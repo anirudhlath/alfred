@@ -74,11 +74,26 @@ class ToolRegistration(BaseEvent):
     tools: list[dict[str, Any]] = Field(description="List of tool manifests")
 
 
+class TriggerFired(BaseEvent):
+    """A trigger's conditions were met. Emitted when trigger has no direct action."""
+
+    event_type: str = "trigger_fired"
+    source: str = "trigger-engine"
+    trigger_id: str
+    trigger_name: str
+    trigger_type: str
+    context: dict[str, Any] = Field(default_factory=dict)
+
+
 class TriggerCreated(BaseEvent):
-    """The LLM dynamically created a trigger (Phase 2)."""
+    """A trigger was dynamically created."""
 
     event_type: str = "trigger_created"
+    source: str = "trigger-engine"
     trigger_id: str = Field(default_factory=lambda: str(uuid4()))
-    trigger_type: str = Field(description="scheduled | event_conditional | composite")
-    conditions: dict[str, Any] = Field(description="Conditions that must be met to fire")
-    action: ActionRequest = Field(description="Action to execute when conditions are met")
+    trigger_type: str = Field(description="Registered trigger type (e.g. time, sensor, composite)")
+    name: str
+    created_by: str
+    conditions: dict[str, Any] = Field(description="Trigger-type-specific conditions")
+    action: dict[str, Any] | None = None
+    one_shot: bool = False
