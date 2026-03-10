@@ -1,13 +1,48 @@
 """Tests for the Reflex Engine — System 1 SLM inference loop."""
 
+from __future__ import annotations
+
 import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from bus.schemas.events import StateChangedEvent
+from core.reflex.tool_registry import ToolInfo
 
-# tv_on_event fixture is inherited from conftest.py
+
+def _make_tools() -> list[ToolInfo]:
+    """Build a standard test tool list."""
+    return [
+        ToolInfo(
+            name="lighting.dim_lights",
+            description="Dim the lights in a room.",
+            parameters={
+                "room": {"type": "str", "description": "The room to dim."},
+                "level": {"type": "int", "description": "Brightness level 0-100."},
+            },
+            feature_name="lighting",
+            feature_description="Smart home lighting controls.",
+            target_service="home-service",
+        ),
+        ToolInfo(
+            name="lighting.turn_off_lights",
+            description="Turn off all lights in a room.",
+            parameters={
+                "room": {"type": "str", "description": "The room to turn off."},
+            },
+            feature_name="lighting",
+            feature_description="Smart home lighting controls.",
+            target_service="home-service",
+        ),
+    ]
+
+
+@pytest.fixture
+def mock_registry() -> AsyncMock:
+    registry = AsyncMock()
+    registry.get_tools = AsyncMock(return_value=_make_tools())
+    return registry
 
 
 @pytest.fixture
@@ -21,14 +56,16 @@ def mock_preferences() -> str:
 
 @pytest.mark.asyncio
 async def test_reflex_engine_produces_action(
-    tv_on_event: StateChangedEvent, mock_preferences: str
+    tv_on_event: StateChangedEvent,
+    mock_preferences: str,
+    mock_registry: AsyncMock,
 ) -> None:
     from core.reflex.engine import ReflexEngine
 
     mock_ollama_response = {
         "response": json.dumps(
             {
-                "tool_name": "smart_home.dim_lights",
+                "tool_name": "lighting.dim_lights",
                 "target_service": "home-service",
                 "parameters": {"room": "living_room", "level": 20},
             }
@@ -46,17 +83,23 @@ async def test_reflex_engine_produces_action(
             return_value=mock_ollama_response,
         ),
     ):
-        engine = ReflexEngine(preferences_dir="/fake/prefs")
+        engine = ReflexEngine(
+            preferences_dir="/fake/prefs",
+            tool_registry=mock_registry,
+        )
         action = await engine.process_event(tv_on_event)
 
     assert action is not None
-    assert action.tool_name == "smart_home.dim_lights"
+    assert action.tool_name == "lighting.dim_lights"
     assert action.parameters["level"] == 20
     assert action.target_service == "home-service"
 
 
 @pytest.mark.asyncio
-async def test_reflex_engine_returns_none_for_no_action(mock_preferences: str) -> None:
+async def test_reflex_engine_returns_none_for_no_action(
+    mock_preferences: str,
+    mock_registry: AsyncMock,
+) -> None:
     from core.reflex.engine import ReflexEngine
 
     boring_event = StateChangedEvent(
@@ -81,7 +124,67 @@ async def test_reflex_engine_returns_none_for_no_action(mock_preferences: str) -
             return_value=mock_ollama_response,
         ),
     ):
-        engine = ReflexEngine(preferences_dir="/fake/prefs")
+        engine = ReflexEngine(
+            preferences_dir="/fake/prefs",
+            tool_registry=mock_registry,
+        )
         action = await engine.process_event(boring_event)
 
     assert action is None
+
+
+@pytest.mark.asyncio
+async def test_reflex_engine_rejects_unknown_service(
+    tv_on_event: StateChangedEvent,
+    mock_preferences: str,
+    mock_registry: AsyncMock,
+) -> None:
+    from core.reflex.engine import ReflexEngine
+
+    mock_ollama_response = {
+        "response": json.dumps(
+            {
+                "tool_name": "lighting.dim_lights",
+                "target_service": "rogue-service",
+                "parameters": {"room": "living_room", "level": 20},
+            }
+        ),
+    }
+
+    with (
+        patch("core.reflex.memory_reader.read_preferences", return_value=mock_preferences),
+        patch(
+            "core.reflex.ollama_client.infer",
+            new_callable=AsyncMock,
+            return_value=mock_ollama_response,
+        ),
+    ):
+        engine = ReflexEngine(
+            preferences_dir="/fake/prefs",
+            tool_registry=mock_registry,
+        )
+        action = await engine.process_event(tv_on_event)
+
+    assert action is None
+
+
+@pytest.mark.asyncio
+async def test_reflex_engine_prompt_contains_tools(
+    mock_registry: AsyncMock,
+    mock_preferences: str,
+) -> None:
+    from core.reflex.engine import ReflexEngine
+
+    with patch("core.reflex.memory_reader.read_preferences", return_value=mock_preferences):
+        engine = ReflexEngine(
+            preferences_dir="/fake/prefs",
+            tool_registry=mock_registry,
+        )
+
+    tools = _make_tools()
+    prompt = engine._build_system_prompt(tools)
+
+    assert "lighting.dim_lights" in prompt
+    assert "lighting.turn_off_lights" in prompt
+    assert "home-service" in prompt
+    assert "Smart home lighting controls." in prompt
