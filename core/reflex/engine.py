@@ -19,21 +19,24 @@ from sdk.alfred_sdk.telemetry import track_latency
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are Alfred's Reflex Engine — a fast-acting steward for a smart home.
+_TARGET_SERVICE = "home-service"
+
+SYSTEM_PROMPT = f"""You are Alfred's Reflex Engine — a fast-acting steward for a smart home.
 
 Given an event from the smart home and the user's preferences, decide if an action is needed.
 
 Rules:
 - Only act if the event clearly matches a user preference
-- If no action is needed, respond with: {"action": "none"}
+- If no action is needed, respond with: {{"action": "none"}}
 - If an action IS needed, respond with:
-  {"tool_name": "<tool>", "target_service": "<service>", "parameters": {<params>}}
+  {{"tool_name": "<tool>", "target_service": "{_TARGET_SERVICE}", "parameters": {{<params>}}}}
 
-Available tools:
+Available tools (all on target_service "{_TARGET_SERVICE}"):
 - smart_home.dim_lights(room: str, level: int 0-100)
 - smart_home.turn_off_lights(room: str)
 - smart_home.set_scene(scene_name: str)
 
+Always set "target_service" to "{_TARGET_SERVICE}".
 Respond ONLY with valid JSON. No explanation."""
 
 
@@ -87,9 +90,14 @@ class ReflexEngine:
                 logger.warning("SLM response missing tool_name: %s", raw)
                 return None
 
+            target_service = str(parsed.get("target_service", _TARGET_SERVICE))
+            if target_service != _TARGET_SERVICE:
+                logger.warning("SLM returned unexpected target_service: %s", target_service)
+                return None
+
             return ActionRequest(
                 source="reflex-engine",
-                target_service=str(parsed.get("target_service", "home-service")),
+                target_service=target_service,
                 tool_name=str(tool_name),
                 parameters=dict(parsed.get("parameters", {})),
             )

@@ -21,6 +21,11 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 
 @.claude/rules/research-protocol.md
 
+## Design Principles
+
+- **No hardcoded tool/service lists** — tools, agents, and services auto-register at runtime via the SDK tool registry; the Reflex Engine prompt must be built dynamically from the registry, not from hardcoded strings
+- **SOLID + DRY** — favor abstraction and single sources of truth; constants over literals, registries over enums
+
 ## Tech Stack
 
 - Python 3.13+, async-first, Pydantic v2
@@ -38,6 +43,8 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `bus/__main__.py` — Bridge entry point (`python -m bus`)
 - `core/memory/preferences/` — Markdown preference files (read-only at runtime)
 - `core/memory/scratchpad.md` — ephemeral observations (append-only at runtime)
+- `shared/config.py` — central env config (loads .env via python-dotenv)
+- `domains/home/home_agent.py` — routes actions to home-service via MCP/HTTP
 - `sdk/` — publishable alfred-sdk package
 - `research/` — Obsidian vault with experiments, data, paper drafts
 
