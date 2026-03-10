@@ -1,3 +1,10 @@
+# Production deployment — all services containerized.
+# Usage:
+#   docker network create alfred-net  # once
+#   docker compose up -d
+#
+# For dev on macOS, use scripts/dev-up.sh with Apple container runtime instead.
+
 services:
   redis:
     image: redis:7-alpine
@@ -5,6 +12,14 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - alfred-net
 
   mosquitto:
     image: eclipse-mosquitto:2
@@ -12,31 +27,71 @@ services:
       - "1883:1883"
     volumes:
       - ./infra/mosquitto.conf:/mosquitto/config/mosquitto.conf
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_pub -t '$$SYS/health' -m ok -u '' -P '' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - alfred-net
 
-  # SigNoz (OpenTelemetry collector + UI)
-  # Uses the all-in-one Docker image for dev
-  signoz:
-    image: signoz/signoz:latest
-    ports:
-      - "3301:3301"   # UI
-      - "4317:4317"   # OTLP gRPC
-      - "4318:4318"   # OTLP HTTP
+  bridge:
+    build:
+      context: .
+      dockerfile: Containerfile
+    command: python -m bus
+    depends_on:
+      redis:
+        condition: service_healthy
+      mosquitto:
+        condition: service_healthy
+    env_file: .env
     environment:
-      - SIGNOZ_LOCAL_DB_PATH=/var/lib/signoz
+      - REDIS_HOST=redis
+      - MQTT_HOST=mosquitto
+    restart: unless-stopped
+    networks:
+      - alfred-net
 
-  # bridge:
-  #   build:
-  #     context: .
-  #     dockerfile: bus/Dockerfile
-  #   depends_on: [redis, mosquitto]
-  #   env_file: .env
+  reflex:
+    build:
+      context: .
+      dockerfile: Containerfile
+    command: python -m core.reflex
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      - REDIS_HOST=redis
+      - MQTT_HOST=mosquitto
+      - OLLAMA_HOST=http://host.docker.internal:11434
+    restart: unless-stopped
+    networks:
+      - alfred-net
 
-  # reflex:
-  #   build:
-  #     context: .
-  #     dockerfile: core/reflex/Dockerfile
-  #   depends_on: [redis]
-  #   env_file: .env
+  home-service:
+    build:
+      context: ..
+      dockerfile: home-service/Containerfile
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      - REDIS_HOST=redis
+      - HA_HOST=http://homeassistant:8123
+    restart: unless-stopped
+    networks:
+      - alfred-net
+
+networks:
+  alfred-net:
+    name: alfred-net
+    external: true
 
 volumes:
   redis_data:

@@ -92,7 +92,6 @@ def track_tokens(model: str) -> Callable[..., Any]:
     """
 
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
-
         @functools.wraps(fn)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
             start = time.perf_counter()
@@ -127,7 +126,6 @@ def track_event(bus: str) -> Callable[..., Any]:
     """Decorator to track event bus publish/subscribe metrics."""
 
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
-
         @functools.wraps(fn)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
             start = time.perf_counter()
