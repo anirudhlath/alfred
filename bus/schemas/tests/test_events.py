@@ -136,3 +136,33 @@ def test_base_event_id_uniqueness() -> None:
         source="a", domain="home", entity_id="x", old_state="on", new_state="off"
     )
     assert e1.event_id != e2.event_id
+
+
+def test_trigger_fired_defaults() -> None:
+    from bus.schemas.events import TriggerFired
+
+    evt = TriggerFired(
+        trigger_id="t-1",
+        trigger_name="test trigger",
+        trigger_type="time",
+        context={"reason": "cron matched"},
+    )
+    assert evt.event_type == "trigger_fired"
+    assert evt.source == "trigger-engine"
+    assert evt.trigger_id == "t-1"
+
+
+def test_trigger_created_updated_schema() -> None:
+    from bus.schemas.events import TriggerCreated
+
+    evt = TriggerCreated(
+        trigger_id="t-1",
+        trigger_type="sensor",
+        name="dim on TV",
+        created_by="reflex-engine",
+        conditions={"entity_id": "media_player.tv", "state_match": "on"},
+    )
+    assert evt.event_type == "trigger_created"
+    assert evt.source == "trigger-engine"
+    assert evt.action is None
+    assert evt.one_shot is False
