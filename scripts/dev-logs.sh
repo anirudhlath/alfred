@@ -1,16 +1,33 @@
 #!/usr/bin/env bash
-# Tail logs from all Alfred infrastructure containers.
+# Show status and logs for Alfred infrastructure services (macOS Homebrew).
 #
-# Usage: ./scripts/dev-logs.sh [container-name]
+# Usage: ./scripts/dev-logs.sh [redis|mosquitto]
 
 set -euo pipefail
 
 if [ $# -gt 0 ]; then
-    container logs "$1" 2>&1
+    case "$1" in
+        redis)
+            echo "==> Redis status:"
+            brew services info redis
+            echo ""
+            echo "==> Redis log:"
+            tail -20 "$(brew --prefix)/var/log/redis.log" 2>/dev/null || echo "    (no log file found)"
+            ;;
+        mosquitto)
+            echo "==> Mosquitto status:"
+            brew services info mosquitto
+            echo ""
+            echo "==> Mosquitto log:"
+            tail -20 "$(brew --prefix)/var/log/mosquitto.log" 2>/dev/null || echo "    (no log file found)"
+            ;;
+        *)
+            echo "Unknown service: $1 (use 'redis' or 'mosquitto')"
+            exit 1
+            ;;
+    esac
 else
-    echo "==> Redis logs:"
-    container logs redis 2>&1 | tail -5
-    echo ""
-    echo "==> Mosquitto logs:"
-    container logs mosquitto 2>&1 | tail -5
+    echo "==> Service status:"
+    brew services info redis
+    brew services info mosquitto
 fi
