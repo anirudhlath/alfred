@@ -1,5 +1,7 @@
 """Tests for AlfredClient."""
 
+import pytest
+
 
 def test_client_stores_config():
     from sdk.alfred_sdk.client import AlfredClient
@@ -69,3 +71,41 @@ def test_client_generates_tool_manifest():
     assert manifest["service_endpoint"] == "http://home-service:8000/mcp"
     assert len(manifest["tools"]) == 1
     assert manifest["tools"][0]["name"] == "smart_home.dim_lights"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_calls_registered_async_tool() -> None:
+    from sdk.alfred_sdk.client import AlfredClient
+
+    client = AlfredClient(service_name="test-service")
+
+    @client.tool(name="test.greet", description="Say hello")
+    async def greet(name: str) -> dict[str, str]:
+        return {"message": f"Hello, {name}!"}
+
+    result = await client.dispatch("test.greet", {"name": "Alfred"})
+    assert result == {"message": "Hello, Alfred!"}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_calls_registered_sync_tool() -> None:
+    from sdk.alfred_sdk.client import AlfredClient
+
+    client = AlfredClient(service_name="test-service")
+
+    @client.tool(name="test.add", description="Add two numbers")
+    def add(a: int, b: int) -> dict[str, int]:
+        return {"sum": a + b}
+
+    result = await client.dispatch("test.add", {"a": 2, "b": 3})
+    assert result == {"sum": 5}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_unknown_tool_raises() -> None:
+    from sdk.alfred_sdk.client import AlfredClient
+
+    client = AlfredClient(service_name="test-service")
+
+    with pytest.raises(KeyError, match="Unknown tool"):
+        await client.dispatch("nonexistent.tool", {})
