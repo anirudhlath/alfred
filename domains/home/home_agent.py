@@ -69,6 +69,16 @@ class HomeAgent:
                 resp.raise_for_status()
                 result_data: Any = resp.json()
 
+            # MCP uses JSON-RPC: errors are in the response body, not HTTP status
+            if isinstance(result_data, dict) and result_data.get("error"):
+                return ActionResult(
+                    source="home-agent",
+                    request_id=action.request_id,
+                    tool_name=action.tool_name,
+                    status="error",
+                    error=str(result_data["error"]),
+                )
+
             return ActionResult(
                 source="home-agent",
                 request_id=action.request_id,
