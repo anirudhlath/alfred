@@ -24,3 +24,4 @@ core/memory/scratchpad.md
 
 # Claude Code local settings
 .claude/settings.local.json
+.worktrees/
