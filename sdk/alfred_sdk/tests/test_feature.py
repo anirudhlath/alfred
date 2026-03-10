@@ -134,3 +134,122 @@ def test_base_feature_to_manifest() -> None:
     assert manifest.name == "test_lighting"
     assert manifest.description == "A test feature for lighting."
     assert len(manifest.tools) == 2
+
+
+# ── Docstring parser edge cases ──
+
+from typing import Any
+
+from alfred_sdk.feature import _parse_google_docstring_args
+
+
+def test_parse_google_docstring_basic() -> None:
+    doc = """Do something.
+
+    Args:
+        room: The room name.
+        level: Brightness 0-100.
+    """
+    args = _parse_google_docstring_args(doc)
+    assert args["room"] == "The room name."
+    assert args["level"] == "Brightness 0-100."
+
+
+def test_parse_google_docstring_multiline_desc() -> None:
+    doc = """Do something.
+
+    Args:
+        room: The room name, which can be
+            a multi-line description.
+        level: Brightness.
+    """
+    args = _parse_google_docstring_args(doc)
+    assert args["room"] == "The room name, which can be a multi-line description."
+    assert args["level"] == "Brightness."
+
+
+def test_parse_google_docstring_no_args_section() -> None:
+    doc = """Do something without args."""
+    args = _parse_google_docstring_args(doc)
+    assert args == {}
+
+
+def test_parse_google_docstring_empty() -> None:
+    args = _parse_google_docstring_args("")
+    assert args == {}
+
+
+def test_parse_google_docstring_args_then_returns() -> None:
+    doc = """Do something.
+
+    Args:
+        x: The input.
+
+    Returns:
+        The output.
+    """
+    args = _parse_google_docstring_args(doc)
+    assert args == {"x": "The input."}
+
+
+def test_tool_meta_complex_types() -> None:
+    """Complex type hints use str() representation."""
+
+    class _ComplexFeature(BaseFeature):
+        feature_name = "complex"
+
+        @tool
+        def do_thing(self, data: dict[str, Any], items: list[str]) -> dict:
+            """Process data.
+
+            Args:
+                data: Input data mapping.
+                items: List of items.
+            """
+            return {}
+
+    feature = _ComplexFeature()
+    tools = {t.name: t for t in feature.get_tools()}
+    t = tools["complex.do_thing"]
+    # Complex types use str() representation
+    assert "dict" in t.parameters["data"].type
+    assert "list" in t.parameters["items"].type
+
+
+def test_tool_meta_default_values() -> None:
+    """Default parameter values are captured."""
+
+    class _DefaultFeature(BaseFeature):
+        feature_name = "defaults"
+
+        @tool
+        def do_thing(self, x: int, y: int = 42) -> dict:
+            """Process.
+
+            Args:
+                x: Required param.
+                y: Optional param.
+            """
+            return {}
+
+    feature = _DefaultFeature()
+    tools = {t.name: t for t in feature.get_tools()}
+    t = tools["defaults.do_thing"]
+    assert t.parameters["x"].default is None  # No default
+    assert t.parameters["y"].default == 42
+
+
+def test_tool_name_override_in_get_tools() -> None:
+    """@tool(name=...) overrides the qualified name in get_tools()."""
+
+    class _OverrideFeature(BaseFeature):
+        feature_name = "over"
+
+        @tool(name="custom.my_tool")
+        def do_thing(self, x: int) -> dict:
+            """Do it."""
+            return {}
+
+    feature = _OverrideFeature()
+    tools = feature.get_tools()
+    assert tools[0].name == "custom.my_tool"
