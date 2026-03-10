@@ -15,13 +15,13 @@ import logging
 from bus.schemas.events import ActionRequest, StateChangedEvent
 from core.reflex import ollama_client
 from core.reflex.memory_reader import read_preferences
+from core.reflex.tool_registry import ToolInfo, ToolRegistry
 from sdk.alfred_sdk.telemetry import track_latency
 
 logger = logging.getLogger(__name__)
 
-_TARGET_SERVICE = "home-service"
-
-SYSTEM_PROMPT = f"""You are Alfred's Reflex Engine — a fast-acting steward for a smart home.
+_SYSTEM_PROMPT_TEMPLATE = """\
+You are Alfred's Reflex Engine — a fast-acting steward for a smart home.
 
 Given an event from the smart home and the user's preferences, decide if an action is needed.
 
@@ -29,24 +29,40 @@ Rules:
 - Only act if the event clearly matches a user preference
 - If no action is needed, respond with: {{"action": "none"}}
 - If an action IS needed, respond with:
-  {{"tool_name": "<tool>", "target_service": "{_TARGET_SERVICE}", "parameters": {{<params>}}}}
+  {{"tool_name": "<exact tool name from list below>", "target_service": "<service>", "parameters": {{<params>}}}}
 
-Available tools (all on target_service "{_TARGET_SERVICE}"):
-- smart_home.dim_lights(room: str, level: int 0-100)
-- smart_home.turn_off_lights(room: str)
-- smart_home.set_scene(scene_name: str)
+{tool_section}
 
-Always set "target_service" to "{_TARGET_SERVICE}".
 Respond ONLY with valid JSON. No explanation."""
+
+
+def _build_tool_section(tools: list[ToolInfo]) -> str:
+    """Build the 'Available tools' section of the system prompt."""
+    if not tools:
+        return "No tools available."
+
+    lines: list[str] = ["Available tools:"]
+    for t in tools:
+        params_str = ", ".join(
+            f"{p}: {info.get('type', 'Any')}" for p, info in t.parameters.items()
+        )
+        line = f"- {t.name}({params_str}) [service: {t.target_service}]"
+        if t.description:
+            line += f" — {t.description}"
+        lines.append(line)
+
+    return "\n".join(lines)
 
 
 class ReflexEngine:
     """The System 1 fast-path inference engine."""
 
-    def __init__(self, preferences_dir: str) -> None:
+    def __init__(self, preferences_dir: str, tool_registry: ToolRegistry) -> None:
         self.preferences_dir = preferences_dir
-        # Cache preferences at init — they're read-only at runtime (Librarian Pattern)
+        self._registry = tool_registry
         self._cached_preferences: str | None = None
+        self._cached_tools: list[ToolInfo] | None = None
+        self._cached_system_prompt: str | None = None
 
     def _get_preferences(self) -> str:
         """Return cached preferences, loading from disk on first call."""
@@ -54,13 +70,33 @@ class ReflexEngine:
             self._cached_preferences = read_preferences(self.preferences_dir)
         return self._cached_preferences
 
+    def _build_system_prompt(self, tools: list[ToolInfo]) -> str:
+        """Build the system prompt with dynamically discovered tools."""
+        tool_section = _build_tool_section(tools)
+        return _SYSTEM_PROMPT_TEMPLATE.format(tool_section=tool_section)
+
+    async def _get_tools_and_prompt(self) -> tuple[list[ToolInfo], str]:
+        """Return cached tools and system prompt, fetching on first call."""
+        if self._cached_tools is None:
+            self._cached_tools = await self._registry.get_tools()
+            self._cached_system_prompt = self._build_system_prompt(self._cached_tools)
+        assert self._cached_system_prompt is not None  # narrowing for mypy
+        return self._cached_tools, self._cached_system_prompt
+
+    async def reload_tools(self) -> None:
+        """Invalidate cached tools, forcing re-fetch on next event."""
+        self._cached_tools = None
+        self._cached_system_prompt = None
+
     @track_latency(category="reflex")
     async def process_event(self, event: StateChangedEvent) -> ActionRequest | None:
         """Process a state change event and optionally produce an action."""
         preferences = self._get_preferences()
+        tools, system_prompt = await self._get_tools_and_prompt()
+        valid_services = ToolRegistry.get_registered_services(tools)
 
         prompt = (
-            f"{SYSTEM_PROMPT}\n\n"
+            f"{system_prompt}\n\n"
             f"## User Preferences\n{preferences}\n\n"
             f"## Event\n"
             f"Entity: {event.entity_id}\n"
@@ -71,10 +107,13 @@ class ReflexEngine:
         )
 
         response = await ollama_client.infer(prompt)
-        return self._parse_response(response, event)
+        return self._parse_response(response, event, valid_services)
 
     def _parse_response(
-        self, response: dict[str, object], event: StateChangedEvent
+        self,
+        response: dict[str, object],
+        event: StateChangedEvent,
+        valid_services: set[str],
     ) -> ActionRequest | None:
         """Parse the SLM's JSON response into an ActionRequest or None."""
         try:
@@ -90,9 +129,13 @@ class ReflexEngine:
                 logger.warning("SLM response missing tool_name: %s", raw)
                 return None
 
-            target_service = str(parsed.get("target_service", _TARGET_SERVICE))
-            if target_service != _TARGET_SERVICE:
-                logger.warning("SLM returned unexpected target_service: %s", target_service)
+            target_service = str(parsed.get("target_service", ""))
+            if target_service not in valid_services:
+                logger.warning(
+                    "SLM returned unregistered target_service: %s (valid: %s)",
+                    target_service,
+                    valid_services,
+                )
                 return None
 
             return ActionRequest(
