@@ -47,8 +47,31 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `shared/config.py` — central env config (loads .env via python-dotenv)
 - `sdk/alfred_sdk/feature.py` — `BaseFeature`, `@tool` decorator, manifest models
 - `sdk/` — publishable alfred-sdk package
+- `scripts/smoke-test.sh` — end-to-end smoke test (MQTT → Reflex → action result)
 - `domains/home/home_agent.py` — routes actions to home-service via MCP/HTTP
 - `research/` — Obsidian vault with experiments, data, paper drafts
+
+## Running the System
+
+```bash
+# 1. Start infrastructure (Redis + Mosquitto via Homebrew)
+brew services start redis
+brew services start mosquitto
+
+# 2. Start home-service (in home-service/ repo)
+cd ../home-service && uv run uvicorn app.server:app --port 8000
+
+# 3. Start Bridge (in alfred/ repo)
+uv run python -m bus
+
+# 4. Start Reflex Runner (in alfred/ repo)
+uv run python -m core.reflex
+
+# 5. Smoke test
+bash scripts/smoke-test.sh
+```
+
+**Startup order matters:** home-service must register tools before Reflex Runner starts (fail-fast if no tools).
 
 ## Spec
 
