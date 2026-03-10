@@ -106,8 +106,8 @@ class TriggerRegistry:
     _registry: dict[str, type[BaseTrigger]] = {}
 
     @classmethod
-    def register(cls, trigger_type: str) -> Callable:
-        """Class decorator: @TriggerRegistry.register("time")"""
+    def register_type(cls, trigger_type: str) -> Callable:
+        """Class decorator: @TriggerRegistry.register_type("time")"""
 
     @classmethod
     def get(cls, trigger_type: str) -> type[BaseTrigger]:
@@ -127,7 +127,7 @@ Adding a new trigger type requires:
 1. Subclass `BaseTrigger`
 2. Define a `Conditions` Pydantic model as a nested class
 3. Implement `evaluate()`
-4. Decorate with `@TriggerRegistry.register("my_type")`
+4. Decorate with `@TriggerRegistry.register_type("my_type")`
 
 No changes to CRUD tools, engine loop, or any other code.
 
@@ -140,7 +140,7 @@ No changes to CRUD tools, engine loop, or any other code.
 Fires on cron schedule or specific datetime.
 
 ```python
-@TriggerRegistry.register("time")
+@TriggerRegistry.register_type("time")
 class TimeTrigger(BaseTrigger):
     trigger_type: str = "time"
 
@@ -158,7 +158,7 @@ class TimeTrigger(BaseTrigger):
 Fires when an incoming event matches conditions.
 
 ```python
-@TriggerRegistry.register("sensor")
+@TriggerRegistry.register_type("sensor")
 class SensorTrigger(BaseTrigger):
     trigger_type: str = "sensor"
 
@@ -177,7 +177,7 @@ class SensorTrigger(BaseTrigger):
 Fires when N of M child conditions are met. Enables multi-condition triggers like "TV on AND after sunset."
 
 ```python
-@TriggerRegistry.register("composite")
+@TriggerRegistry.register_type("composite")
 class CompositeTrigger(BaseTrigger):
     trigger_type: str = "composite"
 
