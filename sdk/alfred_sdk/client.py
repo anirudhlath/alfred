@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import inspect
 import os
 from typing import TYPE_CHECKING, Any
 
@@ -32,6 +33,7 @@ class AlfredClient:
         self.tools: list[dict[str, Any]] = []
         self.publishers: list[dict[str, Any]] = []
         self.subscribers: list[dict[str, Any]] = []
+        self._tool_fns: dict[str, Callable[..., Any]] = {}
 
     def tool(self, name: str, description: str) -> Callable[..., Any]:
         """Register an MCP tool capability."""
@@ -40,6 +42,7 @@ class AlfredClient:
             wrapped: Callable[..., Any] = mcp_tool(name=name, description=description)(fn)
             meta: dict[str, Any] = wrapped._mcp_tool_meta  # type: ignore[attr-defined]
             self.tools.append(meta)
+            self._tool_fns[name] = fn  # Store original fn, not the mcp_tool wrapper
             return wrapped
 
         return decorator
@@ -73,6 +76,16 @@ class AlfredClient:
             return wrapper
 
         return decorator
+
+    async def dispatch(self, method: str, params: dict[str, Any]) -> Any:
+        """Dispatch an MCP tool call to the registered handler."""
+        fn = self._tool_fns.get(method)
+        if fn is None:
+            raise KeyError(f"Unknown tool: {method}")
+        result = fn(**params)
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
     def get_registration_manifest(self) -> dict[str, Any]:
         """Build the tool registration manifest for Alfred's registry."""
