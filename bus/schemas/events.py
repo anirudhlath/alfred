@@ -7,7 +7,7 @@ MQTT and Redis Streams. All inter-agent communication uses these schemas.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -49,7 +49,7 @@ class ActionResult(BaseEvent):
     event_type: str = "action_result"
     request_id: str
     tool_name: str
-    status: str = Field(description="success | error")
+    status: Literal["success", "error"]
     result: dict[str, Any] | None = None
     error: str | None = None
 

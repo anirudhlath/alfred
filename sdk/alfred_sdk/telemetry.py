@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-# Thread-safe telemetry buffer (in production, this flushes to Redis/OTel)
+# In-memory telemetry buffer (not thread-safe; in production, this flushes to Redis/OTel)
 _telemetry_buffer: list[dict[str, Any]] = []
 
 

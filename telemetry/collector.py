@@ -13,6 +13,21 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from telemetry.schemas import EventMetric, LatencyMetric, TokenMetric
+
+# Canonical fieldnames per metric category, derived from telemetry schemas.
+# Using these ensures consistent CSV headers regardless of entry key order.
+_CANONICAL_FIELDS: dict[str, list[str]] = {
+    "latency": sorted(LatencyMetric.model_fields.keys()),
+    "tokens": sorted(TokenMetric.model_fields.keys()),
+    "event_throughput": sorted(EventMetric.model_fields.keys()),
+}
+
+
+def _get_fieldnames(category: str, entry: dict[str, Any]) -> list[str]:
+    """Get canonical fieldnames for a category, falling back to entry keys."""
+    return _CANONICAL_FIELDS.get(category, sorted(entry.keys()))
+
 
 def flush_to_csv(entries: list[dict[str, Any]], vault_path: str) -> None:
     """Append telemetry entries to the appropriate CSV files in the research vault."""
@@ -26,7 +41,7 @@ def flush_to_csv(entries: list[dict[str, Any]], vault_path: str) -> None:
         csv_path = category_dir / "raw.csv"
         file_exists = csv_path.exists()
 
-        fieldnames = sorted(entry.keys())
+        fieldnames = _get_fieldnames(str(category), entry)
         with open(csv_path, "a", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
             if not file_exists:

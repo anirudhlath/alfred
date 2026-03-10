@@ -1,7 +1,5 @@
 """Tests for MCP tool serving."""
 
-import pytest
-
 
 def test_mcp_tool_decorator_preserves_function():
     from sdk.alfred_sdk.mcp import mcp_tool

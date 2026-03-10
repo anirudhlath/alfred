@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, Protocol
 
 import httpx
 
@@ -18,18 +18,25 @@ from bus.schemas.events import ActionRequest, ActionResult
 logger = logging.getLogger(__name__)
 
 
+class RedisLike(Protocol):
+    """Protocol for async Redis operations used by HomeAgent."""
+
+    async def hget(self, name: str, key: str) -> str | bytes | None: ...
+
+
 class HomeAgent:
     """Sub-agent for the home domain."""
 
-    def __init__(self, redis: Any) -> None:
-        self.redis: Any = redis
+    def __init__(self, redis: RedisLike) -> None:
+        self.redis = redis
 
     async def _get_service_endpoint(self, service_name: str) -> str | None:
         """Look up a service endpoint from the tool registry."""
-        manifest_json: str | None = await self.redis.hget("alfred:tool_registry", service_name)
+        manifest_json = await self.redis.hget("alfred:tool_registry", service_name)
         if manifest_json is None:
             return None
-        manifest: dict[str, Any] = json.loads(manifest_json)
+        raw = manifest_json.decode() if isinstance(manifest_json, bytes) else manifest_json
+        manifest: dict[str, Any] = json.loads(raw)
         endpoint = manifest.get("service_endpoint")
         return str(endpoint) if endpoint is not None else None
 

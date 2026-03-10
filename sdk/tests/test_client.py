@@ -1,8 +1,5 @@
 """Tests for AlfredClient."""
 
-import pytest
-from unittest.mock import AsyncMock, patch
-
 
 def test_client_stores_config():
     from sdk.alfred_sdk.client import AlfredClient
@@ -18,7 +15,6 @@ def test_client_stores_config():
 
 def test_client_collects_tools():
     from sdk.alfred_sdk.client import AlfredClient
-    from sdk.alfred_sdk.mcp import mcp_tool
 
     client = AlfredClient(service_name="test")
 
