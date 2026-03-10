@@ -1,51 +1,39 @@
 #!/usr/bin/env bash
-# Start Alfred infrastructure in Apple containers (macOS 26+).
-# Python services (bridge, reflex, home-service) run natively for dev.
+# Start Alfred infrastructure for local development (macOS).
+# Uses Homebrew services for Redis and Mosquitto.
+# Python services (bridge, reflex, home-service) run natively.
 #
 # Usage: ./scripts/dev-up.sh
 
 set -euo pipefail
 
-NETWORK="alfred-net"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-
-echo "==> Starting Apple container runtime..."
-container system start 2>/dev/null || true
-
-# Wait for system to be ready
-for i in $(seq 1 10); do
-    if container system status &>/dev/null; then
-        break
+# Check Homebrew packages are installed
+for pkg in redis mosquitto; do
+    if ! brew list "$pkg" &>/dev/null; then
+        echo "Installing $pkg..."
+        brew install "$pkg"
     fi
-    echo "    Waiting for container runtime... ($i/10)"
-    sleep 2
 done
 
-echo "==> Creating network '$NETWORK'..."
-container network create "$NETWORK" 2>/dev/null || echo "    Network already exists"
-
 echo "==> Starting Redis..."
-if ! container inspect redis &>/dev/null; then
-    container run -d \
-        --name redis \
-        --network "$NETWORK" \
-        -p 6379:6379 \
-        redis:7-alpine
+brew services start redis 2>/dev/null || echo "    Redis already running"
+# Verify
+if redis-cli ping &>/dev/null; then
+    echo "    Redis: localhost:6379"
 else
-    container start redis 2>/dev/null || echo "    Redis already running"
+    echo "    ERROR: Redis failed to start"
+    exit 1
 fi
 
 echo "==> Starting Mosquitto..."
-if ! container inspect mosquitto &>/dev/null; then
-    container run -d \
-        --name mosquitto \
-        --network "$NETWORK" \
-        -p 1883:1883 \
-        -v "$PROJECT_DIR/infra/mosquitto.conf:/mosquitto/config/mosquitto.conf" \
-        eclipse-mosquitto:2
+brew services start mosquitto 2>/dev/null || echo "    Mosquitto already running"
+# Give it a moment to bind
+sleep 1
+if mosquitto_pub -t "test/ping" -m "ping" 2>/dev/null; then
+    echo "    Mosquitto: localhost:1883"
 else
-    container start mosquitto 2>/dev/null || echo "    Mosquitto already running"
+    echo "    ERROR: Mosquitto failed to start"
+    exit 1
 fi
 
 echo ""
