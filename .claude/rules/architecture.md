@@ -13,6 +13,8 @@ These are non-negotiable constraints. Every design decision must respect them.
 - alfred-sdk is the ONLY bridge — apps never import from alfred/ directly
 - Sub-agents in domains/ are Alfred's internal staff, not external apps
 - Registration is runtime discovery via client.register()
+- Never hardcode tool names, service lists, or available capabilities — read from the tool registry at runtime
+- The Reflex Engine prompt must be built dynamically from registered tools, not maintained by hand
 
 ## 3. Deterministic Communication
 - All inter-agent messages are Pydantic-validated JSON
