@@ -1,0 +1,10 @@
+category,function,metric_type,timestamp,unit,value
+reflex,process_event,latency,2026-03-10T19:19:39.530625+00:00,ms,6415.340290986933
+reflex,process_event,latency,2026-03-10T19:25:43.511609+00:00,ms,11073.694207996596
+reflex,process_event,latency,2026-03-10T19:26:30.069883+00:00,ms,4144.305332971271
+reflex,process_event,latency,2026-03-10T19:33:58.633169+00:00,ms,5082.518707960844
+reflex,process_event,latency,2026-03-10T22:25:50.576112+00:00,ms,5410.068124998361
+reflex,process_event,latency,2026-03-10T22:26:59.241849+00:00,ms,3405.8280829922296
+reflex,process_event,latency,2026-03-10T22:29:15.938108+00:00,ms,4223.946042009629
+reflex,process_event,latency,2026-03-10T22:30:01.614168+00:00,ms,3384.320624987595
+reflex,process_event,latency,2026-03-10T22:30:17.709519+00:00,ms,5534.15258298628
