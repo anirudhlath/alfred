@@ -40,12 +40,14 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 
 - `bus/schemas/events.py` — canonical event types (single source of truth)
 - `core/reflex/__main__.py` — Reflex Runner entry point (`python -m core.reflex`)
+- `core/reflex/tool_registry.py` — reads tool manifests from Redis `alfred:tool_registry`
 - `bus/__main__.py` — Bridge entry point (`python -m bus`)
 - `core/memory/preferences/` — Markdown preference files (read-only at runtime)
 - `core/memory/scratchpad.md` — ephemeral observations (append-only at runtime)
 - `shared/config.py` — central env config (loads .env via python-dotenv)
-- `domains/home/home_agent.py` — routes actions to home-service via MCP/HTTP
+- `sdk/alfred_sdk/feature.py` — `BaseFeature`, `@tool` decorator, manifest models
 - `sdk/` — publishable alfred-sdk package
+- `domains/home/home_agent.py` — routes actions to home-service via MCP/HTTP
 - `research/` — Obsidian vault with experiments, data, paper drafts
 
 ## Spec

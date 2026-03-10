@@ -103,7 +103,7 @@ await client.unregister()  # HDEL alfred:tool_registry <service>
 4. For each instance, iterate `@tool`-decorated methods and register bound methods in the dispatch table
 5. Returns `list[BaseFeature]` — the client stores these internally
 
-**Dispatch:** `client.dispatch("lighting.dim_lights", params)` routes to the bound method on the feature instance. The dispatch table is a flat `dict[str, Callable]` keyed by qualified tool name (`{feature_name}.{method_name}`), merged into the same `_tool_fns` dict used by legacy `@client.tool()`. On name collision, the later registration wins and a warning is logged.
+**Dispatch:** `client.dispatch("lighting.dim_lights", params)` routes to the bound method on the feature instance. The dispatch table is a flat `dict[str, Callable]` keyed by qualified tool name (`{feature_name}.{method_name}`). On name collision, the later registration wins and a warning is logged.
 
 ### Context Pattern
 
@@ -181,7 +181,6 @@ class ServiceManifest(BaseModel):
     service_name: str
     service_endpoint: str
     features: list[FeatureManifest]
-    tools: list[ToolManifest] = []  # Legacy @client.tool() entries
 ```
 
 These enforce Pillar 3 (deterministic communication) on the write side. `ToolRegistry` on the read side uses `ToolInfo` dataclasses for lightweight in-memory representation.
@@ -259,23 +258,11 @@ The `__main__.py` calls `await registry.get_tools()` before entering the event l
 - **Two-stage prompts:** Broadcast feature summaries, fetch tool details on demand
 - **Feature-level routing:** SLM selects a feature first, then gets its tools
 
-## Decorator Relationship & Migration
+## Tool Registration Standard
 
-There are three decorator layers in the SDK:
+`BaseFeature` + `@tool` is the **only** way to define tools. The old `@mcp_tool` decorator and `@client.tool()` method are deleted. `sdk/alfred_sdk/mcp.py` is removed entirely.
 
-- **`@mcp_tool`** (`sdk/alfred_sdk/mcp.py`) — Low-level decorator. Extracts parameter metadata from type hints, attaches `_mcp_tool_meta`. Used internally by `@client.tool()`. **Not deprecated** — it's an implementation detail.
-- **`@client.tool(name, desc)`** (`AlfredClient.tool()`) — Wraps `@mcp_tool`. Registers a standalone function as a tool on a client. **Legacy** — works for services that haven't migrated, but new tools should use `BaseFeature` + `@tool`.
-- **`@tool`** (`sdk/alfred_sdk/feature.py`) — New. Marks a `BaseFeature` method as a tool. Zero-arg by default, auto-extracts everything. This is the recommended way to define tools going forward.
-
-### Tool Naming Migration
-
-Existing tools use `smart_home.*` names (`smart_home.dim_lights`, etc.). After migration to BaseFeature, tool names become `{feature_name}.{method_name}` (e.g., `lighting.dim_lights`). This is a **breaking change** to tool names. Since no persistent references to old names exist (no stored triggers, no Phase 2 yet), this is safe to do now. All references in tests and engine code are updated as part of the migration.
-
-### Backward Compatibility
-
-- The existing `@client.tool()` decorator continues to work for services that haven't migrated to BaseFeature
-- `client.register()` includes both legacy `tools` and new `features` in the manifest
-- `ToolRegistry` reads from both formats — legacy tools appear with `feature_name=""` and `feature_description=""`
+Tool names follow the `{feature_name}.{method_name}` convention (e.g., `lighting.dim_lights`).
 
 ## Migrated Home-Service Example
 
@@ -386,18 +373,24 @@ class SceneFeature(BaseFeature):
 ## Files Changed
 
 ### New Files
-- `sdk/alfred_sdk/feature.py` — `BaseFeature`, `@tool`, `ToolMeta`, docstring parser
+- `sdk/alfred_sdk/feature.py` — `BaseFeature`, `@tool`, `ToolMeta`, docstring parser, Pydantic manifest models
 - `core/reflex/tool_registry.py` — `ToolRegistry`, `ToolInfo`
+- `home-service/alfred_ext/features/lighting.py` — `LightingFeature`
+- `home-service/alfred_ext/features/scenes.py` — `SceneFeature`
+
+### Deleted Files
+- `sdk/alfred_sdk/mcp.py` — Replaced by `@tool` decorator in `feature.py`
 
 ### Modified Files
-- `sdk/alfred_sdk/client.py` — `discover_features()`, `unregister()`, feature-aware `register()` and `dispatch()`
-- `sdk/alfred_sdk/__init__.py` — Export `BaseFeature`, `tool`
+- `sdk/alfred_sdk/client.py` — Remove `tool()` method, add `discover_features()`, `unregister()`, feature-only `register()` and `dispatch()`
+- `sdk/alfred_sdk/__init__.py` — Export `BaseFeature`, `tool` (remove `mcp_tool`)
 - `core/reflex/engine.py` — Dynamic prompt, accept `ToolRegistry`, remove hardcoded tools
-- `core/reflex/__main__.py` — Wire `ToolRegistry` into engine, add graceful shutdown
-- `home-service/alfred_ext/register.py` — Migrate from `@client.tool()` to `BaseFeature`
+- `core/reflex/__main__.py` — Wire `ToolRegistry` into engine, fail-fast startup
+- `home-service/alfred_ext/register.py` — Rewrite for `discover_features()`
 
 ### Documentation Updates
-- `sdk/CLAUDE.md` — Add BaseFeature, @tool, discover_features to exports
+- `alfred/CLAUDE.md` — Update design principles for BaseFeature-only architecture
+- `sdk/CLAUDE.md` — Replace with BaseFeature-only exports
 - `core/CLAUDE.md` — Add ToolRegistry to components
-- `.claude/rules/sdk/sdk-design.md` — Add BaseFeature pattern
+- `.claude/rules/sdk/sdk-design.md` — BaseFeature-only pattern
 - `.claude/rules/core/reflex-engine.md` — Add "reads tools from ToolRegistry"

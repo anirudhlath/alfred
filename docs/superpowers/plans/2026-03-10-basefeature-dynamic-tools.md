@@ -26,23 +26,29 @@
 | `home-service/alfred_ext/features/lighting.py` | `LightingFeature` |
 | `home-service/alfred_ext/features/scenes.py` | `SceneFeature` |
 
+### Deleted Files
+| File | Reason |
+|------|--------|
+| `sdk/alfred_sdk/mcp.py` | Replaced by `@tool` in `feature.py` |
+
 ### Modified Files
 | File | Changes |
 |------|---------|
-| `sdk/alfred_sdk/client.py` | Add `discover_features()`, `unregister()`, feature-aware `register()` and `dispatch()` |
-| `sdk/alfred_sdk/__init__.py` | Export `BaseFeature`, `tool` |
+| `sdk/alfred_sdk/client.py` | Remove `tool()` method and legacy `tools`/`publishers`/`subscribers` lists. Add `discover_features()`, `unregister()`, feature-only `register()` and `dispatch()` |
+| `sdk/alfred_sdk/__init__.py` | Export `BaseFeature`, `tool` (remove `mcp_tool`) |
 | `core/reflex/engine.py` | Dynamic prompt from `ToolRegistry`, remove hardcoded `SYSTEM_PROMPT` and `_TARGET_SERVICE` |
-| `core/reflex/__main__.py` | Wire `ToolRegistry`, fail-fast startup check, graceful `unregister()` |
+| `core/reflex/__main__.py` | Wire `ToolRegistry`, fail-fast startup check |
 | `core/reflex/tests/test_engine.py` | Update tests for new engine API |
-| `home-service/alfred_ext/register.py` | Migrate from `@client.tool()` to `discover_features()` |
+| `home-service/alfred_ext/register.py` | Rewrite for `discover_features()` |
 | `home-service/tests/test_server.py` | Update tool names (`smart_home.*` → `lighting.*` / `scenes.*`) |
 
 ### Documentation Updates
 | File | Changes |
 |------|---------|
-| `sdk/CLAUDE.md` | Add BaseFeature, @tool, discover_features |
+| `alfred/CLAUDE.md` | Update design principles for BaseFeature-only |
+| `sdk/CLAUDE.md` | BaseFeature-only exports |
 | `core/CLAUDE.md` | Add ToolRegistry |
-| `.claude/rules/sdk/sdk-design.md` | Add BaseFeature pattern |
+| `.claude/rules/sdk/sdk-design.md` | BaseFeature-only pattern |
 | `.claude/rules/core/reflex-engine.md` | Add "reads tools from ToolRegistry" |
 
 ---
@@ -161,7 +167,7 @@ class ServiceManifest(BaseModel):
     service_name: str
     service_endpoint: str
     features: list[FeatureManifest] = []
-    tools: list[ToolManifest] = []  # Legacy @client.tool() entries
+    # No legacy tools field — BaseFeature is the only pattern
 
 
 # ── @tool Decorator ──
@@ -881,9 +887,6 @@ def get_registration_manifest(self) -> dict[str, Any]:
         "service_name": self.service_name,
         "service_endpoint": self.service_endpoint,
         "features": feature_manifests,
-        "tools": self.tools,  # Legacy @client.tool() entries
-        "publishers": [p["topic"] for p in self.publishers],
-        "subscribers": [s["topic"] for s in self.subscribers],
     }
 ```
 
@@ -999,12 +1002,31 @@ git add sdk/alfred_sdk/client.py sdk/alfred_sdk/tests/test_client_features.py
 git commit -m "feat(sdk): add AlfredClient.unregister() for graceful shutdown"
 ```
 
-### Task 6: Update SDK Exports
+### Task 6: Delete `mcp.py`, Clean Up `client.py`, Update Exports
 
 **Files:**
+- Delete: `sdk/alfred_sdk/mcp.py`
+- Modify: `sdk/alfred_sdk/client.py` (remove `tool()`, `publisher()`, `subscriber()` methods and their backing lists)
 - Modify: `sdk/alfred_sdk/__init__.py`
 
-- [ ] **Step 1: Update exports**
+- [ ] **Step 1: Delete `mcp.py`**
+
+```bash
+git rm sdk/alfred_sdk/mcp.py
+```
+
+- [ ] **Step 2: Remove legacy methods from `client.py`**
+
+Remove these from `AlfredClient`:
+- `self.tools`, `self.publishers`, `self.subscribers` lists from `__init__`
+- `tool()` method (the decorator)
+- `publisher()` method
+- `subscriber()` method
+- The `from .mcp import mcp_tool` import in `tool()`
+
+Keep: `__init__` (with `service_name`, `service_endpoint`, `redis_url`, `_tool_fns`, `_features`), `dispatch()`, `discover_features()`, `discover_features_from_classes()`, `get_registration_manifest()`, `register()`, `unregister()`.
+
+- [ ] **Step 3: Update exports**
 
 Replace contents of `sdk/alfred_sdk/__init__.py`:
 
@@ -1013,13 +1035,11 @@ Replace contents of `sdk/alfred_sdk/__init__.py`:
 
 from .client import AlfredClient
 from .feature import BaseFeature, tool
-from .mcp import mcp_tool
 from .telemetry import track_event, track_latency, track_tokens
 
 __all__ = [
     "AlfredClient",
     "BaseFeature",
-    "mcp_tool",
     "tool",
     "track_event",
     "track_latency",
@@ -1164,35 +1184,6 @@ async def test_get_tools_multiple_services() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_tools_legacy_tools_field() -> None:
-    """ToolRegistry reads from legacy 'tools' field when 'features' is empty."""
-    manifest = json.dumps(
-        {
-            "service_name": "legacy-svc",
-            "service_endpoint": "http://localhost:9000/mcp",
-            "features": [],
-            "tools": [
-                {
-                    "name": "old_tool.do_thing",
-                    "description": "A legacy tool.",
-                    "parameters": {"x": {"type": "int"}},
-                }
-            ],
-        }
-    )
-    mock_redis = AsyncMock()
-    mock_redis.hgetall.return_value = {b"legacy-svc": manifest.encode()}
-
-    registry = ToolRegistry(mock_redis)
-    tools = await registry.get_tools()
-
-    assert len(tools) == 1
-    assert tools[0].name == "old_tool.do_thing"
-    assert tools[0].feature_name == ""
-    assert tools[0].target_service == "legacy-svc"
-
-
-@pytest.mark.asyncio
 async def test_get_tools_malformed_json_skipped() -> None:
     """Malformed JSON in a registry entry is skipped, not fatal."""
     mock_redis = AsyncMock()
@@ -1306,19 +1297,6 @@ class ToolRegistry:
                             target_service=service_name,
                         )
                     )
-
-            # Parse legacy top-level tools
-            for t in manifest.get("tools", []):
-                tools.append(
-                    ToolInfo(
-                        name=t["name"],
-                        description=t.get("description", ""),
-                        parameters=t.get("parameters", {}),
-                        feature_name="",
-                        feature_description="",
-                        target_service=service_name,
-                    )
-                )
 
         return tools
 
@@ -1543,27 +1521,6 @@ async def test_reflex_engine_prompt_contains_tools(
     assert "Smart home lighting controls." in prompt
 
 
-@pytest.mark.asyncio
-async def test_reflex_engine_prompt_legacy_tools() -> None:
-    """Legacy tools (empty feature_name) render with service header."""
-    from core.reflex.engine import _build_tool_section
-    from core.reflex.tool_registry import ToolInfo
-
-    legacy_tools = [
-        ToolInfo(
-            name="old_tool.do_thing",
-            description="A legacy tool.",
-            parameters={"x": {"type": "int"}},
-            feature_name="",
-            feature_description="",
-            target_service="legacy-svc",
-        ),
-    ]
-
-    section = _build_tool_section(legacy_tools)
-    assert "legacy-svc" in section
-    assert "legacy tools" in section.lower()
-    assert "old_tool.do_thing" in section
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1627,13 +1584,10 @@ def _build_tool_section(tools: list[ToolInfo]) -> str:
     lines: list[str] = ["Available tools:"]
     for (feature_name, service), group_tools in groups.items():
         feature_desc = group_tools[0].feature_description
-        if feature_name:
-            header = f"\n## {feature_name} [{service}]"
-            if feature_desc:
-                header += f" — {feature_desc}"
-            lines.append(header)
-        else:
-            lines.append(f"\n## {service} (legacy tools)")
+        header = f"\n## {feature_name} [{service}]"
+        if feature_desc:
+            header += f" — {feature_desc}"
+        lines.append(header)
 
         for t in group_tools:
             params_str = ", ".join(
@@ -2073,7 +2027,7 @@ Expected: All PASS
 ```bash
 cd /Users/anirudhlath/code/private/alfred
 git add home-service/alfred_ext/features/ home-service/alfred_ext/register.py home-service/app/server.py home-service/tests/test_server.py
-git commit -m "feat(home-service): migrate from @client.tool() to BaseFeature pattern"
+git commit -m "feat(home-service): rewrite tools as BaseFeature classes"
 ```
 
 ### Task 11: Update Documentation
@@ -2095,11 +2049,10 @@ Publishable Python package. The ONLY coupling between Alfred and external apps.
 
 - Must work standalone — no imports from alfred core, bus, or domains
 - Keep dependencies minimal
-- Core: AlfredClient, BaseFeature, @tool, @mcp_tool (legacy), telemetry decorators
-- BaseFeature + @tool is the recommended way to define tools — auto-extracts metadata from docstrings + type hints
+- Core: AlfredClient, BaseFeature, @tool, telemetry decorators
+- BaseFeature + @tool is the ONLY way to define tools — auto-extracts metadata from docstrings + type hints
 - AlfredClient.discover_features() scans a package for BaseFeature subclasses and registers their tools
-- @mcp_tool / @client.tool() still work for unmigrated services (legacy)
-- AlfredClient.dispatch() handles both BaseFeature methods and legacy tool functions
+- AlfredClient.dispatch() routes to bound methods on feature instances
 - Not published to PyPI — container builds install from source path
 ```
 
@@ -2139,9 +2092,8 @@ paths:
 - alfred-sdk is a publishable Python package — keep dependencies minimal
 - It is the ONLY coupling between Alfred and external apps
 - Core exports: AlfredClient, BaseFeature, @tool, telemetry decorators
-- BaseFeature + @tool is the standard pattern for defining tools — auto-extracts names, descriptions, and parameters from Python code
+- BaseFeature + @tool is the ONLY way to define tools — auto-extracts names, descriptions, and parameters from Python code
 - AlfredClient.discover_features() scans a package for BaseFeature subclasses and registers tools
-- Legacy @mcp_tool and @client.tool() still work but should not be used for new tools
 - Apps install it as an optional dependency
 - The SDK must work standalone — no imports from alfred core, bus, or domains
 - Registration via client.register() announces feature manifests to Redis registry
