@@ -26,14 +26,16 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - Python 3.13+, async-first, Pydantic v2
 - `uv` for package management, `ruff` for lint/format, `mypy --strict` for types
 - OpenTelemetry → SigNoz for observability
-- Docker Compose, one Dockerfile per service
+- OCI Containerfiles, Apple container runtime (dev) + Docker Compose (prod)
 - MQTT (edge) + Redis Streams (internal backbone)
-- Ollama for local SLM inference (Llama 3 8B)
+- Ollama for local SLM inference (gpt-oss:20b on dev, configurable via OLLAMA_MODEL)
 - alfred-sdk is the ONLY coupling to external apps
 
 ## Key Paths
 
 - `bus/schemas/events.py` — canonical event types (single source of truth)
+- `core/reflex/__main__.py` — Reflex Runner entry point (`python -m core.reflex`)
+- `bus/__main__.py` — Bridge entry point (`python -m bus`)
 - `core/memory/preferences/` — Markdown preference files (read-only at runtime)
 - `core/memory/scratchpad.md` — ephemeral observations (append-only at runtime)
 - `sdk/` — publishable alfred-sdk package
