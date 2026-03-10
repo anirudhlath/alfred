@@ -1,0 +1,31 @@
+# Codebase Structure
+
+## Top-Level Modules
+- `bus/` — Event bus: MQTT↔Redis bridge, canonical event schemas
+  - `bus/schemas/events.py` — Single source of truth for all event types (Pydantic models)
+  - `bus/bridge.py` — Bridge implementation
+  - `bus/__main__.py` — Bridge entry point
+- `core/` — Core engine components
+  - `core/reflex/` — Reflex Engine (System 1): event processing with local SLM
+    - `engine.py` — ReflexEngine class
+    - `ollama_client.py` — Ollama inference client
+    - `memory_reader.py` — Reads preference files for context
+  - `core/memory/` — Memory subsystem
+    - `preferences/` — Markdown preference files (lighting, media, routines)
+    - `scratchpad.md` — Ephemeral observations
+    - `scratchpad_writer.py` — Append-only scratchpad writer
+  - `core/librarian/` — Librarian pattern (scratchpad → nightly consolidation)
+  - `core/triggers/` — Dynamic trigger system
+  - `core/voice/` — Voice interface (future)
+  - `core/conscious/` — Conscious Engine / System 2 (future)
+- `domains/` — Domain agents
+  - `domains/home/` — Home automation domain (home_agent.py)
+  - `domains/media/` — Media domain (future)
+- `sdk/` — alfred-sdk package (separate pyproject.toml)
+  - `sdk/alfred_sdk/` — Client, events, telemetry, MCP integration
+- `shared/` — Shared config utilities
+- `telemetry/` — OpenTelemetry collector + schemas
+- `research/` — Obsidian vault for experiments and papers
+- `infra/` — Infrastructure configs
+- `docs/` — Design specs and plans
+- `tests/` — Integration tests
