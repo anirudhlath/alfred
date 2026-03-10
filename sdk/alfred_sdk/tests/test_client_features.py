@@ -56,9 +56,7 @@ class _BetaFeature(BaseFeature):
 def test_discover_features_from_classes() -> None:
     client = AlfredClient(service_name="test-svc")
     ctx = _StubContext()
-    features = client.discover_features_from_classes(
-        [_AlphaFeature, _BetaFeature], ctx=ctx
-    )
+    features = client.discover_features_from_classes([_AlphaFeature, _BetaFeature], ctx=ctx)
     assert len(features) == 2
     # Tools are registered in dispatch table
     assert "alpha.do_alpha" in client._tool_fns

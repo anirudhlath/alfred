@@ -10,7 +10,6 @@ from typing import Any, overload
 
 from pydantic import BaseModel
 
-
 # ── Pydantic Manifest Models (write-side, for Redis registration) ──
 
 
@@ -246,7 +245,7 @@ def tool(
             "description": description,
             "name": name,
         }
-        return wrapper  # type: ignore[return-value]
+        return wrapper
 
     if fn is not None:
         return decorator(fn)
