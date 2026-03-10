@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 class AlfredClient:
     """Client that microservices use to register with Alfred."""
 
-    REGISTRY_KEY = "alfred:tool_registry"
+    REGISTRY_KEY = "alfred:tool_registry"  # must match ToolRegistry.REGISTRY_KEY in core/
 
     def __init__(
         self,

@@ -6,7 +6,7 @@ Alfred is an ambient, voice-first multi-agent system for smart environments. It 
 
 The system uses a **dual-process cognitive model**:
 
-- **System 1 (Reflex Engine)** -- a local Small Language Model (Ollama, default `llama3:8b`) handles the fast path. Every state-change event passes through the SLM, which decides in sub-500ms whether an action is needed and, if so, which tool to call. This is the only inference path implemented in Phase 1.
+- **System 1 (Reflex Engine)** -- a local Small Language Model (Ollama, default `gpt-oss:20b`) handles the fast path. Every state-change event passes through the SLM, which decides in sub-500ms whether an action is needed and, if so, which tool to call. This is the only inference path implemented in Phase 1.
 - **System 2 (Conscious Engine)** -- a cloud LLM (Claude) handles complex reasoning, multi-step planning, and ambiguous situations. Planned for Phase 3; not yet implemented.
 
 The system is governed by four non-negotiable architectural pillars:
@@ -331,7 +331,7 @@ All configuration flows through the `AlfredConfig` dataclass, which reads from e
 | `MQTT_HOST` | `localhost` | MQTT broker hostname |
 | `MQTT_PORT` | `1883` | MQTT broker port |
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama API base URL |
-| `OLLAMA_MODEL` | `llama3:8b` | SLM model name for inference |
+| `OLLAMA_MODEL` | `gpt-oss:20b` | SLM model name for inference |
 | `HA_HOST` | `http://homeassistant.local:8123` | Home Assistant URL |
 | `HA_TOKEN` | (empty) | Home Assistant long-lived access token |
 | `RESEARCH_VAULT_PATH` | `./research` | Path to the Obsidian research vault |
@@ -349,7 +349,7 @@ Microservices using `alfred-sdk` have their own config via environment variables
 - Python 3.13+
 - Redis server running on localhost:6379
 - Mosquitto (MQTT broker) running on localhost:1883
-- Ollama running with a model pulled (e.g., `ollama pull llama3:8b`)
+- Ollama running with a model pulled (e.g., `ollama pull gpt-oss:20b`)
 - At least one microservice registered (e.g., `home-service`)
 
 On macOS (dev), use Homebrew services for Redis and Mosquitto (Apple `container` CLI does not support `-p` port forwarding).
