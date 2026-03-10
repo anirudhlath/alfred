@@ -13,6 +13,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+_DRAIN_BATCH_SIZE = 1000
+
 
 class ScratchpadWriter:
     """Serialized writer for the scratchpad file."""
@@ -28,18 +30,28 @@ class ScratchpadWriter:
         self.scratchpad_path = scratchpad_path
 
     async def drain_once(self) -> int:
-        """Drain all pending entries from the Redis List to the scratchpad file."""
-        entries: list[str] = []
-        while True:
-            entry = await self.redis.lpop(self.queue_key)
-            if entry is None:
-                break
-            if isinstance(entry, bytes):
-                entry = entry.decode()
-            entries.append(entry)
+        """Drain pending entries from the Redis List to the scratchpad file.
 
-        if not entries:
+        Drains up to _DRAIN_BATCH_SIZE entries per call to bound memory usage.
+        """
+        # Try batch LPOP first (Redis 6.2+), fall back to single pops
+        raw_entries: list[bytes | str] = []
+        try:
+            batch = await self.redis.lpop(self.queue_key, _DRAIN_BATCH_SIZE)
+            if batch is not None:
+                raw_entries = batch if isinstance(batch, list) else [batch]
+        except TypeError:
+            # Redis client doesn't support count arg — fall back to single pops
+            while len(raw_entries) < _DRAIN_BATCH_SIZE:
+                entry = await self.redis.lpop(self.queue_key)
+                if entry is None:
+                    break
+                raw_entries.append(entry)
+
+        if not raw_entries:
             return 0
+
+        entries = [e.decode() if isinstance(e, bytes) else e for e in raw_entries]
 
         with open(self.scratchpad_path, "a") as f:
             for entry in entries:

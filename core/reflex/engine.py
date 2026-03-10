@@ -42,11 +42,19 @@ class ReflexEngine:
 
     def __init__(self, preferences_dir: str) -> None:
         self.preferences_dir = preferences_dir
+        # Cache preferences at init — they're read-only at runtime (Librarian Pattern)
+        self._cached_preferences: str | None = None
+
+    def _get_preferences(self) -> str:
+        """Return cached preferences, loading from disk on first call."""
+        if self._cached_preferences is None:
+            self._cached_preferences = read_preferences(self.preferences_dir)
+        return self._cached_preferences
 
     @track_latency(category="reflex")
     async def process_event(self, event: StateChangedEvent) -> ActionRequest | None:
         """Process a state change event and optionally produce an action."""
-        preferences = read_preferences(self.preferences_dir)
+        preferences = self._get_preferences()
 
         prompt = (
             f"{SYSTEM_PROMPT}\n\n"

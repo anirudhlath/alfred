@@ -33,20 +33,25 @@ def flush_to_csv(entries: list[dict[str, Any]], vault_path: str) -> None:
     """Append telemetry entries to the appropriate CSV files in the research vault."""
     data_dir = Path(vault_path) / "data"
 
+    # Group entries by category to batch writes (one file open per category)
+    grouped: dict[str, list[dict[str, Any]]] = {}
     for entry in entries:
-        category = entry.get("category", entry.get("metric_type", "general"))
-        category_dir = data_dir / str(category)
+        category = str(entry.get("category", entry.get("metric_type", "general")))
+        grouped.setdefault(category, []).append(entry)
+
+    for category, category_entries in grouped.items():
+        category_dir = data_dir / category
         category_dir.mkdir(parents=True, exist_ok=True)
 
         csv_path = category_dir / "raw.csv"
         file_exists = csv_path.exists()
+        fieldnames = _get_fieldnames(category, category_entries[0])
 
-        fieldnames = _get_fieldnames(str(category), entry)
         with open(csv_path, "a", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
             if not file_exists:
                 writer.writeheader()
-            writer.writerow(entry)
+            writer.writerows(category_entries)
 
 
 def generate_daily_summary(vault_path: str, date: str | None = None) -> str:

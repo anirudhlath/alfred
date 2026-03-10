@@ -30,16 +30,7 @@ def preferences_dir(tmp_path: pathlib.Path) -> str:
     return str(prefs)
 
 
-@pytest.fixture
-def tv_on_event() -> StateChangedEvent:
-    return StateChangedEvent(
-        source="home-service",
-        domain="home",
-        entity_id="media_player.living_room_tv",
-        old_state="off",
-        new_state="on",
-        attributes={"friendly_name": "Living Room TV"},
-    )
+# tv_on_event fixture is inherited from conftest.py
 
 
 @pytest.mark.asyncio

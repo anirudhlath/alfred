@@ -32,7 +32,6 @@ class AlfredClient:
         self.tools: list[dict[str, Any]] = []
         self.publishers: list[dict[str, Any]] = []
         self.subscribers: list[dict[str, Any]] = []
-        self._tool_fns: dict[str, Callable[..., Any]] = {}
 
     def tool(self, name: str, description: str) -> Callable[..., Any]:
         """Register an MCP tool capability."""
@@ -41,7 +40,6 @@ class AlfredClient:
             wrapped: Callable[..., Any] = mcp_tool(name=name, description=description)(fn)
             meta: dict[str, Any] = wrapped._mcp_tool_meta  # type: ignore[attr-defined]
             self.tools.append(meta)
-            self._tool_fns[name] = wrapped
             return wrapped
 
         return decorator

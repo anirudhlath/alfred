@@ -13,12 +13,13 @@ async def test_scratchpad_writer_drains_queue() -> None:
     from core.memory.scratchpad_writer import ScratchpadWriter
 
     mock_redis = AsyncMock()
-    entries = [
-        b"2026-03-10T14:00:00Z [reflex] TV turned on in living room",
-        b"2026-03-10T14:00:01Z [reflex] Dimmed lights to 20%",
-        None,
-    ]
-    mock_redis.lpop = AsyncMock(side_effect=entries)
+    # Simulate batch LPOP returning a list of entries
+    mock_redis.lpop = AsyncMock(
+        return_value=[
+            b"2026-03-10T14:00:00Z [reflex] TV turned on in living room",
+            b"2026-03-10T14:00:01Z [reflex] Dimmed lights to 20%",
+        ]
+    )
 
     with tempfile.TemporaryDirectory() as tmpdir:
         scratchpad_path = os.path.join(tmpdir, "scratchpad.md")

@@ -2,21 +2,20 @@
 
 import asyncio
 import logging
-import os
 
 from bus.bridge import run_bridge
+from shared.config import AlfredConfig
 
 logging.basicConfig(level=logging.INFO)
 
 
 def main() -> None:
+    cfg = AlfredConfig.from_env()
     asyncio.run(
         run_bridge(
-            redis_url=(
-                f"redis://{os.getenv('REDIS_HOST', 'localhost')}:{os.getenv('REDIS_PORT', '6379')}"
-            ),
-            mqtt_host=os.getenv("MQTT_HOST", "localhost"),
-            mqtt_port=int(os.getenv("MQTT_PORT", "1883")),
+            redis_url=cfg.redis_url,
+            mqtt_host=cfg.mqtt_host,
+            mqtt_port=cfg.mqtt_port,
         )
     )
 
