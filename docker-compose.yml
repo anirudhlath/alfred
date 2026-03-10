@@ -1,0 +1,42 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./infra/mosquitto.conf:/mosquitto/config/mosquitto.conf
+
+  # SigNoz (OpenTelemetry collector + UI)
+  # Uses the all-in-one Docker image for dev
+  signoz:
+    image: signoz/signoz:latest
+    ports:
+      - "3301:3301"   # UI
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    environment:
+      - SIGNOZ_LOCAL_DB_PATH=/var/lib/signoz
+
+  # bridge:
+  #   build:
+  #     context: .
+  #     dockerfile: bus/Dockerfile
+  #   depends_on: [redis, mosquitto]
+  #   env_file: .env
+
+  # reflex:
+  #   build:
+  #     context: .
+  #     dockerfile: core/reflex/Dockerfile
+  #   depends_on: [redis]
+  #   env_file: .env
+
+volumes:
+  redis_data:

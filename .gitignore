@@ -1,8 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+.venv/
+venv/
+
+# Environment
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# Obsidian vault config (research data itself is tracked)
+research/.obsidian/
+
 # Superpowers brainstorm sessions
 .superpowers/
 
 # Claude Code local settings
 .claude/settings.local.json
-
-# Environment
-.env
