@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 import httpx
 
 from bus.schemas.events import ActionRequest, ActionResult
+from core.reflex.tool_registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ class HomeAgent:
         if cached is not None:
             return cached
 
-        manifest_json = await self.redis.hget("alfred:tool_registry", service_name)  # type: ignore[misc]
+        manifest_json = await self.redis.hget(ToolRegistry.REGISTRY_KEY, service_name)  # type: ignore[misc]
         if manifest_json is None:
             return None
         raw = manifest_json.decode() if isinstance(manifest_json, bytes) else manifest_json

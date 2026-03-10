@@ -187,4 +187,4 @@ async def test_reflex_engine_prompt_contains_tools(
     assert "lighting.dim_lights" in prompt
     assert "lighting.turn_off_lights" in prompt
     assert "home-service" in prompt
-    assert "Smart home lighting controls." in prompt
+    assert "Dim the lights in a room." in prompt
