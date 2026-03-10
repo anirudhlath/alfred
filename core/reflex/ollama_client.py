@@ -1,6 +1,8 @@
-"""Thin async client for Ollama's generate API."""
+"""Thin async client for Ollama's chat API."""
 
 from __future__ import annotations
+
+from typing import Any
 
 import httpx
 
@@ -23,14 +25,20 @@ def _get_client() -> httpx.AsyncClient:
 
 @track_tokens(model="ollama")
 async def infer(prompt: str, model: str | None = None) -> dict[str, object]:
-    """Send a prompt to Ollama and return the response with token counts."""
+    """Send a prompt to Ollama via the chat API and return the response."""
     model = model or _config.ollama_model
     client = _get_client()
+
+    # Split prompt at the last "## Your Decision" to separate system/user content
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": prompt},
+    ]
+
     resp = await client.post(
-        f"{_config.ollama_host}/api/generate",
+        f"{_config.ollama_host}/api/chat",
         json={
             "model": model,
-            "prompt": prompt,
+            "messages": messages,
             "stream": False,
             "format": "json",
         },
@@ -39,7 +47,7 @@ async def infer(prompt: str, model: str | None = None) -> dict[str, object]:
     data = resp.json()
 
     return {
-        "response": data.get("response", ""),
+        "response": data.get("message", {}).get("content", ""),
         "prompt_tokens": data.get("prompt_eval_count", 0),
         "completion_tokens": data.get("eval_count", 0),
         "total_tokens": data.get("prompt_eval_count", 0) + data.get("eval_count", 0),
