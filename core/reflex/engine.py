@@ -41,22 +41,15 @@ def _build_tool_section(tools: list[ToolInfo]) -> str:
     if not tools:
         return "No tools available."
 
-    # Group tools by (feature_name, target_service)
-    groups: dict[tuple[str, str], list[ToolInfo]] = {}
-    for t in tools:
-        key = (t.feature_name, t.target_service)
-        groups.setdefault(key, []).append(t)
-
     lines: list[str] = ["Available tools:"]
-    for (_feature_name, _service), group_tools in groups.items():
-        for t in group_tools:
-            params_str = ", ".join(
-                f"{p}: {info.get('type', 'Any')}" for p, info in t.parameters.items()
-            )
-            line = f"- {t.name}({params_str}) [service: {t.target_service}]"
-            if t.description:
-                line += f" — {t.description}"
-            lines.append(line)
+    for t in tools:
+        params_str = ", ".join(
+            f"{p}: {info.get('type', 'Any')}" for p, info in t.parameters.items()
+        )
+        line = f"- {t.name}({params_str}) [service: {t.target_service}]"
+        if t.description:
+            line += f" — {t.description}"
+        lines.append(line)
 
     return "\n".join(lines)
 
