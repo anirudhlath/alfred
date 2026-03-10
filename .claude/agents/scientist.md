@@ -2,7 +2,7 @@
 name: scientist
 description: Analyze telemetry data and update research vault
 tools: Read, Glob, Grep, Write, Edit, Bash
-model: sonnet
+model: opus
 ---
 
 You are the Background Research Scientist for Project Alfred.

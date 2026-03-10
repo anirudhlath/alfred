@@ -2,7 +2,7 @@
 name = "alfred"
 version = "0.1.0"
 description = "Ambient Multi-Agent System for Smart Environments"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 dependencies = [
     "pydantic>=2.0",
     "redis>=5.0",
@@ -19,12 +19,38 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest-cov>=5.0",
     "ruff>=0.4",
+    "mypy>=1.10",
 ]
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["bus*", "core*", "domains*", "sdk*", "shared*", "telemetry*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["core", "bus", "domains", "telemetry", "sdk", "tests"]
 
 [tool.ruff]
-target-version = "py312"
+target-version = "py313"
 line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "N", "UP", "B", "A", "SIM", "TCH", "RUF"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+plugins = ["pydantic.mypy"]
+warn_return_any = true
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = ["asyncio_mqtt.*", "aiomqtt.*"]
+ignore_missing_imports = true

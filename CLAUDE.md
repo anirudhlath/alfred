@@ -23,7 +23,8 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 
 ## Tech Stack
 
-- Python 3.12+, async-first, Pydantic v2
+- Python 3.13+, async-first, Pydantic v2
+- `uv` for package management, `ruff` for lint/format, `mypy --strict` for types
 - OpenTelemetry → SigNoz for observability
 - Docker Compose, one Dockerfile per service
 - MQTT (edge) + Redis Streams (internal backbone)
