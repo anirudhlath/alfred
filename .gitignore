@@ -19,5 +19,8 @@ research/.obsidian/
 # Superpowers brainstorm sessions
 .superpowers/
 
+# Runtime data (ephemeral, not source)
+core/memory/scratchpad.md
+
 # Claude Code local settings
 .claude/settings.local.json

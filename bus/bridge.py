@@ -13,7 +13,7 @@ import logging
 from typing import Any
 
 import redis.asyncio as aioredis
-from asyncio_mqtt import Client as MqttClient
+from aiomqtt import Client as MqttClient
 
 logger = logging.getLogger(__name__)
 
@@ -85,13 +85,14 @@ async def run_bridge(
 
 async def _mqtt_to_redis_loop(mqtt: MqttClient, redis: AioRedis) -> None:
     """Listen for MQTT messages and forward to Redis."""
-    async with mqtt.messages() as messages:
-        async for message in messages:
-            await forward_mqtt_to_redis(
-                redis=redis,
-                mqtt_topic=str(message.topic),
-                payload=message.payload,  # type: ignore[arg-type]
-            )
+    async for message in mqtt.messages:
+        raw = message.payload
+        payload = raw if isinstance(raw, bytes) else str(raw).encode()
+        await forward_mqtt_to_redis(
+            redis=redis,
+            mqtt_topic=str(message.topic),
+            payload=payload,
+        )
 
 
 async def _redis_to_mqtt_loop(
