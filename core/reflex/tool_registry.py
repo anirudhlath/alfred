@@ -43,9 +43,7 @@ class ToolRegistry:
 
         tools: list[ToolInfo] = []
         for service_key, manifest_json in raw.items():
-            service_name = (
-                service_key.decode() if isinstance(service_key, bytes) else service_key
-            )
+            service_name = service_key.decode() if isinstance(service_key, bytes) else service_key
             manifest_str = (
                 manifest_json.decode() if isinstance(manifest_json, bytes) else manifest_json
             )

@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 
-from core.reflex.tool_registry import ToolInfo, ToolRegistry
+from core.reflex.tool_registry import ToolRegistry
 
 
-def _make_manifest(service_name: str, features: list[dict]) -> str:
+def _make_manifest(service_name: str, features: list[dict[str, Any]]) -> str:
     """Build a JSON manifest string for testing."""
     return json.dumps(
         {

@@ -12,6 +12,27 @@ import pytest
 
 from bus.schemas.events import ActionRequest, StateChangedEvent
 from core.reflex.engine import ReflexEngine
+from core.reflex.tool_registry import ToolInfo
+
+
+def _make_mock_registry() -> AsyncMock:
+    """Build a mock ToolRegistry with standard home-service tools."""
+    tools = [
+        ToolInfo(
+            name="lighting.dim_lights",
+            description="Dim the lights in a room.",
+            parameters={
+                "room": {"type": "str", "description": "The room to dim."},
+                "level": {"type": "int", "description": "Brightness level 0-100."},
+            },
+            feature_name="lighting",
+            feature_description="Smart home lighting controls.",
+            target_service="home-service",
+        ),
+    ]
+    registry = AsyncMock()
+    registry.get_tools = AsyncMock(return_value=tools)
+    return registry
 
 
 @pytest.fixture
@@ -40,7 +61,7 @@ async def test_full_reflex_pipeline(preferences_dir: str, tv_on_event: StateChan
     ollama_response = {
         "response": json.dumps(
             {
-                "tool_name": "smart_home.dim_lights",
+                "tool_name": "lighting.dim_lights",
                 "target_service": "home-service",
                 "parameters": {"room": "living_room", "level": 20},
             }
@@ -50,18 +71,23 @@ async def test_full_reflex_pipeline(preferences_dir: str, tv_on_event: StateChan
         "total_tokens": 225,
     }
 
+    mock_registry = _make_mock_registry()
+
     with patch(
         "core.reflex.ollama_client.infer",
         new_callable=AsyncMock,
         return_value=ollama_response,
     ):
-        engine = ReflexEngine(preferences_dir=preferences_dir)
+        engine = ReflexEngine(
+            preferences_dir=preferences_dir,
+            tool_registry=mock_registry,
+        )
         action = await engine.process_event(tv_on_event)
 
     # Structured output verification (eval contract)
     assert action is not None
     assert isinstance(action, ActionRequest)
-    assert action.tool_name == "smart_home.dim_lights"
+    assert action.tool_name == "lighting.dim_lights"
     assert action.target_service == "home-service"
     assert action.parameters["room"] == "living_room"
     assert 0 <= action.parameters["level"] <= 100
@@ -85,12 +111,17 @@ async def test_reflex_no_action_for_irrelevant_event(preferences_dir: str) -> No
         "total_tokens": 188,
     }
 
+    mock_registry = _make_mock_registry()
+
     with patch(
         "core.reflex.ollama_client.infer",
         new_callable=AsyncMock,
         return_value=ollama_response,
     ):
-        engine = ReflexEngine(preferences_dir=preferences_dir)
+        engine = ReflexEngine(
+            preferences_dir=preferences_dir,
+            tool_registry=mock_registry,
+        )
         action = await engine.process_event(temp_event)
 
     assert action is None

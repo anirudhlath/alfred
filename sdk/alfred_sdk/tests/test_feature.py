@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from alfred_sdk.feature import BaseFeature, ToolMeta, tool
+from typing import Any
+
+from alfred_sdk.feature import BaseFeature, _parse_google_docstring_args, tool
 
 
 def test_tool_decorator_marks_method() -> None:
@@ -137,10 +139,6 @@ def test_base_feature_to_manifest() -> None:
 
 
 # ── Docstring parser edge cases ──
-
-from typing import Any
-
-from alfred_sdk.feature import _parse_google_docstring_args
 
 
 def test_parse_google_docstring_basic() -> None:
