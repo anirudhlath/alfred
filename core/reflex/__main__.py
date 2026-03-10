@@ -1,0 +1,113 @@
+"""Entry point for the Reflex Runner service.
+
+Usage: python -m core.reflex
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import signal
+
+import redis.asyncio as aioredis
+
+from core.memory.scratchpad_writer import ScratchpadWriter
+from core.reflex.engine import ReflexEngine
+from core.reflex.runner import AioRedis, ensure_consumer_group, process_stream_entry
+from domains.home.home_agent import HomeAgent
+from sdk.alfred_sdk.telemetry import clear_telemetry_buffer, get_telemetry_buffer
+from shared.config import AlfredConfig
+from telemetry.collector import flush_to_csv
+
+logger = logging.getLogger(__name__)
+
+STREAM = "alfred:home:state_changed"
+GROUP = "reflex-engine"
+CONSUMER = "worker-1"
+RESULT_STREAM = "alfred:home:action_results"
+SCRATCHPAD_QUEUE = "alfred:scratchpad:queue"
+
+_shutdown = asyncio.Event()
+
+
+def _handle_signal() -> None:
+    logger.info("Shutdown signal received")
+    _shutdown.set()
+
+
+async def flush_telemetry_periodically(config: AlfredConfig, interval: float = 30.0) -> None:
+    """Periodically flush the telemetry buffer to CSV."""
+    while True:
+        await asyncio.sleep(interval)
+        buf = get_telemetry_buffer()
+        if buf:
+            entries = list(buf)
+            clear_telemetry_buffer()
+            flush_to_csv(entries, config.research_vault_path)
+            logger.info("Flushed %d telemetry entries", len(entries))
+
+
+async def run(config: AlfredConfig) -> None:
+    """Main Reflex Runner event loop."""
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, _handle_signal)
+
+    r: AioRedis = aioredis.from_url(config.redis_url)
+
+    await ensure_consumer_group(r, STREAM, GROUP)
+
+    engine = ReflexEngine(preferences_dir="core/memory/preferences")
+    agent = HomeAgent(redis=r)
+    writer = ScratchpadWriter(redis=r, queue_key=SCRATCHPAD_QUEUE)
+
+    # Background tasks
+    scratchpad_task = asyncio.create_task(writer.run())
+    telemetry_task = asyncio.create_task(flush_telemetry_periodically(config))
+
+    logger.info("Reflex Runner started. Listening on stream '%s'...", STREAM)
+
+    try:
+        while not _shutdown.is_set():
+            entries: list[
+                tuple[
+                    bytes | str,
+                    list[tuple[bytes | str, dict[bytes | str, bytes | str]]],
+                ]
+            ] = await r.xreadgroup(GROUP, CONSUMER, {STREAM: ">"}, count=10, block=5000)
+
+            for _stream_key, stream_entries in entries:
+                for entry_id, entry_data in stream_entries:
+                    try:
+                        await process_stream_entry(
+                            entry_data=entry_data,
+                            engine=engine,
+                            agent=agent,
+                            redis=r,
+                            result_stream=RESULT_STREAM,
+                            scratchpad_queue=SCRATCHPAD_QUEUE,
+                        )
+                        # ACK only on success — retriable errors (Ollama down)
+                        # propagate as exceptions and the message stays pending
+                        # for redelivery on next XREADGROUP cycle.
+                        await r.xack(STREAM, GROUP, entry_id)
+                    except Exception as e:
+                        logger.error("Error processing entry %s: %s — will retry", entry_id, e)
+    finally:
+        logger.info("Shutting down Reflex Runner...")
+        scratchpad_task.cancel()
+        telemetry_task.cancel()
+        await r.aclose()
+
+
+def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    )
+    config = AlfredConfig.from_env()
+    asyncio.run(run(config))
+
+
+if __name__ == "__main__":
+    main()

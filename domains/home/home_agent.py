@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable
 
 import httpx
 
@@ -21,7 +24,7 @@ logger = logging.getLogger(__name__)
 class RedisLike(Protocol):
     """Protocol for async Redis operations used by HomeAgent."""
 
-    async def hget(self, name: str, key: str) -> str | bytes | None: ...
+    def hget(self, name: str, key: str) -> Awaitable[str | bytes | None] | str | bytes | None: ...
 
 
 class HomeAgent:
@@ -32,7 +35,7 @@ class HomeAgent:
 
     async def _get_service_endpoint(self, service_name: str) -> str | None:
         """Look up a service endpoint from the tool registry."""
-        manifest_json = await self.redis.hget("alfred:tool_registry", service_name)
+        manifest_json = await self.redis.hget("alfred:tool_registry", service_name)  # type: ignore[misc]
         if manifest_json is None:
             return None
         raw = manifest_json.decode() if isinstance(manifest_json, bytes) else manifest_json
