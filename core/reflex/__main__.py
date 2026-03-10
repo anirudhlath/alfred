@@ -14,6 +14,7 @@ import redis.asyncio as aioredis
 from core.memory.scratchpad_writer import ScratchpadWriter
 from core.reflex.engine import ReflexEngine
 from core.reflex.runner import AioRedis, ensure_consumer_group, process_stream_entry
+from core.reflex.tool_registry import ToolRegistry
 from domains.home.home_agent import HomeAgent
 from sdk.alfred_sdk.telemetry import clear_telemetry_buffer, get_telemetry_buffer
 from shared.config import AlfredConfig
@@ -55,9 +56,24 @@ async def run(config: AlfredConfig) -> None:
 
     r: AioRedis = aioredis.from_url(config.redis_url)
 
+    # Fail-fast: verify tools are registered before entering the event loop
+    registry = ToolRegistry(r)
+    tools = await registry.get_tools()
+    if not tools:
+        await r.aclose()
+        raise RuntimeError(
+            "No tools found in alfred:tool_registry. "
+            "Start at least one microservice (e.g., home-service) before the Reflex Runner."
+        )
+    logger.info(
+        "Loaded %d tools from %d services",
+        len(tools),
+        len(ToolRegistry.get_registered_services(tools)),
+    )
+
     await ensure_consumer_group(r, STREAM, GROUP)
 
-    engine = ReflexEngine(preferences_dir="core/memory/preferences")
+    engine = ReflexEngine(preferences_dir="core/memory/preferences", tool_registry=registry)
     agent = HomeAgent(redis=r)
     writer = ScratchpadWriter(redis=r, queue_key=SCRATCHPAD_QUEUE)
 
