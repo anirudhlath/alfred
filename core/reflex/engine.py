@@ -29,7 +29,7 @@ Rules:
 - Only act if the event clearly matches a user preference
 - If no action is needed, respond with: {{"action": "none"}}
 - If an action IS needed, respond with:
-  {{"tool_name": "<tool>", "target_service": "<service>", "parameters": {{<params>}}}}
+  {{"tool_name": "<exact tool name from list below>", "target_service": "<service>", "parameters": {{<params>}}}}
 
 {tool_section}
 
@@ -48,18 +48,12 @@ def _build_tool_section(tools: list[ToolInfo]) -> str:
         groups.setdefault(key, []).append(t)
 
     lines: list[str] = ["Available tools:"]
-    for (feature_name, service), group_tools in groups.items():
-        feature_desc = group_tools[0].feature_description
-        header = f"\n## {feature_name} [{service}]"
-        if feature_desc:
-            header += f" — {feature_desc}"
-        lines.append(header)
-
+    for (_feature_name, _service), group_tools in groups.items():
         for t in group_tools:
             params_str = ", ".join(
                 f"{p}: {info.get('type', 'Any')}" for p, info in t.parameters.items()
             )
-            line = f"- {t.name}({params_str})"
+            line = f"- {t.name}({params_str}) [service: {t.target_service}]"
             if t.description:
                 line += f" — {t.description}"
             lines.append(line)

@@ -136,5 +136,5 @@ async def test_unregister_calls_hdel() -> None:
     with patch("redis.asyncio.from_url", return_value=mock_redis):
         await client.unregister()
 
-    mock_redis.hdel.assert_called_once_with("alfred:tool_registry", "test-svc")
+    mock_redis.hdel.assert_called_once_with(AlfredClient.REGISTRY_KEY, "test-svc")
     mock_redis.aclose.assert_called_once()

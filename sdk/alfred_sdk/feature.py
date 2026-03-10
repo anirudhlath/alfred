@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import functools
 import inspect
 import re
 from dataclasses import dataclass
@@ -236,16 +235,12 @@ def tool(
     """
 
     def decorator(f: _F) -> _F:
-        @functools.wraps(f)
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
-            return f(*args, **kwargs)
-
-        wrapper._tool_marker = True  # type: ignore[attr-defined]
-        wrapper._tool_overrides = {  # type: ignore[attr-defined]
+        f._tool_marker = True
+        f._tool_overrides = {
             "description": description,
             "name": name,
         }
-        return wrapper
+        return f
 
     if fn is not None:
         return decorator(fn)
