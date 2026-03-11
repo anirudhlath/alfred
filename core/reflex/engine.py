@@ -29,7 +29,7 @@ Rules:
 - Only act if the event clearly matches a user preference
 - If no action is needed, respond with: {{"action": "none"}}
 - If an action IS needed, respond with:
-  {{"tool_name": "<exact tool name from list below>", "target_service": "<service>", "parameters": {{<params>}}}}
+  {{"tool_name": "<tool name>", "target_service": "<service>", "parameters": {{<params>}}}}
 
 {tool_section}
 
