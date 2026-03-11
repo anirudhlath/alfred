@@ -1,6 +1,7 @@
 name: bedtime_lights_off
 description: "When user goes to bed, all lights should turn off"
 tags: [home, lighting]
+context: default.json
 event:
   domain: home
   entity_id: binary_sensor.bed_occupancy

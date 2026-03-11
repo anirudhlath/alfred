@@ -11,16 +11,18 @@ from pathlib import Path
 
 from core.reflex.tool_registry import ToolInfo, ToolRegistry
 from evals.compare import compare_runs
+from evals.inference import BACKENDS
 from evals.loader import load_scenario, load_scenarios
-from evals.models import EvalRun, Verdict
+from evals.models import EvalRun, Scenario, Verdict
 from evals.pipeline import EvalContext, run_scenario
-from evals.report import format_comparison, format_run
+from evals.report import format_aggregate, format_comparison, format_run, latency_stats
 from evals.scorer import score
 from evals.store import build_run_id, list_runs, load_run, save_run
 from shared.config import AlfredConfig
 
 _SCENARIOS_DIR = Path(__file__).parent / "scenarios"
 _RUNS_DIR = Path(__file__).parent / "runs"
+_CONTEXTS_DIR = Path(__file__).parent / "contexts"
 _PREFERENCES_DIR = str(Path(__file__).parent.parent / "core" / "memory" / "preferences")
 
 
@@ -37,7 +39,16 @@ def _parse_args() -> argparse.Namespace:
     run_parser.add_argument("--scenario", type=Path, help="Run a single scenario file")
     run_parser.add_argument("--model", help="Override Ollama model")
     run_parser.add_argument(
+        "--backend",
+        choices=list(BACKENDS),
+        default="ollama",
+        help="Inference backend (default: ollama)",
+    )
+    run_parser.add_argument(
         "--preferences-dir", type=str, default=_PREFERENCES_DIR, help="Preferences directory"
+    )
+    run_parser.add_argument(
+        "-n", "--repeat", type=int, default=1, help="Number of times to run the full suite"
     )
 
     # list
@@ -50,6 +61,14 @@ def _parse_args() -> argparse.Namespace:
 
     # runs
     sub.add_parser("runs", help="List saved runs")
+
+    # capture-context
+    cap_parser = sub.add_parser(
+        "capture-context", help="Capture live context from Redis to a fixture file"
+    )
+    cap_parser.add_argument(
+        "--output", default="default.json", help="Output fixture filename in evals/contexts/"
+    )
 
     return parser.parse_args()
 
@@ -66,10 +85,41 @@ async def _load_tools(config: AlfredConfig) -> list[ToolInfo]:
         await r.aclose()
 
 
+async def _execute_single_run(
+    scenarios: list[Scenario],
+    preferences_dir: str,
+    model: str,
+    ctx: EvalContext,
+) -> EvalRun:
+    """Execute all scenarios in parallel and return an EvalRun."""
+    traces = await asyncio.gather(
+        *(
+            run_scenario(
+                scenario=s,
+                tools=ctx.tools,
+                preferences_dir=preferences_dir,
+                model=model,
+                ctx=ctx,
+            )
+            for s in scenarios
+        )
+    )
+
+    results = [score(trace, s) for trace, s in zip(traces, scenarios, strict=True)]
+    timestamp = datetime.now(UTC)
+    return EvalRun(
+        run_id=build_run_id(timestamp, model),
+        timestamp=timestamp,
+        model=model,
+        results=results,
+    )
+
+
 async def _cmd_run(args: argparse.Namespace) -> None:
-    """Execute scenarios and produce an eval run."""
+    """Execute scenarios and produce eval runs."""
     config = AlfredConfig.from_env()
     model = args.model or config.ollama_model
+    infer = BACKENDS[args.backend]
 
     # Load scenarios
     if args.scenario:
@@ -87,39 +137,32 @@ async def _cmd_run(args: argparse.Namespace) -> None:
         print("No tools registered in Redis. Is home-service running?")
         sys.exit(1)
 
-    print(f"Running {len(scenarios)} scenarios with model {model}...\n")
+    repeat = args.repeat
+    n = len(scenarios)
+    label = f"{n} scenarios" if repeat == 1 else f"{n} scenarios x {repeat} runs"
+    print(f"Running {label} with model {model} ({args.backend})...\n")
 
-    # Pre-compute shared state for the run
-    ctx = EvalContext(tools, args.preferences_dir, model)
+    # Pre-compute shared state
+    ctx = EvalContext(tools, args.preferences_dir, model, infer=infer)
 
-    # Run each scenario
-    results = []
-    for scenario in scenarios:
-        trace = await run_scenario(
-            scenario=scenario,
-            tools=tools,
-            preferences_dir=args.preferences_dir,
-            model=model,
-            ctx=ctx,
-        )
-        result = score(trace, scenario)
-        results.append(result)
+    # Execute runs sequentially (scenarios within each run are parallel)
+    all_runs: list[EvalRun] = []
+    for i in range(repeat):
+        if repeat > 1:
+            print(f"--- Run {i + 1}/{repeat} ---")
+        run = await _execute_single_run(scenarios, args.preferences_dir, model, ctx)
+        all_runs.append(run)
 
-    timestamp = datetime.now(UTC)
-    run = EvalRun(
-        run_id=build_run_id(timestamp, model),
-        timestamp=timestamp,
-        model=model,
-        results=results,
-    )
+    # Report each run
+    for run in all_runs:
+        path = save_run(run, _RUNS_DIR)
+        print(format_run(run))
+        print(f"Run saved: {path}\n")
+        _append_research_csv(run, config)
 
-    # Save and report
-    path = save_run(run, _RUNS_DIR)
-    print(format_run(run))
-    print(f"Run saved: {path}")
-
-    # Append to research CSV
-    _append_research_csv(run, config)
+    # Aggregate report for multi-run
+    if repeat > 1:
+        print(format_aggregate(list(all_runs)))
 
 
 def _append_research_csv(run: EvalRun, config: AlfredConfig) -> None:
@@ -129,10 +172,7 @@ def _append_research_csv(run: EvalRun, config: AlfredConfig) -> None:
 
     write_header = not csv_path.exists()
     latencies = [r.trace.latency_ms for r in run.results]
-    avg_latency = sum(latencies) / len(latencies) if latencies else 0
-    sorted_lat = sorted(latencies)
-    p95_idx = max(0, int(len(sorted_lat) * 0.95) - 1)
-    p95_latency = sorted_lat[p95_idx] if sorted_lat else 0
+    avg_latency, p95_latency = latency_stats(latencies)
 
     with open(csv_path, "a", newline="") as f:
         writer = csv.writer(f)
@@ -185,6 +225,43 @@ def _cmd_runs() -> None:
         print(f"  {run_id}")
 
 
+async def _cmd_capture_context(args: argparse.Namespace) -> None:
+    """Scan all alfred:context:* Redis keys and save a fixture file."""
+    import json
+
+    import redis.asyncio as aioredis
+
+    from sdk.alfred_sdk.context import ContextSnapshot
+    from shared.streams import CONTEXT_KEY_PREFIX
+
+    config = AlfredConfig.from_env()
+    r = aioredis.from_url(config.redis_url)
+    try:
+        pattern = f"{CONTEXT_KEY_PREFIX}*"
+        keys: list[bytes] = await r.keys(pattern)
+        if not keys:
+            print(f"No keys matching {pattern} found in Redis.")
+            sys.exit(1)
+
+        sorted_keys = sorted(keys)
+        values: list[bytes | None] = await r.mget(*sorted_keys)
+        envelope: dict[str, object] = {}
+        for key, raw in zip(sorted_keys, values, strict=True):
+            if not raw:
+                continue
+            service_name = key.decode().removeprefix(CONTEXT_KEY_PREFIX)
+            snapshot = ContextSnapshot.model_validate_json(raw)
+            envelope[service_name] = snapshot.model_dump()
+            print(f"  captured: {service_name}")
+
+        _CONTEXTS_DIR.mkdir(parents=True, exist_ok=True)
+        output_path = _CONTEXTS_DIR / args.output
+        output_path.write_text(json.dumps(envelope, indent=2))
+        print(f"\nFixture written: {output_path}")
+    finally:
+        await r.aclose()
+
+
 def _cmd_compare(args: argparse.Namespace) -> None:
     """Compare two runs."""
     old = load_run(args.run_id_1, _RUNS_DIR)
@@ -204,6 +281,8 @@ def main() -> None:
             _cmd_runs()
         case "compare":
             _cmd_compare(args)
+        case "capture-context":
+            asyncio.run(_cmd_capture_context(args))
 
 
 if __name__ == "__main__":
