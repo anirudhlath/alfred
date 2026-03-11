@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from alfred_sdk.context import ContextEntry, ContextSnapshot
+import pytest
+from alfred_sdk.context import ContextEntry, ContextProvider, ContextSnapshot
+from alfred_sdk.feature import BaseFeature
 
 
 def test_context_entry_defaults() -> None:
@@ -45,3 +47,21 @@ def test_context_snapshot_round_trip() -> None:
     assert restored == snap
     assert len(restored.controllable["light"]) == 1
     assert restored.sensors["sensor"][0].state == "22.5"
+
+
+class StubFeature(BaseFeature):
+    feature_name = "stub"
+
+
+@pytest.mark.asyncio
+async def test_base_feature_default_get_context() -> None:
+    feature = StubFeature()
+    result = await feature.get_context()
+    assert result == ContextSnapshot()
+    assert result.controllable == {}
+    assert result.sensors == {}
+
+
+def test_base_feature_satisfies_context_provider_protocol() -> None:
+    feature = StubFeature()
+    assert isinstance(feature, ContextProvider)
