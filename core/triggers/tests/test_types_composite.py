@@ -1,0 +1,101 @@
+"""Tests for CompositeTrigger."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from typing import Any
+
+import pytest
+
+from bus.schemas.events import StateChangedEvent
+from core.triggers.models import TriggerContext
+from core.triggers.registry import TriggerRegistry
+
+
+@pytest.fixture(autouse=True)
+def _clean_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(TriggerRegistry, "_registry", {})
+    import core.triggers.types  # noqa: F401
+
+
+def _make_composite(**kwargs: Any) -> Any:
+    cls = TriggerRegistry.get("composite")
+    defaults: dict[str, Any] = {
+        "trigger_id": "t-1",
+        "trigger_type": "composite",
+        "name": "test composite",
+        "created_by": "test",
+        "created_at": datetime.now(UTC),
+        "conditions": {"children": [], "require": 1},
+    }
+    defaults.update(kwargs)
+    return cls(**defaults)
+
+
+def test_composite_registered() -> None:
+    assert "composite" in TriggerRegistry.available_types()
+
+
+def test_all_children_match() -> None:
+    children = [
+        {"trigger_type": "sensor", "conditions": {"entity_id": "light.a", "state_match": "on"}},
+        {"trigger_type": "sensor", "conditions": {"entity_id": "light.a", "state_match": "on"}},
+    ]
+    trigger = _make_composite(conditions={"children": children, "require": 2})
+    event = StateChangedEvent(
+        source="test",
+        domain="home",
+        entity_id="light.a",
+        new_state="on",
+    )
+    ctx = TriggerContext(now=datetime.now(UTC), event=event)
+    assert trigger.evaluate(ctx) is True
+
+
+def test_not_enough_children_match() -> None:
+    children = [
+        {"trigger_type": "sensor", "conditions": {"entity_id": "light.a", "state_match": "on"}},
+        {"trigger_type": "sensor", "conditions": {"entity_id": "light.b", "state_match": "on"}},
+    ]
+    trigger = _make_composite(conditions={"children": children, "require": 2})
+    event = StateChangedEvent(
+        source="test",
+        domain="home",
+        entity_id="light.a",
+        new_state="on",
+    )
+    ctx = TriggerContext(now=datetime.now(UTC), event=event)
+    assert trigger.evaluate(ctx) is False
+
+
+def test_mixed_time_and_sensor() -> None:
+    children = [
+        {"trigger_type": "time", "conditions": {"cron": "0 7 * * *"}},
+        {"trigger_type": "sensor", "conditions": {"entity_id": "light.a", "state_match": "on"}},
+    ]
+    trigger = _make_composite(conditions={"children": children, "require": 2})
+    event = StateChangedEvent(
+        source="test",
+        domain="home",
+        entity_id="light.a",
+        new_state="on",
+    )
+    ctx = TriggerContext(now=datetime(2026, 3, 10, 7, 0, 0, tzinfo=UTC), event=event)
+    assert trigger.evaluate(ctx) is True
+
+
+def test_partial_require() -> None:
+    children = [
+        {"trigger_type": "sensor", "conditions": {"entity_id": "light.a", "state_match": "on"}},
+        {"trigger_type": "sensor", "conditions": {"entity_id": "light.b", "state_match": "on"}},
+        {"trigger_type": "sensor", "conditions": {"entity_id": "light.a", "state_match": "on"}},
+    ]
+    trigger = _make_composite(conditions={"children": children, "require": 2})
+    event = StateChangedEvent(
+        source="test",
+        domain="home",
+        entity_id="light.a",
+        new_state="on",
+    )
+    ctx = TriggerContext(now=datetime.now(UTC), event=event)
+    assert trigger.evaluate(ctx) is True

@@ -31,6 +31,7 @@ classDiagram
     BaseEvent <|-- ActionResult
     BaseEvent <|-- TelemetryEvent
     BaseEvent <|-- ToolRegistration
+    BaseEvent <|-- TriggerFired
     BaseEvent <|-- TriggerCreated
 
     class BaseEvent {
@@ -67,7 +68,7 @@ Published by microservices when a device or entity changes state. This is the pr
 
 ### ActionRequest
 
-A request to execute an MCP tool on a target microservice. Produced by the Reflex Engine (or Trigger Engine in Phase 2).
+A request to execute an MCP tool on a target microservice. Produced by the Reflex Engine or Trigger Engine.
 
 | Field            | Type                 | Description                                       |
 |------------------|----------------------|---------------------------------------------------|
@@ -114,17 +115,34 @@ Published by microservices at startup to register their MCP tool capabilities.
 | `service_endpoint` | `str`                | HTTP endpoint for MCP calls              |
 | `tools`            | `list[dict]`         | List of tool manifests (name, params)    |
 
+### TriggerFired
+
+Published by the Trigger Engine when a trigger's conditions are met but the trigger has no direct `action` set. The Reflex Engine receives this on `alfred:events` and decides what to do.
+
+| Field          | Type                | Description                                         |
+|----------------|---------------------|-----------------------------------------------------|
+| `event_type`   | `"trigger_fired"`   | Fixed                                               |
+| `source`       | `"trigger-engine"`  | Fixed                                               |
+| `trigger_id`   | `str`               | Which trigger fired                                 |
+| `trigger_name` | `str`               | Human-readable trigger name                         |
+| `trigger_type` | `str`               | Registered type: `time`, `sensor`, `composite`      |
+| `context`      | `dict[str, Any]`    | Evaluation context (type, entity, state, timestamp) |
+
 ### TriggerCreated
 
-Published when the LLM dynamically creates a trigger (Phase 2).
+Published by the Trigger Engine when a new trigger is dynamically created via CRUD tools.
 
-| Field          | Type                 | Description                                        |
-|----------------|----------------------|----------------------------------------------------|
-| `event_type`   | `"trigger_created"`  | Fixed                                              |
-| `trigger_id`   | `str`                | UUID4, auto-generated                              |
-| `trigger_type` | `str`                | `scheduled`, `event_conditional`, `composite`      |
-| `conditions`   | `dict[str, Any]`     | Conditions that must be met to fire                |
-| `action`       | `ActionRequest`      | The action to execute when conditions are met      |
+| Field          | Type                  | Description                                        |
+|----------------|-----------------------|----------------------------------------------------|
+| `event_type`   | `"trigger_created"`   | Fixed                                              |
+| `source`       | `"trigger-engine"`    | Fixed                                              |
+| `trigger_id`   | `str`                 | UUID4, auto-generated                              |
+| `trigger_type` | `str`                 | Registered type: `time`, `sensor`, `composite`     |
+| `name`         | `str`                 | Human-readable trigger name                        |
+| `created_by`   | `str`                 | Origin (e.g. `"tool-call"`)                        |
+| `conditions`   | `dict[str, Any]`      | Trigger-type-specific conditions                   |
+| `action`       | `dict[str, Any]\|None`| Action payload, if set                             |
+| `one_shot`     | `bool`                | Whether the trigger deletes itself after firing    |
 
 ## MQTT-Redis Bridge
 
