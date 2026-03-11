@@ -1,0 +1,13 @@
+name: bedtime_lights_off
+description: "When user goes to bed, all lights should turn off"
+tags: [home, lighting]
+event:
+  domain: home
+  entity_id: binary_sensor.bed_occupancy
+  old_state: "off"
+  new_state: "on"
+  source: eval
+  attributes:
+    friendly_name: "Bed Occupancy"
+expected:
+  tool_name: lighting.turn_off_lights
