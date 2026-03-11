@@ -9,6 +9,8 @@ import pytest
 _TRIGGER_TYPE_MODULES = [
     "core.triggers.types",
     "core.triggers.types.time",
+    "core.triggers.types.sensor",
+    "core.triggers.types.composite",
 ]
 
 
