@@ -8,6 +8,8 @@ import os
 import pkgutil
 from typing import TYPE_CHECKING, Any
 
+from .context import ContextSnapshot
+
 if TYPE_CHECKING:
     from collections.abc import Callable
     from types import ModuleType
@@ -130,6 +132,22 @@ class AlfredClient:
             result = await result
         return result
 
+    # ── Context Collection ──
+
+    # Duplicated from shared.streams — SDK must be standalone (no monorepo imports)
+    CONTEXT_KEY_PREFIX = "alfred:context:"
+
+    async def _collect_context(self) -> ContextSnapshot:
+        """Collect and merge context from all registered features."""
+        merged = ContextSnapshot()
+        for feature in self._features:
+            snapshot = await feature.get_context()
+            for domain, entries in snapshot.controllable.items():
+                merged.controllable.setdefault(domain, []).extend(entries)
+            for domain, entries in snapshot.sensors.items():
+                merged.sensors.setdefault(domain, []).extend(entries)
+        return merged
+
     # ── Manifest and Registration ──
 
     def get_registration_manifest(self) -> dict[str, Any]:
@@ -145,15 +163,22 @@ class AlfredClient:
         }
 
     async def register(self) -> None:
-        """Register this service's capabilities with Alfred's tool registry on Redis."""
+        """Register this service's tools and context with Alfred's registry on Redis."""
         import json
 
         import redis.asyncio as aioredis
 
         r: aioredis.Redis[Any] = aioredis.from_url(self.redis_url)  # type: ignore[type-arg]
-        manifest = self.get_registration_manifest()
-        await r.hset(self.REGISTRY_KEY, self.service_name, json.dumps(manifest))  # type: ignore[misc]
-        await r.aclose()
+        try:
+            manifest = self.get_registration_manifest()
+            await r.hset(self.REGISTRY_KEY, self.service_name, json.dumps(manifest))  # type: ignore[misc]
+
+            context = await self._collect_context()
+            if context.controllable or context.sensors:
+                context_key = f"{self.CONTEXT_KEY_PREFIX}{self.service_name}"
+                await r.set(context_key, context.model_dump_json(), ex=600)
+        finally:
+            await r.aclose()
 
     async def unregister(self) -> None:
         """Remove this service from Alfred's tool registry on Redis.
