@@ -41,6 +41,8 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `bus/schemas/events.py` — canonical event types (single source of truth)
 - `core/reflex/__main__.py` — Reflex Runner entry point (`python -m core.reflex`)
 - `core/reflex/tool_registry.py` — reads tool manifests from Redis `alfred:tool_registry`
+- `core/triggers/__main__.py` — Trigger Engine entry point (`python -m core.triggers`)
+- `core/triggers/registry.py` — TriggerRegistry for dynamic trigger type registration
 - `bus/__main__.py` — Bridge entry point (`python -m bus`)
 - `core/memory/preferences/` — Markdown preference files (read-only at runtime)
 - `core/memory/scratchpad.md` — ephemeral observations (append-only at runtime)
@@ -67,7 +69,10 @@ uv run python -m bus
 # 4. Start Reflex Runner (in alfred/ repo)
 uv run python -m core.reflex
 
-# 5. Smoke test
+# 5. Start Trigger Engine (in alfred/ repo)
+uv run python -m core.triggers
+
+# 6. Smoke test
 bash scripts/smoke-test.sh
 ```
 
