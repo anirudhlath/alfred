@@ -5,6 +5,17 @@ from __future__ import annotations
 from evals.compare import RunComparison, VerdictChange
 from evals.models import EvalRun, Verdict
 
+
+def latency_stats(latencies: list[float]) -> tuple[float, float]:
+    """Return (avg, p95) for a list of latency values."""
+    if not latencies:
+        return 0.0, 0.0
+    avg = sum(latencies) / len(latencies)
+    sorted_lat = sorted(latencies)
+    p95 = sorted_lat[max(0, int(len(sorted_lat) * 0.95) - 1)]
+    return avg, p95
+
+
 _VERDICT_SYMBOLS = {
     Verdict.PASS: "\u2713",  # check mark
     Verdict.PARTIAL: "~",
@@ -36,6 +47,48 @@ def format_run(run: EvalRun) -> str:
     pt = run.summary.get(Verdict.PARTIAL, 0)
     f = run.summary.get(Verdict.FAIL, 0)
     lines.append(f"Summary: {p} pass | {pt} partial | {f} fail")
+
+    return "\n".join(lines)
+
+
+def format_aggregate(runs: list[EvalRun]) -> str:
+    """Format aggregate stats across multiple runs."""
+    n = len(runs)
+    lines: list[str] = [f"Aggregate over {n} runs  |  Model: {runs[0].model}", ""]
+
+    # Per-scenario pass rate
+    scenario_verdicts: dict[str, list[Verdict]] = {}
+    all_latencies: list[float] = []
+    for run in runs:
+        for result in run.results:
+            name = result.scenario.name
+            scenario_verdicts.setdefault(name, []).append(result.verdict)
+            all_latencies.append(result.trace.latency_ms)
+
+    for name in sorted(scenario_verdicts):
+        verdicts = scenario_verdicts[name]
+        passes = sum(1 for v in verdicts if v == Verdict.PASS)
+        rate = passes / len(verdicts) * 100
+        lines.append(
+            f"  {name} {'.' * max(1, 40 - len(name))} {passes}/{len(verdicts)} pass ({rate:.0f}%)"
+        )
+
+    # Overall stats
+    total = sum(r.scenario_count for r in runs)
+    total_pass = sum(r.summary.get(Verdict.PASS, 0) for r in runs)
+    total_partial = sum(r.summary.get(Verdict.PARTIAL, 0) for r in runs)
+    total_fail = sum(r.summary.get(Verdict.FAIL, 0) for r in runs)
+    pass_rate = total_pass / total * 100 if total else 0
+
+    lines.append("")
+    lines.append(
+        f"Overall: {total_pass}/{total} pass ({pass_rate:.0f}%) "
+        f"| {total_partial} partial | {total_fail} fail"
+    )
+
+    if all_latencies:
+        avg, p95 = latency_stats(all_latencies)
+        lines.append(f"Latency: avg {avg:.0f}ms | p95 {p95:.0f}ms")
 
     return "\n".join(lines)
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -14,7 +13,7 @@ if TYPE_CHECKING:
 from bus.schemas.events import StateChangedEvent
 from core.reflex.tool_registry import ToolInfo
 from evals.models import Scenario
-from evals.pipeline import run_scenario
+from evals.pipeline import EvalContext, run_scenario
 
 
 def _make_tools() -> list[ToolInfo]:
@@ -45,30 +44,34 @@ def _make_scenario() -> Scenario:
     )
 
 
+def _mock_infer(response: dict[str, object]):
+    """Create a mock infer function returning a fixed response."""
+
+    async def _infer(prompt: str, model: str) -> dict[str, object]:
+        return response
+
+    return _infer
+
+
 @pytest.mark.asyncio
 async def test_run_scenario_captures_trace(tmp_path: pathlib.Path) -> None:
     """Pipeline captures full trace from prompt through response."""
     prefs_dir = str(tmp_path)
-    # No preferences files — empty prefs is fine for this test
 
-    ollama_response = {
+    mock_response = {
         "response": json.dumps({"action": "none"}),
         "prompt_tokens": 100,
         "completion_tokens": 8,
-        "total_tokens": 108,
     }
 
-    with patch(
-        "core.reflex.ollama_client.infer",
-        new_callable=AsyncMock,
-        return_value=ollama_response,
-    ):
-        trace = await run_scenario(
-            scenario=_make_scenario(),
-            tools=_make_tools(),
-            preferences_dir=prefs_dir,
-            model="test-model",
-        )
+    ctx = EvalContext(_make_tools(), prefs_dir, "test-model", infer=_mock_infer(mock_response))
+    trace = await run_scenario(
+        scenario=_make_scenario(),
+        tools=_make_tools(),
+        preferences_dir=prefs_dir,
+        model="test-model",
+        ctx=ctx,
+    )
 
     assert trace.model == "test-model"
     assert "media_player.tv" in trace.prompt
@@ -84,7 +87,7 @@ async def test_run_scenario_with_action(tmp_path: pathlib.Path) -> None:
     """Pipeline captures parsed ActionRequest."""
     prefs_dir = str(tmp_path)
 
-    ollama_response = {
+    mock_response = {
         "response": json.dumps(
             {
                 "tool_name": "lighting.dim_lights",
@@ -94,19 +97,15 @@ async def test_run_scenario_with_action(tmp_path: pathlib.Path) -> None:
         ),
         "prompt_tokens": 200,
         "completion_tokens": 30,
-        "total_tokens": 230,
     }
 
-    with patch(
-        "core.reflex.ollama_client.infer",
-        new_callable=AsyncMock,
-        return_value=ollama_response,
-    ):
-        trace = await run_scenario(
-            scenario=_make_scenario(),
-            tools=_make_tools(),
-            preferences_dir=prefs_dir,
-        )
+    ctx = EvalContext(_make_tools(), prefs_dir, infer=_mock_infer(mock_response))
+    trace = await run_scenario(
+        scenario=_make_scenario(),
+        tools=_make_tools(),
+        preferences_dir=prefs_dir,
+        ctx=ctx,
+    )
 
     assert trace.parsed_action is not None
     assert trace.parsed_action.tool_name == "lighting.dim_lights"

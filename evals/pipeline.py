@@ -8,10 +8,11 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from core.reflex import ollama_client
 from core.reflex.engine import ReflexEngine
 from core.reflex.memory_reader import read_preferences
 from core.reflex.tool_registry import ToolInfo, ToolRegistry
+from evals.context_fixtures import load_context_text
+from evals.inference import InferFn, infer_ollama
 from shared.config import AlfredConfig
 from shared.tracing import TraceRecord
 
@@ -29,8 +30,11 @@ class EvalContext:
         tools: list[ToolInfo],
         preferences_dir: str,
         model: str | None = None,
+        *,
+        infer: InferFn = infer_ollama,
     ) -> None:
         self.model = model or _config.ollama_model
+        self.infer = infer
         self.engine = ReflexEngine(
             preferences_dir=preferences_dir,
             tool_registry=ToolRegistry(redis=None),
@@ -62,12 +66,15 @@ async def run_scenario(
     else:
         preferences_text = ctx.preferences_text
 
-    resolved_model = model or ctx.model
-    prompt = ctx.engine.build_prompt(scenario.event, preferences_text, ctx.tools)
+    # Per-scenario context fixture
+    context_text = load_context_text(scenario.context) if scenario.context else ""
 
-    # Call Ollama and measure latency
+    resolved_model = model or ctx.model
+    prompt = ctx.engine.build_prompt(scenario.event, preferences_text, ctx.tools, context_text)
+
+    # Call inference backend and measure latency
     start = time.perf_counter()
-    response = await ollama_client.infer(prompt, model=resolved_model)
+    response: dict[str, Any] = await ctx.infer(prompt, model=resolved_model)
     latency_ms = (time.perf_counter() - start) * 1000
 
     # Parse using the engine's real logic

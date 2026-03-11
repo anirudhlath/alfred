@@ -28,6 +28,7 @@ class Scenario(BaseModel):
     tags: list[str] = []
     event: StateChangedEvent
     preferences_dir: str | None = None
+    context: str | None = None
     expected: ExpectedAction | None
 
 

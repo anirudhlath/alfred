@@ -1,6 +1,7 @@
 name: tv_on_dims_lights
 description: "When TV turns on, dim living room lights"
 tags: [home, lighting, canonical]
+context: default.json
 event:
   domain: home
   entity_id: media_player.living_room_tv

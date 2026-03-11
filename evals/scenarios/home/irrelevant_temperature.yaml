@@ -1,6 +1,7 @@
 name: irrelevant_temperature
 description: "Temperature sensor change should not trigger any action"
 tags: [home, negative]
+context: default.json
 event:
   domain: home
   entity_id: sensor.outdoor_temperature
