@@ -191,3 +191,56 @@ async def test_reflex_engine_prompt_contains_tools(
     # Parameter descriptions appear in the prompt (e.g. available entity values)
     assert "The room to dim." in prompt
     assert "Brightness level 0-100." in prompt
+
+
+@pytest.mark.asyncio
+async def test_reflex_engine_prompt_contains_context(
+    mock_registry: AsyncMock,
+    mock_preferences: str,
+) -> None:
+    from unittest.mock import AsyncMock as AM
+
+    from core.reflex.engine import ReflexEngine
+
+    mock_context_reader = AM()
+    mock_context_reader.get_rendered_context = AM(
+        return_value="### Lights\n- light.living_room: on (brightness: 255)"
+    )
+
+    with patch("core.reflex.memory_reader.read_preferences", return_value=mock_preferences):
+        engine = ReflexEngine(
+            preferences_dir="/fake/prefs",
+            tool_registry=mock_registry,
+            context_reader=mock_context_reader,
+        )
+
+    boring_event = StateChangedEvent(
+        source="home-service",
+        domain="home",
+        entity_id="sensor.temperature",
+        new_state="22.5",
+    )
+
+    mock_ollama_response = {
+        "response": json.dumps({"action": "none"}),
+        "prompt_tokens": 150,
+        "completion_tokens": 10,
+        "total_tokens": 160,
+    }
+
+    with (
+        patch("core.reflex.memory_reader.read_preferences", return_value=mock_preferences),
+        patch(
+            "core.reflex.ollama_client.infer",
+            new_callable=AsyncMock,
+            return_value=mock_ollama_response,
+        ) as mock_infer,
+    ):
+        await engine.process_event(boring_event)
+
+    # Verify the prompt sent to Ollama contains the rendered context
+    called_prompt = mock_infer.call_args[0][0]
+    assert "## Home State" in called_prompt
+    assert "light.living_room: on (brightness: 255)" in called_prompt
+    # Context should appear before preferences
+    assert called_prompt.index("## Home State") < called_prompt.index("## User Preferences")
