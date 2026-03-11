@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock
 
-import pytest
-
 from bus.schemas.events import ActionRequest, StateChangedEvent
 from core.reflex.engine import ReflexEngine
 from core.reflex.tool_registry import ToolInfo
@@ -95,11 +93,13 @@ class TestParseResponse:
         event = _make_event()
 
         response: dict[str, object] = {
-            "response": json.dumps({
-                "tool_name": "lighting.dim_lights",
-                "target_service": "home-service",
-                "parameters": {"room": "living_room", "level": 20},
-            }),
+            "response": json.dumps(
+                {
+                    "tool_name": "lighting.dim_lights",
+                    "target_service": "home-service",
+                    "parameters": {"room": "living_room", "level": 20},
+                }
+            ),
         }
 
         result = engine.parse_response(response, event, {"home-service"})
@@ -129,11 +129,13 @@ class TestParseResponse:
         event = _make_event()
 
         response: dict[str, object] = {
-            "response": json.dumps({
-                "tool_name": "lighting.dim_lights",
-                "target_service": "fake-service",
-                "parameters": {},
-            }),
+            "response": json.dumps(
+                {
+                    "tool_name": "lighting.dim_lights",
+                    "target_service": "fake-service",
+                    "parameters": {},
+                }
+            ),
         }
 
         result = engine.parse_response(response, event, {"home-service"})
