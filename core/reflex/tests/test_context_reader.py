@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 from sdk.alfred_sdk.context import ContextEntry, ContextSnapshot
@@ -61,11 +61,9 @@ async def test_context_reader_fetches_from_redis() -> None:
 
     mock_redis = AsyncMock()
     mock_redis.get = AsyncMock(return_value=snapshot.model_dump_json().encode())
-    mock_redis.aclose = AsyncMock()
 
-    with patch("redis.asyncio.from_url", return_value=mock_redis):
-        reader = ContextReader(redis_url="redis://localhost:6379")
-        result = await reader.get_rendered_context()
+    reader = ContextReader(redis=mock_redis)
+    result = await reader.get_rendered_context()
 
     assert "light.living_room" in result
     assert "brightness: 255" in result
@@ -80,12 +78,10 @@ async def test_context_reader_caches_result() -> None:
 
     mock_redis = AsyncMock()
     mock_redis.get = AsyncMock(return_value=snapshot.model_dump_json().encode())
-    mock_redis.aclose = AsyncMock()
 
-    with patch("redis.asyncio.from_url", return_value=mock_redis):
-        reader = ContextReader(redis_url="redis://localhost:6379")
-        result1 = await reader.get_rendered_context()
-        result2 = await reader.get_rendered_context()
+    reader = ContextReader(redis=mock_redis)
+    result1 = await reader.get_rendered_context()
+    result2 = await reader.get_rendered_context()
 
     assert result1 == result2
     # Redis only queried once (cached)
@@ -98,11 +94,9 @@ async def test_context_reader_returns_empty_when_key_missing() -> None:
 
     mock_redis = AsyncMock()
     mock_redis.get = AsyncMock(return_value=None)
-    mock_redis.aclose = AsyncMock()
 
-    with patch("redis.asyncio.from_url", return_value=mock_redis):
-        reader = ContextReader(redis_url="redis://localhost:6379")
-        result = await reader.get_rendered_context()
+    reader = ContextReader(redis=mock_redis)
+    result = await reader.get_rendered_context()
 
     assert result == ""
 
@@ -114,12 +108,10 @@ async def test_context_reader_caches_empty_result() -> None:
 
     mock_redis = AsyncMock()
     mock_redis.get = AsyncMock(return_value=None)
-    mock_redis.aclose = AsyncMock()
 
-    with patch("redis.asyncio.from_url", return_value=mock_redis):
-        reader = ContextReader(redis_url="redis://localhost:6379")
-        await reader.get_rendered_context()
-        await reader.get_rendered_context()
+    reader = ContextReader(redis=mock_redis)
+    await reader.get_rendered_context()
+    await reader.get_rendered_context()
 
     # Redis only queried once despite empty result
     mock_redis.get.assert_called_once()
