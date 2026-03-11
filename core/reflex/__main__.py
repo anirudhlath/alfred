@@ -12,6 +12,7 @@ import signal
 import redis.asyncio as aioredis
 
 from core.memory.scratchpad_writer import ScratchpadWriter
+from core.reflex.context_reader import ContextReader
 from core.reflex.engine import ReflexEngine
 from core.reflex.runner import AioRedis, ensure_consumer_group, process_stream_entry
 from core.reflex.tool_registry import ToolRegistry
@@ -73,7 +74,12 @@ async def run(config: AlfredConfig) -> None:
 
     await ensure_consumer_group(r, STREAM, GROUP)
 
-    engine = ReflexEngine(preferences_dir="core/memory/preferences", tool_registry=registry)
+    context_reader = ContextReader(redis_url=config.redis_url)
+    engine = ReflexEngine(
+        preferences_dir="core/memory/preferences",
+        tool_registry=registry,
+        context_reader=context_reader,
+    )
     agent = HomeAgent(redis=r)
     writer = ScratchpadWriter(redis=r, queue_key=SCRATCHPAD_QUEUE)
 
