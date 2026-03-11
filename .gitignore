@@ -21,6 +21,7 @@ research/.obsidian/
 
 # Runtime data (ephemeral, not source)
 core/memory/scratchpad.md
+core/memory/triggers/
 
 # Claude Code local settings
 .claude/settings.local.json
