@@ -9,6 +9,8 @@ from typing import Any, overload
 
 from pydantic import BaseModel
 
+from .context import ContextSnapshot
+
 # ── Pydantic Manifest Models (write-side, for Redis registration) ──
 
 
@@ -200,6 +202,10 @@ class BaseFeature:
             description=self.get_description(),
             tools=tool_manifests,
         )
+
+    async def get_context(self) -> ContextSnapshot:
+        """Return structured context for this feature. Override in subclasses."""
+        return ContextSnapshot()
 
 
 # ── @tool Decorator ──

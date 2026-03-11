@@ -74,6 +74,7 @@ graph TB
         Bridge["MQTT-Redis Bridge<br/><code>uv run python -m bus</code>"]
         Runner["Reflex Runner<br/><code>uv run python -m core.reflex</code>"]
         Engine[Reflex Engine]
+        CtxReader[ContextReader]
         Registry[ToolRegistry]
         MemReader[Memory Reader]
         ScratchWriter[ScratchpadWriter]
@@ -119,9 +120,11 @@ graph TB
     Runner --> ScratchWriter
     Runner --> TelCollector
 
+    Engine --> CtxReader
     Engine --> Registry
     Engine --> MemReader
     Engine -->|POST /api/chat| Ollama
+    CtxReader -->|GET alfred:context:*| Redis
     Registry -->|HGETALL alfred:tool_registry| Redis
     MemReader -->|read| Prefs
     ScratchWriter -->|LPOP queue| Redis
@@ -174,8 +177,9 @@ The `ReflexEngine` class is the System 1 fast path. It is a pure inference compo
 
 1. Loads user preferences from `core/memory/preferences/` (cached after first read).
 2. Fetches registered tools from `ToolRegistry` (cached, invalidatable via `reload_tools()`).
-3. Builds a system prompt dynamically from the tool registry -- tool names, parameters, and descriptions are injected at runtime; nothing is hardcoded.
-4. Constructs a user prompt with the event details (entity, domain, old/new state, attributes).
+3. Fetches entity context from `ContextReader` (cached with 5-minute TTL, renders as Markdown).
+4. Builds a system prompt dynamically from the tool registry -- tool names, parameters, and descriptions are injected at runtime; nothing is hardcoded.
+5. Constructs a user prompt with entity context, preferences, and event details.
 5. Sends the combined prompt to Ollama via `/api/chat` with `format: "json"`.
 6. Parses the JSON response: either `{"action": "none"}` or `{"tool_name": "...", "target_service": "...", "parameters": {...}}`.
 7. Validates `target_service` against registered services. Rejects unknown services.
@@ -215,13 +219,16 @@ The SDK is a standalone Python package -- it has no imports from `alfred/core`, 
 
 - **`BaseFeature`** -- base class for grouping related tools. Subclass it and decorate methods with `@tool`. Tool metadata (name, description, parameters) is auto-extracted from Python type hints and Google-style docstrings.
 - **`@tool`** -- marks a method as an MCP tool. Supports both bare `@tool` and `@tool(name="...", description="...")`.
+- **`ContextProvider`** -- protocol for features that publish entity context. `BaseFeature` provides a default no-op; features override `get_context()` to return a `ContextSnapshot`.
 - **`AlfredClient`** -- the entry point for microservices. Key operations:
   - `discover_features(package)` -- scans a Python package for `BaseFeature` subclasses, instantiates them, and builds a dispatch table.
-  - `register()` -- writes the service manifest to Redis `alfred:tool_registry` via `HSET`.
+  - `register()` -- writes the service manifest to Redis `alfred:tool_registry` via `HSET`, and writes merged entity context to `alfred:context:{service_name}` with a 10-minute TTL.
   - `unregister()` -- removes the service from the registry via `HDEL` on graceful shutdown.
   - `dispatch(method, params)` -- routes an incoming MCP call to the correct bound method on the feature instance.
 
-**Registration flow:** microservice starts --> discovers features --> calls `register()` --> Alfred's `ToolRegistry` sees tools on next `HGETALL`.
+**Registration flow:** microservice starts --> discovers features --> calls `register()` --> Alfred's `ToolRegistry` sees tools on next `HGETALL`, `ContextReader` sees entity context on next cache miss.
+
+See `docs/context-provider.md` for full details on the context publishing and consumption pipeline.
 
 ### 3.5 Trigger Engine (Proactive Automation)
 
@@ -348,6 +355,7 @@ All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `
 | `alfred:home:action_results` | Stream | Action execution results |
 | `alfred:tool_registry` | Hash | Service name to tool manifest JSON |
 | `alfred:scratchpad:queue` | List | Pending scratchpad observations |
+| `alfred:context:{service}` | String (JSON) | Service entity context snapshot (TTL 600s) |
 | `alfred:triggers` | Hash | Trigger ID → JSON (Trigger Engine runtime store) |
 
 ### 4.3 Consumer Groups
