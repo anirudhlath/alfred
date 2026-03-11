@@ -14,15 +14,16 @@ from pathlib import Path
 import redis.asyncio as aioredis
 
 import core.triggers.types  # noqa: F401  — register all trigger types
+from core.reflex.runner import ensure_consumer_group
 from core.triggers.engine import TriggerEngine
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
 from core.triggers.store import TriggerStore
 from sdk.alfred_sdk.client import AlfredClient
 from shared.config import AlfredConfig
+from shared.streams import EVENTS_STREAM
 
 logger = logging.getLogger(__name__)
 
-EVENTS_STREAM = "alfred:events"
 GROUP = "trigger-engine"
 CONSUMER = "worker-1"
 SNAPSHOT_DIR = Path("core/memory/triggers")
@@ -52,11 +53,7 @@ async def event_loop(
     """Event listener loop for sensor-based trigger evaluation."""
     from bus.schemas.events import StateChangedEvent
 
-    try:
-        await r.xgroup_create(EVENTS_STREAM, GROUP, id="0", mkstream=True)
-    except aioredis.ResponseError as e:
-        if "BUSYGROUP" not in str(e):
-            raise
+    await ensure_consumer_group(r, EVENTS_STREAM, GROUP)
 
     while not _shutdown.is_set():
         try:

@@ -10,11 +10,10 @@ from bus.schemas.events import TriggerCreated
 from core.triggers.models import ActionPayload
 from core.triggers.registry import TriggerRegistry
 from sdk.alfred_sdk.feature import BaseFeature, ToolMeta, tool
+from shared.streams import EVENTS_STREAM
 
 if TYPE_CHECKING:
     from core.triggers.store import TriggerStore
-
-EVENTS_STREAM = "alfred:events"
 
 
 class TriggerFeatureContext:
@@ -130,8 +129,7 @@ class TriggerFeature(BaseFeature):
         name: str | None = None,
     ) -> dict[str, Any]:
         """Update an existing trigger's conditions, action, or name."""
-        triggers = await self._store.list_all()
-        target = next((t for t in triggers if t.trigger_id == trigger_id), None)
+        target = await self._store.get(trigger_id)
         if target is None:
             return {"error": f"Trigger '{trigger_id}' not found"}
 
@@ -142,14 +140,14 @@ class TriggerFeature(BaseFeature):
             cls = TriggerRegistry.get(target.trigger_type)
             try:
                 conditions_model = cls.Conditions  # type: ignore[attr-defined]
-                conditions_model(**conditions)
-                updates["conditions"] = conditions
+                validated = conditions_model(**conditions)
+                updates["conditions"] = validated.model_dump(mode="json")
             except Exception as e:
                 return {"error": f"Invalid conditions: {e}"}
         if action is not None:
             try:
-                ActionPayload(**action)
-                updates["action"] = action
+                validated_action = ActionPayload(**action)
+                updates["action"] = validated_action
             except Exception as e:
                 return {"error": f"Invalid action: {e}"}
 
@@ -166,8 +164,7 @@ class TriggerFeature(BaseFeature):
     @tool
     async def toggle_trigger(self, trigger_id: str, enabled: bool) -> dict[str, Any]:
         """Enable or disable a trigger."""
-        triggers = await self._store.list_all()
-        target = next((t for t in triggers if t.trigger_id == trigger_id), None)
+        target = await self._store.get(trigger_id)
         if target is None:
             return {"error": f"Trigger '{trigger_id}' not found"}
 

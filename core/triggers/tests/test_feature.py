@@ -22,6 +22,7 @@ def mock_store() -> AsyncMock:
     store.save = AsyncMock()
     store.delete = AsyncMock()
     store.list_all = AsyncMock(return_value=[])
+    store.get = AsyncMock(return_value=None)
     return store
 
 
@@ -123,7 +124,7 @@ async def test_toggle_trigger(mock_store: AsyncMock) -> None:
         conditions={"cron": "0 7 * * *"},
         enabled=True,
     )
-    mock_store.list_all = AsyncMock(return_value=[trigger])
+    mock_store.get = AsyncMock(return_value=trigger)
 
     f = TriggerFeature(ctx=TriggerFeatureContext(store=mock_store))
     result = await f.toggle_trigger(trigger_id="t-1", enabled=False)
@@ -144,7 +145,7 @@ async def test_update_trigger_conditions(mock_store: AsyncMock) -> None:
         created_at=datetime.now(UTC),
         conditions={"cron": "0 7 * * *"},
     )
-    mock_store.list_all = AsyncMock(return_value=[trigger])
+    mock_store.get = AsyncMock(return_value=trigger)
 
     f = TriggerFeature(ctx=TriggerFeatureContext(store=mock_store))
     result = await f.update_trigger(
@@ -160,7 +161,7 @@ async def test_update_trigger_conditions(mock_store: AsyncMock) -> None:
 async def test_update_trigger_not_found(mock_store: AsyncMock) -> None:
     from core.triggers.feature import TriggerFeature, TriggerFeatureContext
 
-    mock_store.list_all = AsyncMock(return_value=[])
+    mock_store.get = AsyncMock(return_value=None)
     f = TriggerFeature(ctx=TriggerFeatureContext(store=mock_store))
     result = await f.update_trigger(trigger_id="t-999", name="x")
     assert "error" in result
