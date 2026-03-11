@@ -29,7 +29,7 @@ graph TB
         Store["TriggerStore<br/>Redis CRUD + YAML"]
         Feature["TriggerFeature<br/>BaseFeature CRUD tools"]
         Server["HTTP Server<br/>JSON-RPC dispatch"]
-        Registry["TriggerRegistry<br/>Type → Class map"]
+        Registry["TriggerRegistry<br/>Type-to-Class map"]
     end
 
     subgraph "Redis"
@@ -80,9 +80,9 @@ graph LR
     Tick["Tick Loop<br/>every 1s"] --> Eval["_evaluate_all()"]
     Event["Event Loop<br/>alfred:events"] --> Eval
     Eval --> Fire{trigger.action?}
-    Fire -->|set| AR["ActionRequest<br/>→ alfred:actions"]
-    Fire -->|None| TF["TriggerFired<br/>→ alfred:events"]
-    Fire --> SP["observation<br/>→ alfred:scratchpad:queue"]
+    Fire -->|set| AR["ActionRequest<br/>to alfred:actions"]
+    Fire -->|None| TF["TriggerFired<br/>to alfred:events"]
+    Fire --> SP["observation<br/>to alfred:scratchpad:queue"]
     Snap["Snapshot Loop<br/>every 5min"] --> Disk["YAML snapshots"]
     HTTP["HTTP Server<br/>:8001"] --> CRUD["TriggerFeature<br/>CRUD tools"]
 ```
@@ -311,7 +311,7 @@ Redis CRUD with YAML cold-start recovery. Redis hash `alfred:triggers` is the ru
 ```mermaid
 graph TB
     subgraph "Runtime (Redis)"
-        Hash["alfred:triggers<br/>Hash: trigger_id → JSON"]
+        Hash["alfred:triggers<br/>Hash: trigger_id to JSON"]
     end
 
     subgraph "Cold Start (Disk)"
@@ -365,7 +365,7 @@ graph TD
     Eval["trigger.evaluate(ctx) == True"] --> HasAction{trigger.action?}
     HasAction -->|set| AR["Build ActionRequest<br/>XADD alfred:actions"]
     HasAction -->|None| TF["Build TriggerFired<br/>XADD alfred:events"]
-    AR --> Obs["LPUSH observation<br/>→ alfred:scratchpad:queue"]
+    AR --> Obs["LPUSH observation<br/>to alfred:scratchpad:queue"]
     TF --> Obs
     Obs --> OneShot{one_shot?}
     OneShot -->|True| Delete["store.delete(trigger_id)"]
