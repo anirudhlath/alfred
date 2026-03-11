@@ -26,3 +26,6 @@ core/memory/triggers/
 # Claude Code local settings
 .claude/settings.local.json
 .worktrees/
+
+# Eval run artifacts (generated JSON)
+evals/runs/

@@ -62,6 +62,9 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `runner/__main__.py` — unified runner entry point (`python -m runner`)
 - `docs/superpowers/specs/` — approved design specs
 - `docs/superpowers/plans/` — implementation plans
+- `evals/__main__.py` — Evals Runner entry point (`python -m evals`)
+- `evals/scenarios/` — YAML eval scenarios organized by domain
+- `shared/tracing.py` — `TraceRecord` model for inference tracing
 
 ## Running the System
 
@@ -77,6 +80,11 @@ uv run python -m runner
 
 # 4. Smoke test
 bash scripts/smoke-test.sh
+
+# 5. Run evals (requires Ollama + tools registered in Redis)
+uv run python -m evals run
+uv run python -m evals list
+uv run python -m evals compare <run1> <run2>
 ```
 
 Individual services can still be run standalone: `python -m bus`, `python -m core.reflex`, `python -m core.triggers`.
