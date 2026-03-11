@@ -43,6 +43,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `shared/config.py` — central env config (loads .env via python-dotenv)
 - `bus/schemas/events.py` — canonical event types (single source of truth)
 - `core/reflex/__main__.py` — Reflex Runner entry point (`python -m core.reflex`)
+- `core/reflex/context_reader.py` — fetches and renders service context from Redis
 - `core/reflex/tool_registry.py` — reads tool manifests from Redis `alfred:tool_registry`
 - `core/triggers/__main__.py` — Trigger Engine entry point (`python -m core.triggers`)
 - `core/triggers/registry.py` — TriggerRegistry for dynamic trigger type registration
@@ -50,6 +51,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `bus/__main__.py` — Bridge entry point (`python -m bus`)
 - `core/memory/preferences/` — Markdown preference files (read-only at runtime)
 - `core/memory/scratchpad.md` — ephemeral observations (append-only at runtime)
+- `sdk/alfred_sdk/context.py` — `ContextEntry`, `ContextSnapshot`, `ContextProvider` protocol
 - `sdk/alfred_sdk/feature.py` — `BaseFeature`, `@tool` decorator, manifest models
 - `sdk/` — publishable alfred-sdk package
 - `scripts/smoke-test.sh` — end-to-end smoke test (MQTT → Reflex → action result)

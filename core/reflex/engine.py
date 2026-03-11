@@ -12,12 +12,16 @@ from __future__ import annotations
 import json
 import logging
 import time
+from typing import TYPE_CHECKING
 
 from bus.schemas.events import ActionRequest, StateChangedEvent
 from core.reflex import ollama_client
 from core.reflex.memory_reader import read_preferences
 from core.reflex.tool_registry import ToolInfo, ToolRegistry
 from sdk.alfred_sdk.telemetry import track_latency
+
+if TYPE_CHECKING:
+    from core.reflex.context_reader import ContextReader
 
 logger = logging.getLogger(__name__)
 
@@ -66,9 +70,15 @@ class ReflexEngine:
 
     TOOL_CACHE_TTL = 300.0  # Re-read tool registry from Redis every 5 minutes
 
-    def __init__(self, preferences_dir: str, tool_registry: ToolRegistry) -> None:
+    def __init__(
+        self,
+        preferences_dir: str,
+        tool_registry: ToolRegistry,
+        context_reader: ContextReader | None = None,
+    ) -> None:
         self.preferences_dir = preferences_dir
         self._registry = tool_registry
+        self._context_reader = context_reader
         self._cached_preferences: str | None = None
         self._cached_tools: list[ToolInfo] | None = None
         self._cached_system_prompt: str | None = None
@@ -107,8 +117,15 @@ class ReflexEngine:
         tools, system_prompt = await self._get_tools_and_prompt()
         valid_services = ToolRegistry.get_registered_services(tools)
 
+        context = ""
+        if self._context_reader is not None:
+            context = await self._context_reader.get_rendered_context()
+
+        context_section = f"## Home State\n{context}\n\n" if context else ""
+
         prompt = (
             f"{system_prompt}\n\n"
+            f"{context_section}"
             f"## User Preferences\n{preferences}\n\n"
             f"## Event\n"
             f"Entity: {event.entity_id}\n"
