@@ -198,12 +198,10 @@ async def test_reflex_engine_prompt_contains_context(
     mock_registry: AsyncMock,
     mock_preferences: str,
 ) -> None:
-    from unittest.mock import AsyncMock as AM
-
     from core.reflex.engine import ReflexEngine
 
-    mock_context_reader = AM()
-    mock_context_reader.get_rendered_context = AM(
+    mock_context_reader = AsyncMock()
+    mock_context_reader.get_rendered_context = AsyncMock(
         return_value="### Lights\n- light.living_room: on (brightness: 255)"
     )
 

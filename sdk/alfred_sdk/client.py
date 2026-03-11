@@ -139,14 +139,17 @@ class AlfredClient:
 
     async def _collect_context(self) -> ContextSnapshot:
         """Collect and merge context from all registered features."""
-        merged = ContextSnapshot()
+        from .context import ContextEntry
+
+        controllable: dict[str, list[ContextEntry]] = {}
+        sensors: dict[str, list[ContextEntry]] = {}
         for feature in self._features:
             snapshot = await feature.get_context()
             for domain, entries in snapshot.controllable.items():
-                merged.controllable.setdefault(domain, []).extend(entries)
+                controllable.setdefault(domain, []).extend(entries)
             for domain, entries in snapshot.sensors.items():
-                merged.sensors.setdefault(domain, []).extend(entries)
-        return merged
+                sensors.setdefault(domain, []).extend(entries)
+        return ContextSnapshot(controllable=controllable, sensors=sensors)
 
     # ── Manifest and Registration ──
 

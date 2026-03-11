@@ -74,7 +74,7 @@ async def run(config: AlfredConfig) -> None:
 
     await ensure_consumer_group(r, STREAM, GROUP)
 
-    context_reader = ContextReader(redis_url=config.redis_url)
+    context_reader = ContextReader(redis=r)
     engine = ReflexEngine(
         preferences_dir="core/memory/preferences",
         tool_registry=registry,
