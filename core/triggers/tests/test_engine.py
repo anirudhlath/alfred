@@ -160,3 +160,33 @@ async def test_evaluate_tick_fires_matching_time_trigger(
     await engine.evaluate_tick(now)
 
     mock_redis.xadd.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_evaluate_event_fires_matching_sensor_trigger(
+    mock_store: AsyncMock, mock_redis: AsyncMock
+) -> None:
+    from bus.schemas.events import StateChangedEvent
+    from core.triggers.engine import TriggerEngine
+
+    cls = TriggerRegistry.get("sensor")
+    trigger = cls(
+        trigger_id="t-1",
+        trigger_type="sensor",
+        name="tv watcher",
+        created_by="test",
+        created_at=datetime.now(UTC),
+        conditions={"entity_id": "media_player.tv", "state_match": "on"},
+    )
+    mock_store.list_all = AsyncMock(return_value=[trigger])
+
+    engine = TriggerEngine(store=mock_store, redis=mock_redis)
+    event = StateChangedEvent(
+        source="test",
+        domain="home",
+        entity_id="media_player.tv",
+        new_state="on",
+    )
+    await engine.evaluate_event(event)
+
+    mock_redis.xadd.assert_called()

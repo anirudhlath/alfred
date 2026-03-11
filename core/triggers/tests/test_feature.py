@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
@@ -105,3 +106,61 @@ async def test_delete_trigger(mock_store: AsyncMock) -> None:
     result = await f.delete_trigger(trigger_id="t-1")
     mock_store.delete.assert_called_once_with("t-1")
     assert result["status"] == "deleted"
+
+
+@pytest.mark.asyncio
+async def test_toggle_trigger(mock_store: AsyncMock) -> None:
+    from core.triggers.feature import TriggerFeature, TriggerFeatureContext
+
+    # Create a trigger to toggle
+    cls = TriggerRegistry.get("time")
+    trigger = cls(
+        trigger_id="t-1",
+        trigger_type="time",
+        name="test",
+        created_by="test",
+        created_at=datetime.now(UTC),
+        conditions={"cron": "0 7 * * *"},
+        enabled=True,
+    )
+    mock_store.list_all = AsyncMock(return_value=[trigger])
+
+    f = TriggerFeature(ctx=TriggerFeatureContext(store=mock_store))
+    result = await f.toggle_trigger(trigger_id="t-1", enabled=False)
+    assert result["enabled"] is False
+    mock_store.save.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_update_trigger_conditions(mock_store: AsyncMock) -> None:
+    from core.triggers.feature import TriggerFeature, TriggerFeatureContext
+
+    cls = TriggerRegistry.get("time")
+    trigger = cls(
+        trigger_id="t-1",
+        trigger_type="time",
+        name="test",
+        created_by="test",
+        created_at=datetime.now(UTC),
+        conditions={"cron": "0 7 * * *"},
+    )
+    mock_store.list_all = AsyncMock(return_value=[trigger])
+
+    f = TriggerFeature(ctx=TriggerFeatureContext(store=mock_store))
+    result = await f.update_trigger(
+        trigger_id="t-1",
+        conditions={"cron": "0 8 * * *"},
+        name="updated",
+    )
+    assert result["name"] == "updated"
+    mock_store.save.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_update_trigger_not_found(mock_store: AsyncMock) -> None:
+    from core.triggers.feature import TriggerFeature, TriggerFeatureContext
+
+    mock_store.list_all = AsyncMock(return_value=[])
+    f = TriggerFeature(ctx=TriggerFeatureContext(store=mock_store))
+    result = await f.update_trigger(trigger_id="t-999", name="x")
+    assert "error" in result
