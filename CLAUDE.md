@@ -25,6 +25,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 
 - **No hardcoded tool/service lists** — tools, agents, and services auto-register at runtime via the SDK tool registry; the Reflex Engine prompt must be built dynamically from the registry, not from hardcoded strings
 - **SOLID + DRY** — favor abstraction and single sources of truth; constants over literals, registries over enums
+- **Document new features** — when implementing a new concept, feature, or subsystem, always create a corresponding `docs/<feature>.md` with architecture overview, mermaid diagrams, data models, and operational details (see `docs/sdk.md`, `docs/event-bus.md`, `docs/architecture.md` for the expected level of detail). Update `docs/architecture.md` to include the new component in system-level diagrams. Track deferred work in `docs/backlog/`.
 
 ## Tech Stack
 
