@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 
 from bus.schemas.events import ActionRequest, StateChangedEvent
 from core.reflex import ollama_client
@@ -51,11 +52,19 @@ def _build_tool_section(tools: list[ToolInfo]) -> str:
             line += f" — {t.description}"
         lines.append(line)
 
+        # Include parameter descriptions (e.g. available entity values)
+        for p, info in t.parameters.items():
+            desc = info.get("description", "")
+            if desc:
+                lines.append(f"    {p}: {desc}")
+
     return "\n".join(lines)
 
 
 class ReflexEngine:
     """The System 1 fast-path inference engine."""
+
+    TOOL_CACHE_TTL = 300.0  # Re-read tool registry from Redis every 5 minutes
 
     def __init__(self, preferences_dir: str, tool_registry: ToolRegistry) -> None:
         self.preferences_dir = preferences_dir
@@ -63,6 +72,7 @@ class ReflexEngine:
         self._cached_preferences: str | None = None
         self._cached_tools: list[ToolInfo] | None = None
         self._cached_system_prompt: str | None = None
+        self._cache_time: float = 0.0
 
     def _get_preferences(self) -> str:
         """Return cached preferences, loading from disk on first call."""
@@ -76,10 +86,12 @@ class ReflexEngine:
         return _SYSTEM_PROMPT_TEMPLATE.format(tool_section=tool_section)
 
     async def _get_tools_and_prompt(self) -> tuple[list[ToolInfo], str]:
-        """Return cached tools and system prompt, fetching on first call."""
-        if self._cached_tools is None:
+        """Return cached tools and system prompt, re-fetching after TTL expires."""
+        now = time.monotonic()
+        if self._cached_tools is None or (now - self._cache_time) > self.TOOL_CACHE_TTL:
             self._cached_tools = await self._registry.get_tools()
             self._cached_system_prompt = self._build_system_prompt(self._cached_tools)
+            self._cache_time = now
         assert self._cached_system_prompt is not None  # narrowing for mypy
         return self._cached_tools, self._cached_system_prompt
 

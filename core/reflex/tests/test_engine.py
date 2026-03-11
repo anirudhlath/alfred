@@ -188,3 +188,6 @@ async def test_reflex_engine_prompt_contains_tools(
     assert "lighting.turn_off_lights" in prompt
     assert "home-service" in prompt
     assert "Dim the lights in a room." in prompt
+    # Parameter descriptions appear in the prompt (e.g. available entity values)
+    assert "The room to dim." in prompt
+    assert "Brightness level 0-100." in prompt

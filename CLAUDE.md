@@ -56,6 +56,8 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `domains/home/home_agent.py` — routes actions to home-service via MCP/HTTP
 - `research/` — Obsidian vault with experiments, data, paper drafts
 - `docs/backlog/` — deferred work items from code reviews and simplification passes
+- `runner/supervisor.py` — multi-process supervisor (ServiceSpec, Supervisor)
+- `runner/__main__.py` — unified runner entry point (`python -m runner`)
 - `docs/superpowers/specs/` — approved design specs
 - `docs/superpowers/plans/` — implementation plans
 
@@ -63,26 +65,21 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 
 ```bash
 # 1. Start infrastructure (Redis + Mosquitto via Homebrew)
-brew services start redis
-brew services start mosquitto
+bash scripts/dev-up.sh
 
 # 2. Start home-service (in home-service/ repo)
 cd ../home-service && uv run uvicorn app.server:app --port 8000
 
-# 3. Start Bridge (in alfred/ repo)
-uv run python -m bus
+# 3. Start all Alfred core services (bridge + reflex + triggers)
+uv run python -m runner
 
-# 4. Start Reflex Runner (in alfred/ repo)
-uv run python -m core.reflex
-
-# 5. Start Trigger Engine (in alfred/ repo)
-uv run python -m core.triggers
-
-# 6. Smoke test
+# 4. Smoke test
 bash scripts/smoke-test.sh
 ```
 
-**Startup order matters:** home-service must register tools before Reflex Runner starts (fail-fast if no tools).
+Individual services can still be run standalone: `python -m bus`, `python -m core.reflex`, `python -m core.triggers`.
+
+**Startup order matters:** home-service must register tools before Reflex Runner starts (fail-fast if no tools). The unified runner adds a 1s delay before starting Reflex and auto-restarts crashed services with exponential backoff.
 
 ## Architecture
 
