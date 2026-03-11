@@ -106,6 +106,12 @@ graph TB
         Scratch["core/memory/scratchpad.md"]
     end
 
+    subgraph "Evals Runner"
+        EvalsCLI["Evals CLI<br/><code>uv run python -m evals</code>"]
+        EvalsScenarios["YAML Scenarios"]
+        EvalsCtx["Context Fixtures"]
+    end
+
     subgraph "Research Vault"
         CSV["research/data/*/raw.csv"]
     end
@@ -148,6 +154,13 @@ graph TB
     TrigStore -->|YAML snapshot| YAML2["core/memory/triggers/*.yaml"]
     TrigFeature -->|TriggerCreated XADD| Redis
     TrigFeature -->|register tools| Redis
+
+    EvalsCLI -->|build_prompt + parse_response| Engine
+    EvalsCLI -->|POST /api/chat| Ollama
+    EvalsCLI -->|load| EvalsScenarios
+    EvalsCLI -->|load| EvalsCtx
+    EvalsCLI -->|HGETALL tools| Redis
+    EvalsCLI -->|flush CSV| CSV
 ```
 
 ### 3.1 Event Bus: MQTT Bridge + Redis Streams
@@ -316,6 +329,24 @@ Runs as a background task in the Reflex Runner (30-second flush interval). Reads
 **Schemas** (in `telemetry/schemas.py`):
 
 Typed Pydantic models for each metric category: `LatencyMetric`, `TokenMetric`, `EventMetric`. These define canonical CSV column headers.
+
+### 3.9 Evals Runner
+
+**Files:** `evals/__main__.py`, `evals/pipeline.py`, `evals/scorer.py`, `evals/inference.py`, `evals/context_fixtures.py`
+
+Scenario-based evaluation framework that tests the Reflex Engine's SLM output. Reuses the engine's public API (`build_prompt()`, `parse_response()`) to ensure eval prompts match production prompts exactly.
+
+**Key capabilities:**
+
+- **YAML scenarios** in `evals/scenarios/<domain>/` define event + expected action pairs
+- **Context fixtures** in `evals/contexts/` replay captured HA state (`capture-context` CLI)
+- **Scoring** produces pass/partial/fail verdicts with type coercion
+- **Parallel execution** runs all scenarios concurrently within each run
+- **Multi-run aggregation** (`-n N`) measures consistency with per-scenario pass rates
+- **Pluggable backends** (Ollama, LM Studio) via `InferFn` protocol
+- **Run comparison** diffs verdict changes and latency deltas between two runs
+
+See [docs/evals-runner.md](evals-runner.md) for full documentation.
 
 ## 4. Data Flow
 

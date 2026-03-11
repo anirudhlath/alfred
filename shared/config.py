@@ -21,6 +21,7 @@ class AlfredConfig:
     mqtt_port: int = 1883
     ollama_host: str = "http://localhost:11434"
     ollama_model: str = "llama3:8b"
+    lmstudio_host: str = "http://localhost:1234"
     ha_host: str = "http://homeassistant.local:8123"
     ha_token: str = ""
     research_vault_path: str = "./research"
@@ -36,6 +37,7 @@ class AlfredConfig:
             mqtt_port=int(os.getenv("MQTT_PORT", "1883")),
             ollama_host=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
             ollama_model=os.getenv("OLLAMA_MODEL", "llama3:8b"),
+            lmstudio_host=os.getenv("LMSTUDIO_HOST", "http://localhost:1234"),
             ha_host=os.getenv("HA_HOST", "http://homeassistant.local:8123"),
             ha_token=os.getenv("HA_TOKEN", ""),
             research_vault_path=os.getenv("RESEARCH_VAULT_PATH", "./research"),

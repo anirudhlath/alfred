@@ -110,23 +110,29 @@ class ReflexEngine:
         self._cached_tools = None
         self._cached_system_prompt = None
 
-    @track_latency(category="reflex")
-    async def process_event(self, event: StateChangedEvent) -> ActionRequest | None:
-        """Process a state change event and optionally produce an action."""
-        preferences = self._get_preferences()
-        tools, system_prompt = await self._get_tools_and_prompt()
-        valid_services = ToolRegistry.get_registered_services(tools)
+    def build_prompt(
+        self,
+        event: StateChangedEvent,
+        preferences_text: str,
+        tools: list[ToolInfo],
+        context_text: str = "",
+        *,
+        _system_prompt: str | None = None,
+    ) -> str:
+        """Build the complete prompt for SLM inference.
 
-        context = ""
-        if self._context_reader is not None:
-            context = await self._context_reader.get_rendered_context()
+        Public API for the evals pipeline. Returns the same prompt that
+        process_event() sends to Ollama.
 
-        context_section = f"## Home State\n{context}\n\n" if context else ""
-
-        prompt = (
+        The private ``_system_prompt`` kwarg lets process_event() pass its
+        cached system prompt to avoid rebuilding on the hot path.
+        """
+        system_prompt = _system_prompt or self._build_system_prompt(tools)
+        context_section = f"## Home State\n{context_text}\n\n" if context_text else ""
+        return (
             f"{system_prompt}\n\n"
             f"{context_section}"
-            f"## User Preferences\n{preferences}\n\n"
+            f"## User Preferences\n{preferences_text}\n\n"
             f"## Event\n"
             f"Entity: {event.entity_id}\n"
             f"Domain: {event.domain}\n"
@@ -135,16 +141,16 @@ class ReflexEngine:
             f"## Your Decision (JSON only):"
         )
 
-        response = await ollama_client.infer(prompt)
-        return self._parse_response(response, event, valid_services)
-
-    def _parse_response(
+    def parse_response(
         self,
         response: dict[str, object],
         event: StateChangedEvent,
         valid_services: set[str],
     ) -> ActionRequest | None:
-        """Parse the SLM's JSON response into an ActionRequest or None."""
+        """Parse the SLM's JSON response into an ActionRequest or None.
+
+        Public API for the evals pipeline. Same logic as used by process_event().
+        """
         try:
             raw = response.get("response", "")
             parsed = json.loads(str(raw))
@@ -176,3 +182,21 @@ class ReflexEngine:
         except (json.JSONDecodeError, KeyError) as e:
             logger.error("Failed to parse SLM response: %s — %s", e, response)
             return None
+
+    @track_latency(category="reflex")
+    async def process_event(self, event: StateChangedEvent) -> ActionRequest | None:
+        """Process a state change event and optionally produce an action."""
+        preferences = self._get_preferences()
+        tools, system_prompt = await self._get_tools_and_prompt()
+        valid_services = ToolRegistry.get_registered_services(tools)
+
+        context = ""
+        if self._context_reader is not None:
+            context = await self._context_reader.get_rendered_context()
+
+        prompt = self.build_prompt(
+            event, preferences, tools, context_text=context, _system_prompt=system_prompt
+        )
+
+        response = await ollama_client.infer(prompt)
+        return self.parse_response(response, event, valid_services)
