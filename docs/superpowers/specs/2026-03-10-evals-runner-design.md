@@ -313,8 +313,7 @@ Runs saved as JSON to `evals/runs/{timestamp}_{model}.json` (gitignored).
       "verdict": "pass",
       "reason": "exact match",
       "trace": {
-        "system_prompt": "...",
-        "user_prompt": "...",
+        "prompt": "...",
         "raw_response": "...",
         "parsed_action": { "tool_name": "lighting.dim_lights" },
         "latency_ms": 423.1,
@@ -365,7 +364,7 @@ Deferred from MVP — tracked in `docs/backlog/evals-runner.md`:
 
 ### New
 
-- `pyyaml` — YAML scenario loading (add to `[project.optional-dependencies]` under `evals` group: `evals = ["pyyaml"]`)
+- `pyyaml` — YAML scenario loading (already in base dependencies: `pyyaml>=6.0`)
 
 ### Existing (no changes)
 
