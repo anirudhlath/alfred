@@ -322,7 +322,7 @@ graph TB
 
     Store -->|HSET/HGET/HDEL| Hash
     Store -->|write_text/unlink| YAML
-    Store -->|load(): if Redis empty| YAML
+    Store -->|load if Redis empty| YAML
     YAML -->|rehydrate_from_disk_static| Store
 ```
 
