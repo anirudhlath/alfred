@@ -13,7 +13,7 @@ from core.reflex.tool_registry import ToolInfo, ToolRegistry
 from evals.compare import compare_runs
 from evals.loader import load_scenario, load_scenarios
 from evals.models import EvalRun, Verdict
-from evals.pipeline import run_scenario
+from evals.pipeline import EvalContext, run_scenario
 from evals.report import format_comparison, format_run
 from evals.scorer import score
 from evals.store import build_run_id, list_runs, load_run, save_run
@@ -54,11 +54,10 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-async def _load_tools() -> list[ToolInfo]:
+async def _load_tools(config: AlfredConfig) -> list[ToolInfo]:
     """Load tools from Redis registry."""
     import redis.asyncio as aioredis
 
-    config = AlfredConfig.from_env()
     r = aioredis.from_url(config.redis_url)
     try:
         registry = ToolRegistry(r)
@@ -83,12 +82,15 @@ async def _cmd_run(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     # Load tools from Redis
-    tools = await _load_tools()
+    tools = await _load_tools(config)
     if not tools:
         print("No tools registered in Redis. Is home-service running?")
         sys.exit(1)
 
     print(f"Running {len(scenarios)} scenarios with model {model}...\n")
+
+    # Pre-compute shared state for the run
+    ctx = EvalContext(tools, args.preferences_dir, model)
 
     # Run each scenario
     results = []
@@ -98,23 +100,17 @@ async def _cmd_run(args: argparse.Namespace) -> None:
             tools=tools,
             preferences_dir=args.preferences_dir,
             model=model,
+            ctx=ctx,
         )
         result = score(trace, scenario)
         results.append(result)
-
-    # Build summary
-    summary: dict[str, int] = {v.value: 0 for v in Verdict}
-    for r in results:
-        summary[r.verdict.value] += 1
 
     timestamp = datetime.now(UTC)
     run = EvalRun(
         run_id=build_run_id(timestamp, model),
         timestamp=timestamp,
         model=model,
-        scenario_count=len(results),
         results=results,
-        summary=summary,
     )
 
     # Save and report
@@ -123,12 +119,11 @@ async def _cmd_run(args: argparse.Namespace) -> None:
     print(f"Run saved: {path}")
 
     # Append to research CSV
-    _append_research_csv(run)
+    _append_research_csv(run, config)
 
 
-def _append_research_csv(run: EvalRun) -> None:
+def _append_research_csv(run: EvalRun, config: AlfredConfig) -> None:
     """Append summary stats to research/data/evals.csv."""
-    config = AlfredConfig.from_env()
     csv_path = Path(config.research_vault_path) / "data" / "evals.csv"
     csv_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -159,9 +154,9 @@ def _append_research_csv(run: EvalRun) -> None:
                 run.timestamp.isoformat(),
                 run.model,
                 run.scenario_count,
-                run.summary.get("pass", 0),
-                run.summary.get("partial", 0),
-                run.summary.get("fail", 0),
+                run.summary.get(Verdict.PASS, 0),
+                run.summary.get(Verdict.PARTIAL, 0),
+                run.summary.get(Verdict.FAIL, 0),
                 f"{avg_latency:.1f}",
                 f"{p95_latency:.1f}",
             ]
