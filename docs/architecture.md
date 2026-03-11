@@ -70,7 +70,7 @@ graph TB
         MQTT[MQTT Broker<br/>Mosquitto]
     end
 
-    subgraph "Alfred Core (single process)"
+    subgraph "Alfred Core"
         Bridge["MQTT-Redis Bridge<br/><code>uv run python -m bus</code>"]
         Runner["Reflex Runner<br/><code>uv run python -m core.reflex</code>"]
         Engine[Reflex Engine]
@@ -78,6 +78,13 @@ graph TB
         MemReader[Memory Reader]
         ScratchWriter[ScratchpadWriter]
         TelCollector[Telemetry Collector]
+    end
+
+    subgraph "Trigger Engine Process"
+        TrigMain["Trigger Engine<br/><code>uv run python -m core.triggers</code>"]
+        TrigEngine[TriggerEngine]
+        TrigStore[TriggerStore]
+        TrigFeature["TriggerFeature<br/>(CRUD tools)"]
     end
 
     subgraph Infrastructure
@@ -126,6 +133,18 @@ graph TB
     HomeSvc <-->|HA API| HA
 
     TelCollector -->|flush CSV| CSV
+
+    TrigMain --> TrigEngine
+    TrigMain --> TrigStore
+    TrigMain --> TrigFeature
+    TrigEngine -->|XREADGROUP| Redis
+    TrigEngine -->|ActionRequest XADD| Redis
+    TrigEngine -->|TriggerFired XADD| Redis
+    TrigEngine -->|LPUSH observation| Redis
+    TrigStore -->|HSET/HGET| Redis
+    TrigStore -->|YAML snapshot| YAML2["core/memory/triggers/*.yaml"]
+    TrigFeature -->|TriggerCreated XADD| Redis
+    TrigFeature -->|register tools| Redis
 ```
 
 ### 3.1 Event Bus: MQTT Bridge + Redis Streams
@@ -204,7 +223,26 @@ The SDK is a standalone Python package -- it has no imports from `alfred/core`, 
 
 **Registration flow:** microservice starts --> discovers features --> calls `register()` --> Alfred's `ToolRegistry` sees tools on next `HGETALL`.
 
-### 3.5 Domain Agents (HomeAgent)
+### 3.5 Trigger Engine (Proactive Automation)
+
+**Files:** `core/triggers/engine.py`, `core/triggers/store.py`, `core/triggers/feature.py`, `core/triggers/registry.py`, `core/triggers/models.py`, `core/triggers/types/`, `core/triggers/__main__.py`
+
+The Trigger Engine enables proactive behavior -- actions that fire based on time, sensor state, or composite conditions without requiring SLM inference. Triggers are created dynamically by the SLM via CRUD tools (never hardcoded).
+
+**Components:**
+
+- **`TriggerRegistry`** -- decorator-based type registry mapping strings to `BaseTrigger` subclasses.
+- **`TriggerStore`** -- Redis hash `alfred:triggers` for runtime CRUD, YAML snapshots for cold-start recovery.
+- **`TriggerEngine`** -- dual evaluation loops (1s tick + event listener) with deterministic fire logic.
+- **`TriggerFeature`** -- `BaseFeature` subclass exposing CRUD tools with dynamic descriptions.
+
+**Trigger types:** `time` (cron/datetime), `sensor` (entity/state/attribute match), `composite` (N-of-M child conditions).
+
+**Fire logic:** If `trigger.action` is set, publishes `ActionRequest` to `alfred:actions`. If `None`, publishes `TriggerFired` to `alfred:events` for the Reflex Engine to handle.
+
+See `docs/trigger-engine.md` for full architecture details.
+
+### 3.6 Domain Agents (HomeAgent)
 
 **Files:** `domains/home/home_agent.py`
 
@@ -219,7 +257,7 @@ Domain agents are Alfred's internal staff. They translate high-level `ActionRequ
 
 The `httpx.AsyncClient` is long-lived (reuses TCP connections). If the service is unreachable, the error is captured and returned as an `ActionResult` with `status: "error"`.
 
-### 3.6 Memory (Preferences + Scratchpad)
+### 3.7 Memory (Preferences + Scratchpad)
 
 **Files:** `core/reflex/memory_reader.py`, `core/memory/scratchpad_writer.py`, `core/memory/preferences/*.md`
 
@@ -252,7 +290,7 @@ Entry format: `{timestamp} [{source}] {tool_name}({parameters}) -> {status}`
 
 The scratchpad is gitignored. It serves as raw material for the Librarian Agent's nightly consolidation (Phase 3).
 
-### 3.7 Telemetry
+### 3.8 Telemetry
 
 **Files:** `sdk/alfred_sdk/telemetry.py`, `telemetry/collector.py`, `telemetry/schemas.py`
 
@@ -297,7 +335,8 @@ graph LR
 | `ActionResult` | Domain agents | Reports the outcome of a tool execution | `request_id`, `tool_name`, `status`, `result`, `error` |
 | `TelemetryEvent` | Any component | Observability metric | `metric_type`, `category`, `value`, `unit` |
 | `ToolRegistration` | Microservices | Announces available tools | `service_name`, `service_endpoint`, `tools` |
-| `TriggerCreated` | LLM (Phase 2) | Dynamically created automation trigger | `trigger_type`, `conditions`, `action` |
+| `TriggerFired` | Trigger Engine | A trigger's conditions were met (no direct action) | `trigger_id`, `trigger_name`, `trigger_type`, `context` |
+| `TriggerCreated` | Trigger Engine | A trigger was dynamically created | `trigger_type`, `name`, `conditions`, `action`, `one_shot` |
 
 All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `timestamp`, and `source`.
 
@@ -309,10 +348,11 @@ All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `
 | `alfred:home:action_results` | Stream | Action execution results |
 | `alfred:tool_registry` | Hash | Service name to tool manifest JSON |
 | `alfred:scratchpad:queue` | List | Pending scratchpad observations |
+| `alfred:triggers` | Hash | Trigger ID → JSON (Trigger Engine runtime store) |
 
 ### 4.3 Consumer Groups
 
-The Reflex Runner uses a Redis Streams consumer group (`reflex-engine`, consumer `worker-1`) on `alfred:home:state_changed`. This enables:
+The Reflex Runner uses a consumer group (`reflex-engine`, consumer `worker-1`) on `alfred:events`. The Trigger Engine uses a separate consumer group (`trigger-engine`, consumer `worker-1`) on the same stream. This enables:
 
 - At-least-once delivery (messages are not lost if the consumer crashes).
 - Future horizontal scaling (add `worker-2`, `worker-3`, etc.).
@@ -369,6 +409,7 @@ Services must start in this order:
 2. **Microservices:** `home-service` (registers tools into `alfred:tool_registry`)
 3. **MQTT-Redis Bridge:** `uv run python -m bus`
 4. **Reflex Runner:** `uv run python -m core.reflex`
+5. **Trigger Engine:** `uv run python -m core.triggers`
 
 The Reflex Runner fail-fast checks for registered tools at startup. If `alfred:tool_registry` is empty, it exits with an error telling you to start a microservice first.
 
@@ -380,6 +421,9 @@ uv run python -m bus
 
 # Start the Reflex Runner (System 1 pipeline)
 uv run python -m core.reflex
+
+# Start the Trigger Engine (proactive automation)
+uv run python -m core.triggers
 
 # Lint and format
 uv run ruff check . --fix
