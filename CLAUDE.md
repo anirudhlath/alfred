@@ -64,6 +64,9 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `docs/superpowers/plans/` — implementation plans
 - `evals/__main__.py` — Evals Runner entry point (`python -m evals`)
 - `evals/scenarios/` — YAML eval scenarios organized by domain
+- `evals/contexts/` — captured HA context fixtures (grounding SLM with real entity IDs)
+- `evals/inference.py` — `InferFn` protocol, Ollama + LM Studio backends
+- `evals/pipeline.py` — `EvalContext`, `run_scenario()` orchestration
 - `shared/tracing.py` — `TraceRecord` model for inference tracing
 
 ## Running the System
@@ -83,6 +86,10 @@ bash scripts/smoke-test.sh
 
 # 5. Run evals (requires Ollama + tools registered in Redis)
 uv run python -m evals run
+uv run python -m evals run --model gpt-oss:20b -n 5  # repeat 5x with aggregate
+uv run python -m evals run --backend lmstudio        # use LM Studio
+uv run python -m evals capture-context --output default.json  # capture live HA state
+uv run python -m evals runs                           # list saved runs
 uv run python -m evals list
 uv run python -m evals compare <run1> <run2>
 ```
