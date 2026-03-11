@@ -1,0 +1,15 @@
+name: tv_on_dims_lights
+description: "When TV turns on, dim living room lights"
+tags: [home, lighting, canonical]
+event:
+  domain: home
+  entity_id: media_player.living_room_tv
+  old_state: "off"
+  new_state: "on"
+  source: eval
+  attributes:
+    friendly_name: "Living Room TV"
+expected:
+  tool_name: lighting.dim_lights
+  parameters:
+    room: living_room
