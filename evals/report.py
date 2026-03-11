@@ -32,9 +32,9 @@ def format_run(run: EvalRun) -> str:
             lines.append(f"    -> {result.reason}")
 
     lines.append("")
-    p = run.summary.get("pass", 0)
-    pt = run.summary.get("partial", 0)
-    f = run.summary.get("fail", 0)
+    p = run.summary.get(Verdict.PASS, 0)
+    pt = run.summary.get(Verdict.PARTIAL, 0)
+    f = run.summary.get(Verdict.FAIL, 0)
     lines.append(f"Summary: {p} pass | {pt} partial | {f} fail")
 
     return "\n".join(lines)

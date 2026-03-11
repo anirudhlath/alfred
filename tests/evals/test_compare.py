@@ -44,16 +44,11 @@ def _make_run(
     run_id: str,
     results: list[ScenarioResult],
 ) -> EvalRun:
-    summary: dict[str, int] = {v.value: 0 for v in Verdict}
-    for r in results:
-        summary[r.verdict.value] += 1
     return EvalRun(
         run_id=run_id,
         timestamp=datetime.now(UTC),
         model="test",
-        scenario_count=len(results),
         results=results,
-        summary=summary,
     )
 
 

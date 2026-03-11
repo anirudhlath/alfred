@@ -6,7 +6,7 @@ from datetime import datetime  # noqa: TC003
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 
 from bus.schemas.events import StateChangedEvent  # noqa: TC001
 from shared.tracing import TraceRecord  # noqa: TC001
@@ -54,6 +54,19 @@ class EvalRun(BaseModel):
     run_id: str
     timestamp: datetime
     model: str
-    scenario_count: int
     results: list[ScenarioResult]
-    summary: dict[str, int]
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def scenario_count(self) -> int:
+        """Number of scenarios in this run."""
+        return len(self.results)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def summary(self) -> dict[Verdict, int]:
+        """Verdict counts derived from results."""
+        counts: dict[Verdict, int] = {v: 0 for v in Verdict}
+        for r in self.results:
+            counts[r.verdict] += 1
+        return counts

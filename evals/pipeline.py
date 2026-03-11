@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from dataclasses import asdict
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from core.reflex import ollama_client
@@ -21,43 +21,65 @@ if TYPE_CHECKING:
 _config = AlfredConfig.from_env()
 
 
+class EvalContext:
+    """Pre-computed state shared across scenarios in a single eval run."""
+
+    def __init__(
+        self,
+        tools: list[ToolInfo],
+        preferences_dir: str,
+        model: str | None = None,
+    ) -> None:
+        self.model = model or _config.ollama_model
+        self.engine = ReflexEngine(
+            preferences_dir=preferences_dir,
+            tool_registry=ToolRegistry(redis=None),
+        )
+        self.preferences_text = read_preferences(preferences_dir)
+        self.tools = tools
+        self.valid_services = ToolRegistry.get_registered_services(tools)
+        self.tools_as_dicts: list[dict[str, Any]] = [asdict(t) for t in tools]
+
+
 async def run_scenario(
     scenario: Scenario,
     tools: list[ToolInfo],
     preferences_dir: str,
     model: str | None = None,
+    *,
+    ctx: EvalContext | None = None,
 ) -> TraceRecord:
-    """Run a single scenario through the inference pipeline, capturing a full trace."""
-    model = model or _config.ollama_model
+    """Run a single scenario through the inference pipeline, capturing a full trace.
 
-    # Use a throwaway engine instance for prompt building / response parsing
-    # (no Redis needed — we pass tools directly)
-    engine = ReflexEngine(
-        preferences_dir=preferences_dir,
-        tool_registry=ToolRegistry(redis=None),
-    )
+    Pass a pre-built ``ctx`` to avoid redundant work when running multiple scenarios.
+    """
+    if ctx is None:
+        ctx = EvalContext(tools, preferences_dir, model)
 
-    # Build prompt using the engine's real logic
-    prefs_dir = scenario.preferences_dir or preferences_dir
-    preferences_text = read_preferences(prefs_dir)
-    prompt = engine.build_prompt(scenario.event, preferences_text, tools)
+    # Per-scenario preferences override
+    if scenario.preferences_dir and scenario.preferences_dir != preferences_dir:
+        preferences_text = read_preferences(scenario.preferences_dir)
+    else:
+        preferences_text = ctx.preferences_text
+
+    resolved_model = model or ctx.model
+    prompt = ctx.engine.build_prompt(scenario.event, preferences_text, ctx.tools)
 
     # Call Ollama and measure latency
     start = time.perf_counter()
-    response = await ollama_client.infer(prompt, model=model)
+    response = await ollama_client.infer(prompt, model=resolved_model)
     latency_ms = (time.perf_counter() - start) * 1000
 
     # Parse using the engine's real logic
-    valid_services = ToolRegistry.get_registered_services(tools)
-    parsed_action = engine.parse_response(response, scenario.event, valid_services)
+    parsed_action = ctx.engine.parse_response(response, scenario.event, ctx.valid_services)
 
     return TraceRecord(
         trace_id=str(uuid4()),
         timestamp=datetime.now(UTC),
-        model=model,
+        model=resolved_model,
         event=scenario.event,
         preferences_text=preferences_text,
-        tools=[asdict(t) for t in tools],
+        tools=ctx.tools_as_dicts,
         prompt=prompt,
         raw_response=str(response.get("response", "")),
         parsed_action=parsed_action,

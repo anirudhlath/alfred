@@ -84,8 +84,7 @@ def test_eval_run_summary() -> None:
         run_id="run-001",
         timestamp=datetime.now(UTC),
         model="test",
-        scenario_count=1,
         results=[result],
-        summary={"pass": 1, "partial": 0, "fail": 0},
     )
-    assert run.summary["pass"] == 1
+    assert run.scenario_count == 1
+    assert run.summary[Verdict.PASS] == 1

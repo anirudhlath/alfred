@@ -116,13 +116,18 @@ class ReflexEngine:
         preferences_text: str,
         tools: list[ToolInfo],
         context_text: str = "",
+        *,
+        _system_prompt: str | None = None,
     ) -> str:
         """Build the complete prompt for SLM inference.
 
         Public API for the evals pipeline. Returns the same prompt that
         process_event() sends to Ollama.
+
+        The private ``_system_prompt`` kwarg lets process_event() pass its
+        cached system prompt to avoid rebuilding on the hot path.
         """
-        system_prompt = self._build_system_prompt(tools)
+        system_prompt = _system_prompt or self._build_system_prompt(tools)
         context_section = f"## Home State\n{context_text}\n\n" if context_text else ""
         return (
             f"{system_prompt}\n\n"
@@ -189,19 +194,8 @@ class ReflexEngine:
         if self._context_reader is not None:
             context = await self._context_reader.get_rendered_context()
 
-        context_section = f"## Home State\n{context}\n\n" if context else ""
-
-        # Build prompt using cached system_prompt directly (hot path — avoids rebuilding)
-        prompt = (
-            f"{system_prompt}\n\n"
-            f"{context_section}"
-            f"## User Preferences\n{preferences}\n\n"
-            f"## Event\n"
-            f"Entity: {event.entity_id}\n"
-            f"Domain: {event.domain}\n"
-            f"Changed: {event.old_state} → {event.new_state}\n"
-            f"Attributes: {json.dumps(event.attributes)}\n\n"
-            f"## Your Decision (JSON only):"
+        prompt = self.build_prompt(
+            event, preferences, tools, context_text=context, _system_prompt=system_prompt
         )
 
         response = await ollama_client.infer(prompt)

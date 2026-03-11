@@ -40,9 +40,7 @@ def _make_run() -> EvalRun:
         run_id="2026-03-10T143000_test-model",
         timestamp=datetime.now(UTC),
         model="test-model",
-        scenario_count=1,
         results=[result],
-        summary={"pass": 1, "partial": 0, "fail": 0},
     )
 
 
