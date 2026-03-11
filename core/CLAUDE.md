@@ -14,6 +14,23 @@ This directory contains Alfred's brain:
   - `engine.py` — Evaluation loops and fire logic
   - `feature.py` — TriggerFeature (CRUD tools via BaseFeature)
   - `server.py` — HTTP endpoint for tool dispatch
+
+### Trigger Engine Data Flow
+
+```mermaid
+graph LR
+    Tick[1s Tick Loop] --> Eval[_evaluate_all]
+    Event[Event Listener<br/>alfred:events] --> Eval
+    Eval --> Fire{trigger.action?}
+    Fire -->|set| AR[ActionRequest → alfred:actions]
+    Fire -->|None| TF[TriggerFired → alfred:events]
+    Fire --> Scratchpad[observation → alfred:scratchpad:queue]
+```
+
+### Key Patterns
+- New trigger types: subclass `BaseTrigger`, define `Conditions` model, implement `evaluate()`, decorate with `@TriggerRegistry.register_type("name")`
+- Storage: Redis hash `alfred:triggers` (primary) + YAML snapshots in `core/memory/triggers/` (gitignored)
+- CRUD exposed via `TriggerFeature(BaseFeature)` with dynamic tool descriptions from `TriggerRegistry.build_conditions_docs()`
 - `conscious/` — System 2 cloud LLM (Phase 3)
 - `voice/` — Voice I/O adapters (Phase 3)
 - `librarian/` — Nightly preference consolidation (Phase 3)
