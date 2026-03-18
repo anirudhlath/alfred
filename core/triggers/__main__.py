@@ -12,11 +12,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import redis.asyncio as aioredis
+import uvicorn
 
 import core.triggers.types  # noqa: F401  — register all trigger types
 from core.reflex.runner import ensure_consumer_group
 from core.triggers.engine import TriggerEngine
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
+from core.triggers.server import create_app
 from core.triggers.store import TriggerStore
 from sdk.alfred_sdk.client import AlfredClient
 from shared.config import AlfredConfig
@@ -98,6 +100,17 @@ async def snapshot_loop(store: TriggerStore, interval: float = 300.0) -> None:
             logger.error("Snapshot error: %s", e)
 
 
+async def refresh_loop(store: TriggerStore, interval: float = 60.0) -> None:
+    """Periodic cache refresh from Redis (safety net)."""
+    while not _shutdown.is_set():
+        await asyncio.sleep(interval)
+        try:
+            await store.refresh()
+            logger.debug("Cache refresh complete")
+        except Exception as e:
+            logger.error("Cache refresh error: %s", e)
+
+
 async def run(config: AlfredConfig) -> None:
     """Main Trigger Engine loop."""
     loop = asyncio.get_running_loop()
@@ -119,18 +132,22 @@ async def run(config: AlfredConfig) -> None:
         redis_url=config.redis_url,
     )
     ctx = TriggerFeatureContext(store=store, redis=r)
+    feature = TriggerFeature(ctx)
     client.discover_features_from_classes([TriggerFeature], ctx=ctx)
     await client.register()
     logger.info("Registered trigger CRUD tools in tool registry")
 
-    # Start concurrent tasks
-    from core.triggers.server import run_server
+    # Build FastAPI app + uvicorn server
+    app = create_app(client=client, feature=feature)
+    uvi_config = uvicorn.Config(app, host="0.0.0.0", port=8001, log_level="info")
+    uvi_server = uvicorn.Server(uvi_config)
 
     tasks = [
         asyncio.create_task(tick_loop(engine)),
         asyncio.create_task(event_loop(engine, r)),
         asyncio.create_task(snapshot_loop(store)),
-        asyncio.create_task(run_server(client, port=8001)),
+        asyncio.create_task(refresh_loop(store)),
+        asyncio.create_task(uvi_server.serve()),
     ]
 
     logger.info("Trigger Engine started")
@@ -139,8 +156,10 @@ async def run(config: AlfredConfig) -> None:
         await _shutdown.wait()
     finally:
         logger.info("Shutting down Trigger Engine...")
+        uvi_server.should_exit = True
         for t in tasks:
             t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         await client.unregister()
         await r.aclose()
 
