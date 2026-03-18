@@ -25,13 +25,13 @@ class TimeTrigger(BaseTrigger):
         run_at: datetime | None = None
 
     conditions: Conditions
-    _cached_cron: croniter | None = PrivateAttr(default=None)
+    _validated_cron: croniter | None = PrivateAttr(default=None)
 
     def model_post_init(self, __context: Any) -> None:
         """Validate cron expression at construction time (fail-fast)."""
         if self.conditions.cron is not None:
             try:
-                self._cached_cron = croniter(self.conditions.cron)
+                self._validated_cron = croniter(self.conditions.cron)
             except (ValueError, KeyError) as e:
                 raise ValueError(f"Invalid cron expression {self.conditions.cron!r}: {e}") from e
 

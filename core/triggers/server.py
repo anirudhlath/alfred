@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from fastapi import FastAPI
+from fastapi import Body, FastAPI
 
 if TYPE_CHECKING:
     from core.triggers.feature import TriggerFeature
@@ -43,9 +43,9 @@ def create_app(client: AlfredClient, feature: TriggerFeature) -> FastAPI:
         return result
 
     @app.patch("/triggers/{trigger_id}/toggle")
-    async def toggle_trigger(trigger_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    async def toggle_trigger(trigger_id: str, enabled: bool = Body(embed=True)) -> dict[str, Any]:
         result: dict[str, Any] = await feature.toggle_trigger(
-            trigger_id=trigger_id, enabled=body["enabled"]
+            trigger_id=trigger_id, enabled=enabled
         )
         return result
 

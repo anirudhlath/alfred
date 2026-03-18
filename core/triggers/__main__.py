@@ -10,6 +10,10 @@ import logging
 import signal
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 import redis.asyncio as aioredis
 import uvicorn
@@ -89,26 +93,19 @@ async def event_loop(
                 await r.xack(EVENTS_STREAM, GROUP, entry_id)
 
 
-async def snapshot_loop(store: TriggerStore, interval: float = 300.0) -> None:
-    """Periodic YAML snapshot (every 5 minutes)."""
+async def _periodic(
+    fn: Callable[[], Awaitable[None]],
+    interval: float,
+    label: str,
+) -> None:
+    """Generic periodic task loop — sleeps, calls fn, logs."""
     while not _shutdown.is_set():
         await asyncio.sleep(interval)
         try:
-            await store.snapshot_all()
-            logger.debug("Periodic trigger snapshot complete")
+            await fn()
+            logger.debug("%s complete", label)
         except Exception as e:
-            logger.error("Snapshot error: %s", e)
-
-
-async def refresh_loop(store: TriggerStore, interval: float = 60.0) -> None:
-    """Periodic cache refresh from Redis (safety net)."""
-    while not _shutdown.is_set():
-        await asyncio.sleep(interval)
-        try:
-            await store.refresh()
-            logger.debug("Cache refresh complete")
-        except Exception as e:
-            logger.error("Cache refresh error: %s", e)
+            logger.error("%s error: %s", label, e)
 
 
 async def run(config: AlfredConfig) -> None:
@@ -132,8 +129,9 @@ async def run(config: AlfredConfig) -> None:
         redis_url=config.redis_url,
     )
     ctx = TriggerFeatureContext(store=store, redis=r)
-    feature = TriggerFeature(ctx)
-    client.discover_features_from_classes([TriggerFeature], ctx=ctx)
+    features = client.discover_features_from_classes([TriggerFeature], ctx=ctx)
+    assert isinstance(features[0], TriggerFeature)
+    feature: TriggerFeature = features[0]
     await client.register()
     logger.info("Registered trigger CRUD tools in tool registry")
 
@@ -145,8 +143,8 @@ async def run(config: AlfredConfig) -> None:
     tasks = [
         asyncio.create_task(tick_loop(engine)),
         asyncio.create_task(event_loop(engine, r)),
-        asyncio.create_task(snapshot_loop(store)),
-        asyncio.create_task(refresh_loop(store)),
+        asyncio.create_task(_periodic(store.snapshot_all, 300.0, "Trigger snapshot")),
+        asyncio.create_task(_periodic(store.refresh, 60.0, "Cache refresh")),
         asyncio.create_task(uvi_server.serve()),
     ]
 
