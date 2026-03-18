@@ -43,7 +43,7 @@ Additionally, the HTTP server (`server.py`) is a hand-rolled 77-line `asyncio.st
 
 **File:** `core/triggers/store.py`
 
-`TriggerStore` gains a `_cache: dict[str, BaseTrigger]` field, populated at startup and kept in sync via write-through on every mutation.
+`TriggerStore` gains a `_cache: dict[str, BaseTrigger]` field, initialized to `{}` in `__init__` and populated at startup via `load()`. Kept in sync via write-through on every mutation. Calling `list_all()` or `get()` before `load()` returns empty results rather than raising `AttributeError`.
 
 #### API Changes (internal only)
 
@@ -106,7 +106,7 @@ The trigger engine is a single-process system. All mutations flow through `Trigg
 
 #### CompositeTrigger (`core/triggers/types/composite.py`)
 
-Add `model_post_init` that parses `conditions.children` into concrete `BaseTrigger` instances once at construction time. Store in `_cached_children: list[BaseTrigger]`.
+Add `model_post_init` (signature: `def model_post_init(self, __context: Any) -> None:`) that parses `conditions.children` into concrete `BaseTrigger` instances once at construction time. Store in a Pydantic private attribute: `_cached_children: list[BaseTrigger] = PrivateAttr(default_factory=list)`. Child construction must pass all required `BaseTrigger` fields — `trigger_type` and `conditions` come from the child spec dict, while `name`, `created_by`, and `created_at` are inherited from the parent trigger.
 
 ```
 Construction (once):
@@ -125,7 +125,9 @@ Triggers are immutable between CRUD operations — `save()` creates a new model 
 
 #### TimeTrigger (`core/triggers/types/time.py`)
 
-Add `model_post_init` that pre-parses the cron string into a stored `croniter` instance (`_cached_cron`). `evaluate()` reuses it by re-seeding with the current time instead of re-parsing the cron expression.
+Add `model_post_init` that validates the cron string by constructing a sentinel `croniter` instance during initialization — this fails fast on bad cron expressions at construction time rather than at evaluation time. Store as a Pydantic private attribute: `_cached_cron: croniter | None = PrivateAttr(default=None)`.
+
+In `evaluate()`, construct a new `croniter(self.conditions.cron, now - timedelta(seconds=1))` as before. The primary win is fail-fast validation at construction; if profiling shows `croniter` construction is still a bottleneck, a follow-up can explore reusing the parsed expansion fields. The cron string parsing overhead is small compared to the HGETALL elimination — this is a correctness improvement first, performance improvement second.
 
 Same immutability argument — the cron string doesn't change between CRUD operations, and `model_copy()` triggers re-initialization.
 
@@ -133,7 +135,7 @@ Same immutability argument — the cron string doesn't change between CRUD opera
 
 | Trigger Type | Current (per tick) | After (per tick) |
 |-------------|-------------------|-----------------|
-| TimeTrigger | Parse cron string + compute next fire | Re-seed cached croniter |
+| TimeTrigger | Parse cron string + compute next fire | Construct croniter from pre-validated expression (fail-fast on bad cron at construction, not evaluation) |
 | CompositeTrigger (5 children) | 5× registry lookup + 5× Pydantic validation + 5× object allocation | Iterate pre-built list |
 | Any trigger via list_all | HGETALL + N× JSON parse + N× Pydantic validate | Dict values iteration |
 
@@ -216,6 +218,10 @@ The JSON-RPC shim can be removed once all callers are confirmed to use the SDK t
 | `refresh_loop` | **NEW** — calls `store.refresh()` every 60s (configurable) |
 | `uvicorn server` | **REPLACES** raw `asyncio.start_server` |
 
+#### Uvicorn Graceful Shutdown
+
+`run_server()` returns or exposes the `uvicorn.Server` instance. In the `run()` finally block, before cancelling tasks, set `server.should_exit = True` to trigger uvicorn's graceful shutdown. This replaces raw task cancellation, which uvicorn does not handle the same way `asyncio.start_server` does. The shutdown sequence becomes: `_shutdown.wait()` → `server.should_exit = True` → `t.cancel()` for remaining tasks → `await asyncio.gather(*tasks, return_exceptions=True)` → cleanup.
+
 ---
 
 ## 5. Files Changed
@@ -235,13 +241,13 @@ The JSON-RPC shim can be removed once all callers are confirmed to use the SDK t
 - **Unit tests for model caching:** Verify `CompositeTrigger._cached_children` is populated at construction, `TimeTrigger._cached_cron` is populated at construction, both survive `model_copy()`
 - **Integration test for FastAPI server:** Hit each REST endpoint, verify correct responses and side effects
 - **Import-order sensitivity:** `model_post_init` in CompositeTrigger calls `TriggerRegistry.get()` at construction time. Tests that construct composite triggers must import `core.triggers.types` first (via `types/__init__.py`) to ensure type registration. This is the same constraint as runtime but surfaces earlier (at construction instead of evaluation).
-- **Existing tests must pass:** All current trigger engine tests should pass without modification (public API is unchanged)
+- **Test updates required:** `test_store.py`'s `test_list_all` must be updated — `list_all()` now reads from cache, so `store.load()` must be called first to populate the cache. `test_server.py` must be fully rewritten — `handle_jsonrpc` is no longer a standalone importable function; replace with FastAPI `TestClient`-based tests covering the REST endpoints and the JSON-RPC shim. All other existing test files are unaffected.
 
 ## 7. Risks
 
 | Risk | Mitigation |
 |------|-----------|
 | Cache diverges from Redis | 60-second periodic refresh as safety net |
-| `model_post_init` breaks serialization | Cached fields use Pydantic `model_config` exclude or private attributes (`_cached_*`) |
+| `model_post_init` breaks serialization | Cached fields use `pydantic.PrivateAttr` — excluded from serialization/validation by default |
 | uvicorn conflicts with existing event loop | Run via `uvicorn.Server.serve()` programmatically (proven pattern in home-service) |
 | FastAPI adds startup latency | Negligible — app construction is <10ms |
