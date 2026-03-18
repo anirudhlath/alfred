@@ -28,18 +28,22 @@ class TriggerStore:
         self._redis = redis
         self._snapshot_dir = Path(snapshot_dir)
         self._snapshot_dir.mkdir(parents=True, exist_ok=True)
+        self._cache: dict[str, BaseTrigger] = {}
 
     async def load(self) -> list[BaseTrigger]:
         """Load all triggers from Redis, falling back to disk if empty."""
         raw: dict[str | bytes, str | bytes] = await self._redis.hgetall(TRIGGERS_KEY)  # type: ignore[misc]
 
         if raw:
-            return self._parse_redis_entries(raw)
+            triggers = self._parse_redis_entries(raw)
+            self._cache = {t.trigger_id: t for t in triggers}
+            return triggers
 
         logger.info("Redis empty — rehydrating triggers from disk")
         triggers = self.rehydrate_from_disk_static(self._snapshot_dir, TriggerRegistry)
         for t in triggers:
             await self._redis.hset(TRIGGERS_KEY, t.trigger_id, t.model_dump_json())  # type: ignore[misc]
+        self._cache = {t.trigger_id: t for t in triggers}
         return triggers
 
     async def save(self, trigger: BaseTrigger) -> None:
@@ -47,35 +51,30 @@ class TriggerStore:
         await self._redis.hset(TRIGGERS_KEY, trigger.trigger_id, trigger.model_dump_json())  # type: ignore[misc]
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._snapshot_to_yaml, trigger)
+        self._cache[trigger.trigger_id] = trigger
 
     async def delete(self, trigger_id: str) -> None:
         """Remove from Redis + delete YAML file."""
         await self._redis.hdel(TRIGGERS_KEY, trigger_id)  # type: ignore[misc]
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._delete_yaml, trigger_id)
+        self._cache.pop(trigger_id, None)
 
     async def get(self, trigger_id: str) -> BaseTrigger | None:
-        """Fetch a single trigger by ID (O(1) HGET)."""
-        raw: bytes | str | None = await self._redis.hget(TRIGGERS_KEY, trigger_id)  # type: ignore[misc]
-        if raw is None:
-            return None
-        val_str = raw.decode() if isinstance(raw, bytes) else raw
-        try:
-            data: dict[str, Any] = json.loads(val_str)
-            trigger_type = data.get("trigger_type", "")
-            cls = TriggerRegistry.get(trigger_type)
-            return cls(**data)
-        except (json.JSONDecodeError, KeyError, ValueError) as e:
-            logger.error("Failed to parse trigger '%s': %s", trigger_id, e)
-            return None
+        """Fetch a single trigger by ID from in-memory cache."""
+        return self._cache.get(trigger_id)
 
     async def list_all(self, enabled_only: bool = False) -> list[BaseTrigger]:
-        """Return all triggers, optionally filtered by enabled status."""
-        raw: dict[str | bytes, str | bytes] = await self._redis.hgetall(TRIGGERS_KEY)  # type: ignore[misc]
-        triggers = self._parse_redis_entries(raw)
+        """Return all triggers from in-memory cache, optionally filtered."""
+        triggers = list(self._cache.values())
         if enabled_only:
             return [t for t in triggers if t.enabled]
         return triggers
+
+    async def refresh(self) -> None:
+        """Re-sync cache from Redis (safety net, called periodically)."""
+        raw: dict[str | bytes, str | bytes] = await self._redis.hgetall(TRIGGERS_KEY)  # type: ignore[misc]
+        self._cache = {t.trigger_id: t for t in self._parse_redis_entries(raw)}
 
     async def snapshot_all(self) -> None:
         """Dump all triggers to YAML (periodic task)."""
