@@ -20,17 +20,11 @@ def _clean_registry(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def mock_feature() -> AsyncMock:
     feature = AsyncMock()
-    feature.create_trigger = AsyncMock(
-        return_value={"trigger_id": "t-1", "name": "test"}
-    )
+    feature.create_trigger = AsyncMock(return_value={"trigger_id": "t-1", "name": "test"})
     feature.list_triggers = AsyncMock(return_value=[])
-    feature.update_trigger = AsyncMock(
-        return_value={"trigger_id": "t-1", "name": "updated"}
-    )
+    feature.update_trigger = AsyncMock(return_value={"trigger_id": "t-1", "name": "updated"})
     feature.delete_trigger = AsyncMock(return_value={"status": "deleted", "trigger_id": "t-1"})
-    feature.toggle_trigger = AsyncMock(
-        return_value={"trigger_id": "t-1", "enabled": False}
-    )
+    feature.toggle_trigger = AsyncMock(return_value={"trigger_id": "t-1", "enabled": False})
     return feature
 
 
