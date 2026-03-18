@@ -32,6 +32,7 @@ Additionally, the HTTP server (`server.py`) is a hand-rolled 77-line `asyncio.st
 - Optimistic locking for concurrent CRUD (single process, not a real risk)
 - OpenTelemetry metrics instrumentation (separate hardening pass)
 - Sensor trigger type coercion bug (separate fix)
+- Sensor triggers evaluated on tick for no reason — backlog item #4, separate optimization (add `responds_to_tick` class attribute)
 - Multi-instance cache coordination (engine is explicitly single-process)
 
 ---
@@ -50,6 +51,7 @@ Additionally, the HTTP server (`server.py`) is a hand-rolled 77-line `asyncio.st
 |--------|-----------------|--------------|
 | `load()` | HGETALL + disk fallback, returns list | Same, but also populates `_cache` |
 | `list_all(enabled_only)` | HGETALL + deserialize + filter | Returns from `_cache`, filters in-memory |
+| `get(trigger_id)` | HGET from Redis + deserialize | Returns from `_cache`, zero Redis calls |
 | `save(trigger)` | HSET + YAML snapshot | Same, plus `_cache[trigger_id] = trigger` |
 | `delete(trigger_id)` | HDEL + YAML delete | Same, plus `del _cache[trigger_id]` |
 | `refresh()` | N/A (new) | HGETALL, replaces `_cache` entirely |
@@ -87,6 +89,18 @@ Safety net (every 60s, configurable):
 #### Why Write-Through Is Sufficient
 
 The trigger engine is a single-process system. All mutations flow through `TriggerStore.save()` and `TriggerStore.delete()` — there's no external writer. The 60-second refresh is a safety net for manual Redis edits during debugging, not a correctness requirement.
+
+#### Concurrency Safety
+
+`list_all()` and `get()` are synchronous reads from the in-memory dict (no `await` between cache access and return). Since the event loop is single-threaded, `refresh()` cannot interleave with a read. Dict reference assignment in `refresh()` is atomic at the CPython bytecode level.
+
+#### Snapshot Behavior After Caching
+
+`snapshot_all()` calls `list_all()`, which now reads the cache instead of Redis. This is intentional — the cache is the authoritative in-process state. The periodic YAML snapshot captures the cache, and `refresh()` re-syncs the cache from Redis every 60s. If Redis is manually edited, the next `refresh()` picks it up, and the next `snapshot_all()` persists it.
+
+#### `refresh()` Cost
+
+`refresh()` performs a full HGETALL + deserialization — the same cost as the old `list_all()`. It must never be called from a hot path. It runs only in `refresh_loop` (every 60s), not in `evaluate_tick()` or `evaluate_event()`.
 
 ### 4.2 Model-Level Caching
 
@@ -142,7 +156,7 @@ Replace the raw `asyncio.start_server` HTTP handler with a FastAPI application. 
 
 #### Server Lifecycle
 
-`run_server()` builds a `FastAPI` app, attaches routes that close over the `TriggerFeature` instance, and runs `uvicorn.Server` programmatically within the existing asyncio event loop. Port remains 8001.
+`run_server()` signature changes from `run_server(client: AlfredClient, ...)` to `run_server(client: AlfredClient, feature: TriggerFeature, ...)`. It builds a `FastAPI` app, attaches REST routes that close over the `TriggerFeature` instance and a JSON-RPC shim that delegates to `client.dispatch()`, and runs `uvicorn.Server` programmatically within the existing asyncio event loop. Port remains 8001. `__main__.py` must construct `TriggerFeature` before passing it to both the server and `AlfredClient` registration.
 
 ```python
 app = FastAPI(title="Trigger Engine")
@@ -152,10 +166,18 @@ server = uvicorn.Server(config)
 await server.serve()
 ```
 
+#### JSON-RPC to REST Migration
+
+The current server exposes a JSON-RPC endpoint that delegates to `AlfredClient.dispatch()`. The Reflex Engine and domain agents call trigger tools by sending JSON-RPC requests to `http://localhost:8001`. The new server replaces this with REST endpoints.
+
+To maintain backward compatibility during transition, the FastAPI server includes a `POST /jsonrpc` endpoint that accepts JSON-RPC requests and delegates to `AlfredClient.dispatch()` — identical to the current behavior. This preserves the existing wire protocol while the REST endpoints provide the new interface.
+
+The JSON-RPC shim can be removed once all callers are confirmed to use the SDK tool-call path (which resolves tools via Redis `alfred:tool_registry` and dispatches locally, not over HTTP).
+
 #### What Stays the Same
 
 - `AlfredClient` still registers tools in Redis `alfred:tool_registry` — this is how the Reflex Engine discovers trigger CRUD capabilities via the MCP/tool-call path
-- The Reflex Engine still calls triggers via JSON-RPC dispatch through `AlfredClient` — this path is unchanged
+- The `POST /jsonrpc` endpoint preserves the existing wire protocol for any caller currently sending JSON-RPC to port 8001
 - The REST endpoints are an **additional** interface for direct HTTP access (debugging, future UI)
 
 #### What We Get
@@ -212,6 +234,7 @@ await server.serve()
 - **Unit tests for cache:** Verify `list_all()` returns cached data, `save()`/`delete()` update cache, `refresh()` re-syncs from Redis
 - **Unit tests for model caching:** Verify `CompositeTrigger._cached_children` is populated at construction, `TimeTrigger._cached_cron` is populated at construction, both survive `model_copy()`
 - **Integration test for FastAPI server:** Hit each REST endpoint, verify correct responses and side effects
+- **Import-order sensitivity:** `model_post_init` in CompositeTrigger calls `TriggerRegistry.get()` at construction time. Tests that construct composite triggers must import `core.triggers.types` first (via `types/__init__.py`) to ensure type registration. This is the same constraint as runtime but surfaces earlier (at construction instead of evaluation).
 - **Existing tests must pass:** All current trigger engine tests should pass without modification (public API is unchanged)
 
 ## 7. Risks
