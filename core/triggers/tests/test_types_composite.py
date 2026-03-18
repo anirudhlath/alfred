@@ -108,7 +108,7 @@ def test_cached_children_populated() -> None:
         {"trigger_type": "sensor", "conditions": {"entity_id": "light.b"}},
     ]
     trigger = _make_composite(conditions={"children": children, "require": 1})
-    cached = trigger._cached_children  # type: ignore[attr-defined]
+    cached = trigger._cached_children
     assert len(cached) == 2
     assert cached[0].trigger_id == "t-1:child:0"
     assert cached[1].trigger_id == "t-1:child:1"
@@ -122,7 +122,7 @@ def test_cached_children_indexed_ids() -> None:
         {"trigger_type": "sensor", "conditions": {"entity_id": "light.c"}},
     ]
     trigger = _make_composite(conditions={"children": children, "require": 1})
-    cached = trigger._cached_children  # type: ignore[attr-defined]
+    cached = trigger._cached_children
     ids = [c.trigger_id for c in cached]
     assert ids == ["t-1:child:0", "t-1:child:1", "t-1:child:2"]
 
@@ -134,5 +134,5 @@ def test_model_copy_rebuilds_cached_children() -> None:
     ]
     trigger = _make_composite(conditions={"children": children, "require": 1})
     copied = trigger.model_copy(update={"name": "renamed"})
-    cached = copied._cached_children  # type: ignore[attr-defined]
+    cached = copied._cached_children
     assert len(cached) == 1

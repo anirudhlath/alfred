@@ -4,23 +4,19 @@
 
 ## Deferred Items
 
-### 1. In-memory trigger cache
-**Priority:** High
-**Files:** `core/triggers/store.py`, `core/triggers/engine.py`
+### 1. ~~In-memory trigger cache~~ DONE
+**Completed:** 2026-03-17 (trigger-engine-hardening branch)
+Write-through `_cache` dict in `TriggerStore`. `list_all()`/`get()` read from cache. `refresh()` periodic safety net.
 
-`evaluate_tick()` and `evaluate_event()` call `HGETALL` + full deserialization on every tick (1/s) and every event. Add an in-process `dict[str, BaseTrigger]` cache populated at startup, updated on `save()`/`delete()`. Safe because the engine is a single process.
+### 2. ~~Composite child trigger caching~~ DONE
+**Completed:** 2026-03-17 (trigger-engine-hardening branch)
+`model_post_init` pre-builds children with indexed IDs (`child:0`, `child:1`, ...) via `PrivateAttr`.
 
-### 2. Composite child trigger caching
-**Priority:** Medium
-**Files:** `core/triggers/types/composite.py`
+### 3. ~~Replace hand-rolled HTTP server with framework~~ DONE
+**Completed:** 2026-03-17 (trigger-engine-hardening branch)
+FastAPI with REST endpoints + JSON-RPC backward-compat shim. uvicorn.Server for graceful shutdown.
 
-`CompositeTrigger.evaluate()` reconstructs child `BaseTrigger` instances on every call. Cache parsed children in a Pydantic `model_validator` or `@cached_property`. Also: child IDs should include list index (`f"{self.trigger_id}:child:{i}"`) instead of all sharing the same ID.
-
-### 3. Replace hand-rolled HTTP server with framework
-**Priority:** Medium
-**Files:** `core/triggers/server.py`
-
-`server.py` is a raw `asyncio.start_server` HTTP handler (70 lines). No TLS, no keep-alive, no content-type validation. Inconsistent with home-service which uses uvicorn/FastAPI. Replace with minimal FastAPI or aiohttp endpoint for production readiness.
+**Also completed:** TimeTrigger cron validation at construction (not in original backlog). `model_post_init` creates sentinel croniter to fail fast on bad cron expressions.
 
 ### 4. Sensor triggers evaluated on tick for no reason
 **Priority:** Low
