@@ -50,8 +50,8 @@ Additionally, the HTTP server (`server.py`) is a hand-rolled 77-line `asyncio.st
 | Method | Current Behavior | New Behavior |
 |--------|-----------------|--------------|
 | `load()` | HGETALL + disk fallback, returns list | Same, but also populates `_cache` |
-| `list_all(enabled_only)` | HGETALL + deserialize + filter | Returns from `_cache`, filters in-memory |
-| `get(trigger_id)` | HGET from Redis + deserialize | Returns from `_cache`, zero Redis calls |
+| `list_all(enabled_only)` | HGETALL + deserialize + filter | Returns from `_cache`, filters in-memory. Remains `async def` (body is synchronous) to avoid breaking callers. |
+| `get(trigger_id)` | HGET from Redis + deserialize | Returns from `_cache`, zero Redis calls. Remains `async def` for same reason. |
 | `save(trigger)` | HSET + YAML snapshot | Same, plus `_cache[trigger_id] = trigger` |
 | `delete(trigger_id)` | HDEL + YAML delete | Same, plus `del _cache[trigger_id]` |
 | `refresh()` | N/A (new) | HGETALL, replaces `_cache` entirely |
