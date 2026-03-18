@@ -125,7 +125,7 @@ Triggers are immutable between CRUD operations — `save()` creates a new model 
 
 #### TimeTrigger (`core/triggers/types/time.py`)
 
-Add `model_post_init` that validates the cron string by constructing a sentinel `croniter` instance during initialization — this fails fast on bad cron expressions at construction time rather than at evaluation time. Store as a Pydantic private attribute: `_cached_cron: croniter | None = PrivateAttr(default=None)`.
+Add `model_post_init` that validates the cron string by constructing a sentinel `croniter` instance during initialization — this fails fast on bad cron expressions at construction time rather than at evaluation time. Store as a Pydantic private attribute: `_validated_cron: croniter | None = PrivateAttr(default=None)`.
 
 In `evaluate()`, construct a new `croniter(self.conditions.cron, now - timedelta(seconds=1))` as before. The primary win is fail-fast validation at construction; if profiling shows `croniter` construction is still a bottleneck, a follow-up can explore reusing the parsed expansion fields. The cron string parsing overhead is small compared to the HGETALL elimination — this is a correctness improvement first, performance improvement second.
 
@@ -230,7 +230,7 @@ The JSON-RPC shim can be removed once all callers are confirmed to use the SDK t
 |------|-------------|-------------|
 | `core/triggers/store.py` | Modify | Add `_cache` dict, write-through on save/delete, cache-read on list_all, new `refresh()` |
 | `core/triggers/types/composite.py` | Modify | Add `model_post_init` to pre-build child triggers, use `_cached_children` in `evaluate()` |
-| `core/triggers/types/time.py` | Modify | Add `model_post_init` to pre-parse cron, use `_cached_cron` in `evaluate()` |
+| `core/triggers/types/time.py` | Modify | Add `model_post_init` to pre-parse cron, use `_validated_cron` in `evaluate()` |
 | `core/triggers/server.py` | Rewrite | FastAPI app with REST endpoints replacing raw asyncio server |
 | `core/triggers/__main__.py` | Modify | Add `refresh_loop`, swap server startup to uvicorn |
 | `pyproject.toml` | Modify | Add `fastapi`, `uvicorn[standard]` dependencies |
@@ -238,7 +238,7 @@ The JSON-RPC shim can be removed once all callers are confirmed to use the SDK t
 ## 6. Testing Strategy
 
 - **Unit tests for cache:** Verify `list_all()` returns cached data, `save()`/`delete()` update cache, `refresh()` re-syncs from Redis
-- **Unit tests for model caching:** Verify `CompositeTrigger._cached_children` is populated at construction, `TimeTrigger._cached_cron` is populated at construction, both survive `model_copy()`
+- **Unit tests for model caching:** Verify `CompositeTrigger._cached_children` is populated at construction, `TimeTrigger._validated_cron` is populated at construction, both survive `model_copy()`
 - **Integration test for FastAPI server:** Hit each REST endpoint, verify correct responses and side effects
 - **Import-order sensitivity:** `model_post_init` in CompositeTrigger calls `TriggerRegistry.get()` at construction time. Tests that construct composite triggers must import `core.triggers.types` first (via `types/__init__.py`) to ensure type registration. This is the same constraint as runtime but surfaces earlier (at construction instead of evaluation).
 - **Test updates required:** `test_store.py`'s `test_list_all` must be updated — `list_all()` now reads from cache, so `store.load()` must be called first to populate the cache. `test_server.py` must be fully rewritten — `handle_jsonrpc` is no longer a standalone importable function; replace with FastAPI `TestClient`-based tests covering the REST endpoints and the JSON-RPC shim. All other existing test files are unaffected.

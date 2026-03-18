@@ -34,6 +34,7 @@ def create_app(client: AlfredClient, feature: TriggerFeature) -> FastAPI:
 
     @app.patch("/triggers/{trigger_id}")
     async def update_trigger(trigger_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        body.pop("trigger_id", None)  # prevent collision with path param
         result: dict[str, Any] = await feature.update_trigger(trigger_id=trigger_id, **body)
         return result
 
