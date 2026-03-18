@@ -54,18 +54,18 @@ def test_run_at_fires() -> None:
     assert trigger.evaluate(ctx) is True
 
 
-def test_cached_cron_populated() -> None:
+def test_validated_cron_populated() -> None:
     """model_post_init should validate cron and store sentinel croniter."""
     trigger = _make_time_trigger(conditions={"cron": "0 7 * * *"})
-    cached = trigger._cached_cron
+    cached = trigger._validated_cron
     assert cached is not None
 
 
-def test_cached_cron_none_for_run_at() -> None:
-    """run_at triggers should have _cached_cron = None."""
+def test_validated_cron_none_for_run_at() -> None:
+    """run_at triggers should have _validated_cron = None."""
     target = datetime(2026, 3, 10, 15, 0, 0, tzinfo=UTC)
     trigger = _make_time_trigger(conditions={"run_at": target.isoformat()})
-    cached = trigger._cached_cron
+    cached = trigger._validated_cron
     assert cached is None
 
 
@@ -75,11 +75,11 @@ def test_invalid_cron_fails_at_construction() -> None:
         _make_time_trigger(conditions={"cron": "not a cron"})
 
 
-def test_model_copy_rebuilds_cached_cron() -> None:
+def test_model_copy_rebuilds_validated_cron() -> None:
     """model_copy() should re-run model_post_init."""
     trigger = _make_time_trigger(conditions={"cron": "0 7 * * *"})
     copied = trigger.model_copy(update={"name": "renamed"})
-    cached = copied._cached_cron
+    cached = copied._validated_cron
     assert cached is not None
 
 
