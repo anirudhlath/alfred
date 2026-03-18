@@ -1,77 +1,69 @@
-"""HTTP server for trigger engine tool dispatch (JSON-RPC)."""
+"""FastAPI server for trigger engine — REST endpoints + JSON-RPC backward-compat shim."""
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from fastapi import FastAPI
+
+if TYPE_CHECKING:
+    from core.triggers.feature import TriggerFeature
+    from sdk.alfred_sdk.client import AlfredClient
 
 logger = logging.getLogger(__name__)
 
 
-async def handle_jsonrpc(
-    request: dict[str, Any],
-    client: Any,
-) -> dict[str, Any]:
-    """Handle a single JSON-RPC request by dispatching to the AlfredClient."""
-    method = request.get("method", "")
-    params = request.get("params", {})
-    req_id = request.get("id")
+def create_app(client: AlfredClient, feature: TriggerFeature) -> FastAPI:
+    """Build the FastAPI app with REST routes and JSON-RPC shim."""
+    app = FastAPI(title="Trigger Engine", docs_url="/docs")
 
-    try:
-        result = await client.dispatch(method, params)
-        return {"jsonrpc": "2.0", "result": result, "id": req_id}
-    except Exception as e:
-        logger.error("JSON-RPC error for method '%s': %s", method, e)
-        return {
-            "jsonrpc": "2.0",
-            "error": {"code": -32603, "message": str(e)},
-            "id": req_id,
-        }
+    @app.get("/health")
+    async def health_check() -> dict[str, str]:
+        return {"status": "ok"}
 
+    @app.post("/triggers")
+    async def create_trigger(body: dict[str, Any]) -> dict[str, Any]:
+        result: dict[str, Any] = await feature.create_trigger(**body)
+        return result
 
-async def run_server(
-    client: Any,
-    host: str = "0.0.0.0",
-    port: int = 8001,
-) -> None:
-    """Run a minimal async HTTP server for JSON-RPC tool dispatch."""
+    @app.get("/triggers")
+    async def list_triggers(enabled_only: bool = True) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = await feature.list_triggers(enabled_only=enabled_only)
+        return result
 
-    async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    @app.patch("/triggers/{trigger_id}")
+    async def update_trigger(trigger_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        result: dict[str, Any] = await feature.update_trigger(trigger_id=trigger_id, **body)
+        return result
+
+    @app.delete("/triggers/{trigger_id}")
+    async def delete_trigger(trigger_id: str) -> dict[str, str]:
+        result: dict[str, str] = await feature.delete_trigger(trigger_id=trigger_id)
+        return result
+
+    @app.patch("/triggers/{trigger_id}/toggle")
+    async def toggle_trigger(trigger_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        result: dict[str, Any] = await feature.toggle_trigger(
+            trigger_id=trigger_id, enabled=body["enabled"]
+        )
+        return result
+
+    # JSON-RPC backward-compat shim
+    @app.post("/jsonrpc")
+    async def jsonrpc_shim(body: dict[str, Any]) -> dict[str, Any]:
+        method = body.get("method", "")
+        params = body.get("params", {})
+        req_id = body.get("id")
         try:
-            await reader.readline()  # consume request line (e.g. "POST / HTTP/1.1")
-            headers: dict[str, str] = {}
-            while True:
-                header_line = await reader.readline()
-                if header_line in (b"\r\n", b"\n", b""):
-                    break
-                key, _, value = header_line.decode().partition(":")
-                headers[key.strip().lower()] = value.strip()
-
-            content_length = int(headers.get("content-length", "0"))
-            body = await reader.readexactly(content_length) if content_length else b""
-
-            rpc_request: dict[str, Any] = json.loads(body) if body else {}
-            rpc_response = await handle_jsonrpc(rpc_request, client)
-
-            response_body = json.dumps(rpc_response).encode()
-            http_response = (
-                b"HTTP/1.1 200 OK\r\n"
-                b"Content-Type: application/json\r\n"
-                b"Content-Length: " + str(len(response_body)).encode() + b"\r\n"
-                b"\r\n" + response_body
-            )
-            writer.write(http_response)
-            await writer.drain()
+            result = await client.dispatch(method, params)
+            return {"jsonrpc": "2.0", "result": result, "id": req_id}
         except Exception as e:
-            logger.error("Server error: %s", e)
-        finally:
-            writer.close()
-            await writer.wait_closed()
+            logger.error("JSON-RPC error for method '%s': %s", method, e)
+            return {
+                "jsonrpc": "2.0",
+                "error": {"code": -32603, "message": str(e)},
+                "id": req_id,
+            }
 
-    server = await asyncio.start_server(handle_connection, host, port)
-    logger.info("Trigger Engine HTTP server listening on %s:%d", host, port)
-
-    async with server:
-        await server.serve_forever()
+    return app
