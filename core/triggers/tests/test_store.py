@@ -124,9 +124,114 @@ async def test_list_all(mock_redis: AsyncMock, snapshot_dir: Path) -> None:
         }
     )
     store = TriggerStore(redis=mock_redis, snapshot_dir=snapshot_dir)
+    await store.load()
 
     all_triggers = await store.list_all()
     assert len(all_triggers) == 2
 
     enabled_only = await store.list_all(enabled_only=True)
     assert len(enabled_only) == 1
+
+
+@pytest.mark.asyncio
+async def test_list_all_reads_from_cache_not_redis(
+    mock_redis: AsyncMock, snapshot_dir: Path
+) -> None:
+    """After load(), list_all() should return cached data without hitting Redis."""
+    d1 = _make_trigger_dict("t-1")
+    mock_redis.hgetall = AsyncMock(return_value={"t-1": json.dumps(d1)})
+    store = TriggerStore(redis=mock_redis, snapshot_dir=snapshot_dir)
+    await store.load()
+
+    # Reset mock to track new calls
+    mock_redis.hgetall.reset_mock()
+
+    result = await store.list_all()
+    assert len(result) == 1
+    assert result[0].trigger_id == "t-1"
+    # list_all should NOT have called hgetall again
+    mock_redis.hgetall.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_reads_from_cache(mock_redis: AsyncMock, snapshot_dir: Path) -> None:
+    """After load(), get() should return from cache without hitting Redis."""
+    d1 = _make_trigger_dict("t-1")
+    mock_redis.hgetall = AsyncMock(return_value={"t-1": json.dumps(d1)})
+    store = TriggerStore(redis=mock_redis, snapshot_dir=snapshot_dir)
+    await store.load()
+
+    mock_redis.hget = AsyncMock()
+    result = await store.get("t-1")
+    assert result is not None
+    assert result.trigger_id == "t-1"
+    mock_redis.hget.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_returns_none_for_missing(mock_redis: AsyncMock, snapshot_dir: Path) -> None:
+    """get() returns None for trigger not in cache."""
+    mock_redis.hgetall = AsyncMock(return_value={})
+    store = TriggerStore(redis=mock_redis, snapshot_dir=snapshot_dir)
+    await store.load()
+    result = await store.get("nonexistent")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_save_updates_cache(mock_redis: AsyncMock, snapshot_dir: Path) -> None:
+    """save() should update the in-memory cache."""
+    mock_redis.hgetall = AsyncMock(return_value={})
+    store = TriggerStore(redis=mock_redis, snapshot_dir=snapshot_dir)
+    await store.load()
+
+    cls = TriggerRegistry.get("time")
+    trigger = cls(**_make_trigger_dict("t-new"))
+    await store.save(trigger)
+
+    result = await store.get("t-new")
+    assert result is not None
+    assert result.trigger_id == "t-new"
+
+
+@pytest.mark.asyncio
+async def test_delete_removes_from_cache(mock_redis: AsyncMock, snapshot_dir: Path) -> None:
+    """delete() should remove trigger from in-memory cache."""
+    d1 = _make_trigger_dict("t-1")
+    mock_redis.hgetall = AsyncMock(return_value={"t-1": json.dumps(d1)})
+    store = TriggerStore(redis=mock_redis, snapshot_dir=snapshot_dir)
+    await store.load()
+
+    await store.delete("t-1")
+
+    result = await store.get("t-1")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_list_all_before_load_returns_empty(
+    mock_redis: AsyncMock, snapshot_dir: Path
+) -> None:
+    """list_all() before load() returns empty, not AttributeError."""
+    store = TriggerStore(redis=mock_redis, snapshot_dir=snapshot_dir)
+    result = await store.list_all()
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_refresh_resyncs_from_redis(mock_redis: AsyncMock, snapshot_dir: Path) -> None:
+    """refresh() should replace cache with current Redis state."""
+    d1 = _make_trigger_dict("t-1")
+    mock_redis.hgetall = AsyncMock(return_value={"t-1": json.dumps(d1)})
+    store = TriggerStore(redis=mock_redis, snapshot_dir=snapshot_dir)
+    await store.load()
+
+    # Simulate external Redis change: t-1 removed, t-2 added
+    d2 = _make_trigger_dict("t-2")
+    mock_redis.hgetall = AsyncMock(return_value={"t-2": json.dumps(d2)})
+
+    await store.refresh()
+
+    all_triggers = await store.list_all()
+    assert len(all_triggers) == 1
+    assert all_triggers[0].trigger_id == "t-2"
