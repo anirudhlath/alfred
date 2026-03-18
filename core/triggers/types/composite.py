@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, PrivateAttr
 
 from core.triggers.models import BaseTrigger, TriggerContext
 from core.triggers.registry import TriggerRegistry
@@ -23,28 +23,36 @@ class CompositeTrigger(BaseTrigger):
         require: int
 
     conditions: Conditions
+    _cached_children: list[BaseTrigger] = PrivateAttr(default_factory=list)
 
-    def evaluate(self, context: TriggerContext) -> bool:
-        """Evaluate each child trigger and check if enough are satisfied."""
-        matched = 0
+    def model_post_init(self, __context: Any) -> None:
+        """Pre-build child trigger instances at construction time.
 
-        for child_spec in self.conditions.children:
+        Note: model_copy(update=...) re-runs model_post_init in Pydantic v2 —
+        tests verify this invariant (test_model_copy_rebuilds_cached_children).
+        """
+        children: list[BaseTrigger] = []
+        for i, child_spec in enumerate(self.conditions.children):
             child_type = child_spec.get("trigger_type", "")
             child_conditions = child_spec.get("conditions", {})
-
             child_cls = TriggerRegistry.get(child_type)
             child = child_cls(
-                trigger_id=f"{self.trigger_id}:child",
+                trigger_id=f"{self.trigger_id}:child:{i}",
                 trigger_type=child_type,
-                name=f"{self.name}:child",
+                name=f"{self.name}:child:{i}",
                 created_by=self.created_by,
                 created_at=self.created_at,
                 conditions=child_conditions,
             )
+            children.append(child)
+        self._cached_children = children
 
+    def evaluate(self, context: TriggerContext) -> bool:
+        """Evaluate each cached child trigger and check if enough are satisfied."""
+        matched = 0
+        for child in self._cached_children:
             if child.evaluate(context):
                 matched += 1
                 if matched >= self.conditions.require:
                     return True
-
         return matched >= self.conditions.require
