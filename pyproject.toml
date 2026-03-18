@@ -14,6 +14,8 @@ dependencies = [
     "python-dotenv>=1.0",
     "croniter>=3.0",
     "pyyaml>=6.0",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
 ]
 
 [project.optional-dependencies]
@@ -57,4 +59,8 @@ warn_unused_configs = true
 
 [[tool.mypy.overrides]]
 module = ["asyncio_mqtt.*", "aiomqtt.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["uvicorn.*"]
 ignore_missing_imports = true

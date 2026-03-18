@@ -99,3 +99,40 @@ def test_partial_require() -> None:
     )
     ctx = TriggerContext(now=datetime.now(UTC), event=event)
     assert trigger.evaluate(ctx) is True
+
+
+def test_cached_children_populated() -> None:
+    """model_post_init should pre-build child instances."""
+    children = [
+        {"trigger_type": "sensor", "conditions": {"entity_id": "light.a", "state_match": "on"}},
+        {"trigger_type": "sensor", "conditions": {"entity_id": "light.b"}},
+    ]
+    trigger = _make_composite(conditions={"children": children, "require": 1})
+    cached = trigger._cached_children
+    assert len(cached) == 2
+    assert cached[0].trigger_id == "t-1:child:0"
+    assert cached[1].trigger_id == "t-1:child:1"
+
+
+def test_cached_children_indexed_ids() -> None:
+    """Each child should have a unique indexed trigger_id."""
+    children = [
+        {"trigger_type": "sensor", "conditions": {"entity_id": "light.a"}},
+        {"trigger_type": "sensor", "conditions": {"entity_id": "light.b"}},
+        {"trigger_type": "sensor", "conditions": {"entity_id": "light.c"}},
+    ]
+    trigger = _make_composite(conditions={"children": children, "require": 1})
+    cached = trigger._cached_children
+    ids = [c.trigger_id for c in cached]
+    assert ids == ["t-1:child:0", "t-1:child:1", "t-1:child:2"]
+
+
+def test_model_copy_rebuilds_cached_children() -> None:
+    """model_copy() should re-run model_post_init and rebuild children."""
+    children = [
+        {"trigger_type": "sensor", "conditions": {"entity_id": "light.a"}},
+    ]
+    trigger = _make_composite(conditions={"children": children, "require": 1})
+    copied = trigger.model_copy(update={"name": "renamed"})
+    cached = copied._cached_children
+    assert len(cached) == 1
