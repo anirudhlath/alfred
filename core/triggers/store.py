@@ -72,7 +72,11 @@ class TriggerStore:
         return triggers
 
     async def refresh(self) -> None:
-        """Re-sync cache from Redis (safety net, called periodically)."""
+        """Re-sync cache from Redis (safety net, called periodically).
+
+        WARNING: Performs a full HGETALL + deserialization. Intended for the
+        60-second background loop only — never call from the hot path.
+        """
         raw: dict[str | bytes, str | bytes] = await self._redis.hgetall(TRIGGERS_KEY)  # type: ignore[misc]
         self._cache = {t.trigger_id: t for t in self._parse_redis_entries(raw)}
 

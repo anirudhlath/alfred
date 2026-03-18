@@ -28,7 +28,11 @@ class TimeTrigger(BaseTrigger):
     _validated_cron: croniter | None = PrivateAttr(default=None)
 
     def model_post_init(self, __context: Any) -> None:
-        """Validate cron expression at construction time (fail-fast)."""
+        """Validate cron expression at construction time (fail-fast).
+
+        Note: model_copy(update=...) re-runs model_post_init in Pydantic v2 —
+        tests verify this invariant (test_model_copy_rebuilds_validated_cron).
+        """
         if self.conditions.cron is not None:
             try:
                 self._validated_cron = croniter(self.conditions.cron)

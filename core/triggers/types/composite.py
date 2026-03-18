@@ -26,7 +26,11 @@ class CompositeTrigger(BaseTrigger):
     _cached_children: list[BaseTrigger] = PrivateAttr(default_factory=list)
 
     def model_post_init(self, __context: Any) -> None:
-        """Pre-build child trigger instances at construction time."""
+        """Pre-build child trigger instances at construction time.
+
+        Note: model_copy(update=...) re-runs model_post_init in Pydantic v2 —
+        tests verify this invariant (test_model_copy_rebuilds_cached_children).
+        """
         children: list[BaseTrigger] = []
         for i, child_spec in enumerate(self.conditions.children):
             child_type = child_spec.get("trigger_type", "")
