@@ -28,6 +28,10 @@ dev = [
     "mypy>=1.10",
     "types-PyYAML>=6.0",
 ]
+integrations = [
+    "caldav>=1.3",
+    "robin_stocks>=3.0",
+]
 
 [build-system]
 requires = ["setuptools>=75.0"]
@@ -64,4 +68,8 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["uvicorn.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["caldav.*", "robin_stocks.*"]
 ignore_missing_imports = true
