@@ -42,13 +42,15 @@ class PiperTTS:
         """
         model_path = self._model_dir / f"{self._voice}.onnx"
 
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+        try:
             cmd = [
                 self._piper_bin,
                 "--model",
                 str(model_path),
                 "--output_file",
-                tmp.name,
+                str(tmp_path),
             ]
             proc = subprocess.run(
                 cmd,
@@ -60,7 +62,9 @@ class PiperTTS:
                 logger.error("Piper TTS failed: {}", proc.stderr.decode())
                 raise RuntimeError(f"Piper TTS failed: {proc.stderr.decode()}")
 
-            return Path(tmp.name).read_bytes()
+            return tmp_path.read_bytes()
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
     def synthesize_streaming(self, text: str) -> subprocess.Popen[bytes]:
         """Start a streaming TTS process. Returns Popen with stdout as audio stream.
