@@ -38,6 +38,10 @@ memory = [
     "aiosqlite>=0.20",
     "numpy>=1.26",
 ]
+voice = [
+    "faster-whisper>=1.0",
+    "piper-tts>=1.2",
+]
 
 [build-system]
 requires = ["setuptools>=75.0"]
@@ -86,4 +90,8 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["sentence_transformers.*", "torch.*", "numpy.*", "aiosqlite.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["faster_whisper.*", "piper.*"]
 ignore_missing_imports = true
