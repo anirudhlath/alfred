@@ -166,6 +166,12 @@ async def run(config: AlfredConfig) -> None:
 def main() -> None:
     configure_logging(service="triggers")
     config = AlfredConfig.from_env()
+    from shared.otel import init_tracing
+
+    init_tracing(
+        service_name="triggers",
+        endpoint=config.otel_endpoint if config.signoz_enabled else None,
+    )
     asyncio.run(run(config))
 
 
