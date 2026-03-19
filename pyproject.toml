@@ -17,6 +17,7 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
     "loguru>=0.7",
+    "anthropic>=0.52",
 ]
 
 [project.optional-dependencies]
@@ -64,4 +65,8 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["uvicorn.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["anthropic.*"]
 ignore_missing_imports = true
