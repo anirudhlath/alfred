@@ -113,11 +113,13 @@ async def run_demo(channel: str = "web_pwa") -> None:
 
     butler = ButlerPersonalityScore()
     butler_score = butler.score(response.text)
-    log.info("  Butler Personality: {:.2f} {}", butler_score, "PASS" if butler_score >= 0.6 else "FAIL")
+    butler_status = "PASS" if butler_score >= 0.6 else "FAIL"
+    log.info("  Butler Personality: {:.2f} {}", butler_score, butler_status)
 
     privacy = PrivacyLeakScore()
     privacy_score = privacy.score(response.text, "sir")
-    log.info("  Privacy (sir):     {:.2f} {}", privacy_score, "PASS" if privacy_score >= 0.9 else "FAIL")
+    privacy_status = "PASS" if privacy_score >= 0.9 else "FAIL"
+    log.info("  Privacy (sir):     {:.2f} {}", privacy_score, privacy_status)
 
     # Check for expected topics
     topics = ["sleep", "meeting", "weather", "portfolio"]
@@ -135,9 +137,7 @@ async def run_demo(channel: str = "web_pwa") -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Alfred Good Morning Demo")
-    parser.add_argument(
-        "--channel", default="web_pwa", choices=["web_pwa", "signal", "voice"]
-    )
+    parser.add_argument("--channel", default="web_pwa", choices=["web_pwa", "signal", "voice"])
     args = parser.parse_args()
     asyncio.run(run_demo(channel=args.channel))
 
