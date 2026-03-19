@@ -16,6 +16,7 @@ from core.reflex.context_reader import ContextReader
 from core.reflex.engine import ReflexEngine
 from core.reflex.runner import AioRedis, ensure_consumer_group, process_stream_entry
 from core.reflex.tool_registry import ToolRegistry
+from core.routing.domain_router import DomainRouter
 from domains.home.home_agent import HomeAgent
 from sdk.alfred_sdk.telemetry import clear_telemetry_buffer, get_telemetry_buffer
 from shared.config import AlfredConfig
@@ -81,7 +82,8 @@ async def run(config: AlfredConfig) -> None:
         tool_registry=registry,
         context_reader=context_reader,
     )
-    agent = HomeAgent(redis=r)
+    router = DomainRouter()
+    router.register("home-service", HomeAgent(redis=r))
     writer = ScratchpadWriter(redis=r, queue_key=SCRATCHPAD_QUEUE)
 
     # Background tasks
@@ -105,7 +107,7 @@ async def run(config: AlfredConfig) -> None:
                         await process_stream_entry(
                             entry_data=entry_data,
                             engine=engine,
-                            agent=agent,
+                            agent=router,
                             redis=r,
                             result_stream=RESULT_STREAM,
                             scratchpad_queue=SCRATCHPAD_QUEUE,

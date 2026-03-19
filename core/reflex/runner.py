@@ -1,7 +1,7 @@
 """Reflex Runner — orchestration loop for the System 1 pipeline.
 
 Reads events from Redis Streams (consumer group), runs the Reflex Engine,
-dispatches actions via Home Agent, and logs observations to the scratchpad.
+dispatches actions via a DomainAgent, and logs observations to the scratchpad.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from core.reflex.engine import ReflexEngine
-    from domains.home.home_agent import HomeAgent
+    from core.routing.domain_router import DomainAgent
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ async def ensure_consumer_group(
 async def process_stream_entry(
     entry_data: Mapping[str | bytes, str | bytes],
     engine: ReflexEngine,
-    agent: HomeAgent,
+    agent: DomainAgent,
     redis: AioRedis,
     result_stream: str,
     scratchpad_queue: str,
