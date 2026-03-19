@@ -810,9 +810,9 @@ Alfred must remain useful when components fail. A butler who goes silent when on
 | Redis down | Event bus offline | Critical dependency. Supervisor auto-restarts. Each service has a brief in-memory queue (configurable, default 100 events) to absorb a Redis restart without losing events. If Redis is down beyond queue capacity, services log and drop. |
 | Signal bridge down | Chat unavailable | Voice and PWA still work. Alfred mentions it if asked. |
 | SigNoz down | No observability | Zero impact on functionality. Logs continue to file. |
+| Librarian fails | No consolidation | Scratchpad accumulates. Retries next cycle. Memory files never left partial. |
 
 **Rate limiting:** Each channel has a configurable request rate limit (default: 10 requests/minute). Requests exceeding the limit are queued, not dropped. This prevents a compromised or misbehaving channel from burning Claude API budget. The cost guardrails (Section 17) apply as a second line of defense.
-| Librarian fails | No consolidation | Scratchpad accumulates. Retries next cycle. Memory files never left partial. |
 
 ---
 
@@ -989,7 +989,7 @@ Trigger Engine, ContextProvider, evals runner, BaseFeature, trigger hardening.
 
 - Librarian running nightly in production
 - Procedural memory actively suggesting routines
-- Proactivity tuning (three stubs operational)
+- Proactivity tuning (three levels operational)
 - Departure routine demo, conversational task demo
 - System prompt refinement from eval feedback
 
