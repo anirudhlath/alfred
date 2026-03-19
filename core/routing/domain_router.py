@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Protocol, runtime_checkable
 
-from bus.schemas.events import ActionRequest, ActionResult
+from loguru import logger
 
-logger = logging.getLogger(__name__)
+from bus.schemas.events import ActionRequest, ActionResult
 
 
 @runtime_checkable
@@ -28,14 +27,14 @@ class DomainRouter:
     def __init__(self) -> None:
         self._agents: dict[str, DomainAgent] = {}
 
-    def register(self, service_pattern: str, agent: DomainAgent) -> None:
-        """Register a domain agent for a service pattern."""
-        self._agents[service_pattern] = agent
-        logger.info("Registered domain agent for '%s'", service_pattern)
+    def register(self, service_name: str, agent: DomainAgent) -> None:
+        """Register a domain agent for a service name."""
+        self._agents[service_name] = agent
+        logger.info("Registered domain agent for '{}'", service_name)
 
     @property
     def registered_services(self) -> set[str]:
-        """Return set of registered service patterns."""
+        """Return set of registered service names."""
         return set(self._agents)
 
     async def route(self, action: ActionRequest) -> ActionResult:

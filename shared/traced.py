@@ -4,24 +4,37 @@ from __future__ import annotations
 
 import asyncio
 import functools
-from typing import Any, overload
+from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, overload
 
 from opentelemetry import trace
 
+if TYPE_CHECKING:
+    from collections.abc import Callable, Coroutine
+
+# Used by the plain @traced(*) overload which cannot use PEP 695 syntax
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
 
 @overload
-def traced(fn: Any) -> Any: ...
+def traced[**P, R](
+    fn: Callable[P, Coroutine[Any, Any, R]],
+) -> Callable[P, Coroutine[Any, Any, R]]: ...
+
+
+@overload
+def traced[**P, R](fn: Callable[P, R]) -> Callable[P, R]: ...
 
 
 @overload
 def traced(
     *,
     name: str | None = None,
-) -> Any: ...
+) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]: ...
 
 
-def traced(
-    fn: Any | None = None,
+def traced[**P](
+    fn: Callable[P, Any] | None = None,
     *,
     name: str | None = None,
 ) -> Any:
@@ -31,14 +44,14 @@ def traced(
     Supports both @traced and @traced(name="custom.name").
     """
 
-    def decorator(f: Any) -> Any:
+    def decorator(f: Callable[P, Any]) -> Callable[P, Any]:
         span_name = name or f"{f.__module__}.{f.__qualname__}"
         tracer = trace.get_tracer(f.__module__)
 
         if asyncio.iscoroutinefunction(f):
 
             @functools.wraps(f)
-            async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+            async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> Any:
                 with tracer.start_as_current_span(span_name) as span:
                     try:
                         result = await f(*args, **kwargs)
@@ -52,7 +65,7 @@ def traced(
         else:
 
             @functools.wraps(f)
-            def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+            def sync_wrapper(*args: P.args, **kwargs: P.kwargs) -> Any:
                 with tracer.start_as_current_span(span_name) as span:
                     try:
                         result = f(*args, **kwargs)
