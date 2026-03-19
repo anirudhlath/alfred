@@ -1,0 +1,28 @@
+name: multi_step
+description: "Sir asks for a complex task requiring multiple tool calls"
+
+request:
+  channel: web_pwa
+  identity: sir
+  content_type: text
+  content: "What's my day look like? And is it going to rain?"
+
+mock_integrations:
+  apple_calendar:
+    events:
+      - summary: "Standup"
+        start: "2026-03-19T10:00:00"
+      - summary: "Lunch with Sarah"
+        start: "2026-03-19T12:30:00"
+  weather:
+    current:
+      temperature_2m: 65
+      precipitation_probability: 10
+
+expected:
+  mentions:
+    - standup
+    - lunch
+    - rain
+  min_tool_calls: 2
+  butler_personality_score: 0.5
