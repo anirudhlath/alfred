@@ -79,7 +79,7 @@ Three-layer biologically-inspired memory serving both planes. System 1 reads sem
 
 System 1 and System 2 share the event bus and tool registry but operate independently. System 1 never waits for System 2. System 2 can observe what System 1 did and override or follow up.
 
-**Conflict resolution:** If both engines want to act on the same event, System 2 wins. System 1 has a configurable grace period (default 200ms) — if System 2 claims the event within that window, System 1 stands down. For most ambient events, System 2 will not claim them, so System 1 acts at full speed.
+**Conflict resolution:** System 1 and System 2 operate on different event types by default. A **static event routing table** (configuration, not inference) determines which events System 2 is interested in. For example, `UserRequest` events always go to System 2, `StateChangedEvent` always goes to System 1. For events where both systems might act (e.g., a door opening that System 1 reacts to and System 2 might want to mention), System 1 acts immediately and System 2 observes the action result asynchronously — no grace period, no race condition. System 2 can then follow up conversationally if relevant ("Sir, the front door opened at 3 AM — System 1 turned on the hallway light, but I thought you should know.").
 
 ---
 
@@ -124,6 +124,26 @@ The Conscious Engine does NOT replace the Reflex Engine. They coexist:
 - You say "Good morning" → System 2 handles it (briefing, personality, multi-step)
 - System 1 processes a door-open event → System 2 can observe this and mention it conversationally
 
+### Agentic Loop (Multi-Step Tool Use)
+
+The Conscious Engine supports iterative tool use within a single request. Claude can call tools, receive results, reason, and call more tools — an agentic loop:
+
+```
+User request → Claude inference
+    → Tool call (e.g., get calendar) → result
+    → Claude reasons on result → another tool call (e.g., get weather) → result
+    → Claude assembles final response
+```
+
+**Constraints:**
+- Maximum iterations per request: configurable (default 10)
+- Each iteration counts against the token budget for that request category
+- If budget exhausted mid-loop, Claude must return a partial response explaining what it couldn't complete
+- Tool calls within a loop are parallelized where possible (Claude can request multiple tools in one turn)
+- All tool calls within a loop share the same trace (nested spans)
+
+For the "Good morning" briefing, Claude calls all integrations in parallel in a single tool-use turn, then assembles the response — typically 2 iterations (tool calls + final response).
+
 ### Conversation State
 
 Each channel maintains its own conversation thread. Cross-channel continuity is supported via `session_id` — start on voice, switch to Signal, Alfred can continue the same thread. Sessions expire after configurable idle time (default 30 min).
@@ -148,12 +168,23 @@ Timestamped records of events, conversations, and observations.
 
 ```
 Storage: Redis Stream (hot, last 7 days) + SQLite archive (cold, searchable)
-Schema: EpisodicEntry(timestamp, source, summary, entities, emotional_valence)
+Schema: EpisodicEntry(timestamp, source, summary, entities, valence: Literal["positive", "negative", "neutral"])
 ```
 
 - Every conversation turn, notable event, and System 1 action gets logged
 - Entries are **summarized, not raw** — "Sir asked for a briefing and seemed rushed" not the full transcript
 - **Retrieval:** Semantic search (embedding similarity) + time-based + entity-based ("what happened with the front door last week?")
+
+**Embedding & vector storage:**
+- Embedding model: local sentence-transformer (e.g., `all-MiniLM-L6-v2` or similar, runs on CPU/GPU). Exact model selected during implementation based on accuracy/speed benchmarks.
+- Vectors stored alongside entries: in Redis as binary field (hot), in SQLite via `sqlite-vec` extension (cold)
+- Embedding computed at write time (when episodic entry is created), not at query time
+- Query: embed the search query with the same model, cosine similarity against stored vectors, combine with recency weighting
+
+**SQLite schema (cold storage):**
+- Table: `episodic_entries(id TEXT PK, timestamp REAL, source TEXT, summary TEXT, entities JSON, valence TEXT, embedding BLOB)`
+- `sqlite-vec` virtual table for vector similarity search
+- Migration strategy: single `schema.sql` in `core/memory/`, applied at startup if not present. Schema versioning via a `schema_version` table.
 
 **Decay schedule:**
 - 0-7 days: Full entries in Redis (hot)
@@ -175,12 +206,12 @@ Location: core/memory/preferences/ (existing) + core/memory/profile/
 - `profile/relationships.md` — people Alfred knows about ("Sarah — friend, visited 3 times, prefers 68F")
 - Every inference is tagged: `[inferred from 3 observations, confidence: high, source: episodic, date: 2026-03-19]`
 - User can inspect, edit, or delete any entry — Markdown is human-readable by design
-- Updated only by the Librarian during consolidation, never at runtime
+- Updated only by the Librarian during consolidation, never at runtime — with one exception: **onboarding** seeds initial preferences via a dedicated bootstrap path that writes directly to semantic memory before the Librarian's first run
 
 **Conflict resolution for semantic updates:** When new observations contradict existing facts (e.g., user changed jobs, new commute), the Librarian:
 
 1. Detects conflicting episodic entries vs existing semantic fact
-2. If new pattern is consistent (N observations over M days), updates the semantic entry
+2. If new pattern is consistent (configurable: default N=5 observations over M=14 days), updates the semantic entry
 3. Logs the change with provenance: `[updated 2026-04-15: was "25 min downtown", now "40 min to campus", source: 12 observations over 14 days]`
 4. Old value archived — Alfred can recall "you used to work downtown"
 
@@ -306,7 +337,7 @@ Example guest interaction: "Good evening. I'm Alfred. I'm afraid I'm not at libe
 
 - **Identity gate is at the Conscious Engine entry point** — before context assembly, before Claude sees anything. If identity = guest, the system prompt contains zero personal data.
 - **System 1 (ambient) is identity-agnostic** — motion → lights works for anyone. It never generates user-facing responses.
-- **Signal bridge** only accepts messages from the registered phone number. Others dropped silently.
+- **Signal bridge** only accepts messages from the registered phone number. Others are dropped with no response but **logged for security auditing** (timestamp, sender number, message hash — no content).
 - **Web PWA** requires authentication. No anonymous access.
 - **Integration API keys** stored in local secrets manager, never in memory files or git.
 - **Integration data sanitization** — all adapter responses pass through a scanner before injection into Claude's context, stripping anything that resembles prompt injection instructions.
@@ -358,7 +389,7 @@ Voice (low latency):  PWA ←WebSocket→ Conscious Engine (streaming)
 Signal (async):       Signal Bridge → Redis → Conscious Engine → Redis → Signal Bridge
 ```
 
-Both paths feed the same engine, same memory, same identity gate. The Redis streams still log everything for observability, but the WebSocket hot path bypasses the queue for voice.
+Both paths feed the same engine, same memory, same identity gate. The WebSocket path writes to Redis **asynchronously** (fire-and-forget after processing) so every interaction is logged for observability and audit, but the user-facing response is not gated on the Redis write completing.
 
 ### Voice Latency Budget (with Streaming)
 
@@ -410,6 +441,21 @@ Mirrors the existing `ToolRegistry` and `TriggerRegistry`. Each integration is a
 
 ```python
 from abc import ABC, abstractmethod
+from pydantic import BaseModel
+
+class IntegrationRequest(BaseModel):
+    action: str
+    params: dict[str, Any]  # Subclasses define typed params per action
+
+class IntegrationResult(BaseModel):
+    data: dict[str, Any]
+    freshness: datetime
+    confidence: float  # 0.0-1.0, how reliable is this data
+
+class IntegrationCapability(BaseModel):
+    name: str
+    description: str
+    params_schema: dict[str, Any]  # JSON Schema for action params
 
 class Integration(ABC):
     name: str
@@ -419,15 +465,29 @@ class Integration(ABC):
     async def get_capabilities(self) -> list[IntegrationCapability]: ...
 
     @abstractmethod
-    async def execute(self, action: str, params: dict) -> IntegrationResult: ...
+    async def execute(self, request: IntegrationRequest) -> IntegrationResult: ...
 
     @abstractmethod
     async def health_check(self) -> bool: ...
 ```
 
+All request/response types are Pydantic models (Pillar 3). Individual adapters may define typed subclasses of `IntegrationRequest` for compile-time safety.
+
 ### IntegrationRegistry
 
 Discovers and manages adapters at startup. The Conscious Engine queries it dynamically — no hardcoded integration lists. New adapters register via `@IntegrationRegistry.register()` decorator, same pattern as triggers.
+
+### Relationship to ToolRegistry and DomainRouter
+
+Three registries serve distinct purposes:
+
+| Registry | What it holds | Who uses it | Direction |
+|----------|--------------|-------------|-----------|
+| **ToolRegistry** | MCP tool manifests from sovereign microservices (home-service, etc.) | Reflex Engine (System 1) + Conscious Engine (System 2) | Alfred → external services |
+| **IntegrationRegistry** | Data-fetching adapters (calendar, health, weather, finance) | Conscious Engine (System 2) only | Alfred → external APIs |
+| **DomainRouter** | Maps `target_service` → domain agent for action dispatch | Both systems, replaces hardcoded `HomeAgent` | Alfred → domain agents → services |
+
+The distinction: **ToolRegistry** is for action execution (turn on light, play music). **IntegrationRegistry** is for data retrieval (get calendar, get sleep data). **DomainRouter** is for dispatching action results to the correct domain. They do not overlap — an engineer always knows which registry a capability belongs to.
 
 ### Adapter Contract
 
@@ -489,7 +549,7 @@ Alfred is opinionated and initiates contact when warranted.
 - Urgent notifications (safety, security) always break through
 - User can manually set DND via voice or Signal ("Alfred, hold my calls for an hour")
 
-### Proactivity Stubs
+### Proactivity Levels
 
 Three configurable levels (selected at onboarding, changeable anytime):
 
@@ -747,9 +807,11 @@ Alfred must remain useful when components fail. A butler who goes silent when on
 | Claude API down | System 2 offline | System 1 continues ambient actions. Signal message: "Sir, I'm operating in reduced capacity. Complex requests will need to wait." |
 | Integration timeout | Missing data in briefing | Skip it, mention it: "I wasn't able to reach your calendar this morning." |
 | No internet | Cloud LLM + external APIs unavailable | System 1 fully operational (Ollama is local). Voice pipeline works (Whisper + Piper are local). Alfred is degraded but not dead. |
-| Redis down | Event bus offline | All services fail — this is a critical dependency. Auto-restart via supervisor. |
+| Redis down | Event bus offline | Critical dependency. Supervisor auto-restarts. Each service has a brief in-memory queue (configurable, default 100 events) to absorb a Redis restart without losing events. If Redis is down beyond queue capacity, services log and drop. |
 | Signal bridge down | Chat unavailable | Voice and PWA still work. Alfred mentions it if asked. |
 | SigNoz down | No observability | Zero impact on functionality. Logs continue to file. |
+
+**Rate limiting:** Each channel has a configurable request rate limit (default: 10 requests/minute). Requests exceeding the limit are queued, not dropped. This prevents a compromised or misbehaving channel from burning Claude API budget. The cost guardrails (Section 17) apply as a second line of defense.
 | Librarian fails | No consolidation | Scratchpad accumulates. Retries next cycle. Memory files never left partial. |
 
 ---
@@ -980,3 +1042,89 @@ All constraints from the original spec remain. Additional:
 - **Streaming for voice** — WebSocket hot path, not queued. Time-to-first-word target: 1.5s.
 - **Cost visibility** — daily cap, per-category budgets, 80% alerts, automatic System 1 fallback at cap.
 - **Graceful degradation** — every component failure has a defined fallback. Alfred never goes fully silent.
+
+---
+
+## 22. New Schemas (Pillar 3 Compliance)
+
+All new Pydantic models introduced by this spec. These live in `bus/schemas/` (inter-service) or their owning module (internal).
+
+### Inter-Service Schemas (`bus/schemas/events.py`)
+
+```python
+class UserRequest(BaseModel):
+    """Inbound user interaction from any channel."""
+    channel: Literal["web_pwa", "signal", "voice"]
+    session_id: str
+    identity_claim: str          # "sir", "guest", or provider-specific token
+    content_type: Literal["text", "audio"]
+    content: str                 # Transcribed text (if audio, after STT)
+    audio_ref: str | None = None # Object store ref for raw audio (if voice)
+    timestamp: datetime
+
+class AlfredResponse(BaseModel):
+    """Outbound response to a user channel."""
+    channel: Literal["web_pwa", "signal", "voice"]
+    session_id: str
+    text: str
+    voice_audio: bytes | None = None  # TTS audio (if voice channel)
+    actions_taken: list[str]          # Summary of actions executed
+    mood: Literal["neutral", "pleased", "concerned", "amused", "serious"]
+    timestamp: datetime
+```
+
+### Memory Schemas (`core/memory/schemas.py`)
+
+```python
+class EpisodicEntry(BaseModel):
+    id: str
+    timestamp: datetime
+    source: str                    # "conversation", "system1_action", "trigger", "integration"
+    summary: str
+    entities: list[str]            # Entity IDs or names referenced
+    valence: Literal["positive", "negative", "neutral"]
+    embedding: bytes | None = None # Computed at write time
+
+class RoutineSpec(BaseModel):
+    name: str
+    trigger_pattern: str           # Natural language description of when this fires
+    steps: list[str]               # Ordered action descriptions
+    confidence: float              # 0.0-1.0
+    learned_from: list[str]        # Episodic entry IDs that contributed
+    state: Literal["candidate", "active", "dormant", "archived"]
+    last_hit: datetime | None = None
+    consecutive_misses: int = 0
+```
+
+### Integration Schemas (`core/integrations/base.py`)
+
+`IntegrationRequest`, `IntegrationResult`, `IntegrationCapability` — defined in Section 7.
+
+### Identity Schemas (`core/identity/schemas.py`)
+
+```python
+class IdentityResult(BaseModel):
+    identity: Literal["sir", "guest"]
+    confidence: float              # 0.0-1.0
+    method: str                    # "voice_id", "signal_phone", "webauthn", "device_proximity"
+    factors: list[str]             # All factors that contributed
+    risk_clearance: Literal["low", "medium", "high", "critical"]
+```
+
+---
+
+## 23. New Redis Streams & Keys
+
+All new stream names and keys to be added to `shared/streams.py`.
+
+| Key | Type | Purpose |
+|-----|------|---------|
+| `alfred:user:requests` | Stream | Inbound user interactions (all channels) |
+| `alfred:user:responses` | Stream | Outbound Alfred responses (all channels) |
+| `alfred:memory:episodic` | Stream | Hot episodic memory entries (last 7 days) |
+| `alfred:memory:scratchpad` | List | Existing scratchpad queue (unchanged) |
+| `alfred:sessions:{session_id}` | Hash | Active conversation session state |
+| `alfred:identity:voiceprint` | Hash | Enrolled speaker embeddings |
+| `alfred:config:runtime` | Hash | Runtime-tunable settings (proactivity level, DND, cost cap) |
+| `alfred:integration_registry` | Hash | Integration manifests (mirrors tool_registry pattern) |
+| `alfred:notifications:queue` | Stream | Outbound proactive notifications |
