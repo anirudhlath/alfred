@@ -9,7 +9,9 @@ import asyncio
 import sys
 
 from runner.supervisor import ServiceSpec, Supervisor
+from shared.config import AlfredConfig
 from shared.logging import configure_logging
+from shared.otel import init_tracing
 
 SERVICES = [
     ServiceSpec(name="bridge", module="bus"),
@@ -20,6 +22,11 @@ SERVICES = [
 
 def main() -> None:
     log = configure_logging(service="runner")
+    config = AlfredConfig.from_env()
+    init_tracing(
+        service_name="runner",
+        endpoint=config.otel_endpoint if config.signoz_enabled else None,
+    )
 
     names = ", ".join(s.name for s in SERVICES)
     log.info("Alfred — starting %d services: %s", len(SERVICES), names)
