@@ -28,6 +28,11 @@ dev = [
     "mypy>=1.10",
     "types-PyYAML>=6.0",
 ]
+memory = [
+    "sentence-transformers>=3.0",
+    "aiosqlite>=0.20",
+    "numpy>=1.26",
+]
 
 [build-system]
 requires = ["setuptools>=75.0"]
@@ -64,4 +69,8 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["uvicorn.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["sentence_transformers.*", "torch.*", "numpy.*", "aiosqlite.*"]
 ignore_missing_imports = true
