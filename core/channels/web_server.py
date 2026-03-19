@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import time
+from contextlib import asynccontextmanager
 from typing import Any
 from uuid import uuid4
 
@@ -15,9 +17,19 @@ from bus.schemas.events import AlfredResponse, UserRequest
 from shared.streams import USER_REQUESTS_STREAM, USER_RESPONSES_STREAM
 
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
+    """Manage shared Redis connection pool lifecycle."""
+    pool: aioredis.Redis[Any] = aioredis.from_url(app.state.redis_url, decode_responses=False)
+    app.state.redis = pool
+    yield
+    await pool.aclose()  # type: ignore[misc]
+
+
 def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
     """Create the FastAPI application for the web channel."""
-    app = FastAPI(title="Alfred Web Channel")
+    app = FastAPI(title="Alfred Web Channel", lifespan=_lifespan)
+    app.state.redis_url = redis_url
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -27,7 +39,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
     async def websocket_endpoint(websocket: WebSocket) -> None:
         await websocket.accept()
         session_id = str(uuid4())
-        r: aioredis.Redis[Any] = aioredis.from_url(redis_url)
+        r: aioredis.Redis[Any] = app.state.redis
 
         try:
             while True:
@@ -44,12 +56,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
                     content=content,
                 )
 
-                await r.xadd(  # type: ignore[misc]
-                    USER_REQUESTS_STREAM,
-                    {"event": request.model_dump_json()},
-                )
-
-                response_text = await _wait_for_response(r, session_id, timeout=30.0)
+                response_text = await _publish_and_wait(r, request, session_id, timeout=30.0)
 
                 await websocket.send_json(
                     {
@@ -61,8 +68,6 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
         except WebSocketDisconnect:
             logger.info("WebSocket disconnected (session={})", session_id)
-        finally:
-            await r.aclose()  # type: ignore[misc]
 
     # Mount static files for PWA (if directory exists)
     web_dir = os.path.join(os.path.dirname(__file__), "..", "..", "web")
@@ -72,16 +77,34 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
     return app
 
 
-async def _wait_for_response(
+async def _publish_and_wait(
     redis: aioredis.Redis[Any],
+    request: UserRequest,
     session_id: str,
     timeout: float = 30.0,
 ) -> str:
-    """Poll the responses stream for a response matching this session."""
-    import time
+    """Publish request and poll the responses stream for a matching response.
+
+    Captures the latest stream ID before publishing to avoid scanning history.
+    """
+    # Get current stream tail so we only read new entries
+    try:
+        info: dict[str, Any] = await redis.xinfo_stream(  # type: ignore[misc]
+            USER_RESPONSES_STREAM
+        )
+        last_id: str | bytes = info.get("last-generated-id", "0-0")
+        if isinstance(last_id, bytes):
+            last_id = last_id.decode()
+    except Exception:
+        last_id = "0-0"
+
+    # Publish the request
+    await redis.xadd(  # type: ignore[misc]
+        USER_REQUESTS_STREAM,
+        {"event": request.model_dump_json()},
+    )
 
     start = time.monotonic()
-    last_id = "0-0"
 
     while (time.monotonic() - start) < timeout:
         entries = await redis.xread(  # type: ignore[misc]
