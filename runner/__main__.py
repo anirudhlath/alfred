@@ -17,6 +17,7 @@ SERVICES = [
     ServiceSpec(name="bridge", module="bus"),
     ServiceSpec(name="reflex", module="core.reflex", delay=1.0),
     ServiceSpec(name="triggers", module="core.triggers"),
+    ServiceSpec(name="conscious", module="core.conscious", delay=2.0),
 ]
 
 
