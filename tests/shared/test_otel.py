@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from opentelemetry import trace
-
 from shared.otel import init_tracing
 
 
