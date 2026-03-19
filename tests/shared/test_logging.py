@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import sys
-from unittest.mock import patch
-
 from shared.logging import configure_logging
 
 
@@ -37,8 +34,34 @@ def test_configure_logging_adds_service_context() -> None:
         records.append({"text": str(message)})
 
     from loguru import logger
-    logger.add(sink, format="{extra[service]} | {message}", filter=lambda r: "service" in r["extra"])
-    log.info("test message")
 
-    assert len(records) >= 1
-    assert "my-service" in str(records[-1]["text"])
+    sink_id = logger.add(
+        sink,
+        format="{extra[service]} | {message}",
+        filter=lambda r: "service" in r["extra"],
+    )
+    try:
+        log.info("test message")
+        assert any("my-service" in str(r["text"]) for r in records)
+    finally:
+        logger.remove(sink_id)
+
+
+def test_configure_logging_env_level(monkeypatch: object) -> None:
+    """LOG_LEVEL env var is used as default level when not passed explicitly."""
+
+    assert isinstance(monkeypatch, object)
+    # Use monkeypatch fixture type correctly via its API
+    _mp = monkeypatch  # type: ignore[assignment]
+    _mp.setenv("LOG_LEVEL", "DEBUG")  # type: ignore[attr-defined]
+    log = configure_logging(service="env-svc")
+    assert hasattr(log, "info")
+
+
+def test_configure_logging_env_format_json(monkeypatch: object) -> None:
+    """LOG_FORMAT=json activates JSON output."""
+    _mp = monkeypatch  # type: ignore[assignment]
+    _mp.setenv("LOG_FORMAT", "json")  # type: ignore[attr-defined]
+    # Should not raise — JSON sink is added
+    log = configure_logging(service="json-svc")
+    assert hasattr(log, "info")

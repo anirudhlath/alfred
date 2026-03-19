@@ -7,6 +7,7 @@ Call configure_logging() once at service startup.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from typing import TYPE_CHECKING
 
@@ -40,25 +41,34 @@ class _InterceptHandler(logging.Handler):
 def configure_logging(
     service: str,
     *,
-    level: str = "INFO",
-    json_output: bool = False,
+    level: str | None = None,
+    json_output: bool | None = None,
 ) -> Logger:
     """Configure Loguru as the sole logging backend.
 
     Args:
         service: Service name bound to all log records.
-        level: Minimum log level (default INFO).
+        level: Minimum log level (default from LOG_LEVEL env var, fallback INFO).
         json_output: If True, emit JSON-serialized logs (for production).
+                     Defaults to True when LOG_FORMAT=json env var is set.
 
     Returns:
         A Loguru logger with service context bound.
     """
+    resolved_level: str = level if level is not None else os.getenv("LOG_LEVEL", "INFO")
+    resolved_json = (
+        json_output if json_output is not None else os.getenv("LOG_FORMAT", "").lower() == "json"
+    )
+
     # Remove default loguru handler
     logger.remove()
 
+    # Set fallback extras so intercepted stdlib logs don't crash the format string
+    logger.configure(extra={"service": "unknown"})
+
     # Console sink
-    if json_output:
-        logger.add(sys.stderr, serialize=True, level=level)
+    if resolved_json:
+        logger.add(sys.stderr, serialize=True, level=resolved_level)
     else:
         fmt = (
             "<green>{time:YYYY-MM-DD HH:mm:ss}</green> "
@@ -66,7 +76,7 @@ def configure_logging(
             "<level>{level: <8}</level> "
             "<level>{message}</level>"
         )
-        logger.add(sys.stderr, format=fmt, level=level, colorize=True)
+        logger.add(sys.stderr, format=fmt, level=resolved_level, colorize=True)
 
     # Intercept stdlib logging
     logging.basicConfig(handlers=[_InterceptHandler()], level=0, force=True)
