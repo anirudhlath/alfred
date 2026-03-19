@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
 
 import pytest
 
@@ -20,11 +19,13 @@ class FakeIntegration(Integration):
     category = "testing"
 
     async def get_capabilities(self) -> list[IntegrationCapability]:
-        return [IntegrationCapability(
-            name="get_test_data",
-            description="Returns test data",
-            params_schema={"type": "object"},
-        )]
+        return [
+            IntegrationCapability(
+                name="get_test_data",
+                description="Returns test data",
+                params_schema={"type": "object"},
+            )
+        ]
 
     async def execute(self, request: IntegrationRequest) -> IntegrationResult:
         return IntegrationResult(
