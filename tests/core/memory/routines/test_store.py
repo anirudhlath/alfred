@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from core.memory.routines.store import RoutineStore
 from core.memory.schemas import RoutineSpec, RoutineStep
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_save_and_load(tmp_path: Path) -> None:
