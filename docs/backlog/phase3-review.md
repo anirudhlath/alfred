@@ -1,18 +1,18 @@
 # Phase 3 Code Review — Deferred Items
 
-From code review of PR #9 (feature/phase3). Critical issues fixed inline.
+From code review of PR #9 (feature/phase3). All items resolved.
 
-## Should Fix
+## Resolved
 
-- **Missing `test_web_server.py`** — planned in Step 5 Task 4 but omitted. Add health endpoint test, WebSocket mock test, static file serving test.
-- **`SpeakerID` stub** — planned as `core/voice/speaker_id.py` but omitted. Define the interface for voiceprint-based identity resolution.
-- **Demo script Literal type** — `evals/e2e/demo_good_morning.py` uses `type: ignore[arg-type]` on channel param. Use a proper Literal type or cast.
-- **Regression runner pass logic** — `evals/regression/runner.py` only marks "none" scenarios as passed. Extend to support positive-action scenarios.
-
-## Nice to Have
-
-- **Voice test coverage** — STT/TTS tests only check attribute existence. Add mocked logic tests.
-- **PWA icons** — `web/manifest.json` has empty `icons` array, preventing mobile "Add to Home Screen".
-- **Static file path** — `core/channels/web_server.py` uses `../../web` relative traversal. Consider `importlib.resources` or config-driven path.
-- **MemoryRetrievalPrecision** — naive word-overlap heuristic. Extend with LLM-as-judge when DeepEval is fully wired.
-- **Plan files in branch** — Phase 3 plan files exist in main repo `docs/superpowers/plans/` but not in the feature branch.
+- **Missing `test_web_server.py`** — added with 6 tests (health, config, routes)
+- **`SpeakerID` stub** — added `core/voice/speaker_id.py` with interface
+- **Demo script Literal type** — fixed with `cast(ChannelType, channel)`
+- **Regression runner pass logic** — extended `_check_scenario()` for positive-action scenarios
+- **Voice test coverage** — added mocked transcription + synthesis tests (STT: 5 tests, TTS: 6 tests)
+- **PWA icons** — added SVG icon + updated manifest.json
+- **Static file path** — uses `Path(__file__).resolve()` instead of `os.path.join` traversal
+- **MemoryRetrievalPrecision** — added stopword filtering + keyword extraction
+- **Plan files in branch** — copied all Phase 3 step plans into feature branch
+- **Web channel connection pooling** — uses shared Redis pool via FastAPI lifespan (fixed earlier)
+- **Stream offset `0-0`** — `_publish_and_wait` captures current stream tail before publishing (fixed earlier)
+- **PiperTTS temp file** — uses `delete=False` + manual cleanup in `finally` block (fixed earlier)
