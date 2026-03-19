@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from core.conscious.identity import IdentityGate
-from core.identity.schemas import IdentityResult
 
 
 def test_signal_phone_match_is_sir() -> None:
