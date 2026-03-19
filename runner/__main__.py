@@ -6,10 +6,10 @@ Usage: python -m runner
 from __future__ import annotations
 
 import asyncio
-import logging
 import sys
 
 from runner.supervisor import ServiceSpec, Supervisor
+from shared.logging import configure_logging
 
 SERVICES = [
     ServiceSpec(name="bridge", module="bus"),
@@ -19,11 +19,7 @@ SERVICES = [
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    )
-    log = logging.getLogger("runner")
+    log = configure_logging(service="runner")
 
     names = ", ".join(s.name for s in SERVICES)
     log.info("Alfred — starting %d services: %s", len(SERVICES), names)

@@ -26,6 +26,7 @@ from core.triggers.server import create_app
 from core.triggers.store import TriggerStore
 from sdk.alfred_sdk.client import AlfredClient
 from shared.config import AlfredConfig
+from shared.logging import configure_logging
 from shared.streams import EVENTS_STREAM
 
 logger = logging.getLogger(__name__)
@@ -163,10 +164,7 @@ async def run(config: AlfredConfig) -> None:
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    )
+    configure_logging(service="triggers")
     config = AlfredConfig.from_env()
     asyncio.run(run(config))
 
