@@ -16,7 +16,9 @@ from evals.regression.mock_ollama import MockOllamaClient
 logger = logging.getLogger(__name__)
 
 
-def load_canned_responses(responses_file: str = "evals/regression/responses.yaml") -> dict[str, str]:
+def load_canned_responses(
+    responses_file: str = "evals/regression/responses.yaml",
+) -> dict[str, str]:
     """Load canned responses from YAML file."""
     path = Path(responses_file)
     if not path.exists():
@@ -47,10 +49,12 @@ def run_regression(
         response = client.infer_sync(event_desc)
 
         passed = expected.get("action") == "none" and '"action": "none"' in response["response"]
-        results["scenarios"].append({
-            "file": str(scenario_file),
-            "passed": passed,
-        })
+        results["scenarios"].append(
+            {
+                "file": str(scenario_file),
+                "passed": passed,
+            }
+        )
         if passed:
             results["passed"] += 1
         else:
