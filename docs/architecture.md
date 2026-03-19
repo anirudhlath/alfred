@@ -6,15 +6,15 @@ Alfred is an ambient, voice-first multi-agent system for smart environments. It 
 
 The system uses a **dual-process cognitive model**:
 
-- **System 1 (Reflex Engine)** -- a local Small Language Model (Ollama, default `gpt-oss:20b`) handles the fast path. Every state-change event passes through the SLM, which decides in sub-500ms whether an action is needed and, if so, which tool to call. This is the only inference path implemented in Phase 1.
-- **System 2 (Conscious Engine)** -- a cloud LLM (Claude) handles complex reasoning, multi-step planning, and ambiguous situations. Planned for Phase 3; not yet implemented.
+- **System 1 (Reflex Engine)** -- a local Small Language Model (Ollama, default `gpt-oss:20b`) handles the fast path. Every state-change event passes through the SLM, which decides in sub-500ms whether an action is needed and, if so, which tool to call.
+- **System 2 (Conscious Engine)** -- a cloud LLM (Claude) handles complex reasoning, multi-step planning, and ambiguous user requests. Receives `UserRequest` events, assembles context from integrations and memory, runs an agentic tool-use loop, and returns `AlfredResponse` events.
 
 The system is governed by four non-negotiable architectural pillars:
 
 1. **Proactivity** -- triggers are created dynamically by the LLM, never hardcoded.
 2. **Decoupling** -- microservices are sovereign applications; `alfred-sdk` is the only bridge.
 3. **Deterministic Communication** -- all inter-agent messages are Pydantic-validated JSON. No natural language between agents.
-4. **Stateful Memory (Librarian Pattern)** -- preferences in Markdown, runtime observations to a scratchpad, nightly consolidation (Phase 3).
+4. **Stateful Memory (Librarian Pattern)** -- three-layer biologically-inspired memory: episodic (Redis hot + SQLite cold), semantic (Markdown profiles), procedural (YAML routines). The Librarian drains the scratchpad nightly and consolidates into long-term memory.
 
 ## 2. Event Pipeline
 
@@ -106,10 +106,44 @@ graph TB
         Scratch["core/memory/scratchpad.md"]
     end
 
+    subgraph "Conscious Engine Process (System 2)"
+        ConsMain["Conscious Engine<br/><code>uv run python -m core.conscious</code>"]
+        ConsEngine[ConsciousEngine]
+        IdentityGate[IdentityGate]
+        SessionMgr[SessionManager]
+        CostTracker[CostTracker]
+        CtxAssembler[ContextAssembler]
+    end
+
+    subgraph "Memory System"
+        EpisodicStore[EpisodicStore<br/>Redis hot + SQLite cold]
+        SemanticProfile["Semantic Profiles<br/>core/memory/profile/*.md"]
+        Routines["Procedural Routines<br/>core/memory/routines/*.yaml"]
+        Librarian["Librarian<br/>nightly consolidation"]
+    end
+
+    subgraph "Integration Registry"
+        IntRegistry[IntegrationRegistry]
+        WeatherInt[WeatherIntegration]
+        CalendarInt[AppleCalendarIntegration]
+        HealthInt[AppleHealthIntegration]
+        RobinhoodInt[RobinhoodIntegration]
+    end
+
+    subgraph "Interaction Channels"
+        WebChannel["Web Channel<br/><code>uv run python -m core.channels</code>"]
+        WebPWA["Web PWA<br/>web/"]
+        VoicePipeline["Voice Pipeline"]
+        WhisperSTT[WhisperSTT]
+        PiperTTS[PiperTTS]
+    end
+
     subgraph "Evals Runner"
         EvalsCLI["Evals CLI<br/><code>uv run python -m evals</code>"]
         EvalsScenarios["YAML Scenarios"]
         EvalsCtx["Context Fixtures"]
+        EvalsConscious["System 2 Evals<br/>DeepEval metrics"]
+        EvalsRegression["Regression Mode<br/>Mocked Ollama"]
     end
 
     subgraph "Research Vault"
@@ -155,12 +189,45 @@ graph TB
     TrigFeature -->|TriggerCreated XADD| Redis
     TrigFeature -->|register tools| Redis
 
+    ConsMain --> ConsEngine
+    ConsMain --> IdentityGate
+    ConsMain --> SessionMgr
+    ConsMain --> CostTracker
+    ConsEngine --> CtxAssembler
+    ConsEngine -->|POST /v1/messages| Claude["Claude API"]
+    ConsEngine -->|XREAD requests| Redis
+    ConsEngine -->|XADD responses| Redis
+    CtxAssembler --> IntRegistry
+    CtxAssembler --> EpisodicStore
+    CtxAssembler --> MemReader
+    IntRegistry --> WeatherInt
+    IntRegistry --> CalendarInt
+    IntRegistry --> HealthInt
+    IntRegistry --> RobinhoodInt
+    SessionMgr -->|GET/SET sessions| Redis
+    CostTracker -->|GET/SET cost| Redis
+    IdentityGate -->|voiceprint lookup| Redis
+    EpisodicStore -->|hot writes| Redis
+    EpisodicStore -->|cold archive| SQLite["SQLite DB"]
+    Librarian -->|drain scratchpad| Redis
+    Librarian -->|write episodic| EpisodicStore
+    Librarian -->|update profiles| SemanticProfile
+
+    WebChannel -->|XADD requests| Redis
+    WebChannel -->|XREAD responses| Redis
+    WebChannel <-->|WebSocket| WebPWA
+    VoicePipeline --> WhisperSTT
+    VoicePipeline --> PiperTTS
+    WebChannel --> VoicePipeline
+
     EvalsCLI -->|build_prompt + parse_response| Engine
     EvalsCLI -->|POST /api/chat| Ollama
     EvalsCLI -->|load| EvalsScenarios
     EvalsCLI -->|load| EvalsCtx
     EvalsCLI -->|HGETALL tools| Redis
     EvalsCLI -->|flush CSV| CSV
+    EvalsConscious -->|custom metrics| EvalsCLI
+    EvalsRegression -->|mocked Ollama| EvalsCLI
 ```
 
 ### 3.1 Event Bus: MQTT Bridge + Redis Streams
@@ -277,40 +344,91 @@ Domain agents are Alfred's internal staff. They translate high-level `ActionRequ
 
 The `httpx.AsyncClient` is long-lived (reuses TCP connections). If the service is unreachable, the error is captured and returned as an `ActionResult` with `status: "error"`.
 
-### 3.7 Memory (Preferences + Scratchpad)
+### 3.7 Memory System (Three-Layer)
 
-**Files:** `core/reflex/memory_reader.py`, `core/memory/scratchpad_writer.py`, `core/memory/preferences/*.md`
+**Files:** `core/memory/`, `core/librarian/consolidator.py`
 
-**Preferences** (`core/memory/preferences/`):
+Alfred's memory is biologically-inspired with three layers:
 
-Read-only Markdown files with YAML frontmatter. The frontmatter contains metadata (`domain`, `updated`, `confidence`); the body contains natural-language preference statements. The `read_preferences()` function strips frontmatter and concatenates all `.md` files into a single string for injection into the SLM prompt.
+**Episodic Memory** (`core/memory/episodic/`):
 
-Example preference file (`lighting.md`):
-```yaml
----
-domain: home
-updated: 2026-03-10
-confidence: manual
----
-# Lighting Preferences
+Two-tier storage: Redis for hot (recent) entries, SQLite for cold archive. Entries are `EpisodicEntry` models with timestamps, source, content, and importance scores. Embeddings are computed via `sentence-transformers` for semantic search. A `DecayScheduler` handles time-based importance decay.
 
-- I prefer dim lighting when watching TV or movies
-- Default brightness during daytime: 80%
-```
+**Semantic Memory** (`core/memory/profile/`, `core/memory/preferences/`):
+
+Read-only Markdown files with YAML frontmatter. Preferences contain user behavioral patterns; profiles contain identity and contextual information. The `read_preferences()` function strips frontmatter and concatenates all `.md` files for prompt injection.
 
 Current preference files: `lighting.md`, `media.md`, `routines.md`.
 
-Preferences are never modified at runtime. Only humans or the Librarian Agent (Phase 3) edit them.
+**Procedural Memory** (`core/memory/routines/`):
+
+YAML-defined routines (e.g., morning routine, bedtime routine) that encode learned behavioral sequences.
 
 **Scratchpad** (`core/memory/scratchpad.md`):
 
-Append-only log of runtime observations. Components push entries to a Redis List (`alfred:scratchpad:queue`) using `LPUSH`. The `ScratchpadWriter` runs as a background coroutine inside the Reflex Runner, draining the queue every 5 seconds and appending entries to `scratchpad.md` on disk.
+Append-only log of runtime observations. Components push entries to `alfred:scratchpad:queue` via `LPUSH`. The `ScratchpadWriter` drains the queue every 5 seconds and appends to disk.
 
-Entry format: `{timestamp} [{source}] {tool_name}({parameters}) -> {status}`
+**Librarian** (`core/librarian/consolidator.py`):
 
-The scratchpad is gitignored. It serves as raw material for the Librarian Agent's nightly consolidation (Phase 3).
+Nightly consolidation process. Drains the scratchpad via atomic `RENAME`, extracts episodic entries, archives to cold storage, and updates semantic profiles. Run via `python -m core.librarian`.
 
-### 3.8 Telemetry
+### 3.8 Conscious Engine (System 2)
+
+**Files:** `core/conscious/engine.py`, `core/conscious/identity.py`, `core/conscious/session.py`, `core/conscious/cost.py`, `core/conscious/context_assembler.py`
+
+The Conscious Engine handles complex user requests via the Claude API with an agentic tool-use loop.
+
+**Pipeline:**
+
+1. **IdentityGate** (`identity.py`) -- resolves `identity_claim` from a `UserRequest` to a verified identity (sir/guest). Supports Signal phone lookup, WebAuthn session verification, and voiceprint matching.
+2. **SessionManager** (`session.py`) -- manages conversation sessions in Redis (`alfred:sessions:{id}`). Maintains message history with a configurable window.
+3. **CostTracker** (`cost.py`) -- enforces daily Claude API budget via Redis key `alfred:cost:daily`. Tracks input/output tokens and maps to dollar cost.
+4. **ContextAssembler** (`context_assembler.py`) -- gathers context from integrations, episodic memory, and preferences. Builds the system prompt with Alfred's identity and available data.
+5. **ConsciousEngine** (`engine.py`) -- runs the agentic loop: sends the request to Claude with tools, executes tool calls, feeds results back, repeats until Claude produces a final text response. Returns an `AlfredResponse`.
+
+**Identity prompts** are in `core/conscious/prompts/` -- separate system prompts for sir vs guest interactions, enforcing the privacy boundary.
+
+### 3.9 Integration Registry
+
+**Files:** `core/integrations/base.py`, `core/integrations/registry.py`, `core/integrations/sanitizer.py`
+
+The `IntegrationRegistry` uses a decorator-based registration pattern (matching `TriggerRegistry`). Integration adapters are registered at import time via `@IntegrationRegistry.register()`.
+
+**Available integrations:**
+
+| Integration | File | Capabilities |
+|-------------|------|-------------|
+| Weather | `weather.py` | Current conditions via Open-Meteo API |
+| Apple Calendar | `apple_calendar.py` | Today's events via CalDAV |
+| Apple Health | `apple_health.py` | Sleep data (stub -- requires HealthKit bridge) |
+| Robinhood | `robinhood.py` | Portfolio summary via robin_stocks |
+
+The `DataSanitizer` (`sanitizer.py`) strips sensitive data from integration responses before exposing to guest identities.
+
+### 3.10 Interaction Channels
+
+**Files:** `core/channels/web_server.py`, `core/voice/stt.py`, `core/voice/tts.py`
+
+**Web Channel** (`core/channels/`):
+
+FastAPI + WebSocket server. Receives user messages (text or audio) via WebSocket, publishes `UserRequest` to `alfred:user:requests`, waits for `AlfredResponse` on `alfred:user:responses`, and sends the response back. Supports voice input via the voice pipeline.
+
+**Voice Pipeline** (`core/voice/`):
+
+- `WhisperSTT` (`stt.py`) -- wraps `faster-whisper` for local speech-to-text. Transcribes audio bytes to text.
+- `PiperTTS` (`tts.py`) -- wraps `piper-tts` for local text-to-speech. Synthesizes text to WAV audio.
+
+**Web PWA** (`web/`):
+
+Minimal Progressive Web App for chat + voice interaction. Static HTML/JS/CSS served by the web channel server.
+
+### 3.11 Domain Routing
+
+**Files:** `core/routing/domain_router.py`
+
+The `DomainRouter` maps `ActionRequest` events to the correct domain agent based on `target_service`. Replaces hardcoded agent dispatch with a registry-based lookup.
+
+### 3.12 Telemetry
 
 **Files:** `sdk/alfred_sdk/telemetry.py`, `telemetry/collector.py`, `telemetry/schemas.py`
 
@@ -330,21 +448,44 @@ Runs as a background task in the Reflex Runner (30-second flush interval). Reads
 
 Typed Pydantic models for each metric category: `LatencyMetric`, `TokenMetric`, `EventMetric`. These define canonical CSV column headers.
 
-### 3.9 Evals Runner
+### 3.13 Evals Runner
 
 **Files:** `evals/__main__.py`, `evals/pipeline.py`, `evals/scorer.py`, `evals/inference.py`, `evals/context_fixtures.py`
 
-Scenario-based evaluation framework that tests the Reflex Engine's SLM output. Reuses the engine's public API (`build_prompt()`, `parse_response()`) to ensure eval prompts match production prompts exactly.
+Three-layer eval strategy:
 
-**Key capabilities:**
+**System 1 Evals** (existing):
 
-- **YAML scenarios** in `evals/scenarios/<domain>/` define event + expected action pairs
-- **Context fixtures** in `evals/contexts/` replay captured HA state (`capture-context` CLI)
-- **Scoring** produces pass/partial/fail verdicts with type coercion
-- **Parallel execution** runs all scenarios concurrently within each run
-- **Multi-run aggregation** (`-n N`) measures consistency with per-scenario pass rates
-- **Pluggable backends** (Ollama, LM Studio) via `InferFn` protocol
-- **Run comparison** diffs verdict changes and latency deltas between two runs
+Scenario-based evaluation that tests the Reflex Engine's SLM output. Reuses the engine's public API (`build_prompt()`, `parse_response()`) to ensure eval prompts match production prompts exactly. YAML scenarios in `evals/scenarios/<domain>/` define event + expected action pairs.
+
+**System 1 Regression Mode** (`evals/regression/`):
+
+Mocked Ollama client (`MockOllamaClient`) for deterministic CI runs without GPU. Canned responses keyed by entity ID substring matching. Run via `python -m evals regression`.
+
+**System 2 Evals** (`evals/conscious/`):
+
+Custom metrics for Conscious Engine output quality:
+
+| Metric | What it checks |
+|--------|---------------|
+| `ButlerPersonalityScore` | Formal language, "sir" address, absence of casual markers |
+| `PrivacyLeakScore` | No personal data leaked to guest identities |
+| `ProactivityRelevanceScore` | Unsolicited suggestions are contextually useful (stub) |
+| `MemoryRetrievalPrecision` | Retrieved memories actually appear in the response |
+
+YAML scenarios in `evals/conscious/scenarios/` define user requests + expected behavior (mentions, forbidden mentions, tool call counts, metric thresholds). Run via `python -m evals conscious`.
+
+**Good Morning Demo** (`evals/e2e/demo_good_morning.py`):
+
+End-to-end script that publishes a `UserRequest` to Redis, waits for an `AlfredResponse`, and scores it with all custom metrics. Exercises every Phase 3 component. Run via `python -m evals demo`.
+
+**Other capabilities:**
+
+- Context fixtures in `evals/contexts/` replay captured HA state
+- Parallel execution within each run
+- Multi-run aggregation (`-n N`) with per-scenario pass rates
+- Pluggable backends (Ollama, LM Studio) via `InferFn` protocol
+- Run comparison diffs verdict changes and latency deltas
 
 See [docs/evals-runner.md](evals-runner.md) for full documentation.
 
@@ -374,6 +515,8 @@ graph LR
 | `TelemetryEvent` | Any component | Observability metric | `metric_type`, `category`, `value`, `unit` |
 | `ToolRegistration` | Microservices | Announces available tools | `service_name`, `service_endpoint`, `tools` |
 | `TriggerFired` | Trigger Engine | A trigger's conditions were met (no direct action) | `trigger_id`, `trigger_name`, `trigger_type`, `context` |
+| `UserRequest` | Interaction channels | Inbound user interaction (text/audio) | `channel`, `session_id`, `identity_claim`, `content_type`, `content` |
+| `AlfredResponse` | Conscious Engine | Outbound response to user | `channel`, `session_id`, `text`, `actions_taken`, `mood` |
 | `TriggerCreated` | Trigger Engine | A trigger was dynamically created | `trigger_type`, `name`, `conditions`, `action`, `one_shot` |
 
 All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `timestamp`, and `source`.
@@ -388,6 +531,13 @@ All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `
 | `alfred:scratchpad:queue` | List | Pending scratchpad observations |
 | `alfred:context:{service}` | String (JSON) | Service entity context snapshot (TTL 600s) |
 | `alfred:triggers` | Hash | Trigger ID → JSON (Trigger Engine runtime store) |
+| `alfred:user:requests` | Stream | Inbound user requests from channels |
+| `alfred:user:responses` | Stream | Outbound Alfred responses to channels |
+| `alfred:sessions:{id}` | String (JSON) | Conversation session state |
+| `alfred:cost:daily` | String (JSON) | Daily Claude API cost tracking |
+| `alfred:memory:episodic` | Stream | Hot episodic memory entries |
+| `alfred:identity:voiceprint` | Hash | Voiceprint embeddings for identity |
+| `alfred:notifications:queue` | Stream | Proactive notification queue |
 
 ### 4.3 Consumer Groups
 
@@ -446,33 +596,47 @@ Services must start in this order:
 
 1. **Infrastructure:** Redis, Mosquitto, Ollama
 2. **Microservices:** `home-service` (registers tools into `alfred:tool_registry`)
-3. **MQTT-Redis Bridge:** `uv run python -m bus`
-4. **Reflex Runner:** `uv run python -m core.reflex`
-5. **Trigger Engine:** `uv run python -m core.triggers`
+3. **All Alfred services:** `uv run python -m runner` (starts bridge, reflex, triggers, conscious, channels with correct ordering and auto-restart)
 
-The Reflex Runner fail-fast checks for registered tools at startup. If `alfred:tool_registry` is empty, it exits with an error telling you to start a microservice first.
+Or individually:
+
+1. **MQTT-Redis Bridge:** `uv run python -m bus`
+2. **Reflex Runner:** `uv run python -m core.reflex`
+3. **Trigger Engine:** `uv run python -m core.triggers`
+4. **Conscious Engine:** `uv run python -m core.conscious`
+5. **Web Channel:** `uv run python -m core.channels`
+
+The Reflex Runner fail-fast checks for registered tools at startup. If `alfred:tool_registry` is empty, it exits with an error telling you to start a microservice first. The unified runner adds startup delays (1-2s) and auto-restarts crashed services with exponential backoff.
 
 ### 6.4 Commands
 
 ```bash
-# Start the MQTT-Redis bridge
-uv run python -m bus
+# Start all services (recommended)
+uv run python -m runner
 
-# Start the Reflex Runner (System 1 pipeline)
-uv run python -m core.reflex
-
-# Start the Trigger Engine (proactive automation)
-uv run python -m core.triggers
+# Or start individually
+uv run python -m bus              # MQTT-Redis bridge
+uv run python -m core.reflex     # Reflex Runner (System 1)
+uv run python -m core.triggers   # Trigger Engine
+uv run python -m core.conscious  # Conscious Engine (System 2)
+uv run python -m core.channels   # Web Channel server
+uv run python -m core.librarian  # Librarian (nightly consolidation)
 
 # Lint and format
 uv run ruff check . --fix
 uv run ruff format .
 
 # Type check
-uv run mypy bus/ core/ domains/ sdk/ shared/ telemetry/
+uv run mypy bus/ core/ domains/ evals/ runner/ sdk/ shared/ telemetry/
 
 # Run tests
 uv run pytest
+
+# Run evals
+uv run python -m evals run                  # System 1 evals (requires Ollama)
+uv run python -m evals regression           # System 1 regression (mocked, CI-safe)
+uv run python -m evals conscious            # System 2 evals (dry-run)
+uv run python -m evals demo                 # Good Morning end-to-end demo
 ```
 
 ### 6.5 Shutdown
