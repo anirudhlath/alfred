@@ -1,15 +1,23 @@
-"""Conscious Engine — Claude-powered System 2 reasoning with agentic tool-use loop."""
+"""Conscious Engine — LLM-powered System 2 reasoning with agentic tool-use loop.
+
+Routes through OpenRouter via LiteLLM for provider-agnostic model access.
+"""
 
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+import os
+from typing import TYPE_CHECKING, Any, ClassVar
 
-import anthropic
+import litellm
 
 from bus.schemas.events import ActionRequest, AlfredResponse, UserRequest
 from sdk.alfred_sdk.telemetry import track_latency
 from shared.traced import traced
+
+_debug = os.getenv("ALFRED_DEBUG", "").lower() in ("1", "true", "yes")
+litellm.suppress_debug_info = not _debug
+litellm.set_verbose = _debug  # type: ignore[attr-defined]
 
 if TYPE_CHECKING:
     from core.conscious.context_assembler import ContextAssembler
@@ -30,7 +38,9 @@ class ConsciousEngine:
     """The conversational brain of Alfred (System 2).
 
     Receives UserRequest events, resolves identity, assembles context,
-    runs a multi-step Claude agentic loop, and returns AlfredResponse.
+    runs a multi-step agentic tool-use loop, and returns AlfredResponse.
+
+    Uses LiteLLM to route requests through OpenRouter or any supported provider.
     """
 
     def __init__(
@@ -43,7 +53,7 @@ class ConsciousEngine:
         domain_router: DomainRouter,
         tool_registry: ToolRegistry,
         context_reader: ContextReader,
-        claude_model: str = "claude-opus-4-6",
+        claude_model: str = "openrouter/anthropic/claude-sonnet-4",
         claude_api_key: str = "",
     ) -> None:
         self._redis = redis
@@ -55,43 +65,78 @@ class ConsciousEngine:
         self._tool_registry = tool_registry
         self._context_reader = context_reader
         self._model = claude_model
-        self._client = anthropic.AsyncAnthropic(api_key=claude_api_key) if claude_api_key else None
+        self._api_key = claude_api_key
 
-    def _tools_to_claude_format(self, tools: list[ToolInfo]) -> list[dict[str, Any]]:
-        """Convert ToolInfo list to Anthropic tool-use format."""
-        claude_tools: list[dict[str, Any]] = []
+    # Map Python type annotations → JSON Schema types
+    _TYPE_MAP: ClassVar[dict[str, str]] = {
+        "str": "string",
+        "int": "integer",
+        "float": "number",
+        "bool": "boolean",
+        "dict": "object",
+        "list": "array",
+    }
+
+    @staticmethod
+    def _sanitize_tool_name(name: str) -> str:
+        """Convert dotted tool names to OpenAI-compatible format (a-zA-Z0-9_-)."""
+        return name.replace(".", "_")
+
+    @staticmethod
+    def _unsanitize_tool_name(name: str, tools: list[ToolInfo]) -> str:
+        """Reverse sanitized name back to original dotted form."""
+        sanitized_to_original = {t.name.replace(".", "_"): t.name for t in tools}
+        return sanitized_to_original.get(name, name)
+
+    def _to_json_schema_type(self, py_type: str) -> str:
+        """Convert a Python type annotation string to a JSON Schema type."""
+        # Strip Optional/None union syntax
+        base = py_type.split("|")[0].strip().split("[")[0].strip()
+        return self._TYPE_MAP.get(base, "string")
+
+    def _tools_to_openai_format(self, tools: list[ToolInfo]) -> list[dict[str, Any]]:
+        """Convert ToolInfo list to OpenAI function-calling format (used by LiteLLM)."""
+        openai_tools: list[dict[str, Any]] = []
         for t in tools:
             properties: dict[str, Any] = {}
             required: list[str] = []
             for pname, pinfo in t.parameters.items():
                 properties[pname] = {
-                    "type": pinfo.get("type", "string"),
+                    "type": self._to_json_schema_type(pinfo.get("type", "string")),
                     "description": pinfo.get("description", ""),
                 }
                 if "default" not in pinfo:
                     required.append(pname)
 
-            claude_tools.append(
+            openai_tools.append(
                 {
-                    "name": t.name,
-                    "description": t.description,
-                    "input_schema": {
-                        "type": "object",
-                        "properties": properties,
-                        "required": required,
+                    "type": "function",
+                    "function": {
+                        "name": self._sanitize_tool_name(t.name),
+                        "description": t.description,
+                        "parameters": {
+                            "type": "object",
+                            "properties": properties,
+                            "required": required,
+                        },
                     },
                 }
             )
-        return claude_tools
+        return openai_tools
 
-    async def _call_claude(
+    async def _call_llm(
         self,
         system_prompt: str,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
+        original_tools: list[ToolInfo] | None = None,
     ) -> tuple[str, list[dict[str, Any]], int, int]:
-        """Call Claude API. Returns (text, tool_calls, prompt_tokens, completion_tokens)."""
-        if self._client is None:
+        """Call LLM via LiteLLM. Returns (text, tool_calls, prompt_tokens, completion_tokens).
+
+        Tool names are unsanitized back to dotted form
+        using the original_tools list for reverse mapping.
+        """
+        if not self._api_key:
             return (
                 "I'm afraid my connection to the thinking engine is not configured, sir.",
                 [],
@@ -99,36 +144,56 @@ class ConsciousEngine:
                 0,
             )
 
+        llm_messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system_prompt},
+            *messages,
+        ]
+
         kwargs: dict[str, Any] = {
             "model": self._model,
+            "messages": llm_messages,
             "max_tokens": 2048,
-            "system": system_prompt,
-            "messages": messages,
+            "api_key": self._api_key,
         }
         if tools:
             kwargs["tools"] = tools
 
-        response = await self._client.messages.create(**kwargs)
+        response = await litellm.acompletion(**kwargs)
 
-        text_parts: list[str] = []
+        choice = response.choices[0]
+        msg = choice.message
+
+        text = msg.content or ""
         tool_calls: list[dict[str, Any]] = []
-        for block in response.content:
-            if block.type == "text":
-                text_parts.append(block.text)
-            elif block.type == "tool_use":
+
+        if msg.tool_calls:
+            import json
+
+            for tc in msg.tool_calls:
+                tool_input = tc.function.arguments
+                if isinstance(tool_input, str):
+                    try:
+                        tool_input = json.loads(tool_input)
+                    except json.JSONDecodeError:
+                        tool_input = {}
+                # Map sanitized name back to original dotted name
+                fn_name = tc.function.name
+                if original_tools:
+                    fn_name = self._unsanitize_tool_name(fn_name, original_tools)
                 tool_calls.append(
                     {
-                        "id": block.id,
-                        "name": block.name,
-                        "input": block.input,
+                        "id": tc.id,
+                        "name": fn_name,
+                        "input": tool_input,
                     }
                 )
 
+        usage = response.usage
         return (
-            "\n".join(text_parts),
+            text,
             tool_calls,
-            response.usage.input_tokens,
-            response.usage.output_tokens,
+            usage.prompt_tokens if usage else 0,
+            usage.completion_tokens if usage else 0,
         )
 
     async def _execute_tool_calls(self, tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -221,6 +286,7 @@ class ConsciousEngine:
             preferences_text=preferences,
             context_text=context_text,
             history=session["history"],
+            channel=request.channel,
         )
 
         # 5. Build messages
@@ -228,15 +294,15 @@ class ConsciousEngine:
         messages.append({"role": "user", "content": request.content})
 
         # 6. Agentic loop
-        claude_tools = self._tools_to_claude_format(tools)
+        openai_tools = self._tools_to_openai_format(tools)
         total_prompt_tokens = 0
         total_completion_tokens = 0
         all_actions: list[str] = []
         final_text = ""
 
         for _iteration in range(MAX_ITERATIONS):
-            text, tool_calls, pt, ct = await self._call_claude(
-                system_prompt, messages, claude_tools
+            text, tool_calls, pt, ct = await self._call_llm(
+                system_prompt, messages, openai_tools, original_tools=tools
             )
             total_prompt_tokens += pt
             total_completion_tokens += ct
@@ -246,26 +312,40 @@ class ConsciousEngine:
                 final_text = text
                 break
 
-            # Execute tools and feed results back
+            # Execute tools and feed results back (uses original dotted names)
             tool_results = await self._execute_tool_calls(tool_calls)
             all_actions.extend(tc["name"] for tc in tool_calls)
 
-            # Append assistant turn with tool use
-            content_blocks: list[dict[str, Any]] = []
+            # Append assistant turn with tool calls (OpenAI format — sanitized names)
+            assistant_msg: dict[str, Any] = {"role": "assistant"}
             if text:
-                content_blocks.append({"type": "text", "text": text})
-            content_blocks.extend(
+                assistant_msg["content"] = text
+            assistant_msg["tool_calls"] = [
                 {
-                    "type": "tool_use",
                     "id": tc["id"],
-                    "name": tc["name"],
-                    "input": tc["input"],
+                    "type": "function",
+                    "function": {
+                        "name": self._sanitize_tool_name(tc["name"]),
+                        "arguments": (
+                            __import__("json").dumps(tc["input"])
+                            if isinstance(tc["input"], dict)
+                            else str(tc["input"])
+                        ),
+                    },
                 }
                 for tc in tool_calls
-            )
-            messages.append({"role": "assistant", "content": content_blocks})
-            # Append tool results
-            messages.append({"role": "user", "content": tool_results})
+            ]
+            messages.append(assistant_msg)
+
+            # Append tool results (OpenAI format)
+            for tr, tc in zip(tool_results, tool_calls, strict=True):
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": tr["content"],
+                    }
+                )
         else:
             if not final_text:
                 final_text = (

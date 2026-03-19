@@ -50,7 +50,7 @@ class EpisodicStore:
             "entry": entry.model_dump_json(),
             "embedding": embedding,
         }
-        await self._redis.xadd(EPISODIC_STREAM, data)  # type: ignore[arg-type]
+        await self._redis.xadd(EPISODIC_STREAM, data)
         logger.debug("Wrote episodic entry %s to hot storage", entry.id)
 
     async def archive_to_cold(self, entry: EpisodicEntry, embedding: bytes) -> None:

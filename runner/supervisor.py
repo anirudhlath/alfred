@@ -3,6 +3,9 @@
 Spawns each service as a child process, prefixes log output,
 restarts on crash with exponential backoff, and propagates
 shutdown signals for clean teardown.
+
+Hot-reload: when ``reload=True``, source directories are watched
+with ``watchfiles`` and affected services are restarted on change.
 """
 
 from __future__ import annotations
@@ -11,9 +14,25 @@ import asyncio
 import logging
 import signal
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# Directories that all services depend on — changes here restart everything.
+_SHARED_DIRS = ("shared", "sdk", "bus/schemas")
+
+
+def _watch_dirs_for_module(module: str, root: Path) -> list[Path]:
+    """Return directories to watch for a given service module."""
+    # e.g. "core.reflex" → "core/reflex", "bus" → "bus"
+    pkg_dir = root / module.replace(".", "/")
+    dirs = [pkg_dir]
+    for shared in _SHARED_DIRS:
+        d = root / shared
+        if d.is_dir():
+            dirs.append(d)
+    return [d for d in dirs if d.is_dir()]
 
 
 @dataclass(frozen=True)
@@ -24,17 +43,19 @@ class ServiceSpec:
     module: str
     delay: float = 0.0
     max_restarts: int = 5
+    watch_dirs: list[str] = field(default_factory=list)
 
 
 class _ManagedService:
     """Mutable runtime state for a supervised service."""
 
-    __slots__ = ("process", "restart_count", "spec")
+    __slots__ = ("_reloading", "process", "restart_count", "spec")
 
     def __init__(self, spec: ServiceSpec) -> None:
         self.spec = spec
         self.process: asyncio.subprocess.Process | None = None
         self.restart_count = 0
+        self._reloading = False
 
 
 class Supervisor:
@@ -44,11 +65,20 @@ class Supervisor:
     - Automatic restart with exponential backoff on crash
     - Graceful shutdown via SIGTERM/SIGINT propagation
     - Shuts down everything if any service exceeds *max_restarts*
+    - Hot-reload on source file changes (when ``reload=True``)
     """
 
-    def __init__(self, services: list[ServiceSpec]) -> None:
+    def __init__(
+        self,
+        services: list[ServiceSpec],
+        *,
+        reload: bool = False,
+        root: Path | None = None,
+    ) -> None:
         self._managed = [_ManagedService(spec=s) for s in services]
         self._shutdown = asyncio.Event()
+        self._reload = reload
+        self._root = root or Path.cwd()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -97,6 +127,12 @@ class Supervisor:
             if self._shutdown.is_set():
                 return
 
+            # Hot-reload triggered — restart immediately, no backoff.
+            if svc._reloading:
+                svc._reloading = False
+                logger.info("[%s] reloaded", svc.spec.name)
+                continue
+
             if returncode == 0:
                 logger.info("[%s] exited cleanly", svc.spec.name)
                 self._shutdown.set()
@@ -127,6 +163,57 @@ class Supervisor:
                 return  # shutdown requested during backoff
             except TimeoutError:
                 pass  # backoff elapsed, restart
+
+    async def _reload_service(self, svc: _ManagedService) -> None:
+        """Terminate a service so the monitor loop restarts it."""
+        if svc.process is not None and svc.process.returncode is None:
+            svc._reloading = True
+            logger.info("[%s] file changed — restarting", svc.spec.name)
+            svc.process.terminate()
+
+    async def _watch_files(self) -> None:
+        """Watch source directories and restart services on changes."""
+        try:
+            from watchfiles import Change, awatch
+        except ImportError:
+            logger.warning("watchfiles not installed — hot-reload disabled")
+            return
+
+        # Build a mapping: directory → list of managed services
+        dir_to_svcs: dict[Path, list[_ManagedService]] = {}
+        for svc in self._managed:
+            for d in _watch_dirs_for_module(svc.spec.module, self._root):
+                dir_to_svcs.setdefault(d, []).append(svc)
+            for extra in svc.spec.watch_dirs:
+                d = self._root / extra
+                if d.is_dir():
+                    dir_to_svcs.setdefault(d, []).append(svc)
+
+        all_dirs = list(dir_to_svcs.keys())
+        if not all_dirs:
+            return
+
+        logger.info("Hot-reload watching %d directories", len(all_dirs))
+
+        async for changes in awatch(
+            *all_dirs,
+            stop_event=self._shutdown,
+            step=500,
+        ):
+            # Determine which services are affected by the changed files.
+            affected: set[str] = set()
+            for change_type, path_str in changes:
+                if change_type == Change.deleted:
+                    continue
+                p = Path(path_str)
+                if p.suffix != ".py":
+                    continue
+                for watch_dir, svcs in dir_to_svcs.items():
+                    if p.is_relative_to(watch_dir):
+                        for svc in svcs:
+                            if svc.spec.name not in affected:
+                                affected.add(svc.spec.name)
+                                await self._reload_service(svc)
 
     async def _terminate_all(self) -> None:
         """Send SIGTERM to running children, SIGKILL after timeout."""
@@ -175,12 +262,19 @@ class Supervisor:
 
         monitor_tasks = [asyncio.create_task(self._monitor(svc)) for svc in self._managed]
 
+        # Start file watcher for hot-reload.
+        watcher_task: asyncio.Task[None] | None = None
+        if self._reload:
+            watcher_task = asyncio.create_task(self._watch_files())
+
         # Block until shutdown is triggered
         # (signal, clean exit of a service, or max_restarts exceeded).
         await self._shutdown.wait()
 
         for task in monitor_tasks:
             task.cancel()
+        if watcher_task is not None:
+            watcher_task.cancel()
 
         await self._terminate_all()
 

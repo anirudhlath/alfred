@@ -97,12 +97,12 @@ async def run(config: AlfredConfig) -> None:
                             USER_RESPONSES_STREAM,
                             {"event": response.model_dump_json()},
                         )
-                        await r.xack(stream, group, entry_id)  # type: ignore[misc,unused-ignore]
+                        await r.xack(stream, group, entry_id)  # type: ignore[no-untyped-call]
                     except Exception as e:
                         log.error("Error processing request {}: {}", entry_id, e)
     finally:
         log.info("Shutting down Conscious Engine...")
-        await r.aclose()
+        await r.close()
 
 
 def main() -> None:

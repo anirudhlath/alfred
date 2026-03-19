@@ -93,7 +93,7 @@ async def _load_tools(config: AlfredConfig) -> list[ToolInfo]:
         registry = ToolRegistry(r)
         return await registry.get_tools()
     finally:
-        await r.aclose()
+        await r.close()
 
 
 async def _execute_single_run(
@@ -270,7 +270,7 @@ async def _cmd_capture_context(args: argparse.Namespace) -> None:
         output_path.write_text(json.dumps(envelope, indent=2))
         print(f"\nFixture written: {output_path}")
     finally:
-        await r.aclose()
+        await r.close()
 
 
 def _cmd_regression() -> None:

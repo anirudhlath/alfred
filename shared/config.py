@@ -28,9 +28,9 @@ class AlfredConfig:
     signoz_enabled: bool = True
     otel_endpoint: str = "http://localhost:4317"
 
-    # Phase 3: Conscious Engine
+    # Phase 3: Conscious Engine (via LiteLLM + OpenRouter)
     claude_api_key: str = ""
-    claude_model: str = "claude-opus-4-6"
+    claude_model: str = "openrouter/anthropic/claude-sonnet-4"
     session_timeout_minutes: int = 30
     proactivity_level: str = "opinionated"  # opinionated | moderate | conservative
 
@@ -67,8 +67,8 @@ class AlfredConfig:
             signoz_enabled=os.getenv("SIGNOZ_ENABLED", "true").lower() == "true",
             otel_endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317"),
             # Phase 3: Conscious Engine
-            claude_api_key=os.getenv("CLAUDE_API_KEY", ""),
-            claude_model=os.getenv("CLAUDE_MODEL", "claude-opus-4-6"),
+            claude_api_key=os.getenv("OPENROUTER_API_KEY", os.getenv("CLAUDE_API_KEY", "")),
+            claude_model=os.getenv("CLAUDE_MODEL", "openrouter/anthropic/claude-sonnet-4"),
             session_timeout_minutes=int(os.getenv("SESSION_TIMEOUT_MINUTES", "30")),
             proactivity_level=os.getenv("PROACTIVITY_LEVEL", "opinionated"),
             # Phase 3: Cost
