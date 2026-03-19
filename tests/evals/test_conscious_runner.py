@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from evals.conscious.runner import EvalResult, ScenarioSpec, evaluate_response, load_scenario
+from evals.conscious.runner import ScenarioSpec, evaluate_response, load_scenario
 
 
 def test_load_scenario() -> None:

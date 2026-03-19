@@ -104,17 +104,72 @@ class ProactivityRelevanceScore:
 class MemoryRetrievalPrecision:
     """Of memories pulled into context, how many were actually used?
 
-    Stub — requires trace analysis of Claude's response vs memories provided.
+    Uses keyword overlap with stopword filtering. Full implementation
+    should use LLM-as-judge via DeepEval for semantic matching.
     """
+
+    _STOPWORDS: ClassVar[set[str]] = {
+        "a",
+        "an",
+        "the",
+        "is",
+        "was",
+        "are",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "shall",
+        "can",
+        "to",
+        "of",
+        "in",
+        "for",
+        "on",
+        "with",
+        "at",
+        "by",
+        "from",
+        "as",
+        "into",
+        "about",
+        "and",
+        "or",
+        "but",
+        "not",
+        "no",
+        "it",
+        "its",
+        "this",
+        "that",
+        "he",
+        "she",
+        "his",
+        "her",
+    }
+
+    def _extract_keywords(self, text: str) -> set[str]:
+        """Extract meaningful keywords from text, filtering stopwords."""
+        words = set(text.lower().split())
+        return {w for w in words if w not in self._STOPWORDS and len(w) > 2}
 
     def score(self, memories_provided: list[str], response: str) -> float:
         """Score memory retrieval precision."""
         if not memories_provided:
             return 1.0
 
-        used = sum(
-            1
-            for m in memories_provided
-            if any(word in response.lower() for word in m.lower().split()[:3])
-        )
+        response_keywords = self._extract_keywords(response)
+        used = sum(1 for m in memories_provided if self._extract_keywords(m) & response_keywords)
         return used / len(memories_provided)
