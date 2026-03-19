@@ -418,10 +418,10 @@ Simple commands ("turn off the lights") route to System 1 via fast-path: under 1
 ### Signal Bridge
 
 - Sovereign service in its own repo (`signal-bridge/`)
-- Uses `signal-cli` under the hood
+- Uses `signal-cli` under the hood (**requires JRE 17+** — non-Python dependency, must be in Containerfile)
 - Registers as a linked Signal device
-- Receives messages → posts `UserRequest` to Redis
-- Reads `AlfredResponse` → sends Signal reply
+- Uses `alfred-sdk` to publish events: `AlfredClient.publish_request(user_request)` writes to `alfred:user:requests`. This avoids the bridge having a direct Redis dependency and maintains the SDK boundary (Pillar 2).
+- Reads `AlfredResponse` from Redis via SDK subscription
 - Only accepts messages from registered phone number
 - Supports text and voice messages (voice messages transcribed via STT first)
 
@@ -942,25 +942,33 @@ Trigger Engine, ContextProvider, evals runner, BaseFeature, trigger hardening.
 
 ### Phase 3: The Brain — THIS SPEC
 
-**Step 1 — Conscious Engine core:**
-- `core/conscious/engine.py` — Claude-powered reasoning loop
-- `UserRequest` / `AlfredResponse` schemas
-- Identity gate (device/session-based first, voice ID later)
-- WebSocket transport for real-time, Redis for async
-- System 1 ↔ System 2 coexistence and conflict resolution
-- Generic domain routing (`DomainRouter`)
+**Step 0 — Prerequisites (resolve existing backlog):**
+- Loguru setup in `shared/logging.py` — replaces all `logging.basicConfig()` across entry points in a single PR (resolves trigger-engine-simplification backlog item 6). Every subsequent component benefits.
+- Generalize `TraceRecord` in `shared/tracing.py` — decouple from `StateChangedEvent`. Use a `BaseEvent` union or split into `ReflexTraceRecord` / `ConsciousTraceRecord` sharing a common base. Required before System 2 tracing.
+- Resolve `ContextReader` hardcoded `service_name="home-service"` — implement multi-service `SCAN alfred:context:*` (resolves context-provider backlog). Required before Conscious Engine context assembly.
+- Add all new Redis stream constants to `shared/streams.py` — before any consuming code.
 
-**Step 2 — Logging & Observability foundation:**
-- Loguru setup in `shared/logging.py`
+**Step 1 — Domain routing + observability:**
+- Generic `DomainRouter` — replaces hardcoded `HomeAgent` in `runner.py`. Must be first because both Reflex and Conscious Engine depend on it. `router.register("home-service", home_agent)` where the string key matches `ToolInfo.target_service` from the tool registry (no magic strings).
 - OpenTelemetry SDK integration, `@traced` decorator
 - SigNoz deployment on CachyOS server
 - Span propagation through Redis + WebSocket
 
+**Step 2 — Conscious Engine core:**
+- `core/conscious/engine.py` — Claude-powered reasoning loop with agentic loop (multi-step tool use)
+- `UserRequest` / `AlfredResponse` schemas (extending `BaseEvent`)
+- Identity gate (device/session-based first, voice ID later)
+- WebSocket transport for real-time, Redis async audit logging
+- System 1 ↔ System 2 coexistence (static event routing table)
+- Cost tracking (`CostState` model, budget checks before Claude calls)
+
 **Step 3 — Memory expansion:**
-- Episodic memory (Redis hot + SQLite cold)
+- Episodic memory (Redis hot + SQLite cold via `sqlite-vec`, with startup fallback to full-table-scan if extension unavailable)
+- Embedding model integration (local sentence-transformer, embeddings stored separately from Pydantic models)
 - Semantic memory (extend preferences + new profile/)
-- Procedural memory (routines with promotion pipeline)
+- Procedural memory (routines with `RoutineStep` containing both description and `ActionPayload` for trigger promotion)
 - Librarian upgrade (consolidation + decay + pattern detection + unlearning)
+- **Librarian must use atomic file writes:** write to `.tmp` then `os.rename()` to prevent read/write races with the Conscious Engine reading semantic memory concurrently
 
 **Step 4 — Integration Registry + first adapters:**
 - `IntegrationRegistry` with ABC base class
@@ -1026,6 +1034,16 @@ Trigger Engine, ContextProvider, evals runner, BaseFeature, trigger hardening.
 | Evals | DeepEval + custom runner | Free, pytest-native, custom metrics |
 | Web Client | Svelte or vanilla JS (PWA) | Lightweight, responsive |
 | Chat Bridge | signal-cli | Open-source, self-hosted |
+| Embeddings | sentence-transformers (local) | Episodic memory retrieval |
+| Vector Search | sqlite-vec | Cold episodic storage |
+
+### Dependency Notes
+
+- **SpeechBrain + torch** are heavy dependencies (~2GB). They must be optional in `pyproject.toml`: `uv pip install "alfred[voice]"`. The core system runs without them — only the voice pipeline requires torch.
+- **signal-cli** requires JRE 17+. The `signal-bridge/` Containerfile must install it explicitly.
+- **sqlite-vec** requires `sqlite3.enable_load_extension(True)`. The implementation must verify availability at startup and fall back to full-table-scan cosine similarity if the extension is unavailable, with a warning log.
+- **Loguru** may need `types-loguru` for `mypy --strict` compatibility. Verify stubs are available or add targeted `# type: ignore` with comments.
+- **DeepEval** is Apache 2.0 as of this writing. Verify current license before committing. The custom metrics (`ButlerPersonalityScore`, `PrivacyLeakScore`) can be reimplemented as standalone pytest fixtures if the license changes.
 
 ---
 
@@ -1042,6 +1060,11 @@ All constraints from the original spec remain. Additional:
 - **Streaming for voice** — WebSocket hot path, not queued. Time-to-first-word target: 1.5s.
 - **Cost visibility** — daily cap, per-category budgets, 80% alerts, automatic System 1 fallback at cap.
 - **Graceful degradation** — every component failure has a defined fallback. Alfred never goes fully silent.
+- **Atomic file writes for memory** — Librarian and any memory writer must write to `.tmp` then `os.rename()`. POSIX `rename()` is atomic, preventing read/write races with the Conscious Engine reading semantic memory concurrently.
+- **Long-lived `httpx.AsyncClient`** — one client per service, never per-request. Follows `HomeAgent` precedent.
+- **Import shared utilities** — `AioRedis` type alias from `core.reflex.runner`, `ensure_consumer_group` from same, stream constants from `shared.streams`. Never redefine or reimplement.
+- **`@track_latency` on all inference entry points** — `conscious_engine.process_request()`, each integration `execute()`, STT, TTS. Follows `process_event()` precedent.
+- **Registry decorator pattern** — all new registries (`IntegrationRegistry`, `DomainRouter`) must use the `@Registry.register()` class method decorator pattern established by `TriggerRegistry`.
 
 ---
 
@@ -1052,48 +1075,69 @@ All new Pydantic models introduced by this spec. These live in `bus/schemas/` (i
 ### Inter-Service Schemas (`bus/schemas/events.py`)
 
 ```python
-class UserRequest(BaseModel):
-    """Inbound user interaction from any channel."""
+class UserRequest(BaseEvent):
+    """Inbound user interaction from any channel. Extends BaseEvent for bus compatibility."""
+    event_type: str = "user_request"
     channel: Literal["web_pwa", "signal", "voice"]
     session_id: str
     identity_claim: str          # "sir", "guest", or provider-specific token
     content_type: Literal["text", "audio"]
     content: str                 # Transcribed text (if audio, after STT)
     audio_ref: str | None = None # Object store ref for raw audio (if voice)
-    timestamp: datetime
+    # Inherits event_id, timestamp, source from BaseEvent
 
-class AlfredResponse(BaseModel):
-    """Outbound response to a user channel."""
+class AlfredResponse(BaseEvent):
+    """Outbound response to a user channel. Extends BaseEvent for bus compatibility."""
+    event_type: str = "alfred_response"
     channel: Literal["web_pwa", "signal", "voice"]
     session_id: str
     text: str
-    voice_audio: bytes | None = None  # TTS audio (if voice channel)
-    actions_taken: list[str]          # Summary of actions executed
+    voice_audio_ref: str | None = None  # Ref to TTS audio file/object (not raw bytes — avoids Redis bloat)
+    actions_taken: list[str]            # Summary of actions executed
     mood: Literal["neutral", "pleased", "concerned", "amused", "serious"]
-    timestamp: datetime
+    # Inherits event_id, timestamp, source from BaseEvent
 ```
+
+**Note:** `UserRequest` and `AlfredResponse` extend `BaseEvent` (not `BaseModel`) to follow the existing convention for all inter-service schemas. This ensures they carry `event_id` for trace correlation and can flow through the event bus. `voice_audio_ref` is a reference (file path or object store key), not raw bytes — channel services fetch audio from the ref. This avoids multi-MB blobs in Redis streams.
 
 ### Memory Schemas (`core/memory/schemas.py`)
 
 ```python
 class EpisodicEntry(BaseModel):
+    """Episodic memory entry. Embedding stored separately (keyed by id) to avoid
+    base64 bloat in JSON serialization. See core/memory/embeddings.py."""
     id: str
     timestamp: datetime
     source: str                    # "conversation", "system1_action", "trigger", "integration"
     summary: str
     entities: list[str]            # Entity IDs or names referenced
     valence: Literal["positive", "negative", "neutral"]
-    embedding: bytes | None = None # Computed at write time
+    # NOTE: embedding is NOT in this model. Stored separately as raw bytes
+    # in Redis (binary field keyed by id) and SQLite (BLOB column).
+    # The retrieval layer joins entry + embedding at query time.
+
+class RoutineStep(BaseModel):
+    """A single step in a learned routine."""
+    description: str               # Human-readable ("dim the living room lights to 30%")
+    action: ActionPayload | None = None  # Machine-executable, populated at promotion time
+    # ActionPayload is from core/triggers/models.py — reused for trigger promotion
 
 class RoutineSpec(BaseModel):
     name: str
     trigger_pattern: str           # Natural language description of when this fires
-    steps: list[str]               # Ordered action descriptions
+    steps: list[RoutineStep]       # Ordered steps with description + optional action payload
     confidence: float              # 0.0-1.0
     learned_from: list[str]        # Episodic entry IDs that contributed
     state: Literal["candidate", "active", "dormant", "archived"]
     last_hit: datetime | None = None
     consecutive_misses: int = 0
+
+class CostState(BaseModel):
+    """Daily Claude API spend tracking. Stored at alfred:cost:daily in Redis."""
+    date: str                      # ISO date (YYYY-MM-DD)
+    spend_usd: float               # Accumulated spend today
+    cap_usd: float                 # Daily cap from config
+    alert_sent: bool = False       # True if 80% alert was sent
 ```
 
 ### Integration Schemas (`core/integrations/base.py`)
@@ -1128,3 +1172,4 @@ All new stream names and keys to be added to `shared/streams.py`.
 | `alfred:config:runtime` | Hash | Runtime-tunable settings (proactivity level, DND, cost cap) |
 | `alfred:integration_registry` | Hash | Integration manifests (mirrors tool_registry pattern) |
 | `alfred:notifications:queue` | Stream | Outbound proactive notifications |
+| `alfred:cost:daily` | Hash | Daily Claude API spend tracking (`CostState`) |
