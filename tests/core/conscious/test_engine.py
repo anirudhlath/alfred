@@ -23,7 +23,7 @@ def _make_request(**overrides: object) -> UserRequest:
         "content": "Hello",
     }
     defaults.update(overrides)
-    return UserRequest(**defaults)  # type: ignore[arg-type]
+    return UserRequest(**defaults)
 
 
 def _sir_identity() -> IdentityResult:
@@ -62,8 +62,8 @@ def mock_deps() -> dict[str, AsyncMock | MagicMock]:
 async def test_process_request_basic(mock_deps: dict[str, AsyncMock | MagicMock]) -> None:
     engine = ConsciousEngine(**mock_deps)
 
-    with patch.object(engine, "_call_claude", new_callable=AsyncMock) as mock_claude:
-        mock_claude.return_value = ("Good evening, sir.", [], 100, 50)
+    with patch.object(engine, "_call_llm", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = ("Good evening, sir.", [], 100, 50)
         response = await engine.process_request(_make_request())
 
     assert isinstance(response, AlfredResponse)
@@ -84,7 +84,7 @@ async def test_budget_exceeded_returns_fallback(
 
 @pytest.mark.asyncio
 async def test_multi_turn_tool_use(mock_deps: dict[str, AsyncMock | MagicMock]) -> None:
-    """Agentic loop: Claude calls a tool, gets result, then responds."""
+    """Agentic loop: LLM calls a tool, gets result, then responds."""
     tool = ToolInfo(
         name="smart_home.get_lights",
         description="Get light state",
@@ -104,9 +104,9 @@ async def test_multi_turn_tool_use(mock_deps: dict[str, AsyncMock | MagicMock]) 
 
     tool_call = [{"id": "tc-1", "name": "smart_home.get_lights", "input": {}}]
 
-    with patch.object(engine, "_call_claude", new_callable=AsyncMock) as mock_claude:
-        # First call: Claude uses a tool. Second call: Claude responds with text.
-        mock_claude.side_effect = [
+    with patch.object(engine, "_call_llm", new_callable=AsyncMock) as mock_llm:
+        # First call: LLM uses a tool. Second call: LLM responds with text.
+        mock_llm.side_effect = [
             ("Let me check...", tool_call, 100, 50),
             ("The lights are on, sir.", [], 150, 60),
         ]
@@ -114,7 +114,7 @@ async def test_multi_turn_tool_use(mock_deps: dict[str, AsyncMock | MagicMock]) 
 
     assert response.text == "The lights are on, sir."
     assert "smart_home.get_lights" in response.actions_taken
-    assert mock_claude.call_count == 2
+    assert mock_llm.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -152,26 +152,26 @@ async def test_max_iterations_fallback(mock_deps: dict[str, AsyncMock | MagicMoc
 
     engine = ConsciousEngine(**mock_deps)
 
-    # Claude always returns a tool call, never a final text-only response
+    # LLM always returns a tool call, never a final text-only response
     tool_call = [{"id": "tc-1", "name": "some.tool", "input": {}}]
-    with patch.object(engine, "_call_claude", new_callable=AsyncMock) as mock_claude:
-        mock_claude.return_value = ("", tool_call, 100, 50)
+    with patch.object(engine, "_call_llm", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = ("", tool_call, 100, 50)
         response = await engine.process_request(_make_request())
 
-    assert mock_claude.call_count == MAX_ITERATIONS
+    assert mock_llm.call_count == MAX_ITERATIONS
     assert "apologize" in response.text.lower() or "deliberating" in response.text.lower()
 
 
-def test_tools_to_claude_format(mock_deps: dict[str, AsyncMock | MagicMock]) -> None:
-    """Verify ToolInfo → Anthropic tool format conversion, including required fields."""
+def test_tools_to_openai_format(mock_deps: dict[str, AsyncMock | MagicMock]) -> None:
+    """Verify ToolInfo → OpenAI function-calling format conversion."""
     engine = ConsciousEngine(**mock_deps)
     tools = [
         ToolInfo(
             name="smart_home.set_light",
             description="Set light brightness",
             parameters={
-                "room": {"type": "string", "description": "Room name"},
-                "level": {"type": "integer", "description": "Brightness", "default": 100},
+                "room": {"type": "str", "description": "Room name"},
+                "level": {"type": "int", "description": "Brightness", "default": 100},
             },
             feature_name="home",
             feature_description="Home",
@@ -179,13 +179,37 @@ def test_tools_to_claude_format(mock_deps: dict[str, AsyncMock | MagicMock]) -> 
         ),
     ]
 
-    result = engine._tools_to_claude_format(tools)
+    result = engine._tools_to_openai_format(tools)
 
     assert len(result) == 1
-    assert result[0]["name"] == "smart_home.set_light"
-    schema = result[0]["input_schema"]
+    assert result[0]["type"] == "function"
+    func = result[0]["function"]
+    # Dots sanitized to underscores for OpenAI compatibility
+    assert func["name"] == "smart_home_set_light"
+    schema = func["parameters"]
     assert "room" in schema["properties"]
     assert "level" in schema["properties"]
+    # Python types mapped to JSON Schema types
+    assert schema["properties"]["room"]["type"] == "string"
+    assert schema["properties"]["level"]["type"] == "integer"
     # room has no default → required; level has default → not required
     assert "room" in schema["required"]
     assert "level" not in schema["required"]
+
+
+def test_tool_name_sanitization(mock_deps: dict[str, AsyncMock | MagicMock]) -> None:
+    """Tool names with dots are sanitized for OpenAI and reversed back."""
+    engine = ConsciousEngine(**mock_deps)
+    assert engine._sanitize_tool_name("lighting.dim_lights") == "lighting_dim_lights"
+
+    tools = [
+        ToolInfo(
+            name="lighting.dim_lights",
+            description="Dim",
+            parameters={},
+            feature_name="home",
+            feature_description="Home",
+            target_service="home-service",
+        ),
+    ]
+    assert engine._unsanitize_tool_name("lighting_dim_lights", tools) == "lighting.dim_lights"

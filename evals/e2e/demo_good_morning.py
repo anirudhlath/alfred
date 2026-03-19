@@ -64,9 +64,7 @@ async def run_demo(channel: str = "web_pwa") -> None:
 
     # Publish request
     start = time.monotonic()
-    await r.xadd(  # type: ignore[misc]
-        USER_REQUESTS_STREAM, {"event": request.model_dump_json()}
-    )
+    await r.xadd(USER_REQUESTS_STREAM, {"event": request.model_dump_json()})
     log.info("Published UserRequest at t=0ms")
 
     # Wait for response
@@ -75,9 +73,7 @@ async def run_demo(channel: str = "web_pwa") -> None:
     response: AlfredResponse | None = None
 
     while (time.monotonic() - start) < timeout:
-        entries = await r.xread(  # type: ignore[misc]
-            {USER_RESPONSES_STREAM: last_id}, count=10, block=1000
-        )
+        entries = await r.xread({USER_RESPONSES_STREAM: last_id}, count=10, block=1000)
         for _stream, stream_entries in entries:
             for entry_id, entry_data in stream_entries:
                 last_id = entry_id
@@ -97,7 +93,7 @@ async def run_demo(channel: str = "web_pwa") -> None:
 
     if response is None:
         log.error("No response received within {:.0f}s!", timeout)
-        await r.aclose()  # type: ignore[misc]
+        await r.close()
         return
 
     log.info("-" * 60)
@@ -136,7 +132,7 @@ async def run_demo(channel: str = "web_pwa") -> None:
     log.info("Latency: {:.0f}ms (target: <3000ms)", elapsed)
     log.info("=" * 60)
 
-    await r.aclose()  # type: ignore[misc]
+    await r.close()
 
 
 def main() -> None:

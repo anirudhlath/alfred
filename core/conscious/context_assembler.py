@@ -20,10 +20,17 @@ class ContextAssembler:
     """
 
     _DEFAULT_PERSONALITY = Path(__file__).parent / "prompts" / "personality.md"
+    _VOICE_DELIVERY = Path(__file__).parent / "prompts" / "voice_delivery.md"
+
+    # Channels that have TTS output
+    _VOICE_CHANNELS: frozenset[str] = frozenset({"web_pwa"})
 
     def __init__(self, personality_path: str | Path | None = None) -> None:
         path = Path(personality_path) if personality_path else self._DEFAULT_PERSONALITY
         self._personality = path.read_text()
+        self._voice_delivery = (
+            self._VOICE_DELIVERY.read_text() if self._VOICE_DELIVERY.exists() else ""
+        )
 
     def assemble(
         self,
@@ -36,12 +43,17 @@ class ContextAssembler:
         proactivity_level: str = "opinionated",
         episodic_text: str = "",
         procedural_text: str = "",
+        channel: str = "",
     ) -> str:
         """Build the complete system prompt for Claude."""
         parts: list[str] = []
 
         # 1. Personality (always)
         parts.append(self._personality)
+
+        # 1b. Voice delivery (only for TTS-enabled channels)
+        if channel in self._VOICE_CHANNELS and self._voice_delivery:
+            parts.append(self._voice_delivery)
 
         # 2. Identity
         if identity.identity == "sir":

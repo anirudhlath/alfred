@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -16,6 +17,51 @@ from loguru import logger
 from bus.schemas.events import AlfredResponse, UserRequest
 from shared.streams import USER_REQUESTS_STREAM, USER_RESPONSES_STREAM
 
+# Optional: WhisperSTT for voice transcription, PiperTTS for speech output
+_stt_instance: Any = None
+_tts_instance: Any = None
+
+
+def _get_stt() -> Any:
+    """Lazy-load WhisperSTT (requires voice extra)."""
+    global _stt_instance
+    if _stt_instance is None:
+        try:
+            from core.voice.stt import WhisperSTT
+
+            _stt_instance = WhisperSTT()
+        except ImportError:
+            logger.warning("faster-whisper not installed — voice transcription disabled")
+            _stt_instance = False  # sentinel: tried and failed
+        except Exception as exc:
+            logger.error("Failed to initialise WhisperSTT: {}", exc)
+            _stt_instance = False
+    return _stt_instance if _stt_instance is not False else None
+
+
+def _get_tts() -> Any:
+    """Lazy-load PiperTTS (requires voice extra)."""
+    global _tts_instance
+    if _tts_instance is None:
+        try:
+            from core.voice.tts import PiperTTS
+
+            _tts_instance = PiperTTS()
+        except ImportError:
+            logger.warning("piper-tts not installed — voice output disabled")
+            _tts_instance = False
+        except Exception as exc:
+            logger.error("Failed to initialise PiperTTS: {}", exc)
+            _tts_instance = False
+    return _tts_instance if _tts_instance is not False else None
+
+
+def _decode_audio(data_url: str) -> bytes:
+    """Decode a base64 data URL (data:audio/webm;base64,...) to raw bytes."""
+    if "," in data_url:
+        data_url = data_url.split(",", 1)[1]
+    return base64.b64decode(data_url)
+
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
@@ -23,7 +69,7 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     pool: aioredis.Redis[Any] = aioredis.from_url(app.state.redis_url, decode_responses=False)
     app.state.redis = pool
     yield
-    await pool.aclose()  # type: ignore[misc]
+    await pool.close()
 
 
 def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
@@ -47,6 +93,45 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
                 content_type = data.get("type", "text")
                 content = data.get("content", "")
 
+                # Transcribe audio to text before sending to Conscious Engine
+                if content_type == "audio" and content:
+                    stt = _get_stt()
+                    if stt is not None:
+                        try:
+                            audio_bytes = _decode_audio(content)
+                            content = stt.transcribe(audio_bytes)
+                            content_type = "text"
+                            logger.info("Transcribed voice → '{}' chars", len(content))
+                            await websocket.send_json(
+                                {
+                                    "type": "transcription",
+                                    "text": content,
+                                    "session_id": session_id,
+                                }
+                            )
+                        except Exception as e:
+                            logger.error("Voice transcription failed: {}", e)
+                            await websocket.send_json(
+                                {
+                                    "type": "response",
+                                    "text": "I'm afraid I couldn't make out what was said.",
+                                    "session_id": session_id,
+                                }
+                            )
+                            continue
+                    else:
+                        await websocket.send_json(
+                            {
+                                "type": "response",
+                                "text": (
+                                    "Voice processing is not available at the moment, "
+                                    "I'm afraid. Please type your message instead."
+                                ),
+                                "session_id": session_id,
+                            }
+                        )
+                        continue
+
                 request = UserRequest(
                     source="web-pwa",
                     channel="web_pwa",
@@ -58,13 +143,22 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
                 response_text = await _publish_and_wait(r, request, session_id, timeout=30.0)
 
-                await websocket.send_json(
-                    {
-                        "type": "response",
-                        "text": response_text,
-                        "session_id": session_id,
-                    }
-                )
+                response_payload: dict[str, Any] = {
+                    "type": "response",
+                    "text": response_text,
+                    "session_id": session_id,
+                }
+
+                # Synthesise audio for the response
+                tts = _get_tts()
+                if tts is not None:
+                    try:
+                        wav_bytes = tts.synthesize(response_text)
+                        response_payload["audio"] = base64.b64encode(wav_bytes).decode()
+                    except Exception as exc:
+                        logger.error("TTS synthesis failed: {}", exc)
+
+                await websocket.send_json(response_payload)
 
         except WebSocketDisconnect:
             logger.info("WebSocket disconnected (session={})", session_id)
@@ -89,9 +183,7 @@ async def _publish_and_wait(
     """
     # Get current stream tail so we only read new entries
     try:
-        info: dict[str, Any] = await redis.xinfo_stream(  # type: ignore[misc]
-            USER_RESPONSES_STREAM
-        )
+        info: dict[str, Any] = await redis.xinfo_stream(USER_RESPONSES_STREAM)
         last_id: str | bytes = info.get("last-generated-id", "0-0")
         if isinstance(last_id, bytes):
             last_id = last_id.decode()
@@ -99,7 +191,7 @@ async def _publish_and_wait(
         last_id = "0-0"
 
     # Publish the request
-    await redis.xadd(  # type: ignore[misc]
+    await redis.xadd(
         USER_REQUESTS_STREAM,
         {"event": request.model_dump_json()},
     )
@@ -107,9 +199,7 @@ async def _publish_and_wait(
     start = time.monotonic()
 
     while (time.monotonic() - start) < timeout:
-        entries = await redis.xread(  # type: ignore[misc]
-            {USER_RESPONSES_STREAM: last_id}, count=10, block=1000
-        )
+        entries = await redis.xread({USER_RESPONSES_STREAM: last_id}, count=10, block=1000)
         for _stream, stream_entries in entries:
             for entry_id, entry_data in stream_entries:
                 last_id = entry_id

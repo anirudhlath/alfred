@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import redis.asyncio as aioredis
 
@@ -22,8 +22,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Type alias — redis-py generics are not typed in this version
-AioRedis = aioredis.Redis
+# PEP 695 type alias — evaluated lazily so Redis[Any] doesn't fail at runtime
+type AioRedis = aioredis.Redis[Any]
 
 
 async def ensure_consumer_group(
@@ -83,7 +83,7 @@ async def process_stream_entry(
 
     timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     observation = f"{timestamp} [reflex] {action.tool_name}({action.parameters}) → {result.status}"
-    await redis.lpush(scratchpad_queue, observation)  # type: ignore[misc]
+    await redis.lpush(scratchpad_queue, observation)
 
     logger.info("Action: %s → %s (status=%s)", event.entity_id, action.tool_name, result.status)
     return True

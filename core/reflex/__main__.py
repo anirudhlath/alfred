@@ -63,7 +63,7 @@ async def run(config: AlfredConfig) -> None:
     registry = ToolRegistry(r)
     tools = await registry.get_tools()
     if not tools:
-        await r.aclose()
+        await r.close()
         raise RuntimeError(
             "No tools found in alfred:tool_registry. "
             "Start at least one microservice (e.g., home-service) before the Reflex Runner."
@@ -115,14 +115,14 @@ async def run(config: AlfredConfig) -> None:
                         # ACK only on success — retriable errors (Ollama down)
                         # propagate as exceptions and the message stays pending
                         # for redelivery on next XREADGROUP cycle.
-                        await r.xack(STREAM, GROUP, entry_id)
+                        await r.xack(STREAM, GROUP, entry_id)  # type: ignore[no-untyped-call]
                     except Exception as e:
                         logger.error("Error processing entry %s: %s — will retry", entry_id, e)
     finally:
         logger.info("Shutting down Reflex Runner...")
         scratchpad_task.cancel()
         telemetry_task.cancel()
-        await r.aclose()
+        await r.close()
 
 
 def main() -> None:

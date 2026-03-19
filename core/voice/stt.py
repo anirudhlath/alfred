@@ -25,7 +25,7 @@ class WhisperSTT:
         self,
         model_size: str = DEFAULT_MODEL,
         device: str = "auto",
-        compute_type: str = "float16",
+        compute_type: str = "auto",
     ) -> None:
         from faster_whisper import WhisperModel as _WhisperModel
 

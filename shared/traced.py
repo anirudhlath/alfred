@@ -11,19 +11,18 @@ from opentelemetry import trace
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
 
-# Used by the plain @traced(*) overload which cannot use PEP 695 syntax
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
 
 
 @overload
-def traced[**P, R](
-    fn: Callable[P, Coroutine[Any, Any, R]],
-) -> Callable[P, Coroutine[Any, Any, R]]: ...
+def traced(
+    fn: Callable[_P, Coroutine[Any, Any, _R]],
+) -> Callable[_P, Coroutine[Any, Any, _R]]: ...
 
 
 @overload
-def traced[**P, R](fn: Callable[P, R]) -> Callable[P, R]: ...
+def traced(fn: Callable[_P, _R]) -> Callable[_P, _R]: ...
 
 
 @overload
@@ -33,8 +32,8 @@ def traced(
 ) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]: ...
 
 
-def traced[**P](
-    fn: Callable[P, Any] | None = None,
+def traced(
+    fn: Callable[_P, Any] | None = None,
     *,
     name: str | None = None,
 ) -> Any:
@@ -44,14 +43,14 @@ def traced[**P](
     Supports both @traced and @traced(name="custom.name").
     """
 
-    def decorator(f: Callable[P, Any]) -> Callable[P, Any]:
+    def decorator(f: Callable[_P, Any]) -> Callable[_P, Any]:
         span_name = name or f"{f.__module__}.{f.__qualname__}"
         tracer = trace.get_tracer(f.__module__)
 
         if asyncio.iscoroutinefunction(f):
 
             @functools.wraps(f)
-            async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> Any:
+            async def async_wrapper(*args: _P.args, **kwargs: _P.kwargs) -> Any:
                 with tracer.start_as_current_span(span_name) as span:
                     try:
                         result = await f(*args, **kwargs)
@@ -65,7 +64,7 @@ def traced[**P](
         else:
 
             @functools.wraps(f)
-            def sync_wrapper(*args: P.args, **kwargs: P.kwargs) -> Any:
+            def sync_wrapper(*args: _P.args, **kwargs: _P.kwargs) -> Any:
                 with tracer.start_as_current_span(span_name) as span:
                     try:
                         result = f(*args, **kwargs)

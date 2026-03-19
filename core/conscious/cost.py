@@ -25,13 +25,20 @@ class CostState(BaseModel):
     alert_sent: bool = False
 
 
-# Approximate pricing per million tokens (Claude Opus 4)
-# These are estimates — update with actual pricing
+# Approximate pricing per million tokens (via OpenRouter)
+# Keyed by LiteLLM model string — update with actual pricing
 _PRICING: dict[str, dict[str, float]] = {
+    # Direct Anthropic
     "claude-opus-4-6": {"input": 15.0, "output": 75.0},
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
+    # OpenRouter prefixed
+    "openrouter/anthropic/claude-opus-4": {"input": 15.0, "output": 75.0},
+    "openrouter/anthropic/claude-sonnet-4": {"input": 3.0, "output": 15.0},
+    "openrouter/anthropic/claude-3.5-sonnet": {"input": 3.0, "output": 15.0},
+    "openrouter/google/gemini-2.5-pro-preview": {"input": 1.25, "output": 10.0},
+    "openrouter/deepseek/deepseek-chat-v3-0324": {"input": 0.27, "output": 1.1},
 }
-_DEFAULT_PRICING = {"input": 15.0, "output": 75.0}
+_DEFAULT_PRICING = {"input": 3.0, "output": 15.0}
 
 
 class CostTracker:

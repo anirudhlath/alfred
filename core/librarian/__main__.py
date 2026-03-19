@@ -41,7 +41,7 @@ async def run() -> None:
         result = await librarian.consolidate()
         log.info("Librarian finished: %s", result)
     finally:
-        await r.aclose()
+        await r.close()
 
 
 def main() -> None:

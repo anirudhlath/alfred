@@ -36,11 +36,55 @@ function connect() {
 
     ws.onmessage = (event) => {
         const data = JSON.parse(event.data);
+        if (data.type === 'transcription') {
+            // Replace the "Voice message" placeholder with actual transcription
+            const placeholder = document.getElementById('voice-placeholder');
+            if (placeholder) {
+                placeholder.textContent = data.text;
+                placeholder.removeAttribute('id');
+            }
+            return;
+        }
         removeTypingIndicator();
         if (data.type === 'response') {
             appendMessage('alfred', data.text);
+            if (data.audio) playAudio(data.audio);
         }
     };
+}
+
+// --- TTS Audio Playback ---
+
+// AudioContext must be unlocked by user gesture before playback works
+let audioCtx = null;
+let audioUnlocked = false;
+
+function unlockAudio() {
+    if (audioUnlocked) return;
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    // Resume context if suspended (autoplay policy)
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    audioUnlocked = true;
+}
+
+// Unlock on first user interaction
+document.addEventListener('click', unlockAudio, { once: true });
+document.addEventListener('keydown', unlockAudio, { once: true });
+
+function playAudio(base64Audio) {
+    if (!audioCtx) unlockAudio();
+    const binaryStr = atob(base64Audio);
+    const bytes = new Uint8Array(binaryStr.length);
+    for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+
+    audioCtx.decodeAudioData(bytes.buffer, (buffer) => {
+        const source = audioCtx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(audioCtx.destination);
+        source.start(0);
+    }, (err) => {
+        console.error('Audio decode failed:', err);
+    });
 }
 
 // --- Messages ---
@@ -54,7 +98,7 @@ function clearWelcome() {
     }
 }
 
-function appendMessage(role, text) {
+function appendMessage(role, text, bubbleId) {
     clearWelcome();
 
     const msg = document.createElement('div');
@@ -67,6 +111,7 @@ function appendMessage(role, text) {
     const bubble = document.createElement('div');
     bubble.className = 'message-bubble';
     bubble.textContent = text;
+    if (bubbleId) bubble.id = bubbleId;
 
     msg.appendChild(label);
     msg.appendChild(bubble);
@@ -129,23 +174,21 @@ function autoResizeInput() {
 
 chatInput.addEventListener('input', autoResizeInput);
 
-// --- Voice: push-to-talk ---
+// --- Voice: toggle mode (click to start, click to stop) ---
 
 let mediaRecorder = null;
 let audioChunks = [];
+let isRecording = false;
 
-voiceBtn.addEventListener('mousedown', startRecording);
-voiceBtn.addEventListener('touchstart', (e) => {
-    e.preventDefault();
-    startRecording();
-});
+voiceBtn.addEventListener('click', toggleRecording);
 
-voiceBtn.addEventListener('mouseup', stopRecording);
-voiceBtn.addEventListener('mouseleave', stopRecording);
-voiceBtn.addEventListener('touchend', (e) => {
-    e.preventDefault();
-    stopRecording();
-});
+async function toggleRecording() {
+    if (isRecording) {
+        stopRecording();
+    } else {
+        await startRecording();
+    }
+}
 
 async function startRecording() {
     try {
@@ -165,7 +208,7 @@ async function startRecording() {
             const reader = new FileReader();
             reader.onload = () => {
                 if (ws && ws.readyState === WebSocket.OPEN) {
-                    appendMessage('user', '\u266a Voice message');
+                    appendMessage('user', '\u266a Voice message', 'voice-placeholder');
                     ws.send(JSON.stringify({
                         type: 'audio',
                         content: reader.result,
@@ -178,6 +221,7 @@ async function startRecording() {
         };
 
         mediaRecorder.start();
+        isRecording = true;
         voiceBtn.classList.add('recording');
     } catch (err) {
         console.error('Microphone access denied:', err);
@@ -187,8 +231,9 @@ async function startRecording() {
 function stopRecording() {
     if (mediaRecorder && mediaRecorder.state === 'recording') {
         mediaRecorder.stop();
-        voiceBtn.classList.remove('recording');
     }
+    isRecording = false;
+    voiceBtn.classList.remove('recording');
 }
 
 // --- Init ---

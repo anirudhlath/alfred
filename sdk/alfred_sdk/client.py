@@ -171,17 +171,17 @@ class AlfredClient:
 
         import redis.asyncio as aioredis
 
-        r: aioredis.Redis[Any] = aioredis.from_url(self.redis_url)  # type: ignore[type-arg]
+        r: aioredis.Redis[Any] = aioredis.from_url(self.redis_url)
         try:
             manifest = self.get_registration_manifest()
-            await r.hset(self.REGISTRY_KEY, self.service_name, json.dumps(manifest))  # type: ignore[misc]
+            await r.hset(self.REGISTRY_KEY, self.service_name, json.dumps(manifest))
 
             context = await self._collect_context()
             if context.controllable or context.sensors:
                 context_key = f"{self.CONTEXT_KEY_PREFIX}{self.service_name}"
                 await r.set(context_key, context.model_dump_json(), ex=600)
         finally:
-            await r.aclose()
+            await r.close()
 
     async def unregister(self) -> None:
         """Remove this service from Alfred's tool registry on Redis.
@@ -190,6 +190,6 @@ class AlfredClient:
         """
         import redis.asyncio as aioredis
 
-        r: aioredis.Redis[Any] = aioredis.from_url(self.redis_url)  # type: ignore[type-arg]
-        await r.hdel(self.REGISTRY_KEY, self.service_name)  # type: ignore[misc]
-        await r.aclose()
+        r: aioredis.Redis[Any] = aioredis.from_url(self.redis_url)
+        await r.hdel(self.REGISTRY_KEY, self.service_name)
+        await r.close()

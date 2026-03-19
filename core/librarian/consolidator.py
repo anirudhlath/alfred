@@ -44,7 +44,7 @@ class Librarian:
         preferences_dir: str = "core/memory/preferences",
         profile_dir: str = "core/memory/profile",
         claude_api_key: str = "",
-        claude_model: str = "claude-opus-4-6",
+        claude_model: str = "openrouter/anthropic/claude-sonnet-4",
     ) -> None:
         self._redis = redis
         self._episodic = episodic_store
@@ -66,24 +66,20 @@ class Librarian:
         survives for the next cycle to pick up.
         """
         # Check for leftover processing key from a previous crash
-        leftover: list[bytes] = await self._redis.lrange(  # type: ignore[misc]
-            self._PROCESSING_KEY, 0, -1
-        )
+        leftover: list[bytes] = await self._redis.lrange(self._PROCESSING_KEY, 0, -1)
         if not leftover:
             # Atomically move the queue to the processing key
             try:
-                await self._redis.rename(  # type: ignore[misc]
+                await self._redis.rename(  # type: ignore[no-untyped-call]
                     SCRATCHPAD_QUEUE, self._PROCESSING_KEY
                 )
             except Exception:
                 # RENAME fails if the source key doesn't exist (empty queue)
                 return []
 
-        raw: list[bytes] = await self._redis.lrange(  # type: ignore[misc]
-            self._PROCESSING_KEY, 0, -1
-        )
+        raw: list[bytes] = await self._redis.lrange(self._PROCESSING_KEY, 0, -1)
         if raw:
-            await self._redis.delete(self._PROCESSING_KEY)  # type: ignore[misc]
+            await self._redis.delete(self._PROCESSING_KEY)
         return [r.decode() if isinstance(r, bytes) else str(r) for r in raw]
 
     async def _extract_episodic_entries(self, scratchpad_lines: list[str]) -> list[EpisodicEntry]:
