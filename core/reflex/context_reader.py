@@ -1,3 +1,4 @@
+# core/reflex/context_reader.py
 """Context reader — fetches and renders service context from Redis."""
 
 from __future__ import annotations
@@ -41,28 +42,43 @@ def render_snapshot(snapshot: ContextSnapshot) -> str:
 
 
 class ContextReader:
-    """Reads and caches service context from Redis."""
+    """Reads and caches service context from Redis.
+
+    Scans all alfred:context:* keys to aggregate context from all
+    registered services (not just home-service).
+    """
 
     CACHE_TTL = 300.0  # 5 minutes
 
-    def __init__(self, redis: AioRedis, service_name: str = "home-service") -> None:
+    def __init__(self, redis: AioRedis) -> None:
         self._redis = redis
-        self._service_name = service_name
         self._cached_rendered: str = ""
         self._cache_time: float = 0.0
         self._cache_valid: bool = False
 
     async def get_rendered_context(self) -> str:
-        """Return rendered Markdown context, re-fetching after TTL."""
+        """Return rendered Markdown context from all services, re-fetching after TTL."""
         now = time.monotonic()
         if not self._cache_valid or (now - self._cache_time) > self.CACHE_TTL:
-            key = f"{CONTEXT_KEY_PREFIX}{self._service_name}"
-            raw: bytes | None = await self._redis.get(key)  # type: ignore[misc]
-            if raw:
-                snapshot = ContextSnapshot.model_validate_json(raw)
-                self._cached_rendered = render_snapshot(snapshot)
-            else:
-                self._cached_rendered = ""
+            merged = ContextSnapshot()
+
+            async for key in self._redis.scan_iter(match=f"{CONTEXT_KEY_PREFIX}*", count=100):
+                raw: bytes | None = await self._redis.get(key)  # type: ignore[misc,unused-ignore]
+                if raw is None:
+                    continue
+                try:
+                    snap = ContextSnapshot.model_validate_json(raw)
+                except Exception as exc:
+                    k = key.decode() if isinstance(key, bytes) else key
+                    logger.warning("Failed to parse context from %s: %s", k, exc)
+                    continue
+
+                for domain, entries in snap.controllable.items():
+                    merged.controllable.setdefault(domain, []).extend(entries)
+                for domain, entries in snap.sensors.items():
+                    merged.sensors.setdefault(domain, []).extend(entries)
+
+            self._cached_rendered = render_snapshot(merged)
             self._cache_time = now
             self._cache_valid = True
 
