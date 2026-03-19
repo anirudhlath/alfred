@@ -92,6 +92,7 @@ class UserRequest(BaseEvent):
     channel: Literal["web_pwa", "signal", "voice"]
     session_id: str
     identity_claim: str
+    authenticated: bool = False
     content_type: Literal["text", "audio"]
     content: str
     audio_ref: str | None = None

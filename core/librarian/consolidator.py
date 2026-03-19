@@ -54,19 +54,36 @@ class Librarian:
         self._api_key = claude_api_key
         self._model = claude_model
 
+    _PROCESSING_KEY = f"{SCRATCHPAD_QUEUE}:processing"
+
     async def _drain_scratchpad(self) -> list[str]:
         """Atomically drain the scratchpad queue.
 
-        Uses LRANGE + LTRIM to get all entries and clear in one shot.
-        If processing fails, entries are lost from the queue but the
-        Librarian logs them — this is acceptable since scratchpad is
-        ephemeral and the next cycle will process new observations.
+        Uses RENAME to atomically swap the queue to a processing key,
+        then drains the processing key. This prevents the race where
+        new entries arrive between LRANGE and LTRIM and get silently lost.
+        If the Librarian crashes mid-processing, the processing key
+        survives for the next cycle to pick up.
         """
+        # Check for leftover processing key from a previous crash
+        leftover: list[bytes] = await self._redis.lrange(  # type: ignore[misc]
+            self._PROCESSING_KEY, 0, -1
+        )
+        if not leftover:
+            # Atomically move the queue to the processing key
+            try:
+                await self._redis.rename(  # type: ignore[misc]
+                    SCRATCHPAD_QUEUE, self._PROCESSING_KEY
+                )
+            except Exception:
+                # RENAME fails if the source key doesn't exist (empty queue)
+                return []
+
         raw: list[bytes] = await self._redis.lrange(  # type: ignore[misc]
-            SCRATCHPAD_QUEUE, 0, -1
+            self._PROCESSING_KEY, 0, -1
         )
         if raw:
-            await self._redis.ltrim(SCRATCHPAD_QUEUE, len(raw), -1)  # type: ignore[misc]
+            await self._redis.delete(self._PROCESSING_KEY)  # type: ignore[misc]
         return [r.decode() if isinstance(r, bytes) else str(r) for r in raw]
 
     async def _extract_episodic_entries(self, scratchpad_lines: list[str]) -> list[EpisodicEntry]:

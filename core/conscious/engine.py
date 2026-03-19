@@ -181,7 +181,7 @@ class ConsciousEngine:
         identity = self._identity_gate.resolve(
             channel=request.channel,
             identity_claim=request.identity_claim,
-            authenticated=request.identity_claim == "sir",  # Simplified for now
+            authenticated=request.authenticated,
         )
         logger.info(
             "Identity resolved: %s (method=%s, confidence=%.2f)",
