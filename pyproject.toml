@@ -42,6 +42,9 @@ voice = [
     "faster-whisper>=1.0",
     "piper-tts>=1.2",
 ]
+evals = [
+    "deepeval>=1.0",
+]
 
 [build-system]
 requires = ["setuptools>=75.0"]
@@ -94,4 +97,8 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["faster_whisper.*", "piper.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["deepeval.*"]
 ignore_missing_imports = true
