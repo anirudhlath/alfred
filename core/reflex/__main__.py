@@ -19,6 +19,7 @@ from core.reflex.tool_registry import ToolRegistry
 from domains.home.home_agent import HomeAgent
 from sdk.alfred_sdk.telemetry import clear_telemetry_buffer, get_telemetry_buffer
 from shared.config import AlfredConfig
+from shared.logging import configure_logging
 from telemetry.collector import flush_to_csv
 
 logger = logging.getLogger(__name__)
@@ -123,10 +124,7 @@ async def run(config: AlfredConfig) -> None:
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    )
+    configure_logging(service="reflex")
     config = AlfredConfig.from_env()
     asyncio.run(run(config))
 
