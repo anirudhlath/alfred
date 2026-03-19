@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import os
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -70,9 +70,9 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
             logger.info("WebSocket disconnected (session={})", session_id)
 
     # Mount static files for PWA (if directory exists)
-    web_dir = os.path.join(os.path.dirname(__file__), "..", "..", "web")
-    if os.path.isdir(web_dir):
-        app.mount("/", StaticFiles(directory=web_dir, html=True), name="static")
+    web_dir = Path(__file__).resolve().parent.parent.parent / "web"
+    if web_dir.is_dir():
+        app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="static")
 
     return app
 

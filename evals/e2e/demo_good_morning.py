@@ -22,7 +22,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, cast
 from uuid import uuid4
 
 import redis.asyncio as aioredis
@@ -37,16 +37,20 @@ if TYPE_CHECKING:
     from loguru import Logger
 
 
+ChannelType = Literal["web_pwa", "signal", "voice"]
+
+
 async def run_demo(channel: str = "web_pwa") -> None:
     """Run the Good Morning demo end-to-end."""
     log: Logger = configure_logging(service="demo")
     config = AlfredConfig.from_env()
     r = aioredis.from_url(config.redis_url)
 
+    channel_typed = cast("ChannelType", channel)
     session_id = str(uuid4())
     request = UserRequest(
         source="demo-script",
-        channel=channel,  # type: ignore[arg-type]
+        channel=channel_typed,
         session_id=session_id,
         identity_claim="sir",
         content_type="text",
