@@ -33,7 +33,13 @@ def init_tracing(
             exporter = OTLPSpanExporter(endpoint=endpoint, insecure=True)
             provider.add_span_processor(BatchSpanProcessor(exporter))
         except Exception:
-            # Fallback to console if OTLP endpoint unreachable
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Failed to initialize OTLP exporter at %s, falling back to console",
+                endpoint,
+                exc_info=True,
+            )
             provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
     else:
         # Dev/test mode — no export

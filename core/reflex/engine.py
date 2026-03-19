@@ -184,7 +184,7 @@ class ReflexEngine:
             logger.error("Failed to parse SLM response: %s — %s", e, response)
             return None
 
-    @traced(name="reflex.process_event")  # type: ignore[untyped-decorator]
+    @traced(name="reflex.process_event")
     @track_latency(category="reflex")
     async def process_event(self, event: StateChangedEvent) -> ActionRequest | None:
         """Process a state change event and optionally produce an action."""
