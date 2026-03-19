@@ -85,6 +85,30 @@ class TriggerFired(BaseEvent):
     context: dict[str, Any] = Field(default_factory=dict)
 
 
+class UserRequest(BaseEvent):
+    """Inbound user interaction from any channel."""
+
+    event_type: str = "user_request"
+    channel: Literal["web_pwa", "signal", "voice"]
+    session_id: str
+    identity_claim: str
+    content_type: Literal["text", "audio"]
+    content: str
+    audio_ref: str | None = None
+
+
+class AlfredResponse(BaseEvent):
+    """Outbound response to a user channel."""
+
+    event_type: str = "alfred_response"
+    channel: Literal["web_pwa", "signal", "voice"]
+    session_id: str
+    text: str
+    voice_audio_ref: str | None = None
+    actions_taken: list[str] = Field(default_factory=list)
+    mood: Literal["neutral", "pleased", "concerned", "amused", "serious"] = "neutral"
+
+
 class TriggerCreated(BaseEvent):
     """A trigger was dynamically created."""
 
