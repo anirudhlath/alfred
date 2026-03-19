@@ -1,8 +1,8 @@
 # Context Provider — Deferred Work
 
-## Agent-Scoped Context Visibility
-Currently `ContextReader` hardcodes `service_name="home-service"` — replace with multi-service
-scan (e.g. `SCAN alfred:context:*`) so the Reflex Engine sees context from all registered services.
+## ~~Agent-Scoped Context Visibility~~ DONE
+**Completed:** 2026-03-19 (phase3-prerequisites branch)
+`ContextReader` now scans all `alfred:context:*` keys via Redis SCAN.
 
 ## Option C Entities
 Extend `get_context()` in home-service features to include system entities:

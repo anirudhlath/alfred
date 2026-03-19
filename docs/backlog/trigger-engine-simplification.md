@@ -30,11 +30,9 @@ FastAPI with REST endpoints + JSON-RPC backward-compat shim. uvicorn.Server for 
 
 The bytes/str decode pattern for Redis stream entries is duplicated between the trigger engine and reflex runner event loops. Extract a `parse_stream_event(entry_data) -> StateChangedEvent | None` utility into `shared/` or `bus/`.
 
-### 6. Extract shared logging setup
-**Priority:** Low
-**Files:** `core/triggers/__main__.py`, `core/reflex/__main__.py`
-
-`logging.basicConfig()` with identical format string is copy-pasted between entry points. Extract to `shared/logging.py` as `configure_logging()`.
+### 6. ~~Extract shared logging setup~~ DONE
+**Completed:** 2026-03-19 (phase3-prerequisites branch)
+Centralized Loguru setup in `shared/logging.py`. All entry points updated.
 
 ### 7. `TriggerFeature.__init__` type safety
 **Priority:** Low
