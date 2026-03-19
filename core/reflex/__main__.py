@@ -21,15 +21,15 @@ from domains.home.home_agent import HomeAgent
 from sdk.alfred_sdk.telemetry import clear_telemetry_buffer, get_telemetry_buffer
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
+from shared.streams import HOME_ACTION_RESULTS_STREAM, HOME_STATE_STREAM, SCRATCHPAD_QUEUE
 from telemetry.collector import flush_to_csv
 
 logger = logging.getLogger(__name__)
 
-STREAM = "alfred:home:state_changed"
+STREAM = HOME_STATE_STREAM
 GROUP = "reflex-engine"
 CONSUMER = "worker-1"
-RESULT_STREAM = "alfred:home:action_results"
-SCRATCHPAD_QUEUE = "alfred:scratchpad:queue"
+RESULT_STREAM = HOME_ACTION_RESULTS_STREAM
 
 _shutdown = asyncio.Event()
 

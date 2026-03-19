@@ -1,4 +1,4 @@
-"""Memory schemas — Pydantic models for episodic, procedural, and cost tracking."""
+"""Memory schemas — Pydantic models for episodic and procedural memory."""
 
 from __future__ import annotations
 
@@ -43,12 +43,3 @@ class RoutineSpec(BaseModel):
     state: Literal["candidate", "active", "dormant", "archived"]
     last_hit: datetime | None = None
     consecutive_misses: int = 0
-
-
-class CostState(BaseModel):
-    """Daily Claude API spend tracking. Stored at alfred:cost:daily in Redis."""
-
-    date: str  # ISO date YYYY-MM-DD
-    spend_usd: float
-    cap_usd: float
-    alert_sent: bool = False

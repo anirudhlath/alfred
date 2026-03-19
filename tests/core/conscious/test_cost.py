@@ -7,8 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.conscious.cost import CostTracker
-from core.memory.schemas import CostState
+from core.conscious.cost import CostState, CostTracker
 
 _TODAY = datetime.now(UTC).strftime("%Y-%m-%d")
 

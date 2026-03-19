@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from core.memory.schemas import CostState, EpisodicEntry, RoutineSpec, RoutineStep
+from core.memory.schemas import EpisodicEntry, RoutineSpec, RoutineStep
 
 
 def test_episodic_entry_creation() -> None:
@@ -35,5 +35,8 @@ def test_routine_spec_defaults() -> None:
 
 
 def test_cost_state_defaults() -> None:
+    """CostState moved to core.conscious.cost — verify import still works."""
+    from core.conscious.cost import CostState
+
     cost = CostState(date="2026-03-19", spend_usd=2.50, cap_usd=5.0)
     assert cost.alert_sent is False

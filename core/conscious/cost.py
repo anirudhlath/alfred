@@ -6,13 +6,24 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from core.memory.schemas import CostState
+from pydantic import BaseModel
+
 from shared.streams import COST_DAILY_KEY
 
 if TYPE_CHECKING:
     from core.reflex.runner import AioRedis
 
 logger = logging.getLogger(__name__)
+
+
+class CostState(BaseModel):
+    """Daily Claude API spend tracking. Stored at alfred:cost:daily in Redis."""
+
+    date: str  # ISO date YYYY-MM-DD
+    spend_usd: float
+    cap_usd: float
+    alert_sent: bool = False
+
 
 # Approximate pricing per million tokens (Claude Opus 4)
 # These are estimates — update with actual pricing

@@ -32,7 +32,7 @@ class AppleHealthAdapter(Integration):
 
     def __init__(self, endpoint: str = "") -> None:
         self._endpoint = endpoint
-        self._client: httpx.AsyncClient | None = None
+        self._client = httpx.AsyncClient(timeout=10.0)
 
     async def get_capabilities(self) -> list[IntegrationCapability]:
         return [
@@ -56,9 +56,6 @@ class AppleHealthAdapter(Integration):
                 confidence=0.0,
             )
 
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=10.0)
-
         try:
             resp = await self._client.get(f"{self._endpoint}/{request.action}")
             resp.raise_for_status()
@@ -80,8 +77,6 @@ class AppleHealthAdapter(Integration):
         if not self._endpoint:
             return False
         try:
-            if self._client is None or self._client.is_closed:
-                self._client = httpx.AsyncClient(timeout=5.0)
             resp = await self._client.get(f"{self._endpoint}/health")
             return resp.status_code == 200
         except Exception:

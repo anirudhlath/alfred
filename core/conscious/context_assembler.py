@@ -19,8 +19,11 @@ class ContextAssembler:
     memory) is excluded for guests.
     """
 
-    def __init__(self, personality_path: str = "core/conscious/prompts/personality.md") -> None:
-        self._personality = Path(personality_path).read_text()
+    _DEFAULT_PERSONALITY = Path(__file__).parent / "prompts" / "personality.md"
+
+    def __init__(self, personality_path: str | Path | None = None) -> None:
+        path = Path(personality_path) if personality_path else self._DEFAULT_PERSONALITY
+        self._personality = path.read_text()
 
     def assemble(
         self,

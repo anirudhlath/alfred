@@ -7,6 +7,10 @@ TRIGGERS_KEY = "alfred:triggers"
 TOOL_REGISTRY_KEY = "alfred:tool_registry"
 CONTEXT_KEY_PREFIX = "alfred:context:"
 
+# Home domain streams (used by MQTT bridge + Reflex Runner)
+HOME_STATE_STREAM = "alfred:home:state_changed"
+HOME_ACTION_RESULTS_STREAM = "alfred:home:action_results"
+
 # Phase 3: Conscious Engine
 USER_REQUESTS_STREAM = "alfred:user:requests"
 USER_RESPONSES_STREAM = "alfred:user:responses"
@@ -20,6 +24,3 @@ VOICEPRINT_KEY = "alfred:identity:voiceprint"
 # Phase 3: Runtime config + cost
 RUNTIME_CONFIG_KEY = "alfred:config:runtime"
 COST_DAILY_KEY = "alfred:cost:daily"
-
-# Phase 3: Integration registry
-INTEGRATION_REGISTRY_KEY = "alfred:integration_registry"

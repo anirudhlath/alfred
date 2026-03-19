@@ -31,12 +31,7 @@ class WeatherAdapter(Integration):
     def __init__(self, latitude: float = 0.0, longitude: float = 0.0) -> None:
         self._lat = latitude
         self._lon = longitude
-        self._client: httpx.AsyncClient | None = None
-
-    def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=10.0)
-        return self._client
+        self._client = httpx.AsyncClient(timeout=10.0)
 
     async def get_capabilities(self) -> list[IntegrationCapability]:
         return [
@@ -53,7 +48,7 @@ class WeatherAdapter(Integration):
         ]
 
     async def execute(self, request: IntegrationRequest) -> IntegrationResult:
-        client = self._get_client()
+        client = self._client
 
         if request.action == "get_current":
             params: dict[str, str | float | int] = {
@@ -90,7 +85,7 @@ class WeatherAdapter(Integration):
 
     async def health_check(self) -> bool:
         try:
-            client = self._get_client()
+            client = self._client
             resp = await client.get(
                 _BASE_URL,
                 params={
