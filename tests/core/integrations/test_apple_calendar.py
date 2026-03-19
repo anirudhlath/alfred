@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-from core.integrations.base import IntegrationRequest
 from core.integrations.apple_calendar import AppleCalendarAdapter
 from core.integrations.registry import IntegrationRegistry
 

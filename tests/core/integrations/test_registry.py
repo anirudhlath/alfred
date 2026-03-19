@@ -22,7 +22,9 @@ class _WeatherIntegration(Integration):
     category = "weather"
 
     async def get_capabilities(self) -> list[IntegrationCapability]:
-        return [IntegrationCapability(name="get_forecast", description="Get weather", params_schema={})]
+        return [
+            IntegrationCapability(name="get_forecast", description="Get weather", params_schema={})
+        ]
 
     async def execute(self, request: IntegrationRequest) -> IntegrationResult:
         return IntegrationResult(data={"temp": 72}, freshness=datetime.now(UTC), confidence=0.9)
