@@ -340,3 +340,192 @@ footer {
         padding: 0.5rem 1rem 1rem;
     }
 }
+
+/* --- Onboarding Overlay --- */
+
+.onboarding-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(10, 8, 6, 0.92);
+    backdrop-filter: blur(8px);
+}
+
+.onboarding-card {
+    width: 100%;
+    max-width: 480px;
+    margin: 1rem;
+    padding: 2.5rem 2rem 2rem;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+
+.onboarding-step {
+    display: flex;
+    flex-direction: column;
+    gap: 1.2rem;
+}
+
+.onboarding-step h2 {
+    font-family: var(--font-display);
+    font-size: 1.6rem;
+    font-weight: 500;
+    color: var(--brass);
+    letter-spacing: 0.02em;
+}
+
+.onboarding-body {
+    font-family: var(--font-body);
+    font-size: 1rem;
+    color: var(--text-secondary);
+    line-height: 1.65;
+}
+
+.onboarding-note {
+    font-family: var(--font-body);
+    font-size: 0.85rem;
+    color: var(--text-dim);
+    font-style: italic;
+}
+
+.onboarding-label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    font-family: var(--font-body);
+    font-size: 0.95rem;
+    color: var(--text-secondary);
+}
+
+.onboarding-label input {
+    background: var(--bg-deep);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 0.55rem 0.75rem;
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    font-size: 0.95rem;
+}
+
+.onboarding-label input:focus {
+    outline: none;
+    border-color: var(--brass-dim);
+}
+
+.onboarding-options {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+
+.onboarding-option {
+    cursor: pointer;
+}
+
+.onboarding-option input {
+    display: none;
+}
+
+.option-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    padding: 0.85rem 1rem;
+    background: var(--bg-deep);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    transition: border-color 0.2s;
+}
+
+.onboarding-option input:checked + .option-card {
+    border-color: var(--brass);
+}
+
+.option-card strong {
+    font-family: var(--font-body);
+    font-size: 0.95rem;
+    color: var(--text-primary);
+}
+
+.option-card span {
+    font-family: var(--font-body);
+    font-size: 0.85rem;
+    color: var(--text-dim);
+}
+
+.onboarding-checks {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem 1.4rem;
+    font-family: var(--font-body);
+    font-size: 0.95rem;
+    color: var(--text-secondary);
+}
+
+.onboarding-checks label {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    cursor: pointer;
+}
+
+.onboarding-checks input[type="checkbox"] {
+    accent-color: var(--brass);
+}
+
+.onboarding-nav {
+    display: flex;
+    gap: 0.75rem;
+    justify-content: flex-end;
+    margin-top: 0.5rem;
+}
+
+.onboarding-btn {
+    padding: 0.55rem 1.4rem;
+    font-family: var(--font-body);
+    font-size: 0.95rem;
+    background: var(--brass-dim);
+    color: var(--bg-deep);
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.onboarding-btn:hover {
+    background: var(--brass);
+}
+
+.onboarding-btn.secondary {
+    background: transparent;
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+}
+
+.onboarding-btn.secondary:hover {
+    color: var(--text-secondary);
+    border-color: var(--border-light);
+}
+
+.onboarding-progress {
+    display: flex;
+    justify-content: center;
+    gap: 0.5rem;
+    margin-top: 1.5rem;
+}
+
+.progress-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--border);
+    transition: background 0.3s;
+}
+
+.progress-dot.active {
+    background: var(--brass-dim);
+}
