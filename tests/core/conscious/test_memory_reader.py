@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 from core.conscious.memory_reader import MemoryReader
 
@@ -23,7 +26,8 @@ def test_get_preferences_reads_markdown_files(
 ) -> None:
     prefs, profile = memory_dirs
     (prefs / "personal.md").write_text(
-        "---\ndomain: general\nupdated: 2026-03-19\nconfidence: manual\n---\n\n# Personal\n\n- Wake time: 07:30\n"
+        "---\ndomain: general\nupdated: 2026-03-19\n"
+        "confidence: manual\n---\n\n# Personal\n\n- Wake time: 07:30\n"
     )
     reader = MemoryReader(preferences_dir=prefs, profile_dir=profile)
     result = reader.get_preferences()
@@ -53,7 +57,8 @@ def test_get_proactivity_level_from_profile(
 ) -> None:
     prefs, profile = memory_dirs
     (profile / "proactivity.md").write_text(
-        "---\ndomain: general\nupdated: 2026-03-19\nconfidence: manual\n---\n\n# Proactivity Level\n\n- Level: moderate\n"
+        "---\ndomain: general\nupdated: 2026-03-19\n"
+        "confidence: manual\n---\n\n# Proactivity Level\n\n- Level: moderate\n"
     )
     reader = MemoryReader(preferences_dir=prefs, profile_dir=profile)
     assert reader.get_proactivity_level() == "moderate"
