@@ -109,8 +109,11 @@ class IntegrationRegistry:
             caps = await instance.get_capabilities()
             lines.append(f"\n### {name} ({integration_cls.category})")
             for cap in caps:
+                # params_schema is JSON Schema: {type: "object", properties: {...}}
+                properties = cap.params_schema.get("properties", {})
                 params_desc = ", ".join(
-                    f"{k}: {v.get('type', 'any')}" for k, v in cap.params_schema.items()
+                    f"{k}: {v.get('type', 'any') if isinstance(v, dict) else v}"
+                    for k, v in properties.items()
                 )
                 lines.append(f"  - {cap.name}: {cap.description}")
                 if params_desc:
