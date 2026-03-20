@@ -90,8 +90,29 @@ class IntegrationRegistry:
 
     @classmethod
     def build_capabilities_docs(cls) -> str:
-        """Build a text description of all available integrations for the system prompt."""
+        """Build a basic text description of integrations (sync, name-only fallback)."""
         lines: list[str] = ["Available integrations:"]
         for name, integration_cls in sorted(cls._registry.items()):
             lines.append(f"  - {name} ({integration_cls.category})")
+        return "\n".join(lines)
+
+    @classmethod
+    async def build_capabilities_docs_async(cls) -> str:
+        """Build a rich text description including per-action details for the LLM.
+
+        Calls get_capabilities() on each integration to surface action names,
+        descriptions, and parameter schemas so the LLM knows how to use them.
+        """
+        lines: list[str] = ["Available integrations:"]
+        for name, integration_cls in sorted(cls._registry.items()):
+            instance = cls.get(name)
+            caps = await instance.get_capabilities()
+            lines.append(f"\n### {name} ({integration_cls.category})")
+            for cap in caps:
+                params_desc = ", ".join(
+                    f"{k}: {v.get('type', 'any')}" for k, v in cap.params_schema.items()
+                )
+                lines.append(f"  - {cap.name}: {cap.description}")
+                if params_desc:
+                    lines.append(f"    Parameters: {params_desc}")
         return "\n".join(lines)

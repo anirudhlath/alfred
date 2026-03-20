@@ -44,6 +44,7 @@ class ContextAssembler:
         episodic_text: str = "",
         procedural_text: str = "",
         channel: str = "",
+        content_type: str = "text",
     ) -> str:
         """Build the complete system prompt for Claude."""
         parts: list[str] = []
@@ -51,8 +52,10 @@ class ContextAssembler:
         # 1. Personality (always)
         parts.append(self._personality)
 
-        # 1b. Voice delivery (only for TTS-enabled channels)
-        if channel in self._VOICE_CHANNELS and self._voice_delivery:
+        # 1b. Voice delivery — only when TTS output will actually be produced
+        # (audio input on a TTS-capable channel), not for text-only web sessions
+        tts_active = content_type == "audio" and channel in self._VOICE_CHANNELS
+        if tts_active and self._voice_delivery:
             parts.append(self._voice_delivery)
 
         # 2. Identity

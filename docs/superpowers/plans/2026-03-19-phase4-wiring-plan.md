@@ -33,6 +33,7 @@
 | Create | `tests/core/channels/test_signal_bridge.py` | Tests for signal bridge forwarding |
 | Create | `shared/fs.py` | Extracted `atomic_write` utility (simplify review) |
 | Modify | `core/memory/scratchpad_writer.py` | Use `SCRATCHPAD_QUEUE` constant (simplify review) |
+| Create | `core/channels/signal_bridge/__main__.py` | Signal bridge entry point (arch review) |
 
 ---
 
@@ -1497,5 +1498,60 @@ See `docs/backlog/phase4-deferred.md` § "Code Quality (from Phase 4 Simplify Re
 After all simplify fixes:
 - **395 tests passing** (0 failures)
 - **mypy --strict clean** (133 source files, 0 errors)
+- **ruff check clean** (0 violations)
+- **ruff format clean**
+
+---
+
+## Post-Implementation: Architecture Review (Completed 2026-03-19)
+
+A code-architect agent reviewed the full PR (158 files, ~21k lines) against the Four Pillars, spec, and production readiness. Findings were categorized as Critical (C), Important (I), and Minor (M).
+
+### Four Pillars Audit: PASS
+- Proactivity: No hardcoded schedules. Triggers via LLM tool calls. Proactivity level from MemoryReader.
+- Decoupling: No cross-boundary imports. DomainAgent is a Protocol.
+- Deterministic Communication: All inter-service messages use Pydantic models.
+- Stateful Memory: Librarian pattern correctly implemented. Memory files read-only at runtime.
+
+### Critical Fixes Applied
+
+| ID | Issue | Fix | Files |
+|----|-------|-----|-------|
+| C1 | Stale PEL messages never redelivered | Added periodic `xautoclaim` recovery (every ~60s) | `core/conscious/__main__.py` |
+| C2 | NotificationPublisher never wired to CostTracker | Construct and inject notifier; call `send_alert_if_needed()` after processing | `core/conscious/__main__.py` |
+| C3 | Signal bridge is one-way (no response delivery) | Added `poll_responses()` reading `USER_RESPONSES_STREAM` for signal channel | `core/channels/signal_bridge/bridge.py` |
+| C4 | ScratchpadWriter not started in conscious process | Start as background `asyncio.create_task` | `core/conscious/__main__.py` |
+| C5 | Invalid `content_type` crashes WebSocket via Pydantic | Validate against `("text", "audio")` before constructing UserRequest | `core/channels/web_server.py` |
+
+### Important Fixes Applied
+
+| ID | Issue | Fix | Files |
+|----|-------|-----|-------|
+| I1 | Session lost on page reload (new UUID per connect) | Accept optional `session_id` from client, send back on first connect | `core/channels/web_server.py` |
+| I2 | Relative path defaults break containerized deploys | Use `Path(__file__).resolve()` for ScratchpadWriter, RoutineStore, Librarian | Multiple |
+| I3 | `xinfo_stream` fails on non-existent stream | Use time-based ID (`int(time.time()*1000)-0`) | `core/channels/web_server.py` |
+| I4 | Librarian deletes processing key before episodic writes | Moved delete to `consolidate()` after all writes succeed | `core/librarian/consolidator.py` |
+| I5 | Integration docs show only names, not capabilities | Added `build_capabilities_docs_async()` with action details + params | `core/integrations/registry.py`, `core/conscious/engine.py` |
+| I6 | `atomic_write` races on concurrent writes | Use `tempfile.mkstemp` for unique tmp names | `shared/fs.py` |
+| I7 | Voice delivery prompt injected for text-only web sessions | Gate on `content_type == "audio"` AND channel, not just channel | `core/conscious/context_assembler.py`, `engine.py` |
+| I8 | Signal bridge has no entry point | Created `core/channels/signal_bridge/__main__.py` | New file |
+| M6 | `contextlib.suppress(Exception)` too broad in bridge | Narrowed to `contextlib.suppress(ResponseError)` | `core/channels/signal_bridge/bridge.py` |
+
+### New Files Created
+- `core/channels/signal_bridge/__main__.py` — Signal bridge entry point
+
+### Deferred (Minor, tracked in backlog)
+- M1: `max_tokens=2048` hardcoded (add to config)
+- M2: MemoryReader order-dependent caching (fragile but works at runtime)
+- M3: Episodic stream unbounded growth (needs `_apply_decay` with XTRIM)
+- M4: Librarian deferred litellm imports (mypy may miss type errors)
+- M5: `_publish_and_wait` timeout off by up to 1s (acceptable)
+- M7: Onboarding test doesn't assert file writes (test coverage gap)
+
+### Verification
+
+After all architecture review fixes:
+- **395 tests passing** (0 failures)
+- **mypy --strict clean** (134 source files, 0 errors)
 - **ruff check clean** (0 violations)
 - **ruff format clean**

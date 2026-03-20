@@ -94,3 +94,25 @@ Items identified during the post-implementation simplify review. These are quali
 - **Impact:** Long parameter lists, minor readability.
 - **Files to modify:** `core/conscious/engine.py`
 - **Estimated scope:** Small (0.5 day)
+
+## Architecture Review Deferred Items (2026-03-19)
+
+### M1: Configurable max_tokens for LLM Calls
+- **Why deferred:** `max_tokens=2048` is hardcoded in `engine.py:_call_llm`. Should be configurable via `AlfredConfig` for long briefings that may need 3000+ tokens.
+- **Files to modify:** `shared/config.py`, `core/conscious/engine.py`
+- **Estimated scope:** Tiny (< 0.5 day)
+
+### M3: Episodic Stream Unbounded Growth
+- **Why deferred:** `EPISODIC_STREAM` Redis stream is never trimmed. `_apply_decay()` in the Librarian is a placeholder. Should add `XADD ... MAXLEN ~` or XTRIM in the decay pass.
+- **Files to modify:** `core/memory/episodic/store.py`, `core/librarian/consolidator.py`
+- **Estimated scope:** Small (0.5 day)
+
+### M4: Librarian Deferred litellm Imports
+- **Why deferred:** `import litellm` and `import json` are inside method bodies in `consolidator.py`. Should be module-level (json) or conditional with TYPE_CHECKING (litellm).
+- **Files to modify:** `core/librarian/consolidator.py`
+- **Estimated scope:** Tiny (< 0.5 day)
+
+### M7: Onboarding Test Coverage Gap
+- **Why deferred:** `test_onboarding_endpoint_saves_preferences` only checks HTTP status, not that files were actually written. Should use `tmp_path` and assert file contents.
+- **Files to modify:** `tests/core/channels/test_web_server.py`
+- **Estimated scope:** Tiny (< 0.5 day)

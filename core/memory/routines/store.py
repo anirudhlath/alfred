@@ -13,6 +13,8 @@ from shared.fs import atomic_write
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_ROUTINES_DIR = str(Path(__file__).resolve().parent)
+
 
 class RoutineStore:
     """Stores learned routines as YAML files on disk.
@@ -21,7 +23,7 @@ class RoutineStore:
     Atomic writes: write to .tmp then os.rename().
     """
 
-    def __init__(self, routines_dir: str = "core/memory/routines") -> None:
+    def __init__(self, routines_dir: str = _DEFAULT_ROUTINES_DIR) -> None:
         self._dir = Path(routines_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
 
