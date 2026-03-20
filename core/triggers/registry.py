@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import functools
 from typing import TYPE_CHECKING, Any, ClassVar
+
+from shared.type_map import friendly_type
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -21,6 +24,7 @@ class TriggerRegistry:
 
         def decorator(trigger_cls: type[BaseTrigger]) -> type[BaseTrigger]:
             cls._registry[trigger_type] = trigger_cls
+            cls._build_conditions_docs.cache_clear()
             return trigger_cls
 
         return decorator
@@ -41,8 +45,9 @@ class TriggerRegistry:
         return list(cls._registry.keys())
 
     @classmethod
-    def build_conditions_docs(cls) -> str:
-        """Introspect all registered types and their Conditions schemas."""
+    @functools.cache
+    def _build_conditions_docs(cls) -> str:
+        """Introspect all registered types and their Conditions schemas (cached)."""
         lines: list[str] = ["Available trigger types and their conditions:"]
         for type_name, trigger_cls in sorted(cls._registry.items()):
             conditions_cls: Any = getattr(trigger_cls, "Conditions", None)
@@ -54,14 +59,19 @@ class TriggerRegistry:
             if hasattr(conditions_cls, "model_fields"):
                 for fname, finfo in conditions_cls.model_fields.items():
                     annotation = finfo.annotation
-                    type_str = getattr(annotation, "__name__", str(annotation))
+                    type_str = friendly_type(annotation)
                     required = finfo.is_required()
                     desc = finfo.description or ""
                     key = fname if required else f"{fname}?"
-                    val = f"{type_str}" + (f" ({desc})" if desc else "")
+                    val = f"{type_str}" + (f" — {desc}" if desc else "")
                     fields[key] = val
 
             fields_str = ", ".join(f"{k}: {v}" for k, v in fields.items())
             lines.append(f"  - {type_name}: {{{fields_str}}}")
 
         return "\n".join(lines)
+
+    @classmethod
+    def build_conditions_docs(cls) -> str:
+        """Introspect all registered types and their Conditions schemas."""
+        return cls._build_conditions_docs()
