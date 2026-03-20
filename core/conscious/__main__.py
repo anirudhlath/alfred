@@ -176,7 +176,7 @@ async def run(config: AlfredConfig) -> None:
     finally:
         log.info("Shutting down Conscious Engine...")
         writer_task.cancel()
-        await r.close()
+        await r.aclose()
 
 
 def main() -> None:

@@ -48,7 +48,7 @@ async def run(config: AlfredConfig) -> None:
             await bridge.poll_notifications()
     finally:
         log.info("Shutting down Signal bridge...")
-        await r.close()
+        await r.aclose()
 
 
 def main() -> None:

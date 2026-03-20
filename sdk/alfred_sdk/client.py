@@ -181,7 +181,7 @@ class AlfredClient:
                 context_key = f"{self.CONTEXT_KEY_PREFIX}{self.service_name}"
                 await r.set(context_key, context.model_dump_json(), ex=600)
         finally:
-            await r.close()
+            await r.aclose()
 
     async def unregister(self) -> None:
         """Remove this service from Alfred's tool registry on Redis.

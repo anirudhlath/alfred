@@ -96,14 +96,14 @@ class Supervisor:
         logger.info("[%s] started (PID %d)", svc.spec.name, proc.pid)
 
     async def _pipe_output(self, svc: _ManagedService) -> None:
-        """Read child stdout and re-emit with a service-name prefix."""
+        """Read child stdout and re-emit it. No prefix — loguru already tags with [service]."""
         proc = svc.process
         if proc is None or proc.stdout is None:
             return
         async for raw_line in proc.stdout:
             line = raw_line.decode(errors="replace").rstrip("\n")
             if line:
-                print(f"[{svc.spec.name}] {line}", flush=True)
+                print(line, flush=True)
 
     async def _monitor(self, svc: _ManagedService) -> None:
         """Start, watch, and restart a service on crash."""

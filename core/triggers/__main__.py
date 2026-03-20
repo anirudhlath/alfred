@@ -160,7 +160,7 @@ async def run(config: AlfredConfig) -> None:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await client.unregister()
-        await r.close()
+        await r.aclose()
 
 
 def main() -> None:
