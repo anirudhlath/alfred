@@ -127,3 +127,80 @@ def run_conscious_evals(
         )
 
     return results
+
+
+async def run_conscious_evals_live(
+    scenarios_dir: str = "evals/conscious/scenarios",
+    api_key: str = "",
+    model: str = "openrouter/anthropic/claude-sonnet-4",
+) -> list[EvalResult]:
+    """Run System 2 evals with a real (or mocked) Conscious Engine.
+
+    Requires OPENROUTER_API_KEY for live execution.
+    Falls back to dry-run if no key provided.
+    """
+    if not api_key:
+        logger.warning("No API key — falling back to dry-run mode")
+        return run_conscious_evals(scenarios_dir)
+
+    from unittest.mock import AsyncMock
+
+    from bus.schemas.events import UserRequest
+    from core.conscious.context_assembler import ContextAssembler
+    from core.conscious.cost import CostTracker
+    from core.conscious.engine import ConsciousEngine
+    from core.conscious.identity import IdentityGate
+    from core.conscious.session import SessionManager
+
+    results: list[EvalResult] = []
+    scenarios_path = Path(scenarios_dir)
+
+    mock_redis: Any = AsyncMock()
+    mock_redis.xinfo_stream = AsyncMock(return_value={"last-generated-id": "0-0"})
+
+    engine = ConsciousEngine(
+        redis=mock_redis,
+        identity_gate=IdentityGate(registered_phone=""),
+        session_mgr=SessionManager(redis=mock_redis, timeout_minutes=30),
+        cost_tracker=CostTracker(redis=mock_redis, daily_cap_usd=50.0),
+        context_assembler=ContextAssembler(),
+        domain_router=AsyncMock(),
+        tool_registry=AsyncMock(get_tools=AsyncMock(return_value=[])),
+        context_reader=AsyncMock(get_rendered_context=AsyncMock(return_value="")),
+        claude_model=model,
+        claude_api_key=api_key,
+    )
+
+    for scenario_file in sorted(scenarios_path.glob("*.yaml")):
+        scenario = load_scenario(str(scenario_file))
+        logger.info("Evaluating scenario: %s", scenario.name)
+
+        request = UserRequest(
+            source="eval",
+            channel="web_pwa",
+            session_id=f"eval-{scenario.name}",
+            identity_claim=scenario.request.get("identity", "sir"),
+            authenticated=scenario.request.get("identity", "sir") == "sir",
+            content_type="text",
+            content=scenario.request.get("content", ""),
+        )
+
+        try:
+            response = await engine.process_request(request)
+            eval_result = evaluate_response(
+                scenario,
+                response_text=response.text,
+                tool_calls_made=response.actions_taken,
+            )
+        except Exception as exc:
+            logger.error("Scenario %s failed: %s", scenario.name, exc)
+            eval_result = EvalResult(
+                scenario=scenario.name,
+                passed=False,
+                scores={},
+                details={"error": str(exc)},
+            )
+
+        results.append(eval_result)
+
+    return results
