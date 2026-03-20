@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from shared.streams import NOTIFICATIONS_STREAM
 
 if TYPE_CHECKING:
-    from core.reflex.runner import AioRedis
+    from shared.types import AioRedis
 
 logger = logging.getLogger(__name__)
 

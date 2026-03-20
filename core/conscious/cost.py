@@ -12,7 +12,7 @@ from shared.streams import COST_DAILY_KEY
 
 if TYPE_CHECKING:
     from core.notifications.publisher import NotificationPublisher
-    from core.reflex.runner import AioRedis
+    from shared.types import AioRedis
 
 logger = logging.getLogger(__name__)
 

@@ -13,10 +13,10 @@ import yaml
 if TYPE_CHECKING:
     from core.triggers.registry import TriggerRegistry as TriggerRegistryType
 
-from core.reflex.runner import AioRedis  # noqa: TC001
 from core.triggers.models import BaseTrigger  # noqa: TC001
 from core.triggers.registry import TriggerRegistry
 from shared.streams import TRIGGERS_KEY
+from shared.types import AioRedis  # noqa: TC001
 
 logger = logging.getLogger(__name__)
 
