@@ -51,7 +51,7 @@ def main() -> None:
 
     names = ", ".join(s.name for s in SERVICES)
     mode = "reload" if reload else "static"
-    log.info("Alfred — starting %d services (%s): %s", len(SERVICES), mode, names)
+    log.info("Alfred — starting {} services ({}): {}", len(SERVICES), mode, names)
 
     supervisor = Supervisor(SERVICES, reload=reload, root=Path.cwd())
     code = asyncio.run(supervisor.run())

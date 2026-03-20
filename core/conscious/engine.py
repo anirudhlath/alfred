@@ -24,6 +24,10 @@ from shared.traced import traced
 from shared.type_map import PYTHON_TO_JSON_SCHEMA
 
 _debug = os.getenv("ALFRED_DEBUG", "").lower() in ("1", "true", "yes")
+# LiteLLM logging: use LITELLM_LOG env var (official API).
+# Set to ERROR by default to suppress verbose debug spam; ALFRED_DEBUG overrides to DEBUG.
+if not os.getenv("LITELLM_LOG"):
+    os.environ["LITELLM_LOG"] = "DEBUG" if _debug else "ERROR"
 litellm.suppress_debug_info = not _debug
 litellm.set_verbose = _debug  # type: ignore[attr-defined]
 
