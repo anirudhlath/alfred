@@ -117,6 +117,16 @@ graph TD
 
 See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full architecture.
 
+## Logging Discipline
+
+- Default production level: INFO
+- TRACE: per-frame data (only with `--log-level TRACE`)
+- DEBUG: per-beat data, device sends
+- INFO: state changes, periodic status (every 10s), startup/shutdown
+- WARNING: device disconnect, network issues, drift > threshold
+- ERROR: unrecoverable failures
+- Never log at INFO in the render loop hot path
+
 ## Gotchas
 
 - `redis.asyncio.Redis` methods return `Awaitable[T] | T` — use `# type: ignore[misc]` on await calls (see `core/reflex/runner.py:86` for precedent)
