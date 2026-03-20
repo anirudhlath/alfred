@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from shared.streams import COST_DAILY_KEY
 
 if TYPE_CHECKING:
+    from core.notifications.publisher import NotificationPublisher
     from core.reflex.runner import AioRedis
 
 logger = logging.getLogger(__name__)
@@ -46,9 +47,15 @@ class CostTracker:
 
     ALERT_THRESHOLD = 0.8  # Alert at 80% of cap
 
-    def __init__(self, redis: AioRedis, daily_cap_usd: float = 5.0) -> None:
+    def __init__(
+        self,
+        redis: AioRedis,
+        daily_cap_usd: float = 5.0,
+        notifier: NotificationPublisher | None = None,
+    ) -> None:
         self._redis = redis
         self._daily_cap = daily_cap_usd
+        self._notifier = notifier
 
     async def _get_state(self) -> CostState:
         """Get today's cost state from Redis, creating if needed."""
@@ -117,3 +124,19 @@ class CostTracker:
             alert_sent=True,
         )
         await self._save_state(state)
+
+    async def send_alert_if_needed(self) -> bool:
+        """Check budget and send alert notification if threshold exceeded."""
+        if not self._notifier:
+            return False
+        if not await self.should_send_alert():
+            return False
+        state = await self._get_state()
+        await self._notifier.publish(
+            channel="cost_alert",
+            title="Budget Warning",
+            body=f"Daily spend ${state.spend_usd:.2f} has reached 80% of ${state.cap_usd:.2f} cap",
+            urgency="high",
+        )
+        await self.mark_alert_sent()
+        return True
