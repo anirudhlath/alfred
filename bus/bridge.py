@@ -19,8 +19,8 @@ logger = logging.getLogger(__name__)
 
 STREAM_PREFIX = "alfred"
 
-# Type alias for the unparameterised Redis client (redis-py generics not typed)
-AioRedis = aioredis.Redis
+# PEP 695 type alias — evaluated lazily so Redis[Any] doesn't fail at runtime
+type AioRedis = aioredis.Redis[Any]
 
 
 def mqtt_topic_to_stream_key(topic: str) -> str:

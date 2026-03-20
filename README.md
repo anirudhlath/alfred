@@ -1,0 +1,157 @@
+# Alfred
+
+An ambient, voice-first multi-agent system for smart environments. Inspired by Alfred Pennyworth.
+
+Alfred processes real-time events from smart home devices, responds to voice and text commands, and proactively manages your environment — all while maintaining the demeanor of a proper English butler.
+
+## Architecture
+
+Alfred uses a **dual-process cognitive model**:
+
+- **System 1 (Reflex Engine)** — a local SLM (Ollama) handles the fast path. State-change events pass through the SLM in sub-500ms to decide whether an action is needed.
+- **System 2 (Conscious Engine)** — Claude handles complex reasoning, multi-step planning, and conversational requests via an agentic tool-use loop.
+
+```
+MQTT (Home Assistant) → Redis Streams → Reflex Engine (Ollama)
+                                      → Conscious Engine (Claude)
+                                      → Trigger Engine (proactive)
+                                      ↕
+                              Domain Agents → Microservices
+```
+
+### Four Pillars
+
+1. **Proactivity** — triggers are created dynamically by the LLM, never hardcoded
+2. **Decoupling** — microservices are sovereign apps; `alfred-sdk` is the only bridge
+3. **Deterministic Communication** — all inter-agent messages are Pydantic-validated JSON
+4. **Stateful Memory** — three-layer biologically-inspired memory with nightly Librarian consolidation
+
+### Components
+
+| Component | Purpose | Entry Point |
+|-----------|---------|-------------|
+| MQTT-Redis Bridge | Edge transport adapter | `python -m bus` |
+| Reflex Engine | System 1 fast path (SLM) | `python -m core.reflex` |
+| Trigger Engine | Proactive automation | `python -m core.triggers` |
+| Conscious Engine | System 2 reasoning (Claude) | `python -m core.conscious` |
+| Web Channel | FastAPI + WebSocket server | `python -m core.channels` |
+| Librarian | Nightly memory consolidation | `python -m core.librarian` |
+| Unified Runner | Multi-process supervisor | `python -m runner` |
+
+### Memory System
+
+- **Episodic** — Redis (hot) + SQLite (cold) with embedding-based semantic search
+- **Semantic** — Markdown profiles and preferences (read-only at runtime)
+- **Procedural** — YAML routines encoding learned behavioral sequences
+
+### Integrations
+
+Weather (Open-Meteo), Apple Calendar (CalDAV), Apple Health, Robinhood — all registered via `IntegrationRegistry` with decorator-based discovery.
+
+### Interaction Channels
+
+- **Web PWA** — chat + voice via WebSocket
+- **Voice** — WhisperSTT (local) + PiperTTS (local)
+- **Signal** — separate bridge service ([alfred-signal-bridge](https://github.com/anirudhlath/alfred-signal-bridge))
+
+## Setup
+
+### Prerequisites
+
+- Python 3.13+
+- Redis
+- Mosquitto (MQTT broker)
+- Ollama with a model pulled (e.g., `ollama pull gpt-oss:20b`)
+- [home-service](https://github.com/anirudhlath/alfred-home-service) running
+
+### Install
+
+```bash
+uv venv --python 3.13
+uv pip install -e ".[dev]"
+
+# Optional extras
+uv pip install -e ".[voice]"         # WhisperSTT + PiperTTS
+uv pip install -e ".[integrations]"  # Calendar, Robinhood
+uv pip install -e ".[memory]"        # Sentence transformers, SQLite
+uv pip install -e ".[evals]"         # DeepEval
+```
+
+### Run
+
+```bash
+# Start infrastructure
+brew services start redis
+brew services start mosquitto
+
+# Start home-service (separate repo)
+cd ../home-service && uv run uvicorn app.server:app --port 8000
+
+# Start all Alfred services
+uv run python -m runner
+```
+
+Or run services individually:
+
+```bash
+uv run python -m bus              # MQTT-Redis bridge
+uv run python -m core.reflex     # Reflex Engine
+uv run python -m core.triggers   # Trigger Engine
+uv run python -m core.conscious  # Conscious Engine
+uv run python -m core.channels   # Web channel + PWA
+```
+
+### Smoke Test
+
+```bash
+bash scripts/smoke-test.sh
+```
+
+## Evals
+
+```bash
+uv run python -m evals run                  # System 1 (requires Ollama)
+uv run python -m evals regression           # System 1 regression (mocked, CI-safe)
+uv run python -m evals conscious            # System 2 (dry-run)
+uv run python -m evals demo                 # Good Morning end-to-end demo
+uv run python -m evals run -n 5             # Repeat 5x with aggregate stats
+uv run python -m evals compare <run1> <run2> # Compare two runs
+```
+
+## Development
+
+```bash
+# Lint + format
+uv run ruff check . --fix
+uv run ruff format .
+
+# Type check
+uv run mypy bus/ core/ domains/ evals/ runner/ sdk/ shared/ telemetry/
+
+# Tests
+uv run pytest
+```
+
+## Configuration
+
+All configuration via environment variables (`.env` file auto-loaded):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `REDIS_HOST` | `localhost` | Redis server |
+| `REDIS_PORT` | `6379` | Redis port |
+| `MQTT_HOST` | `localhost` | MQTT broker |
+| `MQTT_PORT` | `1883` | MQTT port |
+| `OLLAMA_HOST` | `http://localhost:11434` | Ollama API |
+| `OLLAMA_MODEL` | `gpt-oss:20b` | SLM model |
+| `HA_HOST` | `http://homeassistant.local:8123` | Home Assistant |
+| `HA_TOKEN` | — | HA access token |
+
+## Related Repos
+
+- [alfred-home-service](https://github.com/anirudhlath/alfred-home-service) — Home Assistant wrapper microservice
+- [alfred-home-assistant](https://github.com/anirudhlath/alfred-home-assistant) — HA config for dev/testing
+
+## License
+
+Private.

@@ -10,7 +10,7 @@ import logging
 import signal
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -26,6 +26,7 @@ from core.triggers.server import create_app
 from core.triggers.store import TriggerStore
 from sdk.alfred_sdk.client import AlfredClient
 from shared.config import AlfredConfig
+from shared.logging import configure_logging
 from shared.streams import EVENTS_STREAM
 
 logger = logging.getLogger(__name__)
@@ -54,7 +55,7 @@ async def tick_loop(engine: TriggerEngine) -> None:
 
 async def event_loop(
     engine: TriggerEngine,
-    r: aioredis.Redis,
+    r: aioredis.Redis[Any],
 ) -> None:
     """Event listener loop for sensor-based trigger evaluation."""
     from bus.schemas.events import StateChangedEvent
@@ -74,7 +75,7 @@ async def event_loop(
             for entry_id, entry_data in stream_entries:
                 raw_event = entry_data.get("event") or entry_data.get(b"event")
                 if raw_event is None:
-                    await r.xack(EVENTS_STREAM, GROUP, entry_id)
+                    await r.xack(EVENTS_STREAM, GROUP, entry_id)  # type: ignore[no-untyped-call]
                     continue
 
                 event_str = raw_event.decode() if isinstance(raw_event, bytes) else raw_event
@@ -82,7 +83,7 @@ async def event_loop(
                 try:
                     event = StateChangedEvent.model_validate_json(event_str)
                 except Exception:
-                    await r.xack(EVENTS_STREAM, GROUP, entry_id)
+                    await r.xack(EVENTS_STREAM, GROUP, entry_id)  # type: ignore[no-untyped-call]
                     continue
 
                 try:
@@ -90,7 +91,7 @@ async def event_loop(
                 except Exception as e:
                     logger.error("Event evaluation error: %s", e)
 
-                await r.xack(EVENTS_STREAM, GROUP, entry_id)
+                await r.xack(EVENTS_STREAM, GROUP, entry_id)  # type: ignore[no-untyped-call]
 
 
 async def _periodic(
@@ -114,7 +115,7 @@ async def run(config: AlfredConfig) -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, _handle_signal)
 
-    r: aioredis.Redis = aioredis.from_url(config.redis_url)
+    r: aioredis.Redis[Any] = aioredis.from_url(config.redis_url)
 
     store = TriggerStore(redis=r, snapshot_dir=SNAPSHOT_DIR)
     triggers = await store.load()
@@ -159,15 +160,18 @@ async def run(config: AlfredConfig) -> None:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await client.unregister()
-        await r.aclose()
+        await r.close()
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    )
+    configure_logging(service="triggers")
     config = AlfredConfig.from_env()
+    from shared.otel import init_tracing
+
+    init_tracing(
+        service_name="triggers",
+        endpoint=config.otel_endpoint if config.signoz_enabled else None,
+    )
     asyncio.run(run(config))
 
 

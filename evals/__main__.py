@@ -11,6 +11,7 @@ from pathlib import Path
 
 from core.reflex.tool_registry import ToolInfo, ToolRegistry
 from evals.compare import compare_runs
+from evals.conscious.runner import run_conscious_evals
 from evals.inference import BACKENDS
 from evals.loader import load_scenario, load_scenarios
 from evals.models import EvalRun, Scenario, Verdict
@@ -62,6 +63,16 @@ def _parse_args() -> argparse.Namespace:
     # runs
     sub.add_parser("runs", help="List saved runs")
 
+    # regression
+    sub.add_parser("regression", help="Run System 1 evals in regression mode (mocked Ollama)")
+
+    # conscious
+    sub.add_parser("conscious", help="Run System 2 evals with DeepEval metrics")
+
+    # demo
+    demo_parser = sub.add_parser("demo", help="Run Good Morning end-to-end demo")
+    demo_parser.add_argument("--channel", default="web_pwa", choices=["web_pwa", "signal", "voice"])
+
     # capture-context
     cap_parser = sub.add_parser(
         "capture-context", help="Capture live context from Redis to a fixture file"
@@ -82,7 +93,7 @@ async def _load_tools(config: AlfredConfig) -> list[ToolInfo]:
         registry = ToolRegistry(r)
         return await registry.get_tools()
     finally:
-        await r.aclose()
+        await r.close()
 
 
 async def _execute_single_run(
@@ -259,7 +270,38 @@ async def _cmd_capture_context(args: argparse.Namespace) -> None:
         output_path.write_text(json.dumps(envelope, indent=2))
         print(f"\nFixture written: {output_path}")
     finally:
-        await r.aclose()
+        await r.close()
+
+
+def _cmd_regression() -> None:
+    """Run System 1 evals in regression mode."""
+    from evals.regression.runner import run_regression
+
+    results = run_regression()
+    print(f"Regression: {results['passed']} passed, {results['failed']} failed")
+    for s in results["scenarios"]:
+        status = "PASS" if s["passed"] else "FAIL"
+        print(f"  [{status}] {s['file']}")
+
+
+def _cmd_conscious() -> None:
+    """Run System 2 evals (dry-run without live engine)."""
+    import logging
+
+    logging.basicConfig(level=logging.INFO)
+    results = run_conscious_evals()
+    print(f"\nSystem 2 evals: {len(results)} scenarios loaded")
+    for r in results:
+        status = "PASS" if r.passed else "FAIL"
+        detail = f" ({r.details.get('status', '')})" if r.details else ""
+        print(f"  [{status}] {r.scenario}{detail}")
+
+
+def _cmd_demo(args: argparse.Namespace) -> None:
+    """Run the Good Morning demo."""
+    from evals.e2e.demo_good_morning import run_demo
+
+    asyncio.run(run_demo(channel=args.channel))
 
 
 def _cmd_compare(args: argparse.Namespace) -> None:
@@ -279,6 +321,12 @@ def main() -> None:
             _cmd_list()
         case "runs":
             _cmd_runs()
+        case "regression":
+            _cmd_regression()
+        case "conscious":
+            _cmd_conscious()
+        case "demo":
+            _cmd_demo(args)
         case "compare":
             _cmd_compare(args)
         case "capture-context":

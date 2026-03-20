@@ -1,0 +1,16 @@
+name: simple_command
+description: "Sir says 'Turn off the living room lights' — direct tool call"
+
+request:
+  channel: voice
+  identity: sir
+  content_type: text
+  content: "Turn off the living room lights"
+
+expected:
+  tool_calls:
+    - name: "smart_home.set_light"
+      params:
+        room: "living_room"
+  butler_personality_score: 0.5
+  max_iterations: 2

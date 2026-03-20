@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from bus.schemas.events import ActionRequest, StateChangedEvent
-from shared.tracing import TraceRecord
+from shared.tracing import ConsciousTraceRecord, ReflexTraceRecord, TraceRecord
 
 
 def test_trace_record_construction() -> None:
@@ -93,3 +93,64 @@ def test_trace_record_json_round_trip() -> None:
     restored = TraceRecord.model_validate_json(json_str)
     assert restored.trace_id == trace.trace_id
     assert restored.model == trace.model
+
+
+def test_reflex_trace_record_has_event() -> None:
+    event = StateChangedEvent(source="test", domain="home", entity_id="light.test", new_state="on")
+    record = ReflexTraceRecord(
+        trace_id="t1",
+        timestamp=datetime.now(UTC),
+        model="llama3:8b",
+        event=event,
+        preferences_text="prefs",
+        tools=[],
+        prompt="prompt",
+        raw_response="{}",
+        parsed_action=None,
+        latency_ms=100.0,
+        prompt_tokens=50,
+        completion_tokens=20,
+    )
+    assert record.system == "reflex"
+    assert record.event.entity_id == "light.test"
+
+
+def test_conscious_trace_record_has_request_id() -> None:
+    record = ConsciousTraceRecord(
+        trace_id="t2",
+        timestamp=datetime.now(UTC),
+        model="claude-opus-4-6",
+        request_id="req-123",
+        session_id="sess-456",
+        channel="web_pwa",
+        prompt="prompt",
+        raw_response="response text",
+        parsed_action=None,
+        tool_calls=[],
+        latency_ms=1200.0,
+        prompt_tokens=500,
+        completion_tokens=200,
+    )
+    assert record.system == "conscious"
+    assert record.request_id == "req-123"
+
+
+def test_base_fields_shared() -> None:
+    """Both record types share TraceRecordBase fields."""
+    record = ConsciousTraceRecord(
+        trace_id="t3",
+        timestamp=datetime.now(UTC),
+        model="claude-opus-4-6",
+        request_id="req",
+        session_id="sess",
+        channel="signal",
+        prompt="p",
+        raw_response="r",
+        parsed_action=None,
+        tool_calls=[],
+        latency_ms=100.0,
+        prompt_tokens=10,
+        completion_tokens=5,
+    )
+    assert record.trace_id == "t3"
+    assert record.latency_ms == 100.0
