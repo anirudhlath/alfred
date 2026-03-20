@@ -236,6 +236,65 @@ function stopRecording() {
     voiceBtn.classList.remove('recording');
 }
 
+// --- Onboarding ---
+
+function initOnboarding() {
+    if (localStorage.getItem('alfred_onboarded')) return;
+
+    const overlay = document.getElementById('onboarding');
+    overlay.style.display = 'flex';
+
+    // Step navigation
+    overlay.querySelectorAll('[data-next]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const target = parseInt(btn.dataset.next, 10);
+            showStep(target);
+        });
+    });
+
+    // Finish button — collect and submit preferences
+    document.getElementById('ob-finish').addEventListener('click', async () => {
+        const payload = {
+            wake_time: document.getElementById('ob-wake-time').value || null,
+            work_address: document.getElementById('ob-work-address').value || null,
+            dietary_restrictions: document.getElementById('ob-dietary').value || null,
+            proactivity_level: document.querySelector('input[name="proactivity"]:checked')?.value || 'moderate',
+            guest_controls: Array.from(overlay.querySelectorAll('.onboarding-checks input:checked')).map(cb => cb.value),
+        };
+
+        try {
+            await fetch('/api/onboarding', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+        } catch (err) {
+            console.error('Onboarding save failed:', err);
+        }
+
+        localStorage.setItem('alfred_onboarded', '1');
+        showStep(4);
+    });
+
+    // Close button
+    document.getElementById('ob-close').addEventListener('click', () => {
+        overlay.style.opacity = '0';
+        overlay.style.transition = 'opacity 0.4s ease';
+        setTimeout(() => { overlay.style.display = 'none'; }, 400);
+    });
+}
+
+function showStep(n) {
+    const overlay = document.getElementById('onboarding');
+    overlay.querySelectorAll('.onboarding-step').forEach(el => {
+        el.style.display = el.dataset.step === String(n) ? 'flex' : 'none';
+    });
+    overlay.querySelectorAll('.progress-dot').forEach(dot => {
+        dot.classList.toggle('active', parseInt(dot.dataset.dot, 10) <= n);
+    });
+}
+
 // --- Init ---
 
+initOnboarding();
 connect();

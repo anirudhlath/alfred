@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import base64
+import os
 import time
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -13,6 +15,7 @@ import redis.asyncio as aioredis
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
+from pydantic import BaseModel
 
 from bus.schemas.events import AlfredResponse, UserRequest
 from shared.streams import USER_REQUESTS_STREAM, USER_RESPONSES_STREAM
@@ -61,6 +64,32 @@ def _decode_audio(data_url: str) -> bytes:
     if "," in data_url:
         data_url = data_url.split(",", 1)[1]
     return base64.b64decode(data_url)
+
+
+class OnboardingPayload(BaseModel):
+    """Onboarding wizard submission from the PWA."""
+
+    wake_time: str | None = None
+    work_address: str | None = None
+    dietary_restrictions: str | None = None
+    proactivity_level: str | None = None  # opinionated | moderate | conservative
+    guest_controls: list[str] | None = None
+
+
+def _preference_file(
+    domain: str, updated: str, confidence: str, title: str, lines: list[str]
+) -> str:
+    """Format a preference Markdown file with YAML frontmatter."""
+    body = "\n".join(lines)
+    front = f"---\ndomain: {domain}\nupdated: {updated}\nconfidence: {confidence}\n---"
+    return f"{front}\n\n# {title}\n\n{body}\n"
+
+
+def _atomic_write(path: Path, content: str) -> None:
+    """Write content to a file atomically (tmp + rename)."""
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(content)
+    os.rename(tmp, path)
 
 
 @asynccontextmanager
@@ -162,6 +191,58 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
         except WebSocketDisconnect:
             logger.info("WebSocket disconnected (session={})", session_id)
+
+    @app.post("/api/onboarding")
+    async def save_onboarding(payload: OnboardingPayload) -> dict[str, str]:
+        """Save onboarding preferences to semantic memory files.
+
+        This is a bootstrap path that writes directly to preference/profile files
+        before the Librarian's first consolidation cycle.
+        """
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
+        prefs_dir = Path(__file__).resolve().parent.parent / "memory" / "preferences"
+        profile_dir = Path(__file__).resolve().parent.parent / "memory" / "profile"
+        prefs_dir.mkdir(parents=True, exist_ok=True)
+        profile_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write personal preferences (wake time, dietary, work address)
+        lines: list[str] = []
+        if payload.wake_time:
+            lines.append(f"- Usual wake time: {payload.wake_time}")
+        if payload.work_address:
+            lines.append(f"- Work address: {payload.work_address}")
+        if payload.dietary_restrictions:
+            lines.append(f"- Dietary restrictions: {payload.dietary_restrictions}")
+        if lines:
+            _atomic_write(
+                prefs_dir / "personal.md",
+                _preference_file("general", today, "manual", "Personal", lines),
+            )
+
+        # Write proactivity level
+        if payload.proactivity_level:
+            _atomic_write(
+                profile_dir / "proactivity.md",
+                _preference_file(
+                    "general",
+                    today,
+                    "manual",
+                    "Proactivity Level",
+                    [f"- Level: {payload.proactivity_level}"],
+                ),
+            )
+
+        # Write guest mode config
+        if payload.guest_controls:
+            guest_lines = [f"- {ctrl}" for ctrl in payload.guest_controls]
+            _atomic_write(
+                prefs_dir / "guest_mode.md",
+                _preference_file("general", today, "manual", "Guest Mode", guest_lines),
+            )
+
+        n_fields = len(payload.model_dump(exclude_none=True))
+        logger.info("Onboarding preferences saved ({} fields)", n_fields)
+        return {"status": "ok"}
 
     # Mount static files for PWA (if directory exists)
     web_dir = Path(__file__).resolve().parent.parent.parent / "web"
