@@ -153,6 +153,75 @@ class Librarian:
         tmp.write_text(content)
         os.rename(tmp, path)
 
+    async def _update_semantic_memory(self, entries: list[EpisodicEntry]) -> int:
+        """Use Claude to detect preference changes and update semantic files.
+
+        Returns the number of files updated.
+        """
+        if not self._api_key or not entries:
+            return 0
+
+        summaries = "\n".join(f"- {e.summary}" for e in entries)
+        try:
+            import litellm
+
+            response = await litellm.acompletion(
+                model=self._model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Analyze these home assistant observations. "
+                            "If you detect a clear user preference (e.g., preferred temperature, "
+                            "routine change, dietary preference), output it as:\n"
+                            "PREFERENCE: <domain>: <observation>\n"
+                            "Only output high-confidence observations. "
+                            "If nothing is notable, output NONE."
+                        ),
+                    },
+                    {"role": "user", "content": summaries},
+                ],
+                max_tokens=500,
+                api_key=self._api_key,
+            )
+            result_text: str = response.choices[0].message.content or ""
+            if "NONE" in result_text or not result_text.strip():
+                return 0
+
+            new_lines = [
+                line.replace("PREFERENCE:", "-").strip()
+                for line in result_text.splitlines()
+                if line.startswith("PREFERENCE:")
+            ]
+            if not new_lines:
+                return 0
+
+            learned_path = self._preferences_dir / "learned.md"
+            if learned_path.exists():
+                existing = learned_path.read_text()
+            else:
+                existing = (
+                    "---\ndomain: general\nupdated: "
+                    f"{datetime.now(UTC).strftime('%Y-%m-%d')}\n"
+                    "confidence: librarian\n---\n\n# Learned Preferences\n\n"
+                )
+
+            updated = existing.rstrip() + "\n" + "\n".join(new_lines) + "\n"
+            self._write_semantic_file(learned_path, updated)
+            return 1
+        except Exception as exc:
+            logger.warning("Semantic memory update failed: %s", exc)
+        return 0
+
+    async def _apply_decay(self) -> int:
+        """Archive old hot-storage entries to cold storage.
+
+        Returns the number of entries archived.
+        The EpisodicStore hot→cold migration is handled by the store itself.
+        This is a placeholder for future time-based XTRIM or archival.
+        """
+        return 0
+
     async def consolidate(self) -> dict[str, Any]:
         """Run one consolidation cycle.
 
@@ -185,13 +254,21 @@ class Librarian:
             embedding = embedder.embed(entry.summary) if embedder else b""
             await self._episodic.write(entry, embedding)
 
-        # 4. TODO: Pattern detection for procedural memory (requires Claude)
-        # 5. TODO: Semantic memory updates (requires Claude)
-        # 6. TODO: Decay processing
+        # 4. Update semantic memory (requires Claude)
+        semantic_updates = await self._update_semantic_memory(episodic_entries)
+
+        # 5. Pattern detection for procedural memory
+        # Needs multiple consolidation cycles of data (>= 2 weeks).
+        # Deferred until enough episodic entries exist.
+
+        # 6. Decay processing
+        archived = await self._apply_decay()
 
         result: dict[str, Any] = {
             "entries_processed": len(lines),
             "episodic_created": len(episodic_entries),
+            "semantic_updates": semantic_updates,
+            "archived": archived,
             "timestamp": datetime.now(UTC).isoformat(),
         }
         logger.info("Consolidation complete: %s", result)
