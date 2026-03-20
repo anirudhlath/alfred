@@ -109,6 +109,23 @@ def test_onboarding_endpoint_saves_preferences(tmp_path: Path) -> None:
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"
 
+    # Verify preference files were actually written with correct content
+    assert "personal.md" in written_files, "personal.md should have been written"
+    personal_content = written_files["personal.md"]
+    # Parse YAML frontmatter to verify structured data, not string matching
+    assert personal_content.startswith("---\n"), "Preference files should have YAML frontmatter"
+    import yaml
+
+    parts = personal_content.split("---\n", 2)
+    frontmatter = yaml.safe_load(parts[1])
+    assert frontmatter is not None, "Frontmatter should parse as valid YAML"
+
+    assert "proactivity.md" in written_files, "proactivity.md should have been written"
+    proactivity_content = written_files["proactivity.md"]
+    proactivity_parts = proactivity_content.split("---\n", 2)
+    proactivity_fm = yaml.safe_load(proactivity_parts[1])
+    assert proactivity_fm is not None, "Proactivity frontmatter should parse as valid YAML"
+
 
 def test_onboarding_endpoint_empty_payload() -> None:
     """POST /api/onboarding with empty payload returns ok (no files written)."""
