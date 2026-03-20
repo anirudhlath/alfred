@@ -8,81 +8,45 @@ Prior files (`context-provider.md`, `evals-runner.md`, `phase3-review.md`, `phas
 
 ## Tier 1: Critical (System doesn't fully work without these)
 
-### C1: Librarian Never Scheduled
-- **Impact:** Consolidation only runs via manual `python -m core.librarian`. Scratchpad grows forever, no learning happens, semantic memory never updates.
-- **Fix:** Add Librarian to unified runner with a daily schedule (APScheduler or periodic asyncio task).
-- **Files:** `runner/__main__.py`, possibly `core/librarian/__main__.py`
-- **Scope:** Small
+### ~~C1: Librarian Never Scheduled~~ — DONE (Phase 5)
+Periodic scheduler wired into conscious process (1hr default, `LIBRARIAN_INTERVAL_SECONDS` env var).
 
-### C2: Signal Bridge `_send_signal()` is a Stub
-- **Impact:** Notifications reach Redis stream but never reach the user's phone. Bridge is read-only outbound.
-- **Fix:** Implement `asyncio.create_subprocess_exec("signal-cli", ...)` call.
-- **Files:** `core/channels/signal_bridge/bridge.py:42-45`
-- **Scope:** Small
+### ~~C2: Signal Bridge `_send_signal()` is a Stub~~ — DONE (Phase 5)
+Implemented `asyncio.create_subprocess_exec("signal-cli", ...)` with error handling.
 
-### C3: Episodic Stream Unbounded Growth
-- **Impact:** `EPISODIC_STREAM` Redis stream is never trimmed. Redis memory grows indefinitely.
-- **Fix:** Add `MAXLEN ~10000` to `xadd()` in `EpisodicStore.write()`, or implement XTRIM in Librarian `_apply_decay()`.
-- **Files:** `core/memory/episodic/store.py:53`, `core/librarian/consolidator.py:221-228`
-- **Scope:** Small
+### ~~C3: Episodic Stream Unbounded Growth~~ — DONE (Phase 5)
+Added `maxlen=10000, approximate=True` to `EpisodicStore.write()` xadd call.
 
-### C4: Librarian N+1 LLM Calls
-- **Impact:** `_extract_entities()` makes 1 Claude API call per scratchpad line. 100 lines = 100 calls + significant cost.
-- **Fix:** Batch all lines into a single prompt that returns entities for each line.
-- **Files:** `core/librarian/consolidator.py:89-152`
-- **Scope:** Small
+### ~~C4: Librarian N+1 LLM Calls~~ — DONE (Phase 5)
+Batched entity extraction into single LLM call via `_extract_entities_batch()`.
 
 ---
 
 ## Tier 2: Important (Should fix before production)
 
-### I1: AioRedis Type Alias in Wrong Place
-- **Impact:** Defined in `core/reflex/runner.py:26`, imported across 7+ modules. Violates `shared/` as single source of truth.
-- **Fix:** Move to `shared/types.py`, update all imports.
-- **Files:** `shared/types.py` (create), all consumers
-- **Scope:** Tiny
+### ~~I1: AioRedis Type Alias in Wrong Place~~ — DONE (Phase 5)
+Moved to `shared/types.py`, all 16+ consumers updated.
 
-### I2: MemoryReader No File Caching
-- **Impact:** `get_preferences()` and `get_profile()` re-read and glob all `.md` files on every request. Only proactivity is cached.
-- **Fix:** Add TTL-based caching (e.g., 60s) for preference and profile content.
-- **Files:** `core/conscious/memory_reader.py`
-- **Scope:** Small
+### ~~I2: MemoryReader No File Caching~~ — DONE (Phase 5)
+Added 60s TTL caching to `core/memory/reader.py`.
 
-### I3: max_tokens Hardcoded to 2048
-- **Impact:** Long briefings (morning summary with calendar + weather + portfolio) may need 3000+ tokens.
-- **Fix:** Add `max_tokens` to `AlfredConfig`, use in `engine.py:235`.
-- **Files:** `shared/config.py`, `core/conscious/engine.py:235`
-- **Scope:** Tiny
+### ~~I3: max_tokens Hardcoded to 2048~~ — DONE (Phase 5)
+Configurable via `CLAUDE_MAX_TOKENS` env var in `AlfredConfig`.
 
-### I4: Identity "sir" Magic String
-- **Impact:** Literal `"sir"` in 4 places in `identity.py`. Magic string, fragile.
-- **Fix:** Extract to constant (e.g., `IDENTITY_SIR = "sir"`, `IDENTITY_GUEST = "guest"`).
-- **Files:** `core/conscious/identity.py:26,44,72,74`
-- **Scope:** Tiny
+### ~~I4: Identity "sir" Magic String~~ — DONE (Phase 5)
+Extracted to `IDENTITY_SIR` / `IDENTITY_GUEST` constants.
 
-### I5: Librarian Deferred litellm Imports
-- **Impact:** `import litellm` and `import json` inside method bodies in consolidator.py. Reload every call, mypy may miss type errors.
-- **Fix:** Module-level for json, conditional with TYPE_CHECKING for litellm.
-- **Files:** `core/librarian/consolidator.py:94-96,171`
-- **Scope:** Tiny
+### ~~I5: Librarian Deferred litellm Imports~~ — DONE (Phase 5)
+Module-level `json`, structured deferred `litellm` imports.
 
-### I6: Onboarding Test Captures Files But Never Asserts Contents
-- **Impact:** Test populates `written_files` dict but only checks HTTP 200. Silently passes if files have wrong content.
-- **Fix:** Assert file contents, YAML frontmatter structure, field values.
-- **Files:** `tests/core/channels/test_web_server.py:62-110`
-- **Scope:** Tiny
+### ~~I6: Onboarding Test Captures Files But Never Asserts Contents~~ — DONE (Phase 5)
+Added YAML frontmatter parsing assertions for personal.md and proactivity.md.
 
-### I7: Reflex/Conscious Dual MemoryReader
-- **Impact:** Function-based reader in `core/reflex/memory_reader.py` and class-based in `core/conscious/memory_reader.py`. No shared implementation.
-- **Fix:** Consolidate into single implementation in `core/memory/` or have Reflex use the Conscious reader.
-- **Files:** `core/reflex/memory_reader.py`, `core/conscious/memory_reader.py`
-- **Scope:** Small
+### ~~I7: Reflex/Conscious Dual MemoryReader~~ — DONE (Phase 5)
+Consolidated to single `core/memory/reader.py`, deleted both old implementations.
 
-### I8: RoutineStore Globs+Parses YAML Every Call
-- **Impact:** `list_all()` does full directory scan and YAML parse per call. Slow with many routines.
-- **Fix:** Add in-memory index, refresh on write or periodic interval.
-- **Files:** `core/memory/routines/store.py:49-58`
-- **Scope:** Small
+### ~~I8: RoutineStore Globs+Parses YAML Every Call~~ — DONE (Phase 5)
+Added in-memory cache with invalidation on save/delete.
 
 ---
 

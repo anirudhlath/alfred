@@ -24,8 +24,10 @@ async def test_batch_extraction_single_llm_call(librarian: Librarian) -> None:
     """Multiple scratchpad lines should produce exactly ONE LLM call for entities."""
     lines = [
         "2026-03-19T10:00:00Z [reflex] home.turn_on_light({entity: light.living_room}) → success",
-        "2026-03-19T10:05:00Z [reflex] home.set_temperature({entity: climate.main, temp: 72}) → success",
-        "2026-03-19T10:10:00Z [conscious] user='good morning' → 42 chars (actions=none, tokens=100+20)",
+        "2026-03-19T10:05:00Z [reflex] home.set_temperature"
+        "({entity: climate.main, temp: 72}) → success",
+        "2026-03-19T10:10:00Z [conscious] user='good morning'"
+        " → 42 chars (actions=none, tokens=100+20)",
     ]
 
     mock_response = AsyncMock()
