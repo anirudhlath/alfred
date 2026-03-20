@@ -11,6 +11,8 @@ import asyncio
 import logging
 from typing import Any
 
+from shared.streams import SCRATCHPAD_QUEUE
+
 logger = logging.getLogger(__name__)
 
 _DRAIN_BATCH_SIZE = 1000
@@ -22,7 +24,7 @@ class ScratchpadWriter:
     def __init__(
         self,
         redis: Any,
-        queue_key: str = "alfred:scratchpad:queue",
+        queue_key: str = SCRATCHPAD_QUEUE,
         scratchpad_path: str = "core/memory/scratchpad.md",
     ) -> None:
         self.redis = redis

@@ -5,15 +5,18 @@ Routes through OpenRouter via LiteLLM for provider-agnostic model access.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import litellm
 
 from bus.schemas.events import ActionRequest, AlfredResponse, UserRequest
+from core.integrations.registry import IntegrationRegistry
 from sdk.alfred_sdk.telemetry import track_latency
+from shared.streams import SCRATCHPAD_QUEUE
 from shared.traced import traced
 
 _debug = os.getenv("ALFRED_DEBUG", "").lower() in ("1", "true", "yes")
@@ -177,8 +180,6 @@ class ConsciousEngine:
         tool_calls: list[dict[str, Any]] = []
 
         if msg.tool_calls:
-            import json
-
             for tc in msg.tool_calls:
                 tool_input = tc.function.arguments
                 if isinstance(tool_input, str):
@@ -206,12 +207,13 @@ class ConsciousEngine:
             usage.completion_tokens if usage else 0,
         )
 
-    async def _execute_tool_calls(self, tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    async def _execute_tool_calls(
+        self, tool_calls: list[dict[str, Any]], tools: list[ToolInfo]
+    ) -> list[dict[str, Any]]:
         """Execute tool calls via DomainRouter and return results."""
         results: list[dict[str, Any]] = []
         for tc in tool_calls:
             # Tool name format: feature.method -> target_service looked up from registry
-            tools = await self._tool_registry.get_tools()
             target = ""
             for t in tools:
                 if t.name == tc["name"]:
@@ -304,8 +306,6 @@ class ConsciousEngine:
         episodic_text = ""
         if self._episodic:
             try:
-                from datetime import timedelta
-
                 since = datetime.now(UTC) - timedelta(days=7)
                 entries = await self._episodic.query_cold(limit=10, since=since)
                 if entries:
@@ -326,8 +326,6 @@ class ConsciousEngine:
                 logger.warning("Failed to read procedural memory", exc_info=True)
 
         # 4d. Build integrations section
-        from core.integrations.registry import IntegrationRegistry
-
         integrations_section = IntegrationRegistry.build_capabilities_docs()
 
         system_prompt = self._assembler.assemble(
@@ -367,7 +365,7 @@ class ConsciousEngine:
                 break
 
             # Execute tools and feed results back (uses original dotted names)
-            tool_results = await self._execute_tool_calls(tool_calls)
+            tool_results = await self._execute_tool_calls(tool_calls, tools=tools)
             all_actions.extend(tc["name"] for tc in tool_calls)
 
             # Append assistant turn with tool calls (OpenAI format — sanitized names)
@@ -381,7 +379,7 @@ class ConsciousEngine:
                     "function": {
                         "name": self._sanitize_tool_name(tc["name"]),
                         "arguments": (
-                            __import__("json").dumps(tc["input"])
+                            json.dumps(tc["input"])
                             if isinstance(tc["input"], dict)
                             else str(tc["input"])
                         ),
@@ -416,8 +414,6 @@ class ConsciousEngine:
 
         # 8b. Write observation to scratchpad queue
         try:
-            from shared.streams import SCRATCHPAD_QUEUE
-
             timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
             actions_str = ", ".join(all_actions) if all_actions else "none"
             observation = (

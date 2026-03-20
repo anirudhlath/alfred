@@ -12,7 +12,6 @@ On failure, the scratchpad accumulates — memory files never left partial.
 from __future__ import annotations
 
 import logging
-import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -147,11 +146,12 @@ class Librarian:
             )
         return entries
 
-    def _write_semantic_file(self, path: Path, content: str) -> None:
+    @staticmethod
+    def _write_semantic_file(path: Path, content: str) -> None:
         """Atomic write to a semantic memory file."""
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(content)
-        os.rename(tmp, path)
+        from shared.fs import atomic_write
+
+        atomic_write(path, content)
 
     async def _update_semantic_memory(self, entries: list[EpisodicEntry]) -> int:
         """Use Claude to detect preference changes and update semantic files.

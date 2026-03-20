@@ -42,3 +42,55 @@ Items identified during the Phase 3 spec audit and Phase 4 planning that are not
 - **Depends on:** Phase 4A (basic wiring must work first)
 - **Files to modify:** `shared/config.py`, `core/conscious/engine.py` (periodic config refresh)
 - **Estimated scope:** Small (0.5 day)
+
+## Code Quality (from Phase 4 Simplify Review)
+
+Items identified during the post-implementation simplify review. These are quality improvements, not functional gaps.
+
+### Librarian N+1 LLM Calls
+- **Why deferred:** `_extract_entities()` is called per-entry in a loop, making one LLM call per episodic entry. Should batch entries into a single prompt.
+- **Impact:** Consolidation cycles with many entries will be slow and expensive.
+- **Files to modify:** `core/librarian/consolidator.py` (`_extract_episodic_entries` loop)
+- **Estimated scope:** Small (0.5 day)
+
+### AioRedis Type Alias Deduplication
+- **Why deferred:** Multiple modules define or import `AioRedis` differently. Should have a single canonical import path.
+- **Impact:** Inconsistent typing, mild confusion for contributors.
+- **Files to modify:** `shared/types.py` (new canonical location), all consumers
+- **Estimated scope:** Small (0.5 day)
+
+### Reflex/Conscious MemoryReader Consolidation
+- **Why deferred:** Both the Reflex Engine and Conscious Engine have ways to read memory. Could share a common reader.
+- **Impact:** Mild code duplication.
+- **Files to modify:** `core/conscious/memory_reader.py`, `core/reflex/` memory access
+- **Estimated scope:** Small (0.5 day)
+
+### STT/TTS Lazy-Loader DRY
+- **Why deferred:** `_get_stt()` and `_get_tts()` in `web_server.py` follow identical patterns (global sentinel, try/except import, False sentinel). Could use a generic lazy-loader.
+- **Impact:** Minor duplication in web_server.py.
+- **Files to modify:** `core/channels/web_server.py`
+- **Estimated scope:** Tiny (< 0.5 day)
+
+### Identity "sir" Constant
+- **Why deferred:** The string `"sir"` appears as a literal in identity resolution. Should be a named constant.
+- **Impact:** Magic string, minor maintainability.
+- **Files to modify:** `core/conscious/identity.py`
+- **Estimated scope:** Tiny (< 0.5 day)
+
+### MemoryReader File Caching
+- **Why deferred:** MemoryReader re-reads preference Markdown files on every request. Could cache with TTL.
+- **Impact:** Extra disk I/O per request (negligible for dev, relevant for production).
+- **Files to modify:** `core/conscious/memory_reader.py`
+- **Estimated scope:** Small (0.5 day)
+
+### RoutineStore In-Memory Index
+- **Why deferred:** `list_all()` globs and parses every YAML file on each call. Could maintain an in-memory index.
+- **Impact:** Slow if many routines accumulate. Currently fine with few routines.
+- **Files to modify:** `core/memory/routines/store.py`
+- **Estimated scope:** Small (0.5 day)
+
+### Engine Constructor Parameter Grouping
+- **Why deferred:** `ConsciousEngine.__init__` has many parameters. Could use a config/deps dataclass.
+- **Impact:** Long parameter lists, minor readability.
+- **Files to modify:** `core/conscious/engine.py`
+- **Estimated scope:** Small (0.5 day)
