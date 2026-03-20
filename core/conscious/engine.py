@@ -40,9 +40,9 @@ if TYPE_CHECKING:
     from core.memory.episodic.store import EpisodicStore
     from core.memory.routines.store import RoutineStore
     from core.reflex.context_reader import ContextReader
-    from core.reflex.runner import AioRedis
     from core.reflex.tool_registry import ToolInfo, ToolRegistry
     from core.routing.domain_router import DomainRouter
+    from shared.types import AioRedis
 
 logger = logging.getLogger(__name__)
 

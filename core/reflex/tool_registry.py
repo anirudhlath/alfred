@@ -9,14 +9,14 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from shared.streams import TOOL_REGISTRY_KEY
 
-logger = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from shared.types import AioRedis
 
-# Type alias for async Redis
-AioRedis = Any
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)

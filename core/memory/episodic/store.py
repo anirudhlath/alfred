@@ -14,7 +14,7 @@ from core.memory.schemas import EpisodicEntry
 from shared.streams import EPISODIC_STREAM
 
 if TYPE_CHECKING:
-    from core.reflex.runner import AioRedis
+    from shared.types import AioRedis
 
 logger = logging.getLogger(__name__)
 

@@ -8,13 +8,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+from typing import TYPE_CHECKING
 
 import redis.asyncio as aioredis
 
 from core.memory.scratchpad_writer import ScratchpadWriter
 from core.reflex.context_reader import ContextReader
 from core.reflex.engine import ReflexEngine
-from core.reflex.runner import AioRedis, ensure_consumer_group, process_stream_entry
+from core.reflex.runner import ensure_consumer_group, process_stream_entry
 from core.reflex.tool_registry import ToolRegistry
 from core.routing.domain_router import DomainRouter
 from domains.home.home_agent import HomeAgent
@@ -23,6 +24,9 @@ from shared.config import AlfredConfig
 from shared.logging import configure_logging
 from shared.streams import HOME_ACTION_RESULTS_STREAM, HOME_STATE_STREAM, SCRATCHPAD_QUEUE
 from telemetry.collector import flush_to_csv
+
+if TYPE_CHECKING:
+    from shared.types import AioRedis
 
 logger = logging.getLogger(__name__)
 

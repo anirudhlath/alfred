@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import signal
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import redis.asyncio as aioredis
 
@@ -30,7 +30,7 @@ from core.memory.routines.store import RoutineStore
 from core.memory.scratchpad_writer import ScratchpadWriter
 from core.notifications.publisher import NotificationPublisher
 from core.reflex.context_reader import ContextReader
-from core.reflex.runner import AioRedis, ensure_consumer_group
+from core.reflex.runner import ensure_consumer_group
 from core.reflex.tool_registry import ToolRegistry
 from core.routing.domain_router import DomainRouter
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
@@ -40,6 +40,9 @@ from shared.config import AlfredConfig
 from shared.logging import configure_logging
 from shared.otel import init_tracing
 from shared.streams import USER_REQUESTS_STREAM, USER_RESPONSES_STREAM
+
+if TYPE_CHECKING:
+    from shared.types import AioRedis
 
 _shutdown = asyncio.Event()
 
