@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import TYPE_CHECKING, Any
@@ -10,7 +11,7 @@ from bus.schemas.events import AlfredResponse, UserRequest
 from shared.streams import NOTIFICATIONS_STREAM, USER_REQUESTS_STREAM, USER_RESPONSES_STREAM
 
 if TYPE_CHECKING:
-    from core.reflex.runner import AioRedis
+    from shared.types import AioRedis
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +41,32 @@ class SignalBridge:
         logger.info("Forwarded Signal message from %s to Alfred", sender[:6])
 
     async def _send_signal(self, recipient: str, message: str) -> None:
-        """Send a message via signal-cli. Placeholder for subprocess call."""
-        # TODO: Implement actual signal-cli subprocess integration
-        logger.info("Would send to %s: %s", recipient[:6], message[:50])
+        """Send a message via signal-cli subprocess."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "signal-cli",
+                "-u",
+                self._phone,
+                "send",
+                "-m",
+                message,
+                recipient,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _stdout, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                logger.warning(
+                    "signal-cli send failed (code %d): %s",
+                    proc.returncode,
+                    stderr.decode(errors="replace")[:200],
+                )
+            else:
+                logger.info("Sent Signal message to %s", recipient[:6])
+        except FileNotFoundError:
+            logger.error("signal-cli not found — install it to enable Signal delivery")
+        except Exception as exc:
+            logger.warning("Failed to send Signal message: %s", exc)
 
     async def send_notification(self, recipient: str, message: str) -> None:
         """Send an outbound notification via Signal."""
@@ -71,9 +95,7 @@ class SignalBridge:
                     event_str = raw.decode() if isinstance(raw, bytes) else raw
                     event = json.loads(event_str)
                     await self.send_notification(self._phone, f"{event['title']}: {event['body']}")
-                await self._redis.xack(  # type: ignore[no-untyped-call]
-                    NOTIFICATIONS_STREAM, self._GROUP, entry_id
-                )
+                await self._redis.xack(NOTIFICATIONS_STREAM, self._GROUP, entry_id)
 
     async def poll_responses(self, last_id: str = "$") -> str:
         """Poll USER_RESPONSES_STREAM for responses targeting the signal channel.
