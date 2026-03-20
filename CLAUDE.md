@@ -130,7 +130,7 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 ## Gotchas
 
 - `redis.asyncio.Redis` methods return `Awaitable[T] | T` — use `# type: ignore[misc]` on await calls (see `core/reflex/runner.py:86` for precedent)
-- Import `AioRedis` type alias from `core.reflex.runner` — never redefine as `Any`
+- Import `AioRedis` type alias from `shared.types` — never redefine as `Any`
 - Import `ensure_consumer_group` from `core.reflex.runner` — never reimplement inline
 - Import stream constants from `shared.streams` — never hardcode `"alfred:events"` etc.
 - Trigger type modules must be imported before use to trigger `@TriggerRegistry.register_type()` decorators

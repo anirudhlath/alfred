@@ -20,7 +20,7 @@ from shared.config import AlfredConfig
 from shared.logging import configure_logging
 
 if TYPE_CHECKING:
-    from core.reflex.runner import AioRedis
+    from shared.types import AioRedis
 
 
 async def run() -> None:

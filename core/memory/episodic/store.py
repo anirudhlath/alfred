@@ -14,7 +14,7 @@ from core.memory.schemas import EpisodicEntry
 from shared.streams import EPISODIC_STREAM
 
 if TYPE_CHECKING:
-    from core.reflex.runner import AioRedis
+    from shared.types import AioRedis
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ class EpisodicStore:
             "entry": entry.model_dump_json(),
             "embedding": embedding,
         }
-        await self._redis.xadd(EPISODIC_STREAM, data)
+        await self._redis.xadd(EPISODIC_STREAM, data, maxlen=10000, approximate=True)  # type: ignore[misc]
         logger.debug("Wrote episodic entry %s to hot storage", entry.id)
 
     async def archive_to_cold(self, entry: EpisodicEntry, embedding: bytes) -> None:

@@ -10,17 +10,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import redis.asyncio as aioredis
 from aiomqtt import Client as MqttClient
 
+if TYPE_CHECKING:
+    from shared.types import AioRedis
+
 logger = logging.getLogger(__name__)
 
 STREAM_PREFIX = "alfred"
-
-# PEP 695 type alias — evaluated lazily so Redis[Any] doesn't fail at runtime
-type AioRedis = aioredis.Redis[Any]
 
 
 def mqtt_topic_to_stream_key(topic: str) -> str:

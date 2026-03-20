@@ -6,9 +6,10 @@ Usage: python -m core.conscious
 from __future__ import annotations
 
 import asyncio
+import os
 import signal
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import redis.asyncio as aioredis
 
@@ -23,14 +24,14 @@ from core.conscious.context_assembler import ContextAssembler
 from core.conscious.cost import CostTracker
 from core.conscious.engine import ConsciousEngine
 from core.conscious.identity import IdentityGate
-from core.conscious.memory_reader import MemoryReader
 from core.conscious.session import SessionManager
 from core.memory.episodic.store import EpisodicStore
+from core.memory.reader import MemoryReader
 from core.memory.routines.store import RoutineStore
 from core.memory.scratchpad_writer import ScratchpadWriter
 from core.notifications.publisher import NotificationPublisher
 from core.reflex.context_reader import ContextReader
-from core.reflex.runner import AioRedis, ensure_consumer_group
+from core.reflex.runner import ensure_consumer_group
 from core.reflex.tool_registry import ToolRegistry
 from core.routing.domain_router import DomainRouter
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
@@ -40,6 +41,9 @@ from shared.config import AlfredConfig
 from shared.logging import configure_logging
 from shared.otel import init_tracing
 from shared.streams import USER_REQUESTS_STREAM, USER_RESPONSES_STREAM
+
+if TYPE_CHECKING:
+    from shared.types import AioRedis
 
 _shutdown = asyncio.Event()
 
@@ -108,6 +112,7 @@ async def run(config: AlfredConfig) -> None:
         context_reader=ContextReader(redis=r),
         claude_model=config.claude_model,
         claude_api_key=config.claude_api_key,
+        claude_max_tokens=config.claude_max_tokens,
         memory_reader=memory_reader,
         episodic_store=episodic_store,
         routine_store=routine_store,
@@ -121,6 +126,26 @@ async def run(config: AlfredConfig) -> None:
         scratchpad_path=str(memory_dir / "scratchpad.md"),
     )
     writer_task = asyncio.create_task(scratchpad_writer.run())
+
+    # Start Librarian scheduler as a background task to consolidate scratchpad
+    # into structured memory on a periodic interval (default: 1hr).
+    from core.librarian.consolidator import Librarian
+    from core.librarian.scheduler import LibrarianScheduler
+
+    librarian = Librarian(
+        redis=r,
+        episodic_store=episodic_store,
+        routine_store=routine_store,
+        preferences_dir=str(memory_dir / "preferences"),
+        profile_dir=str(memory_dir / "profile"),
+        claude_api_key=config.claude_api_key,
+        claude_model=config.claude_model,
+    )
+    librarian_scheduler = LibrarianScheduler(
+        librarian=librarian,
+        interval_seconds=float(os.getenv("LIBRARIAN_INTERVAL_SECONDS", "3600")),
+    )
+    librarian_task = asyncio.create_task(librarian_scheduler.run())
 
     log.info("Conscious Engine started. Listening on '{}'...", stream)
 
@@ -176,6 +201,7 @@ async def run(config: AlfredConfig) -> None:
     finally:
         log.info("Shutting down Conscious Engine...")
         writer_task.cancel()
+        librarian_task.cancel()
         await r.aclose()
 
 

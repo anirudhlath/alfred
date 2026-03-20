@@ -8,9 +8,9 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from bus.schemas.events import ActionRequest, StateChangedEvent, TriggerFired
-from core.reflex.runner import AioRedis  # noqa: TC001
 from core.triggers.models import BaseTrigger, TriggerContext
 from shared.streams import ACTIONS_STREAM, EVENTS_STREAM, SCRATCHPAD_QUEUE
+from shared.types import AioRedis  # noqa: TC001
 
 if TYPE_CHECKING:
     from core.triggers.store import TriggerStore

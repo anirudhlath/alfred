@@ -15,8 +15,8 @@ import time
 from typing import TYPE_CHECKING
 
 from bus.schemas.events import ActionRequest, StateChangedEvent
+from core.memory.reader import MemoryReader
 from core.reflex import ollama_client
-from core.reflex.memory_reader import read_preferences
 from core.reflex.tool_registry import ToolInfo, ToolRegistry
 from sdk.alfred_sdk.telemetry import track_latency
 from shared.traced import traced
@@ -76,10 +76,12 @@ class ReflexEngine:
         preferences_dir: str,
         tool_registry: ToolRegistry,
         context_reader: ContextReader | None = None,
+        memory_reader: MemoryReader | None = None,
     ) -> None:
         self.preferences_dir = preferences_dir
         self._registry = tool_registry
         self._context_reader = context_reader
+        self._memory_reader = memory_reader
         self._cached_preferences: str | None = None
         self._cached_tools: list[ToolInfo] | None = None
         self._cached_system_prompt: str | None = None
@@ -88,7 +90,16 @@ class ReflexEngine:
     def _get_preferences(self) -> str:
         """Return cached preferences, loading from disk on first call."""
         if self._cached_preferences is None:
-            self._cached_preferences = read_preferences(self.preferences_dir)
+            if self._memory_reader is not None:
+                self._cached_preferences = self._memory_reader.get_preferences()
+            else:
+                from pathlib import Path
+
+                reader = MemoryReader(
+                    preferences_dir=Path(self.preferences_dir),
+                    profile_dir=Path(self.preferences_dir).parent / "profile",
+                )
+                self._cached_preferences = reader.get_preferences()
         return self._cached_preferences
 
     def _build_system_prompt(self, tools: list[ToolInfo]) -> str:

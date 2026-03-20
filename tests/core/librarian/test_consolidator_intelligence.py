@@ -38,8 +38,9 @@ async def test_extract_entities_with_claude(librarian: Librarian) -> None:
         "2026-03-19T10:00:00Z [reflex] home.turn_on_light({entity: light.living_room}) → success",
     ]
     mock_response = AsyncMock()
+    # Batch format: array of arrays — one inner array per observation
     mock_response.choices = [
-        AsyncMock(message=AsyncMock(content='["light.living_room", "living room"]'))
+        AsyncMock(message=AsyncMock(content='[["light.living_room", "living room"]]'))
     ]
     mock_response.usage = AsyncMock(prompt_tokens=100, completion_tokens=20)
 
