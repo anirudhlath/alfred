@@ -87,44 +87,46 @@ class Librarian:
         # recovery: if we crash between read and write, entries survive.
         return [r.decode() if isinstance(r, bytes) else str(r) for r in raw]
 
-    async def _extract_entities(self, text: str) -> list[str]:
-        """Extract named entities from a scratchpad line using Claude."""
-        if not self._api_key:
-            return []
+    async def _extract_entities_batch(self, summaries: list[str]) -> list[list[str]]:
+        """Extract entities from multiple summaries in a single LLM call."""
+        if not self._api_key or not summaries:
+            return [[] for _ in summaries]
         try:
             import litellm  # runtime import — optional dependency
 
+            numbered = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(summaries))
             response = await litellm.acompletion(
                 model=self._model,
                 messages=[
                     {
                         "role": "system",
                         "content": (
-                            "Extract named entities from this home automation observation. "
-                            "Return a JSON array of entity names "
-                            "(devices, rooms, people, services). "
-                            'Example: ["light.living_room", "living room", "motion sensor"]'
+                            "Extract named entities from each numbered home automation"
+                            " observation. "
+                            "Return a JSON array of arrays — one inner array per observation. "
+                            "Each inner array contains entity names"
+                            " (devices, rooms, people, services). "
+                            'Example for 2 observations: [["light.living_room", "living room"],'
+                            ' ["climate.main", "thermostat"]]'
                         ),
                     },
-                    {"role": "user", "content": text},
+                    {"role": "user", "content": numbered},
                 ],
-                max_tokens=200,
+                max_tokens=max(200, 100 * len(summaries)),
                 api_key=self._api_key,
             )
             raw = response.choices[0].message.content or "[]"
-            result: list[str] = json.loads(raw)
-            return result
+            parsed: list[list[str]] = json.loads(raw)
+            while len(parsed) < len(summaries):
+                parsed.append([])
+            return parsed[: len(summaries)]
         except Exception as exc:
-            logger.warning("Entity extraction failed: %s", exc)
-            return []
+            logger.warning("Batch entity extraction failed: %s", exc)
+            return [[] for _ in summaries]
 
     async def _extract_episodic_entries(self, scratchpad_lines: list[str]) -> list[EpisodicEntry]:
-        """Extract episodic entries from scratchpad lines.
-
-        For now, each scratchpad line becomes one episodic entry.
-        Future: use Claude to summarize and merge related observations.
-        """
-        entries: list[EpisodicEntry] = []
+        """Extract episodic entries using a single batched LLM call."""
+        parsed: list[tuple[str, str]] = []
         for line in scratchpad_lines:
             # Parse timestamp and source from scratchpad format:
             # "2026-03-19T10:00:00Z [reflex] action(...) -> result"
@@ -136,14 +138,19 @@ class Librarian:
                 if len(source_part) == 2:
                     source = source_part[1]
                 summary = parts[1]
+            parsed.append((source, summary.strip()))
 
-            entities = await self._extract_entities(summary)
+        summaries = [s for _, s in parsed]
+        all_entities = await self._extract_entities_batch(summaries)
+
+        entries: list[EpisodicEntry] = []
+        for (source, summary), entities in zip(parsed, all_entities, strict=True):
             entries.append(
                 EpisodicEntry(
                     id=str(uuid4()),
                     timestamp=datetime.now(UTC),
                     source=source,
-                    summary=summary.strip(),
+                    summary=summary,
                     entities=entities,
                     valence="neutral",
                 )
