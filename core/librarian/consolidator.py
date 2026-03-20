@@ -11,6 +11,7 @@ On failure, the scratchpad accumulates — memory files never left partial.
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,7 +24,7 @@ from shared.streams import SCRATCHPAD_QUEUE
 if TYPE_CHECKING:
     from core.memory.episodic.store import EpisodicStore
     from core.memory.routines.store import RoutineStore
-    from core.reflex.runner import AioRedis
+    from shared.types import AioRedis
 
 logger = logging.getLogger(__name__)
 
@@ -91,9 +92,7 @@ class Librarian:
         if not self._api_key:
             return []
         try:
-            import json
-
-            import litellm
+            import litellm  # runtime import — optional dependency
 
             response = await litellm.acompletion(
                 model=self._model,
@@ -168,7 +167,7 @@ class Librarian:
 
         summaries = "\n".join(f"- {e.summary}" for e in entries)
         try:
-            import litellm
+            import litellm  # runtime import — optional dependency
 
             response = await litellm.acompletion(
                 model=self._model,
