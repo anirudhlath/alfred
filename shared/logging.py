@@ -20,7 +20,9 @@ if TYPE_CHECKING:
 
 
 class _InterceptHandler(logging.Handler):
-    """Route stdlib logging through Loguru."""
+    """Route stdlib logging through Loguru, preserving the bound service name."""
+
+    _service: str = "unknown"
 
     def emit(self, record: logging.LogRecord) -> None:
         # Find caller from where the logged message originated
@@ -35,7 +37,9 @@ class _InterceptHandler(logging.Handler):
             frame = frame.f_back
             depth += 1
 
-        logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+        logger.bind(service=self._service).opt(depth=depth, exception=record.exc_info).log(
+            level, record.getMessage()
+        )
 
 
 def configure_logging(
@@ -63,8 +67,8 @@ def configure_logging(
     # Remove default loguru handler
     logger.remove()
 
-    # Set fallback extras so intercepted stdlib logs don't crash the format string
-    logger.configure(extra={"service": "unknown"})
+    # Set the service name as the global default for all loguru loggers in this process
+    logger.configure(extra={"service": service})
 
     # Console sink
     if resolved_json:
@@ -78,8 +82,10 @@ def configure_logging(
         )
         logger.add(sys.stderr, format=fmt, level=resolved_level, colorize=True)
 
-    # Intercept stdlib logging
-    logging.basicConfig(handlers=[_InterceptHandler()], level=0, force=True)
+    # Intercept stdlib logging with service name propagated
+    handler = _InterceptHandler()
+    handler._service = service
+    logging.basicConfig(handlers=[handler], level=0, force=True)
 
     # Return logger with service context bound
     return logger.bind(service=service)
