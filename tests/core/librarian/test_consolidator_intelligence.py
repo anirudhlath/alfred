@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import datetime
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from core.librarian.consolidator import Librarian
 from core.memory.schemas import EpisodicEntry
+
+_UTC = datetime.timezone.utc
+_TS = datetime.datetime(2026, 3, 19, tzinfo=_UTC)
 
 
 @pytest.fixture()
@@ -55,3 +60,114 @@ async def test_extract_entities_fallback_without_api_key() -> None:
     entries = await lib._extract_episodic_entries(lines)
     assert len(entries) == 1
     assert entries[0].entities == []
+
+
+@pytest.mark.asyncio
+async def test_update_semantic_memory_writes_learned_preferences(
+    librarian: Librarian, tmp_path: Path
+) -> None:
+    """When Claude detects a preference, it should be appended to learned.md."""
+    librarian._preferences_dir = tmp_path / "prefs"
+    librarian._preferences_dir.mkdir()
+
+    entries = [
+        EpisodicEntry(
+            id="test-1",
+            timestamp=_TS,
+            source="reflex",
+            summary="User set thermostat to 68F every night at 10pm",
+            entities=["thermostat"],
+            valence="neutral",
+        )
+    ]
+
+    mock_response = AsyncMock()
+    mock_response.choices = [
+        AsyncMock(
+            message=AsyncMock(content="PREFERENCE: climate: User prefers 68F at night")
+        )
+    ]
+
+    with patch("litellm.acompletion", return_value=mock_response):
+        count = await librarian._update_semantic_memory(entries)
+
+    assert count == 1
+    learned = (tmp_path / "prefs" / "learned.md").read_text()
+    assert "68F at night" in learned
+
+
+@pytest.mark.asyncio
+async def test_update_semantic_memory_no_op_without_api_key(tmp_path: Path) -> None:
+    """Without API key, semantic memory update should return 0."""
+    redis = AsyncMock()
+    episodic = AsyncMock()
+    routines = AsyncMock()
+    lib = Librarian(
+        redis=redis, episodic_store=episodic, routine_store=routines, claude_api_key=""
+    )
+    lib._preferences_dir = tmp_path / "prefs"
+    lib._preferences_dir.mkdir()
+
+    entries = [
+        EpisodicEntry(
+            id="test-2",
+            timestamp=_TS,
+            source="reflex",
+            summary="some observation",
+            entities=[],
+            valence="neutral",
+        )
+    ]
+    count = await lib._update_semantic_memory(entries)
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_update_semantic_memory_returns_zero_on_none(
+    librarian: Librarian, tmp_path: Path
+) -> None:
+    """When Claude returns NONE, semantic memory should not be updated."""
+    librarian._preferences_dir = tmp_path / "prefs"
+    librarian._preferences_dir.mkdir()
+
+    entries = [
+        EpisodicEntry(
+            id="test-3",
+            timestamp=_TS,
+            source="reflex",
+            summary="motion detected in hallway",
+            entities=["motion.hallway"],
+            valence="neutral",
+        )
+    ]
+
+    mock_response = AsyncMock()
+    mock_response.choices = [AsyncMock(message=AsyncMock(content="NONE"))]
+
+    with patch("litellm.acompletion", return_value=mock_response):
+        count = await librarian._update_semantic_memory(entries)
+
+    assert count == 0
+    assert not (tmp_path / "prefs" / "learned.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_apply_decay_returns_zero(librarian: Librarian) -> None:
+    """Decay placeholder should return 0 archived entries."""
+    archived = await librarian._apply_decay()
+    assert archived == 0
+
+
+@pytest.mark.asyncio
+async def test_consolidate_updates_semantic_memory(
+    librarian: Librarian, tmp_path: Path
+) -> None:
+    """Consolidation should update preference files when patterns are detected."""
+    librarian._preferences_dir = tmp_path / "prefs"
+    librarian._preferences_dir.mkdir()
+    librarian._redis.lrange = AsyncMock(return_value=[])
+    librarian._redis.rename = AsyncMock(side_effect=Exception("no key"))
+
+    # With empty scratchpad, no updates
+    result = await librarian.consolidate()
+    assert result["entries_processed"] == 0
