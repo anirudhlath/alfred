@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -21,11 +22,17 @@ class MemoryReader:
         preferences_dir: Path,
         profile_dir: Path,
         default_proactivity: str = "opinionated",
+        cache_ttl_seconds: float = 60.0,
     ) -> None:
         self._preferences_dir = Path(preferences_dir)
         self._profile_dir = Path(profile_dir)
         self._default_proactivity = default_proactivity
         self._cached_proactivity: str | None = None
+        self._cache_ttl = cache_ttl_seconds
+        self._cached_preferences: str | None = None
+        self._cached_profile: str | None = None
+        self._prefs_cached_at: float = 0.0
+        self._profile_cached_at: float = 0.0
 
     @staticmethod
     def _read_md_body(path: Path) -> str:
@@ -51,13 +58,25 @@ class MemoryReader:
                         self._cached_proactivity = match.group(1).lower()
         return "\n\n".join(parts)
 
+    def _is_expired(self, cached_at: float) -> bool:
+        """Return True if the cache entry at cached_at has exceeded the TTL."""
+        return (time.monotonic() - cached_at) >= self._cache_ttl
+
     def get_preferences(self) -> str:
-        """Read all preference files and concatenate their content."""
-        return self._read_all_md(self._preferences_dir)
+        """Read all preference files and concatenate their content (cached within TTL)."""
+        if self._cached_preferences is not None and not self._is_expired(self._prefs_cached_at):
+            return self._cached_preferences
+        self._cached_preferences = self._read_all_md(self._preferences_dir)
+        self._prefs_cached_at = time.monotonic()
+        return self._cached_preferences
 
     def get_profile(self) -> str:
-        """Read all profile files and concatenate their content."""
-        return self._read_all_md(self._profile_dir)
+        """Read all profile files and concatenate their content (cached within TTL)."""
+        if self._cached_profile is not None and not self._is_expired(self._profile_cached_at):
+            return self._cached_profile
+        self._cached_profile = self._read_all_md(self._profile_dir)
+        self._profile_cached_at = time.monotonic()
+        return self._cached_profile
 
     def get_proactivity_level(self) -> str:
         """Return proactivity level, using cached value from get_profile() if available."""
@@ -71,3 +90,12 @@ class MemoryReader:
             if match:
                 return match.group(1).lower()
         return self._default_proactivity
+
+
+def read_preferences(preferences_dir: str) -> str:
+    """Backward-compatible function for evals pipeline."""
+    reader = MemoryReader(
+        preferences_dir=Path(preferences_dir),
+        profile_dir=Path(preferences_dir).parent / "profile",
+    )
+    return reader.get_preferences()

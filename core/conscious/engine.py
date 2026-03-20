@@ -35,14 +35,14 @@ if TYPE_CHECKING:
     from core.conscious.context_assembler import ContextAssembler
     from core.conscious.cost import CostTracker
     from core.conscious.identity import IdentityGate
-    from core.conscious.memory_reader import MemoryReader
     from core.conscious.session import SessionManager
     from core.memory.episodic.store import EpisodicStore
+    from core.memory.reader import MemoryReader
     from core.memory.routines.store import RoutineStore
     from core.reflex.context_reader import ContextReader
-    from core.reflex.runner import AioRedis
     from core.reflex.tool_registry import ToolInfo, ToolRegistry
     from core.routing.domain_router import DomainRouter
+    from shared.types import AioRedis
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +70,7 @@ class ConsciousEngine:
         context_reader: ContextReader,
         claude_model: str = "openrouter/anthropic/claude-sonnet-4",
         claude_api_key: str = "",
+        claude_max_tokens: int = 2048,
         memory_reader: MemoryReader | None = None,
         episodic_store: EpisodicStore | None = None,
         routine_store: RoutineStore | None = None,
@@ -85,6 +86,7 @@ class ConsciousEngine:
         self._context_reader = context_reader
         self._model = claude_model
         self._api_key = claude_api_key
+        self._max_tokens = claude_max_tokens
         self._memory_reader = memory_reader
         self._episodic = episodic_store
         self._routines = routine_store
@@ -232,7 +234,7 @@ class ConsciousEngine:
         kwargs: dict[str, Any] = {
             "model": self._model,
             "messages": llm_messages,
-            "max_tokens": 2048,
+            "max_tokens": self._max_tokens,
             "api_key": self._api_key,
         }
         if tools:

@@ -11,7 +11,7 @@ from sdk.alfred_sdk.context import ContextSnapshot
 from shared.streams import CONTEXT_KEY_PREFIX
 
 if TYPE_CHECKING:
-    from core.reflex.runner import AioRedis
+    from shared.types import AioRedis
 
 logger = logging.getLogger(__name__)
 

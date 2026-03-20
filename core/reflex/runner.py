@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import redis.asyncio as aioredis
 
 from bus.schemas.events import StateChangedEvent
+from shared.types import AioRedis as AioRedis  # noqa: TC001  # re-export for backward compat
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -21,9 +22,6 @@ if TYPE_CHECKING:
     from core.routing.domain_router import DomainAgent
 
 logger = logging.getLogger(__name__)
-
-# PEP 695 type alias — evaluated lazily so Redis[Any] doesn't fail at runtime
-type AioRedis = aioredis.Redis[Any]
 
 
 async def ensure_consumer_group(

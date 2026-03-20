@@ -8,6 +8,10 @@ from core.identity.schemas import IdentityResult
 
 logger = logging.getLogger(__name__)
 
+# Identity constants
+IDENTITY_SIR = "sir"
+IDENTITY_GUEST = "guest"
+
 
 class IdentityGate:
     """Resolves identity from channel-specific claims.
@@ -23,14 +27,14 @@ class IdentityGate:
         """Resolve identity from a Signal message sender."""
         if sender_phone == self._registered_phone:
             return IdentityResult(
-                identity="sir",
+                identity=IDENTITY_SIR,
                 confidence=0.95,
                 method="signal_phone",
                 factors=["signal_phone"],
                 risk_clearance="medium",
             )
         return IdentityResult(
-            identity="guest",
+            identity=IDENTITY_GUEST,
             confidence=1.0,
             method="signal_phone",
             factors=["signal_phone"],
@@ -41,14 +45,14 @@ class IdentityGate:
         """Resolve identity from a web session (WebAuthn)."""
         if authenticated:
             return IdentityResult(
-                identity="sir",
+                identity=IDENTITY_SIR,
                 confidence=0.99,
                 method="webauthn",
                 factors=["webauthn"],
                 risk_clearance="high",
             )
         return IdentityResult(
-            identity="guest",
+            identity=IDENTITY_GUEST,
             confidence=1.0,
             method="unauthenticated",
             factors=[],
@@ -69,9 +73,9 @@ class IdentityGate:
             if authenticated:
                 return self.resolve_session(authenticated=True)
             # Trust identity claim on local channels (pre-WebAuthn)
-            if identity_claim == "sir":
+            if identity_claim == IDENTITY_SIR:
                 return IdentityResult(
-                    identity="sir",
+                    identity=IDENTITY_SIR,
                     confidence=0.7,
                     method="local_claim",
                     factors=["identity_claim"],
@@ -80,7 +84,7 @@ class IdentityGate:
             return self.resolve_session(authenticated=False)
         logger.warning("Unknown channel '%s', defaulting to guest", channel)
         return IdentityResult(
-            identity="guest",
+            identity=IDENTITY_GUEST,
             confidence=1.0,
             method="unknown",
             factors=[],
