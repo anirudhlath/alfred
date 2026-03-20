@@ -52,6 +52,9 @@ class AlfredConfig:
     log_level: str = "INFO"
     log_json: bool = False
 
+    # Librarian interval: LIBRARIAN_INTERVAL_SECONDS env var (default: 3600s = 1hr)
+    # Not in AlfredConfig since it's only used by the conscious process scheduler.
+
     @classmethod
     def from_env(cls) -> AlfredConfig:
         return cls(
