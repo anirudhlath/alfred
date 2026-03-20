@@ -23,6 +23,7 @@ research/.obsidian/
 core/memory/scratchpad.md
 core/memory/triggers/
 *.db
+db-*
 
 # Personal memory files — only examples are tracked
 core/memory/preferences/*
