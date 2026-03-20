@@ -35,9 +35,9 @@ if TYPE_CHECKING:
     from core.conscious.context_assembler import ContextAssembler
     from core.conscious.cost import CostTracker
     from core.conscious.identity import IdentityGate
-    from core.conscious.memory_reader import MemoryReader
     from core.conscious.session import SessionManager
     from core.memory.episodic.store import EpisodicStore
+    from core.memory.reader import MemoryReader
     from core.memory.routines.store import RoutineStore
     from core.reflex.context_reader import ContextReader
     from core.reflex.tool_registry import ToolInfo, ToolRegistry

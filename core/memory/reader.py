@@ -71,3 +71,12 @@ class MemoryReader:
             if match:
                 return match.group(1).lower()
         return self._default_proactivity
+
+
+def read_preferences(preferences_dir: str) -> str:
+    """Backward-compatible function for evals pipeline."""
+    reader = MemoryReader(
+        preferences_dir=Path(preferences_dir),
+        profile_dir=Path(preferences_dir).parent / "profile",
+    )
+    return reader.get_preferences()

@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from bus.schemas.events import StateChangedEvent
+from core.memory.reader import MemoryReader
 from core.reflex.tool_registry import ToolInfo
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _make_tools() -> list[ToolInfo]:
@@ -54,10 +59,21 @@ def mock_preferences() -> str:
     )
 
 
+@pytest.fixture
+def mock_memory_reader(tmp_path: Path, mock_preferences: str) -> MemoryReader:
+    """Build a MemoryReader whose get_preferences() returns mock_preferences."""
+    prefs_dir = tmp_path / "preferences"
+    profile_dir = tmp_path / "profile"
+    prefs_dir.mkdir()
+    profile_dir.mkdir()
+    (prefs_dir / "prefs.md").write_text(mock_preferences)
+    return MemoryReader(preferences_dir=prefs_dir, profile_dir=profile_dir)
+
+
 @pytest.mark.asyncio
 async def test_reflex_engine_produces_action(
     tv_on_event: StateChangedEvent,
-    mock_preferences: str,
+    mock_memory_reader: MemoryReader,
     mock_registry: AsyncMock,
 ) -> None:
     from core.reflex.engine import ReflexEngine
@@ -75,17 +91,15 @@ async def test_reflex_engine_produces_action(
         "total_tokens": 230,
     }
 
-    with (
-        patch("core.reflex.memory_reader.read_preferences", return_value=mock_preferences),
-        patch(
-            "core.reflex.ollama_client.infer",
-            new_callable=AsyncMock,
-            return_value=mock_ollama_response,
-        ),
+    with patch(
+        "core.reflex.ollama_client.infer",
+        new_callable=AsyncMock,
+        return_value=mock_ollama_response,
     ):
         engine = ReflexEngine(
             preferences_dir="/fake/prefs",
             tool_registry=mock_registry,
+            memory_reader=mock_memory_reader,
         )
         action = await engine.process_event(tv_on_event)
 
@@ -97,7 +111,7 @@ async def test_reflex_engine_produces_action(
 
 @pytest.mark.asyncio
 async def test_reflex_engine_returns_none_for_no_action(
-    mock_preferences: str,
+    mock_memory_reader: MemoryReader,
     mock_registry: AsyncMock,
 ) -> None:
     from core.reflex.engine import ReflexEngine
@@ -116,17 +130,15 @@ async def test_reflex_engine_returns_none_for_no_action(
         "total_tokens": 160,
     }
 
-    with (
-        patch("core.reflex.memory_reader.read_preferences", return_value=mock_preferences),
-        patch(
-            "core.reflex.ollama_client.infer",
-            new_callable=AsyncMock,
-            return_value=mock_ollama_response,
-        ),
+    with patch(
+        "core.reflex.ollama_client.infer",
+        new_callable=AsyncMock,
+        return_value=mock_ollama_response,
     ):
         engine = ReflexEngine(
             preferences_dir="/fake/prefs",
             tool_registry=mock_registry,
+            memory_reader=mock_memory_reader,
         )
         action = await engine.process_event(boring_event)
 
@@ -136,7 +148,7 @@ async def test_reflex_engine_returns_none_for_no_action(
 @pytest.mark.asyncio
 async def test_reflex_engine_rejects_unknown_service(
     tv_on_event: StateChangedEvent,
-    mock_preferences: str,
+    mock_memory_reader: MemoryReader,
     mock_registry: AsyncMock,
 ) -> None:
     from core.reflex.engine import ReflexEngine
@@ -151,17 +163,15 @@ async def test_reflex_engine_rejects_unknown_service(
         ),
     }
 
-    with (
-        patch("core.reflex.memory_reader.read_preferences", return_value=mock_preferences),
-        patch(
-            "core.reflex.ollama_client.infer",
-            new_callable=AsyncMock,
-            return_value=mock_ollama_response,
-        ),
+    with patch(
+        "core.reflex.ollama_client.infer",
+        new_callable=AsyncMock,
+        return_value=mock_ollama_response,
     ):
         engine = ReflexEngine(
             preferences_dir="/fake/prefs",
             tool_registry=mock_registry,
+            memory_reader=mock_memory_reader,
         )
         action = await engine.process_event(tv_on_event)
 
@@ -171,15 +181,15 @@ async def test_reflex_engine_rejects_unknown_service(
 @pytest.mark.asyncio
 async def test_reflex_engine_prompt_contains_tools(
     mock_registry: AsyncMock,
-    mock_preferences: str,
+    mock_memory_reader: MemoryReader,
 ) -> None:
     from core.reflex.engine import ReflexEngine
 
-    with patch("core.reflex.memory_reader.read_preferences", return_value=mock_preferences):
-        engine = ReflexEngine(
-            preferences_dir="/fake/prefs",
-            tool_registry=mock_registry,
-        )
+    engine = ReflexEngine(
+        preferences_dir="/fake/prefs",
+        tool_registry=mock_registry,
+        memory_reader=mock_memory_reader,
+    )
 
     tools = _make_tools()
     prompt = engine._build_system_prompt(tools)
@@ -196,7 +206,7 @@ async def test_reflex_engine_prompt_contains_tools(
 @pytest.mark.asyncio
 async def test_reflex_engine_prompt_contains_context(
     mock_registry: AsyncMock,
-    mock_preferences: str,
+    mock_memory_reader: MemoryReader,
 ) -> None:
     from core.reflex.engine import ReflexEngine
 
@@ -205,12 +215,12 @@ async def test_reflex_engine_prompt_contains_context(
         return_value="### Lights\n- light.living_room: on (brightness: 255)"
     )
 
-    with patch("core.reflex.memory_reader.read_preferences", return_value=mock_preferences):
-        engine = ReflexEngine(
-            preferences_dir="/fake/prefs",
-            tool_registry=mock_registry,
-            context_reader=mock_context_reader,
-        )
+    engine = ReflexEngine(
+        preferences_dir="/fake/prefs",
+        tool_registry=mock_registry,
+        context_reader=mock_context_reader,
+        memory_reader=mock_memory_reader,
+    )
 
     boring_event = StateChangedEvent(
         source="home-service",
@@ -226,14 +236,11 @@ async def test_reflex_engine_prompt_contains_context(
         "total_tokens": 160,
     }
 
-    with (
-        patch("core.reflex.memory_reader.read_preferences", return_value=mock_preferences),
-        patch(
-            "core.reflex.ollama_client.infer",
-            new_callable=AsyncMock,
-            return_value=mock_ollama_response,
-        ) as mock_infer,
-    ):
+    with patch(
+        "core.reflex.ollama_client.infer",
+        new_callable=AsyncMock,
+        return_value=mock_ollama_response,
+    ) as mock_infer:
         await engine.process_event(boring_event)
 
     # Verify the prompt sent to Ollama contains the rendered context

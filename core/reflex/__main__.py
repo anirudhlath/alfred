@@ -8,10 +8,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import redis.asyncio as aioredis
 
+from core.memory.reader import MemoryReader
 from core.memory.scratchpad_writer import ScratchpadWriter
 from core.reflex.context_reader import ContextReader
 from core.reflex.engine import ReflexEngine
@@ -81,10 +83,17 @@ async def run(config: AlfredConfig) -> None:
     await ensure_consumer_group(r, STREAM, GROUP)
 
     context_reader = ContextReader(redis=r)
+    memory_dir = Path(__file__).resolve().parent.parent / "memory"
+    memory_reader = MemoryReader(
+        preferences_dir=memory_dir / "preferences",
+        profile_dir=memory_dir / "profile",
+        default_proactivity=config.proactivity_level,
+    )
     engine = ReflexEngine(
-        preferences_dir="core/memory/preferences",
+        preferences_dir=str(memory_dir / "preferences"),
         tool_registry=registry,
         context_reader=context_reader,
+        memory_reader=memory_reader,
     )
     router = DomainRouter()
     router.register("home-service", HomeAgent(redis=r))

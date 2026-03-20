@@ -23,9 +23,9 @@ from core.conscious.context_assembler import ContextAssembler
 from core.conscious.cost import CostTracker
 from core.conscious.engine import ConsciousEngine
 from core.conscious.identity import IdentityGate
-from core.conscious.memory_reader import MemoryReader
 from core.conscious.session import SessionManager
 from core.memory.episodic.store import EpisodicStore
+from core.memory.reader import MemoryReader
 from core.memory.routines.store import RoutineStore
 from core.memory.scratchpad_writer import ScratchpadWriter
 from core.notifications.publisher import NotificationPublisher
