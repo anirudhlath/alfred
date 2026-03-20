@@ -82,6 +82,39 @@ class Librarian:
             await self._redis.delete(self._PROCESSING_KEY)
         return [r.decode() if isinstance(r, bytes) else str(r) for r in raw]
 
+    async def _extract_entities(self, text: str) -> list[str]:
+        """Extract named entities from a scratchpad line using Claude."""
+        if not self._api_key:
+            return []
+        try:
+            import json
+
+            import litellm
+
+            response = await litellm.acompletion(
+                model=self._model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Extract named entities from this home automation observation. "
+                            "Return a JSON array of entity names "
+                            "(devices, rooms, people, services). "
+                            'Example: ["light.living_room", "living room", "motion sensor"]'
+                        ),
+                    },
+                    {"role": "user", "content": text},
+                ],
+                max_tokens=200,
+                api_key=self._api_key,
+            )
+            raw = response.choices[0].message.content or "[]"
+            result: list[str] = json.loads(raw)
+            return result
+        except Exception as exc:
+            logger.warning("Entity extraction failed: %s", exc)
+            return []
+
     async def _extract_episodic_entries(self, scratchpad_lines: list[str]) -> list[EpisodicEntry]:
         """Extract episodic entries from scratchpad lines.
 
@@ -101,13 +134,14 @@ class Librarian:
                     source = source_part[1]
                 summary = parts[1]
 
+            entities = await self._extract_entities(summary)
             entries.append(
                 EpisodicEntry(
                     id=str(uuid4()),
                     timestamp=datetime.now(UTC),
                     source=source,
                     summary=summary.strip(),
-                    entities=[],  # TODO: entity extraction via Claude
+                    entities=entities,
                     valence="neutral",
                 )
             )
