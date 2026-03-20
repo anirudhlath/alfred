@@ -65,7 +65,19 @@ class IdentityGate:
         if channel == "signal":
             return self.resolve_signal(sender_phone=identity_claim)
         if channel in ("web_pwa", "voice"):
-            return self.resolve_session(authenticated=authenticated)
+            # Authenticated session (WebAuthn) takes priority
+            if authenticated:
+                return self.resolve_session(authenticated=True)
+            # Trust identity claim on local channels (pre-WebAuthn)
+            if identity_claim == "sir":
+                return IdentityResult(
+                    identity="sir",
+                    confidence=0.7,
+                    method="local_claim",
+                    factors=["identity_claim"],
+                    risk_clearance="low",
+                )
+            return self.resolve_session(authenticated=False)
         logger.warning("Unknown channel '%s', defaulting to guest", channel)
         return IdentityResult(
             identity="guest",
