@@ -24,3 +24,6 @@ VOICEPRINT_KEY = "alfred:identity:voiceprint"
 # Phase 3: Runtime config + cost
 RUNTIME_CONFIG_KEY = "alfred:config:runtime"
 COST_DAILY_KEY = "alfred:cost:daily"
+
+# Phase 3: Integration registry
+INTEGRATION_REGISTRY_KEY = "alfred:integration_registry"
