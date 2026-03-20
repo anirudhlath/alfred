@@ -304,7 +304,9 @@ class ConsciousEngine:
         episodic_text = ""
         if self._episodic:
             try:
-                since = datetime.now(UTC).replace(day=max(1, datetime.now(UTC).day - 7))
+                from datetime import timedelta
+
+                since = datetime.now(UTC) - timedelta(days=7)
                 entries = await self._episodic.query_cold(limit=10, since=since)
                 if entries:
                     lines = [f"- [{e.timestamp:%Y-%m-%d}] {e.summary}" for e in entries]
