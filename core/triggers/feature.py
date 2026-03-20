@@ -71,7 +71,7 @@ class TriggerFeature(BaseFeature):
         action: dict[str, Any] | None = None,
         one_shot: bool = False,
     ) -> dict[str, Any]:
-        """Create a new trigger."""
+        """Create a new trigger. Use this for reminders, scheduled tasks, and automation rules."""
         try:
             cls = TriggerRegistry.get(trigger_type)
         except KeyError as e:

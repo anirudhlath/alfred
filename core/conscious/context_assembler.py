@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from core.identity.schemas import IdentityResult
 
 logger = logging.getLogger(__name__)
@@ -45,6 +47,7 @@ class ContextAssembler:
         procedural_text: str = "",
         channel: str = "",
         content_type: str = "text",
+        now: datetime | None = None,
     ) -> str:
         """Build the complete system prompt for Claude."""
         parts: list[str] = []
@@ -67,13 +70,22 @@ class ContextAssembler:
                 "Do NOT share any personal information about sir."
             )
 
+        # 2b. Current time (always — needed for time-based triggers/reminders)
+        if now is not None:
+            parts.append(f"\n## Current Time\n{now.strftime('%Y-%m-%dT%H:%M:%SZ')}")
+
         # 3. Tools (always — guest can use allowed tools)
         if tools_section:
             parts.append(f"\n## Available Tools\n{tools_section}")
 
-        # 4. Integrations (sir only)
+        # 4. Integrations hint (sir only) — actual capabilities are exposed as tools
         if identity.identity == "sir" and integrations_section:
-            parts.append(f"\n## Available Integrations\n{integrations_section}")
+            parts.append(
+                "\n## Integrations\n"
+                "You have integration tools (prefixed `integration_`) for calendar, "
+                "weather, health, and finance data. Use them when sir asks about "
+                "these topics — they are callable just like other tools."
+            )
 
         # 5. Preferences (sir only)
         if identity.identity == "sir" and preferences_text:

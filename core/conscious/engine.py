@@ -5,6 +5,7 @@ Routes through OpenRouter via LiteLLM for provider-agnostic model access.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -14,10 +15,13 @@ from typing import TYPE_CHECKING, Any, ClassVar
 import litellm
 
 from bus.schemas.events import ActionRequest, AlfredResponse, UserRequest
+from core.integrations.base import IntegrationRequest
 from core.integrations.registry import IntegrationRegistry
+from core.triggers.feature import TriggerFeature  # noqa: TC001 (runtime use)
 from sdk.alfred_sdk.telemetry import track_latency
 from shared.streams import SCRATCHPAD_QUEUE
 from shared.traced import traced
+from shared.type_map import PYTHON_TO_JSON_SCHEMA
 
 _debug = os.getenv("ALFRED_DEBUG", "").lower() in ("1", "true", "yes")
 litellm.suppress_debug_info = not _debug
@@ -65,6 +69,7 @@ class ConsciousEngine:
         memory_reader: MemoryReader | None = None,
         episodic_store: EpisodicStore | None = None,
         routine_store: RoutineStore | None = None,
+        trigger_feature: TriggerFeature | None = None,
     ) -> None:
         self._redis = redis
         self._identity_gate = identity_gate
@@ -79,25 +84,23 @@ class ConsciousEngine:
         self._memory_reader = memory_reader
         self._episodic = episodic_store
         self._routines = routine_store
+        self._triggers = trigger_feature
 
-    # Map Python type annotations → JSON Schema types
-    _TYPE_MAP: ClassVar[dict[str, str]] = {
-        "str": "string",
-        "int": "integer",
-        "float": "number",
-        "bool": "boolean",
-        "dict": "object",
-        "list": "array",
-    }
+    _TYPE_MAP: ClassVar[dict[str, str]] = PYTHON_TO_JSON_SCHEMA
 
     @staticmethod
     def _sanitize_tool_name(name: str) -> str:
         """Convert dotted tool names to OpenAI-compatible format (a-zA-Z0-9_-)."""
         return name.replace(".", "_")
 
-    @staticmethod
-    def _unsanitize_tool_name(name: str, tools: list[ToolInfo]) -> str:
-        """Reverse sanitized name back to original dotted form."""
+    @classmethod
+    def _unsanitize_tool_name(cls, name: str, tools: list[ToolInfo]) -> str:
+        """Reverse sanitized name back to original dotted form.
+
+        Integration tool names (prefixed with 'integration_') are returned as-is.
+        """
+        if name.startswith(cls._INTEGRATION_PREFIX):
+            return name
         sanitized_to_original = {t.name.replace(".", "_"): t.name for t in tools}
         return sanitized_to_original.get(name, name)
 
@@ -136,6 +139,66 @@ class ConsciousEngine:
                 }
             )
         return openai_tools
+
+    # Prefix for integration tool names to distinguish from domain tools
+    _INTEGRATION_PREFIX: ClassVar[str] = "integration_"
+
+    async def _integrations_to_openai_format(self) -> list[dict[str, Any]]:
+        """Convert integration capabilities to OpenAI function-calling format."""
+        openai_tools: list[dict[str, Any]] = []
+        for name in IntegrationRegistry.available():
+            instance = IntegrationRegistry.get(name)
+            try:
+                caps = await instance.get_capabilities()
+            except Exception:
+                logger.warning("Failed to get capabilities for integration %s", name)
+                continue
+            for cap in caps:
+                # Build tool name: integration_weather_get_current
+                tool_name = f"{self._INTEGRATION_PREFIX}{name}_{cap.name}"
+                properties = cap.params_schema.get("properties", {})
+                openai_tools.append(
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": tool_name,
+                            "description": f"[{name}] {cap.description}",
+                            "parameters": {
+                                "type": "object",
+                                "properties": properties,
+                                "required": list(
+                                    k
+                                    for k, v in properties.items()
+                                    if isinstance(v, dict) and "default" not in v
+                                ),
+                            },
+                        },
+                    }
+                )
+        return openai_tools
+
+    async def _execute_integration_call(self, tool_name: str, params: dict[str, Any]) -> str:
+        """Execute an integration tool call. Returns result as string."""
+        # Parse: integration_weather_get_current -> integration="weather", action="get_current"
+        stripped = tool_name.removeprefix(self._INTEGRATION_PREFIX)
+        # Find which integration name matches (greedy match on registered names)
+        integration_name = ""
+        action = ""
+        for name in IntegrationRegistry.available():
+            prefix = f"{name}_"
+            if stripped.startswith(prefix):
+                integration_name = name
+                action = stripped.removeprefix(prefix)
+                break
+        if not integration_name:
+            return f"Error: unknown integration tool '{tool_name}'"
+
+        instance = IntegrationRegistry.get(integration_name)
+        request = IntegrationRequest(action=action, params=params)
+        result = await instance.execute(request)
+        if "error" in result.data:
+            return f"Error: {result.data['error']}"
+        return json.dumps(result.data)
 
     async def _call_llm(
         self,
@@ -207,53 +270,88 @@ class ConsciousEngine:
             usage.completion_tokens if usage else 0,
         )
 
+    def _resolve_trigger_method(self, tool_name: str) -> str | None:
+        """Check if tool_name is a trigger tool; return the method name if so."""
+        if self._triggers is None:
+            return None
+        for t in self._triggers.get_tools():
+            if t.name == tool_name:
+                return tool_name.removeprefix(f"{self._triggers.feature_name}.")
+        return None
+
+    async def _execute_trigger_call(self, method: str, params: dict[str, Any]) -> str:
+        """Execute a trigger tool call directly via TriggerFeature."""
+        if self._triggers is None:
+            return "Error: trigger feature not configured"
+        fn = getattr(self._triggers, method)
+        result: Any = await fn(**params)
+        return json.dumps(result) if not isinstance(result, str) else result
+
+    @staticmethod
+    def _make_tool_result(call_id: str, content: str) -> dict[str, Any]:
+        """Build an OpenAI-format tool result dict."""
+        return {"type": "tool_result", "tool_use_id": call_id, "content": content}
+
+    async def _dispatch_tool_call(
+        self, tc: dict[str, Any], tools: list[ToolInfo]
+    ) -> dict[str, Any]:
+        """Dispatch a single tool call and return the result dict."""
+        name = tc["name"]
+        params = tc.get("input", {})
+
+        # 1. Integration tools — direct call via IntegrationRegistry
+        if name.startswith(self._INTEGRATION_PREFIX):
+            try:
+                content = await self._execute_integration_call(name, params)
+            except Exception as e:
+                content = f"Error executing integration: {e}"
+            return self._make_tool_result(tc["id"], content)
+
+        # 2. Trigger tools — direct in-process call (system-level feature)
+        trigger_method = self._resolve_trigger_method(name)
+        if trigger_method:
+            try:
+                content = await self._execute_trigger_call(trigger_method, params)
+            except Exception as e:
+                content = f"Error executing trigger: {e}"
+            return self._make_tool_result(tc["id"], content)
+
+        # 3. Domain tools — route to external service via DomainRouter
+        target = ""
+        for t in tools:
+            if t.name == name:
+                target = t.target_service
+                break
+
+        if not target:
+            return self._make_tool_result(tc["id"], f"Error: tool '{name}' not found in registry")
+
+        action = ActionRequest(
+            source="conscious-engine",
+            target_service=target,
+            tool_name=name,
+            parameters=params,
+        )
+        action_result = await self._router.route(action)
+        content = str(
+            action_result.result if action_result.status == "success" else action_result.error
+        )
+        return self._make_tool_result(tc["id"], content)
+
     async def _execute_tool_calls(
         self, tool_calls: list[dict[str, Any]], tools: list[ToolInfo]
     ) -> list[dict[str, Any]]:
-        """Execute tool calls via DomainRouter and return results."""
-        results: list[dict[str, Any]] = []
-        for tc in tool_calls:
-            # Tool name format: feature.method -> target_service looked up from registry
-            target = ""
-            for t in tools:
-                if t.name == tc["name"]:
-                    target = t.target_service
-                    break
-
-            if not target:
-                results.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tc["id"],
-                        "content": f"Error: tool '{tc['name']}' not found in registry",
-                    }
-                )
-                continue
-
-            action = ActionRequest(
-                source="conscious-engine",
-                target_service=target,
-                tool_name=tc["name"],
-                parameters=tc.get("input", {}),
-            )
-            action_result = await self._router.route(action)
-            results.append(
-                {
-                    "type": "tool_result",
-                    "tool_use_id": tc["id"],
-                    "content": str(
-                        action_result.result
-                        if action_result.status == "success"
-                        else action_result.error
-                    ),
-                }
-            )
-        return results
+        """Execute tool calls concurrently via integration, trigger, or domain dispatch."""
+        return list(
+            await asyncio.gather(*(self._dispatch_tool_call(tc, tools) for tc in tool_calls))
+        )
 
     @track_latency(category="conscious")
     @traced(name="conscious.process_request")
     async def process_request(self, request: UserRequest) -> AlfredResponse:
         """Process a user request through the full pipeline."""
+        now = datetime.now(UTC)
+
         # 1. Identity Gate
         identity = self._identity_gate.resolve(
             channel=request.channel,
@@ -306,7 +404,7 @@ class ConsciousEngine:
         episodic_text = ""
         if self._episodic:
             try:
-                since = datetime.now(UTC) - timedelta(days=7)
+                since = now - timedelta(days=7)
                 entries = await self._episodic.query_cold(limit=10, since=since)
                 if entries:
                     lines = [f"- [{e.timestamp:%Y-%m-%d}] {e.summary}" for e in entries]
@@ -325,17 +423,15 @@ class ConsciousEngine:
             except Exception:
                 logger.warning("Failed to read procedural memory", exc_info=True)
 
-        # 4d. Build integrations section (async for rich capability details)
-        try:
-            integrations_section = await IntegrationRegistry.build_capabilities_docs_async()
-        except Exception:
-            logger.warning("Failed to build rich integration docs, falling back to basic")
-            integrations_section = IntegrationRegistry.build_capabilities_docs()
+        # 4d. Integrations are now exposed as callable tools (not prompt text).
+        # Pass a truthy flag so the assembler emits the integration hint for sir.
+        has_integrations = bool(IntegrationRegistry.available())
 
         system_prompt = self._assembler.assemble(
             identity=identity,
             tools_section="\n".join(f"- {t.name}: {t.description}" for t in tools),
-            integrations_section=integrations_section,
+            integrations_section="available" if has_integrations else "",
+            now=now,
             preferences_text=preferences,
             context_text=context_text,
             history=session["history"],
@@ -352,6 +448,13 @@ class ConsciousEngine:
 
         # 6. Agentic loop
         openai_tools = self._tools_to_openai_format(tools)
+        # Add integration capabilities as callable tools (sir only)
+        if identity.identity == "sir":
+            try:
+                integration_tools = await self._integrations_to_openai_format()
+                openai_tools.extend(integration_tools)
+            except Exception:
+                logger.warning("Failed to build integration tools", exc_info=True)
         total_prompt_tokens = 0
         total_completion_tokens = 0
         all_actions: list[str] = []
@@ -419,7 +522,7 @@ class ConsciousEngine:
 
         # 8b. Write observation to scratchpad queue
         try:
-            timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+            timestamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
             actions_str = ", ".join(all_actions) if all_actions else "none"
             observation = (
                 f"{timestamp} [conscious] "

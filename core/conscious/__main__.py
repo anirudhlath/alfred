@@ -12,11 +12,12 @@ from typing import Any
 
 import redis.asyncio as aioredis
 
-# Import integration modules to trigger @register decorators
+# Import modules to trigger @register decorators
 import core.integrations.apple_calendar
 import core.integrations.apple_health
 import core.integrations.robinhood
-import core.integrations.weather  # noqa: F401
+import core.integrations.weather
+import core.triggers.types  # noqa: F401  # trigger type registrations
 from bus.schemas.events import UserRequest
 from core.conscious.context_assembler import ContextAssembler
 from core.conscious.cost import CostTracker
@@ -32,6 +33,8 @@ from core.reflex.context_reader import ContextReader
 from core.reflex.runner import AioRedis, ensure_consumer_group
 from core.reflex.tool_registry import ToolRegistry
 from core.routing.domain_router import DomainRouter
+from core.triggers.feature import TriggerFeature, TriggerFeatureContext
+from core.triggers.store import TriggerStore
 from domains.home.home_agent import HomeAgent
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
@@ -87,6 +90,13 @@ async def run(config: AlfredConfig) -> None:
     notifier = NotificationPublisher(redis=r)
     cost_tracker = CostTracker(redis=r, daily_cap_usd=config.daily_cost_cap_usd, notifier=notifier)
 
+    # Trigger feature — system-level, called directly (not via HTTP)
+    trigger_store = TriggerStore(
+        redis=r,
+        snapshot_dir=str(Path(__file__).resolve().parent.parent / "memory" / "triggers"),
+    )
+    trigger_feature = TriggerFeature(TriggerFeatureContext(store=trigger_store, redis=r))
+
     engine = ConsciousEngine(
         redis=r,
         identity_gate=IdentityGate(registered_phone=config.signal_phone_number),
@@ -101,6 +111,7 @@ async def run(config: AlfredConfig) -> None:
         memory_reader=memory_reader,
         episodic_store=episodic_store,
         routine_store=routine_store,
+        trigger_feature=trigger_feature,
     )
 
     # Start scratchpad writer as a background task so observations drain to disk
