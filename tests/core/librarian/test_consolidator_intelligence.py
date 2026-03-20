@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import datetime
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 import pytest
 
 from core.librarian.consolidator import Librarian
 from core.memory.schemas import EpisodicEntry
 
-_UTC = datetime.timezone.utc
+_UTC = datetime.UTC
 _TS = datetime.datetime(2026, 3, 19, tzinfo=_UTC)
 
 
@@ -53,9 +56,7 @@ async def test_extract_entities_fallback_without_api_key() -> None:
     redis = AsyncMock()
     episodic = AsyncMock()
     routines = AsyncMock()
-    lib = Librarian(
-        redis=redis, episodic_store=episodic, routine_store=routines, claude_api_key=""
-    )
+    lib = Librarian(redis=redis, episodic_store=episodic, routine_store=routines, claude_api_key="")
     lines = ["2026-03-19T10:00:00Z [reflex] action → result"]
     entries = await lib._extract_episodic_entries(lines)
     assert len(entries) == 1
@@ -83,9 +84,7 @@ async def test_update_semantic_memory_writes_learned_preferences(
 
     mock_response = AsyncMock()
     mock_response.choices = [
-        AsyncMock(
-            message=AsyncMock(content="PREFERENCE: climate: User prefers 68F at night")
-        )
+        AsyncMock(message=AsyncMock(content="PREFERENCE: climate: User prefers 68F at night"))
     ]
 
     with patch("litellm.acompletion", return_value=mock_response):
@@ -102,9 +101,7 @@ async def test_update_semantic_memory_no_op_without_api_key(tmp_path: Path) -> N
     redis = AsyncMock()
     episodic = AsyncMock()
     routines = AsyncMock()
-    lib = Librarian(
-        redis=redis, episodic_store=episodic, routine_store=routines, claude_api_key=""
-    )
+    lib = Librarian(redis=redis, episodic_store=episodic, routine_store=routines, claude_api_key="")
     lib._preferences_dir = tmp_path / "prefs"
     lib._preferences_dir.mkdir()
 
@@ -159,9 +156,7 @@ async def test_apply_decay_returns_zero(librarian: Librarian) -> None:
 
 
 @pytest.mark.asyncio
-async def test_consolidate_updates_semantic_memory(
-    librarian: Librarian, tmp_path: Path
-) -> None:
+async def test_consolidate_updates_semantic_memory(librarian: Librarian, tmp_path: Path) -> None:
     """Consolidation should update preference files when patterns are detected."""
     librarian._preferences_dir = tmp_path / "prefs"
     librarian._preferences_dir.mkdir()

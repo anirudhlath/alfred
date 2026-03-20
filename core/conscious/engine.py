@@ -415,16 +415,19 @@ class ConsciousEngine:
         await self._session_mgr.append_turn(request.session_id, "assistant", final_text)
 
         # 8b. Write observation to scratchpad queue
-        from shared.streams import SCRATCHPAD_QUEUE
+        try:
+            from shared.streams import SCRATCHPAD_QUEUE
 
-        timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        actions_str = ", ".join(all_actions) if all_actions else "none"
-        observation = (
-            f"{timestamp} [conscious] "
-            f"user='{request.content[:80]}' → {len(final_text)} chars "
-            f"(actions={actions_str}, tokens={total_prompt_tokens}+{total_completion_tokens})"
-        )
-        await self._redis.lpush(SCRATCHPAD_QUEUE, observation)
+            timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+            actions_str = ", ".join(all_actions) if all_actions else "none"
+            observation = (
+                f"{timestamp} [conscious] "
+                f"user='{request.content[:80]}' → {len(final_text)} chars "
+                f"(actions={actions_str}, tokens={total_prompt_tokens}+{total_completion_tokens})"
+            )
+            await self._redis.lpush(SCRATCHPAD_QUEUE, observation)
+        except Exception as exc:
+            logger.warning("Failed to write scratchpad observation: %s", exc)
 
         # 9. Build response
         return AlfredResponse(

@@ -22,9 +22,7 @@ class SignalBridge:
         self._redis = redis
         self._phone = phone_number
 
-    async def forward_inbound(
-        self, sender: str, message: str, timestamp: str
-    ) -> None:
+    async def forward_inbound(self, sender: str, message: str, timestamp: str) -> None:
         """Forward an inbound Signal message to the user requests stream."""
         request = UserRequest(
             source="signal-bridge",
@@ -35,9 +33,7 @@ class SignalBridge:
             content_type="text",
             content=message,
         )
-        await self._redis.xadd(
-            USER_REQUESTS_STREAM, {"event": request.model_dump_json()}
-        )
+        await self._redis.xadd(USER_REQUESTS_STREAM, {"event": request.model_dump_json()})
         logger.info("Forwarded Signal message from %s to Alfred", sender[:6])
 
     async def _send_signal(self, recipient: str, message: str) -> None:
@@ -60,6 +56,4 @@ class SignalBridge:
                 if raw:
                     event_str = raw.decode() if isinstance(raw, bytes) else raw
                     event = json.loads(event_str)
-                    await self.send_notification(
-                        self._phone, f"{event['title']}: {event['body']}"
-                    )
+                    await self.send_notification(self._phone, f"{event['title']}: {event['body']}")
