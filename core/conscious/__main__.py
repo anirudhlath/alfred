@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import signal
 from pathlib import Path
+from typing import Any
 
 import redis.asyncio as aioredis
 
@@ -25,6 +26,8 @@ from core.conscious.memory_reader import MemoryReader
 from core.conscious.session import SessionManager
 from core.memory.episodic.store import EpisodicStore
 from core.memory.routines.store import RoutineStore
+from core.memory.scratchpad_writer import ScratchpadWriter
+from core.notifications.publisher import NotificationPublisher
 from core.reflex.context_reader import ContextReader
 from core.reflex.runner import AioRedis, ensure_consumer_group
 from core.reflex.tool_registry import ToolRegistry
@@ -81,11 +84,14 @@ async def run(config: AlfredConfig) -> None:
         default_proactivity=config.proactivity_level,
     )
 
+    notifier = NotificationPublisher(redis=r)
+    cost_tracker = CostTracker(redis=r, daily_cap_usd=config.daily_cost_cap_usd, notifier=notifier)
+
     engine = ConsciousEngine(
         redis=r,
         identity_gate=IdentityGate(registered_phone=config.signal_phone_number),
         session_mgr=SessionManager(redis=r, timeout_minutes=config.session_timeout_minutes),
-        cost_tracker=CostTracker(redis=r, daily_cap_usd=config.daily_cost_cap_usd),
+        cost_tracker=cost_tracker,
         context_assembler=ContextAssembler(),
         domain_router=router,
         tool_registry=ToolRegistry(r),
@@ -97,7 +103,17 @@ async def run(config: AlfredConfig) -> None:
         routine_store=routine_store,
     )
 
+    # Start scratchpad writer as a background task so observations drain to disk
+    # even when the Conscious Engine runs standalone (without the Reflex Runner).
+    scratchpad_writer = ScratchpadWriter(
+        redis=r,
+        scratchpad_path=str(memory_dir / "scratchpad.md"),
+    )
+    writer_task = asyncio.create_task(scratchpad_writer.run())
+
     log.info("Conscious Engine started. Listening on '{}'...", stream)
+
+    pel_counter = 0  # Check PEL every N iterations
 
     try:
         while not _shutdown.is_set():
@@ -115,6 +131,7 @@ async def run(config: AlfredConfig) -> None:
                     try:
                         raw = entry_data.get("event") or entry_data.get(b"event")
                         if raw is None:
+                            await r.xack(stream, group, entry_id)  # type: ignore[no-untyped-call]
                             continue
                         event_str = raw.decode() if isinstance(raw, bytes) else raw
                         request = UserRequest.model_validate_json(event_str)
@@ -126,10 +143,28 @@ async def run(config: AlfredConfig) -> None:
                             {"event": response.model_dump_json()},
                         )
                         await r.xack(stream, group, entry_id)  # type: ignore[no-untyped-call]
+
+                        # Check budget alert after successful processing
+                        await cost_tracker.send_alert_if_needed()
                     except Exception as e:
                         log.error("Error processing request {}: {}", entry_id, e)
+                        # Message stays in PEL for recovery — no xack on failure
+
+            # Periodically reclaim stale pending messages (PEL recovery)
+            pel_counter += 1
+            if pel_counter >= 12:  # ~every 60s at 5s block
+                pel_counter = 0
+                try:
+                    claimed: Any = await r.xautoclaim(  # type: ignore[misc,unused-ignore]
+                        stream, group, consumer, min_idle_time=60000, start_id="0-0", count=5
+                    )
+                    if claimed and len(claimed) > 1 and claimed[1]:
+                        log.info("Reclaimed %d stale PEL messages", len(claimed[1]))
+                except Exception:
+                    pass  # xautoclaim not supported on older Redis — skip gracefully
     finally:
         log.info("Shutting down Conscious Engine...")
+        writer_task.cancel()
         await r.close()
 
 

@@ -112,14 +112,35 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
         await websocket.accept()
-        session_id = str(uuid4())
         r: aioredis.Redis[Any] = app.state.redis
+
+        # Accept optional session_id from client for reconnect persistence
+        session_id: str | None = None
 
         try:
             while True:
                 data = await websocket.receive_json()
-                content_type = data.get("type", "text")
+
+                # Allow client to restore session across reconnects
+                if session_id is None:
+                    session_id = data.get("session_id") or str(uuid4())
+                    # Send assigned session_id so client can persist it
+                    await websocket.send_json({"type": "session", "session_id": session_id})
+
+                raw_type = data.get("type", "text")
                 content = data.get("content", "")
+
+                # C5: Validate content_type before constructing UserRequest
+                if raw_type not in ("text", "audio"):
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "text": f"Unsupported content type: {raw_type}",
+                            "session_id": session_id,
+                        }
+                    )
+                    continue
+                content_type: str = raw_type
 
                 # Transcribe audio to text before sending to Conscious Engine
                 if content_type == "audio" and content:
@@ -261,14 +282,10 @@ async def _publish_and_wait(
 
     Captures the latest stream ID before publishing to avoid scanning history.
     """
-    # Get current stream tail so we only read new entries
-    try:
-        info: dict[str, Any] = await redis.xinfo_stream(USER_RESPONSES_STREAM)
-        last_id: str | bytes = info.get("last-generated-id", "0-0")
-        if isinstance(last_id, bytes):
-            last_id = last_id.decode()
-    except Exception:
-        last_id = "0-0"
+    # Use a time-based ID so we only read responses after this point.
+    # This avoids xinfo_stream which fails on non-existent streams and
+    # "0-0" which would scan all historical entries on a non-fresh Redis.
+    last_id = f"{int(time.time() * 1000)}-0"
 
     # Publish the request
     await redis.xadd(

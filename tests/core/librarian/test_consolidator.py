@@ -40,7 +40,9 @@ async def test_drain_scratchpad_normal_path(
 
     assert len(result) == 2
     redis_mock.rename.assert_called_once()
-    redis_mock.delete.assert_called_once()
+    # delete is NOT called in _drain_scratchpad — it happens in consolidate()
+    # after episodic writes succeed (crash safety)
+    redis_mock.delete.assert_not_called()
 
 
 @pytest.mark.asyncio

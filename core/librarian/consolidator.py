@@ -27,6 +27,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_MEMORY_DIR = Path(__file__).resolve().parent.parent / "memory"
+_DEFAULT_PREFERENCES_DIR = str(_MEMORY_DIR / "preferences")
+_DEFAULT_PROFILE_DIR = str(_MEMORY_DIR / "profile")
+
 
 class Librarian:
     """Nightly consolidation agent.
@@ -40,8 +44,8 @@ class Librarian:
         redis: AioRedis,
         episodic_store: EpisodicStore,
         routine_store: RoutineStore,
-        preferences_dir: str = "core/memory/preferences",
-        profile_dir: str = "core/memory/profile",
+        preferences_dir: str = _DEFAULT_PREFERENCES_DIR,
+        profile_dir: str = _DEFAULT_PROFILE_DIR,
         claude_api_key: str = "",
         claude_model: str = "openrouter/anthropic/claude-sonnet-4",
     ) -> None:
@@ -77,8 +81,9 @@ class Librarian:
                 return []
 
         raw: list[bytes] = await self._redis.lrange(self._PROCESSING_KEY, 0, -1)
-        if raw:
-            await self._redis.delete(self._PROCESSING_KEY)
+        # NOTE: Do NOT delete the processing key here — it is deleted in
+        # consolidate() after episodic writes succeed. This ensures crash
+        # recovery: if we crash between read and write, entries survive.
         return [r.decode() if isinstance(r, bytes) else str(r) for r in raw]
 
     async def _extract_entities(self, text: str) -> list[str]:
@@ -253,6 +258,9 @@ class Librarian:
         for entry in episodic_entries:
             embedding = embedder.embed(entry.summary) if embedder else b""
             await self._episodic.write(entry, embedding)
+
+        # 3b. All episodic writes succeeded — safe to delete the processing key
+        await self._redis.delete(self._PROCESSING_KEY)
 
         # 4. Update semantic memory (requires Claude)
         semantic_updates = await self._update_semantic_memory(episodic_entries)

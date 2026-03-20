@@ -325,8 +325,12 @@ class ConsciousEngine:
             except Exception:
                 logger.warning("Failed to read procedural memory", exc_info=True)
 
-        # 4d. Build integrations section
-        integrations_section = IntegrationRegistry.build_capabilities_docs()
+        # 4d. Build integrations section (async for rich capability details)
+        try:
+            integrations_section = await IntegrationRegistry.build_capabilities_docs_async()
+        except Exception:
+            logger.warning("Failed to build rich integration docs, falling back to basic")
+            integrations_section = IntegrationRegistry.build_capabilities_docs()
 
         system_prompt = self._assembler.assemble(
             identity=identity,
@@ -339,6 +343,7 @@ class ConsciousEngine:
             episodic_text=episodic_text,
             procedural_text=procedural_text,
             channel=request.channel,
+            content_type=request.content_type,
         )
 
         # 5. Build messages
