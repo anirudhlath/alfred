@@ -8,8 +8,8 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from core.memory.reader import read_preferences
 from core.reflex.engine import ReflexEngine
-from core.reflex.memory_reader import read_preferences
 from core.reflex.tool_registry import ToolInfo, ToolRegistry
 from evals.context_fixtures import load_context_text
 from evals.inference import InferFn, infer_ollama

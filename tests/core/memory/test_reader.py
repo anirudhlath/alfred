@@ -9,7 +9,7 @@ import pytest
 if TYPE_CHECKING:
     from pathlib import Path
 
-from core.conscious.memory_reader import MemoryReader
+from core.memory.reader import MemoryReader
 
 
 @pytest.fixture()

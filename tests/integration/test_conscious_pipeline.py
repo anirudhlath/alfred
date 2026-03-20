@@ -15,8 +15,8 @@ from core.conscious.context_assembler import ContextAssembler
 from core.conscious.cost import CostTracker
 from core.conscious.engine import ConsciousEngine
 from core.conscious.identity import IdentityGate
-from core.conscious.memory_reader import MemoryReader
 from core.conscious.session import SessionManager
+from core.memory.reader import MemoryReader
 
 
 def _make_redis_mock() -> AsyncMock:
