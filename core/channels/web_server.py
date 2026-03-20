@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import os
 import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -87,9 +86,9 @@ def _preference_file(
 
 def _atomic_write(path: Path, content: str) -> None:
     """Write content to a file atomically (tmp + rename)."""
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(content)
-    os.rename(tmp, path)
+    from shared.fs import atomic_write
+
+    atomic_write(path, content)
 
 
 @asynccontextmanager

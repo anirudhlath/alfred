@@ -124,7 +124,7 @@ async def test_tool_not_found_in_registry(mock_deps: dict[str, AsyncMock | Magic
     engine = ConsciousEngine(**mock_deps)
 
     results = await engine._execute_tool_calls(
-        [{"id": "tc-1", "name": "nonexistent.tool", "input": {}}]
+        [{"id": "tc-1", "name": "nonexistent.tool", "input": {}}], tools=[]
     )
 
     assert len(results) == 1

@@ -129,14 +129,20 @@ class CostTracker:
         """Check budget and send alert notification if threshold exceeded."""
         if not self._notifier:
             return False
-        if not await self.should_send_alert():
-            return False
         state = await self._get_state()
+        if state.alert_sent or state.spend_usd < state.cap_usd * self.ALERT_THRESHOLD:
+            return False
         await self._notifier.publish(
             channel="cost_alert",
             title="Budget Warning",
             body=f"Daily spend ${state.spend_usd:.2f} has reached 80% of ${state.cap_usd:.2f} cap",
             urgency="high",
         )
-        await self.mark_alert_sent()
+        state = CostState(
+            date=state.date,
+            spend_usd=state.spend_usd,
+            cap_usd=state.cap_usd,
+            alert_sent=True,
+        )
+        await self._save_state(state)
         return True

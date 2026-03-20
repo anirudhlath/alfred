@@ -25,6 +25,7 @@ class MemoryReader:
         self._preferences_dir = Path(preferences_dir)
         self._profile_dir = Path(profile_dir)
         self._default_proactivity = default_proactivity
+        self._cached_proactivity: str | None = None
 
     @staticmethod
     def _read_md_body(path: Path) -> str:
@@ -43,6 +44,11 @@ class MemoryReader:
             body = self._read_md_body(path)
             if body:
                 parts.append(body)
+                # Cache proactivity level when we encounter it during profile read
+                if path.name == "proactivity.md" and directory == self._profile_dir:
+                    match = re.search(r"Level:\s*(\w+)", body)
+                    if match:
+                        self._cached_proactivity = match.group(1).lower()
         return "\n\n".join(parts)
 
     def get_preferences(self) -> str:
@@ -54,11 +60,13 @@ class MemoryReader:
         return self._read_all_md(self._profile_dir)
 
     def get_proactivity_level(self) -> str:
-        """Read proactivity level from profile/proactivity.md, falling back to default."""
+        """Return proactivity level, using cached value from get_profile() if available."""
+        if self._cached_proactivity is not None:
+            return self._cached_proactivity
+        # Fallback: read directly if get_profile() wasn't called first
         proactivity_path = self._profile_dir / "proactivity.md"
         if proactivity_path.exists():
             body = self._read_md_body(proactivity_path)
-            # Parse "- Level: moderate" pattern
             match = re.search(r"Level:\s*(\w+)", body)
             if match:
                 return match.group(1).lower()

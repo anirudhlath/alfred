@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import Literal
 
 import yaml
 
 from core.memory.schemas import RoutineSpec
+from shared.fs import atomic_write
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +32,8 @@ class RoutineStore:
     def save(self, routine: RoutineSpec) -> None:
         """Save a routine to disk (atomic write)."""
         path = self._path(routine.name)
-        tmp = path.with_suffix(".tmp")
         data = routine.model_dump(mode="json")
-        tmp.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
-        os.rename(tmp, path)
+        atomic_write(path, yaml.dump(data, default_flow_style=False, sort_keys=False))
         logger.debug("Saved routine '%s'", routine.name)
 
     def get(self, name: str) -> RoutineSpec | None:

@@ -31,6 +31,8 @@
 | Create | `core/channels/signal_bridge/__init__.py` | Signal bridge package init |
 | Create | `core/channels/signal_bridge/bridge.py` | Signal CLI bridge (inbound/outbound forwarding) |
 | Create | `tests/core/channels/test_signal_bridge.py` | Tests for signal bridge forwarding |
+| Create | `shared/fs.py` | Extracted `atomic_write` utility (simplify review) |
+| Modify | `core/memory/scratchpad_writer.py` | Use `SCRATCHPAD_QUEUE` constant (simplify review) |
 
 ---
 
@@ -1458,3 +1460,42 @@ git commit -m "test: add full-pipeline integration test for Conscious Engine wir
 | Streaming TTS (WebSocket audio) | Enhancement, not a wiring gap |
 | Runtime config hot-reload | Enhancement, not blocking |
 | DomainRouter in Reflex path | Reflex already uses direct agent dispatch (correct for System 1) |
+
+---
+
+## Post-Implementation: Simplify Review (Completed 2026-03-19)
+
+After all 9 tasks were implemented and passing (395 tests), a simplify review was run covering code reuse, quality, and efficiency across the entire PR.
+
+### Fixed Immediately
+
+| Issue | Fix | Files |
+|-------|-----|-------|
+| Deferred `import json` inside `_call_llm` | Module-level import | `core/conscious/engine.py` |
+| `get_tools()` called twice per request (N+1) | Fetch once, pass `tools` list to `_execute_tool_calls` | `core/conscious/engine.py` |
+| `poll_notifications` used `xread("0-0")` (re-reads full history) | Consumer group with `xreadgroup(">")` + `xack` | `core/channels/signal_bridge/bridge.py` |
+| `send_alert_if_needed` made 3 Redis round-trips | Single `_get_state()` fetch, operate on result | `core/conscious/cost.py` |
+| MemoryReader read `proactivity.md` twice (once in profile scan, once in `get_proactivity_level`) | Cache during profile scan, reuse in getter | `core/conscious/memory_reader.py` |
+| `atomic_write` duplicated in `web_server.py` and `routines/store.py` | Extracted to `shared/fs.py`, both callers delegate | `shared/fs.py`, `core/channels/web_server.py`, `core/memory/routines/store.py` |
+| Hardcoded `"alfred:scratchpad:queue"` in `scratchpad_writer.py` | Use `SCRATCHPAD_QUEUE` from `shared/streams` | `core/memory/scratchpad_writer.py` |
+| Unused `type: ignore` comments in `bridge.py` | Removed stale suppressions | `core/channels/signal_bridge/bridge.py` |
+
+### Deferred to Backlog
+
+See `docs/backlog/phase4-deferred.md` § "Code Quality (from Phase 4 Simplify Review)" for 8 items:
+- Librarian N+1 LLM calls (batch entity extraction)
+- AioRedis type alias deduplication
+- Reflex/Conscious MemoryReader consolidation
+- STT/TTS lazy-loader DRY
+- Identity "sir" constant
+- MemoryReader file caching
+- RoutineStore in-memory index
+- Engine constructor parameter grouping
+
+### Verification
+
+After all simplify fixes:
+- **395 tests passing** (0 failures)
+- **mypy --strict clean** (133 source files, 0 errors)
+- **ruff check clean** (0 violations)
+- **ruff format clean**
