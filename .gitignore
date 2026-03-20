@@ -19,10 +19,16 @@ research/.obsidian/
 # Superpowers brainstorm sessions
 .superpowers/
 
-# Runtime data (ephemeral, not source)
+# Runtime data & personal information (not source)
 core/memory/scratchpad.md
 core/memory/triggers/
-core/memory/episodic.db
+*.db
+
+# Personal memory files — only examples are tracked
+core/memory/preferences/*
+!core/memory/preferences/.example/
+core/memory/profile/*
+!core/memory/profile/.example/
 
 # Claude Code local settings
 .claude/settings.local.json
