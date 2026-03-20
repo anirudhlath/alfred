@@ -108,6 +108,7 @@ async def run(config: AlfredConfig) -> None:
         context_reader=ContextReader(redis=r),
         claude_model=config.claude_model,
         claude_api_key=config.claude_api_key,
+        claude_max_tokens=config.claude_max_tokens,
         memory_reader=memory_reader,
         episodic_store=episodic_store,
         routine_store=routine_store,
