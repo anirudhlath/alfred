@@ -1,0 +1,17 @@
+{
+    "name": "Alfred",
+    "short_name": "Alfred",
+    "description": "Your personal butler",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#1a1612",
+    "theme_color": "#1a1612",
+    "icons": [
+        {
+            "src": "/icon.svg",
+            "sizes": "any",
+            "type": "image/svg+xml",
+            "purpose": "any"
+        }
+    ]
+}

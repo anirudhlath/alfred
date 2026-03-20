@@ -1,15 +1,14 @@
 """Entry point for the MQTT ↔ Redis bridge service."""
 
 import asyncio
-import logging
 
 from bus.bridge import run_bridge
 from shared.config import AlfredConfig
-
-logging.basicConfig(level=logging.INFO)
+from shared.logging import configure_logging
 
 
 def main() -> None:
+    configure_logging(service="bridge")
     cfg = AlfredConfig.from_env()
     asyncio.run(
         run_bridge(

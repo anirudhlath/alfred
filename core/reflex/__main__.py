@@ -16,18 +16,20 @@ from core.reflex.context_reader import ContextReader
 from core.reflex.engine import ReflexEngine
 from core.reflex.runner import AioRedis, ensure_consumer_group, process_stream_entry
 from core.reflex.tool_registry import ToolRegistry
+from core.routing.domain_router import DomainRouter
 from domains.home.home_agent import HomeAgent
 from sdk.alfred_sdk.telemetry import clear_telemetry_buffer, get_telemetry_buffer
 from shared.config import AlfredConfig
+from shared.logging import configure_logging
+from shared.streams import HOME_ACTION_RESULTS_STREAM, HOME_STATE_STREAM, SCRATCHPAD_QUEUE
 from telemetry.collector import flush_to_csv
 
 logger = logging.getLogger(__name__)
 
-STREAM = "alfred:home:state_changed"
+STREAM = HOME_STATE_STREAM
 GROUP = "reflex-engine"
 CONSUMER = "worker-1"
-RESULT_STREAM = "alfred:home:action_results"
-SCRATCHPAD_QUEUE = "alfred:scratchpad:queue"
+RESULT_STREAM = HOME_ACTION_RESULTS_STREAM
 
 _shutdown = asyncio.Event()
 
@@ -61,7 +63,7 @@ async def run(config: AlfredConfig) -> None:
     registry = ToolRegistry(r)
     tools = await registry.get_tools()
     if not tools:
-        await r.aclose()
+        await r.close()
         raise RuntimeError(
             "No tools found in alfred:tool_registry. "
             "Start at least one microservice (e.g., home-service) before the Reflex Runner."
@@ -80,7 +82,8 @@ async def run(config: AlfredConfig) -> None:
         tool_registry=registry,
         context_reader=context_reader,
     )
-    agent = HomeAgent(redis=r)
+    router = DomainRouter()
+    router.register("home-service", HomeAgent(redis=r))
     writer = ScratchpadWriter(redis=r, queue_key=SCRATCHPAD_QUEUE)
 
     # Background tasks
@@ -104,7 +107,7 @@ async def run(config: AlfredConfig) -> None:
                         await process_stream_entry(
                             entry_data=entry_data,
                             engine=engine,
-                            agent=agent,
+                            agent=router,
                             redis=r,
                             result_stream=RESULT_STREAM,
                             scratchpad_queue=SCRATCHPAD_QUEUE,
@@ -112,22 +115,25 @@ async def run(config: AlfredConfig) -> None:
                         # ACK only on success — retriable errors (Ollama down)
                         # propagate as exceptions and the message stays pending
                         # for redelivery on next XREADGROUP cycle.
-                        await r.xack(STREAM, GROUP, entry_id)
+                        await r.xack(STREAM, GROUP, entry_id)  # type: ignore[no-untyped-call]
                     except Exception as e:
                         logger.error("Error processing entry %s: %s — will retry", entry_id, e)
     finally:
         logger.info("Shutting down Reflex Runner...")
         scratchpad_task.cancel()
         telemetry_task.cancel()
-        await r.aclose()
+        await r.close()
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    )
+    configure_logging(service="reflex")
     config = AlfredConfig.from_env()
+    from shared.otel import init_tracing
+
+    init_tracing(
+        service_name="reflex",
+        endpoint=config.otel_endpoint if config.signoz_enabled else None,
+    )
     asyncio.run(run(config))
 
 

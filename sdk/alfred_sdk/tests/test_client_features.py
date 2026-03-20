@@ -137,4 +137,4 @@ async def test_unregister_calls_hdel() -> None:
         await client.unregister()
 
     mock_redis.hdel.assert_called_once_with(AlfredClient.REGISTRY_KEY, "test-svc")
-    mock_redis.aclose.assert_called_once()
+    mock_redis.close.assert_called_once()

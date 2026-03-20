@@ -11,6 +11,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from shared.streams import TOOL_REGISTRY_KEY
+
 logger = logging.getLogger(__name__)
 
 # Type alias for async Redis
@@ -32,7 +34,7 @@ class ToolInfo:
 class ToolRegistry:
     """Reads tool manifests from Redis ``alfred:tool_registry``."""
 
-    REGISTRY_KEY = "alfred:tool_registry"  # must match AlfredClient.REGISTRY_KEY in sdk/
+    REGISTRY_KEY = TOOL_REGISTRY_KEY
 
     def __init__(self, redis: AioRedis) -> None:
         self._redis = redis

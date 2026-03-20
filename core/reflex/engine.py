@@ -19,6 +19,7 @@ from core.reflex import ollama_client
 from core.reflex.memory_reader import read_preferences
 from core.reflex.tool_registry import ToolInfo, ToolRegistry
 from sdk.alfred_sdk.telemetry import track_latency
+from shared.traced import traced
 
 if TYPE_CHECKING:
     from core.reflex.context_reader import ContextReader
@@ -183,6 +184,7 @@ class ReflexEngine:
             logger.error("Failed to parse SLM response: %s — %s", e, response)
             return None
 
+    @traced(name="reflex.process_event")
     @track_latency(category="reflex")
     async def process_event(self, event: StateChangedEvent) -> ActionRequest | None:
         """Process a state change event and optionally produce an action."""

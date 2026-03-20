@@ -9,7 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import Any
+
+from shared.streams import SCRATCHPAD_QUEUE
+
+_DEFAULT_SCRATCHPAD = str(Path(__file__).resolve().parent / "scratchpad.md")
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +27,8 @@ class ScratchpadWriter:
     def __init__(
         self,
         redis: Any,
-        queue_key: str = "alfred:scratchpad:queue",
-        scratchpad_path: str = "core/memory/scratchpad.md",
+        queue_key: str = SCRATCHPAD_QUEUE,
+        scratchpad_path: str = _DEFAULT_SCRATCHPAD,
     ) -> None:
         self.redis = redis
         self.queue_key = queue_key

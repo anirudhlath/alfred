@@ -1,14 +1,14 @@
 """Reflex Runner — orchestration loop for the System 1 pipeline.
 
 Reads events from Redis Streams (consumer group), runs the Reflex Engine,
-dispatches actions via Home Agent, and logs observations to the scratchpad.
+dispatches actions via a DomainAgent, and logs observations to the scratchpad.
 """
 
 from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import redis.asyncio as aioredis
 
@@ -18,12 +18,12 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from core.reflex.engine import ReflexEngine
-    from domains.home.home_agent import HomeAgent
+    from core.routing.domain_router import DomainAgent
 
 logger = logging.getLogger(__name__)
 
-# Type alias — redis-py generics are not typed in this version
-AioRedis = aioredis.Redis
+# PEP 695 type alias — evaluated lazily so Redis[Any] doesn't fail at runtime
+type AioRedis = aioredis.Redis[Any]
 
 
 async def ensure_consumer_group(
@@ -45,7 +45,7 @@ async def ensure_consumer_group(
 async def process_stream_entry(
     entry_data: Mapping[str | bytes, str | bytes],
     engine: ReflexEngine,
-    agent: HomeAgent,
+    agent: DomainAgent,
     redis: AioRedis,
     result_stream: str,
     scratchpad_queue: str,
@@ -83,7 +83,7 @@ async def process_stream_entry(
 
     timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     observation = f"{timestamp} [reflex] {action.tool_name}({action.parameters}) → {result.status}"
-    await redis.lpush(scratchpad_queue, observation)  # type: ignore[misc]
+    await redis.lpush(scratchpad_queue, observation)
 
     logger.info("Action: %s → %s (status=%s)", event.entity_id, action.tool_name, result.status)
     return True

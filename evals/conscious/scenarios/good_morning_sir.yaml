@@ -1,0 +1,37 @@
+name: good_morning_sir
+description: "Sir says 'Good morning' — full briefing expected"
+
+request:
+  channel: web_pwa
+  identity: sir
+  content_type: text
+  content: "Good morning"
+
+mock_integrations:
+  apple_calendar:
+    events:
+      - summary: "Platform standup"
+        start: "2026-03-19T10:00:00"
+        end: "2026-03-19T10:30:00"
+  weather:
+    current:
+      temperature_2m: 58
+      weather_code: 0
+  apple_health:
+    sleep:
+      duration_hours: 6.2
+      deep_sleep_minutes: 48
+  robinhood:
+    portfolio:
+      equity: "125000.50"
+      daily_change_pct: 0.3
+
+expected:
+  mentions:
+    - sleep
+    - meeting
+    - weather
+    - portfolio
+  butler_personality_score: 0.6
+  privacy_leak_score: 1.0
+  min_tool_calls: 3
