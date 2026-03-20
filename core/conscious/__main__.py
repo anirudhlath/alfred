@@ -6,6 +6,7 @@ Usage: python -m core.conscious
 from __future__ import annotations
 
 import asyncio
+import os
 import signal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -126,6 +127,26 @@ async def run(config: AlfredConfig) -> None:
     )
     writer_task = asyncio.create_task(scratchpad_writer.run())
 
+    # Start Librarian scheduler as a background task to consolidate scratchpad
+    # into structured memory on a periodic interval (default: 1hr).
+    from core.librarian.consolidator import Librarian
+    from core.librarian.scheduler import LibrarianScheduler
+
+    librarian = Librarian(
+        redis=r,
+        episodic_store=episodic_store,
+        routine_store=routine_store,
+        preferences_dir=str(memory_dir / "preferences"),
+        profile_dir=str(memory_dir / "profile"),
+        claude_api_key=config.claude_api_key,
+        claude_model=config.claude_model,
+    )
+    librarian_scheduler = LibrarianScheduler(
+        librarian=librarian,
+        interval_seconds=float(os.getenv("LIBRARIAN_INTERVAL_SECONDS", "3600")),
+    )
+    librarian_task = asyncio.create_task(librarian_scheduler.run())
+
     log.info("Conscious Engine started. Listening on '{}'...", stream)
 
     pel_counter = 0  # Check PEL every N iterations
@@ -180,6 +201,7 @@ async def run(config: AlfredConfig) -> None:
     finally:
         log.info("Shutting down Conscious Engine...")
         writer_task.cancel()
+        librarian_task.cancel()
         await r.aclose()
 
 
