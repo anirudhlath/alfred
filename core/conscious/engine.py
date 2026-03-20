@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import litellm
@@ -23,7 +24,10 @@ if TYPE_CHECKING:
     from core.conscious.context_assembler import ContextAssembler
     from core.conscious.cost import CostTracker
     from core.conscious.identity import IdentityGate
+    from core.conscious.memory_reader import MemoryReader
     from core.conscious.session import SessionManager
+    from core.memory.episodic.store import EpisodicStore
+    from core.memory.routines.store import RoutineStore
     from core.reflex.context_reader import ContextReader
     from core.reflex.runner import AioRedis
     from core.reflex.tool_registry import ToolInfo, ToolRegistry
@@ -55,6 +59,9 @@ class ConsciousEngine:
         context_reader: ContextReader,
         claude_model: str = "openrouter/anthropic/claude-sonnet-4",
         claude_api_key: str = "",
+        memory_reader: MemoryReader | None = None,
+        episodic_store: EpisodicStore | None = None,
+        routine_store: RoutineStore | None = None,
     ) -> None:
         self._redis = redis
         self._identity_gate = identity_gate
@@ -66,6 +73,9 @@ class ConsciousEngine:
         self._context_reader = context_reader
         self._model = claude_model
         self._api_key = claude_api_key
+        self._memory_reader = memory_reader
+        self._episodic = episodic_store
+        self._routines = routine_store
 
     # Map Python type annotations → JSON Schema types
     _TYPE_MAP: ClassVar[dict[str, str]] = {
@@ -277,15 +287,57 @@ class ConsciousEngine:
         # 4. Context assembly
         tools = await self._tool_registry.get_tools()
         context_text = await self._context_reader.get_rendered_context()
-        preferences = ""  # TODO: Read from memory (Plan 3)
+
+        # 4a. Read semantic memory (preferences + profile)
+        preferences = ""
+        proactivity_level = "opinionated"
+        if self._memory_reader:
+            try:
+                prefs = self._memory_reader.get_preferences()
+                profile = self._memory_reader.get_profile()
+                preferences = "\n\n".join(p for p in (prefs, profile) if p)
+                proactivity_level = self._memory_reader.get_proactivity_level()
+            except Exception:
+                logger.warning("Failed to read semantic memory", exc_info=True)
+
+        # 4b. Read episodic memory (recent entries from cold storage)
+        episodic_text = ""
+        if self._episodic:
+            try:
+                since = datetime.now(UTC).replace(day=max(1, datetime.now(UTC).day - 7))
+                entries = await self._episodic.query_cold(limit=10, since=since)
+                if entries:
+                    lines = [f"- [{e.timestamp:%Y-%m-%d}] {e.summary}" for e in entries]
+                    episodic_text = "\n".join(lines)
+            except Exception:
+                logger.warning("Failed to read episodic memory", exc_info=True)
+
+        # 4c. Read procedural memory (active routines)
+        procedural_text = ""
+        if self._routines:
+            try:
+                active = self._routines.list_by_state("active")
+                if active:
+                    lines = [f"- {r.name}: {r.trigger_pattern}" for r in active]
+                    procedural_text = "\n".join(lines)
+            except Exception:
+                logger.warning("Failed to read procedural memory", exc_info=True)
+
+        # 4d. Build integrations section
+        from core.integrations.registry import IntegrationRegistry
+
+        integrations_section = IntegrationRegistry.build_capabilities_docs()
 
         system_prompt = self._assembler.assemble(
             identity=identity,
             tools_section="\n".join(f"- {t.name}: {t.description}" for t in tools),
-            integrations_section="",  # TODO: IntegrationRegistry (Plan 4)
+            integrations_section=integrations_section,
             preferences_text=preferences,
             context_text=context_text,
             history=session["history"],
+            proactivity_level=proactivity_level,
+            episodic_text=episodic_text,
+            procedural_text=procedural_text,
             channel=request.channel,
         )
 
@@ -359,6 +411,18 @@ class ConsciousEngine:
         # 8. Update session
         await self._session_mgr.append_turn(request.session_id, "user", request.content)
         await self._session_mgr.append_turn(request.session_id, "assistant", final_text)
+
+        # 8b. Write observation to scratchpad queue
+        from shared.streams import SCRATCHPAD_QUEUE
+
+        timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        actions_str = ", ".join(all_actions) if all_actions else "none"
+        observation = (
+            f"{timestamp} [conscious] "
+            f"user='{request.content[:80]}' → {len(final_text)} chars "
+            f"(actions={actions_str}, tokens={total_prompt_tokens}+{total_completion_tokens})"
+        )
+        await self._redis.lpush(SCRATCHPAD_QUEUE, observation)
 
         # 9. Build response
         return AlfredResponse(
