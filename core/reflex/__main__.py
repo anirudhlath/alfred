@@ -63,7 +63,7 @@ async def run(config: AlfredConfig) -> None:
     registry = ToolRegistry(r)
     tools = await registry.get_tools()
     if not tools:
-        await r.close()
+        await r.aclose()
         raise RuntimeError(
             "No tools found in alfred:tool_registry. "
             "Start at least one microservice (e.g., home-service) before the Reflex Runner."
@@ -122,7 +122,7 @@ async def run(config: AlfredConfig) -> None:
         logger.info("Shutting down Reflex Runner...")
         scratchpad_task.cancel()
         telemetry_task.cancel()
-        await r.close()
+        await r.aclose()
 
 
 def main() -> None:

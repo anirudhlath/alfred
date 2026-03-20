@@ -93,7 +93,7 @@ async def _load_tools(config: AlfredConfig) -> list[ToolInfo]:
         registry = ToolRegistry(r)
         return await registry.get_tools()
     finally:
-        await r.close()
+        await r.aclose()
 
 
 async def _execute_single_run(
@@ -270,7 +270,7 @@ async def _cmd_capture_context(args: argparse.Namespace) -> None:
         output_path.write_text(json.dumps(envelope, indent=2))
         print(f"\nFixture written: {output_path}")
     finally:
-        await r.close()
+        await r.aclose()
 
 
 def _cmd_regression() -> None:
@@ -286,9 +286,9 @@ def _cmd_regression() -> None:
 
 def _cmd_conscious() -> None:
     """Run System 2 evals (dry-run without live engine)."""
-    import logging
+    from shared.logging import configure_logging
 
-    logging.basicConfig(level=logging.INFO)
+    configure_logging(service="evals")
     results = run_conscious_evals()
     print(f"\nSystem 2 evals: {len(results)} scenarios loaded")
     for r in results:

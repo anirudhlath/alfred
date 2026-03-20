@@ -93,7 +93,7 @@ async def run_demo(channel: str = "web_pwa") -> None:
 
     if response is None:
         log.error("No response received within {:.0f}s!", timeout)
-        await r.close()
+        await r.aclose()
         return
 
     log.info("-" * 60)
@@ -132,7 +132,7 @@ async def run_demo(channel: str = "web_pwa") -> None:
     log.info("Latency: {:.0f}ms (target: <3000ms)", elapsed)
     log.info("=" * 60)
 
-    await r.close()
+    await r.aclose()
 
 
 def main() -> None:

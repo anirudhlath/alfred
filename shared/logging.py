@@ -18,11 +18,21 @@ if TYPE_CHECKING:
 
     from loguru import Logger
 
+# Third-party loggers to intercept — these libraries configure their own
+# handlers which bypass our root-level intercept.
+_INTERCEPT_LOGGERS = (
+    "uvicorn",
+    "uvicorn.error",
+    "uvicorn.access",
+    "watchfiles",
+    "httpx",
+    "httpcore",
+    "aiomqtt",
+)
+
 
 class _InterceptHandler(logging.Handler):
     """Route stdlib logging through Loguru, preserving the bound service name."""
-
-    _service: str = "unknown"
 
     def emit(self, record: logging.LogRecord) -> None:
         # Find caller from where the logged message originated
@@ -37,9 +47,7 @@ class _InterceptHandler(logging.Handler):
             frame = frame.f_back
             depth += 1
 
-        logger.bind(service=self._service).opt(depth=depth, exception=record.exc_info).log(
-            level, record.getMessage()
-        )
+        logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
 
 
 def configure_logging(
@@ -82,10 +90,16 @@ def configure_logging(
         )
         logger.add(sys.stderr, format=fmt, level=resolved_level, colorize=True)
 
-    # Intercept stdlib logging with service name propagated
-    handler = _InterceptHandler()
-    handler._service = service
-    logging.basicConfig(handlers=[handler], level=0, force=True)
+    # Intercept ALL stdlib logging through Loguru
+    intercept_handler = _InterceptHandler()
+    logging.basicConfig(handlers=[intercept_handler], level=0, force=True)
+
+    # Also intercept third-party loggers that configure their own handlers
+    for name in _INTERCEPT_LOGGERS:
+        lib_logger = logging.getLogger(name)
+        lib_logger.handlers.clear()
+        lib_logger.addHandler(intercept_handler)
+        lib_logger.propagate = False
 
     # Return logger with service context bound
     return logger.bind(service=service)
