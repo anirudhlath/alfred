@@ -31,6 +31,7 @@ class AlfredConfig:
     # Phase 3: Conscious Engine (via LiteLLM + OpenRouter)
     claude_api_key: str = ""
     claude_model: str = "openrouter/anthropic/claude-sonnet-4"
+    claude_max_tokens: int = 2048
     session_timeout_minutes: int = 30
     proactivity_level: str = "opinionated"  # opinionated | moderate | conservative
 
@@ -69,6 +70,7 @@ class AlfredConfig:
             # Phase 3: Conscious Engine
             claude_api_key=os.getenv("OPENROUTER_API_KEY", os.getenv("CLAUDE_API_KEY", "")),
             claude_model=os.getenv("CLAUDE_MODEL", "openrouter/anthropic/claude-sonnet-4"),
+            claude_max_tokens=int(os.getenv("CLAUDE_MAX_TOKENS", "2048")),
             session_timeout_minutes=int(os.getenv("SESSION_TIMEOUT_MINUTES", "30")),
             proactivity_level=os.getenv("PROACTIVITY_LEVEL", "opinionated"),
             # Phase 3: Cost
