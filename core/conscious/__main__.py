@@ -7,15 +7,24 @@ from __future__ import annotations
 
 import asyncio
 import signal
+from pathlib import Path
 
 import redis.asyncio as aioredis
 
+# Import integration modules to trigger @register decorators
+import core.integrations.apple_calendar
+import core.integrations.apple_health
+import core.integrations.robinhood
+import core.integrations.weather  # noqa: F401
 from bus.schemas.events import UserRequest
 from core.conscious.context_assembler import ContextAssembler
 from core.conscious.cost import CostTracker
 from core.conscious.engine import ConsciousEngine
 from core.conscious.identity import IdentityGate
+from core.conscious.memory_reader import MemoryReader
 from core.conscious.session import SessionManager
+from core.memory.episodic.store import EpisodicStore
+from core.memory.routines.store import RoutineStore
 from core.reflex.context_reader import ContextReader
 from core.reflex.runner import AioRedis, ensure_consumer_group
 from core.reflex.tool_registry import ToolRegistry
@@ -56,6 +65,22 @@ async def run(config: AlfredConfig) -> None:
     router = DomainRouter()
     router.register("home-service", HomeAgent(redis=r))
 
+    # Memory components
+    memory_dir = Path(__file__).resolve().parent.parent / "memory"
+    episodic_store = EpisodicStore(
+        redis=r,
+        db_path=str(memory_dir / "episodic.db"),
+        hot_days=config.episodic_hot_days,
+    )
+    routine_store = RoutineStore(
+        routines_dir=str(memory_dir / "routines"),
+    )
+    memory_reader = MemoryReader(
+        preferences_dir=memory_dir / "preferences",
+        profile_dir=memory_dir / "profile",
+        default_proactivity=config.proactivity_level,
+    )
+
     engine = ConsciousEngine(
         redis=r,
         identity_gate=IdentityGate(registered_phone=config.signal_phone_number),
@@ -67,6 +92,9 @@ async def run(config: AlfredConfig) -> None:
         context_reader=ContextReader(redis=r),
         claude_model=config.claude_model,
         claude_api_key=config.claude_api_key,
+        memory_reader=memory_reader,
+        episodic_store=episodic_store,
+        routine_store=routine_store,
     )
 
     log.info("Conscious Engine started. Listening on '{}'...", stream)
