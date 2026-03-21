@@ -22,7 +22,7 @@ import core.triggers.types  # noqa: F401  # trigger type registrations
 from bus.schemas.events import UserRequest
 from core.conscious.context_assembler import ContextAssembler
 from core.conscious.cost import CostTracker
-from core.conscious.engine import ConsciousEngine
+from core.conscious.engine import ConsciousConfig, ConsciousDeps, ConsciousEngine
 from core.conscious.identity import IdentityGate
 from core.conscious.session import SessionManager
 from core.memory.episodic.store import EpisodicStore
@@ -40,7 +40,7 @@ from domains.home.home_agent import HomeAgent
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
 from shared.otel import init_tracing
-from shared.streams import USER_REQUESTS_STREAM, USER_RESPONSES_STREAM
+from shared.streams import USER_REQUESTS_STREAM, USER_RESPONSES_STREAM, decode_stream_value
 
 if TYPE_CHECKING:
     from shared.types import AioRedis
@@ -102,21 +102,25 @@ async def run(config: AlfredConfig) -> None:
     trigger_feature = TriggerFeature(TriggerFeatureContext(store=trigger_store, redis=r))
 
     engine = ConsciousEngine(
-        redis=r,
-        identity_gate=IdentityGate(registered_phone=config.signal_phone_number),
-        session_mgr=SessionManager(redis=r, timeout_minutes=config.session_timeout_minutes),
-        cost_tracker=cost_tracker,
-        context_assembler=ContextAssembler(),
-        domain_router=router,
-        tool_registry=ToolRegistry(r),
-        context_reader=ContextReader(redis=r),
-        claude_model=config.claude_model,
-        claude_api_key=config.claude_api_key,
-        claude_max_tokens=config.claude_max_tokens,
-        memory_reader=memory_reader,
-        episodic_store=episodic_store,
-        routine_store=routine_store,
-        trigger_feature=trigger_feature,
+        deps=ConsciousDeps(
+            redis=r,
+            identity_gate=IdentityGate(registered_phone=config.signal_phone_number),
+            session_mgr=SessionManager(redis=r, timeout_minutes=config.session_timeout_minutes),
+            cost_tracker=cost_tracker,
+            context_assembler=ContextAssembler(),
+            domain_router=router,
+            tool_registry=ToolRegistry(r),
+            context_reader=ContextReader(redis=r),
+            memory_reader=memory_reader,
+            episodic_store=episodic_store,
+            routine_store=routine_store,
+            trigger_feature=trigger_feature,
+            config=ConsciousConfig(
+                model=config.claude_model,
+                api_key=config.claude_api_key,
+                max_tokens=config.claude_max_tokens,
+            ),
+        )
     )
 
     # Start scratchpad writer as a background task so observations drain to disk
@@ -169,7 +173,7 @@ async def run(config: AlfredConfig) -> None:
                         if raw is None:
                             await r.xack(stream, group, entry_id)  # type: ignore[no-untyped-call]
                             continue
-                        event_str = raw.decode() if isinstance(raw, bytes) else raw
+                        event_str = decode_stream_value(raw)
                         request = UserRequest.model_validate_json(event_str)
 
                         response = await engine.process_request(request)
