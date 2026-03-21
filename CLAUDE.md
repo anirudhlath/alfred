@@ -9,7 +9,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - As Engineer: build, review, maintain code quality
 - As Scientist: instrument telemetry, observe results, update research vault
 
-## The Four Pillars (NON-NEGOTIABLE)
+## The Five Pillars (NON-NEGOTIABLE)
 
 @.claude/rules/architecture.md
 
@@ -25,6 +25,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 
 - **No hardcoded tool/service lists** — tools, agents, and services auto-register at runtime via the SDK tool registry; the Reflex Engine prompt must be built dynamically from the registry, not from hardcoded strings
 - **SOLID + DRY** — favor abstraction and single sources of truth; constants over literals, registries over enums
+- **No polling** — never use periodic polling when an event-driven or callback approach is available. Prefer Redis pub/sub, triggers, callbacks, or blocking reads over timed loops. If polling is truly unavoidable, add it to the performance backlog for future replacement.
 - **Document new features** — when implementing a new concept, feature, or subsystem, always create a corresponding `docs/<feature>.md` with architecture overview, mermaid diagrams, data models, and operational details (see `docs/sdk.md`, `docs/event-bus.md`, `docs/architecture.md` for the expected level of detail). Update `docs/architecture.md` to include the new component in system-level diagrams. Track deferred work in `docs/backlog/`.
 
 ## Tech Stack

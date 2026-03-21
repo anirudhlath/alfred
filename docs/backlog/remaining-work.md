@@ -123,6 +123,29 @@ Introduced `ConsciousConfig` + `ConsciousDeps` dataclasses with backward-compati
 
 ---
 
+## Tier 5: Performance Improvements
+
+Items that won't block development but should be addressed before scale/production.
+
+| ID | Improvement | Location | Notes |
+|----|-------------|----------|-------|
+| P1 | Signal Bridge polling → Redis pub/sub | `core/channels/signal_bridge/bridge.py` | Currently polls `NOTIFICATIONS_STREAM` every 5s via `xreadgroup`. Should use Redis pub/sub or blocking read to reduce latency and unnecessary cycles |
+| P2 | Notification dispatcher as sub-agent | `core/notifications/` | Instead of hardcoded routing rules, make the dispatcher an LLM-powered sub-agent that reasons about context, urgency, channel selection, and DND. Would allow natural-language routing policies and learning from user feedback |
+| P3 | Notification dedup/cooldown | `core/notifications/` | Hash-based dedup with Redis TTL key (`notification:{source}:{title_hash}`). Default 5min cooldown, configurable per urgency (urgent = no cooldown). Prevents notification storms from repeated sensor triggers or multiple sources detecting same situation |
+| P4 | PiperTTS GPU acceleration | `core/voice/tts.py` | Currently loads ONNX model with default CPU execution provider. Configure CUDA EP on prod (RTX 4090) and CoreML EP on dev (M4 Max) for faster synthesis |
+
+---
+
+## Tier 6: Public Launch
+
+Items needed before non-engineering users interact with Alfred.
+
+| ID | Item | Notes |
+|----|------|-------|
+| PL1 | User guide for pro users | Explain Alfred's behavior, notification channels, DND logic, proactivity levels, voice commands, and how the system works — written for non-engineering power users, not developers |
+
+---
+
 ## Stubs & Placeholders (Still in Code)
 
 These are implemented as interfaces/stubs but have no real logic:
