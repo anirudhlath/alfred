@@ -109,8 +109,14 @@ async def run(config: AlfredConfig) -> None:
     except (KeyError, Exception):
         log.info("Calendar adapter not available — DND calendar checks disabled")
 
+    # Trigger store — created early so dispatcher can schedule drain triggers
+    trigger_store = TriggerStore(
+        redis=r,
+        snapshot_dir=str(Path(__file__).resolve().parent.parent / "memory" / "triggers"),
+    )
+
     dnd_checker = DNDChecker(redis=r, calendar_adapter=calendar_adapter)
-    dispatcher = NotificationDispatcher(redis=r, dnd_checker=dnd_checker)
+    dispatcher = NotificationDispatcher(redis=r, dnd_checker=dnd_checker, trigger_store=trigger_store)
 
     # Inject pre-built adapter instances that need constructor args
     signal_bridge = SignalBridge(redis=r, phone_number=config.signal_phone_number)
@@ -125,10 +131,6 @@ async def run(config: AlfredConfig) -> None:
     cost_tracker = CostTracker(redis=r, daily_cap_usd=config.daily_cost_cap_usd, notifier=notifier)
 
     # Trigger feature — system-level, called directly (not via HTTP)
-    trigger_store = TriggerStore(
-        redis=r,
-        snapshot_dir=str(Path(__file__).resolve().parent.parent / "memory" / "triggers"),
-    )
     trigger_feature = TriggerFeature(TriggerFeatureContext(store=trigger_store, redis=r))
 
     engine = ConsciousEngine(
