@@ -7,9 +7,6 @@ from __future__ import annotations
 
 import uvicorn
 
-# Import adapter modules to trigger @ChannelRegistry.register() decorators
-import core.notifications.adapters.voice
-import core.notifications.adapters.websocket  # noqa: F401
 from core.channels.web_server import create_app, get_active_websockets
 from core.notifications.adapters.voice import VoiceChannelAdapter
 from core.notifications.adapters.websocket import WebSocketChannelAdapter

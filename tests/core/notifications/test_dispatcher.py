@@ -42,8 +42,7 @@ class FakeWS(ChannelAdapter):
 
 @pytest.fixture(autouse=True)
 def _clear_registry() -> None:
-    ChannelRegistry._registry.clear()
-    ChannelRegistry._instances.clear()
+    ChannelRegistry.reset()
 
 
 @pytest.fixture

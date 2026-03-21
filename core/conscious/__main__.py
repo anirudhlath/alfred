@@ -106,7 +106,7 @@ async def run(config: AlfredConfig) -> None:
         from core.integrations.registry import IntegrationRegistry
 
         calendar_adapter = IntegrationRegistry.get("apple_calendar")
-    except (KeyError, Exception):
+    except KeyError:
         log.info("Calendar adapter not available — DND calendar checks disabled")
 
     # Trigger store — created early so dispatcher can schedule drain triggers

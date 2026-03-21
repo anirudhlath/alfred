@@ -32,8 +32,7 @@ class UrgentOnlyAdapter(ChannelAdapter):
 @pytest.fixture(autouse=True)
 def _clear_registry() -> None:
     """Reset registry between tests."""
-    ChannelRegistry._registry.clear()
-    ChannelRegistry._instances.clear()
+    ChannelRegistry.reset()
 
 
 class TestChannelAdapter:

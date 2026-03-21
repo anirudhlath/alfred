@@ -13,8 +13,7 @@ from core.notifications.schema import Notification, Urgency
 
 @pytest.fixture(autouse=True)
 def _clear_registry() -> None:
-    ChannelRegistry._registry.clear()
-    ChannelRegistry._instances.clear()
+    ChannelRegistry.reset()
 
 
 def _make_notification(urgency: Urgency = Urgency.IMPORTANT) -> Notification:
