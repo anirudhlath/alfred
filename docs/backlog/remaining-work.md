@@ -100,6 +100,13 @@ Introduced `ConsciousConfig` + `ConsciousDeps` dataclasses with backward-compati
 | D23 | Frontend audio queue | Section 6+8 | Response TTS and notification TTS play simultaneously. Need a sequential audio queue so notifications wait for current playback to finish |
 | D11 | Streaming TTS to WebSocket | Section 6 | Full blob only, no chunk streaming |
 
+### Infrastructure & Security
+
+| ID | Feature | Spec Section | Notes |
+|----|---------|-------------|-------|
+| D24 | Client-side geolocation for weather | Section 9 | Weather integration uses hardcoded lat/long from .env. Should use browser Geolocation API, pass coordinates with request context, and fall back to configured default |
+| D25 | Secrets manager for integration credentials | Section 15 | CalDAV password, Robinhood credentials, etc. stored in plaintext .env. Use `keyring` library (macOS Keychain on dev, SecretService on Linux prod). `AlfredConfig.from_env()` should fall back to keyring when env var is empty. No plaintext secrets in .env |
+
 ### Resilience & Operations
 
 | ID | Feature | Spec Section | Notes |
