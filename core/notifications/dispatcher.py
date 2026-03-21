@@ -5,14 +5,12 @@ No LLM calls. Checks DND → defers or routes to channels by urgency.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from core.notifications.channels import ChannelRegistry
 from core.notifications.schema import Notification, Urgency
-from shared.streams import DEFERRED_NOTIFICATIONS_KEY
+from shared.streams import DEFERRED_NOTIFICATIONS_KEY, NOTIFICATION_DISPATCH_STREAM
 
 if TYPE_CHECKING:
     from core.notifications.dnd import DNDChecker
@@ -112,23 +110,13 @@ class NotificationDispatcher:
         logger.info("Created drain trigger %s for %s", trigger_id, drain_at)
 
     async def _deliver(self, notification: Notification) -> None:
-        """Deliver notification to all matching channel adapters in parallel."""
-        adapters = ChannelRegistry.get_adapters_for_urgency(notification.urgency)
-        if not adapters:
-            logger.warning("No channel adapters registered for urgency=%s", notification.urgency)
-            return
-
-        results = await asyncio.gather(
-            *(adapter.deliver(notification) for adapter in adapters),
-            return_exceptions=True,
+        """Publish notification to the dispatch stream for all processes to deliver."""
+        await self._redis.xadd(  # type: ignore[misc]
+            NOTIFICATION_DISPATCH_STREAM,
+            {"notification": notification.model_dump_json()},
         )
-        for adapter, result in zip(adapters, results, strict=True):
-            if isinstance(result, Exception):
-                logger.error(
-                    "Channel %s failed to deliver '%s': %s",
-                    type(adapter).name,
-                    notification.title,
-                    result,
-                )
-            else:
-                logger.info("Delivered '%s' via %s", notification.title, type(adapter).name)
+        logger.info(
+            "Published '%s' (urgency=%s) to dispatch stream",
+            notification.title,
+            notification.urgency,
+        )

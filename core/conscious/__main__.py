@@ -190,10 +190,9 @@ async def run(config: AlfredConfig) -> None:
     )
 
     # Inject pre-built adapter instances that need constructor args.
-    # NOTE: Only Signal adapter is registered in the conscious process. WebSocket and
-    # Voice adapters live in the channels process (which owns the WS session pool).
-    # This means URGENT notifications from CostTracker etc. in this process deliver
-    # via Signal only — cross-process channel delivery is not supported.
+    # Signal adapter lives here; WebSocket + Voice in the channels process.
+    # Notifications reach all channels via the dispatch stream (each process
+    # runs a delivery worker with its own consumer group).
     signal_bridge = SignalBridge(redis=r, phone_number=config.signal_phone_number)
     ChannelRegistry.set_instance(
         "signal",
@@ -265,6 +264,13 @@ async def run(config: AlfredConfig) -> None:
     # Start internal actions consumer (handles drain_deferred_notifications from triggers)
     internal_actions_task = asyncio.create_task(_consume_internal_actions(r, log))
 
+    # Start notification delivery worker (delivers via Signal adapter in this process)
+    from core.notifications.delivery import notification_delivery_worker
+
+    delivery_task = asyncio.create_task(
+        notification_delivery_worker(r, group="conscious-delivery", shutdown=_shutdown)
+    )
+
     log.info("Conscious Engine started. Listening on '{}'...", stream)
 
     pel_counter = 0  # Check PEL every N iterations
@@ -321,6 +327,7 @@ async def run(config: AlfredConfig) -> None:
         writer_task.cancel()
         librarian_task.cancel()
         internal_actions_task.cancel()
+        delivery_task.cancel()
         await r.aclose()
 
 

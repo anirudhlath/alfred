@@ -101,10 +101,23 @@ def _atomic_write(path: Path, content: str) -> None:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
-    """Manage shared Redis connection pool lifecycle."""
+    """Manage shared Redis connection pool lifecycle + notification delivery."""
+    import asyncio
+
+    from core.notifications.delivery import notification_delivery_worker
+
     pool: aioredis.Redis[Any] = aioredis.from_url(app.state.redis_url, decode_responses=False)
     app.state.redis = pool
+
+    shutdown = asyncio.Event()
+    delivery_task = asyncio.create_task(
+        notification_delivery_worker(pool, group="channels-delivery", shutdown=shutdown)
+    )
+
     yield
+
+    shutdown.set()
+    delivery_task.cancel()
     await pool.close()
 
 

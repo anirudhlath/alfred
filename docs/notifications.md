@@ -14,13 +14,11 @@ graph TD
     NP -->|Notification| ND[NotificationDispatcher]
     ND --> DND{DND Active?}
     DND -->|Yes + non-urgent| DEFER[Redis List<br/>alfred:notifications:deferred]
-    DND -->|No or Urgent| ROUTE[Route by Urgency]
-    ROUTE --> CR[ChannelRegistry]
-    CR --> SIG[SignalAdapter<br/>All urgencies]
-    CR --> WS[WebSocketAdapter<br/>Important + Urgent]
-    CR --> VOICE[VoiceAdapter<br/>Urgent only]
+    DND -->|No or Urgent| STREAM[Redis Stream<br/>alfred:notifications:dispatch]
+    STREAM --> CG1[conscious-delivery group<br/>→ SignalAdapter]
+    STREAM --> CG2[channels-delivery group<br/>→ WebSocket + Voice]
     DEFER -->|DND expires trigger| DRAIN[drain_deferred]
-    DRAIN --> ROUTE
+    DRAIN --> STREAM
 ```
 
 ## Data Models
@@ -113,6 +111,7 @@ at import time and are initialized via `set_instance()` during startup.
 |-----|------|---------|
 | `alfred:memory:dnd` | String (JSON) | Manual DND state |
 | `alfred:notifications:deferred` | List | Deferred notification queue |
+| `alfred:notifications:dispatch` | Stream | Cross-process notification delivery |
 
 ## Drain Trigger
 

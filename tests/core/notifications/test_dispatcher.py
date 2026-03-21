@@ -3,47 +3,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import ClassVar
 from unittest.mock import AsyncMock
 
 import pytest
 
-from core.notifications.channels import ChannelAdapter, ChannelRegistry
 from core.notifications.dispatcher import NotificationDispatcher
 from core.notifications.dnd import DNDChecker
 from core.notifications.schema import DNDStatus, Notification, Urgency
-from shared.streams import DEFERRED_NOTIFICATIONS_KEY
-
-
-class FakeSignal(ChannelAdapter):
-    name: ClassVar[str] = "fake_signal"
-    supported_urgencies: ClassVar[set[Urgency]] = {
-        Urgency.INFORMATIONAL,
-        Urgency.IMPORTANT,
-        Urgency.URGENT,
-    }
-
-    def __init__(self) -> None:
-        self.delivered: list[Notification] = []
-
-    async def deliver(self, notification: Notification) -> None:
-        self.delivered.append(notification)
-
-
-class FakeWS(ChannelAdapter):
-    name: ClassVar[str] = "fake_ws"
-    supported_urgencies: ClassVar[set[Urgency]] = {Urgency.IMPORTANT, Urgency.URGENT}
-
-    def __init__(self) -> None:
-        self.delivered: list[Notification] = []
-
-    async def deliver(self, notification: Notification) -> None:
-        self.delivered.append(notification)
-
-
-@pytest.fixture(autouse=True)
-def _clear_registry() -> None:
-    ChannelRegistry.reset()
+from shared.streams import DEFERRED_NOTIFICATIONS_KEY, NOTIFICATION_DISPATCH_STREAM
 
 
 @pytest.fixture
@@ -73,38 +40,29 @@ def _make_notification(urgency: Urgency = Urgency.INFORMATIONAL) -> Notification
 
 class TestDispatchRouting:
     @pytest.mark.asyncio
-    async def test_informational_routes_to_signal_only(
+    async def test_no_dnd_publishes_to_dispatch_stream(
         self, redis: AsyncMock, dnd_inactive: DNDChecker
     ) -> None:
-        signal = FakeSignal()
-        ws = FakeWS()
-        ChannelRegistry._registry["fake_signal"] = FakeSignal
-        ChannelRegistry._instances["fake_signal"] = signal
-        ChannelRegistry._registry["fake_ws"] = FakeWS
-        ChannelRegistry._instances["fake_ws"] = ws
-
         dispatcher = NotificationDispatcher(redis=redis, dnd_checker=dnd_inactive)
         await dispatcher.dispatch(_make_notification(Urgency.INFORMATIONAL))
 
-        assert len(signal.delivered) == 1
-        assert len(ws.delivered) == 0
+        redis.xadd.assert_called_once()
+        call_args = redis.xadd.call_args[0]
+        assert call_args[0] == NOTIFICATION_DISPATCH_STREAM
+        assert "notification" in call_args[1]
 
     @pytest.mark.asyncio
-    async def test_important_routes_to_signal_and_ws(
+    async def test_notification_json_in_stream(
         self, redis: AsyncMock, dnd_inactive: DNDChecker
     ) -> None:
-        signal = FakeSignal()
-        ws = FakeWS()
-        ChannelRegistry._registry["fake_signal"] = FakeSignal
-        ChannelRegistry._instances["fake_signal"] = signal
-        ChannelRegistry._registry["fake_ws"] = FakeWS
-        ChannelRegistry._instances["fake_ws"] = ws
-
+        notification = _make_notification(Urgency.IMPORTANT)
         dispatcher = NotificationDispatcher(redis=redis, dnd_checker=dnd_inactive)
-        await dispatcher.dispatch(_make_notification(Urgency.IMPORTANT))
+        await dispatcher.dispatch(notification)
 
-        assert len(signal.delivered) == 1
-        assert len(ws.delivered) == 1
+        payload = redis.xadd.call_args[0][1]
+        restored = Notification.model_validate_json(payload["notification"])
+        assert restored.title == notification.title
+        assert restored.urgency is Urgency.IMPORTANT
 
 
 class TestDNDDeferral:
@@ -112,42 +70,32 @@ class TestDNDDeferral:
     async def test_dnd_active_defers_informational(
         self, redis: AsyncMock, dnd_active: DNDChecker
     ) -> None:
-        signal = FakeSignal()
-        ChannelRegistry._registry["fake_signal"] = FakeSignal
-        ChannelRegistry._instances["fake_signal"] = signal
-
         dispatcher = NotificationDispatcher(redis=redis, dnd_checker=dnd_active)
         await dispatcher.dispatch(_make_notification(Urgency.INFORMATIONAL))
 
-        assert len(signal.delivered) == 0
+        # Should defer, not publish to dispatch stream
         redis.rpush.assert_called_once()
         call_args = redis.rpush.call_args[0]
         assert call_args[0] == DEFERRED_NOTIFICATIONS_KEY
+        redis.xadd.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_dnd_active_delivers_urgent(
         self, redis: AsyncMock, dnd_active: DNDChecker
     ) -> None:
-        signal = FakeSignal()
-        ChannelRegistry._registry["fake_signal"] = FakeSignal
-        ChannelRegistry._instances["fake_signal"] = signal
-
         dispatcher = NotificationDispatcher(redis=redis, dnd_checker=dnd_active)
         await dispatcher.dispatch(_make_notification(Urgency.URGENT))
 
-        assert len(signal.delivered) == 1
+        # Urgent bypasses DND — published to stream
+        redis.xadd.assert_called_once()
         redis.rpush.assert_not_called()
 
 
 class TestDrainDeferred:
     @pytest.mark.asyncio
-    async def test_drain_resubmits_through_dispatch(
+    async def test_drain_publishes_to_stream(
         self, redis: AsyncMock, dnd_inactive: DNDChecker
     ) -> None:
-        signal = FakeSignal()
-        ChannelRegistry._registry["fake_signal"] = FakeSignal
-        ChannelRegistry._instances["fake_signal"] = signal
-
         notification = _make_notification(Urgency.INFORMATIONAL)
         serialized = notification.model_dump_json()
 
@@ -157,7 +105,9 @@ class TestDrainDeferred:
         dispatcher = NotificationDispatcher(redis=redis, dnd_checker=dnd_inactive)
         await dispatcher.drain_deferred()
 
-        assert len(signal.delivered) == 1
+        redis.xadd.assert_called_once()
+        call_args = redis.xadd.call_args[0]
+        assert call_args[0] == NOTIFICATION_DISPATCH_STREAM
 
     @pytest.mark.asyncio
     async def test_drain_empty_queue_is_noop(
@@ -180,11 +130,7 @@ class TestEnsureDrainTrigger:
         )
 
         trigger_store = AsyncMock()
-        trigger_store.get.return_value = None  # No existing trigger
-
-        signal = FakeSignal()
-        ChannelRegistry._registry["fake_signal"] = FakeSignal
-        ChannelRegistry._instances["fake_signal"] = signal
+        trigger_store.get.return_value = None
 
         dispatcher = NotificationDispatcher(
             redis=redis, dnd_checker=checker, trigger_store=trigger_store
@@ -203,7 +149,6 @@ class TestEnsureDrainTrigger:
 
     @pytest.mark.asyncio
     async def test_skips_if_trigger_already_exists(self, redis: AsyncMock) -> None:
-        """Idempotency: don't create duplicate drain triggers."""
         dnd_until = datetime.now(UTC) + timedelta(hours=1)
         checker = AsyncMock(spec=DNDChecker)
         checker.is_active.return_value = DNDStatus(
@@ -211,11 +156,7 @@ class TestEnsureDrainTrigger:
         )
 
         trigger_store = AsyncMock()
-        trigger_store.get.return_value = "existing"  # Already exists
-
-        signal = FakeSignal()
-        ChannelRegistry._registry["fake_signal"] = FakeSignal
-        ChannelRegistry._instances["fake_signal"] = signal
+        trigger_store.get.return_value = "existing"
 
         dispatcher = NotificationDispatcher(
             redis=redis, dnd_checker=checker, trigger_store=trigger_store
@@ -226,34 +167,23 @@ class TestEnsureDrainTrigger:
 
     @pytest.mark.asyncio
     async def test_no_trigger_without_store(self, redis: AsyncMock) -> None:
-        """No crash when trigger_store is None."""
         dnd_until = datetime.now(UTC) + timedelta(hours=1)
         checker = AsyncMock(spec=DNDChecker)
         checker.is_active.return_value = DNDStatus(
             active=True, source="manual", reason="Hold", until=dnd_until
         )
 
-        signal = FakeSignal()
-        ChannelRegistry._registry["fake_signal"] = FakeSignal
-        ChannelRegistry._instances["fake_signal"] = signal
-
         dispatcher = NotificationDispatcher(redis=redis, dnd_checker=checker)
-        # Should not raise
         await dispatcher.dispatch(_make_notification(Urgency.INFORMATIONAL))
 
     @pytest.mark.asyncio
     async def test_no_trigger_for_indefinite_dnd(self, redis: AsyncMock) -> None:
-        """No drain trigger when DND has no expiry."""
         checker = AsyncMock(spec=DNDChecker)
         checker.is_active.return_value = DNDStatus(
             active=True, source="manual", reason="Hold"
         )
 
         trigger_store = AsyncMock()
-
-        signal = FakeSignal()
-        ChannelRegistry._registry["fake_signal"] = FakeSignal
-        ChannelRegistry._instances["fake_signal"] = signal
 
         dispatcher = NotificationDispatcher(
             redis=redis, dnd_checker=checker, trigger_store=trigger_store
