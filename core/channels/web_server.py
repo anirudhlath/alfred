@@ -57,6 +57,15 @@ def _get_tts() -> Any:
     return _lazy_load("tts", "core.voice.tts", "PiperTTS", "piper-tts not installed")
 
 
+# Active WebSocket connections — used by notification channel adapters
+_active_websockets: list[WebSocket] = []
+
+
+def get_active_websockets() -> list[WebSocket]:
+    """Return list of currently connected WebSocket sessions."""
+    return list(_active_websockets)
+
+
 def _decode_audio(data_url: str) -> bytes:
     """Decode a base64 data URL (data:audio/webm;base64,...) to raw bytes."""
     if "," in data_url:
@@ -111,6 +120,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
         await websocket.accept()
+        _active_websockets.append(websocket)
         r: aioredis.Redis[Any] = app.state.redis
 
         # Accept optional session_id from client for reconnect persistence
@@ -210,6 +220,8 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
         except WebSocketDisconnect:
             logger.info("WebSocket disconnected (session={})", session_id)
+        finally:
+            _active_websockets.remove(websocket)
 
     @app.post("/api/onboarding")
     async def save_onboarding(payload: OnboardingPayload) -> dict[str, str]:
