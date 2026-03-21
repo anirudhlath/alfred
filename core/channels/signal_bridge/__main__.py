@@ -35,7 +35,6 @@ async def run(config: AlfredConfig) -> None:
     r: AioRedis = aioredis.from_url(config.redis_url)
 
     bridge = SignalBridge(redis=r, phone_number=config.signal_phone_number)
-    await bridge.ensure_consumer_group()
 
     log.info("Signal bridge started")
 
@@ -43,9 +42,7 @@ async def run(config: AlfredConfig) -> None:
 
     try:
         while not _shutdown.is_set():
-            # Poll notifications (cost alerts, proactive) and responses in parallel
             response_last_id = await bridge.poll_responses(last_id=response_last_id)
-            await bridge.poll_notifications()
     finally:
         log.info("Shutting down Signal bridge...")
         await r.aclose()

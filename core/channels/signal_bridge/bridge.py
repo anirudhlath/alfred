@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import TYPE_CHECKING, Any
 
 from bus.schemas.events import AlfredResponse, UserRequest
 from shared.streams import (
-    NOTIFICATIONS_STREAM,
     USER_REQUESTS_STREAM,
     USER_RESPONSES_STREAM,
     decode_stream_value,
@@ -76,31 +74,6 @@ class SignalBridge:
     async def send_notification(self, recipient: str, message: str) -> None:
         """Send an outbound notification via Signal."""
         await self._send_signal(recipient, message)
-
-    async def ensure_consumer_group(self) -> None:
-        """Create the consumer group if it doesn't exist."""
-        import contextlib
-
-        from redis.exceptions import ResponseError
-
-        with contextlib.suppress(ResponseError):
-            await self._redis.xgroup_create(
-                NOTIFICATIONS_STREAM, self._GROUP, id="0", mkstream=True
-            )
-
-    async def poll_notifications(self) -> None:
-        """Poll the notifications stream via consumer group and send via Signal."""
-        entries: list[Any] = await self._redis.xreadgroup(
-            self._GROUP, self._CONSUMER, {NOTIFICATIONS_STREAM: ">"}, count=10, block=5000
-        )
-        for _stream, stream_entries in entries:
-            for entry_id, entry_data in stream_entries:
-                raw = entry_data.get(b"event") or entry_data.get("event")
-                if raw:
-                    event_str = decode_stream_value(raw)
-                    event = json.loads(event_str)
-                    await self.send_notification(self._phone, f"{event['title']}: {event['body']}")
-                await self._redis.xack(NOTIFICATIONS_STREAM, self._GROUP, entry_id)
 
     async def poll_responses(self, last_id: str = "$") -> str:
         """Poll USER_RESPONSES_STREAM for responses targeting the signal channel.
