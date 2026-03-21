@@ -97,6 +97,7 @@ Introduced `ConsciousConfig` + `ConsciousDeps` dataclasses with backward-compati
 | D10 | Channel rate limiting | Section 15 | No middleware, no per-user limits |
 | D21 | Indefinite DND drain via keyspace notification | Section 8 | When DND has no `until`, deferred queue strands until next expiry-based drain or restart. Use Redis keyspace notifications on DND_STATE_KEY deletion to trigger immediate drain |
 | D22 | TriggerFired → user notification bridge | Section 1+8 | When a trigger fires without an `action` (e.g. reminders), the `TriggerFired` event is emitted but no one converts it to a user-facing notification. Need a listener that publishes a `Notification` via `NotificationPublisher` so the user actually sees the reminder |
+| D23 | Frontend audio queue | Section 6+8 | Response TTS and notification TTS play simultaneously. Need a sequential audio queue so notifications wait for current playback to finish |
 | D11 | Streaming TTS to WebSocket | Section 6 | Full blob only, no chunk streaming |
 
 ### Resilience & Operations
