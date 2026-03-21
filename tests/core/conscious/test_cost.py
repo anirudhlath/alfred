@@ -86,3 +86,21 @@ async def test_mark_alert_sent(mock_redis: AsyncMock) -> None:
 
     should_after = await tracker.should_send_alert()
     assert should_after is False
+
+
+@pytest.mark.asyncio
+async def test_send_alert_if_needed_publishes_with_urgency(mock_redis: AsyncMock) -> None:
+    """send_alert_if_needed uses Urgency.URGENT when publishing."""
+    from core.notifications.schema import Urgency
+
+    existing = CostState(date=_TODAY, spend_usd=4.5, cap_usd=5.0, alert_sent=False)
+    mock_redis.get.return_value = existing.model_dump_json().encode()
+
+    notifier = AsyncMock()
+    tracker = CostTracker(redis=mock_redis, daily_cap_usd=5.0, notifier=notifier)
+    result = await tracker.send_alert_if_needed()
+    assert result is True
+    notifier.publish.assert_called_once()
+    call_kwargs = notifier.publish.call_args[1]
+    assert call_kwargs["urgency"] is Urgency.URGENT
+    assert call_kwargs["source"] == "cost_tracker"

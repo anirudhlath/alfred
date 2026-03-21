@@ -57,6 +57,15 @@ def _get_tts() -> Any:
     return _lazy_load("tts", "core.voice.tts", "PiperTTS", "piper-tts not installed")
 
 
+# Active WebSocket connections — used by notification channel adapters
+_active_websockets: list[WebSocket] = []
+
+
+def get_active_websockets() -> list[WebSocket]:
+    """Return list of currently connected WebSocket sessions."""
+    return list(_active_websockets)
+
+
 def _decode_audio(data_url: str) -> bytes:
     """Decode a base64 data URL (data:audio/webm;base64,...) to raw bytes."""
     if "," in data_url:
@@ -92,10 +101,23 @@ def _atomic_write(path: Path, content: str) -> None:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
-    """Manage shared Redis connection pool lifecycle."""
+    """Manage shared Redis connection pool lifecycle + notification delivery."""
+    import asyncio
+
+    from core.notifications.delivery import notification_delivery_worker
+
     pool: aioredis.Redis[Any] = aioredis.from_url(app.state.redis_url, decode_responses=False)
     app.state.redis = pool
+
+    shutdown = asyncio.Event()
+    delivery_task = asyncio.create_task(
+        notification_delivery_worker(pool, group="channels-delivery", shutdown=shutdown)
+    )
+
     yield
+
+    shutdown.set()
+    delivery_task.cancel()
     await pool.close()
 
 
@@ -111,6 +133,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
         await websocket.accept()
+        _active_websockets.append(websocket)
         r: aioredis.Redis[Any] = app.state.redis
 
         # Accept optional session_id from client for reconnect persistence
@@ -210,6 +233,8 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
         except WebSocketDisconnect:
             logger.info("WebSocket disconnected (session={})", session_id)
+        finally:
+            _active_websockets.remove(websocket)
 
     @app.post("/api/onboarding")
     async def save_onboarding(payload: OnboardingPayload) -> dict[str, str]:

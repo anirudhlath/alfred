@@ -45,6 +45,15 @@ function connect() {
             }
             return;
         }
+        if (data.type === 'notification') {
+            showNotification(data.title, data.body, data.urgency);
+            if (data.audio) playAudio(data.audio);
+            return;
+        }
+        if (data.type === 'voice_notification') {
+            if (data.audio) playAudio(data.audio);
+            return;
+        }
         removeTypingIndicator();
         if (data.type === 'response') {
             appendMessage('alfred', data.text);
@@ -142,6 +151,26 @@ function showTypingIndicator() {
 function removeTypingIndicator() {
     const el = document.getElementById('typing');
     if (el) el.remove();
+}
+
+function showNotification(title, body, urgency) {
+    clearWelcome();
+
+    const msg = document.createElement('div');
+    msg.className = `message alfred notification ${urgency || ''}`;
+
+    const label = document.createElement('div');
+    label.className = 'message-label';
+    label.textContent = urgency === 'urgent' ? 'Alfred — Urgent' : 'Alfred — Notice';
+
+    const bubble = document.createElement('div');
+    bubble.className = 'message-bubble notification-bubble';
+    bubble.innerHTML = `<strong>${title}</strong><br>${body}`;
+
+    msg.appendChild(label);
+    msg.appendChild(bubble);
+    chatLog.appendChild(msg);
+    chatLog.scrollTop = chatLog.scrollHeight;
 }
 
 // --- Send ---

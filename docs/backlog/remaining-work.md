@@ -93,9 +93,19 @@ Introduced `ConsciousConfig` + `ConsciousDeps` dataclasses with backward-compati
 
 | ID | Feature | Spec Section | Notes |
 |----|---------|-------------|-------|
-| D9 | Proactive notification dispatch + DND + priority routing | Section 8 | NotificationPublisher exists but no routing/DND logic |
+| ~~D9~~ | ~~Proactive notification dispatch + DND + priority routing~~ | ~~Section 8~~ | DONE — NotificationDispatcher with DND awareness, priority routing, 3 channel adapters, drain triggers |
 | D10 | Channel rate limiting | Section 15 | No middleware, no per-user limits |
+| D21 | Indefinite DND drain via keyspace notification | Section 8 | When DND has no `until`, deferred queue strands until next expiry-based drain or restart. Use Redis keyspace notifications on DND_STATE_KEY deletion to trigger immediate drain |
+| D22 | TriggerFired → user notification bridge | Section 1+8 | When a trigger fires without an `action` (e.g. reminders), the `TriggerFired` event is emitted but no one converts it to a user-facing notification. Need a listener that publishes a `Notification` via `NotificationPublisher` so the user actually sees the reminder |
+| D23 | Frontend audio queue | Section 6+8 | Response TTS and notification TTS play simultaneously. Need a sequential audio queue so notifications wait for current playback to finish |
 | D11 | Streaming TTS to WebSocket | Section 6 | Full blob only, no chunk streaming |
+
+### Infrastructure & Security
+
+| ID | Feature | Spec Section | Notes |
+|----|---------|-------------|-------|
+| D24 | Client-side geolocation for weather | Section 9 | Weather integration uses hardcoded lat/long from .env. Should use browser Geolocation API, pass coordinates with request context, and fall back to configured default |
+| D25 | Secrets manager for integration credentials | Section 15 | CalDAV password, Robinhood credentials, etc. stored in plaintext .env. Use `keyring` library (macOS Keychain on dev, SecretService on Linux prod). `AlfredConfig.from_env()` should fall back to keyring when env var is empty. No plaintext secrets in .env |
 
 ### Resilience & Operations
 
@@ -129,7 +139,7 @@ Items that won't block development but should be addressed before scale/producti
 
 | ID | Improvement | Location | Notes |
 |----|-------------|----------|-------|
-| P1 | Signal Bridge polling → Redis pub/sub | `core/channels/signal_bridge/bridge.py` | Currently polls `NOTIFICATIONS_STREAM` every 5s via `xreadgroup`. Should use Redis pub/sub or blocking read to reduce latency and unnecessary cycles |
+| ~~P1~~ | ~~Signal Bridge polling → Redis pub/sub~~ | ~~`core/channels/signal_bridge/bridge.py`~~ | DONE — Removed polling. Dispatcher now routes to SignalChannelAdapter directly |
 | P2 | Notification dispatcher as sub-agent | `core/notifications/` | Instead of hardcoded routing rules, make the dispatcher an LLM-powered sub-agent that reasons about context, urgency, channel selection, and DND. Would allow natural-language routing policies and learning from user feedback |
 | P3 | Notification dedup/cooldown | `core/notifications/` | Hash-based dedup with Redis TTL key (`notification:{source}:{title_hash}`). Default 5min cooldown, configurable per urgency (urgent = no cooldown). Prevents notification storms from repeated sensor triggers or multiple sources detecting same situation |
 | P4 | PiperTTS GPU acceleration | `core/voice/tts.py` | Currently loads ONNX model with default CPU execution provider. Configure CUDA EP on prod (RTX 4090) and CoreML EP on dev (M4 Max) for faster synthesis |
