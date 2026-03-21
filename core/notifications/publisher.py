@@ -1,43 +1,41 @@
-"""NotificationPublisher — sends notifications to the delivery stream."""
+"""NotificationPublisher — creates Notification objects and routes through Dispatcher."""
 
 from __future__ import annotations
 
-import json
 import logging
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from shared.streams import NOTIFICATIONS_STREAM
+from core.notifications.schema import Notification, Urgency
 
 if TYPE_CHECKING:
-    from shared.types import AioRedis
+    from core.notifications.dispatcher import NotificationDispatcher
 
 logger = logging.getLogger(__name__)
 
 
 class NotificationPublisher:
-    """Publishes notification events to the Redis notifications stream.
+    """Creates and publishes notifications through the Dispatcher.
 
-    Downstream consumers (Signal bridge, web push, etc.) read from this stream.
+    This is the public API that other components (CostTracker, Conscious Engine,
+    etc.) call to send notifications. The Dispatcher handles DND + channel routing.
     """
 
-    def __init__(self, redis: AioRedis) -> None:
-        self._redis = redis
+    def __init__(self, dispatcher: NotificationDispatcher) -> None:
+        self._dispatcher = dispatcher
 
     async def publish(
         self,
-        channel: str,
         title: str,
         body: str,
-        urgency: str = "normal",
+        source: str,
+        urgency: Urgency = Urgency.INFORMATIONAL,
     ) -> None:
-        """Publish a notification event."""
-        event = {
-            "channel": channel,
-            "title": title,
-            "body": body,
-            "urgency": urgency,
-            "timestamp": datetime.now(UTC).isoformat(),
-        }
-        await self._redis.xadd(NOTIFICATIONS_STREAM, {"event": json.dumps(event)})
-        logger.info("Published notification: %s — %s", channel, title)
+        """Create a Notification and route it through the dispatcher."""
+        notification = Notification(
+            title=title,
+            body=body,
+            urgency=urgency,
+            source=source,
+        )
+        await self._dispatcher.dispatch(notification)
+        logger.info("Published notification: %s — %s (urgency=%s)", source, title, urgency)

@@ -91,7 +91,12 @@ async def run(config: AlfredConfig) -> None:
         default_proactivity=config.proactivity_level,
     )
 
-    notifier = NotificationPublisher(redis=r)
+    from core.notifications.dispatcher import NotificationDispatcher
+    from core.notifications.dnd import DNDChecker
+
+    dnd_checker = DNDChecker(redis=r, calendar_adapter=None)
+    dispatcher = NotificationDispatcher(redis=r, dnd_checker=dnd_checker)
+    notifier = NotificationPublisher(dispatcher=dispatcher)
     cost_tracker = CostTracker(redis=r, daily_cap_usd=config.daily_cost_cap_usd, notifier=notifier)
 
     # Trigger feature — system-level, called directly (not via HTTP)

@@ -7,35 +7,44 @@ from unittest.mock import AsyncMock
 import pytest
 
 from core.notifications.publisher import NotificationPublisher
-from shared.streams import NOTIFICATIONS_STREAM
+from core.notifications.schema import Notification, Urgency
 
 
-@pytest.mark.asyncio
-async def test_publish_sends_to_stream() -> None:
-    redis = AsyncMock()
-    pub = NotificationPublisher(redis=redis)
-    await pub.publish(
-        channel="cost_alert",
-        title="Budget Warning",
-        body="Daily budget 80% consumed",
-        urgency="high",
-    )
-    redis.xadd.assert_called_once()
-    call_args = redis.xadd.call_args
-    assert call_args[0][0] == NOTIFICATIONS_STREAM
+@pytest.fixture
+def dispatcher() -> AsyncMock:
+    return AsyncMock()
 
 
-@pytest.mark.asyncio
-async def test_publish_includes_metadata() -> None:
-    redis = AsyncMock()
-    pub = NotificationPublisher(redis=redis)
-    await pub.publish(
-        channel="cost_alert",
-        title="Budget exceeded",
-        body="$5.00 daily cap reached",
-        urgency="critical",
-    )
-    payload = redis.xadd.call_args[0][1]
-    event_str = payload["event"]
-    assert "cost_alert" in event_str
-    assert "Budget exceeded" in event_str
+@pytest.fixture
+def publisher(dispatcher: AsyncMock) -> NotificationPublisher:
+    return NotificationPublisher(dispatcher=dispatcher)
+
+
+class TestPublish:
+    @pytest.mark.asyncio
+    async def test_publish_calls_dispatcher(
+        self, publisher: NotificationPublisher, dispatcher: AsyncMock
+    ) -> None:
+        await publisher.publish(
+            title="Budget Warning",
+            body="80% consumed",
+            urgency=Urgency.URGENT,
+            source="cost_tracker",
+        )
+        dispatcher.dispatch.assert_called_once()
+        notification = dispatcher.dispatch.call_args[0][0]
+        assert isinstance(notification, Notification)
+        assert notification.title == "Budget Warning"
+        assert notification.urgency is Urgency.URGENT
+
+    @pytest.mark.asyncio
+    async def test_publish_default_urgency(
+        self, publisher: NotificationPublisher, dispatcher: AsyncMock
+    ) -> None:
+        await publisher.publish(
+            title="Info",
+            body="FYI",
+            source="test",
+        )
+        notification = dispatcher.dispatch.call_args[0][0]
+        assert notification.urgency is Urgency.INFORMATIONAL
