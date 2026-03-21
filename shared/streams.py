@@ -17,6 +17,7 @@ USER_RESPONSES_STREAM = "alfred:user:responses"
 SESSIONS_KEY_PREFIX = "alfred:sessions:"
 DND_STATE_KEY = "alfred:memory:dnd"
 DEFERRED_NOTIFICATIONS_KEY = "alfred:notifications:deferred"
+NOTIFICATION_DISPATCH_STREAM = "alfred:notifications:dispatch"
 
 # Phase 3: Memory
 EPISODIC_STREAM = "alfred:memory:episodic"

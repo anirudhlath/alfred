@@ -1,45 +1,22 @@
 """Integration tests for the full notification pipeline.
 
-Tests the flow: publish → dispatcher → DND check → channel delivery / deferral → drain.
-Uses mock Redis but real Dispatcher, DNDChecker, and ChannelRegistry wiring.
+Tests the flow: publish → dispatcher → DND check → stream publish / deferral → drain.
+Uses mock Redis but real Dispatcher, DNDChecker, and Publisher wiring.
 """
 
 from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
-from typing import ClassVar
 from unittest.mock import AsyncMock
 
 import pytest
 
-from core.notifications.channels import ChannelAdapter, ChannelRegistry
 from core.notifications.dispatcher import NotificationDispatcher
 from core.notifications.dnd import DNDChecker
 from core.notifications.publisher import NotificationPublisher
 from core.notifications.schema import Notification, Urgency
-
-
-class RecordingAdapter(ChannelAdapter):
-    """Test adapter that records all deliveries."""
-
-    name: ClassVar[str] = "recording"
-    supported_urgencies: ClassVar[set[Urgency]] = {
-        Urgency.INFORMATIONAL,
-        Urgency.IMPORTANT,
-        Urgency.URGENT,
-    }
-
-    def __init__(self) -> None:
-        self.delivered: list[Notification] = []
-
-    async def deliver(self, notification: Notification) -> None:
-        self.delivered.append(notification)
-
-
-@pytest.fixture(autouse=True)
-def _clear_registry() -> None:
-    ChannelRegistry.reset()
+from shared.streams import NOTIFICATION_DISPATCH_STREAM
 
 
 @pytest.fixture
@@ -50,18 +27,10 @@ def redis() -> AsyncMock:
     return r
 
 
-@pytest.fixture
-def adapter() -> RecordingAdapter:
-    a = RecordingAdapter()
-    ChannelRegistry._registry["recording"] = RecordingAdapter
-    ChannelRegistry._instances["recording"] = a
-    return a
-
-
 class TestEndToEndFlow:
     @pytest.mark.asyncio
-    async def test_publish_delivers_when_no_dnd(
-        self, redis: AsyncMock, adapter: RecordingAdapter
+    async def test_publish_dispatches_to_stream_when_no_dnd(
+        self, redis: AsyncMock
     ) -> None:
         dnd = DNDChecker(redis=redis, calendar_adapter=None)
         dispatcher = NotificationDispatcher(redis=redis, dnd_checker=dnd)
@@ -74,13 +43,14 @@ class TestEndToEndFlow:
             urgency=Urgency.INFORMATIONAL,
         )
 
-        assert len(adapter.delivered) == 1
-        assert adapter.delivered[0].title == "Weather Alert"
+        redis.xadd.assert_called_once()
+        stream, payload = redis.xadd.call_args[0]
+        assert stream == NOTIFICATION_DISPATCH_STREAM
+        restored = Notification.model_validate_json(payload["notification"])
+        assert restored.title == "Weather Alert"
 
     @pytest.mark.asyncio
-    async def test_publish_defers_during_dnd(
-        self, redis: AsyncMock, adapter: RecordingAdapter
-    ) -> None:
+    async def test_publish_defers_during_dnd(self, redis: AsyncMock) -> None:
         future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
         redis.get.return_value = json.dumps(
             {
@@ -102,11 +72,11 @@ class TestEndToEndFlow:
             urgency=Urgency.INFORMATIONAL,
         )
 
-        assert len(adapter.delivered) == 0
+        redis.xadd.assert_not_called()
         redis.rpush.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_urgent_bypasses_dnd(self, redis: AsyncMock, adapter: RecordingAdapter) -> None:
+    async def test_urgent_bypasses_dnd(self, redis: AsyncMock) -> None:
         future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
         redis.get.return_value = json.dumps(
             {
@@ -128,12 +98,12 @@ class TestEndToEndFlow:
             urgency=Urgency.URGENT,
         )
 
-        assert len(adapter.delivered) == 1
+        # Urgent bypasses DND — published to stream
+        redis.xadd.assert_called_once()
+        redis.rpush.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_drain_delivers_deferred(
-        self, redis: AsyncMock, adapter: RecordingAdapter
-    ) -> None:
+    async def test_drain_publishes_deferred_to_stream(self, redis: AsyncMock) -> None:
         """Simulate: DND was active, deferred 2 notifications. DND expires, drain fires."""
         n1 = Notification(title="N1", body="First", urgency=Urgency.INFORMATIONAL, source="a")
         n2 = Notification(title="N2", body="Second", urgency=Urgency.IMPORTANT, source="b")
@@ -150,6 +120,11 @@ class TestEndToEndFlow:
         dispatcher = NotificationDispatcher(redis=redis, dnd_checker=dnd)
         await dispatcher.drain_deferred()
 
-        assert len(adapter.delivered) == 2
-        assert adapter.delivered[0].title == "N1"
-        assert adapter.delivered[1].title == "N2"
+        # Both notifications published to dispatch stream
+        assert redis.xadd.call_count == 2
+        titles = set()
+        for call in redis.xadd.call_args_list:
+            payload = call[0][1]
+            n = Notification.model_validate_json(payload["notification"])
+            titles.add(n.title)
+        assert titles == {"N1", "N2"}
