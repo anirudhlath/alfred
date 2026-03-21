@@ -91,11 +91,36 @@ async def run(config: AlfredConfig) -> None:
         default_proactivity=config.proactivity_level,
     )
 
+    # Import adapter modules to trigger @ChannelRegistry.register() decorators
+    import core.notifications.adapters.signal
+    import core.notifications.adapters.voice
+    import core.notifications.adapters.websocket
+    from core.channels.signal_bridge.bridge import SignalBridge
+    from core.notifications.channels import ChannelRegistry
     from core.notifications.dispatcher import NotificationDispatcher
     from core.notifications.dnd import DNDChecker
 
-    dnd_checker = DNDChecker(redis=r, calendar_adapter=None)
+    # Try to get calendar adapter for DND checks (optional)
+    calendar_adapter = None
+    try:
+        from core.integrations.registry import IntegrationRegistry
+
+        calendar_adapter = IntegrationRegistry.get("apple_calendar")
+    except (KeyError, Exception):
+        log.info("Calendar adapter not available — DND calendar checks disabled")
+
+    dnd_checker = DNDChecker(redis=r, calendar_adapter=calendar_adapter)
     dispatcher = NotificationDispatcher(redis=r, dnd_checker=dnd_checker)
+
+    # Inject pre-built adapter instances that need constructor args
+    signal_bridge = SignalBridge(redis=r, phone_number=config.signal_phone_number)
+    ChannelRegistry.set_instance(
+        "signal",
+        core.notifications.adapters.signal.SignalChannelAdapter(
+            bridge=signal_bridge, recipient=config.signal_phone_number
+        ),
+    )
+
     notifier = NotificationPublisher(dispatcher=dispatcher)
     cost_tracker = CostTracker(redis=r, daily_cap_usd=config.daily_cost_cap_usd, notifier=notifier)
 
