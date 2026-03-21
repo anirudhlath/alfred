@@ -52,9 +52,12 @@ MAX_ITERATIONS = 10
 
 @dataclass
 class ConsciousConfig:
-    """LLM configuration for the Conscious Engine."""
+    """LLM configuration for the Conscious Engine.
 
-    model: str = "openrouter/anthropic/claude-sonnet-4"
+    Defaults are intentionally empty — populate from AlfredConfig at the call site.
+    """
+
+    model: str
     api_key: str = ""
     max_tokens: int = 2048
 
@@ -63,19 +66,19 @@ class ConsciousConfig:
 class ConsciousDeps:
     """Service dependencies injected into the Conscious Engine."""
 
-    redis: Any  # AioRedis (Any to allow mocks in tests)
-    identity_gate: Any  # IdentityGate
-    session_mgr: Any  # SessionManager
-    cost_tracker: Any  # CostTracker
-    context_assembler: Any  # ContextAssembler
-    domain_router: Any  # DomainRouter
-    tool_registry: Any  # ToolRegistry
-    context_reader: Any  # ContextReader
-    memory_reader: Any | None = None  # MemoryReader
-    episodic_store: Any | None = None  # EpisodicStore
-    routine_store: Any | None = None  # RoutineStore
+    redis: AioRedis
+    identity_gate: IdentityGate
+    session_mgr: SessionManager
+    cost_tracker: CostTracker
+    context_assembler: ContextAssembler
+    domain_router: DomainRouter
+    tool_registry: ToolRegistry
+    context_reader: ContextReader
+    memory_reader: MemoryReader | None = None
+    episodic_store: EpisodicStore | None = None
+    routine_store: RoutineStore | None = None
     trigger_feature: TriggerFeature | None = None
-    config: ConsciousConfig = field(default_factory=ConsciousConfig)
+    config: ConsciousConfig = field(default_factory=lambda: ConsciousConfig(model=""))
 
 
 class ConsciousEngine:
@@ -113,14 +116,24 @@ class ConsciousEngine:
             cfg = d.config
         else:
             # Build from individual kwargs (backward compat)
-            assert redis is not None, "redis is required"
-            assert identity_gate is not None, "identity_gate is required"
-            assert session_mgr is not None, "session_mgr is required"
-            assert cost_tracker is not None, "cost_tracker is required"
-            assert context_assembler is not None, "context_assembler is required"
-            assert domain_router is not None, "domain_router is required"
-            assert tool_registry is not None, "tool_registry is required"
-            assert context_reader is not None, "context_reader is required"
+            required = {
+                "redis": redis, "identity_gate": identity_gate,
+                "session_mgr": session_mgr, "cost_tracker": cost_tracker,
+                "context_assembler": context_assembler, "domain_router": domain_router,
+                "tool_registry": tool_registry, "context_reader": context_reader,
+            }
+            missing = [k for k, v in required.items() if v is None]
+            if missing:
+                raise ValueError(f"Missing required deps: {', '.join(missing)}")
+            # All required deps verified non-None above; narrow for mypy
+            assert redis is not None  # noqa: S101
+            assert identity_gate is not None  # noqa: S101
+            assert session_mgr is not None  # noqa: S101
+            assert cost_tracker is not None  # noqa: S101
+            assert context_assembler is not None  # noqa: S101
+            assert domain_router is not None  # noqa: S101
+            assert tool_registry is not None  # noqa: S101
+            assert context_reader is not None  # noqa: S101
             d = ConsciousDeps(
                 redis=redis,
                 identity_gate=identity_gate,

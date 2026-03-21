@@ -8,7 +8,12 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from bus.schemas.events import AlfredResponse, UserRequest
-from shared.streams import NOTIFICATIONS_STREAM, USER_REQUESTS_STREAM, USER_RESPONSES_STREAM
+from shared.streams import (
+    NOTIFICATIONS_STREAM,
+    USER_REQUESTS_STREAM,
+    USER_RESPONSES_STREAM,
+    decode_stream_value,
+)
 
 if TYPE_CHECKING:
     from shared.types import AioRedis
@@ -92,7 +97,7 @@ class SignalBridge:
             for entry_id, entry_data in stream_entries:
                 raw = entry_data.get(b"event") or entry_data.get("event")
                 if raw:
-                    event_str = raw.decode() if isinstance(raw, bytes) else raw
+                    event_str = decode_stream_value(raw)
                     event = json.loads(event_str)
                     await self.send_notification(self._phone, f"{event['title']}: {event['body']}")
                 await self._redis.xack(NOTIFICATIONS_STREAM, self._GROUP, entry_id)
@@ -109,10 +114,10 @@ class SignalBridge:
         )
         for _stream, stream_entries in entries:
             for entry_id, entry_data in stream_entries:
-                last_id = entry_id.decode() if isinstance(entry_id, bytes) else entry_id
+                last_id = decode_stream_value(entry_id)
                 raw = entry_data.get(b"event") or entry_data.get("event")
                 if raw:
-                    event_str = raw.decode() if isinstance(raw, bytes) else raw
+                    event_str = decode_stream_value(raw)
                     resp = AlfredResponse.model_validate_json(event_str)
                     if resp.channel == "signal":
                         recipient = resp.session_id.removeprefix("signal-")
