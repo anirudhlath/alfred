@@ -77,3 +77,9 @@ class ChannelRegistry:
     def set_instance(cls, name: str, instance: ChannelAdapter) -> None:
         """Inject a pre-built adapter instance (for adapters needing constructor args)."""
         cls._instances[name] = instance
+
+    @classmethod
+    def reset(cls) -> None:
+        """Clear all registrations and instances. Used in tests."""
+        cls._registry.clear()
+        cls._instances.clear()

@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
 
 from core.notifications.schema import Notification, Urgency
 
 if TYPE_CHECKING:
     from core.notifications.dispatcher import NotificationDispatcher
-
-logger = logging.getLogger(__name__)
 
 
 class NotificationPublisher:
@@ -38,4 +35,3 @@ class NotificationPublisher:
             source=source,
         )
         await self._dispatcher.dispatch(notification)
-        logger.info("Published notification: %s — %s (urgency=%s)", source, title, urgency)
