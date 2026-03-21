@@ -34,6 +34,27 @@ graph LR
 - `conscious/` — System 2 cloud LLM (Phase 3)
 - `voice/` — Voice I/O adapters (Phase 3)
 - `librarian/` — Nightly preference consolidation (Phase 3)
+- `notifications/` — Proactive notification system
+  - `schema.py` — `Urgency` enum, `Notification` model, `DNDStatus` model
+  - `dispatcher.py` — DND check → defer or publish to dispatch stream
+  - `delivery.py` — Stream consumer that delivers via local `ChannelRegistry` adapters
+  - `dnd.py` — DNDChecker (manual Redis key + calendar meeting detection)
+  - `channels.py` — `ChannelAdapter` ABC + `ChannelRegistry` (decorator-based registration)
+  - `publisher.py` — Public API (thin facade over dispatcher)
+  - `adapters/` — Signal, WebSocket, Voice concrete adapters
+
+### Notification Data Flow
+
+```mermaid
+graph LR
+    Pub[NotificationPublisher] --> Disp[Dispatcher]
+    Disp --> DND{DND?}
+    DND -->|defer| List[Redis List]
+    DND -->|deliver| Stream[Redis Stream]
+    Stream --> CG1[conscious-delivery → Signal]
+    Stream --> CG2[channels-delivery → WS + Voice]
+    List -->|drain trigger| Disp
+```
 
 ## Running
 
