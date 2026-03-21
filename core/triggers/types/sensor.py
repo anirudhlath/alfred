@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
@@ -14,6 +14,7 @@ from core.triggers.registry import TriggerRegistry
 class SensorTrigger(BaseTrigger):
     """Fires when an incoming event matches conditions."""
 
+    responds_to_tick: ClassVar[bool] = False
     trigger_type: str = "sensor"
 
     class Conditions(BaseModel):

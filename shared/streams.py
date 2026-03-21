@@ -27,3 +27,8 @@ COST_DAILY_KEY = "alfred:cost:daily"
 
 # Phase 3: Integration registry
 INTEGRATION_REGISTRY_KEY = "alfred:integration_registry"
+
+
+def decode_stream_value(raw: str | bytes) -> str:
+    """Decode a Redis stream value that may be bytes or already a string."""
+    return raw.decode() if isinstance(raw, bytes) else raw

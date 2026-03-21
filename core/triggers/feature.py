@@ -30,12 +30,20 @@ class TriggerFeature(BaseFeature):
     feature_name = "triggers"
 
     def __init__(self, ctx: TriggerFeatureContext | None = None) -> None:
+        self._store: TriggerStore | None
         if ctx is not None:
             self._store = ctx.store
             self._redis = ctx.redis
         else:
-            self._store = None  # type: ignore[assignment]
+            self._store = None
             self._redis = None
+
+    @property
+    def _store_or_raise(self) -> TriggerStore:
+        """Return the store or raise if TriggerFeature was created without context."""
+        if self._store is None:
+            raise RuntimeError("TriggerFeature used without TriggerFeatureContext")
+        return self._store
 
     def get_tools(self) -> list[ToolMeta]:
         """Override to inject dynamic descriptions from TriggerRegistry."""
@@ -97,7 +105,7 @@ class TriggerFeature(BaseFeature):
         except Exception as e:
             return {"error": f"Invalid conditions for type '{trigger_type}': {e}"}
 
-        await self._store.save(trigger)
+        await self._store_or_raise.save(trigger)
 
         # Publish TriggerCreated event to bus
         if self._redis is not None:
@@ -117,7 +125,7 @@ class TriggerFeature(BaseFeature):
     @tool
     async def list_triggers(self, enabled_only: bool = True) -> list[dict[str, Any]]:
         """List all triggers."""
-        triggers = await self._store.list_all(enabled_only=enabled_only)
+        triggers = await self._store_or_raise.list_all(enabled_only=enabled_only)
         return [t.model_dump(mode="json") for t in triggers]
 
     @tool
@@ -129,7 +137,7 @@ class TriggerFeature(BaseFeature):
         name: str | None = None,
     ) -> dict[str, Any]:
         """Update an existing trigger's conditions, action, or name."""
-        target = await self._store.get(trigger_id)
+        target = await self._store_or_raise.get(trigger_id)
         if target is None:
             return {"error": f"Trigger '{trigger_id}' not found"}
 
@@ -152,22 +160,22 @@ class TriggerFeature(BaseFeature):
                 return {"error": f"Invalid action: {e}"}
 
         updated = target.model_copy(update=updates)
-        await self._store.save(updated)
+        await self._store_or_raise.save(updated)
         return updated.model_dump(mode="json")
 
     @tool
     async def delete_trigger(self, trigger_id: str) -> dict[str, str]:
         """Delete a trigger by ID."""
-        await self._store.delete(trigger_id)
+        await self._store_or_raise.delete(trigger_id)
         return {"status": "deleted", "trigger_id": trigger_id}
 
     @tool
     async def toggle_trigger(self, trigger_id: str, enabled: bool) -> dict[str, Any]:
         """Enable or disable a trigger."""
-        target = await self._store.get(trigger_id)
+        target = await self._store_or_raise.get(trigger_id)
         if target is None:
             return {"error": f"Trigger '{trigger_id}' not found"}
 
         updated = target.model_copy(update={"enabled": enabled})
-        await self._store.save(updated)
+        await self._store_or_raise.save(updated)
         return updated.model_dump(mode="json")

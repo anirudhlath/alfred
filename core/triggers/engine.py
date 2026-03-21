@@ -72,8 +72,11 @@ class TriggerEngine:
     async def _evaluate_all(self, context: TriggerContext) -> None:
         """Evaluate all enabled triggers against the given context."""
         triggers = await self._store.list_all(enabled_only=True)
+        is_tick = context.event is None
 
         for trigger in triggers:
+            if is_tick and not trigger.responds_to_tick:
+                continue
             try:
                 if trigger.evaluate(context):
                     await self.fire(trigger, context)

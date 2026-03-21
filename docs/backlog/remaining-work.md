@@ -50,37 +50,22 @@ Added in-memory cache with invalidation on save/delete.
 
 ---
 
-## Tier 3: Low Priority (Nice-to-have, not blocking)
+## ~~Tier 3: Low Priority~~ — ALL DONE (Phase 6)
 
-### L1: Sensor Triggers Evaluated on Tick
-- **Impact:** `evaluate_tick()` evaluates all triggers including SensorTriggers that always return False without an event.
-- **Fix:** Add `responds_to_tick: bool` class attribute, skip in tick loop.
-- **Files:** `core/triggers/engine.py:72-81`, `core/triggers/models.py`
-- **Scope:** Tiny
+### ~~L1: Sensor Triggers Evaluated on Tick~~ — DONE
+Added `responds_to_tick: ClassVar[bool]` to `BaseTrigger`, set `False` on `SensorTrigger`, filtered in `_evaluate_all`.
 
-### L2: Shared Stream Entry Parsing Duplicated
-- **Impact:** Identical `raw.decode() if isinstance(raw, bytes) else raw` pattern in triggers and reflex.
-- **Fix:** Extract to `shared/streams.py` utility.
-- **Files:** `core/triggers/__main__.py:81`, `core/reflex/runner.py:64`
-- **Scope:** Tiny
+### ~~L2: Shared Stream Entry Parsing Duplicated~~ — DONE
+Extracted `decode_stream_value()` to `shared/streams.py`, updated 4 consumers.
 
-### L3: TriggerFeature `_store = None # type: ignore`
-- **Impact:** Latent `AttributeError` if TriggerFeature used without context. Mypy suppressed.
-- **Fix:** Use `Optional[TriggerStore]` with guard helper.
-- **Files:** `core/triggers/feature.py:37`
-- **Scope:** Tiny
+### ~~L3: TriggerFeature `_store = None # type: ignore`~~ — DONE
+Replaced with `Optional[TriggerStore]` and `_store_or_raise` guard property.
 
-### L4: STT/TTS Lazy-Loader Boilerplate Duplicated
-- **Impact:** `_get_stt()` and `_get_tts()` in web_server.py are identical patterns.
-- **Fix:** Extract generic lazy-loader factory.
-- **Files:** `core/channels/web_server.py:27-58`
-- **Scope:** Tiny
+### ~~L4: STT/TTS Lazy-Loader Boilerplate Duplicated~~ — DONE
+Extracted `_lazy_load()` factory in `web_server.py`.
 
-### L5: Engine Constructor 16 Parameters
-- **Impact:** `ConsciousEngine.__init__` has 16 params. Hard to read and maintain.
-- **Fix:** Group into config/deps dataclass.
-- **Files:** `core/conscious/engine.py:61-77`
-- **Scope:** Small
+### ~~L5: Engine Constructor 16 Parameters~~ — DONE
+Introduced `ConsciousConfig` + `ConsciousDeps` dataclasses with backward-compatible kwargs.
 
 ---
 

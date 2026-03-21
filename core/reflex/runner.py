@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 import redis.asyncio as aioredis
 
 from bus.schemas.events import StateChangedEvent
+from shared.streams import decode_stream_value
 from shared.types import AioRedis as AioRedis  # noqa: TC001  # re-export for backward compat
 
 if TYPE_CHECKING:
@@ -59,7 +60,7 @@ async def process_stream_entry(
         logger.warning("Stream entry missing 'event' field: %s", entry_data)
         return False
 
-    event_str = raw_event.decode() if isinstance(raw_event, bytes) else raw_event
+    event_str = decode_stream_value(raw_event)
 
     try:
         event = StateChangedEvent.model_validate_json(event_str)

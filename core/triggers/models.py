@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import datetime  # noqa: TC003
-from typing import Any
+from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
@@ -37,6 +37,8 @@ class BaseTrigger(ABC, BaseModel):
     Every concrete subclass MUST define a `conditions` field typed to its own
     nested `Conditions` Pydantic model.
     """
+
+    responds_to_tick: ClassVar[bool] = True
 
     trigger_id: str
     trigger_type: str

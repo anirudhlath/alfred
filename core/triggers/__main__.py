@@ -27,7 +27,7 @@ from core.triggers.store import TriggerStore
 from sdk.alfred_sdk.client import AlfredClient
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
-from shared.streams import EVENTS_STREAM
+from shared.streams import EVENTS_STREAM, decode_stream_value
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +78,7 @@ async def event_loop(
                     await r.xack(EVENTS_STREAM, GROUP, entry_id)  # type: ignore[no-untyped-call]
                     continue
 
-                event_str = raw_event.decode() if isinstance(raw_event, bytes) else raw_event
+                event_str = decode_stream_value(raw_event)
 
                 try:
                     event = StateChangedEvent.model_validate_json(event_str)

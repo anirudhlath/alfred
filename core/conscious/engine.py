@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -49,6 +50,34 @@ logger = logging.getLogger(__name__)
 MAX_ITERATIONS = 10
 
 
+@dataclass
+class ConsciousConfig:
+    """LLM configuration for the Conscious Engine."""
+
+    model: str = "openrouter/anthropic/claude-sonnet-4"
+    api_key: str = ""
+    max_tokens: int = 2048
+
+
+@dataclass
+class ConsciousDeps:
+    """Service dependencies injected into the Conscious Engine."""
+
+    redis: Any  # AioRedis (Any to allow mocks in tests)
+    identity_gate: Any  # IdentityGate
+    session_mgr: Any  # SessionManager
+    cost_tracker: Any  # CostTracker
+    context_assembler: Any  # ContextAssembler
+    domain_router: Any  # DomainRouter
+    tool_registry: Any  # ToolRegistry
+    context_reader: Any  # ContextReader
+    memory_reader: Any | None = None  # MemoryReader
+    episodic_store: Any | None = None  # EpisodicStore
+    routine_store: Any | None = None  # RoutineStore
+    trigger_feature: TriggerFeature | None = None
+    config: ConsciousConfig = field(default_factory=ConsciousConfig)
+
+
 class ConsciousEngine:
     """The conversational brain of Alfred (System 2).
 
@@ -60,14 +89,17 @@ class ConsciousEngine:
 
     def __init__(
         self,
-        redis: AioRedis,
-        identity_gate: IdentityGate,
-        session_mgr: SessionManager,
-        cost_tracker: CostTracker,
-        context_assembler: ContextAssembler,
-        domain_router: DomainRouter,
-        tool_registry: ToolRegistry,
-        context_reader: ContextReader,
+        *,
+        deps: ConsciousDeps | None = None,
+        # Legacy kwargs — kept for backward compatibility with tests and call sites.
+        redis: AioRedis | None = None,
+        identity_gate: IdentityGate | None = None,
+        session_mgr: SessionManager | None = None,
+        cost_tracker: CostTracker | None = None,
+        context_assembler: ContextAssembler | None = None,
+        domain_router: DomainRouter | None = None,
+        tool_registry: ToolRegistry | None = None,
+        context_reader: ContextReader | None = None,
         claude_model: str = "openrouter/anthropic/claude-sonnet-4",
         claude_api_key: str = "",
         claude_max_tokens: int = 2048,
@@ -76,21 +108,55 @@ class ConsciousEngine:
         routine_store: RoutineStore | None = None,
         trigger_feature: TriggerFeature | None = None,
     ) -> None:
-        self._redis = redis
-        self._identity_gate = identity_gate
-        self._session_mgr = session_mgr
-        self._cost = cost_tracker
-        self._assembler = context_assembler
-        self._router = domain_router
-        self._tool_registry = tool_registry
-        self._context_reader = context_reader
-        self._model = claude_model
-        self._api_key = claude_api_key
-        self._max_tokens = claude_max_tokens
-        self._memory_reader = memory_reader
-        self._episodic = episodic_store
-        self._routines = routine_store
-        self._triggers = trigger_feature
+        if deps is not None:
+            d = deps
+            cfg = d.config
+        else:
+            # Build from individual kwargs (backward compat)
+            assert redis is not None, "redis is required"
+            assert identity_gate is not None, "identity_gate is required"
+            assert session_mgr is not None, "session_mgr is required"
+            assert cost_tracker is not None, "cost_tracker is required"
+            assert context_assembler is not None, "context_assembler is required"
+            assert domain_router is not None, "domain_router is required"
+            assert tool_registry is not None, "tool_registry is required"
+            assert context_reader is not None, "context_reader is required"
+            d = ConsciousDeps(
+                redis=redis,
+                identity_gate=identity_gate,
+                session_mgr=session_mgr,
+                cost_tracker=cost_tracker,
+                context_assembler=context_assembler,
+                domain_router=domain_router,
+                tool_registry=tool_registry,
+                context_reader=context_reader,
+                memory_reader=memory_reader,
+                episodic_store=episodic_store,
+                routine_store=routine_store,
+                trigger_feature=trigger_feature,
+                config=ConsciousConfig(
+                    model=claude_model,
+                    api_key=claude_api_key,
+                    max_tokens=claude_max_tokens,
+                ),
+            )
+            cfg = d.config
+
+        self._redis = d.redis
+        self._identity_gate = d.identity_gate
+        self._session_mgr = d.session_mgr
+        self._cost = d.cost_tracker
+        self._assembler = d.context_assembler
+        self._router = d.domain_router
+        self._tool_registry = d.tool_registry
+        self._context_reader = d.context_reader
+        self._model = cfg.model
+        self._api_key = cfg.api_key
+        self._max_tokens = cfg.max_tokens
+        self._memory_reader = d.memory_reader
+        self._episodic = d.episodic_store
+        self._routines = d.routine_store
+        self._triggers = d.trigger_feature
 
     _TYPE_MAP: ClassVar[dict[str, str]] = PYTHON_TO_JSON_SCHEMA
 

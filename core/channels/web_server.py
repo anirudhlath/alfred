@@ -17,45 +17,44 @@ from loguru import logger
 from pydantic import BaseModel
 
 from bus.schemas.events import AlfredResponse, UserRequest
-from shared.streams import USER_REQUESTS_STREAM, USER_RESPONSES_STREAM
+from shared.streams import USER_REQUESTS_STREAM, USER_RESPONSES_STREAM, decode_stream_value
 
 # Optional: WhisperSTT for voice transcription, PiperTTS for speech output
-_stt_instance: Any = None
-_tts_instance: Any = None
+_lazy_cache: dict[str, Any] = {}
+_FAILED: object = object()  # sentinel for imports that already failed
+
+
+def _lazy_load(key: str, module: str, cls_name: str, missing_msg: str) -> Any:
+    """Lazy-load a class from an optional module. Returns instance or None on failure."""
+    cached = _lazy_cache.get(key)
+    if cached is _FAILED:
+        return None
+    if cached is not None:
+        return cached
+    try:
+        import importlib
+
+        mod = importlib.import_module(module)
+        instance = getattr(mod, cls_name)()
+        _lazy_cache[key] = instance
+        return instance
+    except ImportError:
+        logger.warning("{} — {} disabled", missing_msg, key)
+        _lazy_cache[key] = _FAILED
+    except Exception as exc:
+        logger.error("Failed to initialise {}: {}", cls_name, exc)
+        _lazy_cache[key] = _FAILED
+    return None
 
 
 def _get_stt() -> Any:
     """Lazy-load WhisperSTT (requires voice extra)."""
-    global _stt_instance
-    if _stt_instance is None:
-        try:
-            from core.voice.stt import WhisperSTT
-
-            _stt_instance = WhisperSTT()
-        except ImportError:
-            logger.warning("faster-whisper not installed — voice transcription disabled")
-            _stt_instance = False  # sentinel: tried and failed
-        except Exception as exc:
-            logger.error("Failed to initialise WhisperSTT: {}", exc)
-            _stt_instance = False
-    return _stt_instance if _stt_instance is not False else None
+    return _lazy_load("stt", "core.voice.stt", "WhisperSTT", "faster-whisper not installed")
 
 
 def _get_tts() -> Any:
     """Lazy-load PiperTTS (requires voice extra)."""
-    global _tts_instance
-    if _tts_instance is None:
-        try:
-            from core.voice.tts import PiperTTS
-
-            _tts_instance = PiperTTS()
-        except ImportError:
-            logger.warning("piper-tts not installed — voice output disabled")
-            _tts_instance = False
-        except Exception as exc:
-            logger.error("Failed to initialise PiperTTS: {}", exc)
-            _tts_instance = False
-    return _tts_instance if _tts_instance is not False else None
+    return _lazy_load("tts", "core.voice.tts", "PiperTTS", "piper-tts not installed")
 
 
 def _decode_audio(data_url: str) -> bytes:
@@ -302,7 +301,7 @@ async def _publish_and_wait(
                 last_id = entry_id
                 raw = entry_data.get(b"event") or entry_data.get("event")
                 if raw:
-                    event_str = raw.decode() if isinstance(raw, bytes) else raw
+                    event_str = decode_stream_value(raw)
                     resp = AlfredResponse.model_validate_json(event_str)
                     if resp.session_id == session_id:
                         return resp.text
