@@ -69,6 +69,10 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `evals/inference.py` — `InferFn` protocol, Ollama + LM Studio backends
 - `evals/pipeline.py` — `EvalContext`, `run_scenario()` orchestration
 - `shared/tracing.py` — `TraceRecord` model for inference tracing
+- `core/notifications/` — proactive notification system (dispatcher, DND, channels, delivery)
+- `core/notifications/delivery.py` — cross-process delivery worker (Redis stream consumer)
+- `core/notifications/adapters/` — Signal, WebSocket, Voice channel adapters
+- `docs/backlog/remaining-work.md` — single consolidated backlog (D1-D25+)
 
 ## Running the System
 
@@ -79,7 +83,7 @@ bash scripts/dev-up.sh
 # 2. Start home-service (in home-service/ repo)
 cd ../home-service && uv run uvicorn app.server:app --port 8000
 
-# 3. Start all Alfred core services (bridge + reflex + triggers)
+# 3. Start all Alfred core services (bridge + reflex + triggers + conscious + channels)
 uv run python -m runner
 
 # 4. Smoke test
@@ -95,7 +99,9 @@ uv run python -m evals list
 uv run python -m evals compare <run1> <run2>
 ```
 
-Individual services can still be run standalone: `python -m bus`, `python -m core.reflex`, `python -m core.triggers`.
+Individual services can still be run standalone: `python -m bus`, `python -m core.reflex`, `python -m core.triggers`, `python -m core.conscious`, `python -m core.channels`.
+
+Web channel serves the PWA frontend on port 8081 (configurable in `core/channels/__main__.py`).
 
 **Startup order matters:** home-service must register tools before Reflex Runner starts (fail-fast if no tools). The unified runner adds a 1s delay before starting Reflex and auto-restarts crashed services with exponential backoff.
 
@@ -135,3 +141,8 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - Import `ensure_consumer_group` from `core.reflex.runner` — never reimplement inline
 - Import stream constants from `shared.streams` — never hardcode `"alfred:events"` etc.
 - Trigger type modules must be imported before use to trigger `@TriggerRegistry.register_type()` decorators
+- Channel adapter modules must be imported to trigger `@ChannelRegistry.register()` decorators (same pattern as triggers)
+- Cross-process notification delivery uses `NOTIFICATION_DISPATCH_STREAM` — dispatcher publishes to stream, each process runs a delivery worker with its own consumer group (e.g. `conscious-delivery`, `channels-delivery`)
+- `bus/schemas/events.py` is for bus events only — notification models (`Notification`, `Urgency`) live in `core/notifications/schema.py`, not re-exported from bus
+- Piper TTS auto-downloads voice models from HuggingFace on first use — no manual model download needed
+- `# type: ignore[no-untyped-call]` on Redis `xack` calls may be unnecessary depending on mypy version — check before adding

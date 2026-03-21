@@ -203,6 +203,24 @@ main::-webkit-scrollbar-thumb {
     color: var(--text-primary);
 }
 
+.message.notification .notification-bubble {
+    border-left: 2px solid var(--brass);
+    background: rgba(184, 156, 110, 0.08);
+}
+
+.message.notification.urgent .notification-bubble {
+    border-left: 2px solid #c0392b;
+    background: rgba(192, 57, 43, 0.08);
+}
+
+.message.notification .message-label {
+    color: var(--brass);
+}
+
+.message.notification.urgent .message-label {
+    color: #c0392b;
+}
+
 .message.alfred .message-label {
     color: var(--brass-dim);
 }
