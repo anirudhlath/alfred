@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import urllib.request
 import wave
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -18,12 +19,46 @@ if TYPE_CHECKING:
 # Silence between sentences (samples at 22050 Hz, 16-bit mono)
 _SENTENCE_PAUSE_MS = 250
 
+_HF_BASE = (
+    "https://huggingface.co/rhasspy/piper-voices/resolve/main"
+)
+
+
+def _voice_url(voice: str) -> str:
+    """Build HuggingFace URL for a Piper voice model.
+
+    Voice names follow the pattern: lang_REGION-speaker-quality
+    e.g. en_GB-alan-medium → en/en_GB/alan/medium/en_GB-alan-medium
+    """
+    parts = voice.split("-")
+    lang_region = parts[0]  # en_GB
+    lang = lang_region.split("_")[0]  # en
+    speaker = parts[1]  # alan
+    quality = parts[2] if len(parts) > 2 else "medium"
+    return f"{_HF_BASE}/{lang}/{lang_region}/{speaker}/{quality}/{voice}"
+
+
+def _download_model(voice: str, model_dir: Path) -> None:
+    """Download Piper ONNX model + config from HuggingFace."""
+    model_dir.mkdir(parents=True, exist_ok=True)
+    base_url = _voice_url(voice)
+
+    for suffix in (".onnx", ".onnx.json"):
+        url = f"{base_url}{suffix}"
+        dest = model_dir / f"{voice}{suffix}"
+        if dest.exists():
+            continue
+        logger.info("Downloading Piper voice model: {} → {}", url, dest)
+        urllib.request.urlretrieve(url, dest)  # noqa: S310
+        logger.info("Downloaded {} ({:.1f} MB)", dest.name, dest.stat().st_size / 1e6)
+
 
 class PiperTTS:
     """Text-to-speech using Piper (local, no cloud dependency).
 
     Uses ONNX voice models for fast CPU inference via the piper-tts Python API.
     Synthesis parameters are tuned for natural, brisk speech.
+    Auto-downloads models from HuggingFace on first use.
     """
 
     DEFAULT_VOICE = "en_GB-alan-medium"
@@ -42,10 +77,8 @@ class PiperTTS:
 
         model_path = model_dir / f"{voice}.onnx"
         if not model_path.exists():
-            raise FileNotFoundError(
-                f"Piper voice model not found: {model_path}. "
-                f"Download from https://huggingface.co/rhasspy/piper-voices"
-            )
+            logger.info("Voice model not found — downloading {}", voice)
+            _download_model(voice, model_dir)
         self._voice: PiperVoice = _PiperVoice.load(str(model_path))
         self._sample_rate: int = 22050
         self._syn_config: SynthesisConfig = _SynthesisConfig(
