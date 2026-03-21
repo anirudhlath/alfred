@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
+from core.notifications.schema import Urgency
 from shared.streams import COST_DAILY_KEY
 
 if TYPE_CHECKING:
@@ -133,10 +134,10 @@ class CostTracker:
         if state.alert_sent or state.spend_usd < state.cap_usd * self.ALERT_THRESHOLD:
             return False
         await self._notifier.publish(
-            channel="cost_alert",
             title="Budget Warning",
             body=f"Daily spend ${state.spend_usd:.2f} has reached 80% of ${state.cap_usd:.2f} cap",
-            urgency="high",
+            source="cost_tracker",
+            urgency=Urgency.URGENT,
         )
         state = CostState(
             date=state.date,
