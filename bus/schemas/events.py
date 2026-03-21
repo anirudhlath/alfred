@@ -12,6 +12,9 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+# Re-export notification types for discoverability (canonical defs in core.notifications.schema)
+from core.notifications.schema import Notification, Urgency  # noqa: F401
+
 
 class BaseEvent(BaseModel):
     """Base for all events on the Alfred Event Bus."""
