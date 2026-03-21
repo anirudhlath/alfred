@@ -95,6 +95,7 @@ Introduced `ConsciousConfig` + `ConsciousDeps` dataclasses with backward-compati
 |----|---------|-------------|-------|
 | ~~D9~~ | ~~Proactive notification dispatch + DND + priority routing~~ | ~~Section 8~~ | DONE — NotificationDispatcher with DND awareness, priority routing, 3 channel adapters, drain triggers |
 | D10 | Channel rate limiting | Section 15 | No middleware, no per-user limits |
+| D21 | Indefinite DND drain via keyspace notification | Section 8 | When DND has no `until`, deferred queue strands until next expiry-based drain or restart. Use Redis keyspace notifications on DND_STATE_KEY deletion to trigger immediate drain |
 | D11 | Streaming TTS to WebSocket | Section 6 | Full blob only, no chunk streaming |
 
 ### Resilience & Operations

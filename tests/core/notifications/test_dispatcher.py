@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import ClassVar
 from unittest.mock import AsyncMock
 
@@ -166,3 +167,98 @@ class TestDrainDeferred:
         redis.llen.return_value = 0
         await dispatcher.drain_deferred()
         redis.lpop.assert_not_called()
+
+
+class TestEnsureDrainTrigger:
+    @pytest.mark.asyncio
+    async def test_creates_one_shot_time_trigger(self, redis: AsyncMock) -> None:
+        """Verify drain trigger has correct ID, one_shot, target_service, tool_name."""
+        dnd_until = datetime.now(UTC) + timedelta(hours=1)
+        checker = AsyncMock(spec=DNDChecker)
+        checker.is_active.return_value = DNDStatus(
+            active=True, source="manual", reason="Hold", until=dnd_until
+        )
+
+        trigger_store = AsyncMock()
+        trigger_store.get.return_value = None  # No existing trigger
+
+        signal = FakeSignal()
+        ChannelRegistry._registry["fake_signal"] = FakeSignal
+        ChannelRegistry._instances["fake_signal"] = signal
+
+        dispatcher = NotificationDispatcher(
+            redis=redis, dnd_checker=checker, trigger_store=trigger_store
+        )
+        await dispatcher.dispatch(_make_notification(Urgency.INFORMATIONAL))
+
+        trigger_store.save.assert_called_once()
+        saved_trigger = trigger_store.save.call_args[0][0]
+
+        expected_id = f"drain-deferred-{int(dnd_until.timestamp())}"
+        assert saved_trigger.trigger_id == expected_id
+        assert saved_trigger.one_shot is True
+        assert saved_trigger.action is not None
+        assert saved_trigger.action.target_service == "conscious-engine"
+        assert saved_trigger.action.tool_name == "drain_deferred_notifications"
+
+    @pytest.mark.asyncio
+    async def test_skips_if_trigger_already_exists(self, redis: AsyncMock) -> None:
+        """Idempotency: don't create duplicate drain triggers."""
+        dnd_until = datetime.now(UTC) + timedelta(hours=1)
+        checker = AsyncMock(spec=DNDChecker)
+        checker.is_active.return_value = DNDStatus(
+            active=True, source="manual", reason="Hold", until=dnd_until
+        )
+
+        trigger_store = AsyncMock()
+        trigger_store.get.return_value = "existing"  # Already exists
+
+        signal = FakeSignal()
+        ChannelRegistry._registry["fake_signal"] = FakeSignal
+        ChannelRegistry._instances["fake_signal"] = signal
+
+        dispatcher = NotificationDispatcher(
+            redis=redis, dnd_checker=checker, trigger_store=trigger_store
+        )
+        await dispatcher.dispatch(_make_notification(Urgency.INFORMATIONAL))
+
+        trigger_store.save.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_trigger_without_store(self, redis: AsyncMock) -> None:
+        """No crash when trigger_store is None."""
+        dnd_until = datetime.now(UTC) + timedelta(hours=1)
+        checker = AsyncMock(spec=DNDChecker)
+        checker.is_active.return_value = DNDStatus(
+            active=True, source="manual", reason="Hold", until=dnd_until
+        )
+
+        signal = FakeSignal()
+        ChannelRegistry._registry["fake_signal"] = FakeSignal
+        ChannelRegistry._instances["fake_signal"] = signal
+
+        dispatcher = NotificationDispatcher(redis=redis, dnd_checker=checker)
+        # Should not raise
+        await dispatcher.dispatch(_make_notification(Urgency.INFORMATIONAL))
+
+    @pytest.mark.asyncio
+    async def test_no_trigger_for_indefinite_dnd(self, redis: AsyncMock) -> None:
+        """No drain trigger when DND has no expiry."""
+        checker = AsyncMock(spec=DNDChecker)
+        checker.is_active.return_value = DNDStatus(
+            active=True, source="manual", reason="Hold"
+        )
+
+        trigger_store = AsyncMock()
+
+        signal = FakeSignal()
+        ChannelRegistry._registry["fake_signal"] = FakeSignal
+        ChannelRegistry._instances["fake_signal"] = signal
+
+        dispatcher = NotificationDispatcher(
+            redis=redis, dnd_checker=checker, trigger_store=trigger_store
+        )
+        await dispatcher.dispatch(_make_notification(Urgency.INFORMATIONAL))
+
+        trigger_store.get.assert_not_called()
+        trigger_store.save.assert_not_called()
