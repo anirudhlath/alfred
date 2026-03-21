@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 if TYPE_CHECKING:
     from pathlib import Path
 
-from core.voice.tts import PiperTTS
+from core.voice.tts import PiperTTS, _voice_url
 
 
 def test_tts_instantiation() -> None:
@@ -90,9 +90,31 @@ def test_synthesize_multiple_chunks_with_pauses() -> None:
     assert len(result) > 44 + single_chunk_audio
 
 
-def test_constructor_raises_on_missing_model(tmp_path: Path) -> None:
-    """Constructor raises FileNotFoundError if model .onnx file doesn't exist."""
-    import pytest
+def test_voice_url_builder() -> None:
+    """URL builder maps voice name to HuggingFace path."""
+    url = _voice_url("en_GB-alan-medium")
+    assert url.endswith("en/en_GB/alan/medium/en_GB-alan-medium")
 
-    with pytest.raises(FileNotFoundError, match="Piper voice model not found"):
-        PiperTTS(voice="nonexistent-voice", model_dir=tmp_path)
+
+def test_constructor_auto_downloads_missing_model(tmp_path: Path) -> None:
+    """Constructor auto-downloads model from HuggingFace if not present."""
+    import pytest
+    from unittest.mock import patch
+
+    pytest.importorskip("piper", reason="piper-tts not installed")
+
+    with patch("core.voice.tts._download_model") as mock_dl:
+        # Simulate download creating the file
+        def fake_download(voice: str, model_dir: Path) -> None:
+            (model_dir / f"{voice}.onnx").write_bytes(b"fake")
+
+        mock_dl.side_effect = fake_download
+
+        # Still fails because the fake .onnx isn't a real model,
+        # but _download_model should have been called
+        try:
+            PiperTTS(voice="en_GB-alan-medium", model_dir=tmp_path)
+        except Exception:
+            pass  # PiperVoice.load will fail on fake data
+
+        mock_dl.assert_called_once_with("en_GB-alan-medium", tmp_path)
