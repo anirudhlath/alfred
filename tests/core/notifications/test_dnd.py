@@ -24,7 +24,9 @@ def checker(redis: AsyncMock) -> DNDChecker:
 
 class TestManualDND:
     @pytest.mark.asyncio
-    async def test_no_dnd_state_returns_inactive(self, checker: DNDChecker, redis: AsyncMock) -> None:
+    async def test_no_dnd_state_returns_inactive(
+        self, checker: DNDChecker, redis: AsyncMock
+    ) -> None:
         redis.get.return_value = None
         status = await checker.is_active()
         assert not status.active
@@ -32,12 +34,14 @@ class TestManualDND:
     @pytest.mark.asyncio
     async def test_active_dnd_returns_active(self, checker: DNDChecker, redis: AsyncMock) -> None:
         future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
-        redis.get.return_value = json.dumps({
-            "active": True,
-            "until": future,
-            "reason": "User requested",
-            "source": "manual",
-        })
+        redis.get.return_value = json.dumps(
+            {
+                "active": True,
+                "until": future,
+                "reason": "User requested",
+                "source": "manual",
+            }
+        )
         status = await checker.is_active()
         assert status.active
         assert status.source == "manual"
@@ -47,12 +51,14 @@ class TestManualDND:
         self, checker: DNDChecker, redis: AsyncMock
     ) -> None:
         past = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
-        redis.get.return_value = json.dumps({
-            "active": True,
-            "until": past,
-            "reason": "User requested",
-            "source": "manual",
-        })
+        redis.get.return_value = json.dumps(
+            {
+                "active": True,
+                "until": past,
+                "reason": "User requested",
+                "source": "manual",
+            }
+        )
         status = await checker.is_active()
         assert not status.active
         redis.delete.assert_called_once_with(DND_STATE_KEY)
@@ -60,11 +66,13 @@ class TestManualDND:
     @pytest.mark.asyncio
     async def test_active_dnd_no_expiry(self, checker: DNDChecker, redis: AsyncMock) -> None:
         """DND with no 'until' field stays active indefinitely."""
-        redis.get.return_value = json.dumps({
-            "active": True,
-            "reason": "Hold my calls",
-            "source": "manual",
-        })
+        redis.get.return_value = json.dumps(
+            {
+                "active": True,
+                "reason": "Hold my calls",
+                "source": "manual",
+            }
+        )
         status = await checker.is_active()
         assert status.active
 
@@ -74,15 +82,19 @@ class TestCalendarDND:
     async def test_calendar_meeting_active(self, redis: AsyncMock) -> None:
         now = datetime.now(UTC)
         calendar = MagicMock()
-        calendar.execute = AsyncMock(return_value=MagicMock(data={
-            "events": [
-                {
-                    "summary": "Team standup",
-                    "start": (now - timedelta(minutes=10)).isoformat(),
-                    "end": (now + timedelta(minutes=20)).isoformat(),
+        calendar.execute = AsyncMock(
+            return_value=MagicMock(
+                data={
+                    "events": [
+                        {
+                            "summary": "Team standup",
+                            "start": (now - timedelta(minutes=10)).isoformat(),
+                            "end": (now + timedelta(minutes=20)).isoformat(),
+                        }
+                    ]
                 }
-            ]
-        }))
+            )
+        )
         checker = DNDChecker(redis=redis, calendar_adapter=calendar)
         redis.get.return_value = None  # No manual DND
 
@@ -94,15 +106,19 @@ class TestCalendarDND:
     async def test_no_active_meeting(self, redis: AsyncMock) -> None:
         now = datetime.now(UTC)
         calendar = MagicMock()
-        calendar.execute = AsyncMock(return_value=MagicMock(data={
-            "events": [
-                {
-                    "summary": "Past meeting",
-                    "start": (now - timedelta(hours=2)).isoformat(),
-                    "end": (now - timedelta(hours=1)).isoformat(),
+        calendar.execute = AsyncMock(
+            return_value=MagicMock(
+                data={
+                    "events": [
+                        {
+                            "summary": "Past meeting",
+                            "start": (now - timedelta(hours=2)).isoformat(),
+                            "end": (now - timedelta(hours=1)).isoformat(),
+                        }
+                    ]
                 }
-            ]
-        }))
+            )
+        )
         checker = DNDChecker(redis=redis, calendar_adapter=calendar)
         redis.get.return_value = None
 
@@ -124,12 +140,14 @@ class TestCalendarDND:
     async def test_manual_dnd_takes_priority_over_calendar(self, redis: AsyncMock) -> None:
         """Manual DND is checked first — calendar is skipped if manual is active."""
         future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
-        redis.get.return_value = json.dumps({
-            "active": True,
-            "until": future,
-            "reason": "User requested",
-            "source": "manual",
-        })
+        redis.get.return_value = json.dumps(
+            {
+                "active": True,
+                "until": future,
+                "reason": "User requested",
+                "source": "manual",
+            }
+        )
         calendar = MagicMock()
         calendar.execute = AsyncMock()
         checker = DNDChecker(redis=redis, calendar_adapter=calendar)

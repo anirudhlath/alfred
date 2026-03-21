@@ -18,7 +18,6 @@ from core.notifications.dispatcher import NotificationDispatcher
 from core.notifications.dnd import DNDChecker
 from core.notifications.publisher import NotificationPublisher
 from core.notifications.schema import Notification, Urgency
-from shared.streams import DEFERRED_NOTIFICATIONS_KEY, DND_STATE_KEY
 
 
 class RecordingAdapter(ChannelAdapter):
@@ -84,12 +83,14 @@ class TestEndToEndFlow:
         self, redis: AsyncMock, adapter: RecordingAdapter
     ) -> None:
         future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
-        redis.get.return_value = json.dumps({
-            "active": True,
-            "until": future,
-            "reason": "Focus time",
-            "source": "manual",
-        })
+        redis.get.return_value = json.dumps(
+            {
+                "active": True,
+                "until": future,
+                "reason": "Focus time",
+                "source": "manual",
+            }
+        )
 
         dnd = DNDChecker(redis=redis, calendar_adapter=None)
         dispatcher = NotificationDispatcher(redis=redis, dnd_checker=dnd)
@@ -106,16 +107,16 @@ class TestEndToEndFlow:
         redis.rpush.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_urgent_bypasses_dnd(
-        self, redis: AsyncMock, adapter: RecordingAdapter
-    ) -> None:
+    async def test_urgent_bypasses_dnd(self, redis: AsyncMock, adapter: RecordingAdapter) -> None:
         future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
-        redis.get.return_value = json.dumps({
-            "active": True,
-            "until": future,
-            "reason": "Focus time",
-            "source": "manual",
-        })
+        redis.get.return_value = json.dumps(
+            {
+                "active": True,
+                "until": future,
+                "reason": "Focus time",
+                "source": "manual",
+            }
+        )
 
         dnd = DNDChecker(redis=redis, calendar_adapter=None)
         dispatcher = NotificationDispatcher(redis=redis, dnd_checker=dnd)

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import ClassVar
 from unittest.mock import AsyncMock
 
@@ -62,7 +61,9 @@ def dnd_inactive() -> DNDChecker:
 @pytest.fixture
 def dnd_active() -> DNDChecker:
     checker = AsyncMock(spec=DNDChecker)
-    checker.is_active.return_value = DNDStatus(active=True, source="manual", reason="User requested")
+    checker.is_active.return_value = DNDStatus(
+        active=True, source="manual", reason="User requested"
+    )
     return checker
 
 
