@@ -118,5 +118,7 @@ at import time and are initialized via `set_instance()` during startup.
 
 When DND defers a notification and knows when DND expires, the dispatcher creates
 an idempotent one-shot `TimeTrigger` with ID `drain-deferred-{timestamp}`. When
-the trigger fires, it invokes `handle_drain_deferred()` which calls
-`dispatcher.drain_deferred()` to re-dispatch all queued notifications.
+the trigger fires, it posts an `ActionRequest(tool_name="drain_deferred_notifications",
+target_service="conscious-engine")` to `ACTIONS_STREAM`. The conscious engine's
+internal action consumer picks this up and calls `dispatcher.drain_deferred()`
+to re-dispatch all queued notifications.
