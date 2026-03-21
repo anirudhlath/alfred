@@ -93,7 +93,7 @@ Introduced `ConsciousConfig` + `ConsciousDeps` dataclasses with backward-compati
 
 | ID | Feature | Spec Section | Notes |
 |----|---------|-------------|-------|
-| D9 | Proactive notification dispatch + DND + priority routing | Section 8 | NotificationPublisher exists but no routing/DND logic |
+| ~~D9~~ | ~~Proactive notification dispatch + DND + priority routing~~ | ~~Section 8~~ | DONE — NotificationDispatcher with DND awareness, priority routing, 3 channel adapters, drain triggers |
 | D10 | Channel rate limiting | Section 15 | No middleware, no per-user limits |
 | D11 | Streaming TTS to WebSocket | Section 6 | Full blob only, no chunk streaming |
 
@@ -129,7 +129,7 @@ Items that won't block development but should be addressed before scale/producti
 
 | ID | Improvement | Location | Notes |
 |----|-------------|----------|-------|
-| P1 | Signal Bridge polling → Redis pub/sub | `core/channels/signal_bridge/bridge.py` | Currently polls `NOTIFICATIONS_STREAM` every 5s via `xreadgroup`. Should use Redis pub/sub or blocking read to reduce latency and unnecessary cycles |
+| ~~P1~~ | ~~Signal Bridge polling → Redis pub/sub~~ | ~~`core/channels/signal_bridge/bridge.py`~~ | DONE — Removed polling. Dispatcher now routes to SignalChannelAdapter directly |
 | P2 | Notification dispatcher as sub-agent | `core/notifications/` | Instead of hardcoded routing rules, make the dispatcher an LLM-powered sub-agent that reasons about context, urgency, channel selection, and DND. Would allow natural-language routing policies and learning from user feedback |
 | P3 | Notification dedup/cooldown | `core/notifications/` | Hash-based dedup with Redis TTL key (`notification:{source}:{title_hash}`). Default 5min cooldown, configurable per urgency (urgent = no cooldown). Prevents notification storms from repeated sensor triggers or multiple sources detecting same situation |
 | P4 | PiperTTS GPU acceleration | `core/voice/tts.py` | Currently loads ONNX model with default CPU execution provider. Configure CUDA EP on prod (RTX 4090) and CoreML EP on dev (M4 Max) for faster synthesis |

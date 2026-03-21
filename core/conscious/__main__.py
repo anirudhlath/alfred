@@ -116,7 +116,9 @@ async def run(config: AlfredConfig) -> None:
     )
 
     dnd_checker = DNDChecker(redis=r, calendar_adapter=calendar_adapter)
-    dispatcher = NotificationDispatcher(redis=r, dnd_checker=dnd_checker, trigger_store=trigger_store)
+    dispatcher = NotificationDispatcher(
+        redis=r, dnd_checker=dnd_checker, trigger_store=trigger_store
+    )
 
     # Inject pre-built adapter instances that need constructor args
     signal_bridge = SignalBridge(redis=r, phone_number=config.signal_phone_number)

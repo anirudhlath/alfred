@@ -117,23 +117,27 @@ class ConsciousEngine:
         else:
             # Build from individual kwargs (backward compat)
             required = {
-                "redis": redis, "identity_gate": identity_gate,
-                "session_mgr": session_mgr, "cost_tracker": cost_tracker,
-                "context_assembler": context_assembler, "domain_router": domain_router,
-                "tool_registry": tool_registry, "context_reader": context_reader,
+                "redis": redis,
+                "identity_gate": identity_gate,
+                "session_mgr": session_mgr,
+                "cost_tracker": cost_tracker,
+                "context_assembler": context_assembler,
+                "domain_router": domain_router,
+                "tool_registry": tool_registry,
+                "context_reader": context_reader,
             }
             missing = [k for k, v in required.items() if v is None]
             if missing:
                 raise ValueError(f"Missing required deps: {', '.join(missing)}")
             # All required deps verified non-None above; narrow for mypy
-            assert redis is not None  # noqa: S101
-            assert identity_gate is not None  # noqa: S101
-            assert session_mgr is not None  # noqa: S101
-            assert cost_tracker is not None  # noqa: S101
-            assert context_assembler is not None  # noqa: S101
-            assert domain_router is not None  # noqa: S101
-            assert tool_registry is not None  # noqa: S101
-            assert context_reader is not None  # noqa: S101
+            assert redis is not None
+            assert identity_gate is not None
+            assert session_mgr is not None
+            assert cost_tracker is not None
+            assert context_assembler is not None
+            assert domain_router is not None
+            assert tool_registry is not None
+            assert context_reader is not None
             d = ConsciousDeps(
                 redis=redis,
                 identity_gate=identity_gate,

@@ -489,9 +489,27 @@ End-to-end script that publishes a `UserRequest` to Redis, waits for an `AlfredR
 
 See [docs/evals-runner.md](evals-runner.md) for full documentation.
 
-## 4. Data Flow
+## 4. Notification System
 
-### 4.1 Event Types
+```mermaid
+graph LR
+    Pub[NotificationPublisher] --> Disp[NotificationDispatcher]
+    Disp --> DND[DNDChecker]
+    DND -->|active| Defer[Deferred Queue]
+    DND -->|inactive| CR[ChannelRegistry]
+    CR --> Signal[Signal]
+    CR --> WS[WebSocket]
+    CR --> Voice[Voice TTS]
+    Defer -->|drain trigger| Disp
+```
+
+The notification system is deterministic — no LLM calls. The Dispatcher checks DND state,
+defers non-urgent notifications during DND, and routes to auto-discovered channel adapters
+by urgency level. URGENT notifications always bypass DND.
+
+## 5. Data Flow
+
+### 5.1 Event Types
 
 All event types are defined in `bus/schemas/events.py` -- the single source of truth.
 
@@ -521,7 +539,7 @@ graph LR
 
 All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `timestamp`, and `source`.
 
-### 4.2 Redis Keys
+### 5.2 Redis Keys
 
 | Key | Type | Purpose |
 |-----|------|---------|
@@ -539,7 +557,7 @@ All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `
 | `alfred:identity:voiceprint` | Hash | Voiceprint embeddings for identity |
 | `alfred:notifications:queue` | Stream | Proactive notification queue |
 
-### 4.3 Consumer Groups
+### 5.3 Consumer Groups
 
 The Reflex Runner uses a consumer group (`reflex-engine`, consumer `worker-1`) on `alfred:events`. The Trigger Engine uses a separate consumer group (`trigger-engine`, consumer `worker-1`) on the same stream. This enables:
 
@@ -547,7 +565,7 @@ The Reflex Runner uses a consumer group (`reflex-engine`, consumer `worker-1`) o
 - Future horizontal scaling (add `worker-2`, `worker-3`, etc.).
 - Message acknowledgment (`XACK`) only after successful processing.
 
-## 5. Configuration
+## 6. Configuration
 
 **File:** `shared/config.py`
 
@@ -571,9 +589,9 @@ The `AlfredConfig.redis_url` property constructs `redis://{host}:{port}` from th
 
 Microservices using `alfred-sdk` have their own config via environment variables: `ALFRED_SERVICE_NAME`, `ALFRED_SERVICE_ENDPOINT`, `REDIS_URL`, `MQTT_HOST`.
 
-## 6. Running the System
+## 7. Running the System
 
-### 6.1 Prerequisites
+### 7.1 Prerequisites
 
 - Python 3.13+
 - Redis server running on localhost:6379
@@ -583,14 +601,14 @@ Microservices using `alfred-sdk` have their own config via environment variables
 
 On macOS (dev), use Homebrew services for Redis and Mosquitto (Apple `container` CLI does not support `-p` port forwarding).
 
-### 6.2 Installation
+### 7.2 Installation
 
 ```bash
 uv venv --python 3.13
 uv pip install -e ".[dev]"
 ```
 
-### 6.3 Startup Order
+### 7.3 Startup Order
 
 Services must start in this order:
 
@@ -608,7 +626,7 @@ Or individually:
 
 The Reflex Runner fail-fast checks for registered tools at startup. If `alfred:tool_registry` is empty, it exits with an error telling you to start a microservice first. The unified runner adds startup delays (1-2s) and auto-restarts crashed services with exponential backoff.
 
-### 6.4 Commands
+### 7.4 Commands
 
 ```bash
 # Start all services (recommended)
@@ -639,7 +657,7 @@ uv run python -m evals conscious            # System 2 evals (dry-run)
 uv run python -m evals demo                 # Good Morning end-to-end demo
 ```
 
-### 6.5 Shutdown
+### 7.5 Shutdown
 
 The Reflex Runner handles `SIGTERM` and `SIGINT` gracefully:
 
