@@ -19,7 +19,7 @@ import core.integrations.apple_health
 import core.integrations.robinhood
 import core.integrations.weather
 import core.triggers.types  # noqa: F401  # trigger type registrations
-from bus.schemas.events import UserRequest
+from bus.schemas.events import ActionRequest, UserRequest
 from core.conscious.context_assembler import ContextAssembler
 from core.conscious.cost import CostTracker
 from core.conscious.engine import ConsciousConfig, ConsciousDeps, ConsciousEngine
@@ -40,16 +40,85 @@ from domains.home.home_agent import HomeAgent
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
 from shared.otel import init_tracing
-from shared.streams import USER_REQUESTS_STREAM, USER_RESPONSES_STREAM, decode_stream_value
+from shared.streams import (
+    ACTIONS_STREAM,
+    USER_REQUESTS_STREAM,
+    USER_RESPONSES_STREAM,
+    decode_stream_value,
+)
 
 if TYPE_CHECKING:
     from shared.types import AioRedis
 
 _shutdown = asyncio.Event()
 
+# Internal action handlers: tool_name → async callable
+_INTERNAL_HANDLERS: dict[str, Any] = {}
+
 
 def _handle_signal() -> None:
     _shutdown.set()
+
+
+async def _consume_internal_actions(
+    redis: AioRedis,
+    log: Any,
+) -> None:
+    """Background consumer for ACTIONS_STREAM targeting 'conscious-engine'.
+
+    Dispatches to registered internal handlers (e.g. drain_deferred_notifications).
+    Other target_services are ignored — they belong to domain agents.
+    """
+    stream = ACTIONS_STREAM
+    group = "conscious-engine"
+    consumer = "internal-actions-1"
+
+    await ensure_consumer_group(redis, stream, group)
+
+    while not _shutdown.is_set():
+        try:
+            entries: list[
+                tuple[
+                    bytes | str,
+                    list[tuple[bytes | str, dict[bytes | str, bytes | str]]],
+                ]
+            ] = await redis.xreadgroup(  # type: ignore[misc,unused-ignore]
+                group, consumer, {stream: ">"}, count=1, block=5000
+            )
+
+            for _stream_key, stream_entries in entries:
+                for entry_id, entry_data in stream_entries:
+                    raw = entry_data.get("event") or entry_data.get(b"event")
+                    if raw is None:
+                        await redis.xack(stream, group, entry_id)
+                        continue
+
+                    event_str = decode_stream_value(raw)
+                    action = ActionRequest.model_validate_json(event_str)
+
+                    if action.target_service != "conscious-engine":
+                        # Not for us — ack and skip
+                        await redis.xack(stream, group, entry_id)
+                        continue
+
+                    handler = _INTERNAL_HANDLERS.get(action.tool_name)
+                    if handler is not None:
+                        try:
+                            await handler()
+                        except Exception as e:
+                            log.error(
+                                "Internal action '{}' failed: {}", action.tool_name, e
+                            )
+                    else:
+                        log.warning(
+                            "No handler for internal action '{}'", action.tool_name
+                        )
+
+                    await redis.xack(stream, group, entry_id)
+        except Exception as e:
+            if not _shutdown.is_set():
+                log.error("Internal action consumer error: {}", e)
+                await asyncio.sleep(1)
 
 
 async def run(config: AlfredConfig) -> None:
@@ -120,7 +189,11 @@ async def run(config: AlfredConfig) -> None:
         redis=r, dnd_checker=dnd_checker, trigger_store=trigger_store
     )
 
-    # Inject pre-built adapter instances that need constructor args
+    # Inject pre-built adapter instances that need constructor args.
+    # NOTE: Only Signal adapter is registered in the conscious process. WebSocket and
+    # Voice adapters live in the channels process (which owns the WS session pool).
+    # This means URGENT notifications from CostTracker etc. in this process deliver
+    # via Signal only — cross-process channel delivery is not supported.
     signal_bridge = SignalBridge(redis=r, phone_number=config.signal_phone_number)
     ChannelRegistry.set_instance(
         "signal",
@@ -130,6 +203,10 @@ async def run(config: AlfredConfig) -> None:
     )
 
     notifier = NotificationPublisher(dispatcher=dispatcher)
+
+    # Register internal action handlers for ACTIONS_STREAM consumption
+    _INTERNAL_HANDLERS["drain_deferred_notifications"] = dispatcher.drain_deferred
+
     cost_tracker = CostTracker(redis=r, daily_cap_usd=config.daily_cost_cap_usd, notifier=notifier)
 
     # Trigger feature — system-level, called directly (not via HTTP)
@@ -184,6 +261,9 @@ async def run(config: AlfredConfig) -> None:
         interval_seconds=float(os.getenv("LIBRARIAN_INTERVAL_SECONDS", "3600")),
     )
     librarian_task = asyncio.create_task(librarian_scheduler.run())
+
+    # Start internal actions consumer (handles drain_deferred_notifications from triggers)
+    internal_actions_task = asyncio.create_task(_consume_internal_actions(r, log))
 
     log.info("Conscious Engine started. Listening on '{}'...", stream)
 
@@ -240,6 +320,7 @@ async def run(config: AlfredConfig) -> None:
         log.info("Shutting down Conscious Engine...")
         writer_task.cancel()
         librarian_task.cancel()
+        internal_actions_task.cancel()
         await r.aclose()
 
 

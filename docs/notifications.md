@@ -100,7 +100,10 @@ at import time and are initialized via `set_instance()` during startup.
 
 - **Manual DND with expiry**: Notifications deferred to Redis list. One-shot time trigger
   created at expiry time to drain deferred notifications.
-- **Manual DND without expiry**: Stays active until manually cleared.
+- **Manual DND without expiry**: Stays active until manually cleared. Deferred notifications
+  remain queued — they drain only when a subsequent DND-with-expiry triggers a drain, or the
+  system restarts and DND is no longer active. Future improvement: Redis keyspace notification
+  on DND key deletion to trigger immediate drain.
 - **Calendar DND**: Active during meetings. Drain trigger created at meeting end time.
 - **URGENT notifications**: Always delivered immediately, regardless of DND.
 
