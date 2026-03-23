@@ -281,7 +281,24 @@ function initOnboarding() {
         });
     });
 
-    // Finish button — collect and submit preferences
+    // Skip buttons — submit defaults and jump to completion
+    overlay.querySelectorAll('[data-skip]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            try {
+                await fetch('/api/onboarding', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({}),
+                });
+            } catch (err) {
+                console.error('Onboarding default save failed:', err);
+            }
+            localStorage.setItem('alfred_onboarded', '1');
+            showStep(5);
+        });
+    });
+
+    // Finish button — collect and submit preferences + integration credentials
     document.getElementById('ob-finish').addEventListener('click', async () => {
         const payload = {
             wake_time: document.getElementById('ob-wake-time').value || null,
@@ -301,9 +318,58 @@ function initOnboarding() {
             console.error('Onboarding save failed:', err);
         }
 
+        // Save integration credentials (if any filled in)
+        const integrationCards = document.querySelectorAll('#ob-integrations .onboarding-integration');
+        for (const card of integrationCards) {
+            const name = card.dataset.integration;
+            const body = {};
+            card.querySelectorAll('[data-field]').forEach(input => {
+                if (input.value) body[input.name] = input.value;
+            });
+            if (Object.keys(body).length > 0) {
+                try {
+                    await fetch(`/api/integrations/${name}/credentials`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body),
+                    });
+                } catch (err) {
+                    console.error(`Failed to save ${name} credentials:`, err);
+                }
+            }
+        }
+
         localStorage.setItem('alfred_onboarded', '1');
-        showStep(4);
+        showStep(5);
     });
+
+    // Load integration schemas for onboarding step 4
+    fetch('/api/integrations')
+        .then(r => r.json())
+        .then(integrations => {
+            const container = document.getElementById('ob-integrations');
+            integrations.forEach(integration => {
+                if (!Object.keys(integration.schema.fields).length) return;
+                const div = document.createElement('div');
+                div.className = 'onboarding-integration';
+                div.dataset.integration = integration.name;
+
+                let fieldsHtml = '';
+                for (const [name, field] of Object.entries(integration.schema.fields)) {
+                    const inputType = field.field_type === 'password' ? 'password' : 'text';
+                    fieldsHtml += `
+                        <label class="onboarding-label">
+                            ${field.label}
+                            <input type="${inputType}" name="${name}" data-field="${name}"
+                                   placeholder="${field.placeholder || ''}" autocomplete="off">
+                        </label>
+                    `;
+                }
+                div.innerHTML = `<h3>${integration.name.replace(/_/g, ' ')}</h3>${fieldsHtml}`;
+                container.appendChild(div);
+            });
+        })
+        .catch(err => console.error('Failed to load integrations for onboarding:', err));
 
     // Close button
     document.getElementById('ob-close').addEventListener('click', () => {
