@@ -388,3 +388,64 @@ async def test_process_trigger_fired_handles_malformed_json(
         action = await engine.process_trigger_fired(_make_trigger_fired())
 
     assert action is None
+
+
+# --- _build_notification_body tests ---
+
+
+def test_build_notification_body_sensor_with_state() -> None:
+    from core.reflex.engine import _build_notification_body
+
+    evt = TriggerFired(
+        trigger_id="t-1",
+        trigger_name="laundry done",
+        trigger_type="sensor",
+        context={
+            "event_entity": "sensor.washing_machine_power",
+            "event_state": "idle",
+            "evaluated_at": "2026-03-23T21:00:00Z",
+        },
+    )
+    body = _build_notification_body(evt)
+    assert "sensor.washing_machine_power: idle" in body
+    assert "Fired at 2026-03-23T21:00:00Z" in body
+
+
+def test_build_notification_body_sensor_without_state() -> None:
+    from core.reflex.engine import _build_notification_body
+
+    evt = TriggerFired(
+        trigger_id="t-1",
+        trigger_name="test",
+        trigger_type="sensor",
+        context={"event_entity": "sensor.temp", "evaluated_at": "2026-03-23T21:00:00Z"},
+    )
+    body = _build_notification_body(evt)
+    assert "sensor.temp" in body
+    assert "sensor.temp:" not in body  # no trailing colon when state is missing
+
+
+def test_build_notification_body_time_trigger() -> None:
+    from core.reflex.engine import _build_notification_body
+
+    evt = TriggerFired(
+        trigger_id="t-1",
+        trigger_name="take medicine",
+        trigger_type="time",
+        context={"trigger_type": "time", "evaluated_at": "2026-03-23T21:00:00Z"},
+    )
+    body = _build_notification_body(evt)
+    assert "Fired at 2026-03-23T21:00:00Z" in body
+
+
+def test_build_notification_body_empty_context() -> None:
+    from core.reflex.engine import _build_notification_body
+
+    evt = TriggerFired(
+        trigger_id="t-1",
+        trigger_name="my trigger",
+        trigger_type="time",
+        context={},
+    )
+    body = _build_notification_body(evt)
+    assert "my trigger" in body
