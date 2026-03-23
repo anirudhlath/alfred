@@ -11,6 +11,12 @@ const statusLabel = statusEl.querySelector('.status-label');
 let ws = null;
 let reconnectDelay = 1000;
 
+// --- Browser Notifications ---
+
+if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+}
+
 // --- WebSocket ---
 
 function connect() {
@@ -171,6 +177,11 @@ function showNotification(title, body, urgency) {
     msg.appendChild(bubble);
     chatLog.appendChild(msg);
     chatLog.scrollTop = chatLog.scrollHeight;
+
+    // Browser push notification (works even when tab is in background)
+    if ('Notification' in window && Notification.permission === 'granted') {
+        new Notification(title, { body, tag: title, icon: '/favicon.ico' });
+    }
 }
 
 // --- Send ---
