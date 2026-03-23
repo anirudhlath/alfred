@@ -6,17 +6,25 @@ Usage: python -m core.reflex
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import signal
+from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import redis.asyncio as aioredis
 
+from bus.schemas.events import TriggerFired
 from core.memory.reader import MemoryReader
 from core.memory.scratchpad_writer import ScratchpadWriter
+from core.notifications.dnd import DNDChecker
+from core.notifications.dispatcher import NotificationDispatcher
+from core.notifications.publisher import NotificationPublisher
+from core.notifications.schema import Urgency
 from core.reflex.context_reader import ContextReader
-from core.reflex.engine import ReflexEngine
+from core.reflex.engine import ReflexEngine, _build_notification_body
 from core.reflex.runner import ensure_consumer_group, process_stream_entry
 from core.reflex.tool_registry import ToolRegistry
 from core.routing.domain_router import DomainRouter
@@ -24,7 +32,13 @@ from domains.home.home_agent import HomeAgent
 from sdk.alfred_sdk.telemetry import clear_telemetry_buffer, get_telemetry_buffer
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
-from shared.streams import HOME_ACTION_RESULTS_STREAM, HOME_STATE_STREAM, SCRATCHPAD_QUEUE
+from shared.streams import (
+    EVENTS_STREAM,
+    HOME_ACTION_RESULTS_STREAM,
+    HOME_STATE_STREAM,
+    SCRATCHPAD_QUEUE,
+    decode_stream_value,
+)
 from telemetry.collector import flush_to_csv
 
 if TYPE_CHECKING:
@@ -40,9 +54,101 @@ RESULT_STREAM = HOME_ACTION_RESULTS_STREAM
 _shutdown = asyncio.Event()
 
 
+EVENTS_GROUP = "reflex-trigger-fired"
+EVENTS_CONSUMER = "worker-1"
+
+
 def _handle_signal() -> None:
     logger.info("Shutdown signal received")
     _shutdown.set()
+
+
+async def _handle_trigger_fired(
+    entry_data: Mapping[str | bytes, str | bytes],
+    engine: ReflexEngine,
+    agent: DomainRouter,
+    redis: AioRedis,
+    publisher: NotificationPublisher,
+) -> None:
+    """Handle a single TriggerFired event — notify + optional SLM reasoning."""
+    raw_event = entry_data.get("event") or entry_data.get(b"event")
+    if raw_event is None:
+        return
+
+    event_str = decode_stream_value(raw_event)
+    parsed = json.loads(event_str)
+
+    if parsed.get("event_type") != "trigger_fired":
+        return
+
+    trigger_event = TriggerFired.model_validate(parsed)
+
+    # Path A: Immediate notification (DND-aware via dispatcher)
+    urgency = Urgency(trigger_event.urgency)
+    title = (
+        f"Reminder: {trigger_event.trigger_name}"
+        if trigger_event.trigger_type == "time"
+        else f"Alert: {trigger_event.trigger_name}"
+    )
+    await publisher.publish(
+        title=title,
+        body=_build_notification_body(trigger_event),
+        source="trigger-engine",
+        urgency=urgency,
+    )
+
+    # Path B: Reflex SLM reasoning (isolated — failures don't block ACK)
+    try:
+        action = await engine.process_trigger_fired(trigger_event)
+        if action is not None:
+            result = await agent.execute_action(action)
+            await redis.xadd(
+                HOME_ACTION_RESULTS_STREAM, {"event": result.model_dump_json()}
+            )
+
+            timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+            observation = (
+                f"{timestamp} [reflex:trigger] "
+                f"{action.tool_name}({action.parameters}) -> {result.status}"
+            )
+            await redis.lpush(SCRATCHPAD_QUEUE, observation)
+    except Exception as e:
+        logger.error(
+            "SLM reasoning failed for trigger '%s': %s", trigger_event.trigger_name, e
+        )
+
+
+async def _consume_trigger_fired(
+    redis: AioRedis,
+    engine: ReflexEngine,
+    agent: DomainRouter,
+    publisher: NotificationPublisher,
+) -> None:
+    """Second event loop — TriggerFired events from alfred:events."""
+    await ensure_consumer_group(redis, EVENTS_STREAM, EVENTS_GROUP)
+
+    while not _shutdown.is_set():
+        entries: list[
+            tuple[
+                bytes | str,
+                list[tuple[bytes | str, dict[bytes | str, bytes | str]]],
+            ]
+        ] = await redis.xreadgroup(
+            EVENTS_GROUP, EVENTS_CONSUMER,
+            {EVENTS_STREAM: ">"}, count=10, block=5000,
+        )
+        for _stream_key, stream_entries in entries:
+            for entry_id, entry_data in stream_entries:
+                try:
+                    await _handle_trigger_fired(
+                        entry_data, engine, agent, redis, publisher,
+                    )
+                    await redis.xack(EVENTS_STREAM, EVENTS_GROUP, entry_id)  # type: ignore[no-untyped-call]
+                except Exception as e:
+                    logger.error(
+                        "Error processing trigger_fired %s: %s — will retry",
+                        entry_id, e,
+                    )
 
 
 async def flush_telemetry_periodically(config: AlfredConfig, interval: float = 30.0) -> None:
@@ -99,9 +205,17 @@ async def run(config: AlfredConfig) -> None:
     router.register("home-service", HomeAgent(redis=r))
     writer = ScratchpadWriter(redis=r, queue_key=SCRATCHPAD_QUEUE)
 
+    # Notification wiring for TriggerFired
+    dnd_checker = DNDChecker(redis=r, calendar_adapter=None)
+    dispatcher = NotificationDispatcher(redis=r, dnd_checker=dnd_checker)
+    publisher = NotificationPublisher(dispatcher)
+
     # Background tasks
     scratchpad_task = asyncio.create_task(writer.run())
     telemetry_task = asyncio.create_task(flush_telemetry_periodically(config))
+    trigger_fired_task = asyncio.create_task(
+        _consume_trigger_fired(r, engine, router, publisher)
+    )
 
     logger.info("Reflex Runner started. Listening on stream '%s'...", STREAM)
 
@@ -133,6 +247,7 @@ async def run(config: AlfredConfig) -> None:
                         logger.error("Error processing entry %s: %s — will retry", entry_id, e)
     finally:
         logger.info("Shutting down Reflex Runner...")
+        trigger_fired_task.cancel()
         scratchpad_task.cancel()
         telemetry_task.cancel()
         await r.aclose()
