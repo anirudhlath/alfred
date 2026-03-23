@@ -63,36 +63,25 @@ def test_onboarding_endpoint_saves_preferences(tmp_path: Path) -> None:
     """POST /api/onboarding writes preference files atomically."""
     from unittest.mock import patch
 
-    client = _client()
+    import core.channels.web_server as ws
 
     prefs_dir = tmp_path / "preferences"
     profile_dir = tmp_path / "profile"
+    prefs_dir.mkdir(parents=True)
+    profile_dir.mkdir(parents=True)
+
+    written_files: dict[str, str] = {}
+    orig_atomic = ws._atomic_write
+
+    def capture_write(path: Path, content: str) -> None:
+        written_files[path.name] = content
+        orig_atomic(path, content)
 
     with (
-        patch("core.channels.web_server.Path.__file__", create=True),
-        patch(
-            "core.channels.web_server._preference_file_dirs",
-            return_value=(prefs_dir, profile_dir),
-            create=True,
-        ),
+        patch.object(ws, "_atomic_write", side_effect=capture_write),
+        patch.object(ws, "_get_prefs_dirs", return_value=(prefs_dir, profile_dir)),
     ):
-        # Patch the paths inside the endpoint by patching Path resolution
-        import core.channels.web_server as ws
-
-        # Direct approach: override the path computation in the endpoint
-        prefs_dir.mkdir(parents=True)
-        profile_dir.mkdir(parents=True)
-
-        # Monkey-patch the module-level function for atomic write
-        orig_atomic = ws._atomic_write
-        written_files: dict[str, str] = {}
-
-        def capture_write(path: Path, content: str) -> None:
-            written_files[path.name] = content
-            orig_atomic(path, content)
-
-        ws._atomic_write = capture_write  # type: ignore[assignment]
-
+        client = _client()
         resp = client.post(
             "/api/onboarding",
             json={
@@ -103,8 +92,6 @@ def test_onboarding_endpoint_saves_preferences(tmp_path: Path) -> None:
                 "guest_controls": ["Lighting control", "Media playback"],
             },
         )
-
-        ws._atomic_write = orig_atomic  # type: ignore[assignment]
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"

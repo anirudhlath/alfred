@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import time
 from contextlib import asynccontextmanager
@@ -11,7 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 import redis.asyncio as aioredis
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from pydantic import BaseModel
@@ -97,6 +98,19 @@ def _atomic_write(path: Path, content: str) -> None:
     from shared.fs import atomic_write
 
     atomic_write(path, content)
+
+
+def _get_prefs_dirs() -> tuple[Path, Path]:
+    """Return (preferences_dir, profile_dir) for semantic memory."""
+    base = Path(__file__).resolve().parent.parent / "memory"
+    return base / "preferences", base / "profile"
+
+
+async def require_localhost(request: Request) -> None:
+    """FastAPI dependency — restrict endpoint to localhost only."""
+    client_host = request.client.host if request.client else ""
+    if client_host not in ("127.0.0.1", "::1", "testclient"):
+        raise HTTPException(status_code=403, detail="Localhost access only")
 
 
 @asynccontextmanager
@@ -236,51 +250,147 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         finally:
             _active_websockets.remove(websocket)
 
+    @app.get("/api/integrations")
+    async def list_integrations() -> list[dict[str, Any]]:
+        """List all integrations with schema and configured status."""
+        from core.integrations.registry import IntegrationRegistry
+        from shared.secrets import aget_secret
+
+        result: list[dict[str, Any]] = []
+        for name in IntegrationRegistry.available():
+            integration_cls = IntegrationRegistry._registry[name]
+            schema = integration_cls.credentials_schema
+            configured: dict[str, bool] = {}
+            for field_name in schema.fields:
+                val = await aget_secret(name, field_name)
+                configured[field_name] = val is not None
+            result.append({
+                "name": name,
+                "category": integration_cls.category,
+                "schema": schema.model_dump(),
+                "configured": configured,
+            })
+        return result
+
+    @app.put(
+        "/api/integrations/{name}/credentials",
+        dependencies=[Depends(require_localhost)],
+    )
+    async def save_credentials(name: str, request: Request) -> dict[str, str]:
+        """Save integration credentials to OS keyring."""
+        from core.integrations.registry import IntegrationRegistry
+        from shared.secrets import aset_secret
+
+        if name not in IntegrationRegistry._registry:
+            raise HTTPException(status_code=404, detail=f"Unknown integration: {name}")
+
+        integration_cls = IntegrationRegistry._registry[name]
+        schema = integration_cls.credentials_schema
+        body: dict[str, str] = await request.json()
+
+        # Validate: reject unknown fields
+        unknown = set(body.keys()) - set(schema.fields.keys())
+        if unknown:
+            raise HTTPException(status_code=422, detail=f"Unknown fields: {unknown}")
+
+        # Validate: check required fields
+        missing = [
+            f for f, field in schema.fields.items()
+            if field.required and f not in body and not field.transient
+        ]
+        if missing:
+            raise HTTPException(status_code=422, detail=f"Missing required fields: {missing}")
+
+        # Store non-transient fields in keyring
+        for field_name, value in body.items():
+            field_def = schema.fields[field_name]
+            if field_def.transient:
+                continue
+            await aset_secret(name, field_name, value)
+
+        # Reconfigure adapter with fresh credentials (sync — uses keyring internally)
+        await asyncio.to_thread(IntegrationRegistry.reconfigure, name)
+        return {"status": "ok"}
+
+    @app.delete(
+        "/api/integrations/{name}/credentials",
+        dependencies=[Depends(require_localhost)],
+    )
+    async def delete_credentials(name: str) -> dict[str, str]:
+        """Clear all credentials for an integration from OS keyring."""
+        from core.integrations.registry import IntegrationRegistry
+        from shared.secrets import adelete_secret
+
+        if name not in IntegrationRegistry._registry:
+            raise HTTPException(status_code=404, detail=f"Unknown integration: {name}")
+
+        schema = IntegrationRegistry._registry[name].credentials_schema
+        for field_name in schema.fields:
+            await adelete_secret(name, field_name)
+
+        await asyncio.to_thread(IntegrationRegistry.reconfigure, name)
+        return {"status": "ok"}
+
+    @app.get("/api/integrations/{name}/status")
+    async def integration_status(name: str) -> dict[str, Any]:
+        """Run health check on an integration adapter."""
+        from core.integrations.registry import IntegrationRegistry
+
+        if name not in IntegrationRegistry._registry:
+            raise HTTPException(status_code=404, detail=f"Unknown integration: {name}")
+
+        try:
+            instance = IntegrationRegistry.get(name)
+            healthy = await instance.health_check()
+        except Exception:
+            healthy = False
+        return {"name": name, "healthy": healthy}
+
     @app.post("/api/onboarding")
     async def save_onboarding(payload: OnboardingPayload) -> dict[str, str]:
         """Save onboarding preferences to semantic memory files.
 
-        This is a bootstrap path that writes directly to preference/profile files
-        before the Librarian's first consolidation cycle.
+        Writes default values for any null fields. Skips writing if the
+        preference file already exists (prevents clobbering Librarian data).
         """
         today = datetime.now(UTC).strftime("%Y-%m-%d")
-        prefs_dir = Path(__file__).resolve().parent.parent / "memory" / "preferences"
-        profile_dir = Path(__file__).resolve().parent.parent / "memory" / "profile"
+        prefs_dir, profile_dir = _get_prefs_dirs()
         prefs_dir.mkdir(parents=True, exist_ok=True)
         profile_dir.mkdir(parents=True, exist_ok=True)
 
-        # Write personal preferences (wake time, dietary, work address)
-        lines: list[str] = []
-        if payload.wake_time:
-            lines.append(f"- Usual wake time: {payload.wake_time}")
-        if payload.work_address:
-            lines.append(f"- Work address: {payload.work_address}")
-        if payload.dietary_restrictions:
-            lines.append(f"- Dietary restrictions: {payload.dietary_restrictions}")
-        if lines:
+        # Personal preferences (with defaults)
+        personal_path = prefs_dir / "personal.md"
+        if not personal_path.exists():
+            wake = payload.wake_time or "07:00"
+            lines: list[str] = [f"- Usual wake time: {wake}"]
+            if payload.work_address:
+                lines.append(f"- Work address: {payload.work_address}")
+            if payload.dietary_restrictions:
+                lines.append(f"- Dietary restrictions: {payload.dietary_restrictions}")
             _atomic_write(
-                prefs_dir / "personal.md",
+                personal_path,
                 _preference_file("general", today, "manual", "Personal", lines),
             )
 
-        # Write proactivity level
-        if payload.proactivity_level:
+        # Proactivity level (with default)
+        proactivity_path = profile_dir / "proactivity.md"
+        if not proactivity_path.exists():
+            level = payload.proactivity_level or "moderate"
             _atomic_write(
-                profile_dir / "proactivity.md",
+                proactivity_path,
                 _preference_file(
-                    "general",
-                    today,
-                    "manual",
-                    "Proactivity Level",
-                    [f"- Level: {payload.proactivity_level}"],
+                    "general", today, "manual", "Proactivity Level",
+                    [f"- Level: {level}"],
                 ),
             )
 
-        # Write guest mode config
-        if payload.guest_controls:
-            guest_lines = [f"- {ctrl}" for ctrl in payload.guest_controls]
+        # Guest mode config (with defaults)
+        guest_path = prefs_dir / "guest_mode.md"
+        if not guest_path.exists():
+            controls = payload.guest_controls or ["Lighting control", "Media playback"]
+            guest_lines = [f"- {ctrl}" for ctrl in controls]
             _atomic_write(
-                prefs_dir / "guest_mode.md",
+                guest_path,
                 _preference_file("general", today, "manual", "Guest Mode", guest_lines),
             )
 
