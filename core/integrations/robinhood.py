@@ -11,6 +11,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 from core.integrations.base import (
+    CredentialField,
+    CredentialSchema,
     Integration,
     IntegrationCapability,
     IntegrationRequest,
@@ -28,6 +30,23 @@ class RobinhoodAdapter(Integration):
 
     name = "robinhood"
     category = "finance"
+
+    credentials_schema = CredentialSchema(fields={
+        "username": CredentialField(
+            label="Email",
+            placeholder="you@example.com",
+        ),
+        "password": CredentialField(
+            label="Password",
+            field_type="password",
+        ),
+        "mfa_code": CredentialField(
+            label="MFA Code",
+            required=False,
+            transient=True,
+            help_text="Optional — only needed for initial login, not stored",
+        ),
+    })
 
     def __init__(self, username: str = "", password: str = "", mfa_code: str = "") -> None:
         self._username = username
