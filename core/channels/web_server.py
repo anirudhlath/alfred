@@ -410,6 +410,19 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         logger.info("Onboarding preferences saved ({} fields)", n_fields)
         return {"status": "ok"}
 
+    # Disable caching for static files in dev (forces browser to fetch fresh CSS/JS)
+    from starlette.middleware import Middleware
+    from starlette.middleware.base import BaseHTTPMiddleware
+
+    class NoCacheStaticMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: Request, call_next):  # type: ignore[override]
+            response = await call_next(request)
+            if request.url.path.endswith((".css", ".js", ".html")):
+                response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            return response
+
+    app.add_middleware(NoCacheStaticMiddleware)
+
     # Mount static files for PWA (if directory exists)
     web_dir = Path(__file__).resolve().parent.parent.parent / "web"
     if web_dir.is_dir():
