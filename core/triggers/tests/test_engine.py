@@ -190,3 +190,32 @@ async def test_evaluate_event_fires_matching_sensor_trigger(
     await engine.evaluate_event(event)
 
     mock_redis.xadd.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_fire_without_action_propagates_urgency(
+    mock_store: AsyncMock, mock_redis: AsyncMock
+) -> None:
+    import json
+
+    from core.notifications.schema import Urgency
+    from core.triggers.engine import TriggerEngine
+
+    cls = TriggerRegistry.get("time")
+    trigger = cls(
+        trigger_id="t-1",
+        trigger_type="time",
+        name="urgent reminder",
+        created_by="test",
+        created_at=datetime.now(UTC),
+        conditions={"cron": "0 7 * * *"},
+        urgency=Urgency.URGENT,
+    )
+
+    engine = TriggerEngine(store=mock_store, redis=mock_redis)
+    ctx = TriggerContext(now=datetime.now(UTC))
+    await engine.fire(trigger, ctx)
+
+    call_args = mock_redis.xadd.call_args
+    event_json = json.loads(call_args[0][1]["event"])
+    assert event_json["urgency"] == "urgent"
