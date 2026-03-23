@@ -137,9 +137,9 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
 
 def _ensure_integrations_registered() -> None:
     """Import integration adapter modules to trigger @register() decorators."""
-    import core.integrations.apple_calendar  # noqa: F401
-    import core.integrations.apple_health  # noqa: F401
-    import core.integrations.robinhood  # noqa: F401
+    import core.integrations.apple_calendar
+    import core.integrations.apple_health
+    import core.integrations.robinhood
     import core.integrations.weather  # noqa: F401
 
 
@@ -411,7 +411,6 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         return {"status": "ok"}
 
     # Disable caching for static files in dev (forces browser to fetch fresh CSS/JS)
-    from starlette.middleware import Middleware
     from starlette.middleware.base import BaseHTTPMiddleware
 
     class NoCacheStaticMiddleware(BaseHTTPMiddleware):

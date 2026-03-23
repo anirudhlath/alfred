@@ -9,7 +9,6 @@ import asyncio
 import json
 import logging
 import signal
-from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -19,8 +18,8 @@ import redis.asyncio as aioredis
 from bus.schemas.events import TriggerFired
 from core.memory.reader import MemoryReader
 from core.memory.scratchpad_writer import ScratchpadWriter
-from core.notifications.dnd import DNDChecker
 from core.notifications.dispatcher import NotificationDispatcher
+from core.notifications.dnd import DNDChecker
 from core.notifications.publisher import NotificationPublisher
 from core.notifications.schema import Urgency
 from core.reflex.context_reader import ContextReader
@@ -42,6 +41,8 @@ from shared.streams import (
 from telemetry.collector import flush_to_csv
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from shared.types import AioRedis
 
 logger = logging.getLogger(__name__)
@@ -102,20 +103,16 @@ async def _handle_trigger_fired(
         action = await engine.process_trigger_fired(trigger_event)
         if action is not None:
             result = await agent.execute_action(action)
-            await redis.xadd(
-                HOME_ACTION_RESULTS_STREAM, {"event": result.model_dump_json()}
-            )
+            await redis.xadd(HOME_ACTION_RESULTS_STREAM, {"event": result.model_dump_json()})
 
             timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
             observation = (
                 f"{timestamp} [reflex:trigger] "
                 f"{action.tool_name}({action.parameters}) -> {result.status}"
             )
-            await redis.lpush(SCRATCHPAD_QUEUE, observation)
+            await redis.lpush(SCRATCHPAD_QUEUE, observation)  # type: ignore[misc]
     except Exception as e:
-        logger.error(
-            "SLM reasoning failed for trigger '%s': %s", trigger_event.trigger_name, e
-        )
+        logger.error("SLM reasoning failed for trigger '%s': %s", trigger_event.trigger_name, e)
 
 
 async def _consume_trigger_fired(
@@ -134,20 +131,28 @@ async def _consume_trigger_fired(
                 list[tuple[bytes | str, dict[bytes | str, bytes | str]]],
             ]
         ] = await redis.xreadgroup(
-            EVENTS_GROUP, EVENTS_CONSUMER,
-            {EVENTS_STREAM: ">"}, count=10, block=5000,
+            EVENTS_GROUP,
+            EVENTS_CONSUMER,
+            {EVENTS_STREAM: ">"},
+            count=10,
+            block=5000,
         )
         for _stream_key, stream_entries in entries:
             for entry_id, entry_data in stream_entries:
                 try:
                     await _handle_trigger_fired(
-                        entry_data, engine, agent, redis, publisher,
+                        entry_data,
+                        engine,
+                        agent,
+                        redis,
+                        publisher,
                     )
-                    await redis.xack(EVENTS_STREAM, EVENTS_GROUP, entry_id)  # type: ignore[no-untyped-call]
+                    await redis.xack(EVENTS_STREAM, EVENTS_GROUP, entry_id)
                 except Exception as e:
                     logger.error(
                         "Error processing trigger_fired %s: %s — will retry",
-                        entry_id, e,
+                        entry_id,
+                        e,
                     )
 
 
@@ -213,9 +218,7 @@ async def run(config: AlfredConfig) -> None:
     # Background tasks
     scratchpad_task = asyncio.create_task(writer.run())
     telemetry_task = asyncio.create_task(flush_telemetry_periodically(config))
-    trigger_fired_task = asyncio.create_task(
-        _consume_trigger_fired(r, engine, router, publisher)
-    )
+    trigger_fired_task = asyncio.create_task(_consume_trigger_fired(r, engine, router, publisher))
 
     logger.info("Reflex Runner started. Listening on stream '%s'...", STREAM)
 
@@ -242,7 +245,7 @@ async def run(config: AlfredConfig) -> None:
                         # ACK only on success — retriable errors (Ollama down)
                         # propagate as exceptions and the message stays pending
                         # for redelivery on next XREADGROUP cycle.
-                        await r.xack(STREAM, GROUP, entry_id)  # type: ignore[no-untyped-call]
+                        await r.xack(STREAM, GROUP, entry_id)
                     except Exception as e:
                         logger.error("Error processing entry %s: %s — will retry", entry_id, e)
     finally:

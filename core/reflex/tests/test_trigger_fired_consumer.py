@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
 from unittest.mock import AsyncMock
 
 import pytest
@@ -31,7 +30,7 @@ def mock_agent() -> AsyncMock:
     return AsyncMock()
 
 
-def _make_entry_data(event: TriggerFired) -> dict[str, str]:
+def _make_entry_data(event: TriggerFired) -> dict[str | bytes, str | bytes]:
     return {"event": event.model_dump_json()}
 
 
@@ -52,7 +51,11 @@ async def test_handle_trigger_fired_publishes_notification(
     redis = AsyncMock()
 
     await _handle_trigger_fired(
-        _make_entry_data(event), mock_engine, mock_agent, redis, mock_publisher,
+        _make_entry_data(event),
+        mock_engine,
+        mock_agent,
+        redis,
+        mock_publisher,
     )
 
     mock_publisher.publish.assert_called_once()
@@ -77,7 +80,11 @@ async def test_handle_trigger_fired_sensor_uses_alert_title(
     redis = AsyncMock()
 
     await _handle_trigger_fired(
-        _make_entry_data(event), mock_engine, mock_agent, redis, mock_publisher,
+        _make_entry_data(event),
+        mock_engine,
+        mock_agent,
+        redis,
+        mock_publisher,
     )
 
     call_kwargs = mock_publisher.publish.call_args
@@ -100,7 +107,11 @@ async def test_handle_trigger_fired_calls_slm(
     redis = AsyncMock()
 
     await _handle_trigger_fired(
-        _make_entry_data(event), mock_engine, mock_agent, redis, mock_publisher,
+        _make_entry_data(event),
+        mock_engine,
+        mock_agent,
+        redis,
+        mock_publisher,
     )
 
     mock_engine.process_trigger_fired.assert_called_once()
@@ -125,7 +136,11 @@ async def test_handle_trigger_fired_slm_failure_does_not_block_notification(
 
     # Should NOT raise — SLM error is caught, notification already sent
     await _handle_trigger_fired(
-        _make_entry_data(event), engine, mock_agent, redis, mock_publisher,
+        _make_entry_data(event),
+        engine,
+        mock_agent,
+        redis,
+        mock_publisher,
     )
 
     mock_publisher.publish.assert_called_once()
@@ -139,11 +154,17 @@ async def test_handle_trigger_fired_skips_non_trigger_events(
 ) -> None:
     from core.reflex.__main__ import _handle_trigger_fired
 
-    entry_data = {"event": json.dumps({"event_type": "state_changed", "source": "test"})}
+    entry_data: dict[str | bytes, str | bytes] = {
+        "event": json.dumps({"event_type": "state_changed", "source": "test"})
+    }
     redis = AsyncMock()
 
     await _handle_trigger_fired(
-        entry_data, mock_engine, mock_agent, redis, mock_publisher,
+        entry_data,
+        mock_engine,
+        mock_agent,
+        redis,
+        mock_publisher,
     )
 
     mock_publisher.publish.assert_not_called()
@@ -160,8 +181,13 @@ async def test_handle_trigger_fired_skips_missing_event_field(
 
     redis = AsyncMock()
 
+    bad_data: dict[str | bytes, str | bytes] = {"not_event": "data"}
     await _handle_trigger_fired(
-        {"not_event": "data"}, mock_engine, mock_agent, redis, mock_publisher,
+        bad_data,
+        mock_engine,
+        mock_agent,
+        redis,
+        mock_publisher,
     )
 
     mock_publisher.publish.assert_not_called()
@@ -173,8 +199,8 @@ async def test_handle_trigger_fired_dnd_defers_informational(
     mock_agent: AsyncMock,
 ) -> None:
     """DND active + INFORMATIONAL urgency -> notification deferred."""
-    from core.notifications.dnd import DNDChecker
     from core.notifications.dispatcher import NotificationDispatcher
+    from core.notifications.dnd import DNDChecker
     from core.notifications.publisher import NotificationPublisher
     from core.notifications.schema import DNDStatus
     from core.reflex.__main__ import _handle_trigger_fired
@@ -198,7 +224,11 @@ async def test_handle_trigger_fired_dnd_defers_informational(
     )
 
     await _handle_trigger_fired(
-        _make_entry_data(event), mock_engine, mock_agent, redis, publisher,
+        _make_entry_data(event),
+        mock_engine,
+        mock_agent,
+        redis,
+        publisher,
     )
 
     # Should defer (rpush to deferred queue), NOT deliver (no xadd to dispatch stream)
@@ -212,8 +242,8 @@ async def test_handle_trigger_fired_dnd_delivers_urgent(
     mock_agent: AsyncMock,
 ) -> None:
     """DND active + URGENT urgency -> notification delivered immediately."""
-    from core.notifications.dnd import DNDChecker
     from core.notifications.dispatcher import NotificationDispatcher
+    from core.notifications.dnd import DNDChecker
     from core.notifications.publisher import NotificationPublisher
     from core.notifications.schema import DNDStatus
     from core.reflex.__main__ import _handle_trigger_fired
@@ -237,7 +267,11 @@ async def test_handle_trigger_fired_dnd_delivers_urgent(
     )
 
     await _handle_trigger_fired(
-        _make_entry_data(event), mock_engine, mock_agent, redis, publisher,
+        _make_entry_data(event),
+        mock_engine,
+        mock_agent,
+        redis,
+        publisher,
     )
 
     # Should deliver (xadd to dispatch stream), NOT defer
@@ -281,7 +315,11 @@ async def test_handle_trigger_fired_with_slm_action(
     redis.lpush = AsyncMock()
 
     await _handle_trigger_fired(
-        _make_entry_data(event), engine, mock_agent, redis, mock_publisher,
+        _make_entry_data(event),
+        engine,
+        mock_agent,
+        redis,
+        mock_publisher,
     )
 
     mock_publisher.publish.assert_called_once()
