@@ -18,6 +18,7 @@ dependencies = [
     "uvicorn[standard]>=0.34",
     "loguru>=0.7",
     "litellm>=1.0",
+    "keyring>=25.0",
 ]
 
 [project.optional-dependencies]
@@ -105,4 +106,8 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["deepeval.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["keyring.*"]
 ignore_missing_imports = true
