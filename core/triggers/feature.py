@@ -69,8 +69,7 @@ class TriggerFeature(BaseFeature):
                     ToolMeta(
                         name=t.name,
                         description=(
-                            t.description + "\n\n" + conditions_docs
-                            + action_docs + urgency_docs
+                            t.description + "\n\n" + conditions_docs + action_docs + urgency_docs
                         ),
                         parameters=t.parameters,
                     )
@@ -183,8 +182,7 @@ class TriggerFeature(BaseFeature):
             except ValueError:
                 return {
                     "error": (
-                        f"Invalid urgency: {urgency}. "
-                        "Must be: informational, important, urgent"
+                        f"Invalid urgency: {urgency}. Must be: informational, important, urgent"
                     )
                 }
 

@@ -37,8 +37,8 @@ def test_trigger_context_with_event() -> None:
 
 
 def test_base_trigger_urgency_default() -> None:
-    from core.triggers.registry import TriggerRegistry
     import core.triggers.types  # noqa: F401
+    from core.triggers.registry import TriggerRegistry
 
     cls = TriggerRegistry.get("time")
     trigger = cls(
@@ -50,14 +50,14 @@ def test_base_trigger_urgency_default() -> None:
         conditions={"cron": "0 7 * * *"},
     )
     from core.notifications.schema import Urgency
+
     assert trigger.urgency == Urgency.INFORMATIONAL
 
 
 def test_base_trigger_urgency_custom() -> None:
-    from core.triggers.registry import TriggerRegistry
     import core.triggers.types  # noqa: F401
-
     from core.notifications.schema import Urgency
+    from core.triggers.registry import TriggerRegistry
 
     cls = TriggerRegistry.get("time")
     trigger = cls(

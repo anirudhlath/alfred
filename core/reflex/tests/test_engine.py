@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from bus.schemas.events import StateChangedEvent
+from bus.schemas.events import StateChangedEvent, TriggerFired
 from core.memory.reader import MemoryReader
 from core.reflex.tool_registry import ToolInfo
 
@@ -252,8 +252,6 @@ async def test_reflex_engine_prompt_contains_context(
 
 
 # --- TriggerFired processing tests ---
-
-from bus.schemas.events import TriggerFired
 
 
 def _make_trigger_fired(
