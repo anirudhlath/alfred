@@ -547,3 +547,268 @@ footer {
 .progress-dot.active {
     background: var(--brass-dim);
 }
+
+/* --- Settings Page --- */
+
+.settings-page main {
+    overflow-y: auto;
+    padding: 1.5rem;
+}
+
+.settings-section-title {
+    font-family: var(--font-display);
+    font-size: 1.3rem;
+    font-weight: 500;
+    color: var(--brass);
+    letter-spacing: 0.02em;
+    margin-bottom: 0.3rem;
+}
+
+.settings-desc {
+    font-size: 0.85rem;
+    color: var(--text-dim);
+    margin-bottom: 1.5rem;
+}
+
+.settings-error {
+    color: var(--accent-red);
+    font-style: italic;
+}
+
+.back-link {
+    color: var(--text-secondary);
+    text-decoration: none;
+    display: flex;
+    align-items: center;
+    transition: color 0.2s;
+}
+
+.back-link:hover {
+    color: var(--text-primary);
+}
+
+.integration-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1.25rem;
+    margin-bottom: 1rem;
+}
+
+.card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 1rem;
+}
+
+.card-header h3 {
+    font-family: var(--font-display);
+    font-size: 1.1rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    text-transform: capitalize;
+}
+
+.card-category {
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+}
+
+.card-status {
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 0.2rem 0.5rem;
+    border-radius: 2px;
+}
+
+.card-status.configured {
+    color: var(--accent-green);
+    border: 1px solid var(--accent-green);
+}
+
+.card-status.unconfigured {
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+}
+
+.card-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 0.8rem;
+    margin-bottom: 1rem;
+}
+
+.settings-label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+}
+
+.label-text {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.field-badge {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    padding: 0.05rem 0.35rem;
+    border-radius: 2px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.field-help {
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    font-style: italic;
+}
+
+.input-wrapper {
+    display: flex;
+    gap: 0.4rem;
+}
+
+.input-wrapper input {
+    flex: 1;
+    background: var(--bg-deep);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 0.5rem 0.7rem;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+}
+
+.input-wrapper input:focus {
+    outline: none;
+    border-color: var(--brass-dim);
+}
+
+.toggle-vis {
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--text-dim);
+    font-family: var(--font-body);
+    font-size: 0.75rem;
+    padding: 0 0.5rem;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.toggle-vis:hover {
+    color: var(--text-secondary);
+    border-color: var(--border-light);
+}
+
+.card-actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.settings-btn {
+    padding: 0.4rem 1rem;
+    font-family: var(--font-body);
+    font-size: 0.85rem;
+    background: var(--bg-raised);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.settings-btn:hover {
+    color: var(--text-primary);
+    border-color: var(--border-light);
+}
+
+.settings-btn.primary {
+    background: var(--brass-dim);
+    color: var(--bg-deep);
+    border-color: var(--brass-dim);
+}
+
+.settings-btn.primary:hover {
+    background: var(--brass);
+}
+
+.settings-btn.danger {
+    color: var(--accent-red);
+}
+
+.settings-btn.danger:hover {
+    border-color: var(--accent-red);
+}
+
+.card-message {
+    margin-top: 0.6rem;
+    font-size: 0.8rem;
+    padding: 0.35rem 0.6rem;
+    border-radius: 2px;
+}
+
+.card-message.loading {
+    color: var(--text-dim);
+}
+
+.card-message.success {
+    color: var(--accent-green);
+    background: rgba(90, 122, 74, 0.1);
+}
+
+.card-message.error {
+    color: var(--accent-red);
+    background: rgba(138, 74, 74, 0.1);
+}
+
+/* Settings gear icon */
+.gear-link {
+    color: var(--text-dim);
+    text-decoration: none;
+    display: flex;
+    align-items: center;
+    transition: color 0.2s;
+}
+
+.gear-link:hover {
+    color: var(--text-secondary);
+}
+
+/* Onboarding skip button */
+.onboarding-btn.skip {
+    background: transparent;
+    color: var(--text-dim);
+    border: none;
+    font-size: 0.85rem;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.onboarding-btn.skip:hover {
+    color: var(--text-secondary);
+}
+
+/* Onboarding integration fields */
+.onboarding-integration {
+    margin-bottom: 1rem;
+}
+
+.onboarding-integration h3 {
+    font-family: var(--font-display);
+    font-size: 1rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    text-transform: capitalize;
+    margin-bottom: 0.5rem;
+}
