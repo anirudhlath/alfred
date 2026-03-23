@@ -358,6 +358,7 @@ function initOnboarding() {
                 let fieldsHtml = '';
                 for (const [name, field] of Object.entries(integration.schema.fields)) {
                     const inputType = field.field_type === 'password' ? 'password' : 'text';
+                    const defaultVal = field.default || '';
                     const helpHtml = field.help_text
                         ? `<span class="onboarding-note">${field.help_text}</span>`
                         : '';
@@ -365,6 +366,7 @@ function initOnboarding() {
                         <label class="onboarding-label">
                             ${field.label}
                             <input type="${inputType}" name="${name}" data-field="${name}"
+                                   value="${defaultVal}"
                                    placeholder="${field.placeholder || ''}" autocomplete="off">
                             ${helpHtml}
                         </label>

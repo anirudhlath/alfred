@@ -38,6 +38,7 @@ function renderCard(integration) {
         const placeholder = configured
             ? (field.field_type === 'password' ? '••••••••' : field.placeholder)
             : field.placeholder;
+        const defaultVal = (!configured && field.default) ? field.default : '';
         const helpHtml = field.help_text
             ? `<span class="field-help">${field.help_text}</span>`
             : '';
@@ -50,6 +51,7 @@ function renderCard(integration) {
                 <span class="label-text">${field.label}${transientBadge}</span>
                 <div class="input-wrapper">
                     <input type="${inputType}" name="${name}" placeholder="${placeholder}"
+                           value="${defaultVal}"
                            ${required} autocomplete="off" data-field="${name}">
                     ${inputType === 'password' ? '<button type="button" class="toggle-vis" title="Toggle visibility">Show</button>' : ''}
                 </div>

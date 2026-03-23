@@ -39,6 +39,7 @@ class CredentialField(BaseModel):
     field_type: Literal["text", "password", "url"] = "text"
     required: bool = True
     placeholder: str = ""
+    default: str = ""  # Pre-filled value (use for sensible defaults like known URLs)
     help_text: str = ""
     transient: bool = False  # If True, value is passed to adapter but not persisted
 

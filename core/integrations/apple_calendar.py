@@ -32,8 +32,8 @@ class AppleCalendarAdapter(Integration):
             "caldav_url": CredentialField(
                 label="CalDAV URL",
                 field_type="url",
-                placeholder="https://caldav.icloud.com",
-                help_text="Use the default for iCloud. Only change if using Google Calendar or a self-hosted CalDAV server",
+                default="https://caldav.icloud.com",
+                help_text="Pre-filled for iCloud. Only change if using Google Calendar or a self-hosted server",
             ),
             "username": CredentialField(
                 label="Apple ID",
