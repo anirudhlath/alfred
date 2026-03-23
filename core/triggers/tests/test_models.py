@@ -34,3 +34,39 @@ def test_trigger_context_with_event() -> None:
     ctx = TriggerContext(now=datetime.now(UTC), event=evt)
     assert ctx.event is not None
     assert ctx.event.entity_id == "light.x"
+
+
+def test_base_trigger_urgency_default() -> None:
+    import core.triggers.types  # noqa: F401
+    from core.triggers.registry import TriggerRegistry
+
+    cls = TriggerRegistry.get("time")
+    trigger = cls(
+        trigger_id="t-1",
+        trigger_type="time",
+        name="test",
+        created_by="test",
+        created_at=datetime.now(UTC),
+        conditions={"cron": "0 7 * * *"},
+    )
+    from core.notifications.schema import Urgency
+
+    assert trigger.urgency == Urgency.INFORMATIONAL
+
+
+def test_base_trigger_urgency_custom() -> None:
+    import core.triggers.types  # noqa: F401
+    from core.notifications.schema import Urgency
+    from core.triggers.registry import TriggerRegistry
+
+    cls = TriggerRegistry.get("time")
+    trigger = cls(
+        trigger_id="t-1",
+        trigger_type="time",
+        name="test",
+        created_by="test",
+        created_at=datetime.now(UTC),
+        conditions={"cron": "0 7 * * *"},
+        urgency=Urgency.URGENT,
+    )
+    assert trigger.urgency == Urgency.URGENT

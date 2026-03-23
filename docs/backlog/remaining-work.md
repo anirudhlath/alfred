@@ -96,8 +96,11 @@ Introduced `ConsciousConfig` + `ConsciousDeps` dataclasses with backward-compati
 | ~~D9~~ | ~~Proactive notification dispatch + DND + priority routing~~ | ~~Section 8~~ | DONE — NotificationDispatcher with DND awareness, priority routing, 3 channel adapters, drain triggers |
 | D10 | Channel rate limiting | Section 15 | No middleware, no per-user limits |
 | D21 | Indefinite DND drain via keyspace notification | Section 8 | When DND has no `until`, deferred queue strands until next expiry-based drain or restart. Use Redis keyspace notifications on DND_STATE_KEY deletion to trigger immediate drain |
-| D22 | TriggerFired → user notification bridge | Section 1+8 | When a trigger fires without an `action` (e.g. reminders), the `TriggerFired` event is emitted but no one converts it to a user-facing notification. Need a listener that publishes a `Notification` via `NotificationPublisher` so the user actually sees the reminder |
+| ~~D22~~ | ~~TriggerFired → user notification bridge~~ | ~~Section 1+8~~ | DONE — TriggerFired events consumed by Reflex process: immediate DND-aware notification + SLM reasoning for additional actions. Urgency field on BaseTrigger and TriggerFired |
 | D23 | Frontend audio queue | Section 6+8 | Response TTS and notification TTS play simultaneously. Need a sequential audio queue so notifications wait for current playback to finish |
+| D28 | Investigate double TTS on trigger notifications | Section 6+8 | TTS plays twice on trigger fire despite D26 fix (single delivery confirmed). May be WebSocket adapter + Voice adapter both producing audible output, or frontend replaying. Needs debugging with browser dev tools to identify which messages arrive |
+| ~~D26~~ | ~~Duplicate WebSocket notification delivery~~ | ~~Section 8~~ | DONE — Removed WebSocket/Voice adapter registration from conscious process; only channels process delivers via WS/Voice, conscious only delivers via Signal |
+| ~~D27~~ | ~~Browser push notifications (Web Notifications API)~~ | ~~Section 8~~ | DONE — Request notification permission on page load, fire native browser `Notification` alongside in-chat rendering for background tab support |
 | D11 | Streaming TTS to WebSocket | Section 6 | Full blob only, no chunk streaming |
 
 ### Infrastructure & Security

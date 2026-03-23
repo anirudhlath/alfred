@@ -2,9 +2,11 @@
 
 This directory contains Alfred's brain:
 - `reflex/` — System 1 SLM engine (fast event → action loop)
-  - `engine.py` — SLM inference with dynamic tool prompt
+  - `engine.py` — SLM inference with dynamic tool prompt + TriggerFired reasoning
   - `tool_registry.py` — Reads tool manifests from Redis `alfred:tool_registry`
   - `runner.py` — Event loop orchestration
+  - `__main__.py` runs two consumer loops: (1) `HOME_STATE_STREAM` for StateChanged, (2) `EVENTS_STREAM` for TriggerFired (group `reflex-trigger-fired`)
+  - TriggerFired handling: Path A (notification) fires first, Path B (SLM reasoning) is isolated — SLM failures never block notification delivery
 - `memory/` — Markdown preferences + scratchpad
 - `triggers/` — Dynamic trigger engine (proactive actions)
   - `models.py` — BaseTrigger ABC, ActionPayload, TriggerContext

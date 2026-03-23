@@ -12,6 +12,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+UrgencyLevel = Literal["informational", "important", "urgent"]
+
 
 class BaseEvent(BaseModel):
     """Base for all events on the Alfred Event Bus."""
@@ -83,6 +85,7 @@ class TriggerFired(BaseEvent):
     trigger_name: str
     trigger_type: str
     context: dict[str, Any] = Field(default_factory=dict)
+    urgency: UrgencyLevel = "informational"
 
 
 class UserRequest(BaseEvent):
@@ -122,3 +125,4 @@ class TriggerCreated(BaseEvent):
     conditions: dict[str, Any] = Field(description="Trigger-type-specific conditions")
     action: dict[str, Any] | None = None
     one_shot: bool = False
+    urgency: UrgencyLevel = "informational"

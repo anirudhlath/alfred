@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from bus.schemas.events import TriggerCreated
+from core.notifications.schema import Urgency
 from core.triggers.models import ActionPayload
 from core.triggers.registry import TriggerRegistry
 from sdk.alfred_sdk.feature import BaseFeature, ToolMeta, tool
@@ -53,6 +54,11 @@ class TriggerFeature(BaseFeature):
             "\n\naction (optional): {tool_name: str, target_service: str, parameters: dict}\n"
             "If omitted, fires a TriggerFired event for the Reflex Engine to handle."
         )
+        urgency_docs = (
+            '\n\nurgency (optional): "informational" | "important" | "urgent"\n'
+            "Sets notification urgency when trigger fires without an action. "
+            "Default: informational."
+        )
 
         enriched: list[ToolMeta] = []
         for t in tools:
@@ -62,7 +68,9 @@ class TriggerFeature(BaseFeature):
                 enriched.append(
                     ToolMeta(
                         name=t.name,
-                        description=t.description + "\n\n" + conditions_docs + action_docs,
+                        description=(
+                            t.description + "\n\n" + conditions_docs + action_docs + urgency_docs
+                        ),
                         parameters=t.parameters,
                     )
                 )
@@ -78,6 +86,7 @@ class TriggerFeature(BaseFeature):
         conditions: dict[str, Any],
         action: dict[str, Any] | None = None,
         one_shot: bool = False,
+        urgency: str = "informational",
     ) -> dict[str, Any]:
         """Create a new trigger. Use this for reminders, scheduled tasks, and automation rules."""
         try:
@@ -91,6 +100,13 @@ class TriggerFeature(BaseFeature):
             return {"error": f"Invalid action: {e}"}
 
         try:
+            validated_urgency = Urgency(urgency)
+        except ValueError:
+            return {
+                "error": f"Invalid urgency: {urgency}. Must be: informational, important, urgent"
+            }
+
+        try:
             trigger = cls(
                 trigger_id=str(uuid4()),
                 trigger_type=trigger_type,
@@ -100,6 +116,7 @@ class TriggerFeature(BaseFeature):
                 created_by="tool-call",
                 created_at=datetime.now(UTC),
                 action=validated_action,
+                urgency=validated_urgency,
                 conditions=conditions,
             )
         except Exception as e:
@@ -117,6 +134,7 @@ class TriggerFeature(BaseFeature):
                 conditions=conditions,
                 action=action,
                 one_shot=one_shot,
+                urgency=validated_urgency.value,
             )
             await self._redis.xadd(EVENTS_STREAM, {"event": event.model_dump_json()})
 
@@ -135,8 +153,9 @@ class TriggerFeature(BaseFeature):
         conditions: dict[str, Any] | None = None,
         action: dict[str, Any] | None = None,
         name: str | None = None,
+        urgency: str | None = None,
     ) -> dict[str, Any]:
-        """Update an existing trigger's conditions, action, or name."""
+        """Update an existing trigger's conditions, action, name, or urgency."""
         target = await self._store_or_raise.get(trigger_id)
         if target is None:
             return {"error": f"Trigger '{trigger_id}' not found"}
@@ -158,6 +177,15 @@ class TriggerFeature(BaseFeature):
                 updates["action"] = validated_action
             except Exception as e:
                 return {"error": f"Invalid action: {e}"}
+        if urgency is not None:
+            try:
+                updates["urgency"] = Urgency(urgency)
+            except ValueError:
+                return {
+                    "error": (
+                        f"Invalid urgency: {urgency}. Must be: informational, important, urgent"
+                    )
+                }
 
         updated = target.model_copy(update=updates)
         await self._store_or_raise.save(updated)
