@@ -23,7 +23,7 @@ from core.notifications.dnd import DNDChecker
 from core.notifications.publisher import NotificationPublisher
 from core.notifications.schema import Urgency
 from core.reflex.context_reader import ContextReader
-from core.reflex.engine import ReflexEngine, _build_notification_body
+from core.reflex.engine import ReflexEngine, build_notification_body
 from core.reflex.runner import ensure_consumer_group, process_stream_entry
 from core.reflex.tool_registry import ToolRegistry
 from core.routing.domain_router import DomainRouter
@@ -86,14 +86,9 @@ async def _handle_trigger_fired(
 
     # Path A: Immediate notification (DND-aware via dispatcher)
     urgency = Urgency(trigger_event.urgency)
-    title = (
-        f"Reminder: {trigger_event.trigger_name}"
-        if trigger_event.trigger_type == "time"
-        else f"Alert: {trigger_event.trigger_name}"
-    )
     await publisher.publish(
-        title=title,
-        body=_build_notification_body(trigger_event),
+        title=f"Trigger: {trigger_event.trigger_name}",
+        body=build_notification_body(trigger_event),
         source="trigger-engine",
         urgency=urgency,
     )

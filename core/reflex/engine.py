@@ -60,7 +60,7 @@ Rules:
 Respond ONLY with valid JSON. No explanation."""
 
 
-def _build_notification_body(event: TriggerFired) -> str:
+def build_notification_body(event: TriggerFired) -> str:
     """Build a human-readable notification body from TriggerFired context."""
     parts: list[str] = []
     if event.context.get("event_entity"):

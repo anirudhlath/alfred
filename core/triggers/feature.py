@@ -134,6 +134,7 @@ class TriggerFeature(BaseFeature):
                 conditions=conditions,
                 action=action,
                 one_shot=one_shot,
+                urgency=validated_urgency.value,
             )
             await self._redis.xadd(EVENTS_STREAM, {"event": event.model_dump_json()})
 

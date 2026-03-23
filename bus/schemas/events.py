@@ -83,7 +83,7 @@ class TriggerFired(BaseEvent):
     trigger_name: str
     trigger_type: str
     context: dict[str, Any] = Field(default_factory=dict)
-    urgency: str = "informational"
+    urgency: Literal["informational", "important", "urgent"] = "informational"
 
 
 class UserRequest(BaseEvent):
@@ -123,3 +123,4 @@ class TriggerCreated(BaseEvent):
     conditions: dict[str, Any] = Field(description="Trigger-type-specific conditions")
     action: dict[str, Any] | None = None
     one_shot: bool = False
+    urgency: Literal["informational", "important", "urgent"] = "informational"
