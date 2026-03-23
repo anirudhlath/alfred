@@ -143,6 +143,7 @@ Items that won't block development but should be addressed before scale/producti
 | P2 | Notification dispatcher as sub-agent | `core/notifications/` | Instead of hardcoded routing rules, make the dispatcher an LLM-powered sub-agent that reasons about context, urgency, channel selection, and DND. Would allow natural-language routing policies and learning from user feedback |
 | P3 | Notification dedup/cooldown | `core/notifications/` | Hash-based dedup with Redis TTL key (`notification:{source}:{title_hash}`). Default 5min cooldown, configurable per urgency (urgent = no cooldown). Prevents notification storms from repeated sensor triggers or multiple sources detecting same situation |
 | P4 | PiperTTS GPU acceleration | `core/voice/tts.py` | Currently loads ONNX model with default CPU execution provider. Configure CUDA EP on prod (RTX 4090) and CoreML EP on dev (M4 Max) for faster synthesis |
+| P5 | Settings page CSS card styling | `web/style.css`, `web/settings.js` | Integration cards render functionally but CSS classes aren't applying properly — cards appear unstyled. Likely a specificity or class name mismatch issue |
 
 ---
 
