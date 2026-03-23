@@ -68,3 +68,13 @@ async def test_execute_caldav_not_installed(adapter: AppleCalendarAdapter) -> No
         result = await adapter.execute(IntegrationRequest(action="get_today_events", params={}))
     assert result.confidence == 0.0
     assert "not installed" in result.data["error"]
+
+
+def test_credentials_schema_declared() -> None:
+    """Adapter should declare its credential fields."""
+    schema = AppleCalendarAdapter.credentials_schema
+    assert "caldav_url" in schema.fields
+    assert "username" in schema.fields
+    assert "password" in schema.fields
+    assert schema.fields["password"].field_type == "password"
+    assert schema.fields["caldav_url"].field_type == "url"

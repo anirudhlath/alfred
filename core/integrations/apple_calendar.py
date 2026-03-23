@@ -7,6 +7,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from core.integrations.base import (
+    CredentialField,
+    CredentialSchema,
     Integration,
     IntegrationCapability,
     IntegrationRequest,
@@ -24,6 +26,27 @@ class AppleCalendarAdapter(Integration):
 
     name = "apple_calendar"
     category = "calendar"
+
+    credentials_schema = CredentialSchema(
+        fields={
+            "caldav_url": CredentialField(
+                label="CalDAV URL",
+                field_type="url",
+                default="https://caldav.icloud.com",
+                help_text="Pre-filled for iCloud. Only change if using Google Calendar or a self-hosted server",
+            ),
+            "username": CredentialField(
+                label="Apple ID",
+                placeholder="you@icloud.com",
+                help_text="Your Apple ID email address used for iCloud sign-in",
+            ),
+            "password": CredentialField(
+                label="App-Specific Password",
+                field_type="password",
+                help_text="Go to appleid.apple.com > Sign-In and Security > App-Specific Passwords > Generate",
+            ),
+        }
+    )
 
     def __init__(
         self,

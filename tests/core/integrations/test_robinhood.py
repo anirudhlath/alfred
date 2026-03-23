@@ -101,3 +101,14 @@ async def test_health_check_unconfigured(unconfigured_adapter: RobinhoodAdapter)
 async def test_health_check_success(adapter: RobinhoodAdapter) -> None:
     with patch.object(adapter, "_ensure_login", return_value=True):
         assert await adapter.health_check() is True
+
+
+def test_credentials_schema_declared() -> None:
+    """Adapter should declare its credential fields."""
+    schema = RobinhoodAdapter.credentials_schema
+    assert "username" in schema.fields
+    assert "password" in schema.fields
+    assert "mfa_code" in schema.fields
+    assert schema.fields["password"].field_type == "password"
+    assert schema.fields["mfa_code"].required is False
+    assert schema.fields["mfa_code"].transient is True

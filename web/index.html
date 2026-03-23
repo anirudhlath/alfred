@@ -30,6 +30,7 @@
                     available in a future update.
                 </p>
                 <button class="onboarding-btn" data-next="1">Proceed</button>
+                <button class="onboarding-btn skip" data-skip>Skip — use defaults</button>
             </div>
 
             <!-- Step 1: Basic preferences -->
@@ -49,6 +50,7 @@
                 </label>
                 <div class="onboarding-nav">
                     <button class="onboarding-btn secondary" data-next="0">Back</button>
+                    <button class="onboarding-btn skip" data-skip>Skip — use defaults</button>
                     <button class="onboarding-btn" data-next="2">Continue</button>
                 </div>
             </div>
@@ -81,6 +83,7 @@
                 </div>
                 <div class="onboarding-nav">
                     <button class="onboarding-btn secondary" data-next="1">Back</button>
+                    <button class="onboarding-btn skip" data-skip>Skip — use defaults</button>
                     <button class="onboarding-btn" data-next="3">Continue</button>
                 </div>
             </div>
@@ -97,12 +100,28 @@
                 </div>
                 <div class="onboarding-nav">
                     <button class="onboarding-btn secondary" data-next="2">Back</button>
-                    <button class="onboarding-btn" id="ob-finish">Finish</button>
+                    <button class="onboarding-btn skip" data-skip>Skip — use defaults</button>
+                    <button class="onboarding-btn" data-next="4">Continue</button>
                 </div>
             </div>
 
-            <!-- Step 4: Complete -->
+            <!-- Step 4: Integrations -->
             <div class="onboarding-step" data-step="4" style="display:none;">
+                <h2>Connections</h2>
+                <p class="onboarding-body">
+                    Connect your services so I can provide more informed assistance.
+                    You can always configure these later in Settings.
+                </p>
+                <div id="ob-integrations"></div>
+                <div class="onboarding-nav">
+                    <button class="onboarding-btn secondary" data-next="3">Back</button>
+                    <button class="onboarding-btn skip" data-skip>Skip — use defaults</button>
+                    <button class="onboarding-btn" id="ob-finish">Continue</button>
+                </div>
+            </div>
+
+            <!-- Step 5: Complete -->
+            <div class="onboarding-step" data-step="5" style="display:none;">
                 <h2>Very good, sir.</h2>
                 <p class="onboarding-body">
                     Your preferences have been noted. I shall learn the rest
@@ -117,6 +136,7 @@
                 <span class="progress-dot" data-dot="2"></span>
                 <span class="progress-dot" data-dot="3"></span>
                 <span class="progress-dot" data-dot="4"></span>
+                <span class="progress-dot" data-dot="5"></span>
             </div>
         </div>
     </div>
@@ -127,6 +147,12 @@
             <div class="header-content">
                 <h1>Alfred</h1>
                 <div class="header-meta">
+                    <a href="/settings.html" class="gear-link" title="Settings">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="3"/>
+                            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                        </svg>
+                    </a>
                     <span id="status" class="status">
                         <span class="status-indicator"></span>
                         <span class="status-label">Connecting</span>

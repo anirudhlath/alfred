@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
@@ -98,8 +99,9 @@ def test_voice_url_builder() -> None:
 
 def test_constructor_auto_downloads_missing_model(tmp_path: Path) -> None:
     """Constructor auto-downloads model from HuggingFace if not present."""
-    import pytest
     from unittest.mock import patch
+
+    import pytest
 
     pytest.importorskip("piper", reason="piper-tts not installed")
 
@@ -112,9 +114,7 @@ def test_constructor_auto_downloads_missing_model(tmp_path: Path) -> None:
 
         # Still fails because the fake .onnx isn't a real model,
         # but _download_model should have been called
-        try:
+        with contextlib.suppress(Exception):  # PiperVoice.load will fail on fake data
             PiperTTS(voice="en_GB-alan-medium", model_dir=tmp_path)
-        except Exception:
-            pass  # PiperVoice.load will fail on fake data
 
         mock_dl.assert_called_once_with("en_GB-alan-medium", tmp_path)

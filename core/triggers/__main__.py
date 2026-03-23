@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 from datetime import UTC, datetime
 from pathlib import Path
@@ -136,17 +137,32 @@ async def run(config: AlfredConfig) -> None:
     await client.register()
     logger.info("Registered trigger CRUD tools in tool registry")
 
-    # Build FastAPI app + uvicorn server
+    # Build FastAPI app + uvicorn server (retry bind if port is in TIME_WAIT)
     app = create_app(client=client, feature=feature)
-    uvi_config = uvicorn.Config(app, host="0.0.0.0", port=8001, log_level="info")
+    trigger_port = int(os.getenv("TRIGGER_PORT", "8001"))
+    uvi_config = uvicorn.Config(app, host="0.0.0.0", port=trigger_port, log_level="info")
     uvi_server = uvicorn.Server(uvi_config)
+
+    async def _serve_with_retry() -> None:
+        for attempt in range(5):
+            try:
+                server = uvicorn.Server(uvi_config) if attempt > 0 else uvi_server
+                await server.serve()
+                return
+            except OSError as e:
+                if e.errno == 48 and attempt < 4:  # Address already in use
+                    wait = attempt + 1
+                    logger.warning("Port %d in use, retrying in %ds...", trigger_port, wait)
+                    await asyncio.sleep(wait)
+                else:
+                    raise
 
     tasks = [
         asyncio.create_task(tick_loop(engine)),
         asyncio.create_task(event_loop(engine, r)),
         asyncio.create_task(_periodic(store.snapshot_all, 300.0, "Trigger snapshot")),
         asyncio.create_task(_periodic(store.refresh, 60.0, "Cache refresh")),
-        asyncio.create_task(uvi_server.serve()),
+        asyncio.create_task(_serve_with_retry()),
     ]
 
     logger.info("Trigger Engine started")

@@ -106,13 +106,9 @@ async def _consume_internal_actions(
                         try:
                             await handler()
                         except Exception as e:
-                            log.error(
-                                "Internal action '{}' failed: {}", action.tool_name, e
-                            )
+                            log.error("Internal action '{}' failed: {}", action.tool_name, e)
                     else:
-                        log.warning(
-                            "No handler for internal action '{}'", action.tool_name
-                        )
+                        log.warning("No handler for internal action '{}'", action.tool_name)
 
                     await redis.xack(stream, group, entry_id)
         except Exception as e:
