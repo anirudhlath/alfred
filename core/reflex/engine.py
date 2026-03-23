@@ -14,7 +14,7 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
-from bus.schemas.events import ActionRequest, StateChangedEvent
+from bus.schemas.events import ActionRequest, StateChangedEvent, TriggerFired
 from core.memory.reader import MemoryReader
 from core.reflex import ollama_client
 from core.reflex.tool_registry import ToolInfo, ToolRegistry
@@ -40,6 +40,36 @@ Rules:
 {tool_section}
 
 Respond ONLY with valid JSON. No explanation."""
+
+_TRIGGER_FIRED_PROMPT_TEMPLATE = """\
+You are Alfred's Reflex Engine — a fast-acting steward for a smart home.
+
+A trigger has fired. The user set up this trigger for a reason. Given the trigger details,
+current home state, and user preferences, decide if any additional action is needed beyond
+the notification already being sent to the user.
+
+Rules:
+- The user is ALREADY being notified about this trigger. You do NOT need to send a notification.
+- Only act if an additional home automation action would be helpful given the context.
+- If no additional action is needed, respond with: {{"action": "none"}}
+- If an action IS needed, respond with:
+  {{"tool_name": "<tool name>", "target_service": "<service>", "parameters": {{<params>}}}}
+
+{tool_section}
+
+Respond ONLY with valid JSON. No explanation."""
+
+
+def _build_notification_body(event: TriggerFired) -> str:
+    """Build a human-readable notification body from TriggerFired context."""
+    parts: list[str] = []
+    if event.context.get("event_entity"):
+        entity = event.context["event_entity"]
+        state = event.context.get("event_state")
+        parts.append(f"{entity}: {state}" if state else str(entity))
+    if event.context.get("evaluated_at"):
+        parts.append(f"Fired at {event.context['evaluated_at']}")
+    return " | ".join(parts) if parts else f"Trigger '{event.trigger_name}' fired"
 
 
 def _build_tool_section(tools: list[ToolInfo]) -> str:
@@ -153,22 +183,19 @@ class ReflexEngine:
             f"## Your Decision (JSON only):"
         )
 
-    def parse_response(
+    def _parse_slm_json(
         self,
         response: dict[str, object],
-        event: StateChangedEvent,
         valid_services: set[str],
+        log_label: str,
     ) -> ActionRequest | None:
-        """Parse the SLM's JSON response into an ActionRequest or None.
-
-        Public API for the evals pipeline. Same logic as used by process_event().
-        """
+        """Shared SLM JSON response parser."""
         try:
             raw = response.get("response", "")
             parsed = json.loads(str(raw))
 
             if parsed.get("action") == "none":
-                logger.debug("No action for event %s", event.entity_id)
+                logger.debug("No action for %s", log_label)
                 return None
 
             tool_name = parsed.get("tool_name")
@@ -195,6 +222,27 @@ class ReflexEngine:
             logger.error("Failed to parse SLM response: %s — %s", e, response)
             return None
 
+    def parse_response(
+        self,
+        response: dict[str, object],
+        event: StateChangedEvent,
+        valid_services: set[str],
+    ) -> ActionRequest | None:
+        """Parse the SLM's JSON response into an ActionRequest or None.
+
+        Public API for the evals pipeline. Same logic as used by process_event().
+        """
+        return self._parse_slm_json(response, valid_services, log_label=event.entity_id)
+
+    def parse_trigger_response(
+        self,
+        response: dict[str, object],
+        event: TriggerFired,
+        valid_services: set[str],
+    ) -> ActionRequest | None:
+        """Parse SLM response for a TriggerFired event."""
+        return self._parse_slm_json(response, valid_services, log_label=event.trigger_name)
+
     @traced(name="reflex.process_event")
     @track_latency(category="reflex")
     async def process_event(self, event: StateChangedEvent) -> ActionRequest | None:
@@ -213,3 +261,33 @@ class ReflexEngine:
 
         response = await ollama_client.infer(prompt)
         return self.parse_response(response, event, valid_services)
+
+    @traced(name="reflex.process_trigger_fired")
+    @track_latency(category="reflex")
+    async def process_trigger_fired(self, event: TriggerFired) -> ActionRequest | None:
+        """Process a TriggerFired event and optionally produce an action."""
+        preferences = self._get_preferences()
+        tools, _ = await self._get_tools_and_prompt()
+        valid_services = ToolRegistry.get_registered_services(tools)
+
+        tool_section = _build_tool_section(tools)
+        system_prompt = _TRIGGER_FIRED_PROMPT_TEMPLATE.format(tool_section=tool_section)
+
+        context = ""
+        if self._context_reader is not None:
+            context = await self._context_reader.get_rendered_context()
+
+        context_section = f"## Home State\n{context}\n\n" if context else ""
+        prompt = (
+            f"{system_prompt}\n\n"
+            f"{context_section}"
+            f"## User Preferences\n{preferences}\n\n"
+            f"## Trigger Fired\n"
+            f"Name: {event.trigger_name}\n"
+            f"Type: {event.trigger_type}\n"
+            f"Context: {json.dumps(event.context)}\n\n"
+            f"## Your Decision (JSON only):"
+        )
+
+        response = await ollama_client.infer(prompt)
+        return self.parse_trigger_response(response, event, valid_services)
