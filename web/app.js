@@ -284,6 +284,9 @@ function initOnboarding() {
     // Skip buttons — submit defaults and jump to completion
     overlay.querySelectorAll('[data-skip]').forEach(btn => {
         btn.addEventListener('click', async () => {
+            // Always dismiss regardless of API success
+            localStorage.setItem('alfred_onboarded', '1');
+            showStep(5);
             try {
                 await fetch('/api/onboarding', {
                     method: 'POST',
@@ -293,8 +296,6 @@ function initOnboarding() {
             } catch (err) {
                 console.error('Onboarding default save failed:', err);
             }
-            localStorage.setItem('alfred_onboarded', '1');
-            showStep(5);
         });
     });
 
@@ -357,11 +358,15 @@ function initOnboarding() {
                 let fieldsHtml = '';
                 for (const [name, field] of Object.entries(integration.schema.fields)) {
                     const inputType = field.field_type === 'password' ? 'password' : 'text';
+                    const helpHtml = field.help_text
+                        ? `<span class="onboarding-note">${field.help_text}</span>`
+                        : '';
                     fieldsHtml += `
                         <label class="onboarding-label">
                             ${field.label}
                             <input type="${inputType}" name="${name}" data-field="${name}"
                                    placeholder="${field.placeholder || ''}" autocomplete="off">
+                            ${helpHtml}
                         </label>
                     `;
                 }

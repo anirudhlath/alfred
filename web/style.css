@@ -550,9 +550,18 @@ footer {
 
 /* --- Settings Page --- */
 
+.settings-page {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
 .settings-page main {
+    flex: 1;
     overflow-y: auto;
     padding: 1.5rem;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
 }
 
 .settings-section-title {

@@ -33,15 +33,17 @@ class AppleCalendarAdapter(Integration):
                 label="CalDAV URL",
                 field_type="url",
                 placeholder="https://caldav.icloud.com",
+                help_text="For iCloud: use https://caldav.icloud.com. For Google: use https://apidata.googleusercontent.com/caldav/v2/",
             ),
             "username": CredentialField(
                 label="Apple ID",
                 placeholder="you@icloud.com",
+                help_text="Your Apple ID email address used for iCloud sign-in",
             ),
             "password": CredentialField(
                 label="App-Specific Password",
                 field_type="password",
-                help_text="Generate at appleid.apple.com > Sign-In and Security",
+                help_text="Go to appleid.apple.com > Sign-In and Security > App-Specific Passwords > Generate",
             ),
         }
     )
