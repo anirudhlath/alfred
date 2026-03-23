@@ -44,6 +44,7 @@ class TriggerEngine:
                 trigger_name=trigger.name,
                 trigger_type=trigger.trigger_type,
                 context=self._build_fire_context(trigger, context),
+                urgency=trigger.urgency.value,
             )
             await self._redis.xadd(EVENTS_STREAM, {"event": event.model_dump_json()})
             logger.info("Trigger '%s' fired → TriggerFired event", trigger.name)

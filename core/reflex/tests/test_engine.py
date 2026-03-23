@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from bus.schemas.events import StateChangedEvent
+from bus.schemas.events import StateChangedEvent, TriggerFired
 from core.memory.reader import MemoryReader
 from core.reflex.tool_registry import ToolInfo
 
@@ -249,3 +249,201 @@ async def test_reflex_engine_prompt_contains_context(
     assert "light.living_room: on (brightness: 255)" in called_prompt
     # Context should appear before preferences
     assert called_prompt.index("## Home State") < called_prompt.index("## User Preferences")
+
+
+# --- TriggerFired processing tests ---
+
+
+def _make_trigger_fired(
+    name: str = "take medicine",
+    trigger_type: str = "time",
+    urgency: str = "informational",
+) -> TriggerFired:
+    return TriggerFired(
+        trigger_id="t-1",
+        trigger_name=name,
+        trigger_type=trigger_type,
+        context={"trigger_type": trigger_type, "evaluated_at": "2026-03-23T21:00:00Z"},
+        urgency=urgency,
+    )
+
+
+@pytest.mark.asyncio
+async def test_process_trigger_fired_produces_action(
+    mock_memory_reader: MemoryReader,
+    mock_registry: AsyncMock,
+) -> None:
+    from core.reflex.engine import ReflexEngine
+
+    mock_ollama_response = {
+        "response": json.dumps(
+            {
+                "tool_name": "lighting.dim_lights",
+                "target_service": "home-service",
+                "parameters": {"room": "bedroom", "level": 10},
+            }
+        ),
+        "prompt_tokens": 200,
+        "completion_tokens": 30,
+        "total_tokens": 230,
+    }
+
+    with patch(
+        "core.reflex.ollama_client.infer",
+        new_callable=AsyncMock,
+        return_value=mock_ollama_response,
+    ):
+        engine = ReflexEngine(
+            preferences_dir="/fake/prefs",
+            tool_registry=mock_registry,
+            memory_reader=mock_memory_reader,
+        )
+        action = await engine.process_trigger_fired(_make_trigger_fired())
+
+    assert action is not None
+    assert action.tool_name == "lighting.dim_lights"
+    assert action.source == "reflex-engine"
+
+
+@pytest.mark.asyncio
+async def test_process_trigger_fired_returns_none_for_no_action(
+    mock_memory_reader: MemoryReader,
+    mock_registry: AsyncMock,
+) -> None:
+    from core.reflex.engine import ReflexEngine
+
+    mock_ollama_response = {
+        "response": json.dumps({"action": "none"}),
+        "prompt_tokens": 150,
+        "completion_tokens": 10,
+        "total_tokens": 160,
+    }
+
+    with patch(
+        "core.reflex.ollama_client.infer",
+        new_callable=AsyncMock,
+        return_value=mock_ollama_response,
+    ):
+        engine = ReflexEngine(
+            preferences_dir="/fake/prefs",
+            tool_registry=mock_registry,
+            memory_reader=mock_memory_reader,
+        )
+        action = await engine.process_trigger_fired(_make_trigger_fired())
+
+    assert action is None
+
+
+@pytest.mark.asyncio
+async def test_process_trigger_fired_prompt_contains_trigger_details(
+    mock_registry: AsyncMock,
+    mock_memory_reader: MemoryReader,
+) -> None:
+    from core.reflex.engine import ReflexEngine
+
+    mock_ollama_response = {
+        "response": json.dumps({"action": "none"}),
+    }
+
+    with patch(
+        "core.reflex.ollama_client.infer",
+        new_callable=AsyncMock,
+        return_value=mock_ollama_response,
+    ) as mock_infer:
+        engine = ReflexEngine(
+            preferences_dir="/fake/prefs",
+            tool_registry=mock_registry,
+            memory_reader=mock_memory_reader,
+        )
+        await engine.process_trigger_fired(_make_trigger_fired())
+
+    called_prompt = mock_infer.call_args[0][0]
+    assert "## Trigger Fired" in called_prompt
+    assert "take medicine" in called_prompt
+    assert "time" in called_prompt
+    assert "ALREADY being notified" in called_prompt
+
+
+@pytest.mark.asyncio
+async def test_process_trigger_fired_handles_malformed_json(
+    mock_memory_reader: MemoryReader,
+    mock_registry: AsyncMock,
+) -> None:
+    from core.reflex.engine import ReflexEngine
+
+    mock_ollama_response = {"response": "not valid json at all"}
+
+    with patch(
+        "core.reflex.ollama_client.infer",
+        new_callable=AsyncMock,
+        return_value=mock_ollama_response,
+    ):
+        engine = ReflexEngine(
+            preferences_dir="/fake/prefs",
+            tool_registry=mock_registry,
+            memory_reader=mock_memory_reader,
+        )
+        action = await engine.process_trigger_fired(_make_trigger_fired())
+
+    assert action is None
+
+
+# --- build_notification_body tests ---
+
+
+def testbuild_notification_body_sensor_with_state() -> None:
+    from core.reflex.engine import build_notification_body
+
+    evt = TriggerFired(
+        trigger_id="t-1",
+        trigger_name="laundry done",
+        trigger_type="sensor",
+        context={
+            "event_entity": "sensor.washing_machine_power",
+            "event_state": "idle",
+            "evaluated_at": "2026-03-23T21:00:00Z",
+        },
+    )
+    body = build_notification_body(evt)
+    assert "sensor.washing_machine_power: idle" in body
+    assert "Fired at 2026-03-23T21:00:00Z" in body
+
+
+def testbuild_notification_body_sensor_without_state() -> None:
+    from core.reflex.engine import build_notification_body
+
+    evt = TriggerFired(
+        trigger_id="t-1",
+        trigger_name="test",
+        trigger_type="sensor",
+        context={"event_entity": "sensor.temp", "evaluated_at": "2026-03-23T21:00:00Z"},
+    )
+    body = build_notification_body(evt)
+    assert "sensor.temp" in body
+    assert "sensor.temp:" not in body  # no trailing colon when state is missing
+
+
+def testbuild_notification_body_time_trigger() -> None:
+    from core.reflex.engine import build_notification_body
+
+    evt = TriggerFired(
+        trigger_id="t-1",
+        trigger_name="take medicine",
+        trigger_type="time",
+        context={"trigger_type": "time", "evaluated_at": "2026-03-23T21:00:00Z"},
+    )
+    body = build_notification_body(evt)
+    assert "Fired at 2026-03-23T21:00:00Z" in body
+
+
+def testbuild_notification_body_empty_context() -> None:
+    from core.reflex.engine import build_notification_body
+
+    evt = TriggerFired(
+        trigger_id="t-1",
+        trigger_name="my trigger",
+        trigger_type="time",
+        context={},
+    )
+    body = build_notification_body(evt)
+    assert "my trigger" in body

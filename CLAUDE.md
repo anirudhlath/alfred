@@ -105,7 +105,7 @@ Web channel serves the PWA frontend on port 8081 (configurable in `core/channels
 ```mermaid
 graph TD
     MQTT[MQTT Bridge] -->|StateChangedEvent| Bus[Redis Streams<br/>alfred:events]
-    Bus --> Reflex[Reflex Engine<br/>System 1 SLM]
+    Bus --> Reflex[Reflex Engine<br/>System 1 SLM<br/>+ TriggerFired consumer]
     Bus --> Triggers[Trigger Engine<br/>Proactive Actions]
     Bus --> Conscious[Conscious Engine<br/>System 2 Cloud LLM]
     Reflex -->|ActionRequest| Actions[alfred:actions]
@@ -147,7 +147,8 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - Cross-process notification delivery uses `NOTIFICATION_DISPATCH_STREAM` — dispatcher publishes to stream, each process runs a delivery worker with its own consumer group (e.g. `conscious-delivery`, `channels-delivery`)
 - `bus/schemas/events.py` is for bus events only — notification models (`Notification`, `Urgency`) live in `core/notifications/schema.py`, not re-exported from bus
 - Piper TTS auto-downloads voice models from HuggingFace on first use — no manual model download needed
-- `# type: ignore[no-untyped-call]` on Redis `xack` calls may be unnecessary depending on mypy version — check before adding
+- `# type: ignore[no-untyped-call]` on Redis `xack` calls is no longer needed — mypy 3.13+ types these correctly
+- Bus event urgency uses `UrgencyLevel` type alias (Literal) in `bus/schemas/events.py` — bus must NOT import `Urgency` enum from `core/notifications/schema.py` to avoid bus→core dependency
 - Root `conftest.py` has autouse `_mock_keyring` fixture — all tests use `InMemoryKeyring`, never the OS keychain
 - Never put `conftest.py` in `tests/` — causes namespace collision with `sdk/tests/` (both have `__init__.py`). Use root `conftest.py` for repo-wide fixtures.
 - Worktrees default to system Python (may be 3.14) — always run `uv venv --python 3.13` in new worktrees
