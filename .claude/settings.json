@@ -1,4 +1,9 @@
 {
+  "permissions": {
+    "allow": [
+      "mcp__plugin_playwright_playwright__*"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {
