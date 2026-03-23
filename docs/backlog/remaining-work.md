@@ -98,8 +98,8 @@ Introduced `ConsciousConfig` + `ConsciousDeps` dataclasses with backward-compati
 | D21 | Indefinite DND drain via keyspace notification | Section 8 | When DND has no `until`, deferred queue strands until next expiry-based drain or restart. Use Redis keyspace notifications on DND_STATE_KEY deletion to trigger immediate drain |
 | ~~D22~~ | ~~TriggerFired → user notification bridge~~ | ~~Section 1+8~~ | DONE — TriggerFired events consumed by Reflex process: immediate DND-aware notification + SLM reasoning for additional actions. Urgency field on BaseTrigger and TriggerFired |
 | D23 | Frontend audio queue | Section 6+8 | Response TTS and notification TTS play simultaneously. Need a sequential audio queue so notifications wait for current playback to finish |
-| D26 | Duplicate WebSocket notification delivery | Section 8 | Both `conscious-delivery` and `channels-delivery` consumer groups deliver via WebSocket adapter → notifications and TTS fire twice. Fix: WebSocket+Voice adapters should only be in channels process; conscious process should only have Signal adapter |
-| D27 | Browser push notifications (Web Notifications API) | Section 8 | Notifications only appear in-chat via WebSocket. Add `Notification.requestPermission()` + `new Notification()` in frontend so triggers surface as native OS notifications even when the tab is in background |
+| ~~D26~~ | ~~Duplicate WebSocket notification delivery~~ | ~~Section 8~~ | DONE — Removed WebSocket/Voice adapter registration from conscious process; only channels process delivers via WS/Voice, conscious only delivers via Signal |
+| ~~D27~~ | ~~Browser push notifications (Web Notifications API)~~ | ~~Section 8~~ | DONE — Request notification permission on page load, fire native browser `Notification` alongside in-chat rendering for background tab support |
 | D11 | Streaming TTS to WebSocket | Section 6 | Full blob only, no chunk streaming |
 
 ### Infrastructure & Security
