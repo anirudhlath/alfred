@@ -243,17 +243,29 @@ class ReflexEngine:
         """Parse SLM response for a TriggerFired event."""
         return self._parse_slm_json(response, valid_services, log_label=event.trigger_name)
 
+    async def _prepare_inference_context(
+        self,
+    ) -> tuple[str, list[ToolInfo], set[str], str, str]:
+        """Shared setup: preferences, tools, valid services, context, system prompt."""
+        preferences = self._get_preferences()
+        tools, system_prompt = await self._get_tools_and_prompt()
+        valid_services = ToolRegistry.get_registered_services(tools)
+        context = ""
+        if self._context_reader is not None:
+            context = await self._context_reader.get_rendered_context()
+        return preferences, tools, valid_services, context, system_prompt
+
     @traced(name="reflex.process_event")
     @track_latency(category="reflex")
     async def process_event(self, event: StateChangedEvent) -> ActionRequest | None:
         """Process a state change event and optionally produce an action."""
-        preferences = self._get_preferences()
-        tools, system_prompt = await self._get_tools_and_prompt()
-        valid_services = ToolRegistry.get_registered_services(tools)
-
-        context = ""
-        if self._context_reader is not None:
-            context = await self._context_reader.get_rendered_context()
+        (
+            preferences,
+            tools,
+            valid_services,
+            context,
+            system_prompt,
+        ) = await self._prepare_inference_context()
 
         prompt = self.build_prompt(
             event, preferences, tools, context_text=context, _system_prompt=system_prompt
@@ -266,16 +278,10 @@ class ReflexEngine:
     @track_latency(category="reflex")
     async def process_trigger_fired(self, event: TriggerFired) -> ActionRequest | None:
         """Process a TriggerFired event and optionally produce an action."""
-        preferences = self._get_preferences()
-        tools, _ = await self._get_tools_and_prompt()
-        valid_services = ToolRegistry.get_registered_services(tools)
+        preferences, tools, valid_services, context, _ = await self._prepare_inference_context()
 
         tool_section = _build_tool_section(tools)
         system_prompt = _TRIGGER_FIRED_PROMPT_TEMPLATE.format(tool_section=tool_section)
-
-        context = ""
-        if self._context_reader is not None:
-            context = await self._context_reader.get_rendered_context()
 
         context_section = f"## Home State\n{context}\n\n" if context else ""
         prompt = (
