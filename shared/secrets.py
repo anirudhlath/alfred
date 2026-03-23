@@ -10,6 +10,7 @@ Async API (a-prefixed) is used by REST endpoints to avoid blocking the event loo
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 import keyring
 from keyring.errors import PasswordDeleteError
@@ -32,19 +33,13 @@ def set_secret(integration: str, field: str, value: str) -> None:
 
 def delete_secret(integration: str, field: str) -> None:
     """Remove a credential field from the OS keyring. No-op if not found."""
-    try:
+    with contextlib.suppress(PasswordDeleteError):
         keyring.delete_password(SERVICE, f"{integration}.{field}")
-    except PasswordDeleteError:
-        pass
 
 
 def get_all_secrets(integration: str, fields: list[str]) -> dict[str, str]:
     """Fetch all credential fields for an integration. Returns only non-None values."""
-    return {
-        f: v
-        for f in fields
-        if (v := get_secret(integration, f)) is not None
-    }
+    return {f: v for f in fields if (v := get_secret(integration, f)) is not None}
 
 
 # --- Async wrappers (for REST endpoints) ---

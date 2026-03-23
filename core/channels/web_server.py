@@ -120,7 +120,7 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
 
     from core.notifications.delivery import notification_delivery_worker
 
-    pool: aioredis.Redis[Any] = aioredis.from_url(app.state.redis_url, decode_responses=False)
+    pool: aioredis.Redis[Any] = aioredis.from_url(app.state.redis_url, decode_responses=False)  # type: ignore[type-arg]
     app.state.redis = pool
 
     shutdown = asyncio.Event()
@@ -148,7 +148,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
     async def websocket_endpoint(websocket: WebSocket) -> None:
         await websocket.accept()
         _active_websockets.append(websocket)
-        r: aioredis.Redis[Any] = app.state.redis
+        r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
 
         # Accept optional session_id from client for reconnect persistence
         session_id: str | None = None
@@ -264,12 +264,14 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
             for field_name in schema.fields:
                 val = await aget_secret(name, field_name)
                 configured[field_name] = val is not None
-            result.append({
-                "name": name,
-                "category": integration_cls.category,
-                "schema": schema.model_dump(),
-                "configured": configured,
-            })
+            result.append(
+                {
+                    "name": name,
+                    "category": integration_cls.category,
+                    "schema": schema.model_dump(),
+                    "configured": configured,
+                }
+            )
         return result
 
     @app.put(
@@ -295,7 +297,8 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
         # Validate: check required fields
         missing = [
-            f for f, field in schema.fields.items()
+            f
+            for f, field in schema.fields.items()
             if field.required and f not in body and not field.transient
         ]
         if missing:
@@ -379,7 +382,10 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
             _atomic_write(
                 proactivity_path,
                 _preference_file(
-                    "general", today, "manual", "Proactivity Level",
+                    "general",
+                    today,
+                    "manual",
+                    "Proactivity Level",
                     [f"- Level: {level}"],
                 ),
             )
@@ -407,7 +413,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
 
 async def _publish_and_wait(
-    redis: aioredis.Redis[Any],
+    redis: aioredis.Redis[Any],  # type: ignore[type-arg]
     request: UserRequest,
     session_id: str,
     timeout: float = 30.0,

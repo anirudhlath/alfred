@@ -29,7 +29,7 @@ class InMemoryKeyring(keyring.backend.KeyringBackend):
         except KeyError:
             from keyring.errors import PasswordDeleteError
 
-            raise PasswordDeleteError(username)
+            raise PasswordDeleteError(username) from None
 
 
 @pytest.fixture(autouse=True)

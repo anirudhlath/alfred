@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 
 def _make_client():
     from core.channels.web_server import create_app
+
     app = create_app(redis_url="redis://localhost:6379")
     app.state.redis = AsyncMock()
     return TestClient(app)
