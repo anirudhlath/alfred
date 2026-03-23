@@ -4,6 +4,12 @@ Cross-cutting utilities used by multiple top-level packages (core, bus, domains)
 
 - `config.py` — `AlfredConfig` dataclass, loads `.env` via python-dotenv
 - `streams.py` — Redis stream/key constants (single source of truth)
+- `secrets.py` — keyring wrapper for PII credentials (sync + async APIs)
+- `types.py` — shared type aliases (`AioRedis`)
+- `fs.py` — `atomic_write()` for safe file writes
+- `logging.py` — Loguru setup with stdlib intercept
+- `otel.py` — OpenTelemetry init
+- `traced.py` — `@traced` decorator for span instrumentation
 
 ## Rules
 
