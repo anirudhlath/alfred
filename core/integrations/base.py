@@ -32,6 +32,23 @@ class IntegrationCapability(BaseModel):
     params_schema: dict[str, Any]
 
 
+class CredentialField(BaseModel):
+    """Describes one credential input field for an integration adapter."""
+
+    label: str
+    field_type: str = "text"  # "text" | "password" | "url"
+    required: bool = True
+    placeholder: str = ""
+    help_text: str = ""
+    transient: bool = False  # If True, value is passed to adapter but not persisted
+
+
+class CredentialSchema(BaseModel):
+    """Describes all credential fields for an integration adapter."""
+
+    fields: dict[str, CredentialField]
+
+
 class Integration(ABC):
     """Abstract base class for data-fetching integrations.
 
@@ -41,6 +58,7 @@ class Integration(ABC):
 
     name: str
     category: str  # "calendar", "health", "finance", "weather"
+    credentials_schema: CredentialSchema = CredentialSchema(fields={})
 
     @abstractmethod
     async def get_capabilities(self) -> list[IntegrationCapability]: ...
