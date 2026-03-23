@@ -144,6 +144,7 @@ Items that won't block development but should be addressed before scale/producti
 | P3 | Notification dedup/cooldown | `core/notifications/` | Hash-based dedup with Redis TTL key (`notification:{source}:{title_hash}`). Default 5min cooldown, configurable per urgency (urgent = no cooldown). Prevents notification storms from repeated sensor triggers or multiple sources detecting same situation |
 | P4 | PiperTTS GPU acceleration | `core/voice/tts.py` | Currently loads ONNX model with default CPU execution provider. Configure CUDA EP on prod (RTX 4090) and CoreML EP on dev (M4 Max) for faster synthesis |
 | P5 | Settings page CSS card styling | `web/style.css`, `web/settings.js` | Integration cards render functionally but CSS classes aren't applying properly — cards appear unstyled. Likely a specificity or class name mismatch issue |
+| P6 | Reflex-driven notification intelligence for TriggerFired | `core/reflex/`, `core/notifications/` | Instead of immediate fire-and-forget notification on TriggerFired, let the Reflex SLM decide whether/what/how to notify (urgency, wording, suppression). More intelligent but adds latency + inference cost. Experiment with whether SLM-driven notification decisions outperform static ones |
 
 ---
 
