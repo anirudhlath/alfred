@@ -156,10 +156,8 @@ async def run(config: AlfredConfig) -> None:
         default_proactivity=config.proactivity_level,
     )
 
-    # Import adapter modules to trigger @ChannelRegistry.register() decorators
+    # Import only Signal adapter — WebSocket + Voice are delivered by the channels process
     import core.notifications.adapters.signal
-    import core.notifications.adapters.voice
-    import core.notifications.adapters.websocket
     from core.channels.signal_bridge.bridge import SignalBridge
     from core.notifications.channels import ChannelRegistry
     from core.notifications.dispatcher import NotificationDispatcher
