@@ -1,7 +1,7 @@
 """Robinhood portfolio integration adapter.
 
 Uses robin_stocks library for unofficial API access.
-Requires Robinhood credentials stored in .env.
+Requires Robinhood credentials stored in OS keyring.
 """
 
 from __future__ import annotations
@@ -11,6 +11,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 from core.integrations.base import (
+    CredentialField,
+    CredentialSchema,
     Integration,
     IntegrationCapability,
     IntegrationRequest,
@@ -28,6 +30,27 @@ class RobinhoodAdapter(Integration):
 
     name = "robinhood"
     category = "finance"
+
+    credentials_schema = CredentialSchema(
+        fields={
+            "username": CredentialField(
+                label="Email",
+                placeholder="you@example.com",
+                help_text="The email address you use to log into robinhood.com",
+            ),
+            "password": CredentialField(
+                label="Password",
+                field_type="password",
+                help_text="Your Robinhood account password",
+            ),
+            "mfa_code": CredentialField(
+                label="MFA Code",
+                required=False,
+                transient=True,
+                help_text="6-digit code from your authenticator app. Only needed for initial login — not stored after use",
+            ),
+        }
+    )
 
     def __init__(self, username: str = "", password: str = "", mfa_code: str = "") -> None:
         self._username = username

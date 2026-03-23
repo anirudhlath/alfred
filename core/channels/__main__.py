@@ -5,6 +5,10 @@ Usage: python -m core.channels
 
 from __future__ import annotations
 
+import logging
+import os
+import time
+
 import uvicorn
 
 from core.channels.web_server import create_app, get_active_websockets
@@ -37,7 +41,20 @@ def main() -> None:
     )
 
     app = create_app(redis_url=config.redis_url)
-    uvicorn.run(app, host="0.0.0.0", port=8081, log_level="info")
+    port = int(os.getenv("CHANNELS_PORT", "8081"))
+    for attempt in range(5):
+        try:
+            uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+            break
+        except OSError as e:
+            if e.errno == 48 and attempt < 4:
+                wait = attempt + 1
+                logging.getLogger(__name__).warning(
+                    "Port %d in use, retrying in %ds...", port, wait
+                )
+                time.sleep(wait)
+            else:
+                raise
 
 
 if __name__ == "__main__":

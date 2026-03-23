@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import time
 from contextlib import asynccontextmanager
@@ -11,7 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 import redis.asyncio as aioredis
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from pydantic import BaseModel
@@ -99,6 +100,19 @@ def _atomic_write(path: Path, content: str) -> None:
     atomic_write(path, content)
 
 
+def _get_prefs_dirs() -> tuple[Path, Path]:
+    """Return (preferences_dir, profile_dir) for semantic memory."""
+    base = Path(__file__).resolve().parent.parent / "memory"
+    return base / "preferences", base / "profile"
+
+
+async def require_localhost(request: Request) -> None:
+    """FastAPI dependency — restrict endpoint to localhost only."""
+    client_host = request.client.host if request.client else ""
+    if client_host not in ("127.0.0.1", "::1", "testclient"):
+        raise HTTPException(status_code=403, detail="Localhost access only")
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     """Manage shared Redis connection pool lifecycle + notification delivery."""
@@ -106,7 +120,7 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
 
     from core.notifications.delivery import notification_delivery_worker
 
-    pool: aioredis.Redis[Any] = aioredis.from_url(app.state.redis_url, decode_responses=False)
+    pool: aioredis.Redis[Any] = aioredis.from_url(app.state.redis_url, decode_responses=False)  # type: ignore[type-arg]
     app.state.redis = pool
 
     shutdown = asyncio.Event()
@@ -121,8 +135,17 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     await pool.close()
 
 
+def _ensure_integrations_registered() -> None:
+    """Import integration adapter modules to trigger @register() decorators."""
+    import core.integrations.apple_calendar  # noqa: F401
+    import core.integrations.apple_health  # noqa: F401
+    import core.integrations.robinhood  # noqa: F401
+    import core.integrations.weather  # noqa: F401
+
+
 def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
     """Create the FastAPI application for the web channel."""
+    _ensure_integrations_registered()
     app = FastAPI(title="Alfred Web Channel", lifespan=_lifespan)
     app.state.redis_url = redis_url
 
@@ -134,7 +157,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
     async def websocket_endpoint(websocket: WebSocket) -> None:
         await websocket.accept()
         _active_websockets.append(websocket)
-        r: aioredis.Redis[Any] = app.state.redis
+        r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
 
         # Accept optional session_id from client for reconnect persistence
         session_id: str | None = None
@@ -212,7 +235,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
                     content=content,
                 )
 
-                response_text = await _publish_and_wait(r, request, session_id, timeout=30.0)
+                response_text = await _publish_and_wait(r, request, session_id, timeout=60.0)
 
                 response_payload: dict[str, Any] = {
                     "type": "response",
@@ -236,57 +259,169 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         finally:
             _active_websockets.remove(websocket)
 
+    @app.get("/api/integrations")
+    async def list_integrations() -> list[dict[str, Any]]:
+        """List all integrations with schema and configured status."""
+        from core.integrations.registry import IntegrationRegistry
+        from shared.secrets import aget_all_secrets
+
+        async def _build_info(name: str) -> dict[str, Any]:
+            integration_cls = IntegrationRegistry.get_class(name)
+            schema = integration_cls.credentials_schema
+            stored = await aget_all_secrets(name, list(schema.fields))
+            configured = {f: f in stored for f in schema.fields}
+            return {
+                "name": name,
+                "category": integration_cls.category,
+                "schema": schema.model_dump(),
+                "configured": configured,
+            }
+
+        return list(
+            await asyncio.gather(*[_build_info(n) for n in IntegrationRegistry.available()])
+        )
+
+    @app.put(
+        "/api/integrations/{name}/credentials",
+        dependencies=[Depends(require_localhost)],
+    )
+    async def save_credentials(name: str, request: Request) -> dict[str, str]:
+        """Save integration credentials to OS keyring."""
+        from core.integrations.registry import IntegrationRegistry
+        from shared.secrets import aset_secret
+
+        try:
+            integration_cls = IntegrationRegistry.get_class(name)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"Unknown integration: {name}") from None
+
+        schema = integration_cls.credentials_schema
+        body: dict[str, str] = await request.json()
+
+        unknown = set(body.keys()) - set(schema.fields.keys())
+        if unknown:
+            raise HTTPException(status_code=422, detail=f"Unknown fields: {unknown}")
+
+        missing = [
+            f
+            for f, field in schema.fields.items()
+            if field.required and f not in body and not field.transient
+        ]
+        if missing:
+            raise HTTPException(status_code=422, detail=f"Missing required fields: {missing}")
+
+        await asyncio.gather(
+            *[aset_secret(name, f, v) for f, v in body.items() if not schema.fields[f].transient]
+        )
+
+        await asyncio.to_thread(IntegrationRegistry.reconfigure, name)
+        return {"status": "ok"}
+
+    @app.delete(
+        "/api/integrations/{name}/credentials",
+        dependencies=[Depends(require_localhost)],
+    )
+    async def delete_credentials(name: str) -> dict[str, str]:
+        """Clear all credentials for an integration from OS keyring."""
+        from core.integrations.registry import IntegrationRegistry
+        from shared.secrets import adelete_secret
+
+        try:
+            integration_cls = IntegrationRegistry.get_class(name)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"Unknown integration: {name}") from None
+
+        await asyncio.gather(
+            *[adelete_secret(name, f) for f in integration_cls.credentials_schema.fields]
+        )
+
+        await asyncio.to_thread(IntegrationRegistry.reconfigure, name)
+        return {"status": "ok"}
+
+    @app.get("/api/integrations/{name}/status")
+    async def integration_status(name: str) -> dict[str, Any]:
+        """Run health check on an integration adapter."""
+        from core.integrations.registry import IntegrationRegistry
+
+        try:
+            IntegrationRegistry.get_class(name)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"Unknown integration: {name}") from None
+
+        try:
+            instance = IntegrationRegistry.get(name)
+            healthy = await instance.health_check()
+        except Exception:
+            healthy = False
+        return {"name": name, "healthy": healthy}
+
     @app.post("/api/onboarding")
     async def save_onboarding(payload: OnboardingPayload) -> dict[str, str]:
         """Save onboarding preferences to semantic memory files.
 
-        This is a bootstrap path that writes directly to preference/profile files
-        before the Librarian's first consolidation cycle.
+        Writes default values for any null fields. Skips writing if the
+        preference file already exists (prevents clobbering Librarian data).
         """
         today = datetime.now(UTC).strftime("%Y-%m-%d")
-        prefs_dir = Path(__file__).resolve().parent.parent / "memory" / "preferences"
-        profile_dir = Path(__file__).resolve().parent.parent / "memory" / "profile"
+        prefs_dir, profile_dir = _get_prefs_dirs()
         prefs_dir.mkdir(parents=True, exist_ok=True)
         profile_dir.mkdir(parents=True, exist_ok=True)
 
-        # Write personal preferences (wake time, dietary, work address)
-        lines: list[str] = []
-        if payload.wake_time:
-            lines.append(f"- Usual wake time: {payload.wake_time}")
-        if payload.work_address:
-            lines.append(f"- Work address: {payload.work_address}")
-        if payload.dietary_restrictions:
-            lines.append(f"- Dietary restrictions: {payload.dietary_restrictions}")
-        if lines:
+        # Personal preferences (with defaults)
+        personal_path = prefs_dir / "personal.md"
+        if not personal_path.exists():
+            wake = payload.wake_time or "07:00"
+            lines: list[str] = [f"- Usual wake time: {wake}"]
+            if payload.work_address:
+                lines.append(f"- Work address: {payload.work_address}")
+            if payload.dietary_restrictions:
+                lines.append(f"- Dietary restrictions: {payload.dietary_restrictions}")
             _atomic_write(
-                prefs_dir / "personal.md",
+                personal_path,
                 _preference_file("general", today, "manual", "Personal", lines),
             )
 
-        # Write proactivity level
-        if payload.proactivity_level:
+        # Proactivity level (with default)
+        proactivity_path = profile_dir / "proactivity.md"
+        if not proactivity_path.exists():
+            level = payload.proactivity_level or "moderate"
             _atomic_write(
-                profile_dir / "proactivity.md",
+                proactivity_path,
                 _preference_file(
                     "general",
                     today,
                     "manual",
                     "Proactivity Level",
-                    [f"- Level: {payload.proactivity_level}"],
+                    [f"- Level: {level}"],
                 ),
             )
 
-        # Write guest mode config
-        if payload.guest_controls:
-            guest_lines = [f"- {ctrl}" for ctrl in payload.guest_controls]
+        # Guest mode config (with defaults)
+        guest_path = prefs_dir / "guest_mode.md"
+        if not guest_path.exists():
+            controls = payload.guest_controls or ["Lighting control", "Media playback"]
+            guest_lines = [f"- {ctrl}" for ctrl in controls]
             _atomic_write(
-                prefs_dir / "guest_mode.md",
+                guest_path,
                 _preference_file("general", today, "manual", "Guest Mode", guest_lines),
             )
 
         n_fields = len(payload.model_dump(exclude_none=True))
         logger.info("Onboarding preferences saved ({} fields)", n_fields)
         return {"status": "ok"}
+
+    # Disable caching for static files in dev (forces browser to fetch fresh CSS/JS)
+    from starlette.middleware import Middleware
+    from starlette.middleware.base import BaseHTTPMiddleware
+
+    class NoCacheStaticMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: Request, call_next):  # type: ignore[override]
+            response = await call_next(request)
+            if request.url.path.endswith((".css", ".js", ".html")):
+                response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            return response
+
+    app.add_middleware(NoCacheStaticMiddleware)
 
     # Mount static files for PWA (if directory exists)
     web_dir = Path(__file__).resolve().parent.parent.parent / "web"
@@ -297,7 +432,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
 
 async def _publish_and_wait(
-    redis: aioredis.Redis[Any],
+    redis: aioredis.Redis[Any],  # type: ignore[type-arg]
     request: UserRequest,
     session_id: str,
     timeout: float = 30.0,

@@ -58,9 +58,31 @@ class IntegrationRegistry:
             raise KeyError(
                 f"Unknown integration: {name!r}. Available: {list(cls._registry.keys())}"
             ) from None
+        # Auto-populate credentials from keyring if no kwargs provided
+        if not kwargs and integration_cls.credentials_schema.fields:
+            from shared.secrets import get_all_secrets
+
+            kwargs = get_all_secrets(name, list(integration_cls.credentials_schema.fields))
         instance = integration_cls(**kwargs)
         cls._instances[name] = instance
         return instance
+
+    @classmethod
+    def reconfigure(cls, name: str) -> None:
+        """Drop cached instance and re-create with fresh keyring credentials."""
+        cls._instances.pop(name, None)
+        if name in cls._registry:
+            cls.get(name)  # eagerly rebuild
+
+    @classmethod
+    def get_class(cls, name: str) -> type[Integration]:
+        """Look up an integration class by name. Raises KeyError if unknown."""
+        try:
+            return cls._registry[name]
+        except KeyError:
+            raise KeyError(
+                f"Unknown integration: {name!r}. Available: {list(cls._registry.keys())}"
+            ) from None
 
     @classmethod
     def available(cls) -> list[str]:
