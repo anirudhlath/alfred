@@ -235,7 +235,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
                     content=content,
                 )
 
-                response_text = await _publish_and_wait(r, request, session_id, timeout=30.0)
+                response_text = await _publish_and_wait(r, request, session_id, timeout=60.0)
 
                 response_payload: dict[str, Any] = {
                     "type": "response",
