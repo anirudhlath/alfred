@@ -1,146 +1,137 @@
 ---
 name: demo
-description: Start Alfred, demonstrate recent changes visually in the browser, and present a non-technical summary of what was built and its impact
+description: Launch Alfred and present a visual executive demo of recent work — what was built, what it looks like, and what it means for the product
 disable-model-invocation: true
 ---
 
-# Demo — Show Me What You Built
+# Demo — Executive Review
 
-Launch Alfred and visually demonstrate recent work. The user is not interested in code details — they want to see features working and understand impact.
+Launch Alfred and present a CTO-level walkthrough of recent development work. Focus on capability, product impact, and system health — not implementation details.
+
+**Audience:** Director / CTO. They care about: what can Alfred do now, how does it look, does it work, what's the strategic impact. They do NOT care about: code structure, test counts, refactoring, internal abstractions.
 
 ## Steps
 
-### 1. Detect What Changed
+### 1. Scope the Demo
 
-Figure out what was recently built. Check the current branch and compare against master:
+Determine what was recently built:
 
 ```bash
 cd /Users/anirudhlath/code/private/alfred/alfred
-
-# If on a feature branch, diff against master
 BRANCH=$(git branch --show-current)
 if [ "$BRANCH" != "master" ]; then
   git log --oneline master..HEAD
 else
-  # On master, show recent commits since last tag/merge
   git log --oneline -10
 fi
 ```
 
-Read the commit messages and any referenced spec/plan docs to understand WHAT was built (not HOW). Summarize in 2-3 plain-English bullet points for later.
+Read any referenced spec docs (`docs/superpowers/specs/`) to understand the PRODUCT intent. Prepare a one-sentence elevator pitch of what this sprint delivered. Think in terms of capabilities, not tasks.
 
-### 2. Check Infrastructure
-
-```bash
-redis-cli ping 2>/dev/null | grep -q PONG && echo "Redis: OK" || echo "Redis: DOWN"
-pgrep -x mosquitto >/dev/null && echo "Mosquitto: OK" || echo "Mosquitto: DOWN"
-```
-
-If infrastructure is down, run `bash scripts/dev-up.sh` and verify again. If it still fails, stop and tell the user what's missing.
-
-### 3. Start Alfred Services
-
-Start the unified runner in the background. Wait for services to be ready.
+### 2. Boot the System
 
 ```bash
 cd /Users/anirudhlath/code/private/alfred/alfred
+
+# Infrastructure
+redis-cli ping 2>/dev/null | grep -q PONG || bash scripts/dev-up.sh
+pgrep -x mosquitto >/dev/null || bash scripts/dev-up.sh
+
+# Services
 uv run python -m runner &
 RUNNER_PID=$!
-sleep 3
+sleep 4
+
+# Verify
+curl -sf http://localhost:8081/health >/dev/null && echo "System: READY" || echo "System: STARTING..."
 ```
 
-Check the web channel is responding:
-```bash
-curl -sf http://localhost:8081/health | jq .
-```
+If the system won't start, say so plainly and stop. Don't debug during the demo.
 
-If health check fails, wait a few more seconds and retry. If still down after 10s, show logs and stop.
-
-### 4. Run Tests Quietly
-
-Run the test suite in the background to confirm everything works. Don't show output unless something fails.
+### 3. Validate Quietly
 
 ```bash
 uv run python -m pytest -x -q 2>&1 | tail -3
 ```
 
-If tests fail, mention it briefly but continue with the demo — the user wants to see features, not test output.
+Note the test count for the status slide. Don't show test output.
 
-### 5. Open Browser and Demo
+### 4. Visual Walkthrough
 
-Use the Playwright MCP to open the browser and walk through the changes visually.
+Use the Playwright MCP to drive the browser. This is the core of the demo — show, don't tell.
 
-**Always start here:**
+**Open Alfred:**
 1. Navigate to `http://localhost:8081`
-2. Take a screenshot — show the main Alfred PWA
+2. Take a screenshot of the main interface
 
-**Then demo based on what changed.** Match recent commits to these demo paths:
+**Then walk through what's new.** Match recent work to these demo flows:
 
-#### If changes touched `web/settings.*` or `core/integrations/` or `shared/secrets.py`:
-- Click the gear icon in the header to go to Settings
-- Take a screenshot showing the integration cards
-- Point out which integrations are available and their status
-- Try filling in a test credential and clicking Save (use dummy data)
-- Click Test Connection on an integration
-- Take a screenshot of the result
+**Settings / Integrations / Credentials:**
+- Navigate to Settings (gear icon)
+- Screenshot the integration cards — highlight that each service self-describes its credential requirements
+- Show the save/test/clear workflow
+- Key message: *"Users can now connect external services through a settings UI instead of editing config files. Credential storage uses the OS keychain — no plaintext secrets."*
 
-#### If changes touched `web/index.html` or `web/app.js` (onboarding):
-- Clear localStorage to trigger onboarding: run JS `localStorage.removeItem('alfred_onboarded')` then reload
-- Take screenshots walking through each onboarding step
-- Show the skip button
-- Complete the wizard
+**Onboarding:**
+- Clear onboarding state: `localStorage.removeItem('alfred_onboarded')`, reload
+- Walk through the wizard with screenshots at each step
+- Show the skip button — demonstrate graceful defaults
+- Key message: *"First-run experience is self-service. Users can skip any step and Alfred starts with sensible defaults, learning preferences over time through the Librarian."*
 
-#### If changes touched `core/notifications/` or notification adapters:
-- Show the chat interface
-- Point out notification rendering if visible
-- Explain what notification channels are configured
+**Conversation / Intelligence:**
+- Type a message in the chat (e.g., "Good morning, Alfred — what's my day look like?")
+- Wait for response, screenshot
+- Key message: *"The Conscious Engine assembles context from memory, integrations, and calendar to deliver personalized briefings."*
 
-#### If changes touched `core/conscious/` or `core/reflex/`:
-- Type a test message in the chat (e.g., "Good evening, Alfred")
-- Wait for response
-- Take a screenshot of the conversation
+**Notifications:**
+- If notification UI is visible, screenshot it
+- Key message: *"Alfred proactively notifies through Signal, voice, or the web interface — respecting DND schedules and priority routing."*
 
-#### If changes touched `core/voice/` or STT/TTS:
-- Note that voice is available (microphone button visible)
-- Explain what changed in voice processing
+**Voice:**
+- Show the microphone button is present
+- Key message: *"Voice input via Whisper, voice output via Piper TTS — both run locally, no cloud dependency."*
 
-**For ANY demo:** Take screenshots at each interesting point. The user wants to SEE the features.
+**For every screenshot:** Add a one-line caption explaining what the viewer is seeing. Frame it as a capability, not a feature list.
 
-### 6. Present the Summary
+### 5. Executive Summary
 
-After the visual walkthrough, present a clean non-technical summary. Format:
+Present this at the end. This is what they'll remember.
 
+```markdown
+## Sprint Delivery
+
+**[One sentence: what Alfred can do now that it couldn't before]**
+
+### Capabilities Delivered
+- [Capability 1 — framed as user/business value]
+- [Capability 2]
+- [Capability 3 if applicable]
+
+### Architecture Decisions
+- [Key technical choice and WHY it matters for the product — e.g., "OS keychain for credentials means zero plaintext secrets on disk, compliant with our security posture"]
+- [Another if relevant]
+
+### System Health
+- Test coverage: [N] tests passing
+- Services: [all running / any issues]
+- Tech debt: [any known gaps, or "clean"]
+
+### What's Next
+- [Next 1-2 priorities from the backlog, framed as capabilities]
 ```
-## What's New
 
-[2-3 bullet points in plain English describing features, not code]
+### 6. Wrap Up
 
-## What You Just Saw
+Ask if they want to keep the system running or shut down.
 
-[Reference the screenshots — "The settings page now lets you securely connect your calendar and financial accounts without editing config files"]
-
-## Impact
-
-[What this means for the user's daily experience with Alfred — e.g., "Alfred can now pull your calendar events and portfolio data into morning briefings"]
-
-## Status
-
-- Tests: [X passed / Y failed]
-- Services: [running / issues]
-```
-
-### 7. Cleanup
-
-Ask the user if they want to keep Alfred running or shut it down.
-
-If shutting down:
 ```bash
 kill $RUNNER_PID 2>/dev/null
 ```
 
-## Notes
+## Tone Guidelines
 
-- This skill is for the USER, not for developers. Avoid jargon.
-- Screenshots are worth more than explanations.
-- If something doesn't work during the demo, note it calmly and move on — don't debug live.
-- The goal is: "Here's what Alfred can do now that it couldn't before."
+- **Confident, not defensive.** Present what works. If something doesn't work, note it and move on.
+- **Capabilities, not features.** "Alfred can now securely connect to external services" not "We added a keyring wrapper with async APIs."
+- **Strategic, not tactical.** "This positions us for the integration marketplace" not "We added 4 REST endpoints."
+- **Visuals over words.** Every screenshot replaces a paragraph of explanation.
+- **No jargon.** Say "settings page" not "CRUD endpoints." Say "secure storage" not "keyring backend."
