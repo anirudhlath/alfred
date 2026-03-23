@@ -27,22 +27,24 @@ class AppleCalendarAdapter(Integration):
     name = "apple_calendar"
     category = "calendar"
 
-    credentials_schema = CredentialSchema(fields={
-        "caldav_url": CredentialField(
-            label="CalDAV URL",
-            field_type="url",
-            placeholder="https://caldav.icloud.com",
-        ),
-        "username": CredentialField(
-            label="Apple ID",
-            placeholder="you@icloud.com",
-        ),
-        "password": CredentialField(
-            label="App-Specific Password",
-            field_type="password",
-            help_text="Generate at appleid.apple.com > Sign-In and Security",
-        ),
-    })
+    credentials_schema = CredentialSchema(
+        fields={
+            "caldav_url": CredentialField(
+                label="CalDAV URL",
+                field_type="url",
+                placeholder="https://caldav.icloud.com",
+            ),
+            "username": CredentialField(
+                label="Apple ID",
+                placeholder="you@icloud.com",
+            ),
+            "password": CredentialField(
+                label="App-Specific Password",
+                field_type="password",
+                help_text="Generate at appleid.apple.com > Sign-In and Security",
+            ),
+        }
+    )
 
     def __init__(
         self,

@@ -53,16 +53,12 @@ async def notification_delivery_worker(
 
             for _stream_key, stream_entries in entries:
                 for entry_id, entry_data in stream_entries:
-                    raw = entry_data.get("notification") or entry_data.get(
-                        b"notification"
-                    )
+                    raw = entry_data.get("notification") or entry_data.get(b"notification")
                     if raw is None:
                         await redis.xack(stream, group, entry_id)
                         continue
 
-                    notification = Notification.model_validate_json(
-                        decode_stream_value(raw)
-                    )
+                    notification = Notification.model_validate_json(decode_stream_value(raw))
                     await _deliver_locally(notification)
                     await redis.xack(stream, group, entry_id)
 

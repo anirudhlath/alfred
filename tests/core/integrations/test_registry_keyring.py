@@ -25,10 +25,12 @@ class _CredsAdapter(Integration):
 
     name = "creds_test"
     category = "test"
-    credentials_schema = CredentialSchema(fields={
-        "username": CredentialField(label="User"),
-        "password": CredentialField(label="Pass", field_type="password"),
-    })
+    credentials_schema = CredentialSchema(
+        fields={
+            "username": CredentialField(label="User"),
+            "password": CredentialField(label="Pass", field_type="password"),
+        }
+    )
 
     def __init__(self, username: str = "", password: str = "") -> None:
         self.username = username
@@ -86,7 +88,9 @@ def test_get_explicit_kwargs_override_keyring() -> None:
 
     set_secret("creds_test", "username", "keyring_user")
 
-    adapter = IntegrationRegistry.get("creds_test", username="explicit_user", password="explicit_pass")
+    adapter = IntegrationRegistry.get(
+        "creds_test", username="explicit_user", password="explicit_pass"
+    )
     assert isinstance(adapter, _CredsAdapter)
     assert adapter.username == "explicit_user"
     assert adapter.password == "explicit_pass"

@@ -75,6 +75,16 @@ class IntegrationRegistry:
             cls.get(name)  # eagerly rebuild
 
     @classmethod
+    def get_class(cls, name: str) -> type[Integration]:
+        """Look up an integration class by name. Raises KeyError if unknown."""
+        try:
+            return cls._registry[name]
+        except KeyError:
+            raise KeyError(
+                f"Unknown integration: {name!r}. Available: {list(cls._registry.keys())}"
+            ) from None
+
+    @classmethod
     def available(cls) -> list[str]:
         """Return all registered integration names."""
         return list(cls._registry.keys())

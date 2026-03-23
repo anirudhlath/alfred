@@ -19,9 +19,7 @@ if TYPE_CHECKING:
 # Silence between sentences (samples at 22050 Hz, 16-bit mono)
 _SENTENCE_PAUSE_MS = 250
 
-_HF_BASE = (
-    "https://huggingface.co/rhasspy/piper-voices/resolve/main"
-)
+_HF_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
 
 
 def _voice_url(voice: str) -> str:
@@ -49,7 +47,7 @@ def _download_model(voice: str, model_dir: Path) -> None:
         if dest.exists():
             continue
         logger.info("Downloading Piper voice model: {} → {}", url, dest)
-        urllib.request.urlretrieve(url, dest)  # noqa: S310
+        urllib.request.urlretrieve(url, dest)
         logger.info("Downloaded {} ({:.1f} MB)", dest.name, dest.stat().st_size / 1e6)
 
 

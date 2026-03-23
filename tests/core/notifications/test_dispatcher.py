@@ -179,9 +179,7 @@ class TestEnsureDrainTrigger:
     @pytest.mark.asyncio
     async def test_no_trigger_for_indefinite_dnd(self, redis: AsyncMock) -> None:
         checker = AsyncMock(spec=DNDChecker)
-        checker.is_active.return_value = DNDStatus(
-            active=True, source="manual", reason="Hold"
-        )
+        checker.is_active.return_value = DNDStatus(active=True, source="manual", reason="Hold")
 
         trigger_store = AsyncMock()
 

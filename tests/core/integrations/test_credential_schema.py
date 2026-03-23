@@ -28,19 +28,23 @@ def test_credential_schema_empty() -> None:
 
 
 def test_credential_schema_with_fields() -> None:
-    schema = CredentialSchema(fields={
-        "username": CredentialField(label="Email", placeholder="you@example.com"),
-        "password": CredentialField(label="Password", field_type="password"),
-    })
+    schema = CredentialSchema(
+        fields={
+            "username": CredentialField(label="Email", placeholder="you@example.com"),
+            "password": CredentialField(label="Password", field_type="password"),
+        }
+    )
     assert len(schema.fields) == 2
     assert schema.fields["username"].label == "Email"
     assert schema.fields["password"].field_type == "password"
 
 
 def test_credential_schema_serialization() -> None:
-    schema = CredentialSchema(fields={
-        "url": CredentialField(label="URL", field_type="url", required=True),
-    })
+    schema = CredentialSchema(
+        fields={
+            "url": CredentialField(label="URL", field_type="url", required=True),
+        }
+    )
     data = schema.model_dump()
     assert data["fields"]["url"]["label"] == "URL"
     assert data["fields"]["url"]["field_type"] == "url"

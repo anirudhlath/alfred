@@ -29,9 +29,7 @@ def redis() -> AsyncMock:
 
 class TestEndToEndFlow:
     @pytest.mark.asyncio
-    async def test_publish_dispatches_to_stream_when_no_dnd(
-        self, redis: AsyncMock
-    ) -> None:
+    async def test_publish_dispatches_to_stream_when_no_dnd(self, redis: AsyncMock) -> None:
         dnd = DNDChecker(redis=redis, calendar_adapter=None)
         dispatcher = NotificationDispatcher(redis=redis, dnd_checker=dnd)
         publisher = NotificationPublisher(dispatcher=dispatcher)

@@ -3,23 +3,15 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-from fastapi.testclient import TestClient
+    from fastapi.testclient import TestClient
 
 
-def _make_client():
-    from core.channels.web_server import create_app
-
-    app = create_app(redis_url="redis://localhost:6379")
-    app.state.redis = AsyncMock()
-    return TestClient(app)
-
-
-def test_onboarding_writes_defaults_for_null_fields(tmp_path: Path) -> None:
+def test_onboarding_writes_defaults_for_null_fields(web_client: TestClient, tmp_path: Path) -> None:
     """When all fields are null, defaults should be written."""
     import core.channels.web_server as ws
 
@@ -39,7 +31,7 @@ def test_onboarding_writes_defaults_for_null_fields(tmp_path: Path) -> None:
         patch.object(ws, "_atomic_write", side_effect=capture),
         patch.object(ws, "_get_prefs_dirs", return_value=(prefs_dir, profile_dir)),
     ):
-        client = _make_client()
+        client = web_client
         resp = client.post("/api/onboarding", json={})
 
     assert resp.status_code == 200
@@ -49,7 +41,7 @@ def test_onboarding_writes_defaults_for_null_fields(tmp_path: Path) -> None:
     assert "moderate" in written["proactivity.md"]
 
 
-def test_onboarding_does_not_overwrite_existing(tmp_path: Path) -> None:
+def test_onboarding_does_not_overwrite_existing(web_client: TestClient, tmp_path: Path) -> None:
     """If preference files already exist, defaults should NOT overwrite them."""
     import core.channels.web_server as ws
 
@@ -72,7 +64,7 @@ def test_onboarding_does_not_overwrite_existing(tmp_path: Path) -> None:
         patch.object(ws, "_atomic_write", side_effect=capture),
         patch.object(ws, "_get_prefs_dirs", return_value=(prefs_dir, profile_dir)),
     ):
-        client = _make_client()
+        client = web_client
         resp = client.post("/api/onboarding", json={})
 
     assert resp.status_code == 200

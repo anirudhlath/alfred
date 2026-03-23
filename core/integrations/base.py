@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import datetime  # noqa: TC003
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -36,7 +36,7 @@ class CredentialField(BaseModel):
     """Describes one credential input field for an integration adapter."""
 
     label: str
-    field_type: str = "text"  # "text" | "password" | "url"
+    field_type: Literal["text", "password", "url"] = "text"
     required: bool = True
     placeholder: str = ""
     help_text: str = ""

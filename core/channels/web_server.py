@@ -254,25 +254,23 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
     async def list_integrations() -> list[dict[str, Any]]:
         """List all integrations with schema and configured status."""
         from core.integrations.registry import IntegrationRegistry
-        from shared.secrets import aget_secret
+        from shared.secrets import aget_all_secrets
 
-        result: list[dict[str, Any]] = []
-        for name in IntegrationRegistry.available():
-            integration_cls = IntegrationRegistry._registry[name]
+        async def _build_info(name: str) -> dict[str, Any]:
+            integration_cls = IntegrationRegistry.get_class(name)
             schema = integration_cls.credentials_schema
-            configured: dict[str, bool] = {}
-            for field_name in schema.fields:
-                val = await aget_secret(name, field_name)
-                configured[field_name] = val is not None
-            result.append(
-                {
-                    "name": name,
-                    "category": integration_cls.category,
-                    "schema": schema.model_dump(),
-                    "configured": configured,
-                }
-            )
-        return result
+            stored = await aget_all_secrets(name, list(schema.fields))
+            configured = {f: f in stored for f in schema.fields}
+            return {
+                "name": name,
+                "category": integration_cls.category,
+                "schema": schema.model_dump(),
+                "configured": configured,
+            }
+
+        return list(
+            await asyncio.gather(*[_build_info(n) for n in IntegrationRegistry.available()])
+        )
 
     @app.put(
         "/api/integrations/{name}/credentials",
@@ -283,19 +281,18 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         from core.integrations.registry import IntegrationRegistry
         from shared.secrets import aset_secret
 
-        if name not in IntegrationRegistry._registry:
-            raise HTTPException(status_code=404, detail=f"Unknown integration: {name}")
+        try:
+            integration_cls = IntegrationRegistry.get_class(name)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"Unknown integration: {name}") from None
 
-        integration_cls = IntegrationRegistry._registry[name]
         schema = integration_cls.credentials_schema
         body: dict[str, str] = await request.json()
 
-        # Validate: reject unknown fields
         unknown = set(body.keys()) - set(schema.fields.keys())
         if unknown:
             raise HTTPException(status_code=422, detail=f"Unknown fields: {unknown}")
 
-        # Validate: check required fields
         missing = [
             f
             for f, field in schema.fields.items()
@@ -304,14 +301,10 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         if missing:
             raise HTTPException(status_code=422, detail=f"Missing required fields: {missing}")
 
-        # Store non-transient fields in keyring
-        for field_name, value in body.items():
-            field_def = schema.fields[field_name]
-            if field_def.transient:
-                continue
-            await aset_secret(name, field_name, value)
+        await asyncio.gather(
+            *[aset_secret(name, f, v) for f, v in body.items() if not schema.fields[f].transient]
+        )
 
-        # Reconfigure adapter with fresh credentials (sync — uses keyring internally)
         await asyncio.to_thread(IntegrationRegistry.reconfigure, name)
         return {"status": "ok"}
 
@@ -324,12 +317,14 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         from core.integrations.registry import IntegrationRegistry
         from shared.secrets import adelete_secret
 
-        if name not in IntegrationRegistry._registry:
-            raise HTTPException(status_code=404, detail=f"Unknown integration: {name}")
+        try:
+            integration_cls = IntegrationRegistry.get_class(name)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"Unknown integration: {name}") from None
 
-        schema = IntegrationRegistry._registry[name].credentials_schema
-        for field_name in schema.fields:
-            await adelete_secret(name, field_name)
+        await asyncio.gather(
+            *[adelete_secret(name, f) for f in integration_cls.credentials_schema.fields]
+        )
 
         await asyncio.to_thread(IntegrationRegistry.reconfigure, name)
         return {"status": "ok"}
@@ -339,8 +334,10 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         """Run health check on an integration adapter."""
         from core.integrations.registry import IntegrationRegistry
 
-        if name not in IntegrationRegistry._registry:
-            raise HTTPException(status_code=404, detail=f"Unknown integration: {name}")
+        try:
+            IntegrationRegistry.get_class(name)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"Unknown integration: {name}") from None
 
         try:
             instance = IntegrationRegistry.get(name)
