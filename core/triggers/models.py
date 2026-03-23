@@ -9,6 +9,7 @@ from typing import Any, ClassVar
 from pydantic import BaseModel
 
 from bus.schemas.events import StateChangedEvent  # noqa: TC001
+from core.notifications.schema import Urgency
 
 
 class ActionPayload(BaseModel):
@@ -49,6 +50,7 @@ class BaseTrigger(ABC, BaseModel):
     created_at: datetime
     last_fired: datetime | None = None
     action: ActionPayload | None = None
+    urgency: Urgency = Urgency.INFORMATIONAL
 
     @abstractmethod
     def evaluate(self, context: TriggerContext) -> bool:
