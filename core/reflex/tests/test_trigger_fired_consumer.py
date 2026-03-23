@@ -61,7 +61,8 @@ async def test_handle_trigger_fired_publishes_notification(
     mock_publisher.publish.assert_called_once()
     call_kwargs = mock_publisher.publish.call_args
     assert call_kwargs.kwargs["urgency"] == Urgency.IMPORTANT
-    assert "Reminder:" in call_kwargs.kwargs["title"]
+    assert "Trigger:" in call_kwargs.kwargs["title"]
+    assert "take medicine" in call_kwargs.kwargs["title"]
 
 
 @pytest.mark.asyncio
@@ -88,7 +89,8 @@ async def test_handle_trigger_fired_sensor_uses_alert_title(
     )
 
     call_kwargs = mock_publisher.publish.call_args
-    assert "Alert:" in call_kwargs.kwargs["title"]
+    assert "Trigger:" in call_kwargs.kwargs["title"]
+    assert "humidity high" in call_kwargs.kwargs["title"]
 
 
 @pytest.mark.asyncio
