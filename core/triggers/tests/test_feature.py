@@ -165,3 +165,97 @@ async def test_update_trigger_not_found(mock_store: AsyncMock) -> None:
     f = TriggerFeature(ctx=TriggerFeatureContext(store=mock_store))
     result = await f.update_trigger(trigger_id="t-999", name="x")
     assert "error" in result
+
+
+@pytest.mark.asyncio
+async def test_create_trigger_with_urgency(mock_store: AsyncMock) -> None:
+    from core.triggers.feature import TriggerFeature, TriggerFeatureContext
+
+    f = TriggerFeature(ctx=TriggerFeatureContext(store=mock_store))
+    result = await f.create_trigger(
+        name="urgent reminder",
+        trigger_type="time",
+        conditions={"cron": "0 7 * * *"},
+        urgency="urgent",
+    )
+    assert result["urgency"] == "urgent"
+    mock_store.save.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_create_trigger_default_urgency(mock_store: AsyncMock) -> None:
+    from core.triggers.feature import TriggerFeature, TriggerFeatureContext
+
+    f = TriggerFeature(ctx=TriggerFeatureContext(store=mock_store))
+    result = await f.create_trigger(
+        name="chill reminder",
+        trigger_type="time",
+        conditions={"cron": "0 7 * * *"},
+    )
+    assert result["urgency"] == "informational"
+
+
+@pytest.mark.asyncio
+async def test_create_trigger_invalid_urgency(mock_store: AsyncMock) -> None:
+    from core.triggers.feature import TriggerFeature, TriggerFeatureContext
+
+    f = TriggerFeature(ctx=TriggerFeatureContext(store=mock_store))
+    result = await f.create_trigger(
+        name="test",
+        trigger_type="time",
+        conditions={"cron": "0 7 * * *"},
+        urgency="nonexistent",
+    )
+    assert "error" in result
+
+
+@pytest.mark.asyncio
+async def test_update_trigger_urgency(mock_store: AsyncMock) -> None:
+    from core.triggers.feature import TriggerFeature, TriggerFeatureContext
+
+    cls = TriggerRegistry.get("time")
+    trigger = cls(
+        trigger_id="t-1",
+        trigger_type="time",
+        name="test",
+        created_by="test",
+        created_at=datetime.now(UTC),
+        conditions={"cron": "0 7 * * *"},
+    )
+    mock_store.get = AsyncMock(return_value=trigger)
+
+    f = TriggerFeature(ctx=TriggerFeatureContext(store=mock_store))
+    result = await f.update_trigger(trigger_id="t-1", urgency="important")
+    assert result["urgency"] == "important"
+
+
+@pytest.mark.asyncio
+async def test_update_trigger_invalid_urgency(mock_store: AsyncMock) -> None:
+    from core.triggers.feature import TriggerFeature, TriggerFeatureContext
+
+    cls = TriggerRegistry.get("time")
+    trigger = cls(
+        trigger_id="t-1",
+        trigger_type="time",
+        name="test",
+        created_by="test",
+        created_at=datetime.now(UTC),
+        conditions={"cron": "0 7 * * *"},
+    )
+    mock_store.get = AsyncMock(return_value=trigger)
+
+    f = TriggerFeature(ctx=TriggerFeatureContext(store=mock_store))
+    result = await f.update_trigger(trigger_id="t-1", urgency="nonexistent")
+    assert "error" in result
+
+
+def test_dynamic_description_includes_urgency() -> None:
+    from core.triggers.feature import TriggerFeature, TriggerFeatureContext
+
+    f = TriggerFeature(ctx=TriggerFeatureContext(store=AsyncMock()))
+    tools = f.get_tools()
+    create_tool = next(t for t in tools if "create_trigger" in t.name)
+    assert "urgency" in create_tool.description
+    assert "informational" in create_tool.description
+    assert "important" in create_tool.description
+    assert "urgent" in create_tool.description
