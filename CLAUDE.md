@@ -40,39 +40,34 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 
 ## Key Paths
 
-- `shared/streams.py` — Redis stream/key constants (single source of truth for all stream names)
-- `shared/config.py` — central env config (loads .env via python-dotenv)
+- `shared/` — cross-cutting utilities (config, streams, secrets, types, logging, tracing)
 - `bus/schemas/events.py` — canonical event types (single source of truth)
-- `core/reflex/__main__.py` — Reflex Runner entry point (`python -m core.reflex`)
-- `core/reflex/context_reader.py` — fetches and renders service context from Redis
-- `core/reflex/tool_registry.py` — reads tool manifests from Redis `alfred:tool_registry`
-- `core/triggers/__main__.py` — Trigger Engine entry point (`python -m core.triggers`)
-- `core/triggers/registry.py` — TriggerRegistry for dynamic trigger type registration
-- `core/triggers/store.py` — Redis CRUD + YAML snapshots (primary: Redis hash `alfred:triggers`)
-- `bus/__main__.py` — Bridge entry point (`python -m bus`)
-- `core/memory/preferences/` — Markdown preference files (read-only at runtime)
-- `core/memory/scratchpad.md` — ephemeral observations (append-only at runtime)
-- `sdk/alfred_sdk/context.py` — `ContextEntry`, `ContextSnapshot`, `ContextProvider` protocol
-- `sdk/alfred_sdk/feature.py` — `BaseFeature`, `@tool` decorator, manifest models
-- `sdk/` — publishable alfred-sdk package
-- `scripts/smoke-test.sh` — end-to-end smoke test (MQTT → Reflex → action result)
-- `domains/home/home_agent.py` — routes actions to home-service via MCP/HTTP
-- `research/` — Obsidian vault with experiments, data, paper drafts
-- `docs/backlog/` — deferred work items from code reviews and simplification passes
-- `runner/supervisor.py` — multi-process supervisor (ServiceSpec, Supervisor)
+- `core/` — brain (reflex, conscious, triggers, memory, notifications, voice, channels, librarian, integrations)
 - `runner/__main__.py` — unified runner entry point (`python -m runner`)
+- `sdk/` — publishable alfred-sdk package (BaseFeature, @tool, AlfredClient)
+- `domains/home/home_agent.py` — routes actions to home-service
+- `evals/` — eval runner, scenarios, inference backends (`python -m evals`)
+- `web/` — PWA frontend (index.html, settings.html, app.js, settings.js)
 - `docs/superpowers/specs/` — approved design specs
 - `docs/superpowers/plans/` — implementation plans
-- `evals/__main__.py` — Evals Runner entry point (`python -m evals`)
-- `evals/scenarios/` — YAML eval scenarios organized by domain
-- `evals/contexts/` — captured HA context fixtures (grounding SLM with real entity IDs)
-- `evals/inference.py` — `InferFn` protocol, Ollama + LM Studio backends
-- `evals/pipeline.py` — `EvalContext`, `run_scenario()` orchestration
-- `shared/tracing.py` — `TraceRecord` model for inference tracing
-- `core/notifications/` — proactive notification system (dispatcher, DND, channels, delivery)
-- `core/notifications/delivery.py` — cross-process delivery worker (Redis stream consumer)
-- `core/notifications/adapters/` — Signal, WebSocket, Voice channel adapters
 - `docs/backlog/remaining-work.md` — single consolidated backlog (D1-D25+)
+- `conftest.py` — root test fixtures (InMemoryKeyring, telemetry clear, tv_on_event)
+
+## Secrets & Credentials
+
+- `shared/secrets.py` — keyring wrapper for PII credentials (sync + async APIs via `asyncio.to_thread`)
+- Integration adapters declare `credentials_schema: CredentialSchema` with typed `CredentialField` entries
+- `IntegrationRegistry.get()` auto-populates adapter kwargs from keyring; `get_class()` for class lookup; `reconfigure()` to refresh
+- REST endpoints: `GET /api/integrations`, `PUT/DELETE /api/integrations/{name}/credentials`, `GET .../status`
+- Settings page: `web/settings.html` + `web/settings.js` (dynamic cards from API schema)
+
+## Workflow
+
+```bash
+ruff check . --fix && ruff format .        # lint + format
+mypy --strict bus/ core/ domains/ evals/ runner/ sdk/ shared/ telemetry/  # type check
+.venv/bin/python -m pytest -x -q           # test (use .venv in worktrees)
+```
 
 ## Running the System
 
@@ -112,12 +107,19 @@ graph TD
     MQTT[MQTT Bridge] -->|StateChangedEvent| Bus[Redis Streams<br/>alfred:events]
     Bus --> Reflex[Reflex Engine<br/>System 1 SLM]
     Bus --> Triggers[Trigger Engine<br/>Proactive Actions]
+    Bus --> Conscious[Conscious Engine<br/>System 2 Cloud LLM]
     Reflex -->|ActionRequest| Actions[alfred:actions]
     Triggers -->|ActionRequest| Actions
     Triggers -->|TriggerFired| Bus
+    Conscious -->|ActionRequest| Actions
     Actions --> Agents[Domain Agents<br/>home, media, ...]
     Agents -->|MCP/HTTP| Services[Microservices<br/>home-service, ...]
-    Reflex -.->|tools.create_trigger| Triggers
+    Conscious --> Memory[Memory<br/>episodic + semantic + procedural]
+    Conscious --> Integrations[IntegrationRegistry<br/>weather, calendar, health, finance]
+    Conscious --> Notify[NotificationDispatcher<br/>Signal, WebSocket, Voice]
+    Memory --> Librarian[Librarian<br/>nightly consolidation]
+    WebChannel[Web PWA :8081] -->|UserRequest| Bus
+    Signal[Signal Bridge] -->|UserRequest| Bus
 ```
 
 ## Spec
@@ -146,3 +148,6 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - `bus/schemas/events.py` is for bus events only — notification models (`Notification`, `Urgency`) live in `core/notifications/schema.py`, not re-exported from bus
 - Piper TTS auto-downloads voice models from HuggingFace on first use — no manual model download needed
 - `# type: ignore[no-untyped-call]` on Redis `xack` calls may be unnecessary depending on mypy version — check before adding
+- Root `conftest.py` has autouse `_mock_keyring` fixture — all tests use `InMemoryKeyring`, never the OS keychain
+- Never put `conftest.py` in `tests/` — causes namespace collision with `sdk/tests/` (both have `__init__.py`). Use root `conftest.py` for repo-wide fixtures.
+- Worktrees default to system Python (may be 3.14) — always run `uv venv --python 3.13` in new worktrees
