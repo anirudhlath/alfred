@@ -135,8 +135,17 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     await pool.close()
 
 
+def _ensure_integrations_registered() -> None:
+    """Import integration adapter modules to trigger @register() decorators."""
+    import core.integrations.apple_calendar  # noqa: F401
+    import core.integrations.apple_health  # noqa: F401
+    import core.integrations.robinhood  # noqa: F401
+    import core.integrations.weather  # noqa: F401
+
+
 def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
     """Create the FastAPI application for the web channel."""
+    _ensure_integrations_registered()
     app = FastAPI(title="Alfred Web Channel", lifespan=_lifespan)
     app.state.redis_url = redis_url
 
