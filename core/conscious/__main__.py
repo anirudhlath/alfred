@@ -25,10 +25,16 @@ from core.conscious.cost import CostTracker
 from core.conscious.engine import ConsciousConfig, ConsciousDeps, ConsciousEngine
 from core.conscious.identity import IdentityGate
 from core.conscious.session import SessionManager
+from core.memory.context_index import ContextIndexManager
+from core.memory.embedding_provider import SentenceTransformerProvider
+from core.memory.episodic.memory import EpisodicMemory
 from core.memory.episodic.store import EpisodicStore
 from core.memory.reader import MemoryReader
+from core.memory.redis_vector_store import RedisVectorStore
 from core.memory.routines.store import RoutineStore
 from core.memory.scratchpad_writer import ScratchpadWriter
+from core.memory.significance import SignificanceScorer
+from core.memory.sqlite_vec_store import SqliteVecStore
 from core.notifications.publisher import NotificationPublisher
 from core.reflex.context_reader import ContextReader
 from core.reflex.runner import ensure_consumer_group
@@ -156,6 +162,24 @@ async def run(config: AlfredConfig) -> None:
         default_proactivity=config.proactivity_level,
     )
 
+    # New memory system (Phase 3): embedding-backed episodic + context index
+    embedder = SentenceTransformerProvider(config.embedding_model)
+    hot_store = RedisVectorStore(redis=r, dim=config.embedding_dim)
+    cold_store = SqliteVecStore(
+        db_path=str(memory_dir / "episodic_cold.db"),
+        dim=config.embedding_dim,
+    )
+    episodic_memory = EpisodicMemory(hot=hot_store, cold=cold_store, embedder=embedder)
+    context_index = ContextIndexManager(
+        store=hot_store,
+        embedder=embedder,
+        semantic_dirs=[
+            memory_dir / "preferences",
+            memory_dir / "profile",
+        ],
+    )
+    significance_scorer = SignificanceScorer(redis=r, config=config)
+
     # Import only Signal adapter — WebSocket + Voice are delivered by the channels process
     import core.notifications.adapters.signal
     from core.channels.signal_bridge.bridge import SignalBridge
@@ -219,6 +243,8 @@ async def run(config: AlfredConfig) -> None:
             episodic_store=episodic_store,
             routine_store=routine_store,
             trigger_feature=trigger_feature,
+            embedder=embedder,
+            context_index=context_index,
             config=ConsciousConfig(
                 model=config.claude_model,
                 api_key=config.claude_api_key,
@@ -242,8 +268,10 @@ async def run(config: AlfredConfig) -> None:
 
     librarian = Librarian(
         redis=r,
-        episodic_store=episodic_store,
+        episodic_memory=episodic_memory,
         routine_store=routine_store,
+        significance_scorer=significance_scorer,
+        context_index=context_index,
         preferences_dir=str(memory_dir / "preferences"),
         profile_dir=str(memory_dir / "profile"),
         claude_api_key=config.claude_api_key,
