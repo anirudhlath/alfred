@@ -16,7 +16,6 @@ from core.conscious.cost import CostTracker
 from core.conscious.engine import ConsciousEngine
 from core.conscious.identity import IdentityGate
 from core.conscious.session import SessionManager
-from core.memory.reader import MemoryReader
 
 
 def _make_redis_mock() -> AsyncMock:
@@ -80,11 +79,6 @@ def full_engine(tmp_path: Path) -> ConsciousEngine:
         domain_router=AsyncMock(),
         tool_registry=AsyncMock(get_tools=AsyncMock(return_value=[])),
         context_reader=AsyncMock(get_rendered_context=AsyncMock(return_value="")),
-        memory_reader=MemoryReader(
-            preferences_dir=prefs,
-            profile_dir=profile,
-            default_proactivity="opinionated",
-        ),
         claude_model="test-model",
         claude_api_key="test-key",
     )

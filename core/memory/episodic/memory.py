@@ -124,15 +124,31 @@ class EpisodicMemory:
 
         return episodic_results
 
+    async def copy_to_cold_and_remove(self, search_result: SearchResult) -> None:
+        """Re-embed, write to cold, then delete from hot.
+
+        Accepts a ``SearchResult`` (from a context index search) that contains
+        the content and metadata needed to reconstruct the entry in cold storage.
+        """
+        content_emb, key_emb = await asyncio.gather(
+            self._embedder.embed(search_result.content),
+            self._embedder.embed(search_result.semantic_key or search_result.content),
+        )
+        await self._cold.add(
+            id=search_result.id,
+            content=search_result.content,
+            semantic_key=search_result.semantic_key or search_result.content,
+            embedding_content=content_emb,
+            embedding_semantic=key_emb,
+            metadata=search_result.metadata,
+        )
+        await self._hot.delete(search_result.id)
+
     async def migrate_to_cold(self, entry_id: str) -> None:
-        """Remove entry from hot store (caller must have already written to cold).
+        """Remove entry from hot store only (legacy — prefer copy_to_cold_and_remove).
 
-        The typical migration flow:
-        1. Caller reads the full entry data from hot.
-        2. Caller calls cold.add(...) directly with the entry data.
-        3. Caller calls this method to delete from hot.
-
-        This is necessary because VectorStore does not expose a get()-by-id method.
+        Only deletes from hot. The caller must ensure the entry already exists
+        in cold storage before calling this method.
         """
         if not await self._hot.exists(entry_id):
             return
