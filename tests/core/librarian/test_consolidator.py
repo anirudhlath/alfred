@@ -7,14 +7,27 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from core.librarian.consolidator import Librarian
+from core.memory.schemas import SignificanceScore
+
+
+def _make_scorer_mock() -> AsyncMock:
+    scorer = AsyncMock()
+    scorer.score.return_value = SignificanceScore(
+        overall=0.4, safety=0.0, novelty=0.5, personal=0.3, emotional=0.2
+    )
+    return scorer
 
 
 @pytest.fixture
 def mock_deps() -> dict[str, AsyncMock | MagicMock | str]:
+    context_index = AsyncMock()
+    context_index.reindex_semantic_files = AsyncMock()
     return {
         "redis": AsyncMock(),
-        "episodic_store": AsyncMock(),
+        "episodic_memory": AsyncMock(),
         "routine_store": MagicMock(),
+        "significance_scorer": _make_scorer_mock(),
+        "context_index": context_index,
         "preferences_dir": "/tmp/test_prefs",
         "profile_dir": "/tmp/test_profile",
     }
@@ -96,9 +109,9 @@ async def test_consolidate_empty_scratchpad(
 async def test_consolidate_writes_episodic_entries(
     mock_deps: dict[str, AsyncMock | MagicMock | str],
 ) -> None:
-    """Non-empty consolidation: verifies episodic_store.write is called per entry."""
+    """Non-empty consolidation: verifies episodic_memory.write is called per entry."""
     redis_mock: AsyncMock = mock_deps["redis"]  # type: ignore[assignment]
-    episodic_mock: AsyncMock = mock_deps["episodic_store"]  # type: ignore[assignment]
+    episodic_mock: AsyncMock = mock_deps["episodic_memory"]  # type: ignore[assignment]
 
     lines = [
         b"2026-03-19T10:00:00Z [reflex] dim lights -> success",
