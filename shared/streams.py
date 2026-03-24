@@ -20,8 +20,13 @@ DEFERRED_NOTIFICATIONS_KEY = "alfred:notifications:deferred"
 NOTIFICATION_DISPATCH_STREAM = "alfred:notifications:dispatch"
 
 # Phase 3: Memory
-EPISODIC_STREAM = "alfred:memory:episodic"
+EPISODIC_STREAM = "alfred:memory:episodic"  # Deprecated: retained for backward compatibility during migration. Will be removed when EpisodicStore is deleted.
 VOICEPRINT_KEY = "alfred:identity:voiceprint"
+
+# Unified context index (RediSearch)
+CONTEXT_INDEX = "idx:context"
+CONTEXT_PREFIX = "ctx:"
+ENTITY_FREQUENCY_KEY = "alfred:entity:freq"
 
 # Phase 3: Runtime config + cost
 RUNTIME_CONFIG_KEY = "alfred:config:runtime"
