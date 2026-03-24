@@ -686,32 +686,9 @@ class Librarian:
         Supports simple time patterns like "HH:MM daily" and "weekday morning".
         Returns ``True`` if the pattern likely fired in the past 24 hours.
         """
-        pattern = routine.trigger_pattern.lower()
-        # Simple time match: look for HH:MM in the pattern
-        import re
+        from core.memory.routines.patterns import match_trigger_pattern
 
-        time_match = re.search(r"(\d{1,2}):(\d{2})", pattern)
-        if time_match:
-            hour = int(time_match.group(1))
-            # "Fired" if current hour is within 1 of the target hour
-            # (consolidation typically runs nightly, so match is approximate)
-            return abs(now.hour - hour) <= 1
-
-        # Weekday patterns
-        if "weekday" in pattern:
-            return now.weekday() < 5  # Mon-Fri
-
-        if "weekend" in pattern:
-            return now.weekday() >= 5
-
-        if "morning" in pattern:
-            return 5 <= now.hour < 12
-
-        if "evening" in pattern:
-            return 17 <= now.hour < 23
-
-        # Unknown pattern — assume fired to avoid premature dormancy
-        return True
+        return match_trigger_pattern(routine.trigger_pattern, now)
 
     async def consolidate(self) -> dict[str, Any]:
         """Run one consolidation cycle.

@@ -78,17 +78,13 @@ def mock_deps() -> dict[str, AsyncMock | MagicMock]:
 async def test_involuntary_recall_performed(
     mock_deps: dict[str, AsyncMock | MagicMock],
 ) -> None:
-    """When embedder and context_index are provided, involuntary recall runs."""
-    embedder = AsyncMock()
-    embedder.embed.return_value = [0.1, 0.2, 0.3]
-
+    """When context_index is provided, involuntary recall runs via search_text."""
     context_index = AsyncMock()
     search_result = _make_search_result("Sir prefers dim lighting after 8pm")
-    context_index.search.return_value = [search_result]
+    context_index.search_text.return_value = [search_result]
 
     engine = ConsciousEngine(
         **mock_deps,
-        embedder=embedder,
         context_index=context_index,
     )
 
@@ -96,10 +92,8 @@ async def test_involuntary_recall_performed(
         mock_llm.return_value = ("Here are your preferences, sir.", [], 100, 50)
         await engine.process_request(_make_request())
 
-    # Embedder was called with the user query
-    embedder.embed.assert_called_once_with("What are my lighting preferences?")
-    # Context index was searched
-    context_index.search.assert_called_once()
+    # Context index search_text was called with the user query
+    context_index.search_text.assert_called_once()
     # Assembler received relevant_context
     call_kwargs = mock_deps["context_assembler"].assemble.call_args
     assert call_kwargs.kwargs.get("relevant_context") is not None
@@ -111,15 +105,11 @@ async def test_involuntary_recall_empty_results(
     mock_deps: dict[str, AsyncMock | MagicMock],
 ) -> None:
     """When involuntary recall returns nothing, assembler gets relevant_context=None."""
-    embedder = AsyncMock()
-    embedder.embed.return_value = [0.1, 0.2, 0.3]
-
     context_index = AsyncMock()
-    context_index.search.return_value = []
+    context_index.search_text.return_value = []
 
     engine = ConsciousEngine(
         **mock_deps,
-        embedder=embedder,
         context_index=context_index,
     )
 
@@ -136,14 +126,11 @@ async def test_involuntary_recall_failure_graceful(
     mock_deps: dict[str, AsyncMock | MagicMock],
 ) -> None:
     """Involuntary recall failure logs warning but doesn't crash."""
-    embedder = AsyncMock()
-    embedder.embed.side_effect = RuntimeError("embedding service down")
-
     context_index = AsyncMock()
+    context_index.search_text.side_effect = RuntimeError("embedding service down")
 
     engine = ConsciousEngine(
         **mock_deps,
-        embedder=embedder,
         context_index=context_index,
     )
 

@@ -56,13 +56,11 @@ class ContextReader:
         self._cached_snapshot: ContextSnapshot | None = None
         self._cached_rendered: str = ""
         self._cache_time: float = 0.0
-        self._cache_valid: bool = False
 
     async def _get_snapshot(self) -> ContextSnapshot:
         """Fetch and cache the merged ContextSnapshot, respecting TTL."""
         now = time.monotonic()
-        if self._cache_valid and (now - self._cache_time) <= self.CACHE_TTL:
-            assert self._cached_snapshot is not None
+        if self._cached_snapshot is not None and (now - self._cache_time) <= self.CACHE_TTL:
             return self._cached_snapshot
 
         merged = ContextSnapshot()
@@ -85,7 +83,6 @@ class ContextReader:
         self._cached_snapshot = merged
         self._cached_rendered = render_snapshot(merged)
         self._cache_time = now
-        self._cache_valid = True
         return merged
 
     async def get_rendered_context(self) -> str:

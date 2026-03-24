@@ -234,6 +234,8 @@ async def run(config: AlfredConfig) -> None:
                 model=config.claude_model,
                 api_key=config.claude_api_key,
                 max_tokens=config.claude_max_tokens,
+                involuntary_recall_limit=config.involuntary_recall_limit,
+                involuntary_recall_threshold=config.involuntary_recall_threshold,
             ),
         )
     )

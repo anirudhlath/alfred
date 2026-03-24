@@ -66,6 +66,8 @@ class ConsciousConfig:
     model: str
     api_key: str = ""
     max_tokens: int = 2048
+    involuntary_recall_limit: int = 10
+    involuntary_recall_threshold: float = 0.5
 
 
 @dataclass
@@ -176,6 +178,8 @@ class ConsciousEngine:
         self._model = cfg.model
         self._api_key = cfg.api_key
         self._max_tokens = cfg.max_tokens
+        self._involuntary_recall_limit = cfg.involuntary_recall_limit
+        self._involuntary_recall_threshold = cfg.involuntary_recall_threshold
         self._routines = d.routine_store
         self._triggers = d.trigger_feature
         self._embedder = d.embedder
@@ -413,14 +417,13 @@ class ConsciousEngine:
 
         # 3. Memory tools — direct in-process call
         if name.startswith(MEMORY_TOOL_PREFIX):
-            if self._context_index and self._embedder:
+            if self._context_index:
                 try:
                     content = await dispatch_memory_tool(
                         name,
                         params,
                         self._context_index,
                         self._context_reader,
-                        self._embedder,
                     )
                 except Exception as e:
                     content = f"Error executing memory tool: {e}"
@@ -470,7 +473,7 @@ class ConsciousEngine:
         if self._routines is None:
             return ""
 
-        import re
+        from core.memory.routines.patterns import match_trigger_pattern
 
         candidates = self._routines.list_by_state("candidate")
         hints: list[str] = []
@@ -482,24 +485,7 @@ class ConsciousEngine:
                 if hours_since < self._ROUTINE_SUGGESTION_COOLDOWN_HOURS:
                     continue
 
-            # Simple trigger_pattern matching
-            pattern = routine.trigger_pattern.lower()
-            matched = False
-
-            time_match = re.search(r"(\d{1,2}):(\d{2})", pattern)
-            if time_match:
-                hour = int(time_match.group(1))
-                matched = abs(now.hour - hour) <= 1
-            elif "weekday" in pattern:
-                matched = now.weekday() < 5
-            elif "weekend" in pattern:
-                matched = now.weekday() >= 5
-            elif "morning" in pattern:
-                matched = 5 <= now.hour < 12
-            elif "evening" in pattern:
-                matched = 17 <= now.hour < 23
-
-            if not matched:
+            if not match_trigger_pattern(routine.trigger_pattern, now):
                 continue
 
             # Update last_suggested
@@ -555,13 +541,12 @@ class ConsciousEngine:
 
         # 3b. Involuntary recall — embed user query, search unified context index
         involuntary_context: list[SearchResult] = []
-        if self._context_index and self._embedder and request.content:
+        if self._context_index and request.content:
             try:
-                query_emb = await self._embedder.embed(request.content)
-                involuntary_context = await self._context_index.search(
-                    query_emb,
-                    limit=10,  # TODO: from config
-                    min_similarity=0.5,  # TODO: from config
+                involuntary_context = await self._context_index.search_text(
+                    request.content,
+                    limit=self._involuntary_recall_limit,
+                    min_similarity=self._involuntary_recall_threshold,
                 )
             except Exception:
                 logger.warning("Involuntary recall failed", exc_info=True)
