@@ -51,7 +51,16 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `docs/superpowers/specs/` — approved design specs
 - `docs/superpowers/plans/` — implementation plans
 - `docs/backlog/remaining-work.md` — single consolidated backlog (D1-D25+)
-- `conftest.py` — root test fixtures (InMemoryKeyring, telemetry clear, tv_on_event)
+- `core/memory/episodic/memory.py` — `EpisodicMemory` (unified hot+cold vector search)
+- `core/memory/embedding_provider.py` — `EmbeddingProvider` ABC + `SentenceTransformerProvider`
+- `core/memory/vector_store.py` — `VectorStore` ABC, `SearchResult`, `ContextMetadata`
+- `core/memory/redis_vector_store.py` — `RedisVectorStore` (RediSearch HNSW, hot store)
+- `core/memory/sqlite_vec_store.py` — `SqliteVecStore` (sqlite-vec KNN, cold store)
+- `core/memory/significance.py` — `SignificanceScorer` (heuristic amygdala)
+- `core/memory/context_index.py` — `ContextIndexManager` (unified idx:context search)
+- `core/memory/routines/patterns.py` — `match_trigger_pattern()` (shared utility)
+- `core/conscious/memory_tools.py` — Internal memory tools (recall_memories, get_live_state)
+- `conftest.py` — root test fixtures (InMemoryKeyring, telemetry clear, tv_on_event, mock_embedder, mock_vector_store)
 
 ## Secrets & Credentials
 
@@ -152,3 +161,10 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - Root `conftest.py` has autouse `_mock_keyring` fixture — all tests use `InMemoryKeyring`, never the OS keychain
 - Never put `conftest.py` in `tests/` — causes namespace collision with `sdk/tests/` (both have `__init__.py`). Use root `conftest.py` for repo-wide fixtures.
 - Worktrees default to system Python (may be 3.14) — always run `uv venv --python 3.13` in new worktrees
+- Redis Stack (not vanilla redis) required for dev — `scripts/dev-up.sh` installs via `brew install redis-stack`
+- RediSearch `FT.SEARCH RETURN N` — N must EXACTLY match the number of field names that follow; mismatch silently drops fields
+- sqlite-vec `vec0` cosine distance: 0=identical, ≥1=orthogonal — convert to similarity via `1 - distance`
+- `ContextIndexManager.search_text()` embeds query internally — callers should NOT hold an EmbeddingProvider separately
+- Memory tools are INTERNAL to Conscious Engine — dispatched in-process like integration/trigger tools, NOT via BaseFeature/SDK/ToolRegistry
+- `EpisodicMemory.copy_to_cold_and_remove()` re-embeds + writes to cold before deleting hot — use for decay, not `migrate_to_cold()`
+- `SentenceTransformerProvider._load()` blocks on first call — consider warmup `await embedder.embed("warmup")` at startup
