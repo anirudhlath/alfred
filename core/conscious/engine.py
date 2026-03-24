@@ -44,7 +44,6 @@ if TYPE_CHECKING:
     from core.conscious.session import SessionManager
     from core.memory.context_index import ContextIndexManager
     from core.memory.embedding_provider import EmbeddingProvider
-    from core.memory.episodic.store import EpisodicStore
     from core.memory.reader import MemoryReader
     from core.memory.routines.store import RoutineStore
     from core.memory.vector_store import SearchResult
@@ -83,7 +82,6 @@ class ConsciousDeps:
     tool_registry: ToolRegistry
     context_reader: ContextReader
     memory_reader: MemoryReader | None = None
-    episodic_store: EpisodicStore | None = None
     routine_store: RoutineStore | None = None
     trigger_feature: TriggerFeature | None = None
     embedder: EmbeddingProvider | None = None
@@ -117,7 +115,6 @@ class ConsciousEngine:
         claude_api_key: str = "",
         claude_max_tokens: int = 2048,
         memory_reader: MemoryReader | None = None,
-        episodic_store: EpisodicStore | None = None,
         routine_store: RoutineStore | None = None,
         trigger_feature: TriggerFeature | None = None,
         embedder: EmbeddingProvider | None = None,
@@ -160,7 +157,6 @@ class ConsciousEngine:
                 tool_registry=tool_registry,
                 context_reader=context_reader,
                 memory_reader=memory_reader,
-                episodic_store=episodic_store,
                 routine_store=routine_store,
                 trigger_feature=trigger_feature,
                 embedder=embedder,
@@ -185,7 +181,6 @@ class ConsciousEngine:
         self._api_key = cfg.api_key
         self._max_tokens = cfg.max_tokens
         self._memory_reader = d.memory_reader
-        self._episodic = d.episodic_store
         self._routines = d.routine_store
         self._triggers = d.trigger_feature
         self._embedder = d.embedder

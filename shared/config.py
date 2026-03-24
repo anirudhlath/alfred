@@ -38,13 +38,6 @@ class AlfredConfig:
     # Phase 3: Cost
     daily_cost_cap_usd: float = 5.0
 
-    # Phase 3: Memory
-    # DEPRECATED: episodic_hot_days and episodic_compress_days are used by
-    # EpisodicStore (which will be removed in Task 17). The new Librarian._apply_decay()
-    # uses significance-based pressure instead of fixed day thresholds.
-    episodic_hot_days: int = 7
-    episodic_compress_days: int = 90
-
     # Memory: Embedding
     embedding_model: str = "google/embeddinggemma-300m"
     embedding_dim: int = 768
@@ -110,9 +103,6 @@ class AlfredConfig:
             proactivity_level=os.getenv("PROACTIVITY_LEVEL", "opinionated"),
             # Phase 3: Cost
             daily_cost_cap_usd=float(os.getenv("DAILY_COST_CAP_USD", "5.0")),
-            # Phase 3: Memory
-            episodic_hot_days=int(os.getenv("EPISODIC_HOT_DAYS", "7")),
-            episodic_compress_days=int(os.getenv("EPISODIC_COMPRESS_DAYS", "90")),
             # Memory: Embedding (env-configurable)
             embedding_model=os.getenv("EMBEDDING_MODEL", "google/embeddinggemma-300m"),
             embedding_dim=int(os.getenv("EMBEDDING_DIM", "768")),

@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, call
+from unittest.mock import AsyncMock
 
 import pytest
 
 from core.memory.episodic.memory import EpisodicMemory
 from core.memory.schemas import EpisodicEntry, EpisodicResult, SignificanceScore
 from core.memory.vector_store import ContextMetadata, SearchResult
-
 
 # ---------------------------------------------------------------------------
 # Helpers
