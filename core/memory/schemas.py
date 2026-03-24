@@ -10,6 +10,17 @@ from pydantic import BaseModel
 from core.triggers.models import ActionPayload  # noqa: TC001
 
 
+class SignificanceScore(BaseModel):
+    """Multi-dimensional significance score inspired by amygdala function."""
+
+    overall: float
+    safety: float = 0.0
+    novelty: float = 0.0
+    personal: float = 0.0
+    emotional: float = 0.0
+    source: Literal["heuristic", "librarian"] = "heuristic"
+
+
 class EpisodicEntry(BaseModel):
     """Episodic memory entry.
 
@@ -22,7 +33,21 @@ class EpisodicEntry(BaseModel):
     source: str  # "conversation", "system1_action", "trigger", "integration"
     summary: str
     entities: list[str]
-    valence: Literal["positive", "negative", "neutral"]
+    significance: SignificanceScore
+    semantic_key: str = ""
+    retrieval_count: int = 0
+    last_retrieved: datetime | None = None
+    compressed_into: str | None = None
+    # Deprecated: kept for backward compat with EpisodicStore until Task 17
+    valence: Literal["positive", "negative", "neutral"] = "neutral"
+
+
+class EpisodicResult(BaseModel):
+    """Result from episodic memory recall."""
+
+    entry: EpisodicEntry
+    score: float
+    source_store: Literal["hot", "cold"]
 
 
 class RoutineStep(BaseModel):
@@ -43,3 +68,4 @@ class RoutineSpec(BaseModel):
     state: Literal["candidate", "active", "dormant", "archived"]
     last_hit: datetime | None = None
     consecutive_misses: int = 0
+    last_suggested: datetime | None = None

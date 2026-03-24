@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from core.memory.schemas import EpisodicEntry
+from core.memory.schemas import EpisodicEntry, SignificanceScore
 from shared.streams import SCRATCHPAD_QUEUE
 
 if TYPE_CHECKING:
@@ -152,6 +152,7 @@ class Librarian:
                     source=source,
                     summary=summary,
                     entities=entities,
+                    significance=SignificanceScore(overall=0.5),
                     valence="neutral",
                 )
             )

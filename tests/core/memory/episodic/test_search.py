@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from core.memory.episodic.search import EpisodicSearch
-from core.memory.schemas import EpisodicEntry
+from core.memory.schemas import EpisodicEntry, SignificanceScore
 
 
 def _make_entry(
@@ -20,6 +20,7 @@ def _make_entry(
         source="conversation",
         summary=summary,
         entities=entities or [],
+        significance=SignificanceScore(overall=0.5),
         valence="neutral",
     )
 

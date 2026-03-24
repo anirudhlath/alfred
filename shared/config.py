@@ -42,6 +42,35 @@ class AlfredConfig:
     episodic_hot_days: int = 7
     episodic_compress_days: int = 90
 
+    # Memory: Embedding
+    embedding_model: str = "google/embeddinggemma-300m"
+    embedding_dim: int = 768
+
+    # Memory: Significance weights
+    significance_weight_safety: float = 0.35
+    significance_weight_novelty: float = 0.25
+    significance_weight_personal: float = 0.25
+    significance_weight_emotional: float = 0.15
+
+    # Memory: Decay
+    decay_migration_threshold: float = 1.0
+
+    # Memory: Involuntary recall
+    involuntary_recall_limit: int = 10
+    involuntary_recall_threshold: float = 0.5
+
+    # Memory: Pattern detection
+    pattern_min_occurrences: int = 3
+    pattern_min_days: int = 7
+    pattern_confidence_threshold: float = 0.6
+    routine_decay_per_cycle: float = 0.05
+    routine_archive_threshold: float = 0.3
+    routine_suggestion_cooldown_hours: int = 24
+
+    # Memory: Semantic conflict resolution
+    conflict_min_observations: int = 5
+    conflict_min_days: int = 14
+
     # Phase 3: Voice
     voice_confidence_threshold: float = 0.85
 
@@ -81,6 +110,12 @@ class AlfredConfig:
             # Phase 3: Memory
             episodic_hot_days=int(os.getenv("EPISODIC_HOT_DAYS", "7")),
             episodic_compress_days=int(os.getenv("EPISODIC_COMPRESS_DAYS", "90")),
+            # Memory: Embedding (env-configurable)
+            embedding_model=os.getenv("EMBEDDING_MODEL", "google/embeddinggemma-300m"),
+            embedding_dim=int(os.getenv("EMBEDDING_DIM", "768")),
+            # Memory: Involuntary recall (env-configurable)
+            involuntary_recall_limit=int(os.getenv("INVOLUNTARY_RECALL_LIMIT", "10")),
+            involuntary_recall_threshold=float(os.getenv("INVOLUNTARY_RECALL_THRESHOLD", "0.5")),
             # Phase 3: Voice
             voice_confidence_threshold=float(os.getenv("VOICE_CONFIDENCE_THRESHOLD", "0.85")),
             # Phase 3: Signal

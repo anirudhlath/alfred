@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from core.memory.episodic.store import EpisodicStore
-from core.memory.schemas import EpisodicEntry
+from core.memory.schemas import EpisodicEntry, SignificanceScore
 
 
 @pytest.fixture
@@ -33,6 +33,7 @@ async def test_write_entry(store: EpisodicStore) -> None:
         source="conversation",
         summary="Sir asked about the weather",
         entities=["weather"],
+        significance=SignificanceScore(overall=0.5),
         valence="neutral",
     )
     await store.write(entry, embedding=b"\x00" * 384 * 4)
@@ -49,6 +50,7 @@ async def test_archive_to_cold(store: EpisodicStore) -> None:
         source="system1_action",
         summary="Lights dimmed at 10pm",
         entities=["light.living"],
+        significance=SignificanceScore(overall=0.5),
         valence="neutral",
     )
     embedding = b"\x00" * 384 * 4
