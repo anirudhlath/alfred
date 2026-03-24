@@ -7,7 +7,15 @@ This directory contains Alfred's brain:
   - `runner.py` — Event loop orchestration
   - `__main__.py` runs two consumer loops: (1) `HOME_STATE_STREAM` for StateChanged, (2) `EVENTS_STREAM` for TriggerFired (group `reflex-trigger-fired`)
   - TriggerFired handling: Path A (notification) fires first, Path B (SLM reasoning) is isolated — SLM failures never block notification delivery
-- `memory/` — Markdown preferences + scratchpad
+- `memory/` — Three-layer memory system (episodic + semantic + procedural)
+  - `embedding_provider.py` — EmbeddingProvider ABC + SentenceTransformer (lazy-loaded, async via to_thread)
+  - `vector_store.py` — VectorStore ABC with dual-embedding search (content + semantic key)
+  - `redis_vector_store.py` — Hot store (RediSearch HNSW), uses CONTEXT_INDEX/CONTEXT_PREFIX
+  - `sqlite_vec_store.py` — Cold store (sqlite-vec), with v1→v2 migration
+  - `significance.py` — SignificanceScorer: 4 dims (safety/novelty/personal/emotional)
+  - `context_index.py` — ContextIndexManager: unified search, owns RedisVectorStore
+  - `episodic/memory.py` — EpisodicMemory: hot+cold unified interface
+  - `routines/patterns.py` — match_trigger_pattern(): shared by engine + librarian
 - `triggers/` — Dynamic trigger engine (proactive actions)
   - `models.py` — BaseTrigger ABC, ActionPayload, TriggerContext
   - `registry.py` — TriggerRegistry (decorator-based type registration)
