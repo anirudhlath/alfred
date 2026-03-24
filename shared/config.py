@@ -39,6 +39,9 @@ class AlfredConfig:
     daily_cost_cap_usd: float = 5.0
 
     # Phase 3: Memory
+    # DEPRECATED: episodic_hot_days and episodic_compress_days are used by
+    # EpisodicStore (which will be removed in Task 17). The new Librarian._apply_decay()
+    # uses significance-based pressure instead of fixed day thresholds.
     episodic_hot_days: int = 7
     episodic_compress_days: int = 90
 
