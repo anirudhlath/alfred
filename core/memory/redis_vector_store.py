@@ -74,7 +74,7 @@ class RedisVectorStore(VectorStore):
                 "last_retrieved",
                 "NUMERIC",
                 "compressed",
-                "TEXT",
+                "TAG",
                 "content",
                 "TEXT",
                 "semantic_key",
@@ -164,7 +164,12 @@ class RedisVectorStore(VectorStore):
             parts: list[str] = []
             for field, value in filters.items():
                 if isinstance(value, str):
-                    parts.append(f"@{field}:{{{value}}}")
+                    if value == "":
+                        # Empty string = exclude entries with non-empty tag
+                        # For TAG fields, -@field:{yes} excludes tagged entries
+                        parts.append(f"(-@{field}:{{yes}})")
+                    else:
+                        parts.append(f"@{field}:{{{value}}}")
                 else:
                     parts.append(f"@{field}:[{value} {value}]")
             filter_expr = " ".join(parts)
