@@ -57,11 +57,8 @@ class TestMemoryToolsManifest:
 class TestDispatchMemoryTool:
     @pytest.mark.asyncio
     async def test_recall_memories_basic(self) -> None:
-        embedder = AsyncMock()
-        embedder.embed.return_value = [0.1, 0.2]
-
         context_index = AsyncMock()
-        context_index.search.return_value = [
+        context_index.search_text.return_value = [
             _make_search_result("Sir prefers dim lighting", type_="semantic", score=0.9),
         ]
 
@@ -72,7 +69,6 @@ class TestDispatchMemoryTool:
             {"query": "lighting preferences"},
             context_index=context_index,
             context_reader=context_reader,
-            embedder=embedder,
         )
 
         result = json.loads(result_json)
@@ -81,16 +77,12 @@ class TestDispatchMemoryTool:
         assert result["memories"][0]["type"] == "semantic"
         assert result["memories"][0]["score"] == 0.9
 
-        embedder.embed.assert_called_once_with("lighting preferences")
-        context_index.search.assert_called_once()
+        context_index.search_text.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_recall_memories_filter_by_type(self) -> None:
-        embedder = AsyncMock()
-        embedder.embed.return_value = [0.1]
-
         context_index = AsyncMock()
-        context_index.search.return_value = [
+        context_index.search_text.return_value = [
             _make_search_result("episodic entry", type_="episodic"),
             _make_search_result("semantic entry", type_="semantic"),
         ]
@@ -100,7 +92,6 @@ class TestDispatchMemoryTool:
             {"query": "test", "types": ["episodic"]},
             context_index=context_index,
             context_reader=AsyncMock(),
-            embedder=embedder,
         )
 
         result = json.loads(result_json)
@@ -109,9 +100,6 @@ class TestDispatchMemoryTool:
 
     @pytest.mark.asyncio
     async def test_recall_memories_filter_by_time(self) -> None:
-        embedder = AsyncMock()
-        embedder.embed.return_value = [0.1]
-
         import time
 
         now = time.time()
@@ -119,7 +107,7 @@ class TestDispatchMemoryTool:
         recent_ts = now - 86400 * 1  # 1 day ago
 
         context_index = AsyncMock()
-        context_index.search.return_value = [
+        context_index.search_text.return_value = [
             _make_search_result("old entry", timestamp=old_ts),
             _make_search_result("recent entry", timestamp=recent_ts),
         ]
@@ -129,7 +117,6 @@ class TestDispatchMemoryTool:
             {"query": "test", "since_days_ago": 7},
             context_index=context_index,
             context_reader=AsyncMock(),
-            embedder=embedder,
         )
 
         result = json.loads(result_json)
@@ -148,7 +135,6 @@ class TestDispatchMemoryTool:
             {"entities": ["light.*"]},
             context_index=AsyncMock(),
             context_reader=context_reader,
-            embedder=AsyncMock(),
         )
 
         result = json.loads(result_json)
@@ -163,7 +149,6 @@ class TestDispatchMemoryTool:
             {},
             context_index=AsyncMock(),
             context_reader=AsyncMock(),
-            embedder=AsyncMock(),
         )
 
         result = json.loads(result_json)

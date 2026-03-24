@@ -150,6 +150,4 @@ class EpisodicMemory:
         Only deletes from hot. The caller must ensure the entry already exists
         in cold storage before calling this method.
         """
-        if not await self._hot.exists(entry_id):
-            return
         await self._hot.delete(entry_id)

@@ -439,27 +439,13 @@ async def test_recall_empty_entities_string_returns_empty_list(
 
 
 @pytest.mark.asyncio
-async def test_migrate_to_cold_deletes_from_hot_when_exists(
+async def test_migrate_to_cold_deletes_from_hot(
     episodic_memory: EpisodicMemory, mock_hot_store: AsyncMock
 ) -> None:
-    """migrate_to_cold() deletes the entry from hot when it exists."""
-    mock_hot_store.exists.return_value = True
-
+    """migrate_to_cold() always calls delete on the hot store (no-op if missing)."""
     await episodic_memory.migrate_to_cold("entry-1")
 
     mock_hot_store.delete.assert_awaited_once_with("entry-1")
-
-
-@pytest.mark.asyncio
-async def test_migrate_to_cold_noop_when_not_in_hot(
-    episodic_memory: EpisodicMemory, mock_hot_store: AsyncMock
-) -> None:
-    """migrate_to_cold() does nothing when entry is not in hot store."""
-    mock_hot_store.exists.return_value = False
-
-    await episodic_memory.migrate_to_cold("missing-id")
-
-    mock_hot_store.delete.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -469,32 +455,7 @@ async def test_migrate_to_cold_does_not_touch_cold_store(
     mock_cold_store: AsyncMock,
 ) -> None:
     """migrate_to_cold() never calls cold_store.add() or cold_store.delete()."""
-    mock_hot_store.exists.return_value = True
-
     await episodic_memory.migrate_to_cold("entry-1")
 
     mock_cold_store.add.assert_not_awaited()
     mock_cold_store.delete.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_migrate_to_cold_checks_existence_before_delete(
-    episodic_memory: EpisodicMemory, mock_hot_store: AsyncMock
-) -> None:
-    """migrate_to_cold() calls exists() before delete()."""
-    mock_hot_store.exists.return_value = True
-    call_order: list[str] = []
-
-    async def track_exists(id: str) -> bool:  # noqa: A002
-        call_order.append("exists")
-        return True
-
-    async def track_delete(id: str) -> None:  # noqa: A002
-        call_order.append("delete")
-
-    mock_hot_store.exists.side_effect = track_exists
-    mock_hot_store.delete.side_effect = track_delete
-
-    await episodic_memory.migrate_to_cold("entry-1")
-
-    assert call_order == ["exists", "delete"]

@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from core.memory.context_index import ContextIndexManager
-    from core.memory.embedding_provider import EmbeddingProvider
     from core.reflex.context_reader import ContextReader
 
 MEMORY_TOOL_PREFIX = "memory_"
@@ -71,11 +70,10 @@ async def dispatch_memory_tool(
     params: dict[str, Any],
     context_index: ContextIndexManager,
     context_reader: ContextReader,
-    embedder: EmbeddingProvider,
 ) -> str:
     """Dispatch a memory tool call. Returns JSON string result."""
     if tool_name == "memory_recall_memories":
-        return await _recall_memories(params, context_index, embedder)
+        return await _recall_memories(params, context_index)
     elif tool_name == "memory_get_live_state":
         return await _get_live_state(params, context_reader)
     else:
@@ -85,14 +83,12 @@ async def dispatch_memory_tool(
 async def _recall_memories(
     params: dict[str, Any],
     context_index: ContextIndexManager,
-    embedder: EmbeddingProvider,
 ) -> str:
     query: str = params.get("query", "")
     limit: int = params.get("limit", 10)
 
-    query_emb = await embedder.embed(query)
-    results = await context_index.search(
-        query_embedding=query_emb,
+    results = await context_index.search_text(
+        query=query,
         limit=limit,
         include_compressed=True,  # Deliberate recall includes compressed
     )
