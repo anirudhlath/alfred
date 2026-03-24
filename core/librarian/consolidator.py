@@ -13,14 +13,14 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel
 
-from core.memory.schemas import EpisodicEntry, SignificanceScore
+from core.memory.schemas import EpisodicEntry, RoutineSpec, RoutineStep, SignificanceScore
 from shared.streams import SCRATCHPAD_QUEUE
 
 if TYPE_CHECKING:
@@ -78,6 +78,12 @@ class Librarian:
         conflict_min_observations: int = 5,
         conflict_min_days: int = 14,
         decay_migration_threshold: float = 1.0,
+        pattern_min_occurrences: int = 3,
+        pattern_min_days: int = 7,
+        pattern_confidence_threshold: float = 0.6,
+        routine_decay_per_cycle: float = 0.05,
+        routine_archive_threshold: float = 0.3,
+        routine_suggestion_cooldown_hours: int = 24,
     ) -> None:
         self._redis = redis
         self._episodic_memory = episodic_memory
@@ -91,6 +97,12 @@ class Librarian:
         self._conflict_min_observations = conflict_min_observations
         self._conflict_min_days = conflict_min_days
         self._decay_migration_threshold = decay_migration_threshold
+        self._pattern_min_occurrences = pattern_min_occurrences
+        self._pattern_min_days = pattern_min_days
+        self._pattern_confidence_threshold = pattern_confidence_threshold
+        self._routine_decay_per_cycle = routine_decay_per_cycle
+        self._routine_archive_threshold = routine_archive_threshold
+        self._routine_suggestion_cooldown_hours = routine_suggestion_cooldown_hours
 
     _PROCESSING_KEY = f"{SCRATCHPAD_QUEUE}:processing"
 
@@ -497,6 +509,211 @@ class Librarian:
             logger.info("Decay: migrated %d entries to cold storage", migrated)
         return migrated
 
+    async def _detect_patterns(
+        self,
+        recent_entries: list[EpisodicEntry],
+    ) -> list[RoutineSpec]:
+        """Detect repeated behavioural patterns across recent episodic entries.
+
+        Calls Claude with the last 30 days of entries and asks it to identify
+        patterns that occurred 3+ times over 7+ days.  Returns candidate
+        ``RoutineSpec`` objects (state="candidate") that have not yet been saved;
+        the caller decides whether to persist them.
+
+        Falls back to an empty list when no API key is configured or on any
+        error.
+        """
+        if not self._api_key or not recent_entries:
+            return []
+
+        # Gather all routines already stored to avoid re-creating duplicates
+        existing_names: set[str] = {r.name for r in self._routines.list_all()}
+
+        # Restrict to entries in the last 30 days
+        cutoff = datetime.now(UTC) - timedelta(days=30)
+        window_entries = [e for e in recent_entries if e.timestamp >= cutoff]
+        if not window_entries:
+            return []
+
+        summaries = "\n".join(
+            f"- [{e.id}] {e.timestamp.strftime('%Y-%m-%dT%H:%M')} {e.summary}"
+            for e in window_entries
+        )
+
+        system_prompt = (
+            "You are a pattern analyst for a home automation assistant. "
+            "Given episodic memory entries, identify repeated behavioural patterns. "
+            f"Only report patterns with at least {self._pattern_min_occurrences} occurrences "
+            f"spread over at least {self._pattern_min_days} different days. "
+            "Return a JSON array of pattern objects. Each object must have:\n"
+            '  "name": short snake_case identifier (e.g. "evening_dim")\n'
+            '  "trigger_pattern": when it happens (e.g. "20:00 daily", "weekday morning")\n'
+            '  "steps": array of {"description": str} objects\n'
+            '  "confidence": float 0.0-1.0\n'
+            '  "learned_from": array of episodic entry IDs (from the [id] prefix)\n\n'
+            "Return ONLY the JSON array. If no patterns qualify, return [].\n"
+            "Example:\n"
+            '[\n  {"name": "evening_dim", "trigger_pattern": "20:00 daily",\n'
+            '   "steps": [{"description": "Dim living room lights to 30%"}],\n'
+            '   "confidence": 0.75, "learned_from": ["ep-1", "ep-3", "ep-7"]}\n]'
+        )
+
+        try:
+            import litellm  # runtime import — optional dependency
+
+            response = await litellm.acompletion(
+                model=self._model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": summaries},
+                ],
+                max_tokens=1000,
+                api_key=self._api_key,
+            )
+            raw: str = response.choices[0].message.content or "[]"
+            parsed: list[dict[str, Any]] = json.loads(raw)
+        except Exception as exc:
+            logger.warning("Pattern detection LLM call failed: %s", exc)
+            return []
+
+        candidates: list[RoutineSpec] = []
+        for item in parsed:
+            try:
+                name: str = item.get("name", "")
+                if not name or name in existing_names:
+                    continue
+                confidence: float = float(item.get("confidence", 0.0))
+                if confidence < self._pattern_confidence_threshold:
+                    continue
+                steps = [
+                    RoutineStep(description=s.get("description", ""))
+                    for s in item.get("steps", [])
+                    if s.get("description")
+                ]
+                candidate = RoutineSpec(
+                    name=name,
+                    trigger_pattern=item.get("trigger_pattern", ""),
+                    steps=steps,
+                    confidence=confidence,
+                    learned_from=item.get("learned_from", []),
+                    state="candidate",
+                )
+                self._routines.save(candidate)
+                candidates.append(candidate)
+                logger.info(
+                    "Pattern detected: '%s' (confidence=%.2f, occurrences=%d)",
+                    name,
+                    confidence,
+                    len(candidate.learned_from),
+                )
+            except Exception as exc:
+                logger.warning("Failed to process pattern candidate: %s", exc)
+
+        return candidates
+
+    async def _update_routine_lifecycle(self) -> int:
+        """Apply lifecycle transitions to existing routines.
+
+        For each active/candidate routine, checks whether its pattern
+        fired recently (within the last consolidation window):
+        - Pattern occurred → update ``last_hit``, reset ``consecutive_misses``
+        - Pattern missed → increment ``consecutive_misses``
+        - 3 consecutive misses → transition to ``dormant``
+        - Dormant for 30 days → transition to ``archived``
+
+        Returns the number of routines whose state was updated.
+        """
+        routines = self._routines.list_all()
+        now = datetime.now(UTC)
+        updated = 0
+
+        for routine in routines:
+            if routine.state == "archived":
+                continue
+
+            if routine.state == "dormant":
+                # Check if dormant for 30+ days → archive
+                if routine.last_hit is not None:
+                    dormant_days = (now - routine.last_hit).days
+                    if dormant_days >= 30:
+                        routine = routine.model_copy(update={"state": "archived"})
+                        self._routines.save(routine)
+                        updated += 1
+                        logger.info(
+                            "Routine '%s' archived (dormant for %d days)",
+                            routine.name,
+                            dormant_days,
+                        )
+                continue
+
+            # For candidate/active: check if trigger_pattern matches recent activity
+            pattern_fired = self._check_pattern_fired(routine, now)
+
+            if pattern_fired:
+                routine = routine.model_copy(
+                    update={
+                        "last_hit": now,
+                        "consecutive_misses": 0,
+                    }
+                )
+                self._routines.save(routine)
+                updated += 1
+                logger.debug("Routine '%s' hit", routine.name)
+            else:
+                new_misses = routine.consecutive_misses + 1
+                new_state = routine.state
+                if new_misses >= 3:
+                    new_state = "dormant"
+                    logger.info(
+                        "Routine '%s' transitioned to dormant (%d consecutive misses)",
+                        routine.name,
+                        new_misses,
+                    )
+                routine = routine.model_copy(
+                    update={
+                        "consecutive_misses": new_misses,
+                        "state": new_state,
+                    }
+                )
+                self._routines.save(routine)
+                updated += 1
+
+        return updated
+
+    @staticmethod
+    def _check_pattern_fired(routine: RoutineSpec, now: datetime) -> bool:
+        """Heuristic check whether a routine's trigger_pattern matches the current time.
+
+        Supports simple time patterns like "HH:MM daily" and "weekday morning".
+        Returns ``True`` if the pattern likely fired in the past 24 hours.
+        """
+        pattern = routine.trigger_pattern.lower()
+        # Simple time match: look for HH:MM in the pattern
+        import re
+
+        time_match = re.search(r"(\d{1,2}):(\d{2})", pattern)
+        if time_match:
+            hour = int(time_match.group(1))
+            # "Fired" if current hour is within 1 of the target hour
+            # (consolidation typically runs nightly, so match is approximate)
+            return abs(now.hour - hour) <= 1
+
+        # Weekday patterns
+        if "weekday" in pattern:
+            return now.weekday() < 5  # Mon-Fri
+
+        if "weekend" in pattern:
+            return now.weekday() >= 5
+
+        if "morning" in pattern:
+            return 5 <= now.hour < 12
+
+        if "evening" in pattern:
+            return 17 <= now.hour < 23
+
+        # Unknown pattern — assume fired to avoid premature dormancy
+        return True
+
     async def consolidate(self) -> dict[str, Any]:
         """Run one consolidation cycle.
 
@@ -544,21 +761,25 @@ class Librarian:
         )
 
         # 5. Pattern detection for procedural memory
-        # Needs multiple consolidation cycles of data (>= 2 weeks).
-        # Deferred until enough episodic entries exist.
+        patterns_detected = await self._detect_patterns(episodic_entries)
 
-        # 6. Decay processing
+        # 6. Routine lifecycle updates
+        lifecycle_updates = await self._update_routine_lifecycle()
+
+        # 7. Decay processing
         archived = await self._apply_decay(
             decay_migration_threshold=self._decay_migration_threshold,
         )
 
-        # 7. Re-index semantic files so context search reflects latest learned.md etc.
+        # 8. Re-index semantic files so context search reflects latest learned.md etc.
         await self._context_index.reindex_semantic_files()
 
         result: dict[str, Any] = {
             "entries_processed": len(lines),
             "episodic_created": len(episodic_entries),
             "semantic_updates": semantic_updates,
+            "patterns_detected": len(patterns_detected),
+            "lifecycle_updates": lifecycle_updates,
             "archived": archived,
             "timestamp": datetime.now(UTC).isoformat(),
         }

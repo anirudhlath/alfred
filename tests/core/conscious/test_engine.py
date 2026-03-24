@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 from bus.schemas.events import AlfredResponse, UserRequest
 from core.conscious.engine import MAX_ITERATIONS, ConsciousEngine
 from core.identity.schemas import IdentityResult
+from core.memory.schemas import RoutineSpec
 from core.reflex.tool_registry import ToolInfo
 
 
@@ -213,3 +215,145 @@ def test_tool_name_sanitization(mock_deps: dict[str, AsyncMock | MagicMock]) -> 
         ),
     ]
     assert engine._unsanitize_tool_name("lighting_dim_lights", tools) == "lighting.dim_lights"
+
+
+# ---------------------------------------------------------------------------
+# Routine suggestion tests
+# ---------------------------------------------------------------------------
+
+
+def _make_routine(
+    name: str = "evening_dim",
+    trigger_pattern: str = "20:00 daily",
+    state: str = "candidate",
+    last_suggested: _dt.datetime | None = None,
+) -> RoutineSpec:
+    return RoutineSpec(
+        name=name,
+        trigger_pattern=trigger_pattern,
+        steps=[],
+        confidence=0.8,
+        learned_from=["ep-1"],
+        state=state,  # type: ignore[arg-type]
+        last_suggested=last_suggested,
+    )
+
+
+def test_build_routine_hint_returns_empty_without_routines(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """When routine_store is None, _build_routine_hint returns empty string."""
+    engine = ConsciousEngine(**mock_deps)
+    # routine_store not set → _routines is None
+    now = _dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=_dt.UTC)
+    result = engine._build_routine_hint(now)
+    assert result == ""
+
+
+def test_build_routine_hint_matches_time_pattern(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """Candidate routine with matching time pattern should produce a hint."""
+    routine_store = MagicMock()
+    routine_store.list_by_state.return_value = [_make_routine(trigger_pattern="20:00 daily")]
+
+    engine = ConsciousEngine(**mock_deps, routine_store=routine_store)
+    now = _dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=_dt.UTC)
+    result = engine._build_routine_hint(now)
+
+    assert "evening_dim" in result
+    assert "Routine Suggestion" in result
+    routine_store.save.assert_called_once()
+
+
+def test_build_routine_hint_skips_within_cooldown(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """Routine suggested 2 hours ago (within 24h cooldown) should be skipped."""
+    now = _dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=_dt.UTC)
+    recent_suggestion = now - _dt.timedelta(hours=2)
+    routine_store = MagicMock()
+    routine_store.list_by_state.return_value = [
+        _make_routine(trigger_pattern="20:00 daily", last_suggested=recent_suggestion)
+    ]
+
+    engine = ConsciousEngine(**mock_deps, routine_store=routine_store)
+    result = engine._build_routine_hint(now)
+
+    assert result == ""
+    routine_store.save.assert_not_called()
+
+
+def test_build_routine_hint_suggests_after_cooldown(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """Routine suggested 25 hours ago (outside cooldown) should be suggested again."""
+    now = _dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=_dt.UTC)
+    old_suggestion = now - _dt.timedelta(hours=25)
+    routine_store = MagicMock()
+    routine_store.list_by_state.return_value = [
+        _make_routine(trigger_pattern="20:00 daily", last_suggested=old_suggestion)
+    ]
+
+    engine = ConsciousEngine(**mock_deps, routine_store=routine_store)
+    result = engine._build_routine_hint(now)
+
+    assert "evening_dim" in result
+    routine_store.save.assert_called_once()
+
+
+def test_build_routine_hint_no_match_for_wrong_time(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """Evening pattern should not match when it is morning."""
+    routine_store = MagicMock()
+    routine_store.list_by_state.return_value = [_make_routine(trigger_pattern="evening")]
+
+    engine = ConsciousEngine(**mock_deps, routine_store=routine_store)
+    # 8am → not evening
+    now = _dt.datetime(2026, 3, 24, 8, 0, 0, tzinfo=_dt.UTC)
+    result = engine._build_routine_hint(now)
+
+    assert result == ""
+
+
+def test_build_routine_hint_morning_pattern_matches_morning(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """Morning pattern should match when it is morning."""
+    routine_store = MagicMock()
+    routine_store.list_by_state.return_value = [_make_routine(trigger_pattern="weekday morning")]
+
+    engine = ConsciousEngine(**mock_deps, routine_store=routine_store)
+    # 9am Monday
+    now = _dt.datetime(2026, 3, 23, 9, 0, 0, tzinfo=_dt.UTC)  # Monday
+    result = engine._build_routine_hint(now)
+
+    assert "evening_dim" in result  # routine name
+
+
+@pytest.mark.asyncio
+async def test_process_request_injects_routine_hint(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """process_request should append routine hint to system prompt when a candidate matches."""
+    routine_store = MagicMock()
+    routine_store.list_by_state.return_value = [_make_routine(trigger_pattern="20:00 daily")]
+
+    engine = ConsciousEngine(**mock_deps, routine_store=routine_store)
+
+    with patch.object(engine, "_call_llm", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = ("Good evening, sir.", [], 100, 50)
+
+        # 8pm → matches "20:00 daily"
+        fixed_now = _dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=_dt.UTC)
+        with patch("core.conscious.engine.datetime") as mock_dt:
+            mock_dt.now.return_value = fixed_now
+
+            await engine.process_request(_make_request())
+
+    # The system_prompt passed to _call_llm should contain the routine hint
+    call_kwargs = mock_llm.call_args
+    system_prompt_arg = call_kwargs[0][0]  # first positional arg
+    assert "Routine Suggestion" in system_prompt_arg
+    assert "evening_dim" in system_prompt_arg
