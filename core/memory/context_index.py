@@ -114,6 +114,22 @@ class ContextIndexManager:
             metadata=metadata,
         )
 
+    async def search_text(
+        self,
+        query: str,
+        limit: int = 10,
+        min_similarity: float = 0.0,
+        include_compressed: bool = False,
+    ) -> list[SearchResult]:
+        """Search the unified context index by text query (embeds internally)."""
+        query_embedding = await self._embedder.embed(query)
+        return await self.search(
+            query_embedding=query_embedding,
+            limit=limit,
+            min_similarity=min_similarity,
+            include_compressed=include_compressed,
+        )
+
     async def search(
         self,
         query_embedding: list[float],

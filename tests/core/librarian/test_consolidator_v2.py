@@ -607,14 +607,12 @@ async def test_apply_decay_migrates_old_low_significance_entries() -> None:
     old_ts = datetime.datetime.now(datetime.UTC).timestamp() - (30 * 86400)
     old_entry = _make_search_result("old-entry-1", old_ts, significance=0.1, retrieval_count=0)
 
-    context_index._embedder = AsyncMock()
-    context_index._embedder.embed = AsyncMock(return_value=[0.1] * 10)
-    context_index.search = AsyncMock(return_value=[old_entry])
+    context_index.search_text = AsyncMock(return_value=[old_entry])
 
     migrated = await librarian._apply_decay(decay_migration_threshold=1.0)
 
     assert migrated == 1
-    episodic_memory.migrate_to_cold.assert_awaited_once_with("old-entry-1")
+    episodic_memory.copy_to_cold_and_remove.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -633,14 +631,12 @@ async def test_apply_decay_spares_high_significance_entries() -> None:
         "important-1", old_ts, significance=0.95, retrieval_count=0
     )
 
-    context_index._embedder = AsyncMock()
-    context_index._embedder.embed = AsyncMock(return_value=[0.1] * 10)
-    context_index.search = AsyncMock(return_value=[important_entry])
+    context_index.search_text = AsyncMock(return_value=[important_entry])
 
     migrated = await librarian._apply_decay(decay_migration_threshold=5.0)
 
     assert migrated == 0
-    episodic_memory.migrate_to_cold.assert_not_awaited()
+    episodic_memory.copy_to_cold_and_remove.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -657,14 +653,12 @@ async def test_apply_decay_spares_frequently_retrieved_entries() -> None:
     old_ts = datetime.datetime.now(datetime.UTC).timestamp() - (30 * 86400)
     popular_entry = _make_search_result("popular-1", old_ts, significance=0.1, retrieval_count=100)
 
-    context_index._embedder = AsyncMock()
-    context_index._embedder.embed = AsyncMock(return_value=[0.1] * 10)
-    context_index.search = AsyncMock(return_value=[popular_entry])
+    context_index.search_text = AsyncMock(return_value=[popular_entry])
 
     migrated = await librarian._apply_decay(decay_migration_threshold=1.0)
 
     assert migrated == 0
-    episodic_memory.migrate_to_cold.assert_not_awaited()
+    episodic_memory.copy_to_cold_and_remove.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -684,14 +678,12 @@ async def test_apply_decay_skips_non_episodic_entries() -> None:
         "rout-1", old_ts, significance=0.1, retrieval_count=0, entry_type="routine"
     )
 
-    context_index._embedder = AsyncMock()
-    context_index._embedder.embed = AsyncMock(return_value=[0.1] * 10)
-    context_index.search = AsyncMock(return_value=[semantic_entry, routine_entry])
+    context_index.search_text = AsyncMock(return_value=[semantic_entry, routine_entry])
 
     migrated = await librarian._apply_decay(decay_migration_threshold=1.0)
 
     assert migrated == 0
-    episodic_memory.migrate_to_cold.assert_not_awaited()
+    episodic_memory.copy_to_cold_and_remove.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -703,14 +695,12 @@ async def test_apply_decay_handles_search_failure_gracefully() -> None:
 
     librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
 
-    context_index._embedder = AsyncMock()
-    context_index._embedder.embed = AsyncMock(side_effect=Exception("embed failed"))
-    context_index.search = AsyncMock(side_effect=Exception("search failed"))
+    context_index.search_text = AsyncMock(side_effect=Exception("search failed"))
 
     migrated = await librarian._apply_decay()
 
     assert migrated == 0
-    episodic_memory.migrate_to_cold.assert_not_awaited()
+    episodic_memory.copy_to_cold_and_remove.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -726,12 +716,10 @@ async def test_apply_decay_migration_error_continues_for_other_entries() -> None
     entry1 = _make_search_result("entry-1", old_ts, significance=0.1, retrieval_count=0)
     entry2 = _make_search_result("entry-2", old_ts, significance=0.1, retrieval_count=0)
 
-    context_index._embedder = AsyncMock()
-    context_index._embedder.embed = AsyncMock(return_value=[0.1] * 10)
-    context_index.search = AsyncMock(return_value=[entry1, entry2])
+    context_index.search_text = AsyncMock(return_value=[entry1, entry2])
 
     # First migration fails, second succeeds
-    episodic_memory.migrate_to_cold.side_effect = [Exception("migrate failed"), None]
+    episodic_memory.copy_to_cold_and_remove.side_effect = [Exception("migrate failed"), None]
 
     migrated = await librarian._apply_decay(decay_migration_threshold=1.0)
 
@@ -750,14 +738,12 @@ async def test_apply_decay_skips_zero_timestamp_entries() -> None:
 
     zero_ts_entry = _make_search_result("zero-ts", 0.0, significance=0.0, retrieval_count=0)
 
-    context_index._embedder = AsyncMock()
-    context_index._embedder.embed = AsyncMock(return_value=[0.1] * 10)
-    context_index.search = AsyncMock(return_value=[zero_ts_entry])
+    context_index.search_text = AsyncMock(return_value=[zero_ts_entry])
 
     migrated = await librarian._apply_decay(decay_migration_threshold=1.0)
 
     assert migrated == 0
-    episodic_memory.migrate_to_cold.assert_not_awaited()
+    episodic_memory.copy_to_cold_and_remove.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -1115,9 +1101,7 @@ async def test_consolidate_includes_pattern_detection_in_result() -> None:
     """consolidate() result should include patterns_detected and lifecycle_updates keys."""
     context_index = AsyncMock()
     context_index.reindex_semantic_files = AsyncMock()
-    context_index._embedder = AsyncMock()
-    context_index._embedder.embed = AsyncMock(return_value=[0.1] * 10)
-    context_index.search = AsyncMock(return_value=[])
+    context_index.search_text = AsyncMock(return_value=[])
 
     from unittest.mock import MagicMock
 

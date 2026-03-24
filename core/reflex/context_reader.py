@@ -53,43 +53,18 @@ class ContextReader:
 
     def __init__(self, redis: AioRedis) -> None:
         self._redis = redis
+        self._cached_snapshot: ContextSnapshot | None = None
         self._cached_rendered: str = ""
         self._cache_time: float = 0.0
         self._cache_valid: bool = False
 
-    async def get_rendered_context(self) -> str:
-        """Return rendered Markdown context from all services, re-fetching after TTL."""
+    async def _get_snapshot(self) -> ContextSnapshot:
+        """Fetch and cache the merged ContextSnapshot, respecting TTL."""
         now = time.monotonic()
-        if not self._cache_valid or (now - self._cache_time) > self.CACHE_TTL:
-            merged = ContextSnapshot()
+        if self._cache_valid and (now - self._cache_time) <= self.CACHE_TTL:
+            assert self._cached_snapshot is not None
+            return self._cached_snapshot
 
-            async for key in self._redis.scan_iter(match=f"{CONTEXT_KEY_PREFIX}*", count=100):
-                raw: bytes | None = await self._redis.get(key)
-                if raw is None:
-                    continue
-                try:
-                    snap = ContextSnapshot.model_validate_json(raw)
-                except Exception as exc:
-                    k = key.decode() if isinstance(key, bytes) else key
-                    logger.warning("Failed to parse context from %s: %s", k, exc)
-                    continue
-
-                for domain, entries in snap.controllable.items():
-                    merged.controllable.setdefault(domain, []).extend(entries)
-                for domain, entries in snap.sensors.items():
-                    merged.sensors.setdefault(domain, []).extend(entries)
-
-            self._cached_rendered = render_snapshot(merged)
-            self._cache_time = now
-            self._cache_valid = True
-
-        return self._cached_rendered
-
-    async def get_entity_states(
-        self,
-        patterns: list[str] | None = None,
-    ) -> list[dict[str, Any]]:
-        """Return structured entity states, optionally filtered by glob patterns."""
         merged = ContextSnapshot()
         async for key in self._redis.scan_iter(match=f"{CONTEXT_KEY_PREFIX}*", count=100):
             raw: bytes | None = await self._redis.get(key)
@@ -97,12 +72,33 @@ class ContextReader:
                 continue
             try:
                 snap = ContextSnapshot.model_validate_json(raw)
-            except Exception:
+            except Exception as exc:
+                k = key.decode() if isinstance(key, bytes) else key
+                logger.warning("Failed to parse context from %s: %s", k, exc)
                 continue
+
             for domain, entries in snap.controllable.items():
                 merged.controllable.setdefault(domain, []).extend(entries)
             for domain, entries in snap.sensors.items():
                 merged.sensors.setdefault(domain, []).extend(entries)
+
+        self._cached_snapshot = merged
+        self._cached_rendered = render_snapshot(merged)
+        self._cache_time = now
+        self._cache_valid = True
+        return merged
+
+    async def get_rendered_context(self) -> str:
+        """Return rendered Markdown context from all services, re-fetching after TTL."""
+        await self._get_snapshot()
+        return self._cached_rendered
+
+    async def get_entity_states(
+        self,
+        patterns: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return structured entity states, optionally filtered by glob patterns."""
+        merged = await self._get_snapshot()
 
         all_entities: list[dict[str, Any]] = []
         for _domain, entries in {**merged.controllable, **merged.sensors}.items():

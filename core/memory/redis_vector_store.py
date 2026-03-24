@@ -35,7 +35,7 @@ class RedisVectorStore(VectorStore):
     ``delete`` still work on plain Redis hashes, but ``search`` returns ``[]``.
     """
 
-    def __init__(self, redis: AioRedis, dim: int = 384) -> None:
+    def __init__(self, redis: AioRedis, dim: int = 768) -> None:
         self._redis = redis
         self._dim = dim
         self._index_ready: bool = False
@@ -181,7 +181,7 @@ class RedisVectorStore(VectorStore):
                     "vec",
                     query_bytes,
                     "RETURN",
-                    "7",
+                    "11",
                     "content",
                     "semantic_key",
                     "type",

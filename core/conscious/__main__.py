@@ -28,7 +28,6 @@ from core.conscious.session import SessionManager
 from core.memory.context_index import ContextIndexManager
 from core.memory.embedding_provider import SentenceTransformerProvider
 from core.memory.episodic.memory import EpisodicMemory
-from core.memory.reader import MemoryReader
 from core.memory.redis_vector_store import RedisVectorStore
 from core.memory.routines.store import RoutineStore
 from core.memory.scratchpad_writer import ScratchpadWriter
@@ -150,12 +149,6 @@ async def run(config: AlfredConfig) -> None:
     routine_store = RoutineStore(
         routines_dir=str(memory_dir / "routines"),
     )
-    memory_reader = MemoryReader(
-        preferences_dir=memory_dir / "preferences",
-        profile_dir=memory_dir / "profile",
-        default_proactivity=config.proactivity_level,
-    )
-
     # New memory system (Phase 3): embedding-backed episodic + context index
     embedder = SentenceTransformerProvider(config.embedding_model)
     hot_store = RedisVectorStore(redis=r, dim=config.embedding_dim)
@@ -233,7 +226,6 @@ async def run(config: AlfredConfig) -> None:
             domain_router=router,
             tool_registry=ToolRegistry(r),
             context_reader=ContextReader(redis=r),
-            memory_reader=memory_reader,
             routine_store=routine_store,
             trigger_feature=trigger_feature,
             embedder=embedder,

@@ -461,11 +461,9 @@ class Librarian:
         Returns the number of entries migrated.
         """
         try:
-            # Use a broad embedding search to surface candidate hot entries.
-            # We embed a generic query so we cast a wide net.
-            query_embedding = await self._context_index._embedder.embed(search_query)
-            results = await self._context_index.search(
-                query_embedding=query_embedding,
+            # Use a broad text search to surface candidate hot entries.
+            results = await self._context_index.search_text(
+                query=search_query,
                 limit=search_limit,
                 min_similarity=0.0,
             )
@@ -493,7 +491,8 @@ class Librarian:
 
             if pressure > decay_migration_threshold:
                 try:
-                    await self._episodic_memory.migrate_to_cold(result.id)
+                    # Write to cold store, then remove from hot
+                    await self._episodic_memory.copy_to_cold_and_remove(result)
                     migrated += 1
                     logger.debug(
                         "Decayed entry %s (age=%.1fd, sig=%.2f, pressure=%.2f)",

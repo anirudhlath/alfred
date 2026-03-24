@@ -44,7 +44,6 @@ if TYPE_CHECKING:
     from core.conscious.session import SessionManager
     from core.memory.context_index import ContextIndexManager
     from core.memory.embedding_provider import EmbeddingProvider
-    from core.memory.reader import MemoryReader
     from core.memory.routines.store import RoutineStore
     from core.memory.vector_store import SearchResult
     from core.reflex.context_reader import ContextReader
@@ -81,7 +80,6 @@ class ConsciousDeps:
     domain_router: DomainRouter
     tool_registry: ToolRegistry
     context_reader: ContextReader
-    memory_reader: MemoryReader | None = None
     routine_store: RoutineStore | None = None
     trigger_feature: TriggerFeature | None = None
     embedder: EmbeddingProvider | None = None
@@ -114,7 +112,6 @@ class ConsciousEngine:
         claude_model: str = "openrouter/anthropic/claude-sonnet-4",
         claude_api_key: str = "",
         claude_max_tokens: int = 2048,
-        memory_reader: MemoryReader | None = None,
         routine_store: RoutineStore | None = None,
         trigger_feature: TriggerFeature | None = None,
         embedder: EmbeddingProvider | None = None,
@@ -156,7 +153,6 @@ class ConsciousEngine:
                 domain_router=domain_router,
                 tool_registry=tool_registry,
                 context_reader=context_reader,
-                memory_reader=memory_reader,
                 routine_store=routine_store,
                 trigger_feature=trigger_feature,
                 embedder=embedder,
@@ -180,7 +176,6 @@ class ConsciousEngine:
         self._model = cfg.model
         self._api_key = cfg.api_key
         self._max_tokens = cfg.max_tokens
-        self._memory_reader = d.memory_reader
         self._routines = d.routine_store
         self._triggers = d.trigger_feature
         self._embedder = d.embedder
