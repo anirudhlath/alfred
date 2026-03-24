@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 import pytest
 
 from core.librarian.consolidator import Librarian
-from core.memory.schemas import EpisodicEntry
+from core.memory.schemas import EpisodicEntry, SignificanceScore
 
 _UTC = datetime.UTC
 _TS = datetime.datetime(2026, 3, 19, tzinfo=_UTC)
@@ -79,6 +79,7 @@ async def test_update_semantic_memory_writes_learned_preferences(
             source="reflex",
             summary="User set thermostat to 68F every night at 10pm",
             entities=["thermostat"],
+            significance=SignificanceScore(overall=0.5),
             valence="neutral",
         )
     ]
@@ -113,6 +114,7 @@ async def test_update_semantic_memory_no_op_without_api_key(tmp_path: Path) -> N
             source="reflex",
             summary="some observation",
             entities=[],
+            significance=SignificanceScore(overall=0.5),
             valence="neutral",
         )
     ]
@@ -135,6 +137,7 @@ async def test_update_semantic_memory_returns_zero_on_none(
             source="reflex",
             summary="motion detected in hallway",
             entities=["motion.hallway"],
+            significance=SignificanceScore(overall=0.5),
             valence="neutral",
         )
     ]

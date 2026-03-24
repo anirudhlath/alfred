@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 import aiosqlite
 
-from core.memory.schemas import EpisodicEntry
+from core.memory.schemas import EpisodicEntry, SignificanceScore
 from shared.streams import EPISODIC_STREAM
 
 if TYPE_CHECKING:
@@ -109,6 +109,7 @@ class EpisodicStore:
                     source=row[2],
                     summary=row[3],
                     entities=json.loads(row[4]),
+                    significance=SignificanceScore(overall=0.5),
                     valence=row[5],
                 )
             )
