@@ -100,7 +100,7 @@ module = ["litellm.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["sentence_transformers.*", "torch.*", "numpy.*", "aiosqlite.*"]
+module = ["sentence_transformers.*", "torch.*", "numpy.*", "aiosqlite.*", "sqlite_vec.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
