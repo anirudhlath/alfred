@@ -106,20 +106,24 @@ def _make_request(
 
 
 @pytest.mark.asyncio
-async def test_full_pipeline_sir_gets_preferences(full_engine: ConsciousEngine) -> None:
-    """Sir should see preferences and proactivity level in the system prompt."""
+async def test_full_pipeline_sir_gets_system_prompt(full_engine: ConsciousEngine) -> None:
+    """Sir should see identity, proactivity, and personality in the system prompt.
+
+    Note: preferences, episodic, and procedural memory are no longer statically
+    injected.  They surface via involuntary recall (context index) or deliberate
+    recall (memory tools).
+    """
     request = _make_request(identity_claim="sir", content="Good morning")
     mock_response = _make_llm_response("Good morning, sir.")
 
     with patch("litellm.acompletion", return_value=mock_response) as mock_llm:
         response = await full_engine.process_request(request)
 
-    # Verify the system prompt includes preferences
+    # Verify the system prompt includes core sections
     call_kwargs = dict(mock_llm.call_args.kwargs)
     system_msg: str = call_kwargs["messages"][0]["content"]
-    assert "Wake time: 07:30" in system_msg
-    assert "vegetarian" in system_msg
-    assert "moderate" in system_msg  # proactivity level from profile
+    assert "sir (authenticated)" in system_msg
+    assert "opinionated" in system_msg  # default proactivity level
 
     # Verify scratchpad was written
     full_engine._redis.lpush.assert_called()  # type: ignore[attr-defined]
