@@ -83,7 +83,9 @@ class SqliteVecStore(VectorStore):
             self._vec_ready = True
             logger.debug("sqlite-vec extension loaded (dim=%d)", self._dim)
         except Exception as exc:
-            logger.warning("sqlite-vec unavailable — falling back to full scan: %s", exc)
+            logger.warning(
+                "sqlite-vec unavailable — falling back to full scan: %s", exc, exc_info=True
+            )
             self._vec_ready = False
         self._db = db
         return db

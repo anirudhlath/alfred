@@ -150,22 +150,34 @@ async def run(config: AlfredConfig) -> None:
         routines_dir=str(memory_dir / "routines"),
     )
     # New memory system (Phase 3): embedding-backed episodic + context index
-    embedder = SentenceTransformerProvider(config.embedding_model)
-    hot_store = RedisVectorStore(redis=r, dim=config.embedding_dim)
-    cold_store = SqliteVecStore(
-        db_path=str(memory_dir / "episodic_cold.db"),
-        dim=config.embedding_dim,
-    )
-    episodic_memory = EpisodicMemory(hot=hot_store, cold=cold_store, embedder=embedder)
-    context_index = ContextIndexManager(
-        store=hot_store,
-        embedder=embedder,
-        semantic_dirs=[
-            memory_dir / "preferences",
-            memory_dir / "profile",
-        ],
-    )
-    significance_scorer = SignificanceScorer(redis=r, config=config)
+    embedder = None
+    context_index = None
+    episodic_memory = None
+    significance_scorer = None
+    try:
+        embedder = SentenceTransformerProvider(config.embedding_model)
+        hot_store = RedisVectorStore(redis=r, dim=config.embedding_dim)
+        cold_store = SqliteVecStore(
+            db_path=str(memory_dir / "episodic_cold.db"),
+            dim=config.embedding_dim,
+        )
+        episodic_memory = EpisodicMemory(hot=hot_store, cold=cold_store, embedder=embedder)
+        context_index = ContextIndexManager(
+            store=hot_store,
+            embedder=embedder,
+            semantic_dirs=[
+                memory_dir / "preferences",
+                memory_dir / "profile",
+            ],
+        )
+        significance_scorer = SignificanceScorer(redis=r, config=config)
+        log.info(
+            "Memory system initialized (model={}, dim={})",
+            config.embedding_model,
+            config.embedding_dim,
+        )
+    except Exception as exc:
+        log.error("Memory system failed to initialize — running without memory: {}", exc)
 
     # Import only Signal adapter — WebSocket + Voice are delivered by the channels process
     import core.notifications.adapters.signal
@@ -250,25 +262,32 @@ async def run(config: AlfredConfig) -> None:
 
     # Start Librarian scheduler as a background task to consolidate scratchpad
     # into structured memory on a periodic interval (default: 1hr).
-    from core.librarian.consolidator import Librarian
-    from core.librarian.scheduler import LibrarianScheduler
+    librarian_task: asyncio.Task[None] | None = None
+    if episodic_memory is not None:
+        try:
+            from core.librarian.consolidator import Librarian
+            from core.librarian.scheduler import LibrarianScheduler
 
-    librarian = Librarian(
-        redis=r,
-        episodic_memory=episodic_memory,
-        routine_store=routine_store,
-        significance_scorer=significance_scorer,
-        context_index=context_index,
-        preferences_dir=str(memory_dir / "preferences"),
-        profile_dir=str(memory_dir / "profile"),
-        claude_api_key=config.claude_api_key,
-        claude_model=config.claude_model,
-    )
-    librarian_scheduler = LibrarianScheduler(
-        librarian=librarian,
-        interval_seconds=float(os.getenv("LIBRARIAN_INTERVAL_SECONDS", "3600")),
-    )
-    librarian_task = asyncio.create_task(librarian_scheduler.run())
+            librarian = Librarian(
+                redis=r,
+                episodic_memory=episodic_memory,
+                routine_store=routine_store,
+                significance_scorer=significance_scorer,
+                context_index=context_index,
+                preferences_dir=str(memory_dir / "preferences"),
+                profile_dir=str(memory_dir / "profile"),
+                claude_api_key=config.claude_api_key,
+                claude_model=config.claude_model,
+            )
+            librarian_scheduler = LibrarianScheduler(
+                librarian=librarian,
+                interval_seconds=float(os.getenv("LIBRARIAN_INTERVAL_SECONDS", "3600")),
+            )
+            librarian_task = asyncio.create_task(librarian_scheduler.run())
+        except Exception as exc:
+            log.error("Librarian failed to initialize — running without consolidation: {}", exc)
+    else:
+        log.warning("Librarian skipped — memory system unavailable")
 
     # Start internal actions consumer (handles drain_deferred_notifications from triggers)
     internal_actions_task = asyncio.create_task(_consume_internal_actions(r, log))
@@ -334,7 +353,8 @@ async def run(config: AlfredConfig) -> None:
     finally:
         log.info("Shutting down Conscious Engine...")
         writer_task.cancel()
-        librarian_task.cancel()
+        if librarian_task is not None:
+            librarian_task.cancel()
         internal_actions_task.cancel()
         delivery_task.cancel()
         await r.aclose()
