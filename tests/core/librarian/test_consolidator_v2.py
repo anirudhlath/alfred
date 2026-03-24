@@ -761,6 +761,385 @@ async def test_apply_decay_skips_zero_timestamp_entries() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Part D: Pattern detection tests
+# ---------------------------------------------------------------------------
+
+
+def _make_entry_with_id(
+    entry_id: str,
+    summary: str = "User dimmed lights",
+    days_ago: int = 0,
+) -> EpisodicEntry:
+    ts = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=days_ago)
+    return EpisodicEntry(
+        id=entry_id,
+        timestamp=ts,
+        source="reflex",
+        summary=summary,
+        entities=[],
+        significance=SignificanceScore(overall=0.5),
+    )
+
+
+@pytest.mark.asyncio
+async def test_detect_patterns_returns_empty_without_api_key() -> None:
+    """Without API key, _detect_patterns returns []."""
+    librarian = _make_librarian(api_key="")
+    entries = [_make_entry_with_id(f"ep-{i}") for i in range(5)]
+    result = await librarian._detect_patterns(entries)
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_detect_patterns_returns_empty_when_no_entries() -> None:
+    """With no entries, _detect_patterns returns []."""
+    librarian = _make_librarian()
+    result = await librarian._detect_patterns([])
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_detect_patterns_returns_candidate_routines() -> None:
+    """LLM returning a valid pattern should produce a saved RoutineSpec."""
+    from unittest.mock import MagicMock
+
+    routine_store = MagicMock()
+    routine_store.list_all.return_value = []
+
+    librarian = _make_librarian()
+    librarian._routines = routine_store
+
+    entries = [_make_entry_with_id(f"ep-{i}", days_ago=i * 2) for i in range(5)]
+
+    llm_payload = [
+        {
+            "name": "evening_dim",
+            "trigger_pattern": "20:00 daily",
+            "steps": [{"description": "Dim living room lights to 30%"}],
+            "confidence": 0.8,
+            "learned_from": ["ep-0", "ep-2", "ep-4"],
+        }
+    ]
+    mock_response = AsyncMock()
+    mock_response.choices = [AsyncMock(message=AsyncMock(content=json.dumps(llm_payload)))]
+
+    with patch("litellm.acompletion", return_value=mock_response):
+        result = await librarian._detect_patterns(entries)
+
+    assert len(result) == 1
+    assert result[0].name == "evening_dim"
+    assert result[0].state == "candidate"
+    assert result[0].confidence == 0.8
+    assert result[0].learned_from == ["ep-0", "ep-2", "ep-4"]
+    routine_store.save.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_detect_patterns_skips_below_confidence_threshold() -> None:
+    """Patterns below the confidence threshold are not returned."""
+    from unittest.mock import MagicMock
+
+    routine_store = MagicMock()
+    routine_store.list_all.return_value = []
+
+    librarian = _make_librarian()
+    librarian._routines = routine_store
+    librarian._pattern_confidence_threshold = 0.7
+
+    entries = [_make_entry_with_id(f"ep-{i}") for i in range(5)]
+
+    llm_payload = [
+        {
+            "name": "low_confidence_routine",
+            "trigger_pattern": "10:00 daily",
+            "steps": [{"description": "Some action"}],
+            "confidence": 0.5,  # Below threshold
+            "learned_from": ["ep-0", "ep-1"],
+        }
+    ]
+    mock_response = AsyncMock()
+    mock_response.choices = [AsyncMock(message=AsyncMock(content=json.dumps(llm_payload)))]
+
+    with patch("litellm.acompletion", return_value=mock_response):
+        result = await librarian._detect_patterns(entries)
+
+    assert result == []
+    routine_store.save.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_detect_patterns_skips_existing_routines() -> None:
+    """Patterns whose name already exists in the store are skipped."""
+    from unittest.mock import MagicMock
+
+    from core.memory.schemas import RoutineSpec
+
+    existing_routine = RoutineSpec(
+        name="evening_dim",
+        trigger_pattern="20:00 daily",
+        steps=[],
+        confidence=0.8,
+        learned_from=["ep-0"],
+        state="active",
+    )
+    routine_store = MagicMock()
+    routine_store.list_all.return_value = [existing_routine]
+
+    librarian = _make_librarian()
+    librarian._routines = routine_store
+
+    entries = [_make_entry_with_id(f"ep-{i}") for i in range(5)]
+
+    llm_payload = [
+        {
+            "name": "evening_dim",  # Already exists
+            "trigger_pattern": "20:00 daily",
+            "steps": [{"description": "Dim lights"}],
+            "confidence": 0.85,
+            "learned_from": ["ep-0", "ep-1", "ep-2"],
+        }
+    ]
+    mock_response = AsyncMock()
+    mock_response.choices = [AsyncMock(message=AsyncMock(content=json.dumps(llm_payload)))]
+
+    with patch("litellm.acompletion", return_value=mock_response):
+        result = await librarian._detect_patterns(entries)
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_detect_patterns_handles_llm_failure_gracefully() -> None:
+    """On LLM failure, _detect_patterns returns [] without raising."""
+    librarian = _make_librarian()
+    entries = [_make_entry_with_id(f"ep-{i}") for i in range(5)]
+
+    with patch("litellm.acompletion", side_effect=Exception("LLM down")):
+        result = await librarian._detect_patterns(entries)
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_detect_patterns_filters_old_entries() -> None:
+    """Entries older than 30 days should not be used for pattern detection."""
+    from unittest.mock import MagicMock
+
+    routine_store = MagicMock()
+    routine_store.list_all.return_value = []
+
+    librarian = _make_librarian()
+    librarian._routines = routine_store
+
+    # All entries are 31+ days old
+    old_entries = [_make_entry_with_id(f"ep-{i}", days_ago=31 + i) for i in range(5)]
+
+    # Should return early without calling LLM
+    with patch("litellm.acompletion") as mock_llm:
+        result = await librarian._detect_patterns(old_entries)
+
+    assert result == []
+    mock_llm.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Part E: Routine lifecycle tests
+# ---------------------------------------------------------------------------
+
+
+def _make_librarian_with_routine_store(routines: list[Any]) -> tuple[Any, Any]:
+    """Helper: returns (librarian, routine_store_mock) with given routines."""
+    from unittest.mock import MagicMock
+
+    routine_store = MagicMock()
+    routine_store.list_all.return_value = routines
+
+    librarian = _make_librarian()
+    librarian._routines = routine_store
+    return librarian, routine_store
+
+
+@pytest.mark.asyncio
+async def test_update_routine_lifecycle_hit_resets_misses() -> None:
+    """When a routine's pattern fires, consecutive_misses is reset to 0."""
+    from core.memory.schemas import RoutineSpec
+
+    routine = RoutineSpec(
+        name="morning_routine",
+        trigger_pattern="morning",  # matches daytime hours in test
+        steps=[],
+        confidence=0.8,
+        learned_from=["ep-1"],
+        state="active",
+        consecutive_misses=2,
+        last_hit=None,
+    )
+    librarian, routine_store = _make_librarian_with_routine_store([routine])
+
+    import datetime as dt
+
+    # Patch datetime to be a morning hour (8am)
+    with patch("core.librarian.consolidator.datetime") as mock_dt:
+        morning_now = dt.datetime(2026, 3, 24, 8, 0, 0, tzinfo=dt.UTC)
+        mock_dt.now.return_value = morning_now
+        mock_dt.UTC = dt.UTC
+        mock_dt.timedelta = dt.timedelta
+
+        updated_count = await librarian._update_routine_lifecycle()
+
+    assert updated_count == 1
+    call_args = routine_store.save.call_args[0][0]
+    assert call_args.consecutive_misses == 0
+    assert call_args.last_hit == morning_now
+
+
+@pytest.mark.asyncio
+async def test_update_routine_lifecycle_miss_increments_misses() -> None:
+    """When a routine's pattern doesn't fire, consecutive_misses is incremented."""
+    from core.memory.schemas import RoutineSpec
+
+    # Use an "evening" pattern when we simulate midday
+    routine = RoutineSpec(
+        name="evening_routine",
+        trigger_pattern="evening",  # 17:00-23:00
+        steps=[],
+        confidence=0.8,
+        learned_from=["ep-1"],
+        state="active",
+        consecutive_misses=1,
+    )
+    librarian, routine_store = _make_librarian_with_routine_store([routine])
+
+    import datetime as dt
+
+    with patch("core.librarian.consolidator.datetime") as mock_dt:
+        midday_now = dt.datetime(2026, 3, 24, 12, 0, 0, tzinfo=dt.UTC)
+        mock_dt.now.return_value = midday_now
+        mock_dt.UTC = dt.UTC
+        mock_dt.timedelta = dt.timedelta
+
+        updated_count = await librarian._update_routine_lifecycle()
+
+    assert updated_count == 1
+    call_args = routine_store.save.call_args[0][0]
+    assert call_args.consecutive_misses == 2
+    assert call_args.state == "active"
+
+
+@pytest.mark.asyncio
+async def test_update_routine_lifecycle_three_misses_makes_dormant() -> None:
+    """3 consecutive misses transitions routine to dormant."""
+    from core.memory.schemas import RoutineSpec
+
+    routine = RoutineSpec(
+        name="evening_routine",
+        trigger_pattern="evening",
+        steps=[],
+        confidence=0.8,
+        learned_from=["ep-1"],
+        state="active",
+        consecutive_misses=2,  # One more miss → dormant
+    )
+    librarian, routine_store = _make_librarian_with_routine_store([routine])
+
+    import datetime as dt
+
+    with patch("core.librarian.consolidator.datetime") as mock_dt:
+        midday_now = dt.datetime(2026, 3, 24, 12, 0, 0, tzinfo=dt.UTC)
+        mock_dt.now.return_value = midday_now
+        mock_dt.UTC = dt.UTC
+        mock_dt.timedelta = dt.timedelta
+
+        await librarian._update_routine_lifecycle()
+
+    call_args = routine_store.save.call_args[0][0]
+    assert call_args.consecutive_misses == 3
+    assert call_args.state == "dormant"
+
+
+@pytest.mark.asyncio
+async def test_update_routine_lifecycle_dormant_30days_archived() -> None:
+    """Dormant routine with last_hit 30+ days ago is archived."""
+    import datetime as dt
+
+    from core.memory.schemas import RoutineSpec
+
+    old_hit = dt.datetime(2026, 2, 20, 0, 0, 0, tzinfo=dt.UTC)
+    routine = RoutineSpec(
+        name="old_routine",
+        trigger_pattern="morning",
+        steps=[],
+        confidence=0.8,
+        learned_from=["ep-1"],
+        state="dormant",
+        last_hit=old_hit,
+    )
+    librarian, routine_store = _make_librarian_with_routine_store([routine])
+
+    with patch("core.librarian.consolidator.datetime") as mock_dt:
+        now = dt.datetime(2026, 3, 24, 8, 0, 0, tzinfo=dt.UTC)
+        mock_dt.now.return_value = now
+        mock_dt.UTC = dt.UTC
+        mock_dt.timedelta = dt.timedelta
+
+        updated_count = await librarian._update_routine_lifecycle()
+
+    assert updated_count == 1
+    call_args = routine_store.save.call_args[0][0]
+    assert call_args.state == "archived"
+
+
+@pytest.mark.asyncio
+async def test_update_routine_lifecycle_skips_archived() -> None:
+    """Archived routines are skipped entirely."""
+    from core.memory.schemas import RoutineSpec
+
+    routine = RoutineSpec(
+        name="archived_routine",
+        trigger_pattern="morning",
+        steps=[],
+        confidence=0.8,
+        learned_from=["ep-1"],
+        state="archived",
+    )
+    librarian, routine_store = _make_librarian_with_routine_store([routine])
+
+    updated_count = await librarian._update_routine_lifecycle()
+
+    assert updated_count == 0
+    routine_store.save.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_consolidate_includes_pattern_detection_in_result() -> None:
+    """consolidate() result should include patterns_detected and lifecycle_updates keys."""
+    context_index = AsyncMock()
+    context_index.reindex_semantic_files = AsyncMock()
+    context_index._embedder = AsyncMock()
+    context_index._embedder.embed = AsyncMock(return_value=[0.1] * 10)
+    context_index.search = AsyncMock(return_value=[])
+
+    from unittest.mock import MagicMock
+
+    routine_store = MagicMock()
+    routine_store.list_all.return_value = []
+
+    librarian = _make_librarian(api_key="", context_index=context_index)
+    librarian._routines = routine_store
+
+    lines = [b"2026-03-24T08:00:00Z [reflex] morning lights on -> success"]
+    librarian._redis.lrange.side_effect = [[], lines]
+    librarian._redis.rename.return_value = None
+    librarian._redis.delete.return_value = None
+
+    result = await librarian.consolidate()
+
+    assert "patterns_detected" in result
+    assert "lifecycle_updates" in result
+    assert result["patterns_detected"] == 0
+
+
+# ---------------------------------------------------------------------------
 # Part C: DecayScheduler deprecation test
 # ---------------------------------------------------------------------------
 

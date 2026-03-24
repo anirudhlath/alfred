@@ -468,6 +468,63 @@ class ConsciousEngine:
             await asyncio.gather(*(self._dispatch_tool_call(tc, tools) for tc in tool_calls))
         )
 
+    _ROUTINE_SUGGESTION_COOLDOWN_HOURS: ClassVar[int] = 24
+
+    def _build_routine_hint(self, now: datetime) -> str:
+        """Check candidate routines for time-pattern matches and return a hint string.
+
+        Returns an empty string when no routines match or ``_routines`` is None.
+        Routines that were suggested within the cooldown window are skipped.
+        Matching routines have their ``last_suggested`` timestamp updated.
+        """
+        if self._routines is None:
+            return ""
+
+        import re
+
+        candidates = self._routines.list_by_state("candidate")
+        hints: list[str] = []
+
+        for routine in candidates:
+            # Cooldown check
+            if routine.last_suggested is not None:
+                hours_since = (now - routine.last_suggested).total_seconds() / 3600
+                if hours_since < self._ROUTINE_SUGGESTION_COOLDOWN_HOURS:
+                    continue
+
+            # Simple trigger_pattern matching
+            pattern = routine.trigger_pattern.lower()
+            matched = False
+
+            time_match = re.search(r"(\d{1,2}):(\d{2})", pattern)
+            if time_match:
+                hour = int(time_match.group(1))
+                matched = abs(now.hour - hour) <= 1
+            elif "weekday" in pattern:
+                matched = now.weekday() < 5
+            elif "weekend" in pattern:
+                matched = now.weekday() >= 5
+            elif "morning" in pattern:
+                matched = 5 <= now.hour < 12
+            elif "evening" in pattern:
+                matched = 17 <= now.hour < 23
+
+            if not matched:
+                continue
+
+            # Update last_suggested
+            updated = routine.model_copy(update={"last_suggested": now})
+            self._routines.save(updated)
+
+            hints.append(
+                f"## Routine Suggestion\n"
+                f"A pattern has been detected: {routine.name}. "
+                f"Consider suggesting this routine to sir."
+            )
+            logger.debug("Routine suggestion injected: '%s'", routine.name)
+
+        return "\n\n".join(hints)
+
     @track_latency(category="conscious")
     @traced(name="conscious.process_request")
     async def process_request(self, request: UserRequest) -> AlfredResponse:
@@ -519,6 +576,14 @@ class ConsciousEngine:
             except Exception:
                 logger.warning("Involuntary recall failed", exc_info=True)
 
+        # 3c. Routine suggestion — check candidate routines against current time
+        routine_hint: str = ""
+        if self._routines is not None:
+            try:
+                routine_hint = self._build_routine_hint(now)
+            except Exception:
+                logger.warning("Routine suggestion check failed", exc_info=True)
+
         # 4. Context assembly
         tools = await self._tool_registry.get_tools()
 
@@ -536,6 +601,8 @@ class ConsciousEngine:
             channel=request.channel,
             content_type=request.content_type,
         )
+        if routine_hint:
+            system_prompt = system_prompt + "\n\n" + routine_hint
 
         # 5. Build messages
         messages: list[dict[str, Any]] = list(session["history"])
