@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from abc import ABC, abstractmethod
+
+logger = logging.getLogger(__name__)
 
 
 class EmbeddingProvider(ABC):
@@ -31,7 +34,20 @@ class SentenceTransformerProvider(EmbeddingProvider):
         if self._model is None:
             from sentence_transformers import SentenceTransformer
 
-            self._model = SentenceTransformer(self._model_name)
+            try:
+                self._model = SentenceTransformer(self._model_name)
+                logger.info(
+                    "Loaded embedding model: %s (dim=%d)",
+                    self._model_name,
+                    self.dimension(),
+                )
+            except Exception:
+                logger.error(
+                    "Failed to load embedding model %s",
+                    self._model_name,
+                    exc_info=True,
+                )
+                raise
         return self._model
 
     def embed_sync(self, text: str) -> list[float]:

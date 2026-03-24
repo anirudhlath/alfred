@@ -110,7 +110,9 @@ class RedisVectorStore(VectorStore):
                 self._index_ready = True
                 logger.debug("RediSearch index %s already exists", CONTEXT_INDEX)
             else:
-                logger.warning("RediSearch unavailable — vector search disabled: %s", exc)
+                logger.warning(
+                    "RediSearch unavailable — vector search disabled: %s", exc, exc_info=True
+                )
                 # Leave _index_ready = False so search degrades gracefully
 
     # ------------------------------------------------------------------
@@ -247,7 +249,7 @@ class RedisVectorStore(VectorStore):
                 return int(num_docs)
             return 0
         except Exception as exc:
-            logger.warning("FT.INFO failed: %s", exc)
+            logger.warning("FT.INFO failed: %s", exc, exc_info=True)
             return 0
 
 
