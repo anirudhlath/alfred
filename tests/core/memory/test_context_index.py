@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, call
+from unittest.mock import AsyncMock
 
 import pytest
 
 from core.memory.context_index import ContextIndexManager
 from core.memory.vector_store import ContextMetadata, SearchResult
-
 
 # ---------------------------------------------------------------------------
 # Helpers

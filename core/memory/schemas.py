@@ -38,7 +38,6 @@ class EpisodicEntry(BaseModel):
     retrieval_count: int = 0
     last_retrieved: datetime | None = None
     compressed_into: str | None = None
-    # Deprecated: kept for backward compat with EpisodicStore until Task 17
     valence: Literal["positive", "negative", "neutral"] = "neutral"
 
 

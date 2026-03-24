@@ -178,7 +178,7 @@ class SqliteVecStore(VectorStore):
             )
 
         await db.commit()
-        logger.info("Data migration complete: %d entries embedded", len(rows))  # noqa: WPS441
+        logger.info("Data migration complete: %d entries embedded", len(rows))
 
     async def _get_db(self) -> aiosqlite.Connection:
         """Return initialized database connection, running migrations first."""

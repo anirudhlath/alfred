@@ -1137,22 +1137,3 @@ async def test_consolidate_includes_pattern_detection_in_result() -> None:
     assert "patterns_detected" in result
     assert "lifecycle_updates" in result
     assert result["patterns_detected"] == 0
-
-
-# ---------------------------------------------------------------------------
-# Part C: DecayScheduler deprecation test
-# ---------------------------------------------------------------------------
-
-
-def test_decay_scheduler_emits_deprecation_warning() -> None:
-    """DecayScheduler should emit a DeprecationWarning on instantiation."""
-    import warnings
-
-    from core.memory.episodic.decay import DecayScheduler
-
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        DecayScheduler()
-
-    assert any(issubclass(w.category, DeprecationWarning) for w in caught)
-    assert any("Task 17" in str(w.message) for w in caught)

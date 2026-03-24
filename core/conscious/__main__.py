@@ -28,7 +28,6 @@ from core.conscious.session import SessionManager
 from core.memory.context_index import ContextIndexManager
 from core.memory.embedding_provider import SentenceTransformerProvider
 from core.memory.episodic.memory import EpisodicMemory
-from core.memory.episodic.store import EpisodicStore
 from core.memory.reader import MemoryReader
 from core.memory.redis_vector_store import RedisVectorStore
 from core.memory.routines.store import RoutineStore
@@ -148,11 +147,6 @@ async def run(config: AlfredConfig) -> None:
 
     # Memory components
     memory_dir = Path(__file__).resolve().parent.parent / "memory"
-    episodic_store = EpisodicStore(
-        redis=r,
-        db_path=str(memory_dir / "episodic.db"),
-        hot_days=config.episodic_hot_days,
-    )
     routine_store = RoutineStore(
         routines_dir=str(memory_dir / "routines"),
     )
@@ -240,7 +234,6 @@ async def run(config: AlfredConfig) -> None:
             tool_registry=ToolRegistry(r),
             context_reader=ContextReader(redis=r),
             memory_reader=memory_reader,
-            episodic_store=episodic_store,
             routine_store=routine_store,
             trigger_feature=trigger_feature,
             embedder=embedder,
