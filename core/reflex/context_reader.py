@@ -3,9 +3,10 @@
 
 from __future__ import annotations
 
+import fnmatch
 import logging
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sdk.alfred_sdk.context import ContextSnapshot
 from shared.streams import CONTEXT_KEY_PREFIX
@@ -83,3 +84,43 @@ class ContextReader:
             self._cache_valid = True
 
         return self._cached_rendered
+
+    async def get_entity_states(
+        self,
+        patterns: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return structured entity states, optionally filtered by glob patterns."""
+        merged = ContextSnapshot()
+        async for key in self._redis.scan_iter(match=f"{CONTEXT_KEY_PREFIX}*", count=100):
+            raw: bytes | None = await self._redis.get(key)
+            if raw is None:
+                continue
+            try:
+                snap = ContextSnapshot.model_validate_json(raw)
+            except Exception:
+                continue
+            for domain, entries in snap.controllable.items():
+                merged.controllable.setdefault(domain, []).extend(entries)
+            for domain, entries in snap.sensors.items():
+                merged.sensors.setdefault(domain, []).extend(entries)
+
+        all_entities: list[dict[str, Any]] = []
+        for _domain, entries in {**merged.controllable, **merged.sensors}.items():
+            for e in entries:
+                entity_dict: dict[str, Any] = {
+                    "entity_id": e.entity_id,
+                    "state": e.state,
+                }
+                if e.attributes:
+                    entity_dict["attributes"] = e.attributes
+                all_entities.append(entity_dict)
+
+        if patterns:
+            filtered: list[dict[str, Any]] = []
+            for entity in all_entities:
+                eid: str = entity["entity_id"]
+                if any(fnmatch.fnmatch(eid, p) for p in patterns):
+                    filtered.append(entity)
+            return filtered
+
+        return all_entities

@@ -1,4 +1,12 @@
-"""Context assembler — builds Claude's system prompt dynamically per request."""
+"""Context assembler — builds Claude's system prompt dynamically per request.
+
+Two-stage context model:
+  1. Involuntary recall — semantic search results injected automatically
+  2. Deliberate recall — memory tools available during agentic reasoning
+
+Static memory injection (preferences, episodic, procedural, HA state) has been
+removed.  Context now surfaces via the unified context index or tool calls.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +18,7 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from core.identity.schemas import IdentityResult
+    from core.memory.vector_store import SearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -17,8 +26,8 @@ logger = logging.getLogger(__name__)
 class ContextAssembler:
     """Builds the system prompt for the Conscious Engine.
 
-    Personality is always included. Personal data (preferences, integrations,
-    memory) is excluded for guests.
+    Personality is always included. Personal data (integrations, memory)
+    is excluded for guests.
     """
 
     _DEFAULT_PERSONALITY = Path(__file__).parent / "prompts" / "personality.md"
@@ -38,18 +47,18 @@ class ContextAssembler:
         self,
         identity: IdentityResult,
         tools_section: str,
-        integrations_section: str,
-        preferences_text: str,
-        context_text: str,
-        history: list[dict[str, str]],
+        integrations_section: str = "",
         proactivity_level: str = "opinionated",
-        episodic_text: str = "",
-        procedural_text: str = "",
+        now: datetime | None = None,
+        relevant_context: list[SearchResult] | None = None,
         channel: str = "",
         content_type: str = "text",
-        now: datetime | None = None,
     ) -> str:
-        """Build the complete system prompt for Claude."""
+        """Build the complete system prompt for Claude.
+
+        Parameters that were removed (now handled via involuntary/deliberate recall):
+            preferences_text, context_text, history, episodic_text, procedural_text
+        """
         parts: list[str] = []
 
         # 1. Personality (always)
@@ -87,23 +96,14 @@ class ContextAssembler:
                 "these topics — they are callable just like other tools."
             )
 
-        # 5. Preferences (sir only)
-        if identity.identity == "sir" and preferences_text:
-            parts.append(f"\n## Preferences\n{preferences_text}")
+        # 5. Relevant context from involuntary recall
+        if identity.identity == "sir" and relevant_context:
+            ctx_lines: list[str] = []
+            for r in relevant_context:
+                ctx_lines.append(f"- [{r.metadata.type}] {r.content} (relevance: {r.score:.2f})")
+            parts.append("\n## Relevant Context\n" + "\n".join(ctx_lines))
 
-        # 6. Live context (always — HA state is not personal)
-        if context_text:
-            parts.append(f"\n## Current State\n{context_text}")
-
-        # 7. Episodic memory (sir only)
-        if identity.identity == "sir" and episodic_text:
-            parts.append(f"\n## Recent Events\n{episodic_text}")
-
-        # 8. Procedural memory (sir only)
-        if identity.identity == "sir" and procedural_text:
-            parts.append(f"\n## Known Routines\n{procedural_text}")
-
-        # 9. Proactivity instruction (sir only)
+        # 6. Proactivity instruction (sir only)
         if identity.identity == "sir":
             parts.append(f"\n## Proactivity Level: {proactivity_level}")
 
