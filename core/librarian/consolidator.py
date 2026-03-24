@@ -15,8 +15,10 @@ import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
+
+from pydantic import BaseModel
 
 from core.memory.schemas import EpisodicEntry, SignificanceScore
 from shared.streams import SCRATCHPAD_QUEUE
@@ -29,6 +31,26 @@ if TYPE_CHECKING:
     from shared.types import AioRedis
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Semantic conflict resolution models
+# ---------------------------------------------------------------------------
+
+
+class ConflictItem(BaseModel):
+    """A single item in the conflict resolution LLM response."""
+
+    type: Literal["confirm", "contradict", "new"]
+    # Used by "confirm" and "contradict" (the existing preference line)
+    line: str = ""
+    # Used by "contradict" — the new value
+    old: str = ""
+    new: str = ""
+    # Used by "new" — the content to append
+    content: str = ""
+    explanation: str = ""
+
 
 _MEMORY_DIR = Path(__file__).resolve().parent.parent / "memory"
 _DEFAULT_PREFERENCES_DIR = str(_MEMORY_DIR / "preferences")
@@ -53,6 +75,9 @@ class Librarian:
         profile_dir: str = _DEFAULT_PROFILE_DIR,
         claude_api_key: str = "",
         claude_model: str = "openrouter/anthropic/claude-sonnet-4",
+        conflict_min_observations: int = 5,
+        conflict_min_days: int = 14,
+        decay_migration_threshold: float = 1.0,
     ) -> None:
         self._redis = redis
         self._episodic_memory = episodic_memory
@@ -63,6 +88,9 @@ class Librarian:
         self._profile_dir = Path(profile_dir)
         self._api_key = claude_api_key
         self._model = claude_model
+        self._conflict_min_observations = conflict_min_observations
+        self._conflict_min_days = conflict_min_days
+        self._decay_migration_threshold = decay_migration_threshold
 
     _PROCESSING_KEY = f"{SCRATCHPAD_QUEUE}:processing"
 
@@ -207,8 +235,116 @@ class Librarian:
 
         atomic_write(path, content)
 
-    async def _update_semantic_memory(self, entries: list[EpisodicEntry]) -> int:
-        """Use Claude to detect preference changes and update semantic files.
+    async def _resolve_conflicts(
+        self,
+        existing_content: str,
+        new_summaries: str,
+        conflict_min_observations: int,
+        conflict_min_days: int,
+    ) -> list[ConflictItem]:
+        """Call Claude to compare new observations against existing learned.md.
+
+        Returns a structured list of ConflictItem decisions.
+        Falls back to empty list on any error.
+        """
+        try:
+            import litellm  # runtime import — optional dependency
+
+            system_prompt = (
+                "You are a memory conflict resolver for a home automation assistant. "
+                "Given EXISTING learned preferences and NEW observations, classify each new "
+                "observation against the existing preferences.\n\n"
+                "Return a JSON array where each element has:\n"
+                '  "type": "confirm" | "contradict" | "new"\n'
+                '  For "confirm": "line" (existing preference text), "explanation"\n'
+                '  For "contradict": "old" (existing text), "new" (revised text), "explanation"\n'
+                '  For "new": "content" (the new preference to add), "explanation"\n\n'
+                f"IMPORTANT: Only allow 'contradict' if supported by at least "
+                f"{conflict_min_observations} consistent observations over at least "
+                f"{conflict_min_days} days. Otherwise use 'confirm' or 'new'.\n"
+                "Return ONLY the JSON array.\n"
+                "Example:\n"
+                "[\n"
+                '  {"type": "confirm", "line": "Prefers 72°F", '
+                '"explanation": "Consistent with recent data"},\n'
+                '  {"type": "contradict", "old": "Prefers 72°F", "new": "Prefers 68°F", '
+                '"explanation": "Last 5 observations show 68°F"},\n'
+                '  {"type": "new", "content": "Prefers warm lighting in evening", '
+                '"explanation": "Observed 3 times this week"}\n'
+                "]"
+            )
+            user_content = (
+                f"EXISTING PREFERENCES:\n{existing_content}\n\nNEW OBSERVATIONS:\n{new_summaries}"
+            )
+            response = await litellm.acompletion(
+                model=self._model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                max_tokens=800,
+                api_key=self._api_key,
+            )
+            raw = response.choices[0].message.content or "[]"
+            parsed = json.loads(raw)
+            return [ConflictItem.model_validate(item) for item in parsed]
+        except Exception as exc:
+            logger.warning("Conflict resolution failed: %s", exc)
+            return []
+
+    def _apply_conflict_resolutions(
+        self,
+        existing_content: str,
+        resolutions: list[ConflictItem],
+        today: str,
+    ) -> tuple[str, int]:
+        """Apply conflict resolution decisions to existing content.
+
+        Returns (updated_content, change_count).
+        """
+        changes = 0
+        content = existing_content
+
+        for item in resolutions:
+            if item.type == "confirm":
+                # No change needed — existing preference validated
+                continue
+            elif item.type == "contradict" and item.old and item.new:
+                # Replace old line with revised line + provenance
+                old_line = item.old.strip()
+                new_line = (
+                    f"- {item.new.strip()} "
+                    f"[Revised on {today}: was '{old_line}' — {item.explanation}]"
+                )
+                # Try to find and replace the old line in the content
+                for prefix in ("- ", ""):
+                    candidate = f"{prefix}{old_line}"
+                    if candidate in content:
+                        content = content.replace(candidate, new_line, 1)
+                        changes += 1
+                        break
+                else:
+                    # Old line not found verbatim — append contradiction note
+                    content = content.rstrip() + f"\n{new_line}\n"
+                    changes += 1
+            elif item.type == "new" and item.content:
+                # Append new preference
+                content = content.rstrip() + f"\n- {item.content.strip()}\n"
+                changes += 1
+
+        return content, changes
+
+    async def _update_semantic_memory(
+        self,
+        entries: list[EpisodicEntry],
+        conflict_min_observations: int = 5,
+        conflict_min_days: int = 14,
+    ) -> int:
+        """Conflict-aware semantic memory update.
+
+        Two-pass approach:
+        1. Extract candidate preferences from new observations (same as before).
+        2. Compare against existing learned.md: confirm / contradict / new.
 
         Returns the number of files updated.
         """
@@ -216,10 +352,14 @@ class Librarian:
             return 0
 
         summaries = "\n".join(f"- {e.summary}" for e in entries)
+        learned_path = self._preferences_dir / "learned.md"
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
+
         try:
             import litellm  # runtime import — optional dependency
 
-            response = await litellm.acompletion(
+            # Pass 1: extract candidate preferences from observations
+            extract_response = await litellm.acompletion(
                 model=self._model,
                 messages=[
                     {
@@ -238,43 +378,124 @@ class Librarian:
                 max_tokens=500,
                 api_key=self._api_key,
             )
-            result_text: str = response.choices[0].message.content or ""
+            result_text: str = extract_response.choices[0].message.content or ""
             if "NONE" in result_text or not result_text.strip():
                 return 0
 
-            new_lines = [
-                line.replace("PREFERENCE:", "-").strip()
+            candidate_lines = [
+                line.replace("PREFERENCE:", "").strip()
                 for line in result_text.splitlines()
                 if line.startswith("PREFERENCE:")
             ]
-            if not new_lines:
+            if not candidate_lines:
                 return 0
 
-            learned_path = self._preferences_dir / "learned.md"
+            candidates_text = "\n".join(f"- {c}" for c in candidate_lines)
+
+            # Read existing learned.md (or build skeleton)
             if learned_path.exists():
-                existing = learned_path.read_text()
+                existing_content = learned_path.read_text()
             else:
-                existing = (
+                existing_content = (
                     "---\ndomain: general\nupdated: "
-                    f"{datetime.now(UTC).strftime('%Y-%m-%d')}\n"
+                    f"{today}\n"
                     "confidence: librarian\n---\n\n# Learned Preferences\n\n"
                 )
 
-            updated = existing.rstrip() + "\n" + "\n".join(new_lines) + "\n"
-            self._write_semantic_file(learned_path, updated)
+            # Pass 2: conflict resolution against existing content
+            resolutions = await self._resolve_conflicts(
+                existing_content=existing_content,
+                new_summaries=candidates_text,
+                conflict_min_observations=conflict_min_observations,
+                conflict_min_days=conflict_min_days,
+            )
+
+            if not resolutions:
+                # Fallback: append-only (same as old behaviour) when LLM fails
+                updated = existing_content.rstrip() + "\n" + candidates_text + "\n"
+                self._write_semantic_file(learned_path, updated)
+                return 1
+
+            updated_content, changes = self._apply_conflict_resolutions(
+                existing_content, resolutions, today
+            )
+
+            if changes == 0:
+                return 0
+
+            self._write_semantic_file(learned_path, updated_content)
             return 1
+
         except Exception as exc:
             logger.warning("Semantic memory update failed: %s", exc)
         return 0
 
-    async def _apply_decay(self) -> int:
-        """Archive old hot-storage entries to cold storage.
+    async def _apply_decay(
+        self,
+        decay_migration_threshold: float = 1.0,
+        search_query: str = "general context memory event",
+        search_limit: int = 500,
+    ) -> int:
+        """Migrate old low-significance hot entries to cold storage.
 
-        Returns the number of entries archived.
-        The EpisodicStore hot→cold migration is handled by the store itself.
-        This is a placeholder for future time-based XTRIM or archival.
+        Computes migration pressure per entry:
+            age_days = (now - entry.timestamp) / 86400
+            pressure = age_days * (1 - significance) * (1 / (retrieval_count + 1))
+
+        Entries with pressure > decay_migration_threshold are migrated to cold.
+        High-significance entries resist migration (low pressure).
+        Frequently-retrieved entries also resist migration.
+
+        Returns the number of entries migrated.
         """
-        return 0
+        try:
+            # Use a broad embedding search to surface candidate hot entries.
+            # We embed a generic query so we cast a wide net.
+            query_embedding = await self._context_index._embedder.embed(search_query)
+            results = await self._context_index.search(
+                query_embedding=query_embedding,
+                limit=search_limit,
+                min_similarity=0.0,
+            )
+        except Exception as exc:
+            logger.warning("Decay: failed to retrieve hot entries: %s", exc)
+            return 0
+
+        now = datetime.now(UTC).timestamp()
+        migrated = 0
+
+        for result in results:
+            # Only process episodic entries (skip semantic/routine)
+            if result.metadata.type != "episodic":
+                continue
+
+            timestamp = result.metadata.timestamp
+            if timestamp <= 0:
+                continue
+
+            age_days = (now - timestamp) / 86400.0
+            significance = result.metadata.significance
+            retrieval_count = result.metadata.retrieval_count
+
+            pressure = age_days * (1.0 - significance) * (1.0 / (retrieval_count + 1))
+
+            if pressure > decay_migration_threshold:
+                try:
+                    await self._episodic_memory.migrate_to_cold(result.id)
+                    migrated += 1
+                    logger.debug(
+                        "Decayed entry %s (age=%.1fd, sig=%.2f, pressure=%.2f)",
+                        result.id,
+                        age_days,
+                        significance,
+                        pressure,
+                    )
+                except Exception as exc:
+                    logger.warning("Decay: failed to migrate entry %s: %s", result.id, exc)
+
+        if migrated:
+            logger.info("Decay: migrated %d entries to cold storage", migrated)
+        return migrated
 
     async def consolidate(self) -> dict[str, Any]:
         """Run one consolidation cycle.
@@ -316,14 +537,20 @@ class Librarian:
         episodic_entries = [entry for entry, _ in entry_pairs]
 
         # 4. Update semantic memory (requires Claude)
-        semantic_updates = await self._update_semantic_memory(episodic_entries)
+        semantic_updates = await self._update_semantic_memory(
+            episodic_entries,
+            conflict_min_observations=self._conflict_min_observations,
+            conflict_min_days=self._conflict_min_days,
+        )
 
         # 5. Pattern detection for procedural memory
         # Needs multiple consolidation cycles of data (>= 2 weeks).
         # Deferred until enough episodic entries exist.
 
         # 6. Decay processing
-        archived = await self._apply_decay()
+        archived = await self._apply_decay(
+            decay_migration_threshold=self._decay_migration_threshold,
+        )
 
         # 7. Re-index semantic files so context search reflects latest learned.md etc.
         await self._context_index.reindex_semantic_files()
