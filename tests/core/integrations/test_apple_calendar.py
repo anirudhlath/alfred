@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -288,7 +289,6 @@ async def test_delete_event_success(adapter: AppleCalendarAdapter) -> None:
     mock_event.data = "BEGIN:VEVENT\nSUMMARY:Westcliff Session\nEND:VEVENT"
     mock_other = MagicMock()
     mock_other.data = "BEGIN:VEVENT\nSUMMARY:Dentist\nEND:VEVENT"
-    # Event with "Westcliff" in description but NOT in summary — should NOT be deleted
     mock_desc_match = MagicMock()
     mock_desc_match.data = (
         "BEGIN:VEVENT\nSUMMARY:Team Meeting\nDESCRIPTION:Discuss Westcliff project\nEND:VEVENT"
@@ -301,7 +301,10 @@ async def test_delete_event_success(adapter: AppleCalendarAdapter) -> None:
     mock_client = MagicMock()
     mock_client.principal.return_value = mock_principal
 
-    with patch.object(adapter, "_get_client", return_value=mock_client):
+    with (
+        patch.object(adapter, "_get_client", return_value=mock_client),
+        patch.object(type(adapter), "_supports_vevent", return_value=True),
+    ):
         result = await adapter.execute(
             IntegrationRequest(
                 action="delete_event",
@@ -318,7 +321,7 @@ async def test_delete_event_success(adapter: AppleCalendarAdapter) -> None:
     assert result.data["deleted"] == ["Westcliff Session"]
     mock_event.delete.assert_called_once()
     mock_other.delete.assert_not_called()
-    mock_desc_match.delete.assert_not_called()  # Summary doesn't match
+    mock_desc_match.delete.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -429,3 +432,141 @@ async def test_create_event_with_calendar_name(adapter: AppleCalendarAdapter) ->
     assert result.data["calendar"] == "College"
     mock_college.save_event.assert_called_once()
     mock_personal.save_event.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_event_calendar_name_not_found(
+    adapter: AppleCalendarAdapter,
+) -> None:
+    """create_event with unknown calendar_name returns error with available names."""
+    mock_personal = MagicMock()
+    mock_personal.get_display_name.return_value = "Personal"
+    mock_principal = MagicMock()
+    mock_principal.calendars.return_value = [mock_personal]
+    mock_client = MagicMock()
+    mock_client.principal.return_value = mock_principal
+
+    with (
+        patch.object(adapter, "_get_client", return_value=mock_client),
+        patch.object(type(adapter), "_supports_vevent", return_value=True),
+    ):
+        result = await adapter.execute(
+            IntegrationRequest(
+                action="create_event",
+                params={
+                    "summary": "Test",
+                    "start": "2026-04-10T14:00:00Z",
+                    "end": "2026-04-10T15:00:00Z",
+                    "calendar_name": "Nonexistent",
+                },
+            )
+        )
+
+    assert result.confidence == 0.0
+    assert "not found" in result.data["error"]
+    assert "Personal" in result.data["error"]
+
+
+@pytest.mark.asyncio
+async def test_delete_event_dry_run(adapter: AppleCalendarAdapter) -> None:
+    """dry_run returns matches without deleting."""
+    mock_event = MagicMock()
+    mock_event.data = "BEGIN:VEVENT\nSUMMARY:Westcliff Session\nEND:VEVENT"
+
+    mock_cal = MagicMock()
+    mock_cal.get_display_name.return_value = "Personal"
+    mock_cal.search.return_value = [mock_event]
+    mock_principal = MagicMock()
+    mock_principal.calendars.return_value = [mock_cal]
+    mock_client = MagicMock()
+    mock_client.principal.return_value = mock_principal
+
+    with (
+        patch.object(adapter, "_get_client", return_value=mock_client),
+        patch.object(type(adapter), "_supports_vevent", return_value=True),
+    ):
+        result = await adapter.execute(
+            IntegrationRequest(
+                action="delete_event",
+                params={
+                    "search": "Westcliff",
+                    "start": "2026-04-10T00:00:00Z",
+                    "end": "2026-04-14T00:00:00Z",
+                    "dry_run": True,
+                },
+            )
+        )
+
+    assert result.confidence == 0.9
+    assert result.data["status"] == "dry_run"
+    assert result.data["count"] == 1
+    assert result.data["matches"][0]["summary"] == "Westcliff Session"
+    mock_event.delete.assert_not_called()
+
+
+def test_build_vevent_ical_utc_timezone() -> None:
+    """iCal output has Z suffix for UTC datetimes."""
+    from core.integrations.apple_calendar import _build_vevent_ical
+
+    ical = _build_vevent_ical(
+        uid="test-123",
+        summary="Test Event",
+        dtstart=datetime(2026, 4, 10, 19, 0, 0, tzinfo=UTC),
+        dtend=datetime(2026, 4, 10, 20, 0, 0, tzinfo=UTC),
+    )
+    assert "DTSTART:20260410T190000Z" in ical
+    assert "DTEND:20260410T200000Z" in ical
+    assert "SUMMARY:Test Event" in ical
+
+
+def test_build_vevent_ical_escaping() -> None:
+    """iCal text fields are escaped per RFC 5545."""
+    from core.integrations.apple_calendar import _build_vevent_ical
+
+    ical = _build_vevent_ical(
+        uid="test-esc",
+        summary="Meeting; important",
+        dtstart=datetime(2026, 4, 10, 19, 0, 0, tzinfo=UTC),
+        dtend=datetime(2026, 4, 10, 20, 0, 0, tzinfo=UTC),
+        location="Room 1, Floor 2",
+        description="Line1\nLine2",
+    )
+    assert "SUMMARY:Meeting\\; important" in ical
+    assert "LOCATION:Room 1\\, Floor 2" in ical
+    assert "DESCRIPTION:Line1\\nLine2" in ical
+
+
+def test_build_vevent_ical_alerts() -> None:
+    """VALARM entries are generated for each alert."""
+    from core.integrations.apple_calendar import _build_vevent_ical
+
+    ical = _build_vevent_ical(
+        uid="test-alarm",
+        summary="Event",
+        dtstart=datetime(2026, 4, 10, 19, 0, 0, tzinfo=UTC),
+        dtend=datetime(2026, 4, 10, 20, 0, 0, tzinfo=UTC),
+        alerts=[60, 15],
+    )
+    assert ical.count("BEGIN:VALARM") == 2
+    assert "TRIGGER:-PT60M" in ical
+    assert "TRIGGER:-PT15M" in ical
+
+
+@pytest.mark.asyncio
+async def test_create_event_negative_alert_rejected(
+    adapter: AppleCalendarAdapter,
+) -> None:
+    """Negative alert values are rejected."""
+    result = await adapter.execute(
+        IntegrationRequest(
+            action="create_event",
+            params={
+                "summary": "Test",
+                "start": "2026-04-10T14:00:00Z",
+                "end": "2026-04-10T15:00:00Z",
+                "alerts": [-5],
+            },
+        )
+    )
+    assert result.confidence == 0.0
+    assert "alert" in result.data["error"].lower()

@@ -21,17 +21,24 @@ from core.integrations.sanitizer import sanitize_response
 
 logger = logging.getLogger(__name__)
 
+_MAX_DELETIONS = 20
+_MAX_ALERT_MINUTES = 10080  # 7 days
+
 
 def _format_ical_dt(dt: datetime) -> str:
-    """Format a datetime for iCal, preserving timezone offset.
+    """Format a datetime for iCal.
 
-    - UTC datetimes → ``20260410T190000Z``
-    - Offset-aware  → converted to UTC then ``Z`` suffix
-    - Naive         → ``20260410T140000`` (floating)
+    All offset-aware datetimes are converted to UTC with ``Z`` suffix.
+    Naive datetimes are stored as floating (local time).
     """
     if dt.tzinfo is not None:
         return dt.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
     return dt.strftime("%Y%m%dT%H%M%S")
+
+
+def _escape_ical_text(text: str) -> str:
+    """Escape text per RFC 5545 Section 3.3.11."""
+    return text.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
 
 
 def _build_vevent_ical(
@@ -57,18 +64,18 @@ def _build_vevent_ical(
         f"DTSTAMP:{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}",
         f"DTSTART:{_format_ical_dt(dtstart)}",
         f"DTEND:{_format_ical_dt(dtend)}",
-        f"SUMMARY:{summary}",
+        f"SUMMARY:{_escape_ical_text(summary)}",
     ]
     if location:
-        lines.append(f"LOCATION:{location.replace(',', '\\,')}")
+        lines.append(f"LOCATION:{_escape_ical_text(location)}")
     if description:
-        lines.append(f"DESCRIPTION:{description.replace(',', '\\,')}")
+        lines.append(f"DESCRIPTION:{_escape_ical_text(description)}")
     for minutes in alerts or []:
         lines.extend(
             [
                 "BEGIN:VALARM",
                 "ACTION:DISPLAY",
-                f"DESCRIPTION:{summary}",
+                f"DESCRIPTION:{_escape_ical_text(summary)}",
                 f"TRIGGER:-PT{minutes}M",
                 "END:VALARM",
             ]
@@ -83,6 +90,28 @@ def _error_result(message: str) -> IntegrationResult:
         freshness=datetime.now(UTC),
         confidence=0.0,
     )
+
+
+def _parse_date_range(
+    params: dict[str, Any],
+) -> tuple[datetime, datetime] | IntegrationResult:
+    """Parse and validate start/end ISO 8601 strings from params.
+
+    Returns ``(dtstart, dtend)`` on success or an ``IntegrationResult``
+    error on failure.
+    """
+    try:
+        dtstart = datetime.fromisoformat(params["start"])
+        dtend = datetime.fromisoformat(params["end"])
+    except (ValueError, KeyError):
+        return _error_result("start and end must be valid ISO 8601 datetime strings")
+    return dtstart, dtend
+
+
+def _sanitize_dict(data: dict[str, Any]) -> dict[str, Any]:
+    """Run sanitize_response, ensuring the result is always a dict."""
+    clean = sanitize_response(data)
+    return clean if isinstance(clean, dict) else {"data": clean}
 
 
 @IntegrationRegistry.register()
@@ -199,7 +228,8 @@ class AppleCalendarAdapter(Integration):
                 name="delete_event",
                 description=(
                     "Delete calendar events matching a search term"
-                    " (matched against event title only) within a date range"
+                    " (matched against event title only) within a date range."
+                    f" Capped at {_MAX_DELETIONS} deletions per call."
                 ),
                 params_schema={
                     "type": "object",
@@ -215,6 +245,13 @@ class AppleCalendarAdapter(Integration):
                         "end": {
                             "type": "string",
                             "description": "End of date range (ISO 8601)",
+                        },
+                        "dry_run": {
+                            "type": "boolean",
+                            "description": (
+                                "If true, return matching events without deleting."
+                                " Use this to preview before deleting."
+                            ),
                         },
                     },
                     "required": ["search", "start", "end"],
@@ -233,7 +270,7 @@ class AppleCalendarAdapter(Integration):
                 case "list_calendars":
                     result = await loop.run_in_executor(None, self._list_calendars)
                     return IntegrationResult(
-                        data=result,
+                        data=_sanitize_dict(result),
                         freshness=datetime.now(UTC),
                         confidence=0.9,
                     )
@@ -246,9 +283,8 @@ class AppleCalendarAdapter(Integration):
 
                 case "get_today_events" | "get_upcoming":
                     events = await loop.run_in_executor(None, self._fetch_events, request)
-                    clean = sanitize_response(events)
                     return IntegrationResult(
-                        data=(clean if isinstance(clean, dict) else {"events": clean}),
+                        data=_sanitize_dict(events),
                         freshness=datetime.now(UTC),
                         confidence=0.9,
                     )
@@ -269,18 +305,22 @@ class AppleCalendarAdapter(Integration):
         for field in ("summary", "start", "end"):
             if not request.params.get(field):
                 return _error_result("summary, start, and end are required")
-        try:
-            dtstart = datetime.fromisoformat(request.params["start"])
-            dtend = datetime.fromisoformat(request.params["end"])
-        except ValueError:
-            return _error_result("start and end must be valid ISO 8601 datetime strings")
+        parsed = _parse_date_range(request.params)
+        if isinstance(parsed, IntegrationResult):
+            return parsed
+        dtstart, dtend = parsed
         if dtend <= dtstart:
             return _error_result("end must be after start")
 
-        alerts_raw = request.params.get("alerts")
         alerts: list[int] | None = None
+        alerts_raw = request.params.get("alerts")
         if isinstance(alerts_raw, list):
-            alerts = [int(a) for a in alerts_raw]
+            try:
+                alerts = [int(a) for a in alerts_raw]
+                if any(a < 0 or a > _MAX_ALERT_MINUTES for a in alerts):
+                    return _error_result(f"alert values must be 0-{_MAX_ALERT_MINUTES} minutes")
+            except (ValueError, TypeError):
+                return _error_result("alerts must be a list of integers")
 
         result = await loop.run_in_executor(
             None,
@@ -295,9 +335,8 @@ class AppleCalendarAdapter(Integration):
         )
         if "error" in result:
             return _error_result(result["error"])
-        clean = sanitize_response(result)
         return IntegrationResult(
-            data=(clean if isinstance(clean, dict) else {"result": clean}),
+            data=_sanitize_dict(result),
             freshness=datetime.now(UTC),
             confidence=0.9,
         )
@@ -310,11 +349,12 @@ class AppleCalendarAdapter(Integration):
         for field in ("search", "start", "end"):
             if not request.params.get(field):
                 return _error_result("search, start, and end are required")
-        try:
-            dtstart = datetime.fromisoformat(request.params["start"])
-            dtend = datetime.fromisoformat(request.params["end"])
-        except ValueError:
-            return _error_result("start and end must be valid ISO 8601 datetime strings")
+        parsed = _parse_date_range(request.params)
+        if isinstance(parsed, IntegrationResult):
+            return parsed
+        dtstart, dtend = parsed
+
+        dry_run = bool(request.params.get("dry_run", False))
 
         result = await loop.run_in_executor(
             None,
@@ -322,11 +362,12 @@ class AppleCalendarAdapter(Integration):
             request.params["search"],
             dtstart,
             dtend,
+            dry_run,
         )
         if "error" in result:
             return _error_result(result["error"])
         return IntegrationResult(
-            data=result,
+            data=_sanitize_dict(result),
             freshness=datetime.now(UTC),
             confidence=0.9,
         )
@@ -340,6 +381,10 @@ class AppleCalendarAdapter(Integration):
             username=self._username,
             password=self._password,
         )
+
+    def _get_calendars(self) -> list[Any]:
+        """Fetch all calendars from the CalDAV server (sync)."""
+        return self._get_client().principal().calendars()  # type: ignore[no-any-return]
 
     @staticmethod
     def _supports_vevent(cal: Any) -> bool:
@@ -361,9 +406,32 @@ class AppleCalendarAdapter(Integration):
             return str(cal.get_display_name())
         return str(getattr(cal, "name", "default"))
 
+    def _find_event_calendar(
+        self, calendars: list[Any], calendar_name: str
+    ) -> dict[str, Any] | Any:
+        """Find a VEVENT-capable calendar, optionally by name.
+
+        Returns the calendar object on success or an error dict on failure.
+        """
+        event_calendars = [c for c in calendars if self._supports_vevent(c)]
+        if not event_calendars:
+            return {"error": "No writable event calendars found"}
+
+        if not calendar_name:
+            return event_calendars[0]
+
+        for c in event_calendars:
+            if self._cal_display_name(c).lower() == calendar_name.lower():
+                return c
+
+        available = [self._cal_display_name(c) for c in event_calendars]
+        return {
+            "error": (f"Calendar '{calendar_name}' not found. Available: {', '.join(available)}")
+        }
+
     def _list_calendars(self) -> dict[str, Any]:
         """List all calendars with their types."""
-        calendars = self._get_client().principal().calendars()
+        calendars = self._get_calendars()
         result: list[dict[str, str]] = []
         for cal in calendars:
             name = self._cal_display_name(cal)
@@ -372,7 +440,6 @@ class AppleCalendarAdapter(Integration):
                 {
                     "name": name,
                     "type": "events" if supports_vevent else "reminders/tasks",
-                    "writable_for_events": "yes" if supports_vevent else "no",
                 }
             )
         return {"calendars": result, "count": len(result)}
@@ -388,21 +455,14 @@ class AppleCalendarAdapter(Integration):
         alerts: list[int] | None,
     ) -> dict[str, Any]:
         """Sync CalDAV event creation (runs in executor)."""
-        calendars = self._get_client().principal().calendars()
+        calendars = self._get_calendars()
         if not calendars:
             return {"error": "No calendars found on this account"}
 
-        event_calendars = [c for c in calendars if self._supports_vevent(c)]
-        if not event_calendars:
-            return {"error": "No writable event calendars found"}
-
-        # Pick calendar by name if specified, otherwise first VEVENT calendar
-        cal = event_calendars[0]
-        if calendar_name:
-            for c in event_calendars:
-                if self._cal_display_name(c).lower() == calendar_name.lower():
-                    cal = c
-                    break
+        cal_or_err = self._find_event_calendar(calendars, calendar_name)
+        if isinstance(cal_or_err, dict):
+            return cal_or_err
+        cal = cal_or_err
 
         uid = str(uuid4())
         ical = _build_vevent_ical(
@@ -431,36 +491,67 @@ class AppleCalendarAdapter(Integration):
         search: str,
         dtstart: datetime,
         dtend: datetime,
+        dry_run: bool,
     ) -> dict[str, Any]:
-        """Sync CalDAV event deletion (runs in executor)."""
-        calendars = self._get_client().principal().calendars()
-        deleted: list[str] = []
-        for cal in calendars:
+        """Sync CalDAV event deletion (runs in executor).
+
+        Only searches VEVENT-capable calendars. Matches against SUMMARY only.
+        Capped at ``_MAX_DELETIONS`` to prevent accidental bulk deletion.
+        """
+        calendars = self._get_calendars()
+        # Only search event calendars — skip reminder lists
+        event_calendars = [c for c in calendars if self._supports_vevent(c)]
+
+        matched: list[dict[str, str]] = []
+        for cal in event_calendars:
+            cal_name = self._cal_display_name(cal)
             try:
                 events = cal.search(start=dtstart, end=dtend, event=True, expand=False)
-            except Exception:
+            except Exception as e:
+                logger.warning("Calendar search failed for '%s': %s", cal_name, e)
                 continue
             for event in events:
                 data = event.data or ""
-                # Match only against SUMMARY to avoid accidental
-                # deletion from UID/description/other field matches
                 summary = "unknown"
                 for line in data.split("\n"):
                     if line.startswith("SUMMARY"):
                         summary = line.split(":", 1)[1].strip()
                         break
-                if search.lower() in summary.lower():
-                    event.delete()
-                    deleted.append(summary)
+                if search.lower() not in summary.lower():
+                    continue
+                matched.append({"summary": summary, "calendar": cal_name})
+                if dry_run:
+                    continue
+                if len(matched) > _MAX_DELETIONS:
+                    return {
+                        "error": (
+                            f"Too many matches ({len(matched)}+)."
+                            f" Cap is {_MAX_DELETIONS}."
+                            " Use a more specific search term."
+                        )
+                    }
+                logger.info(
+                    "Deleting calendar event: '%s' from '%s'",
+                    summary,
+                    cal_name,
+                )
+                event.delete()
+
+        if dry_run:
+            return {
+                "status": "dry_run",
+                "count": len(matched),
+                "matches": matched,
+            }
         return {
             "status": "deleted",
-            "count": len(deleted),
-            "deleted": deleted,
+            "count": len(matched),
+            "deleted": [m["summary"] for m in matched],
         }
 
     def _fetch_events(self, request: IntegrationRequest) -> dict[str, Any]:
         """Sync CalDAV fetch (runs in executor)."""
-        calendars = self._get_client().principal().calendars()
+        calendars = self._get_calendars()
 
         days = request.params.get("days", 1) if request.action == "get_upcoming" else 1
         start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
