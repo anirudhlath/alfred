@@ -20,7 +20,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # Directories that all services depend on — changes here restart everything.
-_SHARED_DIRS = ("shared", "sdk", "bus/schemas")
+_SHARED_DIRS = ("shared", "sdk", "bus/schemas", "core/integrations")
 
 
 def _watch_dirs_for_module(module: str, root: Path) -> list[Path]:
