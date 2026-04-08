@@ -8,20 +8,27 @@
 set -euo pipefail
 
 # Check Homebrew packages are installed
-for pkg in redis mosquitto; do
+for pkg in mosquitto; do
     if ! brew list "$pkg" &>/dev/null; then
         echo "Installing $pkg..."
         brew install "$pkg"
     fi
 done
 
-echo "==> Starting Redis..."
-brew services start redis 2>/dev/null || echo "    Redis already running"
+echo "==> Starting Redis Stack (with RediSearch)..."
+if ! brew list redis-stack &>/dev/null 2>&1; then
+    echo "    Installing redis-stack..."
+    # Stop vanilla redis if running
+    brew services stop redis 2>/dev/null || true
+    brew tap redis/redis 2>/dev/null || true
+    brew install redis-stack
+fi
+brew services start redis-stack
 # Verify
 if redis-cli ping &>/dev/null; then
-    echo "    Redis: localhost:6379"
+    echo "    Redis Stack: localhost:6379"
 else
-    echo "    ERROR: Redis failed to start"
+    echo "    ERROR: Redis Stack failed to start"
     exit 1
 fi
 

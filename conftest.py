@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import keyring
 import keyring.backend
 import pytest
@@ -46,6 +48,29 @@ def _clear_telemetry() -> None:
     clear_telemetry_buffer()
     yield  # type: ignore[misc]
     clear_telemetry_buffer()
+
+
+@pytest.fixture
+def mock_embedder() -> AsyncMock:
+    """Mock EmbeddingProvider returning deterministic 4-dim vectors."""
+    embedder = AsyncMock()
+    embedder.embed = AsyncMock(return_value=[0.1, 0.2, 0.3, 0.4])
+    embedder.embed_batch = AsyncMock(return_value=[[0.1, 0.2, 0.3, 0.4]])
+    embedder.dimension.return_value = 4
+    embedder.model_name.return_value = "mock-model"
+    return embedder
+
+
+@pytest.fixture
+def mock_vector_store() -> AsyncMock:
+    """Mock VectorStore returning empty search results."""
+    store = AsyncMock()
+    store.search = AsyncMock(return_value=[])
+    store.add = AsyncMock()
+    store.delete = AsyncMock()
+    store.exists = AsyncMock(return_value=False)
+    store.count = AsyncMock(return_value=0)
+    return store
 
 
 @pytest.fixture
