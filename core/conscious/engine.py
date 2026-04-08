@@ -10,12 +10,17 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import litellm
 
 from bus.schemas.events import ActionRequest, AlfredResponse, UserRequest
+from core.conscious.memory_tools import (
+    MEMORY_TOOL_PREFIX,
+    MEMORY_TOOLS_MANIFEST,
+    dispatch_memory_tool,
+)
 from core.integrations.base import IntegrationRequest
 from core.integrations.registry import IntegrationRegistry
 from core.triggers.feature import TriggerFeature  # noqa: TC001 (runtime use)
@@ -37,9 +42,10 @@ if TYPE_CHECKING:
     from core.conscious.cost import CostTracker
     from core.conscious.identity import IdentityGate
     from core.conscious.session import SessionManager
-    from core.memory.episodic.store import EpisodicStore
-    from core.memory.reader import MemoryReader
+    from core.memory.context_index import ContextIndexManager
+    from core.memory.embedding_provider import EmbeddingProvider
     from core.memory.routines.store import RoutineStore
+    from core.memory.vector_store import SearchResult
     from core.reflex.context_reader import ContextReader
     from core.reflex.tool_registry import ToolInfo, ToolRegistry
     from core.routing.domain_router import DomainRouter
@@ -60,6 +66,8 @@ class ConsciousConfig:
     model: str
     api_key: str = ""
     max_tokens: int = 2048
+    involuntary_recall_limit: int = 10
+    involuntary_recall_threshold: float = 0.5
 
 
 @dataclass
@@ -74,10 +82,10 @@ class ConsciousDeps:
     domain_router: DomainRouter
     tool_registry: ToolRegistry
     context_reader: ContextReader
-    memory_reader: MemoryReader | None = None
-    episodic_store: EpisodicStore | None = None
     routine_store: RoutineStore | None = None
     trigger_feature: TriggerFeature | None = None
+    embedder: EmbeddingProvider | None = None
+    context_index: ContextIndexManager | None = None
     config: ConsciousConfig = field(default_factory=lambda: ConsciousConfig(model=""))
 
 
@@ -106,10 +114,10 @@ class ConsciousEngine:
         claude_model: str = "openrouter/anthropic/claude-sonnet-4",
         claude_api_key: str = "",
         claude_max_tokens: int = 2048,
-        memory_reader: MemoryReader | None = None,
-        episodic_store: EpisodicStore | None = None,
         routine_store: RoutineStore | None = None,
         trigger_feature: TriggerFeature | None = None,
+        embedder: EmbeddingProvider | None = None,
+        context_index: ContextIndexManager | None = None,
     ) -> None:
         if deps is not None:
             d = deps
@@ -147,10 +155,10 @@ class ConsciousEngine:
                 domain_router=domain_router,
                 tool_registry=tool_registry,
                 context_reader=context_reader,
-                memory_reader=memory_reader,
-                episodic_store=episodic_store,
                 routine_store=routine_store,
                 trigger_feature=trigger_feature,
+                embedder=embedder,
+                context_index=context_index,
                 config=ConsciousConfig(
                     model=claude_model,
                     api_key=claude_api_key,
@@ -170,10 +178,12 @@ class ConsciousEngine:
         self._model = cfg.model
         self._api_key = cfg.api_key
         self._max_tokens = cfg.max_tokens
-        self._memory_reader = d.memory_reader
-        self._episodic = d.episodic_store
+        self._involuntary_recall_limit = cfg.involuntary_recall_limit
+        self._involuntary_recall_threshold = cfg.involuntary_recall_threshold
         self._routines = d.routine_store
         self._triggers = d.trigger_feature
+        self._embedder = d.embedder
+        self._context_index = d.context_index
 
     _TYPE_MAP: ClassVar[dict[str, str]] = PYTHON_TO_JSON_SCHEMA
 
@@ -405,7 +415,23 @@ class ConsciousEngine:
                 content = f"Error executing trigger: {e}"
             return self._make_tool_result(tc["id"], content)
 
-        # 3. Domain tools — route to external service via DomainRouter
+        # 3. Memory tools — direct in-process call
+        if name.startswith(MEMORY_TOOL_PREFIX):
+            if self._context_index:
+                try:
+                    content = await dispatch_memory_tool(
+                        name,
+                        params,
+                        self._context_index,
+                        self._context_reader,
+                    )
+                except Exception as e:
+                    content = f"Error executing memory tool: {e}"
+            else:
+                content = "Memory tools not available"
+            return self._make_tool_result(tc["id"], content)
+
+        # 4. Domain tools — route to external service via DomainRouter
         target = ""
         for t in tools:
             if t.name == name:
@@ -434,6 +460,46 @@ class ConsciousEngine:
         return list(
             await asyncio.gather(*(self._dispatch_tool_call(tc, tools) for tc in tool_calls))
         )
+
+    _ROUTINE_SUGGESTION_COOLDOWN_HOURS: ClassVar[int] = 24
+
+    def _build_routine_hint(self, now: datetime) -> str:
+        """Check candidate routines for time-pattern matches and return a hint string.
+
+        Returns an empty string when no routines match or ``_routines`` is None.
+        Routines that were suggested within the cooldown window are skipped.
+        Matching routines have their ``last_suggested`` timestamp updated.
+        """
+        if self._routines is None:
+            return ""
+
+        from core.memory.routines.patterns import match_trigger_pattern
+
+        candidates = self._routines.list_by_state("candidate")
+        hints: list[str] = []
+
+        for routine in candidates:
+            # Cooldown check
+            if routine.last_suggested is not None:
+                hours_since = (now - routine.last_suggested).total_seconds() / 3600
+                if hours_since < self._ROUTINE_SUGGESTION_COOLDOWN_HOURS:
+                    continue
+
+            if not match_trigger_pattern(routine.trigger_pattern, now):
+                continue
+
+            # Update last_suggested
+            updated = routine.model_copy(update={"last_suggested": now})
+            self._routines.save(updated)
+
+            hints.append(
+                f"## Routine Suggestion\n"
+                f"A pattern has been detected: {routine.name}. "
+                f"Consider suggesting this routine to sir."
+            )
+            logger.debug("Routine suggestion injected: '%s'", routine.name)
+
+        return "\n\n".join(hints)
 
     @track_latency(category="conscious")
     @traced(name="conscious.process_request")
@@ -473,46 +539,30 @@ class ConsciousEngine:
         # 3. Session
         session = await self._session_mgr.get_or_create(request.session_id, request.channel)
 
+        # 3b. Involuntary recall — embed user query, search unified context index
+        involuntary_context: list[SearchResult] = []
+        if self._context_index and request.content:
+            try:
+                involuntary_context = await self._context_index.search_text(
+                    request.content,
+                    limit=self._involuntary_recall_limit,
+                    min_similarity=self._involuntary_recall_threshold,
+                )
+            except Exception:
+                logger.warning("Involuntary recall failed", exc_info=True)
+
+        # 3c. Routine suggestion — check candidate routines against current time
+        routine_hint: str = ""
+        if self._routines is not None:
+            try:
+                routine_hint = self._build_routine_hint(now)
+            except Exception:
+                logger.warning("Routine suggestion check failed", exc_info=True)
+
         # 4. Context assembly
         tools = await self._tool_registry.get_tools()
-        context_text = await self._context_reader.get_rendered_context()
 
-        # 4a. Read semantic memory (preferences + profile)
-        preferences = ""
-        proactivity_level = "opinionated"
-        if self._memory_reader:
-            try:
-                prefs = self._memory_reader.get_preferences()
-                profile = self._memory_reader.get_profile()
-                preferences = "\n\n".join(p for p in (prefs, profile) if p)
-                proactivity_level = self._memory_reader.get_proactivity_level()
-            except Exception:
-                logger.warning("Failed to read semantic memory", exc_info=True)
-
-        # 4b. Read episodic memory (recent entries from cold storage)
-        episodic_text = ""
-        if self._episodic:
-            try:
-                since = now - timedelta(days=7)
-                entries = await self._episodic.query_cold(limit=10, since=since)
-                if entries:
-                    lines = [f"- [{e.timestamp:%Y-%m-%d}] {e.summary}" for e in entries]
-                    episodic_text = "\n".join(lines)
-            except Exception:
-                logger.warning("Failed to read episodic memory", exc_info=True)
-
-        # 4c. Read procedural memory (active routines)
-        procedural_text = ""
-        if self._routines:
-            try:
-                active = self._routines.list_by_state("active")
-                if active:
-                    lines = [f"- {r.name}: {r.trigger_pattern}" for r in active]
-                    procedural_text = "\n".join(lines)
-            except Exception:
-                logger.warning("Failed to read procedural memory", exc_info=True)
-
-        # 4d. Integrations are now exposed as callable tools (not prompt text).
+        # Integrations are exposed as callable tools (not prompt text).
         # Pass a truthy flag so the assembler emits the integration hint for sir.
         has_integrations = bool(IntegrationRegistry.available())
 
@@ -520,16 +570,14 @@ class ConsciousEngine:
             identity=identity,
             tools_section="\n".join(f"- {t.name}: {t.description}" for t in tools),
             integrations_section="available" if has_integrations else "",
+            proactivity_level="opinionated",
             now=now,
-            preferences_text=preferences,
-            context_text=context_text,
-            history=session["history"],
-            proactivity_level=proactivity_level,
-            episodic_text=episodic_text,
-            procedural_text=procedural_text,
+            relevant_context=involuntary_context if involuntary_context else None,
             channel=request.channel,
             content_type=request.content_type,
         )
+        if routine_hint:
+            system_prompt = system_prompt + "\n\n" + routine_hint
 
         # 5. Build messages
         messages: list[dict[str, Any]] = list(session["history"])
@@ -544,6 +592,9 @@ class ConsciousEngine:
                 openai_tools.extend(integration_tools)
             except Exception:
                 logger.warning("Failed to build integration tools", exc_info=True)
+        # Add memory tools (sir only)
+        if identity.identity == "sir" and self._context_index:
+            openai_tools.extend(MEMORY_TOOLS_MANIFEST)
         total_prompt_tokens = 0
         total_completion_tokens = 0
         all_actions: list[str] = []
