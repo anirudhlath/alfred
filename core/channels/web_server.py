@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -61,17 +62,36 @@ def _get_tts() -> Any:
 # Active WebSocket connections — used by notification channel adapters
 _active_websockets: list[WebSocket] = []
 
+# Channel-to-source mapping for UserRequest construction
+_CHANNEL_SOURCE_MAP: dict[str, str] = {
+    "ios": "ios-app",
+    "web_pwa": "web-pwa",
+    "voice": "web-pwa",
+    "signal": "signal-bridge",
+}
+
 
 def get_active_websockets() -> list[WebSocket]:
     """Return list of currently connected WebSocket sessions."""
     return list(_active_websockets)
 
 
-def _decode_audio(data_url: str) -> bytes:
-    """Decode a base64 data URL (data:audio/webm;base64,...) to raw bytes."""
+def _decode_audio(data_url: str) -> tuple[bytes, str]:
+    """Decode a base64 data URL to raw bytes and extract audio format.
+
+    Returns:
+        Tuple of (audio_bytes, format_extension). Format is extracted from MIME type
+        (e.g., 'webm', 'aac', 'wav'). Defaults to 'wav' if no MIME type found.
+    """
+    fmt = "wav"  # default
     if "," in data_url:
-        data_url = data_url.split(",", 1)[1]
-    return base64.b64decode(data_url)
+        header, encoded = data_url.split(",", 1)
+        # Extract format from "data:audio/webm;base64" or "data:audio/aac;base64"
+        if "audio/" in header:
+            mime_part = header.split("audio/", 1)[1]
+            fmt = mime_part.split(";", 1)[0].split("+", 1)[0].strip()
+        return base64.b64decode(encoded), fmt
+    return base64.b64decode(data_url), fmt
 
 
 class OnboardingPayload(BaseModel):
@@ -82,6 +102,20 @@ class OnboardingPayload(BaseModel):
     dietary_restrictions: str | None = None
     proactivity_level: str | None = None  # opinionated | moderate | conservative
     guest_controls: list[str] | None = None
+
+
+class DeviceRegistration(BaseModel):
+    """APNs device token registration."""
+
+    device_token: str
+    platform: str
+    identity: str
+
+
+class DeviceUnregistration(BaseModel):
+    """APNs device token removal."""
+
+    device_token: str
 
 
 def _preference_file(
@@ -106,22 +140,67 @@ def _get_prefs_dirs() -> tuple[Path, Path]:
     return base / "preferences", base / "profile"
 
 
-async def require_localhost(request: Request) -> None:
-    """FastAPI dependency — restrict endpoint to localhost only."""
+async def require_trusted_network(request: Request) -> None:
+    """FastAPI dependency — restrict endpoint to localhost or Tailscale CGNAT range.
+
+    Trusted networks:
+    - 127.0.0.1, ::1 (localhost)
+    - 100.64.0.0/10 (Tailscale CGNAT)
+    - 'testclient' (Starlette test client)
+    """
+    import ipaddress
+
     client_host = request.client.host if request.client else ""
-    if client_host not in ("127.0.0.1", "::1", "testclient"):
-        raise HTTPException(status_code=403, detail="Localhost access only")
+    if client_host in ("127.0.0.1", "::1", "testclient"):
+        return
+    try:
+        addr = ipaddress.ip_address(client_host)
+        tailscale_range = ipaddress.ip_network("100.64.0.0/10")
+        if addr in tailscale_range:
+            return
+    except ValueError:
+        pass
+    raise HTTPException(status_code=403, detail="Access restricted to trusted networks")
+
+
+async def _init_apns_adapter(pool: aioredis.Redis[Any]) -> None:  # type: ignore[type-arg]
+    """Register APNs adapter if credentials are available in Secrets Manager."""
+    from shared.secrets import aget_secret
+
+    keys = ("team_id", "key_id", "private_key", "bundle_id")
+    values = await asyncio.gather(*(aget_secret("apns", k) for k in keys))
+    creds = dict(zip(keys, values, strict=True))
+    if not all(creds.values()):
+        logger.info("APNs credentials not configured, skipping adapter")
+        return
+
+    import core.notifications.adapters.apns  # noqa: F401 — trigger @register
+    from core.notifications.adapters.apns import APNsChannelAdapter
+    from core.notifications.channels import ChannelRegistry
+
+    adapter = APNsChannelAdapter(
+        redis=pool,
+        team_id=creds["team_id"],  # type: ignore[arg-type]
+        key_id=creds["key_id"],  # type: ignore[arg-type]
+        private_key=creds["private_key"],  # type: ignore[arg-type]
+        bundle_id=creds["bundle_id"],  # type: ignore[arg-type]
+    )
+    ChannelRegistry.set_instance("apns", adapter)
+    logger.info("APNs adapter registered")
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     """Manage shared Redis connection pool lifecycle + notification delivery."""
-    import asyncio
-
     from core.notifications.delivery import notification_delivery_worker
 
     pool: aioredis.Redis[Any] = aioredis.from_url(app.state.redis_url, decode_responses=False)  # type: ignore[type-arg]
     app.state.redis = pool
+
+    try:
+        await _init_apns_adapter(pool)
+    except Exception as exc:
+        logger.warning("APNs adapter init failed: {}", exc)
 
     shutdown = asyncio.Event()
     delivery_task = asyncio.create_task(
@@ -132,6 +211,14 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
 
     shutdown.set()
     delivery_task.cancel()
+
+    # Close APNs HTTP/2 client if it was initialized
+    from core.notifications.channels import ChannelRegistry
+
+    apns = ChannelRegistry._instances.get("apns")
+    if apns is not None and hasattr(apns, "close"):
+        await apns.close()
+
     await pool.close()
 
 
@@ -192,8 +279,8 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
                     stt = _get_stt()
                     if stt is not None:
                         try:
-                            audio_bytes = _decode_audio(content)
-                            content = stt.transcribe(audio_bytes)
+                            audio_bytes, audio_fmt = _decode_audio(content)
+                            content = stt.transcribe(audio_bytes, audio_format=audio_fmt)
                             content_type = "text"
                             logger.info("Transcribed voice → '{}' chars", len(content))
                             await websocket.send_json(
@@ -226,9 +313,14 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
                         )
                         continue
 
+                # Read channel from client (iOS sends "ios", web PWA omits or sends "web_pwa")
+                # Only allow channels reachable via WebSocket (not signal)
+                client_channel = data.get("channel", "web_pwa")
+                if client_channel not in ("web_pwa", "voice", "ios"):
+                    client_channel = "web_pwa"
                 request = UserRequest(
-                    source="web-pwa",
-                    channel="web_pwa",
+                    source=_CHANNEL_SOURCE_MAP.get(client_channel, "web-pwa"),
+                    channel=client_channel,
                     session_id=session_id,
                     identity_claim=data.get("identity", "guest"),
                     content_type=content_type,
@@ -283,7 +375,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.put(
         "/api/integrations/{name}/credentials",
-        dependencies=[Depends(require_localhost)],
+        dependencies=[Depends(require_trusted_network)],
     )
     async def save_credentials(name: str, request: Request) -> dict[str, str]:
         """Save integration credentials to OS keyring."""
@@ -319,7 +411,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.delete(
         "/api/integrations/{name}/credentials",
-        dependencies=[Depends(require_localhost)],
+        dependencies=[Depends(require_trusted_network)],
     )
     async def delete_credentials(name: str) -> dict[str, str]:
         """Clear all credentials for an integration from OS keyring."""
@@ -408,6 +500,39 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
         n_fields = len(payload.model_dump(exclude_none=True))
         logger.info("Onboarding preferences saved ({} fields)", n_fields)
+        return {"status": "ok"}
+
+    @app.post(
+        "/api/devices/register",
+        dependencies=[Depends(require_trusted_network)],
+    )
+    async def register_device(payload: DeviceRegistration) -> dict[str, str]:
+        """Register an APNs device token for push notifications."""
+        from shared.streams import DEVICE_TOKENS_KEY
+
+        r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
+        value = json.dumps(
+            {
+                "platform": payload.platform,
+                "identity": payload.identity,
+                "registered_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        await r.hset(DEVICE_TOKENS_KEY, payload.device_token, value)  # type: ignore[misc]
+        logger.info("Registered device token (platform={})", payload.platform)
+        return {"status": "ok"}
+
+    @app.delete(
+        "/api/devices/register",
+        dependencies=[Depends(require_trusted_network)],
+    )
+    async def unregister_device(payload: DeviceUnregistration) -> dict[str, str]:
+        """Remove an APNs device token."""
+        from shared.streams import DEVICE_TOKENS_KEY
+
+        r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
+        await r.hdel(DEVICE_TOKENS_KEY, payload.device_token)  # type: ignore[misc]
+        logger.info("Unregistered device token")
         return {"status": "ok"}
 
     # Disable caching for static files in dev (forces browser to fetch fresh CSS/JS)

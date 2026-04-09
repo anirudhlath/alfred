@@ -68,7 +68,7 @@ class IdentityGate:
         """Unified resolution from a UserRequest's fields."""
         if channel == "signal":
             return self.resolve_signal(sender_phone=identity_claim)
-        if channel in ("web_pwa", "voice"):
+        if channel in ("web_pwa", "voice", "ios"):
             # Authenticated session (WebAuthn) takes priority
             if authenticated:
                 return self.resolve_session(authenticated=True)
