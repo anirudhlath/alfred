@@ -63,7 +63,7 @@ Agentic tool-use loop with parallel execution (`asyncio.gather`).
 - `context_assembler.py` — Two-stage: involuntary recall (auto semantic search) + deliberate recall (memory tools)
 - `memory_tools.py` — Internal tools: `recall_memories`, `get_live_state` (dispatched in-process, NOT via SDK/ToolRegistry)
 - `cost.py` — Daily cap tracking, 80% alert via NotificationPublisher
-- `identity.py` — Signal phone + local-claim trust (confidence=0.7)
+- `identity.py` — Signal phone + local-claim trust (confidence=0.7) for web_pwa, voice, and ios channels
 - `session.py` — Redis-backed sessions, 30min timeout
 - `prompts/` — System prompt templates
 
@@ -75,7 +75,7 @@ Agentic tool-use loop with parallel execution (`asyncio.gather`).
 
 ## Voice (`voice/`) — Voice I/O
 
-- `stt.py` — WhisperSTT (faster-whisper CTranslate2, model: `large-v3-turbo`, beam_size=5)
+- `stt.py` — WhisperSTT (faster-whisper CTranslate2, model: `large-v3-turbo`, beam_size=5, accepts `audio_format` param)
 - `tts.py` — PiperTTS (ONNX local, `en_GB-alan-medium` voice, auto-downloads from HuggingFace)
 - `models/` — Voice data models
 - `speaker_id.py` — Speaker identification stub (returns `unknown`, confidence=0.0)
@@ -89,7 +89,7 @@ Agentic tool-use loop with parallel execution (`asyncio.gather`).
 
 ## Channels (`channels/`) — User-Facing I/O
 
-- `web_server.py` — FastAPI + WebSocket on port 8081, lazy-loads STT/TTS, onboarding wizard, session persistence
+- `web_server.py` — FastAPI + WebSocket on port 8081, lazy-loads STT/TTS, onboarding wizard, session persistence, iOS channel support, device registration, trusted network auth
 - `signal_bridge/` — Signal CLI subprocess, forwards inbound → `USER_REQUESTS_STREAM`, outbound via adapter
 - `__main__.py` — Port retry (5 attempts on EADDRINUSE with exponential backoff)
 
@@ -101,7 +101,7 @@ Agentic tool-use loop with parallel execution (`asyncio.gather`).
 - `dnd.py` — DNDChecker (manual Redis key + calendar meeting detection)
 - `channels.py` — `ChannelAdapter` ABC + `ChannelRegistry` (decorator-based registration)
 - `publisher.py` — Public API (thin facade over dispatcher)
-- `adapters/` — Signal, WebSocket, Voice concrete adapters
+- `adapters/` — Signal, WebSocket, Voice, APNs concrete adapters
 
 ### Notification Data Flow
 
@@ -112,7 +112,7 @@ graph LR
     DND -->|defer| List[Redis List]
     DND -->|deliver| Stream[Redis Stream]
     Stream --> CG1[conscious-delivery → Signal]
-    Stream --> CG2[channels-delivery → WS + Voice]
+    Stream --> CG2[channels-delivery → WS + Voice + APNs]
     List -->|drain trigger| Disp
 ```
 
