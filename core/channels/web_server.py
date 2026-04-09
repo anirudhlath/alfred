@@ -246,18 +246,18 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         _active_websockets.append(websocket)
         r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
 
-        # Accept optional session_id from client for reconnect persistence
-        session_id: str | None = None
+        # Assign session immediately so clients (iOS) that wait for the
+        # session message before sending don't deadlock.
+        session_id = str(uuid4())
+        await websocket.send_json({"type": "session", "session_id": session_id})
 
         try:
             while True:
                 data = await websocket.receive_json()
 
-                # Allow client to restore session across reconnects
-                if session_id is None:
-                    session_id = data.get("session_id") or str(uuid4())
-                    # Send assigned session_id so client can persist it
-                    await websocket.send_json({"type": "session", "session_id": session_id})
+                # Allow client to restore a previous session on its first message
+                if client_sid := data.get("session_id"):
+                    session_id = client_sid
 
                 raw_type = data.get("type", "text")
                 content = data.get("content", "")
