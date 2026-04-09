@@ -2,17 +2,44 @@
 
 Cross-cutting utilities used by multiple top-level packages (core, bus, domains).
 
-- `config.py` — `AlfredConfig` dataclass, loads `.env` via python-dotenv
-- `streams.py` — Redis stream/key constants (single source of truth)
-- `secrets.py` — keyring wrapper for PII credentials (sync + async APIs)
-- `types.py` — shared type aliases (`AioRedis`)
-- `fs.py` — `atomic_write()` for safe file writes
-- `logging.py` — Loguru setup with stdlib intercept
-- `otel.py` — OpenTelemetry init
-- `traced.py` — `@traced` decorator for span instrumentation
+## Files
+
+- `config.py` — `AlfredConfig` frozen dataclass (30+ fields), `from_env()` loads `.env` via python-dotenv
+- `streams.py` — Redis stream/key constants (21 constants — single source of truth)
+- `secrets.py` — Keyring wrapper: `get_secret()` / `set_secret()` + async versions (`aget_secret()` etc.) via `asyncio.to_thread()`
+- `types.py` — `AioRedis` type alias (canonical location for cross-package use)
+- `fs.py` — `atomic_write()` via mkstemp + rename (safe concurrent writes)
+- `logging.py` — Loguru setup with stdlib intercept (captures uvicorn, httpx, aiomqtt, etc.)
+- `traced.py` — `@traced` decorator for OTel span instrumentation (sync + async, optional name override)
+- `tracing.py` — `ReflexTraceRecord` / `ConsciousTraceRecord` dataclasses + `init_tracing()` with optional OTLP export
+- `otel.py` — TracerProvider init with Resource + optional OTLP BatchSpanProcessor
+- `type_map.py` — `PYTHON_TO_JSON_SCHEMA` mapping + `friendly_type()` for LLM-friendly type strings
+
+## Key Stream Constants
+
+```python
+EVENTS_STREAM = "alfred:events"
+ACTIONS_STREAM = "alfred:actions"
+HOME_STATE_STREAM = "alfred:home:state_changed"
+USER_REQUESTS_STREAM = "alfred:user:requests"
+NOTIFICATION_DISPATCH_STREAM = "alfred:notifications:dispatch"
+TOOL_REGISTRY_KEY = "alfred:tool_registry"
+CONTEXT_INDEX = "idx:context"       # RediSearch index name
+CONTEXT_PREFIX = "ctx:"             # RediSearch key prefix
+```
 
 ## Rules
 
 - Keep this package dependency-free (no imports from core, bus, domains, or sdk)
 - All Redis stream key strings MUST be defined here — never hardcode in consuming modules
 - New shared utilities belong here only if used by 2+ top-level packages
+
+## Gotchas
+
+- `__init__.py` is empty — no centralized re-exports; import from specific modules
+- Two tracing files: `traced.py` (per-function `@traced` decorator) vs `tracing.py` + `otel.py` (global provider init at startup)
+- `.env` loaded automatically at `config.py` import time — walks up to parent of `shared/`
+- `AlfredConfig` is frozen (immutable dataclass) — prevents accidental mutation
+- `friendly_type()` is LLM-aware: converts `datetime` → `"string (ISO 8601)"` for Claude prompts
+- `TraceRecord` is a backward-compat alias for `ReflexTraceRecord`
+- Root `conftest.py` has autouse `_mock_keyring` fixture — all tests use `InMemoryKeyring`, never OS keychain
