@@ -68,6 +68,8 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - Integration adapters declare `credentials_schema: CredentialSchema` with typed `CredentialField` entries
 - `IntegrationRegistry.get()` auto-populates adapter kwargs from keyring; `get_class()` for class lookup; `reconfigure()` to refresh
 - REST endpoints: `GET /api/integrations`, `PUT/DELETE /api/integrations/{name}/credentials`, `GET .../status`
+- APNs credentials (team_id, key_id, private_key, bundle_id) stored via Secrets Manager under service name `"apns"`
+- Device registration: `POST/DELETE /api/devices/register` — stores APNs tokens in Redis hash `alfred:push:devices`
 - Settings page: `web/settings.html` + `web/settings.js` (dynamic cards from API schema)
 
 ## Workflow
@@ -125,7 +127,7 @@ graph TD
     Agents -->|MCP/HTTP| Services[Microservices<br/>home-service, ...]
     Conscious --> Memory[Memory<br/>episodic + semantic + procedural]
     Conscious --> Integrations[IntegrationRegistry<br/>weather, calendar, health, robinhood]
-    Conscious --> Notify[NotificationDispatcher<br/>Signal, WebSocket, Voice]
+    Conscious --> Notify[NotificationDispatcher<br/>Signal, WebSocket, Voice, APNs]
     Memory --> Librarian[Librarian<br/>nightly consolidation]
     WebChannel[Web PWA :8081] -->|UserRequest| Bus
     Signal[Signal Bridge] -->|UserRequest| Bus
@@ -168,3 +170,7 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - Memory tools are INTERNAL to Conscious Engine — dispatched in-process like integration/trigger tools, NOT via BaseFeature/SDK/ToolRegistry
 - `EpisodicMemory.copy_to_cold_and_remove()` re-embeds + writes to cold before deleting hot — use for decay, not `migrate_to_cold()`
 - `SentenceTransformerProvider._load()` blocks on first call — consider warmup `await embedder.embed("warmup")` at startup
+- WebSocket `channel` field is validated to `web_pwa`/`voice`/`ios` only — prevents clients from impersonating Signal channel
+- APNs adapter requires `PyJWT[crypto]` and `httpx[http2]` — added to base deps in pyproject.toml
+- APNs adapter auto-prunes stale device tokens (410 response) — no manual cleanup needed
+- `require_trusted_network` replaces `require_localhost` — accepts localhost + Tailscale CGNAT (100.64.0.0/10)
