@@ -5,24 +5,13 @@
     ]
   },
   "hooks": {
-    "PreToolUse": [
+    "WorktreeCreate": [
       {
-        "matcher": "Edit|Write|Read",
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/protect-env.sh"
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Edit|Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": ".claude/hooks/ruff-autoformat.sh"
+            "command": ".claude/hooks/worktree-setup.sh",
+            "statusMessage": "Setting up worktree environment..."
           }
         ]
       }
