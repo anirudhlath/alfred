@@ -92,7 +92,7 @@ class UserRequest(BaseEvent):
     """Inbound user interaction from any channel."""
 
     event_type: str = "user_request"
-    channel: Literal["web_pwa", "signal", "voice"]
+    channel: Literal["web_pwa", "signal", "voice", "ios"]
     session_id: str
     identity_claim: str
     authenticated: bool = False
@@ -105,7 +105,7 @@ class AlfredResponse(BaseEvent):
     """Outbound response to a user channel."""
 
     event_type: str = "alfred_response"
-    channel: Literal["web_pwa", "signal", "voice"]
+    channel: Literal["web_pwa", "signal", "voice", "ios"]
     session_id: str
     text: str
     voice_audio_ref: str | None = None

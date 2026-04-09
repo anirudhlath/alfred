@@ -35,17 +35,21 @@ class WhisperSTT:
         logger.info("Loaded Whisper model: {} (device={})", model_size, device)
 
     @traced(name="voice.stt.transcribe")
-    def transcribe(self, audio_bytes: bytes, language: str = "en") -> str:
+    def transcribe(
+        self, audio_bytes: bytes, language: str = "en", audio_format: str = "wav"
+    ) -> str:
         """Transcribe audio bytes to text.
 
         Args:
-            audio_bytes: Raw audio data (WAV, MP3, OGG, etc.)
+            audio_bytes: Raw audio data (WAV, AAC, M4A, WebM, etc.)
             language: Language code for transcription.
+            audio_format: File extension hint for ffmpeg (e.g., 'wav', 'aac', 'webm').
 
         Returns:
             Transcribed text string.
         """
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
+        suffix = f".{audio_format.lstrip('.')}"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=True) as tmp:
             tmp.write(audio_bytes)
             tmp.flush()
             return self.transcribe_file(tmp.name, language=language)

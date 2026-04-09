@@ -61,3 +61,24 @@ def test_resolve_from_request_web_unauthenticated() -> None:
         authenticated=False,
     )
     assert result.identity == "guest"
+
+
+def test_resolve_from_request_ios_claim_sir() -> None:
+    gate = IdentityGate(registered_phone="")
+    result = gate.resolve(
+        channel="ios",
+        identity_claim="sir",
+        authenticated=False,
+    )
+    assert result.identity == "sir"
+    assert result.method == "local_claim"
+
+
+def test_resolve_from_request_ios_guest() -> None:
+    gate = IdentityGate(registered_phone="")
+    result = gate.resolve(
+        channel="ios",
+        identity_claim="guest",
+        authenticated=False,
+    )
+    assert result.identity == "guest"
