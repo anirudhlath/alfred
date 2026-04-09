@@ -50,7 +50,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `web/` — PWA frontend (index.html, settings.html, app.js, settings.js)
 - `docs/superpowers/specs/` — approved design specs
 - `docs/superpowers/plans/` — implementation plans
-- `docs/backlog/remaining-work.md` — single consolidated backlog (D1-D25+)
+- `docs/backlog/` — priority subdirs (highest/high/medium/low/lowest) with individual ticket files
 - `core/memory/episodic/memory.py` — `EpisodicMemory` (unified hot+cold vector search)
 - `core/memory/embedding_provider.py` — `EmbeddingProvider` ABC + `SentenceTransformerProvider`
 - `core/memory/vector_store.py` — `VectorStore` ABC, `SearchResult`, `ContextMetadata`
@@ -124,7 +124,7 @@ graph TD
     Actions --> Agents[Domain Agents<br/>home, media, ...]
     Agents -->|MCP/HTTP| Services[Microservices<br/>home-service, ...]
     Conscious --> Memory[Memory<br/>episodic + semantic + procedural]
-    Conscious --> Integrations[IntegrationRegistry<br/>weather, calendar, health, finance]
+    Conscious --> Integrations[IntegrationRegistry<br/>weather, calendar, health, robinhood]
     Conscious --> Notify[NotificationDispatcher<br/>Signal, WebSocket, Voice]
     Memory --> Librarian[Librarian<br/>nightly consolidation]
     WebChannel[Web PWA :8081] -->|UserRequest| Bus
