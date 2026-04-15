@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -39,13 +40,18 @@ class APNsChannelAdapter(ChannelAdapter):
         key_id: str,
         private_key: str,
         bundle_id: str,
-        sandbox: bool = False,
+        sandbox: bool | None = None,
     ) -> None:
+        import os
+
         self._redis = redis
         self._team_id = team_id
         self._key_id = key_id
-        self._private_key = private_key
+        # Normalize escaped newlines (keyring may store \\n instead of \n)
+        self._private_key = private_key.replace("\\n", "\n")
         self._bundle_id = bundle_id
+        if sandbox is None:
+            sandbox = os.getenv("APNS_SANDBOX", "").lower() in ("1", "true", "yes")
         self._base_url = APNS_SANDBOX_URL if sandbox else APNS_PRODUCTION_URL
         self._client: httpx.AsyncClient | None = None
         self._token: str | None = None
@@ -127,14 +133,22 @@ class APNsChannelAdapter(ChannelAdapter):
         payload_bytes = json.dumps(payload)
 
         priority = "5" if notification.urgency == Urgency.INFORMATIONAL else "10"
-        headers = {
+        # Expiration: informational = immediate, others = 24h TTL
+        expiration = (
+            "0" if notification.urgency == Urgency.INFORMATIONAL else str(int(time.time()) + 86400)
+        )
+        headers: dict[str, str] = {
             "authorization": f"bearer {token}",
             "apns-topic": self._bundle_id,
             "apns-push-type": "alert",
             "apns-priority": priority,
+            "apns-expiration": expiration,
         }
+        # Collapse-id lets APNs coalesce retries/duplicates on the device
+        if notification.notification_id:
+            headers["apns-collapse-id"] = notification.notification_id[:64]
 
-        for device_token_raw, _info in raw_tokens.items():
+        async def _send_to_device(device_token_raw: bytes | str) -> None:
             device_token = (
                 device_token_raw.decode()
                 if isinstance(device_token_raw, bytes)
@@ -144,7 +158,6 @@ class APNsChannelAdapter(ChannelAdapter):
             try:
                 resp = await client.post(url, content=payload_bytes, headers=headers)
                 if resp.status_code == 410:
-                    # Token is no longer valid — prune from Redis
                     await self._redis.hdel(DEVICE_TOKENS_KEY, device_token)  # type: ignore[misc]
                     logger.info("Pruned stale APNs token {}...", device_token[:8])
                 elif resp.status_code != 200:
@@ -162,3 +175,5 @@ class APNsChannelAdapter(ChannelAdapter):
                     )
             except Exception as exc:
                 logger.error("APNs delivery error for token {}: {}", device_token[:8], exc)
+
+        await asyncio.gather(*[_send_to_device(tok) for tok in raw_tokens])

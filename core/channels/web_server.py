@@ -4,24 +4,28 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import ipaddress
 import json
 import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import redis.asyncio as aioredis
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+
+if TYPE_CHECKING:
+    from starlette.responses import Response
 
 from bus.schemas.events import AlfredResponse, UserRequest
 from shared.streams import USER_REQUESTS_STREAM, USER_RESPONSES_STREAM, decode_stream_value
 
-# Optional: WhisperSTT for voice transcription, PiperTTS for speech output
 _lazy_cache: dict[str, Any] = {}
 _FAILED: object = object()  # sentinel for imports that already failed
 
@@ -59,21 +63,29 @@ def _get_tts() -> Any:
     return _lazy_load("tts", "core.voice.tts", "PiperTTS", "piper-tts not installed")
 
 
-# Active WebSocket connections — used by notification channel adapters
-_active_websockets: list[WebSocket] = []
-
-# Channel-to-source mapping for UserRequest construction
+_active_websockets: dict[WebSocket, str] = {}
 _CHANNEL_SOURCE_MAP: dict[str, str] = {
     "ios": "ios-app",
     "web_pwa": "web-pwa",
     "voice": "web-pwa",
-    "signal": "signal-bridge",
 }
 
 
 def get_active_websockets() -> list[WebSocket]:
-    """Return list of currently connected WebSocket sessions."""
+    """Return list of currently connected WebSocket sessions (all channels)."""
     return list(_active_websockets)
+
+
+def get_web_websockets() -> list[WebSocket]:
+    """Return only web/PWA WebSocket sessions (excludes iOS).
+
+    iOS clients receive notifications via APNs, so WebSocket and Voice
+    adapters should only push to web clients to avoid duplicates.
+    """
+    return [ws for ws, ch in _active_websockets.items() if ch != "ios"]
+
+
+_ALLOWED_AUDIO_FORMATS = {"wav", "webm", "aac", "m4a", "ogg", "mp3"}
 
 
 def _decode_audio(data_url: str) -> tuple[bytes, str]:
@@ -89,7 +101,9 @@ def _decode_audio(data_url: str) -> tuple[bytes, str]:
         # Extract format from "data:audio/webm;base64" or "data:audio/aac;base64"
         if "audio/" in header:
             mime_part = header.split("audio/", 1)[1]
-            fmt = mime_part.split(";", 1)[0].split("+", 1)[0].strip()
+            extracted = mime_part.split(";", 1)[0].split("+", 1)[0].strip()
+            if extracted in _ALLOWED_AUDIO_FORMATS:
+                fmt = extracted
         return base64.b64decode(encoded), fmt
     return base64.b64decode(data_url), fmt
 
@@ -104,18 +118,21 @@ class OnboardingPayload(BaseModel):
     guest_controls: list[str] | None = None
 
 
+_DEVICE_TOKEN_PATTERN = r"^[a-fA-F0-9]+$"
+
+
 class DeviceRegistration(BaseModel):
     """APNs device token registration."""
 
-    device_token: str
-    platform: str
+    device_token: str = Field(min_length=32, max_length=200, pattern=_DEVICE_TOKEN_PATTERN)
+    platform: str = Field(pattern=r"^(ios|ipados|macos)$")
     identity: str
 
 
 class DeviceUnregistration(BaseModel):
     """APNs device token removal."""
 
-    device_token: str
+    device_token: str = Field(min_length=32, max_length=200, pattern=_DEVICE_TOKEN_PATTERN)
 
 
 def _preference_file(
@@ -140,23 +157,17 @@ def _get_prefs_dirs() -> tuple[Path, Path]:
     return base / "preferences", base / "profile"
 
 
+_TAILSCALE_RANGE = ipaddress.ip_network("100.64.0.0/10")
+
+
 async def require_trusted_network(request: Request) -> None:
-    """FastAPI dependency — restrict endpoint to localhost or Tailscale CGNAT range.
-
-    Trusted networks:
-    - 127.0.0.1, ::1 (localhost)
-    - 100.64.0.0/10 (Tailscale CGNAT)
-    - 'testclient' (Starlette test client)
-    """
-    import ipaddress
-
+    """FastAPI dependency — restrict endpoint to localhost or Tailscale CGNAT range."""
     client_host = request.client.host if request.client else ""
     if client_host in ("127.0.0.1", "::1", "testclient"):
         return
     try:
         addr = ipaddress.ip_address(client_host)
-        tailscale_range = ipaddress.ip_network("100.64.0.0/10")
-        if addr in tailscale_range:
+        if addr in _TAILSCALE_RANGE:
             return
     except ValueError:
         pass
@@ -200,7 +211,7 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     try:
         await _init_apns_adapter(pool)
     except Exception as exc:
-        logger.warning("APNs adapter init failed: {}", exc)
+        logger.warning("APNs adapter init failed ({}): {}", type(exc).__name__, exc)
 
     shutdown = asyncio.Event()
     delivery_task = asyncio.create_task(
@@ -212,10 +223,9 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     shutdown.set()
     delivery_task.cancel()
 
-    # Close APNs HTTP/2 client if it was initialized
     from core.notifications.channels import ChannelRegistry
 
-    apns = ChannelRegistry._instances.get("apns")
+    apns = ChannelRegistry.get_instance("apns")
     if apns is not None and hasattr(apns, "close"):
         await apns.close()
 
@@ -243,26 +253,27 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
         await websocket.accept()
-        _active_websockets.append(websocket)
+        _active_websockets[websocket] = "web_pwa"
         r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
 
         # Assign session immediately so clients (iOS) that wait for the
         # session message before sending don't deadlock.
         session_id = str(uuid4())
+        session_locked = False
         await websocket.send_json({"type": "session", "session_id": session_id})
 
         try:
             while True:
                 data = await websocket.receive_json()
 
-                # Allow client to restore a previous session on its first message
-                if client_sid := data.get("session_id"):
+                # Allow client to restore a previous session on its first message only
+                if not session_locked and (client_sid := data.get("session_id")):
                     session_id = client_sid
+                session_locked = True
 
                 raw_type = data.get("type", "text")
                 content = data.get("content", "")
 
-                # C5: Validate content_type before constructing UserRequest
                 if raw_type not in ("text", "audio"):
                     await websocket.send_json(
                         {
@@ -313,11 +324,10 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
                         )
                         continue
 
-                # Read channel from client (iOS sends "ios", web PWA omits or sends "web_pwa")
-                # Only allow channels reachable via WebSocket (not signal)
                 client_channel = data.get("channel", "web_pwa")
                 if client_channel not in ("web_pwa", "voice", "ios"):
                     client_channel = "web_pwa"
+                _active_websockets[websocket] = client_channel
                 request = UserRequest(
                     source=_CHANNEL_SOURCE_MAP.get(client_channel, "web-pwa"),
                     channel=client_channel,
@@ -349,7 +359,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         except WebSocketDisconnect:
             logger.info("WebSocket disconnected (session={})", session_id)
         finally:
-            _active_websockets.remove(websocket)
+            _active_websockets.pop(websocket, None)
 
     @app.get("/api/integrations")
     async def list_integrations() -> list[dict[str, Any]]:
@@ -535,12 +545,9 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         logger.info("Unregistered device token")
         return {"status": "ok"}
 
-    # Disable caching for static files in dev (forces browser to fetch fresh CSS/JS)
-    from starlette.middleware.base import BaseHTTPMiddleware
-
     class NoCacheStaticMiddleware(BaseHTTPMiddleware):
-        async def dispatch(self, request: Request, call_next):  # type: ignore[override]
-            response = await call_next(request)
+        async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+            response: Response = await call_next(request)
             if request.url.path.endswith((".css", ".js", ".html")):
                 response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
             return response

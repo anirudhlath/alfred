@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, ClassVar
+
+from loguru import logger
 
 from core.notifications.channels import ChannelAdapter, ChannelRegistry
 from core.notifications.schema import Notification, Urgency
 
 if TYPE_CHECKING:
     from core.channels.signal_bridge.bridge import SignalBridge
-
-logger = logging.getLogger(__name__)
 
 
 @ChannelRegistry.register()
