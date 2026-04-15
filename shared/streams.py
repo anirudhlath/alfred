@@ -18,6 +18,7 @@ SESSIONS_KEY_PREFIX = "alfred:sessions:"
 DND_STATE_KEY = "alfred:memory:dnd"
 DEFERRED_NOTIFICATIONS_KEY = "alfred:notifications:deferred"
 NOTIFICATION_DISPATCH_STREAM = "alfred:notifications:dispatch"
+DEVICE_TOKENS_KEY = "alfred:push:devices"
 
 # Phase 3: Memory
 VOICEPRINT_KEY = "alfred:identity:voiceprint"
