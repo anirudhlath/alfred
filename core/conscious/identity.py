@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import logging
+from loguru import logger
 
 from core.identity.schemas import IdentityResult
-
-logger = logging.getLogger(__name__)
 
 # Identity constants
 IDENTITY_SIR = "sir"
@@ -82,7 +80,7 @@ class IdentityGate:
                     risk_clearance="low",
                 )
             return self.resolve_session(authenticated=False)
-        logger.warning("Unknown channel '%s', defaulting to guest", channel)
+        logger.warning("Unknown channel '{}', defaulting to guest", channel)
         return IdentityResult(
             identity=IDENTITY_GUEST,
             confidence=1.0,

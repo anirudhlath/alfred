@@ -78,6 +78,11 @@ class ChannelRegistry:
         cls._instances[name] = instance
 
     @classmethod
+    def get_instance(cls, name: str) -> ChannelAdapter | None:
+        """Return a cached adapter instance by name, or None if not initialized."""
+        return cls._instances.get(name)
+
+    @classmethod
     def reset(cls) -> None:
         """Clear all registrations and instances. Used in tests."""
         cls._registry.clear()
