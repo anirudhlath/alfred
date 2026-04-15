@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import logging
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from loguru import logger
+
 if TYPE_CHECKING:
     from core.notifications.schema import Notification, Urgency
-
-logger = logging.getLogger(__name__)
 
 
 class ChannelAdapter(ABC):
@@ -44,7 +43,7 @@ class ChannelRegistry:
         def decorator(adapter_cls: type[ChannelAdapter]) -> type[ChannelAdapter]:
             name = adapter_cls.name
             cls._registry[name] = adapter_cls
-            logger.info("Registered channel adapter: %s", name)
+            logger.info("Registered channel adapter: {}", name)
             return adapter_cls
 
         return decorator
@@ -61,7 +60,7 @@ class ChannelRegistry:
         result: list[ChannelAdapter] = []
         for name in cls._registry:
             if name not in cls._instances:
-                logger.debug("Adapter '%s' registered but not initialized, skipping", name)
+                logger.debug("Adapter '{}' registered but not initialized, skipping", name)
                 continue
             instance = cls._instances[name]
             if instance.supports_urgency(urgency):
@@ -77,6 +76,11 @@ class ChannelRegistry:
     def set_instance(cls, name: str, instance: ChannelAdapter) -> None:
         """Inject a pre-built adapter instance (for adapters needing constructor args)."""
         cls._instances[name] = instance
+
+    @classmethod
+    def get_instance(cls, name: str) -> ChannelAdapter | None:
+        """Return a cached adapter instance by name, or None if not initialized."""
+        return cls._instances.get(name)
 
     @classmethod
     def reset(cls) -> None:

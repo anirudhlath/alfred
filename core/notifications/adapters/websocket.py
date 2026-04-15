@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, Any, ClassVar
+
+from loguru import logger
 
 from core.notifications.channels import ChannelAdapter, ChannelRegistry
 from core.notifications.schema import Notification, Urgency
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-logger = logging.getLogger(__name__)
 
 
 @ChannelRegistry.register()
@@ -39,9 +38,10 @@ class WebSocketChannelAdapter(ChannelAdapter):
             "title": notification.title,
             "body": notification.body,
             "urgency": notification.urgency.value,
+            "notification_id": notification.notification_id,
         }
         for ws in sessions:
             try:
                 await ws.send_json(payload)
             except Exception as exc:
-                logger.warning("Failed to push notification to WebSocket: %s", exc)
+                logger.warning("Failed to push notification to WebSocket: {}", exc)

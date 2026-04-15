@@ -5,13 +5,13 @@ Usage: python -m core.channels
 
 from __future__ import annotations
 
-import logging
 import os
 import time
 
 import uvicorn
+from loguru import logger
 
-from core.channels.web_server import create_app, get_active_websockets
+from core.channels.web_server import create_app, get_web_websockets
 from core.notifications.adapters.voice import VoiceChannelAdapter
 from core.notifications.adapters.websocket import WebSocketChannelAdapter
 from core.notifications.channels import ChannelRegistry
@@ -30,14 +30,15 @@ def main() -> None:
     configure_logging(service="web-channel")
     config = AlfredConfig.from_env()
 
-    # Wire channel adapters with WebSocket session access
+    # Wire channel adapters — only push to web/PWA clients.
+    # iOS receives notifications via APNs; notification_id dedup is a safety net.
     ChannelRegistry.set_instance(
         "websocket",
-        WebSocketChannelAdapter(get_sessions=get_active_websockets),
+        WebSocketChannelAdapter(get_sessions=get_web_websockets),
     )
     ChannelRegistry.set_instance(
         "voice",
-        VoiceChannelAdapter(get_tts=_get_tts_lazy, get_sessions=get_active_websockets),
+        VoiceChannelAdapter(get_tts=_get_tts_lazy, get_sessions=get_web_websockets),
     )
 
     app = create_app(redis_url=config.redis_url)
@@ -49,9 +50,7 @@ def main() -> None:
         except OSError as e:
             if e.errno == 48 and attempt < 4:
                 wait = attempt + 1
-                logging.getLogger(__name__).warning(
-                    "Port %d in use, retrying in %ds...", port, wait
-                )
+                logger.warning("Port {} in use, retrying in {}s...", port, wait)
                 time.sleep(wait)
             else:
                 raise

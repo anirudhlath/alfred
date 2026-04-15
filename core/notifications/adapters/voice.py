@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import base64
-import logging
 from typing import TYPE_CHECKING, Any, ClassVar
+
+from loguru import logger
 
 from core.notifications.channels import ChannelAdapter, ChannelRegistry
 from core.notifications.schema import Notification, Urgency
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-logger = logging.getLogger(__name__)
 
 
 @ChannelRegistry.register()
@@ -50,7 +49,7 @@ class VoiceChannelAdapter(ChannelAdapter):
         try:
             wav_bytes: bytes = tts.synthesize(text)
         except Exception as exc:
-            logger.error("VoiceChannelAdapter: TTS synthesis failed: %s", exc)
+            logger.error("VoiceChannelAdapter: TTS synthesis failed: {}", exc)
             return
 
         audio_b64 = base64.b64encode(wav_bytes).decode()
@@ -63,4 +62,4 @@ class VoiceChannelAdapter(ChannelAdapter):
             try:
                 await ws.send_json(payload)
             except Exception as exc:
-                logger.warning("Failed to push voice notification to WebSocket: %s", exc)
+                logger.warning("Failed to push voice notification to WebSocket: {}", exc)
