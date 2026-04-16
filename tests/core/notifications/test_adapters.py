@@ -89,6 +89,55 @@ class TestWebSocketChannelAdapter:
         assert adapter.supports_urgency(Urgency.IMPORTANT)
         assert adapter.supports_urgency(Urgency.URGENT)
 
+    @pytest.mark.asyncio
+    async def test_urgent_notification_includes_audio(self) -> None:
+        from core.notifications.adapters.websocket import WebSocketChannelAdapter
+
+        tts = MagicMock()
+        tts.synthesize.return_value = b"\x00\x01\x02\x03"
+        ws = AsyncMock()
+        session_getter = MagicMock(return_value=[ws])
+
+        adapter = WebSocketChannelAdapter(get_sessions=session_getter, get_tts=lambda: tts)
+        await adapter.deliver(_make_notification(Urgency.URGENT))
+
+        tts.synthesize.assert_called_once_with("Test: Hello world")
+        payload = ws.send_json.call_args[0][0]
+        assert payload["type"] == "notification"
+        assert payload["audio"] == base64.b64encode(b"\x00\x01\x02\x03").decode()
+
+    @pytest.mark.asyncio
+    async def test_important_notification_has_no_audio(self) -> None:
+        from core.notifications.adapters.websocket import WebSocketChannelAdapter
+
+        tts = MagicMock()
+        ws = AsyncMock()
+        session_getter = MagicMock(return_value=[ws])
+
+        adapter = WebSocketChannelAdapter(get_sessions=session_getter, get_tts=lambda: tts)
+        await adapter.deliver(_make_notification(Urgency.IMPORTANT))
+
+        tts.synthesize.assert_not_called()
+        payload = ws.send_json.call_args[0][0]
+        assert "audio" not in payload
+
+    @pytest.mark.asyncio
+    async def test_tts_failure_still_delivers_text(self) -> None:
+        from core.notifications.adapters.websocket import WebSocketChannelAdapter
+
+        tts = MagicMock()
+        tts.synthesize.side_effect = RuntimeError("TTS crashed")
+        ws = AsyncMock()
+        session_getter = MagicMock(return_value=[ws])
+
+        adapter = WebSocketChannelAdapter(get_sessions=session_getter, get_tts=lambda: tts)
+        await adapter.deliver(_make_notification(Urgency.URGENT))
+
+        ws.send_json.assert_called_once()
+        payload = ws.send_json.call_args[0][0]
+        assert payload["type"] == "notification"
+        assert "audio" not in payload
+
 
 class TestVoiceChannelAdapter:
     @pytest.mark.asyncio

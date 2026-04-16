@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from loguru import logger
@@ -20,8 +21,13 @@ class WebSocketChannelAdapter(ChannelAdapter):
     name: ClassVar[str] = "websocket"
     supported_urgencies: ClassVar[set[Urgency]] = {Urgency.IMPORTANT, Urgency.URGENT}
 
-    def __init__(self, get_sessions: Callable[[], list[Any]] | None = None) -> None:
+    def __init__(
+        self,
+        get_sessions: Callable[[], list[Any]] | None = None,
+        get_tts: Callable[[], Any | None] | None = None,
+    ) -> None:
         self._get_sessions = get_sessions
+        self._get_tts = get_tts
 
     async def deliver(self, notification: Notification) -> None:
         """Push notification to all active WebSocket connections."""
@@ -33,13 +39,24 @@ class WebSocketChannelAdapter(ChannelAdapter):
             logger.debug("WebSocketChannelAdapter: no active sessions, skipping")
             return
 
-        payload = {
+        payload: dict[str, Any] = {
             "type": "notification",
             "title": notification.title,
             "body": notification.body,
             "urgency": notification.urgency.value,
             "notification_id": notification.notification_id,
         }
+
+        if notification.urgency == Urgency.URGENT and self._get_tts is not None:
+            tts = self._get_tts()
+            if tts is not None:
+                try:
+                    text = f"{notification.title}: {notification.body}"
+                    wav_bytes: bytes = tts.synthesize(text)
+                    payload["audio"] = base64.b64encode(wav_bytes).decode()
+                except Exception as exc:
+                    logger.warning("WebSocketChannelAdapter: TTS synthesis failed: {}", exc)
+
         for ws in sessions:
             try:
                 await ws.send_json(payload)
