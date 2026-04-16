@@ -101,7 +101,7 @@ Agentic tool-use loop with parallel execution (`asyncio.gather`).
 - `dnd.py` — DNDChecker (manual Redis key + calendar meeting detection)
 - `channels.py` — `ChannelAdapter` ABC + `ChannelRegistry` (decorator-based registration)
 - `publisher.py` — Public API (thin facade over dispatcher)
-- `adapters/` — Signal, WebSocket, Voice, APNs concrete adapters
+- `adapters/` — Signal, WebSocket, APNs concrete adapters (Voice adapter exists but is not loaded in channels process; TTS for URGENT notifications is handled inline by the WebSocket adapter)
 
 ### Notification Data Flow
 
@@ -112,7 +112,7 @@ graph LR
     DND -->|defer| List[Redis List]
     DND -->|deliver| Stream[Redis Stream]
     Stream --> CG1[conscious-delivery → Signal]
-    Stream --> CG2[channels-delivery → WS + Voice + APNs]
+    Stream --> CG2[channels-delivery → WS + APNs]
     List -->|drain trigger| Disp
 ```
 
