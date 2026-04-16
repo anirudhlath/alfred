@@ -265,4 +265,4 @@ def test_conscious_config_has_recall_fields() -> None:
 
     config = ConsciousConfig(model="test")
     assert config.involuntary_recall_limit == 10
-    assert config.involuntary_recall_threshold == 0.5
+    assert config.involuntary_recall_threshold == 0.4
