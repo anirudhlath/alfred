@@ -17,7 +17,7 @@ Fast event → action loop via local SLM (Ollama).
 Episodic + semantic + procedural, biologically inspired.
 
 - `embedding_provider.py` — EmbeddingProvider ABC + SentenceTransformer (lazy-loaded, async via to_thread)
-- `vector_store.py` — VectorStore ABC with dual-embedding search (content + semantic key)
+- `vector_store.py` — VectorStore ABC with dual-embedding search (content + semantic key) + `update_metadata()` for retrieval stats
 - `redis_vector_store.py` — Hot store (RediSearch HNSW), uses CONTEXT_INDEX/CONTEXT_PREFIX
 - `sqlite_vec_store.py` — Cold store (sqlite-vec), with v1→v2 migration
 - `significance.py` — SignificanceScorer: 4 dims (safety/novelty/personal/emotional)
@@ -72,6 +72,7 @@ Agentic tool-use loop with parallel execution (`asyncio.gather`).
 2. Trigger tools → in-process `TriggerFeature` methods
 3. Memory tools (prefix `memory_`) → in-process `dispatch_memory_tool()`
 4. Domain tools → `DomainRouter` to external services
+- `__main__.py` runs a 15-min background loop (`asyncio.wait_for`) for proactive routine suggestions; ignored suggestions have confidence decremented over time
 
 ## Voice (`voice/`) — Voice I/O
 
@@ -86,6 +87,9 @@ Agentic tool-use loop with parallel execution (`asyncio.gather`).
 - `scheduler.py` — Periodic scheduler wired into conscious process (1hr default, `LIBRARIAN_INTERVAL_SECONDS` env var)
 - Scratchpad drain: atomic RENAME prevents race; processing key survives crashes for recovery
 - Conflict resolution: requires >=5 observations over >=14 days to contradict existing preference
+- Decay formula is subtractive: `age_factor - significance*2 - recency*1.5 - frequency*1.0` — high significance/recency/frequency resists cold migration
+- Compression at cold migration: groups entries by entity+date, LLM summarization, writes summary to cold, marks originals `compressed="yes"`
+- Routine indexing: detected routines indexed into `idx:context` on detection, removed on archive
 
 ## Channels (`channels/`) — User-Facing I/O
 

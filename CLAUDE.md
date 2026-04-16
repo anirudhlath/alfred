@@ -180,3 +180,5 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - Routines are indexed in `idx:context` on detection and removed on archive — search via `type="routine"` filter
 - Proactive routine suggestions run every 15 minutes in the conscious process background loop
 - Compression at cold migration groups by entity+date — summary goes to cold, originals marked `compressed="yes"`
+- `VectorStore` ABC has `update_metadata(id, fields)` — use for retrieval stats, do NOT mutate Redis hash fields directly
+- Ignored routine suggestions decrement confidence by 0.05/cycle — archived at threshold 0.3, removed from context index
