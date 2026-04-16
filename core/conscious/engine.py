@@ -505,6 +505,62 @@ class ConsciousEngine:
 
         return "\n\n".join(hints)
 
+    async def check_routine_suggestions(
+        self,
+        now: datetime | None = None,
+        notifier: Any = None,
+    ) -> None:
+        """Check candidate routines and publish proactive notifications for matches.
+
+        Called periodically from the conscious process background loop.
+        Routines that match the current time pattern and are outside the suggestion
+        cooldown window receive a INFORMATIONAL notification push.
+        """
+        if self._routines is None or notifier is None:
+            return
+
+        from core.memory.routines.patterns import match_trigger_pattern
+        from core.notifications.schema import Urgency
+
+        if now is None:
+            now = datetime.now(UTC)
+
+        candidates = self._routines.list_by_state("candidate")
+
+        for routine in candidates:
+            if routine.last_suggested is not None:
+                hours_since = (now - routine.last_suggested).total_seconds() / 3600
+                if hours_since < self._ROUTINE_SUGGESTION_COOLDOWN_HOURS:
+                    continue
+
+            if not match_trigger_pattern(routine.trigger_pattern, now):
+                continue
+
+            steps_str = "; ".join(s.description for s in routine.steps) if routine.steps else ""
+            if steps_str:
+                body = (
+                    f"I've noticed a pattern: '{routine.name}' — {steps_str} "
+                    f"around {routine.trigger_pattern}. "
+                    f"Want me to start doing this automatically?"
+                )
+            else:
+                body = (
+                    f"I've noticed a recurring pattern: '{routine.name}' "
+                    f"around {routine.trigger_pattern}. "
+                    f"Want me to start doing this automatically?"
+                )
+
+            await notifier.publish(
+                title="Routine Suggestion",
+                body=body,
+                source="librarian",
+                urgency=Urgency.INFORMATIONAL,
+            )
+
+            updated = routine.model_copy(update={"last_suggested": now})
+            self._routines.save(updated)
+            logger.info("Proactive routine suggestion published: '%s'", routine.name)
+
     @track_latency(category="conscious")
     @traced(name="conscious.process_request")
     async def process_request(self, request: UserRequest) -> AlfredResponse:

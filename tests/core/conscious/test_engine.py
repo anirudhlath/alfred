@@ -397,3 +397,64 @@ def test_build_routine_hint_empty_steps_shows_na(
 
     assert "N/A" in result
     assert "80%" in result
+
+
+# ---------------------------------------------------------------------------
+# check_routine_suggestions tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_check_routine_suggestions_publishes_notification(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """check_routine_suggestions should publish NORMAL notification for matching candidates."""
+    routine_store = MagicMock()
+    routine_store.list_by_state.return_value = [
+        _make_routine(trigger_pattern="20:00 daily")
+    ]
+
+    notifier = AsyncMock()
+    notifier.publish = AsyncMock()
+
+    engine = ConsciousEngine(**mock_deps, routine_store=routine_store)
+
+    now = _dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=_dt.UTC)
+    await engine.check_routine_suggestions(now=now, notifier=notifier)
+
+    notifier.publish.assert_awaited_once()
+    call_kwargs = notifier.publish.await_args.kwargs
+    assert call_kwargs["source"] == "librarian"
+    assert "evening_dim" in call_kwargs["body"].lower() or "20:00" in call_kwargs["body"]
+
+
+@pytest.mark.asyncio
+async def test_check_routine_suggestions_respects_cooldown(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """check_routine_suggestions should skip routines within cooldown."""
+    now = _dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=_dt.UTC)
+    recent = now - _dt.timedelta(hours=2)
+    routine_store = MagicMock()
+    routine_store.list_by_state.return_value = [
+        _make_routine(trigger_pattern="20:00 daily", last_suggested=recent)
+    ]
+
+    notifier = AsyncMock()
+    engine = ConsciousEngine(**mock_deps, routine_store=routine_store)
+
+    await engine.check_routine_suggestions(now=now, notifier=notifier)
+
+    notifier.publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_check_routine_suggestions_no_routines(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """check_routine_suggestions should be a no-op without a routine store."""
+    engine = ConsciousEngine(**mock_deps)
+    notifier = AsyncMock()
+    now = _dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=_dt.UTC)
+    await engine.check_routine_suggestions(now=now, notifier=notifier)
+    notifier.publish.assert_not_awaited()
