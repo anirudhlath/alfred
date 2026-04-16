@@ -59,6 +59,8 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `core/memory/significance.py` — `SignificanceScorer` (heuristic amygdala)
 - `core/memory/context_index.py` — `ContextIndexManager` (unified idx:context search)
 - `core/memory/routines/patterns.py` — `match_trigger_pattern()` (shared utility)
+- `core/memory/ingestor.py` — Memory Ingestor (hippocampus: ReflexObservation → episodic memory)
+- `core/memory/ingestor_main.py` — Memory Ingestor service entry point
 - `core/conscious/memory_tools.py` — Internal memory tools (recall_memories, get_live_state)
 - `core/identity/credentials.py` — `CredentialStore` (async SQLite, WebAuthn credential CRUD)
 - `core/identity/auth_routes.py` — WebAuthn registration/login/logout endpoints (6 routes under `/api/auth/`)
@@ -111,7 +113,7 @@ uv run python -m evals list
 uv run python -m evals compare <run1> <run2>
 ```
 
-Individual services can still be run standalone: `python -m bus`, `python -m core.reflex`, `python -m core.triggers`, `python -m core.conscious`, `python -m core.channels`.
+Individual services can still be run standalone: `python -m bus`, `python -m core.reflex`, `python -m core.triggers`, `python -m core.conscious`, `python -m core.channels`, `python -m core.memory.ingestor_main`.
 
 Web channel serves the PWA frontend on port 8081 (configurable in `core/channels/__main__.py`).
 
@@ -125,6 +127,8 @@ graph TD
     Bus --> Reflex[Reflex Engine<br/>System 1 SLM<br/>+ TriggerFired consumer]
     Bus --> Triggers[Trigger Engine<br/>Proactive Actions]
     Bus --> Conscious[Conscious Engine<br/>System 2 Cloud LLM]
+    Reflex -->|ReflexObservation| Ingestor[Memory Ingestor<br/>hippocampus]
+    Ingestor --> Memory
     Reflex -->|ActionRequest| Actions[alfred:actions]
     Triggers -->|ActionRequest| Actions
     Triggers -->|TriggerFired| Bus
@@ -193,3 +197,5 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - `AuthCookieMiddleware` reads Redis lazily from `request.app.state.redis` — redis is not available at middleware init time (lifespan hasn't run yet)
 - WebSocket auth gate parses cookies manually (BaseHTTPMiddleware doesn't run for WS upgrades) — cookie name constant is `COOKIE_NAME` from `core.identity.auth_middleware`
 - `identity_claim` in WS handler is server-derived from auth state (`"sir"` if authenticated), not client-supplied — frontend no longer sends `identity` field
+- Reflex Runner no longer writes to scratchpad — publishes structured `ReflexObservation` to `REFLEX_OBSERVATIONS_STREAM` instead; Memory Ingestor consumes and writes to episodic memory
+- Import `publish_observation` from `core.reflex.runner` to publish observations from new code paths

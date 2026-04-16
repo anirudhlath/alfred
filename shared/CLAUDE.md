@@ -21,6 +21,7 @@ Cross-cutting utilities used by multiple top-level packages (core, bus, domains)
 EVENTS_STREAM = "alfred:events"
 ACTIONS_STREAM = "alfred:actions"
 HOME_STATE_STREAM = "alfred:home:state_changed"
+REFLEX_OBSERVATIONS_STREAM = "alfred:reflex:observations"
 USER_REQUESTS_STREAM = "alfred:user:requests"
 NOTIFICATION_DISPATCH_STREAM = "alfred:notifications:dispatch"
 TOOL_REGISTRY_KEY = "alfred:tool_registry"

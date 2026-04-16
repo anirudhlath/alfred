@@ -4,7 +4,7 @@ MQTT is the edge layer (HA/devices). Redis Streams is the internal backbone. The
 
 ## Files
 
-- `schemas/events.py` — Single source of truth for all event types (10 types: BaseEvent, StateChangedEvent, ActionRequest, ActionResult, TelemetryEvent, ToolRegistration, TriggerFired, UserRequest, AlfredResponse, TriggerCreated)
+- `schemas/events.py` — Single source of truth for all event types (11 types: BaseEvent, StateChangedEvent, ActionRequest, ActionResult, TelemetryEvent, ToolRegistration, TriggerFired, UserRequest, AlfredResponse, TriggerCreated, ReflexObservation)
 - `bridge.py` — MQTT ↔ Redis Streams forwarder (topic conversion, bidirectional loops)
 - `__main__.py` — Entry point, loads config, runs bridge
 

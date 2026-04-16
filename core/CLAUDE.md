@@ -8,7 +8,7 @@ Fast event → action loop via local SLM (Ollama).
 
 - `engine.py` — SLM inference with dynamic tool prompt + TriggerFired reasoning
 - `tool_registry.py` — Reads tool manifests from Redis `alfred:tool_registry`
-- `runner.py` — Event loop orchestration + `ensure_consumer_group()` utility
+- `runner.py` — Event loop orchestration + `ensure_consumer_group()` + `publish_observation()` utilities
 - `__main__.py` — Two consumer loops: (1) `HOME_STATE_STREAM` for StateChanged, (2) `EVENTS_STREAM` for TriggerFired (group `reflex-trigger-fired`)
 - TriggerFired handling: Path A (notification) fires first, Path B (SLM reasoning) is isolated — SLM failures never block notification delivery
 
@@ -25,6 +25,8 @@ Episodic + semantic + procedural, biologically inspired.
 - `episodic/memory.py` — EpisodicMemory: hot+cold unified interface
 - `schemas.py` — Memory-specific Pydantic models
 - `routines/patterns.py` — `match_trigger_pattern()`: shared by engine + librarian
+- `ingestor.py` — Memory Ingestor (hippocampus): consumes `ReflexObservation` from `REFLEX_OBSERVATIONS_STREAM`, writes to `EpisodicMemory` via `SignificanceScorer`
+- `ingestor_main.py` — Entry point for Memory Ingestor service (`python -m core.memory.ingestor_main`)
 
 ## Triggers (`triggers/`) — Dynamic Trigger Engine
 
