@@ -1246,3 +1246,132 @@ async def test_decay_last_retrieved_zero_fallback_to_age() -> None:
     librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
     count = await librarian._apply_decay(decay_migration_threshold=0.5)
     assert count == 1
+
+
+# ---------------------------------------------------------------------------
+# Part G: Compression tests
+# ---------------------------------------------------------------------------
+
+from core.librarian.consolidator import _group_by_entity_date
+
+
+def test_group_by_entity_date_groups_same_entity_same_day() -> None:
+    """Entries sharing an entity on the same day should be grouped."""
+    results = [
+        _make_decay_search_result(entry_id="a", age_days=31, significance=0.05),
+        _make_decay_search_result(entry_id="b", age_days=31, significance=0.05),
+    ]
+    # Both have entities="light.kitchen"
+    groups, ungrouped = _group_by_entity_date(results)
+    assert len(groups) == 1
+    assert len(groups[0]) == 2
+    assert len(ungrouped) == 0
+
+
+def test_group_by_entity_date_no_entities_ungrouped() -> None:
+    """Entries with no entities should not be grouped."""
+    result = _make_decay_search_result(entry_id="lonely")
+    result.metadata.entities = ""
+    groups, ungrouped = _group_by_entity_date([result])
+    assert len(groups) == 0
+    assert len(ungrouped) == 1
+
+
+def test_group_by_entity_date_different_days_separate() -> None:
+    """Entries on different days should not be grouped even with same entity."""
+    results = [
+        _make_decay_search_result(entry_id="a", age_days=31),
+        _make_decay_search_result(entry_id="b", age_days=32),
+    ]
+    groups, ungrouped = _group_by_entity_date(results)
+    assert len(ungrouped) == 2
+
+
+@pytest.mark.asyncio
+async def test_compression_creates_summary_and_marks_originals() -> None:
+    """Compression should create a summary entry and mark originals."""
+    import time
+
+    now = time.time()
+    base_ts = now - (31 * 86400)
+
+    results = [
+        SearchResult(
+            id="a",
+            score=0.5,
+            content="kitchen light turned on",
+            semantic_key="kitchen light on",
+            metadata=ContextMetadata(
+                type="episodic",
+                source="system1_action",
+                entities="light.kitchen",
+                timestamp=base_ts,
+                significance=0.1,
+                retrieval_count=0,
+                last_retrieved=0.0,
+            ),
+        ),
+        SearchResult(
+            id="b",
+            score=0.5,
+            content="kitchen light turned off",
+            semantic_key="kitchen light off",
+            metadata=ContextMetadata(
+                type="episodic",
+                source="system1_action",
+                entities="light.kitchen",
+                timestamp=base_ts + 3600,
+                significance=0.15,
+                retrieval_count=1,
+                last_retrieved=0.0,
+            ),
+        ),
+    ]
+
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    context_index.search_text = AsyncMock(return_value=results)
+
+    librarian = _make_librarian(
+        episodic_memory=episodic_memory, context_index=context_index
+    )
+
+    llm_response = AsyncMock()
+    llm_response.choices = [
+        AsyncMock(
+            message=AsyncMock(
+                content=json.dumps(
+                    {
+                        "summary": "Kitchen light was toggled on then off during the evening.",
+                        "semantic_key": "kitchen light evening activity",
+                    }
+                )
+            )
+        )
+    ]
+
+    with patch("litellm.acompletion", return_value=llm_response):
+        count = await librarian._apply_decay(decay_migration_threshold=-10.0)
+
+    assert episodic_memory.copy_to_cold_and_remove.await_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_compression_single_entry_no_llm_call() -> None:
+    """A single entry (no group) should migrate without LLM compression."""
+    result = _make_decay_search_result(entry_id="solo", significance=0.05, age_days=60)
+    result.metadata.entities = ""
+
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    context_index.search_text = AsyncMock(return_value=[result])
+
+    librarian = _make_librarian(
+        episodic_memory=episodic_memory, context_index=context_index
+    )
+
+    with patch("litellm.acompletion") as mock_llm:
+        count = await librarian._apply_decay(decay_migration_threshold=-10.0)
+
+    mock_llm.assert_not_called()
+    assert count == 1

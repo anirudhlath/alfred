@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from core.memory.episodic.memory import EpisodicMemory
     from core.memory.routines.store import RoutineStore
     from core.memory.significance import SignificanceScorer
+    from core.memory.vector_store import SearchResult
     from shared.types import AioRedis
 
 logger = logging.getLogger(__name__)
@@ -55,6 +56,49 @@ class ConflictItem(BaseModel):
 _MEMORY_DIR = Path(__file__).resolve().parent.parent / "memory"
 _DEFAULT_PREFERENCES_DIR = str(_MEMORY_DIR / "preferences")
 _DEFAULT_PROFILE_DIR = str(_MEMORY_DIR / "profile")
+
+
+def _group_by_entity_date(
+    results: list[SearchResult],
+) -> tuple[list[list[SearchResult]], list[SearchResult]]:
+    """Group decayed entries by (shared_entity, date) for compression."""
+    from collections import defaultdict
+
+    buckets: dict[tuple[str, str], list[SearchResult]] = defaultdict(list)
+    ungrouped: list[SearchResult] = []
+
+    for result in results:
+        entities_str = result.metadata.entities
+        if not entities_str:
+            ungrouped.append(result)
+            continue
+
+        ts = result.metadata.timestamp
+        date_str = datetime.fromtimestamp(ts, tz=UTC).strftime("%Y-%m-%d")
+
+        entities = [e.strip() for e in entities_str.split(",") if e.strip()]
+        if not entities:
+            ungrouped.append(result)
+            continue
+
+        placed = False
+        for entity in entities:
+            key = (entity, date_str)
+            if key in buckets:
+                buckets[key].append(result)
+                placed = True
+                break
+        if not placed:
+            buckets[(entities[0], date_str)].append(result)
+
+    groups: list[list[SearchResult]] = []
+    for bucket in buckets.values():
+        if len(bucket) >= 2:
+            groups.append(bucket)
+        else:
+            ungrouped.extend(bucket)
+
+    return groups, ungrouped
 
 
 class Librarian:
@@ -87,6 +131,8 @@ class Librarian:
     ) -> None:
         self._redis = redis
         self._episodic_memory = episodic_memory
+        self._cold_store = episodic_memory._cold
+        self._embedder = episodic_memory._embedder
         self._routines = routine_store
         self._scorer = significance_scorer
         self._context_index = context_index
@@ -442,6 +488,121 @@ class Librarian:
             logger.warning("Semantic memory update failed: %s", exc)
         return 0
 
+    async def _compress_and_migrate(self, group: list[SearchResult]) -> int:
+        """Compress a group of related entries into a summary, then migrate originals.
+
+        Calls LLM to generate a summary + semantic_key for the group. Falls back
+        to concatenation if LLM fails or no API key. Writes summary to cold store
+        directly (not via EpisodicMemory to avoid re-embedding), then migrates
+        originals with compressed="yes" marker.
+
+        Returns the number of original entries migrated.
+        """
+        import asyncio
+        from uuid import uuid4
+
+        from core.memory.vector_store import ContextMetadata
+
+        # Build text representation of the group for LLM
+        lines = [f"- [{r.id}] {r.content}" for r in group]
+        group_text = "\n".join(lines)
+
+        # Aggregate metadata
+        all_entities = sorted(
+            {e.strip() for r in group for e in r.metadata.entities.split(",") if e.strip()}
+        )
+        max_significance = max(r.metadata.significance for r in group)
+        min_timestamp = min(r.metadata.timestamp for r in group)
+        total_retrievals = sum(r.metadata.retrieval_count for r in group)
+
+        # Generate summary via LLM
+        summary_text = ""
+        semantic_key_text = ""
+        if self._api_key:
+            try:
+                import litellm
+
+                system_prompt = (
+                    "You are a memory compressor for a home automation assistant. "
+                    "Given multiple related episodic memory entries, produce a single "
+                    "concise summary and a short semantic key phrase. "
+                    "Return ONLY valid JSON with keys "
+                    '"summary" and "semantic_key". No other text.\n'
+                    'Example: {"summary": "Kitchen lights toggled on then off.", '
+                    '"semantic_key": "kitchen light activity"}'
+                )
+                response = await litellm.acompletion(
+                    model=self._model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": group_text},
+                    ],
+                    max_tokens=200,
+                    api_key=self._api_key,
+                )
+                raw = response.choices[0].message.content or "{}"
+                parsed: dict[str, str] = json.loads(raw)
+                summary_text = parsed.get("summary", "")
+                semantic_key_text = parsed.get("semantic_key", "")
+            except Exception as exc:
+                logger.warning("Compression: LLM summarization failed: %s", exc)
+
+        # Fallback: concatenate contents
+        if not summary_text:
+            summary_text = " | ".join(r.content for r in group)
+        if not semantic_key_text:
+            semantic_key_text = summary_text[:100]
+
+        # Write summary entry to cold store (direct add, no hot store)
+        summary_id = str(uuid4())
+        summary_metadata = ContextMetadata(
+            type="episodic",
+            source="librarian_compressed",
+            entities=",".join(all_entities),
+            timestamp=min_timestamp,
+            significance=max_significance,
+            retrieval_count=total_retrievals,
+            last_retrieved=0.0,
+            compressed="yes",
+        )
+        try:
+            content_emb, key_emb = await asyncio.gather(
+                self._embedder.embed(summary_text),
+                self._embedder.embed(semantic_key_text),
+            )
+            await self._cold_store.add(
+                id=summary_id,
+                content=summary_text,
+                semantic_key=semantic_key_text,
+                embedding_content=content_emb,
+                embedding_semantic=key_emb,
+                metadata=summary_metadata,
+            )
+            logger.debug(
+                "Compression: wrote summary %s for %d entries",
+                summary_id,
+                len(group),
+            )
+        except Exception as exc:
+            logger.warning("Compression: failed to write summary entry: %s", exc)
+            # Still migrate originals even if summary write fails
+
+        # Migrate all originals with compressed marker
+        migrated = 0
+        for result in group:
+            try:
+                marked = result.model_copy(
+                    update={"metadata": result.metadata.model_copy(update={"compressed": "yes"})}
+                )
+                await self._episodic_memory.copy_to_cold_and_remove(marked)
+                migrated += 1
+            except Exception as exc:
+                logger.warning(
+                    "Compression: failed to migrate original entry %s: %s", result.id, exc
+                )
+
+        return migrated
+
     async def _apply_decay(
         self,
         decay_migration_threshold: float = 1.0,
@@ -465,6 +626,8 @@ class Librarian:
             )
 
         Entries with pressure > decay_migration_threshold are migrated to cold.
+        Related entries (same entity + same day) are compressed into a single
+        summary before migration.
         Returns the number of entries migrated.
         """
         from math import exp, log2
@@ -480,7 +643,7 @@ class Librarian:
             return 0
 
         now = datetime.now(UTC).timestamp()
-        migrated = 0
+        to_migrate: list[SearchResult] = []
 
         for result in results:
             if result.metadata.type != "episodic":
@@ -513,18 +676,38 @@ class Librarian:
             )
 
             if pressure > decay_migration_threshold:
-                try:
-                    await self._episodic_memory.copy_to_cold_and_remove(result)
-                    migrated += 1
-                    logger.debug(
-                        "Decayed entry %s (age=%.1fd, sig=%.2f, pressure=%.2f)",
-                        result.id,
-                        age_days,
-                        significance,
-                        pressure,
-                    )
-                except Exception as exc:
-                    logger.warning("Decay: failed to migrate entry %s: %s", result.id, exc)
+                to_migrate.append(result)
+                logger.debug(
+                    "Decay: queued entry %s (age=%.1fd, sig=%.2f, pressure=%.2f)",
+                    result.id,
+                    age_days,
+                    significance,
+                    pressure,
+                )
+
+        if not to_migrate:
+            return 0
+
+        # Group related entries for compression
+        groups, ungrouped = _group_by_entity_date(to_migrate)
+
+        migrated = 0
+
+        # Compress groups of 2+ related entries
+        for group in groups:
+            try:
+                count = await self._compress_and_migrate(group)
+                migrated += count
+            except Exception as exc:
+                logger.warning("Decay: compression failed for group: %s", exc)
+
+        # Migrate ungrouped entries individually
+        for result in ungrouped:
+            try:
+                await self._episodic_memory.copy_to_cold_and_remove(result)
+                migrated += 1
+            except Exception as exc:
+                logger.warning("Decay: failed to migrate entry %s: %s", result.id, exc)
 
         if migrated:
             logger.info("Decay: migrated %d entries to cold storage", migrated)
