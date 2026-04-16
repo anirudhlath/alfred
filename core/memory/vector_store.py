@@ -61,3 +61,12 @@ class VectorStore(ABC):
 
     @abstractmethod
     async def count(self) -> int: ...
+
+    @abstractmethod
+    async def update_metadata(
+        self,
+        id: str,  # noqa: A002
+        fields: dict[str, str | float | int],
+    ) -> None:
+        """Update specific metadata fields in-place (no re-embedding)."""
+        ...

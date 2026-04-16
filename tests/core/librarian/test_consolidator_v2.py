@@ -603,13 +603,14 @@ async def test_apply_decay_migrates_old_low_significance_entries() -> None:
     librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
 
     # Entry: 30 days old, low significance=0.1, retrieval_count=0
-    # pressure = 30 * (1-0.1) * (1/(0+1)) = 30 * 0.9 * 1.0 = 27.0 > threshold=1.0
+    # New formula: age_factor=1.0, retrieval_recency≈0.013, retrieval_frequency=0
+    # pressure ≈ 1.0 - 0.2 - 0.02 - 0.0 = 0.78 > threshold=0.5
     old_ts = datetime.datetime.now(datetime.UTC).timestamp() - (30 * 86400)
     old_entry = _make_search_result("old-entry-1", old_ts, significance=0.1, retrieval_count=0)
 
     context_index.search_text = AsyncMock(return_value=[old_entry])
 
-    migrated = await librarian._apply_decay(decay_migration_threshold=1.0)
+    migrated = await librarian._apply_decay(decay_migration_threshold=0.5)
 
     assert migrated == 1
     episodic_memory.copy_to_cold_and_remove.assert_awaited_once()
@@ -721,7 +722,7 @@ async def test_apply_decay_migration_error_continues_for_other_entries() -> None
     # First migration fails, second succeeds
     episodic_memory.copy_to_cold_and_remove.side_effect = [Exception("migrate failed"), None]
 
-    migrated = await librarian._apply_decay(decay_migration_threshold=1.0)
+    migrated = await librarian._apply_decay(decay_migration_threshold=0.5)
 
     # Only second entry migrated successfully
     assert migrated == 1
@@ -1121,3 +1122,541 @@ async def test_consolidate_includes_pattern_detection_in_result() -> None:
     assert "patterns_detected" in result
     assert "lifecycle_updates" in result
     assert result["patterns_detected"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Part J: Routine reindex on startup
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reindex_routines_indexes_non_archived() -> None:
+    """_reindex_routines should index candidate/active routines, skip archived."""
+    from unittest.mock import MagicMock
+
+    from core.memory.schemas import RoutineSpec, RoutineStep
+
+    routines = [
+        RoutineSpec(
+            name="active_one",
+            trigger_pattern="20:00 daily",
+            steps=[RoutineStep(description="Dim lights")],
+            confidence=0.9,
+            learned_from=["ep-1"],
+            state="candidate",
+        ),
+        RoutineSpec(
+            name="archived_one",
+            trigger_pattern="08:00 daily",
+            steps=[],
+            confidence=0.2,
+            learned_from=["ep-2"],
+            state="archived",
+        ),
+    ]
+
+    routine_store = MagicMock()
+    routine_store.list_all.return_value = routines
+
+    context_index = AsyncMock()
+    context_index.index_routine = AsyncMock()
+    context_index.reindex_semantic_files = AsyncMock()
+
+    librarian = _make_librarian(context_index=context_index)
+    librarian._routines = routine_store
+
+    count = await librarian._reindex_routines()
+
+    assert count == 1
+    context_index.index_routine.assert_awaited_once()
+    call_kwargs = context_index.index_routine.await_args.kwargs
+    assert call_kwargs["id"] == "active_one"
+    assert "Dim lights" in call_kwargs["content"]
+
+
+# ---------------------------------------------------------------------------
+# Part F: Upgraded decay formula tests
+# ---------------------------------------------------------------------------
+
+
+def _make_decay_search_result(
+    entry_id: str = "ep-1",
+    age_days: float = 30.0,
+    significance: float = 0.1,
+    retrieval_count: int = 0,
+    last_retrieved_days_ago: float | None = None,
+) -> SearchResult:
+    """Helper to create a SearchResult for decay testing."""
+    import time
+
+    now = time.time()
+    timestamp = now - (age_days * 86400)
+    last_retrieved = 0.0
+    if last_retrieved_days_ago is not None:
+        last_retrieved = now - (last_retrieved_days_ago * 86400)
+    return SearchResult(
+        id=entry_id,
+        score=0.5,
+        content=f"entry {entry_id}",
+        semantic_key=f"key {entry_id}",
+        metadata=ContextMetadata(
+            type="episodic",
+            source="conversation",
+            entities="light.kitchen",
+            timestamp=timestamp,
+            significance=significance,
+            retrieval_count=retrieval_count,
+            last_retrieved=last_retrieved,
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_decay_high_significance_resists_migration() -> None:
+    """Entry with high significance should NOT be migrated even if old."""
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    context_index.search_text = AsyncMock(
+        return_value=[_make_decay_search_result(significance=0.8, age_days=30)]
+    )
+
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+    count = await librarian._apply_decay(decay_migration_threshold=0.5)
+    assert count == 0
+    episodic_memory.copy_to_cold_and_remove.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_decay_old_low_significance_migrates() -> None:
+    """Old entry with low significance and no retrievals should be migrated."""
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    context_index.search_text = AsyncMock(
+        return_value=[_make_decay_search_result(significance=0.1, age_days=30)]
+    )
+
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+    count = await librarian._apply_decay(decay_migration_threshold=0.5)
+    assert count == 1
+    episodic_memory.copy_to_cold_and_remove.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_decay_recently_retrieved_resists_migration() -> None:
+    """Entry retrieved yesterday should resist migration due to recency."""
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    context_index.search_text = AsyncMock(
+        return_value=[
+            _make_decay_search_result(
+                significance=0.1,
+                age_days=30,
+                retrieval_count=1,
+                last_retrieved_days_ago=1,
+            )
+        ]
+    )
+
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+    count = await librarian._apply_decay(decay_migration_threshold=0.5)
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_decay_frequently_retrieved_resists_migration() -> None:
+    """Entry with high retrieval count should resist migration."""
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    context_index.search_text = AsyncMock(
+        return_value=[
+            _make_decay_search_result(
+                significance=0.1,
+                age_days=30,
+                retrieval_count=10,
+                last_retrieved_days_ago=15,
+            )
+        ]
+    )
+
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+    count = await librarian._apply_decay(decay_migration_threshold=0.5)
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_decay_last_retrieved_zero_fallback_to_age() -> None:
+    """When last_retrieved=0 (pre-stats-fix), days_since_last_retrieved == age_days."""
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    # Old entry, low significance, last_retrieved=0.0 (default/never)
+    context_index.search_text = AsyncMock(
+        return_value=[_make_decay_search_result(significance=0.1, age_days=60)]
+    )
+
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+    count = await librarian._apply_decay(decay_migration_threshold=0.5)
+    assert count == 1
+
+
+# ---------------------------------------------------------------------------
+# Part G: Compression tests
+# ---------------------------------------------------------------------------
+
+from core.librarian.consolidator import _group_by_entity_date
+
+
+def test_group_by_entity_date_groups_same_entity_same_day() -> None:
+    """Entries sharing an entity on the same day should be grouped."""
+    results = [
+        _make_decay_search_result(entry_id="a", age_days=31, significance=0.05),
+        _make_decay_search_result(entry_id="b", age_days=31, significance=0.05),
+    ]
+    # Both have entities="light.kitchen"
+    groups, ungrouped = _group_by_entity_date(results)
+    assert len(groups) == 1
+    assert len(groups[0]) == 2
+    assert len(ungrouped) == 0
+
+
+def test_group_by_entity_date_no_entities_ungrouped() -> None:
+    """Entries with no entities should not be grouped."""
+    result = _make_decay_search_result(entry_id="lonely")
+    result.metadata.entities = ""
+    groups, ungrouped = _group_by_entity_date([result])
+    assert len(groups) == 0
+    assert len(ungrouped) == 1
+
+
+def test_group_by_entity_date_different_days_separate() -> None:
+    """Entries on different days should not be grouped even with same entity."""
+    results = [
+        _make_decay_search_result(entry_id="a", age_days=31),
+        _make_decay_search_result(entry_id="b", age_days=32),
+    ]
+    groups, ungrouped = _group_by_entity_date(results)
+    assert len(ungrouped) == 2
+
+
+@pytest.mark.asyncio
+async def test_compression_creates_summary_and_marks_originals() -> None:
+    """Compression should create a summary entry and mark originals."""
+    import time
+
+    now = time.time()
+    base_ts = now - (31 * 86400)
+
+    results = [
+        SearchResult(
+            id="a",
+            score=0.5,
+            content="kitchen light turned on",
+            semantic_key="kitchen light on",
+            metadata=ContextMetadata(
+                type="episodic",
+                source="system1_action",
+                entities="light.kitchen",
+                timestamp=base_ts,
+                significance=0.1,
+                retrieval_count=0,
+                last_retrieved=0.0,
+            ),
+        ),
+        SearchResult(
+            id="b",
+            score=0.5,
+            content="kitchen light turned off",
+            semantic_key="kitchen light off",
+            metadata=ContextMetadata(
+                type="episodic",
+                source="system1_action",
+                entities="light.kitchen",
+                timestamp=base_ts + 3600,
+                significance=0.15,
+                retrieval_count=1,
+                last_retrieved=0.0,
+            ),
+        ),
+    ]
+
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    context_index.search_text = AsyncMock(return_value=results)
+
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+
+    llm_response = AsyncMock()
+    llm_response.choices = [
+        AsyncMock(
+            message=AsyncMock(
+                content=json.dumps(
+                    {
+                        "summary": "Kitchen light was toggled on then off during the evening.",
+                        "semantic_key": "kitchen light evening activity",
+                    }
+                )
+            )
+        )
+    ]
+
+    with patch("litellm.acompletion", return_value=llm_response):
+        count = await librarian._apply_decay(decay_migration_threshold=-10.0)
+
+    assert episodic_memory.copy_to_cold_and_remove.await_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_compression_single_entry_no_llm_call() -> None:
+    """A single entry (no group) should migrate without LLM compression."""
+    result = _make_decay_search_result(entry_id="solo", significance=0.05, age_days=60)
+    result.metadata.entities = ""
+
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    context_index.search_text = AsyncMock(return_value=[result])
+
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+
+    with patch("litellm.acompletion") as mock_llm:
+        count = await librarian._apply_decay(decay_migration_threshold=-10.0)
+
+    mock_llm.assert_not_called()
+    assert count == 1
+
+
+# ---------------------------------------------------------------------------
+# Part H: Routine indexing tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_detect_patterns_indexes_routine_in_context() -> None:
+    """_detect_patterns should call context_index.index_routine after saving."""
+    from unittest.mock import MagicMock
+
+    routine_store = MagicMock()
+    routine_store.list_all.return_value = []
+
+    context_index = AsyncMock()
+    context_index.index_routine = AsyncMock()
+    context_index.reindex_semantic_files = AsyncMock()
+
+    librarian = _make_librarian(context_index=context_index)
+    librarian._routines = routine_store
+
+    entries = [_make_entry_with_id(f"ep-{i}") for i in range(5)]
+
+    llm_payload = json.dumps(
+        [
+            {
+                "name": "test_routine",
+                "trigger_pattern": "20:00 daily",
+                "steps": [{"description": "Turn off lights"}],
+                "confidence": 0.8,
+                "learned_from": ["ep-0", "ep-1", "ep-2"],
+            }
+        ]
+    )
+    mock_response = AsyncMock()
+    mock_response.choices = [AsyncMock(message=AsyncMock(content=llm_payload))]
+
+    with patch("litellm.acompletion", return_value=mock_response):
+        result = await librarian._detect_patterns(entries)
+
+    assert len(result) == 1
+    context_index.index_routine.assert_awaited_once()
+    call_args = context_index.index_routine.await_args
+    assert call_args.kwargs["id"] == "test_routine"
+    assert "Turn off lights" in call_args.kwargs["content"]
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_archive_removes_from_context_index() -> None:
+    """When a routine transitions to archived, it should be removed from context index."""
+    import datetime as dt
+    from unittest.mock import MagicMock
+
+    from core.memory.schemas import RoutineSpec
+
+    old_hit = dt.datetime(2026, 2, 20, 0, 0, 0, tzinfo=dt.UTC)
+    routine = RoutineSpec(
+        name="old_routine",
+        trigger_pattern="morning",
+        steps=[],
+        confidence=0.8,
+        learned_from=["ep-1"],
+        state="dormant",
+        last_hit=old_hit,
+    )
+
+    routine_store = MagicMock()
+    routine_store.list_all.return_value = [routine]
+
+    context_index = AsyncMock()
+    context_index.remove = AsyncMock()
+    context_index.reindex_semantic_files = AsyncMock()
+
+    librarian = _make_librarian(context_index=context_index)
+    librarian._routines = routine_store
+
+    with patch("core.librarian.consolidator.datetime") as mock_dt:
+        now = dt.datetime(2026, 3, 24, 8, 0, 0, tzinfo=dt.UTC)
+        mock_dt.now.return_value = now
+        mock_dt.UTC = dt.UTC
+        mock_dt.timedelta = dt.timedelta
+
+        await librarian._update_routine_lifecycle()
+
+    # Routine should be archived AND removed from context index
+    call_args = routine_store.save.call_args[0][0]
+    assert call_args.state == "archived"
+    context_index.remove.assert_awaited_once_with("old_routine")
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_suggested_but_ignored_decays_confidence() -> None:
+    """Candidate that was suggested but not accepted should lose confidence."""
+    import datetime as dt
+
+    from core.memory.schemas import RoutineSpec
+
+    # Routine was suggested 25 hours ago (past cooldown) but no acceptance
+    # Use "08:00 daily" trigger_pattern with now=20:00 so the pattern does NOT fire
+    now = dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=dt.UTC)
+    suggested = now - dt.timedelta(hours=25)
+
+    routine = RoutineSpec(
+        name="ignored_routine",
+        trigger_pattern="08:00 daily",
+        steps=[],
+        confidence=0.5,
+        learned_from=["ep-1"],
+        state="candidate",
+        last_suggested=suggested,
+    )
+
+    routine_store = MagicMock()
+    routine_store.list_all.return_value = [routine]
+
+    context_index = AsyncMock()
+    context_index._store = AsyncMock()
+    context_index.reindex_semantic_files = AsyncMock()
+
+    librarian = _make_librarian(context_index=context_index)
+    librarian._routines = routine_store
+
+    with patch("core.librarian.consolidator.datetime") as mock_dt:
+        mock_dt.now.return_value = now
+        mock_dt.UTC = dt.UTC
+        mock_dt.timedelta = dt.timedelta
+
+        await librarian._update_routine_lifecycle()
+
+    saved = routine_store.save.call_args[0][0]
+    assert saved.confidence == pytest.approx(0.45)  # 0.5 - 0.05
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_confidence_below_threshold_archives() -> None:
+    """Candidate with confidence below threshold should be archived."""
+    import datetime as dt
+
+    from core.memory.schemas import RoutineSpec
+
+    # Use "08:00 daily" trigger_pattern with now=20:00 so the pattern does NOT fire
+    now = dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=dt.UTC)
+    suggested = now - dt.timedelta(hours=25)
+
+    routine = RoutineSpec(
+        name="dying_routine",
+        trigger_pattern="08:00 daily",
+        steps=[],
+        confidence=0.28,  # Below 0.3 threshold after decay
+        learned_from=["ep-1"],
+        state="candidate",
+        last_suggested=suggested,
+    )
+
+    routine_store = MagicMock()
+    routine_store.list_all.return_value = [routine]
+
+    context_index = AsyncMock()
+    context_index.remove = AsyncMock()
+    context_index.reindex_semantic_files = AsyncMock()
+
+    librarian = _make_librarian(context_index=context_index)
+    librarian._routines = routine_store
+
+    with patch("core.librarian.consolidator.datetime") as mock_dt:
+        mock_dt.now.return_value = now
+        mock_dt.UTC = dt.UTC
+        mock_dt.timedelta = dt.timedelta
+
+        await librarian._update_routine_lifecycle()
+
+    saved = routine_store.save.call_args[0][0]
+    assert saved.state == "archived"
+    context_index.remove.assert_awaited_once_with("dying_routine")
+
+
+# ---------------------------------------------------------------------------
+# Part I: Additional coverage for architect review findings
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_compression_fallback_concatenation_when_no_api_key() -> None:
+    """Without an API key, compression should concatenate contents instead of LLM call."""
+    import time
+
+    now = time.time()
+    base_ts = now - (31 * 86400)
+
+    results = [
+        SearchResult(
+            id="a",
+            score=0.5,
+            content="kitchen light on",
+            semantic_key="kitchen on",
+            metadata=ContextMetadata(
+                type="episodic",
+                source="system1_action",
+                entities="light.kitchen",
+                timestamp=base_ts,
+                significance=0.1,
+                retrieval_count=0,
+                last_retrieved=0.0,
+            ),
+        ),
+        SearchResult(
+            id="b",
+            score=0.5,
+            content="kitchen light off",
+            semantic_key="kitchen off",
+            metadata=ContextMetadata(
+                type="episodic",
+                source="system1_action",
+                entities="light.kitchen",
+                timestamp=base_ts + 3600,
+                significance=0.15,
+                retrieval_count=0,
+                last_retrieved=0.0,
+            ),
+        ),
+    ]
+
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    context_index.search_text = AsyncMock(return_value=results)
+
+    # No API key → no LLM call, fallback to concatenation
+    librarian = _make_librarian(
+        api_key="",
+        episodic_memory=episodic_memory,
+        context_index=context_index,
+    )
+
+    with patch("litellm.acompletion") as mock_llm:
+        count = await librarian._apply_decay(decay_migration_threshold=-10.0)
+
+    mock_llm.assert_not_called()
+    assert episodic_memory.copy_to_cold_and_remove.await_count >= 2

@@ -344,3 +344,18 @@ async def test_search_filters_by_min_similarity(
     mock_redis.execute_command.side_effect = [ft_result, ft_result]
     results = await store.search(query_embedding=[0.1, 0.2, 0.3, 0.4], limit=5, min_similarity=0.5)
     assert results == []
+
+
+# ---------------------------------------------------------------------------
+# update_metadata() tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_update_metadata_calls_hset(store: RedisVectorStore, mock_redis: AsyncMock) -> None:
+    """update_metadata should HSET the given fields on the entry's Redis hash."""
+    store._index_ready = True
+    await store.update_metadata("ep-1", {"retrieval_count": 5, "last_retrieved": 1711000000.0})
+    mock_redis.hset.assert_called_once_with(
+        "ctx:ep-1", mapping={"retrieval_count": 5, "last_retrieved": 1711000000.0}
+    )
