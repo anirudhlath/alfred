@@ -127,7 +127,7 @@ graph TD
     Agents -->|MCP/HTTP| Services[Microservices<br/>home-service, ...]
     Conscious --> Memory[Memory<br/>episodic + semantic + procedural]
     Conscious --> Integrations[IntegrationRegistry<br/>weather, calendar, health, robinhood]
-    Conscious --> Notify[NotificationDispatcher<br/>Signal, WebSocket, Voice, APNs]
+    Conscious --> Notify[NotificationDispatcher<br/>Signal, WebSocket, APNs]
     Memory --> Librarian[Librarian<br/>nightly consolidation]
     WebChannel[Web PWA :8081] -->|UserRequest| Bus
     Signal[Signal Bridge] -->|UserRequest| Bus
