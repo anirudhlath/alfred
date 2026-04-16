@@ -1,12 +1,11 @@
 # D8: System 2 Observation of System 1 Actions
 
+## Status: IMPLEMENTED
+
+See spec: `docs/superpowers/specs/2026-04-16-d8-system2-observation-design.md`
+See plan: `docs/superpowers/plans/2026-04-16-d8-system2-observation-plan.md`
+
 ## Summary
-No observation path from Reflex Engine → Conscious Engine.
-
-## Context
-System 2 (Conscious) should be able to observe System 1 (Reflex) actions to learn from them, override bad decisions, and build higher-level understanding.
-
-## Acceptance Criteria
-- Reflex actions published to an observation stream
-- Conscious Engine consumes and evaluates Reflex decisions
-- Override mechanism for bad Reflex actions
+Observation pipeline from Reflex Engine → Memory Ingestor → Episodic Memory.
+Conscious Engine recalls Reflex actions via episodic search. Librarian detects
+patterns in Reflex behaviour during consolidation.
