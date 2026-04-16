@@ -410,9 +410,7 @@ async def test_check_routine_suggestions_publishes_notification(
 ) -> None:
     """check_routine_suggestions should publish NORMAL notification for matching candidates."""
     routine_store = MagicMock()
-    routine_store.list_by_state.return_value = [
-        _make_routine(trigger_pattern="20:00 daily")
-    ]
+    routine_store.list_by_state.return_value = [_make_routine(trigger_pattern="20:00 daily")]
 
     notifier = AsyncMock()
     notifier.publish = AsyncMock()

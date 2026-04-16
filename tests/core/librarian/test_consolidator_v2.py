@@ -1332,9 +1332,7 @@ async def test_compression_creates_summary_and_marks_originals() -> None:
     context_index = AsyncMock()
     context_index.search_text = AsyncMock(return_value=results)
 
-    librarian = _make_librarian(
-        episodic_memory=episodic_memory, context_index=context_index
-    )
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
 
     llm_response = AsyncMock()
     llm_response.choices = [
@@ -1366,9 +1364,7 @@ async def test_compression_single_entry_no_llm_call() -> None:
     context_index = AsyncMock()
     context_index.search_text = AsyncMock(return_value=[result])
 
-    librarian = _make_librarian(
-        episodic_memory=episodic_memory, context_index=context_index
-    )
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
 
     with patch("litellm.acompletion") as mock_llm:
         count = await librarian._apply_decay(decay_migration_threshold=-10.0)
@@ -1399,15 +1395,17 @@ async def test_detect_patterns_indexes_routine_in_context() -> None:
 
     entries = [_make_entry_with_id(f"ep-{i}") for i in range(5)]
 
-    llm_payload = json.dumps([
-        {
-            "name": "test_routine",
-            "trigger_pattern": "20:00 daily",
-            "steps": [{"description": "Turn off lights"}],
-            "confidence": 0.8,
-            "learned_from": ["ep-0", "ep-1", "ep-2"],
-        }
-    ])
+    llm_payload = json.dumps(
+        [
+            {
+                "name": "test_routine",
+                "trigger_pattern": "20:00 daily",
+                "steps": [{"description": "Turn off lights"}],
+                "confidence": 0.8,
+                "learned_from": ["ep-0", "ep-1", "ep-2"],
+            }
+        ]
+    )
     mock_response = AsyncMock()
     mock_response.choices = [AsyncMock(message=AsyncMock(content=llm_payload))]
 

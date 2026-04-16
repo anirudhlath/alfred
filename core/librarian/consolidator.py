@@ -705,8 +705,8 @@ class Librarian:
                 return 0
 
         results = await asyncio.gather(
-            *((_compress_group(g) for g in groups)),
-            *((_migrate_single(r) for r in ungrouped)),
+            *(_compress_group(g) for g in groups),
+            *(_migrate_single(r) for r in ungrouped),
         )
         migrated = sum(results)
 
@@ -825,9 +825,7 @@ class Librarian:
                         confidence=candidate.confidence,
                     )
                 except Exception as exc:
-                    logger.warning(
-                        "Failed to index routine '%s': %s", candidate.name, exc
-                    )
+                    logger.warning("Failed to index routine '%s': %s", candidate.name, exc)
             except Exception as exc:
                 logger.warning("Failed to process pattern candidate: %s", exc)
 
@@ -934,9 +932,7 @@ class Librarian:
         try:
             await self._context_index.remove(name)
         except Exception as exc:
-            logger.warning(
-                "Failed to remove archived routine '%s' from index: %s", name, exc
-            )
+            logger.warning("Failed to remove archived routine '%s' from index: %s", name, exc)
 
     @staticmethod
     def _check_pattern_fired(routine: RoutineSpec, now: datetime) -> bool:
