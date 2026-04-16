@@ -11,7 +11,7 @@ from bus.schemas.events import ActionRequest, StateChangedEvent
 
 @pytest.mark.asyncio
 async def test_process_stream_entry_produces_action() -> None:
-    """A valid state change event should be processed and produce an action."""
+    """A valid state change event should be processed and produce an action + observation."""
     from core.reflex.runner import process_stream_entry
 
     event = StateChangedEvent(
@@ -34,7 +34,11 @@ async def test_process_stream_entry_produces_action() -> None:
 
     mock_agent = AsyncMock()
     mock_agent.execute_action.return_value = MagicMock(
-        model_dump_json=MagicMock(return_value='{"status":"success"}')
+        model_dump_json=MagicMock(return_value='{"status":"success"}'),
+        status="success",
+        request_id="r-1",
+        tool_name="smart_home.dim_lights",
+        source="home-service",
     )
 
     mock_redis = AsyncMock()
@@ -45,14 +49,67 @@ async def test_process_stream_entry_produces_action() -> None:
         agent=mock_agent,
         redis=mock_redis,
         result_stream="alfred:home:action_results",
-        scratchpad_queue="alfred:scratchpad:queue",
+        observation_stream="alfred:reflex:observations",
     )
 
     assert result is True
     mock_engine.process_event.assert_called_once()
     mock_agent.execute_action.assert_called_once()
-    mock_redis.xadd.assert_called_once()
-    mock_redis.lpush.assert_called_once()
+    # Two xadd calls: one for result stream, one for observation stream
+    assert mock_redis.xadd.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_process_stream_entry_publishes_reflex_observation() -> None:
+    """Observation published to stream includes structured ReflexObservation."""
+    from bus.schemas.events import ReflexObservation
+    from core.reflex.runner import process_stream_entry
+
+    event = StateChangedEvent(
+        source="home-service",
+        domain="home",
+        entity_id="light.hallway",
+        old_state="off",
+        new_state="on",
+    )
+
+    action = ActionRequest(
+        source="reflex-engine",
+        target_service="home-service",
+        tool_name="smart_home.turn_on",
+        parameters={"entity_id": "light.hallway"},
+    )
+
+    mock_engine = AsyncMock()
+    mock_engine.process_event.return_value = action
+
+    mock_agent = AsyncMock()
+    mock_agent.execute_action.return_value = MagicMock(
+        model_dump_json=MagicMock(return_value='{"status":"success"}'),
+        status="success",
+        request_id=action.request_id,
+        tool_name="smart_home.turn_on",
+        source="home-service",
+    )
+
+    mock_redis = AsyncMock()
+
+    await process_stream_entry(
+        entry_data={"event": event.model_dump_json()},
+        engine=mock_engine,
+        agent=mock_agent,
+        redis=mock_redis,
+        result_stream="alfred:home:action_results",
+        observation_stream="alfred:reflex:observations",
+    )
+
+    # Find the observation xadd call (second call)
+    obs_call = mock_redis.xadd.call_args_list[1]
+    assert obs_call.args[0] == "alfred:reflex:observations"
+    obs_json = obs_call.args[1]["event"]
+    obs = ReflexObservation.model_validate_json(obs_json)
+    assert obs.origin == "state_change"
+    assert obs.action.tool_name == "smart_home.turn_on"
 
 
 @pytest.mark.asyncio
@@ -79,7 +136,7 @@ async def test_process_stream_entry_no_action() -> None:
         agent=mock_agent,
         redis=mock_redis,
         result_stream="alfred:home:action_results",
-        scratchpad_queue="alfred:scratchpad:queue",
+        observation_stream="alfred:reflex:observations",
     )
 
     assert result is False
@@ -103,7 +160,7 @@ async def test_process_stream_entry_malformed_event() -> None:
         agent=mock_agent,
         redis=mock_redis,
         result_stream="alfred:home:action_results",
-        scratchpad_queue="alfred:scratchpad:queue",
+        observation_stream="alfred:reflex:observations",
     )
 
     assert result is False
@@ -164,7 +221,7 @@ async def test_process_stream_entry_handles_bytes_keys() -> None:
         agent=mock_agent,
         redis=mock_redis,
         result_stream="alfred:home:action_results",
-        scratchpad_queue="alfred:scratchpad:queue",
+        observation_stream="alfred:reflex:observations",
     )
 
     assert result is False
