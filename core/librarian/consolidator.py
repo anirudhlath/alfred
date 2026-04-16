@@ -544,6 +544,13 @@ class Librarian:
             "Given episodic memory entries, identify repeated behavioural patterns. "
             f"Only report patterns with at least {self._pattern_min_occurrences} occurrences "
             f"spread over at least {self._pattern_min_days} different days. "
+            "\n\n"
+            "PAY SPECIAL ATTENTION to entries with source 'reflex' — these are automatic "
+            "System 1 (Reflex Engine) actions taken without conscious reasoning. Look for:\n"
+            "- Repeated reflex actions that may be unnecessary or counterproductive "
+            "(e.g., lights turning on for pet motion at night)\n"
+            "- Reflex patterns that could be optimised or overridden by a learned routine\n"
+            "- Reflex actions that are consistent and beneficial (validate as good behaviour)\n\n"
             "Return a JSON array of pattern objects. Each object must have:\n"
             '  "name": short snake_case identifier (e.g. "evening_dim")\n'
             '  "trigger_pattern": when it happens (e.g. "20:00 daily", "weekday morning")\n'
