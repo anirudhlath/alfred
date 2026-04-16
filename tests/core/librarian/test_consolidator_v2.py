@@ -1463,3 +1463,90 @@ async def test_lifecycle_archive_removes_from_context_index() -> None:
     call_args = routine_store.save.call_args[0][0]
     assert call_args.state == "archived"
     context_index._store.delete.assert_awaited_once_with("old_routine")
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_suggested_but_ignored_decays_confidence() -> None:
+    """Candidate that was suggested but not accepted should lose confidence."""
+    import datetime as dt
+
+    from core.memory.schemas import RoutineSpec
+
+    # Routine was suggested 25 hours ago (past cooldown) but no acceptance
+    # Use "08:00 daily" trigger_pattern with now=20:00 so the pattern does NOT fire
+    now = dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=dt.UTC)
+    suggested = now - dt.timedelta(hours=25)
+
+    routine = RoutineSpec(
+        name="ignored_routine",
+        trigger_pattern="08:00 daily",
+        steps=[],
+        confidence=0.5,
+        learned_from=["ep-1"],
+        state="candidate",
+        last_suggested=suggested,
+    )
+
+    routine_store = MagicMock()
+    routine_store.list_all.return_value = [routine]
+
+    context_index = AsyncMock()
+    context_index._store = AsyncMock()
+    context_index.reindex_semantic_files = AsyncMock()
+
+    librarian = _make_librarian(context_index=context_index)
+    librarian._routines = routine_store
+
+    with patch("core.librarian.consolidator.datetime") as mock_dt:
+        mock_dt.now.return_value = now
+        mock_dt.UTC = dt.UTC
+        mock_dt.timedelta = dt.timedelta
+
+        await librarian._update_routine_lifecycle()
+
+    saved = routine_store.save.call_args[0][0]
+    assert saved.confidence == pytest.approx(0.45)  # 0.5 - 0.05
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_confidence_below_threshold_archives() -> None:
+    """Candidate with confidence below threshold should be archived."""
+    import datetime as dt
+
+    from core.memory.schemas import RoutineSpec
+
+    # Use "08:00 daily" trigger_pattern with now=20:00 so the pattern does NOT fire
+    now = dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=dt.UTC)
+    suggested = now - dt.timedelta(hours=25)
+
+    routine = RoutineSpec(
+        name="dying_routine",
+        trigger_pattern="08:00 daily",
+        steps=[],
+        confidence=0.28,  # Below 0.3 threshold after decay
+        learned_from=["ep-1"],
+        state="candidate",
+        last_suggested=suggested,
+    )
+
+    routine_store = MagicMock()
+    routine_store.list_all.return_value = [routine]
+
+    context_index = AsyncMock()
+    context_index._store = AsyncMock()
+    context_index._store.delete = AsyncMock()
+    context_index.reindex_semantic_files = AsyncMock()
+
+    librarian = _make_librarian(context_index=context_index)
+    librarian._routines = routine_store
+
+    with patch("core.librarian.consolidator.datetime") as mock_dt:
+        mock_dt.now.return_value = now
+        mock_dt.UTC = dt.UTC
+        mock_dt.timedelta = dt.timedelta
+
+        await librarian._update_routine_lifecycle()
+
+    saved = routine_store.save.call_args[0][0]
+    assert saved.state == "archived"
+    context_index._store.delete.assert_awaited_once_with("dying_routine")

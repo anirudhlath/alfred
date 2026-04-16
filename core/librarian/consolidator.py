@@ -892,6 +892,17 @@ class Librarian:
             else:
                 new_misses = routine.consecutive_misses + 1
                 new_state = routine.state
+                new_confidence = routine.confidence
+
+                # Confidence decay: if suggested but ignored (past cooldown, no acceptance)
+                if (
+                    routine.state == "candidate"
+                    and routine.last_suggested is not None
+                    and (now - routine.last_suggested).total_seconds() / 3600
+                    >= self._routine_suggestion_cooldown_hours
+                ):
+                    new_confidence -= self._routine_decay_per_cycle
+
                 if new_misses >= 3:
                     new_state = "dormant"
                     logger.info(
@@ -899,14 +910,37 @@ class Librarian:
                         routine.name,
                         new_misses,
                     )
+
+                # Archive if confidence drops below threshold
+                if new_confidence < self._routine_archive_threshold:
+                    new_state = "archived"
+                    logger.info(
+                        "Routine '%s' archived (confidence=%.2f below threshold %.2f)",
+                        routine.name,
+                        new_confidence,
+                        self._routine_archive_threshold,
+                    )
+
                 routine = routine.model_copy(
                     update={
                         "consecutive_misses": new_misses,
                         "state": new_state,
+                        "confidence": new_confidence,
                     }
                 )
                 self._routines.save(routine)
                 updated += 1
+
+                # Remove archived routines from context index
+                if new_state == "archived":
+                    try:
+                        await self._context_index._store.delete(routine.name)
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to remove archived routine '%s' from index: %s",
+                            routine.name,
+                            exc,
+                        )
 
         return updated
 
