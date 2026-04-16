@@ -106,6 +106,10 @@ module = ["sentence_transformers.*", "torch.*", "numpy.*", "aiosqlite.*", "sqlit
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
+module = ["webauthn.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
 module = ["faster_whisper.*", "piper.*"]
 ignore_missing_imports = true
 
