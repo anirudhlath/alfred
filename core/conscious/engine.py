@@ -68,7 +68,7 @@ class ConsciousConfig:
     api_key: str = ""
     max_tokens: int = 2048
     involuntary_recall_limit: int = 10
-    involuntary_recall_threshold: float = 0.5
+    involuntary_recall_threshold: float = 0.4
 
 
 @dataclass
