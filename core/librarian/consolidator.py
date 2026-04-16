@@ -945,12 +945,44 @@ class Librarian:
 
         return match_trigger_pattern(routine.trigger_pattern, now)
 
+    async def _reindex_routines(self) -> int:
+        """Re-index all non-archived routines into the context index.
+
+        Called at the start of each consolidation cycle to ensure routines
+        loaded from YAML storage are searchable via involuntary recall.
+        """
+        indexed = 0
+        for routine in self._routines.list_all():
+            if routine.state == "archived":
+                continue
+            content = (
+                f"Routine ({routine.state}): {routine.name} "
+                f"— {routine.trigger_pattern}. "
+                f"Steps: {'; '.join(s.description for s in routine.steps)}. "
+                f"Confidence: {routine.confidence:.2f}"
+            )
+            try:
+                await self._context_index.index_routine(
+                    id=routine.name,
+                    content=content,
+                    confidence=routine.confidence,
+                )
+                indexed += 1
+            except Exception as exc:
+                logger.warning("Failed to reindex routine '%s': %s", routine.name, exc)
+        if indexed:
+            logger.info("Reindexed %d routines into context index", indexed)
+        return indexed
+
     async def consolidate(self) -> dict[str, Any]:
         """Run one consolidation cycle.
 
         Returns a summary dict for logging/telemetry.
         """
         logger.info("Librarian consolidation started")
+
+        # 0. Ensure routines from YAML store are indexed for involuntary recall
+        await self._reindex_routines()
 
         # 1. Drain scratchpad
         lines = await self._drain_scratchpad()

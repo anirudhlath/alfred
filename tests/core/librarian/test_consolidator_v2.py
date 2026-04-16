@@ -1125,6 +1125,56 @@ async def test_consolidate_includes_pattern_detection_in_result() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Part J: Routine reindex on startup
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reindex_routines_indexes_non_archived() -> None:
+    """_reindex_routines should index candidate/active routines, skip archived."""
+    from unittest.mock import MagicMock
+
+    from core.memory.schemas import RoutineSpec, RoutineStep
+
+    routines = [
+        RoutineSpec(
+            name="active_one",
+            trigger_pattern="20:00 daily",
+            steps=[RoutineStep(description="Dim lights")],
+            confidence=0.9,
+            learned_from=["ep-1"],
+            state="candidate",
+        ),
+        RoutineSpec(
+            name="archived_one",
+            trigger_pattern="08:00 daily",
+            steps=[],
+            confidence=0.2,
+            learned_from=["ep-2"],
+            state="archived",
+        ),
+    ]
+
+    routine_store = MagicMock()
+    routine_store.list_all.return_value = routines
+
+    context_index = AsyncMock()
+    context_index.index_routine = AsyncMock()
+    context_index.reindex_semantic_files = AsyncMock()
+
+    librarian = _make_librarian(context_index=context_index)
+    librarian._routines = routine_store
+
+    count = await librarian._reindex_routines()
+
+    assert count == 1
+    context_index.index_routine.assert_awaited_once()
+    call_kwargs = context_index.index_routine.await_args.kwargs
+    assert call_kwargs["id"] == "active_one"
+    assert "Dim lights" in call_kwargs["content"]
+
+
+# ---------------------------------------------------------------------------
 # Part F: Upgraded decay formula tests
 # ---------------------------------------------------------------------------
 

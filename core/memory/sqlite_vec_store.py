@@ -109,24 +109,32 @@ class SqliteVecStore(VectorStore):
 
     async def _migrate_v2(self, db: aiosqlite.Connection) -> None:
         """Apply v2 migration DDL, then back-fill vec0 tables for existing rows."""
-        # The v2 SQL uses vec0 virtual tables — only run DDL if extension loaded.
-        # If vec_ready is False we still add the scalar columns but skip vec0.
-        migration_sql = _MIGRATION_V2_PATH.read_text()
+        # Check which columns already exist to make ALTER TABLE idempotent
+        # (SQLite ALTER TABLE ADD COLUMN doesn't support IF NOT EXISTS)
+        cursor = await db.execute("PRAGMA table_info(episodic_entries)")
+        existing_cols = {row[1] for row in await cursor.fetchall()}
 
-        if not self._vec_ready:
-            # Strip CREATE VIRTUAL TABLE lines and run the rest
-            lines = [
-                line
-                for line in migration_sql.splitlines()
-                if not line.strip().upper().startswith("CREATE VIRTUAL TABLE")
-            ]
-            migration_sql = "\n".join(lines)
+        v2_columns = {
+            "significance": "TEXT DEFAULT '{}'",
+            "semantic_key": "TEXT DEFAULT ''",
+            "compressed_into": "TEXT DEFAULT NULL",
+        }
+        for col_name, col_def in v2_columns.items():
+            if col_name not in existing_cols:
+                await db.execute(
+                    f"ALTER TABLE episodic_entries ADD COLUMN {col_name} {col_def}"
+                )
 
-        # Patch the dimension into the migration SQL (default is 768,
-        # override with actual dim from constructor)
-        migration_sql = migration_sql.replace("float[768]", f"float[{self._dim}]")
+        # vec0 virtual tables (only if extension loaded)
+        if self._vec_ready:
+            await db.executescript(
+                f"CREATE VIRTUAL TABLE IF NOT EXISTS vec_episodic_semantic "
+                f"USING vec0(embedding float[{self._dim}]);\n"
+                f"CREATE VIRTUAL TABLE IF NOT EXISTS vec_episodic_content "
+                f"USING vec0(embedding float[{self._dim}]);"
+            )
 
-        await db.executescript(migration_sql)
+        await db.execute("UPDATE schema_version SET version = 2 WHERE version = 1")
         await db.commit()
         logger.info("Applied schema migration v1 → v2 (dim=%d)", self._dim)
 
