@@ -96,6 +96,22 @@ class EpisodicMemory:
         merged.sort(key=lambda x: x[0].score, reverse=True)
         merged = merged[:limit]
 
+        # Persist retrieval stats for hot-store results (parallel writes)
+        now_ts = datetime.now(UTC).timestamp()
+        update_coros = [
+            self._hot.update_metadata(
+                sr.id,
+                {
+                    "retrieval_count": sr.metadata.retrieval_count + 1,
+                    "last_retrieved": now_ts,
+                },
+            )
+            for sr, store in merged
+            if store == "hot"
+        ]
+        if update_coros:
+            await asyncio.gather(*update_coros)
+
         # Convert to EpisodicResult, increment retrieval_count
         episodic_results: list[EpisodicResult] = []
         for search_result, source_store in merged:

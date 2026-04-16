@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from core.memory.context_index import ContextIndexManager
     from core.memory.embedding_provider import EmbeddingProvider
     from core.memory.routines.store import RoutineStore
+    from core.memory.schemas import RoutineSpec
     from core.memory.vector_store import SearchResult
     from core.reflex.context_reader import ContextReader
     from core.reflex.tool_registry import ToolInfo, ToolRegistry
@@ -184,6 +185,11 @@ class ConsciousEngine:
         self._triggers = d.trigger_feature
         self._embedder = d.embedder
         self._context_index = d.context_index
+
+    @property
+    def has_routine_store(self) -> bool:
+        """Whether a routine store is configured."""
+        return self._routines is not None
 
     _TYPE_MAP: ClassVar[dict[str, str]] = PYTHON_TO_JSON_SCHEMA
 
@@ -463,6 +469,24 @@ class ConsciousEngine:
 
     _ROUTINE_SUGGESTION_COOLDOWN_HOURS: ClassVar[int] = 24
 
+    def _eligible_candidates(self, now: datetime) -> list[RoutineSpec]:
+        """Return candidate routines that match current time and are outside cooldown."""
+        if not self.has_routine_store:
+            return []
+
+        from core.memory.routines.patterns import match_trigger_pattern
+
+        eligible: list[RoutineSpec] = []
+        for routine in self._routines.list_by_state("candidate"):
+            if routine.last_suggested is not None:
+                hours_since = (now - routine.last_suggested).total_seconds() / 3600
+                if hours_since < self._ROUTINE_SUGGESTION_COOLDOWN_HOURS:
+                    continue
+            if not match_trigger_pattern(routine.trigger_pattern, now):
+                continue
+            eligible.append(routine)
+        return eligible
+
     def _build_routine_hint(self, now: datetime) -> str:
         """Check candidate routines for time-pattern matches and return a hint string.
 
@@ -470,36 +494,73 @@ class ConsciousEngine:
         Routines that were suggested within the cooldown window are skipped.
         Matching routines have their ``last_suggested`` timestamp updated.
         """
-        if self._routines is None:
+        if not self.has_routine_store:
             return ""
 
-        from core.memory.routines.patterns import match_trigger_pattern
-
-        candidates = self._routines.list_by_state("candidate")
+        eligible = self._eligible_candidates(now)
         hints: list[str] = []
 
-        for routine in candidates:
-            # Cooldown check
-            if routine.last_suggested is not None:
-                hours_since = (now - routine.last_suggested).total_seconds() / 3600
-                if hours_since < self._ROUTINE_SUGGESTION_COOLDOWN_HOURS:
-                    continue
-
-            if not match_trigger_pattern(routine.trigger_pattern, now):
-                continue
-
-            # Update last_suggested
+        for routine in eligible:
             updated = routine.model_copy(update={"last_suggested": now})
             self._routines.save(updated)
 
+            steps_str = "; ".join(s.description for s in routine.steps) if routine.steps else "N/A"
             hints.append(
-                f"## Routine Suggestion\n"
-                f"A pattern has been detected: {routine.name}. "
-                f"Consider suggesting this routine to sir."
+                f"[routine-suggestion] You've noticed a pattern: {routine.name} "
+                f"({routine.trigger_pattern}). Steps: {steps_str}. "
+                f"Confidence: {routine.confidence:.0%}. "
+                f"If appropriate, suggest this to sir and ask if they'd like "
+                f"Alfred to handle this automatically."
             )
             logger.debug("Routine suggestion injected: '%s'", routine.name)
 
         return "\n\n".join(hints)
+
+    async def check_routine_suggestions(
+        self,
+        now: datetime | None = None,
+        notifier: Any = None,
+    ) -> None:
+        """Check candidate routines and publish proactive notifications for matches.
+
+        Called periodically from the conscious process background loop.
+        Routines that match the current time pattern and are outside the suggestion
+        cooldown window receive an INFORMATIONAL notification push.
+        """
+        if not self.has_routine_store or notifier is None:
+            return
+
+        from core.notifications.schema import Urgency
+
+        if now is None:
+            now = datetime.now(UTC)
+
+        for routine in self._eligible_candidates(now):
+            steps_str = "; ".join(s.description for s in routine.steps) if routine.steps else ""
+            if steps_str:
+                body = (
+                    f"I've noticed a pattern: '{routine.name}' — {steps_str} "
+                    f"around {routine.trigger_pattern}. "
+                    f"Want me to start doing this automatically?"
+                )
+            else:
+                body = (
+                    f"I've noticed a recurring pattern: '{routine.name}' "
+                    f"around {routine.trigger_pattern}. "
+                    f"Want me to start doing this automatically?"
+                )
+
+            # Update last_suggested BEFORE publishing to avoid spam if publish raises
+            updated = routine.model_copy(update={"last_suggested": now})
+            self._routines.save(updated)
+
+            await notifier.publish(
+                title="Routine Suggestion",
+                body=body,
+                source="librarian",
+                urgency=Urgency.INFORMATIONAL,
+            )
+            logger.info("Proactive routine suggestion published: '%s'", routine.name)
 
     @track_latency(category="conscious")
     @traced(name="conscious.process_request")
@@ -553,7 +614,7 @@ class ConsciousEngine:
 
         # 3c. Routine suggestion — check candidate routines against current time
         routine_hint: str = ""
-        if self._routines is not None:
+        if self.has_routine_store:
             try:
                 routine_hint = self._build_routine_hint(now)
             except Exception:

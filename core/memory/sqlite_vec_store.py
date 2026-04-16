@@ -388,6 +388,13 @@ class SqliteVecStore(VectorStore):
             await self._db.close()
             self._db = None
 
+    async def update_metadata(
+        self,
+        id: str,  # noqa: A002
+        fields: dict[str, str | float | int],
+    ) -> None:
+        """No-op — cold store entries don't need retrieval tracking."""
+
 
 # ------------------------------------------------------------------
 # Helpers

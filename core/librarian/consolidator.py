@@ -11,6 +11,7 @@ On failure, the scratchpad accumulates — memory files never left partial.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import UTC, datetime, timedelta
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
     from core.memory.episodic.memory import EpisodicMemory
     from core.memory.routines.store import RoutineStore
     from core.memory.significance import SignificanceScorer
+    from core.memory.vector_store import SearchResult
     from shared.types import AioRedis
 
 logger = logging.getLogger(__name__)
@@ -55,6 +57,60 @@ class ConflictItem(BaseModel):
 _MEMORY_DIR = Path(__file__).resolve().parent.parent / "memory"
 _DEFAULT_PREFERENCES_DIR = str(_MEMORY_DIR / "preferences")
 _DEFAULT_PROFILE_DIR = str(_MEMORY_DIR / "profile")
+
+
+def _group_by_entity_date(
+    results: list[SearchResult],
+) -> tuple[list[list[SearchResult]], list[SearchResult]]:
+    """Group decayed entries by (shared_entity, date) for compression."""
+    from collections import defaultdict
+
+    buckets: dict[tuple[str, str], list[SearchResult]] = defaultdict(list)
+    ungrouped: list[SearchResult] = []
+
+    for result in results:
+        entities_str = result.metadata.entities
+        if not entities_str:
+            ungrouped.append(result)
+            continue
+
+        ts = result.metadata.timestamp
+        date_str = datetime.fromtimestamp(ts, tz=UTC).strftime("%Y-%m-%d")
+
+        entities = [e.strip() for e in entities_str.split(",") if e.strip()]
+        if not entities:
+            ungrouped.append(result)
+            continue
+
+        placed = False
+        for entity in entities:
+            key = (entity, date_str)
+            if key in buckets:
+                buckets[key].append(result)
+                placed = True
+                break
+        if not placed:
+            buckets[(entities[0], date_str)].append(result)
+
+    groups: list[list[SearchResult]] = []
+    for bucket in buckets.values():
+        if len(bucket) >= 2:
+            groups.append(bucket)
+        else:
+            ungrouped.extend(bucket)
+
+    return groups, ungrouped
+
+
+def _routine_index_content(routine: RoutineSpec) -> str:
+    """Build the content string used to index a routine in the context store."""
+    steps = "; ".join(s.description for s in routine.steps) if routine.steps else "N/A"
+    return (
+        f"Routine ({routine.state}): {routine.name} "
+        f"— {routine.trigger_pattern}. "
+        f"Steps: {steps}. "
+        f"Confidence: {routine.confidence:.2f}"
+    )
 
 
 class Librarian:
@@ -87,6 +143,8 @@ class Librarian:
     ) -> None:
         self._redis = redis
         self._episodic_memory = episodic_memory
+        self._cold_store = episodic_memory._cold
+        self._embedder = episodic_memory._embedder
         self._routines = routine_store
         self._scorer = significance_scorer
         self._context_index = context_index
@@ -103,6 +161,7 @@ class Librarian:
         self._routine_decay_per_cycle = routine_decay_per_cycle
         self._routine_archive_threshold = routine_archive_threshold
         self._routine_suggestion_cooldown_hours = routine_suggestion_cooldown_hours
+        self._indexed_routine_content: dict[str, str] = {}
 
     _PROCESSING_KEY = f"{SCRATCHPAD_QUEUE}:processing"
 
@@ -442,6 +501,117 @@ class Librarian:
             logger.warning("Semantic memory update failed: %s", exc)
         return 0
 
+    async def _compress_and_migrate(self, group: list[SearchResult]) -> int:
+        """Compress a group of related entries into a summary, then migrate originals.
+
+        Calls LLM to generate a summary + semantic_key for the group. Falls back
+        to concatenation if LLM fails or no API key. Writes summary to cold store
+        directly (not via EpisodicMemory to avoid re-embedding), then migrates
+        originals with compressed="yes" marker.
+
+        Returns the number of original entries migrated.
+        """
+        from core.memory.vector_store import ContextMetadata
+
+        lines = [f"- [{r.id}] {r.content}" for r in group]
+        group_text = "\n".join(lines)
+
+        # Aggregate metadata
+        all_entities = sorted(
+            {e.strip() for r in group for e in r.metadata.entities.split(",") if e.strip()}
+        )
+        max_significance = max(r.metadata.significance for r in group)
+        min_timestamp = min(r.metadata.timestamp for r in group)
+        total_retrievals = sum(r.metadata.retrieval_count for r in group)
+
+        # Generate summary via LLM
+        summary_text = ""
+        semantic_key_text = ""
+        if self._api_key:
+            try:
+                import litellm
+
+                system_prompt = (
+                    "You are a memory compressor for a home automation assistant. "
+                    "Given multiple related episodic memory entries, produce a single "
+                    "concise summary and a short semantic key phrase. "
+                    "Return ONLY valid JSON with keys "
+                    '"summary" and "semantic_key". No other text.\n'
+                    'Example: {"summary": "Kitchen lights toggled on then off.", '
+                    '"semantic_key": "kitchen light activity"}'
+                )
+                response = await litellm.acompletion(
+                    model=self._model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": group_text},
+                    ],
+                    max_tokens=200,
+                    api_key=self._api_key,
+                )
+                raw = response.choices[0].message.content or "{}"
+                parsed: dict[str, str] = json.loads(raw)
+                summary_text = parsed.get("summary", "")
+                semantic_key_text = parsed.get("semantic_key", "")
+            except Exception as exc:
+                logger.warning("Compression: LLM summarization failed: %s", exc)
+
+        # Fallback: concatenate contents
+        if not summary_text:
+            summary_text = " | ".join(r.content for r in group)
+        if not semantic_key_text:
+            semantic_key_text = summary_text[:100]
+
+        # Write summary entry to cold store (direct add, no hot store)
+        summary_id = str(uuid4())
+        summary_metadata = ContextMetadata(
+            type="episodic",
+            source="librarian_compressed",
+            entities=",".join(all_entities),
+            timestamp=min_timestamp,
+            significance=max_significance,
+            retrieval_count=total_retrievals,
+            last_retrieved=0.0,
+            compressed="yes",
+        )
+        try:
+            content_emb, key_emb = await asyncio.gather(
+                self._embedder.embed(summary_text),
+                self._embedder.embed(semantic_key_text),
+            )
+            await self._cold_store.add(
+                id=summary_id,
+                content=summary_text,
+                semantic_key=semantic_key_text,
+                embedding_content=content_emb,
+                embedding_semantic=key_emb,
+                metadata=summary_metadata,
+            )
+            logger.debug(
+                "Compression: wrote summary %s for %d entries",
+                summary_id,
+                len(group),
+            )
+        except Exception as exc:
+            logger.warning("Compression: failed to write summary entry: %s", exc)
+            # Still migrate originals even if summary write fails
+
+        # Migrate all originals with compressed marker
+        migrated = 0
+        for result in group:
+            try:
+                marked = result.model_copy(
+                    update={"metadata": result.metadata.model_copy(update={"compressed": "yes"})}
+                )
+                await self._episodic_memory.copy_to_cold_and_remove(marked)
+                migrated += 1
+            except Exception as exc:
+                logger.warning(
+                    "Compression: failed to migrate original entry %s: %s", result.id, exc
+                )
+
+        return migrated
+
     async def _apply_decay(
         self,
         decay_migration_threshold: float = 1.0,
@@ -450,18 +620,28 @@ class Librarian:
     ) -> int:
         """Migrate old low-significance hot entries to cold storage.
 
-        Computes migration pressure per entry:
-            age_days = (now - entry.timestamp) / 86400
-            pressure = age_days * (1 - significance) * (1 / (retrieval_count + 1))
+        Uses a subtractive formula where significance and retrieval
+        activity resist the migration pressure from age:
+
+            age_factor = min(days_old / 30.0, 1.0)
+            retrieval_recency = exp(-days_since_last_retrieved / 7.0)
+            retrieval_frequency = min(log2(count + 1) / 5.0, 1.0)
+
+            pressure = (
+                age_factor
+                - significance * 2.0
+                - retrieval_recency * 1.5
+                - retrieval_frequency * 1.0
+            )
 
         Entries with pressure > decay_migration_threshold are migrated to cold.
-        High-significance entries resist migration (low pressure).
-        Frequently-retrieved entries also resist migration.
-
+        Related entries (same entity + same day) are compressed into a single
+        summary before migration.
         Returns the number of entries migrated.
         """
+        from math import exp, log2
+
         try:
-            # Use a broad text search to surface candidate hot entries.
             results = await self._context_index.search_text(
                 query=search_query,
                 limit=search_limit,
@@ -472,10 +652,9 @@ class Librarian:
             return 0
 
         now = datetime.now(UTC).timestamp()
-        migrated = 0
+        to_migrate: list[SearchResult] = []
 
         for result in results:
-            # Only process episodic entries (skip semantic/routine)
             if result.metadata.type != "episodic":
                 continue
 
@@ -486,23 +665,62 @@ class Librarian:
             age_days = (now - timestamp) / 86400.0
             significance = result.metadata.significance
             retrieval_count = result.metadata.retrieval_count
+            last_retrieved = result.metadata.last_retrieved
 
-            pressure = age_days * (1.0 - significance) * (1.0 / (retrieval_count + 1))
+            # Fallback: if last_retrieved was never set, assume never retrieved
+            if last_retrieved > 0:
+                days_since_last_retrieved = (now - last_retrieved) / 86400.0
+            else:
+                days_since_last_retrieved = age_days
+
+            age_factor = min(age_days / 30.0, 1.0)
+            retrieval_recency = exp(-days_since_last_retrieved / 7.0)
+            retrieval_frequency = min(log2(retrieval_count + 1) / 5.0, 1.0)
+
+            pressure = (
+                age_factor
+                - significance * 2.0
+                - retrieval_recency * 1.5
+                - retrieval_frequency * 1.0
+            )
 
             if pressure > decay_migration_threshold:
-                try:
-                    # Write to cold store, then remove from hot
-                    await self._episodic_memory.copy_to_cold_and_remove(result)
-                    migrated += 1
-                    logger.debug(
-                        "Decayed entry %s (age=%.1fd, sig=%.2f, pressure=%.2f)",
-                        result.id,
-                        age_days,
-                        significance,
-                        pressure,
-                    )
-                except Exception as exc:
-                    logger.warning("Decay: failed to migrate entry %s: %s", result.id, exc)
+                to_migrate.append(result)
+                logger.debug(
+                    "Decay: queued entry %s (age=%.1fd, sig=%.2f, pressure=%.2f)",
+                    result.id,
+                    age_days,
+                    significance,
+                    pressure,
+                )
+
+        if not to_migrate:
+            return 0
+
+        # Group related entries for compression
+        groups, ungrouped = _group_by_entity_date(to_migrate)
+
+        # Compress groups and migrate ungrouped in parallel
+        async def _migrate_single(result: SearchResult) -> int:
+            try:
+                await self._episodic_memory.copy_to_cold_and_remove(result)
+                return 1
+            except Exception as exc:
+                logger.warning("Decay: failed to migrate entry %s: %s", result.id, exc)
+                return 0
+
+        async def _compress_group(group: list[SearchResult]) -> int:
+            try:
+                return await self._compress_and_migrate(group)
+            except Exception as exc:
+                logger.warning("Decay: compression failed for group: %s", exc)
+                return 0
+
+        results = await asyncio.gather(
+            *(_compress_group(g) for g in groups),
+            *(_migrate_single(r) for r in ungrouped),
+        )
+        migrated = sum(results)
 
         if migrated:
             logger.info("Decay: migrated %d entries to cold storage", migrated)
@@ -605,6 +823,15 @@ class Librarian:
                     confidence,
                     len(candidate.learned_from),
                 )
+                # Index in context for involuntary recall
+                try:
+                    await self._context_index.index_routine(
+                        id=candidate.name,
+                        content=_routine_index_content(candidate),
+                        confidence=candidate.confidence,
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to index routine '%s': %s", candidate.name, exc)
             except Exception as exc:
                 logger.warning("Failed to process pattern candidate: %s", exc)
 
@@ -643,6 +870,7 @@ class Librarian:
                             routine.name,
                             dormant_days,
                         )
+                        await self._remove_routine_from_index(routine.name)
                 continue
 
             # For candidate/active: check if trigger_pattern matches recent activity
@@ -661,6 +889,17 @@ class Librarian:
             else:
                 new_misses = routine.consecutive_misses + 1
                 new_state = routine.state
+                new_confidence = routine.confidence
+
+                # Confidence decay: if suggested but ignored (past cooldown, no acceptance)
+                if (
+                    routine.state == "candidate"
+                    and routine.last_suggested is not None
+                    and (now - routine.last_suggested).total_seconds() / 3600
+                    >= self._routine_suggestion_cooldown_hours
+                ):
+                    new_confidence -= self._routine_decay_per_cycle
+
                 if new_misses >= 3:
                     new_state = "dormant"
                     logger.info(
@@ -668,16 +907,38 @@ class Librarian:
                         routine.name,
                         new_misses,
                     )
+
+                # Archive if confidence drops below threshold
+                if new_confidence < self._routine_archive_threshold:
+                    new_state = "archived"
+                    logger.info(
+                        "Routine '%s' archived (confidence=%.2f below threshold %.2f)",
+                        routine.name,
+                        new_confidence,
+                        self._routine_archive_threshold,
+                    )
+
                 routine = routine.model_copy(
                     update={
                         "consecutive_misses": new_misses,
                         "state": new_state,
+                        "confidence": new_confidence,
                     }
                 )
                 self._routines.save(routine)
                 updated += 1
 
+                if new_state == "archived":
+                    await self._remove_routine_from_index(routine.name)
+
         return updated
+
+    async def _remove_routine_from_index(self, name: str) -> None:
+        """Remove an archived routine from the context index."""
+        try:
+            await self._context_index.remove(name)
+        except Exception as exc:
+            logger.warning("Failed to remove archived routine '%s' from index: %s", name, exc)
 
     @staticmethod
     def _check_pattern_fired(routine: RoutineSpec, now: datetime) -> bool:
@@ -690,6 +951,44 @@ class Librarian:
 
         return match_trigger_pattern(routine.trigger_pattern, now)
 
+    async def _reindex_routines(self) -> int:
+        """Re-index non-archived routines whose content has changed.
+
+        Called at the start of each consolidation cycle to ensure routines
+        loaded from YAML storage are searchable via involuntary recall.
+        Skips routines whose indexed content hasn't changed (avoids re-embedding).
+        """
+        to_index: list[RoutineSpec] = []
+        for routine in self._routines.list_all():
+            if routine.state == "archived":
+                continue
+            content = _routine_index_content(routine)
+            if self._indexed_routine_content.get(routine.name) == content:
+                continue
+            self._indexed_routine_content[routine.name] = content
+            to_index.append(routine)
+
+        if not to_index:
+            return 0
+
+        async def _index_one(r: RoutineSpec) -> bool:
+            try:
+                await self._context_index.index_routine(
+                    id=r.name,
+                    content=_routine_index_content(r),
+                    confidence=r.confidence,
+                )
+                return True
+            except Exception as exc:
+                logger.warning("Failed to reindex routine '%s': %s", r.name, exc)
+                return False
+
+        results = await asyncio.gather(*(_index_one(r) for r in to_index))
+        indexed = sum(results)
+        if indexed:
+            logger.info("Reindexed %d routines into context index", indexed)
+        return indexed
+
     async def consolidate(self) -> dict[str, Any]:
         """Run one consolidation cycle.
 
@@ -697,11 +996,14 @@ class Librarian:
         """
         logger.info("Librarian consolidation started")
 
+        # 0. Ensure routines from YAML store are indexed for involuntary recall
+        routines_reindexed = await self._reindex_routines()
+
         # 1. Drain scratchpad
         lines = await self._drain_scratchpad()
         if not lines:
             logger.info("Scratchpad empty — nothing to consolidate")
-            return {"entries_processed": 0}
+            return {"entries_processed": 0, "routines_reindexed": routines_reindexed}
 
         logger.info("Draining %d scratchpad entries", len(lines))
 
@@ -755,6 +1057,7 @@ class Librarian:
             "episodic_created": len(episodic_entries),
             "semantic_updates": semantic_updates,
             "patterns_detected": len(patterns_detected),
+            "routines_reindexed": routines_reindexed,
             "lifecycle_updates": lifecycle_updates,
             "archived": archived,
             "timestamp": datetime.now(UTC).isoformat(),

@@ -292,6 +292,25 @@ async def run(config: AlfredConfig) -> None:
     # Start internal actions consumer (handles drain_deferred_notifications from triggers)
     internal_actions_task = asyncio.create_task(_consume_internal_actions(r, log))
 
+    # Start proactive routine suggestion checker (every 15 minutes)
+    routine_suggestion_task: asyncio.Task[None] | None = None
+    if engine.has_routine_store:
+
+        async def _routine_suggestion_loop() -> None:
+            while not _shutdown.is_set():
+                try:
+                    await engine.check_routine_suggestions(notifier=notifier)
+                except Exception as exc:
+                    log.error("Routine suggestion check failed: {}", exc)
+                # Wait 15 minutes or until shutdown (no polling)
+                try:
+                    await asyncio.wait_for(_shutdown.wait(), timeout=900)
+                    return  # shutdown signalled
+                except TimeoutError:
+                    pass  # 15 min elapsed, loop again
+
+        routine_suggestion_task = asyncio.create_task(_routine_suggestion_loop())
+
     # Start notification delivery worker (delivers via Signal adapter in this process)
     from core.notifications.delivery import notification_delivery_worker
 
@@ -356,6 +375,8 @@ async def run(config: AlfredConfig) -> None:
         if librarian_task is not None:
             librarian_task.cancel()
         internal_actions_task.cancel()
+        if routine_suggestion_task is not None:
+            routine_suggestion_task.cancel()
         delivery_task.cancel()
         await r.aclose()
 
