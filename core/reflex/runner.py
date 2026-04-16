@@ -1,13 +1,12 @@
 """Reflex Runner — orchestration loop for the System 1 pipeline.
 
 Reads events from Redis Streams (consumer group), runs the Reflex Engine,
-dispatches actions via a DomainAgent, and logs observations to the scratchpad.
+dispatches actions via a DomainAgent, and publishes structured observations.
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import redis.asyncio as aioredis
@@ -47,7 +46,7 @@ async def process_stream_entry(
     agent: DomainAgent,
     redis: AioRedis,
     result_stream: str,
-    scratchpad_queue: str,
+    observation_stream: str,
 ) -> bool:
     """Process a single Redis Stream entry. Returns True if an action was taken.
 
@@ -80,9 +79,27 @@ async def process_stream_entry(
 
     await redis.xadd(result_stream, {"event": result.model_dump_json()})
 
-    timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    observation = f"{timestamp} [reflex] {action.tool_name}({action.parameters}) → {result.status}"
-    await redis.lpush(scratchpad_queue, observation)
+    # Publish structured observation for Memory Ingestor (D8)
+    from bus.schemas.events import ActionResult, ReflexObservation
 
-    logger.info("Action: %s → %s (status=%s)", event.entity_id, action.tool_name, result.status)
+    observation = ReflexObservation(
+        source="reflex-engine",
+        origin="state_change",
+        trigger_event=event.model_dump(),
+        action=action,
+        result=ActionResult(
+            source=str(getattr(result, "source", "unknown")),
+            request_id=str(getattr(result, "request_id", action.request_id)),
+            tool_name=str(getattr(result, "tool_name", action.tool_name)),
+            status=getattr(result, "status", "success"),
+        ),
+    )
+    await redis.xadd(observation_stream, {"event": observation.model_dump_json()})
+
+    logger.info(
+        "Action: %s → %s (status=%s)",
+        event.entity_id,
+        action.tool_name,
+        getattr(result, "status", "unknown"),
+    )
     return True
