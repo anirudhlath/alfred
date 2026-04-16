@@ -60,6 +60,9 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `core/memory/context_index.py` — `ContextIndexManager` (unified idx:context search)
 - `core/memory/routines/patterns.py` — `match_trigger_pattern()` (shared utility)
 - `core/conscious/memory_tools.py` — Internal memory tools (recall_memories, get_live_state)
+- `core/identity/credentials.py` — `CredentialStore` (async SQLite, WebAuthn credential CRUD)
+- `core/identity/auth_routes.py` — WebAuthn registration/login/logout endpoints (6 routes under `/api/auth/`)
+- `core/identity/auth_middleware.py` — `AuthCookieMiddleware` (cookie → Redis session lookup)
 - `conftest.py` — root test fixtures (InMemoryKeyring, telemetry clear, tv_on_event, mock_embedder, mock_vector_store)
 
 ## Secrets & Credentials
@@ -71,6 +74,9 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - APNs credentials (team_id, key_id, private_key, bundle_id) stored via Secrets Manager under service name `"apns"`
 - Device registration: `POST/DELETE /api/devices/register` — stores APNs tokens in Redis hash `alfred:push:devices`
 - Settings page: `web/settings.html` + `web/settings.js` (dynamic cards from API schema)
+- WebAuthn credentials: SQLite at `data/credentials.db` — credential ID, public key, sign count, device name
+- Auth sessions: Redis at `alfred:auth:{session_id}` — 24hr TTL, HttpOnly cookie `alfred_auth`
+- WebAuthn challenges: Redis at `alfred:webauthn:challenge:{id}` — 5min TTL, one-time use
 
 ## Workflow
 
@@ -129,6 +135,7 @@ graph TD
     Conscious --> Integrations[IntegrationRegistry<br/>weather, calendar, health, robinhood]
     Conscious --> Notify[NotificationDispatcher<br/>Signal, WebSocket, APNs]
     Memory --> Librarian[Librarian<br/>nightly consolidation]
+    WebAuthn[WebAuthn<br/>Passkey Auth] --> WebChannel
     WebChannel[Web PWA :8081] -->|UserRequest| Bus
     Signal[Signal Bridge] -->|UserRequest| Bus
 ```
@@ -182,3 +189,7 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - Compression at cold migration groups by entity+date — summary goes to cold, originals marked `compressed="yes"`
 - `VectorStore` ABC has `update_metadata(id, fields)` — use for retrieval stats, do NOT mutate Redis hash fields directly
 - Ignored routine suggestions decrement confidence by 0.05/cycle — archived at threshold 0.3, removed from context index
+- WebAuthn registration endpoints require trusted network — passkey creation is gated to localhost/Tailscale
+- `AuthCookieMiddleware` reads Redis lazily from `request.app.state.redis` — redis is not available at middleware init time (lifespan hasn't run yet)
+- WebSocket auth gate parses cookies manually (BaseHTTPMiddleware doesn't run for WS upgrades) — cookie name constant is `COOKIE_NAME` from `core.identity.auth_middleware`
+- `identity_claim` in WS handler is server-derived from auth state (`"sir"` if authenticated), not client-supplied — frontend no longer sends `identity` field
