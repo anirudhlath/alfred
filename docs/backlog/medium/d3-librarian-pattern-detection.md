@@ -1,12 +1,15 @@
-# D3: Librarian Pattern Detection → Procedural Memory
+# D3: Librarian Pattern Detection — COMPLETED
 
 ## Summary
-Librarian detects repeated patterns in episodic memory and promotes them to procedural memory.
+Detect repeated patterns in episodic memory and promote to procedural memory with full lifecycle.
 
-## Context
-Needs 2+ weeks of episodic data. `consolidator.py:268-270` is TODO. Part of the fluid → crystallized intelligence lifecycle (Pillar 5).
+## Status
+Implemented in D3+D4 PR. See spec: `docs/superpowers/specs/2026-04-16-d3-d4-pattern-detection-decay-design.md`
 
-## Acceptance Criteria
-- Pattern detection runs during nightly consolidation
-- Detected patterns written to procedural memory store
-- Threshold configurable for promotion confidence
+## What Was Built
+- Pattern detection via LLM (already existed from PR #15)
+- Routine indexing in `idx:context` for involuntary recall
+- Suggestion flow: conversation hints + proactive notifications
+- Confidence decay on ignored suggestions
+- Archive removes from context index
+- Trigger Engine promotion for crystallized execution
