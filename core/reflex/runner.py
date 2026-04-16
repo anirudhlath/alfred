@@ -17,11 +17,34 @@ from shared.types import AioRedis as AioRedis  # noqa: TC001  # re-export for ba
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from typing import Literal
 
+    from pydantic import BaseModel
+
+    from bus.schemas.events import ActionRequest
     from core.reflex.engine import ReflexEngine
     from core.routing.domain_router import DomainAgent
 
 logger = logging.getLogger(__name__)
+
+
+async def publish_observation(
+    redis: AioRedis,
+    stream: str,
+    origin: Literal["state_change", "trigger_fired"],
+    trigger_event: BaseModel,
+    action: ActionRequest,
+    result: BaseModel,
+) -> None:
+    """Publish a ReflexObservation to the observation stream."""
+    observation = ReflexObservation(
+        source="reflex-engine",
+        origin=origin,
+        trigger_event=trigger_event.model_dump(),
+        action=action,
+        result=result,  # type: ignore[arg-type]
+    )
+    await redis.xadd(stream, {"event": observation.model_dump_json()})
 
 
 async def ensure_consumer_group(
@@ -79,15 +102,7 @@ async def process_stream_entry(
 
     await redis.xadd(result_stream, {"event": result.model_dump_json()})
 
-    # Publish structured observation for Memory Ingestor (D8)
-    observation = ReflexObservation(
-        source="reflex-engine",
-        origin="state_change",
-        trigger_event=event.model_dump(),
-        action=action,
-        result=result,
-    )
-    await redis.xadd(observation_stream, {"event": observation.model_dump_json()})
+    await publish_observation(redis, observation_stream, "state_change", event, action, result)
 
     logger.info("Action: %s → %s (status=%s)", event.entity_id, action.tool_name, result.status)
     return True

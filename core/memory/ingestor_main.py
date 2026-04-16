@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import signal
+from pathlib import Path
 
 import redis.asyncio as aioredis
-
-from pathlib import Path
+from loguru import logger
 
 from core.memory.episodic.memory import EpisodicMemory
 from core.memory.ingestor import run_ingestor
@@ -20,7 +20,6 @@ from core.memory.redis_vector_store import RedisVectorStore
 from core.memory.significance import SignificanceScorer
 from core.memory.sqlite_vec_store import SqliteVecStore
 from shared.config import AlfredConfig
-from loguru import logger
 from shared.logging import configure_logging
 
 _shutdown = asyncio.Event()
