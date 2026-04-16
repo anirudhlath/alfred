@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from bus.schemas.events import ActionRequest, ActionResult, ReflexObservation
-from core.memory.schemas import EpisodicEntry
+
+if TYPE_CHECKING:
+    from core.memory.schemas import EpisodicEntry
 
 
 def _make_observation(

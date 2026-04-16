@@ -9,7 +9,6 @@ Runs as a background task in the unified runner.
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -20,6 +19,8 @@ from core.memory.schemas import EpisodicEntry, SignificanceScore
 from shared.streams import REFLEX_OBSERVATIONS_STREAM, decode_stream_value
 
 if TYPE_CHECKING:
+    import asyncio
+
     from core.memory.episodic.memory import EpisodicMemory
     from core.memory.significance import SignificanceScorer
     from shared.types import AioRedis
@@ -103,7 +104,7 @@ async def run_ingestor(
                 bytes | str,
                 list[tuple[bytes | str, dict[bytes | str, bytes | str]]],
             ]
-        ] = await redis.xreadgroup(  # type: ignore[misc]
+        ] = await redis.xreadgroup(
             GROUP,
             CONSUMER,
             {REFLEX_OBSERVATIONS_STREAM: ">"},

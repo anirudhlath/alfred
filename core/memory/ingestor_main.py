@@ -13,6 +13,8 @@ import signal
 
 import redis.asyncio as aioredis
 
+from pathlib import Path
+
 from core.memory.episodic.memory import EpisodicMemory
 from core.memory.ingestor import run_ingestor
 from core.memory.redis_vector_store import RedisVectorStore
@@ -20,7 +22,6 @@ from core.memory.significance import SignificanceScorer
 from core.memory.sqlite_vec_store import SqliteVecStore
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
-from shared.streams import CONTEXT_INDEX, CONTEXT_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +43,14 @@ async def run(config: AlfredConfig) -> None:
     # Lazy-load embedding provider
     from core.memory.embedding_provider import SentenceTransformerProvider
 
-    embedder = SentenceTransformerProvider()
+    embedder = SentenceTransformerProvider(config.embedding_model)
 
-    hot = RedisVectorStore(redis=r, index_name=CONTEXT_INDEX, prefix=CONTEXT_PREFIX)
-    cold = SqliteVecStore(db_path=str(config.sqlite_vec_path))
+    memory_dir = Path(__file__).resolve().parent
+    hot = RedisVectorStore(redis=r, dim=config.embedding_dim)
+    cold = SqliteVecStore(
+        db_path=str(memory_dir / "episodic_cold.db"),
+        dim=config.embedding_dim,
+    )
     episodic = EpisodicMemory(hot=hot, cold=cold, embedder=embedder)
     scorer = SignificanceScorer(redis=r, config=config)
 
