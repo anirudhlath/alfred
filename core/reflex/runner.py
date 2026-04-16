@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 import redis.asyncio as aioredis
 
-from bus.schemas.events import StateChangedEvent
+from bus.schemas.events import ReflexObservation, StateChangedEvent
 from shared.streams import decode_stream_value
 from shared.types import AioRedis as AioRedis  # noqa: TC001  # re-export for backward compat
 
@@ -80,26 +80,14 @@ async def process_stream_entry(
     await redis.xadd(result_stream, {"event": result.model_dump_json()})
 
     # Publish structured observation for Memory Ingestor (D8)
-    from bus.schemas.events import ActionResult, ReflexObservation
-
     observation = ReflexObservation(
         source="reflex-engine",
         origin="state_change",
         trigger_event=event.model_dump(),
         action=action,
-        result=ActionResult(
-            source=str(getattr(result, "source", "unknown")),
-            request_id=str(getattr(result, "request_id", action.request_id)),
-            tool_name=str(getattr(result, "tool_name", action.tool_name)),
-            status=getattr(result, "status", "success"),
-        ),
+        result=result,
     )
     await redis.xadd(observation_stream, {"event": observation.model_dump_json()})
 
-    logger.info(
-        "Action: %s → %s (status=%s)",
-        event.entity_id,
-        action.tool_name,
-        getattr(result, "status", "unknown"),
-    )
+    logger.info("Action: %s → %s (status=%s)", event.entity_id, action.tool_name, result.status)
     return True

@@ -95,10 +95,7 @@ async def run_ingestor(
     await ensure_consumer_group(redis, REFLEX_OBSERVATIONS_STREAM, GROUP)
     logger.info("Memory Ingestor started. Consuming '{}'...", REFLEX_OBSERVATIONS_STREAM)
 
-    while True:
-        if shutdown_event and shutdown_event.is_set():
-            break
-
+    while not (shutdown_event and shutdown_event.is_set()):
         entries: list[
             tuple[
                 bytes | str,

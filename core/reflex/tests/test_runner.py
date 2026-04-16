@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
-from bus.schemas.events import ActionRequest, StateChangedEvent
+from bus.schemas.events import ActionRequest, ActionResult, StateChangedEvent
 
 
 @pytest.mark.asyncio
@@ -32,13 +32,14 @@ async def test_process_stream_entry_produces_action() -> None:
         parameters={"room": "living_room", "level": 20},
     )
 
+    action = mock_engine.process_event.return_value
+
     mock_agent = AsyncMock()
-    mock_agent.execute_action.return_value = MagicMock(
-        model_dump_json=MagicMock(return_value='{"status":"success"}'),
-        status="success",
-        request_id="r-1",
-        tool_name="smart_home.dim_lights",
+    mock_agent.execute_action.return_value = ActionResult(
         source="home-service",
+        request_id=action.request_id,
+        tool_name="smart_home.dim_lights",
+        status="success",
     )
 
     mock_redis = AsyncMock()
@@ -84,12 +85,11 @@ async def test_process_stream_entry_publishes_reflex_observation() -> None:
     mock_engine.process_event.return_value = action
 
     mock_agent = AsyncMock()
-    mock_agent.execute_action.return_value = MagicMock(
-        model_dump_json=MagicMock(return_value='{"status":"success"}'),
-        status="success",
+    mock_agent.execute_action.return_value = ActionResult(
+        source="home-service",
         request_id=action.request_id,
         tool_name="smart_home.turn_on",
-        source="home-service",
+        status="success",
     )
 
     mock_redis = AsyncMock()

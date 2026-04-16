@@ -14,9 +14,8 @@ from typing import TYPE_CHECKING
 
 import redis.asyncio as aioredis
 
-from bus.schemas.events import TriggerFired
+from bus.schemas.events import ReflexObservation, TriggerFired
 from core.memory.reader import MemoryReader
-from core.memory.scratchpad_writer import ScratchpadWriter
 from core.notifications.dispatcher import NotificationDispatcher
 from core.notifications.dnd import DNDChecker
 from core.notifications.publisher import NotificationPublisher
@@ -35,7 +34,6 @@ from shared.streams import (
     HOME_ACTION_RESULTS_STREAM,
     HOME_STATE_STREAM,
     REFLEX_OBSERVATIONS_STREAM,
-    SCRATCHPAD_QUEUE,
     decode_stream_value,
 )
 from telemetry.collector import flush_to_csv
@@ -101,8 +99,6 @@ async def _handle_trigger_fired(
             await redis.xadd(HOME_ACTION_RESULTS_STREAM, {"event": result.model_dump_json()})
 
             # Publish structured observation (D8)
-            from bus.schemas.events import ReflexObservation
-
             observation = ReflexObservation(
                 source="reflex-engine",
                 origin="trigger_fired",
@@ -211,7 +207,6 @@ async def run(config: AlfredConfig) -> None:
     )
     router = DomainRouter()
     router.register("home-service", HomeAgent(redis=r))
-    writer = ScratchpadWriter(redis=r, queue_key=SCRATCHPAD_QUEUE)
 
     # Notification wiring for TriggerFired
     dnd_checker = DNDChecker(redis=r, calendar_adapter=None)
@@ -219,7 +214,6 @@ async def run(config: AlfredConfig) -> None:
     publisher = NotificationPublisher(dispatcher)
 
     # Background tasks
-    scratchpad_task = asyncio.create_task(writer.run())
     telemetry_task = asyncio.create_task(flush_telemetry_periodically(config))
     trigger_fired_task = asyncio.create_task(_consume_trigger_fired(r, engine, router, publisher))
 
@@ -254,7 +248,6 @@ async def run(config: AlfredConfig) -> None:
     finally:
         logger.info("Shutting down Reflex Runner...")
         trigger_fired_task.cancel()
-        scratchpad_task.cancel()
         telemetry_task.cancel()
         await r.aclose()
 
