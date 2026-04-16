@@ -59,6 +59,8 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `core/memory/significance.py` — `SignificanceScorer` (heuristic amygdala)
 - `core/memory/context_index.py` — `ContextIndexManager` (unified idx:context search)
 - `core/memory/routines/patterns.py` — `match_trigger_pattern()` (shared utility)
+- `core/memory/ingestor.py` — Memory Ingestor (hippocampus: ReflexObservation → episodic memory)
+- `core/memory/ingestor_main.py` — Memory Ingestor service entry point
 - `core/conscious/memory_tools.py` — Internal memory tools (recall_memories, get_live_state)
 - `conftest.py` — root test fixtures (InMemoryKeyring, telemetry clear, tv_on_event, mock_embedder, mock_vector_store)
 
@@ -105,7 +107,7 @@ uv run python -m evals list
 uv run python -m evals compare <run1> <run2>
 ```
 
-Individual services can still be run standalone: `python -m bus`, `python -m core.reflex`, `python -m core.triggers`, `python -m core.conscious`, `python -m core.channels`.
+Individual services can still be run standalone: `python -m bus`, `python -m core.reflex`, `python -m core.triggers`, `python -m core.conscious`, `python -m core.channels`, `python -m core.memory.ingestor_main`.
 
 Web channel serves the PWA frontend on port 8081 (configurable in `core/channels/__main__.py`).
 
@@ -119,6 +121,8 @@ graph TD
     Bus --> Reflex[Reflex Engine<br/>System 1 SLM<br/>+ TriggerFired consumer]
     Bus --> Triggers[Trigger Engine<br/>Proactive Actions]
     Bus --> Conscious[Conscious Engine<br/>System 2 Cloud LLM]
+    Reflex -->|ReflexObservation| Ingestor[Memory Ingestor<br/>hippocampus]
+    Ingestor --> Memory
     Reflex -->|ActionRequest| Actions[alfred:actions]
     Triggers -->|ActionRequest| Actions
     Triggers -->|TriggerFired| Bus
@@ -174,3 +178,5 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - APNs adapter requires `PyJWT[crypto]` and `httpx[http2]` — added to base deps in pyproject.toml
 - APNs adapter auto-prunes stale device tokens (410 response) — no manual cleanup needed
 - `require_trusted_network` replaces `require_localhost` — accepts localhost + Tailscale CGNAT (100.64.0.0/10)
+- Reflex Runner no longer writes to scratchpad — publishes structured `ReflexObservation` to `REFLEX_OBSERVATIONS_STREAM` instead; Memory Ingestor consumes and writes to episodic memory
+- Import `publish_observation` from `core.reflex.runner` to publish observations from new code paths
