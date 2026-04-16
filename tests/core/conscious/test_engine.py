@@ -357,3 +357,43 @@ async def test_process_request_injects_routine_hint(
     system_prompt_arg = call_kwargs[0][0]  # first positional arg
     assert "Routine Suggestion" in system_prompt_arg
     assert "evening_dim" in system_prompt_arg
+
+
+def test_build_routine_hint_includes_steps_and_confidence(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """Hint should include step descriptions and confidence percentage."""
+    from core.memory.schemas import RoutineStep
+
+    routine_store = MagicMock()
+    routine_with_steps = RoutineSpec(
+        name="evening_dim",
+        trigger_pattern="20:00 daily",
+        steps=[RoutineStep(description="Dim lights")],
+        confidence=0.75,
+        learned_from=["ep-1"],
+        state="candidate",
+    )
+    routine_store.list_by_state.return_value = [routine_with_steps]
+
+    engine = ConsciousEngine(**mock_deps, routine_store=routine_store)
+    now = _dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=_dt.UTC)
+    result = engine._build_routine_hint(now)
+
+    assert "Dim lights" in result
+    assert "75%" in result
+
+
+def test_build_routine_hint_empty_steps_shows_na(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """Hint should show N/A for steps when the routine has no steps defined."""
+    routine_store = MagicMock()
+    routine_store.list_by_state.return_value = [_make_routine(trigger_pattern="20:00 daily")]
+
+    engine = ConsciousEngine(**mock_deps, routine_store=routine_store)
+    now = _dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=_dt.UTC)
+    result = engine._build_routine_hint(now)
+
+    assert "N/A" in result
+    assert "80%" in result

@@ -492,10 +492,14 @@ class ConsciousEngine:
             updated = routine.model_copy(update={"last_suggested": now})
             self._routines.save(updated)
 
+            steps_str = "; ".join(s.description for s in routine.steps) if routine.steps else "N/A"
             hints.append(
                 f"## Routine Suggestion\n"
-                f"A pattern has been detected: {routine.name}. "
-                f"Consider suggesting this routine to sir."
+                f"You've noticed a pattern: {routine.name} "
+                f"({routine.trigger_pattern}). Steps: {steps_str}. "
+                f"Confidence: {routine.confidence:.0%}. "
+                f"If appropriate, suggest this to sir and ask if they'd like "
+                f"Alfred to handle this automatically."
             )
             logger.debug("Routine suggestion injected: '%s'", routine.name)
 
