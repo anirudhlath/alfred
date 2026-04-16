@@ -126,3 +126,22 @@ class TriggerCreated(BaseEvent):
     action: dict[str, Any] | None = None
     one_shot: bool = False
     urgency: UrgencyLevel = "informational"
+
+
+class ReflexObservation(BaseEvent):
+    """A structured observation of a Reflex Engine action for System 2 awareness.
+
+    Published after every Reflex action execution. The Memory Ingestor
+    consumes these and writes them to episodic memory so that the
+    Conscious Engine can recall Reflex actions during context assembly.
+    """
+
+    event_type: str = "reflex_observation"
+    observation_id: str = Field(default_factory=lambda: str(uuid4()))
+    origin: Literal["state_change", "trigger_fired"]
+    trigger_event: dict[str, Any] = Field(
+        description="The originating event payload (StateChanged or TriggerFired)"
+    )
+    action: ActionRequest
+    result: ActionResult
+    decision_context: str | None = None
