@@ -20,6 +20,8 @@ dependencies = [
     "loguru>=0.7",
     "litellm>=1.0",
     "keyring>=25.0",
+    "webauthn>=2.0",
+    "aiosqlite>=0.20",
 ]
 
 [project.optional-dependencies]
@@ -41,7 +43,6 @@ memory = [
     "sentence-transformers>=3.0",
     "transformers>=4.48",  # Required for Gemma 3 architecture (EmbeddingGemma-300M)
     "sqlite-vec>=0.1",
-    "aiosqlite>=0.20",
     "numpy>=1.26",
 ]
 voice = [
