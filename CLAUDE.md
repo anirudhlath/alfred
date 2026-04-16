@@ -174,3 +174,9 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - APNs adapter requires `PyJWT[crypto]` and `httpx[http2]` — added to base deps in pyproject.toml
 - APNs adapter auto-prunes stale device tokens (410 response) — no manual cleanup needed
 - `require_trusted_network` replaces `require_localhost` — accepts localhost + Tailscale CGNAT (100.64.0.0/10)
+- `_group_by_entity_date()` is a module-level function in `consolidator.py` — used by `_apply_decay()` for compression grouping
+- Decay formula is subtractive: `age_factor - significance*2 - recency*1.5 - frequency*1.0` — high values RESIST migration (negative pressure = stays in hot)
+- `EpisodicMemory.recall()` persists retrieval stats to hot store — each recall triggers HSET on Redis (retrieval_count + last_retrieved)
+- Routines are indexed in `idx:context` on detection and removed on archive — search via `type="routine"` filter
+- Proactive routine suggestions run every 15 minutes in the conscious process background loop
+- Compression at cold migration groups by entity+date — summary goes to cold, originals marked `compressed="yes"`
