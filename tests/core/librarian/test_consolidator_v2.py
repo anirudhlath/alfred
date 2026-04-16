@@ -603,13 +603,14 @@ async def test_apply_decay_migrates_old_low_significance_entries() -> None:
     librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
 
     # Entry: 30 days old, low significance=0.1, retrieval_count=0
-    # pressure = 30 * (1-0.1) * (1/(0+1)) = 30 * 0.9 * 1.0 = 27.0 > threshold=1.0
+    # New formula: age_factor=1.0, retrieval_recency≈0.013, retrieval_frequency=0
+    # pressure ≈ 1.0 - 0.2 - 0.02 - 0.0 = 0.78 > threshold=0.5
     old_ts = datetime.datetime.now(datetime.UTC).timestamp() - (30 * 86400)
     old_entry = _make_search_result("old-entry-1", old_ts, significance=0.1, retrieval_count=0)
 
     context_index.search_text = AsyncMock(return_value=[old_entry])
 
-    migrated = await librarian._apply_decay(decay_migration_threshold=1.0)
+    migrated = await librarian._apply_decay(decay_migration_threshold=0.5)
 
     assert migrated == 1
     episodic_memory.copy_to_cold_and_remove.assert_awaited_once()
@@ -721,7 +722,7 @@ async def test_apply_decay_migration_error_continues_for_other_entries() -> None
     # First migration fails, second succeeds
     episodic_memory.copy_to_cold_and_remove.side_effect = [Exception("migrate failed"), None]
 
-    migrated = await librarian._apply_decay(decay_migration_threshold=1.0)
+    migrated = await librarian._apply_decay(decay_migration_threshold=0.5)
 
     # Only second entry migrated successfully
     assert migrated == 1
@@ -1121,3 +1122,127 @@ async def test_consolidate_includes_pattern_detection_in_result() -> None:
     assert "patterns_detected" in result
     assert "lifecycle_updates" in result
     assert result["patterns_detected"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Part F: Upgraded decay formula tests
+# ---------------------------------------------------------------------------
+
+
+def _make_decay_search_result(
+    entry_id: str = "ep-1",
+    age_days: float = 30.0,
+    significance: float = 0.1,
+    retrieval_count: int = 0,
+    last_retrieved_days_ago: float | None = None,
+) -> SearchResult:
+    """Helper to create a SearchResult for decay testing."""
+    import time
+
+    now = time.time()
+    timestamp = now - (age_days * 86400)
+    last_retrieved = 0.0
+    if last_retrieved_days_ago is not None:
+        last_retrieved = now - (last_retrieved_days_ago * 86400)
+    return SearchResult(
+        id=entry_id,
+        score=0.5,
+        content=f"entry {entry_id}",
+        semantic_key=f"key {entry_id}",
+        metadata=ContextMetadata(
+            type="episodic",
+            source="conversation",
+            entities="light.kitchen",
+            timestamp=timestamp,
+            significance=significance,
+            retrieval_count=retrieval_count,
+            last_retrieved=last_retrieved,
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_decay_high_significance_resists_migration() -> None:
+    """Entry with high significance should NOT be migrated even if old."""
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    context_index.search_text = AsyncMock(
+        return_value=[_make_decay_search_result(significance=0.8, age_days=30)]
+    )
+
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+    count = await librarian._apply_decay(decay_migration_threshold=0.5)
+    assert count == 0
+    episodic_memory.copy_to_cold_and_remove.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_decay_old_low_significance_migrates() -> None:
+    """Old entry with low significance and no retrievals should be migrated."""
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    context_index.search_text = AsyncMock(
+        return_value=[_make_decay_search_result(significance=0.1, age_days=30)]
+    )
+
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+    count = await librarian._apply_decay(decay_migration_threshold=0.5)
+    assert count == 1
+    episodic_memory.copy_to_cold_and_remove.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_decay_recently_retrieved_resists_migration() -> None:
+    """Entry retrieved yesterday should resist migration due to recency."""
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    context_index.search_text = AsyncMock(
+        return_value=[
+            _make_decay_search_result(
+                significance=0.1,
+                age_days=30,
+                retrieval_count=1,
+                last_retrieved_days_ago=1,
+            )
+        ]
+    )
+
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+    count = await librarian._apply_decay(decay_migration_threshold=0.5)
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_decay_frequently_retrieved_resists_migration() -> None:
+    """Entry with high retrieval count should resist migration."""
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    context_index.search_text = AsyncMock(
+        return_value=[
+            _make_decay_search_result(
+                significance=0.1,
+                age_days=30,
+                retrieval_count=10,
+                last_retrieved_days_ago=15,
+            )
+        ]
+    )
+
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+    count = await librarian._apply_decay(decay_migration_threshold=0.5)
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_decay_last_retrieved_zero_fallback_to_age() -> None:
+    """When last_retrieved=0 (pre-stats-fix), days_since_last_retrieved == age_days."""
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    # Old entry, low significance, last_retrieved=0.0 (default/never)
+    context_index.search_text = AsyncMock(
+        return_value=[_make_decay_search_result(significance=0.1, age_days=60)]
+    )
+
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+    count = await librarian._apply_decay(decay_migration_threshold=0.5)
+    assert count == 1

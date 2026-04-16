@@ -450,18 +450,26 @@ class Librarian:
     ) -> int:
         """Migrate old low-significance hot entries to cold storage.
 
-        Computes migration pressure per entry:
-            age_days = (now - entry.timestamp) / 86400
-            pressure = age_days * (1 - significance) * (1 / (retrieval_count + 1))
+        Uses a subtractive formula where significance and retrieval
+        activity resist the migration pressure from age:
+
+            age_factor = min(days_old / 30.0, 1.0)
+            retrieval_recency = exp(-days_since_last_retrieved / 7.0)
+            retrieval_frequency = min(log2(count + 1) / 5.0, 1.0)
+
+            pressure = (
+                age_factor
+                - significance * 2.0
+                - retrieval_recency * 1.5
+                - retrieval_frequency * 1.0
+            )
 
         Entries with pressure > decay_migration_threshold are migrated to cold.
-        High-significance entries resist migration (low pressure).
-        Frequently-retrieved entries also resist migration.
-
         Returns the number of entries migrated.
         """
+        from math import exp, log2
+
         try:
-            # Use a broad text search to surface candidate hot entries.
             results = await self._context_index.search_text(
                 query=search_query,
                 limit=search_limit,
@@ -475,7 +483,6 @@ class Librarian:
         migrated = 0
 
         for result in results:
-            # Only process episodic entries (skip semantic/routine)
             if result.metadata.type != "episodic":
                 continue
 
@@ -486,12 +493,27 @@ class Librarian:
             age_days = (now - timestamp) / 86400.0
             significance = result.metadata.significance
             retrieval_count = result.metadata.retrieval_count
+            last_retrieved = result.metadata.last_retrieved
 
-            pressure = age_days * (1.0 - significance) * (1.0 / (retrieval_count + 1))
+            # Fallback: if last_retrieved was never set, assume never retrieved
+            if last_retrieved > 0:
+                days_since_last_retrieved = (now - last_retrieved) / 86400.0
+            else:
+                days_since_last_retrieved = age_days
+
+            age_factor = min(age_days / 30.0, 1.0)
+            retrieval_recency = exp(-days_since_last_retrieved / 7.0)
+            retrieval_frequency = min(log2(retrieval_count + 1) / 5.0, 1.0)
+
+            pressure = (
+                age_factor
+                - significance * 2.0
+                - retrieval_recency * 1.5
+                - retrieval_frequency * 1.0
+            )
 
             if pressure > decay_migration_threshold:
                 try:
-                    # Write to cold store, then remove from hot
                     await self._episodic_memory.copy_to_cold_and_remove(result)
                     migrated += 1
                     logger.debug(
