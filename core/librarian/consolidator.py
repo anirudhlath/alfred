@@ -11,6 +11,7 @@ On failure, the scratchpad accumulates — memory files never left partial.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import UTC, datetime, timedelta
@@ -498,12 +499,8 @@ class Librarian:
 
         Returns the number of original entries migrated.
         """
-        import asyncio
-        from uuid import uuid4
-
         from core.memory.vector_store import ContextMetadata
 
-        # Build text representation of the group for LLM
         lines = [f"- [{r.id}] {r.content}" for r in group]
         group_text = "\n".join(lines)
 
@@ -691,23 +688,27 @@ class Librarian:
         # Group related entries for compression
         groups, ungrouped = _group_by_entity_date(to_migrate)
 
-        migrated = 0
-
-        # Compress groups of 2+ related entries
-        for group in groups:
-            try:
-                count = await self._compress_and_migrate(group)
-                migrated += count
-            except Exception as exc:
-                logger.warning("Decay: compression failed for group: %s", exc)
-
-        # Migrate ungrouped entries individually
-        for result in ungrouped:
+        # Compress groups and migrate ungrouped in parallel
+        async def _migrate_single(result: SearchResult) -> int:
             try:
                 await self._episodic_memory.copy_to_cold_and_remove(result)
-                migrated += 1
+                return 1
             except Exception as exc:
                 logger.warning("Decay: failed to migrate entry %s: %s", result.id, exc)
+                return 0
+
+        async def _compress_group(group: list[SearchResult]) -> int:
+            try:
+                return await self._compress_and_migrate(group)
+            except Exception as exc:
+                logger.warning("Decay: compression failed for group: %s", exc)
+                return 0
+
+        results = await asyncio.gather(
+            *((_compress_group(g) for g in groups)),
+            *((_migrate_single(r) for r in ungrouped)),
+        )
+        migrated = sum(results)
 
         if migrated:
             logger.info("Decay: migrated %d entries to cold storage", migrated)
@@ -865,15 +866,7 @@ class Librarian:
                             routine.name,
                             dormant_days,
                         )
-                        # Remove from context index
-                        try:
-                            await self._context_index.remove(routine.name)
-                        except Exception as exc:
-                            logger.warning(
-                                "Failed to remove archived routine '%s' from index: %s",
-                                routine.name,
-                                exc,
-                            )
+                        await self._remove_routine_from_index(routine.name)
                 continue
 
             # For candidate/active: check if trigger_pattern matches recent activity
@@ -931,18 +924,19 @@ class Librarian:
                 self._routines.save(routine)
                 updated += 1
 
-                # Remove archived routines from context index
                 if new_state == "archived":
-                    try:
-                        await self._context_index.remove(routine.name)
-                    except Exception as exc:
-                        logger.warning(
-                            "Failed to remove archived routine '%s' from index: %s",
-                            routine.name,
-                            exc,
-                        )
+                    await self._remove_routine_from_index(routine.name)
 
         return updated
+
+    async def _remove_routine_from_index(self, name: str) -> None:
+        """Remove an archived routine from the context index."""
+        try:
+            await self._context_index.remove(name)
+        except Exception as exc:
+            logger.warning(
+                "Failed to remove archived routine '%s' from index: %s", name, exc
+            )
 
     @staticmethod
     def _check_pattern_fired(routine: RoutineSpec, now: datetime) -> bool:

@@ -471,7 +471,7 @@ class ConsciousEngine:
 
     def _eligible_candidates(self, now: datetime) -> list[RoutineSpec]:
         """Return candidate routines that match current time and are outside cooldown."""
-        if self._routines is None:
+        if not self.has_routine_store:
             return []
 
         from core.memory.routines.patterns import match_trigger_pattern
@@ -494,7 +494,7 @@ class ConsciousEngine:
         Routines that were suggested within the cooldown window are skipped.
         Matching routines have their ``last_suggested`` timestamp updated.
         """
-        if self._routines is None:
+        if not self.has_routine_store:
             return ""
 
         eligible = self._eligible_candidates(now)
@@ -527,7 +527,7 @@ class ConsciousEngine:
         Routines that match the current time pattern and are outside the suggestion
         cooldown window receive an INFORMATIONAL notification push.
         """
-        if self._routines is None or notifier is None:
+        if not self.has_routine_store or notifier is None:
             return
 
         from core.notifications.schema import Urgency
@@ -614,7 +614,7 @@ class ConsciousEngine:
 
         # 3c. Routine suggestion — check candidate routines against current time
         routine_hint: str = ""
-        if self._routines is not None:
+        if self.has_routine_store:
             try:
                 routine_hint = self._build_routine_hint(now)
             except Exception:

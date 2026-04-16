@@ -302,11 +302,12 @@ async def run(config: AlfredConfig) -> None:
                     await engine.check_routine_suggestions(notifier=notifier)
                 except Exception as exc:
                     log.error("Routine suggestion check failed: {}", exc)
-                # Sleep 15 minutes in 5s increments to respect shutdown
-                for _ in range(180):
-                    if _shutdown.is_set():
-                        return
-                    await asyncio.sleep(5)
+                # Wait 15 minutes or until shutdown (no polling)
+                try:
+                    await asyncio.wait_for(_shutdown.wait(), timeout=900)
+                    return  # shutdown signalled
+                except TimeoutError:
+                    pass  # 15 min elapsed, loop again
 
         routine_suggestion_task = asyncio.create_task(_routine_suggestion_loop())
 
