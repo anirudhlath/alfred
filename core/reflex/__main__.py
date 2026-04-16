@@ -9,7 +9,6 @@ import asyncio
 import json
 import logging
 import signal
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -35,6 +34,7 @@ from shared.streams import (
     EVENTS_STREAM,
     HOME_ACTION_RESULTS_STREAM,
     HOME_STATE_STREAM,
+    REFLEX_OBSERVATIONS_STREAM,
     SCRATCHPAD_QUEUE,
     decode_stream_value,
 )
@@ -100,12 +100,20 @@ async def _handle_trigger_fired(
             result = await agent.execute_action(action)
             await redis.xadd(HOME_ACTION_RESULTS_STREAM, {"event": result.model_dump_json()})
 
-            timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-            observation = (
-                f"{timestamp} [reflex:trigger] "
-                f"{action.tool_name}({action.parameters}) -> {result.status}"
+            # Publish structured observation (D8)
+            from bus.schemas.events import ReflexObservation
+
+            observation = ReflexObservation(
+                source="reflex-engine",
+                origin="trigger_fired",
+                trigger_event=trigger_event.model_dump(),
+                action=action,
+                result=result,
             )
-            await redis.lpush(SCRATCHPAD_QUEUE, observation)  # type: ignore[misc]
+            await redis.xadd(
+                REFLEX_OBSERVATIONS_STREAM,
+                {"event": observation.model_dump_json()},
+            )
     except Exception as e:
         logger.error("SLM reasoning failed for trigger '%s': %s", trigger_event.trigger_name, e)
 
@@ -235,7 +243,7 @@ async def run(config: AlfredConfig) -> None:
                             agent=router,
                             redis=r,
                             result_stream=RESULT_STREAM,
-                            scratchpad_queue=SCRATCHPAD_QUEUE,
+                            observation_stream=REFLEX_OBSERVATIONS_STREAM,
                         )
                         # ACK only on success — retriable errors (Ollama down)
                         # propagate as exceptions and the message stays pending
