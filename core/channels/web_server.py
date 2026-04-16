@@ -24,7 +24,15 @@ if TYPE_CHECKING:
     from starlette.responses import Response
 
 from bus.schemas.events import AlfredResponse, UserRequest
-from shared.streams import USER_REQUESTS_STREAM, USER_RESPONSES_STREAM, decode_stream_value
+from core.identity.auth_middleware import COOKIE_NAME, AuthCookieMiddleware
+from core.identity.auth_routes import create_auth_router
+from core.identity.credentials import CredentialStore
+from shared.streams import (
+    AUTH_SESSION_PREFIX,
+    USER_REQUESTS_STREAM,
+    USER_RESPONSES_STREAM,
+    decode_stream_value,
+)
 
 _lazy_cache: dict[str, Any] = {}
 _FAILED: object = object()  # sentinel for imports that already failed
@@ -208,6 +216,15 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     pool: aioredis.Redis[Any] = aioredis.from_url(app.state.redis_url, decode_responses=False)  # type: ignore[type-arg]
     app.state.redis = pool
 
+    # Initialize WebAuthn credential store
+    credential_store = CredentialStore()
+    await credential_store.initialize()
+    app.state.credential_store = credential_store
+
+    # Mount auth router (needs both redis and credential_store)
+    auth_router = create_auth_router(store=credential_store, redis=pool)
+    app.include_router(auth_router)
+
     try:
         await _init_apns_adapter(pool)
     except Exception as exc:
@@ -229,6 +246,7 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     if apns is not None and hasattr(apns, "close"):
         await apns.close()
 
+    await credential_store.close()
     await pool.close()
 
 
@@ -253,8 +271,30 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
         await websocket.accept()
-        _active_websockets[websocket] = "web_pwa"
         r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
+
+        # Authenticate via cookie (BaseHTTPMiddleware doesn't run for WS)
+        cookie_header = websocket.headers.get("cookie", "")
+        auth_session_id: str | None = None
+        for part in cookie_header.split(";"):
+            part = part.strip()
+            if part.startswith(f"{COOKIE_NAME}="):
+                auth_session_id = part[len(f"{COOKIE_NAME}=") :]
+                break
+
+        authenticated = False
+        if auth_session_id:
+            session_data: dict[bytes, bytes] = await r.hgetall(  # type: ignore[misc]
+                f"{AUTH_SESSION_PREFIX}{auth_session_id}"
+            )
+            if session_data and session_data.get(b"authenticated") == b"1":
+                authenticated = True
+
+        if not authenticated:
+            await websocket.close(code=4001, reason="Authentication required")
+            return
+
+        _active_websockets[websocket] = "web_pwa"
 
         # Assign session immediately so clients (iOS) that wait for the
         # session message before sending don't deadlock.
@@ -332,7 +372,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
                     source=_CHANNEL_SOURCE_MAP.get(client_channel, "web-pwa"),
                     channel=client_channel,
                     session_id=session_id,
-                    identity_claim=data.get("identity", "guest"),
+                    identity_claim="sir" if authenticated else "guest",
                     content_type=content_type,
                     content=content,
                 )
@@ -458,12 +498,14 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         return {"name": name, "healthy": healthy}
 
     @app.post("/api/onboarding")
-    async def save_onboarding(payload: OnboardingPayload) -> dict[str, str]:
+    async def save_onboarding(payload: OnboardingPayload, request: Request) -> dict[str, str]:
         """Save onboarding preferences to semantic memory files.
 
         Writes default values for any null fields. Skips writing if the
         preference file already exists (prevents clobbering Librarian data).
         """
+        if not getattr(request.state, "authenticated", False):
+            raise HTTPException(status_code=401, detail="Authentication required")
         today = datetime.now(UTC).strftime("%Y-%m-%d")
         prefs_dir, profile_dir = _get_prefs_dirs()
         prefs_dir.mkdir(parents=True, exist_ok=True)
@@ -553,6 +595,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
             return response
 
     app.add_middleware(NoCacheStaticMiddleware)
+    app.add_middleware(AuthCookieMiddleware)
 
     # Mount static files for PWA (if directory exists)
     web_dir = Path(__file__).resolve().parent.parent.parent / "web"
