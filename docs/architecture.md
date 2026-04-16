@@ -131,11 +131,13 @@ graph TB
     end
 
     subgraph "Interaction Channels"
+        WebAuthn["WebAuthn<br/>Passkey Auth"]
         WebChannel["Web Channel<br/><code>uv run python -m core.channels</code>"]
         WebPWA["Web PWA<br/>web/"]
         VoicePipeline["Voice Pipeline"]
         WhisperSTT[WhisperSTT]
         PiperTTS[PiperTTS]
+        WebAuthn --> WebChannel
     end
 
     subgraph "Evals Runner"
@@ -506,6 +508,10 @@ graph LR
 The notification system is deterministic — no LLM calls. The Dispatcher checks DND state,
 defers non-urgent notifications during DND, and routes to auto-discovered channel adapters
 by urgency level. URGENT notifications always bypass DND.
+
+## 4.5 Authentication (WebAuthn)
+
+The web PWA uses passkey-based authentication via the WebAuthn standard. Registration is gated to the Tailscale trusted network. Auth sessions are stored in Redis and carried via HttpOnly cookies. The WebSocket handler validates the cookie on connection and rejects unauthenticated clients (code 4001). See [docs/webauthn.md](webauthn.md) for details.
 
 ## 5. Data Flow
 

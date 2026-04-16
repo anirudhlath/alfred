@@ -35,7 +35,14 @@
             <p class="settings-desc">Configure credentials for external services. Stored securely in your system keychain.</p>
             <div id="integration-cards"></div>
         </main>
+        <div class="settings-section" style="margin-top: 2rem; border-top: 1px solid var(--border); padding-top: 1.5rem;">
+            <h2 class="settings-section-title">Session</h2>
+            <button class="onboarding-btn" onclick="Auth.logout()" style="background: #c0392b;">
+                Sign Out
+            </button>
+        </div>
     </div>
+    <script src="auth.js"></script>
     <script src="settings.js"></script>
 </body>
 </html>

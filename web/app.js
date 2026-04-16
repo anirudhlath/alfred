@@ -167,7 +167,11 @@ function showNotification(title, body, urgency) {
 
     const bubble = document.createElement('div');
     bubble.className = 'message-bubble notification-bubble';
-    bubble.innerHTML = `<strong>${title}</strong><br>${body}`;
+    const titleEl = document.createElement('strong');
+    titleEl.textContent = title;
+    bubble.appendChild(titleEl);
+    bubble.appendChild(document.createElement('br'));
+    bubble.appendChild(document.createTextNode(body));
 
     msg.appendChild(label);
     msg.appendChild(bubble);
@@ -187,7 +191,7 @@ function send() {
     if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
 
     appendMessage('user', text);
-    ws.send(JSON.stringify({ type: 'text', content: text, identity: 'sir' }));
+    ws.send(JSON.stringify({ type: 'text', content: text }));
     chatInput.value = '';
     autoResizeInput();
     showTypingIndicator();
@@ -248,7 +252,6 @@ async function startRecording() {
                     ws.send(JSON.stringify({
                         type: 'audio',
                         content: reader.result,
-                        identity: 'sir',
                     }));
                     showTypingIndicator();
                 }
@@ -403,7 +406,74 @@ function showStep(n) {
     });
 }
 
-// --- Init ---
+// --- Auth-gated init ---
 
-initOnboarding();
-connect();
+async function init() {
+    if (!window.PublicKeyCredential) {
+        document.getElementById('login-unsupported').style.display = 'block';
+        document.getElementById('login-webauthn-supported').style.display = 'none';
+    }
+
+    const status = await Auth.getStatus();
+
+    if (!status.registered) {
+        // First visit -- show onboarding (step 0 = registration)
+        initOnboarding();
+        return;
+    }
+
+    if (!status.authenticated) {
+        // Return visit -- show login
+        showLoginScreen();
+        return;
+    }
+
+    // Authenticated -- go to chat
+    connect();
+}
+
+function showLoginScreen() {
+    document.getElementById('login-overlay').style.display = 'flex';
+    // Try Conditional UI
+    if (window.PublicKeyCredential &&
+        PublicKeyCredential.isConditionalMediationAvailable) {
+        PublicKeyCredential.isConditionalMediationAvailable().then(available => {
+            if (available) {
+                window._conditionalAbort = new AbortController();
+                Auth.loginConditional(window._conditionalAbort).then(ok => {
+                    if (ok) window.location.reload();
+                });
+            }
+        });
+    }
+}
+
+async function handleLogin() {
+    const errorEl = document.getElementById('login-error');
+    errorEl.style.display = 'none';
+    try {
+        if (window._conditionalAbort) window._conditionalAbort.abort();
+        await Auth.login();
+        window.location.reload();
+    } catch (e) {
+        errorEl.textContent = e.message || 'Login failed. Please try again.';
+        errorEl.style.display = 'block';
+    }
+}
+
+async function handleRegister() {
+    const errorEl = document.getElementById('register-error');
+    errorEl.style.display = 'none';
+    const deviceName = document.getElementById('device-name').value.trim()
+        || navigator.platform || 'Unknown Device';
+    try {
+        await Auth.register(deviceName);
+        // Registration succeeded -- move to next onboarding step
+        showStep(1);
+    } catch (e) {
+        errorEl.textContent = e.message || 'Registration failed. Please try again.';
+        errorEl.style.display = 'block';
+    }
+}
+
+init();
