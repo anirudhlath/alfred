@@ -8,7 +8,6 @@ Lightweight consumer that bridges Reflex observations into episodic memory.
 from __future__ import annotations
 
 import asyncio
-import logging
 import signal
 
 import redis.asyncio as aioredis
@@ -21,9 +20,8 @@ from core.memory.redis_vector_store import RedisVectorStore
 from core.memory.significance import SignificanceScorer
 from core.memory.sqlite_vec_store import SqliteVecStore
 from shared.config import AlfredConfig
+from loguru import logger
 from shared.logging import configure_logging
-
-logger = logging.getLogger(__name__)
 
 _shutdown = asyncio.Event()
 
