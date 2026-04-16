@@ -56,44 +56,40 @@ uv run python -m pytest -x -q 2>&1 | tail -3
 
 Note the test count for the status slide. Don't show test output.
 
-### 4. Visual Walkthrough
+### 4. Demo What Changed (THIS IS THE CORE — don't skip it)
 
-Use the Playwright MCP to drive the browser. This is the core of the demo — show, don't tell.
+**CRITICAL:** Demo the ACTUAL RECENT WORK, not pre-existing features. Step 1 identified what was built — this step proves it works. The demo must show the NEW capabilities in action.
 
-**Open Alfred:**
-1. Navigate to `http://localhost:8081`
-2. Take a screenshot of the main interface
+**Classify each change** into one of these demo strategies:
 
-**Then walk through what's new.** Match recent work to these demo flows:
+#### A. Frontend/UI changes → Visual Walkthrough (Playwright)
+Use the Playwright MCP to drive the browser. Screenshot each new UI element or flow.
 
-**Settings / Integrations / Credentials:**
-- Navigate to Settings (gear icon)
-- Screenshot the integration cards — highlight that each service self-describes its credential requirements
-- Show the save/test/clear workflow
-- Key message: *"Users can now connect external services through a settings UI instead of editing config files. Credential storage uses the OS keychain — no plaintext secrets."*
+#### B. Backend/pipeline changes → Live Proof via CLI
+Write a short Python script that exercises the new capability against the running system and prints human-readable output. Run it with `uv run python -c "..."` or as a temp script. Examples:
+- **Memory/decay changes:** Query Redis to show entries with retrieval stats, trigger a Librarian cycle, show before/after state
+- **New API endpoints:** `curl` the endpoint and show the response
+- **Event processing:** Publish a test event to a Redis stream and show it being consumed
+- **Pattern detection:** Seed episodic entries and trigger consolidation to show routine candidates appearing
+- **Notification changes:** Trigger a notification and show it arriving via WebSocket or in Redis
 
-**Onboarding:**
-- Clear onboarding state: `localStorage.removeItem('alfred_onboarded')`, reload
-- Walk through the wizard with screenshots at each step
-- Show the skip button — demonstrate graceful defaults
-- Key message: *"First-run experience is self-service. Users can skip any step and Alfred starts with sensible defaults, learning preferences over time through the Librarian."*
+Format CLI output as a code block with a caption explaining what the viewer is seeing. The output should be self-explanatory — timestamps, IDs, state changes.
 
-**Conversation / Intelligence:**
-- Type a message in the chat (e.g., "Good morning, Alfred — what's my day look like?")
-- Wait for response, screenshot
-- Key message: *"The Conscious Engine assembles context from memory, integrations, and calendar to deliver personalized briefings."*
+#### C. Behavioral/intelligence changes → Conversation Proof
+If the change affects how Alfred responds (new tools, context assembly, memory recall), demonstrate it via a live conversation in the UI. Type a prompt that specifically exercises the new behavior. Screenshot the response.
 
-**Notifications:**
-- If notification UI is visible, screenshot it
-- Key message: *"Alfred proactively notifies through Signal, voice, or the web interface — respecting DND schedules and priority routing."*
+**For EVERY demo item:**
+- State what you're about to prove: *"Let me show that the decay formula actually preserves important memories..."*
+- Show the proof (screenshot or CLI output)
+- One-line caption for the audience
 
-**Voice:**
-- Show the microphone button is present
-- Key message: *"Voice input via Whisper, voice output via Piper TTS — both run locally, no cloud dependency."*
+**DO NOT** fall back to demoing pre-existing features (settings, onboarding, voice button) unless they were specifically changed in this sprint.
 
-**For every screenshot:** Add a one-line caption explaining what the viewer is seeing. Frame it as a capability, not a feature list.
+### 5. System Context (brief)
 
-### 5. Executive Summary
+After demoing what's new, optionally show 1-2 existing capabilities for context — but ONLY if they help frame the new work. Keep this under 2 minutes. Don't walk through every screen.
+
+### 6. Executive Summary
 
 Present this at the end. This is what they'll remember.
 
@@ -120,7 +116,7 @@ Present this at the end. This is what they'll remember.
 - [Next 1-2 priorities from the backlog, framed as capabilities]
 ```
 
-### 6. Wrap Up
+### 7. Wrap Up
 
 Ask if they want to keep the system running or shut down.
 
@@ -133,5 +129,7 @@ kill $RUNNER_PID 2>/dev/null
 - **Confident, not defensive.** Present what works. If something doesn't work, note it and move on.
 - **Capabilities, not features.** "Alfred can now securely connect to external services" not "We added a keyring wrapper with async APIs."
 - **Strategic, not tactical.** "This positions us for the integration marketplace" not "We added 4 REST endpoints."
-- **Visuals over words.** Every screenshot replaces a paragraph of explanation.
+- **Proof over narration.** Every claim must be backed by a screenshot, CLI output, or live conversation. Don't describe what something does — show it working.
+- **Demo what's new, not what exists.** The audience wants to see what changed this sprint. Pre-existing features are context, not the main event.
+- **Backend work deserves demos too.** If the sprint was pipeline/engine work, write scripts that prove the behavior. A Redis query showing decay scores is more compelling than a screenshot of an unchanged chat UI.
 - **No jargon.** Say "settings page" not "CRUD endpoints." Say "secure storage" not "keyring backend."
