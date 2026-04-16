@@ -314,7 +314,6 @@ async def test_handle_trigger_fired_with_slm_action(
     )
     redis = AsyncMock()
     redis.xadd = AsyncMock()
-    redis.lpush = AsyncMock()
 
     await _handle_trigger_fired(
         _make_entry_data(event),
@@ -326,5 +325,57 @@ async def test_handle_trigger_fired_with_slm_action(
 
     mock_publisher.publish.assert_called_once()
     mock_agent.execute_action.assert_called_once()
-    redis.xadd.assert_called_once()  # result stream
-    redis.lpush.assert_called_once()  # scratchpad
+    # Two xadd calls: result stream + observation stream
+    assert redis.xadd.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_handle_trigger_fired_publishes_observation(
+    mock_agent: AsyncMock,
+    mock_publisher: AsyncMock,
+) -> None:
+    """TriggerFired path publishes structured ReflexObservation."""
+    from bus.schemas.events import ActionRequest, ActionResult, ReflexObservation
+    from core.reflex.__main__ import _handle_trigger_fired
+
+    action_result = ActionResult(
+        source="home-service",
+        request_id="r-1",
+        tool_name="lighting.dim_lights",
+        status="success",
+    )
+    mock_agent.execute_action = AsyncMock(return_value=action_result)
+
+    engine = AsyncMock()
+    engine.process_trigger_fired = AsyncMock(
+        return_value=ActionRequest(
+            source="reflex-engine",
+            target_service="home-service",
+            tool_name="lighting.dim_lights",
+            parameters={"room": "bedroom", "level": 10},
+        )
+    )
+
+    event = TriggerFired(
+        trigger_id="t-1",
+        trigger_name="bedtime dim",
+        trigger_type="time",
+    )
+    redis = AsyncMock()
+    redis.xadd = AsyncMock()
+
+    await _handle_trigger_fired(
+        _make_entry_data(event),
+        engine,
+        mock_agent,
+        redis,
+        mock_publisher,
+    )
+
+    # Second xadd is the observation
+    obs_call = redis.xadd.call_args_list[1]
+    obs_json = obs_call.args[1]["event"]
+    obs = ReflexObservation.model_validate_json(obs_json)
+    assert obs.origin == "trigger_fired"
+    assert obs.action.tool_name == "lighting.dim_lights"
+    assert obs.result.status == "success"
