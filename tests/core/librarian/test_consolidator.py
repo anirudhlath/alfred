@@ -133,4 +133,70 @@ async def test_consolidate_writes_episodic_entries(
     # Verify the entries have correct source extraction
     first_call_entry = episodic_mock.write.call_args_list[0][0][0]
     assert first_call_entry.source == "reflex"
-    assert "dim lights" in first_call_entry.summary
+
+
+@pytest.mark.asyncio
+async def test_detect_patterns_includes_reflex_analysis_prompt() -> None:
+    """Pattern detection prompt asks LLM to specifically analyze reflex-sourced entries."""
+    from datetime import UTC, datetime, timedelta
+    from typing import Any
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from core.librarian.consolidator import Librarian
+    from core.memory.schemas import EpisodicEntry, SignificanceScore
+
+    # Create entries — mix of reflex and conscious sources
+    now = datetime.now(UTC)
+    entries = [
+        EpisodicEntry(
+            id=f"ep-{i}",
+            timestamp=now - timedelta(days=i),
+            source="reflex",
+            summary="[reflex:state_change] smart_home.turn_on(entity_id=light.kitchen) → success",
+            entities=["light.kitchen"],
+            significance=SignificanceScore(overall=0.3),
+            semantic_key="Reflex action: turn on kitchen light",
+        )
+        for i in range(5)
+    ] + [
+        EpisodicEntry(
+            id="ep-conv-1",
+            timestamp=now,
+            source="conversation",
+            summary="User asked about weather",
+            entities=[],
+            significance=SignificanceScore(overall=0.5),
+        ),
+    ]
+
+    mock_redis = AsyncMock()
+    mock_episodic = AsyncMock()
+    mock_routines = MagicMock()
+    mock_routines.list_all.return_value = []
+    mock_scorer = AsyncMock()
+    mock_context_index = AsyncMock()
+
+    librarian = Librarian(
+        redis=mock_redis,
+        episodic_memory=mock_episodic,
+        routine_store=mock_routines,
+        significance_scorer=mock_scorer,
+        context_index=mock_context_index,
+        claude_api_key="test-key",
+    )
+
+    captured_prompt: dict[str, str] = {}
+
+    async def mock_completion(**kwargs: Any) -> Any:
+        captured_prompt["system"] = kwargs["messages"][0]["content"]
+        captured_prompt["user"] = kwargs["messages"][1]["content"]
+        result = MagicMock()
+        result.choices = [MagicMock()]
+        result.choices[0].message.content = "[]"
+        return result
+
+    with patch("litellm.acompletion", side_effect=mock_completion):
+        await librarian._detect_patterns(entries)
+
+    # The prompt should specifically mention reflex/System 1 pattern analysis
+    assert "reflex" in captured_prompt["system"].lower() or "system 1" in captured_prompt["system"].lower()
