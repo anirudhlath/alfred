@@ -252,6 +252,15 @@ class RedisVectorStore(VectorStore):
             logger.warning("FT.INFO failed: %s", exc, exc_info=True)
             return 0
 
+    async def update_metadata(
+        self,
+        id: str,  # noqa: A002
+        fields: dict[str, str | float | int],
+    ) -> None:
+        """Update metadata fields on an existing Redis hash entry."""
+        key = f"{CONTEXT_PREFIX}{id}"
+        await self._redis.hset(key, mapping=fields)  # type: ignore[misc]
+
 
 # ------------------------------------------------------------------
 # Helpers
