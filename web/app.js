@@ -167,7 +167,11 @@ function showNotification(title, body, urgency) {
 
     const bubble = document.createElement('div');
     bubble.className = 'message-bubble notification-bubble';
-    bubble.innerHTML = `<strong>${title}</strong><br>${body}`;
+    const titleEl = document.createElement('strong');
+    titleEl.textContent = title;
+    bubble.appendChild(titleEl);
+    bubble.appendChild(document.createElement('br'));
+    bubble.appendChild(document.createTextNode(body));
 
     msg.appendChild(label);
     msg.appendChild(bubble);

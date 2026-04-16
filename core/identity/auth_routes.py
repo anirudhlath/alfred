@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from webauthn import (
     generate_authentication_options,
     generate_registration_options,
@@ -18,7 +18,7 @@ from webauthn import (
     verify_authentication_response,
     verify_registration_response,
 )
-from webauthn.helpers import bytes_to_base64url
+from webauthn.helpers import base64url_to_bytes, bytes_to_base64url
 from webauthn.helpers.structs import (
     AuthenticatorSelectionCriteria,
     PublicKeyCredentialDescriptor,
@@ -36,7 +36,7 @@ _CHALLENGE_TTL = 300  # 5 minutes
 
 
 class RegisterBeginRequest(BaseModel):
-    device_name: str
+    device_name: str = Field(max_length=100)
 
 
 def _get_rp_id(request: Request) -> str:
@@ -56,9 +56,20 @@ def create_auth_router(
     *,
     store: CredentialStore,
     redis: Any,
+    trusted_network_dep: Any = None,
 ) -> APIRouter:
-    """Build the auth APIRouter with all WebAuthn endpoints."""
-    from core.channels.web_server import require_trusted_network
+    """Build the auth APIRouter with all WebAuthn endpoints.
+
+    Args:
+        store: WebAuthn credential store.
+        redis: Async Redis connection for sessions/challenges.
+        trusted_network_dep: FastAPI dependency for trusted network check.
+            If None, imports ``require_trusted_network`` from web_server (backwards compat).
+    """
+    if trusted_network_dep is None:
+        from core.channels.web_server import require_trusted_network
+
+        trusted_network_dep = require_trusted_network
 
     router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -72,7 +83,7 @@ def create_auth_router(
     async def register_begin(
         body: RegisterBeginRequest,
         request: Request,
-        _: None = Depends(require_trusted_network),
+        _: None = Depends(trusted_network_dep),
     ) -> JSONResponse:
         user_id_hex = await store.get_or_create_user_id()
         user_id_bytes = bytes.fromhex(user_id_hex)
@@ -80,7 +91,7 @@ def create_auth_router(
         existing = await store.list_credentials()
         exclude = [
             PublicKeyCredentialDescriptor(
-                id=c.credential_id.encode(),
+                id=base64url_to_bytes(c.credential_id),
                 transports=c.transports,  # type: ignore[arg-type]
             )
             for c in existing
@@ -115,7 +126,7 @@ def create_auth_router(
     @router.post("/register/complete")
     async def register_complete(
         request: Request,
-        _: None = Depends(require_trusted_network),
+        _: None = Depends(trusted_network_dep),
     ) -> JSONResponse:
         body = await request.json()
         challenge_id = body.get("_challenge_id", "")
@@ -126,8 +137,6 @@ def create_auth_router(
             raise HTTPException(status_code=400, detail="Challenge expired or invalid")
 
         await redis.delete(f"{WEBAUTHN_CHALLENGE_PREFIX}{challenge_id}")
-
-        from webauthn.helpers import base64url_to_bytes
 
         expected_challenge = base64url_to_bytes(stored_challenge_b64)
         rp_id = _get_rp_id(request)
@@ -184,7 +193,7 @@ def create_auth_router(
 
         allow_credentials = [
             PublicKeyCredentialDescriptor(
-                id=c.credential_id.encode(),
+                id=base64url_to_bytes(c.credential_id),
                 transports=c.transports,  # type: ignore[arg-type]
             )
             for c in credentials
@@ -223,8 +232,6 @@ def create_auth_router(
         cred = await store.get_credential(credential_id_from_body)
         if not cred:
             raise HTTPException(status_code=401, detail="Authentication failed")
-
-        from webauthn.helpers import base64url_to_bytes
 
         expected_challenge = base64url_to_bytes(stored_challenge_b64)
         rp_id = _get_rp_id(request)

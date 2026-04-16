@@ -222,7 +222,9 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     app.state.credential_store = credential_store
 
     # Mount auth router (needs both redis and credential_store)
-    auth_router = create_auth_router(store=credential_store, redis=pool)
+    auth_router = create_auth_router(
+        store=credential_store, redis=pool, trusted_network_dep=require_trusted_network
+    )
     app.include_router(auth_router)
 
     try:
