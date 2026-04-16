@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -52,7 +53,7 @@ class WebSocketChannelAdapter(ChannelAdapter):
             if tts is not None:
                 try:
                     text = f"{notification.title}: {notification.body}"
-                    wav_bytes: bytes = tts.synthesize(text)
+                    wav_bytes: bytes = await asyncio.to_thread(tts.synthesize, text)
                     payload["audio"] = base64.b64encode(wav_bytes).decode()
                 except Exception as exc:
                     logger.warning("WebSocketChannelAdapter: TTS synthesis failed: {}", exc)
