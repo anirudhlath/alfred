@@ -17,20 +17,23 @@
     <!-- Onboarding overlay (first-run only) -->
     <div id="onboarding" class="onboarding-overlay" style="display:none;">
         <div class="onboarding-card">
-            <!-- Step 0: Welcome -->
+            <!-- Step 0: Register Passkey -->
             <div class="onboarding-step" data-step="0">
-                <h2>Good evening.</h2>
+                <h2>Register Your Device</h2>
                 <p class="onboarding-body">
-                    I am Alfred, your ambient assistant. Before we begin,
-                    allow me to learn a few things about you so I may serve
-                    you properly.
+                    Secure your Alfred instance with a passkey. This uses your
+                    device's biometric authentication (Touch ID, Face ID, or
+                    Windows Hello).
                 </p>
-                <p class="onboarding-note">
-                    Voice enrollment, WebAuthn, and Signal linking will be
-                    available in a future update.
-                </p>
-                <button class="onboarding-btn" data-next="1">Proceed</button>
-                <button class="onboarding-btn skip" data-skip>Skip — use defaults</button>
+                <div class="register-form">
+                    <label for="device-name">Device Name</label>
+                    <input type="text" id="device-name" class="login-input"
+                           placeholder="e.g., MacBook Pro" value="" />
+                    <button class="onboarding-btn" onclick="handleRegister()">
+                        Register Passkey
+                    </button>
+                    <p id="register-error" class="login-error" style="display: none;"></p>
+                </div>
             </div>
 
             <!-- Step 1: Basic preferences -->
@@ -141,6 +144,30 @@
         </div>
     </div>
 
+    <!-- Login Screen -->
+    <div id="login-overlay" class="login-overlay" style="display: none;">
+        <div class="login-card">
+            <div class="login-header">
+                <h1>Alfred</h1>
+                <p class="subtitle">Your Personal Assistant</p>
+            </div>
+            <div id="login-webauthn-supported">
+                <input type="text" id="login-passkey-input"
+                       autocomplete="webauthn"
+                       placeholder="Passkey will appear here..."
+                       readonly
+                       class="login-input" />
+                <button id="login-btn" class="onboarding-btn" onclick="handleLogin()">
+                    Sign in with Passkey
+                </button>
+            </div>
+            <div id="login-unsupported" style="display: none;">
+                <p class="login-error">Your browser doesn't support passkeys. Please use Safari, Chrome, or Edge.</p>
+            </div>
+            <p id="login-error" class="login-error" style="display: none;"></p>
+        </div>
+    </div>
+
     <div id="app">
         <header>
             <div class="header-rule"></div>
@@ -191,6 +218,7 @@
             </div>
         </footer>
     </div>
+    <script src="auth.js"></script>
     <script src="app.js"></script>
 </body>
 </html>
