@@ -56,10 +56,6 @@ function connect() {
             if (data.audio) playAudio(data.audio);
             return;
         }
-        if (data.type === 'voice_notification') {
-            if (data.audio) playAudio(data.audio);
-            return;
-        }
         removeTypingIndicator();
         if (data.type === 'response') {
             appendMessage('alfred', data.text);
