@@ -262,7 +262,7 @@ def test_build_routine_hint_matches_time_pattern(
     result = engine._build_routine_hint(now)
 
     assert "evening_dim" in result
-    assert "Routine Suggestion" in result
+    assert "[routine-suggestion]" in result
     routine_store.save.assert_called_once()
 
 
@@ -355,7 +355,7 @@ async def test_process_request_injects_routine_hint(
     # The system_prompt passed to _call_llm should contain the routine hint
     call_kwargs = mock_llm.call_args
     system_prompt_arg = call_kwargs[0][0]  # first positional arg
-    assert "Routine Suggestion" in system_prompt_arg
+    assert "[routine-suggestion]" in system_prompt_arg
     assert "evening_dim" in system_prompt_arg
 
 
@@ -426,6 +426,11 @@ async def test_check_routine_suggestions_publishes_notification(
     call_kwargs = notifier.publish.await_args.kwargs
     assert call_kwargs["source"] == "librarian"
     assert "evening_dim" in call_kwargs["body"].lower() or "20:00" in call_kwargs["body"]
+
+    # Verify last_suggested was updated (cooldown mechanism depends on this)
+    routine_store.save.assert_called_once()
+    saved = routine_store.save.call_args[0][0]
+    assert saved.last_suggested == now
 
 
 @pytest.mark.asyncio

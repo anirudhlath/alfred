@@ -867,7 +867,7 @@ class Librarian:
                         )
                         # Remove from context index
                         try:
-                            await self._context_index._store.delete(routine.name)
+                            await self._context_index.remove(routine.name)
                         except Exception as exc:
                             logger.warning(
                                 "Failed to remove archived routine '%s' from index: %s",
@@ -934,7 +934,7 @@ class Librarian:
                 # Remove archived routines from context index
                 if new_state == "archived":
                     try:
-                        await self._context_index._store.delete(routine.name)
+                        await self._context_index.remove(routine.name)
                     except Exception as exc:
                         logger.warning(
                             "Failed to remove archived routine '%s' from index: %s",

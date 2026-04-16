@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from core.memory.context_index import ContextIndexManager
     from core.memory.embedding_provider import EmbeddingProvider
     from core.memory.routines.store import RoutineStore
+    from core.memory.schemas import RoutineSpec
     from core.memory.vector_store import SearchResult
     from core.reflex.context_reader import ContextReader
     from core.reflex.tool_registry import ToolInfo, ToolRegistry
@@ -184,6 +185,11 @@ class ConsciousEngine:
         self._triggers = d.trigger_feature
         self._embedder = d.embedder
         self._context_index = d.context_index
+
+    @property
+    def has_routine_store(self) -> bool:
+        """Whether a routine store is configured."""
+        return self._routines is not None
 
     _TYPE_MAP: ClassVar[dict[str, str]] = PYTHON_TO_JSON_SCHEMA
 
@@ -463,6 +469,24 @@ class ConsciousEngine:
 
     _ROUTINE_SUGGESTION_COOLDOWN_HOURS: ClassVar[int] = 24
 
+    def _eligible_candidates(self, now: datetime) -> list[RoutineSpec]:
+        """Return candidate routines that match current time and are outside cooldown."""
+        if self._routines is None:
+            return []
+
+        from core.memory.routines.patterns import match_trigger_pattern
+
+        eligible: list[RoutineSpec] = []
+        for routine in self._routines.list_by_state("candidate"):
+            if routine.last_suggested is not None:
+                hours_since = (now - routine.last_suggested).total_seconds() / 3600
+                if hours_since < self._ROUTINE_SUGGESTION_COOLDOWN_HOURS:
+                    continue
+            if not match_trigger_pattern(routine.trigger_pattern, now):
+                continue
+            eligible.append(routine)
+        return eligible
+
     def _build_routine_hint(self, now: datetime) -> str:
         """Check candidate routines for time-pattern matches and return a hint string.
 
@@ -473,29 +497,16 @@ class ConsciousEngine:
         if self._routines is None:
             return ""
 
-        from core.memory.routines.patterns import match_trigger_pattern
-
-        candidates = self._routines.list_by_state("candidate")
+        eligible = self._eligible_candidates(now)
         hints: list[str] = []
 
-        for routine in candidates:
-            # Cooldown check
-            if routine.last_suggested is not None:
-                hours_since = (now - routine.last_suggested).total_seconds() / 3600
-                if hours_since < self._ROUTINE_SUGGESTION_COOLDOWN_HOURS:
-                    continue
-
-            if not match_trigger_pattern(routine.trigger_pattern, now):
-                continue
-
-            # Update last_suggested
+        for routine in eligible:
             updated = routine.model_copy(update={"last_suggested": now})
             self._routines.save(updated)
 
             steps_str = "; ".join(s.description for s in routine.steps) if routine.steps else "N/A"
             hints.append(
-                f"## Routine Suggestion\n"
-                f"You've noticed a pattern: {routine.name} "
+                f"[routine-suggestion] You've noticed a pattern: {routine.name} "
                 f"({routine.trigger_pattern}). Steps: {steps_str}. "
                 f"Confidence: {routine.confidence:.0%}. "
                 f"If appropriate, suggest this to sir and ask if they'd like "
@@ -514,28 +525,17 @@ class ConsciousEngine:
 
         Called periodically from the conscious process background loop.
         Routines that match the current time pattern and are outside the suggestion
-        cooldown window receive a INFORMATIONAL notification push.
+        cooldown window receive an INFORMATIONAL notification push.
         """
         if self._routines is None or notifier is None:
             return
 
-        from core.memory.routines.patterns import match_trigger_pattern
         from core.notifications.schema import Urgency
 
         if now is None:
             now = datetime.now(UTC)
 
-        candidates = self._routines.list_by_state("candidate")
-
-        for routine in candidates:
-            if routine.last_suggested is not None:
-                hours_since = (now - routine.last_suggested).total_seconds() / 3600
-                if hours_since < self._ROUTINE_SUGGESTION_COOLDOWN_HOURS:
-                    continue
-
-            if not match_trigger_pattern(routine.trigger_pattern, now):
-                continue
-
+        for routine in self._eligible_candidates(now):
             steps_str = "; ".join(s.description for s in routine.steps) if routine.steps else ""
             if steps_str:
                 body = (
@@ -550,15 +550,16 @@ class ConsciousEngine:
                     f"Want me to start doing this automatically?"
                 )
 
+            # Update last_suggested BEFORE publishing to avoid spam if publish raises
+            updated = routine.model_copy(update={"last_suggested": now})
+            self._routines.save(updated)
+
             await notifier.publish(
                 title="Routine Suggestion",
                 body=body,
                 source="librarian",
                 urgency=Urgency.INFORMATIONAL,
             )
-
-            updated = routine.model_copy(update={"last_suggested": now})
-            self._routines.save(updated)
             logger.info("Proactive routine suggestion published: '%s'", routine.name)
 
     @track_latency(category="conscious")

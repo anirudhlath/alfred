@@ -294,7 +294,7 @@ async def run(config: AlfredConfig) -> None:
 
     # Start proactive routine suggestion checker (every 15 minutes)
     routine_suggestion_task: asyncio.Task[None] | None = None
-    if engine._routines is not None:
+    if engine.has_routine_store:
 
         async def _routine_suggestion_loop() -> None:
             while not _shutdown.is_set():

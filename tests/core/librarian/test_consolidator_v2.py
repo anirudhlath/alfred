@@ -1444,8 +1444,7 @@ async def test_lifecycle_archive_removes_from_context_index() -> None:
     routine_store.list_all.return_value = [routine]
 
     context_index = AsyncMock()
-    context_index._store = AsyncMock()
-    context_index._store.delete = AsyncMock()
+    context_index.remove = AsyncMock()
     context_index.reindex_semantic_files = AsyncMock()
 
     librarian = _make_librarian(context_index=context_index)
@@ -1462,7 +1461,7 @@ async def test_lifecycle_archive_removes_from_context_index() -> None:
     # Routine should be archived AND removed from context index
     call_args = routine_store.save.call_args[0][0]
     assert call_args.state == "archived"
-    context_index._store.delete.assert_awaited_once_with("old_routine")
+    context_index.remove.assert_awaited_once_with("old_routine")
 
 
 @pytest.mark.asyncio
@@ -1533,8 +1532,7 @@ async def test_lifecycle_confidence_below_threshold_archives() -> None:
     routine_store.list_all.return_value = [routine]
 
     context_index = AsyncMock()
-    context_index._store = AsyncMock()
-    context_index._store.delete = AsyncMock()
+    context_index.remove = AsyncMock()
     context_index.reindex_semantic_files = AsyncMock()
 
     librarian = _make_librarian(context_index=context_index)
@@ -1549,4 +1547,68 @@ async def test_lifecycle_confidence_below_threshold_archives() -> None:
 
     saved = routine_store.save.call_args[0][0]
     assert saved.state == "archived"
-    context_index._store.delete.assert_awaited_once_with("dying_routine")
+    context_index.remove.assert_awaited_once_with("dying_routine")
+
+
+# ---------------------------------------------------------------------------
+# Part I: Additional coverage for architect review findings
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_compression_fallback_concatenation_when_no_api_key() -> None:
+    """Without an API key, compression should concatenate contents instead of LLM call."""
+    import time
+
+    now = time.time()
+    base_ts = now - (31 * 86400)
+
+    results = [
+        SearchResult(
+            id="a",
+            score=0.5,
+            content="kitchen light on",
+            semantic_key="kitchen on",
+            metadata=ContextMetadata(
+                type="episodic",
+                source="system1_action",
+                entities="light.kitchen",
+                timestamp=base_ts,
+                significance=0.1,
+                retrieval_count=0,
+                last_retrieved=0.0,
+            ),
+        ),
+        SearchResult(
+            id="b",
+            score=0.5,
+            content="kitchen light off",
+            semantic_key="kitchen off",
+            metadata=ContextMetadata(
+                type="episodic",
+                source="system1_action",
+                entities="light.kitchen",
+                timestamp=base_ts + 3600,
+                significance=0.15,
+                retrieval_count=0,
+                last_retrieved=0.0,
+            ),
+        ),
+    ]
+
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    context_index.search_text = AsyncMock(return_value=results)
+
+    # No API key → no LLM call, fallback to concatenation
+    librarian = _make_librarian(
+        api_key="",
+        episodic_memory=episodic_memory,
+        context_index=context_index,
+    )
+
+    with patch("litellm.acompletion") as mock_llm:
+        count = await librarian._apply_decay(decay_migration_threshold=-10.0)
+
+    mock_llm.assert_not_called()
+    assert episodic_memory.copy_to_cold_and_remove.await_count >= 2
