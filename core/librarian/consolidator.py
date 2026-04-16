@@ -810,6 +810,23 @@ class Librarian:
                     confidence,
                     len(candidate.learned_from),
                 )
+                # Index in context for involuntary recall
+                routine_content = (
+                    f"Routine ({candidate.state}): {candidate.name} "
+                    f"— {candidate.trigger_pattern}. "
+                    f"Steps: {'; '.join(s.description for s in candidate.steps)}. "
+                    f"Confidence: {candidate.confidence:.2f}"
+                )
+                try:
+                    await self._context_index.index_routine(
+                        id=candidate.name,
+                        content=routine_content,
+                        confidence=candidate.confidence,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to index routine '%s': %s", candidate.name, exc
+                    )
             except Exception as exc:
                 logger.warning("Failed to process pattern candidate: %s", exc)
 
@@ -848,6 +865,15 @@ class Librarian:
                             routine.name,
                             dormant_days,
                         )
+                        # Remove from context index
+                        try:
+                            await self._context_index._store.delete(routine.name)
+                        except Exception as exc:
+                            logger.warning(
+                                "Failed to remove archived routine '%s' from index: %s",
+                                routine.name,
+                                exc,
+                            )
                 continue
 
             # For candidate/active: check if trigger_pattern matches recent activity

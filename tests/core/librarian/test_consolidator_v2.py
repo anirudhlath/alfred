@@ -1375,3 +1375,91 @@ async def test_compression_single_entry_no_llm_call() -> None:
 
     mock_llm.assert_not_called()
     assert count == 1
+
+
+# ---------------------------------------------------------------------------
+# Part H: Routine indexing tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_detect_patterns_indexes_routine_in_context() -> None:
+    """_detect_patterns should call context_index.index_routine after saving."""
+    from unittest.mock import MagicMock
+
+    routine_store = MagicMock()
+    routine_store.list_all.return_value = []
+
+    context_index = AsyncMock()
+    context_index.index_routine = AsyncMock()
+    context_index.reindex_semantic_files = AsyncMock()
+
+    librarian = _make_librarian(context_index=context_index)
+    librarian._routines = routine_store
+
+    entries = [_make_entry_with_id(f"ep-{i}") for i in range(5)]
+
+    llm_payload = json.dumps([
+        {
+            "name": "test_routine",
+            "trigger_pattern": "20:00 daily",
+            "steps": [{"description": "Turn off lights"}],
+            "confidence": 0.8,
+            "learned_from": ["ep-0", "ep-1", "ep-2"],
+        }
+    ])
+    mock_response = AsyncMock()
+    mock_response.choices = [AsyncMock(message=AsyncMock(content=llm_payload))]
+
+    with patch("litellm.acompletion", return_value=mock_response):
+        result = await librarian._detect_patterns(entries)
+
+    assert len(result) == 1
+    context_index.index_routine.assert_awaited_once()
+    call_args = context_index.index_routine.await_args
+    assert call_args.kwargs["id"] == "test_routine"
+    assert "Turn off lights" in call_args.kwargs["content"]
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_archive_removes_from_context_index() -> None:
+    """When a routine transitions to archived, it should be removed from context index."""
+    import datetime as dt
+    from unittest.mock import MagicMock
+
+    from core.memory.schemas import RoutineSpec
+
+    old_hit = dt.datetime(2026, 2, 20, 0, 0, 0, tzinfo=dt.UTC)
+    routine = RoutineSpec(
+        name="old_routine",
+        trigger_pattern="morning",
+        steps=[],
+        confidence=0.8,
+        learned_from=["ep-1"],
+        state="dormant",
+        last_hit=old_hit,
+    )
+
+    routine_store = MagicMock()
+    routine_store.list_all.return_value = [routine]
+
+    context_index = AsyncMock()
+    context_index._store = AsyncMock()
+    context_index._store.delete = AsyncMock()
+    context_index.reindex_semantic_files = AsyncMock()
+
+    librarian = _make_librarian(context_index=context_index)
+    librarian._routines = routine_store
+
+    with patch("core.librarian.consolidator.datetime") as mock_dt:
+        now = dt.datetime(2026, 3, 24, 8, 0, 0, tzinfo=dt.UTC)
+        mock_dt.now.return_value = now
+        mock_dt.UTC = dt.UTC
+        mock_dt.timedelta = dt.timedelta
+
+        await librarian._update_routine_lifecycle()
+
+    # Routine should be archived AND removed from context index
+    call_args = routine_store.save.call_args[0][0]
+    assert call_args.state == "archived"
+    context_index._store.delete.assert_awaited_once_with("old_routine")
