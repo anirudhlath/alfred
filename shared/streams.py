@@ -36,6 +36,11 @@ COST_DAILY_KEY = "alfred:cost:daily"
 INTEGRATION_REGISTRY_KEY = "alfred:integration_registry"
 
 
+# Auth (WebAuthn)
+AUTH_SESSION_PREFIX: str = "alfred:auth:"
+WEBAUTHN_CHALLENGE_PREFIX: str = "alfred:webauthn:challenge:"
+
+
 def decode_stream_value(raw: str | bytes) -> str:
     """Decode a Redis stream value that may be bytes or already a string."""
     return raw.decode() if isinstance(raw, bytes) else raw
