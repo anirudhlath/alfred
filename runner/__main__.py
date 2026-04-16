@@ -35,6 +35,7 @@ SERVICES = [
         delay=2.0,
         watch_dirs=["core/voice", "core/conscious/prompts"],
     ),
+    ServiceSpec(name="memory-ingestor", module="core.memory.ingestor_main", delay=1.5),
 ]
 
 
