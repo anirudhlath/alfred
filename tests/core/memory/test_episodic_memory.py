@@ -76,6 +76,7 @@ def mock_hot_store() -> AsyncMock:
     store.delete = AsyncMock()
     store.exists = AsyncMock(return_value=False)
     store.count = AsyncMock(return_value=0)
+    store.update_metadata = AsyncMock()
     return store
 
 
@@ -87,6 +88,7 @@ def mock_cold_store() -> AsyncMock:
     store.delete = AsyncMock()
     store.exists = AsyncMock(return_value=False)
     store.count = AsyncMock(return_value=0)
+    store.update_metadata = AsyncMock()
     return store
 
 
@@ -459,3 +461,47 @@ async def test_migrate_to_cold_does_not_touch_cold_store(
 
     mock_cold_store.add.assert_not_awaited()
     mock_cold_store.delete.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# recall() retrieval stats persistence tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_recall_persists_retrieval_count_to_hot_store(
+    episodic_memory: EpisodicMemory,
+    mock_hot_store: AsyncMock,
+    mock_cold_store: AsyncMock,
+) -> None:
+    """recall() must call update_metadata on hot store for each hot result."""
+    mock_hot_store.search.return_value = [
+        _make_search_result(id="h1", score=0.9, retrieval_count=3),
+    ]
+    mock_hot_store.update_metadata = AsyncMock()
+
+    await episodic_memory.recall("query")
+
+    mock_hot_store.update_metadata.assert_awaited_once()
+    call_args = mock_hot_store.update_metadata.await_args
+    assert call_args[0][0] == "h1"
+    fields = call_args[0][1]
+    assert fields["retrieval_count"] == 4
+    assert "last_retrieved" in fields
+
+
+@pytest.mark.asyncio
+async def test_recall_does_not_persist_stats_for_cold_results(
+    episodic_memory: EpisodicMemory,
+    mock_hot_store: AsyncMock,
+    mock_cold_store: AsyncMock,
+) -> None:
+    """recall() must NOT call update_metadata for cold store results."""
+    mock_cold_store.search.return_value = [
+        _make_search_result(id="c1", score=0.9),
+    ]
+    mock_hot_store.update_metadata = AsyncMock()
+
+    await episodic_memory.recall("query")
+
+    mock_hot_store.update_metadata.assert_not_awaited()

@@ -96,6 +96,18 @@ class EpisodicMemory:
         merged.sort(key=lambda x: x[0].score, reverse=True)
         merged = merged[:limit]
 
+        # Persist retrieval stats for hot-store results
+        now_ts = datetime.now(UTC).timestamp()
+        for search_result, source_store in merged:
+            if source_store == "hot":
+                await self._hot.update_metadata(
+                    search_result.id,
+                    {
+                        "retrieval_count": search_result.metadata.retrieval_count + 1,
+                        "last_retrieved": now_ts,
+                    },
+                )
+
         # Convert to EpisodicResult, increment retrieval_count
         episodic_results: list[EpisodicResult] = []
         for search_result, source_store in merged:
