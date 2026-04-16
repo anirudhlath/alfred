@@ -102,6 +102,17 @@ def _group_by_entity_date(
     return groups, ungrouped
 
 
+def _routine_index_content(routine: RoutineSpec) -> str:
+    """Build the content string used to index a routine in the context store."""
+    steps = "; ".join(s.description for s in routine.steps) if routine.steps else "N/A"
+    return (
+        f"Routine ({routine.state}): {routine.name} "
+        f"— {routine.trigger_pattern}. "
+        f"Steps: {steps}. "
+        f"Confidence: {routine.confidence:.2f}"
+    )
+
+
 class Librarian:
     """Nightly consolidation agent.
 
@@ -150,6 +161,7 @@ class Librarian:
         self._routine_decay_per_cycle = routine_decay_per_cycle
         self._routine_archive_threshold = routine_archive_threshold
         self._routine_suggestion_cooldown_hours = routine_suggestion_cooldown_hours
+        self._indexed_routine_content: dict[str, str] = {}
 
     _PROCESSING_KEY = f"{SCRATCHPAD_QUEUE}:processing"
 
@@ -812,16 +824,10 @@ class Librarian:
                     len(candidate.learned_from),
                 )
                 # Index in context for involuntary recall
-                routine_content = (
-                    f"Routine ({candidate.state}): {candidate.name} "
-                    f"— {candidate.trigger_pattern}. "
-                    f"Steps: {'; '.join(s.description for s in candidate.steps)}. "
-                    f"Confidence: {candidate.confidence:.2f}"
-                )
                 try:
                     await self._context_index.index_routine(
                         id=candidate.name,
-                        content=routine_content,
+                        content=_routine_index_content(candidate),
                         confidence=candidate.confidence,
                     )
                 except Exception as exc:
@@ -946,30 +952,39 @@ class Librarian:
         return match_trigger_pattern(routine.trigger_pattern, now)
 
     async def _reindex_routines(self) -> int:
-        """Re-index all non-archived routines into the context index.
+        """Re-index non-archived routines whose content has changed.
 
         Called at the start of each consolidation cycle to ensure routines
         loaded from YAML storage are searchable via involuntary recall.
+        Skips routines whose indexed content hasn't changed (avoids re-embedding).
         """
-        indexed = 0
+        to_index: list[RoutineSpec] = []
         for routine in self._routines.list_all():
             if routine.state == "archived":
                 continue
-            content = (
-                f"Routine ({routine.state}): {routine.name} "
-                f"— {routine.trigger_pattern}. "
-                f"Steps: {'; '.join(s.description for s in routine.steps)}. "
-                f"Confidence: {routine.confidence:.2f}"
-            )
+            content = _routine_index_content(routine)
+            if self._indexed_routine_content.get(routine.name) == content:
+                continue
+            self._indexed_routine_content[routine.name] = content
+            to_index.append(routine)
+
+        if not to_index:
+            return 0
+
+        async def _index_one(r: RoutineSpec) -> bool:
             try:
                 await self._context_index.index_routine(
-                    id=routine.name,
-                    content=content,
-                    confidence=routine.confidence,
+                    id=r.name,
+                    content=_routine_index_content(r),
+                    confidence=r.confidence,
                 )
-                indexed += 1
+                return True
             except Exception as exc:
-                logger.warning("Failed to reindex routine '%s': %s", routine.name, exc)
+                logger.warning("Failed to reindex routine '%s': %s", r.name, exc)
+                return False
+
+        results = await asyncio.gather(*(_index_one(r) for r in to_index))
+        indexed = sum(results)
         if indexed:
             logger.info("Reindexed %d routines into context index", indexed)
         return indexed
@@ -982,13 +997,13 @@ class Librarian:
         logger.info("Librarian consolidation started")
 
         # 0. Ensure routines from YAML store are indexed for involuntary recall
-        await self._reindex_routines()
+        routines_reindexed = await self._reindex_routines()
 
         # 1. Drain scratchpad
         lines = await self._drain_scratchpad()
         if not lines:
             logger.info("Scratchpad empty — nothing to consolidate")
-            return {"entries_processed": 0}
+            return {"entries_processed": 0, "routines_reindexed": routines_reindexed}
 
         logger.info("Draining %d scratchpad entries", len(lines))
 
@@ -1042,6 +1057,7 @@ class Librarian:
             "episodic_created": len(episodic_entries),
             "semantic_updates": semantic_updates,
             "patterns_detected": len(patterns_detected),
+            "routines_reindexed": routines_reindexed,
             "lifecycle_updates": lifecycle_updates,
             "archived": archived,
             "timestamp": datetime.now(UTC).isoformat(),
