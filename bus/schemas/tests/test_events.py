@@ -203,3 +203,70 @@ def test_trigger_created_updated_schema() -> None:
     assert evt.source == "trigger-engine"
     assert evt.action is None
     assert evt.one_shot is False
+
+
+def test_reflex_observation_schema() -> None:
+    """ReflexObservation carries full context of a Reflex action."""
+    from bus.schemas.events import ActionRequest, ActionResult, ReflexObservation
+
+    action = ActionRequest(
+        source="reflex-engine",
+        target_service="home-service",
+        tool_name="lighting.dim_lights",
+        parameters={"room": "living_room", "level": 20},
+    )
+    result = ActionResult(
+        source="home-service",
+        request_id=action.request_id,
+        tool_name="lighting.dim_lights",
+        status="success",
+    )
+    obs = ReflexObservation(
+        source="reflex-engine",
+        origin="state_change",
+        trigger_event={"entity_id": "media_player.living_room_tv", "new_state": "on"},
+        action=action,
+        result=result,
+        decision_context="TV turned on in living room, dimming lights per preference",
+    )
+
+    assert obs.observation_id  # auto-generated
+    assert obs.timestamp  # auto-generated
+    assert obs.origin == "state_change"
+    assert obs.action.tool_name == "lighting.dim_lights"
+    assert obs.result.status == "success"
+    assert obs.decision_context is not None
+
+    # Roundtrip serialization
+    json_str = obs.model_dump_json()
+    restored = ReflexObservation.model_validate_json(json_str)
+    assert restored.observation_id == obs.observation_id
+    assert restored.action.tool_name == "lighting.dim_lights"
+
+
+def test_reflex_observation_defaults() -> None:
+    """ReflexObservation works with minimal fields."""
+    from bus.schemas.events import ActionRequest, ActionResult, ReflexObservation
+
+    action = ActionRequest(
+        source="reflex-engine",
+        target_service="home-service",
+        tool_name="smart_home.turn_on",
+        parameters={"entity_id": "light.hallway"},
+    )
+    result = ActionResult(
+        source="home-service",
+        request_id=action.request_id,
+        tool_name="smart_home.turn_on",
+        status="success",
+    )
+    obs = ReflexObservation(
+        source="reflex-engine",
+        origin="trigger_fired",
+        trigger_event={},
+        action=action,
+        result=result,
+    )
+
+    assert obs.decision_context is None
+    assert obs.event_type == "reflex_observation"
