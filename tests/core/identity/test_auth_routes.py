@@ -61,7 +61,7 @@ class TestAuthStatus:
         self, store: CredentialStore, client: TestClient
     ) -> None:
         await store.save_credential(
-            credential_id="test-cred",
+            credential_id="dGVzdC1jcmVk",
             public_key=b"\x01",
             sign_count=0,
             device_name="Test",
@@ -135,7 +135,7 @@ class TestLoginBegin:
         self, store: CredentialStore, client: TestClient, redis_mock: AsyncMock
     ) -> None:
         await store.save_credential(
-            credential_id="test-cred",
+            credential_id="dGVzdC1jcmVk",
             public_key=b"\x01",
             sign_count=0,
             device_name="Test",
