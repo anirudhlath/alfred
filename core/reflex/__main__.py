@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import redis.asyncio as aioredis
 
-from bus.schemas.events import ReflexObservation, TriggerFired
+from bus.schemas.events import TriggerFired
 from core.memory.reader import MemoryReader
 from core.notifications.dispatcher import NotificationDispatcher
 from core.notifications.dnd import DNDChecker
@@ -22,7 +22,7 @@ from core.notifications.publisher import NotificationPublisher
 from core.notifications.schema import Urgency
 from core.reflex.context_reader import ContextReader
 from core.reflex.engine import ReflexEngine, build_notification_body
-from core.reflex.runner import ensure_consumer_group, process_stream_entry
+from core.reflex.runner import ensure_consumer_group, process_stream_entry, publish_observation
 from core.reflex.tool_registry import ToolRegistry
 from core.routing.domain_router import DomainRouter
 from domains.home.home_agent import HomeAgent
@@ -98,17 +98,13 @@ async def _handle_trigger_fired(
             result = await agent.execute_action(action)
             await redis.xadd(HOME_ACTION_RESULTS_STREAM, {"event": result.model_dump_json()})
 
-            # Publish structured observation (D8)
-            observation = ReflexObservation(
-                source="reflex-engine",
-                origin="trigger_fired",
-                trigger_event=trigger_event.model_dump(),
-                action=action,
-                result=result,
-            )
-            await redis.xadd(
+            await publish_observation(
+                redis,
                 REFLEX_OBSERVATIONS_STREAM,
-                {"event": observation.model_dump_json()},
+                "trigger_fired",
+                trigger_event,
+                action,
+                result,
             )
     except Exception as e:
         logger.error("SLM reasoning failed for trigger '%s': %s", trigger_event.trigger_name, e)
