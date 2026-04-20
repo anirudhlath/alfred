@@ -18,4 +18,4 @@ The Reflex Engine (System 1) is the fast-path SLM that processes events.
 - All inference calls MUST use @track_latency and @track_tokens decorators
 - Never call the cloud LLM (System 2) from the reflex path
 - Uses Ollama for local inference — model configured via OLLAMA_MODEL env var
-- Fail-fast at startup if no tools are registered
+- Starts with no tools — discovers them dynamically via TTL-based cache refresh (5 min)

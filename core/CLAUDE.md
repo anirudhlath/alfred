@@ -138,8 +138,7 @@ uv run python -m core.conscious  # Conscious Engine (System 2)
 uv run python -m core.channels   # Web + Signal channels
 ```
 
-**Fail-fast:** Reflex Runner exits with RuntimeError if no tools are registered in Redis.
-Tools and system prompt are cached after first event (call `engine.reload_tools()` to refresh).
+**Dynamic tools:** Reflex Runner starts even with no tools registered — tools are discovered dynamically via a 5-minute TTL cache (call `engine.reload_tools()` to force refresh).
 
 ## Gotchas
 

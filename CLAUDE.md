@@ -117,7 +117,7 @@ Individual services can still be run standalone: `python -m bus`, `python -m cor
 
 Web channel serves the PWA frontend on port 8081 (configurable in `core/channels/__main__.py`).
 
-**Startup order matters:** home-service must register tools before Reflex Runner starts (fail-fast if no tools). The unified runner adds a 1s delay before starting Reflex and auto-restarts crashed services with exponential backoff.
+**Startup order is flexible:** Reflex starts even if no tools are registered yet — it logs a warning and picks up tools dynamically as services register them (5-minute TTL cache refresh). The unified runner adds a 1s delay before starting Reflex and auto-restarts crashed services with exponential backoff.
 
 ## Architecture
 

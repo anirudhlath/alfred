@@ -42,7 +42,7 @@ async def publish_observation(
         origin=origin,
         trigger_event=trigger_event.model_dump(),
         action=action,
-        result=result,  # type: ignore[arg-type]
+        result=result,
     )
     await redis.xadd(stream, {"event": observation.model_dump_json()})
 

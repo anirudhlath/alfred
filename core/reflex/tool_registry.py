@@ -41,7 +41,9 @@ class ToolRegistry:
 
     async def get_tools(self) -> list[ToolInfo]:
         """Read all service manifests and return a flat list of tools."""
-        raw: dict[bytes | str, bytes | str] = await self._redis.hgetall(self.REGISTRY_KEY)
+        raw: dict[bytes | str, bytes | str] = await self._redis.hgetall(  # type: ignore[misc]
+            self.REGISTRY_KEY
+        )
 
         tools: list[ToolInfo] = []
         for service_key, manifest_json in raw.items():

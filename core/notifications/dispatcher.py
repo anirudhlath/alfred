@@ -111,7 +111,7 @@ class NotificationDispatcher:
 
     async def _deliver(self, notification: Notification) -> None:
         """Publish notification to the dispatch stream for all processes to deliver."""
-        await self._redis.xadd(  # type: ignore[misc]
+        await self._redis.xadd(
             NOTIFICATION_DISPATCH_STREAM,
             {"notification": notification.model_dump_json()},
         )

@@ -171,10 +171,10 @@ class AlfredClient:
 
         import redis.asyncio as aioredis
 
-        r: aioredis.Redis[Any] = aioredis.from_url(self.redis_url)
+        r: aioredis.Redis = aioredis.from_url(self.redis_url)
         try:
             manifest = self.get_registration_manifest()
-            await r.hset(self.REGISTRY_KEY, self.service_name, json.dumps(manifest))
+            await r.hset(self.REGISTRY_KEY, self.service_name, json.dumps(manifest))  # type: ignore[misc]
 
             context = await self._collect_context()
             if context.controllable or context.sensors:
@@ -190,6 +190,6 @@ class AlfredClient:
         """
         import redis.asyncio as aioredis
 
-        r: aioredis.Redis[Any] = aioredis.from_url(self.redis_url)
-        await r.hdel(self.REGISTRY_KEY, self.service_name)
+        r: aioredis.Redis = aioredis.from_url(self.redis_url)
+        await r.hdel(self.REGISTRY_KEY, self.service_name)  # type: ignore[misc]
         await r.close()

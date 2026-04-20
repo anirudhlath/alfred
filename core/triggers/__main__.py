@@ -6,15 +6,19 @@ Usage: python -m core.triggers
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import signal
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+
+    from shared.types import AioRedis
 
 import redis.asyncio as aioredis
 import uvicorn
@@ -39,6 +43,27 @@ SNAPSHOT_DIR = Path("core/memory/triggers")
 _shutdown = asyncio.Event()
 
 
+def _free_port(port: int) -> None:
+    """Kill any process holding *port* so we can bind cleanly."""
+    try:
+        out = subprocess.check_output(
+            ["lsof", "-ti", f":{port}"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return  # nothing on the port or lsof unavailable
+
+    my_pid = os.getpid()
+    for pid_str in out.splitlines():
+        pid = int(pid_str)
+        if pid == my_pid:
+            continue
+        logger.warning("Killing stale process %d on port %d", pid, port)
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGTERM)
+
+
 def _handle_signal() -> None:
     logger.info("Shutdown signal received")
     _shutdown.set()
@@ -56,7 +81,7 @@ async def tick_loop(engine: TriggerEngine) -> None:
 
 async def event_loop(
     engine: TriggerEngine,
-    r: aioredis.Redis[Any],
+    r: AioRedis,
 ) -> None:
     """Event listener loop for sensor-based trigger evaluation."""
     from bus.schemas.events import StateChangedEvent
@@ -76,7 +101,7 @@ async def event_loop(
             for entry_id, entry_data in stream_entries:
                 raw_event = entry_data.get("event") or entry_data.get(b"event")
                 if raw_event is None:
-                    await r.xack(EVENTS_STREAM, GROUP, entry_id)  # type: ignore[no-untyped-call]
+                    await r.xack(EVENTS_STREAM, GROUP, entry_id)
                     continue
 
                 event_str = decode_stream_value(raw_event)
@@ -84,7 +109,7 @@ async def event_loop(
                 try:
                     event = StateChangedEvent.model_validate_json(event_str)
                 except Exception:
-                    await r.xack(EVENTS_STREAM, GROUP, entry_id)  # type: ignore[no-untyped-call]
+                    await r.xack(EVENTS_STREAM, GROUP, entry_id)
                     continue
 
                 try:
@@ -92,7 +117,7 @@ async def event_loop(
                 except Exception as e:
                     logger.error("Event evaluation error: %s", e)
 
-                await r.xack(EVENTS_STREAM, GROUP, entry_id)  # type: ignore[no-untyped-call]
+                await r.xack(EVENTS_STREAM, GROUP, entry_id)
 
 
 async def _periodic(
@@ -116,7 +141,7 @@ async def run(config: AlfredConfig) -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, _handle_signal)
 
-    r: aioredis.Redis[Any] = aioredis.from_url(config.redis_url)
+    r: AioRedis = aioredis.from_url(config.redis_url)
 
     store = TriggerStore(redis=r, snapshot_dir=SNAPSHOT_DIR)
     triggers = await store.load()
@@ -137,9 +162,12 @@ async def run(config: AlfredConfig) -> None:
     await client.register()
     logger.info("Registered trigger CRUD tools in tool registry")
 
-    # Build FastAPI app + uvicorn server (retry bind if port is in TIME_WAIT)
+    # Build FastAPI app + uvicorn server (kill stale port holders, retry bind)
     app = create_app(client=client, feature=feature)
     trigger_port = int(os.getenv("TRIGGER_PORT", "8001"))
+
+    _free_port(trigger_port)
+
     uvi_config = uvicorn.Config(app, host="0.0.0.0", port=trigger_port, log_level="info")
     uvi_server = uvicorn.Server(uvi_config)
 
@@ -149,10 +177,14 @@ async def run(config: AlfredConfig) -> None:
                 server = uvicorn.Server(uvi_config) if attempt > 0 else uvi_server
                 await server.serve()
                 return
-            except OSError as e:
-                if e.errno == 48 and attempt < 4:  # Address already in use
+            except (OSError, SystemExit) as e:
+                is_addr_in_use = (isinstance(e, OSError) and e.errno == 48) or (
+                    isinstance(e, SystemExit) and e.code != 0
+                )
+                if is_addr_in_use and attempt < 4:
                     wait = attempt + 1
                     logger.warning("Port %d in use, retrying in %ds...", trigger_port, wait)
+                    _free_port(trigger_port)
                     await asyncio.sleep(wait)
                 else:
                     raise

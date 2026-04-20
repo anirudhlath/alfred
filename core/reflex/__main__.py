@@ -171,20 +171,21 @@ async def run(config: AlfredConfig) -> None:
 
     r: AioRedis = aioredis.from_url(config.redis_url)
 
-    # Fail-fast: verify tools are registered before entering the event loop
+    # Check tool registry — warn if empty but keep running. Tools are
+    # discovered dynamically via the engine's TTL-based cache refresh.
     registry = ToolRegistry(r)
     tools = await registry.get_tools()
     if not tools:
-        await r.aclose()
-        raise RuntimeError(
+        logger.warning(
             "No tools found in alfred:tool_registry. "
-            "Start at least one microservice (e.g., home-service) before the Reflex Runner."
+            "Reflex will start processing events once a microservice registers tools."
         )
-    logger.info(
-        "Loaded %d tools from %d services",
-        len(tools),
-        len(ToolRegistry.get_registered_services(tools)),
-    )
+    else:
+        logger.info(
+            "Loaded %d tools from %d services",
+            len(tools),
+            len(ToolRegistry.get_registered_services(tools)),
+        )
 
     await ensure_consumer_group(r, STREAM, GROUP)
 
