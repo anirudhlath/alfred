@@ -183,15 +183,19 @@ async def require_trusted_network(request: Request) -> None:
 
 
 async def _init_apns_adapter(pool: aioredis.Redis[Any]) -> None:  # type: ignore[type-arg]
-    """Register APNs adapter if credentials are available in Secrets Manager."""
-    from shared.secrets import aget_secret
+    """Register APNs adapter with hardcoded personal credentials."""
+    from pathlib import Path
 
-    keys = ("team_id", "key_id", "private_key", "bundle_id")
-    values = await asyncio.gather(*(aget_secret("apns", k) for k in keys))
-    creds = dict(zip(keys, values, strict=True))
-    if not all(creds.values()):
-        logger.info("APNs credentials not configured, skipping adapter")
+    team_id = "A3PH6PGY29"
+    key_id = "2U36353CR2"
+    bundle_id = "com.anirudhlath.alfred"
+    p8_path = Path(__file__).resolve().parents[2] / "secrets" / "AuthKey_2U36353CR2.p8"
+
+    if not p8_path.exists():
+        logger.warning("APNs key file missing at {}, skipping adapter", p8_path)
         return
+
+    private_key = p8_path.read_text()
 
     import core.notifications.adapters.apns  # noqa: F401 — trigger @register
     from core.notifications.adapters.apns import APNsChannelAdapter
@@ -199,13 +203,13 @@ async def _init_apns_adapter(pool: aioredis.Redis[Any]) -> None:  # type: ignore
 
     adapter = APNsChannelAdapter(
         redis=pool,
-        team_id=creds["team_id"],  # type: ignore[arg-type]
-        key_id=creds["key_id"],  # type: ignore[arg-type]
-        private_key=creds["private_key"],  # type: ignore[arg-type]
-        bundle_id=creds["bundle_id"],  # type: ignore[arg-type]
+        team_id=team_id,
+        key_id=key_id,
+        private_key=private_key,
+        bundle_id=bundle_id,
     )
     ChannelRegistry.set_instance("apns", adapter)
-    logger.info("APNs adapter registered")
+    logger.info("APNs adapter registered (team={}, bundle={})", team_id, bundle_id)
 
 
 @asynccontextmanager
