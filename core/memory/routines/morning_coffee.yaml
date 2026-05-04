@@ -1,0 +1,25 @@
+name: morning_coffee
+trigger_pattern: 07:10 weekday morning
+steps:
+- description: Turn on coffee machine
+  action: null
+confidence: 0.85
+learned_from:
+- ep-coffee-0
+- ep-coffee-1
+- ep-coffee-2
+- ep-coffee-3
+- ep-coffee-6
+- ep-coffee-7
+- ep-coffee-8
+- ep-coffee-9
+- ep-coffee-10
+- ep-coffee-13
+- ep-coffee-14
+- ep-coffee-15
+- ep-coffee-16
+- ep-coffee-17
+state: candidate
+last_hit: null
+consecutive_misses: 0
+last_suggested: '2026-04-21T07:31:24.099476Z'

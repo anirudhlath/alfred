@@ -34,3 +34,6 @@ reflex,process_trigger_fired,latency,2026-04-12T21:00:06.265573+00:00,ms,6535.65
 reflex,process_trigger_fired,latency,2026-04-12T21:00:09.293918+00:00,ms,3023.3620000071824
 reflex,process_trigger_fired,latency,2026-04-13T21:01:16.386451+00:00,ms,18327.9564580007
 reflex,process_trigger_fired,latency,2026-04-14T21:13:21.196436+00:00,ms,27936.811042018235
+reflex,process_trigger_fired,latency,2026-04-16T21:00:25.670739+00:00,ms,26159.373082977254
+reflex,process_trigger_fired,latency,2026-04-16T21:00:30.326824+00:00,ms,4652.945875015575
+reflex,process_trigger_fired,latency,2026-04-17T21:01:08.057772+00:00,ms,14761.973624990787
