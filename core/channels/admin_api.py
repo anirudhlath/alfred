@@ -11,6 +11,7 @@ for shared state, ACTIONS_STREAM publishes for process-owned behavior.
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -107,6 +108,10 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
     async def stream_history(
         request: Request, name: str, count: int = 50, before: str | None = None
     ) -> dict[str, Any]:
+        if before is not None and not re.fullmatch(r"\d+-\d+", before):
+            raise HTTPException(
+                status_code=400, detail="Invalid 'before' cursor; expected '<ms>-<seq>'"
+            )
         key = STREAM_CATALOG.get(name)
         if key is None:
             raise HTTPException(status_code=404, detail=f"Unknown stream '{name}'")
@@ -119,6 +124,8 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
             {"id": eid.decode() if isinstance(eid, bytes) else eid, "event": decode_entry(data)}
             for eid, data in raw
         ]
+        # When stream length is an exact multiple of count, the client gets one final
+        # empty page (entries: [], next_before: null) — intentional standard cursor behavior.
         next_before = entries[-1]["id"] if len(entries) == count else None
         return {"entries": entries, "next_before": next_before}
 

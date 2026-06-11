@@ -147,3 +147,23 @@ def test_stream_history_before_is_exclusive() -> None:
     assert resp.status_code == 200
     assert resp.json() == {"entries": [], "next_before": None}
     r.xrevrange.assert_awaited_once_with("alfred:events", max="(2-0", min="-", count=5)
+
+
+def test_stream_history_rejects_malformed_before() -> None:
+    client = make_admin_client(_overview_redis())
+    resp = client.get("/api/admin/streams/events?before=garbage")
+    assert resp.status_code == 400
+
+
+def test_stream_history_notification_payload_decode() -> None:
+    r = _overview_redis()
+    r.xrevrange = AsyncMock(
+        return_value=[
+            (b"3-0", {b"notification": b'{"notification_id": "n1", "title": "Hi"}'}),
+        ]
+    )
+    client = make_admin_client(r)
+    resp = client.get("/api/admin/streams/notifications?count=1")
+    assert resp.status_code == 200
+    entries = resp.json()["entries"]
+    assert entries[0]["event"]["title"] == "Hi"
