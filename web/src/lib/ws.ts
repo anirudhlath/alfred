@@ -8,6 +8,7 @@ export class ReconnectingSocket {
   private ws: WebSocket | null = null;
   private attempts = 0;
   private stopped = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   onmessage: (data: unknown) => void = () => {};
   onstatus: (status: SocketStatus) => void = () => {};
@@ -40,7 +41,10 @@ export class ReconnectingSocket {
       this.onstatus("reconnecting");
       const delay = Math.min(BASE_DELAY_MS * 2 ** this.attempts, MAX_DELAY_MS);
       this.attempts += 1;
-      setTimeout(() => this.connect(), delay);
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = null;
+        if (!this.stopped) this.connect();
+      }, delay);
     };
   }
 
@@ -52,5 +56,9 @@ export class ReconnectingSocket {
     return false;
   }
 
-  close(): void { this.stopped = true; this.ws?.close(); }
+  close(): void {
+    this.stopped = true;
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+    this.ws?.close();
+  }
 }

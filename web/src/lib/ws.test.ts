@@ -36,6 +36,16 @@ describe("ReconnectingSocket", () => {
     expect(FakeWebSocket.instances).toHaveLength(2);
   });
 
+  it("does not resurrect after close() during a backoff wait", () => {
+    const sock = new ReconnectingSocket("/ws/test");
+    sock.connect();
+    FakeWebSocket.instances[0].open();
+    FakeWebSocket.instances[0].onclose?.({ code: 1006 });
+    sock.close();
+    vi.advanceTimersByTime(60_000);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+
   it("does not reconnect after 4001 and reports unauthorized", () => {
     const statuses: string[] = [];
     const sock = new ReconnectingSocket("/ws/test");
