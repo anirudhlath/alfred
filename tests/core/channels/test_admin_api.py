@@ -167,3 +167,79 @@ def test_stream_history_notification_payload_decode() -> None:
     assert resp.status_code == 200
     entries = resp.json()["entries"]
     assert entries[0]["event"]["title"] == "Hi"
+
+
+def test_memory_episodic_recent_lists_hot_and_cold(tmp_path: Any, monkeypatch: Any) -> None:
+    r = _overview_redis()
+    r.scan_iter = MagicMock(return_value=_aiter([b"ctx:abc"]))
+
+    # hgetall serves BOTH the auth middleware (session key) and the ctx hash —
+    # route by key, otherwise the request 401s before reaching the endpoint.
+    async def _hgetall(key: Any) -> dict[bytes, bytes]:
+        key_str = key.decode() if isinstance(key, bytes) else key
+        if key_str == f"{AUTH_SESSION_PREFIX}{_SESSION}":
+            return {b"authenticated": b"1"}
+        return {
+            b"content": b"User asked about lights",
+            b"type": b"episodic",
+            b"source": b"conversation",
+            b"timestamp": b"1718000000.0",
+            b"significance": b"0.72",
+            b"embedding_content": b"\x00\x01",
+        }
+
+    r.hgetall = AsyncMock(side_effect=_hgetall)
+    import core.channels.admin_api as admin_api
+
+    monkeypatch.setattr(admin_api, "_MEMORY_DIR", tmp_path)  # no cold DB present
+    client = make_admin_client(r)
+    resp = client.get("/api/admin/memory/episodic")
+    assert resp.status_code == 200
+    items = resp.json()["entries"]
+    assert items[0]["store"] == "hot"
+    assert items[0]["content"] == "User asked about lights"
+    assert "embedding_content" not in items[0]
+
+
+def test_memory_semantic_lists_markdown(tmp_path: Any, monkeypatch: Any) -> None:
+    import core.channels.admin_api as admin_api
+
+    prefs = tmp_path / "preferences"
+    prefs.mkdir()
+    (prefs / "lighting.md").write_text("# Lighting\n- warm")
+    (tmp_path / "profile").mkdir()
+    monkeypatch.setattr(admin_api, "_MEMORY_DIR", tmp_path)
+    client = make_admin_client(_overview_redis())
+    resp = client.get("/api/admin/memory/semantic")
+    assert resp.status_code == 200
+    files = resp.json()["files"]
+    assert files == [
+        {
+            "name": "lighting.md",
+            "dir": "preferences",
+            "content": "# Lighting\n- warm",
+            "modified": files[0]["modified"],
+        },
+    ]
+
+
+def test_memory_scratchpad(tmp_path: Any, monkeypatch: Any) -> None:
+    import core.channels.admin_api as admin_api
+
+    (tmp_path / "scratchpad.md").write_text("obs 1\n")
+    monkeypatch.setattr(admin_api, "_MEMORY_DIR", tmp_path)
+    r = _overview_redis()
+    r.llen = AsyncMock(return_value=3)
+    client = make_admin_client(r)
+    resp = client.get("/api/admin/memory/scratchpad")
+    assert resp.json() == {"content": "obs 1\n", "pending_queue": 3}
+
+
+def test_memory_routines_empty_dir(tmp_path: Any, monkeypatch: Any) -> None:
+    import core.channels.admin_api as admin_api
+
+    monkeypatch.setattr(admin_api, "_MEMORY_DIR", tmp_path)
+    client = make_admin_client(_overview_redis())
+    resp = client.get("/api/admin/memory/routines")
+    assert resp.status_code == 200
+    assert resp.json() == {"routines": []}

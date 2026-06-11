@@ -12,17 +12,23 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Request
+from loguru import logger
 
 from core.channels.stream_catalog import STREAM_CATALOG, decode_entry, stream_summaries
 from shared.config import AlfredConfig
 from shared.streams import (
+    CONTEXT_PREFIX,
     COST_DAILY_KEY,
     DEFERRED_NOTIFICATIONS_KEY,
     DEVICE_TOKENS_KEY,
     DND_STATE_KEY,
+    SCRATCHPAD_QUEUE,
     SESSIONS_KEY_PREFIX,
     TRIGGERS_KEY,
 )
@@ -33,6 +39,49 @@ if TYPE_CHECKING:
     import httpx
 
     from shared.types import AioRedis
+
+
+_MEMORY_DIR = Path(__file__).resolve().parent.parent / "memory"
+_FAILED = object()
+_episodic_memory: Any = None
+
+
+def _get_episodic_lazy(redis: AioRedis) -> Any | None:
+    """Build EpisodicMemory once; heavy embedder loads on first vector search."""
+    global _episodic_memory
+    if _episodic_memory is _FAILED:
+        return None
+    if _episodic_memory is None:
+        try:
+            from core.memory.embedding_provider import SentenceTransformerProvider
+            from core.memory.episodic.memory import EpisodicMemory
+            from core.memory.redis_vector_store import RedisVectorStore
+            from core.memory.sqlite_vec_store import SqliteVecStore
+
+            config = AlfredConfig.from_env()
+            _episodic_memory = EpisodicMemory(
+                hot=RedisVectorStore(redis=redis, dim=config.embedding_dim),
+                cold=SqliteVecStore(
+                    db_path=str(_MEMORY_DIR / "episodic_cold.db"), dim=config.embedding_dim
+                ),
+                embedder=SentenceTransformerProvider(config.embedding_model),
+            )
+        except Exception as exc:
+            logger.error("EpisodicMemory unavailable for admin search: {}", exc)
+            _episodic_memory = _FAILED
+            return None
+    return _episodic_memory
+
+
+def _decode_hash(fields: dict[bytes | str, Any]) -> dict[str, Any]:
+    """Decode a Redis hash, dropping binary embedding fields."""
+    out: dict[str, Any] = {}
+    for k, v in fields.items():
+        key = k.decode() if isinstance(k, bytes) else k
+        if key.startswith("embedding"):
+            continue
+        out[key] = v.decode(errors="replace") if isinstance(v, bytes) else v
+    return out
 
 
 async def require_authenticated(request: Request) -> None:
@@ -128,6 +177,91 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
         # empty page (entries: [], next_before: null) — intentional standard cursor behavior.
         next_before = entries[-1]["id"] if len(entries) == count else None
         return {"entries": entries, "next_before": next_before}
+
+    @router.get("/memory/episodic")
+    async def memory_episodic(
+        request: Request, q: str | None = None, limit: int = 30
+    ) -> dict[str, Any]:
+        r = _redis(request)
+        limit = max(1, min(limit, 100))
+
+        if q:
+            memory = _get_episodic_lazy(r)
+            if memory is None:
+                raise HTTPException(status_code=503, detail="Vector search unavailable")
+            results = await memory.recall(query=q, limit=limit)
+            return {
+                "entries": [
+                    {
+                        "store": res.source_store,
+                        "score": res.score,
+                        **res.entry.model_dump(mode="json"),
+                    }
+                    for res in results
+                ]
+            }
+
+        hot: list[dict[str, Any]] = []
+        async for key in r.scan_iter(match=f"{CONTEXT_PREFIX}*", count=500):
+            fields = await r.hgetall(key)  # type: ignore[misc]
+            entry = _decode_hash(fields)
+            entry["store"] = "hot"
+            hot.append(entry)
+        hot.sort(key=lambda e: float(e.get("timestamp", 0) or 0), reverse=True)
+
+        cold: list[dict[str, Any]] = []
+        db_path = _MEMORY_DIR / "episodic_cold.db"
+        if db_path.exists():
+            try:
+                async with aiosqlite.connect(db_path) as conn:
+                    conn.row_factory = aiosqlite.Row
+                    async with conn.execute(
+                        "SELECT id, timestamp, source, summary, entities, valence,"
+                        " significance, semantic_key FROM episodic_entries"
+                        " ORDER BY timestamp DESC LIMIT ?",
+                        (limit,),
+                    ) as cur:
+                        cold = [dict(row) | {"store": "cold"} for row in await cur.fetchall()]
+            except Exception as exc:
+                logger.warning("Cold store read failed: {}", exc)
+
+        return {"entries": hot[:limit] + cold}
+
+    @router.get("/memory/semantic")
+    async def memory_semantic() -> dict[str, Any]:
+        files: list[dict[str, Any]] = []
+        for dirname in ("preferences", "profile"):
+            directory = _MEMORY_DIR / dirname
+            if not directory.is_dir():
+                continue
+            for path in sorted(directory.glob("*.md")):
+                if path.name.startswith("."):
+                    continue
+                files.append(
+                    {
+                        "name": path.name,
+                        "dir": dirname,
+                        "content": path.read_text(),
+                        "modified": datetime.fromtimestamp(
+                            path.stat().st_mtime, tz=UTC
+                        ).isoformat(),
+                    }
+                )
+        return {"files": files}
+
+    @router.get("/memory/routines")
+    async def memory_routines() -> dict[str, Any]:
+        from core.memory.routines.store import RoutineStore
+
+        store = RoutineStore(routines_dir=str(_MEMORY_DIR / "routines"))
+        return {"routines": [spec.model_dump(mode="json") for spec in store.list_all()]}
+
+    @router.get("/memory/scratchpad")
+    async def memory_scratchpad(request: Request) -> dict[str, Any]:
+        path = _MEMORY_DIR / "scratchpad.md"
+        content = path.read_text() if path.exists() else ""
+        pending = int(await _redis(request).llen(SCRATCHPAD_QUEUE))  # type: ignore[misc]
+        return {"content": content, "pending_queue": pending}
 
     return router
 
