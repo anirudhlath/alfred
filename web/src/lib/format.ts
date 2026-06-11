@@ -1,3 +1,4 @@
+// "memory" is a reserved category — no stream/event produces it yet; pages may assign it manually (Memory page).
 export type SourceCategory =
   | "reflex" | "conscious" | "memory" | "trigger" | "user" | "home" | "system";
 
