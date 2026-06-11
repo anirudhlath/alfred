@@ -373,19 +373,21 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
                     content=content,
                 )
 
-                response_text = await _publish_and_wait(r, request, session_id, timeout=60.0)
+                alfred_resp = await _publish_and_wait(r, request, session_id, timeout=60.0)
 
                 response_payload: dict[str, Any] = {
                     "type": "response",
-                    "text": response_text,
+                    "text": alfred_resp.text,
                     "session_id": session_id,
+                    "actions_taken": alfred_resp.actions_taken,
+                    "mood": alfred_resp.mood,
                 }
 
                 # Synthesise audio for the response
                 tts = _get_tts()
                 if tts is not None:
                     try:
-                        wav_bytes = tts.synthesize(response_text)
+                        wav_bytes = tts.synthesize(alfred_resp.text)
                         response_payload["audio"] = base64.b64encode(wav_bytes).decode()
                     except Exception as exc:
                         logger.error("TTS synthesis failed: {}", exc)
@@ -609,10 +611,11 @@ async def _publish_and_wait(
     request: UserRequest,
     session_id: str,
     timeout: float = 30.0,
-) -> str:
+) -> AlfredResponse:
     """Publish request and poll the responses stream for a matching response.
 
     Captures the latest stream ID before publishing to avoid scanning history.
+    Returns the full AlfredResponse so callers can forward actions_taken and mood.
     """
     # Use a time-based ID so we only read responses after this point.
     # This avoids xinfo_stream which fails on non-existent streams and
@@ -637,6 +640,11 @@ async def _publish_and_wait(
                     event_str = decode_stream_value(raw)
                     resp = AlfredResponse.model_validate_json(event_str)
                     if resp.session_id == session_id:
-                        return resp.text
+                        return resp
 
-    return "I apologize, sir — I seem to be taking longer than expected."
+    return AlfredResponse(
+        source="web-channel",
+        channel="web_pwa",
+        session_id=session_id,
+        text="I apologize, sir — I seem to be taking longer than expected.",
+    )

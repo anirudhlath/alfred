@@ -132,3 +132,82 @@ def test_onboarding_atomic_write(tmp_path: Path) -> None:
     _atomic_write(target, "hello")
     assert target.read_text() == "hello"
     assert not target.with_suffix(".tmp").exists()
+
+
+def test_publish_and_wait_returns_alfred_response() -> None:
+    """_publish_and_wait returns an AlfredResponse (not a bare string)."""
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from bus.schemas.events import AlfredResponse, UserRequest
+    from core.channels.web_server import _publish_and_wait
+    from shared.streams import USER_RESPONSES_STREAM
+
+    session_id = "test-session-abc"
+    resp = AlfredResponse(
+        source="conscious",
+        channel="web_pwa",
+        session_id=session_id,
+        text="Very good, sir.",
+        actions_taken=["calendar.get_events"],
+        mood="pleased",
+    )
+
+    mock_redis = AsyncMock()
+    mock_redis.xadd = AsyncMock(return_value=b"1-0")
+
+    stream_entries = [
+        (USER_RESPONSES_STREAM.encode(), [(b"1-0", {b"event": resp.model_dump_json().encode()})])
+    ]
+    mock_redis.xread = AsyncMock(side_effect=[stream_entries, []])
+
+    request = UserRequest(
+        source="web-pwa",
+        channel="web_pwa",
+        session_id=session_id,
+        identity_claim="sir",
+        content_type="text",
+        content="What's on my calendar?",
+    )
+
+    result = asyncio.run(_publish_and_wait(mock_redis, request, session_id, timeout=5.0))
+
+    assert isinstance(result, AlfredResponse)
+    assert result.text == "Very good, sir."
+    assert result.actions_taken == ["calendar.get_events"]
+    assert result.mood == "pleased"
+    assert result.session_id == session_id
+
+
+def test_ws_response_forwards_actions_taken_and_mood(web_client: TestClient) -> None:
+    """WebSocket /ws response payload includes actions_taken and mood from AlfredResponse."""
+    from unittest.mock import AsyncMock, patch
+
+    from bus.schemas.events import AlfredResponse
+
+    session_id = "ws-test-session"
+    alfred_resp = AlfredResponse(
+        source="conscious",
+        channel="web_pwa",
+        session_id=session_id,
+        text="Lights dimmed to 40%, sir.",
+        actions_taken=["smart_home.dim_lights"],
+        mood="pleased",
+    )
+
+    # Patch _publish_and_wait to return our AlfredResponse directly
+    with patch(
+        "core.channels.web_server._publish_and_wait", new=AsyncMock(return_value=alfred_resp)
+    ), web_client.websocket_connect("/ws") as ws:
+        # Consume the session message
+        session_msg = ws.receive_json()
+        assert session_msg["type"] == "session"
+
+        ws.send_json({"type": "text", "content": "Dim the lights", "channel": "web_pwa"})
+        response = ws.receive_json()
+
+    assert response["type"] == "response"
+    assert response["text"] == "Lights dimmed to 40%, sir."
+    assert response["actions_taken"] == ["smart_home.dim_lights"]
+    assert response["mood"] == "pleased"
+    assert "session_id" in response
