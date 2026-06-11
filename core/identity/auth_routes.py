@@ -21,6 +21,7 @@ from webauthn import (
 from webauthn.helpers import base64url_to_bytes, bytes_to_base64url
 from webauthn.helpers.structs import (
     AuthenticatorSelectionCriteria,
+    AuthenticatorTransport,
     PublicKeyCredentialDescriptor,
     ResidentKeyRequirement,
     UserVerificationRequirement,
@@ -50,6 +51,17 @@ def _get_origin(request: Request) -> str:
     scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
     host = request.headers.get("host", "localhost")
     return f"{scheme}://{host}"
+
+
+def _to_transports(values: list[str]) -> list[AuthenticatorTransport] | None:
+    """Convert stored transport strings to enum members, dropping unknown values."""
+    out: list[AuthenticatorTransport] = []
+    for v in values:
+        try:
+            out.append(AuthenticatorTransport(v))
+        except ValueError:
+            logger.debug("Ignoring unknown WebAuthn transport: {}", v)
+    return out or None
 
 
 def create_auth_router(
@@ -92,7 +104,7 @@ def create_auth_router(
         exclude = [
             PublicKeyCredentialDescriptor(
                 id=base64url_to_bytes(c.credential_id),
-                transports=c.transports,  # type: ignore[arg-type]
+                transports=_to_transports(c.transports),
             )
             for c in existing
         ]
@@ -196,7 +208,7 @@ def create_auth_router(
         allow_credentials = [
             PublicKeyCredentialDescriptor(
                 id=base64url_to_bytes(c.credential_id),
-                transports=c.transports,  # type: ignore[arg-type]
+                transports=_to_transports(c.transports),
             )
             for c in credentials
         ]
