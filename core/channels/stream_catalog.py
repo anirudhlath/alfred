@@ -1,0 +1,87 @@
+"""Stream catalog — single source of truth for admin-visible Redis streams.
+
+Maps friendly names (used in API paths and WS subscribe messages) to the
+canonical Redis stream keys from shared.streams, and provides defensive
+decoding of stream entries for display.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from shared.streams import (
+    ACTIONS_STREAM,
+    EVENTS_STREAM,
+    HOME_ACTION_RESULTS_STREAM,
+    HOME_STATE_STREAM,
+    NOTIFICATION_DISPATCH_STREAM,
+    REFLEX_OBSERVATIONS_STREAM,
+    USER_REQUESTS_STREAM,
+    USER_RESPONSES_STREAM,
+)
+from shared.types import AioRedis  # noqa: TC001
+
+STREAM_CATALOG: dict[str, str] = {
+    "events": EVENTS_STREAM,
+    "actions": ACTIONS_STREAM,
+    "user_requests": USER_REQUESTS_STREAM,
+    "user_responses": USER_RESPONSES_STREAM,
+    "reflex_observations": REFLEX_OBSERVATIONS_STREAM,
+    "notifications": NOTIFICATION_DISPATCH_STREAM,
+    "home_state": HOME_STATE_STREAM,
+    "home_action_results": HOME_ACTION_RESULTS_STREAM,
+}
+
+KEY_TO_NAME: dict[str, str] = {v: k for k, v in STREAM_CATALOG.items()}
+
+
+def _to_str(value: bytes | str) -> str:
+    return value.decode() if isinstance(value, bytes) else value
+
+
+def decode_entry(entry: dict[bytes | str, bytes | str]) -> dict[str, Any]:
+    """Decode a stream entry. Entries carry {"event": "<json>"} — return the
+    parsed event payload; fall back to raw decoded fields for anything else."""
+    decoded: dict[str, Any] = {}
+    for k, v in entry.items():
+        key = _to_str(k)
+        val = _to_str(v)
+        if key == "event":
+            try:
+                parsed: dict[str, Any] = dict(json.loads(val))
+            except (json.JSONDecodeError, TypeError, ValueError):
+                decoded[key] = val
+            else:
+                return parsed
+        else:
+            decoded[key] = val
+    return decoded
+
+
+def _id_to_ts(entry_id: str) -> float | None:
+    """Stream IDs are '<ms>-<seq>' — extract seconds since epoch."""
+    try:
+        return int(entry_id.split("-")[0]) / 1000.0
+    except (ValueError, IndexError):
+        return None
+
+
+async def stream_summaries(redis: AioRedis) -> dict[str, dict[str, Any]]:
+    """Length + last-entry recency for every catalog stream. Missing streams
+    report zero — never raise."""
+    out: dict[str, dict[str, Any]] = {}
+    for name, key in STREAM_CATALOG.items():
+        try:
+            raw: Any = await redis.xinfo_stream(key)
+            info: dict[str | bytes, Any] = raw
+            last = info.get("last-entry") or info.get(b"last-entry")
+            last_id = _to_str(last[0]) if last else None
+            out[name] = {
+                "length": int(info.get("length") or info.get(b"length") or 0),
+                "last_id": last_id,
+                "last_ts": _id_to_ts(last_id) if last_id else None,
+            }
+        except Exception:
+            out[name] = {"length": 0, "last_id": None, "last_ts": None}
+    return out
