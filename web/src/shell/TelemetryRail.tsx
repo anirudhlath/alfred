@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
@@ -7,6 +7,9 @@ import { CATEGORY_CLASS, categorize, summarize, timeOf } from "@/lib/format";
 import type { Overview } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useAlfred } from "./AlfredProvider";
+
+/** Categories whose arrival can change cost, DND state, or session counts. */
+const VITAL_CATEGORIES = new Set(["conscious", "trigger", "user"]);
 
 function Vital({ label, value, tone }: { label: string; value: string; tone?: string }) {
   return (
@@ -25,11 +28,23 @@ export function TelemetryRail() {
     queryFn: () => api("/api/admin/overview"),
   });
 
-  // Event-driven refresh: new conscious/notification activity can change cost,
-  // DND, or session counts — refetch on those, debounced by react-query dedupe.
-  const feedHead = feed[0]?.id;
+  // Throttle state: track the last time we issued a refetch (performance.now() — effect-scope only).
+  // Initialised to -Infinity so the first qualifying entry always passes the 5 s gate.
+  const lastRefetchAt = useRef<number>(-Infinity);
+
+  // Event-driven refresh: only refetch when the newest feed entry belongs to a
+  // category that can change cost, DND, or session counts (conscious / trigger / user).
+  // Home and reflex churn must NOT trigger refetches — they have no effect on vitals.
+  // Throttled to at most once per 5 s to avoid request storms during smart-home bursts.
+  const feedHead = feed[0];
   useEffect(() => {
-    if (feedHead) void refetch();
+    if (!feedHead) return;
+    const category = categorize(feedHead.stream, feedHead.event);
+    if (!VITAL_CATEGORIES.has(category)) return;
+    const now = performance.now();
+    if (now - lastRefetchAt.current < 5000) return;
+    lastRefetchAt.current = now;
+    void refetch();
   }, [feedHead, refetch]);
 
   // Count entries that arrived within 60 s of the most-recent feed entry.

@@ -199,4 +199,122 @@ describe("TelemetryRail", () => {
     const badDot = Array.from(dots).find((d) => d.classList.contains("bg-bad"));
     expect(badDot).toBeInTheDocument();
   });
+
+  // ---------------------------------------------------------------------------
+  // Selective-refetch tests (vital-affecting categories only, 5 s throttle)
+  // ---------------------------------------------------------------------------
+
+  it("refetches overview when a qualifying (user) entry arrives at feed head", async () => {
+    // Render with an empty feed and a SHARED QueryClient so we can track api call
+    // counts across rerenders without triggering a second initial fetch.
+    vi.mocked(useAlfred).mockReturnValue({
+      feed: [],
+      telemetryStatus: "online",
+      chatStatus: "online",
+      chat: {} as never,
+      telemetry: {} as never,
+    });
+    vi.mocked(api).mockResolvedValue(mockOverview);
+
+    const sharedQc = makeQueryClient();
+    const { rerender } = render(
+      <QueryClientProvider client={sharedQc}>
+        <MemoryRouter>
+          <TelemetryRail />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    // Wait for the initial useQuery fetch to settle (cost "—" or overview value).
+    await screen.findByText("—", { selector: ".font-mono" }).catch(() => {
+      // cost may already be visible from cached value — that's fine
+    });
+
+    // Record api call count after the initial query settles.
+    const callsAfterMount = vi.mocked(api).mock.calls.length;
+
+    // Simulate a new user_requests entry arriving at the feed head.
+    const newEntry = {
+      stream: "user_requests",
+      id: `${Date.now()}-0`,
+      event: { event_type: "user_request", content: "Turn on the lights" },
+    };
+
+    vi.mocked(useAlfred).mockReturnValue({
+      feed: [newEntry],
+      telemetryStatus: "online",
+      chatStatus: "online",
+      chat: {} as never,
+      telemetry: {} as never,
+    });
+
+    // Reuse the SAME QueryClient — no second initial fetch is triggered.
+    rerender(
+      <QueryClientProvider client={sharedQc}>
+        <MemoryRouter>
+          <TelemetryRail />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    // The effect fires and calls refetch() → api count increases.
+    await vi.waitFor(() => {
+      expect(vi.mocked(api).mock.calls.length).toBeGreaterThan(callsAfterMount);
+    });
+  });
+
+  it("does NOT refetch overview when feed head is a home_state entry", async () => {
+    // Render with an empty feed and a SHARED QueryClient.
+    vi.mocked(useAlfred).mockReturnValue({
+      feed: [],
+      telemetryStatus: "online",
+      chatStatus: "online",
+      chat: {} as never,
+      telemetry: {} as never,
+    });
+    vi.mocked(api).mockResolvedValue(mockOverview);
+
+    const sharedQc = makeQueryClient();
+    const { rerender } = render(
+      <QueryClientProvider client={sharedQc}>
+        <MemoryRouter>
+          <TelemetryRail />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    // Wait for the initial query to settle.
+    await screen.findByText("—", { selector: ".font-mono" }).catch(() => {});
+
+    const callsAfterMount = vi.mocked(api).mock.calls.length;
+
+    // Simulate a home_state entry arriving — categorize() maps this to "home".
+    const homeEntry = {
+      stream: "home_state",
+      id: `${Date.now()}-0`,
+      event: { event_type: "state_changed", entity_id: "light.living_room", new_state: "on" },
+    };
+
+    vi.mocked(useAlfred).mockReturnValue({
+      feed: [homeEntry],
+      telemetryStatus: "online",
+      chatStatus: "online",
+      chat: {} as never,
+      telemetry: {} as never,
+    });
+
+    rerender(
+      <QueryClientProvider client={sharedQc}>
+        <MemoryRouter>
+          <TelemetryRail />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    // Give React a tick to flush any effects.
+    await new Promise((r) => setTimeout(r, 50));
+
+    // api call count must NOT have increased — home_state must not trigger a refetch.
+    expect(vi.mocked(api).mock.calls.length).toBe(callsAfterMount);
+  });
 });
