@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Mic, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -10,8 +10,10 @@ export function VoiceButton({ onAudio }: { onAudio: (dataUrl: string) => void })
   const recorder = useRef<MediaRecorder | null>(null);
   const audioCtx = useRef<AudioContext | null>(null);
   const raf = useRef(0);
+  const starting = useRef(false);
 
-  const stop = () => {
+  const stop = useCallback(() => {
+    // null-safe: no-op when not recording
     recorder.current?.stop();
     recorder.current?.stream.getTracks().forEach((t) => t.stop());
     cancelAnimationFrame(raf.current);
@@ -19,9 +21,15 @@ export function VoiceButton({ onAudio }: { onAudio: (dataUrl: string) => void })
     audioCtx.current = null;
     setRecording(false);
     setLevel(0);
-  };
+  }, []);
+
+  // Stop mic/RAF/AudioContext when the component unmounts mid-recording
+  useEffect(() => () => stop(), [stop]);
 
   const start = async () => {
+    // Re-entrancy guard: ignore double-clicks during the permission prompt
+    if (starting.current) return;
+    starting.current = true;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const rec = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" });
@@ -58,6 +66,8 @@ export function VoiceButton({ onAudio }: { onAudio: (dataUrl: string) => void })
       setError(false);
     } catch {
       setError(true);
+    } finally {
+      starting.current = false;
     }
   };
 
