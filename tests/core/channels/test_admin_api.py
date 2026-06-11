@@ -97,3 +97,14 @@ def test_overview_reports_redis_down() -> None:
     resp = client.get("/api/admin/overview")
     assert resp.status_code == 200
     assert resp.json()["redis"]["connected"] is False
+
+
+def test_overview_inference_up_with_http_client() -> None:
+    r = _overview_redis()
+    client = make_admin_client(r)
+    fake_http = AsyncMock()
+    fake_http.get = AsyncMock(return_value=MagicMock(status_code=200))
+    client.app.state.http = fake_http  # type: ignore[attr-defined]
+    resp = client.get("/api/admin/overview")
+    assert resp.status_code == 200
+    assert resp.json()["inference"] == {"ollama": True, "lmstudio": True}

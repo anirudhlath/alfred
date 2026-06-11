@@ -11,12 +11,12 @@ for shared state, ACTIONS_STREAM publishes for process-owned behavior.
 from __future__ import annotations
 
 import json
-import os
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from core.channels.stream_catalog import STREAM_CATALOG, decode_entry, stream_summaries
+from shared.config import AlfredConfig
 from shared.streams import (
     COST_DAILY_KEY,
     DEFERRED_NOTIFICATIONS_KEY,
@@ -32,9 +32,6 @@ if TYPE_CHECKING:
     import httpx
 
     from shared.types import AioRedis
-
-_OLLAMA_DEFAULT = "http://localhost:11434"
-_LMSTUDIO_DEFAULT = "http://localhost:1234"
 
 
 async def require_authenticated(request: Request) -> None:
@@ -95,13 +92,10 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
             "triggers": int(await r.hlen(TRIGGERS_KEY)),  # type: ignore[misc]
         }
         out["streams"] = await stream_summaries(r)
+        cfg = AlfredConfig.from_env()
         out["inference"] = {
-            "ollama": await _check_http(
-                request, os.getenv("OLLAMA_HOST", _OLLAMA_DEFAULT) + "/api/tags"
-            ),
-            "lmstudio": await _check_http(
-                request, os.getenv("LMSTUDIO_HOST", _LMSTUDIO_DEFAULT) + "/v1/models"
-            ),
+            "ollama": await _check_http(request, cfg.ollama_host.rstrip("/") + "/api/tags"),
+            "lmstudio": await _check_http(request, cfg.lmstudio_host.rstrip("/") + "/v1/models"),
         }
         return out
 
