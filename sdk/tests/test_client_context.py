@@ -6,9 +6,10 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from alfred_sdk.client import AlfredClient
-from alfred_sdk.context import ContextEntry, ContextSnapshot
-from alfred_sdk.feature import BaseFeature, tool
+
+from sdk.alfred_sdk.client import AlfredClient
+from sdk.alfred_sdk.context import ContextEntry, ContextSnapshot
+from sdk.alfred_sdk.feature import BaseFeature, tool
 
 
 class FakeFeature(BaseFeature):

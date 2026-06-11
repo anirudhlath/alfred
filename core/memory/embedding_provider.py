@@ -3,6 +3,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
@@ -28,9 +32,9 @@ class SentenceTransformerProvider(EmbeddingProvider):
 
     def __init__(self, model_name: str = "google/embeddinggemma-300m") -> None:
         self._model_name = model_name
-        self._model: object | None = None
+        self._model: SentenceTransformer | None = None
 
-    def _load(self) -> object:
+    def _load(self) -> SentenceTransformer:
         if self._model is None:
             from sentence_transformers import SentenceTransformer
 
@@ -52,13 +56,15 @@ class SentenceTransformerProvider(EmbeddingProvider):
 
     def embed_sync(self, text: str) -> list[float]:
         model = self._load()
-        arr = model.encode(text, normalize_embeddings=True)  # type: ignore[union-attr]
-        return arr.tolist()  # type: ignore[union-attr]
+        arr = model.encode(text, normalize_embeddings=True)
+        result: list[float] = arr.tolist()
+        return result
 
     def embed_batch_sync(self, texts: list[str]) -> list[list[float]]:
         model = self._load()
-        arr = model.encode(texts, normalize_embeddings=True)  # type: ignore[union-attr]
-        return arr.tolist()  # type: ignore[union-attr]
+        arr = model.encode(texts, normalize_embeddings=True)
+        result: list[list[float]] = arr.tolist()
+        return result
 
     async def embed(self, text: str) -> list[float]:
         return await asyncio.to_thread(self.embed_sync, text)
@@ -68,7 +74,11 @@ class SentenceTransformerProvider(EmbeddingProvider):
 
     def dimension(self) -> int:
         model = self._load()
-        dim: int = model.get_sentence_embedding_dimension()  # type: ignore[union-attr]
+        dim: int | None = model.get_sentence_embedding_dimension()
+        if dim is None:
+            raise RuntimeError(
+                f"Embedding model {self._model_name!r} did not report an embedding dimension"
+            )
         return dim
 
     def model_name(self) -> str:

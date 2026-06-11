@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import pytest
-from alfred_sdk.context import ContextEntry, ContextProvider, ContextSnapshot
-from alfred_sdk.feature import BaseFeature
+
+from sdk.alfred_sdk.context import ContextEntry, ContextProvider, ContextSnapshot
+from sdk.alfred_sdk.feature import BaseFeature
 
 
 def test_context_entry_defaults() -> None:

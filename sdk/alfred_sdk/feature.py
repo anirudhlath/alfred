@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import inspect
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, overload
+from typing import Any, TypeVar, overload
 
 from pydantic import BaseModel
 
@@ -211,9 +212,9 @@ class BaseFeature:
 # ── @tool Decorator ──
 
 # @tool supports both @tool and @tool(description=..., name=...)
-# Using @overload for type safety.
+# Using @overload for type safety so the decorated function's signature is preserved.
 
-_F = Any  # Callable type alias for decorated functions
+_F = TypeVar("_F", bound=Callable[..., Any])
 
 
 @overload
@@ -225,7 +226,7 @@ def tool(
     *,
     description: str | None = None,
     name: str | None = None,
-) -> Any: ...
+) -> Callable[[_F], _F]: ...
 
 
 def tool(
@@ -233,7 +234,7 @@ def tool(
     *,
     description: str | None = None,
     name: str | None = None,
-) -> Any:
+) -> _F | Callable[[_F], _F]:
     """Mark a BaseFeature method as a tool.
 
     Supports both bare ``@tool`` and ``@tool(description=..., name=...)``.
@@ -241,8 +242,8 @@ def tool(
     """
 
     def decorator(f: _F) -> _F:
-        f._tool_marker = True
-        f._tool_overrides = {
+        f._tool_marker = True  # type: ignore[attr-defined]
+        f._tool_overrides = {  # type: ignore[attr-defined]
             "description": description,
             "name": name,
         }

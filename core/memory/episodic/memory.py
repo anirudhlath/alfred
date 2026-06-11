@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from core.memory.embedding_provider import EmbeddingProvider
@@ -79,7 +79,7 @@ class EpisodicMemory:
         )
 
         # Deduplicate by id, keeping highest score
-        best: dict[str, tuple[SearchResult, str]] = {}
+        best: dict[str, tuple[SearchResult, Literal["hot", "cold"]]] = {}
         for r in hot_results:
             best[r.id] = (r, "hot")
         for r in cold_results:
@@ -87,7 +87,7 @@ class EpisodicMemory:
                 best[r.id] = (r, "cold")
 
         # Filter by time if requested
-        merged: list[tuple[SearchResult, str]] = list(best.values())
+        merged: list[tuple[SearchResult, Literal["hot", "cold"]]] = list(best.values())
         if since:
             since_ts = since.timestamp()
             merged = [(r, s) for r, s in merged if r.metadata.timestamp >= since_ts]
@@ -134,7 +134,7 @@ class EpisodicMemory:
                 EpisodicResult(
                     entry=entry,
                     score=search_result.score,
-                    source_store=source_store,  # type: ignore[arg-type]
+                    source_store=source_store,
                 )
             )
 

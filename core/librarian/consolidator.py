@@ -716,11 +716,11 @@ class Librarian:
                 logger.warning("Decay: compression failed for group: %s", exc)
                 return 0
 
-        results = await asyncio.gather(
+        migration_counts = await asyncio.gather(
             *(_compress_group(g) for g in groups),
             *(_migrate_single(r) for r in ungrouped),
         )
-        migrated = sum(results)
+        migrated = sum(migration_counts)
 
         if migrated:
             logger.info("Decay: migrated %d entries to cold storage", migrated)

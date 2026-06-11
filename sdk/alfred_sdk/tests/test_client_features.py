@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
-from alfred_sdk.client import AlfredClient
-from alfred_sdk.feature import BaseFeature, tool
+from sdk.alfred_sdk.client import AlfredClient
+from sdk.alfred_sdk.feature import BaseFeature, tool
 
 
 class _StubContext:
@@ -23,7 +25,7 @@ class _AlphaFeature(BaseFeature):
         self.ctx = ctx
 
     @tool
-    def do_alpha(self, x: int) -> dict:
+    def do_alpha(self, x: int) -> dict[str, Any]:
         """Do alpha thing.
 
         Args:
@@ -43,7 +45,7 @@ class _BetaFeature(BaseFeature):
         self.ctx = ctx
 
     @tool
-    def do_beta(self, y: str) -> dict:
+    def do_beta(self, y: str) -> dict[str, Any]:
         """Do beta thing.
 
         Args:
@@ -94,7 +96,7 @@ def test_discover_features_name_collision_warns(caplog: pytest.LogCaptureFixture
             super().__init__()
 
         @tool
-        def do_alpha(self, x: int) -> dict:
+        def do_alpha(self, x: int) -> dict[str, Any]:
             """Duplicate."""
             return {"x": x}
 

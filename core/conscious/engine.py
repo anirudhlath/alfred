@@ -471,7 +471,7 @@ class ConsciousEngine:
 
     def _eligible_candidates(self, now: datetime) -> list[RoutineSpec]:
         """Return candidate routines that match current time and are outside cooldown."""
-        if not self.has_routine_store:
+        if self._routines is None:
             return []
 
         from core.memory.routines.patterns import match_trigger_pattern
@@ -494,7 +494,7 @@ class ConsciousEngine:
         Routines that were suggested within the cooldown window are skipped.
         Matching routines have their ``last_suggested`` timestamp updated.
         """
-        if not self.has_routine_store:
+        if self._routines is None:
             return ""
 
         eligible = self._eligible_candidates(now)
@@ -527,7 +527,7 @@ class ConsciousEngine:
         Routines that match the current time pattern and are outside the suggestion
         cooldown window receive an INFORMATIONAL notification push.
         """
-        if not self.has_routine_store or notifier is None:
+        if self._routines is None or notifier is None:
             return
 
         from core.notifications.schema import Urgency
@@ -730,7 +730,7 @@ class ConsciousEngine:
                 f"user='{request.content[:80]}' → {len(final_text)} chars "
                 f"(actions={actions_str}, tokens={total_prompt_tokens}+{total_completion_tokens})"
             )
-            await self._redis.lpush(SCRATCHPAD_QUEUE, observation)
+            await self._redis.lpush(SCRATCHPAD_QUEUE, observation)  # type: ignore[misc]
         except Exception as exc:
             logger.warning("Failed to write scratchpad observation: %s", exc)
 
