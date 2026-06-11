@@ -171,3 +171,130 @@ class TestLogout:
         resp = client.post("/api/auth/logout")
         assert resp.status_code == 200
         redis_mock.delete.assert_called_once_with(f"{AUTH_SESSION_PREFIX}session-123")
+
+
+class TestRegisterCompleteBytesDecode:
+    """Regression: redis.get returns bytes when decode_responses=False (production pool).
+
+    The bug: base64url_to_bytes(b'abc...') would f-string the REPR of the bytes
+    object ("b'abc...'"), decoding to garbage and causing 401 on every passkey
+    registration attempt.  The fix decodes bytes → str before passing to the helper.
+    """
+
+    def test_register_complete_bytes_challenge_not_corrupted(
+        self, store: CredentialStore, redis_mock: AsyncMock
+    ) -> None:
+        """verify_registration_response receives the correct expected_challenge bytes
+        when redis returns the stored challenge as bytes (decode_responses=False)."""
+        from webauthn.helpers import bytes_to_base64url
+
+        raw_challenge = b"\xde\xad\xbe\xef\xca\xfe"
+        stored_b64 = bytes_to_base64url(raw_challenge)
+        # Simulate decode_responses=False: redis returns bytes, not str
+        redis_mock.get = AsyncMock(return_value=stored_b64.encode())
+
+        app = FastAPI()
+        router = create_auth_router(store=store, redis=redis_mock)
+        app.include_router(router)
+        client = TestClient(app)
+
+        captured_kwargs: dict[str, object] = {}
+
+        def _capture_verify(**kwargs: object) -> MagicMock:
+            captured_kwargs.update(kwargs)
+            result = MagicMock()
+            result.credential_id = b"\x01\x02"
+            result.credential_public_key = b"\x03"
+            result.sign_count = 0
+            return result
+
+        with patch(
+            "core.identity.auth_routes.verify_registration_response",
+            side_effect=_capture_verify,
+        ):
+            client.post(
+                "/api/auth/register/complete",
+                json={
+                    "_challenge_id": "test-challenge-id",
+                    "_device_name": "Test Device",
+                    "id": "AQID",
+                    "rawId": "AQID",
+                    "type": "public-key",
+                    "response": {
+                        "clientDataJSON": "e30",
+                        "attestationObject": "e30",
+                    },
+                },
+            )
+
+        # The fix must have fired: challenge was decoded to str before base64url_to_bytes
+        assert "expected_challenge" in captured_kwargs, (
+            "verify_registration_response was not called — challenge decode failed"
+        )
+        got = captured_kwargs["expected_challenge"]
+        assert got == raw_challenge, f"expected_challenge corrupted by bytes repr: {got!r}"
+
+
+class TestLoginCompleteBytesDecode:
+    """Regression: same decode_responses=False bytes bug in login_complete."""
+
+    @pytest.mark.asyncio
+    async def test_login_complete_bytes_challenge_not_corrupted(
+        self, store: CredentialStore, redis_mock: AsyncMock
+    ) -> None:
+        """verify_authentication_response receives the correct expected_challenge bytes
+        when redis returns the stored challenge as bytes (decode_responses=False)."""
+        from webauthn.helpers import bytes_to_base64url
+
+        raw_challenge = b"\xfe\xed\xfa\xce\xba\xbe"
+        stored_b64 = bytes_to_base64url(raw_challenge)
+        # Simulate decode_responses=False: redis returns bytes, not str
+        redis_mock.get = AsyncMock(return_value=stored_b64.encode())
+
+        # Pre-register a credential so get_credential doesn't short-circuit with 401
+        cred_id = "dGVzdC1sb2dpbg"
+        await store.save_credential(
+            credential_id=cred_id,
+            public_key=b"\x04\x05\x06",
+            sign_count=0,
+            device_name="Regression Test Device",
+            transports=["internal"],
+        )
+
+        app = FastAPI()
+        router = create_auth_router(store=store, redis=redis_mock)
+        app.include_router(router)
+        client = TestClient(app)
+
+        captured_kwargs: dict[str, object] = {}
+
+        def _capture_verify(**kwargs: object) -> MagicMock:
+            captured_kwargs.update(kwargs)
+            result = MagicMock()
+            result.new_sign_count = 1
+            return result
+
+        with patch(
+            "core.identity.auth_routes.verify_authentication_response",
+            side_effect=_capture_verify,
+        ):
+            client.post(
+                "/api/auth/login/complete",
+                json={
+                    "_challenge_id": "test-login-challenge-id",
+                    "id": cred_id,
+                    "rawId": cred_id,
+                    "type": "public-key",
+                    "response": {
+                        "clientDataJSON": "e30",
+                        "authenticatorData": "e30",
+                        "signature": "e30",
+                    },
+                },
+            )
+
+        assert "expected_challenge" in captured_kwargs, (
+            "verify_authentication_response was not called — challenge decode failed"
+        )
+        got = captured_kwargs["expected_challenge"]
+        assert got == raw_challenge, f"expected_challenge corrupted by bytes repr: {got!r}"

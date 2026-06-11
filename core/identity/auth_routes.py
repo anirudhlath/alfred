@@ -135,6 +135,8 @@ def create_auth_router(
         stored_challenge_b64 = await redis.get(f"{WEBAUTHN_CHALLENGE_PREFIX}{challenge_id}")
         if not stored_challenge_b64:
             raise HTTPException(status_code=400, detail="Challenge expired or invalid")
+        if isinstance(stored_challenge_b64, bytes):
+            stored_challenge_b64 = stored_challenge_b64.decode()
 
         await redis.delete(f"{WEBAUTHN_CHALLENGE_PREFIX}{challenge_id}")
 
@@ -225,6 +227,8 @@ def create_auth_router(
         stored_challenge_b64 = await redis.get(f"{WEBAUTHN_CHALLENGE_PREFIX}{challenge_id}")
         if not stored_challenge_b64:
             raise HTTPException(status_code=400, detail="Challenge expired or invalid")
+        if isinstance(stored_challenge_b64, bytes):
+            stored_challenge_b64 = stored_challenge_b64.decode()
 
         await redis.delete(f"{WEBAUTHN_CHALLENGE_PREFIX}{challenge_id}")
 
