@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+import httpx
 import redis.asyncio as aioredis
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
     from starlette.responses import Response
 
 from bus.schemas.events import AlfredResponse, UserRequest
+from core.channels.admin_api import create_admin_router
 from core.identity.auth_middleware import AuthCookieMiddleware
 from core.identity.auth_routes import create_auth_router
 from core.identity.credentials import CredentialStore
@@ -219,6 +221,7 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
 
     pool: aioredis.Redis[Any] = aioredis.from_url(app.state.redis_url, decode_responses=False)  # type: ignore[type-arg]
     app.state.redis = pool
+    app.state.http = httpx.AsyncClient(timeout=2.0)
 
     # Initialize WebAuthn credential store
     credential_store = CredentialStore()
@@ -253,6 +256,7 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         await apns.close()
 
     await credential_store.close()
+    await app.state.http.aclose()
     await pool.close()
 
 
@@ -577,6 +581,8 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         await r.hdel(DEVICE_TOKENS_KEY, payload.device_token)  # type: ignore[misc]
         logger.info("Unregistered device token")
         return {"status": "ok"}
+
+    app.include_router(create_admin_router(require_trusted_network))
 
     class NoCacheStaticMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:

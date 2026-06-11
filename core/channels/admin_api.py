@@ -1,0 +1,111 @@
+"""Admin API — read-only observability + curated controls for the web app.
+
+All endpoints require BOTH an authenticated session cookie and a trusted
+network (localhost/Tailscale), mirroring the credentials endpoints.
+
+Reads are defensive: missing keys/streams/files yield empty results, never 500s.
+Controls map to operations the system already performs — direct Redis writes
+for shared state, ACTIONS_STREAM publishes for process-owned behavior.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from typing import TYPE_CHECKING, Any
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+
+from core.channels.stream_catalog import STREAM_CATALOG, decode_entry, stream_summaries
+from shared.streams import (
+    COST_DAILY_KEY,
+    DEFERRED_NOTIFICATIONS_KEY,
+    DEVICE_TOKENS_KEY,
+    DND_STATE_KEY,
+    SESSIONS_KEY_PREFIX,
+    TRIGGERS_KEY,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    import httpx
+
+    from shared.types import AioRedis
+
+_OLLAMA_DEFAULT = "http://localhost:11434"
+_LMSTUDIO_DEFAULT = "http://localhost:1234"
+
+
+async def require_authenticated(request: Request) -> None:
+    """401 unless AuthCookieMiddleware marked this request authenticated."""
+    if not getattr(request.state, "authenticated", False):
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+
+def _redis(request: Request) -> AioRedis:
+    r: AioRedis = request.app.state.redis
+    return r
+
+
+async def _check_http(request: Request, url: str) -> bool:
+    """Probe a local inference server via the lifespan-owned httpx client.
+
+    No lazy creation: when the client is absent (tests don't run the lifespan),
+    report False deterministically — never open real connections from a test.
+    """
+    client: httpx.AsyncClient | None = getattr(request.app.state, "http", None)
+    if client is None:
+        return False
+    try:
+        resp = await client.get(url)
+        return bool(resp.status_code < 500)
+    except Exception:
+        return False
+
+
+def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
+    router = APIRouter(
+        prefix="/api/admin",
+        dependencies=[Depends(trusted_network_dep), Depends(require_authenticated)],
+    )
+
+    @router.get("/overview")
+    async def overview(request: Request) -> dict[str, Any]:
+        r = _redis(request)
+        out: dict[str, Any] = {"redis": {"connected": True}}
+        try:
+            await r.ping()  # type: ignore[misc]
+        except Exception:
+            out["redis"]["connected"] = False
+            return out
+
+        raw_cost = await r.get(COST_DAILY_KEY)
+        out["cost"] = json.loads(raw_cost) if raw_cost else None
+        raw_dnd = await r.get(DND_STATE_KEY)
+        out["dnd"] = json.loads(raw_dnd) if raw_dnd else {"active": False}
+
+        session_count = 0
+        async for _ in r.scan_iter(match=f"{SESSIONS_KEY_PREFIX}*"):
+            session_count += 1
+        out["counts"] = {
+            "sessions": session_count,
+            "devices": int(await r.hlen(DEVICE_TOKENS_KEY)),  # type: ignore[misc]
+            "deferred": int(await r.llen(DEFERRED_NOTIFICATIONS_KEY)),  # type: ignore[misc]
+            "triggers": int(await r.hlen(TRIGGERS_KEY)),  # type: ignore[misc]
+        }
+        out["streams"] = await stream_summaries(r)
+        out["inference"] = {
+            "ollama": await _check_http(
+                request, os.getenv("OLLAMA_HOST", _OLLAMA_DEFAULT) + "/api/tags"
+            ),
+            "lmstudio": await _check_http(
+                request, os.getenv("LMSTUDIO_HOST", _LMSTUDIO_DEFAULT) + "/v1/models"
+            ),
+        }
+        return out
+
+    return router
+
+
+__all__ = ["STREAM_CATALOG", "create_admin_router", "decode_entry", "require_authenticated"]
