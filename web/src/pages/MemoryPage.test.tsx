@@ -32,17 +32,42 @@ function renderPage() {
 // Fixtures
 // ---------------------------------------------------------------------------
 
+// HOT browse: significance is a numeric string (Redis hash decode)
+const EPISODIC_HOT_ENTRY = {
+  store: "hot",
+  content: "User turned on lights at 9pm",
+  significance: "0.87",
+  source: "conversation",
+};
+
+// COLD browse: significance is a JSON string (SQLite TEXT column)
+const EPISODIC_COLD_ENTRY = {
+  store: "cold",
+  summary: "Historical summary entry",
+  significance: '{"overall":0.3,"safety":0.1}',
+};
+
+// SEARCH: significance is a nested object; score is a separate numeric
+const EPISODIC_SEARCH_ENTRY_WITH_SIG = {
+  store: "hot",
+  score: 0.65,
+  summary: "Search result with nested sig",
+  significance: { overall: 0.42 },
+};
+
+// SEARCH: significance absent — should fall back to score
+const EPISODIC_SEARCH_ENTRY_SCORE_ONLY = {
+  store: "hot",
+  score: 0.65,
+  summary: "Search result without sig",
+};
+
 const EPISODIC_RESPONSE = {
-  entries: [
-    { store: "hot", content: "User turned on lights at 9pm", significance: 0.87, source: "reflex" },
-    { store: "cold", summary: "Historical summary entry", score: 0.65, source: "conscious" },
-  ],
+  entries: [EPISODIC_HOT_ENTRY, EPISODIC_COLD_ENTRY],
 };
 
 const EPISODIC_SEARCH_RESPONSE = {
-  entries: [
-    { store: "hot", content: "Search result entry", significance: "0.92", source: "search" },
-  ],
+  entries: [EPISODIC_SEARCH_ENTRY_WITH_SIG, EPISODIC_SEARCH_ENTRY_SCORE_ONLY],
 };
 
 const SEMANTIC_RESPONSE = {
@@ -119,20 +144,20 @@ describe("MemoryPage", () => {
     expect(screen.getByText("hot")).toBeInTheDocument();
     expect(screen.getByText("cold")).toBeInTheDocument();
 
-    // Significance values
+    // HOT: significance is numeric string "0.87" → "sig 0.87"
     expect(screen.getByText("sig 0.87")).toBeInTheDocument();
-    expect(screen.getByText("sig 0.65")).toBeInTheDocument();
+    // COLD: significance is JSON string '{"overall":0.3,...}' → "sig 0.30"
+    expect(screen.getByText("sig 0.30")).toBeInTheDocument();
 
-    // Source labels
-    expect(screen.getByText("reflex")).toBeInTheDocument();
-    expect(screen.getByText("conscious")).toBeInTheDocument();
+    // Source label on hot entry
+    expect(screen.getByText("conversation")).toBeInTheDocument();
 
     // Cold entry uses summary field
     expect(screen.getByText("Historical summary entry")).toBeInTheDocument();
   });
 
-  // 2. Significance rendered correctly when value arrives as string (Redis hash decode)
-  it("formats significance correctly when value is a string", async () => {
+  // 2. Shape-aware significance: HOT numeric string, COLD JSON string, SEARCH object, SEARCH score-only
+  it("renders correct significance for all three backend shapes", async () => {
     vi.mocked(api).mockImplementation((url: string) => {
       if (url.startsWith("/api/admin/memory/episodic"))
         return Promise.resolve(EPISODIC_SEARCH_RESPONSE);
@@ -141,8 +166,12 @@ describe("MemoryPage", () => {
     renderPage();
 
     await waitFor(() => {
-      expect(screen.getByText("sig 0.92")).toBeInTheDocument();
+      // SEARCH shape with nested object significance → uses .overall = 0.42
+      expect(screen.getByText("sig 0.42")).toBeInTheDocument();
     });
+
+    // SEARCH shape with no significance → falls back to score = 0.65
+    expect(screen.getByText("sig 0.65")).toBeInTheDocument();
   });
 
   // 3. Search input fires query with ?q= on Enter
@@ -170,7 +199,7 @@ describe("MemoryPage", () => {
 
     // Now the search result should be shown
     await waitFor(() => {
-      expect(screen.getByText("Search result entry")).toBeInTheDocument();
+      expect(screen.getByText("Search result with nested sig")).toBeInTheDocument();
     });
 
     // Verify the API was called with the query param

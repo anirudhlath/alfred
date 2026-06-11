@@ -7,10 +7,36 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import type { EpisodicEntry, Routine, SemanticFile } from "@/lib/types";
 
-/** Format significance/score — value may be string or number from Redis hash decode. */
-function fmtSig(val: unknown): string {
-  const n = typeof val === "string" ? parseFloat(val) : Number(val);
-  return isNaN(n) ? "—" : n.toFixed(2);
+/**
+ * Extract a numeric significance value from any of the three backend shapes:
+ * - HOT browse: numeric string "0.87" (Redis hash decode)
+ * - COLD browse: JSON string '{"overall":0.3,...}' (SQLite TEXT column)
+ * - SEARCH: nested object {overall, safety, novelty, ...} (model_dump)
+ */
+function sigValue(raw: unknown): number | null {
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw : null;
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (trimmed.startsWith("{")) {
+      try {
+        return sigValue((JSON.parse(trimmed) as { overall?: unknown }).overall);
+      } catch {
+        return null;
+      }
+    }
+    const n = parseFloat(trimmed);
+    return Number.isFinite(n) ? n : null;
+  }
+  if (raw !== null && typeof raw === "object" && "overall" in raw) {
+    return sigValue((raw as { overall?: unknown }).overall);
+  }
+  return null;
+}
+
+/** Format significance falling back to score. */
+function fmtSig(significance: unknown, score?: unknown): string {
+  const n = sigValue(significance) ?? sigValue(score);
+  return n !== null ? n.toFixed(2) : "—";
 }
 
 function Episodic() {
@@ -42,7 +68,11 @@ function Episodic() {
                 {e.store}
               </Badge>
               <span className="text-memory">
-                sig {fmtSig((e as Record<string, unknown>).significance ?? e.score)}
+                sig{" "}
+                {fmtSig(
+                  (e as Record<string, unknown>).significance,
+                  (e as Record<string, unknown>).score,
+                )}
               </span>
               <span className="text-muted-foreground">
                 {String((e as Record<string, unknown>).source ?? "")}
