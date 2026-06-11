@@ -44,10 +44,12 @@ export function TriggersPage() {
   const setDnd = useMutation({
     mutationFn: (active: boolean) => post("/api/admin/dnd", { active }),
     onSuccess: () => { toast("DND updated"); invalidate(); },
+    onError: (e) => toast.error(String(e)),
   });
   const drain = useMutation({
     mutationFn: () => post("/api/admin/notifications/drain"),
     onSuccess: () => { toast("Drain queued"); invalidate(); },
+    onError: (e) => toast.error(String(e)),
   });
 
   return (
