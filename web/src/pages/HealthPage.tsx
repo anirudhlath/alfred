@@ -27,6 +27,8 @@ function IntegrationRow({ integration }: { integration: IntegrationInfo }) {
   const { data, isLoading } = useQuery<{ healthy: boolean }>({
     queryKey: ["integration-status", integration.name],
     queryFn: () => api(`/api/integrations/${integration.name}/status`),
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
   });
   return (
     <div className="flex items-center gap-2 font-mono text-xs">
@@ -90,16 +92,20 @@ export function HealthPage() {
       </Panel>
 
       <Panel title="COST TODAY">
-        <div className="font-mono">
-          <div className={cn("text-2xl", spendRatio > 0.8 ? "text-warn" : "text-ok")}>
-            ${overview?.cost?.spend_usd.toFixed(2) ?? "0.00"}
-            <span className="text-xs text-muted-foreground">
-              {" "}
-              / ${overview?.cost?.cap_usd.toFixed(2) ?? "—"}
-            </span>
+        {overviewError ? (
+          <p className="font-mono text-xs text-bad">overview unavailable</p>
+        ) : (
+          <div className="font-mono">
+            <div className={cn("text-2xl", spendRatio > 0.8 ? "text-warn" : "text-ok")}>
+              ${overview?.cost?.spend_usd.toFixed(2) ?? "0.00"}
+              <span className="text-xs text-muted-foreground">
+                {" "}
+                / ${overview?.cost?.cap_usd.toFixed(2) ?? "—"}
+              </span>
+            </div>
+            <Progress value={Math.min(spendRatio * 100, 100)} className="mt-3" />
           </div>
-          <Progress value={Math.min(spendRatio * 100, 100)} className="mt-3" />
-        </div>
+        )}
       </Panel>
 
       <Panel title="INTEGRATIONS">
@@ -111,19 +117,23 @@ export function HealthPage() {
       </Panel>
 
       <Panel title="STREAMS">
-        <table className="w-full font-mono text-xs">
-          <tbody>
-            {Object.entries(overview?.streams ?? {}).map(([name, s]) => (
-              <tr key={name} className="border-b border-border/40">
-                <td className="py-1.5 text-muted-foreground">{name}</td>
-                <td className="text-right">{s.length}</td>
-                <td className="pl-3 text-right text-muted-foreground">
-                  {s.last_ts ? new Date(s.last_ts * 1000).toLocaleTimeString("en-GB") : "—"}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        {overviewError ? (
+          <p className="font-mono text-xs text-bad">overview unavailable</p>
+        ) : (
+          <table className="w-full font-mono text-xs">
+            <tbody>
+              {Object.entries(overview?.streams ?? {}).map(([name, s]) => (
+                <tr key={name} className="border-b border-border/40">
+                  <td className="py-1.5 text-muted-foreground">{name}</td>
+                  <td className="text-right">{s.length}</td>
+                  <td className="pl-3 text-right text-muted-foreground">
+                    {s.last_ts ? new Date(s.last_ts * 1000).toLocaleTimeString("en-GB") : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </Panel>
 
       <Panel title="SESSIONS">

@@ -269,19 +269,38 @@ describe("HealthPage", () => {
     expect(screen.getByText("calendar")).toBeInTheDocument();
   });
 
-  // 8. Overview error state shows "overview unavailable"
+  // 8. Overview error state shows "overview unavailable" across panels
   it("shows overview unavailable message on fetch error", async () => {
     setupMocks({ overviewError: true });
     renderPage();
 
     await waitFor(() => {
-      expect(screen.getByText(/overview unavailable/)).toBeInTheDocument();
+      // CONNECTIVITY panel includes the full error string; COST and STREAMS show short form
+      expect(screen.getByText(/connection refused/)).toBeInTheDocument();
+      const msgs = screen.getAllByText(/overview unavailable/);
+      expect(msgs.length).toBeGreaterThanOrEqual(1);
     });
-
-    expect(screen.getByText(/connection refused/)).toBeInTheDocument();
   });
 
-  // 9. Empty sessions state
+  // 9. COST TODAY and STREAMS show inline error when overview rejects
+  it("shows overview unavailable in COST TODAY and STREAMS panels when overview query rejects", async () => {
+    setupMocks({ overviewError: true });
+    renderPage();
+
+    await waitFor(() => {
+      // At least 2 "overview unavailable" messages: CONNECTIVITY + COST + STREAMS = 3 total,
+      // but we assert at least 2 matching the new panels (COST + STREAMS)
+      const msgs = screen.getAllByText("overview unavailable");
+      expect(msgs.length).toBeGreaterThanOrEqual(2);
+    });
+
+    // Cost panel: no spend/cap values rendered
+    expect(screen.queryByText(/\$0\.00/)).not.toBeInTheDocument();
+    // Streams panel: no stream names rendered
+    expect(screen.queryByText("alfred:events")).not.toBeInTheDocument();
+  });
+
+  // 10. Empty sessions state
   it("shows empty sessions message when no sessions", async () => {
     setupMocks({ sessions: SESSIONS_EMPTY });
     renderPage();
@@ -291,7 +310,7 @@ describe("HealthPage", () => {
     });
   });
 
-  // 10. Empty devices state
+  // 11. Empty devices state
   it("shows empty devices message when no devices", async () => {
     setupMocks({ devices: DEVICES_EMPTY });
     renderPage();
@@ -301,7 +320,7 @@ describe("HealthPage", () => {
     });
   });
 
-  // 11. Cost defaults to $0.00 when cost is null
+  // 12. Cost defaults to $0.00 when cost is null
   it("shows $0.00 when overview cost is null", async () => {
     setupMocks({ overview: { ...OVERVIEW_RESPONSE, cost: null } });
     renderPage();
