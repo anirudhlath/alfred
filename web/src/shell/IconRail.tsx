@@ -1,7 +1,7 @@
 import { NavLink } from "react-router-dom";
 import { Activity, Brain, Heart, MessageSquare, Settings, Timer } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useAlfred } from "./AlfredProvider";
+import { useAlfredStatus } from "./AlfredProvider";
 
 const ITEMS = [
   { to: "/", label: "Chat", icon: MessageSquare },
@@ -12,7 +12,7 @@ const ITEMS = [
 ] as const;
 
 export function IconRail() {
-  const { telemetryStatus } = useAlfred();
+  const { telemetryStatus } = useAlfredStatus();
   return (
     <nav aria-label="Primary" className="flex w-13 flex-col items-center gap-1 border-r border-border bg-panel py-3">
       <div className="mb-3 flex size-8 items-center justify-center rounded-lg border border-secondary text-primary">◆</div>

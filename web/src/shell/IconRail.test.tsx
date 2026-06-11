@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { IconRail } from "./IconRail";
 
 vi.mock("./AlfredProvider", () => ({
-  useAlfred: () => ({ telemetryStatus: "online" }),
+  useAlfredStatus: () => ({ telemetryStatus: "online" }),
   AlfredProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 

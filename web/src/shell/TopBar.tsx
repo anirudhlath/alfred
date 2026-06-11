@@ -1,4 +1,4 @@
-import { useAlfred } from "./AlfredProvider";
+import { useAlfredStatus } from "./AlfredProvider";
 import { cn } from "@/lib/utils";
 
 const LABEL: Record<string, { text: string; dot: string }> = {
@@ -10,7 +10,7 @@ const LABEL: Record<string, { text: string; dot: string }> = {
 };
 
 export function TopBar() {
-  const { chatStatus, telemetryStatus } = useAlfred();
+  const { chatStatus, telemetryStatus } = useAlfredStatus();
   const status =
     [chatStatus, telemetryStatus].find((s) => s !== "online") ?? "online";
   const { text, dot } = LABEL[status] ?? LABEL.offline;
