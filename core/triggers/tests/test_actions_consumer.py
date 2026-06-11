@@ -94,6 +94,27 @@ async def test_fire_trigger_handler_unknown_id_warns_and_skips() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fire_trigger_handler_refreshes_cache_on_miss_then_proceeds() -> None:
+    """get() returns None first (stale cache), then the trigger after refresh — fire proceeds."""
+    from core.triggers.__main__ import _handle_fire_trigger
+
+    trigger = _make_trigger("t-new")
+    store = AsyncMock()
+    # First call (cache miss), second call (after refresh) finds the trigger.
+    store.get = AsyncMock(side_effect=[None, trigger])
+    store.refresh = AsyncMock()
+    engine = AsyncMock()
+
+    await _handle_fire_trigger(store, engine, {"trigger_id": "t-new"})
+
+    store.refresh.assert_awaited_once()
+    engine.fire.assert_awaited_once()
+    args, kwargs = engine.fire.call_args
+    assert args[0] is trigger
+    assert kwargs.get("fired_by") == "admin"
+
+
+@pytest.mark.asyncio
 async def test_set_trigger_enabled_handler_persists_via_store_save() -> None:
     from core.triggers.__main__ import _handle_set_trigger_enabled
 
@@ -121,6 +142,27 @@ async def test_set_trigger_enabled_handler_unknown_id_warns_and_skips() -> None:
     await _handle_set_trigger_enabled(store, {"trigger_id": "ghost", "enabled": True})
 
     store.save.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_set_trigger_enabled_handler_refreshes_cache_on_miss_then_proceeds() -> None:
+    """get() returns None first (stale cache), then the trigger after refresh — save proceeds."""
+    from core.triggers.__main__ import _handle_set_trigger_enabled
+
+    trigger = _make_trigger("t-new", enabled=True)
+    store = AsyncMock()
+    # First call (cache miss), second call (after refresh) finds the trigger.
+    store.get = AsyncMock(side_effect=[None, trigger])
+    store.refresh = AsyncMock()
+    store.save = AsyncMock()
+
+    await _handle_set_trigger_enabled(store, {"trigger_id": "t-new", "enabled": False})
+
+    store.refresh.assert_awaited_once()
+    store.save.assert_awaited_once()
+    saved = store.save.call_args[0][0]
+    assert saved.enabled is False
+    assert saved.trigger_id == "t-new"
 
 
 def _entry(action: ActionRequest) -> list[object]:

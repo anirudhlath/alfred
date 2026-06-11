@@ -502,4 +502,7 @@ the emitted `TriggerFired` event.
 The Trigger Engine keeps an in-memory cache of all triggers loaded from Redis, refreshed every
 60 seconds. The consumer applies an `enabled` toggle to `TriggerStore` within ms (which also
 updates the cache for triggers it owns), but the `effective_within_seconds: 60` value reflects
-the worst-case window before the evaluation loop observes the change.
+the worst-case window before the evaluation loop observes the change. The `fire_trigger` and
+`set_trigger_enabled` action handlers automatically call `store.refresh()` on a cache miss, so
+freshly-created triggers (written to Redis by the conscious process <60 s ago) are still
+actionable immediately.

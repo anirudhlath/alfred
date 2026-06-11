@@ -60,6 +60,12 @@ async def _handle_fire_trigger(
     trigger_id = str(parameters.get("trigger_id", ""))
     trigger = await store.get(trigger_id)
     if trigger is None:
+        # Cross-process creation visibility window: the trigger may have been created
+        # in the conscious process and written to Redis <60 s ago, before this process's
+        # cache last refreshed.  One targeted refresh is cheap and resolves the gap.
+        await store.refresh()
+        trigger = await store.get(trigger_id)
+    if trigger is None:
         logger.warning("fire_trigger: unknown trigger '%s'", trigger_id)
         return
     await engine.fire(trigger, TriggerContext(now=datetime.now(UTC)), fired_by="admin")
@@ -70,6 +76,12 @@ async def _handle_set_trigger_enabled(store: TriggerStore, parameters: dict[str,
     trigger_id = str(parameters.get("trigger_id", ""))
     enabled = bool(parameters.get("enabled", False))
     trigger = await store.get(trigger_id)
+    if trigger is None:
+        # Cross-process creation visibility window: the trigger may have been created
+        # in the conscious process and written to Redis <60 s ago, before this process's
+        # cache last refreshed.  One targeted refresh is cheap and resolves the gap.
+        await store.refresh()
+        trigger = await store.get(trigger_id)
     if trigger is None:
         logger.warning("set_trigger_enabled: unknown trigger '%s'", trigger_id)
         return
