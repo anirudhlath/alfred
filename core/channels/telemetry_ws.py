@@ -9,6 +9,7 @@ subscription set parks the pump on an asyncio.Event.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from typing import TYPE_CHECKING, Any
 
@@ -38,7 +39,7 @@ def register_telemetry_ws(app: FastAPI) -> None:
         subs: dict[str, str] = {}  # redis key -> last seen entry id
         has_subs = asyncio.Event()
 
-        async def pump() -> None:
+        async def _pump_loop() -> None:
             while True:
                 if not subs:
                     has_subs.clear()
@@ -48,13 +49,15 @@ def register_telemetry_ws(app: FastAPI) -> None:
                         tuple[bytes | str, list[tuple[bytes | str, dict[Any, Any]]]]
                     ] = await r.xread(
                         dict(subs),  # type: ignore[arg-type]
-                        count=100,
+                        count=100,  # backpressure unbounded into transport buffer — acceptable
+                        # for the single-user admin surface; revisit if telemetry fans out
                         block=_XREAD_BLOCK_MS,
                     )
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
                     logger.warning("telemetry xread failed: {}", exc)
+                    # redis_error frame + 1s backoff — xread failures stay here, never exit pump
                     await websocket.send_json({"type": "status", "detail": "redis_error"})
                     await asyncio.sleep(1)
                     continue
@@ -65,6 +68,9 @@ def register_telemetry_ws(app: FastAPI) -> None:
                     for entry_id, data in items:
                         eid = entry_id.decode() if isinstance(entry_id, bytes) else entry_id
                         subs[key] = eid
+                        # Concurrent send_json from pump + receive loop is deliberate and
+                        # lock-free: each send_json call is one atomic WS frame, matching
+                        # the /ws + notification delivery worker precedent (_active_websockets).
                         await websocket.send_json(
                             {
                                 "type": "entry",
@@ -73,6 +79,12 @@ def register_telemetry_ws(app: FastAPI) -> None:
                                 "event": decode_entry(data),
                             }
                         )
+
+        async def pump() -> None:
+            try:
+                await _pump_loop()
+            except (WebSocketDisconnect, RuntimeError, ConnectionError):
+                return  # client gone — receive loop handles teardown
 
         pump_task = asyncio.create_task(pump())
         try:
@@ -101,3 +113,6 @@ def register_telemetry_ws(app: FastAPI) -> None:
             pass
         finally:
             pump_task.cancel()
+            # Await the task so the in-flight xread unwinds before the handler returns.
+            with contextlib.suppress(asyncio.CancelledError):
+                await pump_task
