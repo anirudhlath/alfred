@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, patch
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -214,3 +215,74 @@ def test_ws_response_forwards_actions_taken_and_mood(web_client: TestClient) -> 
     assert response["actions_taken"] == ["smart_home.dim_lights"]
     assert response["mood"] == "pleased"
     assert "session_id" in response
+
+
+def _make_spa_dist(tmp_path: Path) -> Path:
+    """Create a minimal dist/ tree for SPA tests."""
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<html>alfred</html>")
+    return dist
+
+
+def test_auth_status_not_shadowed_by_spa_catch_all(tmp_path: Path) -> None:
+    """Regression: GET /api/auth/status must return JSON, not the SPA index.html.
+
+    The SPA /{full_path:path} catch-all must be registered AFTER the lifespan
+    adds the auth router, or every /api/auth/* request is silently swallowed.
+    """
+    from fastapi.testclient import TestClient
+
+    import core.channels.web_server as ws_mod
+
+    dist = _make_spa_dist(tmp_path)
+
+    # Minimal mock Redis — handles auth-session lookup and any other calls.
+    mock_redis = AsyncMock()
+    mock_redis.hgetall = AsyncMock(return_value={})
+    mock_redis.close = AsyncMock()
+
+    # Minimal mock CredentialStore — initialize/close are no-ops; reports no credentials.
+    mock_store = AsyncMock()
+    mock_store.initialize = AsyncMock()
+    mock_store.close = AsyncMock()
+    mock_store.get_user_id = AsyncMock(return_value=None)
+    mock_store.list_credentials = AsyncMock(return_value=[])
+    mock_store.has_any_credential = AsyncMock(return_value=False)
+
+    with (
+        # Point _SPA_DIST at our tmp dist so mount_spa actually mounts.
+        patch.object(ws_mod, "_SPA_DIST", dist),
+        # Prevent aioredis.from_url from connecting to a real Redis.
+        patch("core.channels.web_server.aioredis.from_url", return_value=mock_redis),
+        # Skip the real CredentialStore (writes to data/credentials.db).
+        patch("core.channels.web_server.CredentialStore", return_value=mock_store),
+        # Skip APNs adapter init (needs .p8 key on disk).
+        patch("core.channels.web_server._init_apns_adapter", new=AsyncMock()),
+        # Skip the notification delivery worker background task (imported inside lifespan).
+        patch(
+            "core.notifications.delivery.notification_delivery_worker",
+            new=AsyncMock(return_value=None),
+        ),
+        # httpx.AsyncClient.aclose() is called on shutdown.
+        patch("httpx.AsyncClient.aclose", new=AsyncMock()),
+    ):
+        app = create_app(redis_url="redis://localhost:6379")
+        with TestClient(app) as client:
+            # /api/auth/status must return JSON (registered key is the "registered" field).
+            resp = client.get("/api/auth/status")
+            assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+            ct = resp.headers.get("content-type", "")
+            assert "application/json" in ct, f"Expected JSON, got content-type: {ct!r}"
+            data = resp.json()
+            assert "registered" in data, f"Missing 'registered' key in: {data}"
+
+            # SPA root must still serve index.html.
+            root = client.get("/")
+            assert root.status_code == 200
+            assert "alfred" in root.text
+
+            # SPA fallback for unknown client-side route must serve index.html.
+            activity = client.get("/activity")
+            assert activity.status_code == 200
+            assert "alfred" in activity.text

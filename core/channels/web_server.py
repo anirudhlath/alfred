@@ -39,6 +39,9 @@ from shared.streams import (
 _lazy_cache: dict[str, Any] = {}
 _FAILED: object = object()  # sentinel for imports that already failed
 
+# Patchable in tests — must be set before the lifespan registers the SPA route.
+_SPA_DIST: Path = Path(__file__).resolve().parent.parent.parent / "web" / "dist"
+
 
 def _lazy_load(key: str, module: str, cls_name: str, missing_msg: str) -> Any:
     """Lazy-load a class from an optional module. Returns instance or None on failure."""
@@ -233,6 +236,13 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         store=credential_store, redis=pool, trusted_network_dep=require_trusted_network
     )
     app.include_router(auth_router)
+
+    # Must register the SPA catch-all AFTER the auth router so that
+    # /{full_path:path} never shadows /api/auth/* routes (Starlette matches
+    # routes in registration order).
+    from core.channels.spa import mount_spa
+
+    mount_spa(app, _SPA_DIST)
 
     try:
         await _init_apns_adapter(pool)
@@ -596,10 +606,6 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     app.add_middleware(NoCacheStaticMiddleware)
     app.add_middleware(AuthCookieMiddleware)
-
-    from core.channels.spa import mount_spa
-
-    mount_spa(app, Path(__file__).resolve().parent.parent.parent / "web" / "dist")
 
     return app
 
