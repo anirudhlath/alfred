@@ -122,8 +122,8 @@ export function OnboardingPage() {
   const toggleGuest = (value: string) =>
     setGuest((prev) => (prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value]));
 
-  const next = () => setStep((s) => Math.min(s + 1, TOTAL_STEPS - 1));
-  const back = () => setStep((s) => Math.max(s - 1, 0));
+  const next = () => setStep(Math.min(activeStep + 1, TOTAL_STEPS - 1));
+  const back = () => setStep(Math.max(activeStep - 1, 0));
 
   return (
     <div className="flex h-dvh items-center justify-center bg-background p-4">
@@ -294,9 +294,13 @@ export function OnboardingPage() {
           {/* Navigation (hidden on the passkey step, which has its own buttons) */}
           {activeStep > 0 && (
             <div className="flex justify-between pt-2">
-              <Button variant="outline" className="font-mono" onClick={back}>
-                Back
-              </Button>
+              {/* Hide Back when the passkey step was auto-skipped — there is no
+                  valid step to return to (step 0 would re-trigger InvalidStateError). */}
+              {!(activeStep === 1 && alreadySetUp) && (
+                <Button variant="outline" className="font-mono" onClick={back}>
+                  Back
+                </Button>
+              )}
               {activeStep < TOTAL_STEPS - 1 ? (
                 <Button className="font-mono" onClick={next}>
                   Continue

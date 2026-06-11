@@ -95,6 +95,28 @@ describe("OnboardingPage", () => {
     expect(screen.queryByText("Register your device")).toBeNull();
   });
 
+  it("advances to the proactivity step with ONE Continue click after auto-skip", async () => {
+    setupMocks({ registered: true, authenticated: true });
+    renderPage();
+    // Auto-skip lands on step 2/6 (activeStep=1, Personal).
+    await waitFor(() => expect(screen.getByText("A few particulars")).toBeInTheDocument());
+    expect(screen.getByText("STEP 2/6")).toBeInTheDocument();
+
+    // A single Continue click must reach step 3/6 (Proactivity).
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() =>
+      expect(screen.getByText("How proactive shall I be?")).toBeInTheDocument(),
+    );
+    expect(screen.getByText("STEP 3/6")).toBeInTheDocument();
+  });
+
+  it("does not show Back on the auto-skipped personal step", async () => {
+    setupMocks({ registered: true, authenticated: true });
+    renderPage();
+    await waitFor(() => expect(screen.getByText("A few particulars")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+  });
+
   it("registers a passkey and advances to the personal step", async () => {
     renderPage();
     await waitFor(() => expect(screen.getByText("Register your device")).toBeInTheDocument());
