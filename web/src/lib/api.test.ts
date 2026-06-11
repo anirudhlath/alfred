@@ -16,7 +16,7 @@ describe("api", () => {
   it("redirects to /login on 401", async () => {
     stubFetch(401, {});
     const assign = vi.fn();
-    vi.stubGlobal("location", { assign, pathname: "/health" });
+    vi.stubGlobal("location", { assign, pathname: "/system" });
     await expect(api("/x")).rejects.toThrow(ApiError);
     expect(assign).toHaveBeenCalledWith("/login");
   });

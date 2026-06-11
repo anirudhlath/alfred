@@ -265,7 +265,7 @@ Home and reflex stream churn (high volume) does not trigger refetches.
 | `/activity` | `ActivityPage` | Live event feed; pause/filter/inspect |
 | `/memory` | `MemoryPage` | Episodic / semantic / routines / scratchpad tabs |
 | `/triggers` | `TriggersPage` | Trigger list + DND + deferred queue |
-| `/health` | `HealthPage` | Connectivity, cost, streams, sessions, devices |
+| `/system` | `HealthPage` | Connectivity, cost, streams, sessions, devices (note: backend `GET /health` is the service healthcheck consumed by iOS AlfredKit; SPA system page lives at `/system` to avoid the catch-all being shadowed) |
 | `/settings` | `SettingsPage` | Sign-out + integration credential cards |
 
 All routes except `/login` and `/onboarding` are guarded by `Guarded`, which checks
@@ -287,7 +287,7 @@ npm run build         # tsc -b && vite build → web/dist/
 npm run preview       # serve web/dist/ locally
 ```
 
-The Vite proxy configuration routes all `/api/*`, `/health`, and `/ws*` requests to
+The Vite proxy configuration routes all `/api/*`, `/health` (backend healthcheck), and `/ws*` requests to
 `http://localhost:8081` (or `ws://localhost:8081` for WebSocket upgrades) during development.
 No CORS configuration is required — all traffic appears to come from the same origin.
 

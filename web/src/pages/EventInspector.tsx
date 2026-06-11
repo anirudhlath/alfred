@@ -1,4 +1,4 @@
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { timeOf } from "@/lib/format";
 import type { FeedEntry } from "@/shell/AlfredProvider";
 
@@ -12,6 +12,9 @@ export function EventInspector({ entry, onClose }: { entry: FeedEntry | null; on
               <SheetTitle className="font-mono text-sm">
                 {entry.stream} · {timeOf(entry.id)}
               </SheetTitle>
+              <SheetDescription className="font-mono text-[10px] text-muted-foreground">
+                Raw event payload
+              </SheetDescription>
             </SheetHeader>
             <pre className="mt-2 overflow-x-auto rounded-md border border-border bg-background p-4 text-[11px] leading-relaxed text-foreground/90">
               {JSON.stringify(entry.event, null, 2)}

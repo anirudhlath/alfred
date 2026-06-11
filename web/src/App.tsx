@@ -50,7 +50,7 @@ export default function App() {
             <Route path="/activity" element={<ActivityPage />} />
             <Route path="/memory" element={<MemoryPage />} />
             <Route path="/triggers" element={<TriggersPage />} />
-            <Route path="/health" element={<HealthPage />} />
+            <Route path="/system" element={<HealthPage />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Route>
         </Routes>

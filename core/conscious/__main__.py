@@ -376,7 +376,7 @@ async def run(config: AlfredConfig) -> None:
                         stream, group, consumer, min_idle_time=60000, start_id="0-0", count=5
                     )
                     if claimed and len(claimed) > 1 and claimed[1]:
-                        log.info("Reclaimed %d stale PEL messages", len(claimed[1]))
+                        log.info("Reclaimed {} stale PEL messages", len(claimed[1]))
                 except Exception:
                     pass  # xautoclaim not supported on older Redis — skip gracefully
     finally:

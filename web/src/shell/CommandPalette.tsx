@@ -48,7 +48,7 @@ export function CommandPalette() {
             <CommandItem onSelect={() => go("/activity")}>Activity</CommandItem>
             <CommandItem onSelect={() => go("/memory")}>Memory</CommandItem>
             <CommandItem onSelect={() => go("/triggers")}>Triggers</CommandItem>
-            <CommandItem onSelect={() => go("/health")}>Health</CommandItem>
+            <CommandItem onSelect={() => go("/system")}>Health</CommandItem>
             <CommandItem onSelect={() => go("/settings")}>Settings</CommandItem>
           </CommandGroup>
           <CommandGroup heading="Controls">

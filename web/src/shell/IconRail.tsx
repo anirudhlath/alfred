@@ -8,7 +8,7 @@ const ITEMS = [
   { to: "/activity", label: "Activity", icon: Activity },
   { to: "/memory", label: "Memory", icon: Brain },
   { to: "/triggers", label: "Triggers", icon: Timer },
-  { to: "/health", label: "Health", icon: Heart },
+  { to: "/system", label: "Health", icon: Heart },
 ] as const;
 
 export function IconRail() {
