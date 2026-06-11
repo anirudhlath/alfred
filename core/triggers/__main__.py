@@ -28,7 +28,7 @@ from bus.schemas.events import ActionRequest
 from core.reflex.runner import ensure_consumer_group
 from core.triggers.engine import TriggerEngine
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
-from core.triggers.models import TriggerContext
+from core.triggers.models import BaseTrigger, TriggerContext
 from core.triggers.server import create_app
 from core.triggers.store import TriggerStore
 from sdk.alfred_sdk.client import AlfredClient
@@ -53,20 +53,30 @@ TARGET_SERVICE = "trigger-engine"
 _shutdown = asyncio.Event()
 
 
+async def _resolve_trigger(store: TriggerStore, trigger_id: str, action: str) -> BaseTrigger | None:
+    """Fetch a trigger by id, refreshing the cache once on a miss.
+
+    The trigger may have been created in the conscious process and written to
+    Redis <60 s ago, before this process's cache last refreshed. One targeted
+    refresh is cheap and closes that cross-process visibility window. Returns
+    None (and logs a warning) if the trigger still cannot be found.
+    """
+    trigger = await store.get(trigger_id)
+    if trigger is None:
+        await store.refresh()
+        trigger = await store.get(trigger_id)
+    if trigger is None:
+        logger.warning("%s: unknown trigger '%s'", action, trigger_id)
+    return trigger
+
+
 async def _handle_fire_trigger(
     store: TriggerStore, engine: TriggerEngine, parameters: dict[str, object]
 ) -> None:
     """Fire a trigger by id via the real TriggerEngine (YAML-consistent)."""
     trigger_id = str(parameters.get("trigger_id", ""))
-    trigger = await store.get(trigger_id)
+    trigger = await _resolve_trigger(store, trigger_id, "fire_trigger")
     if trigger is None:
-        # Cross-process creation visibility window: the trigger may have been created
-        # in the conscious process and written to Redis <60 s ago, before this process's
-        # cache last refreshed.  One targeted refresh is cheap and resolves the gap.
-        await store.refresh()
-        trigger = await store.get(trigger_id)
-    if trigger is None:
-        logger.warning("fire_trigger: unknown trigger '%s'", trigger_id)
         return
     await engine.fire(trigger, TriggerContext(now=datetime.now(UTC)), fired_by="admin")
 
@@ -75,15 +85,8 @@ async def _handle_set_trigger_enabled(store: TriggerStore, parameters: dict[str,
     """Toggle a trigger's enabled flag via TriggerStore (Redis + YAML)."""
     trigger_id = str(parameters.get("trigger_id", ""))
     enabled = bool(parameters.get("enabled", False))
-    trigger = await store.get(trigger_id)
+    trigger = await _resolve_trigger(store, trigger_id, "set_trigger_enabled")
     if trigger is None:
-        # Cross-process creation visibility window: the trigger may have been created
-        # in the conscious process and written to Redis <60 s ago, before this process's
-        # cache last refreshed.  One targeted refresh is cheap and resolves the gap.
-        await store.refresh()
-        trigger = await store.get(trigger_id)
-    if trigger is None:
-        logger.warning("set_trigger_enabled: unknown trigger '%s'", trigger_id)
         return
     await store.save(trigger.model_copy(update={"enabled": enabled}))
     logger.info("Trigger '%s' enabled=%s (admin)", trigger_id, enabled)

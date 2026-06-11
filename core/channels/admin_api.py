@@ -35,6 +35,7 @@ from shared.streams import (
     SCRATCHPAD_QUEUE,
     SESSIONS_KEY_PREFIX,
     TRIGGERS_KEY,
+    decode_stream_value,
 )
 
 if TYPE_CHECKING:
@@ -117,7 +118,7 @@ def _decode_hash(fields: dict[bytes | str, Any]) -> dict[str, Any]:
     """Decode a Redis hash, dropping binary embedding fields."""
     out: dict[str, Any] = {}
     for k, v in fields.items():
-        key = k.decode() if isinstance(k, bytes) else k
+        key = decode_stream_value(k)
         if key.startswith("embedding"):
             continue
         out[key] = v.decode(errors="replace") if isinstance(v, bytes) else v
@@ -210,8 +211,7 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
             request
         ).xrevrange(key, max=max_id, min="-", count=count)
         entries = [
-            {"id": eid.decode() if isinstance(eid, bytes) else eid, "event": decode_entry(data)}
-            for eid, data in raw
+            {"id": decode_stream_value(eid), "event": decode_entry(data)} for eid, data in raw
         ]
         # When stream length is an exact multiple of count, the client gets one final
         # empty page (entries: [], next_before: null) — intentional standard cursor behavior.
@@ -223,7 +223,7 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
         raw: dict[bytes | str, bytes | str] = await _redis(request).hgetall(TRIGGERS_KEY)  # type: ignore[misc]
         items: list[dict[str, Any]] = []
         for _tid, value in raw.items():
-            val = value.decode() if isinstance(value, bytes) else value
+            val = decode_stream_value(value)
             try:
                 items.append(dict(json.loads(val)))
             except (json.JSONDecodeError, ValueError):
@@ -238,7 +238,7 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
         )
         out: list[dict[str, Any]] = []
         for item in raw_list:
-            val = item.decode() if isinstance(item, bytes) else item
+            val = decode_stream_value(item)
             try:
                 out.append(dict(json.loads(val)))
             except (json.JSONDecodeError, ValueError):
@@ -252,7 +252,7 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
         # N+1 (hgetall+ttl per session) is fine — session count is small and
         # this is admin-triggered.
         async for key in r.scan_iter(match=f"{SESSIONS_KEY_PREFIX}*"):
-            key_str = key.decode() if isinstance(key, bytes) else key
+            key_str = decode_stream_value(key)
             data = _decode_hash(await r.hgetall(key_str))  # type: ignore[misc]
             history = data.get("history") or "[]"
             try:
@@ -277,8 +277,8 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
         )
         out: list[dict[str, Any]] = []
         for token, value in raw_devices.items():
-            tok = token.decode() if isinstance(token, bytes) else token
-            val = value.decode() if isinstance(value, bytes) else value
+            tok = decode_stream_value(token)
+            val = decode_stream_value(value)
             try:
                 out.append({"device_token": tok, **json.loads(val)})
             except (json.JSONDecodeError, ValueError):
@@ -433,7 +433,7 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
         if raw is None:
             raise HTTPException(status_code=404, detail=f"Unknown trigger '{trigger_id}'")
         try:
-            json.loads(raw.decode() if isinstance(raw, bytes) else raw)
+            json.loads(decode_stream_value(raw))
         except (json.JSONDecodeError, ValueError) as exc:
             raise HTTPException(
                 status_code=500, detail=f"Trigger '{trigger_id}' has corrupt stored data"

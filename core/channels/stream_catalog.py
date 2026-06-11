@@ -25,6 +25,7 @@ from shared.streams import (
     REFLEX_OBSERVATIONS_STREAM,
     USER_REQUESTS_STREAM,
     USER_RESPONSES_STREAM,
+    decode_stream_value,
 )
 from shared.types import AioRedis  # noqa: TC001
 
@@ -47,10 +48,6 @@ STREAM_CATALOG: dict[str, str] = {
 KEY_TO_NAME: dict[str, str] = {v: k for k, v in STREAM_CATALOG.items()}
 
 
-def _to_str(value: bytes | str) -> str:
-    return value.decode() if isinstance(value, bytes) else value
-
-
 def decode_entry(entry: dict[bytes | str, bytes | str]) -> dict[str, Any]:
     """Decode a stream entry.
 
@@ -62,8 +59,8 @@ def decode_entry(entry: dict[bytes | str, bytes | str]) -> dict[str, Any]:
     """
     decoded: dict[str, Any] = {}
     for k, v in entry.items():
-        key = _to_str(k)
-        val = _to_str(v)
+        key = decode_stream_value(k)
+        val = decode_stream_value(v)
         if key in _PAYLOAD_FIELDS:
             try:
                 parsed: dict[str, Any] = dict(json.loads(val))
@@ -93,7 +90,7 @@ async def stream_summaries(redis: AioRedis) -> dict[str, dict[str, Any]]:
             raw: Any = await redis.xinfo_stream(key)
             info: dict[str | bytes, Any] = raw
             last = info.get("last-entry") or info.get(b"last-entry")
-            last_id = _to_str(last[0]) if last else None
+            last_id = decode_stream_value(last[0]) if last else None
             out[name] = {
                 "length": int(info.get("length") or info.get(b"length") or 0),
                 "last_id": last_id,

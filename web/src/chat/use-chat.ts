@@ -7,7 +7,6 @@ export interface ChatMessage {
   text: string;
   tools?: string[];
   latencyMs?: number;
-  pending?: boolean;
 }
 
 export function useChat() {
