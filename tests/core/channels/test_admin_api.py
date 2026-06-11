@@ -370,6 +370,38 @@ def test_sessions_list() -> None:
     assert body[0]["ttl_seconds"] == 1200
 
 
+def test_sessions_list_populated() -> None:
+    """Sessions list with a real session hash — channel, turns, created_at, and ttl populated."""
+    r = _overview_redis()
+    r.scan_iter = MagicMock(return_value=_aiter([b"alfred:sessions:s2"]))
+
+    async def _hgetall(key: str) -> dict[bytes, bytes]:
+        if key == f"{AUTH_SESSION_PREFIX}{_SESSION}":
+            return {b"authenticated": b"1"}
+        # Session hash for s2
+        return {
+            b"channel": b"web_pwa",
+            b"history": json.dumps(
+                [{"role": "user"}, {"role": "assistant"}, {"role": "user"}]
+            ).encode(),
+            b"created_at": b"2026-06-10T10:00:00+00:00",
+        }
+
+    r.hgetall = AsyncMock(side_effect=_hgetall)
+    r.ttl = AsyncMock(return_value=900)
+    client = make_admin_client(r)
+    resp = client.get("/api/admin/sessions")
+    assert resp.status_code == 200
+    body = resp.json()["sessions"]
+    assert len(body) == 1
+    entry = body[0]
+    assert entry["session_id"] == "s2"
+    assert entry["channel"] == "web_pwa"
+    assert entry["turns"] == 3
+    assert entry["created_at"] == "2026-06-10T10:00:00+00:00"
+    assert entry["ttl_seconds"] == 900
+
+
 def test_devices_list() -> None:
     r = _overview_redis()
 

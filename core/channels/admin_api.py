@@ -210,6 +210,8 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
     async def sessions(request: Request) -> dict[str, Any]:
         r = _redis(request)
         out: list[dict[str, Any]] = []
+        # N+1 (hgetall+ttl per session) is fine — session count is small and
+        # this is admin-triggered.
         async for key in r.scan_iter(match=f"{SESSIONS_KEY_PREFIX}*"):
             key_str = key.decode() if isinstance(key, bytes) else key
             data = _decode_hash(await r.hgetall(key_str))  # type: ignore[misc]
