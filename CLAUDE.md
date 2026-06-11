@@ -47,7 +47,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `sdk/` — publishable alfred-sdk package (BaseFeature, @tool, AlfredClient)
 - `domains/home/home_agent.py` — routes actions to home-service
 - `evals/` — eval runner, scenarios, inference backends (`python -m evals`)
-- `web/` — Vite + React SPA frontend (src/lib, src/shell, src/chat, src/pages; npm run dev|build|test)
+- `web/` — Vite + React 19 SPA frontend (src/lib, src/shell, src/chat, src/pages; npm run dev|build|test|lint) — built `web/dist/` is served by the web channel
 - `docs/superpowers/specs/` — approved design specs
 - `docs/superpowers/plans/` — implementation plans
 - `docs/backlog/` — priority subdirs (highest/high/medium/low/lowest) with individual ticket files
@@ -65,6 +65,12 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `core/identity/credentials.py` — `CredentialStore` (async SQLite, WebAuthn credential CRUD)
 - `core/identity/auth_routes.py` — WebAuthn registration/login/logout endpoints (6 routes under `/api/auth/`)
 - `core/identity/auth_middleware.py` — `AuthCookieMiddleware` (cookie → Redis session lookup)
+- `core/identity/ws_auth.py` — `authenticate_ws_cookie()` (shared WS cookie auth for `/ws` + `/ws/telemetry`)
+- `core/channels/web_server.py` — `create_app()` web channel FastAPI app (chat WS, auth, SPA, admin); run via `python -m core.channels`
+- `core/channels/admin_api.py` — `create_admin_router()` (`/api/admin/*` — 11 reads + 6 controls, cookie + trusted-network gated)
+- `core/channels/telemetry_ws.py` — `/ws/telemetry` live stream fan-out (cookie-authed)
+- `core/channels/stream_catalog.py` — Redis stream catalog + defensive entry decoding for admin reads
+- `core/channels/spa.py` — `mount_spa()` (serves `web/dist/`: real assets + index.html fallback for client-side routes)
 - `conftest.py` — root test fixtures (InMemoryKeyring, telemetry clear, tv_on_event, mock_embedder, mock_vector_store)
 
 ## Secrets & Credentials
@@ -83,9 +89,13 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 ## Workflow
 
 ```bash
+# Python (ruff >=0.15.16, mypy >=2.1)
 ruff check . --fix && ruff format .        # lint + format
 mypy --strict bus/ core/ domains/ evals/ runner/ sdk/ shared/ telemetry/  # type check
 .venv/bin/python -m pytest -x -q           # test (use .venv in worktrees)
+
+# Frontend (run from web/)
+cd web && npm run lint && npm run test && npm run build   # build emits web/dist/ for the runner to serve
 ```
 
 ## Running the System
@@ -115,7 +125,7 @@ uv run python -m evals compare <run1> <run2>
 
 Individual services can still be run standalone: `python -m bus`, `python -m core.reflex`, `python -m core.triggers`, `python -m core.conscious`, `python -m core.channels`, `python -m core.memory.ingestor_main`.
 
-Web channel serves the PWA frontend on port 8081 (configurable in `core/channels/__main__.py`).
+Web channel (`core/channels/web_server.py`, run via `python -m core.channels`) serves the built SPA (`web/dist/`) on port 8081 (configurable in `core/channels/__main__.py`). For frontend dev, `cd web && npm run dev` runs Vite (proxies `/api/*`, `/health`, `/ws*` to :8081) — run `npm run build` so the runner can serve the SPA.
 
 **Startup order is flexible:** Reflex starts even if no tools are registered yet — it logs a warning and picks up tools dynamically as services register them (5-minute TTL cache refresh). The unified runner adds a 1s delay before starting Reflex and auto-restarts crashed services with exponential backoff.
 
@@ -140,7 +150,8 @@ graph TD
     Conscious --> Notify[NotificationDispatcher<br/>Signal, WebSocket, APNs]
     Memory --> Librarian[Librarian<br/>nightly consolidation]
     WebAuthn[WebAuthn<br/>Passkey Auth] --> WebChannel
-    WebChannel[Web PWA :8081] -->|UserRequest| Bus
+    WebChannel[Web Channel :8081<br/>SPA + chat WS<br/>+ /api/admin/* + /ws/telemetry] -->|UserRequest| Bus
+    WebChannel -->|admin trigger mutations| Actions
     Signal[Signal Bridge] -->|UserRequest| Bus
 ```
 
@@ -199,3 +210,11 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - `identity_claim` in WS handler is server-derived from auth state (`"sir"` if authenticated), not client-supplied — frontend no longer sends `identity` field
 - Reflex Runner no longer writes to scratchpad — publishes structured `ReflexObservation` to `REFLEX_OBSERVATIONS_STREAM` instead; Memory Ingestor consumes and writes to episodic memory
 - Import `publish_observation` from `core.reflex.runner` to publish observations from new code paths
+- SPA catch-all (`mount_spa`) MUST register in the FastAPI lifespan AFTER the auth router — routes added during lifespan register after `create_app` routes, so an early mount would shadow `/api/auth/*`. Tests don't catch this because `web/dist/` doesn't exist in CI (mount is a no-op).
+- Backend `GET /health` is the service healthcheck consumed by the iOS AlfredKit client — the SPA's system page lives at `/system` so the catch-all never shadows `/health`.
+- `web/dist/` must be built (`npm run build`) for the runner to serve the SPA; `npm run dev` (Vite) proxies `/api/*`, `/health`, `/ws*` to :8081 instead.
+- Admin trigger mutations (fire/enable) go through `ACTIONS_STREAM` → triggers process (consumer group `triggers-internal`) — NEVER write `alfred:triggers` directly from other processes; `TriggerStore` keeps Redis + YAML in sync. Internal action handlers live in `core/triggers/__main__.py` and `core/conscious/__main__.py` (`run_librarian`).
+- `TriggerFired.fired_by` records provenance (admin vs engine fires) — set it when publishing a fire.
+- Use `EpisodicMemory.recall(..., update_stats=False)` for non-mutating reads (admin search) — the default `True` persists retrieval stats (HSET per recall).
+- `core/channels/admin_api.py` + `telemetry_ws.py` are gated by BOTH `require_trusted_network` AND `require_authenticated` (session cookie) — `/ws/telemetry` authenticates via the shared `authenticate_ws_cookie()` helper.
+- Frontend (`web/src`): `erasableSyntaxOnly` TS flag is on — no parameter properties (declare + assign fields explicitly). `eslint-plugin-react-hooks` v7 purity rule bans `Date.now()`/`Math.random()` in render — compute them in effects/handlers, not in the render body.
