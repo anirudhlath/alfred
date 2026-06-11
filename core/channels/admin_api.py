@@ -61,7 +61,7 @@ class TriggerEnabledRequest(BaseModel):
     enabled: bool
 
 
-async def _publish_internal_action(redis: Any, tool_name: str) -> None:
+async def _publish_internal_action(redis: AioRedis, tool_name: str) -> None:
     action = ActionRequest(
         source="admin-api", target_service="conscious-engine", tool_name=tool_name
     )
@@ -377,6 +377,7 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
         r = _redis(request)
         if not body.active:
             await r.delete(DND_STATE_KEY)
+            logger.info("Admin cleared DND")
             return {"active": False}
         state: dict[str, Any] = {
             "active": True,
@@ -385,16 +386,23 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
             "source": "manual",
         }
         await r.set(DND_STATE_KEY, json.dumps(state))
+        logger.info(
+            "Admin set DND until {} (reason: {})",
+            state["until"] or "indefinite",
+            body.reason or "none",
+        )
         return state
 
     @router.post("/notifications/drain")
     async def drain_notifications(request: Request) -> dict[str, str]:
         await _publish_internal_action(_redis(request), "drain_deferred_notifications")
+        logger.info("Admin queued deferred-notification drain")
         return {"status": "queued"}
 
     @router.post("/librarian/run")
     async def run_librarian(request: Request) -> dict[str, str]:
         await _publish_internal_action(_redis(request), "run_librarian")
+        logger.info("Admin queued manual Librarian run")
         return {"status": "queued"}
 
     @router.post("/triggers/{trigger_id}/enabled")
@@ -405,9 +413,15 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
         raw = await r.hget(TRIGGERS_KEY, trigger_id)  # type: ignore[misc]
         if raw is None:
             raise HTTPException(status_code=404, detail=f"Unknown trigger '{trigger_id}'")
-        data = dict(json.loads(raw.decode() if isinstance(raw, bytes) else raw))
+        try:
+            data = dict(json.loads(raw.decode() if isinstance(raw, bytes) else raw))
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Trigger '{trigger_id}' has corrupt stored data"
+            ) from exc
         data["enabled"] = body.enabled
         await r.hset(TRIGGERS_KEY, trigger_id, json.dumps(data))  # type: ignore[misc]
+        logger.info("Admin set trigger '{}' enabled={}", trigger_id, body.enabled)
         # Triggers process re-syncs its cache from Redis every 60s.
         return {"trigger_id": trigger_id, "enabled": body.enabled, "effective_within_seconds": 60}
 
@@ -417,7 +431,12 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
         raw = await r.hget(TRIGGERS_KEY, trigger_id)  # type: ignore[misc]
         if raw is None:
             raise HTTPException(status_code=404, detail=f"Unknown trigger '{trigger_id}'")
-        data = dict(json.loads(raw.decode() if isinstance(raw, bytes) else raw))
+        try:
+            data = dict(json.loads(raw.decode() if isinstance(raw, bytes) else raw))
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Trigger '{trigger_id}' has corrupt stored data"
+            ) from exc
         now = datetime.now(UTC)
 
         # Mirrors TriggerEngine.fire() — core/triggers/engine.py:28-63.
@@ -446,16 +465,21 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
         )
         await r.lpush(SCRATCHPAD_QUEUE, observation)  # type: ignore[misc]
 
+        # Single-writer assumption: hget→hset is not atomic; last-write-wins on
+        # last_fired between admin fire and the trigger engine — acceptable for
+        # this admin surface (low frequency, non-critical field).
         if data.get("one_shot"):
             await r.hdel(TRIGGERS_KEY, trigger_id)  # type: ignore[misc]
         else:
             data["last_fired"] = now.isoformat()
             await r.hset(TRIGGERS_KEY, trigger_id, json.dumps(data))  # type: ignore[misc]
+        logger.info("Admin manually fired trigger '{}'", data.get("name", trigger_id))
         return {"fired": True, "trigger_id": trigger_id}
 
     @router.delete("/sessions/{session_id}")
     async def delete_session(request: Request, session_id: str) -> dict[str, bool]:
         deleted = await _redis(request).delete(f"{SESSIONS_KEY_PREFIX}{session_id}")
+        logger.info("Admin deleted session {}", session_id)
         return {"deleted": bool(deleted)}
 
     return router

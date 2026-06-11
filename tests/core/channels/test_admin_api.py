@@ -517,3 +517,83 @@ def test_session_delete() -> None:
     resp = client.delete("/api/admin/sessions/s1")
     assert resp.json() == {"deleted": True}
     r.delete.assert_awaited_once_with("alfred:sessions:s1")
+
+
+# ---------------------------------------------------------------------------
+# New tests (Fix items 1-5)
+# ---------------------------------------------------------------------------
+
+
+def test_trigger_fire_one_shot_deletes_and_skips_hset() -> None:
+    """One-shot trigger: HDEL must be called, HSET must NOT be called."""
+    trigger = {
+        "trigger_id": "t1",
+        "name": "flash-sale",
+        "trigger_type": "time",
+        "enabled": True,
+        "one_shot": True,
+        "action": {
+            "tool_name": "send_alert",
+            "target_service": "conscious-engine",
+            "parameters": {},
+        },
+    }
+    r = _overview_redis()
+    r.hget = AsyncMock(return_value=json.dumps(trigger).encode())
+    r.hset = AsyncMock()
+    r.hdel = AsyncMock()
+    r.xadd = AsyncMock()
+    r.lpush = AsyncMock()
+    client = make_admin_client(r)
+    resp = client.post("/api/admin/triggers/t1/fire")
+    assert resp.status_code == 200
+    assert resp.json()["fired"] is True
+    r.hdel.assert_awaited_once()
+    assert r.hdel.call_args.args[:2] == (r.hdel.call_args.args[0], r.hdel.call_args.args[1])
+    r.hset.assert_not_awaited()
+
+
+def test_dnd_set_with_until_stores_isoformat() -> None:
+    """POST /dnd with 'until' stores the correct ISO-8601 string in Redis."""
+    r = _overview_redis()
+    r.set = AsyncMock()
+    client = make_admin_client(r)
+
+    resp = client.post(
+        "/api/admin/dnd",
+        json={"active": True, "until": "2026-06-12T08:00:00+00:00"},
+    )
+    assert resp.status_code == 200
+    _key, payload = r.set.await_args.args
+    stored = json.loads(payload)
+    assert stored["until"] == "2026-06-12T08:00:00+00:00"
+    assert stored["active"] is True
+
+
+def test_set_trigger_enabled_404_when_missing() -> None:
+    """POST .../enabled with an unknown trigger_id → 404."""
+    r = _overview_redis()
+    r.hget = AsyncMock(return_value=None)
+    client = make_admin_client(r)
+    resp = client.post("/api/admin/triggers/ghost/enabled", json={"enabled": False})
+    assert resp.status_code == 404
+
+
+def test_fire_trigger_corrupt_json_returns_500() -> None:
+    """Corrupt stored JSON in fire_trigger → 500 with 'corrupt' in detail."""
+    r = _overview_redis()
+    r.hget = AsyncMock(return_value=b"not-json{{")
+    client = make_admin_client(r)
+    resp = client.post("/api/admin/triggers/t1/fire")
+    assert resp.status_code == 500
+    assert "corrupt" in resp.json()["detail"].lower()
+
+
+def test_set_trigger_enabled_corrupt_json_returns_500() -> None:
+    """Corrupt stored JSON in set_trigger_enabled → 500 with 'corrupt' in detail."""
+    r = _overview_redis()
+    r.hget = AsyncMock(return_value=b"not-json{{")
+    client = make_admin_client(r)
+    resp = client.post("/api/admin/triggers/t1/enabled", json={"enabled": True})
+    assert resp.status_code == 500
+    assert "corrupt" in resp.json()["detail"].lower()
