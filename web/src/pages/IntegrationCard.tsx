@@ -60,6 +60,8 @@ function FieldRow({
             size="sm"
             variant="outline"
             className="font-mono text-[10px]"
+            aria-pressed={reveal}
+            aria-label={reveal ? `Hide ${field.label}` : `Show ${field.label}`}
             onClick={() => setReveal((r) => !r)}
           >
             {reveal ? "HIDE" : "SHOW"}
@@ -78,15 +80,19 @@ function FieldRow({
  * embedded (one per integration) in the onboarding wizard. State is a single
  * `Record<string, string>` of field-name → entered value.
  *
- * `showActions` toggles the Save / Test / Clear row (onboarding hides it and
- * uses its own Save button so the value map lives in this component).
+ * `showActions` (default `true`) controls visibility of the CLEAR button only.
+ * SAVE and TEST CONNECTION are always shown — they are needed during onboarding.
+ * Pass `showActions={false}` from the wizard to hide the destructive CLEAR button
+ * that makes no sense mid-onboarding.
  */
 export function IntegrationCard({
   integration,
   onSaved,
+  showActions = true,
 }: {
   integration: IntegrationInfo;
   onSaved?: () => void;
+  showActions?: boolean;
 }) {
   const { name, category, schema, configured } = integration;
   const fields = schema.fields;
@@ -188,15 +194,17 @@ export function IntegrationCard({
           >
             TEST CONNECTION
           </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            className="font-mono text-[10px] text-bad"
-            disabled={clear.isPending}
-            onClick={() => clear.mutate()}
-          >
-            CLEAR
-          </Button>
+          {showActions && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="font-mono text-[10px] text-bad"
+              disabled={clear.isPending}
+              onClick={() => clear.mutate()}
+            >
+              CLEAR
+            </Button>
+          )}
         </div>
       </CardContent>
     </Card>

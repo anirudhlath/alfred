@@ -76,6 +76,13 @@ export function OnboardingPage() {
     queryKey: ["auth-status"],
     queryFn: () => api("/api/auth/status"),
   });
+
+  // Derive the effective step: if the user is already registered and
+  // authenticated, skip step 0 (passkey) to avoid InvalidStateError when
+  // navigator.credentials.create() is called for an existing credential.
+  const alreadySetUp = Boolean(authStatus?.registered && authStatus?.authenticated);
+  const activeStep = step === 0 && alreadySetUp ? 1 : step;
+
   const { data: integrations } = useQuery<IntegrationInfo[]>({
     queryKey: ["integrations"],
     queryFn: () => api("/api/integrations"),
@@ -123,13 +130,13 @@ export function OnboardingPage() {
       <Card className="w-full max-w-xl bg-card">
         <CardHeader className="space-y-3">
           <CardTitle className="font-mono text-[11px] tracking-[0.3em] text-muted-foreground">
-            STEP {step + 1}/{TOTAL_STEPS}
+            STEP {activeStep + 1}/{TOTAL_STEPS}
           </CardTitle>
-          <Progress value={((step + 1) / TOTAL_STEPS) * 100} />
+          <Progress value={((activeStep + 1) / TOTAL_STEPS) * 100} />
         </CardHeader>
         <CardContent className="space-y-5">
           {/* Step 0 — Passkey */}
-          {step === 0 && (
+          {activeStep === 0 && (
             <div className="space-y-4">
               <div>
                 <h2 className="text-lg text-foreground">Register your device</h2>
@@ -167,7 +174,7 @@ export function OnboardingPage() {
           )}
 
           {/* Step 1 — Personal */}
-          {step === 1 && (
+          {activeStep === 1 && (
             <div className="space-y-4">
               <h2 className="text-lg text-foreground">A few particulars</h2>
               <label className="block space-y-1.5">
@@ -200,7 +207,7 @@ export function OnboardingPage() {
           )}
 
           {/* Step 2 — Proactivity */}
-          {step === 2 && (
+          {activeStep === 2 && (
             <div className="space-y-4">
               <h2 className="text-lg text-foreground">How proactive shall I be?</h2>
               <div className="space-y-2">
@@ -225,7 +232,7 @@ export function OnboardingPage() {
           )}
 
           {/* Step 3 — Guest mode */}
-          {step === 3 && (
+          {activeStep === 3 && (
             <div className="space-y-4">
               <h2 className="text-lg text-foreground">Guest access</h2>
               <p className="text-sm text-muted-foreground">Which controls may guests use?</p>
@@ -249,7 +256,7 @@ export function OnboardingPage() {
           )}
 
           {/* Step 4 — Integrations */}
-          {step === 4 && (
+          {activeStep === 4 && (
             <div className="space-y-4">
               <div>
                 <h2 className="text-lg text-foreground">Connections</h2>
@@ -257,17 +264,24 @@ export function OnboardingPage() {
                   Connect your services for more informed assistance. You can configure these later
                   in Settings — all are optional.
                 </p>
+                <p className="mt-1 font-mono text-[11px] text-muted-foreground">
+                  Credentials are saved per-card with SAVE; unsaved values are not submitted.
+                </p>
               </div>
               <div className="max-h-[50vh] space-y-3 overflow-y-auto pr-1">
                 {(integrations ?? []).map((integration) => (
-                  <IntegrationCard key={integration.name} integration={integration} />
+                  <IntegrationCard
+                    key={integration.name}
+                    integration={integration}
+                    showActions={false}
+                  />
                 ))}
               </div>
             </div>
           )}
 
           {/* Step 5 — Done */}
-          {step === 5 && (
+          {activeStep === 5 && (
             <div className="space-y-4">
               <h2 className="text-lg text-foreground">Very good, sir.</h2>
               <p className="text-sm text-muted-foreground">
@@ -278,12 +292,12 @@ export function OnboardingPage() {
           )}
 
           {/* Navigation (hidden on the passkey step, which has its own buttons) */}
-          {step > 0 && (
+          {activeStep > 0 && (
             <div className="flex justify-between pt-2">
               <Button variant="outline" className="font-mono" onClick={back}>
                 Back
               </Button>
-              {step < TOTAL_STEPS - 1 ? (
+              {activeStep < TOTAL_STEPS - 1 ? (
                 <Button className="font-mono" onClick={next}>
                   Continue
                 </Button>

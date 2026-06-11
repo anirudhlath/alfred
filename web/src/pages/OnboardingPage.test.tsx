@@ -78,12 +78,21 @@ describe("OnboardingPage", () => {
     expect(screen.getByText("Register your device")).toBeInTheDocument();
   });
 
-  it("shows a skip button only when already registered", async () => {
+  it("shows a skip button only when already registered (not authenticated)", async () => {
     setupMocks({ registered: true, authenticated: false });
     renderPage();
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Skip — already registered" })).toBeInTheDocument(),
     );
+  });
+
+  it("auto-skips the passkey step when already registered and authenticated", async () => {
+    setupMocks({ registered: true, authenticated: true });
+    renderPage();
+    // Should jump directly to step 2 (personal) without any user interaction.
+    await waitFor(() => expect(screen.getByText("A few particulars")).toBeInTheDocument());
+    expect(screen.getByText("STEP 2/6")).toBeInTheDocument();
+    expect(screen.queryByText("Register your device")).toBeNull();
   });
 
   it("registers a passkey and advances to the personal step", async () => {

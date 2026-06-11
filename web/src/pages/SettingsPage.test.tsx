@@ -162,9 +162,9 @@ describe("SettingsPage", () => {
     await waitFor(() => expect(screen.getByText("API Key")).toBeInTheDocument());
     const pwInput = screen.getByPlaceholderText("••••••••") as HTMLInputElement;
     expect(pwInput.type).toBe("password");
-    await userEvent.click(screen.getByRole("button", { name: "SHOW" }));
+    await userEvent.click(screen.getByRole("button", { name: "Show API Key" }));
     expect(pwInput.type).toBe("text");
-    await userEvent.click(screen.getByRole("button", { name: "HIDE" }));
+    await userEvent.click(screen.getByRole("button", { name: "Hide API Key" }));
     expect(pwInput.type).toBe("password");
   });
 
