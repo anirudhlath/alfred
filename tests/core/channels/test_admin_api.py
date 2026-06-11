@@ -322,3 +322,63 @@ def test_memory_episodic_search_success_and_no_stat_mutation(
     fake_recall.assert_awaited_once()
     _, kwargs = fake_recall.call_args
     assert kwargs.get("update_stats") is False
+
+
+def test_triggers_list() -> None:
+    r = _overview_redis()
+
+    async def _hgetall(key: str) -> dict[bytes, bytes]:
+        if key == f"{AUTH_SESSION_PREFIX}{_SESSION}":
+            return {b"authenticated": b"1"}
+        return {
+            b"t1": json.dumps(
+                {
+                    "trigger_id": "t1",
+                    "name": "sunset",
+                    "trigger_type": "time",
+                    "enabled": True,
+                    "created_at": "2026-06-01T00:00:00+00:00",
+                }
+            ).encode()
+        }
+
+    r.hgetall = AsyncMock(side_effect=_hgetall)
+    client = make_admin_client(r)
+    resp = client.get("/api/admin/triggers")
+    assert resp.status_code == 200
+    assert resp.json()["triggers"][0]["name"] == "sunset"
+
+
+def test_deferred_notifications() -> None:
+    r = _overview_redis()
+    r.lrange = AsyncMock(
+        return_value=[json.dumps({"notification_id": "n1", "title": "Hi"}).encode()]
+    )
+    client = make_admin_client(r)
+    resp = client.get("/api/admin/notifications/deferred")
+    assert resp.json()["notifications"][0]["title"] == "Hi"
+
+
+def test_sessions_list() -> None:
+    r = _overview_redis()
+    r.scan_iter = MagicMock(return_value=_aiter([b"alfred:sessions:s1"]))
+    r.ttl = AsyncMock(return_value=1200)
+    client = make_admin_client(r)
+    resp = client.get("/api/admin/sessions")
+    body = resp.json()["sessions"]
+    assert body[0]["session_id"] == "s1"
+    assert body[0]["ttl_seconds"] == 1200
+
+
+def test_devices_list() -> None:
+    r = _overview_redis()
+
+    async def _hgetall(key: str) -> dict[bytes, bytes]:
+        if key == f"{AUTH_SESSION_PREFIX}{_SESSION}":
+            return {b"authenticated": b"1"}
+        return {b"tok1": json.dumps({"platform": "ios", "identity": "sir"}).encode()}
+
+    r.hgetall = AsyncMock(side_effect=_hgetall)
+    client = make_admin_client(r)
+    resp = client.get("/api/admin/devices")
+    assert resp.json()["devices"][0]["platform"] == "ios"

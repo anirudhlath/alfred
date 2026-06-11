@@ -179,6 +179,71 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
         next_before = entries[-1]["id"] if len(entries) == count else None
         return {"entries": entries, "next_before": next_before}
 
+    @router.get("/triggers")
+    async def triggers(request: Request) -> dict[str, Any]:
+        raw: dict[bytes | str, bytes | str] = await _redis(request).hgetall(TRIGGERS_KEY)  # type: ignore[misc]
+        items: list[dict[str, Any]] = []
+        for _tid, value in raw.items():
+            val = value.decode() if isinstance(value, bytes) else value
+            try:
+                items.append(dict(json.loads(val)))
+            except (json.JSONDecodeError, ValueError):
+                continue
+        items.sort(key=lambda t: str(t.get("created_at", "")), reverse=True)
+        return {"triggers": items}
+
+    @router.get("/notifications/deferred")
+    async def deferred_notifications(request: Request) -> dict[str, Any]:
+        raw_list: list[bytes | str] = await _redis(request).lrange(  # type: ignore[misc]
+            DEFERRED_NOTIFICATIONS_KEY, 0, -1
+        )
+        out: list[dict[str, Any]] = []
+        for item in raw_list:
+            val = item.decode() if isinstance(item, bytes) else item
+            try:
+                out.append(dict(json.loads(val)))
+            except (json.JSONDecodeError, ValueError):
+                continue
+        return {"notifications": out}
+
+    @router.get("/sessions")
+    async def sessions(request: Request) -> dict[str, Any]:
+        r = _redis(request)
+        out: list[dict[str, Any]] = []
+        async for key in r.scan_iter(match=f"{SESSIONS_KEY_PREFIX}*"):
+            key_str = key.decode() if isinstance(key, bytes) else key
+            data = _decode_hash(await r.hgetall(key_str))  # type: ignore[misc]
+            history = data.get("history") or "[]"
+            try:
+                turns = len(json.loads(history))
+            except (json.JSONDecodeError, ValueError):
+                turns = 0
+            out.append(
+                {
+                    "session_id": key_str.removeprefix(SESSIONS_KEY_PREFIX),
+                    "channel": data.get("channel", "unknown"),
+                    "created_at": data.get("created_at"),
+                    "turns": turns,
+                    "ttl_seconds": int(await r.ttl(key_str)),
+                }
+            )
+        return {"sessions": out}
+
+    @router.get("/devices")
+    async def devices(request: Request) -> dict[str, Any]:
+        raw_devices: dict[bytes | str, bytes | str] = await _redis(request).hgetall(  # type: ignore[misc]
+            DEVICE_TOKENS_KEY
+        )
+        out: list[dict[str, Any]] = []
+        for token, value in raw_devices.items():
+            tok = token.decode() if isinstance(token, bytes) else token
+            val = value.decode() if isinstance(value, bytes) else value
+            try:
+                out.append({"device_token": tok, **json.loads(val)})
+            except (json.JSONDecodeError, ValueError):
+                out.append({"device_token": tok})
+        return {"devices": out}
+
     @router.get("/memory/episodic")
     async def memory_episodic(
         request: Request, q: str | None = None, limit: int = 30
