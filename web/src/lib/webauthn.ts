@@ -67,7 +67,7 @@ export async function registerPasskey(deviceName: string): Promise<void> {
   });
 }
 
-export async function loginPasskey(conditional = false): Promise<void> {
+export async function loginPasskey(conditional = false, signal?: AbortSignal): Promise<void> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const options = await post<Record<string, any>>("/api/auth/login/begin");
 
@@ -89,6 +89,7 @@ export async function loginPasskey(conditional = false): Promise<void> {
   const cred = (await navigator.credentials.get({
     publicKey,
     ...(conditional ? { mediation: "conditional" as CredentialMediationRequirement } : {}),
+    ...(signal ? { signal } : {}),
   })) as PublicKeyCredential;
   if (!cred) throw new Error("Login cancelled");
   const response = cred.response as AuthenticatorAssertionResponse;
