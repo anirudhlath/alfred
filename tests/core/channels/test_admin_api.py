@@ -460,20 +460,36 @@ def test_drain_and_librarian_publish_actions() -> None:
     assert librarian["tool_name"] == "run_librarian"
 
 
-def test_trigger_enable_writes_hash() -> None:
+def test_trigger_enable_publishes_action_to_triggers_process() -> None:
+    """Enable toggle validates via hget, then publishes to ACTIONS_STREAM (no hset)."""
     trigger = {"trigger_id": "t1", "name": "sunset", "trigger_type": "time", "enabled": True}
     r = _overview_redis()
     r.hget = AsyncMock(return_value=json.dumps(trigger).encode())
     r.hset = AsyncMock()
+    r.xadd = AsyncMock()
     client = make_admin_client(r)
     resp = client.post("/api/admin/triggers/t1/enabled", json={"enabled": False})
     assert resp.status_code == 200
-    assert resp.json()["effective_within_seconds"] == 60
-    _, _tid, payload = r.hset.await_args.args
-    assert json.loads(payload)["enabled"] is False
+    body = resp.json()
+    assert body == {
+        "status": "queued",
+        "trigger_id": "t1",
+        "enabled": False,
+        "effective_within_seconds": 60,
+    }
+    # No direct hash write — the triggers process owns the mutation.
+    r.hset.assert_not_awaited()
+    stream, payload = r.xadd.await_args.args
+    assert stream == "alfred:actions"
+    action = json.loads(payload["event"])
+    assert action["tool_name"] == "set_trigger_enabled"
+    assert action["target_service"] == "trigger-engine"
+    assert action["source"] == "admin-api"
+    assert action["parameters"] == {"trigger_id": "t1", "enabled": False}
 
 
-def test_trigger_fire_with_action_publishes_action_request() -> None:
+def test_trigger_fire_publishes_action_to_triggers_process() -> None:
+    """Fire validates via hget, then publishes fire_trigger to ACTIONS_STREAM."""
     trigger = {
         "trigger_id": "t1",
         "name": "sunset",
@@ -489,18 +505,23 @@ def test_trigger_fire_with_action_publishes_action_request() -> None:
     r = _overview_redis()
     r.hget = AsyncMock(return_value=json.dumps(trigger).encode())
     r.hset = AsyncMock()
+    r.hdel = AsyncMock()
     r.xadd = AsyncMock()
     r.lpush = AsyncMock()
     client = make_admin_client(r)
     resp = client.post("/api/admin/triggers/t1/fire")
-    assert resp.json()["fired"] is True
+    assert resp.json() == {"status": "queued", "trigger_id": "t1"}
+    # No hand-mirrored fire logic in the channels process anymore.
+    r.hset.assert_not_awaited()
+    r.hdel.assert_not_awaited()
+    r.lpush.assert_not_awaited()
     stream, payload = r.xadd.await_args.args
     assert stream == "alfred:actions"
     action = json.loads(payload["event"])
-    assert action["tool_name"] == "dim_lights"
-    assert action["parameters"] == {"level": 30}
-    # last_fired persisted (not one-shot)
-    assert "last_fired" in json.loads(r.hset.await_args.args[2])
+    assert action["tool_name"] == "fire_trigger"
+    assert action["target_service"] == "trigger-engine"
+    assert action["source"] == "admin-api"
+    assert action["parameters"] == {"trigger_id": "t1"}
 
 
 def test_trigger_fire_unknown_404() -> None:
@@ -524,8 +545,13 @@ def test_session_delete() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_trigger_fire_one_shot_deletes_and_skips_hset() -> None:
-    """One-shot trigger: HDEL must be called, HSET must NOT be called."""
+def test_trigger_fire_one_shot_does_not_mutate_hash_in_channels() -> None:
+    """One-shot deletion is now owned by the triggers process — channels only queues.
+
+    The channels process must NOT touch the hash (no HDEL / HSET); it publishes
+    a fire_trigger action and the triggers process handles one-shot deletion via
+    TriggerStore.delete (YAML-consistent).
+    """
     trigger = {
         "trigger_id": "t1",
         "name": "flash-sale",
@@ -547,10 +573,12 @@ def test_trigger_fire_one_shot_deletes_and_skips_hset() -> None:
     client = make_admin_client(r)
     resp = client.post("/api/admin/triggers/t1/fire")
     assert resp.status_code == 200
-    assert resp.json()["fired"] is True
-    r.hdel.assert_awaited_once()
-    assert r.hdel.call_args.args[:2] == (r.hdel.call_args.args[0], r.hdel.call_args.args[1])
+    assert resp.json() == {"status": "queued", "trigger_id": "t1"}
+    r.hdel.assert_not_awaited()
     r.hset.assert_not_awaited()
+    stream, payload = r.xadd.await_args.args
+    assert stream == "alfred:actions"
+    assert json.loads(payload["event"])["tool_name"] == "fire_trigger"
 
 
 def test_dnd_set_with_until_stores_isoformat() -> None:

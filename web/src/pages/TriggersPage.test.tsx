@@ -190,6 +190,47 @@ describe("TriggersPage", () => {
     });
   });
 
+  it("optimistically flips the switch before the queued mutation settles", async () => {
+    // post() never resolves → the mutation stays pending; the switch must still
+    // flip immediately via the optimistic cache update.
+    vi.mocked(post).mockReturnValue(new Promise(() => {}));
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByText("Morning Routine")).toBeInTheDocument();
+    });
+
+    const switches = screen.getAllByRole("switch");
+    // Morning Routine starts enabled (aria-checked=true) — toggle it OFF.
+    expect(switches[0]).toBeChecked();
+    await userEvent.click(switches[0]);
+
+    await waitFor(() => {
+      expect(screen.getAllByRole("switch")[0]).not.toBeChecked();
+    });
+  });
+
+  it("rolls back the optimistic switch when the mutation fails", async () => {
+    vi.mocked(post).mockRejectedValue(new Error("boom"));
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByText("Morning Routine")).toBeInTheDocument();
+    });
+
+    const switches = screen.getAllByRole("switch");
+    expect(switches[0]).toBeChecked();
+    await userEvent.click(switches[0]);
+
+    // After the error the switch returns to its original checked state.
+    await waitFor(() => {
+      expect(vi.mocked(toast).error).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(screen.getAllByRole("switch")[0]).toBeChecked();
+    });
+  });
+
   it("toggles disabled trigger ON and POSTs enabled=true", async () => {
     renderPage();
 

@@ -1,0 +1,212 @@
+# core/triggers/tests/test_actions_consumer.py
+"""Tests for the triggers-process ACTIONS_STREAM consumer (admin trigger mutations).
+
+The triggers process owns TriggerStore, so admin fire/enable mutations are routed
+to it via ACTIONS_STREAM (group 'triggers-internal') and applied through the real
+TriggerEngine / TriggerStore — keeping Redis and the YAML snapshot consistent.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock
+
+import pytest
+
+from bus.schemas.events import ActionRequest
+from core.triggers.registry import TriggerRegistry
+
+
+@pytest.fixture(autouse=True)
+def _clean_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(TriggerRegistry, "_registry", {})
+    import core.triggers.types  # noqa: F401
+
+
+def _make_trigger(trigger_id: str = "t-1", *, enabled: bool = True) -> object:
+    cls = TriggerRegistry.get("time")
+    return cls(
+        trigger_id=trigger_id,
+        trigger_type="time",
+        name="test",
+        created_by="test",
+        created_at=datetime.now(UTC),
+        conditions={"cron": "0 7 * * *"},
+        enabled=enabled,
+    )
+
+
+@pytest.mark.asyncio
+async def test_fire_trigger_handler_calls_engine_fire_with_admin_provenance() -> None:
+    from core.triggers.__main__ import _handle_fire_trigger
+
+    trigger = _make_trigger("t-1")
+    store = AsyncMock()
+    store.get = AsyncMock(return_value=trigger)
+    engine = AsyncMock()
+
+    await _handle_fire_trigger(store, engine, {"trigger_id": "t-1"})
+
+    store.get.assert_awaited_once_with("t-1")
+    engine.fire.assert_awaited_once()
+    args, kwargs = engine.fire.call_args
+    assert args[0] is trigger
+    assert kwargs.get("fired_by") == "admin"
+
+
+@pytest.mark.asyncio
+async def test_fire_trigger_handler_emits_admin_provenance_event_via_real_engine() -> None:
+    """End-to-end: admin fire of a no-action trigger emits TriggerFired fired_by=admin."""
+    from core.triggers.__main__ import _handle_fire_trigger
+    from core.triggers.engine import TriggerEngine
+
+    trigger = _make_trigger("t-1")  # no action → emits TriggerFired
+    store = AsyncMock()
+    store.get = AsyncMock(return_value=trigger)
+    store.save = AsyncMock()
+    store.delete = AsyncMock()
+    redis = AsyncMock()
+    redis.xadd = AsyncMock()
+    redis.lpush = AsyncMock()
+    engine = TriggerEngine(store=store, redis=redis)
+
+    await _handle_fire_trigger(store, engine, {"trigger_id": "t-1"})
+
+    stream, payload = redis.xadd.call_args[0]
+    assert stream == "alfred:events"
+    event = json.loads(payload["event"])
+    assert event["event_type"] == "trigger_fired"
+    assert event["fired_by"] == "admin"
+
+
+@pytest.mark.asyncio
+async def test_fire_trigger_handler_unknown_id_warns_and_skips() -> None:
+    from core.triggers.__main__ import _handle_fire_trigger
+
+    store = AsyncMock()
+    store.get = AsyncMock(return_value=None)
+    engine = AsyncMock()
+
+    await _handle_fire_trigger(store, engine, {"trigger_id": "ghost"})
+
+    engine.fire.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_set_trigger_enabled_handler_persists_via_store_save() -> None:
+    from core.triggers.__main__ import _handle_set_trigger_enabled
+
+    trigger = _make_trigger("t-1", enabled=True)
+    store = AsyncMock()
+    store.get = AsyncMock(return_value=trigger)
+    store.save = AsyncMock()
+
+    await _handle_set_trigger_enabled(store, {"trigger_id": "t-1", "enabled": False})
+
+    store.save.assert_awaited_once()
+    saved = store.save.call_args[0][0]
+    assert saved.enabled is False
+    assert saved.trigger_id == "t-1"
+
+
+@pytest.mark.asyncio
+async def test_set_trigger_enabled_handler_unknown_id_warns_and_skips() -> None:
+    from core.triggers.__main__ import _handle_set_trigger_enabled
+
+    store = AsyncMock()
+    store.get = AsyncMock(return_value=None)
+    store.save = AsyncMock()
+
+    await _handle_set_trigger_enabled(store, {"trigger_id": "ghost", "enabled": True})
+
+    store.save.assert_not_awaited()
+
+
+def _entry(action: ActionRequest) -> list[object]:
+    """Shape an XREADGROUP reply with a single entry."""
+    return [("alfred:actions", [(b"1-0", {"event": action.model_dump_json()})])]
+
+
+@pytest.mark.asyncio
+async def test_actions_loop_fires_trigger_engine_action() -> None:
+    from core.triggers.__main__ import _shutdown, actions_loop
+
+    trigger = _make_trigger("t-1")
+    store = AsyncMock()
+    store.get = AsyncMock(return_value=trigger)
+    engine = AsyncMock()
+
+    action = ActionRequest(
+        source="admin-api",
+        target_service="trigger-engine",
+        tool_name="fire_trigger",
+        parameters={"trigger_id": "t-1"},
+    )
+
+    r = AsyncMock()
+    call_count = 0
+
+    async def _xreadgroup(*_a: object, **_k: object) -> list[object]:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _entry(action)
+        _shutdown.set()
+        return []
+
+    r.xreadgroup = AsyncMock(side_effect=_xreadgroup)
+    r.xack = AsyncMock()
+    r.xgroup_create = AsyncMock()
+
+    _shutdown.clear()
+    await actions_loop(store, engine, r)
+    _shutdown.clear()
+
+    engine.fire.assert_awaited_once()
+    assert engine.fire.call_args.kwargs.get("fired_by") == "admin"
+    r.xack.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_actions_loop_ignores_non_trigger_engine_entries() -> None:
+    """Entries for other target_services are acked but never dispatched."""
+    from core.triggers.__main__ import _shutdown, actions_loop
+
+    store = AsyncMock()
+    store.get = AsyncMock(return_value=_make_trigger("t-1"))
+    engine = AsyncMock()
+
+    foreign = ActionRequest(
+        source="admin-api",
+        target_service="conscious-engine",
+        tool_name="run_librarian",
+    )
+
+    r = AsyncMock()
+    acked: list[object] = []
+    call_count = 0
+
+    async def _xreadgroup(*_a: object, **_k: object) -> list[object]:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _entry(foreign)
+        _shutdown.set()
+        return []
+
+    async def _xack(*args: object) -> None:
+        acked.append(args[-1])
+
+    r.xreadgroup = AsyncMock(side_effect=_xreadgroup)
+    r.xack = AsyncMock(side_effect=_xack)
+    r.xgroup_create = AsyncMock()
+
+    _shutdown.clear()
+    await actions_loop(store, engine, r)
+    _shutdown.clear()
+
+    engine.fire.assert_not_awaited()
+    store.save.assert_not_awaited()
+    # The foreign entry was still acked (skipped, not left pending).
+    assert b"1-0" in acked

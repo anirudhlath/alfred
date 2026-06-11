@@ -299,40 +299,51 @@ immediately (outside the scheduled 1-hour cycle). Returns `{"status": "queued"}`
 
 Request body: `{"enabled": true}` or `{"enabled": false}`.
 
-Reads the trigger JSON from `alfred:triggers`, sets `enabled`, writes back. **404** if the
+The endpoint does a **read-only** existence check against `alfred:triggers` (via `HGET`),
+then publishes an `ActionRequest` (`tool_name="set_trigger_enabled"`,
+`target_service="trigger-engine"`, `parameters={"trigger_id", "enabled"}`) to
+`alfred:actions`. The channels process performs **no** direct hash write. **404** if the
 trigger does not exist. **500** if the stored JSON is corrupt:
 
 ```json
 {"detail": "Trigger 'abc123' has corrupt stored data"}
 ```
 
-Response includes `effective_within_seconds: 60` — the Trigger Engine re-syncs its in-memory
-cache from Redis every 60 seconds. The `enabled` flag change takes effect within that window.
+Response: `{"status": "queued", "trigger_id": ..., "enabled": ..., "effective_within_seconds": 60}`.
 
-Known caveat: the Trigger Engine also maintains YAML snapshots in `core/memory/triggers/`.
-The admin write updates Redis only, not the YAML snapshots. On trigger-engine cold restart,
-the YAML snapshot will overwrite the Redis state, reverting the change. See
-[docs/backlog/medium/trigger-yaml-snapshot-drift-admin-writes.md](backlog/medium/trigger-yaml-snapshot-drift-admin-writes.md)
-for the tracking ticket.
+The triggers process consumes the action (group `triggers-internal`), loads the trigger from
+its `TriggerStore`, and persists the toggle via `TriggerStore.save()` — which writes **both**
+the Redis hash and the YAML snapshot, so the change survives a cold-start rehydration. The
+consumer applies the change within ms; the `effective_within_seconds: 60` value reflects the
+worst-case Trigger Engine cache-refresh window.
 
 #### Fire Trigger (`POST /api/admin/triggers/{trigger_id}/fire`)
 
-Mirrors the internal `TriggerEngine.fire()` logic (`core/triggers/engine.py`):
+The endpoint does a **read-only** existence check against `alfred:triggers` (via `HGET`),
+then publishes an `ActionRequest` (`tool_name="fire_trigger"`,
+`target_service="trigger-engine"`, `parameters={"trigger_id"}`) to `alfred:actions`. The
+channels process performs **no** stream/hash writes of its own — it does not mirror the fire
+logic.
 
-- If `trigger.action` is set: publishes an `ActionRequest` to `alfred:actions`.
-- If `trigger.action` is `None`: publishes a `TriggerFired` event to `alfred:events` for the
-  Reflex Engine to handle.
+Response: `{"status": "queued", "trigger_id": ...}`.
 
-After firing:
-- Pushes a scratchpad observation (`alfred:scratchpad:queue`).
-- One-shot triggers (`one_shot: true`) are deleted from `alfred:triggers`.
-- Non-one-shot triggers have `last_fired` updated in Redis.
+The triggers process consumes the action (group `triggers-internal`), loads the trigger from
+its `TriggerStore`, and calls the real `TriggerEngine.fire(trigger, ctx, fired_by="admin")`.
+That single code path handles everything consistently:
+
+- `trigger.action` set → publishes an `ActionRequest` to `alfred:actions`.
+- `trigger.action` is `None` → publishes a `TriggerFired` event to `alfred:events`
+  (with `fired_by="admin"` provenance, so downstream pattern detection can distinguish manual
+  admin fires from organic engine fires).
+- A scratchpad observation is written.
+- One-shot triggers are deleted via `TriggerStore.delete()` (Redis + YAML snapshot).
+- Non-one-shot triggers have `last_fired` persisted via `TriggerStore.save()` (Redis + YAML).
 
 **404** if trigger not found. **500** if stored JSON is corrupt.
 
-Note: the `hget → hset` sequence for `last_fired` is not atomic. Last-write-wins between the
-admin fire and the trigger engine's own fire logic — acceptable for this low-frequency admin
-surface.
+Because the triggers process owns `TriggerStore`, both Redis and the YAML snapshots stay
+consistent — there is no cold-start drift (one-shot triggers do not resurrect, toggles do not
+roll back).
 
 ---
 
@@ -436,16 +447,23 @@ cleanly before the handler returns.
 | Control | Mechanism | Who executes |
 |---|---|---|
 | DND set/clear | Direct `SET`/`DEL alfred:memory:dnd` | Admin API (channels process) |
-| Trigger `enabled` toggle | `HGET → modify → HSET alfred:triggers` | Admin API (channels process) |
+| Trigger `enabled` toggle | `XADD alfred:actions` (`set_trigger_enabled`, `target_service=trigger-engine`) | Triggers process (`triggers-internal` consumer → `TriggerStore.save`) |
 | Session delete | `DEL alfred:sessions:{id}` | Admin API (channels process) |
 | Drain deferred notifications | `XADD alfred:actions` (`drain_deferred_notifications`) | Conscious process `_INTERNAL_HANDLERS` |
 | Run Librarian | `XADD alfred:actions` (`run_librarian`) | Conscious process `_INTERNAL_HANDLERS` |
-| Fire trigger | `XADD alfred:actions` or `XADD alfred:events` | Channels process (admin API) / Reflex Engine |
+| Fire trigger | `XADD alfred:actions` (`fire_trigger`, `target_service=trigger-engine`) | Triggers process (`triggers-internal` consumer → `TriggerEngine.fire`) |
 
 Direct Redis writes take effect immediately. `XADD`-based controls are queued into
-`alfred:actions` and executed asynchronously by the conscious process's internal action
-handler. The admin API returns `{"status": "queued"}` for these and cannot report the
-outcome of the downstream operation.
+`alfred:actions` and executed asynchronously by the owning process. The admin API returns
+`{"status": "queued"}` for these and cannot report the outcome of the downstream operation.
+
+`alfred:actions` is consumed by **multiple distinct consumer groups** — each group sees every
+entry independently and acts only on entries whose `target_service` matches it (acking and
+skipping the rest):
+
+- `conscious-engine` group → `target_service="conscious-engine"` (drain, librarian, …)
+- `triggers-internal` group → `target_service="trigger-engine"` (fire / enable)
+- domain agents (e.g. home) → their own `target_service`
 
 ```mermaid
 graph LR
@@ -455,32 +473,33 @@ graph LR
     Admin -->|reads| Files[memory files / SQLite]
     Admin -->|controls: XADD| Actions[alfred:actions]
     Pump -->|XREAD $| Streams[(Redis Streams)]
-    Actions --> Conscious[Conscious Engine<br/>internal handlers]
+    Actions -->|group: conscious-engine| Conscious[Conscious Engine<br/>internal handlers]
+    Actions -->|group: triggers-internal| Triggers[Triggers Process<br/>TriggerStore / TriggerEngine]
 ```
+
+### Trigger Mutation Execution (YAML-consistent)
+
+Trigger fire and enable/disable are owned by the **triggers process**, which holds the
+authoritative `TriggerStore`. The `triggers-internal` ACTIONS_STREAM consumer:
+
+- `fire_trigger` → `TriggerStore.get(trigger_id)` then `TriggerEngine.fire(..., fired_by="admin")`.
+  This is the same code path organic engine fires use, so action-vs-`TriggerFired` branching,
+  the scratchpad observation, one-shot deletion (`TriggerStore.delete`), and `last_fired`
+  persistence (`TriggerStore.save`) all stay consistent. Unknown id → warn + ack.
+- `set_trigger_enabled` → `TriggerStore.get`, set `enabled`, `TriggerStore.save`. Unknown id → warn + ack.
+
+Because every mutation goes through `TriggerStore`, the Redis hash AND the YAML snapshots in
+`core/memory/triggers/` stay consistent. There is **no cold-start drift**: admin-fired one-shot
+triggers do not resurrect on rehydration, and enable toggles do not roll back. (This replaced
+the earlier channels-process direct-hash-write approach, which only updated Redis.)
+
+`POST .../fire` validates conditions are *not* re-evaluated: the trigger fires unconditionally
+(unlike the engine's evaluate-then-fire loop). Provenance is recorded via `fired_by="admin"` on
+the emitted `TriggerFired` event.
 
 ### Trigger Cache Caveat (60s delay)
 
-The Trigger Engine keeps an in-memory cache of all triggers loaded from Redis. This cache is
-refreshed from `alfred:triggers` every 60 seconds. A `trigger.enabled` toggle written by the
-admin API will not be reflected in the Trigger Engine's evaluation loop until the next cache
-refresh (up to 60 seconds later).
-
-### Manual Fire vs TriggerEngine.fire()
-
-`POST /api/admin/triggers/{id}/fire` mirrors the internal `TriggerEngine.fire()` path in
-`core/triggers/engine.py` lines 28–63. The admin path:
-
-1. Reads the trigger JSON from Redis directly.
-2. Follows the same branch: `action` set → `ActionRequest`; `action` None → `TriggerFired`.
-3. Writes a scratchpad observation and handles one-shot deletion.
-
-The difference is that the trigger engine fires after evaluating conditions; the admin API
-fires unconditionally.
-
-### YAML Snapshot Drift
-
-The Trigger Engine writes YAML snapshots to `core/memory/triggers/` on creation/deletion.
-Admin writes (enable/disable, fire) update Redis only. On Trigger Engine cold restart, the
-YAML snapshot is rehydrated back into Redis, which will overwrite any admin-only `enabled`
-flag changes. Track at:
-[docs/backlog/medium/trigger-yaml-snapshot-drift-admin-writes.md](backlog/medium/trigger-yaml-snapshot-drift-admin-writes.md)
+The Trigger Engine keeps an in-memory cache of all triggers loaded from Redis, refreshed every
+60 seconds. The consumer applies an `enabled` toggle to `TriggerStore` within ms (which also
+updates the cache for triggers it owns), but the `effective_within_seconds: 60` value reflects
+the worst-case window before the evaluation loop observes the change.

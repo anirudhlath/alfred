@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from loguru import logger
 from pydantic import BaseModel
 
-from bus.schemas.events import ActionRequest, TriggerFired
+from bus.schemas.events import ActionRequest
 from core.channels.stream_catalog import STREAM_CATALOG, decode_entry, stream_summaries
 from shared.config import AlfredConfig
 from shared.streams import (
@@ -32,7 +32,6 @@ from shared.streams import (
     DEFERRED_NOTIFICATIONS_KEY,
     DEVICE_TOKENS_KEY,
     DND_STATE_KEY,
-    EVENTS_STREAM,
     SCRATCHPAD_QUEUE,
     SESSIONS_KEY_PREFIX,
     TRIGGERS_KEY,
@@ -64,6 +63,25 @@ class TriggerEnabledRequest(BaseModel):
 async def _publish_internal_action(redis: AioRedis, tool_name: str) -> None:
     action = ActionRequest(
         source="admin-api", target_service="conscious-engine", tool_name=tool_name
+    )
+    await redis.xadd(ACTIONS_STREAM, {"event": action.model_dump_json()})
+
+
+async def _publish_trigger_action(
+    redis: AioRedis, tool_name: str, parameters: dict[str, Any]
+) -> None:
+    """Queue a trigger mutation for the triggers process (owns TriggerStore).
+
+    The triggers process consumes ACTIONS_STREAM (group 'triggers-internal'),
+    filters target_service='trigger-engine', and applies the change via the
+    real TriggerEngine / TriggerStore so Redis AND the YAML snapshot stay
+    consistent — no direct hash writes from the channels process.
+    """
+    action = ActionRequest(
+        source="admin-api",
+        target_service="trigger-engine",
+        tool_name=tool_name,
+        parameters=parameters,
     )
     await redis.xadd(ACTIONS_STREAM, {"event": action.model_dump_json()})
 
@@ -405,76 +423,48 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
         logger.info("Admin queued manual Librarian run")
         return {"status": "queued"}
 
+    async def _validate_trigger_exists(r: AioRedis, trigger_id: str) -> None:
+        """Read-only existence + integrity check (keeps 404 + corrupt-500 contract).
+
+        The mutation itself is owned by the triggers process; this only guards the
+        synchronous response so the web app sees 404/500 for bad ids immediately.
+        """
+        raw = await r.hget(TRIGGERS_KEY, trigger_id)  # type: ignore[misc]
+        if raw is None:
+            raise HTTPException(status_code=404, detail=f"Unknown trigger '{trigger_id}'")
+        try:
+            json.loads(raw.decode() if isinstance(raw, bytes) else raw)
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Trigger '{trigger_id}' has corrupt stored data"
+            ) from exc
+
     @router.post("/triggers/{trigger_id}/enabled")
     async def set_trigger_enabled(
         request: Request, trigger_id: str, body: TriggerEnabledRequest
     ) -> dict[str, Any]:
         r = _redis(request)
-        raw = await r.hget(TRIGGERS_KEY, trigger_id)  # type: ignore[misc]
-        if raw is None:
-            raise HTTPException(status_code=404, detail=f"Unknown trigger '{trigger_id}'")
-        try:
-            data = dict(json.loads(raw.decode() if isinstance(raw, bytes) else raw))
-        except (json.JSONDecodeError, ValueError) as exc:
-            raise HTTPException(
-                status_code=500, detail=f"Trigger '{trigger_id}' has corrupt stored data"
-            ) from exc
-        data["enabled"] = body.enabled
-        await r.hset(TRIGGERS_KEY, trigger_id, json.dumps(data))  # type: ignore[misc]
-        logger.info("Admin set trigger '{}' enabled={}", trigger_id, body.enabled)
-        # Triggers process re-syncs its cache from Redis every 60s.
-        return {"trigger_id": trigger_id, "enabled": body.enabled, "effective_within_seconds": 60}
+        await _validate_trigger_exists(r, trigger_id)
+        await _publish_trigger_action(
+            r, "set_trigger_enabled", {"trigger_id": trigger_id, "enabled": body.enabled}
+        )
+        logger.info("Admin queued trigger '{}' enabled={}", trigger_id, body.enabled)
+        # The triggers process applies the change via TriggerStore (Redis + YAML)
+        # within its 60s cache window.
+        return {
+            "status": "queued",
+            "trigger_id": trigger_id,
+            "enabled": body.enabled,
+            "effective_within_seconds": 60,
+        }
 
     @router.post("/triggers/{trigger_id}/fire")
     async def fire_trigger(request: Request, trigger_id: str) -> dict[str, Any]:
         r = _redis(request)
-        raw = await r.hget(TRIGGERS_KEY, trigger_id)  # type: ignore[misc]
-        if raw is None:
-            raise HTTPException(status_code=404, detail=f"Unknown trigger '{trigger_id}'")
-        try:
-            data = dict(json.loads(raw.decode() if isinstance(raw, bytes) else raw))
-        except (json.JSONDecodeError, ValueError) as exc:
-            raise HTTPException(
-                status_code=500, detail=f"Trigger '{trigger_id}' has corrupt stored data"
-            ) from exc
-        now = datetime.now(UTC)
-
-        # Mirrors TriggerEngine.fire() — core/triggers/engine.py:28-63.
-        action_payload = data.get("action")
-        if action_payload:
-            action = ActionRequest(
-                source="admin-api",
-                target_service=action_payload["target_service"],
-                tool_name=action_payload["tool_name"],
-                parameters=action_payload.get("parameters", {}),
-            )
-            await r.xadd(ACTIONS_STREAM, {"event": action.model_dump_json()})
-        else:
-            fired = TriggerFired(
-                trigger_id=trigger_id,
-                trigger_name=str(data.get("name", "")),
-                trigger_type=str(data.get("trigger_type", "")),
-                context={"manual_fire": True, "evaluated_at": now.isoformat()},
-                urgency=data.get("urgency", "informational"),
-            )
-            await r.xadd(EVENTS_STREAM, {"event": fired.model_dump_json()})
-
-        observation = (
-            f"{now.strftime('%Y-%m-%dT%H:%M:%SZ')} "
-            f"[admin] trigger {data.get('name', trigger_id)} fired manually"
-        )
-        await r.lpush(SCRATCHPAD_QUEUE, observation)  # type: ignore[misc]
-
-        # Single-writer assumption: hget→hset is not atomic; last-write-wins on
-        # last_fired between admin fire and the trigger engine — acceptable for
-        # this admin surface (low frequency, non-critical field).
-        if data.get("one_shot"):
-            await r.hdel(TRIGGERS_KEY, trigger_id)  # type: ignore[misc]
-        else:
-            data["last_fired"] = now.isoformat()
-            await r.hset(TRIGGERS_KEY, trigger_id, json.dumps(data))  # type: ignore[misc]
-        logger.info("Admin manually fired trigger '{}'", data.get("name", trigger_id))
-        return {"fired": True, "trigger_id": trigger_id}
+        await _validate_trigger_exists(r, trigger_id)
+        await _publish_trigger_action(r, "fire_trigger", {"trigger_id": trigger_id})
+        logger.info("Admin queued manual fire for trigger '{}'", trigger_id)
+        return {"status": "queued", "trigger_id": trigger_id}
 
     @router.delete("/sessions/{session_id}")
     async def delete_session(request: Request, session_id: str) -> dict[str, bool]:

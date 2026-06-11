@@ -24,15 +24,17 @@ import redis.asyncio as aioredis
 import uvicorn
 
 import core.triggers.types  # noqa: F401  — register all trigger types
+from bus.schemas.events import ActionRequest
 from core.reflex.runner import ensure_consumer_group
 from core.triggers.engine import TriggerEngine
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
+from core.triggers.models import TriggerContext
 from core.triggers.server import create_app
 from core.triggers.store import TriggerStore
 from sdk.alfred_sdk.client import AlfredClient
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
-from shared.streams import EVENTS_STREAM, decode_stream_value
+from shared.streams import ACTIONS_STREAM, EVENTS_STREAM, decode_stream_value
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +42,89 @@ GROUP = "trigger-engine"
 CONSUMER = "worker-1"
 SNAPSHOT_DIR = Path("core/memory/triggers")
 
+# ACTIONS_STREAM consumer (internal trigger actions from admin API). A distinct
+# consumer GROUP so this process sees every entry independently of the home-agent
+# and conscious-engine groups; we only act on target_service="trigger-engine"
+# entries and ack-and-skip everything else.
+ACTIONS_GROUP = "triggers-internal"
+ACTIONS_CONSUMER = "worker-1"
+TARGET_SERVICE = "trigger-engine"
+
 _shutdown = asyncio.Event()
+
+
+async def _handle_fire_trigger(
+    store: TriggerStore, engine: TriggerEngine, parameters: dict[str, object]
+) -> None:
+    """Fire a trigger by id via the real TriggerEngine (YAML-consistent)."""
+    trigger_id = str(parameters.get("trigger_id", ""))
+    trigger = await store.get(trigger_id)
+    if trigger is None:
+        logger.warning("fire_trigger: unknown trigger '%s'", trigger_id)
+        return
+    await engine.fire(trigger, TriggerContext(now=datetime.now(UTC)), fired_by="admin")
+
+
+async def _handle_set_trigger_enabled(store: TriggerStore, parameters: dict[str, object]) -> None:
+    """Toggle a trigger's enabled flag via TriggerStore (Redis + YAML)."""
+    trigger_id = str(parameters.get("trigger_id", ""))
+    enabled = bool(parameters.get("enabled", False))
+    trigger = await store.get(trigger_id)
+    if trigger is None:
+        logger.warning("set_trigger_enabled: unknown trigger '%s'", trigger_id)
+        return
+    await store.save(trigger.model_copy(update={"enabled": enabled}))
+    logger.info("Trigger '%s' enabled=%s (admin)", trigger_id, enabled)
+
+
+async def actions_loop(store: TriggerStore, engine: TriggerEngine, r: AioRedis) -> None:
+    """Consume internal trigger actions (fire/enable) from ACTIONS_STREAM.
+
+    Mirrors the conscious-engine internal action consumer: a dedicated group,
+    XREADGROUP loop, target_service filter, dispatch by tool_name, ack always.
+    """
+    await ensure_consumer_group(r, ACTIONS_STREAM, ACTIONS_GROUP)
+
+    while not _shutdown.is_set():
+        try:
+            entries = await r.xreadgroup(
+                ACTIONS_GROUP, ACTIONS_CONSUMER, {ACTIONS_STREAM: ">"}, count=10, block=5000
+            )
+        except Exception as e:
+            if not _shutdown.is_set():
+                logger.error("Actions read error: %s", e)
+                await asyncio.sleep(1)
+            continue
+
+        for _stream_key, stream_entries in entries:
+            for entry_id, entry_data in stream_entries:
+                raw_event = entry_data.get("event") or entry_data.get(b"event")
+                if raw_event is None:
+                    await r.xack(ACTIONS_STREAM, ACTIONS_GROUP, entry_id)
+                    continue
+
+                try:
+                    action = ActionRequest.model_validate_json(decode_stream_value(raw_event))
+                except Exception:
+                    await r.xack(ACTIONS_STREAM, ACTIONS_GROUP, entry_id)
+                    continue
+
+                if action.target_service != TARGET_SERVICE:
+                    # Not for us — ack and skip (other groups handle their own).
+                    await r.xack(ACTIONS_STREAM, ACTIONS_GROUP, entry_id)
+                    continue
+
+                try:
+                    if action.tool_name == "fire_trigger":
+                        await _handle_fire_trigger(store, engine, action.parameters)
+                    elif action.tool_name == "set_trigger_enabled":
+                        await _handle_set_trigger_enabled(store, action.parameters)
+                    else:
+                        logger.warning("No handler for trigger action '%s'", action.tool_name)
+                except Exception as e:
+                    logger.error("Trigger action '%s' failed: %s", action.tool_name, e)
+
+                await r.xack(ACTIONS_STREAM, ACTIONS_GROUP, entry_id)
 
 
 def _free_port(port: int) -> None:
@@ -192,6 +276,7 @@ async def run(config: AlfredConfig) -> None:
     tasks = [
         asyncio.create_task(tick_loop(engine)),
         asyncio.create_task(event_loop(engine, r)),
+        asyncio.create_task(actions_loop(store, engine, r)),
         asyncio.create_task(_periodic(store.snapshot_all, 300.0, "Trigger snapshot")),
         asyncio.create_task(_periodic(store.refresh, 60.0, "Cache refresh")),
         asyncio.create_task(_serve_with_retry()),

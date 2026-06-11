@@ -33,8 +33,25 @@ export function TriggersPage() {
   const setEnabled = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       post(`/api/admin/triggers/${id}/enabled`, { enabled }),
-    onSuccess: () => { toast("Trigger updated — effective within 60s"); invalidate(); },
-    onError: (e) => toast.error(String(e)),
+    // The mutation is queued to the triggers process (applied in ms), so the
+    // server list won't reflect the change on the next refetch immediately.
+    // Optimistically flip the switch and roll back if the request fails.
+    onMutate: async ({ id, enabled }) => {
+      await qc.cancelQueries({ queryKey: ["triggers"] });
+      const previous = qc.getQueryData<{ triggers: Trigger[] }>(["triggers"]);
+      qc.setQueryData<{ triggers: Trigger[] }>(["triggers"], (old) =>
+        old
+          ? { triggers: old.triggers.map((t) => (t.trigger_id === id ? { ...t, enabled } : t)) }
+          : old,
+      );
+      return { previous };
+    },
+    onError: (e, _vars, ctx) => {
+      if (ctx?.previous) qc.setQueryData(["triggers"], ctx.previous);
+      toast.error(String(e));
+    },
+    onSuccess: () => { toast("Trigger updated — effective within 60s"); },
+    onSettled: () => { invalidate(); },
   });
   const fire = useMutation({
     mutationFn: (id: string) => post(`/api/admin/triggers/${id}/fire`),
