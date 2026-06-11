@@ -11,7 +11,8 @@ class FakeWebSocket {
   onclose: ((e: { code: number }) => void) | null = null;
   onmessage: ((e: { data: string }) => void) | null = null;
   onerror: (() => void) | null = null;
-  constructor(public url: string) { FakeWebSocket.instances.push(this); }
+  url: string;
+  constructor(url: string) { this.url = url; FakeWebSocket.instances.push(this); }
   send(data: string) { this.sent.push(data); }
   close() { this.readyState = 3; this.onclose?.({ code: 1000 }); }
   open() { this.readyState = 1; this.onopen?.(); }
