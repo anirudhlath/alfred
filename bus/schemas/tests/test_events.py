@@ -189,6 +189,42 @@ def test_trigger_fired_urgency_roundtrip() -> None:
     assert restored.urgency == "important"
 
 
+def test_trigger_fired_fired_by_defaults_to_engine() -> None:
+    from bus.schemas.events import TriggerFired
+
+    evt = TriggerFired(
+        trigger_id="t-1",
+        trigger_name="test trigger",
+        trigger_type="time",
+    )
+    assert evt.fired_by == "engine"
+
+
+def test_trigger_fired_fired_by_admin_override() -> None:
+    from bus.schemas.events import TriggerFired
+
+    evt = TriggerFired(
+        trigger_id="t-1",
+        trigger_name="test trigger",
+        trigger_type="time",
+        fired_by="admin",
+    )
+    assert evt.fired_by == "admin"
+
+
+def test_trigger_fired_fired_by_roundtrip() -> None:
+    from bus.schemas.events import TriggerFired
+
+    evt = TriggerFired(
+        trigger_id="t-1",
+        trigger_name="test trigger",
+        trigger_type="time",
+        fired_by="admin",
+    )
+    restored = TriggerFired.model_validate_json(evt.model_dump_json())
+    assert restored.fired_by == "admin"
+
+
 def test_trigger_created_updated_schema() -> None:
     from bus.schemas.events import TriggerCreated
 

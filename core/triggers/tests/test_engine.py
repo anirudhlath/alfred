@@ -219,3 +219,55 @@ async def test_fire_without_action_propagates_urgency(
     call_args = mock_redis.xadd.call_args
     event_json = json.loads(call_args[0][1]["event"])
     assert event_json["urgency"] == "urgent"
+
+
+@pytest.mark.asyncio
+async def test_fire_default_fired_by_is_engine(
+    mock_store: AsyncMock, mock_redis: AsyncMock
+) -> None:
+    import json
+
+    from core.triggers.engine import TriggerEngine
+
+    cls = TriggerRegistry.get("time")
+    trigger = cls(
+        trigger_id="t-1",
+        trigger_type="time",
+        name="test",
+        created_by="test",
+        created_at=datetime.now(UTC),
+        conditions={"cron": "0 7 * * *"},
+    )
+
+    engine = TriggerEngine(store=mock_store, redis=mock_redis)
+    await engine.fire(trigger, TriggerContext(now=datetime.now(UTC)))
+
+    event_json = json.loads(mock_redis.xadd.call_args[0][1]["event"])
+    assert event_json["fired_by"] == "engine"
+
+
+@pytest.mark.asyncio
+async def test_fire_admin_sets_fired_by_on_trigger_fired(
+    mock_store: AsyncMock, mock_redis: AsyncMock
+) -> None:
+    import json
+
+    from core.triggers.engine import TriggerEngine
+
+    cls = TriggerRegistry.get("time")
+    trigger = cls(
+        trigger_id="t-1",
+        trigger_type="time",
+        name="test",
+        created_by="test",
+        created_at=datetime.now(UTC),
+        conditions={"cron": "0 7 * * *"},
+    )
+
+    engine = TriggerEngine(store=mock_store, redis=mock_redis)
+    await engine.fire(trigger, TriggerContext(now=datetime.now(UTC)), fired_by="admin")
+
+    stream = mock_redis.xadd.call_args[0][0]
+    event_json = json.loads(mock_redis.xadd.call_args[0][1]["event"])
+    assert stream == "alfred:events"
+    assert event_json["fired_by"] == "admin"
