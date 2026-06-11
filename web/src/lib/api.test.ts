@@ -25,4 +25,12 @@ describe("api", () => {
     stubFetch(500, { detail: "boom" });
     await expect(api("/x")).rejects.toMatchObject({ status: 500 });
   });
+
+  it("parses FastAPI detail from JSON error body", async () => {
+    stubFetch(503, { detail: "Vector search unavailable" });
+    await expect(api("/x")).rejects.toMatchObject({
+      status: 503,
+      message: "Vector search unavailable",
+    });
+  });
 });
