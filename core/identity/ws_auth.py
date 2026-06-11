@@ -1,0 +1,35 @@
+"""Shared WebSocket cookie authentication.
+
+BaseHTTPMiddleware does not run for WebSocket upgrades, so WS endpoints
+parse the auth cookie manually. This is the single implementation used by
+/ws and /ws/telemetry.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from core.identity.auth_middleware import COOKIE_NAME
+from shared.streams import AUTH_SESSION_PREFIX
+
+if TYPE_CHECKING:
+    from fastapi import WebSocket
+
+    from shared.types import AioRedis
+
+
+async def authenticate_ws_cookie(websocket: WebSocket, redis: AioRedis) -> bool:
+    """True if the WS carries a valid, authenticated alfred_auth session cookie."""
+    cookie_header: str = websocket.headers.get("cookie", "")
+    session_id: str | None = None
+    for raw_part in cookie_header.split(";"):
+        part = raw_part.strip()
+        if part.startswith(f"{COOKIE_NAME}="):
+            session_id = part[len(f"{COOKIE_NAME}=") :]
+            break
+    if not session_id:
+        return False
+    data: dict[bytes, bytes] = await redis.hgetall(  # type: ignore[misc]
+        f"{AUTH_SESSION_PREFIX}{session_id}"
+    )
+    return bool(data) and data.get(b"authenticated") == b"1"

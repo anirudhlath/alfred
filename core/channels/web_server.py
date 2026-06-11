@@ -24,11 +24,11 @@ if TYPE_CHECKING:
     from starlette.responses import Response
 
 from bus.schemas.events import AlfredResponse, UserRequest
-from core.identity.auth_middleware import COOKIE_NAME, AuthCookieMiddleware
+from core.identity.auth_middleware import AuthCookieMiddleware
 from core.identity.auth_routes import create_auth_router
 from core.identity.credentials import CredentialStore
+from core.identity.ws_auth import authenticate_ws_cookie
 from shared.streams import (
-    AUTH_SESSION_PREFIX,
     USER_REQUESTS_STREAM,
     USER_RESPONSES_STREAM,
     decode_stream_value,
@@ -280,22 +280,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
 
         # Authenticate via cookie (BaseHTTPMiddleware doesn't run for WS)
-        cookie_header = websocket.headers.get("cookie", "")
-        auth_session_id: str | None = None
-        for part in cookie_header.split(";"):
-            part = part.strip()
-            if part.startswith(f"{COOKIE_NAME}="):
-                auth_session_id = part[len(f"{COOKIE_NAME}=") :]
-                break
-
-        authenticated = False
-        if auth_session_id:
-            session_data: dict[bytes, bytes] = await r.hgetall(  # type: ignore[misc]
-                f"{AUTH_SESSION_PREFIX}{auth_session_id}"
-            )
-            if session_data and session_data.get(b"authenticated") == b"1":
-                authenticated = True
-
+        authenticated = await authenticate_ws_cookie(websocket, r)
         if not authenticated:
             await websocket.close(code=4001, reason="Authentication required")
             return
