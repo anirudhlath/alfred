@@ -196,9 +196,12 @@ def test_ws_response_forwards_actions_taken_and_mood(web_client: TestClient) -> 
     )
 
     # Patch _publish_and_wait to return our AlfredResponse directly
-    with patch(
-        "core.channels.web_server._publish_and_wait", new=AsyncMock(return_value=alfred_resp)
-    ), web_client.websocket_connect("/ws") as ws:
+    with (
+        patch(
+            "core.channels.web_server._publish_and_wait", new=AsyncMock(return_value=alfred_resp)
+        ),
+        web_client.websocket_connect("/ws") as ws,
+    ):
         # Consume the session message
         session_msg = ws.receive_json()
         assert session_msg["type"] == "session"

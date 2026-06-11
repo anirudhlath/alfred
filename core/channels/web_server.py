@@ -16,7 +16,6 @@ from uuid import uuid4
 import httpx
 import redis.asyncio as aioredis
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -598,10 +597,9 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
     app.add_middleware(NoCacheStaticMiddleware)
     app.add_middleware(AuthCookieMiddleware)
 
-    # Mount static files for PWA (if directory exists)
-    web_dir = Path(__file__).resolve().parent.parent.parent / "web"
-    if web_dir.is_dir():
-        app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="static")
+    from core.channels.spa import mount_spa
+
+    mount_spa(app, Path(__file__).resolve().parent.parent.parent / "web" / "dist")
 
     return app
 

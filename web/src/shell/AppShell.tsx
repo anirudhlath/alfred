@@ -2,6 +2,7 @@ import { Outlet } from "react-router-dom";
 import { IconRail } from "./IconRail";
 import { TopBar } from "./TopBar";
 import { Toaster } from "@/components/ui/sonner";
+import { CommandPalette } from "./CommandPalette";
 
 export function AppShell() {
   return (
@@ -12,6 +13,7 @@ export function AppShell() {
         <main className="min-h-0 flex-1"><Outlet /></main>
       </div>
       <Toaster position="top-right" />
+      <CommandPalette />
     </div>
   );
 }
