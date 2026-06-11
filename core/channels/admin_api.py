@@ -99,7 +99,30 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
         }
         return out
 
+    @router.get("/streams")
+    async def streams(request: Request) -> dict[str, Any]:
+        return await stream_summaries(_redis(request))
+
+    @router.get("/streams/{name}")
+    async def stream_history(
+        request: Request, name: str, count: int = 50, before: str | None = None
+    ) -> dict[str, Any]:
+        key = STREAM_CATALOG.get(name)
+        if key is None:
+            raise HTTPException(status_code=404, detail=f"Unknown stream '{name}'")
+        count = max(1, min(count, 200))
+        max_id = f"({before}" if before else "+"
+        raw: list[tuple[bytes | str, dict[bytes | str, bytes | str]]] = await _redis(
+            request
+        ).xrevrange(key, max=max_id, min="-", count=count)
+        entries = [
+            {"id": eid.decode() if isinstance(eid, bytes) else eid, "event": decode_entry(data)}
+            for eid, data in raw
+        ]
+        next_before = entries[-1]["id"] if len(entries) == count else None
+        return {"entries": entries, "next_before": next_before}
+
     return router
 
 
-__all__ = ["STREAM_CATALOG", "create_admin_router", "decode_entry", "require_authenticated"]
+__all__ = ["create_admin_router", "require_authenticated"]

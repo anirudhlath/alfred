@@ -108,3 +108,42 @@ def test_overview_inference_up_with_http_client() -> None:
     resp = client.get("/api/admin/overview")
     assert resp.status_code == 200
     assert resp.json()["inference"] == {"ollama": True, "lmstudio": True}
+
+
+def test_streams_list() -> None:
+    client = make_admin_client(_overview_redis())
+    resp = client.get("/api/admin/streams")
+    assert resp.status_code == 200
+    assert "events" in resp.json()
+
+
+def test_stream_history_unknown_name_404() -> None:
+    client = make_admin_client(_overview_redis())
+    assert client.get("/api/admin/streams/nope").status_code == 404
+
+
+def test_stream_history_paginates() -> None:
+    r = _overview_redis()
+    r.xrevrange = AsyncMock(
+        return_value=[
+            (b"2-0", {b"event": b'{"event_type": "state_changed"}'}),
+            (b"1-0", {b"event": b'{"event_type": "trigger_fired"}'}),
+        ]
+    )
+    client = make_admin_client(r)
+    resp = client.get("/api/admin/streams/events?count=2")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["entries"][0] == {"id": "2-0", "event": {"event_type": "state_changed"}}
+    assert body["next_before"] == "1-0"
+    r.xrevrange.assert_awaited_once_with("alfred:events", max="+", min="-", count=2)
+
+
+def test_stream_history_before_is_exclusive() -> None:
+    r = _overview_redis()
+    r.xrevrange = AsyncMock(return_value=[])
+    client = make_admin_client(r)
+    resp = client.get("/api/admin/streams/events?count=5&before=2-0")
+    assert resp.status_code == 200
+    assert resp.json() == {"entries": [], "next_before": None}
+    r.xrevrange.assert_awaited_once_with("alfred:events", max="(2-0", min="-", count=5)
