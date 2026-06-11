@@ -19,7 +19,11 @@ if TYPE_CHECKING:
 
 
 async def authenticate_ws_cookie(websocket: WebSocket, redis: AioRedis) -> bool:
-    """True if the WS carries a valid, authenticated alfred_auth session cookie."""
+    """True if the WS carries a valid, authenticated alfred_auth session cookie.
+
+    The cookie value is used verbatim (no URL-decoding) — session ids are
+    server-generated UUIDs, so this is safe.
+    """
     cookie_header: str = websocket.headers.get("cookie", "")
     session_id: str | None = None
     for raw_part in cookie_header.split(";"):

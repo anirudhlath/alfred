@@ -32,3 +32,10 @@ async def test_unauthenticated_session_rejected() -> None:
     redis.hgetall = AsyncMock(return_value={})
     ws = _ws_with_cookie("alfred_auth=abc123")
     assert await authenticate_ws_cookie(ws, redis) is False
+
+
+async def test_empty_cookie_value_rejected() -> None:
+    redis = AsyncMock()
+    ws = _ws_with_cookie("alfred_auth=")
+    assert await authenticate_ws_cookie(ws, redis) is False
+    redis.hgetall.assert_not_awaited()
