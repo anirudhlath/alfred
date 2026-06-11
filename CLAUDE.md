@@ -47,7 +47,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `sdk/` — publishable alfred-sdk package (BaseFeature, @tool, AlfredClient)
 - `domains/home/home_agent.py` — routes actions to home-service
 - `evals/` — eval runner, scenarios, inference backends (`python -m evals`)
-- `web/` — PWA frontend (index.html, settings.html, app.js, settings.js)
+- `web/` — Vite + React SPA frontend (src/lib, src/shell, src/chat, src/pages; npm run dev|build|test)
 - `docs/superpowers/specs/` — approved design specs
 - `docs/superpowers/plans/` — implementation plans
 - `docs/backlog/` — priority subdirs (highest/high/medium/low/lowest) with individual ticket files
@@ -75,7 +75,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - REST endpoints: `GET /api/integrations`, `PUT/DELETE /api/integrations/{name}/credentials`, `GET .../status`
 - APNs credentials (team_id, key_id, private_key, bundle_id) stored via Secrets Manager under service name `"apns"`
 - Device registration: `POST/DELETE /api/devices/register` — stores APNs tokens in Redis hash `alfred:push:devices`
-- Settings page: `web/settings.html` + `web/settings.js` (dynamic cards from API schema)
+- Settings page: `web/src/pages/SettingsPage.tsx` — React SPA route at `/settings` (integration credential cards via `IntegrationCard`)
 - WebAuthn credentials: SQLite at `data/credentials.db` — credential ID, public key, sign count, device name
 - Auth sessions: Redis at `alfred:auth:{session_id}` — 24hr TTL, HttpOnly cookie `alfred_auth`
 - WebAuthn challenges: Redis at `alfred:webauthn:challenge:{id}` — 5min TTL, one-time use

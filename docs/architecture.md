@@ -446,7 +446,11 @@ subscribe/unsubscribe by stream name; the server pushes `entry` frames via block
 
 **Web PWA** (`web/`):
 
-Minimal Progressive Web App for chat + voice interaction. Static HTML/JS/CSS served by the web channel server.
+Mission Control SPA built with Vite 8 / React 19 / TypeScript / Tailwind v4 / TanStack
+Query / react-router v7. Provides chat, live telemetry rail, memory inspection, trigger
+management, health monitoring, integration settings, and a ⌘K command palette. Built to
+`web/dist/` and served by `core/channels/spa.mount_spa()` (static assets + index.html
+SPA fallback). See `docs/web-frontend.md` for the full architecture reference.
 
 ### 3.11 Domain Routing
 
