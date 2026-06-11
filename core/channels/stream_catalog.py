@@ -3,6 +3,12 @@
 Maps friendly names (used in API paths and WS subscribe messages) to the
 canonical Redis stream keys from shared.streams, and provides defensive
 decoding of stream entries for display.
+
+Stream entry shapes vary by stream:
+- Most streams (events, actions, etc.): ``{"event": "<json>"}``
+- Notification dispatch stream: ``{"notification": "<json>"}``
+
+``decode_entry`` handles both payload field shapes transparently.
 """
 
 from __future__ import annotations
@@ -21,6 +27,11 @@ from shared.streams import (
     USER_RESPONSES_STREAM,
 )
 from shared.types import AioRedis  # noqa: TC001
+
+# Fields that carry the primary JSON payload for a stream entry.
+# "event"        — used by most streams (events, actions, user_requests, …)
+# "notification" — used by NOTIFICATION_DISPATCH_STREAM (see dispatcher.py)
+_PAYLOAD_FIELDS: frozenset[str] = frozenset({"event", "notification"})
 
 STREAM_CATALOG: dict[str, str] = {
     "events": EVENTS_STREAM,
@@ -41,13 +52,19 @@ def _to_str(value: bytes | str) -> str:
 
 
 def decode_entry(entry: dict[bytes | str, bytes | str]) -> dict[str, Any]:
-    """Decode a stream entry. Entries carry {"event": "<json>"} — return the
-    parsed event payload; fall back to raw decoded fields for anything else."""
+    """Decode a stream entry.
+
+    Entries carry a primary payload field — either ``{"event": "<json>"}``
+    (most streams) or ``{"notification": "<json>"}`` (notification dispatch
+    stream).  When the payload field contains a valid JSON object, its
+    contents are returned directly.  For any other field, or when the payload
+    field is not valid JSON, fall back to raw decoded field values.
+    """
     decoded: dict[str, Any] = {}
     for k, v in entry.items():
         key = _to_str(k)
         val = _to_str(v)
-        if key == "event":
+        if key in _PAYLOAD_FIELDS:
             try:
                 parsed: dict[str, Any] = dict(json.loads(val))
             except (json.JSONDecodeError, TypeError, ValueError):
@@ -63,7 +80,7 @@ def _id_to_ts(entry_id: str) -> float | None:
     """Stream IDs are '<ms>-<seq>' — extract seconds since epoch."""
     try:
         return int(entry_id.split("-")[0]) / 1000.0
-    except (ValueError, IndexError):
+    except ValueError:
         return None
 
 

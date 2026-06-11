@@ -43,3 +43,21 @@ async def test_stream_summaries_extracts_length_and_ts() -> None:
     assert out["events"]["length"] == 42
     assert out["events"]["last_id"] == "1718000000123-0"
     assert out["events"]["last_ts"] == 1718000000.123
+
+
+def test_decode_entry_parses_notification_json() -> None:
+    entry: dict[bytes | str, bytes | str] = {
+        b"notification": b'{"notification_id": "n1", "title": "Hi"}'
+    }
+    assert decode_entry(entry) == {"notification_id": "n1", "title": "Hi"}
+
+
+async def test_stream_summaries_bytes_keys() -> None:
+    redis = AsyncMock()
+    redis.xinfo_stream = AsyncMock(
+        return_value={b"length": 42, b"last-entry": (b"1718000000123-0", {b"event": b"{}"})}
+    )
+    out = await stream_summaries(redis)
+    assert out["events"]["length"] == 42
+    assert out["events"]["last_id"] == "1718000000123-0"
+    assert out["events"]["last_ts"] == 1718000000.123
