@@ -10,6 +10,7 @@ for shared state, ACTIONS_STREAM publishes for process-owned behavior.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from datetime import UTC, datetime
@@ -182,6 +183,15 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
     async def memory_episodic(
         request: Request, q: str | None = None, limit: int = 30
     ) -> dict[str, Any]:
+        """Browse or search episodic memory.
+
+        Without ?q: scans the hot Redis context index (type=episodic only) and
+        queries the cold SQLite store, each limited to `limit` entries
+        (per-store limit, not merged-sorted).
+        With ?q: performs vector search across both stores via EpisodicMemory.recall()
+        (also limited per store); recall is non-mutating (update_stats=False) so
+        admin browsing does not perturb decay-relevant retrieval stats.
+        """
         r = _redis(request)
         limit = max(1, min(limit, 100))
 
@@ -189,7 +199,7 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
             memory = _get_episodic_lazy(r)
             if memory is None:
                 raise HTTPException(status_code=503, detail="Vector search unavailable")
-            results = await memory.recall(query=q, limit=limit)
+            results = await memory.recall(query=q, limit=limit, update_stats=False)
             return {
                 "entries": [
                     {
@@ -205,6 +215,10 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
         async for key in r.scan_iter(match=f"{CONTEXT_PREFIX}*", count=500):
             fields = await r.hgetall(key)  # type: ignore[misc]
             entry = _decode_hash(fields)
+            # CONTEXT_PREFIX keyspace is shared: ContextIndexManager writes episodic,
+            # semantic, and routine entries.  Skip non-episodic entries here.
+            if entry.get("type") != "episodic":
+                continue
             entry["store"] = "hot"
             hot.append(entry)
         hot.sort(key=lambda e: float(e.get("timestamp", 0) or 0), reverse=True)
@@ -254,7 +268,10 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
         from core.memory.routines.store import RoutineStore
 
         store = RoutineStore(routines_dir=str(_MEMORY_DIR / "routines"))
-        return {"routines": [spec.model_dump(mode="json") for spec in store.list_all()]}
+        # list_all() does sync glob + YAML reads per file — offload to thread pool
+        # so the event loop (which also serves chat/voice WS) is not blocked.
+        routines = await asyncio.to_thread(store.list_all)
+        return {"routines": [spec.model_dump(mode="json") for spec in routines]}
 
     @router.get("/memory/scratchpad")
     async def memory_scratchpad(request: Request) -> dict[str, Any]:

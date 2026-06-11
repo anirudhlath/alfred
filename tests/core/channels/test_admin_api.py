@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+import core.channels.admin_api as admin_api
 from core.channels.web_server import create_app, require_trusted_network
 from shared.streams import AUTH_SESSION_PREFIX
 
@@ -236,10 +237,88 @@ def test_memory_scratchpad(tmp_path: Any, monkeypatch: Any) -> None:
 
 
 def test_memory_routines_empty_dir(tmp_path: Any, monkeypatch: Any) -> None:
-    import core.channels.admin_api as admin_api
-
     monkeypatch.setattr(admin_api, "_MEMORY_DIR", tmp_path)
     client = make_admin_client(_overview_redis())
     resp = client.get("/api/admin/memory/routines")
     assert resp.status_code == 200
     assert resp.json() == {"routines": []}
+
+
+def test_memory_episodic_hot_scan_filters_out_non_episodic(tmp_path: Any, monkeypatch: Any) -> None:
+    """Hot scan must return only type=episodic entries, skipping routine/semantic."""
+    r = _overview_redis()
+    # Two ctx keys: one episodic, one routine
+    r.scan_iter = MagicMock(return_value=_aiter([b"ctx:episodic1", b"ctx:routine1"]))
+
+    async def _hgetall(key: Any) -> dict[bytes, bytes]:
+        key_str = key.decode() if isinstance(key, bytes) else key
+        if key_str == f"{AUTH_SESSION_PREFIX}{_SESSION}":
+            return {b"authenticated": b"1"}
+        if b"episodic1" in (key if isinstance(key, bytes) else key.encode()):
+            return {
+                b"content": b"User asked about lights",
+                b"type": b"episodic",
+                b"timestamp": b"0",
+            }
+        # routine entry
+        return {b"content": b"Morning routine", b"type": b"routine", b"timestamp": b"0"}
+
+    r.hgetall = AsyncMock(side_effect=_hgetall)
+    monkeypatch.setattr(admin_api, "_MEMORY_DIR", tmp_path)
+    client = make_admin_client(r)
+    resp = client.get("/api/admin/memory/episodic")
+    assert resp.status_code == 200
+    entries = resp.json()["entries"]
+    assert len(entries) == 1
+    assert entries[0]["content"] == "User asked about lights"
+    assert entries[0]["type"] == "episodic"
+
+
+def test_memory_episodic_search_returns_503_when_memory_unavailable(
+    monkeypatch: Any,
+) -> None:
+    """GET /memory/episodic?q=... → 503 when _get_episodic_lazy returns None."""
+    monkeypatch.setattr(admin_api, "_get_episodic_lazy", lambda r: None)
+    client = make_admin_client(_overview_redis())
+    resp = client.get("/api/admin/memory/episodic?q=lights")
+    assert resp.status_code == 503
+
+
+def test_memory_episodic_search_success_and_no_stat_mutation(
+    monkeypatch: Any,
+) -> None:
+    """GET /memory/episodic?q=... returns correct shape and calls recall with update_stats=False."""
+
+    class _FakeEntry:
+        def model_dump(self, *, mode: str = "python") -> dict[str, Any]:
+            return {"id": "e1", "summary": "lights on", "source": "conversation"}
+
+    class _FakeResult:
+        source_store = "hot"
+        score = 0.9
+        entry = _FakeEntry()
+
+    fake_recall = AsyncMock(return_value=[_FakeResult()])
+
+    class _FakeMemory:
+        recall = fake_recall
+
+    monkeypatch.setattr(admin_api, "_get_episodic_lazy", lambda r: _FakeMemory())
+    client = make_admin_client(_overview_redis())
+    resp = client.get("/api/admin/memory/episodic?q=lights")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {
+        "entries": [
+            {
+                "store": "hot",
+                "score": 0.9,
+                "id": "e1",
+                "summary": "lights on",
+                "source": "conversation",
+            }
+        ]
+    }
+    fake_recall.assert_awaited_once()
+    _, kwargs = fake_recall.call_args
+    assert kwargs.get("update_stats") is False

@@ -65,8 +65,20 @@ class EpisodicMemory:
         limit: int = 10,
         since: datetime | None = None,
         types: list[str] | None = None,
+        *,
+        update_stats: bool = True,
     ) -> list[EpisodicResult]:
-        """Search hot + cold in parallel, deduplicate, rank by score descending."""
+        """Search hot + cold in parallel, deduplicate, rank by score descending.
+
+        Args:
+            query: Natural-language search string to embed and match.
+            limit: Maximum number of results to return after merging both stores.
+            since: Exclude entries older than this datetime.
+            types: Optional list of memory type strings to filter by (e.g. ["episodic"]).
+            update_stats: When True (default), persist retrieval_count/last_retrieved
+                to the hot store for every hot result returned.  Pass False from
+                read-only admin callers to avoid perturbing decay-relevant stats.
+        """
         query_emb = await self._embedder.embed(query)
 
         filters: dict[str, str | float | int] | None = None
@@ -97,20 +109,21 @@ class EpisodicMemory:
         merged = merged[:limit]
 
         # Persist retrieval stats for hot-store results (parallel writes)
-        now_ts = datetime.now(UTC).timestamp()
-        update_coros = [
-            self._hot.update_metadata(
-                sr.id,
-                {
-                    "retrieval_count": sr.metadata.retrieval_count + 1,
-                    "last_retrieved": now_ts,
-                },
-            )
-            for sr, store in merged
-            if store == "hot"
-        ]
-        if update_coros:
-            await asyncio.gather(*update_coros)
+        if update_stats:
+            now_ts = datetime.now(UTC).timestamp()
+            update_coros = [
+                self._hot.update_metadata(
+                    sr.id,
+                    {
+                        "retrieval_count": sr.metadata.retrieval_count + 1,
+                        "last_retrieved": now_ts,
+                    },
+                )
+                for sr, store in merged
+                if store == "hot"
+            ]
+            if update_coros:
+                await asyncio.gather(*update_coros)
 
         # Convert to EpisodicResult, increment retrieval_count
         episodic_results: list[EpisodicResult] = []
