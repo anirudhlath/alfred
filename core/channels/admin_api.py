@@ -20,15 +20,19 @@ from typing import TYPE_CHECKING, Any
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Request
 from loguru import logger
+from pydantic import BaseModel
 
+from bus.schemas.events import ActionRequest, TriggerFired
 from core.channels.stream_catalog import STREAM_CATALOG, decode_entry, stream_summaries
 from shared.config import AlfredConfig
 from shared.streams import (
+    ACTIONS_STREAM,
     CONTEXT_PREFIX,
     COST_DAILY_KEY,
     DEFERRED_NOTIFICATIONS_KEY,
     DEVICE_TOKENS_KEY,
     DND_STATE_KEY,
+    EVENTS_STREAM,
     SCRATCHPAD_QUEUE,
     SESSIONS_KEY_PREFIX,
     TRIGGERS_KEY,
@@ -45,6 +49,23 @@ if TYPE_CHECKING:
 _MEMORY_DIR = Path(__file__).resolve().parent.parent / "memory"
 _FAILED = object()
 _episodic_memory: Any = None
+
+
+class DndRequest(BaseModel):
+    active: bool
+    until: datetime | None = None
+    reason: str | None = None
+
+
+class TriggerEnabledRequest(BaseModel):
+    enabled: bool
+
+
+async def _publish_internal_action(redis: Any, tool_name: str) -> None:
+    action = ActionRequest(
+        source="admin-api", target_service="conscious-engine", tool_name=tool_name
+    )
+    await redis.xadd(ACTIONS_STREAM, {"event": action.model_dump_json()})
 
 
 def _get_episodic_lazy(redis: AioRedis) -> Any | None:
@@ -346,6 +367,96 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
         content = path.read_text() if path.exists() else ""
         pending = int(await _redis(request).llen(SCRATCHPAD_QUEUE))  # type: ignore[misc]
         return {"content": content, "pending_queue": pending}
+
+    # ------------------------------------------------------------------
+    # Controls
+    # ------------------------------------------------------------------
+
+    @router.post("/dnd")
+    async def set_dnd(request: Request, body: DndRequest) -> dict[str, Any]:
+        r = _redis(request)
+        if not body.active:
+            await r.delete(DND_STATE_KEY)
+            return {"active": False}
+        state: dict[str, Any] = {
+            "active": True,
+            "until": body.until.isoformat() if body.until else None,
+            "reason": body.reason,
+            "source": "manual",
+        }
+        await r.set(DND_STATE_KEY, json.dumps(state))
+        return state
+
+    @router.post("/notifications/drain")
+    async def drain_notifications(request: Request) -> dict[str, str]:
+        await _publish_internal_action(_redis(request), "drain_deferred_notifications")
+        return {"status": "queued"}
+
+    @router.post("/librarian/run")
+    async def run_librarian(request: Request) -> dict[str, str]:
+        await _publish_internal_action(_redis(request), "run_librarian")
+        return {"status": "queued"}
+
+    @router.post("/triggers/{trigger_id}/enabled")
+    async def set_trigger_enabled(
+        request: Request, trigger_id: str, body: TriggerEnabledRequest
+    ) -> dict[str, Any]:
+        r = _redis(request)
+        raw = await r.hget(TRIGGERS_KEY, trigger_id)  # type: ignore[misc]
+        if raw is None:
+            raise HTTPException(status_code=404, detail=f"Unknown trigger '{trigger_id}'")
+        data = dict(json.loads(raw.decode() if isinstance(raw, bytes) else raw))
+        data["enabled"] = body.enabled
+        await r.hset(TRIGGERS_KEY, trigger_id, json.dumps(data))  # type: ignore[misc]
+        # Triggers process re-syncs its cache from Redis every 60s.
+        return {"trigger_id": trigger_id, "enabled": body.enabled, "effective_within_seconds": 60}
+
+    @router.post("/triggers/{trigger_id}/fire")
+    async def fire_trigger(request: Request, trigger_id: str) -> dict[str, Any]:
+        r = _redis(request)
+        raw = await r.hget(TRIGGERS_KEY, trigger_id)  # type: ignore[misc]
+        if raw is None:
+            raise HTTPException(status_code=404, detail=f"Unknown trigger '{trigger_id}'")
+        data = dict(json.loads(raw.decode() if isinstance(raw, bytes) else raw))
+        now = datetime.now(UTC)
+
+        # Mirrors TriggerEngine.fire() — core/triggers/engine.py:28-63.
+        action_payload = data.get("action")
+        if action_payload:
+            action = ActionRequest(
+                source="admin-api",
+                target_service=action_payload["target_service"],
+                tool_name=action_payload["tool_name"],
+                parameters=action_payload.get("parameters", {}),
+            )
+            await r.xadd(ACTIONS_STREAM, {"event": action.model_dump_json()})
+        else:
+            fired = TriggerFired(
+                trigger_id=trigger_id,
+                trigger_name=str(data.get("name", "")),
+                trigger_type=str(data.get("trigger_type", "")),
+                context={"manual_fire": True, "evaluated_at": now.isoformat()},
+                urgency=data.get("urgency", "informational"),
+            )
+            await r.xadd(EVENTS_STREAM, {"event": fired.model_dump_json()})
+
+        observation = (
+            f"{now.strftime('%Y-%m-%dT%H:%M:%SZ')} "
+            f"[admin] trigger {data.get('name', trigger_id)} fired manually"
+        )
+        await r.lpush(SCRATCHPAD_QUEUE, observation)  # type: ignore[misc]
+
+        if data.get("one_shot"):
+            await r.hdel(TRIGGERS_KEY, trigger_id)  # type: ignore[misc]
+        else:
+            data["last_fired"] = now.isoformat()
+            await r.hset(TRIGGERS_KEY, trigger_id, json.dumps(data))  # type: ignore[misc]
+        return {"fired": True, "trigger_id": trigger_id}
+
+    @router.delete("/sessions/{session_id}")
+    async def delete_session(request: Request, session_id: str) -> dict[str, bool]:
+        deleted = await _redis(request).delete(f"{SESSIONS_KEY_PREFIX}{session_id}")
+        return {"deleted": bool(deleted)}
 
     return router
 

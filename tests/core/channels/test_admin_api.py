@@ -414,3 +414,106 @@ def test_devices_list() -> None:
     client = make_admin_client(r)
     resp = client.get("/api/admin/devices")
     assert resp.json()["devices"][0]["platform"] == "ios"
+
+
+# ---------------------------------------------------------------------------
+# Controls — Task 7
+# ---------------------------------------------------------------------------
+
+
+def test_dnd_set_and_clear() -> None:
+    r = _overview_redis()
+    r.set = AsyncMock()
+    r.delete = AsyncMock()
+    client = make_admin_client(r)
+
+    resp = client.post("/api/admin/dnd", json={"active": True, "reason": "focus"})
+    assert resp.status_code == 200
+    key, payload = r.set.await_args.args
+    assert key == "alfred:memory:dnd"
+    assert json.loads(payload) == {
+        "active": True,
+        "until": None,
+        "reason": "focus",
+        "source": "manual",
+    }
+
+    resp = client.post("/api/admin/dnd", json={"active": False})
+    assert resp.json() == {"active": False}
+    r.delete.assert_awaited_once_with("alfred:memory:dnd")
+
+
+def test_drain_and_librarian_publish_actions() -> None:
+    r = _overview_redis()
+    r.xadd = AsyncMock()
+    client = make_admin_client(r)
+
+    assert client.post("/api/admin/notifications/drain").json() == {"status": "queued"}
+    assert client.post("/api/admin/librarian/run").json() == {"status": "queued"}
+
+    calls = r.xadd.await_args_list
+    assert calls[0].args[0] == "alfred:actions"
+    drained = json.loads(calls[0].args[1]["event"])
+    assert drained["tool_name"] == "drain_deferred_notifications"
+    assert drained["target_service"] == "conscious-engine"
+    librarian = json.loads(calls[1].args[1]["event"])
+    assert librarian["tool_name"] == "run_librarian"
+
+
+def test_trigger_enable_writes_hash() -> None:
+    trigger = {"trigger_id": "t1", "name": "sunset", "trigger_type": "time", "enabled": True}
+    r = _overview_redis()
+    r.hget = AsyncMock(return_value=json.dumps(trigger).encode())
+    r.hset = AsyncMock()
+    client = make_admin_client(r)
+    resp = client.post("/api/admin/triggers/t1/enabled", json={"enabled": False})
+    assert resp.status_code == 200
+    assert resp.json()["effective_within_seconds"] == 60
+    _, _tid, payload = r.hset.await_args.args
+    assert json.loads(payload)["enabled"] is False
+
+
+def test_trigger_fire_with_action_publishes_action_request() -> None:
+    trigger = {
+        "trigger_id": "t1",
+        "name": "sunset",
+        "trigger_type": "time",
+        "enabled": True,
+        "one_shot": False,
+        "action": {
+            "tool_name": "dim_lights",
+            "target_service": "home-service",
+            "parameters": {"level": 30},
+        },
+    }
+    r = _overview_redis()
+    r.hget = AsyncMock(return_value=json.dumps(trigger).encode())
+    r.hset = AsyncMock()
+    r.xadd = AsyncMock()
+    r.lpush = AsyncMock()
+    client = make_admin_client(r)
+    resp = client.post("/api/admin/triggers/t1/fire")
+    assert resp.json()["fired"] is True
+    stream, payload = r.xadd.await_args.args
+    assert stream == "alfred:actions"
+    action = json.loads(payload["event"])
+    assert action["tool_name"] == "dim_lights"
+    assert action["parameters"] == {"level": 30}
+    # last_fired persisted (not one-shot)
+    assert "last_fired" in json.loads(r.hset.await_args.args[2])
+
+
+def test_trigger_fire_unknown_404() -> None:
+    r = _overview_redis()
+    r.hget = AsyncMock(return_value=None)
+    client = make_admin_client(r)
+    assert client.post("/api/admin/triggers/nope/fire").status_code == 404
+
+
+def test_session_delete() -> None:
+    r = _overview_redis()
+    r.delete = AsyncMock(return_value=1)
+    client = make_admin_client(r)
+    resp = client.delete("/api/admin/sessions/s1")
+    assert resp.json() == {"deleted": True}
+    r.delete.assert_awaited_once_with("alfred:sessions:s1")

@@ -288,6 +288,12 @@ async def run(config: AlfredConfig) -> None:
                 interval_seconds=float(os.getenv("LIBRARIAN_INTERVAL_SECONDS", "3600")),
             )
             librarian_task = asyncio.create_task(librarian_scheduler.run())
+
+            async def _run_librarian_now() -> None:
+                summary = await librarian.consolidate()
+                log.info("Manual Librarian run complete: {}", summary)
+
+            _INTERNAL_HANDLERS["run_librarian"] = _run_librarian_now
         except Exception as exc:
             log.error("Librarian failed to initialize — running without consolidation: {}", exc)
     else:
