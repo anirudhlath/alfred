@@ -130,17 +130,13 @@ class CredentialStore:
 
     async def has_any_credential(self) -> bool:
         """Check if any credential is registered."""
-        cursor = await self._conn().execute(
-            "SELECT COUNT(*) FROM webauthn_credentials"
-        )
+        cursor = await self._conn().execute("SELECT COUNT(*) FROM webauthn_credentials")
         row = await cursor.fetchone()
         return bool(row and row[0] > 0)
 
     async def get_or_create_user_id(self) -> str:
         """Get or create the single WebAuthn user ID (hex string)."""
-        cursor = await self._conn().execute(
-            "SELECT value FROM webauthn_user WHERE key = 'user_id'"
-        )
+        cursor = await self._conn().execute("SELECT value FROM webauthn_user WHERE key = 'user_id'")
         row = await cursor.fetchone()
         if row:
             return str(row[0])

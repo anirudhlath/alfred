@@ -47,7 +47,10 @@ class RobinhoodAdapter(Integration):
                 label="MFA Code",
                 required=False,
                 transient=True,
-                help_text="6-digit code from your authenticator app. Only needed for initial login — not stored after use",
+                help_text=(
+                    "6-digit code from your authenticator app. "
+                    "Only needed for initial login — not stored after use"
+                ),
             ),
         }
     )

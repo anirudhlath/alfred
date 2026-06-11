@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 import struct
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -14,6 +13,8 @@ import aiosqlite
 from core.memory.vector_store import ContextMetadata, SearchResult, VectorStore
 
 if TYPE_CHECKING:
+    import sqlite3
+
     from core.memory.embedding_provider import EmbeddingProvider
 
 logger = logging.getLogger(__name__)
@@ -121,9 +122,7 @@ class SqliteVecStore(VectorStore):
         }
         for col_name, col_def in v2_columns.items():
             if col_name not in existing_cols:
-                await db.execute(
-                    f"ALTER TABLE episodic_entries ADD COLUMN {col_name} {col_def}"
-                )
+                await db.execute(f"ALTER TABLE episodic_entries ADD COLUMN {col_name} {col_def}")
 
         # vec0 virtual tables (only if extension loaded)
         if self._vec_ready:
