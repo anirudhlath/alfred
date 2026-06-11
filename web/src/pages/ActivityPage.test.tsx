@@ -200,4 +200,45 @@ describe("ActivityPage", () => {
       screen.getByText("No activity yet — the system is quiet."),
     ).toBeInTheDocument();
   });
+
+  // 6. Merged entries are sorted newest-first when backfill interleaves with live
+  it("sorts merged live + backfill entries newest-first by stream id", async () => {
+    const stream = "events";
+    // Live has ids 5000-0 and 1000-0
+    const liveFeed: FeedEntry[] = [
+      { stream, id: "5000-0", event: { event_type: "state_changed", entity_id: "a", new_state: "live-5000" } },
+      { stream, id: "1000-0", event: { event_type: "state_changed", entity_id: "b", new_state: "live-1000" } },
+    ];
+    // Backfill has id 3000-0 — newer than live 1000-0 but older than live 5000-0
+    const mockPage = {
+      entries: [
+        { id: "3000-0", event: { event_type: "state_changed", entity_id: "c", new_state: "backfill-3000" } },
+      ],
+      next_before: null,
+    };
+    vi.mocked(api).mockResolvedValue(mockPage);
+    vi.mocked(useAlfredFeed).mockReturnValue(liveFeed);
+
+    render(
+      <QueryClientProvider client={makeQC()}>
+        <ActivityPage />
+      </QueryClientProvider>,
+    );
+
+    // Click the "events" stream badge
+    const badges = screen.getAllByText("events");
+    const badge = badges.find((el) => el.getAttribute("data-slot") === "badge")!;
+    await userEvent.click(badge);
+
+    // Wait for backfill to resolve and render
+    await waitFor(() => {
+      expect(screen.getByText("c → backfill-3000")).toBeInTheDocument();
+    });
+
+    // Assert DOM order: 5000 first, then 3000, then 1000
+    const summaries = screen
+      .getAllByText(/live-5000|backfill-3000|live-1000/)
+      .map((el) => el.textContent);
+    expect(summaries).toEqual(["a → live-5000", "c → backfill-3000", "b → live-1000"]);
+  });
 });

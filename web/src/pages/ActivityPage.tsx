@@ -11,6 +11,15 @@ import { useAlfredFeed } from "@/shell/AlfredProvider";
 import type { FeedEntry } from "@/shell/AlfredProvider";
 import { EventInspector } from "./EventInspector";
 
+function compareIdsDesc(a: string, b: string): number {
+  const [amsStr, aseqStr] = a.split("-");
+  const [bmsStr, bseqStr] = b.split("-");
+  const ams = parseInt(amsStr, 10);
+  const bms = parseInt(bmsStr, 10);
+  if (ams !== bms) return bms - ams;
+  return parseInt(bseqStr, 10) - parseInt(aseqStr, 10);
+}
+
 const STREAMS = [
   "events", "actions", "user_requests", "user_responses",
   "reflex_observations", "notifications", "home_state", "home_action_results",
@@ -35,7 +44,8 @@ export function ActivityPage() {
     const backfill = (history?.entries ?? []).map((e) => ({ stream: stream, ...e }));
     const liveFiltered = live.filter((e) => e.stream === stream);
     const seen = new Set(liveFiltered.map((e) => e.id));
-    return [...liveFiltered, ...backfill.filter((e) => !seen.has(e.id))];
+    const merged = [...liveFiltered, ...backfill.filter((e) => !seen.has(e.id))];
+    return merged.sort((a, b) => compareIdsDesc(a.id, b.id));
   }, [live, stream, history]);
 
   const togglePause = () => {
