@@ -14,6 +14,7 @@ export function useChat() {
   const { chat } = useAlfredStatus();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [waiting, setWaiting] = useState(false);
+  // Tracks send time for latency display; assumes single-flight — latency is misattributed if a second message is sent before the first response.
   const sentAt = useRef<number>(0);
 
   useEffect(() => {
@@ -61,7 +62,10 @@ export function useChat() {
   const sendAudio = (dataUrl: string) => {
     sentAt.current = Date.now();
     setWaiting(true);
-    if (!chat.sendAudio(dataUrl)) setWaiting(false);
+    if (!chat.sendAudio(dataUrl)) {
+      setWaiting(false);
+      setMessages((m) => [...m, { role: "system", text: "Not connected — message not sent." }]);
+    }
   };
 
   return { messages, waiting, sendText, sendAudio };

@@ -642,6 +642,11 @@ async def _publish_and_wait(
                     if resp.session_id == session_id:
                         return resp
 
+    logger.warning(
+        "No response for session {} within {}s timeout — returning fallback",
+        session_id,
+        timeout,
+    )
     return AlfredResponse(
         source="web-channel",
         channel="web_pwa",
