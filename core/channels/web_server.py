@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
 from bus.schemas.events import AlfredResponse, UserRequest
 from core.channels.admin_api import create_admin_router
+from core.channels.telemetry_ws import register_telemetry_ws
 from core.identity.auth_middleware import AuthCookieMiddleware
 from core.identity.auth_routes import create_auth_router
 from core.identity.credentials import CredentialStore
@@ -583,6 +584,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         return {"status": "ok"}
 
     app.include_router(create_admin_router(require_trusted_network))
+    register_telemetry_ws(app)
 
     class NoCacheStaticMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
