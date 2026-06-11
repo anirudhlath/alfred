@@ -24,7 +24,7 @@ def mount_spa(app: FastAPI, dist: Path) -> None:
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str) -> FileResponse:
-        candidate = dist / full_path
-        if full_path and ".." not in full_path and candidate.is_file():
+        candidate = (dist / full_path).resolve()
+        if full_path and candidate.is_file() and candidate.is_relative_to(dist.resolve()):
             return FileResponse(candidate)
         return FileResponse(dist / "index.html")

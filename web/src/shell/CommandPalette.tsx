@@ -25,7 +25,12 @@ export function CommandPalette() {
 
   const run = useMutation({
     mutationFn: ({ path, body }: { path: string; body?: unknown }) => post(path, body),
-    onSuccess: (_d, v) => { toast(`Done: ${v.path}`); void qc.invalidateQueries(); },
+    onSuccess: (_d, v) => {
+      toast(`Done: ${v.path}`);
+      void qc.invalidateQueries({ queryKey: ["overview"] });
+      void qc.invalidateQueries({ queryKey: ["deferred"] });
+      void qc.invalidateQueries({ queryKey: ["triggers"] });
+    },
     onError: (e) => toast.error(String(e)),
   });
 
