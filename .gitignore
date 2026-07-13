@@ -38,3 +38,6 @@ core/memory/profile/*
 # Eval run artifacts (generated JSON)
 evals/runs/
 core/voice/models/
+
+# Never commit APNs keys or other secret material
+secrets/
