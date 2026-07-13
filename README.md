@@ -111,10 +111,10 @@ Weather (Open-Meteo), Apple Calendar (CalDAV), Apple Health, Robinhood — all r
 ### Prerequisites
 
 - Python 3.13+
-- Redis
+- Redis Stack (RediSearch is required for vector memory)
 - Mosquitto (MQTT broker)
 - Ollama with a model pulled (e.g., `ollama pull gpt-oss:20b`)
-- [home-service](https://github.com/anirudhlath/alfred-home-service) running
+- `home-service` running — Home Assistant wrapper microservice (separate repo, not yet public)
 
 ### Install
 
@@ -132,9 +132,8 @@ uv sync --extra dev --extra evals         # DeepEval
 ### Run
 
 ```bash
-# Start infrastructure
-brew services start redis
-brew services start mosquitto
+# Start infrastructure (Redis Stack + Mosquitto via Homebrew)
+bash scripts/dev-up.sh
 
 # Start home-service (separate repo)
 cd ../home-service && uv run uvicorn app.server:app --port 8000
@@ -201,8 +200,8 @@ All configuration via environment variables (`.env` file auto-loaded):
 
 ## Related Repos
 
-- [alfred-home-service](https://github.com/anirudhlath/alfred-home-service) — Home Assistant wrapper microservice
-- [alfred-home-assistant](https://github.com/anirudhlath/alfred-home-assistant) — HA config for dev/testing
+- `alfred-home-service` — Home Assistant wrapper microservice built on `alfred-sdk` (not yet public)
+- `alfred-signal-bridge` — Signal messaging channel (not yet public)
 
 ## License
 
