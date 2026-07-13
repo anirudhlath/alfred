@@ -33,6 +33,7 @@ core/memory/profile/*
 
 # Claude Code local settings
 .claude/settings.local.json
+.claude/skills
 .worktrees/
 
 # Eval run artifacts (generated JSON)
