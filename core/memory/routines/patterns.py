@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from datetime import datetime
 
 
 def match_trigger_pattern(pattern: str, now: datetime) -> bool:

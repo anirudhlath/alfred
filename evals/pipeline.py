@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from dataclasses import asdict
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from core.memory.reader import read_preferences
@@ -18,6 +18,7 @@ from shared.tracing import TraceRecord
 
 if TYPE_CHECKING:
     from evals.models import Scenario
+    from shared.types import AioRedis
 
 _config = AlfredConfig.from_env()
 
@@ -37,7 +38,9 @@ class EvalContext:
         self.infer = infer
         self.engine = ReflexEngine(
             preferences_dir=preferences_dir,
-            tool_registry=ToolRegistry(redis=None),
+            # Offline eval harness: the engine only uses build_prompt/parse_response,
+            # so the registry never touches Redis.
+            tool_registry=ToolRegistry(redis=cast("AioRedis", None)),
         )
         self.preferences_text = read_preferences(preferences_dir)
         self.tools = tools

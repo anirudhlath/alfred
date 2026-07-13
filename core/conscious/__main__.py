@@ -263,7 +263,11 @@ async def run(config: AlfredConfig) -> None:
     # Start Librarian scheduler as a background task to consolidate scratchpad
     # into structured memory on a periodic interval (default: 1hr).
     librarian_task: asyncio.Task[None] | None = None
-    if episodic_memory is not None:
+    if (
+        episodic_memory is not None
+        and significance_scorer is not None
+        and context_index is not None
+    ):
         try:
             from core.librarian.consolidator import Librarian
             from core.librarian.scheduler import LibrarianScheduler
@@ -338,7 +342,7 @@ async def run(config: AlfredConfig) -> None:
                     try:
                         raw = entry_data.get("event") or entry_data.get(b"event")
                         if raw is None:
-                            await r.xack(stream, group, entry_id)  # type: ignore[no-untyped-call]
+                            await r.xack(stream, group, entry_id)
                             continue
                         event_str = decode_stream_value(raw)
                         request = UserRequest.model_validate_json(event_str)
@@ -349,7 +353,7 @@ async def run(config: AlfredConfig) -> None:
                             USER_RESPONSES_STREAM,
                             {"event": response.model_dump_json()},
                         )
-                        await r.xack(stream, group, entry_id)  # type: ignore[no-untyped-call]
+                        await r.xack(stream, group, entry_id)
 
                         # Check budget alert after successful processing
                         await cost_tracker.send_alert_if_needed()

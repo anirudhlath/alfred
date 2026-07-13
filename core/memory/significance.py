@@ -66,7 +66,7 @@ class SignificanceScorer:
         novelty_scores: list[float] = []
         for entity in entry.entities:
             # Increment frequency and get current count
-            count = await self._redis.zincrby(ENTITY_FREQUENCY_KEY, 1, entity)  # type: ignore[misc]
+            count = await self._redis.zincrby(ENTITY_FREQUENCY_KEY, 1, entity)
             if count <= 1:
                 novelty_scores.append(1.0)  # First time seeing this entity
             else:

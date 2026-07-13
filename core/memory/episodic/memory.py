@@ -134,7 +134,7 @@ class EpisodicMemory:
                 EpisodicResult(
                     entry=entry,
                     score=search_result.score,
-                    source_store=source_store,  # type: ignore[arg-type]
+                    source_store=source_store,
                 )
             )
 

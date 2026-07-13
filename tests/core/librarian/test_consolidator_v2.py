@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 import pytest
 
-from core.librarian.consolidator import ConflictItem, Librarian
+from core.librarian.consolidator import ConflictItem, Librarian, _group_by_entity_date
 from core.memory.schemas import EpisodicEntry, SignificanceScore
 from core.memory.vector_store import ContextMetadata, SearchResult
 
@@ -1302,8 +1302,6 @@ async def test_decay_last_retrieved_zero_fallback_to_age() -> None:
 # Part G: Compression tests
 # ---------------------------------------------------------------------------
 
-from core.librarian.consolidator import _group_by_entity_date
-
 
 def test_group_by_entity_date_groups_same_entity_same_day() -> None:
     """Entries sharing an entity on the same day should be grouped."""
@@ -1333,7 +1331,7 @@ def test_group_by_entity_date_different_days_separate() -> None:
         _make_decay_search_result(entry_id="a", age_days=31),
         _make_decay_search_result(entry_id="b", age_days=32),
     ]
-    groups, ungrouped = _group_by_entity_date(results)
+    _groups, ungrouped = _group_by_entity_date(results)
     assert len(ungrouped) == 2
 
 
@@ -1399,7 +1397,7 @@ async def test_compression_creates_summary_and_marks_originals() -> None:
     ]
 
     with patch("litellm.acompletion", return_value=llm_response):
-        count = await librarian._apply_decay(decay_migration_threshold=-10.0)
+        await librarian._apply_decay(decay_migration_threshold=-10.0)
 
     assert episodic_memory.copy_to_cold_and_remove.await_count >= 2
 
@@ -1656,7 +1654,7 @@ async def test_compression_fallback_concatenation_when_no_api_key() -> None:
     )
 
     with patch("litellm.acompletion") as mock_llm:
-        count = await librarian._apply_decay(decay_migration_threshold=-10.0)
+        await librarian._apply_decay(decay_migration_threshold=-10.0)
 
     mock_llm.assert_not_called()
     assert episodic_memory.copy_to_cold_and_remove.await_count >= 2

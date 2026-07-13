@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import re
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from core.memory.embedding_provider import EmbeddingProvider
     from core.memory.vector_store import VectorStore
 

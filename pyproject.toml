@@ -81,6 +81,12 @@ indent-style = "space"
 [tool.mypy]
 python_version = "3.13"
 strict = true
+# Map sdk/alfred_sdk/* consistently as sdk.alfred_sdk.* (matches runtime imports);
+# without this a fresh clone fails with "source file found twice under different names".
+explicit_package_bases = true
+# sdk tests import alfred_sdk by its installed package name (they run via pytest's
+# sys.path insertion), which conflicts with the sdk.alfred_sdk mapping above.
+exclude = ["^sdk/tests/", "^sdk/alfred_sdk/tests/"]
 plugins = ["pydantic.mypy"]
 warn_return_any = true
 warn_unused_configs = true

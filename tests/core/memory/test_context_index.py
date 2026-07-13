@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from unittest.mock import AsyncMock
+from typing import TYPE_CHECKING
 
 import pytest
 
 from core.memory.context_index import ContextIndexManager
 from core.memory.vector_store import ContextMetadata, SearchResult
+
+if TYPE_CHECKING:
+    from pathlib import Path
+    from unittest.mock import AsyncMock
 
 # ---------------------------------------------------------------------------
 # Helpers

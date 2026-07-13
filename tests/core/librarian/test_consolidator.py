@@ -199,4 +199,5 @@ async def test_detect_patterns_includes_reflex_analysis_prompt() -> None:
         await librarian._detect_patterns(entries)
 
     # The prompt should specifically mention reflex/System 1 pattern analysis
-    assert "reflex" in captured_prompt["system"].lower() or "system 1" in captured_prompt["system"].lower()
+    system_prompt = captured_prompt["system"].lower()
+    assert "reflex" in system_prompt or "system 1" in system_prompt
