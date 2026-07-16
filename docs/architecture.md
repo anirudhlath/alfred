@@ -16,6 +16,8 @@ The system is governed by four non-negotiable architectural pillars:
 3. **Deterministic Communication** -- all inter-agent messages are Pydantic-validated JSON. No natural language between agents.
 4. **Stateful Memory (Librarian Pattern)** -- three-layer biologically-inspired memory: episodic (Redis hot + SQLite cold), semantic (Markdown profiles), procedural (YAML routines). The Librarian drains the scratchpad nightly and consolidates into long-term memory.
 
+Alfred runs as six supervised OS processes communicating over Redis Streams rather than one async process — see [process-model.md](process-model.md) for the rationale (latency isolation for System 1, native-crash containment, restart granularity, observable boundaries) and the honest costs.
+
 ## 2. Event Pipeline
 
 The full path from a physical device state change to an executed action:
