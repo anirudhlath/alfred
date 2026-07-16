@@ -59,6 +59,7 @@ class SatelliteConnection:
         self._reconnect_max_s = reconnect_max_s
         self._client: AsyncTcpClient | None = None
         self._connected = False
+        self._session_established = False
         self._send_lock = asyncio.Lock()
         self._audio_lock = asyncio.Lock()
         self._collector: UtteranceCollector | None = None
@@ -73,13 +74,12 @@ class SatelliteConnection:
         """Reconnect-forever loop. Cancelled on bridge shutdown."""
         backoff = 1.0
         while True:
+            self._session_established = False
             try:
                 await self._run_once()
-                backoff = 1.0
-            except asyncio.CancelledError:
-                await self._graceful_close()
-                raise
             except Exception as exc:
+                if self._session_established:
+                    backoff = 1.0  # session reached RunSatellite — restart the ladder
                 logger.warning(
                     "Satellite '{}' connection lost ({}: {}) — retrying in {:.0f}s",
                     self.entry.name,
@@ -105,6 +105,7 @@ class SatelliteConnection:
                     break
             await self._send(RunSatellite().event())
             self._connected = True
+            self._session_established = True
             logger.info("Satellite '{}' connected ({})", self.entry.name, self.entry.host)
 
             ping_task = asyncio.create_task(self._ping_loop())
@@ -114,8 +115,15 @@ class SatelliteConnection:
                     if event is None:
                         raise ConnectionResetError("satellite closed connection")
                     await self._handle_event(event)
+            except asyncio.CancelledError:
+                # Shutdown: tell the satellite to pause while the socket is still open.
+                with contextlib.suppress(Exception):  # best-effort
+                    await self._send(PauseSatellite().event())
+                raise
             finally:
                 ping_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await ping_task
         finally:
             self._connected = False
             await client.disconnect()
@@ -170,11 +178,6 @@ class SatelliteConnection:
             raise ConnectionResetError("not connected")
         async with self._send_lock:
             await self._client.write_event(event)
-
-    async def _graceful_close(self) -> None:
-        with contextlib.suppress(Exception):  # best-effort during shutdown
-            if self._client is not None:
-                await self._send(PauseSatellite().event())
 
     # -- public send API (used by the pipeline handler + announcements) --
 

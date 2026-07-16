@@ -3,11 +3,13 @@
 import asyncio
 from collections import deque
 from collections.abc import AsyncGenerator
+from typing import Any
 
 import pytest
 from wyoming.audio import AudioChunk
 from wyoming.pipeline import PipelineStage, RunPipeline
 
+from core.channels.satellite import bridge as bridge_module
 from core.channels.satellite.audio import pcm_to_wav
 from core.channels.satellite.bridge import SatelliteBridge, SatelliteConnection
 from core.channels.satellite.config import SatelliteEntry
@@ -121,3 +123,49 @@ async def test_ping_answered_with_pong(fake_sat: FakeSatellite) -> None:
         assert pong.data.get("text") == "x"
     finally:
         await bridge.stop()
+
+
+async def test_backoff_resets_after_successful_reconnect(
+    fake_sat: FakeSatellite, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A session that reached RunSatellite resets the retry ladder back to 1.0s."""
+    delays: list[float] = []
+    real_sleep = asyncio.sleep
+
+    class _AsyncioProxy:
+        """asyncio as seen by the bridge module, with sleep() recorded and fast-forwarded."""
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(asyncio, name)
+
+        async def sleep(self, delay: float) -> None:
+            delays.append(delay)
+            if delay >= bridge_module._PING_INTERVAL_S:
+                await asyncio.Event().wait()  # park the ping loop until cancelled
+            else:
+                await real_sleep(0)  # fast-forward reconnect backoff
+
+    monkeypatch.setattr(bridge_module, "asyncio", _AsyncioProxy())
+
+    bridge = SatelliteBridge([_entry(fake_sat)], handler=lambda c, p: asyncio.sleep(0))
+    bridge.start()
+    try:
+        for _ in range(2):  # two successful sessions, each dropped after RunSatellite
+            await asyncio.wait_for(fake_sat.run_satellite_seen.wait(), 5.0)
+            fake_sat.run_satellite_seen.clear()
+            assert fake_sat._writer is not None
+            fake_sat._writer.close()  # drop the connection
+        await asyncio.wait_for(fake_sat.run_satellite_seen.wait(), 5.0)  # third session
+        retry_delays = [d for d in delays if d < bridge_module._PING_INTERVAL_S]
+        # Both retries follow a session that reached RunSatellite → both start at 1.0s.
+        assert retry_delays[:2] == [1.0, 1.0]
+    finally:
+        await bridge.stop()
+
+
+async def test_stop_sends_pause_satellite(fake_sat: FakeSatellite) -> None:
+    bridge = SatelliteBridge([_entry(fake_sat)], handler=lambda c, p: asyncio.sleep(0))
+    bridge.start()
+    await asyncio.wait_for(fake_sat.run_satellite_seen.wait(), 5.0)
+    await bridge.stop()
+    await fake_sat.wait_for("pause-satellite")
