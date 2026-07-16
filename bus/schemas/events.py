@@ -93,20 +93,24 @@ class UserRequest(BaseEvent):
     """Inbound user interaction from any channel."""
 
     event_type: str = "user_request"
-    channel: Literal["web_pwa", "signal", "voice", "ios"]
+    channel: Literal["web_pwa", "signal", "voice", "ios", "satellite"]
     session_id: str
     identity_claim: str
     authenticated: bool = False
     content_type: Literal["text", "audio"]
     content: str
     audio_ref: str | None = None
+    # Satellite metadata (None for non-satellite channels)
+    device_id: str | None = None
+    area: str | None = None
+    identity_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class AlfredResponse(BaseEvent):
     """Outbound response to a user channel."""
 
     event_type: str = "alfred_response"
-    channel: Literal["web_pwa", "signal", "voice", "ios"]
+    channel: Literal["web_pwa", "signal", "voice", "ios", "satellite"]
     session_id: str
     text: str
     voice_audio_ref: str | None = None
