@@ -144,3 +144,7 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = "jwt.*"
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["av.*"]
+ignore_missing_imports = true
