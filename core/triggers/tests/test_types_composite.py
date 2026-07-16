@@ -73,7 +73,13 @@ def test_mixed_time_and_sensor() -> None:
         {"trigger_type": "time", "conditions": {"cron": "0 7 * * *"}},
         {"trigger_type": "sensor", "conditions": {"entity_id": "light.a", "state_match": "on"}},
     ]
-    trigger = _make_composite(conditions={"children": children, "require": 2})
+    # created_at (propagated to the time child) must precede the boundary
+    # below — computed next_fire_time anchors on it, so the default
+    # `datetime.now(UTC)` would postdate this fixed historical date.
+    trigger = _make_composite(
+        conditions={"children": children, "require": 2},
+        created_at=datetime(2026, 3, 10, 6, 0, 0, tzinfo=UTC),
+    )
     event = StateChangedEvent(
         source="test",
         domain="home",

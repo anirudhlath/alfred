@@ -150,7 +150,10 @@ async def test_evaluate_tick_fires_matching_time_trigger(
         trigger_type="time",
         name="morning",
         created_by="test",
-        created_at=datetime.now(UTC),
+        # Must precede the boundary being evaluated — computed next_fire_time
+        # anchors on created_at, so `datetime.now(UTC)` would postdate this
+        # fixed historical tick and never fire.
+        created_at=datetime(2026, 3, 10, 6, 0, 0, tzinfo=UTC),
         conditions={"cron": "0 7 * * *"},
     )
     mock_store.list_all = AsyncMock(return_value=[trigger])

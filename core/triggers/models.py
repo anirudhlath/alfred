@@ -29,6 +29,7 @@ class TriggerContext(BaseModel):
     """Read-only context passed to evaluate()."""
 
     now: datetime
+    tz: str = "UTC"  # IANA timezone name for wall-clock semantics (cron, patterns)
     event: StateChangedEvent | None = None
 
 
@@ -55,3 +56,21 @@ class BaseTrigger(ABC, BaseModel):
     @abstractmethod
     def evaluate(self, context: TriggerContext) -> bool:
         """Return True if this trigger should fire now."""
+
+    def next_fire_time(self, context: TriggerContext) -> datetime | None:
+        """Next moment this trigger could fire based on the clock alone.
+
+        None means "not clock-driven" — the trigger only responds to events.
+        May return a past datetime; the scheduler evaluates immediately then
+        excludes non-firing past candidates from the next alarm.
+        """
+        return None
+
+    @classmethod
+    def normalize_conditions(cls, conditions: dict[str, Any], tz_name: str) -> dict[str, Any]:
+        """Normalize raw tool-call conditions before validation.
+
+        Default: unchanged. Types with timezone-sensitive fields override
+        (e.g. TimeTrigger localizes naive run_at to the user's timezone).
+        """
+        return conditions
