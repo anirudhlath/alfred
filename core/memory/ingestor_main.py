@@ -11,7 +11,6 @@ import asyncio
 import signal
 from pathlib import Path
 
-import redis.asyncio as aioredis
 from loguru import logger
 
 from core.memory.episodic.memory import EpisodicMemory
@@ -22,6 +21,7 @@ from core.memory.sqlite_vec_store import SqliteVecStore
 from core.warmup import start_warmup
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
+from shared.redis_streams import create_redis
 
 _shutdown = asyncio.Event()
 
@@ -36,7 +36,7 @@ async def run(config: AlfredConfig) -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, _handle_signal)
 
-    r = aioredis.from_url(config.redis_url)
+    r = create_redis(config.redis_url)
 
     # Lazy-load embedding provider
     from core.memory.embedding_provider import SentenceTransformerProvider

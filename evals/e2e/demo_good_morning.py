@@ -25,13 +25,11 @@ import time
 from typing import TYPE_CHECKING, Literal, cast
 from uuid import uuid4
 
-import redis.asyncio as aioredis
-
 from bus.schemas.events import AlfredResponse, UserRequest
 from evals.conscious.metrics import ButlerPersonalityScore, PrivacyLeakScore
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
-from shared.redis_streams import read
+from shared.redis_streams import create_redis, read
 from shared.streams import USER_REQUESTS_STREAM, USER_RESPONSES_STREAM, decode_stream_value
 
 if TYPE_CHECKING:
@@ -45,7 +43,7 @@ async def run_demo(channel: str = "web_pwa") -> None:
     """Run the Good Morning demo end-to-end."""
     log: Logger = configure_logging(service="demo")
     config = AlfredConfig.from_env()
-    r = aioredis.from_url(config.redis_url)
+    r = create_redis(config.redis_url)
 
     channel_typed = cast("ChannelType", channel)
     session_id = str(uuid4())

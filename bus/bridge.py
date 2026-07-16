@@ -12,10 +12,9 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
-import redis.asyncio as aioredis
 from aiomqtt import Client as MqttClient
 
-from shared.redis_streams import read
+from shared.redis_streams import create_redis, read
 from shared.streams import decode_stream_value
 
 if TYPE_CHECKING:
@@ -74,7 +73,7 @@ async def run_bridge(
     if redis_streams is None:
         redis_streams = ["alfred:reflex:actions"]
 
-    redis: AioRedis = aioredis.from_url(redis_url)
+    redis: AioRedis = create_redis(redis_url)
     async with MqttClient(mqtt_host, mqtt_port) as mqtt:
         for topic in mqtt_topics:
             await mqtt.subscribe(topic)

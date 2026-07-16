@@ -86,9 +86,9 @@ def _parse_args() -> argparse.Namespace:
 
 async def _load_tools(config: AlfredConfig) -> list[ToolInfo]:
     """Load tools from Redis registry."""
-    import redis.asyncio as aioredis
+    from shared.redis_streams import create_redis
 
-    r = aioredis.from_url(config.redis_url)
+    r = create_redis(config.redis_url)
     try:
         registry = ToolRegistry(r)
         return await registry.get_tools()
@@ -240,13 +240,12 @@ async def _cmd_capture_context(args: argparse.Namespace) -> None:
     """Scan all alfred:context:* Redis keys and save a fixture file."""
     import json
 
-    import redis.asyncio as aioredis
-
     from sdk.alfred_sdk.context import ContextSnapshot
+    from shared.redis_streams import create_redis
     from shared.streams import CONTEXT_KEY_PREFIX, decode_stream_value
 
     config = AlfredConfig.from_env()
-    r = aioredis.from_url(config.redis_url)
+    r = create_redis(config.redis_url)
     try:
         pattern = f"{CONTEXT_KEY_PREFIX}*"
         keys: list[bytes | str] = await r.keys(pattern)

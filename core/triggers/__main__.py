@@ -20,7 +20,6 @@ if TYPE_CHECKING:
 
     from shared.types import AioRedis
 
-import redis.asyncio as aioredis
 import uvicorn
 
 import core.triggers.types  # noqa: F401  — register all trigger types
@@ -34,7 +33,7 @@ from core.triggers.store import TriggerStore
 from sdk.alfred_sdk.client import AlfredClient
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
-from shared.redis_streams import read_group
+from shared.redis_streams import create_redis, read_group
 from shared.streams import ACTIONS_STREAM, HOME_STATE_STREAM, decode_stream_value
 
 logger = logging.getLogger(__name__)
@@ -271,7 +270,7 @@ async def run(config: AlfredConfig) -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, _handle_signal)
 
-    r: AioRedis = aioredis.from_url(config.redis_url)
+    r: AioRedis = create_redis(config.redis_url)
 
     store = TriggerStore(redis=r, snapshot_dir=SNAPSHOT_DIR)
     triggers = await store.load()

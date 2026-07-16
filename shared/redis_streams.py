@@ -7,14 +7,27 @@ redis-py's asyncio stream-read methods (``xread``, ``xreadgroup``,
 verbose return-type annotation plus a
 ``# type: ignore[assignment,misc,unused-ignore]``. These wrappers own that
 gap once so callers get a plain, correctly typed coroutine.
+
+This module also owns the one construction point for async Redis clients
+used by blocking stream readers — see ``create_redis`` below.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
+import redis.asyncio as aioredis
+
 if TYPE_CHECKING:
     from shared.types import AioRedis
+
+
+def create_redis(url: str, *, decode_responses: bool = False) -> AioRedis:
+    """Create an async Redis client with socket_timeout=None (redis-py 8 defaults to 5s,
+    which breaks idle blocking stream reads — block= governs read timeouts instead).
+    """
+    return aioredis.from_url(url, decode_responses=decode_responses, socket_timeout=None)
+
 
 # xread/xreadgroup return shape: one entry per stream, each stream carrying a
 # list of (entry_id, fields) pairs.

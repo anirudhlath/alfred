@@ -9,11 +9,10 @@ import asyncio
 import signal
 from typing import TYPE_CHECKING
 
-import redis.asyncio as aioredis
-
 from core.channels.signal_bridge.bridge import SignalBridge
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
+from shared.redis_streams import create_redis
 
 if TYPE_CHECKING:
     from shared.types import AioRedis
@@ -32,7 +31,7 @@ async def run(config: AlfredConfig) -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, _handle_signal)
 
-    r: AioRedis = aioredis.from_url(config.redis_url)
+    r: AioRedis = create_redis(config.redis_url)
 
     bridge = SignalBridge(redis=r, phone_number=config.signal_phone_number)
 

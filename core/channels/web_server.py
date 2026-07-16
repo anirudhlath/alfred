@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 import httpx
-import redis.asyncio as aioredis
+import redis.asyncio as aioredis  # noqa: TC002 — patched at runtime by tests (e.g. test_device_registration.py)
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -36,7 +36,7 @@ from core.identity.auth_routes import create_auth_router
 from core.identity.credentials import CredentialStore
 from core.identity.ws_auth import require_ws_auth
 from core.warmup import start_warmup
-from shared.redis_streams import read
+from shared.redis_streams import create_redis, read
 from shared.streams import (
     USER_REQUESTS_STREAM,
     USER_RESPONSES_STREAM,
@@ -268,7 +268,7 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     """Manage shared Redis connection pool lifecycle + notification delivery."""
     from core.notifications.delivery import notification_delivery_worker
 
-    pool: aioredis.Redis = aioredis.from_url(app.state.redis_url, decode_responses=False)
+    pool: aioredis.Redis = create_redis(app.state.redis_url, decode_responses=False)
     app.state.redis = pool
     app.state.http = httpx.AsyncClient(timeout=2.0)
 

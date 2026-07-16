@@ -42,3 +42,4 @@ pytest sdk/tests/                 # integration tests (schema compatibility)
 - Tool name collisions: last registration wins, logged as warnings
 - Context key `alfred:context:{service-name}` expires in 600s (10min) — long-running services need periodic re-registration
 - Complex type hints stored as `str()` representation in manifests (e.g., `dict[str, Any]`)
+- `client.py`'s two `redis.asyncio.from_url()` calls keep redis-py defaults (including the redis-py 8 `socket_timeout=5s`) — the SDK only issues short non-blocking commands (hset/xadd/hdel/set), so a 5s read timeout is acceptable/desirable for startup calls. Blocking stream reads belong in core via `shared.redis_streams.create_redis` (SDK cannot import `shared`).

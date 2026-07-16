@@ -11,8 +11,6 @@ import signal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import redis.asyncio as aioredis
-
 # Import modules to trigger @register decorators
 import core.integrations.apple_calendar
 import core.integrations.apple_health
@@ -45,7 +43,7 @@ from domains.home.home_agent import HomeAgent
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
 from shared.otel import init_tracing
-from shared.redis_streams import read_group
+from shared.redis_streams import create_redis, read_group
 from shared.streams import (
     ACTIONS_STREAM,
     USER_REQUESTS_STREAM,
@@ -127,7 +125,7 @@ async def run(config: AlfredConfig) -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, _handle_signal)
 
-    r: AioRedis = aioredis.from_url(config.redis_url)
+    r: AioRedis = create_redis(config.redis_url)
 
     stream = USER_REQUESTS_STREAM
     group = "conscious-engine"
