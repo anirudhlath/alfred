@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from pathlib import Path  # noqa: TC003
@@ -235,3 +236,80 @@ async def test_refresh_resyncs_from_redis(mock_redis: AsyncMock, snapshot_dir: P
     all_triggers = await store.list_all()
     assert len(all_triggers) == 1
     assert all_triggers[0].trigger_id == "t-2"
+
+
+def _build_trigger(trigger_id: str = "t-sync") -> Any:
+    cls = TriggerRegistry.get("time")
+    return cls(**_make_trigger_dict(trigger_id))
+
+
+@pytest.mark.asyncio
+async def test_cross_process_visibility_without_refresh(
+    fake_redis: Any, snapshot_dir: Path, tmp_path: Path
+) -> None:
+    """The 5s-reminder regression: a save in store A must appear in store B
+    via pub/sub alone — no refresh(), no 60s wait."""
+    store_a = TriggerStore(redis=fake_redis, snapshot_dir=snapshot_dir)
+    store_b = TriggerStore(redis=fake_redis, snapshot_dir=tmp_path / "b")
+    await store_b.start_sync()
+    await asyncio.sleep(0.05)  # let the subscriber task subscribe
+    try:
+        await store_a.save(_build_trigger())
+        await asyncio.sleep(0.05)  # let the message propagate
+        assert await store_b.get("t-sync") is not None
+    finally:
+        await store_b.stop_sync()
+
+
+@pytest.mark.asyncio
+async def test_delete_propagates_and_fires_on_change(
+    fake_redis: Any, snapshot_dir: Path, tmp_path: Path
+) -> None:
+    store_a = TriggerStore(redis=fake_redis, snapshot_dir=snapshot_dir)
+    store_b = TriggerStore(redis=fake_redis, snapshot_dir=tmp_path / "b")
+    changes: list[bool] = []
+    store_b.add_on_change(lambda: changes.append(True))
+    await store_b.start_sync()
+    await asyncio.sleep(0.05)
+    try:
+        await store_a.save(_build_trigger())
+        await asyncio.sleep(0.05)
+        assert await store_b.get("t-sync") is not None
+        await store_a.delete("t-sync")
+        await asyncio.sleep(0.05)
+        assert await store_b.get("t-sync") is None
+        assert changes  # subscriber fired callbacks
+    finally:
+        await store_b.stop_sync()
+
+
+@pytest.mark.asyncio
+async def test_tz_changed_message_fires_callbacks_without_cache_mutation(
+    fake_redis: Any, snapshot_dir: Path
+) -> None:
+    store = TriggerStore(redis=fake_redis, snapshot_dir=snapshot_dir)
+    changes: list[bool] = []
+    store.add_on_change(lambda: changes.append(True))
+    await store._apply_sync_message('{"op": "tz-changed"}')
+    assert changes
+
+
+@pytest.mark.asyncio
+async def test_saved_message_for_missing_trigger_evicts(
+    fake_redis: Any, snapshot_dir: Path
+) -> None:
+    store = TriggerStore(redis=fake_redis, snapshot_dir=snapshot_dir)
+    store._cache["ghost"] = _build_trigger("ghost")
+    await store._apply_sync_message('{"op": "saved", "trigger_id": "ghost"}')
+    assert await store.get("ghost") is None  # raced with a delete -> evict
+
+
+@pytest.mark.asyncio
+async def test_save_notifies_local_callbacks_immediately(
+    fake_redis: Any, snapshot_dir: Path
+) -> None:
+    store = TriggerStore(redis=fake_redis, snapshot_dir=snapshot_dir)
+    changes: list[bool] = []
+    store.add_on_change(lambda: changes.append(True))
+    await store.save(_build_trigger())
+    assert changes  # no subscriber running — local notify is synchronous
