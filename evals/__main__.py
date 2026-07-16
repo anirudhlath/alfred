@@ -243,24 +243,24 @@ async def _cmd_capture_context(args: argparse.Namespace) -> None:
     import redis.asyncio as aioredis
 
     from sdk.alfred_sdk.context import ContextSnapshot
-    from shared.streams import CONTEXT_KEY_PREFIX
+    from shared.streams import CONTEXT_KEY_PREFIX, decode_stream_value
 
     config = AlfredConfig.from_env()
     r = aioredis.from_url(config.redis_url)
     try:
         pattern = f"{CONTEXT_KEY_PREFIX}*"
-        keys: list[bytes] = await r.keys(pattern)
+        keys: list[bytes | str] = await r.keys(pattern)
         if not keys:
             print(f"No keys matching {pattern} found in Redis.")
             sys.exit(1)
 
         sorted_keys = sorted(keys)
-        values: list[bytes | None] = await r.mget(*sorted_keys)
+        values: list[bytes | str | None] = await r.mget(*sorted_keys)
         envelope: dict[str, object] = {}
         for key, raw in zip(sorted_keys, values, strict=True):
             if not raw:
                 continue
-            service_name = key.decode().removeprefix(CONTEXT_KEY_PREFIX)
+            service_name = decode_stream_value(key).removeprefix(CONTEXT_KEY_PREFIX)
             snapshot = ContextSnapshot.model_validate_json(raw)
             envelope[service_name] = snapshot.model_dump()
             print(f"  captured: {service_name}")

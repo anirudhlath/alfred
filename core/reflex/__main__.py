@@ -127,7 +127,7 @@ async def _consume_trigger_fired(
                 bytes | str,
                 list[tuple[bytes | str, dict[bytes | str, bytes | str]]],
             ]
-        ] = await redis.xreadgroup(
+        ] = await redis.xreadgroup(  # type: ignore[assignment,misc,unused-ignore]
             EVENTS_GROUP,
             EVENTS_CONSUMER,
             {EVENTS_STREAM: ">"},
@@ -226,7 +226,9 @@ async def run(config: AlfredConfig) -> None:
                     bytes | str,
                     list[tuple[bytes | str, dict[bytes | str, bytes | str]]],
                 ]
-            ] = await r.xreadgroup(GROUP, CONSUMER, {STREAM: ">"}, count=10, block=5000)
+            ] = await r.xreadgroup(  # type: ignore[assignment,misc,unused-ignore]
+                GROUP, CONSUMER, {STREAM: ">"}, count=10, block=5000
+            )
 
             for _stream_key, stream_entries in entries:
                 for entry_id, entry_data in stream_entries:

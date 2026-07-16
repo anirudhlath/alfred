@@ -87,7 +87,7 @@ async def _consume_internal_actions(
                     bytes | str,
                     list[tuple[bytes | str, dict[bytes | str, bytes | str]]],
                 ]
-            ] = await redis.xreadgroup(  # type: ignore[misc,unused-ignore]
+            ] = await redis.xreadgroup(  # type: ignore[assignment,misc,unused-ignore]
                 group, consumer, {stream: ">"}, count=1, block=5000
             )
 
@@ -356,7 +356,7 @@ async def run(config: AlfredConfig) -> None:
                     bytes | str,
                     list[tuple[bytes | str, dict[bytes | str, bytes | str]]],
                 ]
-            ] = await r.xreadgroup(  # type: ignore[misc,unused-ignore]
+            ] = await r.xreadgroup(  # type: ignore[assignment,misc,unused-ignore]
                 group, consumer, {stream: ">"}, count=1, block=5000
             )
 

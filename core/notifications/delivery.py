@@ -47,7 +47,7 @@ async def notification_delivery_worker(
                     bytes | str,
                     list[tuple[bytes | str, dict[bytes | str, bytes | str]]],
                 ]
-            ] = await redis.xreadgroup(  # type: ignore[misc,unused-ignore]
+            ] = await redis.xreadgroup(  # type: ignore[assignment,misc,unused-ignore]
                 group, consumer, {stream: ">"}, count=5, block=5000
             )
 

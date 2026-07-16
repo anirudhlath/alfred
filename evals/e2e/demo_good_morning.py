@@ -31,7 +31,7 @@ from bus.schemas.events import AlfredResponse, UserRequest
 from evals.conscious.metrics import ButlerPersonalityScore, PrivacyLeakScore
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
-from shared.streams import USER_REQUESTS_STREAM, USER_RESPONSES_STREAM
+from shared.streams import USER_REQUESTS_STREAM, USER_RESPONSES_STREAM, decode_stream_value
 
 if TYPE_CHECKING:
     from loguru import Logger
@@ -73,10 +73,14 @@ async def run_demo(channel: str = "web_pwa") -> None:
     response: AlfredResponse | None = None
 
     while (time.monotonic() - start) < timeout:
-        entries = await r.xread({USER_RESPONSES_STREAM: last_id}, count=10, block=1000)
+        entries: list[
+            tuple[bytes | str, list[tuple[bytes | str, dict[bytes | str, bytes | str]]]]
+        ] = await r.xread(  # type: ignore[assignment,misc,unused-ignore]
+            {USER_RESPONSES_STREAM: last_id}, count=10, block=1000
+        )
         for _stream, stream_entries in entries:
             for entry_id, entry_data in stream_entries:
-                last_id = entry_id
+                last_id = decode_stream_value(entry_id)
                 raw = entry_data.get(b"event") or entry_data.get("event")
                 if raw:
                     event_str = raw.decode() if isinstance(raw, bytes) else raw

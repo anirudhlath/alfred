@@ -65,7 +65,7 @@ class ContextReader:
 
         merged = ContextSnapshot()
         async for key in self._redis.scan_iter(match=f"{CONTEXT_KEY_PREFIX}*", count=100):
-            raw: bytes | None = await self._redis.get(key)
+            raw: bytes | str | None = await self._redis.get(key)
             if raw is None:
                 continue
             try:

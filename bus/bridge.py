@@ -108,7 +108,9 @@ async def _redis_to_mqtt_loop(
     while True:
         results: list[
             tuple[bytes | str, list[tuple[bytes | str, dict[bytes | str, bytes | str]]]]
-        ] = await redis.xread(last_ids, block=1000)
+        ] = await redis.xread(  # type: ignore[assignment,misc,unused-ignore]
+            last_ids, block=1000
+        )
         for stream_key_raw, entries in results:
             stream_key = (
                 stream_key_raw.decode() if isinstance(stream_key_raw, bytes) else stream_key_raw

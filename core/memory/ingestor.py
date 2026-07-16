@@ -101,7 +101,7 @@ async def run_ingestor(
                 bytes | str,
                 list[tuple[bytes | str, dict[bytes | str, bytes | str]]],
             ]
-        ] = await redis.xreadgroup(
+        ] = await redis.xreadgroup(  # type: ignore[assignment,misc,unused-ignore]
             GROUP,
             CONSUMER,
             {REFLEX_OBSERVATIONS_STREAM: ">"},

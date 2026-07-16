@@ -226,7 +226,7 @@ async def require_trusted_network(request: Request) -> None:
     raise HTTPException(status_code=403, detail="Access restricted to trusted networks")
 
 
-async def _init_apns_adapter(pool: aioredis.Redis[Any]) -> None:  # type: ignore[type-arg]
+async def _init_apns_adapter(pool: aioredis.Redis) -> None:
     """Register APNs adapter if credentials are configured via environment."""
     team_id = os.getenv("APNS_TEAM_ID", "")
     key_id = os.getenv("APNS_KEY_ID", "")
@@ -265,7 +265,7 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     """Manage shared Redis connection pool lifecycle + notification delivery."""
     from core.notifications.delivery import notification_delivery_worker
 
-    pool: aioredis.Redis[Any] = aioredis.from_url(app.state.redis_url, decode_responses=False)  # type: ignore[type-arg]
+    pool: aioredis.Redis = aioredis.from_url(app.state.redis_url, decode_responses=False)
     app.state.redis = pool
     app.state.http = httpx.AsyncClient(timeout=2.0)
 
@@ -352,7 +352,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
-        r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
+        r: aioredis.Redis = app.state.redis
 
         # Accept + cookie auth + 4001-on-fail, in the one place that owns the ordering.
         if not await require_ws_auth(websocket, r):
@@ -699,7 +699,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         """Register an APNs device token for push notifications."""
         from shared.streams import DEVICE_TOKENS_KEY
 
-        r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
+        r: aioredis.Redis = app.state.redis
         value = json.dumps(
             {
                 "platform": payload.platform,
@@ -707,7 +707,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
                 "registered_at": datetime.now(UTC).isoformat(),
             }
         )
-        await r.hset(DEVICE_TOKENS_KEY, payload.device_token, value)  # type: ignore[misc]
+        await r.hset(DEVICE_TOKENS_KEY, payload.device_token, value)
         logger.info("Registered device token (platform={})", payload.platform)
         return {"status": "ok"}
 
@@ -719,8 +719,8 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         """Remove an APNs device token."""
         from shared.streams import DEVICE_TOKENS_KEY
 
-        r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
-        await r.hdel(DEVICE_TOKENS_KEY, payload.device_token)  # type: ignore[misc]
+        r: aioredis.Redis = app.state.redis
+        await r.hdel(DEVICE_TOKENS_KEY, payload.device_token)
         logger.info("Unregistered device token")
         return {"status": "ok"}
 
@@ -741,7 +741,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
 
 async def _publish_and_wait(
-    redis: aioredis.Redis[Any],  # type: ignore[type-arg]
+    redis: aioredis.Redis,
     request: UserRequest,
     session_id: str,
     timeout: float = 30.0,
@@ -765,10 +765,14 @@ async def _publish_and_wait(
     start = time.monotonic()
 
     while (time.monotonic() - start) < timeout:
-        entries = await redis.xread({USER_RESPONSES_STREAM: last_id}, count=10, block=1000)
+        entries: list[
+            tuple[bytes | str, list[tuple[bytes | str, dict[bytes | str, bytes | str]]]]
+        ] = await redis.xread(  # type: ignore[assignment,misc,unused-ignore]
+            {USER_RESPONSES_STREAM: last_id}, count=10, block=1000
+        )
         for _stream, stream_entries in entries:
             for entry_id, entry_data in stream_entries:
-                last_id = entry_id
+                last_id = decode_stream_value(entry_id)
                 raw = entry_data.get(b"event") or entry_data.get("event")
                 if raw:
                     event_str = decode_stream_value(raw)

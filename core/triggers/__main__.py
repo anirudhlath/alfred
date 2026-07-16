@@ -102,7 +102,9 @@ async def actions_loop(store: TriggerStore, engine: TriggerEngine, r: AioRedis) 
 
     while not _shutdown.is_set():
         try:
-            entries = await r.xreadgroup(
+            entries: list[
+                tuple[bytes | str, list[tuple[bytes | str, dict[bytes | str, bytes | str]]]]
+            ] = await r.xreadgroup(  # type: ignore[assignment,misc,unused-ignore]
                 ACTIONS_GROUP, ACTIONS_CONSUMER, {ACTIONS_STREAM: ">"}, count=10, block=5000
             )
         except Exception as e:
@@ -125,7 +127,7 @@ async def _process_action_entry(
     store: TriggerStore,
     engine: TriggerEngine,
     r: AioRedis,
-    entry_id: str,
+    entry_id: bytes | str,
     entry_data: dict[Any, Any],
 ) -> None:
     raw_event = entry_data.get("event") or entry_data.get(b"event")
@@ -204,7 +206,9 @@ async def event_loop(
 
     while not _shutdown.is_set():
         try:
-            entries = await r.xreadgroup(
+            entries: list[
+                tuple[bytes | str, list[tuple[bytes | str, dict[bytes | str, bytes | str]]]]
+            ] = await r.xreadgroup(  # type: ignore[assignment,misc,unused-ignore]
                 GROUP, CONSUMER, {HOME_STATE_STREAM: ">"}, count=10, block=5000
             )
         except Exception as e:
@@ -219,7 +223,7 @@ async def event_loop(
 async def _process_event_entry(
     engine: TriggerEngine,
     r: AioRedis,
-    entry_id: str,
+    entry_id: bytes | str,
     entry_data: dict[Any, Any],
 ) -> None:
     from bus.schemas.events import StateChangedEvent
