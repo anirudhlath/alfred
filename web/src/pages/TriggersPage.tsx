@@ -74,7 +74,7 @@ export function TriggersPage() {
   });
 
   return (
-    <div className="grid h-full gap-4 overflow-y-auto p-5 lg:grid-cols-3">
+    <div className="grid h-full grid-cols-1 gap-4 overflow-y-auto p-5 lg:grid-cols-3">
       <Card className="bg-card lg:col-span-2">
         <CardHeader><CardTitle className="font-mono text-xs tracking-widest">TRIGGERS</CardTitle></CardHeader>
         <CardContent className="space-y-2">

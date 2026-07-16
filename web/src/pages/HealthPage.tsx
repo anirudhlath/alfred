@@ -70,7 +70,7 @@ export function HealthPage() {
   const spendRatio = overview?.cost ? overview.cost.spend_usd / overview.cost.cap_usd : 0;
 
   return (
-    <div className="grid h-full content-start gap-4 overflow-y-auto p-5 md:grid-cols-2 xl:grid-cols-3">
+    <div className="grid h-full grid-cols-1 content-start gap-4 overflow-y-auto p-5 md:grid-cols-2 xl:grid-cols-3">
       <Panel title="CONNECTIVITY">
         {overviewError ? (
           <p className="font-mono text-xs text-bad">
