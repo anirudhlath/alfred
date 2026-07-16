@@ -114,6 +114,21 @@ def _get_episodic_lazy(redis: AioRedis) -> Any | None:
     return _episodic_memory
 
 
+def _base_overview() -> dict[str, Any]:
+    """Full Overview shape with placeholders — the single source of truth for the
+    field set. The frontend `Overview` type requires every key, so both the degraded
+    path (returned as-is) and the happy path (which overwrites what it can compute)
+    build from this, and neither can drift into a partial payload."""
+    return {
+        "redis": {"connected": False},
+        "cost": None,
+        "dnd": {"active": False},
+        "counts": {"sessions": 0, "devices": 0, "deferred": 0, "triggers": 0},
+        "streams": {},
+        "inference": {"ollama": False, "lmstudio": False},
+    }
+
+
 def _safe_json(raw: Any, *, default: Any) -> Any:
     """Parse a stored JSON value, returning ``default`` on missing/corrupt data.
 
@@ -172,27 +187,16 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
         dependencies=[Depends(trusted_network_dep), Depends(require_authenticated)],
     )
 
-    def _degraded_overview() -> dict[str, Any]:
-        """Full Overview shape with placeholders — the frontend `Overview` type
-        requires every field, so a partial payload would crash the SPA."""
-        return {
-            "redis": {"connected": False},
-            "cost": None,
-            "dnd": {"active": False},
-            "counts": {"sessions": 0, "devices": 0, "deferred": 0, "triggers": 0},
-            "streams": {},
-            "inference": {"ollama": False, "lmstudio": False},
-        }
-
     @router.get("/overview")
     async def overview(request: Request) -> dict[str, Any]:
         r = _redis(request)
-        out: dict[str, Any] = {"redis": {"connected": True}}
+        out = _base_overview()
         try:
             await r.ping()  # type: ignore[misc]
         except Exception:
-            return _degraded_overview()
+            return out  # degraded: full shape, all placeholders
 
+        out["redis"]["connected"] = True
         raw_cost = await r.get(COST_DAILY_KEY)
         out["cost"] = _safe_json(raw_cost, default=None)
         raw_dnd = await r.get(DND_STATE_KEY)

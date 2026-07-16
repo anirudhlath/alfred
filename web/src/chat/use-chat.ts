@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { playWavBase64 } from "@/lib/audio";
 import { useAlfredStatus } from "@/shell/AlfredProvider";
 
 export interface ChatMessage {
@@ -28,7 +29,7 @@ export function useChat() {
             ...m,
             { role: "alfred", text: msg.text, tools: msg.actions_taken, latencyMs },
           ]);
-          if (msg.audio) void new Audio(`data:audio/wav;base64,${msg.audio}`).play().catch(() => {});
+          if (msg.audio) playWavBase64(msg.audio);
           break;
         }
         // "notification" frames are handled globally in AlfredProvider so they

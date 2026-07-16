@@ -17,7 +17,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from loguru import logger
 
 from core.channels.stream_catalog import KEY_TO_NAME, STREAM_CATALOG, decode_entry
-from core.identity.ws_auth import authenticate_ws_cookie
+from core.identity.ws_auth import require_ws_auth
+from shared.streams import decode_stream_value
 
 if TYPE_CHECKING:
     from shared.types import AioRedis
@@ -34,10 +35,7 @@ async def _last_id(r: AioRedis, key: str) -> str:
     without replaying history (XREAD returns only entries after the given id).
     """
     entries: list[tuple[bytes | str, dict[Any, Any]]] = await r.xrevrange(key, count=1)
-    if entries:
-        eid = entries[0][0]
-        return eid.decode() if isinstance(eid, bytes) else eid
-    return "0-0"
+    return decode_stream_value(entries[0][0]) if entries else "0-0"
 
 
 def register_telemetry_ws(app: FastAPI) -> None:
@@ -45,13 +43,7 @@ def register_telemetry_ws(app: FastAPI) -> None:
     async def telemetry_ws(websocket: WebSocket) -> None:
         r: AioRedis = websocket.app.state.redis
 
-        # Accept before authenticating so a rejection sends a real close frame
-        # carrying code 4001 (close-before-accept surfaces as an HTTP 403 with no
-        # code, and the browser then reconnects forever). Matches the /ws gate.
-        await websocket.accept()
-
-        if not await authenticate_ws_cookie(websocket, r):
-            await websocket.close(code=4001, reason="Authentication required")
+        if not await require_ws_auth(websocket, r):
             return
 
         subs: dict[str, str] = {}  # redis key -> last seen entry id

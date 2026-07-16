@@ -37,3 +37,18 @@ async def authenticate_ws_cookie(websocket: WebSocket, redis: AioRedis) -> bool:
         f"{AUTH_SESSION_PREFIX}{session_id}"
     )
     return bool(data) and data.get(b"authenticated") == b"1"
+
+
+async def require_ws_auth(websocket: WebSocket, redis: AioRedis) -> bool:
+    """Accept the socket, then authenticate; close with 4001 on failure.
+
+    Accept MUST happen before authenticating: a close-before-accept surfaces as an
+    HTTP 403 upgrade rejection with no close code, so the browser never sees 4001 and
+    reconnects forever. Owning that ordering here keeps every WS endpoint consistent.
+    Returns True iff the connection is authenticated (and left open).
+    """
+    await websocket.accept()
+    if await authenticate_ws_cookie(websocket, redis):
+        return True
+    await websocket.close(code=4001, reason="Authentication required")
+    return False

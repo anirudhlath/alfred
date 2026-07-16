@@ -4,10 +4,12 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { loginPasskey } from "@/lib/webauthn";
 
+function isDismissal(e: unknown): boolean {
+  return e instanceof DOMException && (e.name === "AbortError" || e.name === "NotAllowedError");
+}
+
 function friendlyError(e: unknown): string {
-  if (e instanceof DOMException && (e.name === "NotAllowedError" || e.name === "AbortError")) {
-    return "Passkey prompt was dismissed";
-  }
+  if (isDismissal(e)) return "Passkey prompt was dismissed";
   return e instanceof Error ? e.message : "Sign-in failed";
 }
 
@@ -32,17 +34,10 @@ export function LoginPage() {
       await queryClient.refetchQueries({ queryKey: ["auth-status"] });
       navigate("/", { replace: true });
     } catch (e) {
-      // Abort/dismissal is expected noise on the conditional (autofill) path — stay
-      // quiet there. But genuine failures (challenge expired, network, verification
-      // error) were previously swallowed on the conditional path; surface those on
-      // both paths so the user isn't left staring at a dead autofill prompt.
-      if (
-        e instanceof DOMException &&
-        (e.name === "AbortError" || e.name === "NotAllowedError")
-      ) {
-        if (!conditional) setError(friendlyError(e));
-        return;
-      }
+      // Dismissal/abort is expected noise on the conditional (autofill) path — stay
+      // quiet there. Genuine failures (challenge expired, network, verification error)
+      // were previously swallowed on the conditional path; surface those on both.
+      if (isDismissal(e) && conditional) return;
       setError(friendlyError(e));
     }
   };

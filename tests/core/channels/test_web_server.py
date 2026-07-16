@@ -217,6 +217,23 @@ def test_ws_response_forwards_actions_taken_and_mood(web_client: TestClient) -> 
     assert "session_id" in response
 
 
+def test_ws_rejects_unauthenticated() -> None:
+    """/ws accepts then closes with 4001 when no valid session cookie is present, so
+    the browser gets a real close code instead of a codeless 403 (reconnect-forever)."""
+    import pytest
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    mock_redis = AsyncMock()
+    mock_redis.hgetall = AsyncMock(return_value={})
+    app = create_app(redis_url="redis://localhost:6379")
+    app.state.redis = mock_redis
+    client = TestClient(app)  # no auth cookie
+    with client.websocket_connect("/ws") as ws, pytest.raises(WebSocketDisconnect) as exc:
+        ws.receive_text()
+    assert exc.value.code == 4001
+
+
 def _make_spa_dist(tmp_path: Path) -> Path:
     """Create a minimal dist/ tree for SPA tests."""
     dist = tmp_path / "dist"

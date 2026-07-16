@@ -43,6 +43,21 @@ changed field, or make trigger writes field-merged via a small Lua/WATCH transac
 Also add `effective_within_seconds` (queued ≠ applied) to the `fire_trigger` response,
 matching the enable path.
 
+### 6. Extract a shared internal-actions consumer (de-duplicate two near-identical loops)
+`core/triggers/__main__.py` (`actions_loop` / `_process_action_entry`) and
+`core/conscious/__main__.py` (`_consume_internal_actions`) are near-identical copies of
+the same pattern: ensure group → `XREADGROUP ">"` → read `event`/`b"event"` →
+ack-and-skip if missing → `ActionRequest.model_validate_json` → filter by
+`target_service` → dispatch by `tool_name` → ack. Per-entry robustness has already
+drifted (the triggers copy now isolates per-entry failures; the conscious copy still
+lets a malformed `model_validate_json` leave the entry unacked in the PEL). **Acceptance:**
+extract one shared consumer (e.g. `bus`/`shared`: `consume_internal_actions(redis, *,
+stream, group, consumer, target_service, handlers: dict[str, Callable[[ActionRequest],
+Awaitable[None]]])`); both processes register their `{tool_name: handler}` table and get
+identical framing, per-entry isolation, and ack semantics. Fold items 3–5 above into the
+shared implementation. (Deferred from PR #21 review: this is a two-process refactor
+better done as its own focused task with dedicated tests.)
+
 ### 5. Manual `run_librarian` can race the scheduler
 `_run_librarian_now` calls `librarian.consolidate()` inline while
 `librarian_scheduler.run()` runs the same `Librarian` instance with no mutual

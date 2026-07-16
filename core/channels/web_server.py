@@ -29,7 +29,7 @@ from core.channels.telemetry_ws import register_telemetry_ws
 from core.identity.auth_middleware import AuthCookieMiddleware
 from core.identity.auth_routes import create_auth_router
 from core.identity.credentials import CredentialStore
-from core.identity.ws_auth import authenticate_ws_cookie
+from core.identity.ws_auth import require_ws_auth
 from shared.streams import (
     USER_REQUESTS_STREAM,
     USER_RESPONSES_STREAM,
@@ -290,13 +290,10 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
-        await websocket.accept()
         r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
 
-        # Authenticate via cookie (BaseHTTPMiddleware doesn't run for WS)
-        authenticated = await authenticate_ws_cookie(websocket, r)
-        if not authenticated:
-            await websocket.close(code=4001, reason="Authentication required")
+        # Accept + cookie auth + 4001-on-fail, in the one place that owns the ordering.
+        if not await require_ws_auth(websocket, r):
             return
 
         _active_websockets[websocket] = "web_pwa"
@@ -377,7 +374,8 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
                     source=_CHANNEL_SOURCE_MAP.get(client_channel, "web-pwa"),
                     channel=client_channel,
                     session_id=session_id,
-                    identity_claim="sir" if authenticated else "guest",
+                    # Only authenticated sockets reach here (require_ws_auth gates above).
+                    identity_claim="sir",
                     content_type=content_type,
                     content=content,
                 )
