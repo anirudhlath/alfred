@@ -34,7 +34,7 @@ from core.triggers.store import TriggerStore
 from sdk.alfred_sdk.client import AlfredClient
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
-from shared.streams import ACTIONS_STREAM, EVENTS_STREAM, decode_stream_value
+from shared.streams import ACTIONS_STREAM, HOME_STATE_STREAM, decode_stream_value
 
 logger = logging.getLogger(__name__)
 
@@ -194,15 +194,18 @@ async def event_loop(
     engine: TriggerEngine,
     r: AioRedis,
 ) -> None:
-    """Event listener loop for sensor-based trigger evaluation."""
-    from bus.schemas.events import StateChangedEvent
+    """Event listener loop for sensor-based trigger evaluation.
 
-    await ensure_consumer_group(r, EVENTS_STREAM, GROUP)
+    Consumes HOME_STATE_STREAM — the stream the MQTT bridge publishes real
+    state changes to. (EVENTS_STREAM only carries the engine's own
+    TriggerFired/TriggerCreated events, which are not sensor input.)
+    """
+    await ensure_consumer_group(r, HOME_STATE_STREAM, GROUP)
 
     while not _shutdown.is_set():
         try:
             entries = await r.xreadgroup(
-                GROUP, CONSUMER, {EVENTS_STREAM: ">"}, count=10, block=5000
+                GROUP, CONSUMER, {HOME_STATE_STREAM: ">"}, count=10, block=5000
             )
         except Exception as e:
             logger.error("Event read error: %s", e)
@@ -210,25 +213,38 @@ async def event_loop(
 
         for _stream_key, stream_entries in entries:
             for entry_id, entry_data in stream_entries:
-                raw_event = entry_data.get("event") or entry_data.get(b"event")
-                if raw_event is None:
-                    await r.xack(EVENTS_STREAM, GROUP, entry_id)
-                    continue
+                await _process_event_entry(engine, r, entry_id, entry_data)
 
-                event_str = decode_stream_value(raw_event)
 
-                try:
-                    event = StateChangedEvent.model_validate_json(event_str)
-                except Exception:
-                    await r.xack(EVENTS_STREAM, GROUP, entry_id)
-                    continue
+async def _process_event_entry(
+    engine: TriggerEngine,
+    r: AioRedis,
+    entry_id: str,
+    entry_data: dict[Any, Any],
+) -> None:
+    from bus.schemas.events import StateChangedEvent
 
-                try:
-                    await engine.evaluate_event(event)
-                except Exception as e:
-                    logger.error("Event evaluation error: %s", e)
+    raw_event = entry_data.get("event") or entry_data.get(b"event")
+    if raw_event is None:
+        logger.warning("Event entry %s has no 'event' field — skipping", entry_id)
+        await r.xack(HOME_STATE_STREAM, GROUP, entry_id)
+        return
 
-                await r.xack(EVENTS_STREAM, GROUP, entry_id)
+    try:
+        event = StateChangedEvent.model_validate_json(decode_stream_value(raw_event))
+    except Exception as e:
+        logger.warning(
+            "Event entry %s is not a valid StateChangedEvent (%s) — skipping", entry_id, e
+        )
+        await r.xack(HOME_STATE_STREAM, GROUP, entry_id)
+        return
+
+    try:
+        await engine.evaluate_event(event)
+    except Exception as e:
+        logger.error("Event evaluation error: %s", e)
+
+    await r.xack(HOME_STATE_STREAM, GROUP, entry_id)
 
 
 async def _periodic(

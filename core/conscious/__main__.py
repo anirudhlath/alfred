@@ -40,6 +40,7 @@ from core.reflex.tool_registry import ToolRegistry
 from core.routing.domain_router import DomainRouter
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
 from core.triggers.store import TriggerStore
+from core.warmup import start_warmup
 from domains.home.home_agent import HomeAgent
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
@@ -154,6 +155,8 @@ async def run(config: AlfredConfig) -> None:
     context_index = None
     episodic_memory = None
     significance_scorer = None
+    hot_store = None
+    cold_store = None
     try:
         embedder = SentenceTransformerProvider(config.embedding_model)
         hot_store = RedisVectorStore(redis=r, dim=config.embedding_dim)
@@ -178,6 +181,20 @@ async def run(config: AlfredConfig) -> None:
         )
     except Exception as exc:
         log.error("Memory system failed to initialize — running without memory: {}", exc)
+
+    # Load memory components in the background so the first request doesn't pay
+    # the embedding-model lazy-load cost; lazy init remains the fallback.
+    warmup_task: asyncio.Task[None] | None = None
+    if embedder is not None and hot_store is not None and cold_store is not None:
+        warm_embedder, warm_hot, warm_cold = embedder, hot_store, cold_store
+        warmup_task = start_warmup(
+            "conscious",
+            {
+                "embedding model": lambda: warm_embedder.embed("warmup"),
+                "redis vector index": warm_hot.ensure_index,
+                "sqlite cold store": warm_cold._connect,
+            },
+        )
 
     # Import only Signal adapter — WebSocket + Voice are delivered by the channels process
     import core.notifications.adapters.signal
@@ -381,6 +398,8 @@ async def run(config: AlfredConfig) -> None:
                     pass  # xautoclaim not supported on older Redis — skip gracefully
     finally:
         log.info("Shutting down Conscious Engine...")
+        if warmup_task is not None:
+            warmup_task.cancel()
         writer_task.cancel()
         if librarian_task is not None:
             librarian_task.cancel()

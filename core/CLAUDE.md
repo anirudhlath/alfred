@@ -45,7 +45,7 @@ Proactive actions created by LLM at runtime.
 ```mermaid
 graph LR
     Tick[1s Tick Loop] --> Eval[_evaluate_all]
-    Event[Event Listener<br/>alfred:events] --> Eval
+    Event[Event Listener<br/>alfred:home:state_changed] --> Eval
     Eval --> Fire{trigger.action?}
     Fire -->|set| AR[ActionRequest → alfred:actions]
     Fire -->|None| TF[TriggerFired → alfred:events]
@@ -95,7 +95,7 @@ Agentic tool-use loop with parallel execution (`asyncio.gather`).
 
 ## Channels (`channels/`) — User-Facing I/O
 
-- `web_server.py` — FastAPI + WebSocket on port 8081, lazy-loads STT/TTS, onboarding wizard, session persistence, iOS channel support, device registration, trusted network auth
+- `web_server.py` — FastAPI + WebSocket on port 8081, STT/TTS loaded off the event loop (async getters + background warmup, `asyncio.to_thread` for transcribe/synthesize), onboarding wizard, session persistence, iOS channel support, device registration, trusted network auth
 - `signal_bridge/` — Signal CLI subprocess, forwards inbound → `USER_REQUESTS_STREAM`, outbound via adapter
 - `__main__.py` — Port retry (5 attempts on EADDRINUSE with exponential backoff)
 
@@ -144,7 +144,7 @@ uv run python -m core.channels   # Web + Signal channels
 
 - Memory tools are INTERNAL — dispatched in-process, NOT via BaseFeature/SDK/ToolRegistry
 - `ContextIndexManager.search_text()` embeds query internally — callers don't need separate EmbeddingProvider
-- `SentenceTransformerProvider._load()` blocks on first call — consider warmup at startup
+- `SentenceTransformerProvider._load()` is thread-safe and blocks on first call — services warm it via `core/warmup.py` (`start_warmup()`) background tasks at startup
 - Trigger type modules must be imported before use to trigger `@TriggerRegistry.register_type()` decorators
 - Channel adapter modules must be imported to trigger `@ChannelRegistry.register()` decorators
 - Web server uses `_FAILED` sentinel to avoid repeated import failures on lazy-load

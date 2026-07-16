@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
@@ -33,26 +34,32 @@ class SentenceTransformerProvider(EmbeddingProvider):
     def __init__(self, model_name: str = "google/embeddinggemma-300m") -> None:
         self._model_name = model_name
         self._model: SentenceTransformer | None = None
+        # embed()/embed_batch() run _load() via asyncio.to_thread — a startup
+        # warmup racing the first request must not load the model twice.
+        self._load_lock = threading.Lock()
 
     def _load(self) -> SentenceTransformer:
-        if self._model is None:
-            from sentence_transformers import SentenceTransformer
+        with self._load_lock:
+            if self._model is None:
+                from sentence_transformers import SentenceTransformer
 
-            try:
-                self._model = SentenceTransformer(self._model_name)
-                logger.info(
-                    "Loaded embedding model: %s (dim=%d)",
-                    self._model_name,
-                    self.dimension(),
-                )
-            except Exception:
-                logger.error(
-                    "Failed to load embedding model %s",
-                    self._model_name,
-                    exc_info=True,
-                )
-                raise
-        return self._model
+                try:
+                    self._model = SentenceTransformer(self._model_name)
+                    # Read dim off the model directly — self.dimension() would
+                    # re-enter _load() and deadlock on the (non-reentrant) lock.
+                    logger.info(
+                        "Loaded embedding model: %s (dim=%s)",
+                        self._model_name,
+                        self._model.get_sentence_embedding_dimension(),
+                    )
+                except Exception:
+                    logger.error(
+                        "Failed to load embedding model %s",
+                        self._model_name,
+                        exc_info=True,
+                    )
+                    raise
+            return self._model
 
     def embed_sync(self, text: str) -> list[float]:
         model = self._load()

@@ -42,13 +42,14 @@ def test_create_app_stores_redis_url() -> None:
 
 def test_app_has_websocket_route() -> None:
     app = create_app()
-    routes = [r.path for r in app.routes]  # type: ignore[union-attr]
+    # Newer FastAPI adds non-path router objects to app.routes — filter them.
+    routes = [path for r in app.routes if (path := getattr(r, "path", None)) is not None]
     assert "/ws" in routes
 
 
 def test_app_has_health_route() -> None:
     app = create_app()
-    routes = [r.path for r in app.routes]  # type: ignore[union-attr]
+    routes = [path for r in app.routes if (path := getattr(r, "path", None)) is not None]
     assert "/health" in routes
 
 

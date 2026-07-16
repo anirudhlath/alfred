@@ -19,6 +19,7 @@ from core.memory.ingestor import run_ingestor
 from core.memory.redis_vector_store import RedisVectorStore
 from core.memory.significance import SignificanceScorer
 from core.memory.sqlite_vec_store import SqliteVecStore
+from core.warmup import start_warmup
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
 
@@ -51,9 +52,21 @@ async def run(config: AlfredConfig) -> None:
     episodic = EpisodicMemory(hot=hot, cold=cold, embedder=embedder)
     scorer = SignificanceScorer(redis=r, config=config)
 
+    # Load memory components in the background — the first observation then
+    # skips the embedding-model lazy-load hit.
+    warmup_task = start_warmup(
+        "memory-ingestor",
+        {
+            "embedding model": lambda: embedder.embed("warmup"),
+            "redis vector index": hot.ensure_index,
+            "sqlite cold store": cold._connect,
+        },
+    )
+
     try:
         await run_ingestor(r, episodic, scorer, shutdown_event=_shutdown)
     finally:
+        warmup_task.cancel()
         await r.aclose()
 
 
