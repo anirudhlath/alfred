@@ -208,4 +208,4 @@ All configuration via environment variables (`.env` file auto-loaded):
 
 [AGPL-3.0-or-later](LICENSE) © 2025–2026 Anirudh Lath
 
-Versions up to and including v0.1.0 were released under MIT; all later versions are AGPL-3.0-or-later. Contributions are accepted under the same license with a [DCO](CONTRIBUTING.md) sign-off.
+Briefly published under MIT during initial release prep (July 13–15, 2026); relicensed to AGPL-3.0-or-later on 2026-07-15. Contributions are accepted under the same license with a [DCO](CONTRIBUTING.md) sign-off.
