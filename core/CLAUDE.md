@@ -99,7 +99,7 @@ Agentic tool-use loop with parallel execution (`asyncio.gather`).
 - `signal_bridge/` — Signal CLI subprocess, forwards inbound → `USER_REQUESTS_STREAM`, outbound via adapter
 - `satellite/` — Wyoming voice satellite bridge (physical devices, not the web/iOS voice pipeline): `config.py` (fleet loader, `SATELLITES_CONFIG`), `endpointing.py` (streaming VAD via `pysilero-vad`, `UtteranceCollector`), `bridge.py` (`SatelliteConnection`/`SatelliteBridge` — one persistent reconnecting TCP client per device), `pipeline.py` (`SatellitePipeline`: STT → Conscious round-trip → TTS). See `docs/voice-satellites.md`
 - `request_bus.py` — `publish_and_wait()`: shared XADD-then-XREAD request/response helper, used by both the WebSocket handler and `SatellitePipeline`
-- `voice_models.py` — shared lazy Whisper/Piper/SpeakerID loaders for the channels process (`_aget_stt`, `_aget_tts`, `aget_speaker_id`)
+- `voice_models.py` — shared lazy Whisper/Piper/SpeakerID loaders for the channels process (`aget_stt`, `aget_tts`, `aget_speaker_id`)
 - `__main__.py` — Port retry (5 attempts on EADDRINUSE with exponential backoff)
 
 ## Notifications (`notifications/`) — Proactive System
