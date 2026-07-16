@@ -26,6 +26,9 @@ if TYPE_CHECKING:
 from bus.schemas.events import UserRequest
 from core.channels.admin_api import create_admin_router, require_authenticated
 from core.channels.request_bus import publish_and_wait
+from core.channels.satellite.bridge import SatelliteBridge
+from core.channels.satellite.config import load_satellites
+from core.channels.satellite.pipeline import SatellitePipeline
 from core.channels.telemetry_ws import register_telemetry_ws
 from core.channels.voice_models import (  # re-exported for tests/__main__ (see __all__)
     _FAILED,
@@ -42,6 +45,8 @@ from core.identity.auth_middleware import AuthCookieMiddleware
 from core.identity.auth_routes import create_auth_router
 from core.identity.credentials import CredentialStore
 from core.identity.ws_auth import require_ws_auth
+from core.notifications.adapters.satellite import SatelliteChannelAdapter
+from core.notifications.channels import ChannelRegistry
 from core.warmup import start_warmup
 
 # mypy --strict (no_implicit_reexport): mark the voice_models re-imports above as
@@ -264,13 +269,33 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
 
     warmup_task = start_warmup("channels", {"whisper stt": _warm_stt, "piper tts": _warm_tts})
 
+    # Satellite bridge — physical voice devices (see docs/voice-satellites.md)
+    satellite_bridge: SatelliteBridge | None = None
+    satellites = load_satellites()
+    if satellites:
+        speaker_id = await aget_speaker_id(pool)
+        pipeline = SatellitePipeline(
+            pool, get_stt=_aget_stt, get_tts=_aget_tts, speaker_id=speaker_id
+        )
+        satellite_bridge = SatelliteBridge(satellites, pipeline)
+        satellite_bridge.start()
+        app.state.satellite_bridge = satellite_bridge
+        ChannelRegistry.set_instance(
+            "satellite",
+            SatelliteChannelAdapter(
+                get_bridge=lambda: getattr(app.state, "satellite_bridge", None),
+                get_tts=_get_tts,
+            ),
+        )
+
     yield
 
     shutdown.set()
     delivery_task.cancel()
     warmup_task.cancel()
 
-    from core.notifications.channels import ChannelRegistry
+    if satellite_bridge is not None:
+        await satellite_bridge.stop()
 
     apns = ChannelRegistry.get_instance("apns")
     if apns is not None and hasattr(apns, "close"):
