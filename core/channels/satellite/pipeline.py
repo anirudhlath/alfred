@@ -10,6 +10,7 @@ from loguru import logger
 from bus.schemas.events import UserRequest
 from core.channels.request_bus import publish_and_wait
 from core.channels.satellite.audio import pcm_to_wav
+from core.conscious.identity import IDENTITY_SIR
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -36,6 +37,11 @@ class SatellitePipeline:
         self._request_timeout = request_timeout
 
     async def __call__(self, conn: SatelliteConnection, pcm: bytes) -> None:
+        # Wyoming end-of-turn ordering is shared knowledge with bridge.py's
+        # "public send API" (see the comment there) — change both files
+        # together: Transcript stops mic streaming and re-arms the satellite;
+        # Error also stops it; reply audio then rides as a bare
+        # AudioStart/AudioChunk/AudioStop stream, with no wrapping event.
         entry = conn.entry
 
         stt = await self._get_stt()
@@ -55,7 +61,7 @@ class SatellitePipeline:
             return
         logger.info("Satellite '{}' heard: {}", entry.name, text)
 
-        identity_claim: str = "sir"
+        identity_claim: str = IDENTITY_SIR
         identity_confidence: float | None = None
         if self._speaker_id is not None:
             try:

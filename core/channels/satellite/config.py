@@ -31,6 +31,8 @@ def load_satellites(path: Path | None = None) -> list[SatelliteEntry]:
         logger.info("No satellite config at {} — satellite bridge disabled", resolved)
         return []
     raw = yaml.safe_load(resolved.read_text()) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"Invalid satellite config {resolved}: top level must be a mapping")
     try:
         entries = [SatelliteEntry.model_validate(item) for item in raw.get("satellites", [])]
     except ValidationError as exc:

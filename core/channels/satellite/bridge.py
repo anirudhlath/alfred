@@ -191,6 +191,19 @@ class SatelliteConnection:
             await self._client.write_event(event)
 
     # -- public send API (used by the pipeline handler + announcements) --
+    #
+    # Wyoming end-of-turn ordering is shared knowledge with
+    # core/channels/satellite/pipeline.py's SatellitePipeline.__call__ (see
+    # the comment there) — change both files together: Transcript
+    # (send_transcript) stops mic streaming and re-arms the satellite; Error
+    # (send_error) also stops it; reply audio then rides as a bare
+    # AudioStart/AudioChunk/AudioStop stream (play_wav), no wrapping event.
+    #
+    # Known v1 limitation: a re-wake during a slow in-flight handler (LLM
+    # round-trip up to the pipeline's request_timeout) can queue a second
+    # reply on this connection — _audio_lock serializes the two play_wav()
+    # calls so they don't interleave on the wire, but there's no cancellation
+    # of the first reply. Multi-turn follow-up handling will revisit this.
 
     async def send_transcript(self, text: str) -> None:
         """End-of-command signal: satellite stops streaming and re-arms."""

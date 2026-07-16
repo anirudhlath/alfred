@@ -52,6 +52,7 @@ voice = [
     "piper-tts>=1.2",
     "pysilero-vad>=3.4",
     "speechbrain>=1.1",
+    "numpy>=1.26",  # core/voice/speaker_id.py imports it directly
 ]
 evals = [
     "deepeval>=1.0",

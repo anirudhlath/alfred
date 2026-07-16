@@ -89,18 +89,30 @@ def _get_speaker_id_cls() -> Any:
     return SpeakerID
 
 
+# Guards construct-and-cache the same way _voice_load_lock guards get_stt/get_tts:
+# without it, two concurrent first callers could each build their own SpeakerID
+# (each would later load its own ECAPA model). A dedicated lock (not
+# _voice_load_lock) so speaker-ID construction never queues behind a slow
+# STT/TTS model load.
+_speaker_id_lock = asyncio.Lock()
+
+
 async def aget_speaker_id(redis: Any) -> Any | None:
     """Shared SpeakerID singleton, or None if the voice extra is unavailable."""
     cached = _lazy_cache.get("speaker_id")
-    if cached is _FAILED:
-        return None
     if cached is not None:
-        return cached
-    try:
-        instance = _get_speaker_id_cls()(redis)
-    except ImportError:
-        logger.warning("speechbrain not installed — speaker ID disabled")
-        _lazy_cache["speaker_id"] = _FAILED
-        return None
-    _lazy_cache["speaker_id"] = instance
-    return instance
+        return None if cached is _FAILED else cached
+    async with _speaker_id_lock:
+        # Double-check: another caller may have constructed it while we
+        # waited for the lock.
+        cached = _lazy_cache.get("speaker_id")
+        if cached is not None:
+            return None if cached is _FAILED else cached
+        try:
+            instance = _get_speaker_id_cls()(redis)
+        except ImportError:
+            logger.warning("speechbrain not installed — speaker ID disabled")
+            _lazy_cache["speaker_id"] = _FAILED
+            return None
+        _lazy_cache["speaker_id"] = instance
+        return instance

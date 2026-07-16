@@ -50,3 +50,12 @@ def test_duplicate_names_raise(tmp_path: Path) -> None:
     cfg.write_text("satellites:\n  - name: a\n    host: h1\n  - name: a\n    host: h2\n")
     with pytest.raises(ValueError):
         load_satellites(cfg)
+
+
+def test_non_mapping_root_raises(tmp_path: Path) -> None:
+    """A YAML file whose top level is a list (not a mapping) must raise, not
+    crash later on `.get("satellites", ...)` (AttributeError on a list)."""
+    cfg = tmp_path / "list-root.yaml"
+    cfg.write_text("- name: a\n  host: h1\n")
+    with pytest.raises(ValueError):
+        load_satellites(cfg)

@@ -122,3 +122,33 @@ async def test_aget_tts_returns_none_when_unavailable(
     assert await web_server.aget_tts() is None
     # Cached failure short-circuits without re-entering the loader
     assert await web_server.aget_tts() is None
+
+
+@pytest.mark.asyncio
+async def test_aget_speaker_id_double_checks_cache_after_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two concurrent first calls must not each build their own SpeakerID
+    (each would later load its own ECAPA model). A caller that loses the race
+    for the module-level lock must re-check the cache once it acquires it,
+    rather than constructing a second instance."""
+    constructions = 0
+
+    class _FakeSpeakerID:
+        def __init__(self, redis: Any) -> None:
+            nonlocal constructions
+            constructions += 1
+
+    monkeypatch.setattr(voice_models, "_get_speaker_id_cls", lambda: _FakeSpeakerID)
+
+    sentinel = object()
+    async with voice_models._speaker_id_lock:
+        task = asyncio.create_task(voice_models.aget_speaker_id(redis=None))
+        await asyncio.sleep(0)  # let the task start and block waiting for the lock
+        # Simulate a winner (holding the lock) already having cached an instance.
+        voice_models._lazy_cache["speaker_id"] = sentinel
+
+    result = await task
+
+    assert result is sentinel
+    assert constructions == 0  # double-check found the cache — didn't build a second one
