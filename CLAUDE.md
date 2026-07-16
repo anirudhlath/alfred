@@ -175,7 +175,7 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 
 ## Gotchas
 
-- `redis.asyncio.Redis` methods return `Awaitable[T] | T` under the current redis stubs — `hset`/`hdel`/`xadd` awaits need NO ignore (e.g. `core/reflex/runner.py`, `sdk/alfred_sdk/client.py`); `xreadgroup` awaits still need `# type: ignore[assignment,misc,unused-ignore]` (see the worker in `core/channels/service_credentials.py`, also `core/notifications/delivery.py`)
+- `redis.asyncio.Redis` methods return `Awaitable[T] | T` under the current redis stubs — `hset`/`hdel`/`xadd` awaits need NO ignore (e.g. `core/reflex/runner.py`, `sdk/alfred_sdk/client.py`); for `xreadgroup`/`xread`/`xrevrange`, use `read_group`/`read`/`revrange` from `shared.redis_streams` — the ignore lives there once
 - Import `AioRedis` type alias from `shared.types` — never redefine as `Any`
 - Import `ensure_consumer_group` from `core.reflex.runner` — never reimplement inline
 - Import stream constants from `shared.streams` — never hardcode `"alfred:events"` etc.

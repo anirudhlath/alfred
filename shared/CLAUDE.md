@@ -6,6 +6,7 @@ Cross-cutting utilities used by multiple top-level packages (core, bus, domains)
 
 - `config.py` — `AlfredConfig` frozen dataclass (30+ fields), `from_env()` loads `.env` via python-dotenv
 - `streams.py` — Redis stream/key constants (21 constants — single source of truth)
+- `redis_streams.py` — `StreamBatch` type alias + typed `read_group()`/`read()`/`revrange()` wrappers around `xreadgroup`/`xread`/`xrevrange` (owns the one stub-gap `# type: ignore` per wrapper)
 - `secrets.py` — Keyring wrapper: `get_secret()` / `set_secret()` + async versions (`aget_secret()` etc.) via `asyncio.to_thread()`
 - `types.py` — `AioRedis` type alias (canonical location for cross-package use)
 - `fs.py` — `atomic_write()` via mkstemp + rename (safe concurrent writes)

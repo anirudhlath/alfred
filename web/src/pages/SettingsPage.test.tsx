@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { SettingsPage } from "./SettingsPage";
+import { HOME_SERVICE_INTEGRATION as HOME_SERVICE } from "./__fixtures__/integrations";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -58,35 +59,6 @@ const WEATHER = {
     },
   },
   configured: { api_key: true, city: false },
-};
-
-const HOME_SERVICE = {
-  name: "home-service",
-  category: "service",
-  kind: "service",
-  schema: {
-    fields: {
-      url: {
-        label: "Home Assistant URL",
-        field_type: "url",
-        required: true,
-        placeholder: "",
-        default: "http://homeassistant.local:8123",
-        help_text: "",
-        transient: false,
-      },
-      token: {
-        label: "Access Token",
-        field_type: "password",
-        required: true,
-        placeholder: "",
-        default: "",
-        help_text: "",
-        transient: false,
-      },
-    },
-  },
-  configured: { url: false, token: false },
 };
 
 const INTEGRATIONS = [WEATHER];

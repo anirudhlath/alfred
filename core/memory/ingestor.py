@@ -16,6 +16,7 @@ from loguru import logger
 
 from bus.schemas.events import ReflexObservation
 from core.memory.schemas import EpisodicEntry, SignificanceScore
+from shared.redis_streams import read_group
 from shared.streams import REFLEX_OBSERVATIONS_STREAM, decode_stream_value
 
 if TYPE_CHECKING:
@@ -96,12 +97,8 @@ async def run_ingestor(
     logger.info("Memory Ingestor started. Consuming '{}'...", REFLEX_OBSERVATIONS_STREAM)
 
     while not (shutdown_event and shutdown_event.is_set()):
-        entries: list[
-            tuple[
-                bytes | str,
-                list[tuple[bytes | str, dict[bytes | str, bytes | str]]],
-            ]
-        ] = await redis.xreadgroup(  # type: ignore[assignment,misc,unused-ignore]
+        entries = await read_group(
+            redis,
             GROUP,
             CONSUMER,
             {REFLEX_OBSERVATIONS_STREAM: ">"},

@@ -34,6 +34,7 @@ from core.triggers.store import TriggerStore
 from sdk.alfred_sdk.client import AlfredClient
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
+from shared.redis_streams import read_group
 from shared.streams import ACTIONS_STREAM, HOME_STATE_STREAM, decode_stream_value
 
 logger = logging.getLogger(__name__)
@@ -102,10 +103,8 @@ async def actions_loop(store: TriggerStore, engine: TriggerEngine, r: AioRedis) 
 
     while not _shutdown.is_set():
         try:
-            entries: list[
-                tuple[bytes | str, list[tuple[bytes | str, dict[bytes | str, bytes | str]]]]
-            ] = await r.xreadgroup(  # type: ignore[assignment,misc,unused-ignore]
-                ACTIONS_GROUP, ACTIONS_CONSUMER, {ACTIONS_STREAM: ">"}, count=10, block=5000
+            entries = await read_group(
+                r, ACTIONS_GROUP, ACTIONS_CONSUMER, {ACTIONS_STREAM: ">"}, count=10, block=5000
             )
         except Exception as e:
             if not _shutdown.is_set():
@@ -208,10 +207,8 @@ async def event_loop(
 
     while not _shutdown.is_set():
         try:
-            entries: list[
-                tuple[bytes | str, list[tuple[bytes | str, dict[bytes | str, bytes | str]]]]
-            ] = await r.xreadgroup(  # type: ignore[assignment,misc,unused-ignore]
-                GROUP, CONSUMER, {HOME_STATE_STREAM: ">"}, count=10, block=5000
+            entries = await read_group(
+                r, GROUP, CONSUMER, {HOME_STATE_STREAM: ">"}, count=10, block=5000
             )
         except Exception as e:
             logger.error("Event read error: %s", e)

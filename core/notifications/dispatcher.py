@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from core.notifications.schema import Notification, Urgency
 from shared.streams import DEFERRED_NOTIFICATIONS_KEY, NOTIFICATION_DISPATCH_STREAM
@@ -68,15 +68,11 @@ class NotificationDispatcher:
 
         logger.info("Draining %d deferred notifications", count)
         while True:
-            raw: bytes | str | list[bytes | str] | None = await self._redis.lpop(
-                DEFERRED_NOTIFICATIONS_KEY
-            )
-            if raw is None:
-                break
+            raw = cast("bytes | str | None", await self._redis.lpop(DEFERRED_NOTIFICATIONS_KEY))
             # No `count` passed above, so a real reply is a single item, never a
             # list — the stub's list[...] branch only applies to the count= form.
-            if isinstance(raw, list):
-                raw = raw[0]
+            if raw is None:
+                break
             notification = Notification.model_validate_json(raw)
             await self._deliver(notification)
 

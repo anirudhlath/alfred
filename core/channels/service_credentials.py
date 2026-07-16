@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -26,8 +27,10 @@ from loguru import logger
 from pydantic import ValidationError
 
 from bus.schemas.events import ServiceRegistered
+from core.channels.stream_catalog import decode_entry
 from core.integrations.base import CredentialSchema
 from core.reflex.runner import ensure_consumer_group
+from shared.redis_streams import read_group
 from shared.secrets import aget_all_secrets
 from shared.streams import EVENTS_STREAM, TOOL_REGISTRY_KEY, decode_stream_value
 
@@ -40,8 +43,20 @@ CREDENTIAL_PUSH_GROUP = "channels-credentials"
 # ── registry reads ──
 
 
-def _parse_manifest(name: str, raw: bytes | str) -> dict[str, Any] | None:
-    """Decode one registry manifest; None (logged) if malformed or without a usable schema."""
+@dataclass(frozen=True)
+class ServiceCredentialManifest:
+    """A registry manifest paired with its already-validated credentials_schema.
+
+    ``_parse_manifest`` validates ``credentials_schema`` exactly once per read;
+    callers use ``.schema`` instead of re-parsing ``.manifest["credentials_schema"]``.
+    """
+
+    manifest: dict[str, Any]
+    schema: CredentialSchema
+
+
+def _parse_manifest(name: str, raw: bytes | str) -> ServiceCredentialManifest | None:
+    """Decode + validate one registry manifest; None (logged) if malformed or unusable."""
     try:
         decoded: Any = json.loads(decode_stream_value(raw))
     except (TypeError, json.JSONDecodeError):
@@ -55,17 +70,17 @@ def _parse_manifest(name: str, raw: bytes | str) -> dict[str, Any] | None:
     if not schema_dict:
         return None
     try:
-        CredentialSchema.model_validate(schema_dict)
+        schema = CredentialSchema.model_validate(schema_dict)
     except ValidationError:
         logger.error("Malformed credentials_schema in registry for service '{}'", name)
         return None
-    return manifest
+    return ServiceCredentialManifest(manifest=manifest, schema=schema)
 
 
-async def list_service_manifests(redis: AioRedis) -> dict[str, dict[str, Any]]:
+async def list_service_manifests(redis: AioRedis) -> dict[str, ServiceCredentialManifest]:
     """All registry manifests that declare a valid credentials_schema, keyed by service name."""
     raw: dict[bytes | str, bytes | str] = await redis.hgetall(TOOL_REGISTRY_KEY)
-    manifests: dict[str, dict[str, Any]] = {}
+    manifests: dict[str, ServiceCredentialManifest] = {}
     for key, value in raw.items():
         name = key.decode() if isinstance(key, bytes) else key
         manifest = _parse_manifest(name, value)
@@ -74,17 +89,12 @@ async def list_service_manifests(redis: AioRedis) -> dict[str, dict[str, Any]]:
     return manifests
 
 
-async def get_service_manifest(redis: AioRedis, name: str) -> dict[str, Any] | None:
+async def get_service_manifest(redis: AioRedis, name: str) -> ServiceCredentialManifest | None:
     """One registry manifest; None if absent, malformed, or without a credentials_schema."""
     raw = await redis.hget(TOOL_REGISTRY_KEY, name)
     if raw is None:
         return None
     return _parse_manifest(name, raw)
-
-
-def parse_schema(manifest: dict[str, Any]) -> CredentialSchema:
-    """Parse a manifest's credentials_schema into the core CredentialSchema model."""
-    return CredentialSchema.model_validate(manifest["credentials_schema"])
 
 
 # ── validation (shared by adapter + service PUT paths) ──
@@ -104,17 +114,18 @@ def validate_credential_body(schema: CredentialSchema, body: dict[str, str]) -> 
         raise HTTPException(status_code=422, detail=f"Missing required fields: {missing}")
 
 
-# ── GET /api/integrations entry (contract C5) ──
+# ── GET /api/integrations entry (contract C5) — shared by adapters + services ──
 
 
-async def build_service_info(name: str, manifest: dict[str, Any]) -> dict[str, Any]:
-    """Build a merged-integrations entry for a registry-declared service."""
-    schema = parse_schema(manifest)
+async def build_integration_entry(
+    name: str, category: str, kind: str, schema: CredentialSchema
+) -> dict[str, Any]:
+    """Build one merged-integrations entry (adapter or registry-declared service)."""
     stored = await aget_all_secrets(name, list(schema.fields))
     return {
         "name": name,
-        "category": "service",
-        "kind": "service",
+        "category": category,
+        "kind": kind,
         "schema": schema.model_dump(),
         "configured": {f: f in stored for f in schema.fields},
     }
@@ -170,17 +181,10 @@ async def _handle_event_entry(
     entry_data: dict[bytes | str, bytes | str],
 ) -> None:
     """Process one alfred:events entry; push credentials for ServiceRegistered."""
-    raw = entry_data.get("event") or entry_data.get(b"event")
-    if raw is None:
-        return
-
-    try:
-        payload = json.loads(decode_stream_value(raw))
-    except json.JSONDecodeError:
-        return
-    if not isinstance(payload, dict):
-        return
+    payload = decode_entry(entry_data)
     # alfred:events also carries TriggerFired/TriggerCreated — only act on ours.
+    # decode_entry falls back to a dict without "event_type" for garbage/missing
+    # payloads, so this check also covers the malformed-entry case (no crash).
     if payload.get("event_type") != "service_registered":
         return
 
@@ -196,7 +200,7 @@ async def _handle_event_entry(
         )
         return
 
-    fields = await stored_pushable_credentials(event.service_name, parse_schema(manifest))
+    fields = await stored_pushable_credentials(event.service_name, manifest.schema)
     if fields is None:
         logger.info("No stored credentials for '{}' — skipping push", event.service_name)
         return
@@ -231,13 +235,8 @@ async def credential_push_worker(
 
     while not _shutdown.is_set():
         try:
-            entries: list[
-                tuple[
-                    bytes | str,
-                    list[tuple[bytes | str, dict[bytes | str, bytes | str]]],
-                ]
-            ] = await redis.xreadgroup(  # type: ignore[assignment,misc,unused-ignore]
-                CREDENTIAL_PUSH_GROUP, consumer, {EVENTS_STREAM: ">"}, count=10, block=5000
+            entries = await read_group(
+                redis, CREDENTIAL_PUSH_GROUP, consumer, {EVENTS_STREAM: ">"}, count=10, block=5000
             )
 
             for _stream_key, stream_entries in entries:

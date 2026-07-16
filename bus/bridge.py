@@ -15,6 +15,9 @@ from typing import TYPE_CHECKING, Any
 import redis.asyncio as aioredis
 from aiomqtt import Client as MqttClient
 
+from shared.redis_streams import read
+from shared.streams import decode_stream_value
+
 if TYPE_CHECKING:
     from shared.types import AioRedis
 
@@ -102,25 +105,14 @@ async def _redis_to_mqtt_loop(
 ) -> None:
     """Listen for Redis Stream entries and forward to MQTT."""
     # Redis xread IDs keyed by stream name → last-seen entry ID ("0" = from beginning)
-    last_ids: dict[bytes | str | memoryview[int], int | bytes | str | memoryview[int]] = {
-        s: "0" for s in streams
-    }
+    last_ids: dict[str, str] = {s: "0" for s in streams}
     while True:
-        results: list[
-            tuple[bytes | str, list[tuple[bytes | str, dict[bytes | str, bytes | str]]]]
-        ] = await redis.xread(  # type: ignore[assignment,misc,unused-ignore]
-            last_ids, block=1000
-        )
+        results = await read(redis, last_ids, block=1000)
         for stream_key_raw, entries in results:
-            stream_key = (
-                stream_key_raw.decode() if isinstance(stream_key_raw, bytes) else stream_key_raw
-            )
+            stream_key = decode_stream_value(stream_key_raw)
             for entry_id, data in entries:
                 decoded: dict[str, str] = {
-                    (k.decode() if isinstance(k, bytes) else k): (
-                        v.decode() if isinstance(v, bytes) else v
-                    )
-                    for k, v in data.items()
+                    decode_stream_value(k): decode_stream_value(v) for k, v in data.items()
                 }
                 await forward_redis_to_mqtt(mqtt, stream_key, decoded)
-                last_ids[stream_key] = entry_id
+                last_ids[stream_key] = decode_stream_value(entry_id)

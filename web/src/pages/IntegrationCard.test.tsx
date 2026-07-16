@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { IntegrationCard } from "./IntegrationCard";
 import type { IntegrationInfo } from "@/lib/types";
+import { HOME_SERVICE_INTEGRATION } from "./__fixtures__/integrations";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -49,35 +50,6 @@ const WEATHER_INTEGRATION: IntegrationInfo = {
     },
   },
   configured: { api_key: true, city: false },
-};
-
-const HOME_SERVICE_INTEGRATION: IntegrationInfo = {
-  name: "home-service",
-  category: "service",
-  kind: "service",
-  schema: {
-    fields: {
-      url: {
-        label: "Home Assistant URL",
-        field_type: "url",
-        required: true,
-        placeholder: "",
-        default: "http://homeassistant.local:8123",
-        help_text: "",
-        transient: false,
-      },
-      token: {
-        label: "Access Token",
-        field_type: "password",
-        required: true,
-        placeholder: "",
-        default: "",
-        help_text: "Long-lived access token from your HA profile page",
-        transient: false,
-      },
-    },
-  },
-  configured: { url: false, token: false },
 };
 
 // ---------------------------------------------------------------------------

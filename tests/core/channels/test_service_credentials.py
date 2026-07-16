@@ -13,18 +13,30 @@ from fastapi import HTTPException
 
 from bus.schemas.events import ServiceRegistered, TriggerFired
 from core.channels.service_credentials import (
-    build_service_info,
+    build_integration_entry,
     credential_push_worker,
     get_service_manifest,
     list_service_manifests,
-    parse_schema,
     push_credentials,
     service_payload_healthy,
     stored_pushable_credentials,
     validate_credential_body,
 )
 from core.channels.web_server import create_app
+from core.integrations.base import CredentialSchema
 from shared.streams import EVENTS_STREAM
+
+
+def _schema_of(manifest: dict[str, Any]) -> CredentialSchema:
+    """Parse a raw manifest fixture's credentials_schema for tests.
+
+    Production code validates a manifest's schema exactly once, via
+    ``_parse_manifest`` / ``ServiceCredentialManifest`` — this mirrors that
+    parsing for tests that start from a hand-built manifest dict rather than
+    a ``ServiceCredentialManifest`` returned by ``get_service_manifest``.
+    """
+    return CredentialSchema.model_validate(manifest["credentials_schema"])
+
 
 # ── registry reads ──
 
@@ -52,7 +64,10 @@ async def test_list_service_manifests_filters_and_survives_garbage(
     )
     manifests = await list_service_manifests(redis)
     assert set(manifests) == {"home-service"}
-    assert manifests["home-service"]["credentials_endpoint"] == "http://localhost:8000/credentials"
+    assert (
+        manifests["home-service"].manifest["credentials_endpoint"]
+        == "http://localhost:8000/credentials"
+    )
 
 
 @pytest.mark.asyncio
@@ -85,7 +100,7 @@ async def test_get_service_manifest_found(home_service_manifest: dict[str, Any])
     redis.hget = AsyncMock(return_value=json.dumps(home_service_manifest).encode())
     manifest = await get_service_manifest(redis, "home-service")
     assert manifest is not None
-    assert manifest["service_name"] == "home-service"
+    assert manifest.manifest["service_name"] == "home-service"
 
 
 @pytest.mark.asyncio
@@ -110,16 +125,17 @@ async def test_get_service_manifest_none_without_schema() -> None:
 async def test_sdk_manifest_round_trips_through_core_parsing() -> None:
     """Build a manifest with a *real* AlfredClient (not the hand-rolled
     home_service_manifest fixture) and feed it through the exact core parsing
-    path (get_service_manifest → _parse_manifest → build_service_info).
+    path (get_service_manifest → _parse_manifest → build_integration_entry).
 
     The SDK never imports core (and vice versa) — the wire contract is JSON,
     so fixtures on each side can silently drift from what the other side
     actually produces/consumes. This test makes that drift impossible by
     exercising both ends for real.
     """
-    from sdk.alfred_sdk import AlfredClient, CredentialField, CredentialSchema
+    from sdk.alfred_sdk import AlfredClient, CredentialField
+    from sdk.alfred_sdk import CredentialSchema as SdkCredentialSchema
 
-    schema = CredentialSchema(
+    schema = SdkCredentialSchema(
         fields={
             "url": CredentialField(label="Home Assistant URL", field_type="url"),
             "token": CredentialField(label="Access Token", field_type="password"),
@@ -137,9 +153,9 @@ async def test_sdk_manifest_round_trips_through_core_parsing() -> None:
     redis.hget = AsyncMock(return_value=manifest_json)
     manifest = await get_service_manifest(redis, "home-service")
     assert manifest is not None
-    assert manifest["credentials_endpoint"] == "http://localhost:8000/credentials"
+    assert manifest.manifest["credentials_endpoint"] == "http://localhost:8000/credentials"
 
-    info = await build_service_info("home-service", manifest)
+    info = await build_integration_entry("home-service", "service", "service", manifest.schema)
     assert set(info["schema"]["fields"]) == {"url", "token"}
     assert info["schema"]["fields"]["url"]["field_type"] == "url"
     assert info["schema"]["fields"]["token"]["field_type"] == "password"
@@ -149,7 +165,7 @@ async def test_sdk_manifest_round_trips_through_core_parsing() -> None:
 
 
 def test_validate_credential_body_rejects_unknown(home_service_manifest: dict[str, Any]) -> None:
-    schema = parse_schema(home_service_manifest)
+    schema = _schema_of(home_service_manifest)
     with pytest.raises(HTTPException) as exc_info:
         validate_credential_body(schema, {"url": "http://x", "token": "t", "bogus": "v"})
     assert exc_info.value.status_code == 422
@@ -158,14 +174,14 @@ def test_validate_credential_body_rejects_unknown(home_service_manifest: dict[st
 def test_validate_credential_body_rejects_missing_required(
     home_service_manifest: dict[str, Any],
 ) -> None:
-    schema = parse_schema(home_service_manifest)
+    schema = _schema_of(home_service_manifest)
     with pytest.raises(HTTPException) as exc_info:
         validate_credential_body(schema, {"url": "http://x"})
     assert exc_info.value.status_code == 422
 
 
 def test_validate_credential_body_accepts_complete(home_service_manifest: dict[str, Any]) -> None:
-    schema = parse_schema(home_service_manifest)
+    schema = _schema_of(home_service_manifest)
     validate_credential_body(schema, {"url": "http://x", "token": "t"})  # no raise
 
 
@@ -177,7 +193,8 @@ async def test_build_service_info_shape(home_service_manifest: dict[str, Any]) -
     from shared.secrets import set_secret
 
     set_secret("home-service", "url", "http://192.168.50.159:8123")
-    info = await build_service_info("home-service", home_service_manifest)
+    schema = _schema_of(home_service_manifest)
+    info = await build_integration_entry("home-service", "service", "service", schema)
     assert info["name"] == "home-service"
     assert info["kind"] == "service"
     assert info["category"] == "service"
@@ -194,7 +211,7 @@ async def test_stored_pushable_credentials_requires_all_required(
 ) -> None:
     from shared.secrets import set_secret
 
-    schema = parse_schema(home_service_manifest)
+    schema = _schema_of(home_service_manifest)
     assert await stored_pushable_credentials("home-service", schema) is None
 
     set_secret("home-service", "url", "http://192.168.50.159:8123")
