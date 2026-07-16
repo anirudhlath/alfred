@@ -200,9 +200,12 @@ All configuration via environment variables (`.env` file auto-loaded):
 
 ## Related Repos
 
-- `alfred-home-service` — Home Assistant wrapper microservice built on `alfred-sdk` (not yet public)
+- [`alfred-home-service`](https://github.com/anirudhlath/alfred-home-service) — Home Assistant wrapper microservice built on `alfred-sdk`
+- [`alfred-ios`](https://github.com/anirudhlath/alfred-ios) — SwiftUI voice + chat companion app
 - `alfred-signal-bridge` — Signal messaging channel (not yet public)
 
 ## License
 
-[MIT](LICENSE)
+[AGPL-3.0-or-later](LICENSE) © 2025–2026 Anirudh Lath
+
+Versions up to and including v0.1.0 were released under MIT; all later versions are AGPL-3.0-or-later. Contributions are accepted under the same license with a [DCO](CONTRIBUTING.md) sign-off.

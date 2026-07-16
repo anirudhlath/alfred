@@ -2,6 +2,7 @@
 name = "alfred"
 version = "0.1.0"
 description = "Ambient Multi-Agent System for Smart Environments"
+license = "AGPL-3.0-or-later"
 requires-python = ">=3.13"
 dependencies = [
     "pydantic>=2.0",
@@ -54,7 +55,7 @@ evals = [
 ]
 
 [build-system]
-requires = ["setuptools>=75.0"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
