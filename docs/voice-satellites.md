@@ -151,8 +151,10 @@ Path resolution in `load_satellites()` (`core/channels/satellite/config.py`): ex
 argument > `SATELLITES_CONFIG` env var > `config/satellites.yaml`. **A missing file is not an
 error** — the fleet is empty and the satellite bridge is disabled entirely (no tasks started,
 `app.state.satellite_bridge` stays `None`, the `satellite` channel adapter is never
-registered). An invalid or malformed file *is* an error — `ValidationError`/duplicate names
-raise `ValueError` at startup.
+registered). An invalid or malformed file (non-mapping root, bad entry, duplicate names)
+raises `ValueError` from `load_satellites()`, which the channels lifespan catches: the error
+is logged at ERROR level and **satellites are disabled for that run** — the channels process
+itself (web, iOS, notifications) keeps serving. Fix the YAML and restart to re-enable.
 
 ### Environment Variables
 
@@ -250,6 +252,10 @@ per-satellite delivery failure is caught and logged as a WARNING without abortin
 the rest of the fleet; an offline satellite is silently skipped the same way (it's simply not
 in `connections()`). There is no dedicated Wyoming "announce" event — an announcement is a
 bare `AudioStart`/`AudioChunk`/`AudioStop` stream, identical to a spoken reply.
+
+For single-device delivery (future presence-aware targeting, timers), the bridge also exposes
+`get_connection(name)` and `play_wav_to(name, wav) -> bool` (False when the named satellite is
+offline or unknown); v1's announcement adapter only uses the broadcast path.
 
 ## Operational Notes
 

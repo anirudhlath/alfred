@@ -74,7 +74,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `core/channels/spa.py` — `mount_spa()` (serves `web/dist/`: real assets + index.html fallback for client-side routes)
 - `core/channels/satellite/` — Wyoming voice satellite bridge: `config.py` (fleet loader), `endpointing.py` (streaming VAD/`UtteranceCollector`), `bridge.py` (`SatelliteConnection`/`SatelliteBridge`, reconnect + protocol handling), `pipeline.py` (`SatellitePipeline`: STT → Conscious → TTS). See `docs/voice-satellites.md`.
 - `core/channels/request_bus.py` — `publish_and_wait()`, the shared XADD-then-XREAD request/response helper used by both the web channel and the satellite pipeline
-- `core/channels/voice_models.py` — shared lazy Whisper/Piper/SpeakerID loaders for the channels process (`_aget_stt`, `_aget_tts`, `aget_speaker_id`)
+- `core/channels/voice_models.py` — shared lazy Whisper/Piper/SpeakerID loaders for the channels process (`aget_stt`, `aget_tts`, `aget_speaker_id`)
 - `core/voice/speaker_id.py` — `SpeakerID` (now real, not a stub): ECAPA-TDNN voiceprint enroll/identify
 - `conftest.py` — root test fixtures (InMemoryKeyring, telemetry clear, tv_on_event, mock_embedder, mock_vector_store)
 
