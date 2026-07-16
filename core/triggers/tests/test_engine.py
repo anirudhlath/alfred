@@ -356,3 +356,23 @@ async def test_evaluate_tick_uses_stored_timezone_for_cron(
     assert not fake_redis.streams.get(EVENTS_STREAM)  # not yet 7am local
     await engine.evaluate_tick(datetime(2026, 7, 16, 13, 0, 1, tzinfo=UTC))  # 7:00:01 Denver
     assert fake_redis.streams.get(EVENTS_STREAM)  # fired
+
+
+@pytest.mark.asyncio
+async def test_user_tz_cached_until_invalidated(fake_redis: Any, snapshot_dir: Path) -> None:
+    from core.triggers.engine import TriggerEngine
+
+    fake_redis.kv[USER_TIMEZONE_KEY] = "America/Denver"
+    store = TriggerStore(redis=fake_redis, snapshot_dir=snapshot_dir)
+    engine = TriggerEngine(store=store, redis=fake_redis)
+
+    # First resolution populates the in-memory cache from Redis.
+    assert await engine._user_tz() == "America/Denver"
+
+    # Redis changes underneath, but evaluations keep using the cached zone...
+    fake_redis.kv[USER_TIMEZONE_KEY] = "UTC"
+    assert await engine._user_tz() == "America/Denver"
+
+    # ...until the coherence hook (TriggerStore.add_on_change) clears it.
+    engine.invalidate_tz_cache()
+    assert await engine._user_tz() == "UTC"

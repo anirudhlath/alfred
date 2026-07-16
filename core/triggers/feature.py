@@ -47,6 +47,10 @@ class TriggerFeature(BaseFeature):
             raise RuntimeError("TriggerFeature used without TriggerFeatureContext")
         return self._store
 
+    async def _user_tz(self) -> str:
+        """Resolve the user timezone, tolerating a redis-less feature instance."""
+        return "UTC" if self._redis is None else await get_user_timezone(self._redis)
+
     def get_tools(self) -> list[ToolMeta]:
         """Override to inject dynamic descriptions from TriggerRegistry."""
         tools = super().get_tools()
@@ -108,7 +112,7 @@ class TriggerFeature(BaseFeature):
             }
 
         try:
-            tz_name = "UTC" if self._redis is None else await get_user_timezone(self._redis)
+            tz_name = await self._user_tz()
             normalized = cls.normalize_conditions(conditions, tz_name)
             trigger = cls(
                 trigger_id=str(uuid4()),
@@ -169,7 +173,7 @@ class TriggerFeature(BaseFeature):
         if conditions is not None:
             cls = TriggerRegistry.get(target.trigger_type)
             try:
-                tz_name = "UTC" if self._redis is None else await get_user_timezone(self._redis)
+                tz_name = await self._user_tz()
                 normalized = cls.normalize_conditions(conditions, tz_name)
                 conditions_model = cls.Conditions  # type: ignore[attr-defined]
                 validated = conditions_model(**normalized)

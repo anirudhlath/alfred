@@ -214,6 +214,17 @@ def test_match_trigger_pattern_unknown_returns_true() -> None:
     assert match_trigger_pattern("some unknown pattern", now) is True
 
 
+def test_match_trigger_pattern_localizes_to_tz() -> None:
+    from core.memory.routines.patterns import match_trigger_pattern
+
+    # 02:00 UTC on 2026-03-25 is 20:00 (evening) on 2026-03-24 in America/Denver
+    # (MDT, UTC-6). Same instant: evening locally, past-midnight in UTC.
+    now = datetime(2026, 3, 25, 2, 0, tzinfo=UTC)
+    assert match_trigger_pattern("evening routine", now, "America/Denver") is True
+    assert match_trigger_pattern("evening routine", now, "UTC") is False
+    assert match_trigger_pattern("morning routine", now, "America/Denver") is False
+
+
 # ---------------------------------------------------------------------------
 # Test 8: ContextReader._get_snapshot shares cache between methods
 # ---------------------------------------------------------------------------

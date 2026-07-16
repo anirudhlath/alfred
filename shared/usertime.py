@@ -9,13 +9,13 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from shared.streams import (
     TRIGGER_SYNC_OP_TZ_CHANGED,
     TRIGGERS_CHANGED_CHANNEL,
     USER_TIMEZONE_KEY,
+    decode_stream_value,
 )
 from shared.types import AioRedis  # noqa: TC001
 
@@ -37,7 +37,7 @@ async def get_user_timezone(redis: AioRedis) -> str:
     """Return the user's IANA timezone name (stored -> env -> UTC)."""
     raw: str | bytes | None = await redis.get(USER_TIMEZONE_KEY)  # type: ignore[misc,unused-ignore]
     if raw is not None:
-        name = raw.decode() if isinstance(raw, bytes) else raw
+        name = decode_stream_value(raw)
         if is_valid_timezone(name):
             return name
     env = os.getenv("ALFRED_TIMEZONE", "")
@@ -56,7 +56,7 @@ async def set_user_timezone(redis: AioRedis, tz_name: str) -> bool:
         logger.warning("Ignoring invalid client timezone %r", tz_name)
         return False
     raw: str | bytes | None = await redis.get(USER_TIMEZONE_KEY)  # type: ignore[misc,unused-ignore]
-    current = raw.decode() if isinstance(raw, bytes) else raw
+    current = decode_stream_value(raw) if raw is not None else None
     if current == tz_name:
         return False
     await redis.set(USER_TIMEZONE_KEY, tz_name)  # type: ignore[misc,unused-ignore]
@@ -65,9 +65,3 @@ async def set_user_timezone(redis: AioRedis, tz_name: str) -> bool:
     )
     logger.info("User timezone set to %s", tz_name)
     return True
-
-
-async def user_local_now(redis: AioRedis, now: datetime | None = None) -> datetime:
-    """Current time converted to the user's local timezone (aware)."""
-    tz = ZoneInfo(await get_user_timezone(redis))
-    return (now or datetime.now(UTC)).astimezone(tz)

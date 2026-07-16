@@ -25,6 +25,22 @@ class TriggerEngine:
     def __init__(self, store: TriggerStore, redis: AioRedis) -> None:
         self._store = store
         self._redis = redis
+        self._tz_cache: str | None = None
+
+    def invalidate_tz_cache(self) -> None:
+        """Forget the cached user timezone; next evaluation re-reads it."""
+        self._tz_cache = None
+
+    async def _user_tz(self) -> str:
+        """User timezone, cached in memory.
+
+        Invalidated via TriggerStore.add_on_change — tz changes ride the same
+        coherence channel ("tz-changed" op), so any change wakes the process
+        and clears this cache before the next evaluation pass.
+        """
+        if self._tz_cache is None:
+            self._tz_cache = await get_user_timezone(self._redis)
+        return self._tz_cache
 
     async def fire(
         self,
@@ -77,12 +93,12 @@ class TriggerEngine:
 
     async def evaluate_tick(self, now: datetime) -> None:
         """Evaluate all enabled triggers against the current time (scheduler pass)."""
-        tz = await get_user_timezone(self._redis)
+        tz = await self._user_tz()
         await self._evaluate_all(TriggerContext(now=now, tz=tz))
 
     async def evaluate_event(self, event: StateChangedEvent) -> None:
         """Evaluate all enabled triggers against an incoming event."""
-        tz = await get_user_timezone(self._redis)
+        tz = await self._user_tz()
         await self._evaluate_all(TriggerContext(now=datetime.now(UTC), tz=tz, event=event))
 
     async def next_wakeup(self, now: datetime) -> datetime | None:
@@ -93,7 +109,7 @@ class TriggerEngine:
         re-anchored) or is blocked on non-time conditions — in which case the
         event path, not the clock, will complete it.
         """
-        tz = await get_user_timezone(self._redis)
+        tz = await self._user_tz()
         context = TriggerContext(now=now, tz=tz)
         result: datetime | None = None
         for trigger in await self._store.list_all(enabled_only=True):

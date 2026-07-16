@@ -860,9 +860,9 @@ class Librarian:
         now = datetime.now(UTC)
         updated = 0
 
-        from shared.usertime import user_local_now
+        from shared.usertime import get_user_timezone
 
-        local_now = await user_local_now(self._redis, now)
+        tz_name = await get_user_timezone(self._redis)
 
         for routine in routines:
             if routine.state == "archived":
@@ -885,7 +885,7 @@ class Librarian:
                 continue
 
             # For candidate/active: check if trigger_pattern matches recent activity
-            pattern_fired = self._check_pattern_fired(routine, local_now)
+            pattern_fired = self._check_pattern_fired(routine, now, tz_name)
 
             if pattern_fired:
                 routine = routine.model_copy(
@@ -952,15 +952,16 @@ class Librarian:
             logger.warning("Failed to remove archived routine '%s' from index: %s", name, exc)
 
     @staticmethod
-    def _check_pattern_fired(routine: RoutineSpec, now: datetime) -> bool:
+    def _check_pattern_fired(routine: RoutineSpec, now: datetime, tz_name: str) -> bool:
         """Heuristic check whether a routine's trigger_pattern matches the current time.
 
-        Supports simple time patterns like "HH:MM daily" and "weekday morning".
-        Returns ``True`` if the pattern likely fired in the past 24 hours.
+        ``now`` is an aware UTC datetime; matching happens in ``tz_name``'s wall
+        clock. Supports simple time patterns like "HH:MM daily" and "weekday
+        morning". Returns ``True`` if the pattern likely fired in the past 24 hours.
         """
         from core.memory.routines.patterns import match_trigger_pattern
 
-        return match_trigger_pattern(routine.trigger_pattern, now)
+        return match_trigger_pattern(routine.trigger_pattern, now, tz_name)
 
     async def _reindex_routines(self) -> int:
         """Re-index non-archived routines whose content has changed.

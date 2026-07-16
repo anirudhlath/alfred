@@ -295,6 +295,10 @@ async def run(config: AlfredConfig) -> None:
 
     engine = TriggerEngine(store=store, redis=r)
 
+    # Drop the engine's cached user timezone whenever a coherence event lands
+    # (tz changes ride the same channel via the "tz-changed" op).
+    store.add_on_change(engine.invalidate_tz_cache)
+
     # Keep this process's cache coherent via pub/sub so the scheduler wakes the
     # instant a trigger is created/updated in another process (no 60s window).
     await store.start_sync()
