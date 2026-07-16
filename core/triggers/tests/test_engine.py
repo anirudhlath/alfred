@@ -3,13 +3,17 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from pathlib import Path  # noqa: TC003
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 
 from core.triggers.models import ActionPayload, TriggerContext
 from core.triggers.registry import TriggerRegistry
+from core.triggers.store import TriggerStore
+from shared.streams import EVENTS_STREAM, USER_TIMEZONE_KEY
 
 
 @pytest.fixture(autouse=True)
@@ -33,6 +37,13 @@ def mock_redis() -> AsyncMock:
     r.xadd = AsyncMock()
     r.lpush = AsyncMock()
     return r
+
+
+@pytest.fixture
+def snapshot_dir(tmp_path: Path) -> Path:
+    d = tmp_path / "triggers"
+    d.mkdir()
+    return d
 
 
 @pytest.mark.asyncio
@@ -274,3 +285,74 @@ async def test_fire_admin_sets_fired_by_on_trigger_fired(
     event_json = json.loads(mock_redis.xadd.call_args[0][1]["event"])
     assert stream == "alfred:events"
     assert event_json["fired_by"] == "admin"
+
+
+@pytest.mark.asyncio
+async def test_next_wakeup_returns_earliest_future_candidate(
+    fake_redis: Any, snapshot_dir: Path
+) -> None:
+    from core.triggers.engine import TriggerEngine
+
+    store = TriggerStore(redis=fake_redis, snapshot_dir=snapshot_dir)
+    engine = TriggerEngine(store=store, redis=fake_redis)
+    now = datetime(2026, 7, 16, 8, 0, tzinfo=UTC)
+    cls = TriggerRegistry.get("time")
+    for i, offset_min in enumerate((30, 10)):
+        await store.save(
+            cls(
+                trigger_id=f"t-{i}",
+                trigger_type="time",
+                name=f"t-{i}",
+                created_by="test",
+                created_at=now,
+                conditions={"run_at": (now + timedelta(minutes=offset_min)).isoformat()},
+            )
+        )
+    assert await engine.next_wakeup(now) == now + timedelta(minutes=10)
+
+
+@pytest.mark.asyncio
+async def test_next_wakeup_excludes_past_due_and_none(fake_redis: Any, snapshot_dir: Path) -> None:
+    from core.triggers.engine import TriggerEngine
+
+    store = TriggerStore(redis=fake_redis, snapshot_dir=snapshot_dir)
+    engine = TriggerEngine(store=store, redis=fake_redis)
+    now = datetime(2026, 7, 16, 8, 0, tzinfo=UTC)
+    cls = TriggerRegistry.get("time")
+    await store.save(
+        cls(
+            trigger_id="past",
+            trigger_type="time",
+            name="past",
+            created_by="test",
+            created_at=now,
+            conditions={"run_at": (now - timedelta(minutes=5)).isoformat()},
+        )
+    )
+    assert await engine.next_wakeup(now) is None  # past-due handled by evaluate, not the alarm
+
+
+@pytest.mark.asyncio
+async def test_evaluate_tick_uses_stored_timezone_for_cron(
+    fake_redis: Any, snapshot_dir: Path
+) -> None:
+    from core.triggers.engine import TriggerEngine
+
+    fake_redis.kv[USER_TIMEZONE_KEY] = "America/Denver"
+    store = TriggerStore(redis=fake_redis, snapshot_dir=snapshot_dir)
+    engine = TriggerEngine(store=store, redis=fake_redis)
+    cls = TriggerRegistry.get("time")
+    await store.save(
+        cls(
+            trigger_id="cron-denver",
+            trigger_type="time",
+            name="7am Denver",
+            created_by="test",
+            created_at=datetime(2026, 7, 16, 0, 0, tzinfo=UTC),
+            conditions={"cron": "0 7 * * *"},
+        )
+    )
+    await engine.evaluate_tick(datetime(2026, 7, 16, 12, 30, tzinfo=UTC))  # 6:30am Denver
+    assert not fake_redis.streams.get(EVENTS_STREAM)  # not yet 7am local
+    await engine.evaluate_tick(datetime(2026, 7, 16, 13, 0, 1, tzinfo=UTC))  # 7:00:01 Denver
+    assert fake_redis.streams.get(EVENTS_STREAM)  # fired

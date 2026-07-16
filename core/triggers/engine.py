@@ -11,6 +11,7 @@ from bus.schemas.events import ActionRequest, StateChangedEvent, TriggerFired
 from core.triggers.models import BaseTrigger, TriggerContext
 from shared.streams import ACTIONS_STREAM, EVENTS_STREAM, SCRATCHPAD_QUEUE
 from shared.types import AioRedis  # noqa: TC001
+from shared.usertime import get_user_timezone
 
 if TYPE_CHECKING:
     from core.triggers.store import TriggerStore
@@ -65,7 +66,7 @@ class TriggerEngine:
             f"{now.strftime('%Y-%m-%dT%H:%M:%SZ')} "
             f"[trigger] {trigger.name} (type={trigger.trigger_type}) fired"
         )
-        await self._redis.lpush(SCRATCHPAD_QUEUE, observation)  # type: ignore[misc]
+        await self._redis.lpush(SCRATCHPAD_QUEUE, observation)  # type: ignore[misc,unused-ignore]
 
         if trigger.one_shot:
             await self._store.delete(trigger.trigger_id)
@@ -75,12 +76,37 @@ class TriggerEngine:
             await self._store.save(updated)
 
     async def evaluate_tick(self, now: datetime) -> None:
-        """Evaluate all enabled triggers against the current time (tick loop)."""
-        await self._evaluate_all(TriggerContext(now=now))
+        """Evaluate all enabled triggers against the current time (scheduler pass)."""
+        tz = await get_user_timezone(self._redis)
+        await self._evaluate_all(TriggerContext(now=now, tz=tz))
 
     async def evaluate_event(self, event: StateChangedEvent) -> None:
         """Evaluate all enabled triggers against an incoming event."""
-        await self._evaluate_all(TriggerContext(now=datetime.now(UTC), event=event))
+        tz = await get_user_timezone(self._redis)
+        await self._evaluate_all(TriggerContext(now=datetime.now(UTC), tz=tz, event=event))
+
+    async def next_wakeup(self, now: datetime) -> datetime | None:
+        """Earliest strictly-future clock candidate across enabled triggers.
+
+        Past-due candidates are excluded on purpose: the scheduler evaluates
+        before arming the alarm, so a past-due trigger either fired (and
+        re-anchored) or is blocked on non-time conditions — in which case the
+        event path, not the clock, will complete it.
+        """
+        tz = await get_user_timezone(self._redis)
+        context = TriggerContext(now=now, tz=tz)
+        result: datetime | None = None
+        for trigger in await self._store.list_all(enabled_only=True):
+            try:
+                candidate = trigger.next_fire_time(context)
+            except Exception as e:
+                logger.error("next_fire_time failed for '%s': %s", trigger.trigger_id, e)
+                continue
+            if candidate is None or candidate <= now:
+                continue
+            if result is None or candidate < result:
+                result = candidate
+        return result
 
     async def _evaluate_all(self, context: TriggerContext) -> None:
         """Evaluate all enabled triggers against the given context."""
