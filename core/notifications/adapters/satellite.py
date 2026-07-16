@@ -1,0 +1,46 @@
+"""Satellite channel adapter — speaks URGENT notifications on all online satellites."""
+
+from __future__ import annotations
+
+import asyncio
+from typing import TYPE_CHECKING, Any, ClassVar
+
+from loguru import logger
+
+from core.notifications.channels import ChannelAdapter, ChannelRegistry
+from core.notifications.schema import Notification, Urgency
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+
+@ChannelRegistry.register()
+class SatelliteChannelAdapter(ChannelAdapter):
+    """Piper-synthesized speech pushed over the satellite bridge connections."""
+
+    name: ClassVar[str] = "satellite"
+    supported_urgencies: ClassVar[set[Urgency]] = {Urgency.URGENT}
+
+    def __init__(
+        self,
+        get_bridge: Callable[[], Any | None],
+        get_tts: Callable[[], Any | None],
+    ) -> None:
+        self._get_bridge = get_bridge
+        self._get_tts = get_tts
+
+    async def deliver(self, notification: Notification) -> None:
+        """Speak the notification on every online satellite."""
+        bridge = self._get_bridge()
+        tts = self._get_tts()
+        if bridge is None or tts is None:
+            logger.debug("SatelliteChannelAdapter: bridge/TTS unavailable, skipping")
+            return
+        text = f"{notification.title}: {notification.body}"
+        try:
+            wav = await asyncio.to_thread(tts.synthesize, text)
+        except Exception as exc:
+            logger.warning("SatelliteChannelAdapter: TTS failed: {}", exc)
+            return
+        delivered = await bridge.play_wav_all(wav)
+        logger.info("Announcement delivered to {} satellite(s)", delivered)
