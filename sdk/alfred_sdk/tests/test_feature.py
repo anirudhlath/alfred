@@ -251,3 +251,52 @@ def test_tool_name_override_in_get_tools() -> None:
     feature = _OverrideFeature()
     tools = feature.get_tools()
     assert tools[0].name == "custom.my_tool"
+
+
+# ── Credential models (contract C1) ──
+
+
+def test_credential_field_defaults() -> None:
+    from sdk.alfred_sdk.feature import CredentialField
+
+    field = CredentialField(label="HA URL")
+    assert field.field_type == "text"
+    assert field.required is True
+    assert field.placeholder == ""
+    assert field.default == ""
+    assert field.help_text == ""
+    assert field.transient is False
+
+
+def test_credential_schema_dumps_fields() -> None:
+    from sdk.alfred_sdk.feature import CredentialField, CredentialSchema
+
+    schema = CredentialSchema(fields={"url": CredentialField(label="HA URL", field_type="url")})
+    dumped = schema.model_dump()
+    assert dumped["fields"]["url"]["label"] == "HA URL"
+    assert dumped["fields"]["url"]["field_type"] == "url"
+
+
+def test_service_manifest_credential_fields_default_none() -> None:
+    from sdk.alfred_sdk.feature import ServiceManifest
+
+    manifest = ServiceManifest(service_name="svc", service_endpoint="http://x/mcp")
+    dumped = manifest.model_dump()
+    assert dumped["credentials_schema"] is None
+    assert dumped["credentials_endpoint"] is None
+
+
+def test_service_manifest_carries_credentials() -> None:
+    from sdk.alfred_sdk.feature import CredentialField, CredentialSchema, ServiceManifest
+
+    manifest = ServiceManifest(
+        service_name="home-service",
+        service_endpoint="http://localhost:8000/mcp",
+        credentials_schema=CredentialSchema(
+            fields={"token": CredentialField(label="Token", field_type="password")}
+        ),
+        credentials_endpoint="http://localhost:8000/credentials",
+    )
+    dumped = manifest.model_dump()
+    assert dumped["credentials_endpoint"] == "http://localhost:8000/credentials"
+    assert dumped["credentials_schema"]["fields"]["token"]["field_type"] == "password"

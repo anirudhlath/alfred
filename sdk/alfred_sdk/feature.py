@@ -6,7 +6,7 @@ import inspect
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, TypeVar, overload
+from typing import Any, Literal, TypeVar, overload
 
 from pydantic import BaseModel
 
@@ -21,6 +21,33 @@ class ToolParameter(BaseModel):
     type: str
     description: str = ""
     default: Any = None
+
+
+ToolAudience = Literal["reflex", "conscious"]
+ToolRisk = Literal["benign", "elevated", "critical"]
+
+
+class CredentialField(BaseModel):
+    """Describes one credential input field for a sovereign service.
+
+    Field shape MUST stay identical to core/integrations/base.py CredentialField.
+    The JSON contract is the coupling — the SDK never imports core. Guarded by
+    sdk/tests/test_schema_compatibility.py::test_credential_models_match_core_field_shape.
+    """
+
+    label: str
+    field_type: Literal["text", "password", "url"] = "text"
+    required: bool = True
+    placeholder: str = ""
+    default: str = ""  # Pre-filled value (use for sensible defaults like known URLs)
+    help_text: str = ""
+    transient: bool = False  # If True, value is pushed to the service but not persisted
+
+
+class CredentialSchema(BaseModel):
+    """Describes all credential fields for a sovereign service."""
+
+    fields: dict[str, CredentialField]
 
 
 class ToolManifest(BaseModel):
@@ -45,6 +72,8 @@ class ServiceManifest(BaseModel):
     service_name: str
     service_endpoint: str
     features: list[FeatureManifest] = []
+    credentials_schema: CredentialSchema | None = None
+    credentials_endpoint: str | None = None
 
 
 # ── ToolMeta dataclass ──

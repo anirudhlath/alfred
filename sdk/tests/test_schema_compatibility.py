@@ -87,3 +87,29 @@ def test_shared_schemas_have_same_fields() -> None:
             f"{bus_cls.__name__} field mismatch: "
             f"bus-only={bus_fields - sdk_fields}, sdk-only={sdk_fields - bus_fields}"
         )
+
+
+def test_credential_models_match_core_field_shape() -> None:
+    """SDK CredentialField/CredentialSchema must stay JSON-identical to core's.
+
+    The JSON contract is the coupling (Pillar 3) — the SDK never imports core,
+    so this test is the only guard against drift with core/integrations/base.py.
+    """
+    from core.integrations.base import CredentialField as CoreField
+    from core.integrations.base import CredentialSchema as CoreSchema
+    from sdk.alfred_sdk.feature import CredentialField as SdkField
+    from sdk.alfred_sdk.feature import CredentialSchema as SdkSchema
+
+    assert _get_field_names(CoreField) == _get_field_names(SdkField)
+    assert _get_field_names(CoreSchema) == _get_field_names(SdkSchema)
+
+    # Round-trip: SDK-serialized schema parses as the core model with values intact.
+    sdk_schema = SdkSchema(
+        fields={"token": SdkField(label="Token", field_type="password", transient=False)}
+    )
+    core_schema = CoreSchema.model_validate_json(sdk_schema.model_dump_json())
+    assert core_schema.fields["token"].label == "Token"
+    assert core_schema.fields["token"].field_type == "password"
+
+    # Defaults must match too — core fills defaults for fields the SDK omitted.
+    assert CoreField(label="x").model_dump() == SdkField(label="x").model_dump()
