@@ -24,12 +24,26 @@ export function LoginPage() {
         ? (conditionalAbort.current = new AbortController()).signal
         : undefined;
       await loginPasskey(conditional, signal);
-      // Invalidate the cached auth-status so Guarded refetches rather than
-      // serving the stale unauthenticated value, which would cause a redirect loop.
-      await queryClient.invalidateQueries({ queryKey: ["auth-status"] });
+      // Refetch (not invalidate) before navigating: on /login the Guarded layout is
+      // unmounted, so ["auth-status"] has no active observer and invalidateQueries
+      // would NOT refetch it — Guarded would then re-read the stale unauthenticated
+      // value and bounce straight back to /login. refetchQueries forces the inactive
+      // query to update so Guarded sees `authenticated: true` on mount.
+      await queryClient.refetchQueries({ queryKey: ["auth-status"] });
       navigate("/", { replace: true });
     } catch (e) {
-      if (!conditional) setError(friendlyError(e));
+      // Abort/dismissal is expected noise on the conditional (autofill) path — stay
+      // quiet there. But genuine failures (challenge expired, network, verification
+      // error) were previously swallowed on the conditional path; surface those on
+      // both paths so the user isn't left staring at a dead autofill prompt.
+      if (
+        e instanceof DOMException &&
+        (e.name === "AbortError" || e.name === "NotAllowedError")
+      ) {
+        if (!conditional) setError(friendlyError(e));
+        return;
+      }
+      setError(friendlyError(e));
     }
   };
 

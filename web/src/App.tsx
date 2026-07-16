@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { Toaster } from "@/components/ui/sonner";
 import { api, ApiError } from "@/lib/api";
 import type { AuthStatus } from "@/lib/types";
 import { AlfredProvider } from "@/shell/AlfredProvider";
@@ -24,13 +25,18 @@ const queryClient = new QueryClient({
 });
 
 function Guarded() {
-  const { data, isLoading } = useQuery<AuthStatus>({
+  const { data, isLoading, isError } = useQuery<AuthStatus>({
     queryKey: ["auth-status"],
     queryFn: () => api("/api/auth/status"),
   });
   if (isLoading) return null;
-  if (data && !data.registered) return <Navigate to="/onboarding" replace />;
-  if (data && !data.authenticated) return <Navigate to="/login" replace />;
+  // Fail closed: if the status query errored (backend restarting, 5xx, network
+  // blip — 401 is handled by api()'s hard redirect), `data` is undefined. Redirect
+  // to /login rather than falling through and mounting the protected shell with
+  // undefined auth state.
+  if (isError || !data) return <Navigate to="/login" replace />;
+  if (!data.registered) return <Navigate to="/onboarding" replace />;
+  if (!data.authenticated) return <Navigate to="/login" replace />;
   return (
     <AlfredProvider>
       <AppShell />
@@ -41,6 +47,8 @@ function Guarded() {
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
+      {/* App-level so toasts render on /login and /onboarding too, not only inside AppShell. */}
+      <Toaster position="top-right" />
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<LoginPage />} />

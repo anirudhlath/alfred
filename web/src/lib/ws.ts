@@ -24,18 +24,33 @@ export class ReconnectingSocket {
   }
 
   connect(): void {
+    // Bail if a socket is already live. Without this, a second connect() (React
+    // StrictMode's setup→cleanup→setup, or a fast logout/login) overwrites this.ws
+    // while the previous socket's onclose still fires and spawns a duplicate,
+    // permanently-reconnecting connection. Every handler is also pinned to its own
+    // socket so a stale socket can never mutate state after being replaced.
+    if (
+      this.ws &&
+      (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)
+    ) {
+      return;
+    }
     this.stopped = false;
     this.onstatus(this.attempts === 0 ? "connecting" : "reconnecting");
-    this.ws = new WebSocket(this.url());
-    this.ws.onopen = () => {
+    const ws = new WebSocket(this.url());
+    this.ws = ws;
+    ws.onopen = () => {
+      if (this.ws !== ws) return;
       this.attempts = 0;
       this.onstatus("online");
       this.onopen();
     };
-    this.ws.onmessage = (e) => {
+    ws.onmessage = (e) => {
+      if (this.ws !== ws) return;
       try { this.onmessage(JSON.parse(e.data as string)); } catch { /* non-JSON frame */ }
     };
-    this.ws.onclose = (e) => {
+    ws.onclose = (e) => {
+      if (this.ws !== ws) return;  // superseded socket — ignore its close
       if (e.code === 4001) { this.onstatus("unauthorized"); return; }
       if (this.stopped) { this.onstatus("offline"); return; }
       this.onstatus("reconnecting");

@@ -25,16 +25,34 @@ if TYPE_CHECKING:
 _XREAD_BLOCK_MS = 2000
 
 
+async def _last_id(r: AioRedis, key: str) -> str:
+    """Resolve a stream's current last-generated id so the pump starts strictly after it.
+
+    Subscribing at the literal "$" would re-evaluate on every XREAD call, so entries
+    landing between two blocking reads on a stream that has not yet delivered on this
+    connection would be silently skipped. Pinning a concrete id closes that window
+    without replaying history (XREAD returns only entries after the given id).
+    """
+    entries: list[tuple[bytes | str, dict[Any, Any]]] = await r.xrevrange(key, count=1)
+    if entries:
+        eid = entries[0][0]
+        return eid.decode() if isinstance(eid, bytes) else eid
+    return "0-0"
+
+
 def register_telemetry_ws(app: FastAPI) -> None:
     @app.websocket("/ws/telemetry")
     async def telemetry_ws(websocket: WebSocket) -> None:
         r: AioRedis = websocket.app.state.redis
 
+        # Accept before authenticating so a rejection sends a real close frame
+        # carrying code 4001 (close-before-accept surfaces as an HTTP 403 with no
+        # code, and the browser then reconnects forever). Matches the /ws gate.
+        await websocket.accept()
+
         if not await authenticate_ws_cookie(websocket, r):
             await websocket.close(code=4001, reason="Authentication required")
             return
-
-        await websocket.accept()
 
         subs: dict[str, str] = {}  # redis key -> last seen entry id
         has_subs = asyncio.Event()
@@ -44,6 +62,7 @@ def register_telemetry_ws(app: FastAPI) -> None:
                 if not subs:
                     has_subs.clear()
                     await has_subs.wait()
+                    continue  # re-check subs after waking (may still be empty)
                 try:
                     entries: list[
                         tuple[bytes | str, list[tuple[bytes | str, dict[Any, Any]]]]
@@ -66,6 +85,8 @@ def register_telemetry_ws(app: FastAPI) -> None:
                     if key not in subs:
                         continue  # unsubscribed mid-read
                     for entry_id, data in items:
+                        if key not in subs:
+                            break  # client unsubscribed mid-delivery (send_json yields)
                         eid = entry_id.decode() if isinstance(entry_id, bytes) else entry_id
                         subs[key] = eid
                         # Concurrent send_json from pump + receive loop is deliberate and
@@ -98,7 +119,9 @@ def register_telemetry_ws(app: FastAPI) -> None:
                 names = [n for n in msg.get("streams", []) if n in STREAM_CATALOG]
                 if msg.get("type") == "subscribe":
                     for name in names:
-                        subs.setdefault(STREAM_CATALOG[name], "$")
+                        key = STREAM_CATALOG[name]
+                        if key not in subs:
+                            subs[key] = await _last_id(r, key)
                     has_subs.set()
                 elif msg.get("type") == "unsubscribe":
                     for name in names:

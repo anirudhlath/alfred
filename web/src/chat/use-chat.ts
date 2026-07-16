@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { toast } from "sonner";
 import { useAlfredStatus } from "@/shell/AlfredProvider";
 
 export interface ChatMessage {
@@ -32,14 +31,8 @@ export function useChat() {
           if (msg.audio) void new Audio(`data:audio/wav;base64,${msg.audio}`).play().catch(() => {});
           break;
         }
-        case "notification": {
-          const urgent = msg.urgency === "urgent";
-          toast(msg.title, { description: msg.body, ...(urgent ? { duration: 10000 } : {}) });
-          if (urgent && msg.audio) {
-            void new Audio(`data:audio/wav;base64,${msg.audio}`).play().catch(() => {});
-          }
-          break;
-        }
+        // "notification" frames are handled globally in AlfredProvider so they
+        // toast on every route, not only while the chat page is mounted.
         case "error":
           setWaiting(false);
           setMessages((m) => [...m, { role: "system", text: msg.text }]);

@@ -22,6 +22,9 @@ def _make_client(mock_redis: AsyncMock, *, authed: bool = True) -> TestClient:
         return {}
 
     mock_redis.hgetall = AsyncMock(side_effect=_fake_hgetall)
+    # Default: empty stream so _last_id resolves subscriptions to "0-0" deterministically.
+    if not isinstance(mock_redis.xrevrange, AsyncMock):
+        mock_redis.xrevrange = AsyncMock(return_value=[])
     app = create_app(redis_url="redis://localhost:6379")
     app.state.redis = mock_redis
     client = TestClient(app)
@@ -32,9 +35,38 @@ def _make_client(mock_redis: AsyncMock, *, authed: bool = True) -> TestClient:
 
 def test_telemetry_ws_rejects_unauthenticated() -> None:
     client = _make_client(AsyncMock(), authed=False)
-    with pytest.raises(WebSocketDisconnect) as exc, client.websocket_connect("/ws/telemetry"):
-        pass
+    # The gate now accepts before closing with 4001 so the browser receives a real
+    # close frame (close-before-accept surfaces as an HTTP 403 with no code, causing
+    # the client to reconnect forever). The connect succeeds; the close is observed
+    # on the first receive.
+    with client.websocket_connect("/ws/telemetry") as ws, pytest.raises(WebSocketDisconnect) as exc:
+        ws.receive_text()
     assert exc.value.code == 4001
+
+
+def test_telemetry_ws_subscribe_resolves_concrete_start_id() -> None:
+    """Subscription pins the stream's last-generated id (not the literal '$'), so
+    entries landing between blocking reads are not skipped."""
+    mock_redis = AsyncMock()
+    mock_redis.xrevrange = AsyncMock(return_value=[(b"7-0", {b"event": b"{}"})])
+    seen_start: list[str] = []
+
+    async def _xread(streams: dict[str, str], **kwargs: Any) -> Any:
+        seen_start.append(streams["alfred:events"])
+        await asyncio.Event().wait()  # block after capturing the requested position
+
+    mock_redis.xread = AsyncMock(side_effect=_xread)
+    client = _make_client(mock_redis)
+    with client.websocket_connect("/ws/telemetry") as ws:
+        ws.send_text(json.dumps({"type": "subscribe", "streams": ["events"]}))
+        ws.receive_json()  # subscribed ack
+        # Give the pump a moment to issue its first xread with the resolved id.
+        for _ in range(20):
+            if seen_start:
+                break
+            ws.send_text(json.dumps({"type": "subscribe", "streams": []}))
+            ws.receive_json()
+    assert seen_start and seen_start[0] == "7-0"
 
 
 def test_telemetry_ws_subscribe_and_receive_entry() -> None:

@@ -42,3 +42,6 @@ core/voice/models/
 # Web frontend
 web/node_modules/
 web/dist/
+
+# Secrets — APNs .p8 signing key and other local credentials (never commit)
+secrets/

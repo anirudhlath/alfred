@@ -166,8 +166,14 @@ async def test_set_trigger_enabled_handler_refreshes_cache_on_miss_then_proceeds
 
 
 def _entry(action: ActionRequest) -> list[object]:
-    """Shape an XREADGROUP reply with a single entry."""
-    return [("alfred:actions", [(b"1-0", {"event": action.model_dump_json()})])]
+    """Shape an XREADGROUP reply in production wire shape.
+
+    The triggers pool is decode_responses=False, so the stream key, entry field
+    names, and values all arrive as bytes — feeding str keys here would let a
+    bytes-handling regression pass (the class of bug that shipped the WebAuthn
+    challenge-bytes defect).
+    """
+    return [(b"alfred:actions", [(b"1-0", {b"event": action.model_dump_json().encode()})])]
 
 
 @pytest.mark.asyncio
@@ -252,3 +258,36 @@ async def test_actions_loop_ignores_non_trigger_engine_entries() -> None:
     store.save.assert_not_awaited()
     # The foreign entry was still acked (skipped, not left pending).
     assert b"1-0" in acked
+
+
+@pytest.mark.asyncio
+async def test_actions_loop_acks_and_survives_malformed_entry() -> None:
+    """A corrupt (non-JSON) event payload is acked and skipped, not left pending,
+    and does not kill the consumer loop."""
+    from core.triggers.__main__ import _shutdown, actions_loop
+
+    store = AsyncMock()
+    engine = AsyncMock()
+
+    r = AsyncMock()
+    acked: list[object] = []
+    call_count = 0
+
+    async def _xreadgroup(*_a: object, **_k: object) -> list[object]:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return [(b"alfred:actions", [(b"9-0", {b"event": b"{not json"})])]
+        _shutdown.set()
+        return []
+
+    r.xreadgroup = AsyncMock(side_effect=_xreadgroup)
+    r.xack = AsyncMock(side_effect=lambda *a: acked.append(a[-1]))
+    r.xgroup_create = AsyncMock()
+
+    _shutdown.clear()
+    await actions_loop(store, engine, r)
+    _shutdown.clear()
+
+    engine.fire.assert_not_awaited()
+    assert b"9-0" in acked  # malformed entry acked, not stranded in the PEL

@@ -16,7 +16,12 @@ export function Composer({ onSend, onAudio }: { onSend: (t: string) => void; onA
         value={text}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
+          // isComposing guards against submitting while an IME candidate is being
+          // confirmed (CJK input) — Enter there commits the candidate, not the message.
+          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+            e.preventDefault();
+            submit();
+          }
         }}
         placeholder="Message Alfred…"
         rows={1}

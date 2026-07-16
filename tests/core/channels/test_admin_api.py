@@ -97,7 +97,27 @@ def test_overview_reports_redis_down() -> None:
     client = make_admin_client(r)
     resp = client.get("/api/admin/overview")
     assert resp.status_code == 200
-    assert resp.json()["redis"]["connected"] is False
+    data = resp.json()
+    # Degraded path must return the FULL Overview shape (all keys) so the SPA's
+    # required-field Overview type doesn't crash on a partial payload.
+    assert data["redis"]["connected"] is False
+    assert data["cost"] is None
+    assert data["dnd"] == {"active": False}
+    assert data["counts"] == {"sessions": 0, "devices": 0, "deferred": 0, "triggers": 0}
+    assert data["streams"] == {}
+    assert data["inference"] == {"ollama": False, "lmstudio": False}
+
+
+def test_overview_survives_corrupt_cost_and_dnd() -> None:
+    """One corrupt cost/dnd value must not 500 the whole dashboard overview."""
+    r = _overview_redis()
+    r.get = AsyncMock(return_value=b"{not valid json")
+    client = make_admin_client(r)
+    resp = client.get("/api/admin/overview")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["cost"] is None
+    assert data["dnd"] == {"active": False}
 
 
 def test_overview_inference_up_with_http_client() -> None:

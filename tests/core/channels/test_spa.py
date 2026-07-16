@@ -42,6 +42,18 @@ def test_missing_dist_is_noop(tmp_path: Path) -> None:
     assert client.get("/").status_code == 404
 
 
+@pytest.mark.parametrize("url", ["/api/admin/nope", "/api/does-not-exist", "/health"])
+def test_unknown_api_and_health_paths_404_not_index(tmp_path: Path, url: str) -> None:
+    """Unknown /api/*, /ws*, and /health must 404, not fall back to index.html — a
+    200 HTML page would break REST/iOS clients that expect JSON (or a real 404)."""
+    app = FastAPI()
+    mount_spa(app, _dist(tmp_path))
+    client = TestClient(app)
+    resp = client.get(url)
+    assert resp.status_code == 404
+    assert "alfred" not in resp.text
+
+
 # ---------------------------------------------------------------------------
 # Path traversal / escape tests
 # ---------------------------------------------------------------------------

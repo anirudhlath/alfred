@@ -13,7 +13,7 @@ import signal
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -113,33 +113,45 @@ async def actions_loop(store: TriggerStore, engine: TriggerEngine, r: AioRedis) 
 
         for _stream_key, stream_entries in entries:
             for entry_id, entry_data in stream_entries:
-                raw_event = entry_data.get("event") or entry_data.get(b"event")
-                if raw_event is None:
-                    await r.xack(ACTIONS_STREAM, ACTIONS_GROUP, entry_id)
-                    continue
-
+                # A transient Redis error (e.g. a blip inside xack) must not escape and
+                # kill the consumer task permanently — log and move on to the next entry.
                 try:
-                    action = ActionRequest.model_validate_json(decode_stream_value(raw_event))
-                except Exception:
-                    await r.xack(ACTIONS_STREAM, ACTIONS_GROUP, entry_id)
-                    continue
-
-                if action.target_service != TARGET_SERVICE:
-                    # Not for us — ack and skip (other groups handle their own).
-                    await r.xack(ACTIONS_STREAM, ACTIONS_GROUP, entry_id)
-                    continue
-
-                try:
-                    if action.tool_name == "fire_trigger":
-                        await _handle_fire_trigger(store, engine, action.parameters)
-                    elif action.tool_name == "set_trigger_enabled":
-                        await _handle_set_trigger_enabled(store, action.parameters)
-                    else:
-                        logger.warning("No handler for trigger action '%s'", action.tool_name)
+                    await _process_action_entry(store, engine, r, entry_id, entry_data)
                 except Exception as e:
-                    logger.error("Trigger action '%s' failed: %s", action.tool_name, e)
+                    logger.error("Trigger action entry %s failed: %s", entry_id, e)
 
-                await r.xack(ACTIONS_STREAM, ACTIONS_GROUP, entry_id)
+
+async def _process_action_entry(
+    store: TriggerStore,
+    engine: TriggerEngine,
+    r: AioRedis,
+    entry_id: str,
+    entry_data: dict[Any, Any],
+) -> None:
+    raw_event = entry_data.get("event") or entry_data.get(b"event")
+    if raw_event is None:
+        await r.xack(ACTIONS_STREAM, ACTIONS_GROUP, entry_id)
+        return
+
+    try:
+        action = ActionRequest.model_validate_json(decode_stream_value(raw_event))
+    except Exception:
+        await r.xack(ACTIONS_STREAM, ACTIONS_GROUP, entry_id)
+        return
+
+    if action.target_service != TARGET_SERVICE:
+        # Not for us — ack and skip (other groups handle their own).
+        await r.xack(ACTIONS_STREAM, ACTIONS_GROUP, entry_id)
+        return
+
+    if action.tool_name == "fire_trigger":
+        await _handle_fire_trigger(store, engine, action.parameters)
+    elif action.tool_name == "set_trigger_enabled":
+        await _handle_set_trigger_enabled(store, action.parameters)
+    else:
+        logger.warning("No handler for trigger action '%s'", action.tool_name)
+
+    await r.xack(ACTIONS_STREAM, ACTIONS_GROUP, entry_id)
 
 
 def _free_port(port: int) -> None:

@@ -31,21 +31,38 @@ export function TelemetryRail() {
   // Throttle state: track the last time we issued a refetch (performance.now() — effect-scope only).
   // Initialised to -Infinity so the first qualifying entry always passes the 5 s gate.
   const lastRefetchAt = useRef<number>(-Infinity);
+  const trailingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Event-driven refresh: only refetch when the newest feed entry belongs to a
   // category that can change cost, DND, or session counts (conscious / trigger / user).
   // Home and reflex churn must NOT trigger refetches — they have no effect on vitals.
   // Throttled to at most once per 5 s to avoid request storms during smart-home bursts.
+  // Trailing-edge: an event suppressed inside the window schedules one deferred
+  // refetch so the final state-changing event in a burst (e.g. the response after a
+  // chat exchange) still converges vitals instead of leaving them stale.
   const feedHead = feed[0];
   useEffect(() => {
     if (!feedHead) return;
     const category = categorize(feedHead.stream, feedHead.event);
     if (!VITAL_CATEGORIES.has(category)) return;
     const now = performance.now();
-    if (now - lastRefetchAt.current < 5000) return;
-    lastRefetchAt.current = now;
-    void refetch();
+    const elapsed = now - lastRefetchAt.current;
+    if (elapsed >= 5000) {
+      lastRefetchAt.current = now;
+      void refetch();
+    } else if (trailingTimer.current === null) {
+      trailingTimer.current = setTimeout(() => {
+        trailingTimer.current = null;
+        lastRefetchAt.current = performance.now();
+        void refetch();
+      }, 5000 - elapsed);
+    }
   }, [feedHead, refetch]);
+
+  // Clear any pending trailing refetch on unmount.
+  useEffect(() => () => {
+    if (trailingTimer.current !== null) clearTimeout(trailingTimer.current);
+  }, []);
 
   // Count entries that arrived within 60 s of the most-recent feed entry.
   // Pure computation — avoids Date.now() in render.

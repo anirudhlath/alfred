@@ -1,4 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { ChatSocket } from "@/lib/chat-socket";
 import { TelemetrySocket } from "@/lib/telemetry-socket";
 import type { TelemetryMessage } from "@/lib/types";
@@ -38,6 +40,7 @@ const chat = new ChatSocket();
 const telemetry = new TelemetrySocket();
 
 export function AlfredProvider({ children }: { children: React.ReactNode }) {
+  const queryClient = useQueryClient();
   const [chatStatus, setChatStatus] = useState<SocketStatus>("connecting");
   const [telemetryStatus, setTelemetryStatus] = useState<SocketStatus>("connecting");
   const [feed, setFeed] = useState<FeedEntry[]>([]);
@@ -45,16 +48,36 @@ export function AlfredProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     chat.onstatus = setChatStatus;
     telemetry.onstatus = setTelemetryStatus;
-    const unlisten = telemetry.listen((msg: TelemetryMessage) => {
+    const unlistenFeed = telemetry.listen((msg: TelemetryMessage) => {
       if (msg.type === "entry") {
         setFeed((prev) => [{ stream: msg.stream, id: msg.id, event: msg.event }, ...prev].slice(0, FEED_MAX));
+      }
+    });
+    // Notifications are handled here, not in useChat — the chat socket stays
+    // connected across routes but useChat only mounts on the chat page, so a toast
+    // (and urgent TTS audio) would otherwise be dropped on every other route.
+    const unlistenChat = chat.listen((msg) => {
+      if (msg.type !== "notification") return;
+      const urgent = msg.urgency === "urgent";
+      toast(msg.title, { description: msg.body, ...(urgent ? { duration: 10000 } : {}) });
+      if (urgent && msg.audio) {
+        void new Audio(`data:audio/wav;base64,${msg.audio}`).play().catch(() => {});
       }
     });
     chat.connect();
     telemetry.connect();
     telemetry.subscribe(ALL_STREAMS);
-    return () => { unlisten(); chat.close(); telemetry.close(); };
+    return () => { unlistenFeed(); unlistenChat(); chat.close(); telemetry.close(); };
   }, []);
+
+  // Session cookie expired mid-session (either socket closed with 4001): refetch
+  // auth-status so Guarded re-evaluates and redirects to /login, instead of the
+  // sockets silently dead-ending on "unauthorized".
+  useEffect(() => {
+    if (chatStatus === "unauthorized" || telemetryStatus === "unauthorized") {
+      void queryClient.invalidateQueries({ queryKey: ["auth-status"] });
+    }
+  }, [chatStatus, telemetryStatus, queryClient]);
 
   // Status value: only re-creates when socket statuses change (rare)
   const statusValue = useMemo<AlfredStatusValue>(

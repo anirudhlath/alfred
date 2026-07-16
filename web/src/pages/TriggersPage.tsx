@@ -51,7 +51,11 @@ export function TriggersPage() {
       toast.error(String(e));
     },
     onSuccess: () => { toast("Trigger updated — effective within 60s"); },
-    onSettled: () => { invalidate(); },
+    // Deliberately NO onSettled invalidate of ["triggers"]: the mutation is only
+    // queued to the triggers process (applied within its 60s cache window), so an
+    // immediate refetch would return the pre-change value and visibly revert the
+    // optimistic switch. The optimistic value stands; a rejected request rolls back
+    // in onError, and window-focus/navigation refetches reconcile with server truth.
   });
   const fire = useMutation({
     mutationFn: (id: string) => post(`/api/admin/triggers/${id}/fire`),

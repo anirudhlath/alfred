@@ -114,6 +114,20 @@ def _get_episodic_lazy(redis: AioRedis) -> Any | None:
     return _episodic_memory
 
 
+def _safe_json(raw: Any, *, default: Any) -> Any:
+    """Parse a stored JSON value, returning ``default`` on missing/corrupt data.
+
+    Keeps the 'admin reads never 500' contract: one corrupt Redis value must not
+    take down the whole overview dashboard.
+    """
+    if not raw:
+        return default
+    try:
+        return json.loads(decode_stream_value(raw))
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return default
+
+
 def _decode_hash(fields: dict[bytes | str, Any]) -> dict[str, Any]:
     """Decode a Redis hash, dropping binary embedding fields."""
     out: dict[str, Any] = {}
@@ -158,6 +172,18 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
         dependencies=[Depends(trusted_network_dep), Depends(require_authenticated)],
     )
 
+    def _degraded_overview() -> dict[str, Any]:
+        """Full Overview shape with placeholders — the frontend `Overview` type
+        requires every field, so a partial payload would crash the SPA."""
+        return {
+            "redis": {"connected": False},
+            "cost": None,
+            "dnd": {"active": False},
+            "counts": {"sessions": 0, "devices": 0, "deferred": 0, "triggers": 0},
+            "streams": {},
+            "inference": {"ollama": False, "lmstudio": False},
+        }
+
     @router.get("/overview")
     async def overview(request: Request) -> dict[str, Any]:
         r = _redis(request)
@@ -165,13 +191,12 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
         try:
             await r.ping()  # type: ignore[misc]
         except Exception:
-            out["redis"]["connected"] = False
-            return out
+            return _degraded_overview()
 
         raw_cost = await r.get(COST_DAILY_KEY)
-        out["cost"] = json.loads(raw_cost) if raw_cost else None
+        out["cost"] = _safe_json(raw_cost, default=None)
         raw_dnd = await r.get(DND_STATE_KEY)
-        out["dnd"] = json.loads(raw_dnd) if raw_dnd else {"active": False}
+        out["dnd"] = _safe_json(raw_dnd, default={"active": False})
 
         session_count = 0
         async for _ in r.scan_iter(match=f"{SESSIONS_KEY_PREFIX}*"):
@@ -349,25 +374,29 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
 
     @router.get("/memory/semantic")
     async def memory_semantic() -> dict[str, Any]:
-        files: list[dict[str, Any]] = []
-        for dirname in ("preferences", "profile"):
-            directory = _MEMORY_DIR / dirname
-            if not directory.is_dir():
-                continue
-            for path in sorted(directory.glob("*.md")):
-                if path.name.startswith("."):
+        def _read_semantic() -> list[dict[str, Any]]:
+            files: list[dict[str, Any]] = []
+            for dirname in ("preferences", "profile"):
+                directory = _MEMORY_DIR / dirname
+                if not directory.is_dir():
                     continue
-                files.append(
-                    {
-                        "name": path.name,
-                        "dir": dirname,
-                        "content": path.read_text(),
-                        "modified": datetime.fromtimestamp(
-                            path.stat().st_mtime, tz=UTC
-                        ).isoformat(),
-                    }
-                )
-        return {"files": files}
+                for path in sorted(directory.glob("*.md")):
+                    if path.name.startswith("."):
+                        continue
+                    files.append(
+                        {
+                            "name": path.name,
+                            "dir": dirname,
+                            "content": path.read_text(),
+                            "modified": datetime.fromtimestamp(
+                                path.stat().st_mtime, tz=UTC
+                            ).isoformat(),
+                        }
+                    )
+            return files
+
+        # Offload sync glob + reads off the event loop (which also serves chat/voice WS).
+        return {"files": await asyncio.to_thread(_read_semantic)}
 
     @router.get("/memory/routines")
     async def memory_routines() -> dict[str, Any]:
@@ -382,7 +411,7 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
     @router.get("/memory/scratchpad")
     async def memory_scratchpad(request: Request) -> dict[str, Any]:
         path = _MEMORY_DIR / "scratchpad.md"
-        content = path.read_text() if path.exists() else ""
+        content = await asyncio.to_thread(lambda: path.read_text() if path.exists() else "")
         pending = int(await _redis(request).llen(SCRATCHPAD_QUEUE))  # type: ignore[misc]
         return {"content": content, "pending_queue": pending}
 
