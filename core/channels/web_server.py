@@ -30,16 +30,14 @@ from core.channels.satellite.bridge import SatelliteBridge
 from core.channels.satellite.config import load_satellites
 from core.channels.satellite.pipeline import SatellitePipeline
 from core.channels.telemetry_ws import register_telemetry_ws
-from core.channels.voice_models import (  # re-exported for tests/__main__ (see __all__)
-    _FAILED,
-    _aget_stt,
-    _aget_tts,
-    _get_stt,
-    _get_tts,
-    _lazy_cache,
-    _synthesize_async,
-    _transcribe_async,
+from core.channels.voice_models import (  # re-exported for tests (see __all__)
     aget_speaker_id,
+    aget_stt,
+    aget_tts,
+    get_stt,
+    get_tts,
+    synthesize_async,
+    transcribe_async,
 )
 from core.identity.auth_middleware import AuthCookieMiddleware
 from core.identity.auth_routes import create_auth_router
@@ -50,18 +48,16 @@ from core.notifications.channels import ChannelRegistry
 from core.warmup import start_warmup
 
 # mypy --strict (no_implicit_reexport): mark the voice_models re-imports above as
-# this module's public interface so `from core.channels.web_server import _get_tts`
-# (core/channels/__main__.py) and test monkeypatches keep resolving without error.
+# this module's public interface so test monkeypatches (e.g.
+# `patch("core.channels.web_server.aget_tts", ...)`) keep resolving without error.
 __all__ = [
-    "_FAILED",
-    "_aget_stt",
-    "_aget_tts",
-    "_get_stt",
-    "_get_tts",
-    "_lazy_cache",
-    "_synthesize_async",
-    "_transcribe_async",
     "aget_speaker_id",
+    "aget_stt",
+    "aget_tts",
+    "get_stt",
+    "get_tts",
+    "synthesize_async",
+    "transcribe_async",
 ]
 
 # Patchable in tests — must be set before the lifespan registers the SPA route.
@@ -260,11 +256,11 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     # Load voice models in the background so the first audio message doesn't
     # pay the 10-40s lazy-load cost; the server starts serving immediately.
     async def _warm_stt() -> None:
-        if await _aget_stt() is None:
+        if await aget_stt() is None:
             raise RuntimeError("voice extra not installed or model failed to load")
 
     async def _warm_tts() -> None:
-        if await _aget_tts() is None:
+        if await aget_tts() is None:
             raise RuntimeError("voice extra not installed or model failed to load")
 
     warmup_task = start_warmup("channels", {"whisper stt": _warm_stt, "piper tts": _warm_tts})
@@ -279,7 +275,7 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         if satellites:
             speaker_id = await aget_speaker_id(pool)
             pipeline = SatellitePipeline(
-                pool, get_stt=_aget_stt, get_tts=_aget_tts, speaker_id=speaker_id
+                pool, get_stt=aget_stt, get_tts=aget_tts, speaker_id=speaker_id
             )
             satellite_bridge = SatelliteBridge(satellites, pipeline)
             satellite_bridge.start()
@@ -288,7 +284,7 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
                 "satellite",
                 SatelliteChannelAdapter(
                     get_bridge=lambda: getattr(app.state, "satellite_bridge", None),
-                    get_tts=_aget_tts,
+                    get_tts=aget_tts,
                 ),
             )
     except Exception as exc:
@@ -376,11 +372,11 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
                 # Transcribe audio to text before sending to Conscious Engine
                 if content_type == "audio" and content:
-                    stt = await _aget_stt()
+                    stt = await aget_stt()
                     if stt is not None:
                         try:
                             audio_bytes, audio_fmt = _decode_audio(content)
-                            content = await _transcribe_async(stt, audio_bytes, audio_fmt)
+                            content = await transcribe_async(stt, audio_bytes, audio_fmt)
                             content_type = "text"
                             logger.info("Transcribed voice → '{}' chars", len(content))
                             await websocket.send_json(
@@ -438,10 +434,10 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
                 }
 
                 # Synthesise audio for the response
-                tts = await _aget_tts()
+                tts = await aget_tts()
                 if tts is not None:
                     try:
-                        wav_bytes = await _synthesize_async(tts, alfred_resp.text)
+                        wav_bytes = await synthesize_async(tts, alfred_resp.text)
                         response_payload["audio"] = base64.b64encode(wav_bytes).decode()
                     except Exception as exc:
                         logger.error("TTS synthesis failed: {}", exc)

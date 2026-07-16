@@ -11,18 +11,12 @@ import time
 import uvicorn
 from loguru import logger
 
+from core.channels.voice_models import get_tts
 from core.channels.web_server import create_app, get_web_websockets
 from core.notifications.adapters.websocket import WebSocketChannelAdapter
 from core.notifications.channels import ChannelRegistry
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
-
-
-def _get_tts_lazy() -> object:
-    """Lazy TTS getter matching web_server pattern."""
-    from core.channels.web_server import _get_tts
-
-    return _get_tts()
 
 
 def main() -> None:
@@ -34,7 +28,7 @@ def main() -> None:
     # WebSocket adapter handles both text and TTS audio (URGENT only).
     ChannelRegistry.set_instance(
         "websocket",
-        WebSocketChannelAdapter(get_sessions=get_web_websockets, get_tts=_get_tts_lazy),
+        WebSocketChannelAdapter(get_sessions=get_web_websockets, get_tts=get_tts),
     )
 
     app = create_app(redis_url=config.redis_url)

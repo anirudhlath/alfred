@@ -37,12 +37,12 @@ def _lazy_load(key: str, module: str, cls_name: str, missing_msg: str) -> Any:
     return None
 
 
-def _get_stt() -> Any:
+def get_stt() -> Any:
     """Lazy-load WhisperSTT (requires voice extra)."""
     return _lazy_load("stt", "core.voice.stt", "WhisperSTT", "faster-whisper not installed")
 
 
-def _get_tts() -> Any:
+def get_tts() -> Any:
     """Lazy-load PiperTTS (requires voice extra)."""
     return _lazy_load("tts", "core.voice.tts", "PiperTTS", "piper-tts not installed")
 
@@ -60,23 +60,23 @@ async def _aget_voice(key: str, getter: Callable[[], Any]) -> Any:
         return await asyncio.to_thread(getter)
 
 
-async def _aget_stt() -> Any:
+async def aget_stt() -> Any:
     """WhisperSTT instance (or None), constructed off the event loop."""
-    return await _aget_voice("stt", _get_stt)
+    return await _aget_voice("stt", get_stt)
 
 
-async def _aget_tts() -> Any:
+async def aget_tts() -> Any:
     """PiperTTS instance (or None), constructed off the event loop."""
-    return await _aget_voice("tts", _get_tts)
+    return await _aget_voice("tts", get_tts)
 
 
-async def _transcribe_async(stt: Any, audio_bytes: bytes, audio_fmt: str) -> str:
+async def transcribe_async(stt: Any, audio_bytes: bytes, audio_fmt: str) -> str:
     """Run blocking Whisper transcription in a worker thread."""
     result = await asyncio.to_thread(stt.transcribe, audio_bytes, audio_format=audio_fmt)
     return cast("str", result)
 
 
-async def _synthesize_async(tts: Any, text: str) -> bytes:
+async def synthesize_async(tts: Any, text: str) -> bytes:
     """Run blocking Piper synthesis in a worker thread."""
     result = await asyncio.to_thread(tts.synthesize, text)
     return cast("bytes", result)

@@ -28,15 +28,15 @@ def test_bridge_started_when_satellites_configured(tmp_path: Path) -> None:
     with (
         patch.dict("os.environ", {"SATELLITES_CONFIG": str(cfg)}),
         patch("core.channels.web_server.SatelliteBridge") as bridge_cls,
-        # The lifespan's background warmup task calls the real _aget_stt/_aget_tts,
+        # The lifespan's background warmup task calls the real aget_stt/aget_tts,
         # which serialize on a module-level asyncio.Lock in voice_models.py that
         # binds to whichever event loop first acquires it — leaking that bind
         # here would break unrelated tests (e.g. test_voice_async.py) that expect
         # a fresh, unbound lock on their own event loop. Stub the warmup calls so
         # this wiring test doesn't touch that shared lock (or spend real time
         # loading STT/TTS models neither test exercises).
-        patch("core.channels.web_server._aget_stt", new=AsyncMock(return_value=None)),
-        patch("core.channels.web_server._aget_tts", new=AsyncMock(return_value=None)),
+        patch("core.channels.web_server.aget_stt", new=AsyncMock(return_value=None)),
+        patch("core.channels.web_server.aget_tts", new=AsyncMock(return_value=None)),
     ):
         bridge_cls.return_value.stop = AsyncMock()
         app = create_app(redis_url="redis://localhost:6379")
@@ -54,8 +54,8 @@ def test_no_bridge_without_config(tmp_path: Path) -> None:
         patch.dict("os.environ", {"SATELLITES_CONFIG": str(tmp_path / "missing.yaml")}),
         patch("core.channels.web_server.SatelliteBridge") as bridge_cls,
         # See comment in test_bridge_started_when_satellites_configured above.
-        patch("core.channels.web_server._aget_stt", new=AsyncMock(return_value=None)),
-        patch("core.channels.web_server._aget_tts", new=AsyncMock(return_value=None)),
+        patch("core.channels.web_server.aget_stt", new=AsyncMock(return_value=None)),
+        patch("core.channels.web_server.aget_tts", new=AsyncMock(return_value=None)),
     ):
         app = create_app(redis_url="redis://localhost:6379")
         with TestClient(app):
@@ -76,8 +76,8 @@ def test_malformed_config_isolates_failure_and_disables_satellites(tmp_path: Pat
         patch.dict("os.environ", {"SATELLITES_CONFIG": str(cfg)}),
         patch("core.channels.web_server.SatelliteBridge") as bridge_cls,
         # See comment in test_bridge_started_when_satellites_configured above.
-        patch("core.channels.web_server._aget_stt", new=AsyncMock(return_value=None)),
-        patch("core.channels.web_server._aget_tts", new=AsyncMock(return_value=None)),
+        patch("core.channels.web_server.aget_stt", new=AsyncMock(return_value=None)),
+        patch("core.channels.web_server.aget_tts", new=AsyncMock(return_value=None)),
     ):
         app = create_app(redis_url="redis://localhost:6379")
         with TestClient(app) as client:  # must start fine, not raise
