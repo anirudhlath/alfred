@@ -92,14 +92,6 @@ class SpeakerID:
         logger.info("Enrolled voiceprint for '{}' ({} samples)", identity, len(audio_samples))
         return True
 
-    async def delete(self, identity: str) -> None:
-        """Remove an enrolled voiceprint."""
-        await self._redis.hdel(VOICEPRINT_KEY, identity)
-
-    async def enrolled_identities(self) -> list[str]:
-        """List enrolled identity labels."""
-        return sorted((await self._load_prints()).keys())
-
     async def _load_prints(self) -> dict[str, np.ndarray]:
         raw = await self._redis.hgetall(VOICEPRINT_KEY)
         prints: dict[str, np.ndarray] = {}

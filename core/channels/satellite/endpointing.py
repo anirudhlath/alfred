@@ -8,6 +8,7 @@ below end_threshold for silence_ms. Frames are 512 samples (1024 bytes) of
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -47,7 +48,7 @@ class UtteranceCollector:
         self._no_speech_frames = max(1, no_speech_timeout_ms // _MS_PER_FRAME)
         self._max_frames = max(1, max_utterance_ms // _MS_PER_FRAME)
         self._buffer = bytearray()
-        self._pre_roll: list[bytes] = []
+        self._pre_roll: deque[bytes] = deque(maxlen=_PRE_ROLL_FRAMES)
         self._speech: bytearray = bytearray()
         self._in_speech = False
         self._silence_run = 0
@@ -72,9 +73,7 @@ class UtteranceCollector:
         prob = self._vad(frame)
 
         if not self._in_speech:
-            self._pre_roll.append(frame)
-            if len(self._pre_roll) > _PRE_ROLL_FRAMES:
-                self._pre_roll.pop(0)
+            self._pre_roll.append(frame)  # deque(maxlen=...) auto-evicts the oldest
             if prob >= self._threshold:
                 self._in_speech = True
                 self._speech.extend(b"".join(self._pre_roll))

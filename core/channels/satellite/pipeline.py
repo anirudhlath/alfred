@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -10,6 +9,7 @@ from loguru import logger
 from bus.schemas.events import UserRequest
 from core.channels.request_bus import publish_and_wait
 from core.channels.satellite.audio import pcm_to_wav
+from core.channels.voice_models import synthesize_async, transcribe_async
 from core.conscious.identity import IDENTITY_SIR
 
 if TYPE_CHECKING:
@@ -52,7 +52,7 @@ class SatellitePipeline:
             return
 
         wav = pcm_to_wav(pcm)
-        text = (await asyncio.to_thread(stt.transcribe, wav, audio_format="wav")).strip()
+        text = (await transcribe_async(stt, wav, "wav")).strip()
         # Transcript FIRST: it stops mic streaming and re-arms the satellite
         # before the slow LLM round-trip.
         await conn.send_transcript(text)
@@ -94,5 +94,5 @@ class SatellitePipeline:
         if tts is None:
             logger.warning("Satellite '{}': TTS unavailable — reply not spoken", entry.name)
             return
-        wav_out = await asyncio.to_thread(tts.synthesize, response.text)
+        wav_out = await synthesize_async(tts, response.text)
         await conn.play_wav(wav_out)

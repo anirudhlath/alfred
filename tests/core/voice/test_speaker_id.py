@@ -24,7 +24,6 @@ def _fake_redis(store: dict[bytes, bytes]) -> AsyncMock:
 
     redis.hset = AsyncMock(side_effect=_hset)
     redis.hgetall = AsyncMock(side_effect=_hgetall)
-    redis.hdel = AsyncMock(side_effect=lambda key, field: store.pop(field.encode(), None))
     return redis
 
 

@@ -57,6 +57,18 @@ class IdentityGate:
             risk_clearance="low",
         )
 
+    def resolve_local_claim(self, identity_claim: str) -> IdentityResult:
+        """Trust an identity claim on a local (trusted-network) channel."""
+        if identity_claim == IDENTITY_SIR:
+            return IdentityResult(
+                identity=IDENTITY_SIR,
+                confidence=0.7,
+                method="local_claim",
+                factors=["identity_claim"],
+                risk_clearance="low",
+            )
+        return self.resolve_session(authenticated=False)
+
     def resolve(
         self,
         channel: str,
@@ -76,29 +88,13 @@ class IdentityGate:
                     factors=["voiceprint"],
                     risk_clearance="low",
                 )
-            if identity_claim == IDENTITY_SIR:
-                return IdentityResult(
-                    identity=IDENTITY_SIR,
-                    confidence=0.7,
-                    method="local_claim",
-                    factors=["identity_claim"],
-                    risk_clearance="low",
-                )
-            return self.resolve_session(authenticated=False)
+            return self.resolve_local_claim(identity_claim)
         if channel in ("web_pwa", "voice", "ios"):
             # Authenticated session (WebAuthn) takes priority
             if authenticated:
                 return self.resolve_session(authenticated=True)
             # Trust identity claim on local channels (pre-WebAuthn)
-            if identity_claim == IDENTITY_SIR:
-                return IdentityResult(
-                    identity=IDENTITY_SIR,
-                    confidence=0.7,
-                    method="local_claim",
-                    factors=["identity_claim"],
-                    risk_clearance="low",
-                )
-            return self.resolve_session(authenticated=False)
+            return self.resolve_local_claim(identity_claim)
         logger.warning("Unknown channel '{}', defaulting to guest", channel)
         return IdentityResult(
             identity=IDENTITY_GUEST,

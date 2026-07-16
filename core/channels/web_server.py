@@ -34,8 +34,6 @@ from core.channels.voice_models import (  # re-exported for tests (see __all__)
     aget_speaker_id,
     aget_stt,
     aget_tts,
-    get_stt,
-    get_tts,
     synthesize_async,
     transcribe_async,
 )
@@ -54,8 +52,6 @@ __all__ = [
     "aget_speaker_id",
     "aget_stt",
     "aget_tts",
-    "get_stt",
-    "get_tts",
     "synthesize_async",
     "transcribe_async",
 ]

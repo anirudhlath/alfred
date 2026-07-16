@@ -13,10 +13,11 @@ Deliberate v1 scope (final review 2026-07, whole-branch Minor #2): the enrollmen
 accepts any `[a-z0-9_-]+` identity, but the web enrollment card hardcodes `"sir"`, so
 non-sir voiceprints can only be created via direct API calls today. When household members
 get their own enrollments, the gate, context assembly ("You are speaking with …"),
-and preference scoping all need to understand named non-sir identities. Related:
-`SpeakerID.delete()` / `enrolled_identities()` exist but have no callers or endpoints yet —
-wire them into a management surface as part of this work. Also add the untested
-IdentityGate satellite edges (confidence + non-sir claim; authenticated satellite) as tests.
+and preference scoping all need to understand named non-sir identities. Related: add
+voiceprint management (`delete`/`list` methods on `SpeakerID` plus endpoints — earlier
+drafts carried these methods, removed as dead code pending this work). Also add the
+untested IdentityGate satellite edges (confidence + non-sir claim; authenticated
+satellite) as tests.
 
 ## Acceptance Criteria
 

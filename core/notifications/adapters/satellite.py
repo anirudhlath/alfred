@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from loguru import logger
 
+from core.channels.voice_models import synthesize_async
 from core.notifications.channels import ChannelAdapter, ChannelRegistry
 from core.notifications.schema import Notification, Urgency
 
@@ -41,7 +41,7 @@ class SatelliteChannelAdapter(ChannelAdapter):
             return
         text = f"{notification.title}: {notification.body}"
         try:
-            wav = await asyncio.to_thread(tts.synthesize, text)
+            wav = await synthesize_async(tts, text)
         except Exception as exc:
             logger.warning("SatelliteChannelAdapter: TTS failed: {}", exc)
             return
