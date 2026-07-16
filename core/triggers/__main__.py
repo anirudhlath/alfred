@@ -180,14 +180,33 @@ def _handle_signal() -> None:
     _shutdown.set()
 
 
-async def tick_loop(engine: TriggerEngine) -> None:
-    """1-second tick loop for time-based trigger evaluation."""
+async def scheduler_loop(engine: TriggerEngine, store: TriggerStore) -> None:
+    """Event-driven clock: evaluate, then sleep until the earliest next fire
+    time — woken instantly by any trigger mutation (pub/sub via the store).
+
+    Replaces the 1s tick loop. Ordering matters: the wake event is cleared
+    BEFORE evaluating/recomputing, so a mutation landing mid-pass leaves the
+    event set and the wait returns immediately — re-arms are never missed.
+    """
+    wake = asyncio.Event()
+    store.add_on_change(wake.set)
+
     while not _shutdown.is_set():
+        wake.clear()
         try:
             await engine.evaluate_tick(datetime.now(UTC))
         except Exception as e:
-            logger.error("Tick loop error: %s", e)
-        await asyncio.sleep(1.0)
+            logger.error("Scheduler evaluation error: %s", e)
+        try:
+            next_due = await engine.next_wakeup(datetime.now(UTC))
+        except Exception as e:
+            logger.error("Scheduler next_wakeup error: %s", e)
+            next_due = None
+        timeout: float | None = None
+        if next_due is not None:
+            timeout = max((next_due - datetime.now(UTC)).total_seconds(), 0.0)
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(wake.wait(), timeout)
 
 
 async def event_loop(
@@ -276,6 +295,10 @@ async def run(config: AlfredConfig) -> None:
 
     engine = TriggerEngine(store=store, redis=r)
 
+    # Keep this process's cache coherent via pub/sub so the scheduler wakes the
+    # instant a trigger is created/updated in another process (no 60s window).
+    await store.start_sync()
+
     # Register CRUD tools via public AlfredClient API
     client = AlfredClient(
         service_name="trigger-engine",
@@ -317,7 +340,7 @@ async def run(config: AlfredConfig) -> None:
                     raise
 
     tasks = [
-        asyncio.create_task(tick_loop(engine)),
+        asyncio.create_task(scheduler_loop(engine, store)),
         asyncio.create_task(event_loop(engine, r)),
         asyncio.create_task(actions_loop(store, engine, r)),
         asyncio.create_task(_periodic(store.snapshot_all, 300.0, "Trigger snapshot")),
@@ -335,6 +358,7 @@ async def run(config: AlfredConfig) -> None:
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        await store.stop_sync()
         await client.unregister()
         await r.aclose()
 

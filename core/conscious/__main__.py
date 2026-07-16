@@ -217,6 +217,9 @@ async def run(config: AlfredConfig) -> None:
         redis=r,
         snapshot_dir=str(Path(__file__).resolve().parent.parent / "memory" / "triggers"),
     )
+    # Publish/subscribe cache coherence: mutations here (e.g. new reminders)
+    # poke the trigger process's scheduler instantly via pub/sub.
+    await trigger_store.start_sync()
 
     dnd_checker = DNDChecker(redis=r, calendar_adapter=calendar_adapter)
     dispatcher = NotificationDispatcher(
@@ -407,6 +410,7 @@ async def run(config: AlfredConfig) -> None:
         if routine_suggestion_task is not None:
             routine_suggestion_task.cancel()
         delivery_task.cancel()
+        await trigger_store.stop_sync()
         await r.aclose()
 
 
