@@ -100,6 +100,7 @@ class UserRequest(BaseEvent):
     content_type: Literal["text", "audio"]
     content: str
     audio_ref: str | None = None
+    timezone: str | None = None  # IANA name from the client (e.g. America/Denver)
 
 
 class AlfredResponse(BaseEvent):

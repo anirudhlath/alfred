@@ -39,6 +39,7 @@ from shared.streams import (
     USER_RESPONSES_STREAM,
     decode_stream_value,
 )
+from shared.usertime import is_valid_timezone, set_user_timezone
 
 _lazy_cache: dict[str, Any] = {}
 _FAILED: object = object()  # sentinel for imports that already failed
@@ -158,6 +159,14 @@ def _decode_audio(data_url: str) -> tuple[bytes, str]:
                 fmt = extracted
         return base64.b64decode(encoded), fmt
     return base64.b64decode(data_url), fmt
+
+
+def _resolve_client_timezone(data: dict[str, Any]) -> str | None:
+    """Validated IANA timezone from a client WS payload, else None."""
+    tz = data.get("timezone")
+    if isinstance(tz, str) and is_valid_timezone(tz):
+        return tz
+    return None
 
 
 class OnboardingPayload(BaseModel):
@@ -426,6 +435,9 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
                 if client_channel not in ("web_pwa", "voice", "ios"):
                     client_channel = "web_pwa"
                 _active_websockets[websocket] = client_channel
+                client_tz = _resolve_client_timezone(data)
+                if client_tz:
+                    await set_user_timezone(r, client_tz)
                 request = UserRequest(
                     source=_CHANNEL_SOURCE_MAP.get(client_channel, "web-pwa"),
                     channel=client_channel,
@@ -434,6 +446,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
                     identity_claim="sir",
                     content_type=content_type,
                     content=content,
+                    timezone=client_tz,
                 )
 
                 alfred_resp = await _publish_and_wait(r, request, session_id, timeout=60.0)
