@@ -56,3 +56,34 @@ graph TD
 - PUT/DELETE endpoints restricted to localhost via `Depends(require_localhost)`
 - Password fields are never pre-filled in the UI
 - Transient fields (e.g. MFA codes) are passed to the adapter but not persisted
+
+## Sovereign Service Credentials (kind=service)
+
+Integration adapters run in-process; sovereign services (home-service,
+signal-bridge, ...) are separate processes that declare credential needs at
+registration time via the SDK:
+
+- `AlfredClient(credentials_schema=..., credentials_endpoint=...)` embeds a
+  `CredentialSchema` (field shape identical to `core/integrations/base.py`,
+  guarded by `sdk/tests/test_schema_compatibility.py`) and an absolute
+  `credentials_endpoint` URL in the `alfred:tool_registry` manifest.
+- `AlfredClient.register()` publishes a `ServiceRegistered` event to
+  `alfred:events` AFTER the registry hset.
+
+Core stays the single credential authority (`core/channels/service_credentials.py`):
+
+- `GET /api/integrations` merges adapters (`"kind": "adapter"`) with
+  registry-declared services (`"kind": "service"`, `category` = `"service"`);
+  the schema-driven `IntegrationCard` renders both with no special-casing.
+- `PUT /api/integrations/{name}/credentials` (service, trusted network):
+  validate against the registry schema → store non-transient fields in the OS
+  keyring (namespace = service name) → POST the flat field dict to the
+  service's `credentials_endpoint`. Push failure → HTTP 502, but the keyring
+  write persists and is re-pushed on the service's next registration.
+- `GET /api/integrations/{name}/status` (service) proxies the service's
+  `/health`. Healthy iff HTTP 200, top-level `status == "ok"`, and every
+  nested component dict with a `"state"` key reports `"connected"`.
+- Self-healing re-push: the channels process consumes `ServiceRegistered`
+  from `alfred:events` (consumer group `channels-credentials`) and re-pushes
+  stored credentials — services keep credentials in memory only and recover
+  automatically on restart. Event-driven; no polling.

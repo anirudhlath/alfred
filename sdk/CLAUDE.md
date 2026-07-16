@@ -23,6 +23,9 @@ Publishable Python package. The ONLY coupling between Alfred and external apps.
 - `client.register()` → `HSET alfred:tool_registry` + context write with 10min TTL
 - `client.unregister()` → `HDEL alfred:tool_registry` on graceful shutdown
 - `client.dispatch("feature.tool_name", params)` routes to bound method (async + sync supported)
+- `AlfredClient(credentials_schema=CredentialSchema(...), credentials_endpoint="http://host:port/credentials")` declares credential needs; core pushes stored values to that endpoint on every `register()`
+- `client.register()` also publishes a `ServiceRegistered` event to `alfred:events` (constant duplicated as `AlfredClient.EVENTS_STREAM` — SDK stays standalone)
+- `@tool(audience="reflex"|"conscious", risk="benign"|"elevated"|"critical")` — defaults `conscious`/`benign`; carried into `ToolManifest`
 
 ## Testing
 

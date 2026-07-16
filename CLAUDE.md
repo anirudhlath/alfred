@@ -86,6 +86,9 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - WebAuthn credentials: SQLite at `data/credentials.db` — credential ID, public key, sign count, device name
 - Auth sessions: Redis at `alfred:auth:{session_id}` — 24hr TTL, HttpOnly cookie `alfred_auth`
 - WebAuthn challenges: Redis at `alfred:webauthn:challenge:{id}` — 5min TTL, one-time use
+- Sovereign services declare `credentials_schema`/`credentials_endpoint` via `AlfredClient`; `register()` publishes `ServiceRegistered` to `alfred:events` AFTER the registry hset
+- `core/channels/service_credentials.py` — service credential helpers + `credential_push_worker` (consumer group `channels-credentials` on `alfred:events`) re-pushes keyring credentials whenever a service re-registers
+- `GET /api/integrations` merges adapters (`kind: "adapter"`) and registry-declared services (`kind: "service"`); service PUT pushes to the service's `credentials_endpoint`, service status proxies its `/health`
 
 ## Workflow
 
@@ -172,7 +175,7 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 
 ## Gotchas
 
-- `redis.asyncio.Redis` methods return `Awaitable[T] | T` — use `# type: ignore[misc]` on await calls (see `core/reflex/runner.py:86` for precedent)
+- `redis.asyncio.Redis` methods return `Awaitable[T] | T` under the current redis stubs — `hset`/`hdel`/`xadd` awaits need NO ignore (e.g. `core/reflex/runner.py`, `sdk/alfred_sdk/client.py`); `xreadgroup` awaits still need `# type: ignore[assignment,misc,unused-ignore]` (see the worker in `core/channels/service_credentials.py`, also `core/notifications/delivery.py`)
 - Import `AioRedis` type alias from `shared.types` — never redefine as `Any`
 - Import `ensure_consumer_group` from `core.reflex.runner` — never reimplement inline
 - Import stream constants from `shared.streams` — never hardcode `"alfred:events"` etc.
@@ -221,3 +224,4 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - Use `EpisodicMemory.recall(..., update_stats=False)` for non-mutating reads (admin search) — the default `True` persists retrieval stats (HSET per recall).
 - `core/channels/admin_api.py` + `telemetry_ws.py` are gated by BOTH `require_trusted_network` AND `require_authenticated` (session cookie) — `/ws/telemetry` authenticates via the shared `authenticate_ws_cookie()` helper.
 - Frontend (`web/src`): `erasableSyntaxOnly` TS flag is on — no parameter properties (declare + assign fields explicitly). `eslint-plugin-react-hooks` v7 purity rule bans `Date.now()`/`Math.random()` in render — compute them in effects/handlers, not in the render body.
+- Service credential push failures return HTTP 502 from PUT but the keyring write persists — recovery is event-driven via the next `ServiceRegistered`, never a retry loop
