@@ -19,10 +19,21 @@ async def publish_and_wait(
 ) -> AlfredResponse:
     """Publish request and block-read the responses stream for a matching response.
 
-    Captures the latest stream ID before publishing to avoid scanning history.
+    Anchors the XREAD lower-bound to the response stream's own last entry ID
+    (via XREVRANGE) instead of a wall-clock timestamp, to avoid scanning
+    history. XREAD's lower bound is EXCLUSIVE — it only returns entries with
+    an ID strictly greater than what's given. A wall-clock-derived ID like
+    f"{now_ms}-0" can collide with a response Redis auto-assigns the exact
+    same ID (its own "-0" sequence slot) in that same millisecond, which
+    silently drops that response and burns the full timeout. It's also a
+    clock-skew hazard, since Redis assigns stream IDs from ITS clock, not the
+    caller's. Reading the stream's actual tail sidesteps both: "0-0" on an
+    empty/nonexistent stream is correct here since there's no history to scan.
     Returns the full AlfredResponse so callers can forward actions_taken and mood.
     """
-    last_id = f"{int(time.time() * 1000)}-0"
+    tail = await redis.xrevrange(USER_RESPONSES_STREAM, count=1)
+    tail_id = tail[0][0] if tail else None
+    last_id = decode_stream_value(tail_id) if tail_id is not None else "0-0"
 
     await redis.xadd(USER_REQUESTS_STREAM, {"event": request.model_dump_json()})
 
