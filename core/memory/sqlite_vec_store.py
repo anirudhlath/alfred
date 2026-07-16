@@ -120,8 +120,7 @@ class SqliteVecStore(VectorStore):
         # INSERT OR IGNORE seed — they made re-migration collide with
         # "UNIQUE constraint failed: schema_version.version".
         await db.execute(
-            "DELETE FROM schema_version"
-            " WHERE version < (SELECT MAX(version) FROM schema_version)"
+            "DELETE FROM schema_version WHERE version < (SELECT MAX(version) FROM schema_version)"
         )
         await db.commit()
 
