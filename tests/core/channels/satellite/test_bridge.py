@@ -97,6 +97,31 @@ async def test_play_wav_streams_audio(fake_sat: FakeSatellite) -> None:
         await bridge.stop()
 
 
+async def test_play_wav_to_named_satellite(fake_sat: FakeSatellite) -> None:
+    bridge = SatelliteBridge([_entry(fake_sat)], handler=lambda c, p: asyncio.sleep(0))
+    bridge.start()
+    try:
+        await asyncio.wait_for(fake_sat.run_satellite_seen.wait(), 5.0)
+        wav = pcm_to_wav(b"\x00\x01" * 4096, rate=22050)
+        delivered = await bridge.play_wav_to("kitchen", wav)
+        assert delivered is True
+        start = await fake_sat.wait_for("audio-start")
+        assert start.data["rate"] == 22050
+        await fake_sat.wait_for("audio-stop")
+    finally:
+        await bridge.stop()
+
+
+async def test_play_wav_to_unknown_satellite_returns_false(fake_sat: FakeSatellite) -> None:
+    bridge = SatelliteBridge([_entry(fake_sat)], handler=lambda c, p: asyncio.sleep(0))
+    bridge.start()
+    try:
+        await asyncio.wait_for(fake_sat.run_satellite_seen.wait(), 5.0)
+        assert await bridge.play_wav_to("nope", b"unused") is False
+    finally:
+        await bridge.stop()
+
+
 async def test_reconnects_after_disconnect(fake_sat: FakeSatellite) -> None:
     bridge = SatelliteBridge([_entry(fake_sat)], handler=lambda c, p: asyncio.sleep(0))
     bridge.start()

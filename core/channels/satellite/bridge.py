@@ -259,6 +259,13 @@ class SatelliteBridge:
         """Currently-connected satellites."""
         return [c for c in self._connections if c.connected]
 
+    def get_connection(self, name: str) -> SatelliteConnection | None:
+        """Connected satellite by configured name, or None."""
+        for conn in self._connections:
+            if conn.entry.name == name and conn.connected:
+                return conn
+        return None
+
     async def play_wav_all(self, wav: bytes) -> int:
         """Play a WAV on every online satellite. Returns delivery count."""
         delivered = 0
@@ -269,3 +276,16 @@ class SatelliteBridge:
             except Exception as exc:
                 logger.warning("Announcement to satellite '{}' failed: {}", conn.entry.name, exc)
         return delivered
+
+    async def play_wav_to(self, name: str, wav: bytes) -> bool:
+        """Play a WAV on one named satellite. False if offline/unknown or send fails."""
+        conn = self.get_connection(name)
+        if conn is None:
+            logger.warning("Announcement to satellite '{}' failed: offline or unknown", name)
+            return False
+        try:
+            await conn.play_wav(wav)
+        except Exception as exc:
+            logger.warning("Announcement to satellite '{}' failed: {}", name, exc)
+            return False
+        return True

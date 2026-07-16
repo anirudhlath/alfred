@@ -11,7 +11,7 @@ from core.notifications.channels import ChannelAdapter, ChannelRegistry
 from core.notifications.schema import Notification, Urgency
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
 
 @ChannelRegistry.register()
@@ -24,15 +24,18 @@ class SatelliteChannelAdapter(ChannelAdapter):
     def __init__(
         self,
         get_bridge: Callable[[], Any | None],
-        get_tts: Callable[[], Any | None],
+        get_tts: Callable[[], Awaitable[Any | None]],
     ) -> None:
         self._get_bridge = get_bridge
+        # Async getter — TTS construction is a cold 10-40s load (possibly a
+        # blocking HF download) and must never run synchronously on the event
+        # loop that's also serving WebSockets/notifications.
         self._get_tts = get_tts
 
     async def deliver(self, notification: Notification) -> None:
         """Speak the notification on every online satellite."""
         bridge = self._get_bridge()
-        tts = self._get_tts()
+        tts = await self._get_tts()
         if bridge is None or tts is None:
             logger.debug("SatelliteChannelAdapter: bridge/TTS unavailable, skipping")
             return

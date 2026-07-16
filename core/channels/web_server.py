@@ -269,24 +269,35 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
 
     warmup_task = start_warmup("channels", {"whisper stt": _warm_stt, "piper tts": _warm_tts})
 
-    # Satellite bridge — physical voice devices (see docs/voice-satellites.md)
+    # Satellite bridge — physical voice devices (see docs/voice-satellites.md).
+    # A malformed/duplicate satellites.yaml must not take down the whole
+    # channels process (web+iOS+notifications) — isolate it like the APNs
+    # adapter above, but loud (ERROR) since it silently disables a feature.
     satellite_bridge: SatelliteBridge | None = None
-    satellites = load_satellites()
-    if satellites:
-        speaker_id = await aget_speaker_id(pool)
-        pipeline = SatellitePipeline(
-            pool, get_stt=_aget_stt, get_tts=_aget_tts, speaker_id=speaker_id
+    try:
+        satellites = load_satellites()
+        if satellites:
+            speaker_id = await aget_speaker_id(pool)
+            pipeline = SatellitePipeline(
+                pool, get_stt=_aget_stt, get_tts=_aget_tts, speaker_id=speaker_id
+            )
+            satellite_bridge = SatelliteBridge(satellites, pipeline)
+            satellite_bridge.start()
+            app.state.satellite_bridge = satellite_bridge
+            ChannelRegistry.set_instance(
+                "satellite",
+                SatelliteChannelAdapter(
+                    get_bridge=lambda: getattr(app.state, "satellite_bridge", None),
+                    get_tts=_aget_tts,
+                ),
+            )
+    except Exception as exc:
+        logger.error(
+            "Satellite bridge init failed ({}): {} — satellites disabled",
+            type(exc).__name__,
+            exc,
         )
-        satellite_bridge = SatelliteBridge(satellites, pipeline)
-        satellite_bridge.start()
-        app.state.satellite_bridge = satellite_bridge
-        ChannelRegistry.set_instance(
-            "satellite",
-            SatelliteChannelAdapter(
-                get_bridge=lambda: getattr(app.state, "satellite_bridge", None),
-                get_tts=_get_tts,
-            ),
-        )
+        satellite_bridge = None
 
     yield
 

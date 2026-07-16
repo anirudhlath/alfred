@@ -60,3 +60,28 @@ def test_no_bridge_without_config(tmp_path: Path) -> None:
         app = create_app(redis_url="redis://localhost:6379")
         with TestClient(app):
             bridge_cls.assert_not_called()
+
+
+def test_malformed_config_isolates_failure_and_disables_satellites(tmp_path: Path) -> None:
+    """A ValueError from load_satellites() (e.g. duplicate names) must not take
+    down the whole channels process — web/iOS/notifications must keep serving."""
+    cfg = tmp_path / "satellites.yaml"
+    cfg.write_text(
+        "satellites:\n"
+        "  - name: kitchen\n    host: 127.0.0.1\n"
+        "  - name: kitchen\n    host: 127.0.0.2\n"
+    )
+
+    with (
+        patch.dict("os.environ", {"SATELLITES_CONFIG": str(cfg)}),
+        patch("core.channels.web_server.SatelliteBridge") as bridge_cls,
+        # See comment in test_bridge_started_when_satellites_configured above.
+        patch("core.channels.web_server._aget_stt", new=AsyncMock(return_value=None)),
+        patch("core.channels.web_server._aget_tts", new=AsyncMock(return_value=None)),
+    ):
+        app = create_app(redis_url="redis://localhost:6379")
+        with TestClient(app) as client:  # must start fine, not raise
+            bridge_cls.assert_not_called()
+            assert ChannelRegistry.get_instance("satellite") is None
+            resp = client.get("/health")
+            assert resp.status_code == 200
