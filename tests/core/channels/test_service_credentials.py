@@ -41,11 +41,37 @@ async def test_list_service_manifests_filters_and_survives_garbage(
             b"home-service": json.dumps(home_service_manifest).encode(),
             b"plain": json.dumps(plain).encode(),
             b"broken": b"{not json",
+            b"int-value": b"123",
+            b"list-value": b"[1, 2]",
         }
     )
     manifests = await list_service_manifests(redis)
     assert set(manifests) == {"home-service"}
     assert manifests["home-service"]["credentials_endpoint"] == "http://localhost:8000/credentials"
+
+
+@pytest.mark.asyncio
+async def test_get_service_manifest_none_for_non_object_json() -> None:
+    redis = AsyncMock()
+    redis.hget = AsyncMock(return_value=b"123")
+    assert await get_service_manifest(redis, "int-value") is None
+
+    redis.hget = AsyncMock(return_value=b"[1, 2]")
+    assert await get_service_manifest(redis, "list-value") is None
+
+
+@pytest.mark.asyncio
+async def test_get_service_manifest_none_for_malformed_credentials_schema() -> None:
+    manifest = {
+        "service_name": "bad-schema",
+        "service_endpoint": "http://x/mcp",
+        "features": [],
+        "credentials_schema": {"fields": "nope"},
+        "credentials_endpoint": "http://x/credentials",
+    }
+    redis = AsyncMock()
+    redis.hget = AsyncMock(return_value=json.dumps(manifest).encode())
+    assert await get_service_manifest(redis, "bad-schema") is None
 
 
 @pytest.mark.asyncio

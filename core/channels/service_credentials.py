@@ -41,10 +41,14 @@ CREDENTIAL_PUSH_GROUP = "channels-credentials"
 def _parse_manifest(name: str, raw: bytes | str) -> dict[str, Any] | None:
     """Decode one registry manifest; None (logged) if malformed or without a usable schema."""
     try:
-        manifest: dict[str, Any] = json.loads(decode_stream_value(raw))
+        decoded: Any = json.loads(decode_stream_value(raw))
     except (TypeError, json.JSONDecodeError):
         logger.error("Invalid JSON in tool registry for service '{}'", name)
         return None
+    if not isinstance(decoded, dict):
+        logger.error("Non-object JSON in tool registry for service '{}'", name)
+        return None
+    manifest: dict[str, Any] = decoded
     schema_dict = manifest.get("credentials_schema")
     if not schema_dict:
         return None
