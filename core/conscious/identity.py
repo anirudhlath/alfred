@@ -62,10 +62,29 @@ class IdentityGate:
         channel: str,
         identity_claim: str,
         authenticated: bool,
+        identity_confidence: float | None = None,
     ) -> IdentityResult:
         """Unified resolution from a UserRequest's fields."""
         if channel == "signal":
             return self.resolve_signal(sender_phone=identity_claim)
+        if channel == "satellite":
+            if identity_confidence is not None and identity_claim == IDENTITY_SIR:
+                return IdentityResult(
+                    identity=IDENTITY_SIR,
+                    confidence=identity_confidence,
+                    method="voice_id",
+                    factors=["voiceprint"],
+                    risk_clearance="low",
+                )
+            if identity_claim == IDENTITY_SIR:
+                return IdentityResult(
+                    identity=IDENTITY_SIR,
+                    confidence=0.7,
+                    method="local_claim",
+                    factors=["identity_claim"],
+                    risk_clearance="low",
+                )
+            return self.resolve_session(authenticated=False)
         if channel in ("web_pwa", "voice", "ios"):
             # Authenticated session (WebAuthn) takes priority
             if authenticated:

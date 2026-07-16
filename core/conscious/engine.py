@@ -573,6 +573,7 @@ class ConsciousEngine:
             channel=request.channel,
             identity_claim=request.identity_claim,
             authenticated=request.authenticated,
+            identity_confidence=request.identity_confidence,
         )
         logger.info(
             "Identity resolved: %s (method=%s, confidence=%.2f)",
