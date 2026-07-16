@@ -65,6 +65,35 @@ def test_action_result_roundtrip_bus_to_sdk() -> None:
     assert sdk_result.result == bus_result.result
 
 
+def test_service_registered_roundtrip_sdk_to_bus() -> None:
+    """Serialize an SDK ServiceRegistered, deserialize as bus ServiceRegistered."""
+    from bus.schemas.events import ServiceRegistered as BusReg
+    from sdk.alfred_sdk.events import ServiceRegistered as SdkReg
+
+    sdk_event = SdkReg(
+        source="home-service",
+        service_name="home-service",
+        credentials_endpoint="http://localhost:8000/credentials",
+        has_credentials_schema=True,
+    )
+    bus_event = BusReg.model_validate_json(sdk_event.model_dump_json())
+
+    assert bus_event.event_type == "service_registered"
+    assert bus_event.service_name == "home-service"
+    assert bus_event.credentials_endpoint == "http://localhost:8000/credentials"
+    assert bus_event.has_credentials_schema is True
+    assert bus_event.event_id == sdk_event.event_id
+
+
+def test_service_registered_defaults() -> None:
+    """A service without credential support publishes a minimal event."""
+    from sdk.alfred_sdk.events import ServiceRegistered
+
+    event = ServiceRegistered(source="plain-service", service_name="plain-service")
+    assert event.credentials_endpoint is None
+    assert event.has_credentials_schema is False
+
+
 def _get_field_names(model: type[Any]) -> set[str]:
     """Get all field names from a Pydantic model."""
     return set(model.model_fields.keys())
@@ -80,6 +109,7 @@ def test_shared_schemas_have_same_fields() -> None:
         (bus.StateChangedEvent, sdk.StateChangedEvent),
         (bus.ActionRequest, sdk.ActionRequest),
         (bus.ActionResult, sdk.ActionResult),
+        (bus.ServiceRegistered, sdk.ServiceRegistered),
     ]:
         bus_fields = _get_field_names(bus_cls)
         sdk_fields = _get_field_names(sdk_cls)

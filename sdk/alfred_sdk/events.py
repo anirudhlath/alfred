@@ -55,3 +55,12 @@ class ActionResult(BaseEvent):
     status: Literal["success", "error"]
     result: dict[str, Any] | None = None
     error: str | None = None
+
+
+class ServiceRegistered(BaseEvent):
+    """A sovereign service (re)registered its manifest. Mirrors bus/schemas/events.py."""
+
+    event_type: str = "service_registered"
+    service_name: str
+    credentials_endpoint: str | None = None
+    has_credentials_schema: bool = False
