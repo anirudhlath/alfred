@@ -29,6 +29,7 @@ def web_client() -> TestClient:
         return {}
 
     mock_redis.hgetall = AsyncMock(side_effect=_fake_hgetall)
+    mock_redis.hget = AsyncMock(return_value=None)
 
     app = create_app(redis_url="redis://localhost:6379")
     app.state.redis = mock_redis

@@ -464,7 +464,8 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.get("/api/integrations")
     async def list_integrations() -> list[dict[str, Any]]:
-        """List all integrations with schema and configured status."""
+        """List integration adapters + registry-declared sovereign services (C5)."""
+        from core.channels.service_credentials import build_service_info, list_service_manifests
         from core.integrations.registry import IntegrationRegistry
         from shared.secrets import aget_all_secrets
 
@@ -476,42 +477,77 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
             return {
                 "name": name,
                 "category": integration_cls.category,
+                "kind": "adapter",
                 "schema": schema.model_dump(),
                 "configured": configured,
             }
 
-        return list(
+        adapters = list(
             await asyncio.gather(*[_build_info(n) for n in IntegrationRegistry.available()])
         )
+        manifests = await list_service_manifests(app.state.redis)
+        services = list(
+            await asyncio.gather(*[build_service_info(n, m) for n, m in manifests.items()])
+        )
+        return adapters + services
+
+    async def _save_service_credentials(name: str, body: dict[str, str]) -> dict[str, Any]:
+        """Service branch of PUT: validate → keyring → push to credentials_endpoint."""
+        from core.channels.service_credentials import (
+            get_service_manifest,
+            parse_schema,
+            push_credentials,
+            validate_credential_body,
+        )
+        from shared.secrets import aset_secret
+
+        manifest = await get_service_manifest(app.state.redis, name)
+        if manifest is None:
+            raise HTTPException(status_code=404, detail=f"Unknown integration: {name}")
+
+        schema = parse_schema(manifest)
+        validate_credential_body(schema, body)
+
+        await asyncio.gather(
+            *[aset_secret(name, f, v) for f, v in body.items() if not schema.fields[f].transient]
+        )
+
+        endpoint = manifest.get("credentials_endpoint")
+        if not endpoint:
+            return {"status": "ok", "pushed": False}
+        try:
+            # Push the full body (including transient fields) — the service
+            # applies them live; only non-transient fields were persisted above.
+            await push_credentials(app.state.http, endpoint, body)
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"Credentials stored, but push to {name} failed: {exc}. "
+                    "They will be re-pushed when the service re-registers."
+                ),
+            ) from exc
+        return {"status": "ok", "pushed": True}
 
     @app.put(
         "/api/integrations/{name}/credentials",
         dependencies=[Depends(require_trusted_network)],
     )
-    async def save_credentials(name: str, request: Request) -> dict[str, str]:
-        """Save integration credentials to OS keyring."""
+    async def save_credentials(name: str, request: Request) -> dict[str, Any]:
+        """Save credentials to the OS keyring (adapters + registry-declared services)."""
+        from core.channels.service_credentials import validate_credential_body
         from core.integrations.registry import IntegrationRegistry
         from shared.secrets import aset_secret
+
+        body: dict[str, str] = await request.json()
 
         try:
             integration_cls = IntegrationRegistry.get_class(name)
         except KeyError:
-            raise HTTPException(status_code=404, detail=f"Unknown integration: {name}") from None
+            return await _save_service_credentials(name, body)
 
         schema = integration_cls.credentials_schema
-        body: dict[str, str] = await request.json()
-
-        unknown = set(body.keys()) - set(schema.fields.keys())
-        if unknown:
-            raise HTTPException(status_code=422, detail=f"Unknown fields: {unknown}")
-
-        missing = [
-            f
-            for f, field in schema.fields.items()
-            if field.required and f not in body and not field.transient
-        ]
-        if missing:
-            raise HTTPException(status_code=422, detail=f"Missing required fields: {missing}")
+        validate_credential_body(schema, body)
 
         await asyncio.gather(
             *[aset_secret(name, f, v) for f, v in body.items() if not schema.fields[f].transient]
@@ -525,31 +561,64 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         dependencies=[Depends(require_trusted_network)],
     )
     async def delete_credentials(name: str) -> dict[str, str]:
-        """Clear all credentials for an integration from OS keyring."""
+        """Clear all credentials for an adapter or service from the OS keyring."""
+        from core.channels.service_credentials import get_service_manifest, parse_schema
         from core.integrations.registry import IntegrationRegistry
         from shared.secrets import adelete_secret
 
         try:
             integration_cls = IntegrationRegistry.get_class(name)
+            fields = list(integration_cls.credentials_schema.fields)
+            is_adapter = True
         except KeyError:
-            raise HTTPException(status_code=404, detail=f"Unknown integration: {name}") from None
+            manifest = await get_service_manifest(app.state.redis, name)
+            if manifest is None:
+                raise HTTPException(
+                    status_code=404, detail=f"Unknown integration: {name}"
+                ) from None
+            fields = list(parse_schema(manifest).fields)
+            is_adapter = False
 
-        await asyncio.gather(
-            *[adelete_secret(name, f) for f in integration_cls.credentials_schema.fields]
-        )
+        await asyncio.gather(*[adelete_secret(name, f) for f in fields])
 
-        await asyncio.to_thread(IntegrationRegistry.reconfigure, name)
+        if is_adapter:
+            await asyncio.to_thread(IntegrationRegistry.reconfigure, name)
         return {"status": "ok"}
+
+    async def _service_status(name: str) -> dict[str, Any]:
+        """Service branch of status: proxy the service's /health (C5)."""
+        from urllib.parse import urljoin
+
+        from core.channels.service_credentials import get_service_manifest, service_payload_healthy
+
+        manifest = await get_service_manifest(app.state.redis, name)
+        if manifest is None:
+            raise HTTPException(status_code=404, detail=f"Unknown integration: {name}")
+
+        endpoint = manifest.get("credentials_endpoint") or manifest.get("service_endpoint") or ""
+        if not endpoint:
+            return {"name": name, "healthy": False, "detail": {"error": "no endpoint declared"}}
+        health_url = urljoin(endpoint, "/health")
+        try:
+            resp = await app.state.http.get(health_url)
+            payload: dict[str, Any] = resp.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            return {"name": name, "healthy": False, "detail": {"error": str(exc)}}
+        return {
+            "name": name,
+            "healthy": service_payload_healthy(resp.status_code, payload),
+            "detail": payload,
+        }
 
     @app.get("/api/integrations/{name}/status")
     async def integration_status(name: str) -> dict[str, Any]:
-        """Run health check on an integration adapter."""
+        """Health check for an adapter (in-process) or service (proxied /health)."""
         from core.integrations.registry import IntegrationRegistry
 
         try:
             IntegrationRegistry.get_class(name)
         except KeyError:
-            raise HTTPException(status_code=404, detail=f"Unknown integration: {name}") from None
+            return await _service_status(name)
 
         try:
             instance = IntegrationRegistry.get(name)
