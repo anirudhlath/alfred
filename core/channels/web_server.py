@@ -6,6 +6,7 @@ import asyncio
 import base64
 import ipaddress
 import json
+import os
 import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -188,13 +189,17 @@ async def require_trusted_network(request: Request) -> None:
 
 
 async def _init_apns_adapter(pool: aioredis.Redis[Any]) -> None:  # type: ignore[type-arg]
-    """Register APNs adapter with hardcoded personal credentials."""
-    from pathlib import Path
+    """Register APNs adapter if credentials are configured via environment."""
+    team_id = os.getenv("APNS_TEAM_ID", "")
+    key_id = os.getenv("APNS_KEY_ID", "")
+    bundle_id = os.getenv("APNS_BUNDLE_ID", "")
 
-    team_id = "A3PH6PGY29"
-    key_id = "2U36353CR2"
-    bundle_id = "com.anirudhlath.alfred"
-    p8_path = Path(__file__).resolve().parents[2] / "secrets" / "AuthKey_2U36353CR2.p8"
+    if not (team_id and key_id and bundle_id):
+        logger.info("APNs credentials not configured, skipping adapter")
+        return
+
+    default_key_path = Path(__file__).resolve().parents[2] / "secrets" / f"AuthKey_{key_id}.p8"
+    p8_path = Path(os.getenv("APNS_KEY_PATH") or default_key_path)
 
     if not p8_path.exists():
         logger.warning("APNs key file missing at {}, skipping adapter", p8_path)

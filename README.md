@@ -1,5 +1,7 @@
 # Alfred
 
+[![CI](https://github.com/anirudhlath/alfred/actions/workflows/ci.yml/badge.svg)](https://github.com/anirudhlath/alfred/actions/workflows/ci.yml)
+
 An ambient, voice-first multi-agent system for smart environments. Inspired by Alfred Pennyworth.
 
 Alfred processes real-time events from smart home devices, responds to voice and text commands, and proactively manages your environment — all while maintaining the demeanor of a proper English butler.
@@ -11,12 +13,62 @@ Alfred uses a **dual-process cognitive model**:
 - **System 1 (Reflex Engine)** — a local SLM (Ollama) handles the fast path. State-change events pass through the SLM in sub-500ms to decide whether an action is needed.
 - **System 2 (Conscious Engine)** — Claude handles complex reasoning, multi-step planning, and conversational requests via an agentic tool-use loop.
 
-```
-MQTT (Home Assistant) → Redis Streams → Reflex Engine (Ollama)
-                                      → Conscious Engine (Claude)
-                                      → Trigger Engine (proactive)
-                                      ↕
-                              Domain Agents → Microservices
+```mermaid
+flowchart TB
+    subgraph BUS["Event Bus"]
+        MQTT["MQTT broker (Mosquitto)"] <--> Bridge["MQTT–Redis Bridge"]
+        Bridge <--> Streams[("Redis Streams<br/>consumer groups, Pydantic-validated events")]
+    end
+
+    HA["Home Assistant"] <--> MQTT
+
+    subgraph CHANNELS["Interaction Channels"]
+        WebAuthn["WebAuthn passkeys +<br/>Tailscale network gating"] --> WebChannel
+        WebChannel["Web Channel<br/>FastAPI + WebSocket + PWA<br/>WhisperSTT / PiperTTS voice"]
+        SignalBridge["Signal bridge<br/>(separate service)"]
+    end
+
+    WebChannel -->|UserRequest| Streams
+    SignalBridge -->|UserRequest| Streams
+    Streams -->|AlfredResponse| WebChannel
+
+    subgraph CORE["Dual-Process Core"]
+        Reflex["Reflex Engine — System 1<br/>local SLM (Ollama), fast path"]
+        Triggers["Trigger Engine<br/>LLM-created triggers,<br/>deterministic firing"]
+        Conscious["Conscious Engine — System 2<br/>Claude agentic tool-use loop<br/>sessions, cost caps, identity gate"]
+    end
+
+    Streams -->|StateChangedEvent| Reflex
+    Streams -->|StateChangedEvent / TriggerFired| Triggers
+    Streams -->|UserRequest| Conscious
+    Conscious -->|AlfredResponse| Streams
+
+    Reflex -->|ActionRequest| Agents
+    Triggers -->|ActionRequest| Agents
+    Conscious -->|ActionRequest| Agents
+
+    Agents["Domain Agents<br/>(HomeAgent)"] -->|"JSON-RPC (MCP)"| Services["Microservices<br/>home-service via alfred-sdk"]
+    Services --> HA
+
+    subgraph MEMORY["Three-Layer Memory"]
+        Episodic["Episodic<br/>Redis hot + SQLite cold,<br/>embedding search"]
+        Semantic["Semantic<br/>Markdown profiles + preferences"]
+        Procedural["Procedural<br/>YAML routines"]
+        Librarian["Librarian<br/>nightly consolidation,<br/>pattern detection, decay"]
+    end
+
+    Reflex -->|ReflexObservation| Ingestor["Memory Ingestor"] --> Episodic
+    Conscious <-->|recall / context assembly| MEMORY
+    Librarian --> Episodic
+    Librarian --> Semantic
+    Librarian --> Procedural
+
+    Conscious --> Integrations["IntegrationRegistry<br/>weather, calendar, health, robinhood"]
+    Conscious --> Notify["Notification Dispatcher<br/>APNs push, WebSocket, voice TTS"]
+
+    Evals["Evals Runner<br/>DeepEval metrics + mocked regression suite"] -.-> Reflex
+    Evals -.-> Conscious
+    Telemetry["Telemetry<br/>OpenTelemetry + latency/token CSVs"] -.-> Reflex
 ```
 
 ### Four Pillars
@@ -52,37 +104,36 @@ Weather (Open-Meteo), Apple Calendar (CalDAV), Apple Health, Robinhood — all r
 
 - **Web PWA** — chat + voice via WebSocket
 - **Voice** — WhisperSTT (local) + PiperTTS (local)
-- **Signal** — separate bridge service ([alfred-signal-bridge](https://github.com/anirudhlath/alfred-signal-bridge))
+- **Signal** — separate bridge service (not yet public)
 
 ## Setup
 
 ### Prerequisites
 
 - Python 3.13+
-- Redis
+- Redis Stack (RediSearch is required for vector memory)
 - Mosquitto (MQTT broker)
 - Ollama with a model pulled (e.g., `ollama pull gpt-oss:20b`)
-- [home-service](https://github.com/anirudhlath/alfred-home-service) running
+- `home-service` running — Home Assistant wrapper microservice (separate repo, not yet public)
 
 ### Install
 
 ```bash
-uv venv --python 3.13
-uv pip install -e ".[dev]"
+uv sync --extra dev        # core + dev tooling
+uv sync --all-extras       # everything (voice, integrations, memory, evals)
 
-# Optional extras
-uv pip install -e ".[voice]"         # WhisperSTT + PiperTTS
-uv pip install -e ".[integrations]"  # Calendar, Robinhood
-uv pip install -e ".[memory]"        # Sentence transformers, SQLite
-uv pip install -e ".[evals]"         # DeepEval
+# Or pick extras individually
+uv sync --extra dev --extra voice         # WhisperSTT + PiperTTS
+uv sync --extra dev --extra integrations  # Calendar, Robinhood
+uv sync --extra dev --extra memory        # Sentence transformers, sqlite-vec
+uv sync --extra dev --extra evals         # DeepEval
 ```
 
 ### Run
 
 ```bash
-# Start infrastructure
-brew services start redis
-brew services start mosquitto
+# Start infrastructure (Redis Stack + Mosquitto via Homebrew)
+bash scripts/dev-up.sh
 
 # Start home-service (separate repo)
 cd ../home-service && uv run uvicorn app.server:app --port 8000
@@ -149,9 +200,12 @@ All configuration via environment variables (`.env` file auto-loaded):
 
 ## Related Repos
 
-- [alfred-home-service](https://github.com/anirudhlath/alfred-home-service) — Home Assistant wrapper microservice
-- [alfred-home-assistant](https://github.com/anirudhlath/alfred-home-assistant) — HA config for dev/testing
+- [`alfred-home-service`](https://github.com/anirudhlath/alfred-home-service) — Home Assistant wrapper microservice built on `alfred-sdk`
+- [`alfred-ios`](https://github.com/anirudhlath/alfred-ios) — SwiftUI voice + chat companion app
+- `alfred-signal-bridge` — Signal messaging channel (not yet public)
 
 ## License
 
-Private.
+[AGPL-3.0-or-later](LICENSE) © 2025–2026 Anirudh Lath
+
+Briefly published under MIT during initial release prep (July 13–15, 2026); relicensed to AGPL-3.0-or-later on 2026-07-15. Contributions are accepted under the same license with a [DCO](CONTRIBUTING.md) sign-off.

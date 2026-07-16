@@ -79,7 +79,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - Integration adapters declare `credentials_schema: CredentialSchema` with typed `CredentialField` entries
 - `IntegrationRegistry.get()` auto-populates adapter kwargs from keyring; `get_class()` for class lookup; `reconfigure()` to refresh
 - REST endpoints: `GET /api/integrations`, `PUT/DELETE /api/integrations/{name}/credentials`, `GET .../status`
-- APNs credentials (team_id, key_id, private_key, bundle_id) stored via Secrets Manager under service name `"apns"`
+- APNs credentials configured via env (`APNS_TEAM_ID`, `APNS_KEY_ID`, `APNS_BUNDLE_ID`, optional `APNS_KEY_PATH`); the `.p8` signing key lives in `secrets/` (gitignored)
 - Device registration: `POST/DELETE /api/devices/register` — stores APNs tokens in Redis hash `alfred:push:devices`
 - Settings page: `web/src/pages/SettingsPage.tsx` — React SPA route at `/settings` (integration credential cards via `IntegrationCard`)
 - WebAuthn credentials: SQLite at `data/credentials.db` — credential ID, public key, sign count, device name

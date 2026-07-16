@@ -2,6 +2,7 @@
 name = "alfred"
 version = "0.1.0"
 description = "Ambient Multi-Agent System for Smart Environments"
+license = "AGPL-3.0-or-later"
 requires-python = ">=3.13"
 dependencies = [
     "pydantic>=2.0",
@@ -54,7 +55,7 @@ evals = [
 ]
 
 [build-system]
-requires = ["setuptools>=75.0"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
@@ -85,6 +86,12 @@ indent-style = "space"
 [tool.mypy]
 python_version = "3.13"
 strict = true
+# Map sdk/alfred_sdk/* consistently as sdk.alfred_sdk.* (matches runtime imports);
+# without this a fresh clone fails with "source file found twice under different names".
+explicit_package_bases = true
+# sdk tests import alfred_sdk by its installed package name (they run via pytest's
+# sys.path insertion), which conflicts with the sdk.alfred_sdk mapping above.
+exclude = ["^sdk/tests/", "^sdk/alfred_sdk/tests/"]
 plugins = ["pydantic.mypy"]
 warn_return_any = true
 warn_unused_configs = true
@@ -96,7 +103,6 @@ warn_unused_configs = true
 # the one canonical module name (matching how all monorepo source imports it),
 # which the documented `mypy --strict ... sdk/ ...` command then checks cleanly.
 mypy_path = "."
-explicit_package_bases = true
 namespace_packages = true
 
 [[tool.mypy.overrides]]
