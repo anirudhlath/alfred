@@ -4,7 +4,10 @@ CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER PRIMARY KEY
 );
 
-INSERT OR IGNORE INTO schema_version (version) VALUES (1);
+-- Seed version 1 only on a brand-new database; re-running against a
+-- migrated DB must NOT re-insert a stale version-1 row.
+INSERT INTO schema_version (version)
+SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM schema_version);
 
 CREATE TABLE IF NOT EXISTS episodic_entries (
     id          TEXT PRIMARY KEY,

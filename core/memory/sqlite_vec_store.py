@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 import struct
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -13,8 +14,6 @@ import aiosqlite
 from core.memory.vector_store import ContextMetadata, SearchResult, VectorStore
 
 if TYPE_CHECKING:
-    import sqlite3
-
     from core.memory.embedding_provider import EmbeddingProvider
 
 logger = logging.getLogger(__name__)
@@ -77,6 +76,9 @@ class SqliteVecStore(VectorStore):
             return self._db
         db = await aiosqlite.connect(self._db_path)
         await db.execute("PRAGMA journal_mode=WAL")
+        # Other Alfred processes share this file — wait out their write
+        # transactions instead of failing fast with "database is locked".
+        await db.execute("PRAGMA busy_timeout=10000")
         # Attempt to load sqlite-vec extension
         try:
             import sqlite_vec
@@ -98,18 +100,46 @@ class SqliteVecStore(VectorStore):
         """Run schema migrations up to v2 if needed."""
         db = await self._connect()
 
+        # Fast path: already migrated and clean — stay read-only. Multiple
+        # processes share this file and warm concurrently at startup while the
+        # librarian may hold write transactions; taking write locks here
+        # produced "database is locked" warmup failures.
+        try:
+            cursor = await db.execute("SELECT COUNT(*), MAX(version) FROM schema_version")
+            row = await cursor.fetchone()
+            if row is not None and row[0] == 1 and row[1] is not None and row[1] >= 2:
+                self._schema_ready = True
+                return
+        except sqlite3.OperationalError:
+            pass  # schema_version table missing — fresh database
+
         # Ensure base v1 schema exists (idempotent CREATE IF NOT EXISTS)
         schema_v1 = _SCHEMA_V1_PATH.read_text()
         await db.executescript(schema_v1)
+        # Drop stale lower-version rows left behind by the pre-2026-07
+        # INSERT OR IGNORE seed — they made re-migration collide with
+        # "UNIQUE constraint failed: schema_version.version".
+        await db.execute(
+            "DELETE FROM schema_version"
+            " WHERE version < (SELECT MAX(version) FROM schema_version)"
+        )
         await db.commit()
 
         # Check current version
-        cursor = await db.execute("SELECT version FROM schema_version LIMIT 1")
+        cursor = await db.execute("SELECT MAX(version) FROM schema_version")
         row = await cursor.fetchone()
-        version: int = row[0] if row else 1
+        version: int = row[0] if row and row[0] is not None else 1
 
         if version < 2:
-            await self._migrate_v2(db)
+            try:
+                await self._migrate_v2(db)
+            except sqlite3.IntegrityError:
+                # Another process sharing this DB migrated concurrently —
+                # accept its result if the version now reads >= 2.
+                cursor = await db.execute("SELECT MAX(version) FROM schema_version")
+                row = await cursor.fetchone()
+                if row is None or row[0] is None or row[0] < 2:
+                    raise
 
         self._schema_ready = True
 
