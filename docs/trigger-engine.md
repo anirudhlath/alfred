@@ -22,11 +22,11 @@ Minimum dependencies: `pydantic>=2.0`, `redis>=5.0`, `croniter>=1.0`, `pyyaml>=6
 graph TB
     subgraph "Trigger Engine Process"
         Main["__main__.py<br/>Orchestrator"]
-        TickLoop["Tick Loop<br/>1s interval"]
+        Sched["Scheduler Loop<br/>sleep to next_fire_time"]
         EventLoop["Event Loop<br/>Redis XREADGROUP"]
         SnapLoop["Snapshot Loop<br/>5min interval"]
         Engine["TriggerEngine<br/>Evaluate + Fire"]
-        Store["TriggerStore<br/>Redis CRUD + YAML"]
+        Store["TriggerStore<br/>Redis CRUD + YAML + pub/sub sync"]
         Feature["TriggerFeature<br/>BaseFeature CRUD tools"]
         Server["HTTP Server<br/>JSON-RPC dispatch"]
         Registry["TriggerRegistry<br/>Type-to-Class map"]
@@ -36,6 +36,7 @@ graph TB
         Events["alfred:events<br/>(Stream)"]
         Actions["alfred:actions<br/>(Stream)"]
         Triggers["alfred:triggers<br/>(Hash)"]
+        Channel["alfred:triggers:changed<br/>(Pub/Sub)"]
         Scratchpad["alfred:scratchpad:queue<br/>(List)"]
         ToolReg["alfred:tool_registry<br/>(Hash)"]
     end
@@ -44,12 +45,12 @@ graph TB
         YAML["core/memory/triggers/*.yaml<br/>Cold-start snapshots"]
     end
 
-    Main --> TickLoop
+    Main --> Sched
     Main --> EventLoop
     Main --> SnapLoop
     Main --> Server
 
-    TickLoop --> Engine
+    Sched --> Engine
     EventLoop -->|StateChangedEvent| Engine
     Engine --> Store
     Engine -->|ActionRequest| Actions
@@ -58,6 +59,8 @@ graph TB
 
     Store --> Triggers
     Store --> YAML
+    Store <-->|publish/subscribe| Channel
+    Channel -.->|re-arm wakeup| Sched
     SnapLoop --> Store
 
     Feature --> Store
@@ -77,7 +80,8 @@ The Trigger Engine runs four concurrent async tasks:
 
 ```mermaid
 graph LR
-    Tick["Tick Loop<br/>every 1s"] --> Eval["_evaluate_all()"]
+    Sched["Scheduler Loop<br/>sleep to next_fire_time"] --> Eval["_evaluate_all()"]
+    Channel["alfred:triggers:changed<br/>pub/sub"] -.->|re-arm| Sched
     Event["Event Loop<br/>alfred:events"] --> Eval
     Eval --> Fire{trigger.action?}
     Fire -->|set| AR["ActionRequest<br/>to alfred:actions"]
@@ -87,7 +91,7 @@ graph LR
     HTTP["HTTP Server<br/>:8001"] --> CRUD["TriggerFeature<br/>CRUD tools"]
 ```
 
-1. **Tick loop** (1s) -- calls `engine.evaluate_tick(now)` with the current UTC time. This drives `TimeTrigger` evaluations (cron and run_at).
+1. **Scheduler loop** -- calls `engine.evaluate_tick(now)`, then sleeps until `engine.next_wakeup(now)` (the earliest enabled trigger's `next_fire_time()`). No polling interval: a `TriggerStore` mutation wakes it instantly via `add_on_change` (see [Coherence](#coherence-pubsub) below), so a newly created or rescheduled trigger fires on time even if it's due sooner than any prior wakeup. This drives `TimeTrigger` evaluations (cron and run_at).
 2. **Event loop** -- reads `StateChangedEvent` entries from `alfred:events` via `XREADGROUP` (consumer group `trigger-engine`, consumer `worker-1`). Each event is passed to `engine.evaluate_event(event)`, which drives `SensorTrigger` evaluations.
 3. **Snapshot loop** (5min) -- calls `store.snapshot_all()` to dump all triggers from Redis to YAML files on disk. These serve as cold-start recovery only.
 4. **HTTP server** (:8001) -- a minimal `asyncio.start_server` that handles JSON-RPC requests dispatched to `TriggerFeature` tools via `AlfredClient.dispatch()`.
@@ -186,7 +190,7 @@ Fires on a cron schedule or at a specific datetime.
 
 At least one of `cron` or `run_at` must be set. The evaluate logic:
 
-- **Cron:** uses `croniter` to compute the next fire time. Fires if the next fire time is within 1 second of `now`. The 1-second window matches the tick loop interval.
+- **Cron:** `next_fire_time()` computes the next boundary strictly after `last_fired or created_at` (anchored in the user's local timezone, see `TriggerContext.tz`) via `croniter`; `evaluate()` fires once `now` reaches that boundary. A late wakeup (e.g. after downtime) fires exactly once and then re-anchors on the new `last_fired` -- no missed or duplicate fires, and no fixed polling window.
 - **run_at:** fires when `now >= run_at` and the trigger hasn't fired since `run_at`. Naive datetimes are treated as UTC.
 
 **Example:**
@@ -341,6 +345,18 @@ graph TB
 
 **Redis type handling:** redis-py stubs return `Awaitable[T] | T` unions. All Redis calls use `# type: ignore[misc]` on the await (following the precedent in `core/reflex/runner.py`).
 
+### Coherence (Pub/Sub)
+
+Every process holding a `TriggerStore` calls `start_sync()` to subscribe to `TRIGGERS_CHANGED_CHANNEL` (`alfred:triggers:changed`), keeping its in-memory cache coherent with every other process near-instantly instead of waiting for the periodic refresh. `save()`/`delete()` publish after writing to Redis; `shared/usertime.py` publishes on timezone change:
+
+| `op` | Payload | Effect |
+|---|---|---|
+| `saved` | `{"op": "saved", "trigger_id": "..."}` | Re-fetches that one trigger and upserts it into the cache (a concurrent delete is handled by evicting instead). |
+| `deleted` | `{"op": "deleted", "trigger_id": "..."}` | Evicts that trigger from the cache. |
+| `tz-changed` | `{"op": "tz-changed"}` | No cache change -- just notifies `add_on_change` listeners so the scheduler re-arms cron alarms under the new zone. |
+
+Pub/sub is best-effort. The existing 60-second `refresh()` (full `HGETALL`) remains as the reconciliation net, healing any state missed by a dropped subscriber connection.
+
 ---
 
 ## TriggerEngine
@@ -449,6 +465,7 @@ All keys are defined in `shared/streams.py` -- the single source of truth.
 | Key                        | Type   | Purpose                                       |
 |----------------------------|--------|-----------------------------------------------|
 | `alfred:triggers`          | Hash   | trigger_id → JSON (runtime source of truth)   |
+| `alfred:triggers:changed`  | Pub/Sub| Cross-process `TriggerStore` cache coherence (`saved`/`deleted`/`tz-changed`) |
 | `alfred:events`            | Stream | Input (StateChangedEvent) + output (TriggerFired, TriggerCreated) |
 | `alfred:actions`           | Stream | Output (ActionRequest when trigger has action) |
 | `alfred:scratchpad:queue`  | List   | Fire observations for ScratchpadWriter         |
@@ -537,7 +554,7 @@ The engine:
 1. Connects to Redis.
 2. Loads triggers from `alfred:triggers` (or rehydrates from YAML if empty).
 3. Registers CRUD tools via `AlfredClient.register()` to `alfred:tool_registry`.
-4. Starts tick loop, event loop, snapshot loop, and HTTP server concurrently.
+4. Starts the scheduler loop, event loop, snapshot loop, and HTTP server concurrently.
 
 ### Shutdown
 
@@ -579,6 +596,7 @@ The Trigger Engine should start after the MQTT-Redis Bridge and Reflex Runner:
 | Redis key | Type | Constant |
 |---|---|---|
 | `alfred:triggers` | Hash | `shared.streams.TRIGGERS_KEY` |
+| `alfred:triggers:changed` | Pub/Sub | `shared.streams.TRIGGERS_CHANGED_CHANNEL` |
 | `alfred:events` | Stream | `shared.streams.EVENTS_STREAM` |
 | `alfred:actions` | Stream | `shared.streams.ACTIONS_STREAM` |
 | `alfred:scratchpad:queue` | List | `shared.streams.SCRATCHPAD_QUEUE` |
