@@ -16,19 +16,27 @@ for pkg in mosquitto; do
 done
 
 echo "==> Starting Redis Stack (with RediSearch)..."
-if ! brew list redis-stack &>/dev/null 2>&1; then
-    echo "    Installing redis-stack..."
-    # Stop vanilla redis if running
-    brew services stop redis 2>/dev/null || true
-    brew tap redis/redis 2>/dev/null || true
-    brew install redis-stack
-fi
-brew services start redis-stack
-# Verify
+# Homebrew no longer ships a redis-stack formula/service — use the
+# redis-stack-server binary (cask) directly.
 if redis-cli ping &>/dev/null; then
-    echo "    Redis Stack: localhost:6379"
+    echo "    Redis already running"
 else
-    echo "    ERROR: Redis Stack failed to start"
+    if ! command -v redis-stack-server &>/dev/null; then
+        echo "    Installing redis-stack-server (cask)..."
+        # Stop vanilla redis if running — it lacks RediSearch
+        brew services stop redis 2>/dev/null || true
+        brew tap redis-stack/redis-stack 2>/dev/null || true
+        brew install --cask redis-stack-server
+    fi
+    redis-stack-server --daemonize yes
+    sleep 1
+fi
+# Verify server + RediSearch module (vector search requires it)
+if redis-cli ping &>/dev/null && redis-cli MODULE LIST 2>/dev/null | grep -qi search; then
+    echo "    Redis Stack: localhost:6379 (RediSearch loaded)"
+else
+    echo "    ERROR: Redis Stack failed to start or RediSearch module missing"
+    echo "    (vanilla redis won't work — Alfred needs redis-stack-server)"
     exit 1
 fi
 
@@ -63,5 +71,10 @@ echo "  Redis:     localhost:6379"
 echo "  Mosquitto: localhost:1883"
 echo ""
 echo "Now start the services:"
-echo "  Terminal 1: cd ../home-service && uv run uvicorn app.server:app --port 8000"
-echo "  Terminal 2: uv run python -m runner      # starts bridge + reflex + triggers"
+echo "  Terminal 1: cd ../home-service && .venv/bin/uvicorn app.server:app --port 8000"
+echo "              # (alfred-sdk is not on PyPI — 'uv run' re-resolves and fails;"
+echo "              #  use the repo's existing .venv)"
+echo "  Terminal 2: uv run python -m runner      # starts all six core services"
+echo ""
+echo "Home Assistant (:8123) is OPTIONAL — without it, home actions fail fast"
+echo "with structured error results; the event pipeline still works end-to-end."
