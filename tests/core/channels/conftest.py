@@ -35,3 +35,40 @@ def web_client() -> TestClient:
     client = TestClient(app)
     client.cookies.set("alfred_auth", _TEST_SESSION_ID)
     return client
+
+
+@pytest.fixture
+def home_service_manifest() -> dict[str, object]:
+    """A registry manifest for a sovereign service with credential support.
+
+    Mirrors what AlfredClient.get_registration_manifest() writes to
+    alfred:tool_registry for home-service (Plan 2 declares exactly this schema).
+    """
+    return {
+        "service_name": "home-service",
+        "service_endpoint": "http://localhost:8000/mcp",
+        "features": [],
+        "credentials_schema": {
+            "fields": {
+                "url": {
+                    "label": "Home Assistant URL",
+                    "field_type": "url",
+                    "required": True,
+                    "placeholder": "",
+                    "default": "http://homeassistant.local:8123",
+                    "help_text": "",
+                    "transient": False,
+                },
+                "token": {
+                    "label": "Access Token",
+                    "field_type": "password",
+                    "required": True,
+                    "placeholder": "",
+                    "default": "",
+                    "help_text": "Long-lived access token from your HA profile page",
+                    "transient": False,
+                },
+            }
+        },
+        "credentials_endpoint": "http://localhost:8000/credentials",
+    }
