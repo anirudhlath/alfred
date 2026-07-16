@@ -137,12 +137,12 @@ def test_onboarding_atomic_write(tmp_path: Path) -> None:
 
 
 def test_publish_and_wait_returns_alfred_response() -> None:
-    """_publish_and_wait returns an AlfredResponse (not a bare string)."""
+    """publish_and_wait returns an AlfredResponse (not a bare string)."""
     import asyncio
     from unittest.mock import AsyncMock
 
     from bus.schemas.events import AlfredResponse, UserRequest
-    from core.channels.web_server import _publish_and_wait
+    from core.channels.web_server import publish_and_wait
     from shared.streams import USER_RESPONSES_STREAM
 
     session_id = "test-session-abc"
@@ -172,7 +172,7 @@ def test_publish_and_wait_returns_alfred_response() -> None:
         content="What's on my calendar?",
     )
 
-    result = asyncio.run(_publish_and_wait(mock_redis, request, session_id, timeout=5.0))
+    result = asyncio.run(publish_and_wait(mock_redis, request, session_id, timeout=5.0))
 
     assert isinstance(result, AlfredResponse)
     assert result.text == "Very good, sir."
@@ -197,11 +197,9 @@ def test_ws_response_forwards_actions_taken_and_mood(web_client: TestClient) -> 
         mood="pleased",
     )
 
-    # Patch _publish_and_wait to return our AlfredResponse directly
+    # Patch publish_and_wait to return our AlfredResponse directly
     with (
-        patch(
-            "core.channels.web_server._publish_and_wait", new=AsyncMock(return_value=alfred_resp)
-        ),
+        patch("core.channels.web_server.publish_and_wait", new=AsyncMock(return_value=alfred_resp)),
         web_client.websocket_connect("/ws") as ws,
     ):
         # Consume the session message

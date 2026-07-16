@@ -7,7 +7,6 @@ import base64
 import ipaddress
 import json
 import os
-import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,19 +25,15 @@ if TYPE_CHECKING:
 
     from starlette.responses import Response
 
-from bus.schemas.events import AlfredResponse, UserRequest
+from bus.schemas.events import UserRequest
 from core.channels.admin_api import create_admin_router
+from core.channels.request_bus import publish_and_wait
 from core.channels.telemetry_ws import register_telemetry_ws
 from core.identity.auth_middleware import AuthCookieMiddleware
 from core.identity.auth_routes import create_auth_router
 from core.identity.credentials import CredentialStore
 from core.identity.ws_auth import require_ws_auth
 from core.warmup import start_warmup
-from shared.streams import (
-    USER_REQUESTS_STREAM,
-    USER_RESPONSES_STREAM,
-    decode_stream_value,
-)
 
 _lazy_cache: dict[str, Any] = {}
 _FAILED: object = object()  # sentinel for imports that already failed
@@ -436,7 +431,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
                     content=content,
                 )
 
-                alfred_resp = await _publish_and_wait(r, request, session_id, timeout=60.0)
+                alfred_resp = await publish_and_wait(r, request, session_id, timeout=60.0)
 
                 response_payload: dict[str, Any] = {
                     "type": "response",
@@ -662,52 +657,3 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
     app.add_middleware(AuthCookieMiddleware)
 
     return app
-
-
-async def _publish_and_wait(
-    redis: aioredis.Redis[Any],  # type: ignore[type-arg]
-    request: UserRequest,
-    session_id: str,
-    timeout: float = 30.0,
-) -> AlfredResponse:
-    """Publish request and poll the responses stream for a matching response.
-
-    Captures the latest stream ID before publishing to avoid scanning history.
-    Returns the full AlfredResponse so callers can forward actions_taken and mood.
-    """
-    # Use a time-based ID so we only read responses after this point.
-    # This avoids xinfo_stream which fails on non-existent streams and
-    # "0-0" which would scan all historical entries on a non-fresh Redis.
-    last_id = f"{int(time.time() * 1000)}-0"
-
-    # Publish the request
-    await redis.xadd(
-        USER_REQUESTS_STREAM,
-        {"event": request.model_dump_json()},
-    )
-
-    start = time.monotonic()
-
-    while (time.monotonic() - start) < timeout:
-        entries = await redis.xread({USER_RESPONSES_STREAM: last_id}, count=10, block=1000)
-        for _stream, stream_entries in entries:
-            for entry_id, entry_data in stream_entries:
-                last_id = entry_id
-                raw = entry_data.get(b"event") or entry_data.get("event")
-                if raw:
-                    event_str = decode_stream_value(raw)
-                    resp = AlfredResponse.model_validate_json(event_str)
-                    if resp.session_id == session_id:
-                        return resp
-
-    logger.warning(
-        "No response for session {} within {}s timeout — returning fallback",
-        session_id,
-        timeout,
-    )
-    return AlfredResponse(
-        source="web-channel",
-        channel="web_pwa",
-        session_id=session_id,
-        text="I apologize, sir — I seem to be taking longer than expected.",
-    )
