@@ -16,20 +16,22 @@ restart. Event-driven, no polling.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import TYPE_CHECKING, Any
 
+import httpx
 from fastapi import HTTPException
 from loguru import logger
 from pydantic import ValidationError
 
+from bus.schemas.events import ServiceRegistered
 from core.integrations.base import CredentialSchema
+from core.reflex.runner import ensure_consumer_group
 from shared.secrets import aget_all_secrets
-from shared.streams import TOOL_REGISTRY_KEY, decode_stream_value
+from shared.streams import EVENTS_STREAM, TOOL_REGISTRY_KEY, decode_stream_value
 
 if TYPE_CHECKING:
-    import httpx
-
     from shared.types import AioRedis
 
 CREDENTIAL_PUSH_GROUP = "channels-credentials"
@@ -157,3 +159,91 @@ def service_payload_healthy(status_code: int, payload: dict[str, Any]) -> bool:
         for component in payload.values()
         if isinstance(component, dict) and "state" in component
     )
+
+
+# ── ServiceRegistered re-push worker ──
+
+
+async def _handle_event_entry(
+    redis: AioRedis,
+    http: httpx.AsyncClient,
+    entry_data: dict[bytes | str, bytes | str],
+) -> None:
+    """Process one alfred:events entry; push credentials for ServiceRegistered."""
+    raw = entry_data.get("event") or entry_data.get(b"event")
+    if raw is None:
+        return
+
+    try:
+        payload = json.loads(decode_stream_value(raw))
+    except json.JSONDecodeError:
+        return
+    # alfred:events also carries TriggerFired/TriggerCreated — only act on ours.
+    if payload.get("event_type") != "service_registered":
+        return
+
+    event = ServiceRegistered.model_validate(payload)
+    if not event.has_credentials_schema or event.credentials_endpoint is None:
+        return
+
+    manifest = await get_service_manifest(redis, event.service_name)
+    if manifest is None:
+        logger.warning(
+            "ServiceRegistered for '{}' but no registry manifest with a schema",
+            event.service_name,
+        )
+        return
+
+    fields = await stored_pushable_credentials(event.service_name, parse_schema(manifest))
+    if fields is None:
+        logger.info("No stored credentials for '{}' — skipping push", event.service_name)
+        return
+
+    try:
+        await push_credentials(http, event.credentials_endpoint, fields)
+        logger.info(
+            "Re-pushed credentials to '{}' at {}",
+            event.service_name,
+            event.credentials_endpoint,
+        )
+    except httpx.HTTPError as exc:
+        # ACKed by the caller regardless — the retry vehicle is the service's
+        # next ServiceRegistered (it re-registers on restart / re-connect).
+        logger.warning("Credential push to '{}' failed: {}", event.service_name, exc)
+
+
+async def credential_push_worker(
+    redis: AioRedis,
+    http: httpx.AsyncClient,
+    consumer: str = "worker-1",
+    shutdown: asyncio.Event | None = None,
+) -> None:
+    """Consume ServiceRegistered from alfred:events and re-push stored credentials.
+
+    Runs in the channels process with its own consumer group (contract C5:
+    ``channels-credentials``). Same worker pattern as
+    core/notifications/delivery.py::notification_delivery_worker.
+    """
+    await ensure_consumer_group(redis, EVENTS_STREAM, CREDENTIAL_PUSH_GROUP)
+    _shutdown = shutdown or asyncio.Event()
+
+    while not _shutdown.is_set():
+        try:
+            entries: list[
+                tuple[
+                    bytes | str,
+                    list[tuple[bytes | str, dict[bytes | str, bytes | str]]],
+                ]
+            ] = await redis.xreadgroup(  # type: ignore[assignment,misc,unused-ignore]
+                CREDENTIAL_PUSH_GROUP, consumer, {EVENTS_STREAM: ">"}, count=10, block=5000
+            )
+
+            for _stream_key, stream_entries in entries:
+                for entry_id, entry_data in stream_entries:
+                    await _handle_event_entry(redis, http, entry_data)
+                    await redis.xack(EVENTS_STREAM, CREDENTIAL_PUSH_GROUP, entry_id)
+
+        except Exception as e:
+            if not _shutdown.is_set():
+                logger.error("Credential push worker error: {}", e)
+                await asyncio.sleep(1)

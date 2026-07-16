@@ -1,17 +1,20 @@
-"""Tests for core/channels/service_credentials.py — helpers (worker tests come later)."""
+"""Tests for core/channels/service_credentials.py — helpers + ServiceRegistered worker."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
 from fastapi import HTTPException
 
+from bus.schemas.events import ServiceRegistered, TriggerFired
 from core.channels.service_credentials import (
     build_service_info,
+    credential_push_worker,
     get_service_manifest,
     list_service_manifests,
     parse_schema,
@@ -20,6 +23,8 @@ from core.channels.service_credentials import (
     stored_pushable_credentials,
     validate_credential_body,
 )
+from core.channels.web_server import create_app
+from shared.streams import EVENTS_STREAM
 
 # ── registry reads ──
 
@@ -203,3 +208,184 @@ def test_service_payload_healthy() -> None:
     assert service_payload_healthy(200, {"status": "ok"}) is True  # no components → healthy
     auth_failed = {"status": "ok", "ha": {"state": "auth_failed", "entities": 0}}
     assert service_payload_healthy(200, auth_failed) is False
+
+
+# ── credential_push_worker (ServiceRegistered consumer) ──
+
+
+def _stream_entries(event_json: str) -> list[Any]:
+    return [(EVENTS_STREAM.encode(), [(b"1-0", {b"event": event_json.encode()})])]
+
+
+def _worker_redis(
+    manifest: dict[str, Any] | None, entries: list[Any]
+) -> tuple[AsyncMock, asyncio.Event]:
+    """AsyncMock redis whose xreadgroup yields one batch, then stops the worker."""
+    shutdown = asyncio.Event()
+    redis = AsyncMock()
+    redis.hget = AsyncMock(
+        return_value=json.dumps(manifest).encode() if manifest is not None else None
+    )
+    redis.xgroup_create = AsyncMock()
+    redis.xack = AsyncMock()
+
+    async def fake_xreadgroup(*args: Any, **kwargs: Any) -> list[Any]:
+        shutdown.set()
+        return entries
+
+    redis.xreadgroup = AsyncMock(side_effect=fake_xreadgroup)
+    return redis, shutdown
+
+
+def _service_registered_json() -> str:
+    return ServiceRegistered(
+        source="home-service",
+        service_name="home-service",
+        credentials_endpoint="http://localhost:8000/credentials",
+        has_credentials_schema=True,
+    ).model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_worker_re_pushes_stored_credentials(
+    home_service_manifest: dict[str, Any],
+) -> None:
+    from shared.secrets import set_secret
+
+    set_secret("home-service", "url", "http://192.168.50.159:8123")
+    set_secret("home-service", "token", "tok")
+
+    redis, shutdown = _worker_redis(
+        home_service_manifest, _stream_entries(_service_registered_json())
+    )
+
+    pushes: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        pushes.append(json.loads(request.content))
+        return httpx.Response(200, json={"status": "ok", "health": {"status": "ok"}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        await credential_push_worker(redis, http, shutdown=shutdown)
+
+    assert pushes == [{"url": "http://192.168.50.159:8123", "token": "tok"}]
+    redis.xack.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_worker_skips_when_credentials_incomplete(
+    home_service_manifest: dict[str, Any],
+) -> None:
+    from shared.secrets import set_secret
+
+    set_secret("home-service", "url", "http://192.168.50.159:8123")  # token missing
+
+    redis, shutdown = _worker_redis(
+        home_service_manifest, _stream_entries(_service_registered_json())
+    )
+
+    pushes: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        pushes.append(json.loads(request.content))
+        return httpx.Response(200, json={"status": "ok"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        await credential_push_worker(redis, http, shutdown=shutdown)
+
+    assert pushes == []
+    redis.xack.assert_awaited_once()  # still acked — nothing to retry until user saves
+
+
+@pytest.mark.asyncio
+async def test_worker_ignores_other_event_types(home_service_manifest: dict[str, Any]) -> None:
+    fired = TriggerFired(trigger_id="t1", trigger_name="test", trigger_type="time")
+    redis, shutdown = _worker_redis(home_service_manifest, _stream_entries(fired.model_dump_json()))
+
+    pushes: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        pushes.append(json.loads(request.content))
+        return httpx.Response(200, json={"status": "ok"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        await credential_push_worker(redis, http, shutdown=shutdown)
+
+    assert pushes == []
+    redis.xack.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_worker_push_failure_logged_and_acked(
+    home_service_manifest: dict[str, Any],
+) -> None:
+    from shared.secrets import set_secret
+
+    set_secret("home-service", "url", "http://192.168.50.159:8123")
+    set_secret("home-service", "token", "tok")
+
+    redis, shutdown = _worker_redis(
+        home_service_manifest, _stream_entries(_service_registered_json())
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        await credential_push_worker(redis, http, shutdown=shutdown)  # must not raise
+
+    redis.xack.assert_awaited_once()
+
+
+def test_lifespan_starts_credential_push_worker() -> None:
+    """The channels lifespan starts the ServiceRegistered consumer (same wiring
+    as the notification delivery worker). Patch set mirrors
+    tests/core/channels/test_web_server.py::test_auth_status_not_shadowed_by_spa_catch_all.
+    """
+    from fastapi.testclient import TestClient
+
+    calls: list[tuple[Any, Any]] = []
+
+    async def fake_worker(
+        redis: Any,
+        http: Any,
+        consumer: str = "worker-1",
+        shutdown: asyncio.Event | None = None,
+    ) -> None:
+        calls.append((redis, http))
+
+    mock_redis = AsyncMock()
+    mock_redis.hgetall = AsyncMock(return_value={})
+    mock_redis.close = AsyncMock()
+
+    mock_store = AsyncMock()
+    mock_store.initialize = AsyncMock()
+    mock_store.close = AsyncMock()
+    mock_store.get_user_id = AsyncMock(return_value=None)
+    mock_store.list_credentials = AsyncMock(return_value=[])
+    mock_store.has_any_credential = AsyncMock(return_value=False)
+
+    def fake_warmup(service: str, steps: Any) -> Any:
+        # The real warmup starts Whisper/Piper loads in to_thread; those
+        # threads outlive the TestClient and pollute web_server._lazy_cache
+        # for later tests (this file runs before test_voice_async.py).
+        return asyncio.create_task(asyncio.sleep(0))
+
+    with (
+        patch("core.channels.web_server.aioredis.from_url", return_value=mock_redis),
+        patch("core.channels.web_server.CredentialStore", return_value=mock_store),
+        patch("core.channels.web_server._init_apns_adapter", new=AsyncMock()),
+        patch("core.channels.web_server.start_warmup", new=fake_warmup),
+        patch(
+            "core.notifications.delivery.notification_delivery_worker",
+            new=AsyncMock(return_value=None),
+        ),
+        patch("core.channels.service_credentials.credential_push_worker", new=fake_worker),
+        patch("httpx.AsyncClient.aclose", new=AsyncMock()),
+    ):
+        app = create_app(redis_url="redis://localhost:6379")
+        with TestClient(app) as client:
+            assert client.get("/health").status_code == 200
+
+    assert len(calls) == 1
+    assert calls[0][0] is mock_redis  # worker gets the shared pool

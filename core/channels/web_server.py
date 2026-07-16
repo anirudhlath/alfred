@@ -292,9 +292,14 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     except Exception as exc:
         logger.warning("APNs adapter init failed ({}): {}", type(exc).__name__, exc)
 
+    from core.channels.service_credentials import credential_push_worker
+
     shutdown = asyncio.Event()
     delivery_task = asyncio.create_task(
         notification_delivery_worker(pool, group="channels-delivery", shutdown=shutdown)
+    )
+    credential_push_task = asyncio.create_task(
+        credential_push_worker(pool, app.state.http, shutdown=shutdown)
     )
 
     # Load voice models in the background so the first audio message doesn't
@@ -313,6 +318,7 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
 
     shutdown.set()
     delivery_task.cancel()
+    credential_push_task.cancel()
     warmup_task.cancel()
 
     from core.notifications.channels import ChannelRegistry
