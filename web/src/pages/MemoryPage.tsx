@@ -98,7 +98,7 @@ function Semantic() {
     queryFn: () => api("/api/admin/memory/semantic"),
   });
   return (
-    <div className="grid gap-3 lg:grid-cols-2">
+    <div className="grid grid-cols-1 items-start gap-3 lg:grid-cols-2">
       {(data?.files ?? []).map((f) => (
         <div key={`${f.dir}/${f.name}`} className="rounded-md border border-border bg-card p-4">
           <div className="mb-2 font-mono text-[10px] text-muted-foreground">

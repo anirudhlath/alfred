@@ -1,6 +1,12 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+/* Radix sets data-orientation; the shadcn Tabs primitive keys its layout off these
+   custom variants (data-horizontal:flex-col, group-data-horizontal/tabs:h-8, …).
+   Without them the tab list renders beside the content instead of above it. */
+@custom-variant data-horizontal (&[data-orientation="horizontal"]);
+@custom-variant data-vertical (&[data-orientation="vertical"]);
+
 :root {
   /* Mission Control — single dark theme by design (no light mode, no switching) */
   --background: #090c12;

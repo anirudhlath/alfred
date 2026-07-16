@@ -46,7 +46,7 @@ export function SettingsPage() {
         </CardContent>
       </Card>
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
         {(integrations ?? []).map((integration) => (
           <IntegrationCard key={integration.name} integration={integration} onSaved={onSaved} />
         ))}
