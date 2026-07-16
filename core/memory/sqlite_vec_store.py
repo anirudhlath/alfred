@@ -63,6 +63,9 @@ class SqliteVecStore(VectorStore):
         self._embedder = embedder
         self._db: aiosqlite.Connection | None = None
         self._vec_ready: bool = False
+        # Tracked separately from the connection: a warmup task may call
+        # _connect() first, and that must not skip schema creation/migration.
+        self._schema_ready: bool = False
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -107,6 +110,8 @@ class SqliteVecStore(VectorStore):
 
         if version < 2:
             await self._migrate_v2(db)
+
+        self._schema_ready = True
 
     async def _migrate_v2(self, db: aiosqlite.Connection) -> None:
         """Apply v2 migration DDL, then back-fill vec0 tables for existing rows."""
@@ -191,7 +196,7 @@ class SqliteVecStore(VectorStore):
 
     async def _get_db(self) -> aiosqlite.Connection:
         """Return initialized database connection, running migrations first."""
-        if self._db is None:
+        if not self._schema_ready:
             await self._ensure_schema()
         assert self._db is not None
         return self._db
@@ -386,6 +391,7 @@ class SqliteVecStore(VectorStore):
         if self._db is not None:
             await self._db.close()
             self._db = None
+            self._schema_ready = False
 
     async def update_metadata(
         self,

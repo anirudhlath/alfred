@@ -62,6 +62,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `core/memory/ingestor.py` — Memory Ingestor (hippocampus: ReflexObservation → episodic memory)
 - `core/memory/ingestor_main.py` — Memory Ingestor service entry point
 - `core/conscious/memory_tools.py` — Internal memory tools (recall_memories, get_live_state)
+- `core/warmup.py` — `start_warmup()` background model/component warmup at service startup
 - `core/identity/credentials.py` — `CredentialStore` (async SQLite, WebAuthn credential CRUD)
 - `core/identity/auth_routes.py` — WebAuthn registration/login/logout endpoints (6 routes under `/api/auth/`)
 - `core/identity/auth_middleware.py` — `AuthCookieMiddleware` (cookie → Redis session lookup)
@@ -133,7 +134,7 @@ Web channel (`core/channels/web_server.py`, run via `python -m core.channels`) s
 
 ```mermaid
 graph TD
-    MQTT[MQTT Bridge] -->|StateChangedEvent| Bus[Redis Streams<br/>alfred:events]
+    MQTT[MQTT Bridge] -->|StateChangedEvent| Bus[Redis Streams<br/>alfred:home:state_changed<br/>+ alfred:events]
     Bus --> Reflex[Reflex Engine<br/>System 1 SLM<br/>+ TriggerFired consumer]
     Bus --> Triggers[Trigger Engine<br/>Proactive Actions]
     Bus --> Conscious[Conscious Engine<br/>System 2 Cloud LLM]
@@ -191,7 +192,9 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - `ContextIndexManager.search_text()` embeds query internally — callers should NOT hold an EmbeddingProvider separately
 - Memory tools are INTERNAL to Conscious Engine — dispatched in-process like integration/trigger tools, NOT via BaseFeature/SDK/ToolRegistry
 - `EpisodicMemory.copy_to_cold_and_remove()` re-embeds + writes to cold before deleting hot — use for decay, not `migrate_to_cold()`
-- `SentenceTransformerProvider._load()` blocks on first call — consider warmup `await embedder.embed("warmup")` at startup
+- `SentenceTransformerProvider._load()` is thread-safe (lock) and blocks on first call — services warm it automatically via `core/warmup.py` background startup tasks
+- Trigger engine sensor evaluation consumes `HOME_STATE_STREAM` (not `alfred:events`) — `alfred:events` only carries TriggerFired/TriggerCreated
+- Voice models (Whisper/Piper) load and run via `asyncio.to_thread` in channels — never call `transcribe()`/`synthesize()` directly on the event loop
 - WebSocket `channel` field is validated to `web_pwa`/`voice`/`ios` only — prevents clients from impersonating Signal channel
 - APNs adapter requires `PyJWT[crypto]` and `httpx[http2]` — added to base deps in pyproject.toml
 - APNs adapter auto-prunes stale device tokens (410 response) — no manual cleanup needed

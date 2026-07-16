@@ -23,6 +23,21 @@ def _get_client() -> httpx.AsyncClient:
     return _http_client
 
 
+async def warmup(model: str | None = None) -> None:
+    """Load the model into Ollama's memory without generating.
+
+    An empty ``messages`` list is Ollama's documented model-load request; no
+    telemetry decorator so warmup pings never pollute research token data.
+    """
+    model = model or _config.ollama_model
+    client = _get_client()
+    resp = await client.post(
+        f"{_config.ollama_host}/api/chat",
+        json={"model": model, "messages": [], "stream": False},
+    )
+    resp.raise_for_status()
+
+
 @track_tokens(model="ollama")
 async def infer(prompt: str, model: str | None = None) -> dict[str, object]:
     """Send a prompt to Ollama via the chat API and return the response."""

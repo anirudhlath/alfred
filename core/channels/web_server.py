@@ -11,7 +11,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 import httpx
@@ -22,6 +22,8 @@ from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from starlette.responses import Response
 
 from bus.schemas.events import AlfredResponse, UserRequest
@@ -31,6 +33,7 @@ from core.identity.auth_middleware import AuthCookieMiddleware
 from core.identity.auth_routes import create_auth_router
 from core.identity.credentials import CredentialStore
 from core.identity.ws_auth import require_ws_auth
+from core.warmup import start_warmup
 from shared.streams import (
     USER_REQUESTS_STREAM,
     USER_RESPONSES_STREAM,
@@ -75,6 +78,41 @@ def _get_stt() -> Any:
 def _get_tts() -> Any:
     """Lazy-load PiperTTS (requires voice extra)."""
     return _lazy_load("tts", "core.voice.tts", "PiperTTS", "piper-tts not installed")
+
+
+# Model construction takes 10-40s and must run off the event loop; the lock
+# keeps a warmup task and a first request from loading the same model twice.
+_voice_load_lock = asyncio.Lock()
+
+
+async def _aget_voice(key: str, getter: Callable[[], Any]) -> Any:
+    cached = _lazy_cache.get(key)
+    if cached is not None:
+        return None if cached is _FAILED else cached
+    async with _voice_load_lock:
+        return await asyncio.to_thread(getter)
+
+
+async def _aget_stt() -> Any:
+    """WhisperSTT instance (or None), constructed off the event loop."""
+    return await _aget_voice("stt", _get_stt)
+
+
+async def _aget_tts() -> Any:
+    """PiperTTS instance (or None), constructed off the event loop."""
+    return await _aget_voice("tts", _get_tts)
+
+
+async def _transcribe_async(stt: Any, audio_bytes: bytes, audio_fmt: str) -> str:
+    """Run blocking Whisper transcription in a worker thread."""
+    result = await asyncio.to_thread(stt.transcribe, audio_bytes, audio_format=audio_fmt)
+    return cast("str", result)
+
+
+async def _synthesize_async(tts: Any, text: str) -> bytes:
+    """Run blocking Piper synthesis in a worker thread."""
+    result = await asyncio.to_thread(tts.synthesize, text)
+    return cast("bytes", result)
 
 
 _active_websockets: dict[WebSocket, str] = {}
@@ -259,10 +297,23 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         notification_delivery_worker(pool, group="channels-delivery", shutdown=shutdown)
     )
 
+    # Load voice models in the background so the first audio message doesn't
+    # pay the 10-40s lazy-load cost; the server starts serving immediately.
+    async def _warm_stt() -> None:
+        if await _aget_stt() is None:
+            raise RuntimeError("voice extra not installed or model failed to load")
+
+    async def _warm_tts() -> None:
+        if await _aget_tts() is None:
+            raise RuntimeError("voice extra not installed or model failed to load")
+
+    warmup_task = start_warmup("channels", {"whisper stt": _warm_stt, "piper tts": _warm_tts})
+
     yield
 
     shutdown.set()
     delivery_task.cancel()
+    warmup_task.cancel()
 
     from core.notifications.channels import ChannelRegistry
 
@@ -334,11 +385,11 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
                 # Transcribe audio to text before sending to Conscious Engine
                 if content_type == "audio" and content:
-                    stt = _get_stt()
+                    stt = await _aget_stt()
                     if stt is not None:
                         try:
                             audio_bytes, audio_fmt = _decode_audio(content)
-                            content = stt.transcribe(audio_bytes, audio_format=audio_fmt)
+                            content = await _transcribe_async(stt, audio_bytes, audio_fmt)
                             content_type = "text"
                             logger.info("Transcribed voice → '{}' chars", len(content))
                             await websocket.send_json(
@@ -396,10 +447,10 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
                 }
 
                 # Synthesise audio for the response
-                tts = _get_tts()
+                tts = await _aget_tts()
                 if tts is not None:
                     try:
-                        wav_bytes = tts.synthesize(alfred_resp.text)
+                        wav_bytes = await _synthesize_async(tts, alfred_resp.text)
                         response_payload["audio"] = base64.b64encode(wav_bytes).decode()
                     except Exception as exc:
                         logger.error("TTS synthesis failed: {}", exc)
