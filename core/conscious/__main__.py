@@ -192,7 +192,7 @@ async def run(config: AlfredConfig) -> None:
             {
                 "embedding model": lambda: warm_embedder.embed("warmup"),
                 "redis vector index": warm_hot.ensure_index,
-                "sqlite cold store": warm_cold._connect,
+                "sqlite cold store": warm_cold._get_db,
             },
         )
 

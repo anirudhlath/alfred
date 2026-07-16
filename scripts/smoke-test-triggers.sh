@@ -40,7 +40,7 @@ curl -sf --max-time 2 -X POST "http://$TRIGGER_HOST:$TRIGGER_PORT" \
 echo "  ✓ Trigger Engine HTTP server"
 
 # Check consumer group
-redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" XINFO GROUPS alfred:events 2>/dev/null | grep -q "trigger-engine" || { echo "ERROR: trigger-engine consumer group not found on alfred:events. Is the Trigger Engine running?"; exit 1; }
+redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" XINFO GROUPS alfred:home:state_changed 2>/dev/null | grep -q "trigger-engine" || { echo "ERROR: trigger-engine consumer group not found on alfred:home:state_changed. Is the Trigger Engine running?"; exit 1; }
 echo "  ✓ Trigger Engine consumer group"
 
 echo ""
