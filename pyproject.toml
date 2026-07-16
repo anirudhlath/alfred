@@ -50,6 +50,7 @@ voice = [
     "faster-whisper>=1.0",
     "piper-tts>=1.2",
     "pysilero-vad>=3.4",
+    "speechbrain>=1.1",
 ]
 evals = [
     "deepeval>=1.0",
@@ -147,7 +148,7 @@ module = "jwt.*"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["av.*"]
+module = ["av.*", "speechbrain.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

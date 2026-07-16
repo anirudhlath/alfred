@@ -81,7 +81,7 @@ Agentic tool-use loop with parallel execution (`asyncio.gather`).
 - `stt.py` — WhisperSTT (faster-whisper CTranslate2, model: `large-v3-turbo`, beam_size=5, accepts `audio_format` param)
 - `tts.py` — PiperTTS (ONNX local, `en_GB-alan-medium` voice, auto-downloads from HuggingFace)
 - `models/` — Voice data models
-- `speaker_id.py` — Speaker identification stub (returns `unknown`, confidence=0.0)
+- `speaker_id.py` — `SpeakerID`: ECAPA-TDNN voiceprint enroll/identify (speechbrain, lazy-loaded off the event loop via `asyncio.to_thread`), cosine match vs Redis hash `VOICEPRINT_KEY`, env-tunable `SPEAKER_ID_THRESHOLD` (default 0.45); `embed_fn` injection point for tests
 
 ## Librarian (`librarian/`) — Memory Consolidation
 
