@@ -520,6 +520,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
             # applies them live; only non-transient fields were persisted above.
             await push_credentials(app.state.http, endpoint, body)
         except httpx.HTTPError as exc:
+            logger.warning("Credentials push to service {} failed: {}", name, exc)
             raise HTTPException(
                 status_code=502,
                 detail=(
