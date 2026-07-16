@@ -80,3 +80,27 @@ async def _synthesize_async(tts: Any, text: str) -> bytes:
     """Run blocking Piper synthesis in a worker thread."""
     result = await asyncio.to_thread(tts.synthesize, text)
     return cast("bytes", result)
+
+
+def _get_speaker_id_cls() -> Any:
+    """Lazy-import SpeakerID class (requires voice extra deps at embed time)."""
+    from core.voice.speaker_id import SpeakerID
+
+    return SpeakerID
+
+
+async def aget_speaker_id(redis: Any) -> Any | None:
+    """Shared SpeakerID singleton, or None if the voice extra is unavailable."""
+    cached = _lazy_cache.get("speaker_id")
+    if cached is _FAILED:
+        return None
+    if cached is not None:
+        return cached
+    try:
+        instance = _get_speaker_id_cls()(redis)
+    except ImportError:
+        logger.warning("speechbrain not installed — speaker ID disabled")
+        _lazy_cache["speaker_id"] = _FAILED
+        return None
+    _lazy_cache["speaker_id"] = instance
+    return instance

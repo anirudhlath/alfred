@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from starlette.responses import Response
 
 from bus.schemas.events import UserRequest
-from core.channels.admin_api import create_admin_router
+from core.channels.admin_api import create_admin_router, require_authenticated
 from core.channels.request_bus import publish_and_wait
 from core.channels.telemetry_ws import register_telemetry_ws
 from core.channels.voice_models import (  # re-exported for tests/__main__ (see __all__)
@@ -36,6 +36,7 @@ from core.channels.voice_models import (  # re-exported for tests/__main__ (see 
     _lazy_cache,
     _synthesize_async,
     _transcribe_async,
+    aget_speaker_id,
 )
 from core.identity.auth_middleware import AuthCookieMiddleware
 from core.identity.auth_routes import create_auth_router
@@ -55,6 +56,7 @@ __all__ = [
     "_lazy_cache",
     "_synthesize_async",
     "_transcribe_async",
+    "aget_speaker_id",
 ]
 
 # Patchable in tests — must be set before the lifespan registers the SPA route.
@@ -114,6 +116,13 @@ class OnboardingPayload(BaseModel):
     dietary_restrictions: str | None = None
     proactivity_level: str | None = None  # opinionated | moderate | conservative
     guest_controls: list[str] | None = None
+
+
+class VoiceEnrollmentPayload(BaseModel):
+    """Voice enrollment samples from the settings page."""
+
+    identity: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9_-]+$")
+    samples: list[str] = Field(min_length=3, max_length=5)
 
 
 _DEVICE_TOKEN_PATTERN = r"^[a-fA-F0-9]+$"
@@ -560,6 +569,25 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         n_fields = len(payload.model_dump(exclude_none=True))
         logger.info("Onboarding preferences saved ({} fields)", n_fields)
         return {"status": "ok"}
+
+    @app.post(
+        "/api/voice/enroll",
+        dependencies=[Depends(require_trusted_network), Depends(require_authenticated)],
+    )
+    async def voice_enroll(payload: VoiceEnrollmentPayload) -> dict[str, str]:
+        """Enroll a voiceprint from mic samples (trusted network + session only)."""
+        speaker_id = await aget_speaker_id(app.state.redis)
+        if speaker_id is None:
+            raise HTTPException(status_code=503, detail="Voice processing unavailable")
+        from core.voice.audio import decode_to_pcm16k
+
+        pcm_samples: list[bytes] = []
+        for sample in payload.samples:
+            audio_bytes, _fmt = _decode_audio(sample)
+            pcm_samples.append(await asyncio.to_thread(decode_to_pcm16k, audio_bytes))
+        if not await speaker_id.enroll(payload.identity, pcm_samples):
+            raise HTTPException(status_code=500, detail="Enrollment failed")
+        return {"status": "enrolled", "identity": payload.identity}
 
     @app.post(
         "/api/devices/register",
