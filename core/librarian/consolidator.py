@@ -860,6 +860,12 @@ class Librarian:
         now = datetime.now(UTC)
         updated = 0
 
+        from zoneinfo import ZoneInfo
+
+        from shared.usertime import get_user_timezone
+
+        local_now = now.astimezone(ZoneInfo(await get_user_timezone(self._redis)))
+
         for routine in routines:
             if routine.state == "archived":
                 continue
@@ -881,7 +887,7 @@ class Librarian:
                 continue
 
             # For candidate/active: check if trigger_pattern matches recent activity
-            pattern_fired = self._check_pattern_fired(routine, now)
+            pattern_fired = self._check_pattern_fired(routine, local_now)
 
             if pattern_fired:
                 routine = routine.model_copy(

@@ -12,6 +12,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
+from zoneinfo import ZoneInfo
 
 import litellm
 
@@ -28,6 +29,7 @@ from sdk.alfred_sdk.telemetry import track_latency
 from shared.streams import SCRATCHPAD_QUEUE
 from shared.traced import traced
 from shared.type_map import PYTHON_TO_JSON_SCHEMA
+from shared.usertime import get_user_timezone, is_valid_timezone
 
 _debug = os.getenv("ALFRED_DEBUG", "").lower() in ("1", "true", "yes")
 # LiteLLM logging: use LITELLM_LOG env var (official API).
@@ -532,8 +534,8 @@ class ConsciousEngine:
 
         from core.notifications.schema import Urgency
 
-        if now is None:
-            now = datetime.now(UTC)
+        tz_name = await get_user_timezone(self._redis)
+        now = (now or datetime.now(UTC)).astimezone(ZoneInfo(tz_name))
 
         for routine in self._eligible_candidates(now):
             steps_str = "; ".join(s.description for s in routine.steps) if routine.steps else ""
@@ -567,6 +569,11 @@ class ConsciousEngine:
     async def process_request(self, request: UserRequest) -> AlfredResponse:
         """Process a user request through the full pipeline."""
         now = datetime.now(UTC)
+        tz_name = (
+            request.timezone
+            if request.timezone and is_valid_timezone(request.timezone)
+            else await get_user_timezone(self._redis)
+        )
 
         # 1. Identity Gate
         identity = self._identity_gate.resolve(
@@ -616,7 +623,7 @@ class ConsciousEngine:
         routine_hint: str = ""
         if self.has_routine_store:
             try:
-                routine_hint = self._build_routine_hint(now)
+                routine_hint = self._build_routine_hint(now.astimezone(ZoneInfo(tz_name)))
             except Exception:
                 logger.warning("Routine suggestion check failed", exc_info=True)
 
@@ -636,6 +643,7 @@ class ConsciousEngine:
             relevant_context=involuntary_context if involuntary_context else None,
             channel=request.channel,
             content_type=request.content_type,
+            tz_name=tz_name,
         )
         if routine_hint:
             system_prompt = system_prompt + "\n\n" + routine_hint

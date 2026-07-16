@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import pytest
@@ -146,3 +147,27 @@ def test_assemble_no_relevant_context_omits_section(assembler: ContextAssembler)
         relevant_context=[],
     )
     assert "## Relevant Context" not in prompt2
+
+
+def test_current_time_rendered_in_user_timezone(assembler: ContextAssembler) -> None:
+    """Current Time is rendered as local wall-clock in the requested tz."""
+    prompt = assembler.assemble(
+        identity=_sir(),
+        tools_section="- t: tool",
+        now=datetime(2026, 7, 16, 20, 5, 32, tzinfo=UTC),
+        tz_name="America/Denver",
+    )
+    assert "## Current Time" in prompt
+    assert "Thursday 2026-07-16T14:05:32-06:00 (America/Denver)" in prompt
+
+
+def test_current_time_utc_fallback(assembler: ContextAssembler) -> None:
+    """Default tz_name of UTC renders the current time unchanged."""
+    prompt = assembler.assemble(
+        identity=_sir(),
+        tools_section="- t: tool",
+        now=datetime(2026, 7, 16, 20, 5, 32, tzinfo=UTC),
+        tz_name="UTC",
+    )
+    assert "## Current Time" in prompt
+    assert "Thursday 2026-07-16T20:05:32+00:00 (UTC)" in prompt
