@@ -49,6 +49,7 @@ memory = [
 voice = [
     "faster-whisper>=1.0",
     "piper-tts>=1.2",
+    "pysilero-vad>=3.4",
 ]
 evals = [
     "deepeval>=1.0",
@@ -147,4 +148,8 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["av.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["pysilero_vad.*"]
 ignore_missing_imports = true
