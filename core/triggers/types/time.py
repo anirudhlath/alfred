@@ -41,8 +41,10 @@ class TimeTrigger(BaseTrigger):
     def model_post_init(self, __context: Any) -> None:
         """Validate cron expression at construction time (fail-fast).
 
-        Note: model_copy(update=...) re-runs model_post_init in Pydantic v2 —
-        tests verify this invariant (test_model_copy_rebuilds_validated_cron).
+        Note: `_validated_cron` is validation-only — evaluation builds a fresh
+        croniter per call. Pydantic 2.13's model_copy does NOT re-run
+        model_post_init; copies inherit the private attr by shallow copy
+        (see CompositeTrigger.model_copy for the case where that matters).
         """
         if self.conditions.cron is not None:
             try:

@@ -217,8 +217,10 @@ async def run(config: AlfredConfig) -> None:
         redis=r,
         snapshot_dir=str(Path(__file__).resolve().parent.parent / "memory" / "triggers"),
     )
-    # Publish/subscribe cache coherence: mutations here (e.g. new reminders)
+    # Warm the cache from Redis so tools see triggers created before this
+    # process started, then subscribe: mutations here (e.g. new reminders)
     # poke the trigger process's scheduler instantly via pub/sub.
+    await trigger_store.load()
     await trigger_store.start_sync()
 
     dnd_checker = DNDChecker(redis=r, calendar_adapter=calendar_adapter)
@@ -322,6 +324,22 @@ async def run(config: AlfredConfig) -> None:
     # Start internal actions consumer (handles drain_deferred_notifications from triggers)
     internal_actions_task = asyncio.create_task(_consume_internal_actions(r, log))
 
+    # Trigger cache reconciliation net (60s), mirroring the triggers process:
+    # pub/sub keeps the cache coherent; the periodic refresh heals any missed message.
+    async def _trigger_refresh_loop() -> None:
+        while not _shutdown.is_set():
+            try:
+                await asyncio.wait_for(_shutdown.wait(), timeout=60)
+                return  # shutdown signalled
+            except TimeoutError:
+                pass
+            try:
+                await trigger_store.refresh()
+            except Exception as exc:
+                log.error("Trigger cache refresh failed: {}", exc)
+
+    trigger_refresh_task = asyncio.create_task(_trigger_refresh_loop())
+
     # Start proactive routine suggestion checker (every 15 minutes)
     routine_suggestion_task: asyncio.Task[None] | None = None
     if engine.has_routine_store:
@@ -407,6 +425,7 @@ async def run(config: AlfredConfig) -> None:
         if librarian_task is not None:
             librarian_task.cancel()
         internal_actions_task.cancel()
+        trigger_refresh_task.cancel()
         if routine_suggestion_task is not None:
             routine_suggestion_task.cancel()
         delivery_task.cancel()
