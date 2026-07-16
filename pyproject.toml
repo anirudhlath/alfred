@@ -23,6 +23,7 @@ dependencies = [
     "keyring>=25.0",
     "webauthn>=2.0",
     "aiosqlite>=0.20",
+    "wyoming>=1.10",
 ]
 
 [project.optional-dependencies]

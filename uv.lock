@@ -140,6 +140,7 @@ dependencies = [
     { name = "redis" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "webauthn" },
+    { name = "wyoming" },
 ]
 
 [package.optional-dependencies]
@@ -212,6 +213,7 @@ requires-dist = [
     { name = "vobject", marker = "extra == 'integrations'", specifier = ">=0.9" },
     { name = "watchfiles", marker = "extra == 'dev'", specifier = ">=1.0" },
     { name = "webauthn", specifier = ">=2.0" },
+    { name = "wyoming", specifier = ">=1.10" },
 ]
 provides-extras = ["dev", "integrations", "memory", "voice", "evals"]
 
@@ -3745,6 +3747,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/b3/8f/705086c9d734d3b663af0e9bb3d4de6578d08f46b1b101c2442fd9aecaa2/win32_setctime-1.2.0.tar.gz", hash = "sha256:ae1fdf948f5640aae05c511ade119313fb6a30d7eabe25fef9764dca5873c4c0", size = 4867, upload-time = "2024-12-07T15:28:28.314Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e1/07/c6fe3ad3e685340704d314d765b7912993bcb8dc198f0e7a89382d37974b/win32_setctime-1.2.0-py3-none-any.whl", hash = "sha256:95d644c4e708aba81dc3704a116d8cbc974d70b3bdb8be1d150e36be6e9d1390", size = 4083, upload-time = "2024-12-07T15:28:26.465Z" },
+]
+
+[[package]]
+name = "wyoming"
+version = "1.10.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/cf/ae/f676bf8c5cda90283978e7569c96df0b96295c68b1e1b65e3249a67996a7/wyoming-1.10.0.tar.gz", hash = "sha256:50f2aa61d95131a379482d096975a822d61a5d7d2bad1b74d05b38fce9ce2d05", size = 41871, upload-time = "2026-07-02T20:59:58.897Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/50/c9/0b9b2eca91e240bb3390472306fb8e2aa45d491dd5a2de1bc765e041177c/wyoming-1.10.0-py3-none-any.whl", hash = "sha256:83b23ab9fb7e0a9ad92387e62497728949603b97a25f4e61706c222d2b2c63d1", size = 42277, upload-time = "2026-07-02T20:59:57.6Z" },
 ]
 
 [[package]]
