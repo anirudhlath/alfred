@@ -1,0 +1,7 @@
+# Copy to config/satellites.yaml (gitignored) and edit.
+# `area` must match a Home Assistant area name for room-aware commands.
+satellites:
+  - name: kitchen
+    host: 192.168.1.40   # or kitchen-sat.local
+    port: 10700          # wyoming-satellite default
+    area: Kitchen
