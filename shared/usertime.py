@@ -9,9 +9,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
-from shared.streams import TRIGGERS_CHANGED_CHANNEL, USER_TIMEZONE_KEY
+from shared.streams import (
+    TRIGGER_SYNC_OP_TZ_CHANGED,
+    TRIGGERS_CHANGED_CHANNEL,
+    USER_TIMEZONE_KEY,
+)
 from shared.types import AioRedis  # noqa: TC001
 
 logger = logging.getLogger(__name__)
@@ -55,6 +60,14 @@ async def set_user_timezone(redis: AioRedis, tz_name: str) -> bool:
     if current == tz_name:
         return False
     await redis.set(USER_TIMEZONE_KEY, tz_name)  # type: ignore[misc,unused-ignore]
-    await redis.publish(TRIGGERS_CHANGED_CHANNEL, json.dumps({"op": "tz-changed"}))  # type: ignore[misc,unused-ignore]
+    await redis.publish(  # type: ignore[misc,unused-ignore]
+        TRIGGERS_CHANGED_CHANNEL, json.dumps({"op": TRIGGER_SYNC_OP_TZ_CHANGED})
+    )
     logger.info("User timezone set to %s", tz_name)
     return True
+
+
+async def user_local_now(redis: AioRedis, now: datetime | None = None) -> datetime:
+    """Current time converted to the user's local timezone (aware)."""
+    tz = ZoneInfo(await get_user_timezone(redis))
+    return (now or datetime.now(UTC)).astimezone(tz)

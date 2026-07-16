@@ -151,6 +151,6 @@ uv run python -m core.channels   # Web + Signal channels
 - Signal bridge expects `signal-cli` binary in PATH
 - Piper TTS auto-downloads voice models from HuggingFace on first use
 - TriggerStore coherence is pub/sub (`alfred:triggers:changed`) — never mutate `alfred:triggers` without going through TriggerStore
-- User timezone lives at `alfred:user:timezone` via `shared/usertime.py` — resolution stored → `ALFRED_TIMEZONE` → UTC
+- User timezone lives at `alfred:user:timezone` via `shared/usertime.py` — resolution stored → `ALFRED_TIMEZONE` → UTC. Clients send their IANA zone per message; the conscious engine (not the web channel) persists it via `set_user_timezone` (write-on-change)
 
 See `.claude/rules/core/` for component-specific constraints.

@@ -29,7 +29,12 @@ from sdk.alfred_sdk.telemetry import track_latency
 from shared.streams import SCRATCHPAD_QUEUE
 from shared.traced import traced
 from shared.type_map import PYTHON_TO_JSON_SCHEMA
-from shared.usertime import get_user_timezone, is_valid_timezone
+from shared.usertime import (
+    get_user_timezone,
+    is_valid_timezone,
+    set_user_timezone,
+    user_local_now,
+)
 
 _debug = os.getenv("ALFRED_DEBUG", "").lower() in ("1", "true", "yes")
 # LiteLLM logging: use LITELLM_LOG env var (official API).
@@ -534,8 +539,7 @@ class ConsciousEngine:
 
         from core.notifications.schema import Urgency
 
-        tz_name = await get_user_timezone(self._redis)
-        now = (now or datetime.now(UTC)).astimezone(ZoneInfo(tz_name))
+        now = await user_local_now(self._redis, now)
 
         for routine in self._eligible_candidates(now):
             steps_str = "; ".join(s.description for s in routine.steps) if routine.steps else ""
@@ -569,11 +573,14 @@ class ConsciousEngine:
     async def process_request(self, request: UserRequest) -> AlfredResponse:
         """Process a user request through the full pipeline."""
         now = datetime.now(UTC)
-        tz_name = (
-            request.timezone
-            if request.timezone and is_valid_timezone(request.timezone)
-            else await get_user_timezone(self._redis)
-        )
+        if request.timezone and is_valid_timezone(request.timezone):
+            tz_name = request.timezone
+            # Persist the client-supplied timezone at the domain boundary, before
+            # any tool dispatch (run_at normalization / cron) reads the stored key.
+            # set_user_timezone is write-on-change — one cheap GET per request.
+            await set_user_timezone(self._redis, request.timezone)
+        else:
+            tz_name = await get_user_timezone(self._redis)
 
         # 1. Identity Gate
         identity = self._identity_gate.resolve(

@@ -39,7 +39,7 @@ from shared.streams import (
     USER_RESPONSES_STREAM,
     decode_stream_value,
 )
-from shared.usertime import is_valid_timezone, set_user_timezone
+from shared.usertime import is_valid_timezone
 
 _lazy_cache: dict[str, Any] = {}
 _FAILED: object = object()  # sentinel for imports that already failed
@@ -435,9 +435,8 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
                 if client_channel not in ("web_pwa", "voice", "ios"):
                     client_channel = "web_pwa"
                 _active_websockets[websocket] = client_channel
+                # Validate at ingress; the conscious engine owns persistence.
                 client_tz = _resolve_client_timezone(data)
-                if client_tz:
-                    await set_user_timezone(r, client_tz)
                 request = UserRequest(
                     source=_CHANNEL_SOURCE_MAP.get(client_channel, "web-pwa"),
                     channel=client_channel,

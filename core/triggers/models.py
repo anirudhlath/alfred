@@ -63,6 +63,12 @@ class BaseTrigger(ABC, BaseModel):
         None means "not clock-driven" — the trigger only responds to events.
         May return a past datetime; the scheduler evaluates immediately then
         excludes non-firing past candidates from the next alarm.
+
+        Clock-driven invariant: a clock-driven type MUST both keep
+        ``responds_to_tick = True`` AND return a non-None datetime here while it
+        is armed (so the scheduler can compute a wakeup for it). A purely
+        event-driven type instead sets ``responds_to_tick = False`` and inherits
+        the None default below.
         """
         return None
 

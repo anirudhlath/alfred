@@ -134,7 +134,7 @@ class TriggerFeature(BaseFeature):
                 trigger_type=trigger_type,
                 name=name,
                 created_by="tool-call",
-                conditions=conditions,
+                conditions=normalized,
                 action=action,
                 one_shot=one_shot,
                 urgency=validated_urgency.value,

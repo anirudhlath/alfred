@@ -18,7 +18,14 @@ if TYPE_CHECKING:
 
 from core.triggers.models import BaseTrigger  # noqa: TC001
 from core.triggers.registry import TriggerRegistry
-from shared.streams import TRIGGERS_CHANGED_CHANNEL, TRIGGERS_KEY, decode_stream_value
+from shared.streams import (
+    TRIGGER_SYNC_OP_DELETED,
+    TRIGGER_SYNC_OP_SAVED,
+    TRIGGER_SYNC_OP_TZ_CHANGED,
+    TRIGGERS_CHANGED_CHANNEL,
+    TRIGGERS_KEY,
+    decode_stream_value,
+)
 from shared.types import AioRedis  # noqa: TC001
 
 logger = logging.getLogger(__name__)
@@ -63,7 +70,7 @@ class TriggerStore:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._snapshot_to_yaml, trigger)
         self._cache[trigger.trigger_id] = trigger
-        await self._publish_change("saved", trigger.trigger_id)
+        await self._publish_change(TRIGGER_SYNC_OP_SAVED, trigger.trigger_id)
         self._notify_change()
 
     async def delete(self, trigger_id: str) -> None:
@@ -72,7 +79,7 @@ class TriggerStore:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._delete_yaml, trigger_id)
         self._cache.pop(trigger_id, None)
-        await self._publish_change("deleted", trigger_id)
+        await self._publish_change(TRIGGER_SYNC_OP_DELETED, trigger_id)
         self._notify_change()
 
     async def get(self, trigger_id: str) -> BaseTrigger | None:
@@ -101,7 +108,13 @@ class TriggerStore:
         self._notify_change()
 
     def add_on_change(self, callback: Callable[[], None]) -> None:
-        """Register a synchronous callback fired after any cache change."""
+        """Register a synchronous callback fired after any cache change.
+
+        Callbacks MUST be synchronous, idempotent, and non-blocking. A local
+        mutation may fire them twice — once synchronously from ``save``/``delete``
+        and once again when this process receives its own pub/sub message on
+        ``TRIGGERS_CHANGED_CHANNEL`` — so callbacks must tolerate redundant calls.
+        """
         self._on_change.append(callback)
 
     def _notify_change(self) -> None:
@@ -163,7 +176,7 @@ class TriggerStore:
             return
         op = data.get("op")
         trigger_id = str(data.get("trigger_id", ""))
-        if op == "saved":
+        if op == TRIGGER_SYNC_OP_SAVED:
             value: str | bytes | None = await self._redis.hget(  # type: ignore[misc,unused-ignore]
                 TRIGGERS_KEY, trigger_id
             )
@@ -173,9 +186,9 @@ class TriggerStore:
                 parsed = self._parse_redis_entries({trigger_id: value})
                 if parsed:
                     self._cache[trigger_id] = parsed[0]
-        elif op == "deleted":
+        elif op == TRIGGER_SYNC_OP_DELETED:
             self._cache.pop(trigger_id, None)
-        elif op != "tz-changed":
+        elif op != TRIGGER_SYNC_OP_TZ_CHANGED:
             logger.warning("Unknown trigger sync op: %r", op)
             return
         self._notify_change()

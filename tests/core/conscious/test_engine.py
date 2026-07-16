@@ -73,6 +73,24 @@ async def test_process_request_basic(mock_deps: dict[str, AsyncMock | MagicMock]
 
 
 @pytest.mark.asyncio
+async def test_process_request_persists_valid_timezone(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """A request carrying a valid timezone is persisted at the domain boundary."""
+    from shared.streams import USER_TIMEZONE_KEY
+
+    # get() → None so set_user_timezone's change-guard always writes.
+    mock_deps["redis"].get = AsyncMock(return_value=None)
+    engine = ConsciousEngine(**mock_deps)
+
+    with patch.object(engine, "_call_llm", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = ("Good evening, sir.", [], 100, 50)
+        await engine.process_request(_make_request(timezone="America/Denver"))
+
+    mock_deps["redis"].set.assert_any_await(USER_TIMEZONE_KEY, "America/Denver")
+
+
+@pytest.mark.asyncio
 async def test_budget_exceeded_returns_fallback(
     mock_deps: dict[str, AsyncMock | MagicMock],
 ) -> None:

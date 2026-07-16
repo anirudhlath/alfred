@@ -150,7 +150,9 @@ added). A "5 second" reminder is bounded only by the LLM computing `run_at` mid-
     under the new zone instantly.
   - `get_user_timezone(redis) -> ZoneInfo` — resolution order: stored key → `ALFRED_TIMEZONE`
     env → UTC.
-- The web channel calls `set_user_timezone` when an inbound message carries a timezone.
+- Clients send their IANA timezone per message; the conscious engine persists it via
+  `set_user_timezone` (write-on-change) when a request carries a valid timezone. Persistence
+  lives in the domain, not the transport — the web channel only validates the value at ingress.
 - Per-request resolution in the conscious engine: request `timezone` (if present) else
   `get_user_timezone`.
 

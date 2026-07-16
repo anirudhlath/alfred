@@ -860,11 +860,9 @@ class Librarian:
         now = datetime.now(UTC)
         updated = 0
 
-        from zoneinfo import ZoneInfo
+        from shared.usertime import user_local_now
 
-        from shared.usertime import get_user_timezone
-
-        local_now = now.astimezone(ZoneInfo(await get_user_timezone(self._redis)))
+        local_now = await user_local_now(self._redis, now)
 
         for routine in routines:
             if routine.state == "archived":
