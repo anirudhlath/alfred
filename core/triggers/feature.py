@@ -12,6 +12,7 @@ from core.triggers.models import ActionPayload
 from core.triggers.registry import TriggerRegistry
 from sdk.alfred_sdk.feature import BaseFeature, ToolMeta, tool
 from shared.streams import EVENTS_STREAM
+from shared.usertime import get_user_timezone
 
 if TYPE_CHECKING:
     from core.triggers.store import TriggerStore
@@ -107,6 +108,8 @@ class TriggerFeature(BaseFeature):
             }
 
         try:
+            tz_name = "UTC" if self._redis is None else await get_user_timezone(self._redis)
+            normalized = cls.normalize_conditions(conditions, tz_name)
             trigger = cls(
                 trigger_id=str(uuid4()),
                 trigger_type=trigger_type,
@@ -117,7 +120,7 @@ class TriggerFeature(BaseFeature):
                 created_at=datetime.now(UTC),
                 action=validated_action,
                 urgency=validated_urgency,
-                conditions=conditions,
+                conditions=normalized,
             )
         except Exception as e:
             return {"error": f"Invalid conditions for type '{trigger_type}': {e}"}
@@ -166,9 +169,11 @@ class TriggerFeature(BaseFeature):
         if conditions is not None:
             cls = TriggerRegistry.get(target.trigger_type)
             try:
+                tz_name = "UTC" if self._redis is None else await get_user_timezone(self._redis)
+                normalized = cls.normalize_conditions(conditions, tz_name)
                 conditions_model = cls.Conditions  # type: ignore[attr-defined]
-                validated = conditions_model(**conditions)
-                updates["conditions"] = validated.model_dump(mode="json")
+                validated = conditions_model(**normalized)
+                updates["conditions"] = validated
             except Exception as e:
                 return {"error": f"Invalid conditions: {e}"}
         if action is not None:
