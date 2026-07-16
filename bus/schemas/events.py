@@ -158,6 +158,11 @@ class ServiceRegistered(BaseEvent):
     """
 
     event_type: str = "service_registered"
-    service_name: str
-    credentials_endpoint: str | None = None
-    has_credentials_schema: bool = False
+    service_name: str = Field(description="Name of the service that registered")
+    credentials_endpoint: str | None = Field(
+        default=None,
+        description="Absolute URL core POSTs credentials to, if the service accepts pushes",
+    )
+    has_credentials_schema: bool = Field(
+        default=False, description="Whether the manifest declares a credentials schema"
+    )

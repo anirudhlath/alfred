@@ -199,8 +199,10 @@ async def event_loop(
     """Event listener loop for sensor-based trigger evaluation.
 
     Consumes HOME_STATE_STREAM — the stream the MQTT bridge publishes real
-    state changes to. (EVENTS_STREAM only carries the engine's own
-    TriggerFired/TriggerCreated events, which are not sensor input.)
+    state changes to. (EVENTS_STREAM also carries other bus events —
+    TriggerFired/TriggerCreated from this engine and ServiceRegistered from
+    the SDK, consumed by the channels process — none of which are sensor
+    input, so this loop never reads EVENTS_STREAM.)
     """
     await ensure_consumer_group(r, HOME_STATE_STREAM, GROUP)
 
