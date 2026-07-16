@@ -169,3 +169,19 @@ async def test_stop_sends_pause_satellite(fake_sat: FakeSatellite) -> None:
     await asyncio.wait_for(fake_sat.run_satellite_seen.wait(), 5.0)
     await bridge.stop()
     await fake_sat.wait_for("pause-satellite")
+
+
+async def test_stop_completes_when_ping_task_already_dead(
+    fake_sat: FakeSatellite, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ping task that died before teardown must not swallow shutdown cancellation."""
+
+    async def broken_ping_loop(self: SatelliteConnection) -> None:
+        raise ConnectionResetError("broken pipe")  # half-open connection: ping write failed
+
+    monkeypatch.setattr(SatelliteConnection, "_ping_loop", broken_ping_loop)
+
+    bridge = SatelliteBridge([_entry(fake_sat)], handler=lambda c, p: asyncio.sleep(0))
+    bridge.start()
+    await asyncio.wait_for(fake_sat.run_satellite_seen.wait(), 5.0)
+    await asyncio.wait_for(bridge.stop(), 5.0)  # must not hang

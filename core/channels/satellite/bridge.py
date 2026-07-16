@@ -122,8 +122,11 @@ class SatelliteConnection:
                 raise
             finally:
                 ping_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await ping_task
+                # gather(return_exceptions=True), not a bare await: if the ping
+                # task already died with a socket error, awaiting it would
+                # re-raise that error here and replace a propagating
+                # CancelledError — bridge.stop() would then hang forever.
+                await asyncio.gather(ping_task, return_exceptions=True)
         finally:
             self._connected = False
             await client.disconnect()
