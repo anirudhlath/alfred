@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from core.channels import web_server
+from core.channels import voice_models, web_server
 
 
 @pytest.fixture(autouse=True)
@@ -73,7 +73,7 @@ async def test_aget_stt_constructs_in_worker_thread(monkeypatch: pytest.MonkeyPa
         web_server._lazy_cache[key] = instance
         return instance
 
-    monkeypatch.setattr(web_server, "_lazy_load", fake_lazy_load)
+    monkeypatch.setattr(voice_models, "_lazy_load", fake_lazy_load)
 
     result = await web_server._aget_stt()
 
@@ -99,7 +99,7 @@ async def test_aget_stt_concurrent_calls_construct_once(
         web_server._lazy_cache[key] = instance
         return instance
 
-    monkeypatch.setattr(web_server, "_lazy_load", fake_lazy_load)
+    monkeypatch.setattr(voice_models, "_lazy_load", fake_lazy_load)
 
     results = await asyncio.gather(web_server._aget_stt(), web_server._aget_stt())
 
@@ -117,7 +117,7 @@ async def test_aget_tts_returns_none_when_unavailable(
         web_server._lazy_cache[key] = web_server._FAILED
         return None
 
-    monkeypatch.setattr(web_server, "_lazy_load", fake_lazy_load)
+    monkeypatch.setattr(voice_models, "_lazy_load", fake_lazy_load)
 
     assert await web_server._aget_tts() is None
     # Cached failure short-circuits without re-entering the loader
