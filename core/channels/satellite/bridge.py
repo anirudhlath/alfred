@@ -129,6 +129,14 @@ class SatelliteConnection:
                 await asyncio.gather(ping_task, return_exceptions=True)
         finally:
             self._connected = False
+            # A slow handler (LLM round-trip up to 60s) surviving a disconnect
+            # could deliver a stale reply onto the NEXT reconnected session
+            # (which has already re-armed) — cancel any in-flight handlers now.
+            tasks = list(self._tasks)
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
             await client.disconnect()
             self._client = None
 
