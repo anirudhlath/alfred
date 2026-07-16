@@ -56,6 +56,8 @@ class ToolManifest(BaseModel):
     name: str
     description: str = ""
     parameters: dict[str, ToolParameter] = {}
+    audience: ToolAudience = "conscious"
+    risk: ToolRisk = "benign"
 
 
 class FeatureManifest(BaseModel):
@@ -86,6 +88,8 @@ class ToolMeta:
     name: str
     description: str
     parameters: dict[str, ToolParameter]
+    audience: ToolAudience = "conscious"
+    risk: ToolRisk = "benign"
 
 
 # ── Docstring parser ──
@@ -142,6 +146,8 @@ def _extract_tool_meta(
     feature_name: str,
     name_override: str | None = None,
     description_override: str | None = None,
+    audience: ToolAudience = "conscious",
+    risk: ToolRisk = "benign",
 ) -> ToolMeta:
     """Extract ToolMeta from a @tool-decorated method.
 
@@ -150,6 +156,8 @@ def _extract_tool_meta(
         feature_name: The owning feature's name (used for qualified tool name).
         name_override: Optional explicit tool name.
         description_override: Optional explicit description.
+        audience: Which engine sees the tool ("reflex" or "conscious").
+        risk: Dispatch risk gate ("benign", "elevated", "critical").
     """
     from typing import get_type_hints
 
@@ -180,7 +188,13 @@ def _extract_tool_meta(
             default=default,
         )
 
-    return ToolMeta(name=qualified_name, description=description, parameters=parameters)
+    return ToolMeta(
+        name=qualified_name,
+        description=description,
+        parameters=parameters,
+        audience=audience,
+        risk=risk,
+    )
 
 
 # ── BaseFeature Base Class ──
@@ -208,6 +222,8 @@ class BaseFeature:
                 feature_name=self.feature_name,
                 name_override=overrides.get("name"),
                 description_override=overrides.get("description"),
+                audience=overrides.get("audience", "conscious"),
+                risk=overrides.get("risk", "benign"),
             )
             tools.append(meta)
         return tools
@@ -224,6 +240,8 @@ class BaseFeature:
                 name=t.name,
                 description=t.description,
                 parameters=dict(t.parameters),
+                audience=t.audience,
+                risk=t.risk,
             )
             for t in self.get_tools()
         ]
@@ -255,6 +273,8 @@ def tool(
     *,
     description: str | None = None,
     name: str | None = None,
+    audience: ToolAudience = "conscious",
+    risk: ToolRisk = "benign",
 ) -> Callable[[_F], _F]: ...
 
 
@@ -263,11 +283,15 @@ def tool(
     *,
     description: str | None = None,
     name: str | None = None,
+    audience: ToolAudience = "conscious",
+    risk: ToolRisk = "benign",
 ) -> _F | Callable[[_F], _F]:
     """Mark a BaseFeature method as a tool.
 
-    Supports both bare ``@tool`` and ``@tool(description=..., name=...)``.
+    Supports bare ``@tool`` and ``@tool(description=..., name=..., audience=..., risk=...)``.
     Metadata is auto-extracted from docstring + type hints at discovery time.
+    ``audience`` gates which engine sees the tool ("reflex" tools also reach
+    Conscious); ``risk`` gates dispatch ("critical" requires user confirmation).
     """
 
     def decorator(f: _F) -> _F:
@@ -275,6 +299,8 @@ def tool(
         f._tool_overrides = {  # type: ignore[attr-defined]
             "description": description,
             "name": name,
+            "audience": audience,
+            "risk": risk,
         }
         return f
 
