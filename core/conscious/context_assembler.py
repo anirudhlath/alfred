@@ -34,7 +34,7 @@ class ContextAssembler:
     _VOICE_DELIVERY = Path(__file__).parent / "prompts" / "voice_delivery.md"
 
     # Channels that have TTS output
-    _VOICE_CHANNELS: frozenset[str] = frozenset({"web_pwa"})
+    _VOICE_CHANNELS: frozenset[str] = frozenset({"web_pwa", "satellite"})
 
     def __init__(self, personality_path: str | Path | None = None) -> None:
         path = Path(personality_path) if personality_path else self._DEFAULT_PERSONALITY
@@ -53,6 +53,7 @@ class ContextAssembler:
         relevant_context: list[SearchResult] | None = None,
         channel: str = "",
         content_type: str = "text",
+        area: str | None = None,
     ) -> str:
         """Build the complete system prompt for Claude.
 
@@ -77,6 +78,14 @@ class ContextAssembler:
             parts.append(
                 "\n## Identity\nYou are speaking with a guest. "
                 "Do NOT share any personal information about sir."
+            )
+
+        # 2a. Location — physical satellite context
+        if area:
+            parts.append(
+                f"\n## Location\nThis request was spoken at the {area} satellite. "
+                f'When a device is referenced without naming a room ("the lights"), '
+                f"assume the {area} area."
             )
 
         # 2b. Current time (always — needed for time-based triggers/reminders)

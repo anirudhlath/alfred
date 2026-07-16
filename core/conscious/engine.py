@@ -637,6 +637,7 @@ class ConsciousEngine:
             relevant_context=involuntary_context if involuntary_context else None,
             channel=request.channel,
             content_type=request.content_type,
+            area=request.area,
         )
         if routine_hint:
             system_prompt = system_prompt + "\n\n" + routine_hint
