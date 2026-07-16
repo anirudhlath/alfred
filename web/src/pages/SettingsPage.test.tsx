@@ -60,6 +60,35 @@ const WEATHER = {
   configured: { api_key: true, city: false },
 };
 
+const HOME_SERVICE = {
+  name: "home-service",
+  category: "service",
+  kind: "service",
+  schema: {
+    fields: {
+      url: {
+        label: "Home Assistant URL",
+        field_type: "url",
+        required: true,
+        placeholder: "",
+        default: "http://homeassistant.local:8123",
+        help_text: "",
+        transient: false,
+      },
+      token: {
+        label: "Access Token",
+        field_type: "password",
+        required: true,
+        placeholder: "",
+        default: "",
+        help_text: "",
+        transient: false,
+      },
+    },
+  },
+  configured: { url: false, token: false },
+};
+
 const INTEGRATIONS = [WEATHER];
 
 function makeQC() {
@@ -166,6 +195,15 @@ describe("SettingsPage", () => {
     expect(pwInput.type).toBe("text");
     await userEvent.click(screen.getByRole("button", { name: "Hide API Key" }));
     expect(pwInput.type).toBe("password");
+  });
+
+  it("renders service entries from the merged API alongside adapters", async () => {
+    setupMocks([WEATHER, HOME_SERVICE]);
+    renderPage();
+    await waitFor(() => expect(screen.getByText("HOME-SERVICE")).toBeInTheDocument());
+    expect(screen.getByText("WEATHER")).toBeInTheDocument();
+    expect(screen.getByText("external service")).toBeInTheDocument();
+    expect(screen.getByText("Home Assistant URL")).toBeInTheDocument();
   });
 
   it("logout calls the auth API and navigates to /login", async () => {

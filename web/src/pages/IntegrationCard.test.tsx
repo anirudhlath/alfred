@@ -51,6 +51,35 @@ const WEATHER_INTEGRATION: IntegrationInfo = {
   configured: { api_key: true, city: false },
 };
 
+const HOME_SERVICE_INTEGRATION: IntegrationInfo = {
+  name: "home-service",
+  category: "service",
+  kind: "service",
+  schema: {
+    fields: {
+      url: {
+        label: "Home Assistant URL",
+        field_type: "url",
+        required: true,
+        placeholder: "",
+        default: "http://homeassistant.local:8123",
+        help_text: "",
+        transient: false,
+      },
+      token: {
+        label: "Access Token",
+        field_type: "password",
+        required: true,
+        placeholder: "",
+        default: "",
+        help_text: "Long-lived access token from your HA profile page",
+        transient: false,
+      },
+    },
+  },
+  configured: { url: false, token: false },
+};
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -105,5 +134,21 @@ describe("IntegrationCard", () => {
 
     const hideBtn = screen.getByRole("button", { name: "Hide API Key" });
     expect(hideBtn).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("renders an external service badge and schema-driven fields for kind=service", async () => {
+    renderCard({ integration: HOME_SERVICE_INTEGRATION });
+    await waitFor(() => expect(screen.getByText("HOME-SERVICE")).toBeInTheDocument());
+    expect(screen.getByText("external service")).toBeInTheDocument();
+    expect(screen.getByText("Home Assistant URL")).toBeInTheDocument();
+    expect(screen.getByText("Access Token")).toBeInTheDocument();
+    // Unconfigured field pre-fills its schema default.
+    expect(screen.getByDisplayValue("http://homeassistant.local:8123")).toBeInTheDocument();
+  });
+
+  it("does not render the service badge for adapters", async () => {
+    renderCard();
+    await waitFor(() => expect(screen.getByText("WEATHER")).toBeInTheDocument());
+    expect(screen.queryByText("external service")).toBeNull();
   });
 });
