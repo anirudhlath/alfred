@@ -55,7 +55,7 @@ graph LR
     end
     subgraph Channels["channels process (monorepo)"]
         Bridge[Satellite Bridge<br/>core/channels/satellite/] -->|connects out| Sat
-        Bridge --> VAD[Endpointing<br/>silero-vad ONNX]
+        Bridge --> VAD[Endpointing<br/>pysilero-vad]
         VAD --> STT[WhisperSTT]
         Bridge --> SID[SpeakerID<br/>ECAPA-TDNN]
         STT --> UR[UserRequest<br/>channel=satellite<br/>+ device_id + area]
@@ -90,8 +90,8 @@ graph LR
 - `bridge.py` — connection manager: one task per configured satellite, Wyoming event
   handling (`wyoming` PyPI package), reconnect with exponential backoff, exposes
   `play_audio(device_id, wav_bytes)` for announcements.
-- `pipeline.py` — per-utterance flow: endpointing (streaming silero-vad ONNX;
-  onnxruntime is already a dependency via Piper) → `WhisperSTT.transcribe` and
+- `pipeline.py` — per-utterance flow: endpointing (streaming `pysilero-vad`,
+  a zero-dependency `voice`-extra package) → `WhisperSTT.transcribe` and
   `SpeakerID.identify` (both via `asyncio.to_thread`, per channels convention) →
   `UserRequest` → `_publish_and_wait()` (extracted from `web_server.py` into a shared
   channels helper so web and satellite use one implementation, 60s timeout) →
@@ -119,10 +119,13 @@ Nothing hardcoded — areas come from `satellites.yaml`.
 - ECAPA-TDNN voiceprint embeddings (SpeechBrain; torch already present via the `memory`
   extra — SpeechBrain goes in the `voice` extra).
 - Storage: Redis hash `alfred:identity:voiceprint` (as the stub docstring already planned).
-- `identify()`: cosine similarity vs enrolled prints; ≥ threshold (~0.7, tunable) →
+- `identify()`: cosine similarity vs enrolled prints; ≥ threshold →
   the match's identity and confidence go on the `UserRequest` (`identity_claim` +
   `identity_confidence`, see §4.3) for the existing IdentityGate; below → `unknown`,
-  request falls back to local-claim trust (0.7) like web/iOS.
+  request falls back to local-claim trust (0.7) like web/iOS. Threshold: cosine threshold
+  0.45 default (`SPEAKER_ID_THRESHOLD`); ECAPA same-speaker scores run 0.4–0.7, so 0.7 would
+  reject genuine matches. Match confidence maps to `0.7 + (score − threshold) × 0.5`, capped
+  at 0.95.
 - **Enrollment:** "Voice enrollment" card on the web Settings page records 3 mic samples →
   `POST /api/voice/enroll` (trusted-network + cookie gated, like other sensitive routes).
 
@@ -175,9 +178,7 @@ Latency target: wake → first reply audio under ~4s typical (cloud LLM is the l
 
 ## 8. New dependencies (monorepo)
 
-- `wyoming` (protocol events) — base deps.
-- `silero-vad` ONNX model (runs on existing onnxruntime) — base deps, model
-  auto-downloaded on first use (matching the Piper pattern).
+- `pysilero-vad` (zero-dep, rhasspy) — `voice` extra; `wyoming` — base deps.
 - `speechbrain` — `voice` extra.
 
 ## 9. Out of scope for v1 (tracked in `docs/backlog/`)
