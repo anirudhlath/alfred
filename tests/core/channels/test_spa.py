@@ -103,3 +103,23 @@ def test_symlink_escape_falls_back_to_index(tmp_path: Path) -> None:
     assert resp.status_code == 200
     assert "alfred" in resp.text
     assert "OUTSIDE" not in resp.text
+
+
+def test_missing_dist_logs_warning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing web/dist must be loudly visible in logs.
+
+    Silently skipping the mount made 'GET / -> {"detail":"Not Found"}' a blind
+    debug (seen live 2026-07-16 on a checkout that never ran npm run build).
+    """
+    from unittest.mock import MagicMock
+
+    import core.channels.spa as spa_mod
+
+    fake_logger = MagicMock()
+    monkeypatch.setattr(spa_mod, "logger", fake_logger)
+
+    app = FastAPI()
+    mount_spa(app, tmp_path / "does-not-exist")
+
+    fake_logger.warning.assert_called_once()
+    assert "npm run build" in str(fake_logger.warning.call_args)
