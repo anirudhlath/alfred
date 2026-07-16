@@ -178,6 +178,8 @@ async def _handle_event_entry(
         payload = json.loads(decode_stream_value(raw))
     except json.JSONDecodeError:
         return
+    if not isinstance(payload, dict):
+        return
     # alfred:events also carries TriggerFired/TriggerCreated — only act on ours.
     if payload.get("event_type") != "service_registered":
         return

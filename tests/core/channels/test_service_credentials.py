@@ -103,6 +103,48 @@ async def test_get_service_manifest_none_without_schema() -> None:
     assert await get_service_manifest(redis, "plain") is None
 
 
+# ── SDK↔core round trip (seam) ──
+
+
+@pytest.mark.asyncio
+async def test_sdk_manifest_round_trips_through_core_parsing() -> None:
+    """Build a manifest with a *real* AlfredClient (not the hand-rolled
+    home_service_manifest fixture) and feed it through the exact core parsing
+    path (get_service_manifest → _parse_manifest → build_service_info).
+
+    The SDK never imports core (and vice versa) — the wire contract is JSON,
+    so fixtures on each side can silently drift from what the other side
+    actually produces/consumes. This test makes that drift impossible by
+    exercising both ends for real.
+    """
+    from sdk.alfred_sdk import AlfredClient, CredentialField, CredentialSchema
+
+    schema = CredentialSchema(
+        fields={
+            "url": CredentialField(label="Home Assistant URL", field_type="url"),
+            "token": CredentialField(label="Access Token", field_type="password"),
+        }
+    )
+    client = AlfredClient(
+        service_name="home-service",
+        service_endpoint="http://localhost:8000/mcp",
+        credentials_schema=schema,
+        credentials_endpoint="http://localhost:8000/credentials",
+    )
+    manifest_json = json.dumps(client.get_registration_manifest()).encode()
+
+    redis = AsyncMock()
+    redis.hget = AsyncMock(return_value=manifest_json)
+    manifest = await get_service_manifest(redis, "home-service")
+    assert manifest is not None
+    assert manifest["credentials_endpoint"] == "http://localhost:8000/credentials"
+
+    info = await build_service_info("home-service", manifest)
+    assert set(info["schema"]["fields"]) == {"url", "token"}
+    assert info["schema"]["fields"]["url"]["field_type"] == "url"
+    assert info["schema"]["fields"]["token"]["field_type"] == "password"
+
+
 # ── validation ──
 
 
@@ -316,6 +358,27 @@ async def test_worker_ignores_other_event_types(home_service_manifest: dict[str,
 
 
 @pytest.mark.asyncio
+async def test_worker_acks_non_object_event_json_without_crashing(
+    home_service_manifest: dict[str, Any],
+) -> None:
+    """A stream entry whose "event" field decodes to valid-but-non-object JSON
+    (e.g. a bare int) must not crash the batch — it's skipped and acked."""
+    redis, shutdown = _worker_redis(home_service_manifest, _stream_entries("123"))
+
+    pushes: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        pushes.append(json.loads(request.content))
+        return httpx.Response(200, json={"status": "ok"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        await credential_push_worker(redis, http, shutdown=shutdown)  # must not raise
+
+    assert pushes == []
+    redis.xack.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_worker_push_failure_logged_and_acked(
     home_service_manifest: dict[str, Any],
 ) -> None:
@@ -389,3 +452,4 @@ def test_lifespan_starts_credential_push_worker() -> None:
 
     assert len(calls) == 1
     assert calls[0][0] is mock_redis  # worker gets the shared pool
+    assert calls[0][1] is app.state.http  # worker gets the app's long-lived httpx client

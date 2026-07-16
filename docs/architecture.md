@@ -139,9 +139,11 @@ graph TB
         VoicePipeline["Voice Pipeline"]
         WhisperSTT[WhisperSTT]
         PiperTTS[PiperTTS]
+        CredPushWorker["Credential Push Worker<br/>(channels-credentials)"]
         WebAuthn --> WebChannel
         WebChannel --> AdminRouter
         WebChannel --> TelemetryWS
+        WebChannel --> CredPushWorker
     end
 
     subgraph "Evals Runner"
@@ -229,6 +231,8 @@ graph TB
     AdminRouter -->|reads memory files| Prefs
     AdminRouter -->|XADD drain/librarian| Redis
     TelemetryWS -->|XREAD $| Redis
+    CredPushWorker -->|XREADGROUP channels-credentials| Redis
+    CredPushWorker -->|POST credentials_endpoint| HomeSvc
 
     EvalsCLI -->|build_prompt + parse_response| Engine
     EvalsCLI -->|POST /api/chat| Ollama

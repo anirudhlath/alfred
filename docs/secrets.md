@@ -20,7 +20,7 @@ graph TD
 1. Each `Integration` adapter declares a `credentials_schema` (`CredentialSchema`) listing its credential fields with types, labels, and validation rules.
 2. `shared/secrets.py` wraps the `keyring` library — all credentials stored under service name `"alfred"` with key format `"{integration}.{field}"`.
 3. `IntegrationRegistry.get()` auto-populates adapter constructor kwargs from keyring when no explicit kwargs are provided.
-4. REST endpoints on the web server provide CRUD operations restricted to localhost.
+4. REST endpoints on the web server provide CRUD operations restricted to the trusted network (localhost + Tailscale CGNAT).
 5. The frontend settings page and onboarding wizard render credential forms dynamically from the adapter schemas.
 
 ## Credential Fields
@@ -46,14 +46,14 @@ graph TD
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
 | GET | `/api/integrations` | none | List integrations with schema + configured status |
-| PUT | `/api/integrations/{name}/credentials` | localhost | Save credentials to keyring |
-| DELETE | `/api/integrations/{name}/credentials` | localhost | Clear credentials |
+| PUT | `/api/integrations/{name}/credentials` | trusted network | Save credentials to keyring |
+| DELETE | `/api/integrations/{name}/credentials` | trusted network | Clear credentials |
 | GET | `/api/integrations/{name}/status` | none | Run health check |
 
 ## Security
 
 - Credential values are never returned in GET responses — only boolean configured status
-- PUT/DELETE endpoints restricted to localhost via `Depends(require_localhost)`
+- PUT/DELETE endpoints restricted to the trusted network via `Depends(require_trusted_network)` (localhost + Tailscale CGNAT `100.64.0.0/10`)
 - Password fields are never pre-filled in the UI
 - Transient fields (e.g. MFA codes) are passed to the adapter but not persisted
 
@@ -82,8 +82,22 @@ Core stays the single credential authority (`core/channels/service_credentials.p
   write persists and is re-pushed on the service's next registration.
 - `GET /api/integrations/{name}/status` (service) proxies the service's
   `/health`. Healthy iff HTTP 200, top-level `status == "ok"`, and every
-  nested component dict with a `"state"` key reports `"connected"`.
+  nested component dict with a `"state"` key reports `"connected"`. The
+  `/health` URL is resolved via `urljoin(endpoint, "/health")` against the
+  service's registered endpoint host — services MUST expose `/health` at the
+  root of that host (not under a sub-path) for the status proxy to work.
 - Self-healing re-push: the channels process consumes `ServiceRegistered`
   from `alfred:events` (consumer group `channels-credentials`) and re-pushes
   stored credentials — services keep credentials in memory only and recover
   automatically on restart. Event-driven; no polling.
+
+### Operational notes
+
+- **First-deploy replay:** the `channels-credentials` consumer group is
+  created at stream id `0` (not `$`), so on first deploy the worker replays
+  the *entire* existing `alfred:events` history, not just events published
+  after it starts. This is intentional — any `ServiceRegistered` events
+  already on the stream get a credential push on first boot instead of
+  waiting for the next real registration. The re-push is idempotent (it's
+  just a POST of the current keyring contents to `credentials_endpoint`), so
+  replaying old `ServiceRegistered` entries is safe.
