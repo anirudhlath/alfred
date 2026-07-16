@@ -86,6 +86,7 @@ class TriggerFired(BaseEvent):
     trigger_type: str
     context: dict[str, Any] = Field(default_factory=dict)
     urgency: UrgencyLevel = "informational"
+    fired_by: Literal["engine", "admin"] = "engine"
 
 
 class UserRequest(BaseEvent):

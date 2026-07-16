@@ -40,5 +40,9 @@ core/memory/profile/*
 evals/runs/
 core/voice/models/
 
-# Never commit APNs keys or other secret material
+# Web frontend
+web/node_modules/
+web/dist/
+
+# Secrets — APNs .p8 signing key and other local credentials (never commit)
 secrets/

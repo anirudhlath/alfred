@@ -14,9 +14,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+import httpx
 import redis.asyncio as aioredis
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -25,11 +25,13 @@ if TYPE_CHECKING:
     from starlette.responses import Response
 
 from bus.schemas.events import AlfredResponse, UserRequest
-from core.identity.auth_middleware import COOKIE_NAME, AuthCookieMiddleware
+from core.channels.admin_api import create_admin_router
+from core.channels.telemetry_ws import register_telemetry_ws
+from core.identity.auth_middleware import AuthCookieMiddleware
 from core.identity.auth_routes import create_auth_router
 from core.identity.credentials import CredentialStore
+from core.identity.ws_auth import require_ws_auth
 from shared.streams import (
-    AUTH_SESSION_PREFIX,
     USER_REQUESTS_STREAM,
     USER_RESPONSES_STREAM,
     decode_stream_value,
@@ -37,6 +39,9 @@ from shared.streams import (
 
 _lazy_cache: dict[str, Any] = {}
 _FAILED: object = object()  # sentinel for imports that already failed
+
+# Patchable in tests — must be set before the lifespan registers the SPA route.
+_SPA_DIST: Path = Path(__file__).resolve().parent.parent.parent / "web" / "dist"
 
 
 def _lazy_load(key: str, module: str, cls_name: str, missing_msg: str) -> Any:
@@ -224,6 +229,7 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
 
     pool: aioredis.Redis[Any] = aioredis.from_url(app.state.redis_url, decode_responses=False)  # type: ignore[type-arg]
     app.state.redis = pool
+    app.state.http = httpx.AsyncClient(timeout=2.0)
 
     # Initialize WebAuthn credential store
     credential_store = CredentialStore()
@@ -235,6 +241,13 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         store=credential_store, redis=pool, trusted_network_dep=require_trusted_network
     )
     app.include_router(auth_router)
+
+    # Must register the SPA catch-all AFTER the auth router so that
+    # /{full_path:path} never shadows /api/auth/* routes (Starlette matches
+    # routes in registration order).
+    from core.channels.spa import mount_spa
+
+    mount_spa(app, _SPA_DIST)
 
     try:
         await _init_apns_adapter(pool)
@@ -258,6 +271,7 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         await apns.close()
 
     await credential_store.close()
+    await app.state.http.aclose()
     await pool.close()
 
 
@@ -281,28 +295,10 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
-        await websocket.accept()
         r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
 
-        # Authenticate via cookie (BaseHTTPMiddleware doesn't run for WS)
-        cookie_header = websocket.headers.get("cookie", "")
-        auth_session_id: str | None = None
-        for part in cookie_header.split(";"):
-            part = part.strip()
-            if part.startswith(f"{COOKIE_NAME}="):
-                auth_session_id = part[len(f"{COOKIE_NAME}=") :]
-                break
-
-        authenticated = False
-        if auth_session_id:
-            session_data: dict[bytes, bytes] = await r.hgetall(  # type: ignore[misc]
-                f"{AUTH_SESSION_PREFIX}{auth_session_id}"
-            )
-            if session_data and session_data.get(b"authenticated") == b"1":
-                authenticated = True
-
-        if not authenticated:
-            await websocket.close(code=4001, reason="Authentication required")
+        # Accept + cookie auth + 4001-on-fail, in the one place that owns the ordering.
+        if not await require_ws_auth(websocket, r):
             return
 
         _active_websockets[websocket] = "web_pwa"
@@ -383,24 +379,27 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
                     source=_CHANNEL_SOURCE_MAP.get(client_channel, "web-pwa"),
                     channel=client_channel,
                     session_id=session_id,
-                    identity_claim="sir" if authenticated else "guest",
+                    # Only authenticated sockets reach here (require_ws_auth gates above).
+                    identity_claim="sir",
                     content_type=content_type,
                     content=content,
                 )
 
-                response_text = await _publish_and_wait(r, request, session_id, timeout=60.0)
+                alfred_resp = await _publish_and_wait(r, request, session_id, timeout=60.0)
 
                 response_payload: dict[str, Any] = {
                     "type": "response",
-                    "text": response_text,
+                    "text": alfred_resp.text,
                     "session_id": session_id,
+                    "actions_taken": alfred_resp.actions_taken,
+                    "mood": alfred_resp.mood,
                 }
 
                 # Synthesise audio for the response
                 tts = _get_tts()
                 if tts is not None:
                     try:
-                        wav_bytes = tts.synthesize(response_text)
+                        wav_bytes = tts.synthesize(alfred_resp.text)
                         response_payload["audio"] = base64.b64encode(wav_bytes).decode()
                     except Exception as exc:
                         logger.error("TTS synthesis failed: {}", exc)
@@ -598,6 +597,9 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         logger.info("Unregistered device token")
         return {"status": "ok"}
 
+    app.include_router(create_admin_router(require_trusted_network))
+    register_telemetry_ws(app)
+
     class NoCacheStaticMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
             response: Response = await call_next(request)
@@ -608,11 +610,6 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
     app.add_middleware(NoCacheStaticMiddleware)
     app.add_middleware(AuthCookieMiddleware)
 
-    # Mount static files for PWA (if directory exists)
-    web_dir = Path(__file__).resolve().parent.parent.parent / "web"
-    if web_dir.is_dir():
-        app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="static")
-
     return app
 
 
@@ -621,10 +618,11 @@ async def _publish_and_wait(
     request: UserRequest,
     session_id: str,
     timeout: float = 30.0,
-) -> str:
+) -> AlfredResponse:
     """Publish request and poll the responses stream for a matching response.
 
     Captures the latest stream ID before publishing to avoid scanning history.
+    Returns the full AlfredResponse so callers can forward actions_taken and mood.
     """
     # Use a time-based ID so we only read responses after this point.
     # This avoids xinfo_stream which fails on non-existent streams and
@@ -649,6 +647,16 @@ async def _publish_and_wait(
                     event_str = decode_stream_value(raw)
                     resp = AlfredResponse.model_validate_json(event_str)
                     if resp.session_id == session_id:
-                        return resp.text
+                        return resp
 
-    return "I apologize, sir — I seem to be taking longer than expected."
+    logger.warning(
+        "No response for session {} within {}s timeout — returning fallback",
+        session_id,
+        timeout,
+    )
+    return AlfredResponse(
+        source="web-channel",
+        channel="web_pwa",
+        session_id=session_id,
+        text="I apologize, sir — I seem to be taking longer than expected.",
+    )

@@ -1,16 +1,19 @@
 """Tests for telemetry decorators."""
 
+from __future__ import annotations
+
 import asyncio
+from typing import Any
 
 import pytest
 
 
 @pytest.mark.asyncio
-async def test_track_latency_records_duration():
+async def test_track_latency_records_duration() -> None:
     from sdk.alfred_sdk.telemetry import get_telemetry_buffer, track_latency
 
     @track_latency(category="test")
-    async def slow_function():
+    async def slow_function() -> str:
         await asyncio.sleep(0.05)
         return "done"
 
@@ -28,11 +31,11 @@ async def test_track_latency_records_duration():
 
 
 @pytest.mark.asyncio
-async def test_track_tokens_records_usage():
+async def test_track_tokens_records_usage() -> None:
     from sdk.alfred_sdk.telemetry import get_telemetry_buffer, track_tokens
 
     @track_tokens(model="llama3:8b")
-    async def mock_inference(prompt: str):
+    async def mock_inference(prompt: str) -> dict[str, Any]:
         return {
             "response": "dim the lights",
             "prompt_tokens": 150,
@@ -53,11 +56,11 @@ async def test_track_tokens_records_usage():
 
 
 @pytest.mark.asyncio
-async def test_track_event_records_bus_metrics():
+async def test_track_event_records_bus_metrics() -> None:
     from sdk.alfred_sdk.telemetry import get_telemetry_buffer, track_event
 
     @track_event(bus="redis")
-    async def publish_something(topic: str, data: dict):
+    async def publish_something(topic: str, data: dict[str, Any]) -> dict[str, bool]:
         return {"published": True}
 
     await publish_something("home/state", {"entity": "light"})
@@ -69,11 +72,11 @@ async def test_track_event_records_bus_metrics():
     assert entry["bus"] == "redis"
 
 
-def test_track_latency_works_on_sync():
+def test_track_latency_works_on_sync() -> None:
     from sdk.alfred_sdk.telemetry import get_telemetry_buffer, track_latency
 
     @track_latency(category="sync-test")
-    def sync_function():
+    def sync_function() -> int:
         return 42
 
     result = sync_function()

@@ -74,9 +74,11 @@ class SentenceTransformerProvider(EmbeddingProvider):
 
     def dimension(self) -> int:
         model = self._load()
-        dim = model.get_sentence_embedding_dimension()
+        dim: int | None = model.get_sentence_embedding_dimension()
         if dim is None:
-            raise RuntimeError(f"Model {self._model_name} does not expose an embedding dimension")
+            raise RuntimeError(
+                f"Embedding model {self._model_name!r} did not report an embedding dimension"
+            )
         return dim
 
     def model_name(self) -> str:

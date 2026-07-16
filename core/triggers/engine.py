@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from bus.schemas.events import ActionRequest, StateChangedEvent, TriggerFired
 from core.triggers.models import BaseTrigger, TriggerContext
@@ -25,8 +25,19 @@ class TriggerEngine:
         self._store = store
         self._redis = redis
 
-    async def fire(self, trigger: BaseTrigger, context: TriggerContext) -> None:
-        """Execute the fire logic for a trigger that evaluated to True."""
+    async def fire(
+        self,
+        trigger: BaseTrigger,
+        context: TriggerContext,
+        fired_by: Literal["engine", "admin"] = "engine",
+    ) -> None:
+        """Execute the fire logic for a trigger that evaluated to True.
+
+        `fired_by` marks provenance: organic engine evaluation ("engine") vs.
+        a manual admin-initiated fire ("admin"). It is propagated onto the
+        emitted TriggerFired event so downstream pattern detection can
+        distinguish manual fires from real conditions.
+        """
         now = datetime.now(UTC)
 
         if trigger.action is not None:
@@ -45,6 +56,7 @@ class TriggerEngine:
                 trigger_type=trigger.trigger_type,
                 context=self._build_fire_context(trigger, context),
                 urgency=trigger.urgency.value,
+                fired_by=fired_by,
             )
             await self._redis.xadd(EVENTS_STREAM, {"event": event.model_dump_json()})
             logger.info("Trigger '%s' fired → TriggerFired event", trigger.name)

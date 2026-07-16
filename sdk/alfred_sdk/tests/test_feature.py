@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from alfred_sdk.feature import BaseFeature, _parse_google_docstring_args, tool
+from sdk.alfred_sdk.feature import BaseFeature, _parse_google_docstring_args, tool
 
 
 def test_tool_decorator_marks_method() -> None:
@@ -55,7 +55,7 @@ class _StubFeature(BaseFeature):
         self.ha_called = False
 
     @tool
-    def dim_lights(self, room: str, level: int) -> dict:
+    def dim_lights(self, room: str, level: int) -> dict[str, Any]:
         """Dim the lights in a room.
 
         Args:
@@ -66,7 +66,7 @@ class _StubFeature(BaseFeature):
         return {"room": room, "level": level}
 
     @tool(description="Custom turn off description")
-    def turn_off(self, room: str) -> dict:
+    def turn_off(self, room: str) -> dict[str, Any]:
         """Original description."""
         return {"room": room}
 
@@ -197,7 +197,7 @@ def test_tool_meta_complex_types() -> None:
         feature_name = "complex"
 
         @tool
-        def do_thing(self, data: dict[str, Any], items: list[str]) -> dict:
+        def do_thing(self, data: dict[str, Any], items: list[str]) -> dict[str, Any]:
             """Process data.
 
             Args:
@@ -221,7 +221,7 @@ def test_tool_meta_default_values() -> None:
         feature_name = "defaults"
 
         @tool
-        def do_thing(self, x: int, y: int = 42) -> dict:
+        def do_thing(self, x: int, y: int = 42) -> dict[str, Any]:
             """Process.
 
             Args:
@@ -244,7 +244,7 @@ def test_tool_name_override_in_get_tools() -> None:
         feature_name = "over"
 
         @tool(name="custom.my_tool")
-        def do_thing(self, x: int) -> dict:
+        def do_thing(self, x: int) -> dict[str, Any]:
             """Do it."""
             return {}
 

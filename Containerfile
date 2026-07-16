@@ -3,6 +3,13 @@
 # Run bridge:  container run --name bridge  ... alfred python -m bus
 # Run reflex:  container run --name reflex  ... alfred python -m core.reflex
 
+FROM node:22-slim AS webbuild
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+
 FROM python:3.13-slim
 
 # Install uv for fast dependency management
@@ -21,6 +28,9 @@ COPY telemetry/ /app/telemetry/
 
 # Non-editable install (editable requires source present, non-editable is correct for containers)
 RUN uv pip install --system --no-cache .
+
+# Copy built SPA from webbuild stage
+COPY --from=webbuild /web/dist /app/web/dist
 
 # Ensure all packages are importable from /app
 ENV PYTHONPATH=/app

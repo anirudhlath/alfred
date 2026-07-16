@@ -36,11 +36,15 @@ class ToolRegistry:
 
     REGISTRY_KEY = TOOL_REGISTRY_KEY
 
-    def __init__(self, redis: AioRedis) -> None:
+    def __init__(self, redis: AioRedis | None = None) -> None:
+        # ``redis`` may be None in offline contexts (e.g. evals) that only use the
+        # static helpers; ``get_tools`` requires a live connection and guards for it.
         self._redis = redis
 
     async def get_tools(self) -> list[ToolInfo]:
         """Read all service manifests and return a flat list of tools."""
+        if self._redis is None:
+            raise RuntimeError("ToolRegistry.get_tools() requires a Redis connection")
         raw: dict[bytes | str, bytes | str] = await self._redis.hgetall(  # type: ignore[misc]
             self.REGISTRY_KEY
         )

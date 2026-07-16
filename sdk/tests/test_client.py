@@ -1,7 +1,7 @@
 """Tests for AlfredClient."""
 
 
-def test_client_stores_config():
+def test_client_stores_config() -> None:
     from sdk.alfred_sdk.client import AlfredClient
 
     client = AlfredClient(

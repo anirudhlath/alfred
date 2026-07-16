@@ -133,11 +133,15 @@ graph TB
     subgraph "Interaction Channels"
         WebAuthn["WebAuthn<br/>Passkey Auth"]
         WebChannel["Web Channel<br/><code>uv run python -m core.channels</code>"]
+        AdminRouter["Admin API<br/>/api/admin/*"]
+        TelemetryWS["Telemetry WS<br/>/ws/telemetry"]
         WebPWA["Web PWA<br/>web/"]
         VoicePipeline["Voice Pipeline"]
         WhisperSTT[WhisperSTT]
         PiperTTS[PiperTTS]
         WebAuthn --> WebChannel
+        WebChannel --> AdminRouter
+        WebChannel --> TelemetryWS
     end
 
     subgraph "Evals Runner"
@@ -221,6 +225,10 @@ graph TB
     VoicePipeline --> WhisperSTT
     VoicePipeline --> PiperTTS
     WebChannel --> VoicePipeline
+    AdminRouter -->|reads streams + state| Redis
+    AdminRouter -->|reads memory files| Prefs
+    AdminRouter -->|XADD drain/librarian| Redis
+    TelemetryWS -->|XREAD $| Redis
 
     EvalsCLI -->|build_prompt + parse_response| Engine
     EvalsCLI -->|POST /api/chat| Ollama
@@ -409,11 +417,27 @@ The `DataSanitizer` (`sanitizer.py`) strips sensitive data from integration resp
 
 ### 3.10 Interaction Channels
 
-**Files:** `core/channels/web_server.py`, `core/voice/stt.py`, `core/voice/tts.py`
+**Files:** `core/channels/web_server.py`, `core/channels/admin_api.py`,
+`core/channels/telemetry_ws.py`, `core/voice/stt.py`, `core/voice/tts.py`
 
 **Web Channel** (`core/channels/`):
 
-FastAPI + WebSocket server. Receives user messages (text or audio) via WebSocket, publishes `UserRequest` to `alfred:user:requests`, waits for `AlfredResponse` on `alfred:user:responses`, and sends the response back. Supports voice input via the voice pipeline.
+FastAPI + WebSocket server on port 8081. Receives user messages (text or audio) via
+WebSocket, publishes `UserRequest` to `alfred:user:requests`, waits for `AlfredResponse` on
+`alfred:user:responses`, and sends the response back. Supports voice input via the voice
+pipeline.
+
+**Admin API** (`core/channels/admin_api.py`):
+
+Read-only observability endpoints plus curated controls, all under `/api/admin/`. Requires
+both a trusted network IP (localhost or Tailscale CGNAT) and a valid `alfred_auth` session
+cookie. See [docs/admin-api.md](admin-api.md) for full details.
+
+**Telemetry WebSocket** (`core/channels/telemetry_ws.py`):
+
+`/ws/telemetry` fans out Redis stream entries to the web app in real time. Clients
+subscribe/unsubscribe by stream name; the server pushes `entry` frames via blocking `XREAD`
+(2s block interval). Auth uses the same cookie gate as `/ws` (code 4001 on failure).
 
 **Voice Pipeline** (`core/voice/`):
 
@@ -422,7 +446,11 @@ FastAPI + WebSocket server. Receives user messages (text or audio) via WebSocket
 
 **Web PWA** (`web/`):
 
-Minimal Progressive Web App for chat + voice interaction. Static HTML/JS/CSS served by the web channel server.
+Mission Control SPA built with Vite 8 / React 19 / TypeScript / Tailwind v4 / TanStack
+Query / react-router v7. Provides chat, live telemetry rail, memory inspection, trigger
+management, health monitoring, integration settings, and a ⌘K command palette. Built to
+`web/dist/` and served by `core/channels/spa.mount_spa()` (static assets + index.html
+SPA fallback). See `docs/web-frontend.md` for the full architecture reference.
 
 ### 3.11 Domain Routing
 

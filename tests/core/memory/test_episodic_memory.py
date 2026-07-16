@@ -505,3 +505,44 @@ async def test_recall_does_not_persist_stats_for_cold_results(
     await episodic_memory.recall("query")
 
     mock_hot_store.update_metadata.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# recall() update_stats=False tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_recall_update_stats_false_skips_hot_store_write(
+    episodic_memory: EpisodicMemory,
+    mock_hot_store: AsyncMock,
+    mock_cold_store: AsyncMock,
+) -> None:
+    """When update_stats=False, recall() must NOT call update_metadata at all."""
+    mock_hot_store.search.return_value = [
+        _make_search_result(id="h1", score=0.9, retrieval_count=2),
+    ]
+    mock_hot_store.update_metadata = AsyncMock()
+
+    await episodic_memory.recall("query", update_stats=False)
+
+    mock_hot_store.update_metadata.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_recall_update_stats_true_by_default_persists_hot_stats(
+    episodic_memory: EpisodicMemory,
+    mock_hot_store: AsyncMock,
+) -> None:
+    """Default recall() (update_stats=True) still calls update_metadata for hot results."""
+    mock_hot_store.search.return_value = [
+        _make_search_result(id="h1", score=0.9, retrieval_count=1),
+    ]
+    mock_hot_store.update_metadata = AsyncMock()
+
+    await episodic_memory.recall("query")
+
+    mock_hot_store.update_metadata.assert_awaited_once()
+    call_args = mock_hot_store.update_metadata.await_args
+    assert call_args[0][0] == "h1"
+    assert call_args[0][1]["retrieval_count"] == 2

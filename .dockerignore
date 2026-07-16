@@ -1,0 +1,41 @@
+# Build artifacts — re-created inside container
+web/node_modules
+web/dist
+
+# Python virtualenv and caches
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.egg-info
+
+# Git worktrees directory
+.worktrees
+
+# Version control
+.git
+
+# Research and data (not needed at runtime)
+research/
+data/
+
+# Test and dev files
+tests/
+*.test.*
+*.spec.*
+
+# Editor and OS
+.DS_Store
+.idea
+.vscode
+*.swp
+*.swo
+
+# Docs (not needed at runtime)
+docs/
+
+# Secrets — never bake into image
+.env
+.env.*
+secrets/

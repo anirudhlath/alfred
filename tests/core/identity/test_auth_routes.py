@@ -171,3 +171,300 @@ class TestLogout:
         resp = client.post("/api/auth/logout")
         assert resp.status_code == 200
         redis_mock.delete.assert_called_once_with(f"{AUTH_SESSION_PREFIX}session-123")
+
+
+class TestRegisterCompleteBytesDecode:
+    """Regression: redis.get returns bytes when decode_responses=False (production pool).
+
+    The bug: base64url_to_bytes(b'abc...') would f-string the REPR of the bytes
+    object ("b'abc...'"), decoding to garbage and causing 401 on every passkey
+    registration attempt.  The fix decodes bytes → str before passing to the helper.
+    """
+
+    def test_register_complete_bytes_challenge_not_corrupted(
+        self, store: CredentialStore, redis_mock: AsyncMock
+    ) -> None:
+        """verify_registration_response receives the correct expected_challenge bytes
+        when redis returns the stored challenge as bytes (decode_responses=False)."""
+        from webauthn.helpers import bytes_to_base64url
+
+        raw_challenge = b"\xde\xad\xbe\xef\xca\xfe"
+        stored_b64 = bytes_to_base64url(raw_challenge)
+        # Simulate decode_responses=False: redis returns bytes, not str
+        redis_mock.get = AsyncMock(return_value=stored_b64.encode())
+
+        app = FastAPI()
+        router = create_auth_router(store=store, redis=redis_mock)
+        app.include_router(router)
+        client = TestClient(app)
+
+        captured_kwargs: dict[str, object] = {}
+
+        def _capture_verify(**kwargs: object) -> MagicMock:
+            captured_kwargs.update(kwargs)
+            result = MagicMock()
+            result.credential_id = b"\x01\x02"
+            result.credential_public_key = b"\x03"
+            result.sign_count = 0
+            return result
+
+        with patch(
+            "core.identity.auth_routes.verify_registration_response",
+            side_effect=_capture_verify,
+        ):
+            client.post(
+                "/api/auth/register/complete",
+                json={
+                    "_challenge_id": "test-challenge-id",
+                    "_device_name": "Test Device",
+                    "id": "AQID",
+                    "rawId": "AQID",
+                    "type": "public-key",
+                    "response": {
+                        "clientDataJSON": "e30",
+                        "attestationObject": "e30",
+                    },
+                },
+            )
+
+        # The fix must have fired: challenge was decoded to str before base64url_to_bytes
+        assert "expected_challenge" in captured_kwargs, (
+            "verify_registration_response was not called — challenge decode failed"
+        )
+        got = captured_kwargs["expected_challenge"]
+        assert got == raw_challenge, f"expected_challenge corrupted by bytes repr: {got!r}"
+
+
+class TestLoginCompleteBytesDecode:
+    """Regression: same decode_responses=False bytes bug in login_complete."""
+
+    @pytest.mark.asyncio
+    async def test_login_complete_bytes_challenge_not_corrupted(
+        self, store: CredentialStore, redis_mock: AsyncMock
+    ) -> None:
+        """verify_authentication_response receives the correct expected_challenge bytes
+        when redis returns the stored challenge as bytes (decode_responses=False)."""
+        from webauthn.helpers import bytes_to_base64url
+
+        raw_challenge = b"\xfe\xed\xfa\xce\xba\xbe"
+        stored_b64 = bytes_to_base64url(raw_challenge)
+        # Simulate decode_responses=False: redis returns bytes, not str
+        redis_mock.get = AsyncMock(return_value=stored_b64.encode())
+
+        # Pre-register a credential so get_credential doesn't short-circuit with 401
+        cred_id = "dGVzdC1sb2dpbg"
+        await store.save_credential(
+            credential_id=cred_id,
+            public_key=b"\x04\x05\x06",
+            sign_count=0,
+            device_name="Regression Test Device",
+            transports=["internal"],
+        )
+
+        app = FastAPI()
+        router = create_auth_router(store=store, redis=redis_mock)
+        app.include_router(router)
+        client = TestClient(app)
+
+        captured_kwargs: dict[str, object] = {}
+
+        def _capture_verify(**kwargs: object) -> MagicMock:
+            captured_kwargs.update(kwargs)
+            result = MagicMock()
+            result.new_sign_count = 1
+            return result
+
+        with patch(
+            "core.identity.auth_routes.verify_authentication_response",
+            side_effect=_capture_verify,
+        ):
+            client.post(
+                "/api/auth/login/complete",
+                json={
+                    "_challenge_id": "test-login-challenge-id",
+                    "id": cred_id,
+                    "rawId": cred_id,
+                    "type": "public-key",
+                    "response": {
+                        "clientDataJSON": "e30",
+                        "authenticatorData": "e30",
+                        "signature": "e30",
+                    },
+                },
+            )
+
+        assert "expected_challenge" in captured_kwargs, (
+            "verify_authentication_response was not called — challenge decode failed"
+        )
+        got = captured_kwargs["expected_challenge"]
+        assert got == raw_challenge, f"expected_challenge corrupted by bytes repr: {got!r}"
+
+
+class TestTransportEnumConversion:
+    """Regression: stored transport strings must be coerced to AuthenticatorTransport enums.
+
+    py_webauthn calls .value on each transport in options_to_json; passing plain str
+    causes AttributeError: 'str' object has no attribute 'value'.  Both the
+    register/begin excludeCredentials list and the login/begin allowCredentials list
+    share the same bug — both paths are covered here.
+    """
+
+    @pytest.mark.asyncio
+    async def test_login_begin_known_transports_round_trip(
+        self, store: CredentialStore, redis_mock: AsyncMock
+    ) -> None:
+        """login/begin with transports ['internal', 'hybrid'] → 200, no AttributeError,
+        and allowCredentials[0].transports carries both enum members."""
+        await store.save_credential(
+            credential_id="dGVzdC1jcmVk",
+            public_key=b"\x01",
+            sign_count=0,
+            device_name="Test",
+            transports=["internal", "hybrid"],
+        )
+
+        captured_kwargs: dict[str, object] = {}
+
+        def _capture_gen(**kwargs: object) -> MagicMock:
+            captured_kwargs.update(kwargs)
+            result = MagicMock()
+            result.challenge = b"\x07\x08\x09"
+            return result
+
+        with (
+            patch(
+                "core.identity.auth_routes.generate_authentication_options",
+                side_effect=_capture_gen,
+            ),
+            patch("core.identity.auth_routes.options_to_json", return_value='{"ok": true}'),
+        ):
+            from fastapi import FastAPI
+
+            _app = FastAPI()
+            from core.identity.auth_routes import create_auth_router
+
+            _app.include_router(create_auth_router(store=store, redis=redis_mock))
+            from fastapi.testclient import TestClient
+
+            _client = TestClient(_app)
+            response = _client.post("/api/auth/login/begin")
+
+        assert response.status_code == 200
+        assert "allow_credentials" in captured_kwargs
+        descriptors = captured_kwargs["allow_credentials"]
+        assert isinstance(descriptors, list) and len(descriptors) == 1
+        from webauthn.helpers.structs import AuthenticatorTransport
+
+        assert descriptors[0].transports == [
+            AuthenticatorTransport.INTERNAL,
+            AuthenticatorTransport.HYBRID,
+        ]
+
+    @pytest.mark.asyncio
+    async def test_login_begin_unknown_transport_dropped(
+        self, store: CredentialStore, redis_mock: AsyncMock
+    ) -> None:
+        """login/begin with transports ['internal', 'bogus'] → 200, 'bogus' silently dropped."""
+        await store.save_credential(
+            credential_id="dGVzdC1jcmVk",
+            public_key=b"\x01",
+            sign_count=0,
+            device_name="Test",
+            transports=["internal", "bogus"],
+        )
+
+        captured_kwargs: dict[str, object] = {}
+
+        def _capture_gen(**kwargs: object) -> MagicMock:
+            captured_kwargs.update(kwargs)
+            result = MagicMock()
+            result.challenge = b"\x0a\x0b\x0c"
+            return result
+
+        with (
+            patch(
+                "core.identity.auth_routes.generate_authentication_options",
+                side_effect=_capture_gen,
+            ),
+            patch("core.identity.auth_routes.options_to_json", return_value='{"ok": true}'),
+        ):
+            from fastapi import FastAPI
+
+            _app = FastAPI()
+            from core.identity.auth_routes import create_auth_router
+
+            _app.include_router(create_auth_router(store=store, redis=redis_mock))
+            from fastapi.testclient import TestClient
+
+            _client = TestClient(_app)
+            response = _client.post("/api/auth/login/begin")
+
+        assert response.status_code == 200
+        assert "allow_credentials" in captured_kwargs
+        descriptors = captured_kwargs["allow_credentials"]
+        assert isinstance(descriptors, list) and len(descriptors) == 1
+        from webauthn.helpers.structs import AuthenticatorTransport
+
+        # Only "internal" survives; "bogus" is dropped
+        assert descriptors[0].transports == [AuthenticatorTransport.INTERNAL]
+
+    @pytest.mark.asyncio
+    async def test_register_begin_exclude_credentials_with_transports(
+        self, store: CredentialStore, redis_mock: AsyncMock
+    ) -> None:
+        """register/begin with one existing credential → 200 and excludeCredentials present.
+
+        This is the path that raises AttributeError once any credential exists because
+        the stored transport strings were passed raw to PublicKeyCredentialDescriptor.
+        """
+        await store.save_credential(
+            credential_id="dGVzdC1jcmVk",
+            public_key=b"\x01",
+            sign_count=0,
+            device_name="Test",
+            transports=["internal"],
+        )
+
+        captured_kwargs: dict[str, object] = {}
+
+        def _capture_gen(**kwargs: object) -> MagicMock:
+            captured_kwargs.update(kwargs)
+            result = MagicMock()
+            result.challenge = b"\x0d\x0e\x0f"
+            return result
+
+        with (
+            patch(
+                "core.identity.auth_routes.generate_registration_options",
+                side_effect=_capture_gen,
+            ),
+            patch("core.identity.auth_routes.options_to_json", return_value='{"ok": true}'),
+        ):
+            from fastapi import FastAPI
+
+            _app = FastAPI()
+            from core.identity.auth_routes import create_auth_router
+
+            # trusted_network_dep=lambda: None bypasses the IP gate in tests
+            _app.include_router(
+                create_auth_router(
+                    store=store,
+                    redis=redis_mock,
+                    trusted_network_dep=lambda: None,
+                )
+            )
+            from fastapi.testclient import TestClient
+
+            _client = TestClient(_app)
+            response = _client.post(
+                "/api/auth/register/begin",
+                json={"device_name": "New Device"},
+            )
+
+        assert response.status_code == 200
+        assert "exclude_credentials" in captured_kwargs
+        exclude = captured_kwargs["exclude_credentials"]
+        assert isinstance(exclude, list) and len(exclude) == 1
+        from webauthn.helpers.structs import AuthenticatorTransport
+
+        assert exclude[0].transports == [AuthenticatorTransport.INTERNAL]
