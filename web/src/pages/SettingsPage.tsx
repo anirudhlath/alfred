@@ -6,6 +6,7 @@ import { api } from "@/lib/api";
 import { logout } from "@/lib/webauthn";
 import type { IntegrationInfo } from "@/lib/types";
 import { IntegrationCard } from "./IntegrationCard";
+import { VoiceEnrollmentCard } from "./VoiceEnrollmentCard";
 
 export function SettingsPage() {
   const navigate = useNavigate();
@@ -45,6 +46,8 @@ export function SettingsPage() {
           Signed in via passkey. Sign out to clear this session.
         </CardContent>
       </Card>
+
+      <VoiceEnrollmentCard />
 
       <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
         {(integrations ?? []).map((integration) => (

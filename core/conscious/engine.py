@@ -586,6 +586,7 @@ class ConsciousEngine:
             channel=request.channel,
             identity_claim=request.identity_claim,
             authenticated=request.authenticated,
+            identity_confidence=request.identity_confidence,
         )
         logger.info(
             "Identity resolved: %s (method=%s, confidence=%.2f)",
@@ -649,6 +650,7 @@ class ConsciousEngine:
             relevant_context=involuntary_context if involuntary_context else None,
             channel=request.channel,
             content_type=request.content_type,
+            area=request.area,
             tz_name=tz_name,
         )
         if routine_hint:

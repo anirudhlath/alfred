@@ -7,11 +7,10 @@ import base64
 import ipaddress
 import json
 import os
-import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import httpx
@@ -22,101 +21,47 @@ from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from starlette.responses import Response
 
     from core.integrations.base import CredentialSchema
 
-from bus.schemas.events import AlfredResponse, UserRequest
-from core.channels.admin_api import create_admin_router
+from bus.schemas.events import UserRequest
+from core.channels.admin_api import create_admin_router, require_authenticated
+from core.channels.request_bus import publish_and_wait
+from core.channels.satellite.bridge import SatelliteBridge
+from core.channels.satellite.config import load_satellites
+from core.channels.satellite.pipeline import SatellitePipeline
 from core.channels.telemetry_ws import register_telemetry_ws
+from core.channels.voice_models import (  # re-exported for tests (see __all__)
+    aget_speaker_id,
+    aget_stt,
+    aget_tts,
+    synthesize_async,
+    transcribe_async,
+)
 from core.identity.auth_middleware import AuthCookieMiddleware
 from core.identity.auth_routes import create_auth_router
 from core.identity.credentials import CredentialStore
 from core.identity.ws_auth import require_ws_auth
+from core.notifications.adapters.satellite import SatelliteChannelAdapter
+from core.notifications.channels import ChannelRegistry
 from core.warmup import start_warmup
-from shared.redis_streams import create_redis, read
-from shared.streams import (
-    USER_REQUESTS_STREAM,
-    USER_RESPONSES_STREAM,
-    decode_stream_value,
-)
+from shared.redis_streams import create_redis
 from shared.usertime import is_valid_timezone
 
-_lazy_cache: dict[str, Any] = {}
-_FAILED: object = object()  # sentinel for imports that already failed
+# mypy --strict (no_implicit_reexport): mark the voice_models re-imports above as
+# this module's public interface so test monkeypatches (e.g.
+# `patch("core.channels.web_server.aget_tts", ...)`) keep resolving without error.
+__all__ = [
+    "aget_speaker_id",
+    "aget_stt",
+    "aget_tts",
+    "synthesize_async",
+    "transcribe_async",
+]
 
 # Patchable in tests — must be set before the lifespan registers the SPA route.
 _SPA_DIST: Path = Path(__file__).resolve().parent.parent.parent / "web" / "dist"
-
-
-def _lazy_load(key: str, module: str, cls_name: str, missing_msg: str) -> Any:
-    """Lazy-load a class from an optional module. Returns instance or None on failure."""
-    cached = _lazy_cache.get(key)
-    if cached is _FAILED:
-        return None
-    if cached is not None:
-        return cached
-    try:
-        import importlib
-
-        mod = importlib.import_module(module)
-        instance = getattr(mod, cls_name)()
-        _lazy_cache[key] = instance
-        return instance
-    except ImportError:
-        logger.warning("{} — {} disabled", missing_msg, key)
-        _lazy_cache[key] = _FAILED
-    except Exception as exc:
-        logger.error("Failed to initialise {}: {}", cls_name, exc)
-        _lazy_cache[key] = _FAILED
-    return None
-
-
-def _get_stt() -> Any:
-    """Lazy-load WhisperSTT (requires voice extra)."""
-    return _lazy_load("stt", "core.voice.stt", "WhisperSTT", "faster-whisper not installed")
-
-
-def _get_tts() -> Any:
-    """Lazy-load PiperTTS (requires voice extra)."""
-    return _lazy_load("tts", "core.voice.tts", "PiperTTS", "piper-tts not installed")
-
-
-# Model construction takes 10-40s and must run off the event loop; the lock
-# keeps a warmup task and a first request from loading the same model twice.
-_voice_load_lock = asyncio.Lock()
-
-
-async def _aget_voice(key: str, getter: Callable[[], Any]) -> Any:
-    cached = _lazy_cache.get(key)
-    if cached is not None:
-        return None if cached is _FAILED else cached
-    async with _voice_load_lock:
-        return await asyncio.to_thread(getter)
-
-
-async def _aget_stt() -> Any:
-    """WhisperSTT instance (or None), constructed off the event loop."""
-    return await _aget_voice("stt", _get_stt)
-
-
-async def _aget_tts() -> Any:
-    """PiperTTS instance (or None), constructed off the event loop."""
-    return await _aget_voice("tts", _get_tts)
-
-
-async def _transcribe_async(stt: Any, audio_bytes: bytes, audio_fmt: str) -> str:
-    """Run blocking Whisper transcription in a worker thread."""
-    result = await asyncio.to_thread(stt.transcribe, audio_bytes, audio_format=audio_fmt)
-    return cast("str", result)
-
-
-async def _synthesize_async(tts: Any, text: str) -> bytes:
-    """Run blocking Piper synthesis in a worker thread."""
-    result = await asyncio.to_thread(tts.synthesize, text)
-    return cast("bytes", result)
 
 
 _active_websockets: dict[WebSocket, str] = {}
@@ -180,6 +125,13 @@ class OnboardingPayload(BaseModel):
     dietary_restrictions: str | None = None
     proactivity_level: str | None = None  # opinionated | moderate | conservative
     guest_controls: list[str] | None = None
+
+
+class VoiceEnrollmentPayload(BaseModel):
+    """Voice enrollment samples from the settings page."""
+
+    identity: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9_-]+$")
+    samples: list[str] = Field(min_length=3, max_length=5)
 
 
 _DEVICE_TOKEN_PATTERN = r"^[a-fA-F0-9]+$"
@@ -317,14 +269,44 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     # Load voice models in the background so the first audio message doesn't
     # pay the 10-40s lazy-load cost; the server starts serving immediately.
     async def _warm_stt() -> None:
-        if await _aget_stt() is None:
+        if await aget_stt() is None:
             raise RuntimeError("voice extra not installed or model failed to load")
 
     async def _warm_tts() -> None:
-        if await _aget_tts() is None:
+        if await aget_tts() is None:
             raise RuntimeError("voice extra not installed or model failed to load")
 
     warmup_task = start_warmup("channels", {"whisper stt": _warm_stt, "piper tts": _warm_tts})
+
+    # Satellite bridge — physical voice devices (see docs/voice-satellites.md).
+    # A malformed/duplicate satellites.yaml must not take down the whole
+    # channels process (web+iOS+notifications) — isolate it like the APNs
+    # adapter above, but loud (ERROR) since it silently disables a feature.
+    satellite_bridge: SatelliteBridge | None = None
+    try:
+        satellites = load_satellites()
+        if satellites:
+            speaker_id = await aget_speaker_id(pool)
+            pipeline = SatellitePipeline(
+                pool, get_stt=aget_stt, get_tts=aget_tts, speaker_id=speaker_id
+            )
+            satellite_bridge = SatelliteBridge(satellites, pipeline)
+            satellite_bridge.start()
+            app.state.satellite_bridge = satellite_bridge
+            ChannelRegistry.set_instance(
+                "satellite",
+                SatelliteChannelAdapter(
+                    get_bridge=lambda: getattr(app.state, "satellite_bridge", None),
+                    get_tts=aget_tts,
+                ),
+            )
+    except Exception as exc:
+        logger.error(
+            "Satellite bridge init failed ({}): {} — satellites disabled",
+            type(exc).__name__,
+            exc,
+        )
+        satellite_bridge = None
 
     yield
 
@@ -333,7 +315,8 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     credential_push_task.cancel()
     warmup_task.cancel()
 
-    from core.notifications.channels import ChannelRegistry
+    if satellite_bridge is not None:
+        await satellite_bridge.stop()
 
     apns = ChannelRegistry.get_instance("apns")
     if apns is not None and hasattr(apns, "close"):
@@ -418,11 +401,11 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
                 # Transcribe audio to text before sending to Conscious Engine
                 if content_type == "audio" and content:
-                    stt = await _aget_stt()
+                    stt = await aget_stt()
                     if stt is not None:
                         try:
                             audio_bytes, audio_fmt = _decode_audio(content)
-                            content = await _transcribe_async(stt, audio_bytes, audio_fmt)
+                            content = await transcribe_async(stt, audio_bytes, audio_fmt)
                             content_type = "text"
                             logger.info("Transcribed voice → '{}' chars", len(content))
                             await websocket.send_json(
@@ -472,7 +455,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
                     timezone=client_tz,
                 )
 
-                alfred_resp = await _publish_and_wait(r, request, session_id, timeout=60.0)
+                alfred_resp = await publish_and_wait(r, request, session_id, timeout=60.0)
 
                 response_payload: dict[str, Any] = {
                     "type": "response",
@@ -483,10 +466,10 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
                 }
 
                 # Synthesise audio for the response
-                tts = await _aget_tts()
+                tts = await aget_tts()
                 if tts is not None:
                     try:
-                        wav_bytes = await _synthesize_async(tts, alfred_resp.text)
+                        wav_bytes = await synthesize_async(tts, alfred_resp.text)
                         response_payload["audio"] = base64.b64encode(wav_bytes).decode()
                     except Exception as exc:
                         logger.error("TTS synthesis failed: {}", exc)
@@ -708,6 +691,25 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         return {"status": "ok"}
 
     @app.post(
+        "/api/voice/enroll",
+        dependencies=[Depends(require_trusted_network), Depends(require_authenticated)],
+    )
+    async def voice_enroll(payload: VoiceEnrollmentPayload) -> dict[str, str]:
+        """Enroll a voiceprint from mic samples (trusted network + session only)."""
+        speaker_id = await aget_speaker_id(app.state.redis)
+        if speaker_id is None:
+            raise HTTPException(status_code=503, detail="Voice processing unavailable")
+        from core.voice.audio import decode_to_pcm16k
+
+        pcm_samples: list[bytes] = []
+        for sample in payload.samples:
+            audio_bytes, _fmt = _decode_audio(sample)
+            pcm_samples.append(await asyncio.to_thread(decode_to_pcm16k, audio_bytes))
+        if not await speaker_id.enroll(payload.identity, pcm_samples):
+            raise HTTPException(status_code=500, detail="Enrollment failed")
+        return {"status": "enrolled", "identity": payload.identity}
+
+    @app.post(
         "/api/devices/register",
         dependencies=[Depends(require_trusted_network)],
     )
@@ -754,52 +756,3 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
     app.add_middleware(AuthCookieMiddleware)
 
     return app
-
-
-async def _publish_and_wait(
-    redis: aioredis.Redis,
-    request: UserRequest,
-    session_id: str,
-    timeout: float = 30.0,
-) -> AlfredResponse:
-    """Publish request and poll the responses stream for a matching response.
-
-    Captures the latest stream ID before publishing to avoid scanning history.
-    Returns the full AlfredResponse so callers can forward actions_taken and mood.
-    """
-    # Use a time-based ID so we only read responses after this point.
-    # This avoids xinfo_stream which fails on non-existent streams and
-    # "0-0" which would scan all historical entries on a non-fresh Redis.
-    last_id = f"{int(time.time() * 1000)}-0"
-
-    # Publish the request
-    await redis.xadd(
-        USER_REQUESTS_STREAM,
-        {"event": request.model_dump_json()},
-    )
-
-    start = time.monotonic()
-
-    while (time.monotonic() - start) < timeout:
-        entries = await read(redis, {USER_RESPONSES_STREAM: last_id}, count=10, block=1000)
-        for _stream, stream_entries in entries:
-            for entry_id, entry_data in stream_entries:
-                last_id = decode_stream_value(entry_id)
-                raw = entry_data.get(b"event") or entry_data.get("event")
-                if raw:
-                    event_str = decode_stream_value(raw)
-                    resp = AlfredResponse.model_validate_json(event_str)
-                    if resp.session_id == session_id:
-                        return resp
-
-    logger.warning(
-        "No response for session {} within {}s timeout — returning fallback",
-        session_id,
-        timeout,
-    )
-    return AlfredResponse(
-        source="web-channel",
-        channel="web_pwa",
-        session_id=session_id,
-        text="I apologize, sir — I seem to be taking longer than expected.",
-    )

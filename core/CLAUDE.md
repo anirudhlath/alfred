@@ -81,7 +81,7 @@ Agentic tool-use loop with parallel execution (`asyncio.gather`).
 - `stt.py` — WhisperSTT (faster-whisper CTranslate2, model: `large-v3-turbo`, beam_size=5, accepts `audio_format` param)
 - `tts.py` — PiperTTS (ONNX local, `en_GB-alan-medium` voice, auto-downloads from HuggingFace)
 - `models/` — Voice data models
-- `speaker_id.py` — Speaker identification stub (returns `unknown`, confidence=0.0)
+- `speaker_id.py` — `SpeakerID`: ECAPA-TDNN voiceprint enroll/identify (speechbrain, lazy-loaded off the event loop via `asyncio.to_thread`), cosine match vs Redis hash `VOICEPRINT_KEY`, env-tunable `SPEAKER_ID_THRESHOLD` (default 0.45); `embed_fn` injection point for tests
 
 ## Librarian (`librarian/`) — Memory Consolidation
 
@@ -95,8 +95,11 @@ Agentic tool-use loop with parallel execution (`asyncio.gather`).
 
 ## Channels (`channels/`) — User-Facing I/O
 
-- `web_server.py` — FastAPI + WebSocket on port 8081, STT/TTS loaded off the event loop (async getters + background warmup, `asyncio.to_thread` for transcribe/synthesize), onboarding wizard, session persistence, iOS channel support, device registration, trusted network auth
+- `web_server.py` — FastAPI + WebSocket on port 8081, STT/TTS loaded off the event loop (async getters + background warmup, `asyncio.to_thread` for transcribe/synthesize), onboarding wizard, session persistence, iOS channel support, device registration, trusted network auth. Lifespan also starts the satellite bridge (`load_satellites()` non-empty → `SatelliteBridge` + `SatelliteChannelAdapter` registration)
 - `signal_bridge/` — Signal CLI subprocess, forwards inbound → `USER_REQUESTS_STREAM`, outbound via adapter
+- `satellite/` — Wyoming voice satellite bridge (physical devices, not the web/iOS voice pipeline): `config.py` (fleet loader, `SATELLITES_CONFIG`), `endpointing.py` (streaming VAD via `pysilero-vad`, `UtteranceCollector`), `bridge.py` (`SatelliteConnection`/`SatelliteBridge` — one persistent reconnecting TCP client per device), `pipeline.py` (`SatellitePipeline`: STT → Conscious round-trip → TTS). See `docs/voice-satellites.md`
+- `request_bus.py` — `publish_and_wait()`: shared XADD-then-XREAD request/response helper, used by both the WebSocket handler and `SatellitePipeline`
+- `voice_models.py` — shared lazy Whisper/Piper/SpeakerID loaders for the channels process (`aget_stt`, `aget_tts`, `aget_speaker_id`)
 - `__main__.py` — Port retry (5 attempts on EADDRINUSE with exponential backoff)
 
 ## Notifications (`notifications/`) — Proactive System
@@ -107,7 +110,7 @@ Agentic tool-use loop with parallel execution (`asyncio.gather`).
 - `dnd.py` — DNDChecker (manual Redis key + calendar meeting detection)
 - `channels.py` — `ChannelAdapter` ABC + `ChannelRegistry` (decorator-based registration)
 - `publisher.py` — Public API (thin facade over dispatcher)
-- `adapters/` — Signal, WebSocket, APNs concrete adapters (Voice adapter exists but is not loaded in channels process; TTS for URGENT notifications is handled inline by the WebSocket adapter)
+- `adapters/` — Signal, WebSocket, APNs, Satellite concrete adapters (Voice adapter exists but is not loaded in channels process; TTS for URGENT notifications is handled inline by the WebSocket adapter). `SatelliteChannelAdapter` (`adapters/satellite.py`) is URGENT-only, registered only when `config/satellites.yaml` has entries, and broadcasts Piper-synthesized speech to every currently-connected satellite via `SatelliteBridge.play_wav_all()`
 
 ### Notification Data Flow
 

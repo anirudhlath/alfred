@@ -14,14 +14,14 @@ from typing import Any
 
 import pytest
 
-from core.channels import web_server
+from core.channels import voice_models, web_server
 
 
 @pytest.fixture(autouse=True)
 def _clean_lazy_cache() -> Any:
-    web_server._lazy_cache.clear()
+    voice_models._lazy_cache.clear()
     yield
-    web_server._lazy_cache.clear()
+    voice_models._lazy_cache.clear()
 
 
 class _ThreadRecorder:
@@ -43,7 +43,7 @@ class _ThreadRecorder:
 async def test_transcribe_async_runs_off_event_loop() -> None:
     fake = _ThreadRecorder()
 
-    result = await web_server._transcribe_async(fake, b"audio", "wav")
+    result = await web_server.transcribe_async(fake, b"audio", "wav")
 
     assert result == "transcribed"
     assert fake.thread_ids and fake.thread_ids[0] != threading.get_ident()
@@ -53,7 +53,7 @@ async def test_transcribe_async_runs_off_event_loop() -> None:
 async def test_synthesize_async_runs_off_event_loop() -> None:
     fake = _ThreadRecorder()
 
-    result = await web_server._synthesize_async(fake, "hello sir")
+    result = await web_server.synthesize_async(fake, "hello sir")
 
     assert result == b"RIFFwav"
     assert fake.thread_ids and fake.thread_ids[0] != threading.get_ident()
@@ -66,16 +66,16 @@ async def test_aget_stt_constructs_in_worker_thread(monkeypatch: pytest.MonkeyPa
     instance = object()
 
     def fake_lazy_load(key: str, module: str, cls_name: str, missing_msg: str) -> Any:
-        cached = web_server._lazy_cache.get(key)
+        cached = voice_models._lazy_cache.get(key)
         if cached is not None:
             return cached
         construction_threads.append(threading.get_ident())
-        web_server._lazy_cache[key] = instance
+        voice_models._lazy_cache[key] = instance
         return instance
 
-    monkeypatch.setattr(web_server, "_lazy_load", fake_lazy_load)
+    monkeypatch.setattr(voice_models, "_lazy_load", fake_lazy_load)
 
-    result = await web_server._aget_stt()
+    result = await web_server.aget_stt()
 
     assert result is instance
     assert construction_threads and construction_threads[0] != threading.get_ident()
@@ -91,17 +91,17 @@ async def test_aget_stt_concurrent_calls_construct_once(
 
     def fake_lazy_load(key: str, module: str, cls_name: str, missing_msg: str) -> Any:
         nonlocal constructions
-        cached = web_server._lazy_cache.get(key)
+        cached = voice_models._lazy_cache.get(key)
         if cached is not None:
             return cached
         constructions += 1
         time.sleep(0.05)  # simulate slow model load
-        web_server._lazy_cache[key] = instance
+        voice_models._lazy_cache[key] = instance
         return instance
 
-    monkeypatch.setattr(web_server, "_lazy_load", fake_lazy_load)
+    monkeypatch.setattr(voice_models, "_lazy_load", fake_lazy_load)
 
-    results = await asyncio.gather(web_server._aget_stt(), web_server._aget_stt())
+    results = await asyncio.gather(web_server.aget_stt(), web_server.aget_stt())
 
     assert results == [instance, instance]
     assert constructions == 1
@@ -114,11 +114,41 @@ async def test_aget_tts_returns_none_when_unavailable(
     """A failed lazy load (missing voice extra) must surface as None, not raise."""
 
     def fake_lazy_load(key: str, module: str, cls_name: str, missing_msg: str) -> Any:
-        web_server._lazy_cache[key] = web_server._FAILED
+        voice_models._lazy_cache[key] = voice_models._FAILED
         return None
 
-    monkeypatch.setattr(web_server, "_lazy_load", fake_lazy_load)
+    monkeypatch.setattr(voice_models, "_lazy_load", fake_lazy_load)
 
-    assert await web_server._aget_tts() is None
+    assert await web_server.aget_tts() is None
     # Cached failure short-circuits without re-entering the loader
-    assert await web_server._aget_tts() is None
+    assert await web_server.aget_tts() is None
+
+
+@pytest.mark.asyncio
+async def test_aget_speaker_id_double_checks_cache_after_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two concurrent first calls must not each build their own SpeakerID
+    (each would later load its own ECAPA model). A caller that loses the race
+    for the module-level lock must re-check the cache once it acquires it,
+    rather than constructing a second instance."""
+    constructions = 0
+
+    class _FakeSpeakerID:
+        def __init__(self, redis: Any) -> None:
+            nonlocal constructions
+            constructions += 1
+
+    monkeypatch.setattr(voice_models, "_get_speaker_id_cls", lambda: _FakeSpeakerID)
+
+    sentinel = object()
+    async with voice_models._speaker_id_lock:
+        task = asyncio.create_task(voice_models.aget_speaker_id(redis=None))
+        await asyncio.sleep(0)  # let the task start and block waiting for the lock
+        # Simulate a winner (holding the lock) already having cached an instance.
+        voice_models._lazy_cache["speaker_id"] = sentinel
+
+    result = await task
+
+    assert result is sentinel
+    assert constructions == 0  # double-check found the cache — didn't build a second one

@@ -46,3 +46,6 @@ web/dist/
 
 # Secrets — APNs .p8 signing key and other local credentials (never commit)
 secrets/
+
+# Local satellite fleet config — only the .example is tracked
+config/satellites.yaml

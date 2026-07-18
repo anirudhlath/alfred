@@ -141,6 +141,11 @@ graph TB
         VoicePipeline["Voice Pipeline"]
         WhisperSTT[WhisperSTT]
         PiperTTS[PiperTTS]
+        Satellites["Voice Satellites<br/>wyoming-satellite"]
+        WebAuthn --> WebChannel
+        WebChannel --> AdminRouter
+        WebChannel --> TelemetryWS
+        Satellites <-->|Wyoming TCP| WebChannel
         CredPushWorker["Credential Push Worker<br/>(channels-credentials)"]
         WebAuthn --> WebChannel
         WebChannel --> AdminRouter
@@ -449,6 +454,15 @@ subscribe/unsubscribe by stream name; the server pushes `entry` frames via block
 
 - `WhisperSTT` (`stt.py`) -- wraps `faster-whisper` for local speech-to-text. Transcribes audio bytes to text.
 - `PiperTTS` (`tts.py`) -- wraps `piper-tts` for local text-to-speech. Synthesizes text to WAV audio.
+
+**Voice Satellites** (`core/channels/satellite/`):
+
+Physical Wyoming-protocol devices (e.g. `wyoming-satellite` on a Raspberry Pi) connect over
+TCP to a bridge running as asyncio tasks inside the channels process -- wake word streaming,
+server-side VAD endpointing (`pysilero-vad`), speaker identification (ECAPA-TDNN), and the
+same Whisper/Piper instances used by the web channel. See
+[docs/voice-satellites.md](voice-satellites.md) for the full architecture, protocol handling,
+and configuration reference.
 
 **Web PWA** (`web/`):
 

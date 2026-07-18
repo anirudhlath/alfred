@@ -23,6 +23,7 @@ dependencies = [
     "keyring>=25.0",
     "webauthn>=2.0",
     "aiosqlite>=0.20",
+    "wyoming>=1.10",
 ]
 
 [project.optional-dependencies]
@@ -49,6 +50,9 @@ memory = [
 voice = [
     "faster-whisper>=1.0",
     "piper-tts>=1.2",
+    "pysilero-vad>=3.4",
+    "speechbrain>=1.1",
+    "numpy>=1.26",  # core/voice/speaker_id.py imports it directly
 ]
 evals = [
     "deepeval>=1.0",
@@ -139,4 +143,12 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = "jwt.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["av.*", "speechbrain.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["pysilero_vad.*"]
 ignore_missing_imports = true
