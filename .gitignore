@@ -49,3 +49,16 @@ secrets/
 
 # Local satellite fleet config — only the .example is tracked
 config/satellites.yaml
+
+# Internal planning notes — local-only working files (never commit)
+docs/backlog/epics/
+docs/backlog/highest/revoke-leaked-apns-key.md
+docs/backlog/high/lock-down-compose-redis-mqtt.md
+docs/backlog/high/webauthn-registration-lock.md
+docs/backlog/low/scrub-local-paths-and-session-links.md
+docs/backlog/medium/github-issues-agent-work-queue.md
+docs/backlog/medium/prep-sibling-repos-license-readme.md
+docs/backlog/medium/redact-apartment-ip.md
+docs/backlog/medium/trusted-network-and-clearance-enforcement.md
+docs/superpowers/plans/2026-07-18-phase0-github-chores.md
+docs/superpowers/specs/2026-07-18-reddit-launch-milestone-design.md
