@@ -4,37 +4,113 @@ on:
   push:
     branches: [master]
   pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  ci:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
+  python:
+    uses: ./.github/workflows/python-ci.yml
+    with:
+      mypy-targets: "bus/ core/ domains/ evals/ runner/ sdk/ shared/ telemetry/"
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run test
+      - run: npm run build
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: web-dist
+          path: web/dist
+
+  # web/dist never existed in CI, so mount_spa route-shadowing bugs were invisible.
+  spa:
+    needs: [web]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: web-dist
+          path: web/dist
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           python-version: "3.13"
           enable-cache: true
+      - run: uv sync --all-extras
+      - run: uv run pytest tests/core/channels/test_spa_ci.py -q
 
-      - name: Install dependencies
-        run: uv sync --all-extras
+  pr-title:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate conventional PR title
+        if: github.event_name == 'pull_request'
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          echo "PR title: $TITLE"
+          if ! printf '%s' "$TITLE" | grep -qE '^(feat|fix|chore|docs|refactor|test|ci|perf)(\([a-zA-Z0-9._/ -]+\))?!?: .+$'; then
+            echo "::error::PR title must be a conventional commit line: type(scope)!?: subject, type in feat|fix|chore|docs|refactor|test|ci|perf"
+            exit 1
+          fi
+      - name: Not a PR — nothing to validate
+        if: github.event_name != 'pull_request'
+        run: echo "push event"
 
-      - name: Ruff lint
-        run: uv run ruff check .
+  artifact-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Block oversized or suspicious tracked files
+        run: |
+          set -euo pipefail
+          fail=0
+          while IFS= read -r f; do
+            case "$f" in
+              uv.lock|web/package-lock.json|docs/assets/*|web/public/*) continue ;;
+            esac
+            if [ "$(wc -c < "$f")" -gt 1048576 ]; then
+              echo "::error::$f exceeds 1MB — move binaries to docs/assets/ or keep them out of git"
+              fail=1
+            fi
+          done < <(git ls-files)
+          bad=$(git ls-files | grep -E '^-|[<>|;&`$]' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::suspicious filename(s) tracked: $bad"
+            fail=1
+          fi
+          exit $fail
 
-      - name: Ruff format
-        run: uv run ruff format --check .
-
-      - name: Mypy
-        run: uv run mypy bus/ core/ domains/ evals/ runner/ sdk/ shared/ telemetry/
-
-      - name: Cache embedding model
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/huggingface
-          key: hf-all-MiniLM-L6-v2
-
-      - name: Tests
-        run: uv run pytest -q
+  ci-ok:
+    if: always()
+    needs: [python, web, spa, pr-title, artifact-guard]
+    runs-on: ubuntu-latest
+    steps:
+      - name: All gates green?
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS"
+          if echo "$RESULTS" | grep -Eq '"result": "(failure|cancelled|skipped)"'; then
+            echo "::error::a required job did not succeed"
+            exit 1
+          fi
