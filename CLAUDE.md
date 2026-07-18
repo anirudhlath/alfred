@@ -154,6 +154,10 @@ Web channel (`core/channels/web_server.py`, run via `python -m core.channels`) s
 
 **Startup order is flexible:** Reflex starts even if no tools are registered yet — it logs a warning and picks up tools dynamically as services register them (5-minute TTL cache refresh). The unified runner adds a 1s delay before starting Reflex and auto-restarts crashed services with exponential backoff.
 
+## Dev Environment Notes
+
+- Cloud/Linux sessions: use `.devcontainer/` (redis-stack + mosquitto included). macOS: `scripts/dev-up.sh` (Homebrew).
+
 ## Architecture
 
 ```mermaid

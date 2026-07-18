@@ -1,0 +1,14 @@
+{
+  "name": "alfred",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "dev",
+  "workspaceFolder": "/workspaces/alfred",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": { "version": "22" }
+  },
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "remoteEnv": {
+    "REDIS_HOST": "redis",
+    "MQTT_HOST": "mosquitto"
+  }
+}
