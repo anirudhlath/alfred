@@ -108,6 +108,18 @@ mypy --strict bus/ core/ domains/ evals/ runner/ sdk/ shared/ telemetry/  # type
 cd web && npm run lint && npm run test && npm run build   # build emits web/dist/ for the runner to serve
 ```
 
+## Branching & PRs
+
+- PR-only; branch `<type>/<slug>` (`feat|fix|chore|docs|refactor|test|ci|perf`); PR title
+  is a conventional commit line (it becomes the squash commit — release-please reads it).
+- Squash-only; branches auto-delete on merge; never reuse a branch.
+- Worktree discipline: the main checkout stays parked on the trunk and is pull-only —
+  never commit from it. One worktree per topic branch, created inside this repo; delete
+  the worktree as soon as its PR merges.
+- Never emit `[skip ci]`/`[no ci]` on PR branches.
+- CI gate is the single `ci-ok` aggregate check (python, web, spa, pr-title,
+  artifact-guard). See `docs/superpowers/specs/2026-07-18-branching-strategy-design.md`.
+
 ## Running the System
 
 ```bash
