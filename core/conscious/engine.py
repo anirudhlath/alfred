@@ -28,6 +28,11 @@ from sdk.alfred_sdk.telemetry import track_latency
 from shared.streams import SCRATCHPAD_QUEUE
 from shared.traced import traced
 from shared.type_map import PYTHON_TO_JSON_SCHEMA
+from shared.usertime import (
+    get_user_timezone,
+    is_valid_timezone,
+    set_user_timezone,
+)
 
 _debug = os.getenv("ALFRED_DEBUG", "").lower() in ("1", "true", "yes")
 # LiteLLM logging: use LITELLM_LOG env var (official API).
@@ -469,7 +474,7 @@ class ConsciousEngine:
 
     _ROUTINE_SUGGESTION_COOLDOWN_HOURS: ClassVar[int] = 24
 
-    def _eligible_candidates(self, now: datetime) -> list[RoutineSpec]:
+    def _eligible_candidates(self, now: datetime, tz_name: str) -> list[RoutineSpec]:
         """Return candidate routines that match current time and are outside cooldown."""
         if self._routines is None:
             return []
@@ -482,12 +487,12 @@ class ConsciousEngine:
                 hours_since = (now - routine.last_suggested).total_seconds() / 3600
                 if hours_since < self._ROUTINE_SUGGESTION_COOLDOWN_HOURS:
                     continue
-            if not match_trigger_pattern(routine.trigger_pattern, now):
+            if not match_trigger_pattern(routine.trigger_pattern, now, tz_name):
                 continue
             eligible.append(routine)
         return eligible
 
-    def _build_routine_hint(self, now: datetime) -> str:
+    def _build_routine_hint(self, now: datetime, tz_name: str) -> str:
         """Check candidate routines for time-pattern matches and return a hint string.
 
         Returns an empty string when no routines match or ``_routines`` is None.
@@ -497,7 +502,7 @@ class ConsciousEngine:
         if self._routines is None:
             return ""
 
-        eligible = self._eligible_candidates(now)
+        eligible = self._eligible_candidates(now, tz_name)
         hints: list[str] = []
 
         for routine in eligible:
@@ -532,10 +537,10 @@ class ConsciousEngine:
 
         from core.notifications.schema import Urgency
 
-        if now is None:
-            now = datetime.now(UTC)
+        now = now or datetime.now(UTC)
+        tz_name = await get_user_timezone(self._redis)
 
-        for routine in self._eligible_candidates(now):
+        for routine in self._eligible_candidates(now, tz_name):
             steps_str = "; ".join(s.description for s in routine.steps) if routine.steps else ""
             if steps_str:
                 body = (
@@ -567,6 +572,14 @@ class ConsciousEngine:
     async def process_request(self, request: UserRequest) -> AlfredResponse:
         """Process a user request through the full pipeline."""
         now = datetime.now(UTC)
+        if request.timezone and is_valid_timezone(request.timezone):
+            tz_name = request.timezone
+            # Persist the client-supplied timezone at the domain boundary, before
+            # any tool dispatch (run_at normalization / cron) reads the stored key.
+            # set_user_timezone is write-on-change — one cheap GET per request.
+            await set_user_timezone(self._redis, request.timezone)
+        else:
+            tz_name = await get_user_timezone(self._redis)
 
         # 1. Identity Gate
         identity = self._identity_gate.resolve(
@@ -617,7 +630,7 @@ class ConsciousEngine:
         routine_hint: str = ""
         if self.has_routine_store:
             try:
-                routine_hint = self._build_routine_hint(now)
+                routine_hint = self._build_routine_hint(now, tz_name)
             except Exception:
                 logger.warning("Routine suggestion check failed", exc_info=True)
 
@@ -638,6 +651,7 @@ class ConsciousEngine:
             channel=request.channel,
             content_type=request.content_type,
             area=request.area,
+            tz_name=tz_name,
         )
         if routine_hint:
             system_prompt = system_prompt + "\n\n" + routine_hint

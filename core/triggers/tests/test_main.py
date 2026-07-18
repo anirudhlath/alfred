@@ -2,20 +2,36 @@
 
 from __future__ import annotations
 
-from typing import Any
-from unittest.mock import AsyncMock
+import asyncio
+import contextlib
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from bus.schemas.events import StateChangedEvent
+from core.triggers.engine import TriggerEngine
 from core.triggers.registry import TriggerRegistry
-from shared.streams import HOME_STATE_STREAM
+from core.triggers.store import TriggerStore
+from shared.streams import EVENTS_STREAM, HOME_STATE_STREAM
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from pathlib import Path
 
 
 @pytest.fixture(autouse=True)
 def _clean_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(TriggerRegistry, "_registry", {})
     import core.triggers.types  # noqa: F401
+
+
+@pytest.fixture
+def snapshot_dir(tmp_path: Path) -> Path:
+    d = tmp_path / "triggers"
+    d.mkdir()
+    return d
 
 
 def test_main_is_importable() -> None:
@@ -29,27 +45,37 @@ def test_main_function_exists() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tick_loop_calls_evaluate(monkeypatch: pytest.MonkeyPatch) -> None:
-    from core.triggers.__main__ import _shutdown, tick_loop
+async def test_scheduler_loop_evaluates_and_rearms() -> None:
+    """Scheduler pass evaluates, computes the next wakeup, then waits on the
+    store-change event — replacing the old 1s tick. Verifying add_on_change is
+    wired to the wake event guards the instant re-arm this task delivers.
+    """
+    from core.triggers.__main__ import _shutdown, scheduler_loop
+
+    callbacks: list[Callable[[], None]] = []
+    mock_store = MagicMock()
+    mock_store.add_on_change = MagicMock(side_effect=callbacks.append)
 
     mock_engine = AsyncMock()
-    mock_engine.evaluate_tick = AsyncMock()
 
-    call_count = 0
+    async def fake_eval(now: datetime) -> None:
+        # End the loop after one pass and wake the waiter so wait_for returns
+        # immediately (no real sleep) — the loop top then sees _shutdown set.
+        _shutdown.set()
+        for cb in callbacks:
+            cb()
 
-    async def fake_sleep(duration: float) -> None:
-        nonlocal call_count
-        call_count += 1
-        if call_count >= 1:
-            _shutdown.set()
-
-    monkeypatch.setattr("asyncio.sleep", fake_sleep)
+    mock_engine.evaluate_tick = AsyncMock(side_effect=fake_eval)
+    mock_engine.next_wakeup = AsyncMock(return_value=None)
 
     _shutdown.clear()
-    await tick_loop(mock_engine)
-
-    mock_engine.evaluate_tick.assert_called()
+    await scheduler_loop(mock_engine, mock_store)
     _shutdown.clear()
+
+    mock_engine.evaluate_tick.assert_awaited_once()
+    mock_engine.next_wakeup.assert_awaited_once()
+    # The scheduler must have subscribed its wake event to store mutations.
+    mock_store.add_on_change.assert_called_once()
 
 
 class _FakeEventRedis:
@@ -130,3 +156,42 @@ async def test_event_loop_acks_and_warns_on_invalid_event(
     engine.evaluate_event.assert_not_awaited()
     assert redis.acked == [(HOME_STATE_STREAM, GROUP, "1-0")]
     assert any("1-0" in rec.getMessage() for rec in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_fires_newly_created_reminder_within_a_second(
+    fake_redis: Any, snapshot_dir: Path, tmp_path: Path
+) -> None:
+    """End-to-end latency regression: create in 'conscious' store, fire via
+    'triggers' scheduler — no refresh(), no tick, no 60s window."""
+    from core.triggers.__main__ import scheduler_loop
+
+    triggers_store = TriggerStore(redis=fake_redis, snapshot_dir=snapshot_dir)
+    conscious_store = TriggerStore(redis=fake_redis, snapshot_dir=tmp_path / "b")
+    engine = TriggerEngine(store=triggers_store, redis=fake_redis)
+
+    await triggers_store.start_sync()
+    task = asyncio.create_task(scheduler_loop(engine, triggers_store))
+    await asyncio.sleep(0.05)
+    try:
+        cls = TriggerRegistry.get("time")
+        due = datetime.now(UTC) + timedelta(seconds=0.3)
+        await conscious_store.save(
+            cls(
+                trigger_id="fast-reminder",
+                trigger_type="time",
+                name="fast reminder",
+                created_by="test",
+                created_at=datetime.now(UTC),
+                one_shot=True,
+                conditions={"run_at": due.isoformat()},
+            )
+        )
+        await asyncio.sleep(1.0)
+        fired = fake_redis.streams.get(EVENTS_STREAM, [])
+        assert any("fast reminder" in e.get("event", "") for e in fired)
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        await triggers_store.stop_sync()

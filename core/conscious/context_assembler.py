@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -54,6 +55,7 @@ class ContextAssembler:
         channel: str = "",
         content_type: str = "text",
         area: str | None = None,
+        tz_name: str = "UTC",
     ) -> str:
         """Build the complete system prompt for Claude.
 
@@ -90,7 +92,9 @@ class ContextAssembler:
 
         # 2b. Current time (always — needed for time-based triggers/reminders)
         if now is not None:
-            parts.append(f"\n## Current Time\n{now.strftime('%Y-%m-%dT%H:%M:%SZ')}")
+            local = now.astimezone(ZoneInfo(tz_name))
+            stamp = f"{local.strftime('%A')} {local.isoformat(timespec='seconds')}"
+            parts.append(f"\n## Current Time\n{stamp} ({tz_name})")
 
         # 3. Tools (always — guest can use allowed tools)
         if tools_section:

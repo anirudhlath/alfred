@@ -73,6 +73,24 @@ async def test_process_request_basic(mock_deps: dict[str, AsyncMock | MagicMock]
 
 
 @pytest.mark.asyncio
+async def test_process_request_persists_valid_timezone(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """A request carrying a valid timezone is persisted at the domain boundary."""
+    from shared.streams import USER_TIMEZONE_KEY
+
+    # get() → None so set_user_timezone's change-guard always writes.
+    mock_deps["redis"].get = AsyncMock(return_value=None)
+    engine = ConsciousEngine(**mock_deps)
+
+    with patch.object(engine, "_call_llm", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = ("Good evening, sir.", [], 100, 50)
+        await engine.process_request(_make_request(timezone="America/Denver"))
+
+    mock_deps["redis"].set.assert_any_await(USER_TIMEZONE_KEY, "America/Denver")
+
+
+@pytest.mark.asyncio
 async def test_budget_exceeded_returns_fallback(
     mock_deps: dict[str, AsyncMock | MagicMock],
 ) -> None:
@@ -246,7 +264,7 @@ def test_build_routine_hint_returns_empty_without_routines(
     engine = ConsciousEngine(**mock_deps)
     # routine_store not set → _routines is None
     now = _dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=_dt.UTC)
-    result = engine._build_routine_hint(now)
+    result = engine._build_routine_hint(now, "UTC")
     assert result == ""
 
 
@@ -259,7 +277,7 @@ def test_build_routine_hint_matches_time_pattern(
 
     engine = ConsciousEngine(**mock_deps, routine_store=routine_store)
     now = _dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=_dt.UTC)
-    result = engine._build_routine_hint(now)
+    result = engine._build_routine_hint(now, "UTC")
 
     assert "evening_dim" in result
     assert "[routine-suggestion]" in result
@@ -278,7 +296,7 @@ def test_build_routine_hint_skips_within_cooldown(
     ]
 
     engine = ConsciousEngine(**mock_deps, routine_store=routine_store)
-    result = engine._build_routine_hint(now)
+    result = engine._build_routine_hint(now, "UTC")
 
     assert result == ""
     routine_store.save.assert_not_called()
@@ -296,7 +314,7 @@ def test_build_routine_hint_suggests_after_cooldown(
     ]
 
     engine = ConsciousEngine(**mock_deps, routine_store=routine_store)
-    result = engine._build_routine_hint(now)
+    result = engine._build_routine_hint(now, "UTC")
 
     assert "evening_dim" in result
     routine_store.save.assert_called_once()
@@ -312,7 +330,7 @@ def test_build_routine_hint_no_match_for_wrong_time(
     engine = ConsciousEngine(**mock_deps, routine_store=routine_store)
     # 8am → not evening
     now = _dt.datetime(2026, 3, 24, 8, 0, 0, tzinfo=_dt.UTC)
-    result = engine._build_routine_hint(now)
+    result = engine._build_routine_hint(now, "UTC")
 
     assert result == ""
 
@@ -327,7 +345,7 @@ def test_build_routine_hint_morning_pattern_matches_morning(
     engine = ConsciousEngine(**mock_deps, routine_store=routine_store)
     # 9am Monday
     now = _dt.datetime(2026, 3, 23, 9, 0, 0, tzinfo=_dt.UTC)  # Monday
-    result = engine._build_routine_hint(now)
+    result = engine._build_routine_hint(now, "UTC")
 
     assert "evening_dim" in result  # routine name
 
@@ -378,7 +396,7 @@ def test_build_routine_hint_includes_steps_and_confidence(
 
     engine = ConsciousEngine(**mock_deps, routine_store=routine_store)
     now = _dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=_dt.UTC)
-    result = engine._build_routine_hint(now)
+    result = engine._build_routine_hint(now, "UTC")
 
     assert "Dim lights" in result
     assert "75%" in result
@@ -393,7 +411,7 @@ def test_build_routine_hint_empty_steps_shows_na(
 
     engine = ConsciousEngine(**mock_deps, routine_store=routine_store)
     now = _dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=_dt.UTC)
-    result = engine._build_routine_hint(now)
+    result = engine._build_routine_hint(now, "UTC")
 
     assert "N/A" in result
     assert "80%" in result

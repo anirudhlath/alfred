@@ -42,6 +42,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 ## Key Paths
 
 - `shared/` — cross-cutting utilities (config, streams, secrets, types, logging, tracing)
+- `shared/usertime.py` — `get_user_timezone()`/`set_user_timezone()` (Redis key `alfred:user:timezone`; resolution: stored → `ALFRED_TIMEZONE` env → UTC)
 - `bus/schemas/events.py` — canonical event types (single source of truth)
 - `core/` — brain (reflex, conscious, triggers, memory, notifications, voice, channels, librarian, integrations)
 - `runner/__main__.py` — unified runner entry point (`python -m runner`)
@@ -233,5 +234,7 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - Announcements are bare `AudioStart`/`AudioChunk`/`AudioStop` streams — no announce event exists in the Wyoming usage here; it's the same code path as a spoken reply
 - `pysilero-vad` frames are exactly 1024 bytes (512 samples @ 16 kHz s16 mono) — `UtteranceCollector.feed()` buffers arbitrary-size input and slices exact frames before calling the VAD
 - ECAPA cosine same-speaker scores run ≈ 0.4–0.7 — `SPEAKER_ID_THRESHOLD` defaults to 0.45, not 0.7 (a 0.7 floor would reject genuine matches)
+- TriggerStore coherence is pub/sub (`alfred:triggers:changed`) — never mutate `alfred:triggers` without going through TriggerStore
+- User timezone lives at `alfred:user:timezone` via `shared/usertime.py` — resolution stored → `ALFRED_TIMEZONE` → UTC. Clients send their IANA zone per message; the conscious engine (not the web channel) persists it via `set_user_timezone` (write-on-change)
 - Service credential push failures return HTTP 502 from PUT but the keyring write persists — recovery is event-driven via the next `ServiceRegistered`, never a retry loop
 - redis-py 8 defaults `socket_timeout` to 5s (was `None`), which races idle blocking stream reads (`block=5000`) and raises spurious `Timeout reading from <host>` every ~5s — always construct async Redis clients via `shared.redis_streams.create_redis()` (`socket_timeout=None`, `block=` governs read timeouts instead), never `redis.asyncio.from_url()` directly. Exception: `sdk/alfred_sdk/client.py` keeps redis-py defaults — the SDK only issues short non-blocking commands and cannot import `shared`.

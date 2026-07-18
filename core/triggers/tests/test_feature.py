@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from pathlib import Path  # noqa: TC003
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 
 from core.triggers.registry import TriggerRegistry
+from core.triggers.store import TriggerStore
+from shared.streams import USER_TIMEZONE_KEY
 
 
 @pytest.fixture(autouse=True)
@@ -24,6 +28,13 @@ def mock_store() -> AsyncMock:
     store.list_all = AsyncMock(return_value=[])
     store.get = AsyncMock(return_value=None)
     return store
+
+
+@pytest.fixture
+def snapshot_dir(tmp_path: Path) -> Path:
+    d = tmp_path / "triggers"
+    d.mkdir()
+    return d
 
 
 def test_feature_name() -> None:
@@ -259,3 +270,47 @@ def test_dynamic_description_includes_urgency() -> None:
     assert "informational" in create_tool.description
     assert "important" in create_tool.description
     assert "urgent" in create_tool.description
+
+
+@pytest.mark.asyncio
+async def test_create_trigger_localizes_naive_run_at(fake_redis: Any, snapshot_dir: Path) -> None:
+    from core.triggers.feature import TriggerFeature, TriggerFeatureContext
+    from core.triggers.types.time import TimeTrigger
+
+    fake_redis.kv[USER_TIMEZONE_KEY] = "America/Denver"
+    store = TriggerStore(redis=fake_redis, snapshot_dir=snapshot_dir)
+    feature = TriggerFeature(TriggerFeatureContext(store=store, redis=fake_redis))
+    result = await feature.create_trigger(
+        name="tea time",
+        trigger_type="time",
+        conditions={"run_at": "2026-07-16T15:00:00"},
+    )
+    assert "error" not in result
+    stored = await store.get(result["trigger_id"])
+    assert isinstance(stored, TimeTrigger)
+    run_at = stored.conditions.run_at
+    assert run_at is not None and run_at.utcoffset() == timedelta(hours=-6)
+
+
+@pytest.mark.asyncio
+async def test_update_trigger_localizes_naive_run_at(fake_redis: Any, snapshot_dir: Path) -> None:
+    from core.triggers.feature import TriggerFeature, TriggerFeatureContext
+    from core.triggers.types.time import TimeTrigger
+
+    fake_redis.kv[USER_TIMEZONE_KEY] = "America/Denver"
+    store = TriggerStore(redis=fake_redis, snapshot_dir=snapshot_dir)
+    feature = TriggerFeature(TriggerFeatureContext(store=store, redis=fake_redis))
+    created = await feature.create_trigger(
+        name="tea time",
+        trigger_type="time",
+        conditions={"run_at": "2026-07-16T15:00:00+00:00"},
+    )
+    updated = await feature.update_trigger(
+        trigger_id=created["trigger_id"],
+        conditions={"run_at": "2026-07-16T16:00:00"},
+    )
+    assert "error" not in updated
+    stored = await store.get(created["trigger_id"])
+    assert isinstance(stored, TimeTrigger)
+    run_at = stored.conditions.run_at
+    assert run_at is not None and run_at.utcoffset() == timedelta(hours=-6)

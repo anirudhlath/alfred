@@ -104,6 +104,7 @@ class UserRequest(BaseEvent):
     device_id: str | None = None
     area: str | None = None
     identity_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    timezone: str | None = None  # IANA name from the client (e.g. America/Denver)
 
 
 class AlfredResponse(BaseEvent):

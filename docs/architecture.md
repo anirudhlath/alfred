@@ -341,7 +341,7 @@ The Trigger Engine enables proactive behavior -- actions that fire based on time
 
 - **`TriggerRegistry`** -- decorator-based type registry mapping strings to `BaseTrigger` subclasses.
 - **`TriggerStore`** -- Redis hash `alfred:triggers` for runtime CRUD, YAML snapshots for cold-start recovery.
-- **`TriggerEngine`** -- dual evaluation loops (1s tick + event listener) with deterministic fire logic.
+- **`TriggerEngine`** -- dual evaluation loops (scheduled wakeup on `next_fire_time()` + event listener) with deterministic fire logic.
 - **`TriggerFeature`** -- `BaseFeature` subclass exposing CRUD tools with dynamic descriptions.
 
 **Trigger types:** `time` (cron/datetime), `sensor` (entity/state/attribute match), `composite` (N-of-M child conditions).
@@ -603,6 +603,8 @@ All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `
 | `alfred:scratchpad:queue` | List | Pending scratchpad observations |
 | `alfred:context:{service}` | String (JSON) | Service entity context snapshot (TTL 600s) |
 | `alfred:triggers` | Hash | Trigger ID → JSON (Trigger Engine runtime store) |
+| `alfred:triggers:changed` | Pub/Sub | Cross-process `TriggerStore` coherence (saved/deleted/tz-changed) |
+| `alfred:user:timezone` | String | User's IANA timezone (`shared/usertime.py`; resolution: stored → `ALFRED_TIMEZONE` env → UTC) |
 | `alfred:user:requests` | Stream | Inbound user requests from channels |
 | `alfred:user:responses` | Stream | Outbound Alfred responses to channels |
 | `alfred:sessions:{id}` | String (JSON) | Conversation session state |
