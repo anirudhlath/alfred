@@ -1,0 +1,27 @@
+name: Claude Review
+
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+
+jobs:
+  review:
+    # Skip bot-authored PRs (dependabot, release-please) — nothing useful to review.
+    if: ${{ !endsWith(github.event.pull_request.user.login, '[bot]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 1
+      - uses: anthropics/claude-code-action@3553f84341b92da26052e28acf1aa898f9511f32 # v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Review this pull request for correctness bugs, security issues, and
+            violations of the repo's conventions (CLAUDE.md, CONTRIBUTING.md). Post a
+            concise review: only findings that matter, with file:line references.
