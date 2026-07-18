@@ -1,0 +1,60 @@
+name: Dependabot auto-merge
+
+on: pull_request
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  automerge:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dependabot/fetch-metadata@21025c705c08248db411dc16f3619e6b5f9ea21a # v2
+        id: meta
+
+      - name: Decide eligibility
+        id: decide
+        env:
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+          DEP_TYPE: ${{ steps.meta.outputs.dependency-type }}
+          NAMES: ${{ steps.meta.outputs.dependency-names }}
+        run: |
+          # Policy: patch bumps auto-merge for everything; minor bumps only for
+          # dev-only deps. Majors and the auth/crypto path always wait for review.
+          blocked='cryptography|pyjwt|webauthn|fido2|keyring'
+          ok=false
+          if echo "$NAMES" | grep -qiE "$blocked"; then
+            echo "auth/crypto-path dependency — never auto-merge"
+          elif [ "$UPDATE_TYPE" = "version-update:semver-patch" ]; then
+            ok=true
+          elif [ "$UPDATE_TYPE" = "version-update:semver-minor" ] && [ "$DEP_TYPE" = "direct:development" ]; then
+            ok=true
+          fi
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        if: steps.decide.outputs.ok == 'true'
+        id: app
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
+      # App token, not GITHUB_TOKEN: a GITHUB_TOKEN-enabled merge would not trigger
+      # master push workflows (GitHub recursion guard).
+      - name: Approve and enable auto-merge
+        if: steps.decide.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          gh pr review --approve "$PR_URL"
+          gh pr merge --auto --squash "$PR_URL"
+
+      - name: Escalate non-qualifying majors
+        if: steps.decide.outputs.ok != 'true' && steps.meta.outputs.update-type == 'version-update:semver-major'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr comment "$PR_URL" --body "Major version bump — waiting for human/@claude review (auto-merge policy)."
