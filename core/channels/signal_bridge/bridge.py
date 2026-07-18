@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from bus.schemas.events import AlfredResponse, UserRequest
+from shared.redis_streams import read
 from shared.streams import (
     USER_REQUESTS_STREAM,
     USER_RESPONSES_STREAM,
@@ -82,9 +83,7 @@ class SignalBridge:
         Uses plain xread (no consumer group) since responses may be read
         by multiple channel consumers.
         """
-        entries: list[Any] = await self._redis.xread(
-            {USER_RESPONSES_STREAM: last_id}, count=10, block=5000
-        )
+        entries = await read(self._redis, {USER_RESPONSES_STREAM: last_id}, count=10, block=5000)
         for _stream, stream_entries in entries:
             for entry_id, entry_data in stream_entries:
                 last_id = decode_stream_value(entry_id)

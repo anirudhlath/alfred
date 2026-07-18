@@ -20,7 +20,6 @@ if TYPE_CHECKING:
 
     from shared.types import AioRedis
 
-import redis.asyncio as aioredis
 import uvicorn
 
 import core.triggers.types  # noqa: F401  — register all trigger types
@@ -34,6 +33,7 @@ from core.triggers.store import TriggerStore
 from sdk.alfred_sdk.client import AlfredClient
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
+from shared.redis_streams import create_redis, read_group
 from shared.streams import ACTIONS_STREAM, HOME_STATE_STREAM, decode_stream_value
 
 logger = logging.getLogger(__name__)
@@ -102,8 +102,8 @@ async def actions_loop(store: TriggerStore, engine: TriggerEngine, r: AioRedis) 
 
     while not _shutdown.is_set():
         try:
-            entries = await r.xreadgroup(
-                ACTIONS_GROUP, ACTIONS_CONSUMER, {ACTIONS_STREAM: ">"}, count=10, block=5000
+            entries = await read_group(
+                r, ACTIONS_GROUP, ACTIONS_CONSUMER, {ACTIONS_STREAM: ">"}, count=10, block=5000
             )
         except Exception as e:
             if not _shutdown.is_set():
@@ -125,7 +125,7 @@ async def _process_action_entry(
     store: TriggerStore,
     engine: TriggerEngine,
     r: AioRedis,
-    entry_id: str,
+    entry_id: bytes | str,
     entry_data: dict[Any, Any],
 ) -> None:
     raw_event = entry_data.get("event") or entry_data.get(b"event")
@@ -216,15 +216,17 @@ async def event_loop(
     """Event listener loop for sensor-based trigger evaluation.
 
     Consumes HOME_STATE_STREAM — the stream the MQTT bridge publishes real
-    state changes to. (EVENTS_STREAM only carries the engine's own
-    TriggerFired/TriggerCreated events, which are not sensor input.)
+    state changes to. (EVENTS_STREAM also carries other bus events —
+    TriggerFired/TriggerCreated from this engine and ServiceRegistered from
+    the SDK, consumed by the channels process — none of which are sensor
+    input, so this loop never reads EVENTS_STREAM.)
     """
     await ensure_consumer_group(r, HOME_STATE_STREAM, GROUP)
 
     while not _shutdown.is_set():
         try:
-            entries = await r.xreadgroup(
-                GROUP, CONSUMER, {HOME_STATE_STREAM: ">"}, count=10, block=5000
+            entries = await read_group(
+                r, GROUP, CONSUMER, {HOME_STATE_STREAM: ">"}, count=10, block=5000
             )
         except Exception as e:
             logger.error("Event read error: %s", e)
@@ -238,7 +240,7 @@ async def event_loop(
 async def _process_event_entry(
     engine: TriggerEngine,
     r: AioRedis,
-    entry_id: str,
+    entry_id: bytes | str,
     entry_data: dict[Any, Any],
 ) -> None:
     from bus.schemas.events import StateChangedEvent
@@ -287,7 +289,7 @@ async def run(config: AlfredConfig) -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, _handle_signal)
 
-    r: AioRedis = aioredis.from_url(config.redis_url)
+    r: AioRedis = create_redis(config.redis_url)
 
     store = TriggerStore(redis=r, snapshot_dir=SNAPSHOT_DIR)
     triggers = await store.load()

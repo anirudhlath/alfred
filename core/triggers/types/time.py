@@ -74,8 +74,14 @@ class TimeTrigger(BaseTrigger):
             if anchor.tzinfo is None:
                 anchor = anchor.replace(tzinfo=UTC)
             local_anchor = anchor.astimezone(ZoneInfo(context.tz))
-            nxt: datetime = croniter(self.conditions.cron, local_anchor).get_next(datetime)
-            return nxt
+            # Compute in naive wall-clock space, then attach the zone: croniter's
+            # aware-datetime handling does interval arithmetic across DST jumps
+            # (7am becomes 6am after spring-forward) and varies by version — the
+            # contract here is wall-clock ("0 7 * * *" means 7am local, always).
+            naive_next: datetime = croniter(
+                self.conditions.cron, local_anchor.replace(tzinfo=None)
+            ).get_next(datetime)
+            return naive_next.replace(tzinfo=ZoneInfo(context.tz))
         return None
 
     def evaluate(self, context: TriggerContext) -> bool:

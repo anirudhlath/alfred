@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from fastapi import HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from loguru import logger
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -23,6 +24,11 @@ _NON_SPA_PATHS = frozenset({"health"})
 def mount_spa(app: FastAPI, dist: Path) -> None:
     """Serve a built SPA: real files when they exist, index.html otherwise."""
     if not dist.is_dir():
+        logger.warning(
+            "SPA not mounted — {} missing. Run 'cd web && npm run build', "
+            "then restart the channels process; '/' will 404 until then.",
+            dist,
+        )
         return
 
     assets = dist / "assets"

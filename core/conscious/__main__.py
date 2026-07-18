@@ -11,8 +11,6 @@ import signal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import redis.asyncio as aioredis
-
 # Import modules to trigger @register decorators
 import core.integrations.apple_calendar
 import core.integrations.apple_health
@@ -45,6 +43,7 @@ from domains.home.home_agent import HomeAgent
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
 from shared.otel import init_tracing
+from shared.redis_streams import create_redis, read_group
 from shared.streams import (
     ACTIONS_STREAM,
     USER_REQUESTS_STREAM,
@@ -82,14 +81,7 @@ async def _consume_internal_actions(
 
     while not _shutdown.is_set():
         try:
-            entries: list[
-                tuple[
-                    bytes | str,
-                    list[tuple[bytes | str, dict[bytes | str, bytes | str]]],
-                ]
-            ] = await redis.xreadgroup(  # type: ignore[misc,unused-ignore]
-                group, consumer, {stream: ">"}, count=1, block=5000
-            )
+            entries = await read_group(redis, group, consumer, {stream: ">"}, count=1, block=5000)
 
             for _stream_key, stream_entries in entries:
                 for entry_id, entry_data in stream_entries:
@@ -133,7 +125,7 @@ async def run(config: AlfredConfig) -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, _handle_signal)
 
-    r: AioRedis = aioredis.from_url(config.redis_url)
+    r: AioRedis = create_redis(config.redis_url)
 
     stream = USER_REQUESTS_STREAM
     group = "conscious-engine"
@@ -372,14 +364,7 @@ async def run(config: AlfredConfig) -> None:
 
     try:
         while not _shutdown.is_set():
-            entries: list[
-                tuple[
-                    bytes | str,
-                    list[tuple[bytes | str, dict[bytes | str, bytes | str]]],
-                ]
-            ] = await r.xreadgroup(  # type: ignore[misc,unused-ignore]
-                group, consumer, {stream: ">"}, count=1, block=5000
-            )
+            entries = await read_group(r, group, consumer, {stream: ">"}, count=1, block=5000)
 
             for _stream_key, stream_entries in entries:
                 for entry_id, entry_data in stream_entries:

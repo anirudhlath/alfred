@@ -175,9 +175,7 @@ class Librarian:
         survives for the next cycle to pick up.
         """
         # Check for leftover processing key from a previous crash
-        leftover: list[bytes] = await self._redis.lrange(  # type: ignore[misc]
-            self._PROCESSING_KEY, 0, -1
-        )
+        leftover: list[bytes | str] = await self._redis.lrange(self._PROCESSING_KEY, 0, -1)
         if not leftover:
             # Atomically move the queue to the processing key
             try:
@@ -186,9 +184,7 @@ class Librarian:
                 # RENAME fails if the source key doesn't exist (empty queue)
                 return []
 
-        raw: list[bytes] = await self._redis.lrange(  # type: ignore[misc]
-            self._PROCESSING_KEY, 0, -1
-        )
+        raw: list[bytes | str] = await self._redis.lrange(self._PROCESSING_KEY, 0, -1)
         # NOTE: Do NOT delete the processing key here — it is deleted in
         # consolidate() after episodic writes succeed. This ensures crash
         # recovery: if we crash between read and write, entries survive.

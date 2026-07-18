@@ -12,8 +12,6 @@ import signal
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import redis.asyncio as aioredis
-
 from bus.schemas.events import TriggerFired
 from core.memory.reader import MemoryReader
 from core.notifications.dispatcher import NotificationDispatcher
@@ -31,6 +29,7 @@ from domains.home.home_agent import HomeAgent
 from sdk.alfred_sdk.telemetry import clear_telemetry_buffer, get_telemetry_buffer
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
+from shared.redis_streams import create_redis, read_group
 from shared.streams import (
     EVENTS_STREAM,
     HOME_ACTION_RESULTS_STREAM,
@@ -122,12 +121,8 @@ async def _consume_trigger_fired(
     await ensure_consumer_group(redis, EVENTS_STREAM, EVENTS_GROUP)
 
     while not _shutdown.is_set():
-        entries: list[
-            tuple[
-                bytes | str,
-                list[tuple[bytes | str, dict[bytes | str, bytes | str]]],
-            ]
-        ] = await redis.xreadgroup(
+        entries = await read_group(
+            redis,
             EVENTS_GROUP,
             EVENTS_CONSUMER,
             {EVENTS_STREAM: ">"},
@@ -171,7 +166,7 @@ async def run(config: AlfredConfig) -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, _handle_signal)
 
-    r: AioRedis = aioredis.from_url(config.redis_url)
+    r: AioRedis = create_redis(config.redis_url)
 
     # Check tool registry — warn if empty but keep running. Tools are
     # discovered dynamically via the engine's TTL-based cache refresh.
@@ -221,12 +216,7 @@ async def run(config: AlfredConfig) -> None:
 
     try:
         while not _shutdown.is_set():
-            entries: list[
-                tuple[
-                    bytes | str,
-                    list[tuple[bytes | str, dict[bytes | str, bytes | str]]],
-                ]
-            ] = await r.xreadgroup(GROUP, CONSUMER, {STREAM: ">"}, count=10, block=5000)
+            entries = await read_group(r, GROUP, CONSUMER, {STREAM: ">"}, count=10, block=5000)
 
             for _stream_key, stream_entries in entries:
                 for entry_id, entry_data in stream_entries:

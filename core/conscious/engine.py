@@ -744,7 +744,7 @@ class ConsciousEngine:
                 f"user='{request.content[:80]}' → {len(final_text)} chars "
                 f"(actions={actions_str}, tokens={total_prompt_tokens}+{total_completion_tokens})"
             )
-            await self._redis.lpush(SCRATCHPAD_QUEUE, observation)  # type: ignore[misc]
+            await self._redis.lpush(SCRATCHPAD_QUEUE, observation)
         except Exception as exc:
             logger.warning("Failed to write scratchpad observation: %s", exc)
 

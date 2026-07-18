@@ -6,7 +6,7 @@ import inspect
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, TypeVar, overload
+from typing import Any, Literal, TypeVar, overload
 
 from pydantic import BaseModel
 
@@ -23,12 +23,41 @@ class ToolParameter(BaseModel):
     default: Any = None
 
 
+ToolAudience = Literal["reflex", "conscious"]
+ToolRisk = Literal["benign", "elevated", "critical"]
+
+
+class CredentialField(BaseModel):
+    """Describes one credential input field for a sovereign service.
+
+    Field shape MUST stay identical to core/integrations/base.py CredentialField.
+    The JSON contract is the coupling — the SDK never imports core. Guarded by
+    sdk/tests/test_schema_compatibility.py::test_credential_models_match_core_field_shape.
+    """
+
+    label: str
+    field_type: Literal["text", "password", "url"] = "text"
+    required: bool = True
+    placeholder: str = ""
+    default: str = ""  # Pre-filled value (use for sensible defaults like known URLs)
+    help_text: str = ""
+    transient: bool = False  # If True, value is pushed to the service but not persisted
+
+
+class CredentialSchema(BaseModel):
+    """Describes all credential fields for a sovereign service."""
+
+    fields: dict[str, CredentialField]
+
+
 class ToolManifest(BaseModel):
     """Schema for a single tool in the manifest."""
 
     name: str
     description: str = ""
     parameters: dict[str, ToolParameter] = {}
+    audience: ToolAudience = "conscious"
+    risk: ToolRisk = "benign"
 
 
 class FeatureManifest(BaseModel):
@@ -45,6 +74,8 @@ class ServiceManifest(BaseModel):
     service_name: str
     service_endpoint: str
     features: list[FeatureManifest] = []
+    credentials_schema: CredentialSchema | None = None
+    credentials_endpoint: str | None = None
 
 
 # ── ToolMeta dataclass ──
@@ -57,6 +88,8 @@ class ToolMeta:
     name: str
     description: str
     parameters: dict[str, ToolParameter]
+    audience: ToolAudience = "conscious"
+    risk: ToolRisk = "benign"
 
 
 # ── Docstring parser ──
@@ -113,6 +146,8 @@ def _extract_tool_meta(
     feature_name: str,
     name_override: str | None = None,
     description_override: str | None = None,
+    audience: ToolAudience = "conscious",
+    risk: ToolRisk = "benign",
 ) -> ToolMeta:
     """Extract ToolMeta from a @tool-decorated method.
 
@@ -121,6 +156,8 @@ def _extract_tool_meta(
         feature_name: The owning feature's name (used for qualified tool name).
         name_override: Optional explicit tool name.
         description_override: Optional explicit description.
+        audience: Which engine sees the tool ("reflex" or "conscious").
+        risk: Dispatch risk gate ("benign", "elevated", "critical").
     """
     from typing import get_type_hints
 
@@ -151,7 +188,13 @@ def _extract_tool_meta(
             default=default,
         )
 
-    return ToolMeta(name=qualified_name, description=description, parameters=parameters)
+    return ToolMeta(
+        name=qualified_name,
+        description=description,
+        parameters=parameters,
+        audience=audience,
+        risk=risk,
+    )
 
 
 # ── BaseFeature Base Class ──
@@ -179,6 +222,8 @@ class BaseFeature:
                 feature_name=self.feature_name,
                 name_override=overrides.get("name"),
                 description_override=overrides.get("description"),
+                audience=overrides.get("audience", "conscious"),
+                risk=overrides.get("risk", "benign"),
             )
             tools.append(meta)
         return tools
@@ -195,6 +240,8 @@ class BaseFeature:
                 name=t.name,
                 description=t.description,
                 parameters=dict(t.parameters),
+                audience=t.audience,
+                risk=t.risk,
             )
             for t in self.get_tools()
         ]
@@ -226,6 +273,8 @@ def tool(
     *,
     description: str | None = None,
     name: str | None = None,
+    audience: ToolAudience = "conscious",
+    risk: ToolRisk = "benign",
 ) -> Callable[[_F], _F]: ...
 
 
@@ -234,11 +283,15 @@ def tool(
     *,
     description: str | None = None,
     name: str | None = None,
+    audience: ToolAudience = "conscious",
+    risk: ToolRisk = "benign",
 ) -> _F | Callable[[_F], _F]:
     """Mark a BaseFeature method as a tool.
 
-    Supports both bare ``@tool`` and ``@tool(description=..., name=...)``.
+    Supports bare ``@tool`` and ``@tool(description=..., name=..., audience=..., risk=...)``.
     Metadata is auto-extracted from docstring + type hints at discovery time.
+    ``audience`` gates which engine sees the tool ("reflex" tools also reach
+    Conscious); ``risk`` gates dispatch ("critical" requires user confirmation).
     """
 
     def decorator(f: _F) -> _F:
@@ -246,6 +299,8 @@ def tool(
         f._tool_overrides = {  # type: ignore[attr-defined]
             "description": description,
             "name": name,
+            "audience": audience,
+            "risk": risk,
         }
         return f
 

@@ -6,6 +6,8 @@ An ambient, voice-first multi-agent system for smart environments. Inspired by A
 
 Alfred processes real-time events from smart home devices, responds to voice and text commands, and proactively manages your environment — all while maintaining the demeanor of a proper English butler.
 
+**What can Alfred do?** See the [Product Requirements Document](docs/PRD.md) — vision, product principles, and a maintained catalog of every capability with its current status.
+
 ## Architecture
 
 Alfred uses a **dual-process cognitive model**:
@@ -208,4 +210,4 @@ All configuration via environment variables (`.env` file auto-loaded):
 
 [AGPL-3.0-or-later](LICENSE) © 2025–2026 Anirudh Lath
 
-Briefly published under MIT during initial release prep (July 13–15, 2026); relicensed to AGPL-3.0-or-later on 2026-07-15. Contributions are accepted under the same license with a [DCO](CONTRIBUTING.md) sign-off.
+Briefly published under MIT during initial release prep (July 13–15, 2026); relicensed to AGPL-3.0-or-later on 2026-07-15. Contributions require a one-time [CLA](CLA.md) signature and a per-commit [DCO](CONTRIBUTING.md) sign-off.

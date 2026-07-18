@@ -6,6 +6,7 @@ Cross-cutting utilities used by multiple top-level packages (core, bus, domains)
 
 - `config.py` — `AlfredConfig` frozen dataclass (30+ fields), `from_env()` loads `.env` via python-dotenv
 - `streams.py` — Redis stream/key constants (single source of truth, incl. trigger-sync op constants)
+- `redis_streams.py` — `create_redis()` constructor (socket_timeout=None — see Gotchas) + `StreamBatch` type alias + typed `read_group()`/`read()`/`revrange()` wrappers around `xreadgroup`/`xread`/`xrevrange` (owns the one stub-gap `# type: ignore` per wrapper)
 - `usertime.py` — User timezone helpers: `is_valid_timezone()`, `get_user_timezone()` (stored → `ALFRED_TIMEZONE` → UTC), `set_user_timezone()` (write-on-change + coherence poke)
 - `secrets.py` — Keyring wrapper: `get_secret()` / `set_secret()` + async versions (`aget_secret()` etc.) via `asyncio.to_thread()`
 - `types.py` — `AioRedis` type alias (canonical location for cross-package use)
@@ -45,3 +46,4 @@ CONTEXT_PREFIX = "ctx:"             # RediSearch key prefix
 - `friendly_type()` is LLM-aware: converts `datetime` → `"string (ISO 8601)"` for Claude prompts
 - `TraceRecord` is a backward-compat alias for `ReflexTraceRecord`
 - Root `conftest.py` has autouse `_mock_keyring` fixture — all tests use `InMemoryKeyring`, never OS keychain
+- redis-py 8 defaults `socket_timeout` to 5s (was `None`), which races idle blocking stream reads (`block=`) — always construct async Redis clients via `create_redis()` in this module, never `redis.asyncio.from_url()` directly (SDK is the sole exception — see `sdk/CLAUDE.md`)
