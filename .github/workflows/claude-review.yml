@@ -14,11 +14,16 @@ jobs:
       contents: read
       pull-requests: write
       id-token: write
+    # Dormant until CLAUDE_CODE_OAUTH_TOKEN is configured — steps skip, job stays green.
+    env:
+      HAS_OAUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        if: env.HAS_OAUTH == 'true'
         with:
           fetch-depth: 1
       - uses: anthropics/claude-code-action@3553f84341b92da26052e28acf1aa898f9511f32 # v1
+        if: env.HAS_OAUTH == 'true'
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |

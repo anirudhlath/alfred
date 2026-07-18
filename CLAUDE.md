@@ -120,7 +120,8 @@ cd web && npm run lint && npm run test && npm run build   # build emits web/dist
 - CI gate is the single `ci-ok` aggregate check (python, web, spa, pr-title,
   artifact-guard). See `docs/superpowers/specs/2026-07-18-branching-strategy-design.md`.
 - GitHub-dispatched agents exist: commenting `@claude <task>` on an issue/PR (write-access
-  users only) runs an agent via Actions; every human PR gets an automatic Claude review.
+  users only) runs an agent via Actions; every human PR gets an automatic Claude review
+  (once the Claude GitHub App + OAuth token are configured).
 
 ## Running the System
 
