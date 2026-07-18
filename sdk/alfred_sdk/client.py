@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from types import ModuleType
 
-    from .feature import BaseFeature
+    from .feature import BaseFeature, CredentialSchema
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,8 @@ class AlfredClient:
     """Client that microservices use to register with Alfred."""
 
     REGISTRY_KEY = "alfred:tool_registry"  # must match ToolRegistry.REGISTRY_KEY in core/
+    # Duplicated from shared.streams.EVENTS_STREAM — SDK must be standalone
+    EVENTS_STREAM = "alfred:events"
 
     def __init__(
         self,
@@ -31,12 +33,16 @@ class AlfredClient:
         redis_url: str = "",
         mqtt_host: str = "",
         mqtt_port: int = 1883,
+        credentials_schema: CredentialSchema | None = None,
+        credentials_endpoint: str | None = None,
     ) -> None:
         self.service_name = service_name or os.getenv("ALFRED_SERVICE_NAME", "unknown")
         self.service_endpoint = service_endpoint or os.getenv("ALFRED_SERVICE_ENDPOINT", "")
         self.redis_url = redis_url or os.getenv("REDIS_URL", "redis://localhost:6379")
         self.mqtt_host = mqtt_host or os.getenv("MQTT_HOST", "localhost")
         self.mqtt_port = mqtt_port
+        self.credentials_schema = credentials_schema
+        self.credentials_endpoint = credentials_endpoint
 
         self._tool_fns: dict[str, Callable[..., Any]] = {}
         self._features: list[BaseFeature] = []
@@ -155,26 +161,42 @@ class AlfredClient:
 
     def get_registration_manifest(self) -> dict[str, Any]:
         """Build the tool registration manifest for Alfred's registry."""
-        feature_manifests: list[dict[str, Any]] = []
-        for f in self._features:
-            feature_manifests.append(f.to_manifest().model_dump())
+        from .feature import ServiceManifest
 
-        return {
-            "service_name": self.service_name,
-            "service_endpoint": self.service_endpoint,
-            "features": feature_manifests,
-        }
+        manifest = ServiceManifest(
+            service_name=self.service_name,
+            service_endpoint=self.service_endpoint,
+            features=[f.to_manifest() for f in self._features],
+            credentials_schema=self.credentials_schema,
+            credentials_endpoint=self.credentials_endpoint,
+        )
+        return manifest.model_dump()
 
     async def register(self) -> None:
-        """Register this service's tools and context with Alfred's registry on Redis."""
+        """Register this service's tools and context with Alfred's registry on Redis.
+
+        Publishes a ServiceRegistered event to alfred:events AFTER the registry
+        hset — consumers read the manifest from the registry when handling the
+        event, so ordering matters.
+        """
         import json
 
         import redis.asyncio as aioredis
 
+        from .events import ServiceRegistered
+
         r: aioredis.Redis = aioredis.from_url(self.redis_url)
         try:
             manifest = self.get_registration_manifest()
-            await r.hset(self.REGISTRY_KEY, self.service_name, json.dumps(manifest))  # type: ignore[misc]
+            await r.hset(self.REGISTRY_KEY, self.service_name, json.dumps(manifest))
+
+            event = ServiceRegistered(
+                source=self.service_name,
+                service_name=self.service_name,
+                credentials_endpoint=self.credentials_endpoint,
+                has_credentials_schema=self.credentials_schema is not None,
+            )
+            await r.xadd(self.EVENTS_STREAM, {"event": event.model_dump_json()})
 
             context = await self._collect_context()
             if context.controllable or context.sensors:
@@ -191,5 +213,5 @@ class AlfredClient:
         import redis.asyncio as aioredis
 
         r: aioredis.Redis = aioredis.from_url(self.redis_url)
-        await r.hdel(self.REGISTRY_KEY, self.service_name)  # type: ignore[misc]
+        await r.hdel(self.REGISTRY_KEY, self.service_name)
         await r.close()

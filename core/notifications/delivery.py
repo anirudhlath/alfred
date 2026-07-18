@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from core.notifications.channels import ChannelRegistry
 from core.notifications.schema import Notification
 from core.reflex.runner import ensure_consumer_group
+from shared.redis_streams import read_group
 from shared.streams import NOTIFICATION_DISPATCH_STREAM, decode_stream_value
 
 if TYPE_CHECKING:
@@ -42,14 +43,7 @@ async def notification_delivery_worker(
 
     while not _shutdown.is_set():
         try:
-            entries: list[
-                tuple[
-                    bytes | str,
-                    list[tuple[bytes | str, dict[bytes | str, bytes | str]]],
-                ]
-            ] = await redis.xreadgroup(  # type: ignore[misc,unused-ignore]
-                group, consumer, {stream: ">"}, count=5, block=5000
-            )
+            entries = await read_group(redis, group, consumer, {stream: ">"}, count=5, block=5000)
 
             for _stream_key, stream_entries in entries:
                 for entry_id, entry_data in stream_entries:

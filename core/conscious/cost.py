@@ -61,7 +61,7 @@ class CostTracker:
     async def _get_state(self) -> CostState:
         """Get today's cost state from Redis, creating if needed."""
         today = datetime.now(UTC).strftime("%Y-%m-%d")
-        raw: bytes | None = await self._redis.get(COST_DAILY_KEY)  # type: ignore[misc,unused-ignore]
+        raw: bytes | str | None = await self._redis.get(COST_DAILY_KEY)
 
         if raw:
             state = CostState.model_validate_json(raw)

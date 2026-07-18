@@ -16,6 +16,8 @@ The system is governed by four non-negotiable architectural pillars:
 3. **Deterministic Communication** -- all inter-agent messages are Pydantic-validated JSON. No natural language between agents.
 4. **Stateful Memory (Librarian Pattern)** -- three-layer biologically-inspired memory: episodic (Redis hot + SQLite cold), semantic (Markdown profiles), procedural (YAML routines). The Librarian drains the scratchpad nightly and consolidates into long-term memory.
 
+Alfred runs as six supervised OS processes communicating over Redis Streams rather than one async process — see [process-model.md](process-model.md) for the rationale (latency isolation for System 1, native-crash containment, restart granularity, observable boundaries) and the honest costs.
+
 ## 2. Event Pipeline
 
 The full path from a physical device state change to an executed action:
@@ -144,6 +146,11 @@ graph TB
         WebChannel --> AdminRouter
         WebChannel --> TelemetryWS
         Satellites <-->|Wyoming TCP| WebChannel
+        CredPushWorker["Credential Push Worker<br/>(channels-credentials)"]
+        WebAuthn --> WebChannel
+        WebChannel --> AdminRouter
+        WebChannel --> TelemetryWS
+        WebChannel --> CredPushWorker
     end
 
     subgraph "Evals Runner"
@@ -231,6 +238,8 @@ graph TB
     AdminRouter -->|reads memory files| Prefs
     AdminRouter -->|XADD drain/librarian| Redis
     TelemetryWS -->|XREAD $| Redis
+    CredPushWorker -->|XREADGROUP channels-credentials| Redis
+    CredPushWorker -->|POST credentials_endpoint| HomeSvc
 
     EvalsCLI -->|build_prompt + parse_response| Engine
     EvalsCLI -->|POST /api/chat| Ollama

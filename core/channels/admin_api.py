@@ -192,7 +192,7 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
         r = _redis(request)
         out = _base_overview()
         try:
-            await r.ping()  # type: ignore[misc]
+            await r.ping()
         except Exception:
             return out  # degraded: full shape, all placeholders
 
@@ -207,9 +207,9 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
             session_count += 1
         out["counts"] = {
             "sessions": session_count,
-            "devices": int(await r.hlen(DEVICE_TOKENS_KEY)),  # type: ignore[misc]
-            "deferred": int(await r.llen(DEFERRED_NOTIFICATIONS_KEY)),  # type: ignore[misc]
-            "triggers": int(await r.hlen(TRIGGERS_KEY)),  # type: ignore[misc]
+            "devices": int(await r.hlen(DEVICE_TOKENS_KEY)),
+            "deferred": int(await r.llen(DEFERRED_NOTIFICATIONS_KEY)),
+            "triggers": int(await r.hlen(TRIGGERS_KEY)),
         }
         out["streams"] = await stream_summaries(r)
         cfg = AlfredConfig.from_env()
@@ -236,7 +236,7 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
             raise HTTPException(status_code=404, detail=f"Unknown stream '{name}'")
         count = max(1, min(count, 200))
         max_id = f"({before}" if before else "+"
-        raw: list[tuple[bytes | str, dict[bytes | str, bytes | str]]] = await _redis(
+        raw: list[tuple[bytes | str, dict[bytes | str, bytes | str]]] = await _redis(  # type: ignore[assignment,misc,unused-ignore]
             request
         ).xrevrange(key, max=max_id, min="-", count=count)
         entries = [
@@ -249,7 +249,7 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
 
     @router.get("/triggers")
     async def triggers(request: Request) -> dict[str, Any]:
-        raw: dict[bytes | str, bytes | str] = await _redis(request).hgetall(TRIGGERS_KEY)  # type: ignore[misc]
+        raw: dict[bytes | str, bytes | str] = await _redis(request).hgetall(TRIGGERS_KEY)
         items: list[dict[str, Any]] = []
         for _tid, value in raw.items():
             val = decode_stream_value(value)
@@ -262,7 +262,7 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
 
     @router.get("/notifications/deferred")
     async def deferred_notifications(request: Request) -> dict[str, Any]:
-        raw_list: list[bytes | str] = await _redis(request).lrange(  # type: ignore[misc]
+        raw_list: list[bytes | str] = await _redis(request).lrange(
             DEFERRED_NOTIFICATIONS_KEY, 0, -1
         )
         out: list[dict[str, Any]] = []
@@ -282,7 +282,7 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
         # this is admin-triggered.
         async for key in r.scan_iter(match=f"{SESSIONS_KEY_PREFIX}*"):
             key_str = decode_stream_value(key)
-            data = _decode_hash(await r.hgetall(key_str))  # type: ignore[misc]
+            data = _decode_hash(await r.hgetall(key_str))
             history = data.get("history") or "[]"
             try:
                 turns = len(json.loads(history))
@@ -301,7 +301,7 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
 
     @router.get("/devices")
     async def devices(request: Request) -> dict[str, Any]:
-        raw_devices: dict[bytes | str, bytes | str] = await _redis(request).hgetall(  # type: ignore[misc]
+        raw_devices: dict[bytes | str, bytes | str] = await _redis(request).hgetall(
             DEVICE_TOKENS_KEY
         )
         out: list[dict[str, Any]] = []
@@ -348,7 +348,7 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
 
         hot: list[dict[str, Any]] = []
         async for key in r.scan_iter(match=f"{CONTEXT_PREFIX}*", count=500):
-            fields = await r.hgetall(key)  # type: ignore[misc]
+            fields = await r.hgetall(key)
             entry = _decode_hash(fields)
             # CONTEXT_PREFIX keyspace is shared: ContextIndexManager writes episodic,
             # semantic, and routine entries.  Skip non-episodic entries here.
@@ -416,7 +416,7 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
     async def memory_scratchpad(request: Request) -> dict[str, Any]:
         path = _MEMORY_DIR / "scratchpad.md"
         content = await asyncio.to_thread(lambda: path.read_text() if path.exists() else "")
-        pending = int(await _redis(request).llen(SCRATCHPAD_QUEUE))  # type: ignore[misc]
+        pending = int(await _redis(request).llen(SCRATCHPAD_QUEUE))
         return {"content": content, "pending_queue": pending}
 
     # ------------------------------------------------------------------
@@ -462,7 +462,7 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
         The mutation itself is owned by the triggers process; this only guards the
         synchronous response so the web app sees 404/500 for bad ids immediately.
         """
-        raw = await r.hget(TRIGGERS_KEY, trigger_id)  # type: ignore[misc]
+        raw = await r.hget(TRIGGERS_KEY, trigger_id)
         if raw is None:
             raise HTTPException(status_code=404, detail=f"Unknown trigger '{trigger_id}'")
         try:

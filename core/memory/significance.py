@@ -67,6 +67,9 @@ class SignificanceScorer:
         for entity in entry.entities:
             # Increment frequency and get current count
             count = await self._redis.zincrby(ENTITY_FREQUENCY_KEY, 1, entity)
+            # ZINCRBY always returns the resulting score for a real sorted set member;
+            # the stub's Optional is defensive typing, not an observed runtime case.
+            assert count is not None, "ZINCRBY must return a score"
             if count <= 1:
                 novelty_scores.append(1.0)  # First time seeing this entity
             else:

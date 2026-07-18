@@ -12,8 +12,6 @@ import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import redis.asyncio as aioredis
-
 from core.librarian.consolidator import Librarian
 from core.memory.context_index import ContextIndexManager
 from core.memory.embedding_provider import SentenceTransformerProvider
@@ -24,6 +22,7 @@ from core.memory.significance import SignificanceScorer
 from core.memory.sqlite_vec_store import SqliteVecStore
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
+from shared.redis_streams import create_redis
 
 if TYPE_CHECKING:
     from shared.types import AioRedis
@@ -35,7 +34,7 @@ async def run() -> None:
     log = configure_logging(service="librarian")
     config = AlfredConfig.from_env()
 
-    r: AioRedis = aioredis.from_url(config.redis_url)
+    r: AioRedis = create_redis(config.redis_url)
 
     embedder = None
     context_index = None

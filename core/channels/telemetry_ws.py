@@ -11,13 +11,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from loguru import logger
 
 from core.channels.stream_catalog import KEY_TO_NAME, STREAM_CATALOG, decode_entry
 from core.identity.ws_auth import require_ws_auth
+from shared.redis_streams import read, revrange
 from shared.streams import decode_stream_value
 
 if TYPE_CHECKING:
@@ -34,7 +35,7 @@ async def _last_id(r: AioRedis, key: str) -> str:
     connection would be silently skipped. Pinning a concrete id closes that window
     without replaying history (XREAD returns only entries after the given id).
     """
-    entries: list[tuple[bytes | str, dict[Any, Any]]] = await r.xrevrange(key, count=1)
+    entries = await revrange(r, key, count=1)
     return decode_stream_value(entries[0][0]) if entries else "0-0"
 
 
@@ -56,10 +57,9 @@ def register_telemetry_ws(app: FastAPI) -> None:
                     await has_subs.wait()
                     continue  # re-check subs after waking (may still be empty)
                 try:
-                    entries: list[
-                        tuple[bytes | str, list[tuple[bytes | str, dict[Any, Any]]]]
-                    ] = await r.xread(
-                        dict(subs),  # type: ignore[arg-type]
+                    entries = await read(
+                        r,
+                        dict(subs),
                         count=100,  # backpressure unbounded into transport buffer — acceptable
                         # for the single-user admin surface; revisit if telemetry fans out
                         block=_XREAD_BLOCK_MS,

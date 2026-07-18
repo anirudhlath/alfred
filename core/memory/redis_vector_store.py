@@ -144,7 +144,7 @@ class RedisVectorStore(VectorStore):
             "embedding_content": _pack_floats(embedding_content),
             "embedding_semantic": _pack_floats(embedding_semantic),
         }
-        await self._redis.hset(key, mapping=mapping)  # type: ignore[misc]
+        await self._redis.hset(key, mapping=mapping)  # type: ignore[arg-type]
 
     async def search(
         self,
@@ -259,7 +259,7 @@ class RedisVectorStore(VectorStore):
     ) -> None:
         """Update metadata fields on an existing Redis hash entry."""
         key = f"{CONTEXT_PREFIX}{id}"
-        await self._redis.hset(key, mapping=fields)  # type: ignore[misc]
+        await self._redis.hset(key, mapping=fields)  # type: ignore[arg-type]
 
 
 # ------------------------------------------------------------------

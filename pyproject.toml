@@ -6,7 +6,7 @@ license = "AGPL-3.0-or-later"
 requires-python = ">=3.13"
 dependencies = [
     "pydantic>=2.0",
-    "redis>=5.0",
+    "redis>=8.0",
     "aiomqtt>=2.0",
     "opentelemetry-api>=1.20",
     "opentelemetry-sdk>=1.20",
@@ -110,7 +110,7 @@ mypy_path = "."
 namespace_packages = true
 
 [[tool.mypy.overrides]]
-module = ["asyncio_mqtt.*", "aiomqtt.*"]
+module = ["aiomqtt.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
@@ -135,10 +135,6 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["faster_whisper.*", "piper.*"]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = ["deepeval.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

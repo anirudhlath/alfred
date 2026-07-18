@@ -46,6 +46,7 @@ export interface CredentialField {
 }
 export interface IntegrationInfo {
   name: string; category: string;
+  kind?: "adapter" | "service";
   schema: { fields: Record<string, CredentialField> };
   configured: Record<string, boolean>;
 }

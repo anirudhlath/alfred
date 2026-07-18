@@ -7,6 +7,7 @@ import time
 from loguru import logger
 
 from bus.schemas.events import AlfredResponse, UserRequest
+from shared.redis_streams import read, revrange
 from shared.streams import USER_REQUESTS_STREAM, USER_RESPONSES_STREAM, decode_stream_value
 from shared.types import AioRedis  # noqa: TC001
 
@@ -31,7 +32,7 @@ async def publish_and_wait(
     empty/nonexistent stream is correct here since there's no history to scan.
     Returns the full AlfredResponse so callers can forward actions_taken and mood.
     """
-    tail = await redis.xrevrange(USER_RESPONSES_STREAM, count=1)
+    tail = await revrange(redis, USER_RESPONSES_STREAM, count=1)
     tail_id = tail[0][0] if tail else None
     last_id = decode_stream_value(tail_id) if tail_id is not None else "0-0"
 
@@ -39,10 +40,10 @@ async def publish_and_wait(
 
     start = time.monotonic()
     while (time.monotonic() - start) < timeout:
-        entries = await redis.xread({USER_RESPONSES_STREAM: last_id}, count=10, block=1000)
+        entries = await read(redis, {USER_RESPONSES_STREAM: last_id}, count=10, block=1000)
         for _stream, stream_entries in entries:
             for entry_id, entry_data in stream_entries:
-                last_id = entry_id
+                last_id = decode_stream_value(entry_id)
                 raw = entry_data.get(b"event") or entry_data.get("event")
                 if raw:
                     resp = AlfredResponse.model_validate_json(decode_stream_value(raw))
