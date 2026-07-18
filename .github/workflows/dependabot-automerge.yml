@@ -10,6 +10,9 @@ jobs:
   automerge:
     if: github.actor == 'dependabot[bot]'
     runs-on: ubuntu-latest
+    # Dormant until BOT_APP_ID/BOT_APP_PRIVATE_KEY are configured — qualifying PRs skip instead of failing red.
+    env:
+      HAS_BOT_APP: ${{ secrets.BOT_APP_ID != '' }}
     steps:
       - uses: dependabot/fetch-metadata@21025c705c08248db411dc16f3619e6b5f9ea21a # v2
         id: meta
@@ -35,7 +38,7 @@ jobs:
           echo "ok=$ok" >> "$GITHUB_OUTPUT"
 
       - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
-        if: steps.decide.outputs.ok == 'true'
+        if: steps.decide.outputs.ok == 'true' && env.HAS_BOT_APP == 'true'
         id: app
         with:
           app-id: ${{ secrets.BOT_APP_ID }}
@@ -44,7 +47,7 @@ jobs:
       # App token, not GITHUB_TOKEN: a GITHUB_TOKEN-enabled merge would not trigger
       # master push workflows (GitHub recursion guard).
       - name: Approve and enable auto-merge
-        if: steps.decide.outputs.ok == 'true'
+        if: steps.decide.outputs.ok == 'true' && env.HAS_BOT_APP == 'true'
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
