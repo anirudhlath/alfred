@@ -1,0 +1,22 @@
+# Lock Down Unauthenticated Redis & Anonymous MQTT (Deployment)
+
+**Epic:** [Alpha Release Readiness](../epics/alpha-release.md)
+**Priority:** high
+**Severity (audit):** high
+**Source:** Public-release readiness audit 2026-07-18 (findings #3, #21, #22)
+
+## Summary
+The documented "Production deployment" `docker-compose.yml` stands up Redis (`redis:7-alpine`, `ports: 6379:6379`, no password/ACL) and MQTT (`eclipse-mosquitto:2`, `ports: 1883:1883`, `allow_anonymous true`) published on the host's `0.0.0.0`, making both world-reachable on any box with a routable/public IP (VPS, or LAN with untrusted peers). Redis is the security root of trust — it holds the session store, so an attacker who can reach it can forge an owner (`sir`) session and take over the instance. Because the repo is already public, this insecure compose is the copy-paste "Production deployment" path a self-hoster (or the maintainer) will actually run, so this is hardening of an already-published config rather than pre-release cleanup. The same compose also ships vanilla Redis, which the repo itself says cannot work (RediSearch required), and there is no security doc telling operators not to expose these ports.
+
+## Context / Motivation
+- **Unauthenticated Redis + anonymous MQTT bound to all interfaces (#3, high).** `docker-compose.yml` (header comment "Production deployment") provisions `redis:7-alpine` with `ports: 6379:6379` and no password/ACL, and `eclipse-mosquitto:2` with `ports: 1883:1883` backed by `infra/mosquitto.conf` line 2 `allow_anonymous true`. Docker `ports:` publishes on the host's `0.0.0.0`, so both are world-reachable wherever the host has a routable/public IP. Redis is the root of trust because it holds the session store — `core/identity/auth_middleware.py` (`AuthCookieMiddleware`/`ws_auth`) derives owner (`sir`) identity from that state, so anyone able to write Redis can forge an owner session. Scope note: the services already share the `alfred-net` compose network, so intra-stack access does not require the published `ports:` mappings.
+- **Vanilla `redis:7-alpine` cannot work (#21, medium).** The tracked compose provisions `redis:7-alpine`, but vector memory (`RedisVectorStore` / `ContextIndexManager`) requires RediSearch. `scripts/dev-up.sh` hard-fails on exactly this ("vanilla redis won't work — Alfred needs redis-stack-server"), but that script is Homebrew-only (macOS), so a Linux self-hoster naturally reaches for the compose file and gets a stack whose memory subsystem fails at runtime.
+- **No security-expectations documentation (#22, medium).** The channels server binds `0.0.0.0:8081` (`core/channels/__main__.py:44`). Security relies on WebAuthn cookies plus a "trusted network" check that silently trusts all of Tailscale CGNAT `100.64.0.0/10` and localhost. No `SECURITY.md` exists, and grepping `README.md` and `docs/*.md` for "public internet", "do not expose", or "VPN" returns zero hits — so a self-hoster is never told the deployment model assumes a private/Tailscale network or that admin/registration endpoints trust any CGNAT address.
+- **Locations:** `docker-compose.yml`, `infra/mosquitto.conf`, `core/identity/auth_middleware.py`, `scripts/dev-up.sh`, `core/channels/__main__.py:44`, `README.md`, `docs/architecture.md`.
+
+## Acceptance Criteria
+- [ ] Redis is not reachable unauthenticated: either the `ports: 6379:6379` mapping is dropped from `docker-compose.yml` (services reach Redis over `alfred-net`), or Redis runs with `--requirepass ${REDIS_PASSWORD}` and all `REDIS_URL`s use `redis://:pass@redis:6379`.
+- [ ] MQTT no longer allows anonymous access: `infra/mosquitto.conf` sets `allow_anonymous false` with a `password_file`, and/or the `ports: 1883:1883` mapping is dropped so Mosquitto is not published on the host.
+- [ ] The tracked `docker-compose.yml` uses `redis/redis-stack-server` (RediSearch available) instead of vanilla `redis:7-alpine`, so the memory subsystem works when a self-hoster runs the documented compose.
+- [ ] `README.md` gains a Linux/containers subsection noting that `scripts/dev-up.sh` is macOS/Homebrew-only and that Linux operators should use the compose stack.
+- [ ] A `SECURITY.md` (or `README` "Deployment & security" section) documents the private-network/Tailscale trust model — including that the trusted-network check trusts all of `100.64.0.0/10` and localhost, and that Redis holds the session store and must never be exposed unauthenticated — and warns against exposing ports 8081, 8000, 6379, and 1883 to the public internet.

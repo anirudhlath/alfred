@@ -40,3 +40,8 @@ reflex,process_trigger_fired,latency,2026-04-17T21:01:08.057772+00:00,ms,14761.9
 reflex,process_trigger_fired,latency,2026-05-10T21:00:58.300743+00:00,ms,15593.115459021647
 reflex,process_event,latency,2026-07-16T04:50:26.347413+00:00,ms,17094.65270896908
 reflex,process_trigger_fired,latency,2026-07-16T04:50:26.944301+00:00,ms,17688.249792088754
+reflex,process_event,latency,2026-07-16T05:07:49.921677+00:00,ms,5775.724458042532
+reflex,process_event,latency,2026-07-16T05:15:02.539171+00:00,ms,7206.340792006813
+reflex,process_event,latency,2026-07-16T05:18:27.520518+00:00,ms,4430.663625011221
+reflex,process_trigger_fired,latency,2026-07-16T21:00:09.891543+00:00,ms,10473.003500024788
+reflex,process_trigger_fired,latency,2026-07-16T21:00:24.349023+00:00,ms,14454.869417008013
