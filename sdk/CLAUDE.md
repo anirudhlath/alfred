@@ -23,6 +23,9 @@ Publishable Python package. The ONLY coupling between Alfred and external apps.
 - `client.register()` → `HSET alfred:tool_registry` + context write with 10min TTL
 - `client.unregister()` → `HDEL alfred:tool_registry` on graceful shutdown
 - `client.dispatch("feature.tool_name", params)` routes to bound method (async + sync supported)
+- `AlfredClient(credentials_schema=CredentialSchema(...), credentials_endpoint="http://host:port/credentials")` declares credential needs; core pushes stored values to that endpoint on every `register()`
+- `client.register()` also publishes a `ServiceRegistered` event to `alfred:events` (constant duplicated as `AlfredClient.EVENTS_STREAM` — SDK stays standalone)
+- `@tool(audience="reflex"|"conscious", risk="benign"|"elevated"|"critical")` — defaults `conscious`/`benign`; carried into `ToolManifest`
 
 ## Testing
 
@@ -39,3 +42,4 @@ pytest sdk/tests/                 # integration tests (schema compatibility)
 - Tool name collisions: last registration wins, logged as warnings
 - Context key `alfred:context:{service-name}` expires in 600s (10min) — long-running services need periodic re-registration
 - Complex type hints stored as `str()` representation in manifests (e.g., `dict[str, Any]`)
+- `client.py`'s two `redis.asyncio.from_url()` calls keep redis-py defaults (including the redis-py 8 `socket_timeout=5s`) — the SDK only issues short non-blocking commands (hset/xadd/hdel/set), so a 5s read timeout is acceptable/desirable for startup calls. Blocking stream reads belong in core via `shared.redis_streams.create_redis` (SDK cannot import `shared`).

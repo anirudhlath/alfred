@@ -55,3 +55,17 @@ class ActionResult(BaseEvent):
     status: Literal["success", "error"]
     result: dict[str, Any] | None = None
     error: str | None = None
+
+
+class ServiceRegistered(BaseEvent):
+    """A sovereign service (re)registered its manifest. Mirrors bus/schemas/events.py."""
+
+    event_type: str = "service_registered"
+    service_name: str = Field(description="Name of the service that registered")
+    credentials_endpoint: str | None = Field(
+        default=None,
+        description="Absolute URL core POSTs credentials to, if the service accepts pushes",
+    )
+    has_credentials_schema: bool = Field(
+        default=False, description="Whether the manifest declares a credentials schema"
+    )

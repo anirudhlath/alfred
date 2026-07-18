@@ -94,7 +94,7 @@ export function IntegrationCard({
   onSaved?: () => void;
   showActions?: boolean;
 }) {
-  const { name, category, schema, configured } = integration;
+  const { name, category, schema, configured, kind } = integration;
   const fields = schema.fields;
 
   // Pre-fill defaults only for unconfigured fields (matches old wizard behavior).
@@ -159,7 +159,14 @@ export function IntegrationCard({
           <CardTitle className="font-mono text-xs tracking-widest">
             {name.replace(/_/g, " ").toUpperCase()}
           </CardTitle>
-          <span className="font-mono text-[10px] text-muted-foreground">{category}</span>
+          <span className="flex items-center gap-2 font-mono text-[10px] text-muted-foreground">
+            {category}
+            {kind === "service" && (
+              <Badge variant="outline" className="text-[9px]">
+                external service
+              </Badge>
+            )}
+          </span>
         </div>
         <Badge variant="outline" className={allConfigured ? "text-ok" : "text-muted-foreground"}>
           {allConfigured ? "configured" : "not configured"}

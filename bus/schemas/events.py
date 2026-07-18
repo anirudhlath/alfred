@@ -146,3 +146,23 @@ class ReflexObservation(BaseEvent):
     action: ActionRequest
     result: ActionResult
     decision_context: str | None = None
+
+
+class ServiceRegistered(BaseEvent):
+    """A sovereign service (re)registered its manifest in the tool registry.
+
+    Published by the SDK's AlfredClient.register() AFTER the registry hset,
+    so consumers can immediately read the manifest. The channels process
+    consumes this to (re)push stored credentials to the service's
+    credentials_endpoint (self-healing, event-driven — no polling).
+    """
+
+    event_type: str = "service_registered"
+    service_name: str = Field(description="Name of the service that registered")
+    credentials_endpoint: str | None = Field(
+        default=None,
+        description="Absolute URL core POSTs credentials to, if the service accepts pushes",
+    )
+    has_credentials_schema: bool = Field(
+        default=False, description="Whether the manifest declares a credentials schema"
+    )

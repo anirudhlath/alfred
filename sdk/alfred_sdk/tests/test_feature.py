@@ -251,3 +251,122 @@ def test_tool_name_override_in_get_tools() -> None:
     feature = _OverrideFeature()
     tools = feature.get_tools()
     assert tools[0].name == "custom.my_tool"
+
+
+# ── Credential models (contract C1) ──
+
+
+def test_credential_field_defaults() -> None:
+    from sdk.alfred_sdk.feature import CredentialField
+
+    field = CredentialField(label="HA URL")
+    assert field.field_type == "text"
+    assert field.required is True
+    assert field.placeholder == ""
+    assert field.default == ""
+    assert field.help_text == ""
+    assert field.transient is False
+
+
+def test_credential_schema_dumps_fields() -> None:
+    from sdk.alfred_sdk.feature import CredentialField, CredentialSchema
+
+    schema = CredentialSchema(fields={"url": CredentialField(label="HA URL", field_type="url")})
+    dumped = schema.model_dump()
+    assert dumped["fields"]["url"]["label"] == "HA URL"
+    assert dumped["fields"]["url"]["field_type"] == "url"
+
+
+def test_service_manifest_credential_fields_default_none() -> None:
+    from sdk.alfred_sdk.feature import ServiceManifest
+
+    manifest = ServiceManifest(service_name="svc", service_endpoint="http://x/mcp")
+    dumped = manifest.model_dump()
+    assert dumped["credentials_schema"] is None
+    assert dumped["credentials_endpoint"] is None
+
+
+def test_service_manifest_carries_credentials() -> None:
+    from sdk.alfred_sdk.feature import CredentialField, CredentialSchema, ServiceManifest
+
+    manifest = ServiceManifest(
+        service_name="home-service",
+        service_endpoint="http://localhost:8000/mcp",
+        credentials_schema=CredentialSchema(
+            fields={"token": CredentialField(label="Token", field_type="password")}
+        ),
+        credentials_endpoint="http://localhost:8000/credentials",
+    )
+    dumped = manifest.model_dump()
+    assert dumped["credentials_endpoint"] == "http://localhost:8000/credentials"
+    assert dumped["credentials_schema"]["fields"]["token"]["field_type"] == "password"
+
+
+# ── audience / risk (contract C1) ──
+
+
+def test_tool_decorator_default_audience_and_risk() -> None:
+    @tool
+    def my_tool(x: int) -> str:
+        """Do something."""
+        return str(x)
+
+    assert my_tool._tool_overrides["audience"] == "conscious"  # type: ignore[attr-defined]
+    assert my_tool._tool_overrides["risk"] == "benign"  # type: ignore[attr-defined]
+
+
+def test_tool_decorator_audience_and_risk_kwargs() -> None:
+    @tool(audience="reflex", risk="critical")
+    def my_tool(x: int) -> str:
+        """Do something."""
+        return str(x)
+
+    assert my_tool._tool_overrides["audience"] == "reflex"  # type: ignore[attr-defined]
+    assert my_tool._tool_overrides["risk"] == "critical"  # type: ignore[attr-defined]
+
+
+class _TaggedFeature(BaseFeature):
+    """Feature with audience/risk-tagged tools."""
+
+    feature_name = "tagged"
+
+    @tool(audience="reflex")
+    def turn_on(self, room: str) -> dict[str, Any]:
+        """Turn on lights.
+
+        Args:
+            room: The room.
+        """
+        return {"room": room}
+
+    @tool(risk="critical")
+    def unlock(self, door: str) -> dict[str, Any]:
+        """Unlock a door.
+
+        Args:
+            door: The door.
+        """
+        return {"door": door}
+
+
+def test_get_tools_carries_audience_and_risk() -> None:
+    feature = _TaggedFeature()
+    metas = {t.name: t for t in feature.get_tools()}
+    assert metas["tagged.turn_on"].audience == "reflex"
+    assert metas["tagged.turn_on"].risk == "benign"
+    assert metas["tagged.unlock"].audience == "conscious"
+    assert metas["tagged.unlock"].risk == "critical"
+
+
+def test_to_manifest_carries_audience_and_risk() -> None:
+    feature = _TaggedFeature()
+    manifest_tools = {t.name: t for t in feature.to_manifest().tools}
+    assert manifest_tools["tagged.turn_on"].audience == "reflex"
+    assert manifest_tools["tagged.unlock"].risk == "critical"
+
+    dumped = feature.to_manifest().model_dump()
+    by_name = {t["name"]: t for t in dumped["tools"]}
+    assert by_name["tagged.turn_on"]["audience"] == "reflex"
+    assert by_name["tagged.turn_on"]["risk"] == "benign"
+    assert by_name["tagged.unlock"]["audience"] == "conscious"
+    assert by_name["tagged.unlock"]["risk"] == "critical"

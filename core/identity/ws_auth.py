@@ -33,9 +33,7 @@ async def authenticate_ws_cookie(websocket: WebSocket, redis: AioRedis) -> bool:
             break
     if not session_id:
         return False
-    data: dict[bytes, bytes] = await redis.hgetall(  # type: ignore[misc]
-        f"{AUTH_SESSION_PREFIX}{session_id}"
-    )
+    data: dict[bytes | str, bytes | str] = await redis.hgetall(f"{AUTH_SESSION_PREFIX}{session_id}")
     return bool(data) and data.get(b"authenticated") == b"1"
 
 

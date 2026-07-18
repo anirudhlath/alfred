@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from core.notifications.schema import Notification, Urgency
 from shared.streams import DEFERRED_NOTIFICATIONS_KEY, NOTIFICATION_DISPATCH_STREAM
@@ -39,7 +39,7 @@ class NotificationDispatcher:
 
         if dnd_status.active and notification.urgency != Urgency.URGENT:
             # Defer non-urgent notifications during DND
-            await self._redis.rpush(  # type: ignore[misc]
+            await self._redis.rpush(
                 DEFERRED_NOTIFICATIONS_KEY,
                 notification.model_dump_json(),
             )
@@ -62,15 +62,15 @@ class NotificationDispatcher:
         Called when DND expires (via time trigger). Each notification is
         re-dispatched — if DND is still somehow active, it will re-defer.
         """
-        count: int = await self._redis.llen(DEFERRED_NOTIFICATIONS_KEY)  # type: ignore[misc]
+        count: int = await self._redis.llen(DEFERRED_NOTIFICATIONS_KEY)
         if count == 0:
             return
 
         logger.info("Draining %d deferred notifications", count)
         while True:
-            raw: bytes | str | None = await self._redis.lpop(  # type: ignore[misc]
-                DEFERRED_NOTIFICATIONS_KEY
-            )
+            raw = cast("bytes | str | None", await self._redis.lpop(DEFERRED_NOTIFICATIONS_KEY))
+            # No `count` passed above, so a real reply is a single item, never a
+            # list — the stub's list[...] branch only applies to the count= form.
             if raw is None:
                 break
             notification = Notification.model_validate_json(raw)

@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { SettingsPage } from "./SettingsPage";
+import { HOME_SERVICE_INTEGRATION as HOME_SERVICE } from "./__fixtures__/integrations";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -166,6 +167,15 @@ describe("SettingsPage", () => {
     expect(pwInput.type).toBe("text");
     await userEvent.click(screen.getByRole("button", { name: "Hide API Key" }));
     expect(pwInput.type).toBe("password");
+  });
+
+  it("renders service entries from the merged API alongside adapters", async () => {
+    setupMocks([WEATHER, HOME_SERVICE]);
+    renderPage();
+    await waitFor(() => expect(screen.getByText("HOME-SERVICE")).toBeInTheDocument());
+    expect(screen.getByText("WEATHER")).toBeInTheDocument();
+    expect(screen.getByText("external service")).toBeInTheDocument();
+    expect(screen.getByText("Home Assistant URL")).toBeInTheDocument();
   });
 
   it("logout calls the auth API and navigates to /login", async () => {

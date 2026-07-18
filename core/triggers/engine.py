@@ -65,7 +65,7 @@ class TriggerEngine:
             f"{now.strftime('%Y-%m-%dT%H:%M:%SZ')} "
             f"[trigger] {trigger.name} (type={trigger.trigger_type}) fired"
         )
-        await self._redis.lpush(SCRATCHPAD_QUEUE, observation)  # type: ignore[misc]
+        await self._redis.lpush(SCRATCHPAD_QUEUE, observation)
 
         if trigger.one_shot:
             await self._store.delete(trigger.trigger_id)

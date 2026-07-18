@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { IntegrationCard } from "./IntegrationCard";
 import type { IntegrationInfo } from "@/lib/types";
+import { HOME_SERVICE_INTEGRATION } from "./__fixtures__/integrations";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -105,5 +106,21 @@ describe("IntegrationCard", () => {
 
     const hideBtn = screen.getByRole("button", { name: "Hide API Key" });
     expect(hideBtn).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("renders an external service badge and schema-driven fields for kind=service", async () => {
+    renderCard({ integration: HOME_SERVICE_INTEGRATION });
+    await waitFor(() => expect(screen.getByText("HOME-SERVICE")).toBeInTheDocument());
+    expect(screen.getByText("external service")).toBeInTheDocument();
+    expect(screen.getByText("Home Assistant URL")).toBeInTheDocument();
+    expect(screen.getByText("Access Token")).toBeInTheDocument();
+    // Unconfigured field pre-fills its schema default.
+    expect(screen.getByDisplayValue("http://homeassistant.local:8123")).toBeInTheDocument();
+  });
+
+  it("does not render the service badge for adapters", async () => {
+    renderCard();
+    await waitFor(() => expect(screen.getByText("WEATHER")).toBeInTheDocument());
+    expect(screen.queryByText("external service")).toBeNull();
   });
 });

@@ -122,7 +122,7 @@ class APNsChannelAdapter(ChannelAdapter):
 
     async def deliver(self, notification: Notification) -> None:
         """Deliver notification to all registered iOS devices."""
-        raw_tokens: dict[bytes, bytes] = await self._redis.hgetall(DEVICE_TOKENS_KEY)  # type: ignore[misc]
+        raw_tokens: dict[bytes | str, bytes | str] = await self._redis.hgetall(DEVICE_TOKENS_KEY)
         if not raw_tokens:
             logger.debug("APNsChannelAdapter: no registered devices, skipping")
             return
@@ -158,7 +158,7 @@ class APNsChannelAdapter(ChannelAdapter):
             try:
                 resp = await client.post(url, content=payload_bytes, headers=headers)
                 if resp.status_code == 410:
-                    await self._redis.hdel(DEVICE_TOKENS_KEY, device_token)  # type: ignore[misc]
+                    await self._redis.hdel(DEVICE_TOKENS_KEY, device_token)
                     logger.info("Pruned stale APNs token {}...", device_token[:8])
                 elif resp.status_code != 200:
                     logger.warning(

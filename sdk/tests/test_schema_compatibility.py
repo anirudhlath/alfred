@@ -65,6 +65,35 @@ def test_action_result_roundtrip_bus_to_sdk() -> None:
     assert sdk_result.result == bus_result.result
 
 
+def test_service_registered_roundtrip_sdk_to_bus() -> None:
+    """Serialize an SDK ServiceRegistered, deserialize as bus ServiceRegistered."""
+    from bus.schemas.events import ServiceRegistered as BusReg
+    from sdk.alfred_sdk.events import ServiceRegistered as SdkReg
+
+    sdk_event = SdkReg(
+        source="home-service",
+        service_name="home-service",
+        credentials_endpoint="http://localhost:8000/credentials",
+        has_credentials_schema=True,
+    )
+    bus_event = BusReg.model_validate_json(sdk_event.model_dump_json())
+
+    assert bus_event.event_type == "service_registered"
+    assert bus_event.service_name == "home-service"
+    assert bus_event.credentials_endpoint == "http://localhost:8000/credentials"
+    assert bus_event.has_credentials_schema is True
+    assert bus_event.event_id == sdk_event.event_id
+
+
+def test_service_registered_defaults() -> None:
+    """A service without credential support publishes a minimal event."""
+    from sdk.alfred_sdk.events import ServiceRegistered
+
+    event = ServiceRegistered(source="plain-service", service_name="plain-service")
+    assert event.credentials_endpoint is None
+    assert event.has_credentials_schema is False
+
+
 def _get_field_names(model: type[Any]) -> set[str]:
     """Get all field names from a Pydantic model."""
     return set(model.model_fields.keys())
@@ -80,6 +109,7 @@ def test_shared_schemas_have_same_fields() -> None:
         (bus.StateChangedEvent, sdk.StateChangedEvent),
         (bus.ActionRequest, sdk.ActionRequest),
         (bus.ActionResult, sdk.ActionResult),
+        (bus.ServiceRegistered, sdk.ServiceRegistered),
     ]:
         bus_fields = _get_field_names(bus_cls)
         sdk_fields = _get_field_names(sdk_cls)
@@ -87,3 +117,29 @@ def test_shared_schemas_have_same_fields() -> None:
             f"{bus_cls.__name__} field mismatch: "
             f"bus-only={bus_fields - sdk_fields}, sdk-only={sdk_fields - bus_fields}"
         )
+
+
+def test_credential_models_match_core_field_shape() -> None:
+    """SDK CredentialField/CredentialSchema must stay JSON-identical to core's.
+
+    The JSON contract is the coupling (Pillar 3) — the SDK never imports core,
+    so this test is the only guard against drift with core/integrations/base.py.
+    """
+    from core.integrations.base import CredentialField as CoreField
+    from core.integrations.base import CredentialSchema as CoreSchema
+    from sdk.alfred_sdk.feature import CredentialField as SdkField
+    from sdk.alfred_sdk.feature import CredentialSchema as SdkSchema
+
+    assert _get_field_names(CoreField) == _get_field_names(SdkField)
+    assert _get_field_names(CoreSchema) == _get_field_names(SdkSchema)
+
+    # Round-trip: SDK-serialized schema parses as the core model with values intact.
+    sdk_schema = SdkSchema(
+        fields={"token": SdkField(label="Token", field_type="password", transient=False)}
+    )
+    core_schema = CoreSchema.model_validate_json(sdk_schema.model_dump_json())
+    assert core_schema.fields["token"].label == "Token"
+    assert core_schema.fields["token"].field_type == "password"
+
+    # Defaults must match too — core fills defaults for fields the SDK omitted.
+    assert CoreField(label="x").model_dump() == SdkField(label="x").model_dump()

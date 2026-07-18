@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -282,6 +282,15 @@ def test_auth_status_not_shadowed_by_spa_catch_all(tmp_path: Path) -> None:
             "core.notifications.delivery.notification_delivery_worker",
             new=AsyncMock(return_value=None),
         ),
+        # Skip the credential push worker — the real one busy-spins against the
+        # AsyncMock redis (xreadgroup returns instantly, never suspends), starving
+        # the lifespan event loop so requests never complete.
+        patch(
+            "core.channels.service_credentials.credential_push_worker",
+            new=AsyncMock(return_value=None),
+        ),
+        # Skip warmup — real Whisper/Piper loads in to_thread outlive the TestClient.
+        patch("core.channels.web_server.start_warmup", return_value=MagicMock()),
         # httpx.AsyncClient.aclose() is called on shutdown.
         patch("httpx.AsyncClient.aclose", new=AsyncMock()),
     ):

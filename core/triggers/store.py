@@ -32,9 +32,7 @@ class TriggerStore:
 
     async def load(self) -> list[BaseTrigger]:
         """Load all triggers from Redis, falling back to disk if empty."""
-        raw: dict[str | bytes, str | bytes] = await self._redis.hgetall(  # type: ignore[misc]
-            TRIGGERS_KEY
-        )
+        raw: dict[str | bytes, str | bytes] = await self._redis.hgetall(TRIGGERS_KEY)
 
         if raw:
             triggers = self._parse_redis_entries(raw)
@@ -44,24 +42,20 @@ class TriggerStore:
         logger.info("Redis empty — rehydrating triggers from disk")
         triggers = self.rehydrate_from_disk_static(self._snapshot_dir, TriggerRegistry)
         for t in triggers:
-            await self._redis.hset(  # type: ignore[misc]
-                TRIGGERS_KEY, t.trigger_id, t.model_dump_json()
-            )
+            await self._redis.hset(TRIGGERS_KEY, t.trigger_id, t.model_dump_json())
         self._cache = {t.trigger_id: t for t in triggers}
         return triggers
 
     async def save(self, trigger: BaseTrigger) -> None:
         """Write to Redis + snapshot to YAML."""
-        await self._redis.hset(  # type: ignore[misc]
-            TRIGGERS_KEY, trigger.trigger_id, trigger.model_dump_json()
-        )
+        await self._redis.hset(TRIGGERS_KEY, trigger.trigger_id, trigger.model_dump_json())
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._snapshot_to_yaml, trigger)
         self._cache[trigger.trigger_id] = trigger
 
     async def delete(self, trigger_id: str) -> None:
         """Remove from Redis + delete YAML file."""
-        await self._redis.hdel(TRIGGERS_KEY, trigger_id)  # type: ignore[misc]
+        await self._redis.hdel(TRIGGERS_KEY, trigger_id)
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._delete_yaml, trigger_id)
         self._cache.pop(trigger_id, None)
@@ -83,9 +77,7 @@ class TriggerStore:
         WARNING: Performs a full HGETALL + deserialization. Intended for the
         60-second background loop only — never call from the hot path.
         """
-        raw: dict[str | bytes, str | bytes] = await self._redis.hgetall(  # type: ignore[misc]
-            TRIGGERS_KEY
-        )
+        raw: dict[str | bytes, str | bytes] = await self._redis.hgetall(TRIGGERS_KEY)
         self._cache = {t.trigger_id: t for t in self._parse_redis_entries(raw)}
 
     async def snapshot_all(self) -> None:

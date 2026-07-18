@@ -65,7 +65,7 @@ class SessionManager:
     async def append_turn(self, session_id: str, role: str, content: str) -> None:
         """Append a conversation turn to the session history."""
         key = self._key(session_id)
-        raw: bytes | None = await self._redis.hget(key, "history")  # type: ignore[misc,unused-ignore]
+        raw: bytes | str | None = await self._redis.hget(key, "history")
         history: list[dict[str, str]] = json.loads(raw) if raw else []
         history.append({"role": role, "content": content})
         await self._redis.hset(key, "history", json.dumps(history))  # type: ignore[misc,unused-ignore]
@@ -74,5 +74,5 @@ class SessionManager:
     async def get_history(self, session_id: str) -> list[dict[str, str]]:
         """Get the conversation history for a session."""
         key = self._key(session_id)
-        raw: bytes | None = await self._redis.hget(key, "history")  # type: ignore[misc,unused-ignore]
+        raw: bytes | str | None = await self._redis.hget(key, "history")
         return json.loads(raw) if raw else []
