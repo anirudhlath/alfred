@@ -36,6 +36,15 @@ COST_DAILY_KEY = "alfred:cost:daily"
 # Phase 3: Integration registry
 INTEGRATION_REGISTRY_KEY = "alfred:integration_registry"
 
+# Trigger cache coherence + user timezone
+TRIGGERS_CHANGED_CHANNEL = "alfred:triggers:changed"
+USER_TIMEZONE_KEY = "alfred:user:timezone"
+
+# Ops carried on TRIGGERS_CHANGED_CHANNEL messages ({"op": ..., "trigger_id": ...})
+TRIGGER_SYNC_OP_SAVED = "saved"
+TRIGGER_SYNC_OP_DELETED = "deleted"
+TRIGGER_SYNC_OP_TZ_CHANGED = "tz-changed"
+
 
 # Auth (WebAuthn)
 AUTH_SESSION_PREFIX: str = "alfred:auth:"

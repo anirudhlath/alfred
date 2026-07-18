@@ -12,6 +12,7 @@ from core.triggers.models import ActionPayload
 from core.triggers.registry import TriggerRegistry
 from sdk.alfred_sdk.feature import BaseFeature, ToolMeta, tool
 from shared.streams import EVENTS_STREAM
+from shared.usertime import get_user_timezone
 
 if TYPE_CHECKING:
     from core.triggers.store import TriggerStore
@@ -45,6 +46,10 @@ class TriggerFeature(BaseFeature):
         if self._store is None:
             raise RuntimeError("TriggerFeature used without TriggerFeatureContext")
         return self._store
+
+    async def _user_tz(self) -> str:
+        """Resolve the user timezone, tolerating a redis-less feature instance."""
+        return "UTC" if self._redis is None else await get_user_timezone(self._redis)
 
     def get_tools(self) -> list[ToolMeta]:
         """Override to inject dynamic descriptions from TriggerRegistry."""
@@ -107,6 +112,8 @@ class TriggerFeature(BaseFeature):
             }
 
         try:
+            tz_name = await self._user_tz()
+            normalized = cls.normalize_conditions(conditions, tz_name)
             trigger = cls(
                 trigger_id=str(uuid4()),
                 trigger_type=trigger_type,
@@ -117,7 +124,7 @@ class TriggerFeature(BaseFeature):
                 created_at=datetime.now(UTC),
                 action=validated_action,
                 urgency=validated_urgency,
-                conditions=conditions,
+                conditions=normalized,
             )
         except Exception as e:
             return {"error": f"Invalid conditions for type '{trigger_type}': {e}"}
@@ -131,7 +138,7 @@ class TriggerFeature(BaseFeature):
                 trigger_type=trigger_type,
                 name=name,
                 created_by="tool-call",
-                conditions=conditions,
+                conditions=normalized,
                 action=action,
                 one_shot=one_shot,
                 urgency=validated_urgency.value,
@@ -166,9 +173,11 @@ class TriggerFeature(BaseFeature):
         if conditions is not None:
             cls = TriggerRegistry.get(target.trigger_type)
             try:
+                tz_name = await self._user_tz()
+                normalized = cls.normalize_conditions(conditions, tz_name)
                 conditions_model = cls.Conditions  # type: ignore[attr-defined]
-                validated = conditions_model(**conditions)
-                updates["conditions"] = validated.model_dump(mode="json")
+                validated = conditions_model(**normalized)
+                updates["conditions"] = validated
             except Exception as e:
                 return {"error": f"Invalid conditions: {e}"}
         if action is not None:

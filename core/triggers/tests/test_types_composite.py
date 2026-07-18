@@ -73,7 +73,13 @@ def test_mixed_time_and_sensor() -> None:
         {"trigger_type": "time", "conditions": {"cron": "0 7 * * *"}},
         {"trigger_type": "sensor", "conditions": {"entity_id": "light.a", "state_match": "on"}},
     ]
-    trigger = _make_composite(conditions={"children": children, "require": 2})
+    # created_at (propagated to the time child) must precede the boundary
+    # below — computed next_fire_time anchors on it, so the default
+    # `datetime.now(UTC)` would postdate this fixed historical date.
+    trigger = _make_composite(
+        conditions={"children": children, "require": 2},
+        created_at=datetime(2026, 3, 10, 6, 0, 0, tzinfo=UTC),
+    )
     event = StateChangedEvent(
         source="test",
         domain="home",
@@ -136,3 +142,42 @@ def test_model_copy_rebuilds_cached_children() -> None:
     copied = trigger.model_copy(update={"name": "renamed"})
     cached = copied._cached_children
     assert len(cached) == 1
+
+
+def test_next_fire_time_is_min_over_time_children() -> None:
+    created = datetime(2026, 7, 16, 8, 0, tzinfo=UTC)
+    children = [
+        {"trigger_type": "time", "conditions": {"run_at": "2026-07-16T15:00:00+00:00"}},
+        {"trigger_type": "time", "conditions": {"run_at": "2026-07-16T12:00:00+00:00"}},
+        {"trigger_type": "sensor", "conditions": {"entity_id": "light.x"}},
+    ]
+    trigger = _make_composite(
+        conditions={"children": children, "require": 1},
+        created_at=created,
+    )
+    ctx = TriggerContext(now=created)
+    assert trigger.next_fire_time(ctx) == datetime(2026, 7, 16, 12, 0, tzinfo=UTC)
+
+
+def test_next_fire_time_none_when_only_sensor_children() -> None:
+    children = [
+        {"trigger_type": "sensor", "conditions": {"entity_id": "light.x"}},
+    ]
+    trigger = _make_composite(conditions={"children": children, "require": 1})
+    assert trigger.next_fire_time(TriggerContext(now=datetime.now(UTC))) is None
+
+
+def test_children_inherit_parent_last_fired() -> None:
+    fired = datetime(2026, 7, 16, 7, 0, tzinfo=UTC)
+    children = [
+        {"trigger_type": "time", "conditions": {"cron": "0 7 * * *"}},
+    ]
+    trigger = _make_composite(
+        conditions={"children": children, "require": 1},
+        created_at=datetime(2026, 7, 1, 0, 0, tzinfo=UTC),
+    )
+    fired_copy = trigger.model_copy(update={"last_fired": fired})
+    # Child cron must anchor from the parent's last_fired, not created_at —
+    # otherwise a composite cron child re-fires on every scheduler wake.
+    child_nft = fired_copy._cached_children[0].next_fire_time(TriggerContext(now=fired))
+    assert child_nft is not None and child_nft.astimezone(UTC) > fired

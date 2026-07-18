@@ -5,8 +5,9 @@ Cross-cutting utilities used by multiple top-level packages (core, bus, domains)
 ## Files
 
 - `config.py` — `AlfredConfig` frozen dataclass (30+ fields), `from_env()` loads `.env` via python-dotenv
-- `streams.py` — Redis stream/key constants (21 constants — single source of truth)
+- `streams.py` — Redis stream/key constants (single source of truth, incl. trigger-sync op constants)
 - `redis_streams.py` — `create_redis()` constructor (socket_timeout=None — see Gotchas) + `StreamBatch` type alias + typed `read_group()`/`read()`/`revrange()` wrappers around `xreadgroup`/`xread`/`xrevrange` (owns the one stub-gap `# type: ignore` per wrapper)
+- `usertime.py` — User timezone helpers: `is_valid_timezone()`, `get_user_timezone()` (stored → `ALFRED_TIMEZONE` → UTC), `set_user_timezone()` (write-on-change + coherence poke)
 - `secrets.py` — Keyring wrapper: `get_secret()` / `set_secret()` + async versions (`aget_secret()` etc.) via `asyncio.to_thread()`
 - `types.py` — `AioRedis` type alias (canonical location for cross-package use)
 - `fs.py` — `atomic_write()` via mkstemp + rename (safe concurrent writes)

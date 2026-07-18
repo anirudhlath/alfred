@@ -44,7 +44,7 @@ Proactive actions created by LLM at runtime.
 
 ```mermaid
 graph LR
-    Tick[1s Tick Loop] --> Eval[_evaluate_all]
+    Sched[Scheduled Wakeup<br/>next_fire_time + pub/sub re-arm] --> Eval[_evaluate_all]
     Event[Event Listener<br/>alfred:home:state_changed] --> Eval
     Eval --> Fire{trigger.action?}
     Fire -->|set| AR[ActionRequest → alfred:actions]
@@ -150,5 +150,7 @@ uv run python -m core.channels   # Web + Signal channels
 - Web server uses `_FAILED` sentinel to avoid repeated import failures on lazy-load
 - Signal bridge expects `signal-cli` binary in PATH
 - Piper TTS auto-downloads voice models from HuggingFace on first use
+- TriggerStore coherence is pub/sub (`alfred:triggers:changed`) — never mutate `alfred:triggers` without going through TriggerStore
+- User timezone lives at `alfred:user:timezone` via `shared/usertime.py` — resolution stored → `ALFRED_TIMEZONE` → UTC. Clients send their IANA zone per message; the conscious engine (not the web channel) persists it via `set_user_timezone` (write-on-change)
 
 See `.claude/rules/core/` for component-specific constraints.

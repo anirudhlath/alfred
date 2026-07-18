@@ -42,6 +42,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 ## Key Paths
 
 - `shared/` — cross-cutting utilities (config, streams, secrets, types, logging, tracing)
+- `shared/usertime.py` — `get_user_timezone()`/`set_user_timezone()` (Redis key `alfred:user:timezone`; resolution: stored → `ALFRED_TIMEZONE` env → UTC)
 - `bus/schemas/events.py` — canonical event types (single source of truth)
 - `core/` — brain (reflex, conscious, triggers, memory, notifications, voice, channels, librarian, integrations)
 - `runner/__main__.py` — unified runner entry point (`python -m runner`)
@@ -225,5 +226,7 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - Use `EpisodicMemory.recall(..., update_stats=False)` for non-mutating reads (admin search) — the default `True` persists retrieval stats (HSET per recall).
 - `core/channels/admin_api.py` + `telemetry_ws.py` are gated by BOTH `require_trusted_network` AND `require_authenticated` (session cookie) — `/ws/telemetry` authenticates via the shared `authenticate_ws_cookie()` helper.
 - Frontend (`web/src`): `erasableSyntaxOnly` TS flag is on — no parameter properties (declare + assign fields explicitly). `eslint-plugin-react-hooks` v7 purity rule bans `Date.now()`/`Math.random()` in render — compute them in effects/handlers, not in the render body.
+- TriggerStore coherence is pub/sub (`alfred:triggers:changed`) — never mutate `alfred:triggers` without going through TriggerStore
+- User timezone lives at `alfred:user:timezone` via `shared/usertime.py` — resolution stored → `ALFRED_TIMEZONE` → UTC. Clients send their IANA zone per message; the conscious engine (not the web channel) persists it via `set_user_timezone` (write-on-change)
 - Service credential push failures return HTTP 502 from PUT but the keyring write persists — recovery is event-driven via the next `ServiceRegistered`, never a retry loop
 - redis-py 8 defaults `socket_timeout` to 5s (was `None`), which races idle blocking stream reads (`block=5000`) and raises spurious `Timeout reading from <host>` every ~5s — always construct async Redis clients via `shared.redis_streams.create_redis()` (`socket_timeout=None`, `block=` governs read timeouts instead), never `redis.asyncio.from_url()` directly. Exception: `sdk/alfred_sdk/client.py` keeps redis-py defaults — the SDK only issues short non-blocking commands and cannot import `shared`.

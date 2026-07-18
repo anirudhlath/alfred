@@ -31,7 +31,12 @@ export class ChatSocket {
   close(): void { this.socket.close(); }
 
   private payload(type: "text" | "audio", content: string): Record<string, unknown> {
-    const body: Record<string, unknown> = { type, content, channel: "web_pwa" };
+    const body: Record<string, unknown> = {
+      type,
+      content,
+      channel: "web_pwa",
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    };
     if (!this.firstMessageSent && this.sessionId) body.session_id = this.sessionId;
     this.firstMessageSent = true;
     return body;
