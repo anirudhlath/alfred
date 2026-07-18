@@ -6,6 +6,8 @@ An ambient, voice-first multi-agent system for smart environments. Inspired by A
 
 Alfred processes real-time events from smart home devices, responds to voice and text commands, and proactively manages your environment — all while maintaining the demeanor of a proper English butler.
 
+**What can Alfred do?** See the [Product Requirements Document](docs/PRD.md) — vision, product principles, and a maintained catalog of every capability with its current status.
+
 ## Architecture
 
 Alfred uses a **dual-process cognitive model**:
