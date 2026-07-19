@@ -37,6 +37,13 @@ class SentenceTransformerProvider(EmbeddingProvider):
         # embed()/embed_batch() run _load() via asyncio.to_thread — a startup
         # warmup racing the first request must not load the model twice.
         self._load_lock = threading.Lock()
+        # Force numpy's full initialization on the constructing (main) thread.
+        # _load() imports sentence-transformers → torch → numpy inside a worker
+        # thread (to_thread); if numpy is first imported there while the main
+        # thread concurrently touches it (e.g. reindexing routines at startup),
+        # numpy 2.x can raise a partial-init circular-import RecursionError.
+        # Constructing a provider already implies the memory extra is installed.
+        import numpy  # noqa: F401
 
     def _load(self) -> SentenceTransformer:
         with self._load_lock:
