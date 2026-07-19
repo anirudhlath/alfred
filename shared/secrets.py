@@ -11,11 +11,40 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
+import sys
 
 import keyring
 from keyring.errors import PasswordDeleteError
 
 SERVICE = "alfred"
+
+
+def select_backend_name() -> str:
+    """Choose the keyring backend: 'native' (macOS default) or 'cryptfile' (container/Linux)."""
+    explicit = os.getenv("ALFRED_SECRETS_BACKEND", "").strip().lower()
+    if explicit in ("cryptfile", "native"):
+        return explicit
+    return "native" if sys.platform == "darwin" else "cryptfile"
+
+
+def configure_backend() -> None:
+    """Configure the active keyring backend based on select_backend_name()."""
+    if select_backend_name() != "cryptfile":
+        return  # leave keyring's auto-detected native backend in place
+    from keyrings.cryptfile.cryptfile import CryptFileKeyring
+
+    from shared.config import data_path
+
+    secrets_dir = data_path("secrets")
+    secrets_dir.mkdir(parents=True, exist_ok=True)
+    kr = CryptFileKeyring()
+    kr.file_path = str(secrets_dir / "keyring.cfg")
+    kr.keyring_key = os.getenv("ALFRED_SECRETS_PASSPHRASE", "alfred-insecure-default")
+    keyring.set_keyring(kr)
+
+
+configure_backend()
 
 
 # --- Sync API ---
