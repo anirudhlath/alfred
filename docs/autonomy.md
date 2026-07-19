@@ -50,17 +50,25 @@ sequenceDiagram
     DR->>N: URGENT notification (metadata.pending_action_id)
     DR-->>CE: ActionResult error "confirmation_required:{id}"
     U->>R: POST /api/actions/{id}/confirm  OR  confirm_pending_action tool
-    R->>R: republish to alfred:actions confirmed=true, DEL pending key
+    R->>R: GETDEL pending key (atomic), republish to alfred:actions confirmed=true
     IC->>DR: route(confirmed ActionRequest)
     DR->>DR: risk=critical but confirmed → pass through
 ```
 
 - Pending store helpers: `core/routing/pending.py` (`PENDING_TTL_SECONDS=300`).
+  `confirm_pending_action()` uses an atomic `GETDEL` (not GET-then-DELETE) so two
+  concurrent confirms of the same id can never both republish — only one caller ever
+  gets the ActionRequest back; every other confirm (concurrent or after) gets `None`.
+  This is what prevents a critical action (e.g. a door unlock) from executing twice.
 - Web confirm: `POST /api/actions/{request_id}/confirm` (auth cookie
   required; 404 when expired). The SPA renders a Confirm button on the
   notification toast (`web/src/lib/notifications.ts`).
 - Chat confirm: Conscious internal tool `confirm_pending_action(request_id)`
-  (`core/conscious/action_tools.py`) — works over Signal/iOS/web chat.
+  (`core/conscious/action_tools.py`) — works over Signal/iOS/web chat. Action tools
+  (confirm + `attention_*`) are offered to sir turns only in the tool manifest, and
+  `ConsciousEngine._dispatch_tool_call()` re-checks the resolved identity at dispatch
+  time before executing any of them — defense-in-depth against a guest-turn model
+  hallucinating the call.
 - Execution: the conscious process's `_consume_internal_actions` consumer
   (group `conscious-engine` on `alfred:actions`) routes `confirmed=True`
   domain actions through the DomainRouter.

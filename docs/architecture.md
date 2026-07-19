@@ -75,6 +75,7 @@ graph TB
     subgraph "Alfred Core"
         Bridge["MQTT-Redis Bridge<br/><code>uv run python -m bus</code>"]
         Runner["Reflex Runner<br/><code>uv run python -m core.reflex</code>"]
+        AttnSet["AttentionSet<br/>Tier-2 SLM gate"]
         Engine[Reflex Engine]
         CtxReader[ContextReader]
         Registry[ToolRegistry]
@@ -96,6 +97,7 @@ graph TB
     end
 
     subgraph "Domain Agents"
+        DomRouter["DomainRouter<br/>risk enforcement +<br/>critical-action interception"]
         HomeAgent[HomeAgent]
     end
 
@@ -115,6 +117,7 @@ graph TB
         SessionMgr[SessionManager]
         CostTracker[CostTracker]
         CtxAssembler[ContextAssembler]
+        ActionTools["Action Tools<br/>confirm_pending_action +<br/>attention_* (sir-only)"]
     end
 
     subgraph "Memory System"
@@ -170,8 +173,12 @@ graph TB
     Bridge <-->|XADD / XREAD| Redis
 
     Runner -->|XREADGROUP| Redis
-    Runner --> Engine
-    Runner --> HomeAgent
+    Runner --> AttnSet
+    AttnSet -->|SADD/SMEMBERS<br/>alfred:attention:*| Redis
+    AttnSet --> Engine
+    Runner --> DomRouter
+    DomRouter --> HomeAgent
+    DomRouter -->|SET/GETDEL<br/>alfred:pending_actions:*| Redis
     Runner --> ScratchWriter
     Runner --> TelCollector
 
@@ -212,6 +219,10 @@ graph TB
     ConsEngine -->|POST /v1/messages| Claude["Claude API"]
     ConsEngine -->|XREAD requests| Redis
     ConsEngine -->|XADD responses| Redis
+    ConsEngine -->|domain tool calls| DomRouter
+    ConsEngine -->|sir-only tool calls| ActionTools
+    ActionTools -->|GETDEL + XADD alfred:actions| Redis
+    ActionTools -->|SADD/SREM alfred:attention:*| Redis
     CtxAssembler --> IntRegistry
     CtxAssembler --> EpisodicStore
     CtxAssembler --> MemReader
@@ -288,6 +299,20 @@ The `ReflexEngine` class is the System 1 fast path. It is a pure inference compo
 The `@track_latency(category="reflex")` decorator on `process_event` records inference latency to the telemetry buffer. The `@track_tokens(model="ollama")` decorator on `ollama_client.infer` records token usage.
 
 **Ollama client** (`core/reflex/ollama_client.py`): thin async wrapper using a long-lived `httpx.AsyncClient` for TCP connection reuse on the hot path.
+
+#### 3.2.1 AttentionSet (Tiered Autonomy — Reflex Gating)
+
+**Files:** `core/reflex/attention.py`, `core/reflex/attention_seed.yaml`
+
+Every `state_changed` event still reaches triggers and context (Tier 1, full visibility), but
+only entities in the **attention set** trigger SLM inference (Tier 2). `AttentionSet` is a
+Redis SET per domain (`alfred:attention:{domain}`); membership is lazily seeded from
+`attention_seed.yaml` (domain + device-class rules) on first sight of an entity and persisted
+via `SADD`. A companion `alfred:attention:{domain}:seen` set makes runtime removals sticky --
+the YAML seed never re-adds a demoted entity. The gate lives in `core/reflex/runner.py
+process_stream_entry()`, upstream of `Engine`; gated-out events are still `XACK`ed. The
+Conscious action tools (`attention_add`/`attention_remove`/`attention_list`, see 3.8) and the
+Librarian can reshape membership at runtime. Full detail: [docs/autonomy.md](autonomy.md).
 
 ### 3.3 ToolRegistry (Dynamic Tool Discovery)
 
@@ -409,6 +434,13 @@ The Conscious Engine handles complex user requests via the Claude API with an ag
 
 **Identity prompts** are in `core/conscious/prompts/` -- separate system prompts for sir vs guest interactions, enforcing the privacy boundary.
 
+**Action tools** (`core/conscious/action_tools.py`) -- `confirm_pending_action` (republishes a
+parked critical action once the user approves) and `attention_add`/`attention_remove`/`attention_list`
+(reshape the Reflex `AttentionSet`, see 3.2.1), dispatched in-process like memory tools. Offered
+in the tool manifest only when `identity.identity == "sir"`, and re-checked at dispatch time in
+`_dispatch_tool_call()` -- a guest turn that somehow emits one of these calls is refused rather
+than executed (defense-in-depth). See [docs/autonomy.md](autonomy.md).
+
 ### 3.9 Integration Registry
 
 **Files:** `core/integrations/base.py`, `core/integrations/registry.py`, `core/integrations/sanitizer.py`
@@ -472,11 +504,22 @@ management, health monitoring, integration settings, and a ⌘K command palette.
 `web/dist/` and served by `core/channels/spa.mount_spa()` (static assets + index.html
 SPA fallback). See `docs/web-frontend.md` for the full architecture reference.
 
-### 3.11 Domain Routing
+### 3.11 Domain Routing (Tiered Autonomy Enforcement)
 
-**Files:** `core/routing/domain_router.py`
+**Files:** `core/routing/domain_router.py`, `core/routing/risk.py`, `core/routing/pending.py`
 
-The `DomainRouter` maps `ActionRequest` events to the correct domain agent based on `target_service`. Replaces hardcoded agent dispatch with a registry-based lookup.
+The `DomainRouter` maps `ActionRequest` events to the correct domain agent based on
+`target_service` -- a registry-based lookup, not hardcoded agent dispatch. It is also the
+**dispatch-layer enforcement point** for tiered autonomy (defense-in-depth alongside the
+Reflex prompt filter, 3.2.1): every `route()` call looks up the tool's risk
+(`tool_risk()`, default `"benign"`); a Reflex-sourced request above benign risk is rejected
+and recorded as a `ReflexObservation`, and an unconfirmed `risk == "critical"` request is
+parked (not executed) via the **pending-action store** (`core/routing/pending.py`,
+Redis key `alfred:pending_actions:{request_id}`, 5-minute TTL) while an URGENT notification
+asks the user to confirm. Confirmation -- via `POST /api/actions/{id}/confirm` or the
+`confirm_pending_action` action tool (3.8) -- atomically `GETDEL`s the pending entry and
+republishes it with `confirmed=True`, so concurrent confirms of the same id can never both
+execute. Full flow and sequence diagram: [docs/autonomy.md](autonomy.md).
 
 ### 3.12 Telemetry
 
@@ -612,6 +655,9 @@ All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `
 | `alfred:memory:episodic` | Stream | Hot episodic memory entries |
 | `alfred:identity:voiceprint` | Hash | Voiceprint embeddings for identity |
 | `alfred:notifications:queue` | Stream | Proactive notification queue |
+| `alfred:attention:{domain}` | Set | Tier-2 Reflex attention set membership (`core/reflex/attention.py`) |
+| `alfred:attention:{domain}:seen` | Set | Sticky removals -- entities the YAML seed must not re-add |
+| `alfred:pending_actions:{request_id}` | String (JSON) | Parked critical `ActionRequest` awaiting confirmation (TTL 300s, `core/routing/pending.py`) |
 
 ### 5.3 Consumer Groups
 
