@@ -16,6 +16,11 @@ from typing import TYPE_CHECKING, Any, ClassVar
 import litellm
 
 from bus.schemas.events import ActionRequest, AlfredResponse, UserRequest
+from core.conscious.action_tools import (
+    ACTION_TOOL_NAMES,
+    ACTION_TOOLS_MANIFEST,
+    dispatch_action_tool,
+)
 from core.conscious.memory_tools import (
     MEMORY_TOOL_PREFIX,
     MEMORY_TOOLS_MANIFEST,
@@ -442,6 +447,14 @@ class ConsciousEngine:
                 content = "Memory tools not available"
             return self._make_tool_result(tc["id"], content)
 
+        # 3b. Action tools (confirmation + attention) — direct in-process call
+        if name in ACTION_TOOL_NAMES:
+            try:
+                content = await dispatch_action_tool(name, params, self._redis)
+            except Exception as e:
+                content = f"Error executing action tool: {e}"
+            return self._make_tool_result(tc["id"], content)
+
         # 4. Domain tools — route to external service via DomainRouter
         target = ""
         for t in tools:
@@ -672,6 +685,9 @@ class ConsciousEngine:
         # Add memory tools (sir only)
         if identity.identity == "sir" and self._context_index:
             openai_tools.extend(MEMORY_TOOLS_MANIFEST)
+        # Add confirmation + attention tools (sir only)
+        if identity.identity == "sir":
+            openai_tools.extend(ACTION_TOOLS_MANIFEST)
         total_prompt_tokens = 0
         total_completion_tokens = 0
         all_actions: list[str] = []
