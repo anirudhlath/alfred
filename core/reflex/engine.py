@@ -138,10 +138,16 @@ class ReflexEngine:
         return _SYSTEM_PROMPT_TEMPLATE.format(tool_section=tool_section)
 
     async def _get_tools_and_prompt(self) -> tuple[list[ToolInfo], str]:
-        """Return cached tools and system prompt, re-fetching after TTL expires."""
+        """Return cached reflex-audience tools and system prompt (TTL-refreshed).
+
+        Only tools tagged ``audience == "reflex"`` reach the SLM prompt —
+        the first layer of tiered autonomy. Untagged (legacy) tools default
+        to "conscious" and are therefore excluded.
+        """
         now = time.monotonic()
         if self._cached_tools is None or (now - self._cache_time) > self.TOOL_CACHE_TTL:
-            self._cached_tools = await self._registry.get_tools()
+            all_tools = await self._registry.get_tools()
+            self._cached_tools = [t for t in all_tools if t.audience == "reflex"]
             self._cached_system_prompt = self._build_system_prompt(self._cached_tools)
             self._cache_time = now
         assert self._cached_system_prompt is not None  # narrowing for mypy
