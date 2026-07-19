@@ -21,7 +21,7 @@ async def test_confirm_pending_action_tool_republishes() -> None:
         tool_name="home.unlock_door",
     )
     redis = AsyncMock()
-    redis.get = AsyncMock(return_value=action.model_dump_json().encode())
+    redis.getdel = AsyncMock(return_value=action.model_dump_json().encode())
 
     result = json.loads(
         await dispatch_action_tool(
@@ -41,7 +41,7 @@ async def test_confirm_pending_action_tool_expired() -> None:
     from core.conscious.action_tools import dispatch_action_tool
 
     redis = AsyncMock()
-    redis.get = AsyncMock(return_value=None)
+    redis.getdel = AsyncMock(return_value=None)
     result = json.loads(
         await dispatch_action_tool("confirm_pending_action", {"request_id": "x"}, redis)
     )

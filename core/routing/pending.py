@@ -37,17 +37,21 @@ async def store_pending_action(redis: AioRedis, action: ActionRequest) -> None:
 
 
 async def confirm_pending_action(redis: AioRedis, request_id: str) -> ActionRequest | None:
-    """Confirm a pending action: republish with the marker set, delete the key.
+    """Confirm a pending action: atomically pop it and republish with the marker set.
+
+    Uses GETDEL so concurrent confirms of the same id can never both see the
+    value — only one caller gets the ActionRequest back and republishes;
+    every other concurrent (or later) confirm gets None. This prevents a
+    critical action (e.g. a door unlock) from executing twice.
 
     Returns the confirmed ActionRequest, or None when the pending entry is
-    missing or expired.
+    missing, expired, or was already consumed by a concurrent confirm.
     """
-    raw: bytes | str | None = await redis.get(pending_key(request_id))
+    raw: bytes | str | None = await redis.getdel(pending_key(request_id))
     if raw is None:
         return None
     action = ActionRequest.model_validate_json(decode_stream_value(raw))
     confirmed = action.model_copy(update={"confirmed": True})
     await redis.xadd(ACTIONS_STREAM, {"event": confirmed.model_dump_json()})
-    await redis.delete(pending_key(request_id))
     logger.info("Pending action {} confirmed → republished '{}'", request_id, confirmed.tool_name)
     return confirmed

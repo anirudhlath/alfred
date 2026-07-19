@@ -23,7 +23,7 @@ def _pending_action() -> ActionRequest:
 def test_confirm_happy_path(web_client: TestClient) -> None:
     action = _pending_action()
     redis: AsyncMock = web_client.app.state.redis  # type: ignore[attr-defined]
-    redis.get = AsyncMock(return_value=action.model_dump_json().encode())
+    redis.getdel = AsyncMock(return_value=action.model_dump_json().encode())
 
     resp = web_client.post(f"/api/actions/{action.request_id}/confirm")
 
@@ -34,12 +34,12 @@ def test_confirm_happy_path(web_client: TestClient) -> None:
     republished = ActionRequest.model_validate_json(fields["event"])
     assert republished.confirmed is True
     assert republished.request_id == action.request_id
-    redis.delete.assert_awaited_once_with(f"alfred:pending_actions:{action.request_id}")
+    redis.getdel.assert_awaited_once_with(f"alfred:pending_actions:{action.request_id}")
 
 
 def test_confirm_missing_or_expired_returns_404(web_client: TestClient) -> None:
     redis: AsyncMock = web_client.app.state.redis  # type: ignore[attr-defined]
-    redis.get = AsyncMock(return_value=None)
+    redis.getdel = AsyncMock(return_value=None)
 
     resp = web_client.post("/api/actions/ghost-id/confirm")
 
