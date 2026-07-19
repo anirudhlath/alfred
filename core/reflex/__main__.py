@@ -201,13 +201,14 @@ async def run(config: AlfredConfig) -> None:
         memory_reader=memory_reader,
     )
     attention = AttentionSet(redis=r)
-    router = DomainRouter()
-    router.register("home-service", HomeAgent(redis=r))
 
-    # Notification wiring for TriggerFired
+    # Notification wiring for TriggerFired + critical-action confirmations
     dnd_checker = DNDChecker(redis=r, calendar_adapter=None)
     dispatcher = NotificationDispatcher(redis=r, dnd_checker=dnd_checker)
     publisher = NotificationPublisher(dispatcher)
+
+    router = DomainRouter(redis=r, notifier=publisher)
+    router.register("home-service", HomeAgent(redis=r))
 
     # Background tasks
     telemetry_task = asyncio.create_task(flush_telemetry_periodically(config))

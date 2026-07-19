@@ -134,9 +134,6 @@ async def run(config: AlfredConfig) -> None:
     await ensure_consumer_group(r, stream, group)
 
     # Setup components
-    router = DomainRouter()
-    router.register("home-service", HomeAgent(redis=r))
-
     # Memory components
     memory_dir = Path(__file__).resolve().parent.parent / "memory"
     routine_store = RoutineStore(
@@ -233,6 +230,9 @@ async def run(config: AlfredConfig) -> None:
     )
 
     notifier = NotificationPublisher(dispatcher=dispatcher)
+
+    router = DomainRouter(redis=r, notifier=notifier)
+    router.register("home-service", HomeAgent(redis=r))
 
     # Register internal action handlers for ACTIONS_STREAM consumption
     _INTERNAL_HANDLERS["drain_deferred_notifications"] = dispatcher.drain_deferred
