@@ -26,6 +26,7 @@ from core.conscious.session import SessionManager
 from core.memory.context_index import ContextIndexManager
 from core.memory.embedding_provider import SentenceTransformerProvider
 from core.memory.episodic.memory import EpisodicMemory
+from core.memory.paths import triggers_snapshot_dir
 from core.memory.redis_vector_store import RedisVectorStore
 from core.memory.routines.store import RoutineStore
 from core.memory.scratchpad_writer import ScratchpadWriter
@@ -139,9 +140,7 @@ async def run(config: AlfredConfig) -> None:
 
     # Memory components
     memory_dir = Path(__file__).resolve().parent.parent / "memory"
-    routine_store = RoutineStore(
-        routines_dir=str(memory_dir / "routines"),
-    )
+    routine_store = RoutineStore()
     # New memory system (Phase 3): embedding-backed episodic + context index
     embedder = None
     context_index = None
@@ -207,7 +206,7 @@ async def run(config: AlfredConfig) -> None:
     # Trigger store — created early so dispatcher can schedule drain triggers
     trigger_store = TriggerStore(
         redis=r,
-        snapshot_dir=str(Path(__file__).resolve().parent.parent / "memory" / "triggers"),
+        snapshot_dir=triggers_snapshot_dir(),
     )
     # Warm the cache from Redis so tools see triggers created before this
     # process started, then subscribe: mutations here (e.g. new reminders)

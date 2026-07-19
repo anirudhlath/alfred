@@ -8,12 +8,11 @@ from typing import Literal
 
 import yaml
 
+from core.memory.paths import routines_dir as _routines_dir
 from core.memory.schemas import RoutineSpec
 from shared.fs import atomic_write
 
 logger = logging.getLogger(__name__)
-
-_DEFAULT_ROUTINES_DIR = str(Path(__file__).resolve().parent)
 
 
 class RoutineStore:
@@ -27,8 +26,8 @@ class RoutineStore:
     re-scans the directory.
     """
 
-    def __init__(self, routines_dir: str = _DEFAULT_ROUTINES_DIR) -> None:
-        self._dir = Path(routines_dir)
+    def __init__(self, routines_dir: str | None = None) -> None:
+        self._dir = Path(routines_dir) if routines_dir else _routines_dir()
         self._dir.mkdir(parents=True, exist_ok=True)
         self._cache: list[RoutineSpec] | None = None
 

@@ -406,7 +406,7 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
     async def memory_routines() -> dict[str, Any]:
         from core.memory.routines.store import RoutineStore
 
-        store = RoutineStore(routines_dir=str(_MEMORY_DIR / "routines"))
+        store = RoutineStore()
         # list_all() does sync glob + YAML reads per file — offload to thread pool
         # so the event loop (which also serves chat/voice WS) is not blocked.
         routines = await asyncio.to_thread(store.list_all)

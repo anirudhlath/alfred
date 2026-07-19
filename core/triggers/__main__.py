@@ -12,7 +12,6 @@ import os
 import signal
 import subprocess
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -24,6 +23,7 @@ import uvicorn
 
 import core.triggers.types  # noqa: F401  — register all trigger types
 from bus.schemas.events import ActionRequest
+from core.memory.paths import triggers_snapshot_dir
 from core.reflex.runner import ensure_consumer_group
 from core.triggers.engine import TriggerEngine
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 GROUP = "trigger-engine"
 CONSUMER = "worker-1"
-SNAPSHOT_DIR = Path("core/memory/triggers")
+SNAPSHOT_DIR = triggers_snapshot_dir()
 
 # ACTIONS_STREAM consumer (internal trigger actions from admin API). A distinct
 # consumer GROUP so this process sees every entry independently of the home-agent
