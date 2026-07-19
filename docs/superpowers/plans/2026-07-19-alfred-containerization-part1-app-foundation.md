@@ -408,12 +408,14 @@ git commit -m "refactor(memory): route scratchpad + cold store through data dir"
 
 **Files:**
 - Modify: `core/memory/routines/store.py:16,30`
-- Modify: the `TriggerStore(...)` construction site(s) (find via grep — see Step 1)
+- Modify: `core/triggers/__main__.py:43`
+- Modify: `core/conscious/__main__.py:142-144, 208-211`
+- Modify: `core/channels/admin_api.py:409`
 - Test: `tests/core/memory/test_routines_store_path.py` (create)
 
 **Interfaces:**
 - Consumes: `core.memory.paths.routines_dir`, `core.memory.paths.triggers_snapshot_dir` (Task 2).
-- Produces: no new public API.
+- Produces: no new public API. `RoutineStore(routines_dir=...)` keyword stays valid (backward compatible).
 
 - [ ] **Step 1: Locate the TriggerStore call site**
 
@@ -460,47 +462,56 @@ Expected: FAIL — `store._dir` still resolves under the package.
 
 - [ ] **Step 4: Write minimal implementation**
 
-In `core/memory/routines/store.py`, replace line 16 and the `__init__` default (line 30):
+In `core/memory/routines/store.py`, replace line 16 (`_DEFAULT_ROUTINES_DIR`) and the
+`__init__` default (line 30). **Use an alias import and KEEP the public `routines_dir`
+parameter name** — two callers pass `routines_dir=` by keyword (`core/conscious/__main__.py`,
+`core/channels/admin_api.py`), so renaming the parameter would break them:
 
 ```python
 # remove: _DEFAULT_ROUTINES_DIR = str(Path(__file__).resolve().parent)
-from core.memory.paths import routines_dir
+from core.memory.paths import routines_dir as _routines_dir
 
 
 class RoutineStore:
     ...
-    def __init__(self, routines_dir_override: str | None = None) -> None:
-        self._dir = Path(routines_dir_override) if routines_dir_override else routines_dir()
+    def __init__(self, routines_dir: str | None = None) -> None:
+        self._dir = Path(routines_dir) if routines_dir else _routines_dir()
         self._dir.mkdir(parents=True, exist_ok=True)
         self._cache = None
 ```
 
-(Rename the parameter to `routines_dir_override` to avoid shadowing the imported
-`routines_dir` function. Update any caller that passed `routines_dir=` positionally — grep
-`RoutineStore(` to confirm none pass it by keyword; the default construction `RoutineStore()`
-is unaffected.)
+The `_routines_dir` alias avoids shadowing the public parameter; existing
+`RoutineStore(routines_dir=...)` keyword callers keep working.
 
-At each `TriggerStore(...)` site found in Step 1, replace the snapshot dir argument with:
+Then route every routines/triggers construction site (exact before → after; each modified
+file adds `from core.memory.paths import triggers_snapshot_dir` where it uses it):
 
-```python
-from core.memory.paths import triggers_snapshot_dir
-...
-store = TriggerStore(redis=..., snapshot_dir=triggers_snapshot_dir())
-```
+| File | Before | After |
+|---|---|---|
+| `core/triggers/__main__.py:43` | `SNAPSHOT_DIR = Path("core/memory/triggers")` | `SNAPSHOT_DIR = triggers_snapshot_dir()` |
+| `core/conscious/__main__.py:142-144` | `routine_store = RoutineStore(\n        routines_dir=str(memory_dir / "routines"),\n    )` | `routine_store = RoutineStore()` |
+| `core/conscious/__main__.py:208-211` | `snapshot_dir=str(Path(__file__).resolve().parent.parent / "memory" / "triggers"),` | `snapshot_dir=triggers_snapshot_dir(),` |
+| `core/channels/admin_api.py:409` | `store = RoutineStore(routines_dir=str(_MEMORY_DIR / "routines"))` | `store = RoutineStore()` |
 
-- [ ] **Step 5: Run test + full memory suite to verify no regressions**
+`TriggerStore.snapshot_dir` accepts `Path | str` (`core/triggers/store.py:37`), so passing the
+`Path` from `triggers_snapshot_dir()` is fine. Do NOT remove the `memory_dir` / `_MEMORY_DIR`
+locals yet — their remaining cold-store/scratchpad/prefs uses are routed in Task 5, which
+removes the now-dead locals.
 
-Run: `.venv/bin/python -m pytest tests/core/memory/ core/reflex/tests/ -q`
-Expected: PASS (new test + existing memory/reflex tests unaffected).
+- [ ] **Step 5: Run tests to verify no regressions**
+
+Run: `.venv/bin/python -m pytest tests/core/memory/ tests/core/channels/ tests/core/triggers/ core/reflex/tests/ -q`
+Expected: PASS (new test + existing memory/channels/triggers/reflex tests unaffected). The
+conscious/triggers/admin_api call-site edits must not break their existing tests.
 
 - [ ] **Step 6: Lint, type-check, commit**
 
 ```bash
-ruff check core/memory/routines/store.py core/triggers/ tests/core/memory/test_routines_store_path.py --fix
-ruff format core/memory/routines/store.py core/triggers/ tests/core/memory/test_routines_store_path.py
-mypy --strict core/
-git add -A
-git commit -m "refactor(memory): route routines + trigger snapshots through data dir"
+.venv/bin/python -m ruff check core/memory/routines/store.py core/triggers/__main__.py core/conscious/__main__.py core/channels/admin_api.py tests/core/memory/test_routines_store_path.py --fix
+.venv/bin/python -m ruff format core/memory/routines/store.py core/triggers/__main__.py core/conscious/__main__.py core/channels/admin_api.py tests/core/memory/test_routines_store_path.py
+.venv/bin/python -m mypy --strict core/
+git add core/memory/routines/store.py core/triggers/__main__.py core/conscious/__main__.py core/channels/admin_api.py tests/core/memory/test_routines_store_path.py
+git commit -m "refactor(memory): route routines + trigger snapshots through data dir (defaults + call sites)"
 ```
 
 ---
@@ -508,15 +519,20 @@ git commit -m "refactor(memory): route routines + trigger snapshots through data
 ### Task 5: Route preferences/profile through `paths` + call `seed_defaults()` at startup
 
 **Files:**
-- Modify: `core/channels/web_server.py:170-173` (`_get_prefs_dirs`)
-- Modify: `core/librarian/consolidator.py:57-59` (`_MEMORY_DIR`, `_DEFAULT_PREFERENCES_DIR`, `_DEFAULT_PROFILE_DIR`)
+- Modify: `core/channels/web_server.py:170-173` (`_get_prefs_dirs`) + lifespan `seed_defaults()`
+- Modify: `core/librarian/consolidator.py:57-59` (defaults; remove `_MEMORY_DIR`)
 - Modify: `runner/__main__.py` (call `seed_defaults()` before starting services)
-- Modify: `core/channels/web_server.py` lifespan startup (call `seed_defaults()` for standalone `python -m core.channels`)
+- Modify: `core/conscious/__main__.py` (cold store, semantic dirs, scratchpad, Librarian prefs args; remove dead `memory_dir`)
+- Modify: `core/librarian/__main__.py` (cold store, semantic dirs, Librarian prefs args; remove dead `_MEMORY_DIR`)
+- Modify: `core/channels/admin_api.py` (cold store; remove dead `_MEMORY_DIR`)
+- Modify: `core/reflex/__main__.py` (MemoryReader + ReflexEngine prefs dirs; remove dead `memory_dir`)
 - Test: `tests/core/memory/test_preferences_paths.py` (create)
+- Test: `tests/core/memory/test_no_package_state_paths.py` (create — completeness gate)
 
 **Interfaces:**
-- Consumes: `core.memory.paths.preferences_dir`, `.profile_dir`, `.seed_defaults` (Task 2).
-- Produces: no new public API.
+- Consumes: `core.memory.paths.preferences_dir`, `.profile_dir`, `.episodic_cold_path`, `.seed_defaults` (Task 2).
+- Produces: no new public API. This task COMPLETES the state consolidation — every process
+  entry point that previously built package-relative writable-state paths now routes through `paths`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -591,24 +607,90 @@ of startup:
     seed_defaults()  # idempotent — safe when the runner already seeded
 ```
 
+Then route every remaining cold-store / scratchpad / preferences / profile construction site
+in the process entry points (exact before → after). Each modified file adds
+`from core.memory.paths import episodic_cold_path, preferences_dir, profile_dir` (import only
+what it uses). **Leave read-only package resources alone** — e.g.
+`core/memory/sqlite_vec_store.py`'s `_SCHEMA_V1_PATH`/`_MIGRATION_V2_PATH` are shipped SQL
+assets, NOT writable state; do not touch them.
+
+| File | Before | After |
+|---|---|---|
+| `core/conscious/__main__.py:155-158` | `db_path=str(memory_dir / "episodic_cold.db"),` | `db_path=str(episodic_cold_path()),` |
+| `core/conscious/__main__.py:163-166` | `semantic_dirs=[\n                memory_dir / "preferences",\n                memory_dir / "profile",\n            ],` | `semantic_dirs=[\n                preferences_dir(),\n                profile_dir(),\n            ],` |
+| `core/conscious/__main__.py:271-274` | `scratchpad_writer = ScratchpadWriter(\n        redis=r,\n        scratchpad_path=str(memory_dir / "scratchpad.md"),\n    )` | `scratchpad_writer = ScratchpadWriter(redis=r)` |
+| `core/conscious/__main__.py:295-296` | `preferences_dir=str(memory_dir / "preferences"),\n                profile_dir=str(memory_dir / "profile"),` | *(delete both lines — `Librarian` defaults are now `paths`-based)* |
+| `core/conscious/__main__.py:141` | `memory_dir = Path(__file__).resolve().parent.parent / "memory"` | *(delete — now unused)* |
+| `core/librarian/__main__.py:46-49` | `db_path=str(_MEMORY_DIR / "episodic_cold.db"),` | `db_path=str(episodic_cold_path()),` |
+| `core/librarian/__main__.py:54-57` | `semantic_dirs=[\n                _MEMORY_DIR / "preferences",\n                _MEMORY_DIR / "profile",\n            ],` | `semantic_dirs=[\n                preferences_dir(),\n                profile_dir(),\n            ],` |
+| `core/librarian/__main__.py:79-80` | `preferences_dir=str(_MEMORY_DIR / "preferences"),\n            profile_dir=str(_MEMORY_DIR / "profile"),` | *(delete both lines)* |
+| `core/librarian/__main__.py:30` | `_MEMORY_DIR = Path(__file__).resolve().parent.parent / "memory"` | *(delete — now unused)* |
+| `core/channels/admin_api.py:105-106` | `db_path=str(_MEMORY_DIR / "episodic_cold.db"), dim=config.embedding_dim` | `db_path=str(episodic_cold_path()), dim=config.embedding_dim` |
+| `core/channels/admin_api.py:49` | `_MEMORY_DIR = Path(__file__).resolve().parent.parent / "memory"` | *(delete — unused after Task 4's routines edit + this cold-store edit)* |
+| `core/reflex/__main__.py:191-193` | `preferences_dir=memory_dir / "preferences",\n        profile_dir=memory_dir / "profile",` | `preferences_dir=preferences_dir(),\n        profile_dir=profile_dir(),` |
+| `core/reflex/__main__.py:196` | `preferences_dir=str(memory_dir / "preferences"),` | `preferences_dir=str(preferences_dir()),` |
+| `core/reflex/__main__.py:190` | `memory_dir = Path(__file__).resolve().parent.parent / "memory"` | *(delete — now unused)* |
+
+`Librarian.__init__` already defaults `preferences_dir`/`profile_dir` to
+`_DEFAULT_PREFERENCES_DIR`/`_DEFAULT_PROFILE_DIR` (`core/librarian/consolidator.py:130-131`),
+which this task rewires to the `paths`-based values — so deleting the explicit args at the two
+`Librarian(...)` call sites makes them use the correct defaults.
+
+- [ ] **Step 3b: Write the completeness-gate test**
+
+Create `tests/core/memory/test_no_package_state_paths.py`:
+
+```python
+"""No process entry point may construct package-relative writable-state paths."""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+_REPO = Path(__file__).resolve().parents[2]
+# Matches `.parent.parent / "memory"` — the entry-point pattern reaching into the
+# installed package for writable state. Read-only assets use `.parent / "episodic"`,
+# which this pattern does not match.
+_PATTERN = re.compile(r"""\.parent\.parent\s*/\s*["']memory["']""")
+
+
+def test_no_package_relative_memory_state_paths() -> None:
+    offenders: list[str] = []
+    for f in (_REPO / "core").rglob("*.py"):
+        s = str(f)
+        if "/tests/" in s or f.name == "paths.py":
+            continue
+        if _PATTERN.search(f.read_text(encoding="utf-8")):
+            offenders.append(str(f.relative_to(_REPO)))
+    assert not offenders, f"package-relative memory state paths remain: {offenders}"
+```
+
+Run it once BEFORE the routing edits to confirm it FAILS listing the offenders
+(`core/conscious/__main__.py`, `core/librarian/__main__.py`, `core/channels/admin_api.py`,
+`core/reflex/__main__.py`, `core/librarian/consolidator.py`), then again AFTER all edits to
+confirm it PASSES. This gate is what proves the consolidation is complete.
+
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `.venv/bin/python -m pytest tests/core/memory/test_preferences_paths.py -v`
+Run: `.venv/bin/python -m pytest tests/core/memory/test_preferences_paths.py tests/core/memory/test_no_package_state_paths.py -v`
 Expected: PASS.
 
-- [ ] **Step 5: Run the channels + librarian suites for regressions**
+- [ ] **Step 5: Run regressions across every touched entry point**
 
-Run: `.venv/bin/python -m pytest tests/core/channels/ core/librarian/ -q`
-Expected: PASS (no path regressions).
+Run: `.venv/bin/python -m pytest tests/core/channels/ tests/core/memory/ core/librarian/ core/reflex/tests/ -q`
+Expected: PASS (no path regressions in channels/memory/librarian/reflex; conscious/admin_api
+entry-point edits must not break their tests).
 
 - [ ] **Step 6: Lint, type-check, commit**
 
 ```bash
-ruff check core/channels/web_server.py core/librarian/consolidator.py runner/__main__.py tests/core/memory/test_preferences_paths.py --fix
-ruff format core/channels/web_server.py core/librarian/consolidator.py runner/__main__.py tests/core/memory/test_preferences_paths.py
-mypy --strict core/ runner/
-git add -A
-git commit -m "refactor(memory): route preferences/profile through data dir + seed on boot"
+FILES="core/channels/web_server.py core/channels/admin_api.py core/librarian/consolidator.py core/librarian/__main__.py core/conscious/__main__.py core/reflex/__main__.py runner/__main__.py tests/core/memory/test_preferences_paths.py tests/core/memory/test_no_package_state_paths.py"
+.venv/bin/python -m ruff check $FILES --fix
+.venv/bin/python -m ruff format $FILES
+.venv/bin/python -m mypy --strict core/ runner/
+git add $FILES
+git commit -m "refactor(memory): complete state consolidation — route all entry points + seed on boot"
 ```
 
 ---
