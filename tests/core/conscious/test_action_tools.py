@@ -178,6 +178,45 @@ async def test_non_sir_identity_does_not_get_action_tools_manifest() -> None:
 
 
 @pytest.mark.asyncio
+async def test_guest_hallucinated_action_tool_call_refused_end_to_end() -> None:
+    """Full pipeline defense-in-depth: the manifest gate already keeps action tools
+    out of a guest turn's tool list, but if the model hallucinates the call anyway
+    (e.g. from prior conversation context), the dispatch-side identity gate must
+    still refuse it — the pending-action store is never touched."""
+    from unittest.mock import patch
+
+    engine = _make_engine(
+        IdentityResult(
+            identity="guest",
+            confidence=0.4,
+            method="unclaimed",
+            factors=[],
+            risk_clearance="low",
+        )
+    )
+    hallucinated_call = [
+        {"id": "tc-1", "name": "confirm_pending_action", "input": {"request_id": "req-1"}}
+    ]
+
+    with (
+        patch.object(engine, "_call_llm", new_callable=AsyncMock) as mock_llm,
+        patch(
+            "core.conscious.engine.dispatch_action_tool", new_callable=AsyncMock
+        ) as mock_dispatch,
+    ):
+        mock_llm.side_effect = [
+            ("", hallucinated_call, 100, 50),
+            ("I can't do that for you.", [], 50, 20),
+        ]
+        response = await engine.process_request(
+            _make_request(identity_claim="guest", authenticated=False)
+        )
+
+    mock_dispatch.assert_not_called()
+    assert response.actions_taken == ["confirm_pending_action"]
+
+
+@pytest.mark.asyncio
 async def test_engine_dispatches_action_tool() -> None:
     """The engine routes ACTION_TOOL_NAMES through dispatch_action_tool in-process."""
     from core.conscious.engine import ConsciousEngine

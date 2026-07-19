@@ -153,6 +153,50 @@ async def test_tool_not_found_in_registry(mock_deps: dict[str, AsyncMock | Magic
 
 
 @pytest.mark.asyncio
+async def test_dispatch_tool_call_refuses_action_tool_for_non_sir(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """Dispatch-side gate (defense-in-depth): a guest-identity turn dispatching an
+    action tool (confirm_pending_action/attention_*) is refused even though the
+    manifest that offers these tools is already sir-only — a guest-turn model that
+    hallucinates the call must not reach the underlying pending-action helper."""
+    engine = ConsciousEngine(**mock_deps)
+
+    with patch(
+        "core.conscious.engine.dispatch_action_tool", new_callable=AsyncMock
+    ) as mock_dispatch:
+        result = await engine._dispatch_tool_call(
+            {"id": "tc-1", "name": "confirm_pending_action", "input": {"request_id": "req-1"}},
+            tools=[],
+            is_sir=False,
+        )
+
+    mock_dispatch.assert_not_called()
+    assert result["type"] == "tool_result"
+    assert "verified user" in result["content"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_tool_call_allows_action_tool_for_sir(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """A sir turn (is_sir=True, the default) still dispatches action tools normally."""
+    engine = ConsciousEngine(**mock_deps)
+
+    with patch(
+        "core.conscious.engine.dispatch_action_tool", new_callable=AsyncMock
+    ) as mock_dispatch:
+        mock_dispatch.return_value = '{"status": "confirmed"}'
+        result = await engine._dispatch_tool_call(
+            {"id": "tc-1", "name": "confirm_pending_action", "input": {"request_id": "req-1"}},
+            tools=[],
+        )
+
+    mock_dispatch.assert_awaited_once()
+    assert result["content"] == '{"status": "confirmed"}'
+
+
+@pytest.mark.asyncio
 async def test_max_iterations_fallback(mock_deps: dict[str, AsyncMock | MagicMock]) -> None:
     """When tool calls never resolve, engine hits MAX_ITERATIONS and returns fallback."""
     tool = ToolInfo(
