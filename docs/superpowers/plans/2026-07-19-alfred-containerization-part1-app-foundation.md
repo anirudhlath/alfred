@@ -655,21 +655,33 @@ def test_spec_requires_exactly_one_of_module_or_command() -> None:
     ServiceSpec(name="ok-cmd", command=["redis-server"])
 
 
-async def test_native_command_service_runs_and_ready_gate_passes() -> None:
-    from runner.supervisor import Supervisor
+async def test_await_ready_probes_until_true() -> None:
+    # Deterministic unit test of the readiness gate — no subprocess race.
+    from runner.supervisor import Supervisor, _ManagedService
 
-    ready_calls: list[int] = []
+    calls: list[int] = []
 
     async def ready() -> bool:
-        ready_calls.append(1)
-        return True
+        calls.append(1)
+        return len(calls) >= 2  # False on first probe, True on second
 
-    # A trivial native command that exits 0 immediately.
-    infra = ServiceSpec(name="probe", command=["true"], ready_check=ready)
-    sup = Supervisor([infra], reload=False)
-    code = await sup.run()
-    assert code == 0
-    assert ready_calls  # readiness was probed
+    sup = Supervisor([], reload=False)
+    svc = _ManagedService(ServiceSpec(name="probe", command=["sleep", "1"], ready_check=ready))
+    ok = await sup._await_ready(svc, timeout=5.0)
+    assert ok is True
+    assert len(calls) >= 2  # probed more than once before readiness
+
+
+async def test_native_command_spawns_via_start_process() -> None:
+    # Verifies the command branch of _start_process without driving run().
+    from runner.supervisor import Supervisor, _ManagedService
+
+    sup = Supervisor([], reload=False)
+    svc = _ManagedService(ServiceSpec(name="probe", command=["true"]))
+    await sup._start_process(svc)
+    assert svc.process is not None
+    await svc.process.wait()
+    assert svc.process.returncode == 0
 ```
 
 Create `tests/runner/test_service_list.py`:
@@ -845,10 +857,12 @@ def _infra_services() -> list[ServiceSpec]:
         except Exception:
             return False
 
+    redis_dir = data_root() / "redis"
+    redis_dir.mkdir(parents=True, exist_ok=True)
     return [
         ServiceSpec(
             name="redis",
-            command=["redis-stack-server", "--dir", str(data_path("redis").parent / "redis")],
+            command=["redis-stack-server", "--dir", str(redis_dir)],
             ready_check=_redis_ready,
         ),
         ServiceSpec(name="mosquitto", command=["mosquitto", "-c", "/etc/mosquitto/mosquitto.conf"],
@@ -859,7 +873,7 @@ def _infra_services() -> list[ServiceSpec]:
 ```
 
 Update `main()` to call `build_services()` instead of the removed `SERVICES` constant, and
-add `import os` + `from shared.config import data_path` at the top. Redis/mosquitto config
+add `import os` + `from shared.config import data_root` at the top. Redis/mosquitto config
 file paths are finalized in Part 2 (the Containerfile provides `mosquitto.conf` and the
 redis data dir); the `ready_check` probes are what Part 2 relies on.
 
