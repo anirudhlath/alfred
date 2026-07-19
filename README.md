@@ -211,3 +211,5 @@ All configuration via environment variables (`.env` file auto-loaded):
 [AGPL-3.0-or-later](LICENSE) © 2025–2026 Anirudh Lath
 
 Briefly published under MIT during initial release prep (July 13–15, 2026); relicensed to AGPL-3.0-or-later on 2026-07-15. Contributions require a one-time [CLA](CLA.md) signature and a per-commit [DCO](CONTRIBUTING.md) sign-off.
+
+<!-- protection smoke test: ci-ok ruleset gate verification (task 13) -->
