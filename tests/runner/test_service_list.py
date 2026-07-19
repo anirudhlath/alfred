@@ -7,16 +7,20 @@ from typing import TYPE_CHECKING
 from runner.__main__ import build_services
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     import pytest
 
 
-def test_core_only_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_core_only_by_default(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("ALFRED_MANAGE_INFRA", raising=False)
     names = {s.name for s in build_services()}
     assert names == {"bridge", "reflex", "triggers", "conscious", "channels", "memory-ingestor"}
 
 
-def test_infra_added_when_flag_set(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_infra_added_when_flag_set(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("ALFRED_MANAGE_INFRA", "1")
     names = {s.name for s in build_services()}
     assert {"redis", "mosquitto", "home-service"}.issubset(names)
