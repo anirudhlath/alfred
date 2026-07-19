@@ -175,7 +175,46 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
   automations, it has failed this document. Home Assistant remains the device layer;
   Alfred is the judgment layer above it.
 
-## 6. Success criteria
+## 6. Why Alfred is different
+
+Voice assistants sort into three camps, and each is missing something Alfred treats as
+load-bearing.
+
+- **The device layer** — Home Assistant Voice and the automation platforms — has a
+  *body*: it can act on the physical world. But it has no durable memory and little
+  judgment. It answers when spoken to and runs the rules you wrote yourself; bolting an
+  LLM onto its pipeline narrows the gap but stays request-and-response.
+- **The big-tech assistants** — Alexa+, Gemini for Home, Siri — have a body *and* a
+  brain, but they are cloud-locked, monetized, and walled. Your calendar, your health,
+  and your spending are their business model, not a private butler's context.
+- **The chat assistants** — ChatGPT, Claude — have the strongest brain, but no body and
+  no standing presence. They can plan a morning; they cannot warm the bedroom, and they
+  forget you between sessions.
+
+Alfred is the only one that is **private, proactive, memory-rich, and physically
+embodied at the same time.** That combination — not any single feature — is the product.
+
+| | Reasons well | Acts on the world | Remembers your life | Private & yours |
+|---|---|---|---|---|
+| Home Assistant Voice | weak (optional LLM) | ✅ the home | ✗ | ✅ local |
+| Alexa+ / Gemini / Siri | ✅ | ✅ | partial | ✗ cloud, monetized |
+| ChatGPT / Claude apps | ✅✅ | ✗ | shallow | ✗ cloud |
+| **Alfred** | ✅ conscious mind | ✅ home + services | ✅ three-layer memory | ✅ your hardware |
+
+Controlling the home is where a butler *starts*, not what a butler *is*. Because one
+memory and one reasoning loop span every domain Alfred reaches — calendar, health,
+weather, finances, and the home — the value comes from *crossing* them: an alarm moved
+early because tomorrow's flight is at 7am, the roads will be icy, and you slept badly.
+No single-domain assistant crosses those wires, and the cloud assistant that could
+won't do it on hardware you own.
+
+The strategy this implies: Alfred does not race Amazon or Google on breadth of
+integrations — it wins on **depth at that intersection**, and lets cross-domain
+composition (Principle 5) turn a handful of well-built senses into behavior none of
+them was programmed for. Four effectors Alfred can combine beat two hundred that only
+answer one at a time.
+
+## 7. Success criteria
 
 | Dimension | Bar |
 |---|---|
@@ -187,7 +226,7 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 | Memory quality | Eval-suite judgment metrics do not regress release-over-release |
 | Sovereignty | Killing Alfred leaves the home functional; killing any service leaves Alfred functional |
 
-## 7. Roadmap
+## 8. Roadmap
 
 **Near** — land what's in review (instant reminders #27, credential flow #28, voice
 satellites #29); then the Home Assistant integration Plans 2–3: full-home discovery and
@@ -204,7 +243,7 @@ routines promoted to fully autonomous behavior with consent), richer channel con
 services built on the SDK by whoever shows up — that's what the credential flow, the
 SDK, and this document are for.
 
-## 8. Where the depth lives
+## 9. Where the depth lives
 
 | Want | Read |
 |---|---|
