@@ -31,3 +31,24 @@ def test_data_mode_default_and_override(monkeypatch: pytest.MonkeyPatch) -> None
     assert config.data_mode() == "persistent"
     monkeypatch.setenv("ALFRED_DATA_MODE", "seed")
     assert config.data_mode() == "seed"
+
+
+def test_research_vault_defaults_under_data_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Telemetry writes under research_vault_path; unset RESEARCH_VAULT_PATH must
+    # resolve inside ALFRED_DATA_DIR so a container/worktree never writes into the
+    # tracked source tree.
+    monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("RESEARCH_VAULT_PATH", raising=False)
+    cfg = config.AlfredConfig.from_env()
+    assert Path(cfg.research_vault_path) == (tmp_path / "research").resolve()
+
+
+def test_research_vault_env_override_wins(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("RESEARCH_VAULT_PATH", "/my/obsidian/vault")
+    cfg = config.AlfredConfig.from_env()
+    assert cfg.research_vault_path == "/my/obsidian/vault"

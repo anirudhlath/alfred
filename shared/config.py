@@ -109,7 +109,7 @@ class AlfredConfig:
             lmstudio_host=os.getenv("LMSTUDIO_HOST", "http://localhost:1234"),
             ha_host=os.getenv("HA_HOST", "http://homeassistant.local:8123"),
             ha_token=os.getenv("HA_TOKEN", ""),
-            research_vault_path=os.getenv("RESEARCH_VAULT_PATH", "./research"),
+            research_vault_path=os.getenv("RESEARCH_VAULT_PATH", str(data_root() / "research")),
             signoz_enabled=os.getenv("SIGNOZ_ENABLED", "true").lower() == "true",
             otel_endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317"),
             # Phase 3: Conscious Engine
