@@ -67,11 +67,15 @@ def _handle_signal() -> None:
 async def _consume_internal_actions(
     redis: AioRedis,
     log: Any,
+    router: DomainRouter | None = None,
 ) -> None:
-    """Background consumer for ACTIONS_STREAM targeting 'conscious-engine'.
+    """Background consumer for ACTIONS_STREAM.
 
-    Dispatches to registered internal handlers (e.g. drain_deferred_notifications).
-    Other target_services are ignored — they belong to domain agents.
+    Dispatches conscious-engine internal actions (e.g.
+    drain_deferred_notifications) to registered handlers, and executes
+    CONFIRMED domain actions (republished by the confirmation flow) via the
+    DomainRouter — which passes confirmed requests through without
+    re-interception. All other target_services are acked and skipped.
     """
     stream = ACTIONS_STREAM
     group = "conscious-engine"
@@ -94,7 +98,21 @@ async def _consume_internal_actions(
                     action = ActionRequest.model_validate_json(event_str)
 
                     if action.target_service != "conscious-engine":
-                        # Not for us — ack and skip
+                        if (
+                            router is not None
+                            and action.confirmed
+                            and action.target_service in router.registered_services
+                        ):
+                            try:
+                                result = await router.route(action)
+                                log.info(
+                                    "Confirmed action '{}' executed (status={})",
+                                    action.tool_name,
+                                    result.status,
+                                )
+                            except Exception as e:
+                                log.error("Confirmed action '{}' failed: {}", action.tool_name, e)
+                        # Ack either way — not-ours or handled above
                         await redis.xack(stream, group, entry_id)
                         continue
 
@@ -314,7 +332,7 @@ async def run(config: AlfredConfig) -> None:
         log.warning("Librarian skipped — memory system unavailable")
 
     # Start internal actions consumer (handles drain_deferred_notifications from triggers)
-    internal_actions_task = asyncio.create_task(_consume_internal_actions(r, log))
+    internal_actions_task = asyncio.create_task(_consume_internal_actions(r, log, router))
 
     # Trigger cache reconciliation net (60s), mirroring the triggers process:
     # pub/sub keeps the cache coherent; the periodic refresh heals any missed message.
