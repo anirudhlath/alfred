@@ -13,6 +13,23 @@ _env_path = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(_env_path)
 
 
+def data_root() -> Path:
+    """Root directory for all runtime-writable state (env ``ALFRED_DATA_DIR``, default ``data``)."""
+    return Path(os.getenv("ALFRED_DATA_DIR", "data")).resolve()
+
+
+def data_path(*parts: str) -> Path:
+    """Resolve a child path under the data root, ensuring its parent directory exists."""
+    p = data_root().joinpath(*parts)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def data_mode() -> str:
+    """Data lifecycle mode: ``persistent`` | ``ephemeral`` | ``seed`` (env ``ALFRED_DATA_MODE``)."""
+    return os.getenv("ALFRED_DATA_MODE", "persistent")
+
+
 @dataclass(frozen=True)
 class AlfredConfig:
     redis_host: str = "localhost"
