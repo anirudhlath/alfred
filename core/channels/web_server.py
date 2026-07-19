@@ -7,7 +7,7 @@ import base64
 import ipaddress
 import json
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -177,17 +177,32 @@ def _get_prefs_dirs() -> tuple[Path, Path]:
 _TAILSCALE_RANGE = ipaddress.ip_network("100.64.0.0/10")
 
 
+def _trusted_networks() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+    """Trusted CIDRs: Tailscale CGNAT + any from ALFRED_TRUSTED_NETWORKS (comma-separated)."""
+    nets: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = [_TAILSCALE_RANGE]
+    for cidr in os.getenv("ALFRED_TRUSTED_NETWORKS", "").split(","):
+        cidr = cidr.strip()
+        if cidr:
+            with suppress(ValueError):
+                nets.append(ipaddress.ip_network(cidr, strict=False))
+    return nets
+
+
 async def require_trusted_network(request: Request) -> None:
-    """FastAPI dependency — restrict endpoint to localhost or Tailscale CGNAT range."""
+    """FastAPI dependency — restrict to localhost, Tailscale, or configured container nets."""
     client_host = request.client.host if request.client else ""
     if client_host in ("127.0.0.1", "::1", "testclient"):
         return
     try:
         addr = ipaddress.ip_address(client_host)
-        if addr in _TAILSCALE_RANGE:
-            return
-    except ValueError:
-        pass
+    except ValueError as err:
+        raise HTTPException(
+            status_code=403, detail="Access restricted to trusted networks"
+        ) from err
+    for net in _trusted_networks():
+        with suppress(TypeError):  # IPv4 addr vs IPv6 net → TypeError, skip
+            if addr in net:
+                return
     raise HTTPException(status_code=403, detail="Access restricted to trusted networks")
 
 
