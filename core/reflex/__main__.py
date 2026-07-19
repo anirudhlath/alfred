@@ -19,6 +19,7 @@ from core.notifications.dnd import DNDChecker
 from core.notifications.publisher import NotificationPublisher
 from core.notifications.schema import Urgency
 from core.reflex import ollama_client
+from core.reflex.attention import AttentionSet
 from core.reflex.context_reader import ContextReader
 from core.reflex.engine import ReflexEngine, build_notification_body
 from core.reflex.runner import ensure_consumer_group, process_stream_entry, publish_observation
@@ -199,6 +200,7 @@ async def run(config: AlfredConfig) -> None:
         context_reader=context_reader,
         memory_reader=memory_reader,
     )
+    attention = AttentionSet(redis=r)
     router = DomainRouter()
     router.register("home-service", HomeAgent(redis=r))
 
@@ -228,6 +230,7 @@ async def run(config: AlfredConfig) -> None:
                             redis=r,
                             result_stream=RESULT_STREAM,
                             observation_stream=REFLEX_OBSERVATIONS_STREAM,
+                            attention=attention,
                         )
                         # ACK only on success — retriable errors (Ollama down)
                         # propagate as exceptions and the message stays pending
