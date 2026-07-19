@@ -45,6 +45,11 @@ def main() -> None:
         os.environ["ALFRED_DEBUG"] = "1"
     log = configure_logging(service="runner")
     config = AlfredConfig.from_env()
+
+    from core.memory.paths import seed_defaults
+
+    seed_defaults()  # first-boot: copy read-only templates into ALFRED_DATA_DIR
+
     init_tracing(
         service_name="runner",
         endpoint=config.otel_endpoint if config.signoz_enabled else None,

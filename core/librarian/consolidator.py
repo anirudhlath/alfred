@@ -21,6 +21,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
+from core.memory.paths import preferences_dir as _preferences_dir
+from core.memory.paths import profile_dir as _profile_dir
 from core.memory.schemas import EpisodicEntry, RoutineSpec, RoutineStep, SignificanceScore
 from shared.streams import SCRATCHPAD_QUEUE
 
@@ -54,9 +56,8 @@ class ConflictItem(BaseModel):
     explanation: str = ""
 
 
-_MEMORY_DIR = Path(__file__).resolve().parent.parent / "memory"
-_DEFAULT_PREFERENCES_DIR = str(_MEMORY_DIR / "preferences")
-_DEFAULT_PROFILE_DIR = str(_MEMORY_DIR / "profile")
+_DEFAULT_PREFERENCES_DIR = str(_preferences_dir())
+_DEFAULT_PROFILE_DIR = str(_profile_dir())
 
 
 def _group_by_entity_date(

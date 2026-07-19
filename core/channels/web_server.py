@@ -168,9 +168,10 @@ def _atomic_write(path: Path, content: str) -> None:
 
 
 def _get_prefs_dirs() -> tuple[Path, Path]:
-    """Return (preferences_dir, profile_dir) for semantic memory."""
-    base = Path(__file__).resolve().parent.parent / "memory"
-    return base / "preferences", base / "profile"
+    """Return (preferences_dir, profile_dir) for semantic memory (under ALFRED_DATA_DIR)."""
+    from core.memory.paths import preferences_dir, profile_dir
+
+    return preferences_dir(), profile_dir()
 
 
 _TAILSCALE_RANGE = ipaddress.ip_network("100.64.0.0/10")
@@ -227,7 +228,10 @@ async def _init_apns_adapter(pool: aioredis.Redis) -> None:
 @asynccontextmanager
 async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     """Manage shared Redis connection pool lifecycle + notification delivery."""
+    from core.memory.paths import seed_defaults
     from core.notifications.delivery import notification_delivery_worker
+
+    seed_defaults()  # idempotent — safe when the runner already seeded
 
     pool: aioredis.Redis = create_redis(app.state.redis_url, decode_responses=False)
     app.state.redis = pool

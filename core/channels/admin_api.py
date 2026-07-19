@@ -14,7 +14,6 @@ import asyncio
 import json
 import re
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import aiosqlite
@@ -24,6 +23,7 @@ from pydantic import BaseModel
 
 from bus.schemas.events import ActionRequest
 from core.channels.stream_catalog import STREAM_CATALOG, decode_entry, stream_summaries
+from core.memory.paths import episodic_cold_path, preferences_dir, profile_dir, scratchpad_path
 from shared.config import AlfredConfig
 from shared.streams import (
     ACTIONS_STREAM,
@@ -46,7 +46,6 @@ if TYPE_CHECKING:
     from shared.types import AioRedis
 
 
-_MEMORY_DIR = Path(__file__).resolve().parent.parent / "memory"
 _FAILED = object()
 _episodic_memory: Any = None
 
@@ -102,9 +101,7 @@ def _get_episodic_lazy(redis: AioRedis) -> Any | None:
             config = AlfredConfig.from_env()
             _episodic_memory = EpisodicMemory(
                 hot=RedisVectorStore(redis=redis, dim=config.embedding_dim),
-                cold=SqliteVecStore(
-                    db_path=str(_MEMORY_DIR / "episodic_cold.db"), dim=config.embedding_dim
-                ),
+                cold=SqliteVecStore(db_path=str(episodic_cold_path()), dim=config.embedding_dim),
                 embedder=SentenceTransformerProvider(config.embedding_model),
             )
         except Exception as exc:
@@ -359,7 +356,7 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
         hot.sort(key=lambda e: float(e.get("timestamp", 0) or 0), reverse=True)
 
         cold: list[dict[str, Any]] = []
-        db_path = _MEMORY_DIR / "episodic_cold.db"
+        db_path = episodic_cold_path()
         if db_path.exists():
             try:
                 async with aiosqlite.connect(db_path) as conn:
@@ -380,8 +377,8 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
     async def memory_semantic() -> dict[str, Any]:
         def _read_semantic() -> list[dict[str, Any]]:
             files: list[dict[str, Any]] = []
-            for dirname in ("preferences", "profile"):
-                directory = _MEMORY_DIR / dirname
+            for directory in (preferences_dir(), profile_dir()):
+                dirname = directory.name
                 if not directory.is_dir():
                     continue
                 for path in sorted(directory.glob("*.md")):
@@ -414,7 +411,7 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
 
     @router.get("/memory/scratchpad")
     async def memory_scratchpad(request: Request) -> dict[str, Any]:
-        path = _MEMORY_DIR / "scratchpad.md"
+        path = scratchpad_path()
         content = await asyncio.to_thread(lambda: path.read_text() if path.exists() else "")
         pending = int(await _redis(request).llen(SCRATCHPAD_QUEUE))
         return {"content": content, "pending_queue": pending}
