@@ -24,6 +24,9 @@ logger = logging.getLogger(__name__)
 
 STREAM_PREFIX = "alfred"
 
+# Cap MQTT-fed streams so a chatty apartment cannot grow Redis unboundedly.
+FORWARD_MAXLEN = 10_000
+
 
 def mqtt_topic_to_stream_key(topic: str) -> str:
     """Convert MQTT topic 'home/state_changed' → Redis stream 'alfred:home:state_changed'."""
@@ -42,9 +45,14 @@ async def forward_mqtt_to_redis(
     mqtt_topic: str,
     payload: bytes,
 ) -> None:
-    """Forward an MQTT message to the corresponding Redis Stream."""
+    """Forward an MQTT message to the corresponding Redis Stream (bounded)."""
     stream_key = mqtt_topic_to_stream_key(mqtt_topic)
-    await redis.xadd(stream_key, {"event": payload.decode()})
+    await redis.xadd(
+        stream_key,
+        {"event": payload.decode()},
+        maxlen=FORWARD_MAXLEN,
+        approximate=True,
+    )
     logger.debug("MQTT → Redis: %s → %s", mqtt_topic, stream_key)
 
 
