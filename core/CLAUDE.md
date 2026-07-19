@@ -54,7 +54,7 @@ graph LR
 
 ### Key Patterns
 - New trigger types: subclass `BaseTrigger`, define `Conditions` model, implement `evaluate()`, decorate with `@TriggerRegistry.register_type("name")`
-- Storage: Redis hash `alfred:triggers` (primary) + YAML snapshots in `core/memory/triggers/` (gitignored)
+- Storage: Redis hash `alfred:triggers` (primary) + YAML snapshots in `$ALFRED_DATA_DIR/triggers/` (default `data/triggers/`, gitignored) — resolved via `core.memory.paths.triggers_snapshot_dir()`
 - CRUD exposed via `TriggerFeature(BaseFeature)` with dynamic tool descriptions from `TriggerRegistry.build_conditions_docs()`
 
 ## Conscious (`conscious/`) — System 2 Cloud LLM
