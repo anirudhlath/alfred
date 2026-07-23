@@ -61,14 +61,21 @@ def _seed_specs() -> list[tuple[Path, Path, str]]:
 
 
 def seed_defaults() -> None:
-    """Copy shipped read-only templates into the data dir when missing. Idempotent."""
+    """Copy shipped read-only templates into the data dir when missing. Idempotent.
+
+    Templates shipped under a `.example/` subdirectory (preferences, profile) are
+    promoted to top-level active files — the `.example` path component is stripped
+    so `MemoryReader`'s top-level-only glob actually picks them up. Routine templates
+    (already top-level YAML) are copied as-is.
+    """
     for src, dest, pattern in _seed_specs():
         if not src.is_dir():
             continue
         for f in src.rglob(pattern):
             if not f.is_file():
                 continue
-            target = dest / f.relative_to(src)
+            rel_parts = [p for p in f.relative_to(src).parts if p != ".example"]
+            target = dest.joinpath(*rel_parts)
             if target.exists():
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)

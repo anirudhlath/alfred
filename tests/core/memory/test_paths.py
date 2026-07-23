@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from core.memory import paths
+from core.memory.paths import seed_defaults
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     import pytest
 
 
@@ -49,3 +49,38 @@ def test_seed_defaults_never_overwrites(monkeypatch: pytest.MonkeyPatch, tmp_pat
     target.write_text("# user edited", encoding="utf-8")
     paths.seed_defaults()
     assert target.read_text(encoding="utf-8") == "# user edited"  # untouched
+
+
+def test_seed_promotes_example_templates_to_active(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path))
+    seed_defaults()
+    prefs = tmp_path / "preferences"
+    # every packaged .example template must land as an ACTIVE top-level file
+    pkg_examples = Path(paths.__file__).parent / "preferences" / ".example"
+    for tpl in pkg_examples.glob("*.md"):
+        assert (prefs / tpl.name).is_file(), tpl.name
+    # and no inert .example/ copy in the data dir
+    assert not (prefs / ".example").exists()
+
+    # profile templates promote the same way, if the package ships any.
+    profile = tmp_path / "profile"
+    pkg_profile_examples = Path(paths.__file__).parent / "profile" / ".example"
+    if pkg_profile_examples.is_dir():
+        for tpl in pkg_profile_examples.glob("*.md"):
+            assert (profile / tpl.name).is_file(), tpl.name
+        assert not (profile / ".example").exists()
+
+
+def test_seed_never_overwrites_existing_active_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path))
+    prefs = tmp_path / "preferences"
+    prefs.mkdir(parents=True)
+    pkg_examples = Path(paths.__file__).parent / "preferences" / ".example"
+    name = next(pkg_examples.glob("*.md")).name
+    (prefs / name).write_text("user-owned content")
+    seed_defaults()
+    assert (prefs / name).read_text() == "user-owned content"
