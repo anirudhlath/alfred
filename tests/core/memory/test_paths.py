@@ -84,3 +84,26 @@ def test_seed_never_overwrites_existing_active_file(
     (prefs / name).write_text("user-owned content")
     seed_defaults()
     assert (prefs / name).read_text() == "user-owned content"
+
+
+def test_seed_real_top_level_file_wins_over_example_template(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A real (gitignored, dev-owned) top-level package file must ALWAYS win over a
+    `.example/` template of the same name, deterministically — never dependent on
+    filesystem/glob traversal order. Real files seed as Part 1 always has; templates
+    only fill the gap when no real file exists.
+    """
+    # Package-shaped preferences root: a real top-level file AND a `.example` template
+    # with the same name (mirrors a dev worktree where both can genuinely coexist).
+    pkg = tmp_path / "pkg_prefs"
+    pkg.mkdir()
+    (pkg / "name.md").write_text("real", encoding="utf-8")
+    (pkg / ".example").mkdir()
+    (pkg / ".example" / "name.md").write_text("template", encoding="utf-8")
+    monkeypatch.setattr(paths, "PKG_PREFERENCES", pkg)
+    monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path / "data"))
+
+    seed_defaults()
+    seeded = paths.preferences_dir() / "name.md"
+    assert seeded.read_text(encoding="utf-8") == "real"
