@@ -305,7 +305,7 @@ class Supervisor:
         monitor_tasks = [asyncio.create_task(self._monitor(m)) for m in infra]
         if infra:
             ready = await asyncio.gather(*(self._await_ready(m) for m in infra))
-            if not all(ready):
+            if not all(ready) and not self._shutdown.is_set():
                 gate_failed = True
                 self._shutdown.set()
         if not self._shutdown.is_set():

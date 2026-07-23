@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 
 import pytest
 
@@ -102,3 +103,33 @@ class TestSupervisor:
 
         monkeypatch.setattr(Supervisor, "_await_ready", _fast_gate)
         assert await sup.run() == 1
+
+    async def test_shutdown_during_ready_gate_returns_zero(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A SIGTERM/SIGINT arriving while the readiness gate is still probing must
+        be treated as a clean shutdown (return 0), not a gate failure — even though
+        the real ``_await_ready`` bails out and returns False once shutdown is set.
+        """
+
+        async def _never_ready() -> bool:
+            return False
+
+        spec = ServiceSpec(name="redis", command=["sleep", "5"], ready_check=_never_ready)
+        sup = Supervisor([spec])
+
+        # Use the REAL _await_ready — only shorten its default timeout so the test
+        # stays fast, so the shutdown-during-probe race is genuinely exercised.
+        real_await_ready = Supervisor._await_ready
+        monkeypatch.setattr(
+            Supervisor,
+            "_await_ready",
+            functools.partialmethod(real_await_ready, timeout=2.0),
+        )
+
+        task = asyncio.create_task(sup.run())
+        await asyncio.sleep(0.5)
+        sup._shutdown.set()  # simulate the signal handler firing mid-probe
+
+        code = await asyncio.wait_for(task, timeout=15.0)
+        assert code == 0
