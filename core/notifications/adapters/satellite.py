@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 @ChannelRegistry.register()
 class SatelliteChannelAdapter(ChannelAdapter):
-    """Piper-synthesized speech pushed over the satellite bridge connections."""
+    """TTS-synthesized speech pushed over the satellite bridge connections."""
 
     name: ClassVar[str] = "satellite"
     supported_urgencies: ClassVar[set[Urgency]] = {Urgency.URGENT}
