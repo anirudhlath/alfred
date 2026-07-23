@@ -43,8 +43,44 @@ def get_stt() -> Any:
 
 
 def get_tts() -> Any:
-    """Lazy-load PiperTTS (requires voice extra)."""
-    return _lazy_load("tts", "core.voice.tts", "PiperTTS", "piper-tts not installed")
+    """Lazy-load the configured TTS backend (Kokoro default; Piper fallback).
+
+    Reads ``config.tts_backend``, tries that adapter first, then falls back to any
+    other registered backend whose optional deps are installed. Returns a
+    ``TTSBackend`` instance (typed Any for parity with get_stt), cached under "tts".
+    """
+    cached = _lazy_cache.get("tts")
+    if cached is _FAILED:
+        return None
+    if cached is not None:
+        return cached
+
+    from core.voice.tts_registry import TTS_BACKENDS, resolve_backend_order
+    from shared.config import AlfredConfig
+
+    selected = AlfredConfig.from_env().tts_backend
+    for name in resolve_backend_order(selected):
+        module, cls_name, missing_msg = TTS_BACKENDS[name]
+        instance = _construct_backend(module, cls_name, missing_msg)
+        if instance is not None:
+            _lazy_cache["tts"] = instance
+            return instance
+    _lazy_cache["tts"] = _FAILED
+    return None
+
+
+def _construct_backend(module: str, cls_name: str, missing_msg: str) -> Any:
+    """Import + instantiate a TTS backend adapter; return None (logged) on failure."""
+    try:
+        import importlib
+
+        mod = importlib.import_module(module)
+        return getattr(mod, cls_name)()
+    except ImportError:
+        logger.warning("{} — {} unavailable", missing_msg, cls_name)
+    except Exception as exc:
+        logger.error("Failed to initialise {}: {}", cls_name, exc)
+    return None
 
 
 # Model construction takes 10-40s and must run off the event loop; the lock
@@ -66,7 +102,7 @@ async def aget_stt() -> Any:
 
 
 async def aget_tts() -> Any:
-    """PiperTTS instance (or None), constructed off the event loop."""
+    """Configured TTS backend instance (or None), constructed off the event loop."""
     return await _aget_voice("tts", get_tts)
 
 
@@ -77,7 +113,7 @@ async def transcribe_async(stt: Any, audio_bytes: bytes, audio_fmt: str) -> str:
 
 
 async def synthesize_async(tts: Any, text: str) -> bytes:
-    """Run blocking Piper synthesis in a worker thread."""
+    """Run blocking TTS synthesis in a worker thread."""
     result = await asyncio.to_thread(tts.synthesize, text)
     return cast("bytes", result)
 

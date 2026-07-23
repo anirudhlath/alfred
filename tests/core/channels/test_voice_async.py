@@ -111,17 +111,19 @@ async def test_aget_stt_concurrent_calls_construct_once(
 async def test_aget_tts_returns_none_when_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A failed lazy load (missing voice extra) must surface as None, not raise."""
+    """No registered TTS backend available (missing voice extras) must surface as
+    None, not raise."""
+    voice_models._lazy_cache.clear()
 
-    def fake_lazy_load(key: str, module: str, cls_name: str, missing_msg: str) -> Any:
-        voice_models._lazy_cache[key] = voice_models._FAILED
+    def fake_construct_backend(module: str, cls_name: str, missing_msg: str) -> Any:
         return None
 
-    monkeypatch.setattr(voice_models, "_lazy_load", fake_lazy_load)
+    monkeypatch.setattr(voice_models, "_construct_backend", fake_construct_backend)
 
     assert await web_server.aget_tts() is None
     # Cached failure short-circuits without re-entering the loader
     assert await web_server.aget_tts() is None
+    voice_models._lazy_cache.clear()
 
 
 @pytest.mark.asyncio
