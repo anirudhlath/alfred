@@ -284,7 +284,9 @@ class Supervisor:
     async def run(self) -> int:
         """Run the supervisor until shutdown.
 
-        Returns 0 on clean shutdown, 1 if any service exhausted its restarts.
+        Returns 0 on clean shutdown, 1 if any service exhausted its restarts
+        or a readiness gate never passed (so a container PID 1 fails loudly
+        instead of reporting success with infra never up).
         """
         loop = asyncio.get_running_loop()
 
@@ -299,11 +301,13 @@ class Supervisor:
         infra = [m for m in self._managed if m.spec.ready_check is not None]
         rest = [m for m in self._managed if m.spec.ready_check is None]
 
+        gate_failed = False
         monitor_tasks = [asyncio.create_task(self._monitor(m)) for m in infra]
-        for m in infra:
-            if not await self._await_ready(m):
+        if infra:
+            ready = await asyncio.gather(*(self._await_ready(m) for m in infra))
+            if not all(ready):
+                gate_failed = True
                 self._shutdown.set()
-                break
         if not self._shutdown.is_set():
             monitor_tasks += [asyncio.create_task(self._monitor(m)) for m in rest]
 
@@ -324,4 +328,4 @@ class Supervisor:
         await self._terminate_all()
 
         crashed = any(svc.restart_count > svc.spec.max_restarts for svc in self._managed)
-        return 1 if crashed else 0
+        return 1 if (crashed or gate_failed) else 0

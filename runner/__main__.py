@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import sys
 from pathlib import Path
 
 from runner.supervisor import ServiceSpec, Supervisor
-from shared.config import AlfredConfig, data_root
+from shared.config import AlfredConfig, data_mode, data_path, data_root
 from shared.logging import configure_logging
 from shared.otel import init_tracing
 
@@ -71,17 +72,15 @@ def _infra_services() -> list[ServiceSpec]:
         except Exception:
             return False
 
-    redis_dir = data_root() / "redis"
-    redis_dir.mkdir(parents=True, exist_ok=True)
     return [
         ServiceSpec(
             name="redis",
-            command=["redis-stack-server", "--dir", str(redis_dir)],
+            command=_redis_command(data_root() / "redis"),
             ready_check=_redis_ready,
         ),
         ServiceSpec(
             name="mosquitto",
-            command=["mosquitto", "-c", "/etc/mosquitto/mosquitto.conf"],
+            command=["mosquitto", "-c", str(_write_mosquitto_conf())],
             ready_check=_mqtt_ready,
         ),
         ServiceSpec(
@@ -89,6 +88,39 @@ def _infra_services() -> list[ServiceSpec]:
             command=["uvicorn", "app.server:app", "--host", "0.0.0.0", "--port", "8000"],
         ),
     ]
+
+
+def _redis_command(redis_dir: Path) -> list[str]:
+    """Redis argv: redis-stack-server when installed (native dev), else redis-server
+    with explicit module loads (container). Persistence follows ALFRED_DATA_MODE."""
+    redis_dir.mkdir(parents=True, exist_ok=True)
+    if shutil.which("redis-stack-server"):
+        return ["redis-stack-server", "--dir", str(redis_dir)]
+    cmd = ["redis-server", "--dir", str(redis_dir), "--bind", "127.0.0.1"]
+    if data_mode() == "persistent":
+        cmd += ["--appendonly", "yes"]
+    else:
+        cmd += ["--save", "", "--appendonly", "no"]
+    modules_dir = Path(os.getenv("ALFRED_REDIS_MODULES_DIR", "/usr/local/lib/redis/modules"))
+    for mod in ("redisearch.so", "rejson.so"):
+        path = modules_dir / mod
+        if path.exists():
+            cmd += ["--loadmodule", str(path)]
+    return cmd
+
+
+def _write_mosquitto_conf() -> Path:
+    """Generate a mosquitto config under the data dir (persistence per data mode)."""
+    conf = data_path("mosquitto", "mosquitto.conf")
+    persistence = "true" if data_mode() == "persistent" else "false"
+    conf.write_text(
+        "listener 1883 0.0.0.0\n"
+        "allow_anonymous true\n"
+        f"persistence {persistence}\n"
+        f"persistence_location {conf.parent}/\n"
+        "log_dest stdout\n"
+    )
+    return conf
 
 
 def main() -> None:

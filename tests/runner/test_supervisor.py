@@ -85,3 +85,20 @@ class TestSupervisor:
 
         code = await supervisor.run()
         assert code == 0
+
+    async def test_run_returns_nonzero_when_ready_gate_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """PID-1 contract: a container must not report success when a ready gate fails."""
+
+        async def _never_ready() -> bool:
+            return False
+
+        spec = ServiceSpec(name="redis", command=["sleep", "5"], ready_check=_never_ready)
+        sup = Supervisor([spec])
+
+        async def _fast_gate(self: Supervisor, svc: object, timeout: float = 30.0) -> bool:
+            return False
+
+        monkeypatch.setattr(Supervisor, "_await_ready", _fast_gate)
+        assert await sup.run() == 1
