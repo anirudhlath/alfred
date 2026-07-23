@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path  # noqa: TC003
 
-import pytest  # noqa: TC002
+import pytest
 
 from shared import secrets
 
@@ -39,3 +39,22 @@ def test_configure_cryptfile_sets_keyring(monkeypatch: pytest.MonkeyPatch, tmp_p
     secrets.set_secret("demo", "token", "sekret")
     assert secrets.get_secret("demo", "token") == "sekret"
     assert (tmp_path / "secrets").is_dir()
+
+
+def test_explicit_cryptfile_without_passphrase_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("ALFRED_SECRETS_BACKEND", "cryptfile")
+    monkeypatch.delenv("ALFRED_SECRETS_PASSPHRASE", raising=False)
+    with pytest.raises(RuntimeError, match="ALFRED_SECRETS_PASSPHRASE"):
+        secrets.configure_backend()
+
+
+def test_explicit_cryptfile_with_passphrase_configures(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("ALFRED_SECRETS_BACKEND", "cryptfile")
+    monkeypatch.setenv("ALFRED_SECRETS_PASSPHRASE", "hunter2")
+    secrets.configure_backend()  # must not raise

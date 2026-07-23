@@ -36,11 +36,29 @@ def configure_backend() -> None:
 
     from shared.config import data_path
 
+    explicit = os.getenv("ALFRED_SECRETS_BACKEND", "").strip().lower() == "cryptfile"
+    passphrase = os.getenv("ALFRED_SECRETS_PASSPHRASE", "")
+    if not passphrase:
+        if explicit:
+            raise RuntimeError(
+                "ALFRED_SECRETS_BACKEND=cryptfile requires ALFRED_SECRETS_PASSPHRASE. "
+                "Set it in the environment (alfredctl generates and persists one for you)."
+            )
+        # Auto-detected on a bare Linux host (CI, devcontainer): stay importable, but
+        # credentials stored this way are only obfuscated, not protected.
+        from loguru import logger
+
+        logger.warning(
+            "cryptfile keyring auto-selected without ALFRED_SECRETS_PASSPHRASE — "
+            "using an INSECURE default key; do not store real credentials"
+        )
+        passphrase = "alfred-insecure-default"
+
     secrets_dir = data_path("secrets")
     secrets_dir.mkdir(parents=True, exist_ok=True)
     kr = CryptFileKeyring()
     kr.file_path = str(secrets_dir / "keyring.cfg")
-    kr.keyring_key = os.getenv("ALFRED_SECRETS_PASSPHRASE", "alfred-insecure-default")
+    kr.keyring_key = passphrase
     keyring.set_keyring(kr)
 
 
