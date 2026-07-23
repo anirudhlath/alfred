@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import os
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -22,12 +21,18 @@ from shared.streams import VOICEPRINT_KEY, decode_stream_value
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
     from shared.types import AioRedis
 
 _DEFAULT_THRESHOLD = 0.45  # ECAPA cosine: same speaker ≈ 0.4-0.7+, different ≈ 0.0-0.25
 _MODEL_SOURCE = "speechbrain/spkrec-ecapa-voxceleb"
-_MODEL_DIR = Path("data") / "models" / "spkrec-ecapa-voxceleb"
+
+
+def _model_dir() -> Path:
+    from shared.config import models_root
+
+    return models_root() / "spkrec-ecapa-voxceleb"
 
 
 @dataclass(frozen=True)
@@ -118,7 +123,7 @@ class SpeakerID:
 
                 return EncoderClassifier.from_hparams(
                     source=_MODEL_SOURCE,
-                    savedir=str(_MODEL_DIR),
+                    savedir=str(_model_dir()),
                     run_opts={"device": self._device},
                 )
 

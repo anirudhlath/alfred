@@ -30,6 +30,17 @@ def data_mode() -> str:
     return os.getenv("ALFRED_DATA_MODE", "persistent")
 
 
+def models_root() -> Path:
+    """Root for downloaded model caches (env ``ALFRED_MODELS_DIR``, default ``<data>/models``).
+
+    Caches, not state: safe to share across worktrees/containers and to delete.
+    """
+    override = os.getenv("ALFRED_MODELS_DIR", "").strip()
+    root = Path(override).resolve() if override else data_root() / "models"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 @dataclass(frozen=True)
 class AlfredConfig:
     redis_host: str = "localhost"

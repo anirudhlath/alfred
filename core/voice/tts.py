@@ -5,7 +5,6 @@ from __future__ import annotations
 import io
 import urllib.request
 import wave
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from loguru import logger
@@ -13,6 +12,8 @@ from loguru import logger
 from shared.traced import traced
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from piper import PiperVoice
     from piper.config import SynthesisConfig
 
@@ -34,6 +35,12 @@ def _voice_url(voice: str) -> str:
     speaker = parts[1]  # alan
     quality = parts[2] if len(parts) > 2 else "medium"
     return f"{_HF_BASE}/{lang}/{lang_region}/{speaker}/{quality}/{voice}"
+
+
+def _default_model_dir() -> Path:
+    from shared.config import models_root
+
+    return models_root() / "piper"
 
 
 def _download_model(voice: str, model_dir: Path) -> None:
@@ -60,12 +67,11 @@ class PiperTTS:
     """
 
     DEFAULT_VOICE = "en_GB-alan-medium"
-    DEFAULT_MODEL_DIR = Path(__file__).resolve().parent / "models"
 
     def __init__(
         self,
         voice: str = DEFAULT_VOICE,
-        model_dir: Path = DEFAULT_MODEL_DIR,
+        model_dir: Path | None = None,
         length_scale: float = 0.75,
         noise_scale: float = 0.667,
         noise_w: float = 0.3,
@@ -73,6 +79,7 @@ class PiperTTS:
         from piper import PiperVoice as _PiperVoice
         from piper.config import SynthesisConfig as _SynthesisConfig
 
+        model_dir = model_dir if model_dir is not None else _default_model_dir()
         model_path = model_dir / f"{voice}.onnx"
         if not model_path.exists():
             logger.info("Voice model not found — downloading {}", voice)

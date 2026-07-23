@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 if TYPE_CHECKING:
     from pathlib import Path
 
-from core.voice.tts import PiperTTS, _voice_url
+from core.voice.tts import PiperTTS, _default_model_dir, _voice_url
 
 
 def test_tts_instantiation() -> None:
@@ -24,9 +24,8 @@ def test_default_voice() -> None:
 
 
 def test_default_model_dir() -> None:
-    """Default model directory is core/voice/models/."""
-    assert PiperTTS.DEFAULT_MODEL_DIR.name == "models"
-    assert PiperTTS.DEFAULT_MODEL_DIR.parent.name == "voice"
+    """Default model directory resolves under models_root()/piper."""
+    assert _default_model_dir().name == "piper"
 
 
 @patch("core.voice.tts.PiperTTS.__init__", return_value=None)

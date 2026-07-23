@@ -45,10 +45,22 @@ def test_research_vault_defaults_under_data_dir(
     assert Path(cfg.research_vault_path) == (tmp_path / "research").resolve()
 
 
-def test_research_vault_env_override_wins(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_research_vault_env_override_wins(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("RESEARCH_VAULT_PATH", "/my/obsidian/vault")
     cfg = config.AlfredConfig.from_env()
     assert cfg.research_vault_path == "/my/obsidian/vault"
+
+
+def test_models_root_defaults_under_data_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("ALFRED_MODELS_DIR", raising=False)
+    assert config.models_root() == (tmp_path / "models").resolve()
+    assert config.models_root().is_dir()
+
+
+def test_models_root_env_override_wins(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("ALFRED_MODELS_DIR", str(tmp_path / "cache"))
+    assert config.models_root() == (tmp_path / "cache").resolve()
