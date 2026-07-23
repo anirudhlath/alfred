@@ -39,3 +39,11 @@ docs/
 .env
 .env.*
 secrets/
+
+# Personal (gitignored) memory content — must never enter an image
+core/memory/preferences/*.md
+core/memory/profile/*.md
+!core/memory/preferences/.example
+!core/memory/profile/.example
+core/voice/models/
+secrets/
