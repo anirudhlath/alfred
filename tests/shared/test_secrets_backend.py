@@ -58,3 +58,39 @@ def test_explicit_cryptfile_with_passphrase_configures(
     monkeypatch.setenv("ALFRED_SECRETS_BACKEND", "cryptfile")
     monkeypatch.setenv("ALFRED_SECRETS_PASSPHRASE", "hunter2")
     secrets.configure_backend()  # must not raise
+
+
+def test_auto_cryptfile_without_passphrase_warns_and_continues(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Auto-detected cryptfile (no explicit backend, no passphrase) warns but continues."""
+    monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("ALFRED_SECRETS_BACKEND", raising=False)
+    monkeypatch.delenv("ALFRED_SECRETS_PASSPHRASE", raising=False)
+    monkeypatch.setattr(secrets.sys, "platform", "linux")
+
+    from loguru import logger
+
+    messages: list[str] = []
+    sink_id = logger.add(messages.append, level="WARNING")
+    try:
+        secrets.configure_backend()  # must not raise
+    finally:
+        logger.remove(sink_id)
+
+    assert any("INSECURE" in str(m) for m in messages)
+    import keyring
+
+    kr = keyring.get_keyring()
+    assert kr.__class__.__name__ == "CryptFileKeyring"
+
+
+def test_explicit_cryptfile_empty_string_passphrase_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Explicit cryptfile backend with empty string passphrase must raise."""
+    monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("ALFRED_SECRETS_BACKEND", "cryptfile")
+    monkeypatch.setenv("ALFRED_SECRETS_PASSPHRASE", "")
+    with pytest.raises(RuntimeError, match="ALFRED_SECRETS_PASSPHRASE"):
+        secrets.configure_backend()
