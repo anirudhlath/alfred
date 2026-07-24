@@ -12,9 +12,11 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
+from rich.table import Table
 
 from alfredctl import launch, staging
 from alfredctl import runtime as rt
+from alfredctl import smoke as smoke_mod
 
 app = typer.Typer(help="Alfred container launcher", no_args_is_help=True)
 console = Console()
@@ -181,6 +183,43 @@ def urls(
         image=rt.image_tag(),
     )
     console.print(_resolve_url(r, plan))
+
+
+@app.command()
+def smoke(
+    runtime: RuntimeOpt = None,
+    keep: Annotated[bool, typer.Option("--keep", help="Leave the container running")] = False,
+    attach: Annotated[
+        bool, typer.Option("--attach", help="Check the already-running container")
+    ] = False,
+    hf_cache: Annotated[
+        Path | None, typer.Option(help="Existing HF cache to mount at /models/hf")
+    ] = None,
+    timeout: Annotated[float, typer.Option(help="Seconds to wait for /health")] = 300.0,
+) -> None:
+    """Boot (seed mode) + verify the containerized stack, then tear it down."""
+    r = rt.detect(runtime)
+    if not attach:
+        up(runtime=r.name, mode="seed", hf_cache=hf_cache)
+    plan = launch.LaunchPlan(
+        run_args=[],
+        url_hint="resolve-ip" if r.name == "container" else "http://localhost:8081",
+        name=rt.container_name(),
+        image=rt.image_tag(),
+    )
+    base_url = _resolve_url(r, plan)
+    checks = smoke_mod.run_checks(r.exe, plan.name, base_url, timeout=timeout)
+    table = Table(title=f"alfred smoke — {plan.name}")
+    table.add_column("check")
+    table.add_column("result")
+    table.add_column("detail")
+    for c in checks:
+        table.add_row(c.name, "[green]PASS[/green]" if c.passed else "[red]FAIL[/red]", c.detail)
+    console.print(table)
+    if not keep and not attach:
+        down(runtime=r.name)
+    if not all(c.passed for c in checks):
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":
