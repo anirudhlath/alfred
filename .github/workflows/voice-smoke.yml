@@ -1,0 +1,29 @@
+name: voice-smoke
+
+on:
+  pull_request:
+    paths:
+      - "core/voice/**"
+      - "core/channels/voice_models.py"
+      - "pyproject.toml"
+      - ".github/workflows/voice-smoke.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  espeak-smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --extra voice --extra dev
+      - run: uv run pytest tests/core/voice/test_espeak_smoke.py -q
