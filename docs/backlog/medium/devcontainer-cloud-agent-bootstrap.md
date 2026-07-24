@@ -6,8 +6,10 @@
 
 ## Summary
 Alfred's dev environment needs redis-stack, mosquitto, Python 3.13 (system may be 3.14),
-and Node — today that knowledge lives in CLAUDE.md prose and `scripts/dev-up.sh`
-(Homebrew/macOS-specific). Cloud-based agents (Claude Code web sessions, Codespaces,
+and Node — today that knowledge lives in CLAUDE.md prose (native macOS dev now runs
+Homebrew-managed Redis/Mosquitto directly, with no wrapper script; `uv run alfredctl up`
+is the containerized alternative for macOS/Linux). Cloud-based agents (Claude Code web
+sessions, Codespaces,
 `@claude` Actions runners) get a bare Linux box and must rediscover the environment by
 trial and error. A `.devcontainer/` (Linux-native, container-based services) gives every
 cloud agent a reproducible environment that can run the full system, not just the mocked
@@ -25,9 +27,11 @@ test suite.
   possible (but heed [lock-down-compose-redis-mqtt](../high/lock-down-compose-redis-mqtt.md)
   — the devcontainer compose must not inherit its published-ports/no-auth defaults
   verbatim; inside the devcontainer network, unpublished ports are fine).
-- `scripts/dev-up.sh` stays the macOS/Homebrew path (and is currently broken per the
-  dev-gotchas memory — fixing it is adjacent but separate); the devcontainer is the
-  Linux/cloud path. CLAUDE.md should name both and say which applies where.
+- Native macOS dev now runs Homebrew-managed Redis/Mosquitto directly (the old
+  `scripts/dev-up.sh` wrapper was retired in Part 2 of containerization); `uv run
+  alfredctl up` is the containerized path for macOS/Linux; the devcontainer remains the
+  dedicated Linux/cloud edit-test-loop path. CLAUDE.md should name all three and say
+  which applies where.
 - Model downloads (Whisper/Piper/EmbeddingGemma) are auto-fetched on first use and the
   embedding default is gated
   ([embedding-model-gated-first-run](../high/embedding-model-gated-first-run.md)) — the
@@ -40,6 +44,7 @@ test suite.
 - [ ] Inside the container: `pytest` passes, `npm run build` works, and `python -m runner`
   starts with Redis/MQTT reachable (voice/embedding warmup failures acceptable/documented).
 - [ ] No published host ports and no plaintext secrets in the devcontainer config.
-- [ ] CLAUDE.md documents the two environment paths (devcontainer for Linux/cloud,
-  dev-up.sh for macOS) so agents pick correctly.
+- [ ] CLAUDE.md documents the environment paths (devcontainer for Linux/cloud, `alfredctl`
+  for containerized macOS/Linux, native Homebrew-managed Redis/Mosquitto for macOS) so
+  agents pick correctly.
 - [ ] Verified from at least one real cloud agent session (Claude Code web or Codespace).

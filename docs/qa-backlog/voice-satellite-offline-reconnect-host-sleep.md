@@ -5,7 +5,8 @@
 **Type:** integration
 
 ## Prerequisites
-- Full stack running on the MacBook (the bridge host): `bash scripts/dev-up.sh`,
+- Full stack running on the MacBook (the bridge host): Redis Stack + Mosquitto
+  (`brew install redis-stack mosquitto && brew services start redis-stack mosquitto`),
   `home-service`, real LLM key, `uv run python -m runner`
 - `config/satellites.yaml` with the dev-mac satellite entry pointed at `127.0.0.1`, dev
   satellite process running

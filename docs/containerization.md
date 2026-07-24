@@ -2,9 +2,9 @@
 
 > **Stub.** This doc covers the app-side foundation landed in Part 1 (data-dir
 > consolidation, secrets backend, trusted-network config, generalized runner). Part 2
-> adds the fat `Containerfile`, the `alfredctl` launcher, the model cache volume, port
-> exposure, a prod compose-of-one, and removes `scripts/dev-up.sh` — this doc will be
-> expanded then.
+> added the fat `Containerfile`, the `alfredctl` launcher, the model cache volume, port
+> exposure, and a prod compose-of-one, and retired the Homebrew `scripts/dev-*.sh`
+> wrappers — this doc will be expanded into the full guide next.
 
 ## Data directory model
 
@@ -60,16 +60,18 @@ triggers, conscious, channels, memory-ingestor) via `runner.supervisor.Superviso
 - **`ALFRED_MANAGE_INFRA`** — when truthy (`1`/`true`/`yes`), the runner additionally
   spawns and supervises `redis-stack-server` and Mosquitto (with readiness checks
   before dependent services start) as child processes. This is the container's job —
-  native dev keeps using Homebrew-managed Redis/Mosquitto (`scripts/dev-up.sh`), so
-  this stays unset outside a container.
+  native dev keeps running its own Redis Stack + Mosquitto directly (Homebrew or
+  otherwise, no wrapper script), so this stays unset outside a container.
 
 ## What's still to come (Part 2)
 
-- Fat `Containerfile` bundling the full runtime (replacing the current source-only
-  `Containerfile`)
-- `alfredctl` launcher script/CLI
-- Model cache volume for Ollama/embedding models
-- Port exposure + prod compose-of-one (`docker-compose.yml` today is dev-oriented)
-- Deletion of `scripts/dev-up.sh` once the container fully owns infra lifecycle
+- ~~Fat `Containerfile` bundling the full runtime~~ — done: single-image build via
+  `alfredctl build`.
+- ~~`alfredctl` launcher script/CLI~~ — done: `build`/`up`/`down`/`logs`/`shell`/`urls`/`smoke`.
+- ~~Model cache volume for Ollama/embedding models~~ — done: `/models` volume,
+  `ALFRED_MODELS_DIR`/`HF_TOKEN`.
+- ~~Port exposure + prod compose-of-one~~ — done: `docker-compose.yml` is now a
+  compose-of-one for the fat image.
+- ~~Deletion of `scripts/dev-up.sh` once the container fully owns infra lifecycle~~ — done.
 - arm64 image validation
 - A full rewrite of this doc covering the end-to-end container workflow

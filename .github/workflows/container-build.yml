@@ -1,0 +1,55 @@
+name: container-build
+
+# Standalone, non-required check — NOT part of the ci-ok aggregate in ci.yml. Builds
+# the fat Containerfile image on amd64 + arm64 and asserts the runtime contract holds.
+on:
+  pull_request:
+    paths:
+      - "Containerfile"
+      - ".dockerignore"
+      - "alfredctl/**"
+      - "runner/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/container-build.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          path: alfred
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: anirudhlath/alfred-home-service
+          path: home-service
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+      - name: Build fat image (staged context)
+        working-directory: alfred
+        run: |
+          uv venv --python 3.13
+          # staging.py is stdlib-only — no project install needed
+          .venv/bin/python -c "
+          import sys; sys.path.insert(0, '.')
+          from pathlib import Path
+          from alfredctl.staging import stage_context
+          stage_context(Path('/tmp/alfred-ctx'))
+          "
+          docker build -t alfred:ci -f /tmp/alfred-ctx/alfred/Containerfile /tmp/alfred-ctx
+      - name: Assert image contract
+        run: |
+          docker run --rm --entrypoint python -e ALFRED_SECRETS_PASSPHRASE=ci alfred:ci \
+            -c "import bus, core.reflex, runner, alfred_sdk, app.server"
+          docker run --rm --entrypoint sh alfred:ci -c "redis-server --port 7777 --loadmodule /usr/local/lib/redis/modules/redisearch.so --daemonize no & sleep 1; redis-cli -p 7777 MODULE LIST | grep -qi search"
+          docker run --rm --entrypoint tini alfred:ci --version

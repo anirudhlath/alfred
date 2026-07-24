@@ -5,7 +5,7 @@
 **Type:** e2e
 
 ## Prerequisites
-- Full stack running: `bash scripts/dev-up.sh`, `home-service` on port 8000, real LLM key,
+- Full stack running: Redis Stack + Mosquitto (`brew install redis-stack mosquitto && brew services start redis-stack mosquitto`), `home-service` on port 8000, real LLM key,
   `uv run python -m runner`
 - `config/satellites.yaml` with a `127.0.0.1` entry and the macOS dev satellite running (real
   mic/speaker), as in `voice-satellite-real-mic-full-loop.md`

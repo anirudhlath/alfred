@@ -5,7 +5,7 @@
 **Type:** integration
 
 ## Prerequisites
-- Real Redis (redis-stack, not fakeredis) running via `scripts/dev-up.sh`
+- Real Redis (redis-stack, not fakeredis) running (`brew install redis-stack && brew services start redis-stack`, or `uv run alfredctl up --mode ephemeral` for the containerized stack)
 - Alfred `core.channels` process running for real (not under pytest) so the real `credential_push_worker` consumer loop is active with consumer group `channels-credentials`
 - A stub or Plan-2 service with a `credentials_schema` + `credentials_endpoint` that logs/exposes incoming POST bodies so a re-push is observable (home-service does not declare `credentials_schema` on this branch — use a small stub `AlfredClient`-based service, or Plan 2's home-service once merged)
 
