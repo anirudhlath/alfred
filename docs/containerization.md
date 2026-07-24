@@ -135,18 +135,18 @@ because fixtures exist yet.
 
 ## 5. Models — cached volume, not baked
 
-Models (`faster-whisper`, Piper TTS, ECAPA speaker-ID, the embedding model) are **not**
-baked into the image — they download on first use to a dedicated cache volume mounted in
-**every** mode (including `ephemeral`/`seed`), so worktrees share one cache and never
-re-download gigabytes on teardown:
+Models (`faster-whisper`, Piper/Kokoro TTS, ECAPA speaker-ID, the embedding model) are
+**not** baked into the image — they download on first use to a dedicated cache volume
+mounted in **every** mode (including `ephemeral`/`seed`), so worktrees share one cache
+and never re-download gigabytes on teardown:
 
+- **`HF_HOME=/models/hf`** — HuggingFace's own cache dir. Whisper, the embedding model,
+  and both TTS backends (Piper + Kokoro via `core/voice/hf_models.ensure_model()`) all
+  route through `huggingface_hub`, so this covers nearly everything. It is a
+  subdirectory of the same `/models` volume by default.
 - **`ALFRED_MODELS_DIR`** (container default `/models`) — root resolved by
-  `shared.config.models_root()`. Piper caches under `models_root()/piper`
-  (`core/voice/tts.py`); the ECAPA speaker-ID model caches under
-  `models_root()/spkrec-ecapa-voxceleb` (`core/voice/speaker_id.py`).
-- **`HF_HOME=/models/hf`** — HuggingFace's own cache dir (embedding model, and anything
-  else routed through `huggingface_hub`), a subdirectory of the same `/models` volume by
-  default.
+  `shared.config.models_root()`. Used by the one non-HF cache: the ECAPA speaker-ID
+  model at `models_root()/spkrec-ecapa-voxceleb` (`core/voice/speaker_id.py`).
 - `alfredctl up --hf-cache <path>` mounts an **existing** HF cache directory straight at
   `/models/hf`, overriding the general `/models` volume for that one path — point it at
   `~/.cache/huggingface` to reuse models you've already downloaded on the host instead of

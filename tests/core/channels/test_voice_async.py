@@ -1,6 +1,6 @@
 """Voice processing must never block the channels event loop.
 
-Whisper transcription, Piper synthesis, and model construction are CPU-bound
+Whisper transcription, TTS synthesis, and model construction are CPU-bound
 (seconds to tens of seconds) — they must run via asyncio.to_thread so the
 event loop keeps serving WebSockets, admin API, and notification delivery.
 """
@@ -111,17 +111,27 @@ async def test_aget_stt_concurrent_calls_construct_once(
 async def test_aget_tts_returns_none_when_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A failed lazy load (missing voice extra) must surface as None, not raise."""
+    """No registered TTS backend available (missing voice extras) must surface as
+    None, not raise."""
+    construct_calls = 0
 
-    def fake_lazy_load(key: str, module: str, cls_name: str, missing_msg: str) -> Any:
-        voice_models._lazy_cache[key] = voice_models._FAILED
-        return None
+    def fake_construct_backend(module: str, cls_name: str, missing_msg: str) -> Any:
+        nonlocal construct_calls
+        construct_calls += 1
+        # Every backend's dependency is "absent" (not a runtime failure), so the
+        # total failure is cached permanently (see voice_models.get_tts) and a
+        # second call can short-circuit without re-entering the loader.
+        return voice_models._ConstructResult(None, import_missing=True)
 
-    monkeypatch.setattr(voice_models, "_lazy_load", fake_lazy_load)
+    monkeypatch.setattr(voice_models, "_construct_backend", fake_construct_backend)
 
     assert await web_server.aget_tts() is None
-    # Cached failure short-circuits without re-entering the loader
+    calls_after_first = construct_calls
+    assert calls_after_first > 0
+
+    # Cached failure short-circuits without re-entering the loader.
     assert await web_server.aget_tts() is None
+    assert construct_calls == calls_after_first
 
 
 @pytest.mark.asyncio

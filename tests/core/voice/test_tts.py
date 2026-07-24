@@ -2,16 +2,9 @@
 
 from __future__ import annotations
 
-import contextlib
-from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
-import pytest  # noqa: TC002
-
-if TYPE_CHECKING:
-    from pathlib import Path
-
-from core.voice.tts import PiperTTS, _default_model_dir, _voice_url
+from core.voice.tts import PiperTTS
 
 
 def test_tts_instantiation() -> None:
@@ -25,10 +18,36 @@ def test_default_voice() -> None:
     assert PiperTTS.DEFAULT_VOICE == "en_GB-alan-medium"
 
 
-def test_default_model_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Default model directory resolves under models_root()/piper."""
-    monkeypatch.setenv("ALFRED_MODELS_DIR", str(tmp_path))
-    assert _default_model_dir() == tmp_path.resolve() / "piper"
+def test_is_ttsbackend_subclass() -> None:
+    from core.voice.tts_backend import TTSBackend
+
+    assert issubclass(PiperTTS, TTSBackend)
+
+
+def test_voice_path_builder() -> None:
+    from core.voice.tts import _voice_path
+
+    assert _voice_path("en_GB-alan-medium") == "en/en_GB/alan/medium/en_GB-alan-medium"
+
+
+def test_download_model_uses_hf(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from pathlib import Path
+
+    from core.voice import tts as tts_mod
+
+    calls: list[str] = []
+
+    def fake_ensure(repo_id: str, filename: str, revision: str) -> Path:
+        calls.append(filename)
+        return Path("/tmp") / filename
+
+    monkeypatch.setattr(tts_mod, "ensure_model", fake_ensure)
+    out = tts_mod._download_model("en_GB-alan-medium")
+    assert out == Path("/tmp/en/en_GB/alan/medium/en_GB-alan-medium.onnx")
+    assert calls == [
+        "en/en_GB/alan/medium/en_GB-alan-medium.onnx.json",
+        "en/en_GB/alan/medium/en_GB-alan-medium.onnx",
+    ]
 
 
 @patch("core.voice.tts.PiperTTS.__init__", return_value=None)
@@ -91,32 +110,3 @@ def test_synthesize_multiple_chunks_with_pauses() -> None:
     single_chunk_audio = len(chunk1.audio_int16_bytes)
     # WAV header is 44 bytes, content is 2 chunks + 1 pause
     assert len(result) > 44 + single_chunk_audio
-
-
-def test_voice_url_builder() -> None:
-    """URL builder maps voice name to HuggingFace path."""
-    url = _voice_url("en_GB-alan-medium")
-    assert url.endswith("en/en_GB/alan/medium/en_GB-alan-medium")
-
-
-def test_constructor_auto_downloads_missing_model(tmp_path: Path) -> None:
-    """Constructor auto-downloads model from HuggingFace if not present."""
-    from unittest.mock import patch
-
-    import pytest
-
-    pytest.importorskip("piper", reason="piper-tts not installed")
-
-    with patch("core.voice.tts._download_model") as mock_dl:
-        # Simulate download creating the file
-        def fake_download(voice: str, model_dir: Path) -> None:
-            (model_dir / f"{voice}.onnx").write_bytes(b"fake")
-
-        mock_dl.side_effect = fake_download
-
-        # Still fails because the fake .onnx isn't a real model,
-        # but _download_model should have been called
-        with contextlib.suppress(Exception):  # PiperVoice.load will fail on fake data
-            PiperTTS(voice="en_GB-alan-medium", model_dir=tmp_path)
-
-        mock_dl.assert_called_once_with("en_GB-alan-medium", tmp_path)

@@ -181,7 +181,7 @@ graph TB
         WebPWA["Web PWA<br/>web/"]
         VoicePipeline["Voice Pipeline"]
         WhisperSTT[WhisperSTT]
-        PiperTTS[PiperTTS]
+        TTS["TTS Backend<br/>Kokoro (default) / Piper"]
         Satellites["Voice Satellites<br/>wyoming-satellite"]
         WebAuthn --> WebChannel
         WebChannel --> AdminRouter
@@ -273,7 +273,7 @@ graph TB
     WebChannel -->|XREAD responses| Redis
     WebChannel <-->|WebSocket| WebPWA
     VoicePipeline --> WhisperSTT
-    VoicePipeline --> PiperTTS
+    VoicePipeline --> TTS
     WebChannel --> VoicePipeline
     AdminRouter -->|reads streams + state| Redis
     AdminRouter -->|reads memory files| Prefs
@@ -494,14 +494,17 @@ subscribe/unsubscribe by stream name; the server pushes `entry` frames via block
 **Voice Pipeline** (`core/voice/`):
 
 - `WhisperSTT` (`stt.py`) -- wraps `faster-whisper` for local speech-to-text. Transcribes audio bytes to text.
-- `PiperTTS` (`tts.py`) -- wraps `piper-tts` for local text-to-speech. Synthesizes text to WAV audio.
+- **TTS backend** (`tts_backend.py` ABC + `tts_registry.py`) -- config-selected
+  neural TTS. `KokoroTTS` (`tts_kokoro.py`, Kokoro-82M via `kokoro-onnx`) is the
+  default; `PiperTTS` (`tts.py`) the fallback. Both return 16-bit PCM WAV and
+  auto-download from the HF Hub. See [docs/voice.md](voice.md).
 
 **Voice Satellites** (`core/channels/satellite/`):
 
 Physical Wyoming-protocol devices (e.g. `wyoming-satellite` on a Raspberry Pi) connect over
 TCP to a bridge running as asyncio tasks inside the channels process -- wake word streaming,
 server-side VAD endpointing (`pysilero-vad`), speaker identification (ECAPA-TDNN), and the
-same Whisper/Piper instances used by the web channel. See
+same Whisper/TTS instances used by the web channel. See
 [docs/voice-satellites.md](voice-satellites.md) for the full architecture, protocol handling,
 and configuration reference.
 

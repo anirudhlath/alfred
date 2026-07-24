@@ -295,7 +295,7 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         if await aget_tts() is None:
             raise RuntimeError("voice extra not installed or model failed to load")
 
-    warmup_task = start_warmup("channels", {"whisper stt": _warm_stt, "piper tts": _warm_tts})
+    warmup_task = start_warmup("channels", {"whisper stt": _warm_stt, "tts": _warm_tts})
 
     # Satellite bridge — physical voice devices (see docs/voice-satellites.md).
     # A malformed/duplicate satellites.yaml must not take down the whole

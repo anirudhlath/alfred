@@ -1,6 +1,6 @@
 # Alfred — Product Requirements Document
 
-**Status:** Living document. Capability statuses current as of **2026-07-23**.
+**Status:** Living document. Capability statuses current as of **2026-07-24**.
 **Maintenance rule:** any PR that adds or changes a user-facing capability updates the
 relevant row(s) in the [Capability Catalog](#4-capability-catalog) in the same branch.
 
@@ -73,7 +73,7 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 | Web app (Mission Control SPA: chat, notifications, triggers, memory, system health, settings) | Shipped | `docs/web-frontend.md` |
 | Native iOS app (chat, notifications, settings, Face ID, push) | Shipped | `alfred-ios` repo |
 | Signal messaging (inbound requests + outbound notifications) | Shipped | `docs/architecture.md` |
-| Voice in the browser/app (speech-to-text, spoken replies) | Shipped | `docs/architecture.md` |
+| Voice in the browser/app (speech-to-text, neural spoken replies) | Shipped | `docs/voice.md` |
 | Physical wake-word satellites ("Hey Alfred" devices per room, room-aware context) | In review | spec `2026-07-15-voice-satellite-design.md`, PR #29 |
 | Speaker identification (who is talking, voice enrollment) | In review | PR #29 |
 | Multi-step conversations with session continuity (30-min sessions, any channel) | Shipped | `docs/architecture.md` |

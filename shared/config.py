@@ -97,6 +97,11 @@ class AlfredConfig:
 
     # Phase 3: Voice
     voice_confidence_threshold: float = 0.85
+    # Phase 3: Voice — TTS backend (see docs/voice.md)
+    tts_backend: str = "kokoro"  # kokoro | piper
+    kokoro_voice: str = "am_michael"
+    kokoro_speed: float = 1.0
+    kokoro_onnx_provider: str = "auto"  # auto | cpu | cuda | coreml
 
     # Phase 3: Signal
     signal_phone_number: str = ""
@@ -139,6 +144,10 @@ class AlfredConfig:
             involuntary_recall_threshold=float(os.getenv("INVOLUNTARY_RECALL_THRESHOLD", "0.5")),
             # Phase 3: Voice
             voice_confidence_threshold=float(os.getenv("VOICE_CONFIDENCE_THRESHOLD", "0.85")),
+            tts_backend=os.getenv("ALFRED_TTS_BACKEND", "kokoro"),
+            kokoro_voice=os.getenv("KOKORO_VOICE", "am_michael"),
+            kokoro_speed=float(os.getenv("KOKORO_SPEED", "1.0")),
+            kokoro_onnx_provider=os.getenv("KOKORO_ONNX_PROVIDER", "auto"),
             # Phase 3: Signal
             signal_phone_number=os.getenv("SIGNAL_PHONE_NUMBER", ""),
             # Phase 3: Logging

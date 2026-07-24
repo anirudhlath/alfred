@@ -1,14 +1,15 @@
-"""PiperTTS — text-to-speech using Piper (local ONNX inference)."""
+"""PiperTTS — text-to-speech using Piper (local ONNX inference), HF-Hub model."""
 
 from __future__ import annotations
 
 import io
-import urllib.request
 import wave
 from typing import TYPE_CHECKING
 
 from loguru import logger
 
+from core.voice.hf_models import ensure_model
+from core.voice.tts_backend import TTSBackend
 from shared.traced import traced
 
 if TYPE_CHECKING:
@@ -20,13 +21,14 @@ if TYPE_CHECKING:
 # Silence between sentences (samples at 22050 Hz, 16-bit mono)
 _SENTENCE_PAUSE_MS = 250
 
-_HF_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
+# Pinned HF source for Piper voices.
+_PIPER_REPO = "rhasspy/piper-voices"
+_PIPER_REVISION = "5b44ec7bab7c5822cfec48fbd5aa99db71a823d6"
 
 
-def _voice_url(voice: str) -> str:
-    """Build HuggingFace URL for a Piper voice model.
+def _voice_path(voice: str) -> str:
+    """Map a Piper voice name to its repo-relative path (no extension).
 
-    Voice names follow the pattern: lang_REGION-speaker-quality
     e.g. en_GB-alan-medium → en/en_GB/alan/medium/en_GB-alan-medium
     """
     parts = voice.split("-")
@@ -34,36 +36,25 @@ def _voice_url(voice: str) -> str:
     lang = lang_region.split("_")[0]  # en
     speaker = parts[1]  # alan
     quality = parts[2] if len(parts) > 2 else "medium"
-    return f"{_HF_BASE}/{lang}/{lang_region}/{speaker}/{quality}/{voice}"
+    return f"{lang}/{lang_region}/{speaker}/{quality}/{voice}"
 
 
-def _default_model_dir() -> Path:
-    from shared.config import models_root
+def _download_model(voice: str) -> Path:
+    """Fetch the Piper ONNX model + config from the HF Hub; return the .onnx path.
 
-    return models_root() / "piper"
-
-
-def _download_model(voice: str, model_dir: Path) -> None:
-    """Download Piper ONNX model + config from HuggingFace."""
-    model_dir.mkdir(parents=True, exist_ok=True)
-    base_url = _voice_url(voice)
-
-    for suffix in (".onnx", ".onnx.json"):
-        url = f"{base_url}{suffix}"
-        dest = model_dir / f"{voice}{suffix}"
-        if dest.exists():
-            continue
-        logger.info("Downloading Piper voice model: {} → {}", url, dest)
-        urllib.request.urlretrieve(url, dest)
-        logger.info("Downloaded {} ({:.1f} MB)", dest.name, dest.stat().st_size / 1e6)
+    Both files land in the same HF snapshot dir, so PiperVoice.load finds the
+    config alongside the model.
+    """
+    base = _voice_path(voice)
+    ensure_model(_PIPER_REPO, f"{base}.onnx.json", _PIPER_REVISION)  # config alongside
+    return ensure_model(_PIPER_REPO, f"{base}.onnx", _PIPER_REVISION)
 
 
-class PiperTTS:
+class PiperTTS(TTSBackend):
     """Text-to-speech using Piper (local, no cloud dependency).
 
-    Uses ONNX voice models for fast CPU inference via the piper-tts Python API.
-    Synthesis parameters are tuned for natural, brisk speech.
-    Auto-downloads models from HuggingFace on first use.
+    Fallback backend behind the TTSBackend seam. Auto-downloads voice models from
+    the HF Hub on first use.
     """
 
     DEFAULT_VOICE = "en_GB-alan-medium"
@@ -71,7 +62,6 @@ class PiperTTS:
     def __init__(
         self,
         voice: str = DEFAULT_VOICE,
-        model_dir: Path | None = None,
         length_scale: float = 0.75,
         noise_scale: float = 0.667,
         noise_w: float = 0.3,
@@ -79,11 +69,7 @@ class PiperTTS:
         from piper import PiperVoice as _PiperVoice
         from piper.config import SynthesisConfig as _SynthesisConfig
 
-        model_dir = model_dir if model_dir is not None else _default_model_dir()
-        model_path = model_dir / f"{voice}.onnx"
-        if not model_path.exists():
-            logger.info("Voice model not found — downloading {}", voice)
-            _download_model(voice, model_dir)
+        model_path = _download_model(voice)
         self._voice: PiperVoice = _PiperVoice.load(str(model_path))
         self._sample_rate: int = 22050
         self._syn_config: SynthesisConfig = _SynthesisConfig(
@@ -91,13 +77,7 @@ class PiperTTS:
             noise_scale=noise_scale,
             noise_w_scale=noise_w,
         )
-        logger.info(
-            "Loaded Piper TTS voice: {} (length={}, noise={}, noise_w={})",
-            voice,
-            length_scale,
-            noise_scale,
-            noise_w,
-        )
+        logger.info("Loaded Piper TTS voice: {}", voice)
 
     @traced(name="voice.tts.synthesize")
     def synthesize(self, text: str) -> bytes:
