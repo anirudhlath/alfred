@@ -34,13 +34,14 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - Python 3.13+, async-first, Pydantic v2
 - `uv` for package management, `ruff` for lint/format, `mypy --strict` for types
 - OpenTelemetry → SigNoz for observability
-- OCI Containerfiles, Apple container runtime (dev) + Docker Compose (prod)
+- OCI Containerfiles, Apple container runtime (dev) + Docker Compose (prod) — one fat image, launched via `alfredctl` (build/up/down/logs/shell/urls/smoke)
 - MQTT (edge) + Redis Streams (internal backbone)
 - Ollama for local SLM inference (gpt-oss:20b on dev, configurable via OLLAMA_MODEL)
 - alfred-sdk is the ONLY coupling to external apps
 
 ## Key Paths
 
+- `alfredctl/` — container launcher CLI (`typer`): `main.py` (commands), `runtime.py` (runtime detection + per-runtime gateway/subnet knowledge), `launch.py` (`run` arg assembly), `staging.py` (git-tracked build context), `smoke.py` (containerized health checks). See `docs/containerization.md`.
 - `shared/` — cross-cutting utilities (config, streams, secrets, types, logging, tracing)
 - `shared/usertime.py` — `get_user_timezone()`/`set_user_timezone()` (Redis key `alfred:user:timezone`; resolution: stored → `ALFRED_TIMEZONE` env → UTC)
 - `bus/schemas/events.py` — canonical event types (single source of truth)
@@ -101,7 +102,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 ```bash
 # Python (ruff >=0.15.16, mypy >=2.1)
 ruff check . --fix && ruff format .        # lint + format
-mypy --strict bus/ core/ domains/ evals/ runner/ sdk/ shared/ telemetry/  # type check
+mypy --strict alfredctl/ bus/ core/ domains/ evals/ runner/ sdk/ shared/ telemetry/  # type check
 .venv/bin/python -m pytest -x -q           # test (use .venv in worktrees)
 
 # Frontend (run from web/)
@@ -269,3 +270,8 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - User timezone lives at `alfred:user:timezone` via `shared/usertime.py` — resolution stored → `ALFRED_TIMEZONE` → UTC. Clients send their IANA zone per message; the conscious engine (not the web channel) persists it via `set_user_timezone` (write-on-change)
 - Service credential push failures return HTTP 502 from PUT but the keyring write persists — recovery is event-driven via the next `ServiceRegistered`, never a retry loop
 - redis-py 8 defaults `socket_timeout` to 5s (was `None`), which races idle blocking stream reads (`block=5000`) and raises spurious `Timeout reading from <host>` every ~5s — always construct async Redis clients via `shared.redis_streams.create_redis()` (`socket_timeout=None`, `block=` governs read timeouts instead), never `redis.asyncio.from_url()` directly. Exception: `sdk/alfred_sdk/client.py` keeps redis-py defaults — the SDK only issues short non-blocking commands and cannot import `shared`.
+- Downloaded models live under `ALFRED_MODELS_DIR` via `shared.config.models_root()` (container default `/models`) — Piper caches at `models_root()/piper`, ECAPA speaker-ID at `models_root()/spkrec-ecapa-voxceleb`; HF-routed models (embedding) use `HF_HOME`, a subdir of the same volume by default
+- The container image build stages context from `git ls-files -z -co --exclude-standard` (`alfredctl/staging.py`), not the repo directory directly — gitignored files (`.env`, `secrets/`, personal `core/memory/preferences|profile/*`) can never reach the image regardless of runtime `.dockerignore` support; `.dockerignore` itself is only a defense-in-depth fallback for a direct `docker build` against an unstaged checkout
+- `ALFRED_SECRETS_BACKEND=cryptfile` set *explicitly* without `ALFRED_SECRETS_PASSPHRASE` raises `RuntimeError` at import time (`shared/secrets.py`) — fails loud, no silent insecure fallback; the fallback only applies when `cryptfile` is auto-detected (unset backend on a bare Linux host)
+- Apple `container`'s `inspect`/`network inspect` JSON nests fields under a `status` key, not top-level — `networks[].ipv4Address` and `ipv4Subnet` live at `entry["status"]["networks"][0]["ipv4Address"]` / `entry["status"]["ipv4Subnet"]` (see `alfredctl/runtime.py`, `alfredctl/main.py`)
+- Mosquitto's config is generated at runtime, not shipped as a static file — `runner/__main__.py:_write_mosquitto_conf()` writes `data_path("mosquitto")/mosquitto.conf` with `persistence` set from `ALFRED_DATA_MODE` (`infra/mosquitto.conf` was deleted as dead — the old compose file was its only consumer)

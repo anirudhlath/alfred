@@ -2,49 +2,62 @@
 
 **Epic:** [GitHub Chores](../epics/github-chores.md)
 **Priority:** medium
-**Source:** GitHub agent-enablement round-up 2026-07-18
+**Source:** GitHub agent-enablement round-up 2026-07-18; updated 2026-07-23 post
+containerization Part 2 (`.devcontainer/` now exists — most of the shape below already
+shipped; this ticket narrows to what's left).
 
 ## Summary
+
 Alfred's dev environment needs redis-stack, mosquitto, Python 3.13 (system may be 3.14),
-and Node — today that knowledge lives in CLAUDE.md prose (native macOS dev now runs
-Homebrew-managed Redis/Mosquitto directly, with no wrapper script; `uv run alfredctl up`
-is the containerized alternative for macOS/Linux). Cloud-based agents (Claude Code web
-sessions, Codespaces,
-`@claude` Actions runners) get a bare Linux box and must rediscover the environment by
-trial and error. A `.devcontainer/` (Linux-native, container-based services) gives every
-cloud agent a reproducible environment that can run the full system, not just the mocked
-test suite.
+and Node — `.devcontainer/` now exists and provisions exactly this (see "What shipped"
+below). What's left is *verification from a real cloud agent session* and a couple of
+doc/link cleanups; the provisioning shape itself is done.
 
-## Context / Motivation
-- The pytest suite passes without live services (fakes/mocks via root `conftest.py`, CI
-  proves it) — so plain CI doesn't need this. The gap is **live-system work**: running
-  `python -m runner`, smoke tests, evals, or reproducing integration bugs from a cloud
-  session.
-- Shape: `devcontainer.json` with a docker-compose defining `redis-stack` and
-  `eclipse-mosquitto` services; base image with Python 3.13 (uv-managed) + Node 22;
-  `postCreateCommand`: `uv venv --python 3.13 && uv sync --all-extras && (cd web && npm ci)`.
-- Reuse/align with the existing prod `docker-compose.yml` service definitions where
-  possible (but heed [lock-down-compose-redis-mqtt](../high/lock-down-compose-redis-mqtt.md)
-  — the devcontainer compose must not inherit its published-ports/no-auth defaults
-  verbatim; inside the devcontainer network, unpublished ports are fine).
-- Native macOS dev now runs Homebrew-managed Redis/Mosquitto directly (the old
-  `scripts/dev-up.sh` wrapper was retired in Part 2 of containerization); `uv run
-  alfredctl up` is the containerized path for macOS/Linux; the devcontainer remains the
-  dedicated Linux/cloud edit-test-loop path. CLAUDE.md should name all three and say
-  which applies where.
-- Model downloads (Whisper/Piper/EmbeddingGemma) are auto-fetched on first use and the
-  embedding default is gated
-  ([embedding-model-gated-first-run](../high/embedding-model-gated-first-run.md)) — the
-  devcontainer docs should note `HF_HUB_OFFLINE=1` for test runs and not pre-bake gated
-  models.
+## What shipped (no longer open)
 
-## Acceptance Criteria
-- [ ] `.devcontainer/` in `alfred/` provisions Python 3.13 + uv + Node 22 with redis-stack
-  and mosquitto service containers; `postCreateCommand` installs backend + frontend deps.
-- [ ] Inside the container: `pytest` passes, `npm run build` works, and `python -m runner`
-  starts with Redis/MQTT reachable (voice/embedding warmup failures acceptable/documented).
-- [ ] No published host ports and no plaintext secrets in the devcontainer config.
-- [ ] CLAUDE.md documents the environment paths (devcontainer for Linux/cloud, `alfredctl`
-  for containerized macOS/Linux, native Homebrew-managed Redis/Mosquitto for macOS) so
-  agents pick correctly.
-- [ ] Verified from at least one real cloud agent session (Claude Code web or Codespace).
+- ✅ `.devcontainer/devcontainer.json` + `.devcontainer/docker-compose.yml`: a
+  `mcr.microsoft.com/devcontainers/python:3.13` dev service, a `redis/redis-stack-server`
+  service, and an `eclipse-mosquitto:2` service, with the Node 22 devcontainer feature.
+  No `ports:` published on any service — safe by construction inside the devcontainer's
+  private network.
+- ✅ `.devcontainer/post-create.sh`: installs `uv`, runs `uv venv --python 3.13 && uv
+  sync --all-extras`, then `(cd web && npm ci)` — matches the target
+  `postCreateCommand` shape exactly, and prints the `HF_HUB_OFFLINE=1` reminder for test
+  runs (gated embedding default — see
+  [`embedding-model-gated-first-run`](../high/embedding-model-gated-first-run.md)).
+- ✅ **Stale assumption fixed:** the original text suggested reusing "the existing prod
+  `docker-compose.yml` service definitions" for the devcontainer's redis/mosquitto
+  services. That's no longer possible or desirable — Part 2 containerization replaced
+  the old multi-service prod compose with a **compose-of-one** running the single fat
+  image (`docker-compose.yml` now has exactly one `alfred` service, no bare
+  redis/mosquitto service definitions to borrow). The devcontainer's own standalone
+  redis-stack/mosquitto services (as shipped) are the correct, independent shape — see
+  `docs/containerization.md` §11 for the explicit deviation-from-spec rationale (building
+  the fat multi-stage image on every Codespace boot would be prohibitively slow for an
+  edit/test loop).
+- ✅ **Dead link removed:** the original text referenced a
+  `lock-down-compose-redis-mqtt.md` backlog ticket that does not exist in this repo (no
+  such file was ever filed) — dropped rather than perpetuated. The underlying concern
+  (no published ports, no plaintext secrets) is satisfied by the shipped
+  `.devcontainer/docker-compose.yml` regardless.
+
+## What's still open
+
+- [ ] **Verified from at least one real cloud agent session** (Claude Code web or a
+      GitHub Codespace) — inspection of the config is not the same as a live run.
+      Confirm: `pytest` passes, `npm run build` works, and `python -m runner` starts with
+      Redis/MQTT reachable (voice/embedding warmup failures acceptable/documented per the
+      gated-model ticket).
+- [ ] CLAUDE.md (repo root) documents all three environment paths explicitly — native
+      Homebrew-managed Redis/Mosquitto (macOS), `alfredctl up` (containerized,
+      macOS/Linux), and `.devcontainer/` (Linux/cloud edit-test loop) — so an agent
+      picks the right one for its environment without guessing. (Root `CLAUDE.md`'s
+      *Dev Environment Notes* section names `.devcontainer/` and `alfredctl`; confirm it
+      stays current as those paths evolve.)
+
+## Acceptance Criteria (narrowed)
+
+- [ ] Verified from at least one real cloud agent session (Claude Code web or
+      Codespace) — the sole functional gap left in this ticket.
+- [ ] CLAUDE.md's environment-path guidance re-read for currency at the same time
+      (cheap to check while already in a live session).
