@@ -23,6 +23,10 @@ _DETECT_ORDER_OTHER = ("docker", "podman")
 def detect(preferred: str | None) -> Runtime:
     """Resolve the container runtime: explicit choice, else platform preference order."""
     if preferred:
+        if preferred not in ("docker", "container", "podman"):
+            raise RuntimeError(
+                f"Unknown runtime {preferred!r} (expected docker | container | podman)"
+            )
         exe = shutil.which(preferred)
         if exe is None:
             raise RuntimeError(f"Requested runtime {preferred!r} not found on PATH")

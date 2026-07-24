@@ -29,6 +29,12 @@ def test_detect_none_raises(monkeypatch: pytest.MonkeyPatch) -> None:
         runtime.detect(None)
 
 
+def test_detect_rejects_unknown_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runtime.shutil, "which", lambda name: f"/bin/{name}")
+    with pytest.raises(RuntimeError, match="Unknown runtime 'nope'"):
+        runtime.detect("nope")
+
+
 def test_slug_sanitizes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(runtime, "_current_branch", lambda: "worktree-feat+Container/Z")
     assert runtime.branch_slug() == "worktree-feat-container-z"
