@@ -125,10 +125,18 @@ cd web && npm run lint && npm run test && npm run build   # build emits web/dist
 
 ## Running the System
 
+**Option A — containerized (one command, builds the image, starts everything):**
+
 ```bash
-# 1. Containerized (builds the image, starts everything): uv run alfredctl up --mode seed
-#    Or natively — start infra yourself (Homebrew infra scripts are retired):
-#    redis-stack-server & mosquitto &
+uv run alfredctl up --mode seed
+uv run alfredctl smoke   # health-check it in one shot (boots seed mode, verifies, tears down)
+```
+
+**Option B — native (bring your own Redis Stack + Mosquitto; Homebrew infra scripts are retired):**
+
+```bash
+# 1. Start infrastructure yourself, e.g.:
+redis-stack-server & mosquitto &
 
 # 2. Start home-service (in home-service/ repo)
 cd ../home-service && uv run uvicorn app.server:app --port 8000
@@ -138,8 +146,11 @@ uv run python -m runner
 
 # 4. Smoke test
 bash scripts/smoke-test.sh
+```
 
-# 5. Run evals (requires Ollama + tools registered in Redis)
+**Either path** — run evals (requires Ollama + tools registered in Redis):
+
+```bash
 uv run python -m evals run
 uv run python -m evals run --model gpt-oss:20b -n 5  # repeat 5x with aggregate
 uv run python -m evals run --backend lmstudio        # use LM Studio

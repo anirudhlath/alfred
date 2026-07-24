@@ -119,8 +119,10 @@ Weather (Open-Meteo), Apple Calendar (CalDAV), Apple Health, Robinhood — all r
   image build stages both repos together.
 - Inference for the two engines: `OPENROUTER_API_KEY` (or `CLAUDE_API_KEY`) in `.env`
   for the Conscious Engine, and/or a local [Ollama](https://ollama.com) install for the
-  Reflex Engine (e.g. `ollama pull gpt-oss:20b`) — the container reaches host Ollama
-  automatically via the injected gateway host.
+  Reflex Engine (e.g. `ollama pull gpt-oss:20b`). `uv run alfredctl up` reaches host
+  Ollama automatically via the injected gateway host — it rewrites `OLLAMA_HOST` in
+  your `.env` for you. The `docker compose` path below does **not** do this rewrite
+  (see the compose snippet).
 
 ### Quickstart
 
@@ -146,9 +148,17 @@ command reference and troubleshooting.
 For production (a Docker Compose host), build once and run the compose-of-one instead:
 
 ```bash
+cp .env.example .env   # fill in OPENROUTER_API_KEY / CLAUDE_API_KEY, HA_TOKEN, etc. —
+                        # env_file: .env is required, compose fails without it
 uv run alfredctl build --tag alfred:latest
 ALFRED_SECRETS_PASSPHRASE=... docker compose up -d
 ```
+
+Unlike `alfredctl up`, plain `docker compose` passes your `.env` through **untouched** —
+if you're running Ollama on the host, set `OLLAMA_HOST=http://host.docker.internal:11434`
+in `.env` yourself (the compose file's `extra_hosts` entry makes that hostname resolve
+inside the container; `localhost`/`127.0.0.1` in `.env` would otherwise point at the
+container itself).
 
 ### Native (non-container) dev
 

@@ -1,4 +1,5 @@
 # Production deployment — one fat image, external state.
+# Before first run:       cp .env.example .env && fill it in (env_file below requires it)
 # Build the image first:  uv run alfredctl build --tag alfred:latest
 # Then:                   ALFRED_SECRETS_PASSPHRASE=... docker compose up -d
 services:
@@ -15,6 +16,9 @@ services:
       - "8081:8081"
       # - "1883:1883"   # opt-in: real Home Assistant publishing to the edge broker
     extra_hosts:
+      # Unlike `alfredctl up`, compose passes .env through untouched — if Ollama runs
+      # on the host, set OLLAMA_HOST=http://host.docker.internal:11434 in .env yourself
+      # so it resolves via this gateway instead of pointing at the container itself.
       - "host.docker.internal:host-gateway"   # reach host Ollama on Linux
     restart: unless-stopped
 volumes:
