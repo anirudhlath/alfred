@@ -45,14 +45,40 @@ def test_stage_excludes_gitignored(fake_workspace: Path, tmp_path: Path) -> None
     assert not (dest / "alfred" / "secret.md").exists()
 
 
-def test_stage_missing_home_service_raises(
-    fake_workspace: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_ensure_home_service_returns_existing(fake_workspace: Path) -> None:
+    assert staging.ensure_home_service() == fake_workspace / "home-service"
+
+
+def test_ensure_home_service_no_autoclone_raises(
+    fake_workspace: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import shutil
 
     shutil.rmtree(fake_workspace / "home-service")
     with pytest.raises(FileNotFoundError, match="home-service"):
-        staging.stage_context(tmp_path / "stage")
+        staging.ensure_home_service(auto_clone=False)
+
+
+def test_ensure_home_service_autoclones_when_missing(
+    fake_workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing sibling is cloned automatically (git call stubbed — no network)."""
+    import shutil
+
+    target = fake_workspace / "home-service"
+    shutil.rmtree(target)
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> object:
+        calls.append(cmd)
+        target.mkdir()  # simulate a successful clone
+        return None
+
+    monkeypatch.setattr(staging.subprocess, "run", fake_run)
+    assert staging.ensure_home_service() == target
+    assert calls and calls[0][:2] == ["git", "clone"]
+    assert str(target) in calls[0]
 
 
 def test_build_stage_root_lives_under_home() -> None:

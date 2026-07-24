@@ -10,6 +10,53 @@ from dataclasses import dataclass
 
 _POLL_INTERVAL = 2.0
 _EXEC_TIMEOUT = 30.0
+_DEEP_EXEC_TIMEOUT = 90.0
+
+# Runs INSIDE the container: drives a real UserRequest through the Conscious Engine
+# (System 2) and prints the response source. A genuine cloud-LLM reply has
+# source="conscious-engine"; the request_bus timeout fallback has source="channels".
+_DEEP_SNIPPET = """
+import asyncio
+from shared.config import AlfredConfig
+from shared.redis_streams import create_redis
+from bus.schemas.events import UserRequest
+from core.channels.request_bus import publish_and_wait
+
+
+async def main() -> None:
+    cfg = AlfredConfig.from_env()
+    redis = create_redis(cfg.redis_url)
+    session_id = "alfredctl-smoke-deep"
+    request = UserRequest(
+        source="alfredctl-smoke",
+        channel="web_pwa",
+        session_id=session_id,
+        identity_claim="sir",
+        authenticated=True,
+        content_type="text",
+        content="Reply in one short sentence to confirm you are online.",
+    )
+    resp = await publish_and_wait(redis, request, session_id, timeout=75.0)
+    print("SMOKE_SOURCE=" + (resp.source or ""))
+    print("SMOKE_TEXT=" + (resp.text or "")[:120].replace(chr(10), " "))
+
+
+asyncio.run(main())
+"""
+
+
+def _exec_deep(exe: str, name: str) -> tuple[int, str]:
+    try:
+        proc = subprocess.run(
+            [exe, "exec", name, "python", "-c", _DEEP_SNIPPET],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_DEEP_EXEC_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return 124, "timed out"
+    return proc.returncode, proc.stdout + proc.stderr
 
 
 @dataclass(frozen=True)
@@ -44,9 +91,15 @@ def _exec_in(exe: str, name: str, *cmd: str) -> tuple[int, str]:
     return proc.returncode, proc.stdout + proc.stderr
 
 
-def run_checks(exe: str, name: str, base_url: str, timeout: float = 300.0) -> list[SmokeCheck]:
+def run_checks(
+    exe: str, name: str, base_url: str, timeout: float = 300.0, *, deep: bool = False
+) -> list[SmokeCheck]:
     """Boot-gate + verify the containerized stack. `timeout` bounds only the initial
     /health poll (a startup gate, not steady-state polling) — every other check runs once.
+
+    With `deep=True`, adds an end-to-end check that drives a real UserRequest through the
+    Conscious Engine (System 2) and confirms a cloud-LLM response comes back — the only
+    check that actually exercises the OpenRouter/Claude path.
     """
     checks: list[SmokeCheck] = []
 
@@ -84,5 +137,18 @@ def run_checks(exe: str, name: str, base_url: str, timeout: float = 300.0) -> li
         exe, name, "sh", "-c", "ls /data/routines /data/preferences /data/mosquitto/mosquitto.conf"
     )
     checks.append(SmokeCheck("data-dir", rc == 0, out.strip()[:80]))
+
+    if deep:
+        rc, out = _exec_deep(exe, name)
+        source = ""
+        text = ""
+        for line in out.splitlines():
+            if line.startswith("SMOKE_SOURCE="):
+                source = line[len("SMOKE_SOURCE=") :].strip()
+            elif line.startswith("SMOKE_TEXT="):
+                text = line[len("SMOKE_TEXT=") :].strip()
+        passed = rc == 0 and source == "conscious-engine"
+        detail = f"System 2 replied: “{text}”" if passed else f"source={source or 'none'} rc={rc}"
+        checks.append(SmokeCheck("conscious", passed, detail[:120]))
 
     return checks

@@ -110,27 +110,45 @@ Weather (Open-Meteo), Apple Calendar (CalDAV), Apple Health, Robinhood — all r
 
 ## Setup
 
-### Prerequisites
-
-- A container runtime — Docker, Apple `container` (macOS), or Podman. `alfredctl`
-  auto-detects whichever is on `PATH`.
-- [`alfred-home-service`](https://github.com/anirudhlath/alfred-home-service) cloned as
-  a sibling directory (`../home-service` relative to this repo, not yet public) — the
-  image build stages both repos together.
-- Inference for the two engines: `OPENROUTER_API_KEY` (or `CLAUDE_API_KEY`) in `.env`
-  for the Conscious Engine, and/or a local [Ollama](https://ollama.com) install for the
-  Reflex Engine (e.g. `ollama pull gpt-oss:20b`). `uv run alfredctl up` reaches host
-  Ollama automatically via the injected gateway host — it rewrites `OLLAMA_HOST` in
-  your `.env` for you. The `docker compose` path below does **not** do this rewrite
-  (see the compose snippet).
-
 ### Quickstart
 
 ```bash
 git clone https://github.com/anirudhlath/alfred && cd alfred
 uv venv --python 3.13 && uv pip install -e ".[dev]"
-uv run alfredctl up --mode seed     # builds the image, starts everything, prints the URL
+
+cp .env.example .env          # fill in OPENROUTER_API_KEY (+ HA_TOKEN for home control)
+uv run alfredctl doctor       # validate .env before starting (optional but recommended)
+uv run alfredctl up           # build the image + start everything, prints the URL
 ```
+
+That's it. `alfredctl up` builds the fat image, auto-clones the `home-service` sibling if
+it's missing, starts the container, and prints the reachable URL (default
+`http://localhost:8081`). The full guide is [`docs/deployment.md`](docs/deployment.md).
+
+### What you configure
+
+Only one value is strictly required for a reasoning assistant; everything else has a
+working default.
+
+- **`OPENROUTER_API_KEY`** — System 2 (reasoning/conversation). Get one at
+  [openrouter.ai/keys](https://openrouter.ai/keys). (`CLAUDE_API_KEY` also works.)
+- **`HA_TOKEN`** — only for Home Assistant control. Mint it in HA → profile → Security →
+  Long-lived access tokens.
+- **Local inference** — for the fast System 1 path, a local [Ollama](https://ollama.com)
+  (`ollama pull gpt-oss:20b`) or any OpenAI-compatible server (vLLM/LM Studio).
+
+Sensible defaults handle the rest: memory embeddings use an **ungated** model (no HF token
+needed), the secrets passphrase is **generated and persisted** on first boot, and host
+services reachable at `localhost` are **auto-rewritten** to the container gateway.
+
+### Prerequisites
+
+- A container runtime — Docker, Apple `container` (macOS), or Podman; `alfredctl`
+  auto-detects whichever is on `PATH`.
+- The [`alfred-home-service`](https://github.com/anirudhlath/alfred-home-service) sibling
+  repo — `alfredctl build` clones it automatically as `../home-service` if absent.
+
+### Data modes
 
 `--mode` picks the data lifecycle:
 
@@ -140,25 +158,19 @@ uv run alfredctl up --mode seed     # builds the image, starts everything, print
 | `ephemeral` | Worktree / PR testing | Thrown away on teardown |
 | `seed` | Demo / QA | `ephemeral` + dummy fixtures pre-loaded |
 
-Other commands: `uv run alfredctl down`, `logs -f`, `shell`, `urls`, and `smoke` (boots
-seed mode, health-checks it, tears it down — the containerized equivalent of the smoke
-test below). See [`docs/containerization.md`](docs/containerization.md) for the full
-command reference and troubleshooting.
+Other commands: `uv run alfredctl down`, `logs -f`, `shell`, `urls`, `doctor`, and `smoke`.
+See [`docs/containerization.md`](docs/containerization.md) for the full command reference.
 
-For production (a Docker Compose host), build once and run the compose-of-one instead:
+### Production (Docker Compose)
 
 ```bash
-cp .env.example .env   # fill in OPENROUTER_API_KEY / CLAUDE_API_KEY, HA_TOKEN, etc. —
-                        # env_file: .env is required, compose fails without it
+cp .env.example .env                          # fill it in
 uv run alfredctl build --tag alfred:latest
-ALFRED_SECRETS_PASSPHRASE=... docker compose up -d
+docker compose up -d
 ```
 
-Unlike `alfredctl up`, plain `docker compose` passes your `.env` through **untouched** —
-if you're running Ollama on the host, set `OLLAMA_HOST=http://host.docker.internal:11434`
-in `.env` yourself (the compose file's `extra_hosts` entry makes that hostname resolve
-inside the container; `localhost`/`127.0.0.1` in `.env` would otherwise point at the
-container itself).
+The compose-of-one needs only your `.env` — no passphrase or host-networking flags to
+remember (the container generates the passphrase and rewrites `localhost` hosts itself).
 
 ### Native (non-container) dev
 
@@ -197,6 +209,7 @@ uv run python -m core.channels   # Web channel + PWA
 ```bash
 bash scripts/smoke-test.sh    # native — requires the stack already running
 uv run alfredctl smoke        # containerized — boots seed mode, verifies, tears down
+uv run alfredctl smoke --deep # also drives a real request through System 2 (needs a key)
 ```
 
 ## Evals
@@ -226,18 +239,24 @@ uv run pytest
 
 ## Configuration
 
-All configuration via environment variables (`.env` file auto-loaded):
+All configuration is via environment variables (`.env` auto-loaded). `.env.example` is the
+annotated source of truth, split into a short **REQUIRED** section and defaulted
+**OPTIONAL** settings; the most common ones:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `REDIS_HOST` | `localhost` | Redis server |
-| `REDIS_PORT` | `6379` | Redis port |
-| `MQTT_HOST` | `localhost` | MQTT broker |
-| `MQTT_PORT` | `1883` | MQTT port |
-| `OLLAMA_HOST` | `http://localhost:11434` | Ollama API |
-| `OLLAMA_MODEL` | `gpt-oss:20b` | SLM model |
-| `HA_HOST` | `http://homeassistant.local:8123` | Home Assistant |
-| `HA_TOKEN` | — | HA access token |
+| `OPENROUTER_API_KEY` | — | System 2 cloud LLM key (required for reasoning) |
+| `CLAUDE_MODEL` | `openrouter/anthropic/claude-sonnet-4` | System 2 model (LiteLLM string) |
+| `REFLEX_BACKEND` | `ollama` | System 1 backend: `ollama` \| `openai` |
+| `OLLAMA_HOST` | `http://localhost:11434` | Ollama API (localhost auto-rewritten in-container) |
+| `HA_HOST` | `http://localhost:8123` | Home Assistant base URL |
+| `HA_TOKEN` | — | HA long-lived token (required for home control) |
+| `EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Ungated by default; `EMBEDDING_DIM` auto-tracks it |
+| `ALFRED_TRUSTED_NETWORKS` | — | Extra trusted CIDRs (loopback + LAN + Tailscale trusted by default) |
+| `ALFRED_SECRETS_PASSPHRASE` | auto-generated | Keyring passphrase; persisted on first boot if unset |
+
+See [`docs/deployment.md`](docs/deployment.md) for the guided walkthrough and
+[`docs/containerization.md`](docs/containerization.md) for the containerization design.
 
 ## Related Repos
 

@@ -54,7 +54,7 @@ class SqliteVecStore(VectorStore):
     def __init__(
         self,
         db_path: str | Path,
-        dim: int = 768,
+        dim: int = 384,
         embedder: EmbeddingProvider | None = None,
     ) -> None:
         self._db_path = str(db_path)

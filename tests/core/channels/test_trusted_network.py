@@ -81,13 +81,42 @@ async def test_no_client_rejected() -> None:
 
 
 @pytest.mark.asyncio
-async def test_container_gateway_blocked_without_config(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_private_lan_allowed_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RFC1918 LAN (Docker bridge, home network) is trusted by default — the common case."""
     monkeypatch.delenv("ALFRED_TRUSTED_NETWORKS", raising=False)
+    monkeypatch.delenv("ALFRED_TRUSTED_NETWORKS_STRICT", raising=False)
+    for host in ("172.17.0.1", "192.168.1.50", "10.4.5.6"):
+        request = MagicMock()
+        request.client.host = host
+        await require_trusted_network(request)  # no raise
+
+
+@pytest.mark.asyncio
+async def test_private_lan_blocked_in_strict_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """STRICT mode drops the RFC1918 defaults — only loopback/Tailscale/explicit remain."""
+    monkeypatch.delenv("ALFRED_TRUSTED_NETWORKS", raising=False)
+    monkeypatch.setenv("ALFRED_TRUSTED_NETWORKS_STRICT", "1")
     request = MagicMock()
-    request.client.host = "172.17.0.1"
+    request.client.host = "192.168.1.50"
     with pytest.raises(HTTPException) as exc_info:
         await require_trusted_network(request)
     assert exc_info.value.status_code == 403
+    # loopback + Tailscale still trusted under strict mode
+    for host in ("127.0.0.1", "100.100.50.25"):
+        ok = MagicMock()
+        ok.client.host = host
+        await require_trusted_network(ok)
+
+
+@pytest.mark.asyncio
+async def test_403_detail_names_client_ip(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The 403 tells the operator exactly which IP was rejected (actionable)."""
+    monkeypatch.setenv("ALFRED_TRUSTED_NETWORKS_STRICT", "1")
+    request = MagicMock()
+    request.client.host = "203.0.113.99"
+    with pytest.raises(HTTPException) as exc_info:
+        await require_trusted_network(request)
+    assert "203.0.113.99" in exc_info.value.detail
 
 
 @pytest.mark.asyncio
