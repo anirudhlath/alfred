@@ -210,9 +210,8 @@ def test_memory_episodic_recent_lists_hot_and_cold(tmp_path: Any, monkeypatch: A
         }
 
     r.hgetall = AsyncMock(side_effect=_hgetall)
-    import core.channels.admin_api as admin_api
 
-    monkeypatch.setattr(admin_api, "_MEMORY_DIR", tmp_path)  # no cold DB present
+    monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path))  # no cold DB present
     client = make_admin_client(r)
     resp = client.get("/api/admin/memory/episodic")
     assert resp.status_code == 200
@@ -223,13 +222,11 @@ def test_memory_episodic_recent_lists_hot_and_cold(tmp_path: Any, monkeypatch: A
 
 
 def test_memory_semantic_lists_markdown(tmp_path: Any, monkeypatch: Any) -> None:
-    import core.channels.admin_api as admin_api
-
+    monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path))
     prefs = tmp_path / "preferences"
     prefs.mkdir()
     (prefs / "lighting.md").write_text("# Lighting\n- warm")
     (tmp_path / "profile").mkdir()
-    monkeypatch.setattr(admin_api, "_MEMORY_DIR", tmp_path)
     client = make_admin_client(_overview_redis())
     resp = client.get("/api/admin/memory/semantic")
     assert resp.status_code == 200
@@ -245,10 +242,8 @@ def test_memory_semantic_lists_markdown(tmp_path: Any, monkeypatch: Any) -> None
 
 
 def test_memory_scratchpad(tmp_path: Any, monkeypatch: Any) -> None:
-    import core.channels.admin_api as admin_api
-
+    monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path))
     (tmp_path / "scratchpad.md").write_text("obs 1\n")
-    monkeypatch.setattr(admin_api, "_MEMORY_DIR", tmp_path)
     r = _overview_redis()
     r.llen = AsyncMock(return_value=3)
     client = make_admin_client(r)
@@ -257,7 +252,7 @@ def test_memory_scratchpad(tmp_path: Any, monkeypatch: Any) -> None:
 
 
 def test_memory_routines_empty_dir(tmp_path: Any, monkeypatch: Any) -> None:
-    monkeypatch.setattr(admin_api, "_MEMORY_DIR", tmp_path)
+    monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path))
     client = make_admin_client(_overview_redis())
     resp = client.get("/api/admin/memory/routines")
     assert resp.status_code == 200
@@ -284,7 +279,7 @@ def test_memory_episodic_hot_scan_filters_out_non_episodic(tmp_path: Any, monkey
         return {b"content": b"Morning routine", b"type": b"routine", b"timestamp": b"0"}
 
     r.hgetall = AsyncMock(side_effect=_hgetall)
-    monkeypatch.setattr(admin_api, "_MEMORY_DIR", tmp_path)
+    monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path))
     client = make_admin_client(r)
     resp = client.get("/api/admin/memory/episodic")
     assert resp.status_code == 200

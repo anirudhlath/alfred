@@ -16,6 +16,10 @@ import signal
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -37,13 +41,19 @@ def _watch_dirs_for_module(module: str, root: Path) -> list[Path]:
 
 @dataclass(frozen=True)
 class ServiceSpec:
-    """Specification for a supervised child service."""
+    """Specification for a supervised child service (python module or native command)."""
 
     name: str
-    module: str
+    module: str | None = None
+    command: list[str] | None = None
     delay: float = 0.0
     max_restarts: int = 5
     watch_dirs: list[str] = field(default_factory=list)
+    ready_check: Callable[[], Awaitable[bool]] | None = None
+
+    def __post_init__(self) -> None:
+        if (self.module is None) == (self.command is None):
+            raise ValueError(f"{self.name}: exactly one of 'module' or 'command' must be set")
 
 
 class _ManagedService:
@@ -85,8 +95,12 @@ class Supervisor:
     # ------------------------------------------------------------------
 
     async def _start_process(self, svc: _ManagedService) -> None:
-        """Spawn a service as a child process."""
-        cmd = [sys.executable, "-u", "-m", svc.spec.module]
+        """Spawn a service as a child process (python module or native command)."""
+        if svc.spec.command is not None:
+            cmd = list(svc.spec.command)
+        else:
+            assert svc.spec.module is not None
+            cmd = [sys.executable, "-u", "-m", svc.spec.module]
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -104,6 +118,26 @@ class Supervisor:
             line = raw_line.decode(errors="replace").rstrip("\n")
             if line:
                 print(line, flush=True)
+
+    async def _await_ready(self, svc: _ManagedService, timeout: float = 30.0) -> bool:
+        """Probe a service's ready_check until it passes or timeout (startup gate only)."""
+        check = svc.spec.ready_check
+        if check is None:
+            return True
+        deadline = timeout
+        interval = 0.25
+        elapsed = 0.0
+        while elapsed < deadline and not self._shutdown.is_set():
+            try:
+                if await check():
+                    logger.info("[%s] ready", svc.spec.name)
+                    return True
+            except Exception:
+                pass
+            await asyncio.sleep(interval)
+            elapsed += interval
+        logger.error("[%s] not ready after %.0fs", svc.spec.name, timeout)
+        return False
 
     async def _monitor(self, svc: _ManagedService) -> None:
         """Start, watch, and restart a service on crash."""
@@ -182,6 +216,8 @@ class Supervisor:
         # Build a mapping: directory → list of managed services
         dir_to_svcs: dict[Path, list[_ManagedService]] = {}
         for svc in self._managed:
+            if svc.spec.module is None:
+                continue  # native commands are not hot-reloaded
             for d in _watch_dirs_for_module(svc.spec.module, self._root):
                 dir_to_svcs.setdefault(d, []).append(svc)
             for extra in svc.spec.watch_dirs:
@@ -248,7 +284,9 @@ class Supervisor:
     async def run(self) -> int:
         """Run the supervisor until shutdown.
 
-        Returns 0 on clean shutdown, 1 if any service exhausted its restarts.
+        Returns 0 on clean shutdown, 1 if any service exhausted its restarts
+        or a readiness gate never passed (so a container PID 1 fails loudly
+        instead of reporting success with infra never up).
         """
         loop = asyncio.get_running_loop()
 
@@ -260,7 +298,18 @@ class Supervisor:
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, on_signal)
 
-        monitor_tasks = [asyncio.create_task(self._monitor(svc)) for svc in self._managed]
+        infra = [m for m in self._managed if m.spec.ready_check is not None]
+        rest = [m for m in self._managed if m.spec.ready_check is None]
+
+        gate_failed = False
+        monitor_tasks = [asyncio.create_task(self._monitor(m)) for m in infra]
+        if infra:
+            ready = await asyncio.gather(*(self._await_ready(m) for m in infra))
+            if not all(ready) and not self._shutdown.is_set():
+                gate_failed = True
+                self._shutdown.set()
+        if not self._shutdown.is_set():
+            monitor_tasks += [asyncio.create_task(self._monitor(m)) for m in rest]
 
         # Start file watcher for hot-reload.
         watcher_task: asyncio.Task[None] | None = None
@@ -279,4 +328,4 @@ class Supervisor:
         await self._terminate_all()
 
         crashed = any(svc.restart_count > svc.spec.max_restarts for svc in self._managed)
-        return 1 if crashed else 0
+        return 1 if (crashed or gate_failed) else 0

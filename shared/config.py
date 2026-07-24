@@ -13,6 +13,34 @@ _env_path = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(_env_path)
 
 
+def data_root() -> Path:
+    """Root directory for all runtime-writable state (env ``ALFRED_DATA_DIR``, default ``data``)."""
+    return Path(os.getenv("ALFRED_DATA_DIR", "data")).resolve()
+
+
+def data_path(*parts: str) -> Path:
+    """Resolve a child path under the data root, ensuring its parent directory exists."""
+    p = data_root().joinpath(*parts)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def data_mode() -> str:
+    """Data lifecycle mode: ``persistent`` | ``ephemeral`` | ``seed`` (env ``ALFRED_DATA_MODE``)."""
+    return os.getenv("ALFRED_DATA_MODE", "persistent")
+
+
+def models_root() -> Path:
+    """Root for downloaded model caches (env ``ALFRED_MODELS_DIR``, default ``<data>/models``).
+
+    Caches, not state: safe to share across worktrees/containers and to delete.
+    """
+    override = os.getenv("ALFRED_MODELS_DIR", "").strip()
+    root = Path(override).resolve() if override else data_root() / "models"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 @dataclass(frozen=True)
 class AlfredConfig:
     redis_host: str = "localhost"
@@ -97,7 +125,7 @@ class AlfredConfig:
             lmstudio_host=os.getenv("LMSTUDIO_HOST", "http://localhost:1234"),
             ha_host=os.getenv("HA_HOST", "http://homeassistant.local:8123"),
             ha_token=os.getenv("HA_TOKEN", ""),
-            research_vault_path=os.getenv("RESEARCH_VAULT_PATH", "./research"),
+            research_vault_path=os.getenv("RESEARCH_VAULT_PATH", str(data_root() / "research")),
             signoz_enabled=os.getenv("SIGNOZ_ENABLED", "true").lower() == "true",
             otel_endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317"),
             # Phase 3: Conscious Engine

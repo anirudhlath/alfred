@@ -39,3 +39,11 @@ docs/
 .env
 .env.*
 secrets/
+
+# Personal (gitignored) memory content — must never enter an image (defense-in-depth;
+# the real gate is alfredctl's git-ls-files build context staging, not this file)
+core/memory/preferences/*
+core/memory/profile/*
+!core/memory/preferences/.example
+!core/memory/profile/.example
+core/voice/models/

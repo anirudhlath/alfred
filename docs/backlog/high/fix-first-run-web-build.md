@@ -6,7 +6,7 @@
 **Source:** Public-release readiness audit 2026-07-18 (findings #6)
 
 ## Summary
-The README quickstart produces a UI-less server: a stranger following the Setup steps (`uv sync` + `dev-up.sh` + `python -m runner`) lands on a channels process where `/` returns 404, because the web SPA is served from the gitignored `web/dist` and `mount_spa()` is a no-op when that directory is missing. The README never mentions Node.js, npm, or the `cd web && npm run build` step needed to produce it. Because the alfred repo is already public, this is a live first-run defect that any current visitor hits — not a pre-release gap — and the only recovery hint they get is a runtime log warning.
+The native (non-container) README quickstart produces a UI-less server: a stranger following the native Setup steps (`uv sync` + start Redis/Mosquitto + `python -m runner`) lands on a channels process where `/` returns 404, because the web SPA is served from the gitignored `web/dist` and `mount_spa()` is a no-op when that directory is missing. The README never mentions Node.js, npm, or the `cd web && npm run build` step needed to produce it. The containerized quickstart (`uv run alfredctl up`, added in Part 2 of containerization) sidesteps this — the fat image's `webbuild` stage bakes `web/dist` in — but the native path is still broken, and the alfred repo is already public, so this is a live first-run defect for anyone choosing native dev, not a pre-release gap; the only recovery hint they get is a runtime log warning.
 
 ## Context / Motivation
 - The web SPA is served from `web/dist`, which is gitignored (`alfred/.gitignore` line 45: `web/dist/`), so a fresh clone has no built frontend.

@@ -11,10 +11,11 @@ internal CLAUDE.md files, and session memory.
 
 Launch-readiness assessment (2026-07-18): setup is engineer-grade and takes
 1–2 hours with insider knowledge. The README covers install commands but not
-the journey: brew services (redis-stack, mosquitto), Ollama model pull, `.env`
-keys (which are documented only internally), `scripts/dev-up.sh`, the runner,
-first-run onboarding wizard, and what "working" looks like. The in-product
-onboarding is already good — the gap is everything before the browser opens.
+the journey: the `uv run alfredctl up` containerized path vs. native brew
+services (redis-stack, mosquitto), Ollama model pull, `.env` keys (which are
+documented only internally), the runner, first-run onboarding wizard, and
+what "working" looks like. The in-product onboarding is already good — the
+gap is everything before the browser opens.
 
 ## Acceptance Criteria
 

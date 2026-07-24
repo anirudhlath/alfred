@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import signal
-from pathlib import Path
 
 from loguru import logger
 
 from core.memory.episodic.memory import EpisodicMemory
 from core.memory.ingestor import run_ingestor
+from core.memory.paths import episodic_cold_path
 from core.memory.redis_vector_store import RedisVectorStore
 from core.memory.significance import SignificanceScorer
 from core.memory.sqlite_vec_store import SqliteVecStore
@@ -43,10 +43,9 @@ async def run(config: AlfredConfig) -> None:
 
     embedder = SentenceTransformerProvider(config.embedding_model)
 
-    memory_dir = Path(__file__).resolve().parent
     hot = RedisVectorStore(redis=r, dim=config.embedding_dim)
     cold = SqliteVecStore(
-        db_path=str(memory_dir / "episodic_cold.db"),
+        db_path=str(episodic_cold_path()),
         dim=config.embedding_dim,
     )
     episodic = EpisodicMemory(hot=hot, cold=cold, embedder=embedder)

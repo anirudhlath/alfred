@@ -18,6 +18,47 @@ The system is governed by four non-negotiable architectural pillars:
 
 Alfred runs as six supervised OS processes communicating over Redis Streams rather than one async process — see [process-model.md](process-model.md) for the rationale (latency isolation for System 1, native-crash containment, restart granularity, observable boundaries) and the honest costs.
 
+### 1.1 Deployment Topology
+
+Alfred ships as a single "fat" OCI image containing every core service, Redis Stack, and
+Mosquitto, supervised by `tini` (PID 1) + the unified runner (`ALFRED_MANAGE_INFRA=1`).
+Multi-container orchestration is deliberately avoided — Apple's `container` runtime has
+no compose and no `-p` port mapping, so a fat image is the only shape that runs
+identically on Docker, Apple `container`, and Podman via the `alfredctl` launcher. All
+state is externalized to two volumes; the container itself is disposable.
+
+```mermaid
+flowchart TB
+    subgraph HOST["Host (macOS dev / CachyOS prod)"]
+        Browser["Browser / iOS app"]
+        Ollama["Ollama (optional, external)"]
+        OR["OpenRouter (external)"]
+        subgraph C["alfred container — one fat OCI image"]
+            tini["tini (PID 1)"]
+            runner["runner supervisor"]
+            redis["redis-stack-server :6379"]
+            mqtt["mosquitto :1883"]
+            core["bridge · reflex · triggers · conscious · channels · ingestor"]
+            home["home-service :8000"]
+            tini --> runner
+            runner --> redis & mqtt & core & home
+            core --- redis
+            core --- mqtt
+            core --- home
+        end
+    end
+    Browser -->|"only :8081 exposed"| core
+    core -.->|OLLAMA_HOST / OPENROUTER_API_KEY| Ollama
+    core -.-> OR
+    C -.->|"volume: /data (persistent mode)"| DataVol[("data volume")]
+    C -.->|"volume: /models (HF + voice model cache)"| ModelVol[("model cache volume")]
+```
+
+This is the deployment shape only — [Section 3](#3-component-architecture) below details
+the internal wiring between those same core services, and applies whether they run
+containerized or natively. See [containerization.md](containerization.md) for the full
+image contents, `alfredctl` command reference, data lifecycle modes, and troubleshooting.
+
 ## 2. Event Pipeline
 
 The full path from a physical device state change to an executed action:

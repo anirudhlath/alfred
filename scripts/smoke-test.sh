@@ -5,7 +5,8 @@
 # Reflex Engine to process it, and checks for an action result
 # on the Redis action_results stream.
 #
-# Prerequisites: all services running (./scripts/dev-up.sh + Python processes)
+# Prerequisites: all services running (`uv run alfredctl up` container, or Redis Stack +
+# Mosquitto + `uv run python -m runner` natively)
 #
 # Usage: ./scripts/smoke-test.sh
 

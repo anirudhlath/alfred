@@ -1,6 +1,6 @@
 # Alfred — Product Requirements Document
 
-**Status:** Living document. Capability statuses current as of **2026-07-22**.
+**Status:** Living document. Capability statuses current as of **2026-07-24**.
 **Maintenance rule:** any PR that adds or changes a user-facing capability updates the
 relevant row(s) in the [Capability Catalog](#4-capability-catalog) in the same branch.
 
@@ -161,6 +161,7 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 | Eval harness: regression + live modes, custom judgment metrics, run comparison | Shipped | `docs/evals-runner.md` |
 | Model warmup at startup (no cold-start latency on first request) | Shipped | spec `2026-04-16-startup-warmup-design.md` |
 | Self-describing health for external services surfaced in Settings | In review | PR #28 |
+| One-command containerized deployment (`alfredctl`: build/up/down/logs/shell/urls/smoke — Docker, Apple `container`, Podman; worktree-isolated; persistent/ephemeral/seed data modes) | Shipped | `docs/containerization.md` |
 
 ## 5. What Alfred is not
 

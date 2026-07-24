@@ -112,13 +112,58 @@ Weather (Open-Meteo), Apple Calendar (CalDAV), Apple Health, Robinhood — all r
 
 ### Prerequisites
 
-- Python 3.13+
-- Redis Stack (RediSearch is required for vector memory)
-- Mosquitto (MQTT broker)
-- Ollama with a model pulled (e.g., `ollama pull gpt-oss:20b`)
-- `home-service` running — Home Assistant wrapper microservice (separate repo, not yet public)
+- A container runtime — Docker, Apple `container` (macOS), or Podman. `alfredctl`
+  auto-detects whichever is on `PATH`.
+- [`alfred-home-service`](https://github.com/anirudhlath/alfred-home-service) cloned as
+  a sibling directory (`../home-service` relative to this repo, not yet public) — the
+  image build stages both repos together.
+- Inference for the two engines: `OPENROUTER_API_KEY` (or `CLAUDE_API_KEY`) in `.env`
+  for the Conscious Engine, and/or a local [Ollama](https://ollama.com) install for the
+  Reflex Engine (e.g. `ollama pull gpt-oss:20b`). `uv run alfredctl up` reaches host
+  Ollama automatically via the injected gateway host — it rewrites `OLLAMA_HOST` in
+  your `.env` for you. The `docker compose` path below does **not** do this rewrite
+  (see the compose snippet).
 
-### Install
+### Quickstart
+
+```bash
+git clone https://github.com/anirudhlath/alfred && cd alfred
+uv venv --python 3.13 && uv pip install -e ".[dev]"
+uv run alfredctl up --mode seed     # builds the image, starts everything, prints the URL
+```
+
+`--mode` picks the data lifecycle:
+
+| Mode | Use case | State |
+|------|----------|-------|
+| `persistent` (default) | Production / self-hosting | Survives restarts |
+| `ephemeral` | Worktree / PR testing | Thrown away on teardown |
+| `seed` | Demo / QA | `ephemeral` + dummy fixtures pre-loaded |
+
+Other commands: `uv run alfredctl down`, `logs -f`, `shell`, `urls`, and `smoke` (boots
+seed mode, health-checks it, tears it down — the containerized equivalent of the smoke
+test below). See [`docs/containerization.md`](docs/containerization.md) for the full
+command reference and troubleshooting.
+
+For production (a Docker Compose host), build once and run the compose-of-one instead:
+
+```bash
+cp .env.example .env   # fill in OPENROUTER_API_KEY / CLAUDE_API_KEY, HA_TOKEN, etc. —
+                        # env_file: .env is required, compose fails without it
+uv run alfredctl build --tag alfred:latest
+ALFRED_SECRETS_PASSPHRASE=... docker compose up -d
+```
+
+Unlike `alfredctl up`, plain `docker compose` passes your `.env` through **untouched** —
+if you're running Ollama on the host, set `OLLAMA_HOST=http://host.docker.internal:11434`
+in `.env` yourself (the compose file's `extra_hosts` entry makes that hostname resolve
+inside the container; `localhost`/`127.0.0.1` in `.env` would otherwise point at the
+container itself).
+
+### Native (non-container) dev
+
+`uv run python -m runner` also runs directly against your own Redis Stack + Mosquitto —
+no container, no wrapper script required.
 
 ```bash
 uv sync --extra dev        # core + dev tooling
@@ -131,17 +176,10 @@ uv sync --extra dev --extra memory        # Sentence transformers, sqlite-vec
 uv sync --extra dev --extra evals         # DeepEval
 ```
 
-### Run
-
 ```bash
-# Start infrastructure (Redis Stack + Mosquitto via Homebrew)
-bash scripts/dev-up.sh
-
-# Start home-service (separate repo)
-cd ../home-service && uv run uvicorn app.server:app --port 8000
-
-# Start all Alfred services
-uv run python -m runner
+# With Redis Stack + Mosquitto already running:
+cd ../home-service && uv run uvicorn app.server:app --port 8000   # separate repo
+uv run python -m runner                                            # all Alfred services
 ```
 
 Or run services individually:
@@ -157,7 +195,8 @@ uv run python -m core.channels   # Web channel + PWA
 ### Smoke Test
 
 ```bash
-bash scripts/smoke-test.sh
+bash scripts/smoke-test.sh    # native — requires the stack already running
+uv run alfredctl smoke        # containerized — boots seed mode, verifies, tears down
 ```
 
 ## Evals

@@ -9,12 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from pathlib import Path
 from typing import Any
 
+from core.memory.paths import scratchpad_path as _scratchpad_path
 from shared.streams import SCRATCHPAD_QUEUE
-
-_DEFAULT_SCRATCHPAD = str(Path(__file__).resolve().parent / "scratchpad.md")
 
 logger = logging.getLogger(__name__)
 
@@ -28,11 +26,11 @@ class ScratchpadWriter:
         self,
         redis: Any,
         queue_key: str = SCRATCHPAD_QUEUE,
-        scratchpad_path: str = _DEFAULT_SCRATCHPAD,
+        scratchpad_path: str | None = None,
     ) -> None:
         self.redis = redis
         self.queue_key = queue_key
-        self.scratchpad_path = scratchpad_path
+        self.scratchpad_path = scratchpad_path or str(_scratchpad_path())
 
     async def drain_once(self) -> int:
         """Drain pending entries from the Redis List to the scratchpad file.

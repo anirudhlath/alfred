@@ -25,6 +25,9 @@ core/memory/triggers/
 *.db
 *.db-*
 
+# Runtime state (ALFRED_DATA_DIR) — consolidated scratchpad/routines/preferences/secrets/dbs
+/data/
+
 # Personal memory files — only examples are tracked
 core/memory/preferences/*
 !core/memory/preferences/.example/

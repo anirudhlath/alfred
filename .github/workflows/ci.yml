@@ -17,7 +17,7 @@ jobs:
   python:
     uses: ./.github/workflows/python-ci.yml
     with:
-      mypy-targets: "bus/ core/ domains/ evals/ runner/ sdk/ shared/ telemetry/"
+      mypy-targets: "alfredctl/ bus/ core/ domains/ evals/ runner/ sdk/ shared/ telemetry/"
 
   web:
     runs-on: ubuntu-latest
