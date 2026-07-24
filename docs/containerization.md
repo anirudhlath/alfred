@@ -381,9 +381,12 @@ JSON shape.
 ```bash
 container system stop
 
+# List what's actually registered first — labels vary slightly by version
+launchctl list | grep com.apple.container
+
 launchctl bootout gui/$UID/com.apple.container.apiserver
-launchctl bootout gui/$UID/com.apple.container.core-images    2>/dev/null || true
-launchctl bootout gui/$UID/com.apple.container.network-vmnet.default 2>/dev/null || true
+launchctl bootout gui/$UID/com.apple.container.container-core-images          2>/dev/null || true
+launchctl bootout gui/$UID/com.apple.container.container-network-vmnet.default 2>/dev/null || true
 
 # Remove the stale apiserver plist so launchd doesn't resurrect the old agent
 rm -f ~/Library/Application\ Support/com.apple.container/apiserver/*.plist
