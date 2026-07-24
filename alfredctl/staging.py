@@ -18,6 +18,18 @@ CLONE_HINT = (
 )
 
 
+def build_stage_root() -> Path:
+    """Directory build contexts are staged under.
+
+    Must live inside $HOME: Apple `container`'s builder VM only shares the home
+    directory with the host, and a build context outside it appears EMPTY to the
+    builder — COPY steps silently find no files.
+    """
+    root = Path.home() / ".cache" / "alfred" / "build-ctx"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def repo_root() -> Path:
     """Root of the current checkout (worktree-aware)."""
     out = subprocess.run(

@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Annotated
 
@@ -39,10 +39,16 @@ def build(
     """Build the fat image from a git-staged context (alfred + home-service)."""
     r = rt.detect(runtime)
     image = tag or rt.image_tag()
-    with tempfile.TemporaryDirectory(prefix="alfred-ctx-") as tmp:
-        ctx = staging.stage_context(Path(tmp) / "ctx")
+    # Stage under $HOME, not the system temp dir: Apple `container`'s builder VM
+    # only shares the home directory, and a context outside it appears EMPTY to
+    # the builder (COPY steps silently see no files).
+    stage_root = staging.build_stage_root() / rt.branch_slug()
+    try:
+        ctx = staging.stage_context(stage_root)
         console.print(f"Building [bold]{image}[/bold] with {r.name}…")
         _run([r.exe, "build", "-t", image, "-f", str(ctx / "alfred" / "Containerfile"), str(ctx)])
+    finally:
+        shutil.rmtree(stage_root, ignore_errors=True)
     console.print(f"[green]Built {image}[/green]")
 
 

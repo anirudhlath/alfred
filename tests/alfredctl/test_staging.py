@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import subprocess
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
 
 from alfredctl import staging
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -56,3 +53,11 @@ def test_stage_missing_home_service_raises(
     shutil.rmtree(fake_workspace / "home-service")
     with pytest.raises(FileNotFoundError, match="home-service"):
         staging.stage_context(tmp_path / "stage")
+
+
+def test_build_stage_root_lives_under_home() -> None:
+    # Apple `container`'s builder VM only shares $HOME — a context staged in the
+    # system temp dir appears empty to the builder. Lock the location in.
+    root = staging.build_stage_root()
+    assert root.is_relative_to(Path.home())
+    assert root.is_dir()
