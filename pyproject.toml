@@ -45,7 +45,7 @@ integrations = [
     "robin_stocks>=3.0",
 ]
 memory = [
-    "sentence-transformers>=3.0",
+    "sentence-transformers>=5.6.1",
     "transformers>=4.48",  # Required for Gemma 3 architecture (EmbeddingGemma-300M)
     "sqlite-vec>=0.1",
     "numpy>=1.26",
