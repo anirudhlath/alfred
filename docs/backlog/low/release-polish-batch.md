@@ -26,9 +26,12 @@ of integrations and, per field, whether each credential is configured (a reconna
 `health_check` on demand. Scope limit: **no credential values are exposed** by either endpoint —
 only presence/config state — which is why this rates low.
 
-**#49 — no third-party ML model license docs** (`core/voice/tts.py`, `shared/config.py`, `README.md`, `core/voice/stt.py`)
+**#49 — no third-party ML model license docs** (`core/voice/tts_kokoro.py`, `core/voice/tts.py`, `shared/config.py`, `README.md`, `core/voice/stt.py`)
 The repo auto-downloads several third-party models with no NOTICE/docs page recording their
-licenses. The Piper TTS default voice `en_GB-alan-medium` (`core/voice/tts.py:62`, auto-downloaded
+licenses. The Kokoro-82M default voice (`core/voice/tts_kokoro.py`, ~353 MB auto-downloaded from
+`huggingface.co/fastrtc/kokoro-onnx`) is Apache-2.0 weights + MIT wrapper — clean, but should be
+recorded in the same NOTICE/docs page. The Piper TTS fallback voice `en_GB-alan-medium`
+(`core/voice/tts.py`, auto-downloaded
 from `huggingface.co/rhasspy/piper-voices`) is trained on MycroftAI mimic3-voices `en_UK/apope`
 (Alan Pope) data, which is CC BY-SA 4.0. The `piper-voices` repo labels itself MIT, but the dataset
 heritage is a known open question (rhasspy/piper issue #253, "About mimic3-voices dataset license"),
