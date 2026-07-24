@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.13"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -193,7 +193,7 @@ requires-dist = [
     { name = "espeakng-loader", marker = "extra == 'voice'", specifier = ">=0.2.4,<0.3" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "faster-whisper", marker = "extra == 'voice'", specifier = ">=1.0" },
-    { name = "httpx", extras = ["http2"], specifier = ">=0.27" },
+    { name = "httpx", extras = ["http2"], specifier = ">=0.28.1" },
     { name = "huggingface-hub", marker = "extra == 'voice'", specifier = ">=0.24" },
     { name = "keyring", specifier = ">=25.0" },
     { name = "keyrings-cryptfile", specifier = ">=1.3" },
