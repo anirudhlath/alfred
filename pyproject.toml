@@ -21,9 +21,12 @@ dependencies = [
     "loguru>=0.7",
     "litellm>=1.0",
     "keyring>=25.0",
+    "keyrings.cryptfile>=1.3",
     "webauthn>=2.0",
     "aiosqlite>=0.20",
     "wyoming>=1.10",
+    "typer>=0.15",
+    "rich>=13.0",
 ]
 
 [project.optional-dependencies]
@@ -50,20 +53,28 @@ memory = [
 voice = [
     "faster-whisper>=1.0",
     "piper-tts>=1.2",
+    "kokoro-onnx>=0.5,<0.6",
+    "espeakng_loader>=0.2.4,<0.3",
+    "phonemizer-fork>=3.3,<3.4",
+    "onnxruntime>=1.27",
+    "huggingface_hub>=0.24",
     "pysilero-vad>=3.4",
     "speechbrain>=1.1",
-    "numpy>=1.26",  # core/voice/speaker_id.py imports it directly
+    "numpy>=1.26",  # speaker_id.py + tts_kokoro.py import it directly
 ]
 evals = [
     "deepeval>=1.0",
 ]
+
+[project.scripts]
+alfredctl = "alfredctl.main:app"
 
 [build-system]
 requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["bus*", "core*", "domains*", "evals*", "runner*", "sdk*", "shared*", "telemetry*", "tests*"]
+include = ["alfredctl*", "bus*", "core*", "domains*", "evals*", "runner*", "sdk*", "shared*", "telemetry*", "tests*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -142,6 +153,10 @@ module = ["keyring.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
+module = ["keyrings.cryptfile.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
 module = "jwt.*"
 ignore_missing_imports = true
 
@@ -151,4 +166,8 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["pysilero_vad.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["kokoro_onnx.*", "espeakng_loader.*", "phonemizer.*", "onnxruntime.*", "huggingface_hub.*"]
 ignore_missing_imports = true

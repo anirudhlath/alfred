@@ -54,7 +54,7 @@ graph LR
 
 ### Key Patterns
 - New trigger types: subclass `BaseTrigger`, define `Conditions` model, implement `evaluate()`, decorate with `@TriggerRegistry.register_type("name")`
-- Storage: Redis hash `alfred:triggers` (primary) + YAML snapshots in `core/memory/triggers/` (gitignored)
+- Storage: Redis hash `alfred:triggers` (primary) + YAML snapshots in `$ALFRED_DATA_DIR/triggers/` (default `data/triggers/`, gitignored) — resolved via `core.memory.paths.triggers_snapshot_dir()`
 - CRUD exposed via `TriggerFeature(BaseFeature)` with dynamic tool descriptions from `TriggerRegistry.build_conditions_docs()`
 
 ## Conscious (`conscious/`) — System 2 Cloud LLM
@@ -79,7 +79,10 @@ Agentic tool-use loop with parallel execution (`asyncio.gather`).
 ## Voice (`voice/`) — Voice I/O
 
 - `stt.py` — WhisperSTT (faster-whisper CTranslate2, model: `large-v3-turbo`, beam_size=5, accepts `audio_format` param)
-- `tts.py` — PiperTTS (ONNX local, `en_GB-alan-medium` voice, auto-downloads from HuggingFace)
+- `tts_backend.py` — `TTSBackend` ABC port; `tts_registry.py` — backend registry (Kokoro default, Piper fallback)
+- `tts_kokoro.py` — KokoroTTS (neural Kokoro-82M via kokoro-onnx, `am_michael`, HF-Hub download; CPU EP mac / CUDA EP 4090)
+- `tts.py` — PiperTTS fallback (ONNX local, `en_GB-alan-medium`, HF-Hub download)
+- `hf_models.py` — shared `ensure_model()` HF-Hub downloader
 - `models/` — Voice data models
 - `speaker_id.py` — `SpeakerID`: ECAPA-TDNN voiceprint enroll/identify (speechbrain, lazy-loaded off the event loop via `asyncio.to_thread`), cosine match vs Redis hash `VOICEPRINT_KEY`, env-tunable `SPEAKER_ID_THRESHOLD` (default 0.45); `embed_fn` injection point for tests
 
@@ -99,7 +102,7 @@ Agentic tool-use loop with parallel execution (`asyncio.gather`).
 - `signal_bridge/` — Signal CLI subprocess, forwards inbound → `USER_REQUESTS_STREAM`, outbound via adapter
 - `satellite/` — Wyoming voice satellite bridge (physical devices, not the web/iOS voice pipeline): `config.py` (fleet loader, `SATELLITES_CONFIG`), `endpointing.py` (streaming VAD via `pysilero-vad`, `UtteranceCollector`), `bridge.py` (`SatelliteConnection`/`SatelliteBridge` — one persistent reconnecting TCP client per device), `pipeline.py` (`SatellitePipeline`: STT → Conscious round-trip → TTS). See `docs/voice-satellites.md`
 - `request_bus.py` — `publish_and_wait()`: shared XADD-then-XREAD request/response helper, used by both the WebSocket handler and `SatellitePipeline`
-- `voice_models.py` — shared lazy Whisper/Piper/SpeakerID loaders for the channels process (`aget_stt`, `aget_tts`, `aget_speaker_id`)
+- `voice_models.py` — shared lazy Whisper/TTS/SpeakerID loaders for the channels process (`aget_stt`, `aget_tts`, `aget_speaker_id`)
 - `__main__.py` — Port retry (5 attempts on EADDRINUSE with exponential backoff)
 
 ## Notifications (`notifications/`) — Proactive System
@@ -110,7 +113,7 @@ Agentic tool-use loop with parallel execution (`asyncio.gather`).
 - `dnd.py` — DNDChecker (manual Redis key + calendar meeting detection)
 - `channels.py` — `ChannelAdapter` ABC + `ChannelRegistry` (decorator-based registration)
 - `publisher.py` — Public API (thin facade over dispatcher)
-- `adapters/` — Signal, WebSocket, APNs, Satellite concrete adapters (Voice adapter exists but is not loaded in channels process; TTS for URGENT notifications is handled inline by the WebSocket adapter). `SatelliteChannelAdapter` (`adapters/satellite.py`) is URGENT-only, registered only when `config/satellites.yaml` has entries, and broadcasts Piper-synthesized speech to every currently-connected satellite via `SatelliteBridge.play_wav_all()`
+- `adapters/` — Signal, WebSocket, APNs, Satellite concrete adapters (Voice adapter exists but is not loaded in channels process; TTS for URGENT notifications is handled inline by the WebSocket adapter). `SatelliteChannelAdapter` (`adapters/satellite.py`) is URGENT-only, registered only when `config/satellites.yaml` has entries, and broadcasts TTS-synthesized speech to every currently-connected satellite via `SatelliteBridge.play_wav_all()`
 
 ### Notification Data Flow
 
@@ -152,7 +155,9 @@ uv run python -m core.channels   # Web + Signal channels
 - Channel adapter modules must be imported to trigger `@ChannelRegistry.register()` decorators
 - Web server uses `_FAILED` sentinel to avoid repeated import failures on lazy-load
 - Signal bridge expects `signal-cli` binary in PATH
-- Piper TTS auto-downloads voice models from HuggingFace on first use
+- TTS backends (Kokoro default, Piper fallback) auto-download from the HF Hub — see docs/voice.md
+- kokoro-onnx reads the process-global `ONNX_PROVIDER` env var at construction — `KokoroTTS.__init__` sets it from `KOKORO_ONNX_PROVIDER` (`auto` → CUDA when available, else CPU); `onnxruntime` and `onnxruntime-gpu` cannot coexist (4090 swaps packages, see docs/voice.md)
+- TTS fallback semantics (`voice_models.get_tts()`): runtime init failure of the configured backend logs a loud warning and falls back — never cached, so later calls retry; `_FAILED` is cached permanently only when every backend fails with ImportError
 - TriggerStore coherence is pub/sub (`alfred:triggers:changed`) — never mutate `alfred:triggers` without going through TriggerStore
 - User timezone lives at `alfred:user:timezone` via `shared/usertime.py` — resolution stored → `ALFRED_TIMEZONE` → UTC. Clients send their IANA zone per message; the conscious engine (not the web channel) persists it via `set_user_timezone` (write-on-change)
 

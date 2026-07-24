@@ -98,7 +98,9 @@ class TestWebSocketChannelAdapter:
         ws = AsyncMock()
         session_getter = MagicMock(return_value=[ws])
 
-        adapter = WebSocketChannelAdapter(get_sessions=session_getter, get_tts=lambda: tts)
+        adapter = WebSocketChannelAdapter(
+            get_sessions=session_getter, aget_tts=AsyncMock(return_value=tts)
+        )
         await adapter.deliver(_make_notification(Urgency.URGENT))
 
         tts.synthesize.assert_called_once_with("Test: Hello world")
@@ -114,7 +116,9 @@ class TestWebSocketChannelAdapter:
         ws = AsyncMock()
         session_getter = MagicMock(return_value=[ws])
 
-        adapter = WebSocketChannelAdapter(get_sessions=session_getter, get_tts=lambda: tts)
+        adapter = WebSocketChannelAdapter(
+            get_sessions=session_getter, aget_tts=AsyncMock(return_value=tts)
+        )
         await adapter.deliver(_make_notification(Urgency.IMPORTANT))
 
         tts.synthesize.assert_not_called()
@@ -130,7 +134,9 @@ class TestWebSocketChannelAdapter:
         ws = AsyncMock()
         session_getter = MagicMock(return_value=[ws])
 
-        adapter = WebSocketChannelAdapter(get_sessions=session_getter, get_tts=lambda: tts)
+        adapter = WebSocketChannelAdapter(
+            get_sessions=session_getter, aget_tts=AsyncMock(return_value=tts)
+        )
         await adapter.deliver(_make_notification(Urgency.URGENT))
 
         ws.send_json.assert_called_once()
@@ -200,7 +206,9 @@ class TestD28NoDoubleTTS:
         ws = AsyncMock()
         session_getter = MagicMock(return_value=[ws])
 
-        adapter = WebSocketChannelAdapter(get_sessions=session_getter, get_tts=lambda: tts)
+        adapter = WebSocketChannelAdapter(
+            get_sessions=session_getter, aget_tts=AsyncMock(return_value=tts)
+        )
         ChannelRegistry.set_instance("websocket", adapter)
 
         adapters = ChannelRegistry.get_adapters_for_urgency(Urgency.URGENT)

@@ -5,7 +5,8 @@
 **Type:** functional
 
 ## Prerequisites
-- Same live stack as `voice-satellite-real-mic-full-loop.md`: `bash scripts/dev-up.sh`,
+- Same live stack as `voice-satellite-real-mic-full-loop.md`: Redis Stack + Mosquitto
+  (`brew install redis-stack mosquitto && brew services start redis-stack mosquitto`),
   `home-service` on port 8000, real LLM API key configured, `config/satellites.yaml`
   pointed at `127.0.0.1`, macOS dev satellite running (sox mic/speaker), full stack via
   `uv run python -m runner`

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from unittest.mock import MagicMock
 
 import pytest
@@ -76,3 +78,24 @@ async def test_no_client_rejected() -> None:
     with pytest.raises(HTTPException) as exc_info:
         await require_trusted_network(request)
     assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_container_gateway_blocked_without_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ALFRED_TRUSTED_NETWORKS", raising=False)
+    request = MagicMock()
+    request.client.host = "172.17.0.1"
+    with pytest.raises(HTTPException) as exc_info:
+        await require_trusted_network(request)
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_container_subnet_allowed_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ALFRED_TRUSTED_NETWORKS", "172.16.0.0/12,192.168.64.0/24")
+    request = MagicMock()
+    request.client.host = "172.17.0.1"
+    await require_trusted_network(request)  # docker bridge — no raise
+
+    request.client.host = "192.168.64.5"
+    await require_trusted_network(request)  # apple container vmnet — no raise

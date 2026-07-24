@@ -15,8 +15,9 @@ The feature splits into two halves, per the Decoupled Domains pillar:
    services, plus a custom `hey_alfred` wake word model. The device speaks standard Wyoming
    and works with plain Home Assistant too; it is not coupled to Alfred in any way.
 2. **Alfred side — Satellite Bridge**, this repo, `core/channels/satellite/` — asyncio tasks
-   running inside the **channels process** (`python -m core.channels`). Whisper and Piper are
-   already loaded there, and the `channels-delivery` notification worker already runs there.
+   running inside the **channels process** (`python -m core.channels`). Whisper and the TTS
+   backend are already loaded there, and the `channels-delivery` notification worker already
+   runs there.
 
 This document covers the Alfred-side bridge. Full design rationale and decisions live in
 `docs/superpowers/specs/2026-07-15-voice-satellite-design.md`.
@@ -42,7 +43,7 @@ graph LR
         VAD --> Pipe["SatellitePipeline<br/>core/channels/satellite/pipeline.py"]
         Pipe --> STT[WhisperSTT]
         Pipe --> SID["SpeakerID<br/>ECAPA-TDNN"]
-        Pipe --> TTS[PiperTTS]
+        Pipe --> TTS["TTS backend (Kokoro default / Piper)"]
         Pipe --> Bus["publish_and_wait()<br/>core/channels/request_bus.py"]
         Adapter["SatelliteChannelAdapter<br/>core/notifications/adapters/satellite.py"] --> Bridge
     end
@@ -85,7 +86,7 @@ sequenceDiagram
     Conscious->>Redis: XADD alfred:user:responses<br/>(AlfredResponse)
     Redis-->>Pipe: XREAD match session_id="sat-<name>"
     Pipe->>Pi: Synthesize(text) — FYI event
-    Pipe->>Pipe: PiperTTS.synthesize(text)
+    Pipe->>Pipe: TTSBackend.synthesize(text)
     Pipe->>Pi: AudioStart / AudioChunk* / AudioStop
     Pi-->>Conn: played (logged only)
 ```
@@ -245,7 +246,8 @@ only when at least one satellite is configured. `supported_urgencies = {Urgency.
 the existing `channels-delivery` consumer group and dispatcher require **zero changes** to
 pick it up; `ChannelRegistry.get_adapters_for_urgency()` filters by urgency automatically.
 
-`deliver()` synthesizes `"{title}: {body}"` with Piper, then calls
+`deliver()` synthesizes `"{title}: {body}"` with the configured TTS backend (see
+docs/voice.md), then calls
 `SatelliteBridge.play_wav_all()`, which broadcasts to every currently-**connected** satellite
 (`SatelliteBridge.connections()`, filtered on `SatelliteConnection.connected`). A
 per-satellite delivery failure is caught and logged as a WARNING without aborting delivery to

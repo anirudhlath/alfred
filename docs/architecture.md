@@ -18,6 +18,47 @@ The system is governed by four non-negotiable architectural pillars:
 
 Alfred runs as six supervised OS processes communicating over Redis Streams rather than one async process — see [process-model.md](process-model.md) for the rationale (latency isolation for System 1, native-crash containment, restart granularity, observable boundaries) and the honest costs.
 
+### 1.1 Deployment Topology
+
+Alfred ships as a single "fat" OCI image containing every core service, Redis Stack, and
+Mosquitto, supervised by `tini` (PID 1) + the unified runner (`ALFRED_MANAGE_INFRA=1`).
+Multi-container orchestration is deliberately avoided — Apple's `container` runtime has
+no compose and no `-p` port mapping, so a fat image is the only shape that runs
+identically on Docker, Apple `container`, and Podman via the `alfredctl` launcher. All
+state is externalized to two volumes; the container itself is disposable.
+
+```mermaid
+flowchart TB
+    subgraph HOST["Host (macOS dev / CachyOS prod)"]
+        Browser["Browser / iOS app"]
+        Ollama["Ollama (optional, external)"]
+        OR["OpenRouter (external)"]
+        subgraph C["alfred container — one fat OCI image"]
+            tini["tini (PID 1)"]
+            runner["runner supervisor"]
+            redis["redis-stack-server :6379"]
+            mqtt["mosquitto :1883"]
+            core["bridge · reflex · triggers · conscious · channels · ingestor"]
+            home["home-service :8000"]
+            tini --> runner
+            runner --> redis & mqtt & core & home
+            core --- redis
+            core --- mqtt
+            core --- home
+        end
+    end
+    Browser -->|"only :8081 exposed"| core
+    core -.->|OLLAMA_HOST / OPENROUTER_API_KEY| Ollama
+    core -.-> OR
+    C -.->|"volume: /data (persistent mode)"| DataVol[("data volume")]
+    C -.->|"volume: /models (HF + voice model cache)"| ModelVol[("model cache volume")]
+```
+
+This is the deployment shape only — [Section 3](#3-component-architecture) below details
+the internal wiring between those same core services, and applies whether they run
+containerized or natively. See [containerization.md](containerization.md) for the full
+image contents, `alfredctl` command reference, data lifecycle modes, and troubleshooting.
+
 ## 2. Event Pipeline
 
 The full path from a physical device state change to an executed action:
@@ -143,7 +184,7 @@ graph TB
         WebPWA["Web PWA<br/>web/"]
         VoicePipeline["Voice Pipeline"]
         WhisperSTT[WhisperSTT]
-        PiperTTS[PiperTTS]
+        TTS["TTS Backend<br/>Kokoro (default) / Piper"]
         Satellites["Voice Satellites<br/>wyoming-satellite"]
         WebAuthn --> WebChannel
         WebChannel --> AdminRouter
@@ -243,7 +284,7 @@ graph TB
     WebChannel -->|XREAD responses| Redis
     WebChannel <-->|WebSocket| WebPWA
     VoicePipeline --> WhisperSTT
-    VoicePipeline --> PiperTTS
+    VoicePipeline --> TTS
     WebChannel --> VoicePipeline
     AdminRouter -->|reads streams + state| Redis
     AdminRouter -->|reads memory files| Prefs
@@ -485,14 +526,17 @@ subscribe/unsubscribe by stream name; the server pushes `entry` frames via block
 **Voice Pipeline** (`core/voice/`):
 
 - `WhisperSTT` (`stt.py`) -- wraps `faster-whisper` for local speech-to-text. Transcribes audio bytes to text.
-- `PiperTTS` (`tts.py`) -- wraps `piper-tts` for local text-to-speech. Synthesizes text to WAV audio.
+- **TTS backend** (`tts_backend.py` ABC + `tts_registry.py`) -- config-selected
+  neural TTS. `KokoroTTS` (`tts_kokoro.py`, Kokoro-82M via `kokoro-onnx`) is the
+  default; `PiperTTS` (`tts.py`) the fallback. Both return 16-bit PCM WAV and
+  auto-download from the HF Hub. See [docs/voice.md](voice.md).
 
 **Voice Satellites** (`core/channels/satellite/`):
 
 Physical Wyoming-protocol devices (e.g. `wyoming-satellite` on a Raspberry Pi) connect over
 TCP to a bridge running as asyncio tasks inside the channels process -- wake word streaming,
 server-side VAD endpointing (`pysilero-vad`), speaker identification (ECAPA-TDNN), and the
-same Whisper/Piper instances used by the web channel. See
+same Whisper/TTS instances used by the web channel. See
 [docs/voice-satellites.md](voice-satellites.md) for the full architecture, protocol handling,
 and configuration reference.
 

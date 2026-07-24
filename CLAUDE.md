@@ -34,13 +34,14 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - Python 3.13+, async-first, Pydantic v2
 - `uv` for package management, `ruff` for lint/format, `mypy --strict` for types
 - OpenTelemetry → SigNoz for observability
-- OCI Containerfiles, Apple container runtime (dev) + Docker Compose (prod)
+- OCI Containerfiles, Apple container runtime (dev) + Docker Compose (prod) — one fat image, launched via `alfredctl` (build/up/down/logs/shell/urls/smoke)
 - MQTT (edge) + Redis Streams (internal backbone)
 - Ollama for local SLM inference (gpt-oss:20b on dev, configurable via OLLAMA_MODEL)
 - alfred-sdk is the ONLY coupling to external apps
 
 ## Key Paths
 
+- `alfredctl/` — container launcher CLI (`typer`): `main.py` (commands), `runtime.py` (runtime detection + per-runtime gateway/subnet knowledge), `launch.py` (`run` arg assembly), `staging.py` (git-tracked build context), `smoke.py` (containerized health checks). See `docs/containerization.md`.
 - `shared/` — cross-cutting utilities (config, streams, secrets, types, logging, tracing)
 - `shared/usertime.py` — `get_user_timezone()`/`set_user_timezone()` (Redis key `alfred:user:timezone`; resolution: stored → `ALFRED_TIMEZONE` env → UTC)
 - `bus/schemas/events.py` — canonical event types (single source of truth)
@@ -76,7 +77,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `core/channels/spa.py` — `mount_spa()` (serves `web/dist/`: real assets + index.html fallback for client-side routes)
 - `core/channels/satellite/` — Wyoming voice satellite bridge: `config.py` (fleet loader), `endpointing.py` (streaming VAD/`UtteranceCollector`), `bridge.py` (`SatelliteConnection`/`SatelliteBridge`, reconnect + protocol handling), `pipeline.py` (`SatellitePipeline`: STT → Conscious → TTS). See `docs/voice-satellites.md`.
 - `core/channels/request_bus.py` — `publish_and_wait()`, the shared XADD-then-XREAD request/response helper used by both the web channel and the satellite pipeline
-- `core/channels/voice_models.py` — shared lazy Whisper/Piper/SpeakerID loaders for the channels process (`aget_stt`, `aget_tts`, `aget_speaker_id`)
+- `core/channels/voice_models.py` — shared lazy Whisper/TTS/SpeakerID loaders for the channels process (`aget_stt`, `aget_tts`, `aget_speaker_id`)
 - `core/voice/speaker_id.py` — `SpeakerID` (now real, not a stub): ECAPA-TDNN voiceprint enroll/identify
 - `conftest.py` — root test fixtures (InMemoryKeyring, telemetry clear, tv_on_event, mock_embedder, mock_vector_store)
 - `core/reflex/attention.py` — `AttentionSet` (SLM gating) + `attention_add/remove/list` helpers; seed rules in `core/reflex/attention_seed.yaml`
@@ -104,7 +105,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 ```bash
 # Python (ruff >=0.15.16, mypy >=2.1)
 ruff check . --fix && ruff format .        # lint + format
-mypy --strict bus/ core/ domains/ evals/ runner/ sdk/ shared/ telemetry/  # type check
+mypy --strict alfredctl/ bus/ core/ domains/ evals/ runner/ sdk/ shared/ telemetry/  # type check
 .venv/bin/python -m pytest -x -q           # test (use .venv in worktrees)
 
 # Frontend (run from web/)
@@ -128,9 +129,18 @@ cd web && npm run lint && npm run test && npm run build   # build emits web/dist
 
 ## Running the System
 
+**Option A — containerized (one command, builds the image, starts everything):**
+
 ```bash
-# 1. Start infrastructure (Redis + Mosquitto via Homebrew)
-bash scripts/dev-up.sh
+uv run alfredctl up --mode seed
+uv run alfredctl smoke   # health-check it in one shot (boots seed mode, verifies, tears down)
+```
+
+**Option B — native (bring your own Redis Stack + Mosquitto; Homebrew infra scripts are retired):**
+
+```bash
+# 1. Start infrastructure yourself, e.g.:
+redis-stack-server & mosquitto &
 
 # 2. Start home-service (in home-service/ repo)
 cd ../home-service && uv run uvicorn app.server:app --port 8000
@@ -140,8 +150,11 @@ uv run python -m runner
 
 # 4. Smoke test
 bash scripts/smoke-test.sh
+```
 
-# 5. Run evals (requires Ollama + tools registered in Redis)
+**Either path** — run evals (requires Ollama + tools registered in Redis):
+
+```bash
 uv run python -m evals run
 uv run python -m evals run --model gpt-oss:20b -n 5  # repeat 5x with aggregate
 uv run python -m evals run --backend lmstudio        # use LM Studio
@@ -159,7 +172,7 @@ Web channel (`core/channels/web_server.py`, run via `python -m core.channels`) s
 
 ## Dev Environment Notes
 
-- Cloud/Linux sessions: use `.devcontainer/` (redis-stack + mosquitto included). macOS: `scripts/dev-up.sh` (Homebrew).
+- Cloud/Linux sessions: use `.devcontainer/` (redis-stack + mosquitto included). macOS: `uv run alfredctl up` (containerized, no Homebrew infra needed) or your own Homebrew-managed Redis Stack + Mosquitto for native dev.
 
 ## Architecture
 
@@ -211,13 +224,14 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - Channel adapter modules must be imported to trigger `@ChannelRegistry.register()` decorators (same pattern as triggers)
 - Cross-process notification delivery uses `NOTIFICATION_DISPATCH_STREAM` — dispatcher publishes to stream, each process runs a delivery worker with its own consumer group (e.g. `conscious-delivery`, `channels-delivery`)
 - `bus/schemas/events.py` is for bus events only — notification models (`Notification`, `Urgency`) live in `core/notifications/schema.py`, not re-exported from bus
-- Piper TTS auto-downloads voice models from HuggingFace on first use — no manual model download needed
+- TTS is a pluggable ABC-adapter (registry `core/voice/tts_registry.py`, port `tts_backend.py`): Kokoro-82M default (`ALFRED_TTS_BACKEND`, voice `am_michael`), Piper fallback. Both auto-download from the HF Hub. See `docs/voice.md`.
+- Never set ambient `PHONEMIZER_ESPEAK_*`/`ESPEAK_DATA_PATH` env vars — they break Kokoro's espeak phonemization (`phontab: No such file or directory`); `KokoroTTS` passes an explicit `EspeakConfig` from `espeakng_loader` instead (see `docs/voice.md`)
 - `# type: ignore[no-untyped-call]` on Redis `xack` calls is no longer needed — mypy 3.13+ types these correctly
 - Bus event urgency uses `UrgencyLevel` type alias (Literal) in `bus/schemas/events.py` — bus must NOT import `Urgency` enum from `core/notifications/schema.py` to avoid bus→core dependency
 - Root `conftest.py` has autouse `_mock_keyring` fixture — all tests use `InMemoryKeyring`, never the OS keychain
 - Never put `conftest.py` in `tests/` — causes namespace collision with `sdk/tests/` (both have `__init__.py`). Use root `conftest.py` for repo-wide fixtures.
 - Worktrees default to system Python (may be 3.14) — always run `uv venv --python 3.13` in new worktrees
-- Redis Stack (not vanilla redis) required for dev — `scripts/dev-up.sh` installs via `brew install redis-stack`
+- Redis Stack (not vanilla redis) required for dev — `uv run alfredctl up` bundles it in the container; native dev installs it yourself via `brew install redis-stack`
 - RediSearch `FT.SEARCH RETURN N` — N must EXACTLY match the number of field names that follow; mismatch silently drops fields
 - sqlite-vec `vec0` cosine distance: 0=identical, ≥1=orthogonal — convert to similarity via `1 - distance`
 - `ContextIndexManager.search_text()` embeds query internally — callers should NOT hold an EmbeddingProvider separately
@@ -225,7 +239,7 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - `EpisodicMemory.copy_to_cold_and_remove()` re-embeds + writes to cold before deleting hot — use for decay, not `migrate_to_cold()`
 - `SentenceTransformerProvider._load()` is thread-safe (lock) and blocks on first call — services warm it automatically via `core/warmup.py` background startup tasks
 - Trigger engine sensor evaluation consumes `HOME_STATE_STREAM` (not `alfred:events`) — `alfred:events` only carries TriggerFired/TriggerCreated
-- Voice models (Whisper/Piper) load and run via `asyncio.to_thread` in channels — never call `transcribe()`/`synthesize()` directly on the event loop
+- Voice models (Whisper/TTS) load and run via `asyncio.to_thread` in channels — never call `transcribe()`/`synthesize()` directly on the event loop
 - WebSocket `channel` field is validated to `web_pwa`/`voice`/`ios` only — prevents clients from impersonating Signal channel
 - APNs adapter requires `PyJWT[crypto]` and `httpx[http2]` — added to base deps in pyproject.toml
 - APNs adapter auto-prunes stale device tokens (410 response) — no manual cleanup needed
@@ -262,3 +276,8 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - redis-py 8 defaults `socket_timeout` to 5s (was `None`), which races idle blocking stream reads (`block=5000`) and raises spurious `Timeout reading from <host>` every ~5s — always construct async Redis clients via `shared.redis_streams.create_redis()` (`socket_timeout=None`, `block=` governs read timeouts instead), never `redis.asyncio.from_url()` directly. Exception: `sdk/alfred_sdk/client.py` keeps redis-py defaults — the SDK only issues short non-blocking commands and cannot import `shared`.
 - The attention set gates ONLY the Reflex SLM — triggers and context consume `alfred:home:state_changed` with full visibility. `attention_remove` is sticky (seen-set) — the YAML seed never re-adds a demoted entity.
 - Confirmed critical actions execute via the conscious process's ACTIONS_STREAM consumer (`_consume_internal_actions` routes `confirmed=True` domain actions through DomainRouter) — DomainRouter needs `redis=` (+ `notifier=`) at construction or enforcement is skipped.
+- Downloaded models: Piper/Kokoro TTS, Whisper, and the embedding model all route through the HF hub cache (`HF_HOME`, `/models/hf` in the container — see `core/voice/hf_models.ensure_model()`); only ECAPA speaker-ID uses `shared.config.models_root()` directly (`models_root()/spkrec-ecapa-voxceleb`, env `ALFRED_MODELS_DIR`)
+- The container image build stages context from `git ls-files -z -co --exclude-standard` (`alfredctl/staging.py`), not the repo directory directly — gitignored files (`.env`, `secrets/`, personal `core/memory/preferences|profile/*`) can never reach the image regardless of runtime `.dockerignore` support; `.dockerignore` itself is only a defense-in-depth fallback for a direct `docker build` against an unstaged checkout
+- `ALFRED_SECRETS_BACKEND=cryptfile` set *explicitly* without `ALFRED_SECRETS_PASSPHRASE` raises `RuntimeError` at import time (`shared/secrets.py`) — fails loud, no silent insecure fallback; the fallback only applies when `cryptfile` is auto-detected (unset backend on a bare Linux host)
+- Apple `container`'s `inspect`/`network inspect` JSON nests fields under a `status` key, not top-level — `networks[].ipv4Address` and `ipv4Subnet` live at `entry["status"]["networks"][0]["ipv4Address"]` / `entry["status"]["ipv4Subnet"]` (see `alfredctl/runtime.py`, `alfredctl/main.py`)
+- Mosquitto's config is generated at runtime, not shipped as a static file — `runner/__main__.py:_write_mosquitto_conf()` writes `data_path("mosquitto")/mosquitto.conf` with `persistence` set from `ALFRED_DATA_MODE` (`infra/mosquitto.conf` was deleted as dead — the old compose file was its only consumer)

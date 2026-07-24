@@ -9,10 +9,10 @@ import asyncio
 import json
 import logging
 import signal
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from bus.schemas.events import TriggerFired
+from core.memory.paths import preferences_dir, profile_dir
 from core.memory.reader import MemoryReader
 from core.notifications.dispatcher import NotificationDispatcher
 from core.notifications.dnd import DNDChecker
@@ -188,14 +188,13 @@ async def run(config: AlfredConfig) -> None:
     await ensure_consumer_group(r, STREAM, GROUP)
 
     context_reader = ContextReader(redis=r)
-    memory_dir = Path(__file__).resolve().parent.parent / "memory"
     memory_reader = MemoryReader(
-        preferences_dir=memory_dir / "preferences",
-        profile_dir=memory_dir / "profile",
+        preferences_dir=preferences_dir(),
+        profile_dir=profile_dir(),
         default_proactivity=config.proactivity_level,
     )
     engine = ReflexEngine(
-        preferences_dir=str(memory_dir / "preferences"),
+        preferences_dir=str(preferences_dir()),
         tool_registry=registry,
         context_reader=context_reader,
         memory_reader=memory_reader,

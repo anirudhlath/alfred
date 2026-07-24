@@ -5,7 +5,7 @@
 **Type:** functional
 
 ## Prerequisites
-- Full stack running: `bash scripts/dev-up.sh`, real LLM key, `uv run python -m runner`
+- Full stack running: Redis Stack + Mosquitto (`brew install redis-stack mosquitto && brew services start redis-stack mosquitto`), real LLM key, `uv run python -m runner`
 - `home-service` running against the dev Home Assistant instance
   (`../home-assistant/config`), which currently defines areas "Living Room", "Kitchen", and
   "Bedroom" (`config/.storage/core.area_registry`) but does NOT pre-assign the template light

@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 # Import modules to trigger @register decorators
@@ -26,6 +25,12 @@ from core.conscious.session import SessionManager
 from core.memory.context_index import ContextIndexManager
 from core.memory.embedding_provider import SentenceTransformerProvider
 from core.memory.episodic.memory import EpisodicMemory
+from core.memory.paths import (
+    episodic_cold_path,
+    preferences_dir,
+    profile_dir,
+    triggers_snapshot_dir,
+)
 from core.memory.redis_vector_store import RedisVectorStore
 from core.memory.routines.store import RoutineStore
 from core.memory.scratchpad_writer import ScratchpadWriter
@@ -153,10 +158,7 @@ async def run(config: AlfredConfig) -> None:
 
     # Setup components
     # Memory components
-    memory_dir = Path(__file__).resolve().parent.parent / "memory"
-    routine_store = RoutineStore(
-        routines_dir=str(memory_dir / "routines"),
-    )
+    routine_store = RoutineStore()
     # New memory system (Phase 3): embedding-backed episodic + context index
     embedder = None
     context_index = None
@@ -168,7 +170,7 @@ async def run(config: AlfredConfig) -> None:
         embedder = SentenceTransformerProvider(config.embedding_model)
         hot_store = RedisVectorStore(redis=r, dim=config.embedding_dim)
         cold_store = SqliteVecStore(
-            db_path=str(memory_dir / "episodic_cold.db"),
+            db_path=str(episodic_cold_path()),
             dim=config.embedding_dim,
         )
         episodic_memory = EpisodicMemory(hot=hot_store, cold=cold_store, embedder=embedder)
@@ -176,8 +178,8 @@ async def run(config: AlfredConfig) -> None:
             store=hot_store,
             embedder=embedder,
             semantic_dirs=[
-                memory_dir / "preferences",
-                memory_dir / "profile",
+                preferences_dir(),
+                profile_dir(),
             ],
         )
         significance_scorer = SignificanceScorer(redis=r, config=config)
@@ -222,7 +224,7 @@ async def run(config: AlfredConfig) -> None:
     # Trigger store — created early so dispatcher can schedule drain triggers
     trigger_store = TriggerStore(
         redis=r,
-        snapshot_dir=str(Path(__file__).resolve().parent.parent / "memory" / "triggers"),
+        snapshot_dir=triggers_snapshot_dir(),
     )
     # Warm the cache from Redis so tools see triggers created before this
     # process started, then subscribe: mutations here (e.g. new reminders)
@@ -286,10 +288,7 @@ async def run(config: AlfredConfig) -> None:
 
     # Start scratchpad writer as a background task so observations drain to disk
     # even when the Conscious Engine runs standalone (without the Reflex Runner).
-    scratchpad_writer = ScratchpadWriter(
-        redis=r,
-        scratchpad_path=str(memory_dir / "scratchpad.md"),
-    )
+    scratchpad_writer = ScratchpadWriter(redis=r)
     writer_task = asyncio.create_task(scratchpad_writer.run())
 
     # Start Librarian scheduler as a background task to consolidate scratchpad
@@ -310,8 +309,6 @@ async def run(config: AlfredConfig) -> None:
                 routine_store=routine_store,
                 significance_scorer=significance_scorer,
                 context_index=context_index,
-                preferences_dir=str(memory_dir / "preferences"),
-                profile_dir=str(memory_dir / "profile"),
                 claude_api_key=config.claude_api_key,
                 claude_model=config.claude_model,
             )

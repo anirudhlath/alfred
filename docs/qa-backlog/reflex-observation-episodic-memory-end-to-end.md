@@ -12,7 +12,7 @@
 - At least one trigger rule configured in the trigger registry
 
 ## Test Steps
-1. Start the full Alfred stack via `scripts/dev-up.sh` and confirm all services report healthy in logs
+1. Start the full Alfred stack (Redis Stack + Mosquitto via Homebrew, or `uv run alfredctl up`) and confirm all services report healthy in logs
 2. Trigger a state change event in Home Assistant that matches a known reflex rule (e.g., motion sensor activation)
 3. Confirm in the Reflex Runner logs that a `ReflexObservation` was published to `alfred:reflex:observations` (look for `"Published observation"` log line)
 4. Confirm in the Memory Ingestor logs that the observation was consumed and written (look for `"Ingested reflex observation"` log line)

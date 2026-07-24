@@ -9,13 +9,13 @@ by a cron job or scheduler, not as a long-running service.
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from core.librarian.consolidator import Librarian
 from core.memory.context_index import ContextIndexManager
 from core.memory.embedding_provider import SentenceTransformerProvider
 from core.memory.episodic.memory import EpisodicMemory
+from core.memory.paths import episodic_cold_path, preferences_dir, profile_dir
 from core.memory.redis_vector_store import RedisVectorStore
 from core.memory.routines.store import RoutineStore
 from core.memory.significance import SignificanceScorer
@@ -26,8 +26,6 @@ from shared.redis_streams import create_redis
 
 if TYPE_CHECKING:
     from shared.types import AioRedis
-
-_MEMORY_DIR = Path(__file__).resolve().parent.parent / "memory"
 
 
 async def run() -> None:
@@ -44,7 +42,7 @@ async def run() -> None:
         embedder = SentenceTransformerProvider(config.embedding_model)
         hot_store = RedisVectorStore(redis=r, dim=config.embedding_dim)
         cold_store = SqliteVecStore(
-            db_path=str(_MEMORY_DIR / "episodic_cold.db"),
+            db_path=str(episodic_cold_path()),
             dim=config.embedding_dim,
         )
         episodic_memory = EpisodicMemory(hot=hot_store, cold=cold_store, embedder=embedder)
@@ -52,8 +50,8 @@ async def run() -> None:
             store=hot_store,
             embedder=embedder,
             semantic_dirs=[
-                _MEMORY_DIR / "preferences",
-                _MEMORY_DIR / "profile",
+                preferences_dir(),
+                profile_dir(),
             ],
         )
         scorer = SignificanceScorer(redis=r, config=config)
@@ -76,8 +74,6 @@ async def run() -> None:
             routine_store=RoutineStore(),
             significance_scorer=scorer,
             context_index=context_index,
-            preferences_dir=str(_MEMORY_DIR / "preferences"),
-            profile_dir=str(_MEMORY_DIR / "profile"),
             claude_api_key=config.claude_api_key,
             claude_model=config.claude_model,
         )

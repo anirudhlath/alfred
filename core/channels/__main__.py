@@ -11,7 +11,7 @@ import time
 import uvicorn
 from loguru import logger
 
-from core.channels.voice_models import get_tts
+from core.channels.voice_models import aget_tts
 from core.channels.web_server import create_app, get_web_websockets
 from core.notifications.adapters.websocket import WebSocketChannelAdapter
 from core.notifications.channels import ChannelRegistry
@@ -28,7 +28,7 @@ def main() -> None:
     # WebSocket adapter handles both text and TTS audio (URGENT only).
     ChannelRegistry.set_instance(
         "websocket",
-        WebSocketChannelAdapter(get_sessions=get_web_websockets, get_tts=get_tts),
+        WebSocketChannelAdapter(get_sessions=get_web_websockets, aget_tts=aget_tts),
     )
 
     app = create_app(redis_url=config.redis_url)

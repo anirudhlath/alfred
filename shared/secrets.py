@@ -11,11 +11,58 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
+import sys
 
 import keyring
 from keyring.errors import PasswordDeleteError
 
 SERVICE = "alfred"
+
+
+def select_backend_name() -> str:
+    """Choose the keyring backend: 'native' (macOS default) or 'cryptfile' (container/Linux)."""
+    explicit = os.getenv("ALFRED_SECRETS_BACKEND", "").strip().lower()
+    if explicit in ("cryptfile", "native"):
+        return explicit
+    return "native" if sys.platform == "darwin" else "cryptfile"
+
+
+def configure_backend() -> None:
+    """Configure the active keyring backend based on select_backend_name()."""
+    if select_backend_name() != "cryptfile":
+        return  # leave keyring's auto-detected native backend in place
+    from keyrings.cryptfile.cryptfile import CryptFileKeyring
+
+    from shared.config import data_path
+
+    explicit = os.getenv("ALFRED_SECRETS_BACKEND", "").strip().lower() == "cryptfile"
+    passphrase = os.getenv("ALFRED_SECRETS_PASSPHRASE", "")
+    if not passphrase:
+        if explicit:
+            raise RuntimeError(
+                "ALFRED_SECRETS_BACKEND=cryptfile requires ALFRED_SECRETS_PASSPHRASE. "
+                "Set it in the environment (alfredctl generates and persists one for you)."
+            )
+        # Auto-detected on a bare Linux host (CI, devcontainer): stay importable, but
+        # credentials stored this way are only obfuscated, not protected.
+        from loguru import logger
+
+        logger.warning(
+            "cryptfile keyring auto-selected without ALFRED_SECRETS_PASSPHRASE — "
+            "using an INSECURE default key; do not store real credentials"
+        )
+        passphrase = "alfred-insecure-default"
+
+    secrets_dir = data_path("secrets")
+    secrets_dir.mkdir(parents=True, exist_ok=True)
+    kr = CryptFileKeyring()
+    kr.file_path = str(secrets_dir / "keyring.cfg")
+    kr.keyring_key = passphrase
+    keyring.set_keyring(kr)
+
+
+configure_backend()
 
 
 # --- Sync API ---

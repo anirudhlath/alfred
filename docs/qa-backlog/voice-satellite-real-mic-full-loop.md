@@ -5,7 +5,7 @@
 **Type:** e2e
 
 ## Prerequisites
-- Redis Stack + Mosquitto running: `bash scripts/dev-up.sh` (from `alfred/` repo root)
+- Redis Stack + Mosquitto running: `brew install redis-stack mosquitto && brew services start redis-stack mosquitto`
 - `home-service` running against a real/dev Home Assistant instance:
   `cd ../home-service && uv run uvicorn app.server:app --port 8000` (needs `HA_TOKEN`)
 - A real LLM API key configured for the Conscious Engine (LiteLLM/OpenRouter) — this must be

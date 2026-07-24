@@ -1,97 +1,26 @@
-# Production deployment — all services containerized.
-# Usage:
-#   docker network create alfred-net  # once
-#   docker compose up -d
-#
-# For dev on macOS, use scripts/dev-up.sh with Apple container runtime instead.
-
+# Production deployment — one fat image, external state.
+# Before first run:       cp .env.example .env && fill it in (env_file below requires it)
+# Build the image first:  uv run alfredctl build --tag alfred:latest
+# Then:                   ALFRED_SECRETS_PASSPHRASE=... docker compose up -d
 services:
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
+  alfred:
+    image: alfred:latest
+    env_file: .env
+    environment:
+      ALFRED_DATA_MODE: persistent
+      ALFRED_SECRETS_PASSPHRASE: ${ALFRED_SECRETS_PASSPHRASE:?set ALFRED_SECRETS_PASSPHRASE}
     volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    restart: unless-stopped
-    networks:
-      - alfred-net
-
-  mosquitto:
-    image: eclipse-mosquitto:2
+      - alfred_data:/data
+      - alfred_models:/models
     ports:
-      - "1883:1883"
-    volumes:
-      - ./infra/mosquitto.conf:/mosquitto/config/mosquitto.conf
-    healthcheck:
-      test: ["CMD-SHELL", "mosquitto_pub -t '$$SYS/health' -m ok -u '' -P '' || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+      - "8081:8081"
+      # - "1883:1883"   # opt-in: real Home Assistant publishing to the edge broker
+    extra_hosts:
+      # Unlike `alfredctl up`, compose passes .env through untouched — if Ollama runs
+      # on the host, set OLLAMA_HOST=http://host.docker.internal:11434 in .env yourself
+      # so it resolves via this gateway instead of pointing at the container itself.
+      - "host.docker.internal:host-gateway"   # reach host Ollama on Linux
     restart: unless-stopped
-    networks:
-      - alfred-net
-
-  bridge:
-    build:
-      context: .
-      dockerfile: Containerfile
-    command: python -m bus
-    depends_on:
-      redis:
-        condition: service_healthy
-      mosquitto:
-        condition: service_healthy
-    env_file: .env
-    environment:
-      - REDIS_HOST=redis
-      - MQTT_HOST=mosquitto
-    restart: unless-stopped
-    networks:
-      - alfred-net
-
-  reflex:
-    build:
-      context: .
-      dockerfile: Containerfile
-    command: python -m core.reflex
-    depends_on:
-      redis:
-        condition: service_healthy
-    env_file: .env
-    environment:
-      - REDIS_HOST=redis
-      - MQTT_HOST=mosquitto
-      - OLLAMA_HOST=http://host.docker.internal:11434
-    restart: unless-stopped
-    networks:
-      - alfred-net
-
-  home-service:
-    build:
-      context: ..
-      dockerfile: home-service/Containerfile
-    ports:
-      - "8000:8000"
-    depends_on:
-      redis:
-        condition: service_healthy
-    env_file: .env
-    environment:
-      - REDIS_HOST=redis
-      - HA_HOST=http://homeassistant:8123
-    restart: unless-stopped
-    networks:
-      - alfred-net
-
-networks:
-  alfred-net:
-    name: alfred-net
-    external: true
-
 volumes:
-  redis_data:
+  alfred_data:
+  alfred_models:
