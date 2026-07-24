@@ -322,12 +322,21 @@ other's host paths.
 | URL resolution | `http://localhost:<port>` | `alfredctl` runs `container inspect <name>`, reads `status.networks[0].ipv4Address` from the JSON, prints `http://<ip>:8081` | `http://localhost:<port>` |
 | Host gateway (reach Ollama/LM Studio/HA on the host) | `host.docker.internal` (native on Docker Desktop; needs `--add-host`/`extra_hosts: host-gateway` on Linux Docker Engine) | vmnet gateway, derived from `container network inspect default` → `status.ipv4Subnet`, base + `.1` (fallback `192.168.64.1`) | `host.containers.internal` |
 | Trusted container subnet (auto-added to `ALFRED_TRUSTED_NETWORKS`) | `172.16.0.0/12` | `192.168.64.0/24` | `10.88.0.0/16` |
+| VM sizing | Docker Desktop / host limits apply | **per-container VM defaults to 2 GB RAM** — far too small for the full stack (the VM OOMs and stops silently). `alfredctl up` passes `--memory 8g --cpus 4` (tune with `--memory`/`--cpus`) | host limits apply |
 | Detection order on macOS | 2nd | 1st (preferred when present) | 3rd |
 | Detection order elsewhere | 1st | n/a | 2nd |
 | `alfredctl exec`-style commands (`shell`, smoke's internal checks) | `docker exec` | `container exec` | `podman exec` |
 
 `alfredctl detect()` (`alfredctl/runtime.py`) picks the first available runtime in
 platform order unless `--runtime` is passed explicitly.
+
+**Apple `container` + host inference caveat:** Docker's `host.docker.internal`
+forwards to the host's *loopback*, so a default Ollama (`127.0.0.1:11434`) just
+works. The Apple `container` vmnet gateway does **not** — the host service must
+actually listen on the vmnet interface. Run Ollama with `OLLAMA_HOST=0.0.0.0`
+(or enable "Expose Ollama to the network" in the Ollama app); otherwise the
+container's rewritten `OLLAMA_HOST=http://192.168.64.1:11434` gets connection
+refused while everything else works.
 
 ## 11. devcontainer — deviation from the design spec
 

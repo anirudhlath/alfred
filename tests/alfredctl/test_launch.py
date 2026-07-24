@@ -141,3 +141,14 @@ def test_trusted_networks_merge(tmp_path: Path) -> None:
     values = entry.split("=", 1)[1].split(",")
     assert "10.1.0.0/16" in values
     assert "172.16.0.0/12" in values
+
+
+def test_apple_container_gets_memory_and_cpus() -> None:
+    args = _plan(rt=APPLE).run_args
+    assert "--memory" in args and args[args.index("--memory") + 1] == "8g"
+    assert "--cpus" in args and args[args.index("--cpus") + 1] == "4"
+
+
+def test_docker_gets_no_vm_sizing_flags() -> None:
+    args = _plan().run_args
+    assert "--memory" not in args and "--cpus" not in args

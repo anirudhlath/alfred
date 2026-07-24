@@ -76,6 +76,12 @@ def up(
     do_build: Annotated[bool, typer.Option("--build/--no-build", help="Build the image first")] = (
         True
     ),
+    memory: Annotated[
+        str, typer.Option(help="VM memory for the Apple container runtime (default 8g)")
+    ] = "8g",
+    cpus: Annotated[
+        int, typer.Option(help="VM CPUs for the Apple container runtime (default 4)")
+    ] = 4,
 ) -> None:
     """Start this branch's Alfred container (build first if needed)."""
     r = rt.detect(runtime)
@@ -102,6 +108,8 @@ def up(
         extra_env=list(env),
         env_file=env_file if env_file.is_file() else None,
         passphrase=_passphrase(mode, persist_dir),
+        memory=memory,
+        cpus=cpus,
     )
     _run([r.exe, "rm", "-f", plan.name], check=False)
     _run([r.exe, *plan.run_args])

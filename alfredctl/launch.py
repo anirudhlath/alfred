@@ -71,11 +71,18 @@ def build_plan(
     extra_env: list[str],
     env_file: Path | None,
     passphrase: str,
+    memory: str = "8g",
+    cpus: int = 4,
 ) -> LaunchPlan:
     name = container_name()
     image = image_tag()
     args = ["run", "--detach", "--name", name]
-    if rt.name != "container":
+    if rt.name == "container":
+        # Apple container VMs default to 2 GB / few CPUs — far below what the
+        # full stack (torch + whisper + embeddings + redis) needs; the VM OOMs
+        # and stops silently. Docker/Podman size their VM/host limits themselves.
+        args += ["--memory", memory, "--cpus", str(cpus)]
+    else:
         args += ["-p", f"{port}:8081"]
         if expose_ha:
             args += ["-p", "1883:1883"]
