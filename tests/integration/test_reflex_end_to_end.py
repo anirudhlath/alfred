@@ -28,6 +28,7 @@ def _make_mock_registry() -> AsyncMock:
             feature_name="lighting",
             feature_description="Smart home lighting controls.",
             target_service="home-service",
+            audience="reflex",
         ),
     ]
     registry = AsyncMock()

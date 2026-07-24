@@ -1,8 +1,8 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { toast } from "sonner";
 import { playWavBase64 } from "@/lib/audio";
 import { ChatSocket } from "@/lib/chat-socket";
+import { showNotificationToast } from "@/lib/notifications";
 import { TelemetrySocket } from "@/lib/telemetry-socket";
 import type { TelemetryMessage } from "@/lib/types";
 import type { SocketStatus } from "@/lib/ws";
@@ -59,9 +59,8 @@ export function AlfredProvider({ children }: { children: React.ReactNode }) {
     // (and urgent TTS audio) would otherwise be dropped on every other route.
     const unlistenChat = chat.listen((msg) => {
       if (msg.type !== "notification") return;
-      const urgent = msg.urgency === "urgent";
-      toast(msg.title, { description: msg.body, ...(urgent ? { duration: 10000 } : {}) });
-      if (urgent && msg.audio) playWavBase64(msg.audio);
+      showNotificationToast(msg);
+      if (msg.urgency === "urgent" && msg.audio) playWavBase64(msg.audio);
     });
     chat.connect();
     telemetry.connect();

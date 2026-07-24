@@ -36,6 +36,10 @@ COST_DAILY_KEY = "alfred:cost:daily"
 # Phase 3: Integration registry
 INTEGRATION_REGISTRY_KEY = "alfred:integration_registry"
 
+# Attention set + pending critical actions (Real-Home HA Integration, Plan 3)
+ATTENTION_PREFIX = "alfred:attention:"  # + domain → Redis SET of entity_ids
+PENDING_ACTIONS_PREFIX = "alfred:pending_actions:"  # + request_id → ActionRequest JSON, TTL 300s
+
 # Trigger cache coherence + user timezone
 TRIGGERS_CHANGED_CHANNEL = "alfred:triggers:changed"
 USER_TIMEZONE_KEY = "alfred:user:timezone"

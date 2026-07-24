@@ -45,6 +45,7 @@ from core.identity.credentials import CredentialStore
 from core.identity.ws_auth import require_ws_auth
 from core.notifications.adapters.satellite import SatelliteChannelAdapter
 from core.notifications.channels import ChannelRegistry
+from core.routing.pending import confirm_pending_action
 from core.warmup import start_warmup
 from shared.redis_streams import create_redis
 from shared.usertime import is_valid_timezone
@@ -708,6 +709,24 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         n_fields = len(payload.model_dump(exclude_none=True))
         logger.info("Onboarding preferences saved ({} fields)", n_fields)
         return {"status": "ok"}
+
+    @app.post("/api/actions/{request_id}/confirm")
+    async def confirm_action(request_id: str, request: Request) -> dict[str, str]:
+        """Confirm a pending critical action — republishes it with confirmed=True.
+
+        The pending entry was stored by the DomainRouter's critical-action
+        interception (TTL 5 min). Expired or unknown IDs return 404.
+        """
+        if not getattr(request.state, "authenticated", False):
+            raise HTTPException(status_code=401, detail="Authentication required")
+        r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
+        confirmed = await confirm_pending_action(r, request_id)
+        if confirmed is None:
+            raise HTTPException(status_code=404, detail="Pending action not found or expired")
+        logger.info(
+            "Pending action {} confirmed via web (tool={})", request_id, confirmed.tool_name
+        )
+        return {"status": "confirmed"}
 
     @app.post(
         "/api/voice/enroll",

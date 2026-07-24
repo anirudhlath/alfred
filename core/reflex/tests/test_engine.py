@@ -29,6 +29,7 @@ def _make_tools() -> list[ToolInfo]:
             feature_name="lighting",
             feature_description="Smart home lighting controls.",
             target_service="home-service",
+            audience="reflex",
         ),
         ToolInfo(
             name="lighting.turn_off_lights",
@@ -39,6 +40,7 @@ def _make_tools() -> list[ToolInfo]:
             feature_name="lighting",
             feature_description="Smart home lighting controls.",
             target_service="home-service",
+            audience="reflex",
         ),
     ]
 

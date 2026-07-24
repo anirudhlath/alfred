@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from pydantic import BaseModel
 
     from bus.schemas.events import ActionRequest
+    from core.reflex.attention import AttentionSet
     from core.reflex.engine import ReflexEngine
     from core.routing.domain_router import DomainAgent
 
@@ -70,12 +71,14 @@ async def process_stream_entry(
     redis: AioRedis,
     result_stream: str,
     observation_stream: str,
+    attention: AttentionSet | None = None,
 ) -> bool:
     """Process a single Redis Stream entry. Returns True if an action was taken.
 
     Raises on retriable errors (e.g., Ollama down) so the caller can
     choose not to ACK the message. Returns False for skip-worthy errors
-    (malformed event, no action needed).
+    (malformed event, no action needed) AND for attention-gated events —
+    gated events are still ACKed by the caller.
     """
     raw_event = entry_data.get("event") or entry_data.get(b"event")
     if raw_event is None:
@@ -88,6 +91,15 @@ async def process_stream_entry(
         event = StateChangedEvent.model_validate_json(event_str)
     except Exception as e:
         logger.error("Failed to parse event: %s — %s", e, event_str[:200])
+        return False
+
+    # Attention gate — only attention-set members on real transitions reach
+    # the SLM. Gated events stay fully visible to triggers and context
+    # (they consume the stream independently / via home-service snapshots).
+    if attention is not None and not await attention.should_fire(event):
+        logger.debug(
+            "Attention-gated: %s (%s → %s)", event.entity_id, event.old_state, event.new_state
+        )
         return False
 
     # NOTE: engine.process_event() calls Ollama. If Ollama is down, this

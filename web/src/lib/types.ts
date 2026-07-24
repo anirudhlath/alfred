@@ -60,7 +60,7 @@ export type ChatServerMessage =
   | { type: "response"; text: string; audio?: string; session_id: string;
       actions_taken?: string[]; mood?: string }
   | { type: "notification"; title: string; body: string; urgency: string;
-      notification_id: string; audio?: string }
+      notification_id: string; audio?: string; metadata?: Record<string, unknown> }
   | { type: "error"; text: string; session_id?: string };
 
 /** Telemetry WS messages (Step 1 protocol) */
