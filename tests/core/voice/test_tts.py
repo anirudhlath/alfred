@@ -6,6 +6,8 @@ import contextlib
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
+import pytest  # noqa: TC002
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -23,9 +25,10 @@ def test_default_voice() -> None:
     assert PiperTTS.DEFAULT_VOICE == "en_GB-alan-medium"
 
 
-def test_default_model_dir() -> None:
+def test_default_model_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Default model directory resolves under models_root()/piper."""
-    assert _default_model_dir().name == "piper"
+    monkeypatch.setenv("ALFRED_MODELS_DIR", str(tmp_path))
+    assert _default_model_dir() == tmp_path.resolve() / "piper"
 
 
 @patch("core.voice.tts.PiperTTS.__init__", return_value=None)
