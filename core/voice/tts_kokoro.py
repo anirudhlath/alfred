@@ -56,6 +56,10 @@ def _resolve_provider(setting: str) -> str:
     """
     if setting in _PROVIDER_BY_SETTING:
         return _PROVIDER_BY_SETTING[setting]
+    if setting != "auto":
+        logger.warning(
+            "Unknown Kokoro ONNX provider setting {!r} — auto-resolving instead", setting
+        )
     import onnxruntime as ort
 
     if "CUDAExecutionProvider" in ort.get_available_providers():
@@ -85,6 +89,9 @@ class KokoroTTS(TTSBackend):
 
         model_path = ensure_model(_KOKORO_REPO, _MODEL_FILE, _KOKORO_REVISION)
         voices_path = ensure_model(_KOKORO_REPO, _VOICES_FILE, _KOKORO_REVISION)
+        # Process-global env var, not a constructor arg — kokoro-onnx 0.5 reads
+        # ONNX_PROVIDER itself at Kokoro() construction time, so this must be set
+        # before instantiating below.
         os.environ["ONNX_PROVIDER"] = _resolve_provider(provider_setting)
 
         self._kokoro: Kokoro = _Kokoro(

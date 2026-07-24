@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from loguru import logger
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from core.voice.tts_backend import TTSBackend
 
 _lazy_cache: dict[str, Any] = {}
 _FAILED: object = object()  # sentinel for imports that already failed
@@ -42,45 +44,92 @@ def get_stt() -> Any:
     return _lazy_load("stt", "core.voice.stt", "WhisperSTT", "faster-whisper not installed")
 
 
-def get_tts() -> Any:
+class _ConstructResult(NamedTuple):
+    """Outcome of attempting to construct one TTS backend adapter.
+
+    ``import_missing`` distinguishes an absent optional dependency (expected —
+    the caller silently proceeds to the next fallback) from a runtime
+    construction failure (unexpected — the caller must log loudly and must
+    not permanently cache the failure, since a later retry might succeed).
+    """
+
+    instance: TTSBackend | None
+    import_missing: bool
+    error: str | None = None
+
+
+def get_tts() -> TTSBackend | None:
     """Lazy-load the configured TTS backend (Kokoro default; Piper fallback).
 
     Reads ``config.tts_backend``, tries that adapter first, then falls back to any
     other registered backend whose optional deps are installed. Returns a
-    ``TTSBackend`` instance (typed Any for parity with get_stt), cached under "tts".
+    ``TTSBackend`` instance, cached under "tts".
+
+    Fallback semantics: a backend whose optional dependency is simply not
+    installed (ImportError) falls back silently — that's the intended
+    dep-based selection. A backend that fails at *runtime* (deps present,
+    construction/init raised) logs loudly and, if a fallback then succeeds,
+    names the configured backend, the error, and the fallback now active. If
+    every backend fails and at least one of those failures was a runtime
+    error (not just a missing dependency), the failure is NOT cached — a
+    later call retries construction, since deps-missing failures never
+    change mid-process but runtime failures might be transient.
     """
     cached = _lazy_cache.get("tts")
     if cached is _FAILED:
         return None
     if cached is not None:
-        return cached
+        return cast("TTSBackend", cached)
 
     from core.voice.tts_registry import TTS_BACKENDS, resolve_backend_order
     from shared.config import AlfredConfig
 
     selected = AlfredConfig.from_env().tts_backend
-    for name in resolve_backend_order(selected):
+    order = resolve_backend_order(selected)
+    configured = order[0]
+    configured_error: str | None = None
+    any_runtime_failure = False
+
+    for name in order:
         module, cls_name, missing_msg = TTS_BACKENDS[name]
-        instance = _construct_backend(module, cls_name, missing_msg)
-        if instance is not None:
-            _lazy_cache["tts"] = instance
-            return instance
+        result = _construct_backend(module, cls_name, missing_msg)
+        if result.instance is not None:
+            if configured_error is not None:
+                logger.warning(
+                    "Configured TTS backend {!r} failed to initialise ({}); falling back to {!r}",
+                    configured,
+                    configured_error,
+                    name,
+                )
+            _lazy_cache["tts"] = result.instance
+            return result.instance
+        if not result.import_missing:
+            any_runtime_failure = True
+            if name == configured:
+                configured_error = result.error
+
+    if any_runtime_failure:
+        # At least one backend failed with a runtime error rather than a
+        # missing dependency — don't cache the failure permanently.
+        return None
     _lazy_cache["tts"] = _FAILED
     return None
 
 
-def _construct_backend(module: str, cls_name: str, missing_msg: str) -> Any:
-    """Import + instantiate a TTS backend adapter; return None (logged) on failure."""
+def _construct_backend(module: str, cls_name: str, missing_msg: str) -> _ConstructResult:
+    """Import + instantiate a TTS backend adapter."""
     try:
         import importlib
 
         mod = importlib.import_module(module)
-        return getattr(mod, cls_name)()
+        instance = cast("TTSBackend", getattr(mod, cls_name)())
+        return _ConstructResult(instance, import_missing=False)
     except ImportError:
         logger.warning("{} — {} unavailable", missing_msg, cls_name)
+        return _ConstructResult(None, import_missing=True)
     except Exception as exc:
         logger.error("Failed to initialise {}: {}", cls_name, exc)
-    return None
+        return _ConstructResult(None, import_missing=False, error=str(exc))
 
 
 # Model construction takes 10-40s and must run off the event loop; the lock
@@ -101,9 +150,10 @@ async def aget_stt() -> Any:
     return await _aget_voice("stt", get_stt)
 
 
-async def aget_tts() -> Any:
+async def aget_tts() -> TTSBackend | None:
     """Configured TTS backend instance (or None), constructed off the event loop."""
-    return await _aget_voice("tts", get_tts)
+    result = await _aget_voice("tts", get_tts)
+    return cast("TTSBackend | None", result)
 
 
 async def transcribe_async(stt: Any, audio_bytes: bytes, audio_fmt: str) -> str:
@@ -112,10 +162,9 @@ async def transcribe_async(stt: Any, audio_bytes: bytes, audio_fmt: str) -> str:
     return cast("str", result)
 
 
-async def synthesize_async(tts: Any, text: str) -> bytes:
+async def synthesize_async(tts: TTSBackend, text: str) -> bytes:
     """Run blocking TTS synthesis in a worker thread."""
-    result = await asyncio.to_thread(tts.synthesize, text)
-    return cast("bytes", result)
+    return await asyncio.to_thread(tts.synthesize, text)
 
 
 def _get_speaker_id_cls() -> Any:
