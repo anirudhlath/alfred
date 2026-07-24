@@ -18,7 +18,7 @@ from core.notifications.dispatcher import NotificationDispatcher
 from core.notifications.dnd import DNDChecker
 from core.notifications.publisher import NotificationPublisher
 from core.notifications.schema import Urgency
-from core.reflex import ollama_client
+from core.reflex import inference
 from core.reflex.context_reader import ContextReader
 from core.reflex.engine import ReflexEngine, build_notification_body
 from core.reflex.runner import ensure_consumer_group, process_stream_entry, publish_observation
@@ -209,7 +209,7 @@ async def run(config: AlfredConfig) -> None:
     # Background tasks
     telemetry_task = asyncio.create_task(flush_telemetry_periodically(config))
     trigger_fired_task = asyncio.create_task(_consume_trigger_fired(r, engine, router, publisher))
-    warmup_task = start_warmup("reflex", {"ollama model": ollama_client.warmup})
+    warmup_task = start_warmup("reflex", {"inference backend": inference.warmup})
 
     logger.info("Reflex Runner started. Listening on stream '%s'...", STREAM)
 

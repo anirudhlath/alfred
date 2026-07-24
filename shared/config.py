@@ -50,6 +50,12 @@ class AlfredConfig:
     ollama_host: str = "http://localhost:11434"
     ollama_model: str = "llama3:8b"
     lmstudio_host: str = "http://localhost:1234"
+
+    # Reflex (System 1) inference backend: ollama (native /api/chat) | openai
+    # (any OpenAI-compatible /v1/chat/completions server — vLLM, LM Studio)
+    reflex_backend: str = "ollama"
+    openai_compat_host: str = "http://localhost:1234"
+    openai_compat_model: str = ""
     ha_host: str = "http://homeassistant.local:8123"
     ha_token: str = ""
     research_vault_path: str = "./research"
@@ -123,6 +129,12 @@ class AlfredConfig:
             ollama_host=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
             ollama_model=os.getenv("OLLAMA_MODEL", "llama3:8b"),
             lmstudio_host=os.getenv("LMSTUDIO_HOST", "http://localhost:1234"),
+            reflex_backend=os.getenv("REFLEX_BACKEND", "ollama"),
+            # Falls back to LMSTUDIO_HOST — LM Studio is the same protocol
+            openai_compat_host=os.getenv(
+                "OPENAI_COMPAT_HOST", os.getenv("LMSTUDIO_HOST", "http://localhost:1234")
+            ),
+            openai_compat_model=os.getenv("OPENAI_COMPAT_MODEL", ""),
             ha_host=os.getenv("HA_HOST", "http://homeassistant.local:8123"),
             ha_token=os.getenv("HA_TOKEN", ""),
             research_vault_path=os.getenv("RESEARCH_VAULT_PATH", str(data_root() / "research")),

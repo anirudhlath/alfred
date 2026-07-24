@@ -287,7 +287,7 @@ ALFRED_SECRETS_PASSPHRASE=... docker compose up -d
 Two things `alfredctl up` does for you that plain `docker compose` does **not**:
 
 - **Gateway rewriting** — `alfredctl` rewrites `localhost`/`127.0.0.1` in `OLLAMA_HOST`
-  (and `LMSTUDIO_HOST`, `HA_HOST`, `OTEL_EXPORTER_OTLP_ENDPOINT`) to the runtime's host
+  (and `LMSTUDIO_HOST`, `OPENAI_COMPAT_HOST`, `HA_HOST`, `OTEL_EXPORTER_OTLP_ENDPOINT`) to the runtime's host
   gateway. Compose passes `.env` through **untouched** — if Ollama runs on the compose
   host, set `OLLAMA_HOST=http://host.docker.internal:11434` in `.env` yourself (the
   `extra_hosts` entry above makes that hostname resolve on Linux; Docker Desktop

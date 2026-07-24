@@ -36,7 +36,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - OpenTelemetry → SigNoz for observability
 - OCI Containerfiles, Apple container runtime (dev) + Docker Compose (prod) — one fat image, launched via `alfredctl` (build/up/down/logs/shell/urls/smoke)
 - MQTT (edge) + Redis Streams (internal backbone)
-- Ollama for local SLM inference (gpt-oss:20b on dev, configurable via OLLAMA_MODEL)
+- Local SLM inference (System 1): Ollama by default (OLLAMA_MODEL), or any OpenAI-compatible server (vLLM/LM Studio) via REFLEX_BACKEND=openai + OPENAI_COMPAT_HOST/OPENAI_COMPAT_MODEL
 - alfred-sdk is the ONLY coupling to external apps
 
 ## Key Paths
@@ -216,6 +216,7 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - `redis.asyncio.Redis` methods return `Awaitable[T] | T` under the current redis stubs — `hset`/`hdel`/`xadd` awaits need NO ignore (e.g. `core/reflex/runner.py`, `sdk/alfred_sdk/client.py`); for `xreadgroup`/`xread`/`xrevrange`, use `read_group`/`read`/`revrange` from `shared.redis_streams` — the ignore lives there once
 - Import `AioRedis` type alias from `shared.types` — never redefine as `Any`
 - Import `ensure_consumer_group` from `core.reflex.runner` — never reimplement inline
+- Reflex inference goes through `core/reflex/inference.py` (dispatches on `REFLEX_BACKEND`, ollama|openai, per call) — engine/__main__ import `inference`, never a concrete client; the openai path (vLLM/LM Studio) requires `OPENAI_COMPAT_MODEL` (fails loud)
 - Import stream constants from `shared.streams` — never hardcode `"alfred:events"` etc.
 - Trigger type modules must be imported before use to trigger `@TriggerRegistry.register_type()` decorators
 - Channel adapter modules must be imported to trigger `@ChannelRegistry.register()` decorators (same pattern as triggers)

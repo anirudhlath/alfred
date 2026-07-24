@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 from bus.schemas.events import ActionRequest, StateChangedEvent, TriggerFired
 from core.memory.reader import MemoryReader
-from core.reflex import ollama_client
+from core.reflex import inference
 from core.reflex.tool_registry import ToolInfo, ToolRegistry
 from sdk.alfred_sdk.telemetry import track_latency
 from shared.traced import traced
@@ -271,7 +271,7 @@ class ReflexEngine:
             event, preferences, tools, context_text=context, _system_prompt=system_prompt
         )
 
-        response = await ollama_client.infer(prompt)
+        response = await inference.infer(prompt)
         return self.parse_response(response, event, valid_services)
 
     @traced(name="reflex.process_trigger_fired")
@@ -295,5 +295,5 @@ class ReflexEngine:
             f"## Your Decision (JSON only):"
         )
 
-        response = await ollama_client.infer(prompt)
+        response = await inference.infer(prompt)
         return self.parse_trigger_response(response, event, valid_services)
