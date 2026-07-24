@@ -32,13 +32,16 @@ def _env_pairs(
     extra_env: list[str],
     passphrase: str,
 ) -> list[str]:
-    gateway = host_gateway(rt)
     merged: dict[str, str] = {}
     if env_file is not None and env_file.is_file():
         merged.update({k: v for k, v in dotenv_values(env_file).items() if v is not None})
-    for key in _GATEWAY_REWRITE_KEYS:
-        if key in merged:
-            merged[key] = merged[key].replace("localhost", gateway).replace("127.0.0.1", gateway)
+    if any(key in merged for key in _GATEWAY_REWRITE_KEYS):
+        gateway = host_gateway(rt)
+        for key in _GATEWAY_REWRITE_KEYS:
+            if key in merged:
+                merged[key] = (
+                    merged[key].replace("localhost", gateway).replace("127.0.0.1", gateway)
+                )
     subnets = (merged.get("ALFRED_TRUSTED_NETWORKS", ""), trusted_subnet(rt))
     trusted = ",".join(x for x in subnets if x)
     merged["ALFRED_TRUSTED_NETWORKS"] = trusted

@@ -109,8 +109,11 @@ def _passphrase(mode: str, persist_dir: Path | None) -> str:
         if marker.is_file():
             return marker.read_text().strip()
         value = secrets.token_urlsafe(32)
-        marker.write_text(value + "\n")
-        marker.chmod(0o600)
+        fd = os.open(marker, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, (value + "\n").encode())
+        finally:
+            os.close(fd)
         return value
     return secrets.token_urlsafe(32)  # ephemeral/seed: fresh per run
 
@@ -124,8 +127,9 @@ def _resolve_url(r: rt.Runtime, plan: launch.LaunchPlan) -> str:
         )
         payload = json.loads(out.stdout)
         entry = payload[0] if isinstance(payload, list) else payload
-        networks = entry.get("networks") or []
-        address = str(networks[0].get("address", "")) if networks else ""
+        status = entry.get("status") or {}
+        networks = status.get("networks") or []
+        address = str(networks[0].get("ipv4Address", "")) if networks else ""
         ip = address.split("/")[0]
         if ip:
             return f"http://{ip}:8081"
@@ -150,7 +154,10 @@ def logs(
     """Stream container logs."""
     r = rt.detect(runtime)
     cmd = [r.exe, "logs"] + (["-f"] if follow else []) + [rt.container_name()]
-    subprocess.run(cmd, check=False)
+    try:
+        subprocess.run(cmd, check=False)
+    except KeyboardInterrupt:
+        return
 
 
 @app.command()
@@ -161,12 +168,15 @@ def shell(runtime: RuntimeOpt = None) -> None:
 
 
 @app.command()
-def urls(runtime: RuntimeOpt = None) -> None:
+def urls(
+    runtime: RuntimeOpt = None,
+    port: Annotated[int, typer.Option(help="Host port for the web UI (docker/podman)")] = 8081,
+) -> None:
     """Print the reachable URL(s) for the running container."""
     r = rt.detect(runtime)
     plan = launch.LaunchPlan(
         run_args=[],
-        url_hint="resolve-ip" if r.name == "container" else "http://localhost:8081",
+        url_hint="resolve-ip" if r.name == "container" else f"http://localhost:{port}",
         name=rt.container_name(),
         image=rt.image_tag(),
     )

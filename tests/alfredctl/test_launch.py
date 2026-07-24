@@ -2,11 +2,31 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from alfredctl import launch
+from alfredctl import runtime as runtime_module
 from alfredctl.launch import LaunchPlan, build_plan
 from alfredctl.runtime import Runtime
 
 DOCKER = Runtime("docker", "docker")
 APPLE = Runtime("container", "container")
+
+
+@pytest.fixture(autouse=True)
+def _no_apple_gateway_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
+    """host_gateway() must only shell out (Apple `container network inspect`) when a
+    gateway-rewrite env key is actually present in the merged env — never unconditionally.
+
+    Note: build_plan()/container_name() legitimately shell out to `git branch
+    --show-current` for naming on every call — that's pre-existing, unrelated to this
+    guard, and intentionally left alone here.
+    """
+
+    def _boom(rt: Runtime) -> str:
+        raise AssertionError("host_gateway() shelled out to the Apple runtime unexpectedly")
+
+    monkeypatch.setattr(runtime_module, "_apple_vmnet_gateway", _boom)
 
 
 def _plan(
@@ -86,3 +106,38 @@ def test_mode_and_passphrase_set() -> None:
     args = _plan(mode="seed").run_args
     assert "ALFRED_DATA_MODE=seed" in args
     assert "ALFRED_SECRETS_PASSPHRASE=pp" in args
+
+
+def test_docker_linux_adds_add_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(launch.sys, "platform", "linux")
+    args = _plan(rt=DOCKER).run_args
+    assert "--add-host" in args
+    assert args[args.index("--add-host") + 1] == "host.docker.internal:host-gateway"
+
+
+def test_hf_token_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HF_TOKEN", "tok123")
+    args = _plan().run_args
+    assert "HF_TOKEN=tok123" in args
+
+
+def test_apple_gateway_lookup_only_triggered_when_key_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The lazy-lookup half of the guard: with a gateway-rewrite key present, the Apple
+    vmnet lookup DOES get invoked (and its result is used for the rewrite)."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("OLLAMA_HOST=http://localhost:11434\n")
+    monkeypatch.setattr(runtime_module, "_apple_vmnet_gateway", lambda rt: "192.168.64.9")
+    args = _plan(rt=APPLE, env_file=env_file).run_args
+    assert "OLLAMA_HOST=http://192.168.64.9:11434" in args
+
+
+def test_trusted_networks_merge(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("ALFRED_TRUSTED_NETWORKS=10.1.0.0/16\n")
+    args = _plan(env_file=env_file).run_args
+    entry = next(a for a in args if a.startswith("ALFRED_TRUSTED_NETWORKS="))
+    values = entry.split("=", 1)[1].split(",")
+    assert "10.1.0.0/16" in values
+    assert "172.16.0.0/12" in values

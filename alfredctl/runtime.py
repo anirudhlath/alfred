@@ -79,7 +79,8 @@ def _apple_vmnet_gateway(rt: Runtime) -> str:
         )
         payload = json.loads(out.stdout)
         entry = payload[0] if isinstance(payload, list) else payload
-        subnet = str(entry.get("subnet", ""))
+        status = entry.get("status") or {}
+        subnet = str(status.get("ipv4Subnet", ""))
         if subnet:
             base = subnet.split("/")[0].rsplit(".", 1)[0]
             return f"{base}.1"
