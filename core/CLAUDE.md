@@ -156,6 +156,8 @@ uv run python -m core.channels   # Web + Signal channels
 - Web server uses `_FAILED` sentinel to avoid repeated import failures on lazy-load
 - Signal bridge expects `signal-cli` binary in PATH
 - TTS backends (Kokoro default, Piper fallback) auto-download from the HF Hub — see docs/voice.md
+- kokoro-onnx reads the process-global `ONNX_PROVIDER` env var at construction — `KokoroTTS.__init__` sets it from `KOKORO_ONNX_PROVIDER` (`auto` → CUDA when available, else CPU); `onnxruntime` and `onnxruntime-gpu` cannot coexist (4090 swaps packages, see docs/voice.md)
+- TTS fallback semantics (`voice_models.get_tts()`): runtime init failure of the configured backend logs a loud warning and falls back — never cached, so later calls retry; `_FAILED` is cached permanently only when every backend fails with ImportError
 - TriggerStore coherence is pub/sub (`alfred:triggers:changed`) — never mutate `alfred:triggers` without going through TriggerStore
 - User timezone lives at `alfred:user:timezone` via `shared/usertime.py` — resolution stored → `ALFRED_TIMEZONE` → UTC. Clients send their IANA zone per message; the conscious engine (not the web channel) persists it via `set_user_timezone` (write-on-change)
 
