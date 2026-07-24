@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from loguru import logger
@@ -24,8 +25,6 @@ def _lazy_load(key: str, module: str, cls_name: str, missing_msg: str) -> Any:
     if cached is not None:
         return cached
     try:
-        import importlib
-
         mod = importlib.import_module(module)
         instance = getattr(mod, cls_name)()
         _lazy_cache[key] = instance
@@ -119,8 +118,6 @@ def get_tts() -> TTSBackend | None:
 def _construct_backend(module: str, cls_name: str, missing_msg: str) -> _ConstructResult:
     """Import + instantiate a TTS backend adapter."""
     try:
-        import importlib
-
         mod = importlib.import_module(module)
         instance = cast("TTSBackend", getattr(mod, cls_name)())
         return _ConstructResult(instance, import_missing=False)
