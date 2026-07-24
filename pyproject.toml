@@ -25,6 +25,8 @@ dependencies = [
     "webauthn>=2.0",
     "aiosqlite>=0.20",
     "wyoming>=1.10",
+    "typer>=0.15",
+    "rich>=13.0",
 ]
 
 [project.optional-dependencies]
@@ -59,12 +61,15 @@ evals = [
     "deepeval>=1.0",
 ]
 
+[project.scripts]
+alfredctl = "alfredctl.main:app"
+
 [build-system]
 requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["bus*", "core*", "domains*", "evals*", "runner*", "sdk*", "shared*", "telemetry*", "tests*"]
+include = ["alfredctl*", "bus*", "core*", "domains*", "evals*", "runner*", "sdk*", "shared*", "telemetry*", "tests*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
