@@ -9,6 +9,7 @@ import urllib.request
 from dataclasses import dataclass
 
 _POLL_INTERVAL = 2.0
+_EXEC_TIMEOUT = 30.0
 
 
 @dataclass(frozen=True)
@@ -30,7 +31,16 @@ def _http_get(url: str, timeout: float = 3.0) -> tuple[int, str, str]:
 
 
 def _exec_in(exe: str, name: str, *cmd: str) -> tuple[int, str]:
-    proc = subprocess.run([exe, "exec", name, *cmd], capture_output=True, text=True, check=False)
+    try:
+        proc = subprocess.run(
+            [exe, "exec", name, *cmd],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_EXEC_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return 124, "timed out"
     return proc.returncode, proc.stdout + proc.stderr
 
 
@@ -46,7 +56,8 @@ def run_checks(exe: str, name: str, base_url: str, timeout: float = 300.0) -> li
         status, _, _ = _http_get(f"{base_url}/health")
         if status == 200:
             break
-        time.sleep(_POLL_INTERVAL)
+        if time.monotonic() + _POLL_INTERVAL < deadline:
+            time.sleep(_POLL_INTERVAL)
     checks.append(SmokeCheck("health", status == 200, f"GET /health → {status}"))
     if status != 200:
         return checks  # nothing else can pass; report what we have

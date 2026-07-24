@@ -208,17 +208,22 @@ def smoke(
         image=rt.image_tag(),
     )
     base_url = _resolve_url(r, plan)
-    checks = smoke_mod.run_checks(r.exe, plan.name, base_url, timeout=timeout)
-    table = Table(title=f"alfred smoke — {plan.name}")
-    table.add_column("check")
-    table.add_column("result")
-    table.add_column("detail")
-    for c in checks:
-        table.add_row(c.name, "[green]PASS[/green]" if c.passed else "[red]FAIL[/red]", c.detail)
-    console.print(table)
-    if not keep and not attach:
-        down(runtime=r.name)
-    if not all(c.passed for c in checks):
+    checks: list[smoke_mod.SmokeCheck] = []
+    try:
+        checks = smoke_mod.run_checks(r.exe, plan.name, base_url, timeout=timeout)
+        table = Table(title=f"alfred smoke — {plan.name}")
+        table.add_column("check")
+        table.add_column("result")
+        table.add_column("detail")
+        for c in checks:
+            table.add_row(
+                c.name, "[green]PASS[/green]" if c.passed else "[red]FAIL[/red]", c.detail
+            )
+        console.print(table)
+    finally:
+        if not keep and not attach:
+            down(runtime=r.name)
+    if not checks or not all(c.passed for c in checks):
         raise typer.Exit(code=1)
 
 
