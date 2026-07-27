@@ -53,6 +53,9 @@ async def test_forward_mqtt_to_redis(sample_state_event: StateChangedEvent) -> N
     mock_redis.xadd.assert_called_once()
     call_args = mock_redis.xadd.call_args
     assert call_args[0][0] == "alfred:home:state_changed"
+    # Chatty-apartment guard: bounded stream (contract C11)
+    assert call_args.kwargs["maxlen"] == 10000
+    assert call_args.kwargs["approximate"] is True
 
 
 @pytest.mark.asyncio

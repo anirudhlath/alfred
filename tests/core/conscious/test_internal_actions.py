@@ -12,7 +12,9 @@ def _entry(action: ActionRequest) -> list[object]:
     return [(b"alfred:actions", [(b"1-0", {b"event": action.model_dump_json().encode()})])]
 
 
-async def _drive_once(action: ActionRequest) -> tuple[AsyncMock, list[object]]:
+async def _drive_once(
+    action: ActionRequest, router: object | None = None
+) -> tuple[AsyncMock, list[object]]:
     """Run one dispatch cycle of the real consumer with `run_librarian` registered."""
     from core.conscious import __main__ as cmain
 
@@ -37,7 +39,7 @@ async def _drive_once(action: ActionRequest) -> tuple[AsyncMock, list[object]]:
 
     cmain._shutdown.clear()
     try:
-        await cmain._consume_internal_actions(redis, MagicMock())
+        await cmain._consume_internal_actions(redis, MagicMock(), router)
     finally:
         cmain._shutdown.clear()
         cmain._INTERNAL_HANDLERS.pop("run_librarian", None)
@@ -64,4 +66,41 @@ async def test_consume_ignores_other_target_services_but_acks() -> None:
     )
     called, acked = await _drive_once(foreign)
     called.assert_not_awaited()
+    assert b"1-0" in acked
+
+
+@pytest.mark.asyncio
+async def test_confirmed_domain_action_routes_through_router() -> None:
+    """A confirmed=True entry for a registered domain service is executed."""
+    from bus.schemas.events import ActionResult
+
+    router = AsyncMock()
+    router.registered_services = {"home-service"}
+    router.route = AsyncMock(
+        return_value=ActionResult(
+            source="stub", request_id="r", tool_name="home.unlock_door", status="success"
+        )
+    )
+    action = ActionRequest(
+        source="domain-router",
+        target_service="home-service",
+        tool_name="home.unlock_door",
+        confirmed=True,
+    )
+    _, acked = await _drive_once(action, router=router)
+    router.route.assert_awaited_once()
+    assert router.route.call_args[0][0].confirmed is True
+    assert b"1-0" in acked
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_domain_action_is_skipped() -> None:
+    """Unmarked domain entries keep the pre-existing ack-and-skip behavior."""
+    router = AsyncMock()
+    router.registered_services = {"home-service"}
+    action = ActionRequest(
+        source="trigger-engine", target_service="home-service", tool_name="home.turn_on_lights"
+    )
+    _, acked = await _drive_once(action, router=router)
+    router.route.assert_not_awaited()
     assert b"1-0" in acked

@@ -16,6 +16,11 @@ from typing import TYPE_CHECKING, Any, ClassVar
 import litellm
 
 from bus.schemas.events import ActionRequest, AlfredResponse, UserRequest
+from core.conscious.action_tools import (
+    ACTION_TOOL_NAMES,
+    ACTION_TOOLS_MANIFEST,
+    dispatch_action_tool,
+)
 from core.conscious.memory_tools import (
     MEMORY_TOOL_PREFIX,
     MEMORY_TOOLS_MANIFEST,
@@ -403,9 +408,18 @@ class ConsciousEngine:
         return {"type": "tool_result", "tool_use_id": call_id, "content": content}
 
     async def _dispatch_tool_call(
-        self, tc: dict[str, Any], tools: list[ToolInfo]
+        self, tc: dict[str, Any], tools: list[ToolInfo], *, is_sir: bool = True
     ) -> dict[str, Any]:
-        """Dispatch a single tool call and return the result dict."""
+        """Dispatch a single tool call and return the result dict.
+
+        ``is_sir`` gates the action-tool branch only (confirmation + attention
+        tools). This is defense-in-depth: the manifest is already only offered
+        to sir turns (see ``process_request``), but a guest-turn model could
+        still hallucinate an action-tool call, so it's re-checked here at
+        dispatch time. Defaults to True so existing callers (tests, and any
+        caller that never routes to a guest turn) are unaffected — real
+        dispatch from ``process_request`` always passes the resolved identity.
+        """
         name = tc["name"]
         params = tc.get("input", {})
 
@@ -442,6 +456,23 @@ class ConsciousEngine:
                 content = "Memory tools not available"
             return self._make_tool_result(tc["id"], content)
 
+        # 3b. Action tools (confirmation + attention) — direct in-process call, sir-only.
+        # Dispatch-side gate (defense-in-depth): the manifest is only handed to sir
+        # turns, but a guest-turn model could still emit a hallucinated call for one
+        # of these names, so refuse rather than execute.
+        if name in ACTION_TOOL_NAMES:
+            if not is_sir:
+                logger.warning(
+                    "Refusing action tool '%s' for non-sir identity (dispatch-side gate)", name
+                )
+                content = json.dumps({"error": "confirm/attention tools require the verified user"})
+                return self._make_tool_result(tc["id"], content)
+            try:
+                content = await dispatch_action_tool(name, params, self._redis)
+            except Exception as e:
+                content = f"Error executing action tool: {e}"
+            return self._make_tool_result(tc["id"], content)
+
         # 4. Domain tools — route to external service via DomainRouter
         target = ""
         for t in tools:
@@ -465,11 +496,17 @@ class ConsciousEngine:
         return self._make_tool_result(tc["id"], content)
 
     async def _execute_tool_calls(
-        self, tool_calls: list[dict[str, Any]], tools: list[ToolInfo]
+        self, tool_calls: list[dict[str, Any]], tools: list[ToolInfo], *, is_sir: bool = True
     ) -> list[dict[str, Any]]:
-        """Execute tool calls concurrently via integration, trigger, or domain dispatch."""
+        """Execute tool calls concurrently via integration, trigger, or domain dispatch.
+
+        ``is_sir`` is forwarded to ``_dispatch_tool_call`` to gate action tools
+        at dispatch time (defense-in-depth alongside the manifest-level gate).
+        """
         return list(
-            await asyncio.gather(*(self._dispatch_tool_call(tc, tools) for tc in tool_calls))
+            await asyncio.gather(
+                *(self._dispatch_tool_call(tc, tools, is_sir=is_sir) for tc in tool_calls)
+            )
         )
 
     _ROUTINE_SUGGESTION_COOLDOWN_HOURS: ClassVar[int] = 24
@@ -672,6 +709,9 @@ class ConsciousEngine:
         # Add memory tools (sir only)
         if identity.identity == "sir" and self._context_index:
             openai_tools.extend(MEMORY_TOOLS_MANIFEST)
+        # Add confirmation + attention tools (sir only)
+        if identity.identity == "sir":
+            openai_tools.extend(ACTION_TOOLS_MANIFEST)
         total_prompt_tokens = 0
         total_completion_tokens = 0
         all_actions: list[str] = []
@@ -690,7 +730,9 @@ class ConsciousEngine:
                 break
 
             # Execute tools and feed results back (uses original dotted names)
-            tool_results = await self._execute_tool_calls(tool_calls, tools=tools)
+            tool_results = await self._execute_tool_calls(
+                tool_calls, tools=tools, is_sir=identity.identity == "sir"
+            )
             all_actions.extend(tc["name"] for tc in tool_calls)
 
             # Append assistant turn with tool calls (OpenAI format — sanitized names)

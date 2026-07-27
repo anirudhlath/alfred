@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from core.notifications.schema import Notification, Urgency
 
@@ -26,6 +26,7 @@ class NotificationPublisher:
         body: str,
         source: str,
         urgency: Urgency = Urgency.INFORMATIONAL,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         """Create a Notification and route it through the dispatcher."""
         notification = Notification(
@@ -33,5 +34,6 @@ class NotificationPublisher:
             body=body,
             urgency=urgency,
             source=source,
+            metadata=metadata or {},
         )
         await self._dispatcher.dispatch(notification)

@@ -52,6 +52,7 @@ class WebSocketChannelAdapter(ChannelAdapter):
             "body": notification.body,
             "urgency": notification.urgency.value,
             "notification_id": notification.notification_id,
+            "metadata": notification.metadata,
         }
 
         if notification.urgency == Urgency.URGENT and self._aget_tts is not None:

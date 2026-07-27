@@ -44,6 +44,7 @@ class ActionRequest(BaseEvent):
     target_service: str = Field(description="Which microservice should handle this")
     tool_name: str = Field(description="MCP tool name, e.g. smart_home.dim_lights")
     parameters: dict[str, Any] = Field(default_factory=dict)
+    confirmed: bool = False  # set True only by the confirmation flow (contract C3)
 
 
 class ActionResult(BaseEvent):

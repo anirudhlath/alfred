@@ -29,6 +29,8 @@ class ToolInfo:
     feature_name: str
     feature_description: str
     target_service: str
+    audience: str = "conscious"
+    risk: str = "benign"
 
 
 class ToolRegistry:
@@ -73,6 +75,8 @@ class ToolRegistry:
                             feature_name=feature_name,
                             feature_description=feature_desc,
                             target_service=service_name,
+                            audience=t.get("audience", "conscious"),
+                            risk=t.get("risk", "benign"),
                         )
                     )
 

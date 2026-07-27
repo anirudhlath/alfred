@@ -1,0 +1,4 @@
+# Attention-set seed rules — decides membership the first time Reflex sees an entity.
+# Runtime adjustments (attention_add / attention_remove) override these rules.
+domains: [light, switch, media_player, scene, climate, lock, person]
+device_classes: [door, motion, occupancy, presence, window, garage_door]
