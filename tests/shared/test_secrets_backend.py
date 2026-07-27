@@ -32,9 +32,11 @@ def test_configure_cryptfile_sets_keyring(monkeypatch: pytest.MonkeyPatch, tmp_p
     monkeypatch.setenv("ALFRED_SECRETS_PASSPHRASE", "test-pass")
     secrets.configure_backend()
     import keyring
+    from keyrings.cryptfile.cryptfile import CryptFileKeyring
 
     kr = keyring.get_keyring()
-    assert kr.__class__.__name__ == "CryptFileKeyring"
+    # a locking subclass of CryptFileKeyring — see tests/shared/test_keyring_locking.py
+    assert isinstance(kr, CryptFileKeyring)
     # round-trips through the encrypted file:
     secrets.set_secret("demo", "token", "sekret")
     assert secrets.get_secret("demo", "token") == "sekret"
@@ -67,8 +69,9 @@ def test_cryptfile_without_passphrase_generates_and_persists(
     assert marker.read_text().strip()  # non-empty generated key
     assert stat.S_IMODE(marker.stat().st_mode) == 0o600
     import keyring
+    from keyrings.cryptfile.cryptfile import CryptFileKeyring
 
-    assert keyring.get_keyring().__class__.__name__ == "CryptFileKeyring"
+    assert isinstance(keyring.get_keyring(), CryptFileKeyring)
 
 
 def test_persisted_passphrase_is_reused(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
