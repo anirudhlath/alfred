@@ -36,7 +36,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - OpenTelemetry → SigNoz for observability
 - OCI Containerfiles, Apple container runtime (dev) + Docker Compose (prod) — one fat image, launched via `alfredctl` (build/up/down/logs/shell/urls/smoke)
 - MQTT (edge) + Redis Streams (internal backbone)
-- Ollama for local SLM inference (gpt-oss:20b on dev, configurable via OLLAMA_MODEL)
+- Local SLM inference (System 1): Ollama by default (OLLAMA_MODEL), or any OpenAI-compatible server (vLLM/LM Studio) via REFLEX_BACKEND=openai + OPENAI_COMPAT_HOST/OPENAI_COMPAT_MODEL
 - alfred-sdk is the ONLY coupling to external apps
 
 ## Key Paths
@@ -219,6 +219,7 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - `redis.asyncio.Redis` methods return `Awaitable[T] | T` under the current redis stubs — `hset`/`hdel`/`xadd` awaits need NO ignore (e.g. `core/reflex/runner.py`, `sdk/alfred_sdk/client.py`); for `xreadgroup`/`xread`/`xrevrange`, use `read_group`/`read`/`revrange` from `shared.redis_streams` — the ignore lives there once
 - Import `AioRedis` type alias from `shared.types` — never redefine as `Any`
 - Import `ensure_consumer_group` from `core.reflex.runner` — never reimplement inline
+- Reflex inference goes through `core/reflex/inference.py` (dispatches on `REFLEX_BACKEND`, ollama|openai, per call) — engine/__main__ import `inference`, never a concrete client; the openai path (vLLM/LM Studio) requires `OPENAI_COMPAT_MODEL` (fails loud)
 - Import stream constants from `shared.streams` — never hardcode `"alfred:events"` etc.
 - Trigger type modules must be imported before use to trigger `@TriggerRegistry.register_type()` decorators
 - Channel adapter modules must be imported to trigger `@ChannelRegistry.register()` decorators (same pattern as triggers)
@@ -243,7 +244,7 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - WebSocket `channel` field is validated to `web_pwa`/`voice`/`ios` only — prevents clients from impersonating Signal channel
 - APNs adapter requires `PyJWT[crypto]` and `httpx[http2]` — added to base deps in pyproject.toml
 - APNs adapter auto-prunes stale device tokens (410 response) — no manual cleanup needed
-- `require_trusted_network` replaces `require_localhost` — accepts localhost + Tailscale CGNAT (100.64.0.0/10)
+- `require_trusted_network` (`core/channels/web_server.py`) trusts loopback + private LAN (RFC1918) + Tailscale CGNAT by default — the sane self-hosted default so localhost/Docker/LAN all work. `ALFRED_TRUSTED_NETWORKS_STRICT=1` drops the RFC1918 defaults (loopback + Tailscale + explicit `ALFRED_TRUSTED_NETWORKS` only). 403s name the rejected IP
 - `_group_by_entity_date()` is a module-level function in `consolidator.py` — used by `_apply_decay()` for compression grouping
 - Decay formula is subtractive: `age_factor - significance*2 - recency*1.5 - frequency*1.0` — high values RESIST migration (negative pressure = stays in hot)
 - `EpisodicMemory.recall()` persists retrieval stats to hot store — each recall triggers HSET on Redis (retrieval_count + last_retrieved)
@@ -277,7 +278,11 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - The attention set gates ONLY the Reflex SLM — triggers and context consume `alfred:home:state_changed` with full visibility. `attention_remove` is sticky (seen-set) — the YAML seed never re-adds a demoted entity.
 - Confirmed critical actions execute via the conscious process's ACTIONS_STREAM consumer (`_consume_internal_actions` routes `confirmed=True` domain actions through DomainRouter) — DomainRouter needs `redis=` (+ `notifier=`) at construction or enforcement is skipped.
 - Downloaded models: Piper/Kokoro TTS, Whisper, and the embedding model all route through the HF hub cache (`HF_HOME`, `/models/hf` in the container — see `core/voice/hf_models.ensure_model()`); only ECAPA speaker-ID uses `shared.config.models_root()` directly (`models_root()/spkrec-ecapa-voxceleb`, env `ALFRED_MODELS_DIR`)
+- Default embedding model is ungated (`sentence-transformers/all-MiniLM-L6-v2`, dim 384) so a fresh clone needs no HF token — `shared.config.DEFAULT_EMBEDDING_MODEL` + `_KNOWN_EMBEDDING_DIMS`. `EMBEDDING_DIM` auto-tracks `EMBEDDING_MODEL` via `embedding_dim_for()`; only set `EMBEDDING_DIM` for a model not in the lookup. Changing the model changes the vector index dim — the two MUST match
+- `alfredctl doctor` (`alfredctl/doctor.py`) is the config preflight: reads `.env`, checks each subsystem (System 1/2, HA, embeddings, home-service sibling), optional live probes. `alfredctl smoke --deep` adds a real System 2 round-trip (`source="conscious-engine"`)
+- The in-container runner rewrites `localhost`/`127.0.0.1` in host-pointing env vars (`OLLAMA_HOST`, `OPENAI_COMPAT_HOST`, `HA_HOST`, …) to the reachable container gateway when `ALFRED_MANAGE_INFRA` is set (`runner/__main__.rewrite_host_gateway`) — so plain `docker compose` matches `alfredctl up`; no-op for native dev
 - The container image build stages context from `git ls-files -z -co --exclude-standard` (`alfredctl/staging.py`), not the repo directory directly — gitignored files (`.env`, `secrets/`, personal `core/memory/preferences|profile/*`) can never reach the image regardless of runtime `.dockerignore` support; `.dockerignore` itself is only a defense-in-depth fallback for a direct `docker build` against an unstaged checkout
-- `ALFRED_SECRETS_BACKEND=cryptfile` set *explicitly* without `ALFRED_SECRETS_PASSPHRASE` raises `RuntimeError` at import time (`shared/secrets.py`) — fails loud, no silent insecure fallback; the fallback only applies when `cryptfile` is auto-detected (unset backend on a bare Linux host)
+- `shared/secrets.py` cryptfile passphrase resolution: `ALFRED_SECRETS_PASSPHRASE` env wins; otherwise a strong random passphrase is generated once and persisted (0600) at `data_path("secrets")/.passphrase` so `docker compose up` needs no secret management. There is NO insecure hardcoded fallback anymore (the old `alfred-insecure-default` + explicit-cryptfile `RuntimeError` were removed) — losing the data dir loses stored credentials, so back it up or pin `ALFRED_SECRETS_PASSPHRASE`
+- The cryptfile keyring is shared by all 9 processes and `CryptFileKeyring` read-modify-writes the whole `.cfg` per call, so concurrent writes used to interleave into duplicate `[alfred]` sections — fatal, because the backend is built at *import* time (took production down 2026-07-27). `shared/secrets.py` now wraps every get/set/delete in `_keyring_lock()` (re-entrant, always-exclusive `flock`; re-entrancy is REQUIRED because the backend nests `_init_file`→`set_password` and `_unlock`→`get_password`), and `repair_keyring_file()` self-heals an already-corrupt file at startup by merging duplicates (later write wins). Never construct `CryptFileKeyring` directly — go through `configure_backend()`
 - Apple `container`'s `inspect`/`network inspect` JSON nests fields under a `status` key, not top-level — `networks[].ipv4Address` and `ipv4Subnet` live at `entry["status"]["networks"][0]["ipv4Address"]` / `entry["status"]["ipv4Subnet"]` (see `alfredctl/runtime.py`, `alfredctl/main.py`)
 - Mosquitto's config is generated at runtime, not shipped as a static file — `runner/__main__.py:_write_mosquitto_conf()` writes `data_path("mosquitto")/mosquitto.conf` with `persistence` set from `ALFRED_DATA_MODE` (`infra/mosquitto.conf` was deleted as dead — the old compose file was its only consumer)

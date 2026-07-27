@@ -6,6 +6,8 @@ import threading
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
+from shared.config import DEFAULT_EMBEDDING_MODEL
+
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
 
@@ -31,7 +33,7 @@ class EmbeddingProvider(ABC):
 class SentenceTransformerProvider(EmbeddingProvider):
     """EmbeddingProvider backed by sentence-transformers."""
 
-    def __init__(self, model_name: str = "google/embeddinggemma-300m") -> None:
+    def __init__(self, model_name: str = DEFAULT_EMBEDDING_MODEL) -> None:
         self._model_name = model_name
         self._model: SentenceTransformer | None = None
         # embed()/embed_batch() run _load() via asyncio.to_thread — a startup
@@ -59,11 +61,18 @@ class SentenceTransformerProvider(EmbeddingProvider):
                         self._model_name,
                         self._model.get_sentence_embedding_dimension(),
                     )
-                except Exception:
-                    logger.error(
-                        "Failed to load embedding model %s",
+                except Exception as exc:
+                    # Expected when a gated model (e.g. google/embeddinggemma-300m) is
+                    # configured without HF_TOKEN + license acceptance. Memory embedding
+                    # is non-fatal (recall degrades, the system still runs), so keep this
+                    # a single actionable line rather than an alarming ERROR + traceback.
+                    logger.warning(
+                        "Embedding model %r unavailable (%s): memory recall disabled. "
+                        "Use an ungated model via EMBEDDING_MODEL (default %r needs no "
+                        "token), or set HF_TOKEN and accept the model's license.",
                         self._model_name,
-                        exc_info=True,
+                        type(exc).__name__,
+                        DEFAULT_EMBEDDING_MODEL,
                     )
                     raise
             return self._model

@@ -152,3 +152,10 @@ def test_apple_container_gets_memory_and_cpus() -> None:
 def test_docker_gets_no_vm_sizing_flags() -> None:
     args = _plan().run_args
     assert "--memory" not in args and "--cpus" not in args
+
+
+def test_openai_compat_host_rewritten_to_gateway(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("OPENAI_COMPAT_HOST=http://localhost:8000\n")
+    args = _plan(env_file=env_file).run_args
+    assert "OPENAI_COMPAT_HOST=http://host.docker.internal:8000" in args

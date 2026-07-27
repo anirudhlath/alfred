@@ -1,14 +1,20 @@
-# Production deployment — one fat image, external state.
-# Before first run:       cp .env.example .env && fill it in (env_file below requires it)
-# Build the image first:  uv run alfredctl build --tag alfred:latest
-# Then:                   ALFRED_SECRETS_PASSPHRASE=... docker compose up -d
+# Alfred — production deployment. One fat image, external state in named volumes.
+#
+#   cp .env.example .env      # fill in OPENROUTER_API_KEY (+ HA_TOKEN for home control)
+#   uv run alfredctl doctor   # optional: validate .env before starting
+#   uv run alfredctl build --tag alfred:latest
+#   docker compose up -d
+#
+# Host-service hosts (OLLAMA_HOST, OPENAI_COMPAT_HOST, HA_HOST, …) may use `localhost`:
+# the container rewrites it to the host gateway automatically. The secrets passphrase is
+# generated and persisted in the data volume on first boot — no manual step required
+# (override with ALFRED_SECRETS_PASSPHRASE in .env to pin your own).
 services:
   alfred:
     image: alfred:latest
     env_file: .env
     environment:
       ALFRED_DATA_MODE: persistent
-      ALFRED_SECRETS_PASSPHRASE: ${ALFRED_SECRETS_PASSPHRASE:?set ALFRED_SECRETS_PASSPHRASE}
     volumes:
       - alfred_data:/data
       - alfred_models:/models
@@ -16,10 +22,7 @@ services:
       - "8081:8081"
       # - "1883:1883"   # opt-in: real Home Assistant publishing to the edge broker
     extra_hosts:
-      # Unlike `alfredctl up`, compose passes .env through untouched — if Ollama runs
-      # on the host, set OLLAMA_HOST=http://host.docker.internal:11434 in .env yourself
-      # so it resolves via this gateway instead of pointing at the container itself.
-      - "host.docker.internal:host-gateway"   # reach host Ollama on Linux
+      - "host.docker.internal:host-gateway"   # lets the container reach host services
     restart: unless-stopped
 volumes:
   alfred_data:

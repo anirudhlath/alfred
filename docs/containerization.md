@@ -221,13 +221,14 @@ uv run alfredctl <command> [options]
 
 | Command | Options | Behavior |
 |---|---|---|
-| `build` | `--runtime docker\|container\|podman`, `--tag TEXT` (default `alfred:<branch-slug>`) | Stages the git-tracked context and builds the image |
-| `up` | `--runtime`, `--mode persistent\|ephemeral\|seed` (default `persistent`), `--persist PATH`, `--models PATH`, `--hf-cache PATH`, `--expose-ha`, `--expose-home`, `--port INT` (default 8081), `--env/-e KEY=VALUE` (repeatable), `--build/--no-build` (default: build) | Builds (unless `--no-build`), removes any existing container of the same name, starts the container, prints the reachable URL |
+| `doctor` | `--online/--offline` (default online) | Validates `.env` + prerequisites and prints a pass/warn/fail preflight table; live-probes OpenRouter/HA/inference unless `--offline`. Exits non-zero on any hard failure |
+| `build` | `--runtime docker\|container\|podman`, `--tag TEXT` (default `alfred:<branch-slug>`) | Stages the git-tracked context (auto-cloning the `home-service` sibling if absent) and builds the image |
+| `up` | `--runtime`, `--mode persistent\|ephemeral\|seed` (default `persistent`), `--persist PATH`, `--models PATH`, `--hf-cache PATH`, `--expose-ha`, `--expose-home`, `--port INT` (default 8081), `--env/-e KEY=VALUE` (repeatable), `--build/--no-build` (default: build) | Prints an offline preflight, builds (unless `--no-build`), removes any existing container of the same name, starts the container, prints the reachable URL |
 | `down` | `--runtime` | Stops and removes this branch's container |
 | `logs` | `--runtime`, `--follow/-f` | Streams container logs |
 | `shell` | `--runtime` | `exec -it <container> bash` |
 | `urls` | `--runtime`, `--port INT` | Prints the reachable URL without starting/stopping anything |
-| `smoke` | `--runtime`, `--keep`, `--attach`, `--hf-cache PATH`, `--timeout FLOAT` (default 300s) | Boots `seed` mode (unless `--attach`, which checks an already-running container instead), runs the check suite below, tears down unless `--keep`/`--attach`; exits non-zero on any failure |
+| `smoke` | `--runtime`, `--keep`, `--attach`, `--hf-cache PATH`, `--timeout FLOAT` (default 300s), `--deep` | Boots `seed` mode (unless `--attach`, which checks an already-running container instead), runs the check suite below, tears down unless `--keep`/`--attach`; exits non-zero on any failure. `--deep` adds an end-to-end System 2 round-trip check |
 
 ### Worktree/branch isolation
 
@@ -250,7 +251,10 @@ container of that name.
 3. **redisearch** — `redis-cli MODULE LIST` contains `search`
 4. **mqtt** — `mosquitto_pub -h localhost -t alfred/smoke -m ok`
 5. **spa** — `GET /` returns 200 with `text/html`
-6. **data-dir** — `/data/scratchpad.md` and `/data/routines` exist
+6. **data-dir** — `/data/routines`, `/data/preferences`, and the generated `mosquitto.conf` exist
+7. **conscious** (`--deep` only) — publishes a real `UserRequest` and confirms an
+   `AlfredResponse` with `source="conscious-engine"` comes back (a genuine cloud-LLM reply,
+   not the request-bus timeout fallback). Requires a valid `OPENROUTER_API_KEY`.
 
 ## 9. Production deployment (compose-of-one)
 
@@ -287,7 +291,7 @@ ALFRED_SECRETS_PASSPHRASE=... docker compose up -d
 Two things `alfredctl up` does for you that plain `docker compose` does **not**:
 
 - **Gateway rewriting** — `alfredctl` rewrites `localhost`/`127.0.0.1` in `OLLAMA_HOST`
-  (and `LMSTUDIO_HOST`, `HA_HOST`, `OTEL_EXPORTER_OTLP_ENDPOINT`) to the runtime's host
+  (and `LMSTUDIO_HOST`, `OPENAI_COMPAT_HOST`, `HA_HOST`, `OTEL_EXPORTER_OTLP_ENDPOINT`) to the runtime's host
   gateway. Compose passes `.env` through **untouched** — if Ollama runs on the compose
   host, set `OLLAMA_HOST=http://host.docker.internal:11434` in `.env` yourself (the
   `extra_hosts` entry above makes that hostname resolve on Linux; Docker Desktop
@@ -410,10 +414,10 @@ vice versa) reproduces the same skew.
 
 ### `docker build`/`alfredctl build` fails with "home-service repo not found"
 
-`alfredctl/staging.py` expects `alfred-home-service` cloned as a sibling of this repo:
-`../home-service` relative to `alfred/` (i.e. both under the same workspace root,
-resolved via `git rev-parse --path-format=absolute --git-common-dir` so it works from
-any worktree). Clone it there:
+`alfredctl build` **auto-clones** `alfred-home-service` as a sibling of this repo
+(`../home-service`, resolved via `git rev-parse --path-format=absolute --git-common-dir`
+so it works from any worktree). You only hit this if you build the image by hand with a
+raw `docker build`. Clone the sibling yourself in that case:
 
 ```bash
 git clone https://github.com/anirudhlath/alfred-home-service ../home-service
@@ -429,9 +433,11 @@ service — the runner logs each supervised process with its own name prefix.
 ### WebAuthn registration returns 403 through the container
 
 You're hitting the trusted-network gate from an IP the server doesn't recognize as
-trusted (Section 7). If you used `alfredctl up`, the active runtime's subnet is added
-automatically — check `ALFRED_TRUSTED_NETWORKS` was actually picked up (`alfredctl
-shell` → `env | grep TRUSTED`). If you used `docker compose`, add it yourself.
+trusted (Section 7). Loopback, private LAN (RFC1918), and Tailscale are trusted by
+default, so this is rare — it usually means you set `ALFRED_TRUSTED_NETWORKS_STRICT=1`
+(which drops the LAN defaults) or you're reaching Alfred over a public/VPN range. The
+403 response names the offending IP; add its subnet to `ALFRED_TRUSTED_NETWORKS`
+(e.g. `10.1.2.0/24`).
 
 ## 14. What's deferred
 

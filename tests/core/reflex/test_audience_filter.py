@@ -79,7 +79,10 @@ async def test_reflex_prompt_contains_only_reflex_audience_tools(
         captured["prompt"] = prompt
         return {"response": json.dumps({"action": "none"})}
 
-    with patch("core.reflex.ollama_client.infer", new=AsyncMock(side_effect=_capture)):
+    # Patch the backend dispatcher, not a concrete client: the engine calls
+    # inference.infer(), which fans out to ollama/openai with a backend-specific
+    # signature. Patching here keeps this test about prompt contents only.
+    with patch("core.reflex.inference.infer", new=AsyncMock(side_effect=_capture)):
         engine = ReflexEngine(preferences_dir="/fake", tool_registry=ToolRegistry(redis))
         engine._cached_preferences = "- no preferences"
         await engine.process_event(tv_on_event)

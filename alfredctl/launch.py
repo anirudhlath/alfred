@@ -14,7 +14,13 @@ from alfredctl.runtime import Runtime, container_name, host_gateway, image_tag, 
 if TYPE_CHECKING:
     from pathlib import Path
 
-_GATEWAY_REWRITE_KEYS = ("OLLAMA_HOST", "LMSTUDIO_HOST", "HA_HOST", "OTEL_EXPORTER_OTLP_ENDPOINT")
+_GATEWAY_REWRITE_KEYS = (
+    "OLLAMA_HOST",
+    "LMSTUDIO_HOST",
+    "OPENAI_COMPAT_HOST",
+    "HA_HOST",
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+)
 
 
 @dataclass(frozen=True)

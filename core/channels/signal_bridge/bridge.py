@@ -68,7 +68,11 @@ class SignalBridge:
             else:
                 logger.info("Sent Signal message to %s", recipient[:6])
         except FileNotFoundError:
-            logger.error("signal-cli not found — install it to enable Signal delivery")
+            # Signal delivery is optional — don't alarm operators who never enabled it.
+            logger.warning(
+                "signal-cli not found — Signal delivery disabled. Install signal-cli to "
+                "enable it (optional; see docs/deployment.md)."
+            )
         except Exception as exc:
             logger.warning("Failed to send Signal message: %s", exc)
 
