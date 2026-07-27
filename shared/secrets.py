@@ -10,19 +10,144 @@ Async API (a-prefixed) is used by REST endpoints to avoid blocking the event loo
 from __future__ import annotations
 
 import asyncio
+import configparser
 import contextlib
+import fcntl
+import functools
+import io
 import os
 import secrets as _secrets
 import sys
-from typing import TYPE_CHECKING
+import threading
+from contextlib import contextmanager
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import keyring
 from keyring.errors import PasswordDeleteError
 
+from shared.fs import atomic_write
+
 if TYPE_CHECKING:
-    from pathlib import Path
+    from collections.abc import Iterator
 
 SERVICE = "alfred"
+
+# Guards every access to the cryptfile keyring. Held across the backend's whole
+# read-modify-write, so concurrent writers can't interleave (see _keyring_lock).
+_LOCK_SUFFIX = ".lock"
+_process_lock = threading.RLock()
+_lock_state = threading.local()
+
+
+@contextmanager
+def _keyring_lock(path: Path) -> Iterator[None]:
+    """Serialize keyring file access across every Alfred process and thread.
+
+    ``CryptFileKeyring`` read-modify-writes a plaintext-structured ``.cfg`` on each
+    set/delete. Alfred runs nine processes against one shared keyring file, so two
+    concurrent writes interleave and append a *duplicate* section — which configparser
+    then refuses to parse. That is fatal rather than cosmetic: the backend is configured
+    at import time, so a corrupt file stops every process from starting.
+
+    Always exclusive, never shared: the backend's read paths can themselves rewrite the
+    file (``_check_file`` → ``_migrate``), so a shared lock would need upgrading mid-call.
+
+    Re-entrant by necessity — the backend nests its own calls (``_init_file`` →
+    ``set_password``, ``_unlock`` → ``get_password``) and ``flock`` on a second
+    descriptor from the same process would deadlock. Nested acquisitions ride the
+    outer lock instead of taking a new one.
+    """
+    depth: int = getattr(_lock_state, "depth", 0)
+    if depth:
+        _lock_state.depth = depth + 1
+        try:
+            yield
+        finally:
+            _lock_state.depth -= 1
+        return
+
+    lock_path = path.with_name(path.name + _LOCK_SUFFIX)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with _process_lock:
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            _lock_state.depth = 1
+            yield
+        finally:
+            _lock_state.depth = 0
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+
+
+def repair_keyring_file(path: Path) -> bool:
+    """Merge duplicate sections in a keyring file corrupted by concurrent writes.
+
+    Returns True if a repair was performed. Files written before locking existed can
+    contain two ``[alfred]`` sections; configparser's strict parser rejects those, and
+    because the backend is built at import time that would keep every process from
+    starting. Re-reading non-strict merges the duplicates (later values win — the most
+    recent write of each credential is the one kept) and the file is rewritten atomically.
+    """
+    if not path.is_file():
+        return False
+    strict = configparser.RawConfigParser()
+    try:
+        strict.read(path)
+    except configparser.Error:
+        pass  # corrupt — fall through and attempt the merge
+    else:
+        return False  # parses cleanly, nothing to repair
+
+    from loguru import logger
+
+    merged = configparser.RawConfigParser(strict=False)
+    try:
+        merged.read(path)
+    except configparser.Error as exc:
+        # Damaged beyond a duplicate-section merge. Don't raise: a broken secrets file
+        # should cost you the integrations that need it, not the whole system.
+        logger.error(
+            "Keyring file {} is unreadable ({}). Stored credentials are unavailable; "
+            "move it aside and re-enter them to recover.",
+            path,
+            exc,
+        )
+        return False
+
+    buffer = io.StringIO()
+    merged.write(buffer)
+    atomic_write(path, buffer.getvalue())
+    logger.warning(
+        "Repaired keyring file {} — merged duplicate sections left by concurrent writes.",
+        path,
+    )
+    return True
+
+
+@functools.cache
+def _locked_keyring_cls() -> type[Any]:
+    """Build the locking CryptFileKeyring subclass (import stays lazy for macOS/native)."""
+    from keyrings.cryptfile.cryptfile import CryptFileKeyring
+
+    class LockedCryptFileKeyring(CryptFileKeyring):  # type: ignore[misc]
+        """CryptFileKeyring whose file access is serialized across processes."""
+
+        def get_password(self, service: str, username: str) -> str | None:
+            with _keyring_lock(Path(self.file_path)):
+                result: str | None = super().get_password(service, username)
+                return result
+
+        def set_password(self, service: str, username: str, password: str) -> None:
+            with _keyring_lock(Path(self.file_path)):
+                super().set_password(service, username, password)
+
+        def delete_password(self, service: str, username: str) -> None:
+            with _keyring_lock(Path(self.file_path)):
+                super().delete_password(service, username)
+
+    return LockedCryptFileKeyring
 
 
 def select_backend_name() -> str:
@@ -71,15 +196,18 @@ def configure_backend() -> None:
     """Configure the active keyring backend based on select_backend_name()."""
     if select_backend_name() != "cryptfile":
         return  # leave keyring's auto-detected native backend in place
-    from keyrings.cryptfile.cryptfile import CryptFileKeyring
-
     from shared.config import data_path
 
     secrets_dir = data_path("secrets")
     secrets_dir.mkdir(parents=True, exist_ok=True)
     passphrase = _resolve_passphrase(secrets_dir)
-    kr = CryptFileKeyring()
-    kr.file_path = str(secrets_dir / "keyring.cfg")
+    keyring_path = secrets_dir / "keyring.cfg"
+    # Heal a file damaged by pre-lock concurrent writes before anything reads it,
+    # so an old corruption can't keep this process from starting.
+    with _keyring_lock(keyring_path):
+        repair_keyring_file(keyring_path)
+    kr = _locked_keyring_cls()()
+    kr.file_path = str(keyring_path)
     kr.keyring_key = passphrase
     keyring.set_keyring(kr)
 
