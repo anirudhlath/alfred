@@ -37,8 +37,15 @@ WORKDIR /app
 COPY alfred/pyproject.toml /app/pyproject.toml
 RUN uv pip install --system --no-cache -r pyproject.toml \
         --extra voice --extra memory --extra integrations
+# home-service depends on alfred-sdk, which is not on PyPI and is pinned in its
+# pyproject to an alfred git revision. Resolving that pin here would need git in the
+# image (it isn't installed) and would fetch an older alfred than the one being built.
+# Install the SDK from the staged source instead, then --no-sources so uv skips the git
+# pin and sees the requirement already satisfied. Mirrors home-service's own Containerfile.
+COPY alfred/sdk/ /tmp/alfred-sdk/
+RUN uv pip install --system --no-cache /tmp/alfred-sdk/ && rm -rf /tmp/alfred-sdk/
 COPY home-service/pyproject.toml /srv/home-service/pyproject.toml
-RUN uv pip install --system --no-cache -r /srv/home-service/pyproject.toml
+RUN uv pip install --system --no-cache --no-sources -r /srv/home-service/pyproject.toml
 
 # Source trees (run from source via PYTHONPATH — one copy, no site-packages duplicate)
 COPY alfred/bus/ /app/bus/
@@ -50,6 +57,8 @@ COPY alfred/shared/ /app/shared/
 COPY alfred/telemetry/ /app/telemetry/
 COPY home-service/app/ /srv/home-service/app/
 COPY home-service/alfred_ext/ /srv/home-service/alfred_ext/
+# Data-driven risk tiers + reflex tool list, loaded at startup — not optional.
+COPY home-service/config/ /srv/home-service/config/
 
 COPY --from=webbuild /web/dist /app/web/dist
 
