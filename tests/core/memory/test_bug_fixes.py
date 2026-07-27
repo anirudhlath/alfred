@@ -38,13 +38,13 @@ class AsyncIteratorMock:
 
 
 def test_redis_vector_store_default_dim_matches_config() -> None:
-    """Default dim should be 768 to match AlfredConfig.embedding_dim."""
+    """Store default dim must match AlfredConfig.embedding_dim (384 for the ungated default)."""
     from core.memory.redis_vector_store import RedisVectorStore
     from shared.config import AlfredConfig
 
     store = RedisVectorStore(redis=AsyncMock())
     config = AlfredConfig()
-    assert store._dim == config.embedding_dim == 768
+    assert store._dim == config.embedding_dim == 384
 
 
 # ---------------------------------------------------------------------------
@@ -256,13 +256,15 @@ async def test_context_reader_shares_cache_between_methods() -> None:
 
 
 def test_embedding_provider_logs_load_failure(caplog: pytest.LogCaptureFixture) -> None:
-    """Failed model load should log an error with the model name."""
+    """Failed model load logs a single actionable WARNING (not an alarming ERROR+traceback)."""
     from core.memory.embedding_provider import SentenceTransformerProvider
 
     provider = SentenceTransformerProvider(model_name="nonexistent/model-xyz-404")
-    with caplog.at_level(logging.ERROR), pytest.raises(Exception):  # noqa: B017
+    with caplog.at_level(logging.WARNING), pytest.raises(Exception):  # noqa: B017
         provider.embed_sync("test")
     assert "nonexistent/model-xyz-404" in caplog.text
+    assert any(r.levelname == "WARNING" for r in caplog.records)
+    assert not any(r.levelname == "ERROR" for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------

@@ -11,11 +11,34 @@ import shutil
 import subprocess
 from pathlib import Path
 
+HOME_SERVICE_REPO = "https://github.com/anirudhlath/alfred-home-service"
 CLONE_HINT = (
     "home-service repo not found at {path}.\n"
     "Clone it next to the alfred repo:\n"
-    "  git clone https://github.com/anirudhlath/alfred-home-service {path}"
+    f"  git clone {HOME_SERVICE_REPO} {{path}}"
 )
+
+
+def home_service_dir() -> Path:
+    """Expected location of the sibling home-service repo (next to the main checkout)."""
+    return workspace_root() / "home-service"
+
+
+def ensure_home_service(auto_clone: bool = True) -> Path:
+    """Return the home-service sibling path, cloning it if absent and *auto_clone*.
+
+    The image build stages alfred + home-service together, so a fresh clone of alfred
+    alone can't build. Rather than fail with a hint, fetch the sibling automatically.
+    """
+    path = home_service_dir()
+    if path.is_dir():
+        return path
+    if not auto_clone:
+        raise FileNotFoundError(CLONE_HINT.format(path=path))
+    subprocess.run(["git", "clone", "--depth", "1", HOME_SERVICE_REPO, str(path)], check=True)
+    if not path.is_dir():  # pragma: no cover - clone failure is surfaced by check=True
+        raise FileNotFoundError(CLONE_HINT.format(path=path))
+    return path
 
 
 def build_stage_root() -> Path:
@@ -76,9 +99,7 @@ def _copy_repo(repo: Path, dest: Path) -> None:
 
 def stage_context(dest: Path) -> Path:
     """Stage alfred/ + home-service/ into *dest* and return it."""
-    home_service = workspace_root() / "home-service"
-    if not home_service.is_dir():
-        raise FileNotFoundError(CLONE_HINT.format(path=home_service))
+    home_service = ensure_home_service()
     if dest.exists():
         shutil.rmtree(dest)
     _copy_repo(repo_root(), dest / "alfred")

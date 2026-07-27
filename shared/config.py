@@ -30,6 +30,28 @@ def data_mode() -> str:
     return os.getenv("ALFRED_DATA_MODE", "persistent")
 
 
+# Default embedding model: ungated so a fresh clone works with no HF token or license
+# acceptance. Known models map to their output dimension so ``EMBEDDING_DIM`` stays in
+# sync automatically — the vector index dimension must match the model, or search breaks.
+DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+_KNOWN_EMBEDDING_DIMS: dict[str, int] = {
+    "sentence-transformers/all-MiniLM-L6-v2": 384,
+    "sentence-transformers/all-mpnet-base-v2": 768,
+    "BAAI/bge-small-en-v1.5": 384,
+    "BAAI/bge-base-en-v1.5": 768,
+    "google/embeddinggemma-300m": 768,  # gated — requires HF_TOKEN + license acceptance
+}
+
+
+def embedding_dim_for(model: str) -> int:
+    """Output dimension for a known embedding model (default 384 for unknown models).
+
+    An explicit ``EMBEDDING_DIM`` env var always wins; this is only the fallback so
+    setting ``EMBEDDING_MODEL`` to a known model auto-selects the right index dimension.
+    """
+    return _KNOWN_EMBEDDING_DIMS.get(model, 384)
+
+
 def models_root() -> Path:
     """Root for downloaded model caches (env ``ALFRED_MODELS_DIR``, default ``<data>/models``).
 
@@ -73,8 +95,8 @@ class AlfredConfig:
     daily_cost_cap_usd: float = 5.0
 
     # Memory: Embedding
-    embedding_model: str = "google/embeddinggemma-300m"
-    embedding_dim: int = 768
+    embedding_model: str = DEFAULT_EMBEDDING_MODEL
+    embedding_dim: int = 384
 
     # Memory: Significance weights
     significance_weight_safety: float = 0.35
@@ -121,6 +143,10 @@ class AlfredConfig:
 
     @classmethod
     def from_env(cls) -> AlfredConfig:
+        # EMBEDDING_DIM defaults to the known dimension for EMBEDDING_MODEL so the two
+        # never silently drift out of sync (a mismatch breaks vector search).
+        embedding_model = os.getenv("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
+        embedding_dim = int(os.getenv("EMBEDDING_DIM", str(embedding_dim_for(embedding_model))))
         return cls(
             redis_host=os.getenv("REDIS_HOST", "localhost"),
             redis_port=int(os.getenv("REDIS_PORT", "6379")),
@@ -148,9 +174,9 @@ class AlfredConfig:
             proactivity_level=os.getenv("PROACTIVITY_LEVEL", "opinionated"),
             # Phase 3: Cost
             daily_cost_cap_usd=float(os.getenv("DAILY_COST_CAP_USD", "5.0")),
-            # Memory: Embedding (env-configurable)
-            embedding_model=os.getenv("EMBEDDING_MODEL", "google/embeddinggemma-300m"),
-            embedding_dim=int(os.getenv("EMBEDDING_DIM", "768")),
+            # Memory: Embedding (env-configurable; see above for the dim default).
+            embedding_model=embedding_model,
+            embedding_dim=embedding_dim,
             # Memory: Involuntary recall (env-configurable)
             involuntary_recall_limit=int(os.getenv("INVOLUNTARY_RECALL_LIMIT", "10")),
             involuntary_recall_threshold=float(os.getenv("INVOLUNTARY_RECALL_THRESHOLD", "0.5")),

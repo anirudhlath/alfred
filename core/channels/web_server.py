@@ -174,12 +174,39 @@ def _get_prefs_dirs() -> tuple[Path, Path]:
     return preferences_dir(), profile_dir()
 
 
-_TAILSCALE_RANGE = ipaddress.ip_network("100.64.0.0/10")
+# Trusted by default: loopback, private LAN (RFC1918), link-local, and Tailscale CGNAT.
+# This is the sane default for a self-hosted home system — localhost, the Docker bridge,
+# and the operator's own LAN all "just work" for passkey registration, while the public
+# internet stays blocked. WebAuthn passkeys remain the primary auth; this gate is
+# defense-in-depth. Set ALFRED_TRUSTED_NETWORKS_STRICT=1 to drop the LAN defaults and
+# trust only loopback + Tailscale + whatever you list in ALFRED_TRUSTED_NETWORKS.
+_LAN_DEFAULT_RANGES = (
+    "127.0.0.0/8",  # loopback (covers 127.0.0.1 and the rest of the range)
+    "10.0.0.0/8",  # RFC1918 private
+    "172.16.0.0/12",  # RFC1918 private (Docker default bridge lives here)
+    "192.168.0.0/16",  # RFC1918 private (typical home LAN)
+    "169.254.0.0/16",  # link-local
+    "::1/128",  # IPv6 loopback
+    "fc00::/7",  # IPv6 unique-local
+    "fe80::/10",  # IPv6 link-local
+)
+_TAILSCALE_RANGE = "100.64.0.0/10"
+
+
+def _strict_networks() -> bool:
+    """True → drop the RFC1918 LAN defaults (loopback + Tailscale + explicit list only)."""
+    return os.getenv("ALFRED_TRUSTED_NETWORKS_STRICT", "").strip().lower() in ("1", "true", "yes")
 
 
 def _trusted_networks() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
-    """Trusted CIDRs: Tailscale CGNAT + any from ALFRED_TRUSTED_NETWORKS (comma-separated)."""
-    nets: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = [_TAILSCALE_RANGE]
+    """Trusted CIDRs: loopback + LAN (unless strict) + Tailscale + ALFRED_TRUSTED_NETWORKS."""
+    cidrs: list[str] = ["127.0.0.0/8", "::1/128", _TAILSCALE_RANGE]
+    if not _strict_networks():
+        cidrs = [*_LAN_DEFAULT_RANGES, _TAILSCALE_RANGE]
+    nets: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    for cidr in cidrs:
+        with suppress(ValueError):
+            nets.append(ipaddress.ip_network(cidr, strict=False))
     for cidr in os.getenv("ALFRED_TRUSTED_NETWORKS", "").split(","):
         cidr = cidr.strip()
         if cidr:
@@ -189,9 +216,9 @@ def _trusted_networks() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
 
 
 async def require_trusted_network(request: Request) -> None:
-    """FastAPI dependency — restrict to localhost, Tailscale, or configured container nets."""
+    """FastAPI dependency — restrict to localhost, LAN, Tailscale, or configured nets."""
     client_host = request.client.host if request.client else ""
-    if client_host in ("127.0.0.1", "::1", "testclient"):
+    if client_host == "testclient":
         return
     try:
         addr = ipaddress.ip_address(client_host)
@@ -203,7 +230,15 @@ async def require_trusted_network(request: Request) -> None:
         with suppress(TypeError):  # IPv4 addr vs IPv6 net → TypeError, skip
             if addr in net:
                 return
-    raise HTTPException(status_code=403, detail="Access restricted to trusted networks")
+    # Actionable 403: name the rejected IP and how to allow it.
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            f"Access restricted to trusted networks: {client_host} is not trusted. "
+            f"Add its subnet to ALFRED_TRUSTED_NETWORKS (e.g. '{client_host}/24'), "
+            "or reach Alfred via localhost or Tailscale."
+        ),
+    )
 
 
 async def _init_apns_adapter(pool: aioredis.Redis) -> None:

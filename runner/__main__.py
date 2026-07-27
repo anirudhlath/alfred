@@ -20,6 +20,50 @@ from shared.config import AlfredConfig, data_mode, data_path, data_root
 from shared.logging import configure_logging
 from shared.otel import init_tracing
 
+# Env vars pointing at host services — localhost inside a container means the container
+# itself, not the host. Rewrite to the container→host gateway so `docker compose up` with
+# OLLAMA_HOST=localhost "just works", matching what `alfredctl up` already does.
+_GATEWAY_REWRITE_KEYS = (
+    "OLLAMA_HOST",
+    "LMSTUDIO_HOST",
+    "OPENAI_COMPAT_HOST",
+    "HA_HOST",
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+)
+# Docker adds host.docker.internal via extra_hosts; Podman uses host.containers.internal.
+_GATEWAY_HOSTS = ("host.docker.internal", "host.containers.internal")
+
+
+def _reachable_gateway() -> str | None:
+    """First container→host gateway hostname that resolves, or None."""
+    import socket
+
+    for host in _GATEWAY_HOSTS:
+        try:
+            socket.gethostbyname(host)
+        except OSError:
+            continue
+        return host
+    return None
+
+
+def rewrite_host_gateway(env: dict[str, str] | None = None) -> None:
+    """Rewrite localhost/127.0.0.1 in host-pointing env vars to the container gateway.
+
+    Only acts inside the managed container (ALFRED_MANAGE_INFRA set) and only if a
+    gateway hostname actually resolves — a no-op for native/dev runs.
+    """
+    target = os.environ if env is None else env
+    if not target.get("ALFRED_MANAGE_INFRA"):
+        return
+    gateway = _reachable_gateway()
+    if gateway is None:
+        return
+    for key in _GATEWAY_REWRITE_KEYS:
+        value = target.get(key, "")
+        if "localhost" in value or "127.0.0.1" in value:
+            target[key] = value.replace("localhost", gateway).replace("127.0.0.1", gateway)
+
 
 def build_services() -> list[ServiceSpec]:
     """Return the services the runner should supervise.
@@ -128,6 +172,7 @@ def main() -> None:
     if "--debug" in sys.argv:
         os.environ["ALFRED_DEBUG"] = "1"
     log = configure_logging(service="runner")
+    rewrite_host_gateway()  # before from_env() so config picks up the rewritten hosts
     config = AlfredConfig.from_env()
 
     from core.memory.paths import seed_defaults

@@ -14,9 +14,13 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from alfredctl import doctor as doctor_mod
 from alfredctl import launch, staging
 from alfredctl import runtime as rt
 from alfredctl import smoke as smoke_mod
+
+_STATUS_STYLE = {"pass": "green", "warn": "yellow", "fail": "red"}
+_STATUS_GLYPH = {"pass": "✓", "warn": "!", "fail": "✗"}
 
 app = typer.Typer(help="Alfred container launcher", no_args_is_help=True)
 console = Console()
@@ -50,6 +54,34 @@ def build(
     finally:
         shutil.rmtree(stage_root, ignore_errors=True)
     console.print(f"[green]Built {image}[/green]")
+
+
+def _render_doctor(checks: list[doctor_mod.DoctorCheck]) -> bool:
+    """Print a preflight table; return True if any check failed."""
+    table = Table(title="alfred doctor — deployment preflight")
+    table.add_column("check")
+    table.add_column("status")
+    table.add_column("detail", overflow="fold")
+    for c in checks:
+        style = _STATUS_STYLE[c.status]
+        table.add_row(c.name, f"[{style}]{_STATUS_GLYPH[c.status]} {c.status}[/{style}]", c.detail)
+    console.print(table)
+    return any(c.status == "fail" for c in checks)
+
+
+@app.command()
+def doctor(
+    online: Annotated[
+        bool, typer.Option("--online/--offline", help="Live-probe external endpoints")
+    ] = True,
+) -> None:
+    """Validate .env and prerequisites before starting the stack (config preflight)."""
+    env_file = staging.repo_root() / ".env"
+    failed = _render_doctor(doctor_mod.run_checks(env_file, online=online))
+    if failed:
+        console.print("[red]Preflight failed — fix the ✗ rows above, then re-run.[/red]")
+        raise typer.Exit(code=1)
+    console.print("[green]Preflight passed.[/green]")
 
 
 @app.command()
@@ -87,6 +119,17 @@ def up(
     r = rt.detect(runtime)
     if mode not in ("persistent", "ephemeral", "seed"):
         raise typer.BadParameter("mode must be persistent | ephemeral | seed")
+    # Preflight: surface config gaps early (offline, non-blocking).
+    pre = [
+        c
+        for c in doctor_mod.run_checks(staging.repo_root() / ".env", online=False)
+        if c.status != "pass"
+    ]
+    if pre:
+        console.print("[yellow]Preflight notes (run `alfredctl doctor` for detail):[/yellow]")
+        for c in pre:
+            style = _STATUS_STYLE[c.status]
+            console.print(f"  [{style}]{_STATUS_GLYPH[c.status]}[/{style}] {c.name}: {c.detail}")
     if do_build:
         build(runtime=r.name, tag=None)
     repo = staging.repo_root()
@@ -210,6 +253,12 @@ def smoke(
         Path | None, typer.Option(help="Existing HF cache to mount at /models/hf")
     ] = None,
     timeout: Annotated[float, typer.Option(help="Seconds to wait for /health")] = 300.0,
+    deep: Annotated[
+        bool,
+        typer.Option(
+            "--deep", help="Also drive a real request through the Conscious Engine (System 2)"
+        ),
+    ] = False,
 ) -> None:
     """Boot (seed mode) + verify the containerized stack, then tear it down."""
     r = rt.detect(runtime)
@@ -224,7 +273,7 @@ def smoke(
     base_url = _resolve_url(r, plan)
     checks: list[smoke_mod.SmokeCheck] = []
     try:
-        checks = smoke_mod.run_checks(r.exe, plan.name, base_url, timeout=timeout)
+        checks = smoke_mod.run_checks(r.exe, plan.name, base_url, timeout=timeout, deep=deep)
         table = Table(title=f"alfred smoke — {plan.name}")
         table.add_column("check")
         table.add_column("result")
