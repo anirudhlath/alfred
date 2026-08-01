@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Load .env from project root (walk up from this file to find it)
+# Load .env from project root (walk up from this file to find it).
+#
+# Skipped under pytest: the suite must not inherit the developer's real config.
+# A populated .env (REFLEX_BACKEND=openai + OPENAI_COMPAT_HOST, say) routes mocked
+# code paths at live endpoints, so tests that pass in CI — which has no .env —
+# fail locally with connection errors. Keeping the load out of test runs makes a
+# local `pytest` mean the same thing as a CI one.
 _env_path = Path(__file__).resolve().parent.parent / ".env"
-load_dotenv(_env_path)
+if "pytest" not in sys.modules:
+    load_dotenv(_env_path)
 
 
 def data_root() -> Path:
