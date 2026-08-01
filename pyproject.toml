@@ -79,6 +79,14 @@ include = ["alfredctl*", "bus*", "core*", "domains*", "evals*", "runner*", "sdk*
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["core", "bus", "domains", "telemetry", "sdk", "tests"]
+# deepeval ships a pytest11 entry point, and importing `deepeval` runs
+# autoload_dotenv() as a side effect — copying the developer's .env into
+# os.environ before any conftest can intervene. That handed the suite the real
+# REFLEX_BACKEND/OPENAI_COMPAT_HOST, so reflex tests bypassed their mocks and
+# opened live connections: green in CI (no .env), red on a configured machine.
+# Blocking the plugin prevents the import; deepeval is an `evals` extra and the
+# test suite never uses it. -p no:X is checked before the entry point loads.
+addopts = "-p no:deepeval"
 
 [tool.ruff]
 target-version = "py313"

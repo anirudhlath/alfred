@@ -2,6 +2,30 @@
 
 from __future__ import annotations
 
+import atexit
+import os
+import shutil
+import tempfile
+
+# Both of these MUST run before the imports below, because the state they guard
+# is established at import time — not when a fixture runs.
+
+# deepeval/__init__.py calls autoload_dotenv() as an import side effect, copying
+# the developer's .env into os.environ. It reaches the suite via deepeval's
+# pytest11 entry point (blocked in pyproject's addopts), but keep the belt here
+# too for anyone importing deepeval directly.
+os.environ.setdefault("DEEPEVAL_DISABLE_DOTENV", "1")
+
+# shared/secrets.py builds the cryptfile keyring backend at import time under
+# data_path("secrets"), so merely importing a test module writes a real keyring
+# into the checkout's ./data/. Point runtime state at a throwaway directory: the
+# suite then never touches — or is broken by — a developer's real keyring, whose
+# passphrase may not match whatever the current environment resolves to.
+if "ALFRED_DATA_DIR" not in os.environ:
+    _tmp_data_dir = tempfile.mkdtemp(prefix="alfred-tests-")
+    os.environ["ALFRED_DATA_DIR"] = _tmp_data_dir
+    atexit.register(shutil.rmtree, _tmp_data_dir, ignore_errors=True)
+
 from unittest.mock import AsyncMock
 
 import keyring
@@ -32,6 +56,21 @@ class InMemoryKeyring(keyring.backend.KeyringBackend):
             from keyring.errors import PasswordDeleteError
 
             raise PasswordDeleteError(username) from None
+
+
+@pytest.fixture(autouse=True)
+def _default_reflex_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin System 1 dispatch to the backend the tests mock.
+
+    ``core.reflex.inference`` resolves ``REFLEX_BACKEND`` per call, and the reflex
+    tests patch ``core.reflex.ollama_client.infer``. Third-party imports load the
+    developer's .env into os.environ before any fixture can run — litellm does it
+    at import time (via ``core.conscious.engine``), and it cannot be stopped
+    without changing litellm's mode. A developer running ``REFLEX_BACKEND=openai``
+    would otherwise send those tests down the unmocked openai path and out to a
+    live endpoint. Pinning here is import-order independent.
+    """
+    monkeypatch.setenv("REFLEX_BACKEND", "ollama")
 
 
 @pytest.fixture(autouse=True)
