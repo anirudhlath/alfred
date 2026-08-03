@@ -11,6 +11,7 @@ from core.channels.request_bus import publish_and_wait
 from core.channels.satellite.audio import pcm_to_wav
 from core.channels.voice_models import synthesize_async, transcribe_async
 from core.conscious.identity import IDENTITY_SIR
+from core.voice.stt import is_probable_hallucination
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -58,6 +59,11 @@ class SatellitePipeline:
         await conn.send_transcript(text)
         if not text:
             logger.debug("Satellite '{}': empty transcript", entry.name)
+            return
+        if is_probable_hallucination(text):
+            # Always-listening surface: answering a false wake out loud is
+            # worse than missing a command, so drop it before the LLM/TTS.
+            logger.info("Satellite '{}': ignoring probable false wake: {!r}", entry.name, text)
             return
         logger.info("Satellite '{}' heard: {}", entry.name, text)
 

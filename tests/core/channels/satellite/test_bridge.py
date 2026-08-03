@@ -57,11 +57,12 @@ async def test_wake_utterance_flow_invokes_handler(fake_sat: FakeSatellite) -> N
         got.set_result((conn, pcm))
         await conn.send_transcript("turn off the lights")
 
-    # 5 speech frames then silence until the 800ms end fires
+    # 10 speech frames (320ms, over the min_speech_ms floor) then silence
+    # until the 800ms end fires
     bridge = SatelliteBridge(
         [_entry(fake_sat)],
         handler=handler,
-        collector_factory=lambda: _scripted_collector([0.9] * 5 + [0.0] * 100),
+        collector_factory=lambda: _scripted_collector([0.9] * 10 + [0.0] * 100),
     )
     bridge.start()
     try:
@@ -233,7 +234,7 @@ async def test_disconnect_cancels_in_flight_handler_task(fake_sat: FakeSatellite
     bridge = SatelliteBridge(
         [_entry(fake_sat)],
         handler=handler,
-        collector_factory=lambda: _scripted_collector([0.9] * 5 + [0.0] * 100),
+        collector_factory=lambda: _scripted_collector([0.9] * 10 + [0.0] * 100),
     )
     bridge.start()
     try:

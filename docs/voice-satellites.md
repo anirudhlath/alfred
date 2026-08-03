@@ -96,6 +96,12 @@ sequenceDiagram
 sends an empty `Transcript("")` directly — this still stops mic streaming and re-arms the
 satellite, but skips STT/Conscious/TTS entirely.
 
+**Too-little-speech path:** the same `timeout` event is emitted when speech *did* start but
+the utterance contains fewer than `min_speech_ms` (default 250ms) of voiced frames. A wake
+word that fires on TV audio typically trips the VAD for only a frame or two; without this
+floor the collector emitted a ~1.15s clip that was ~97% silence, and Whisper reliably
+decodes near-silence into confident text (see False Wakes below).
+
 **Failure path:** if the pipeline handler raises (STT error, Conscious timeout, TTS error),
 `SatelliteConnection._run_handler` catches it and sends an `Error` event so the satellite can
 play error feedback. `Transcript` is always sent *before* the slow Conscious round-trip
@@ -258,6 +264,31 @@ bare `AudioStart`/`AudioChunk`/`AudioStop` stream, identical to a spoken reply.
 For single-device delivery (future presence-aware targeting, timers), the bridge also exposes
 `get_connection(name)` and `play_wav_to(name, wav) -> bool` (False when the named satellite is
 offline or unknown); v1's announcement adapter only uses the broadcast path.
+
+## False Wakes
+
+An always-listening device in a room with a TV will wake on the TV. Measured on the `pi1`
+living-room satellite over 2026-07-27 → 08-03: **30 wakes reached STT, none were commands** —
+movie dialogue plus Whisper artifacts. Three independent layers now have to agree before a
+wake becomes a spoken answer, because each one alone leaks:
+
+| Layer | Where | Defense |
+|---|---|---|
+| 1. Wake word | Pi, `wyoming-openwakeword` | `--threshold` / `--trigger-level`. Both default to the most permissive setting (`0.5` / `1` — a *single* frame over threshold fires), so they must be set explicitly. |
+| 2. Endpointing | `endpointing.py` | `min_speech_ms` floor — a wake that trips the VAD for a frame or two is reported as no-speech instead of becoming a mostly-silent clip. |
+| 3. Transcript | `stt.py` + `pipeline.py` | `vad_filter` on the decoder, plus `is_probable_hallucination()` dropping whole-transcript artifacts before the LLM/TTS. |
+
+**Whisper decodes silence into confident text.** Measured on `large-v3-turbo` with the
+repo's settings, 1.15s of pure digital silence transcribes to `'You'` with
+`no_speech_prob = 0.00`. The decoder's own confidence signals therefore **cannot** be used to
+filter these — `no_speech_threshold` and `log_prob_threshold` never trigger. Only keeping the
+non-speech audio away from the decoder (`vad_filter=True`) suppresses it; with the filter on,
+the same silence returns `''`. `condition_on_previous_text=False` additionally stops one
+hallucinated segment from seeding the next.
+
+`is_probable_hallucination()` matches the **whole** transcript only — "thank you" alone is
+dropped, "turn off the lights, thank you" is not. It is applied on satellites but
+deliberately **not** on web/iOS, which are push-to-talk and carry explicit user intent.
 
 ## Operational Notes
 
