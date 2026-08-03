@@ -42,7 +42,33 @@ def test_transcribe_file_joins_segments() -> None:
 
     result = stt.transcribe_file("/tmp/test.wav", language="en")
     assert result == "Hello world"
-    mock_model.transcribe.assert_called_once_with("/tmp/test.wav", language="en", beam_size=5)
+    mock_model.transcribe.assert_called_once_with(
+        "/tmp/test.wav",
+        language="en",
+        beam_size=5,
+        vad_filter=True,
+        condition_on_previous_text=False,
+    )
+
+
+def test_transcribe_file_gates_non_speech_audio() -> None:
+    """Decoding runs behind a VAD gate with no cross-segment context carry-over.
+
+    Whisper decodes pure silence into text ('You', 'Thank you.') with
+    no_speech_prob=0.00, so confidence cannot be used to filter it. vad_filter
+    drops the non-speech audio before it ever reaches the decoder, and
+    condition_on_previous_text=False stops one hallucination seeding the next.
+    """
+    stt = WhisperSTT.__new__(WhisperSTT)
+    mock_model = MagicMock()
+    mock_model.transcribe.return_value = ([], _MockInfo())
+    stt._model = mock_model
+
+    stt.transcribe_file("/tmp/test.wav")
+
+    kwargs = mock_model.transcribe.call_args.kwargs
+    assert kwargs["vad_filter"] is True
+    assert kwargs["condition_on_previous_text"] is False
 
 
 def test_transcribe_writes_temp_file() -> None:

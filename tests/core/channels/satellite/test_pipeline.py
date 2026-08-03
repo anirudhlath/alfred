@@ -95,6 +95,29 @@ async def test_empty_transcript_stops_early() -> None:
     conn.play_wav.assert_not_awaited()
 
 
+async def test_hallucinated_transcript_is_not_answered() -> None:
+    """A bare Whisper hallucination must not reach the LLM or the speaker.
+
+    'Thank you.' was 6 of 30 satellite wakes over a week, none of them real.
+    """
+    conn = _conn()
+    pipeline, publish = _pipeline(_stt(text="Thank you."), _tts())
+    with patch("core.channels.satellite.pipeline.publish_and_wait", publish):
+        await pipeline(conn, PCM)
+    publish.assert_not_awaited()
+    conn.play_wav.assert_not_awaited()
+
+
+async def test_real_command_ending_in_thanks_is_answered() -> None:
+    """The gate matches whole transcripts only — real speech still gets through."""
+    conn = _conn()
+    pipeline, publish = _pipeline(_stt(text="turn off the lights, thank you"), _tts())
+    with patch("core.channels.satellite.pipeline.publish_and_wait", publish):
+        await pipeline(conn, PCM)
+    publish.assert_awaited_once()
+    conn.play_wav.assert_awaited_once()
+
+
 async def test_stt_unavailable_sends_error() -> None:
     conn = _conn()
     pipeline, publish = _pipeline(None, _tts())

@@ -34,6 +34,37 @@ def test_speech_then_silence_emits_utterance() -> None:
     assert len(utterance.pcm) >= speech_frames * len(FRAME)
 
 
+def test_single_frame_blip_does_not_emit_utterance() -> None:
+    """A lone 32ms VAD blip is a false wake — it must not become an utterance.
+
+    Without a minimum-speech floor this produced a ~1.15s clip that was 97%
+    silence, which Whisper reliably hallucinated into text ("Thank you.").
+    """
+    silence_frames = 800 // _MS_PER_FRAME + 1
+    c = _collector([0.9] + [0.0] * (silence_frames + 5))
+    events = _feed_frames(c, 1 + silence_frames + 5)
+    kinds = [e.kind for e in events]
+    assert "utterance" not in kinds
+    assert kinds[-1] == "timeout"
+
+
+def test_brief_real_speech_still_emits_utterance() -> None:
+    """A short single-word command (256ms voiced) must survive the floor."""
+    speech_frames = 8  # 256ms — just over the 250ms default
+    silence_frames = 800 // _MS_PER_FRAME + 1
+    c = _collector([0.9] * speech_frames + [0.0] * (silence_frames + 5))
+    events = _feed_frames(c, speech_frames + silence_frames + 5)
+    assert "utterance" in [e.kind for e in events]
+
+
+def test_min_speech_ms_is_configurable() -> None:
+    """Callers can tune the floor; a higher floor rejects a longer blip."""
+    silence_frames = 800 // _MS_PER_FRAME + 1
+    c = _collector([0.9] * 8 + [0.0] * (silence_frames + 5), min_speech_ms=500)
+    events = _feed_frames(c, 8 + silence_frames + 5)
+    assert "utterance" not in [e.kind for e in events]
+
+
 def test_no_speech_times_out() -> None:
     frames = 8000 // _MS_PER_FRAME + 2
     c = _collector([0.0] * frames)
