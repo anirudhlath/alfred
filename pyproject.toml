@@ -52,7 +52,7 @@ memory = [
 ]
 voice = [
     "faster-whisper>=1.0",
-    "piper-tts>=1.2",
+    "piper-tts>=1.6.0",
     "kokoro-onnx>=0.5,<0.6",
     "espeakng_loader>=0.2.4,<0.3",
     "phonemizer-fork>=3.3,<3.4",
