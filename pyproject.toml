@@ -35,7 +35,7 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest-cov>=7.1.0",
     "ruff>=0.15.16",
-    "mypy>=2.1",
+    "mypy>=2.3.0",
     "types-PyYAML>=6.0",
     "watchfiles>=1.0",
 ]
