@@ -228,7 +228,7 @@ uv run alfredctl <command> [options]
 | `logs` | `--runtime`, `--follow/-f` | Streams container logs |
 | `shell` | `--runtime` | `exec -it <container> bash` |
 | `urls` | `--runtime`, `--port INT` | Prints the reachable URL without starting/stopping anything |
-| `smoke` | `--runtime`, `--keep`, `--attach`, `--hf-cache PATH`, `--timeout FLOAT` (default 300s), `--deep` | Boots `seed` mode (unless `--attach`, which checks an already-running container instead), runs the check suite below, tears down unless `--keep`/`--attach`; exits non-zero on any failure. `--deep` adds an end-to-end System 2 round-trip check |
+| `smoke` | `--runtime`, `--keep`, `--attach`, `--name TEXT` (requires `--attach`), `--hf-cache PATH`, `--timeout FLOAT` (default 300s), `--deep` | Boots `seed` mode (unless `--attach`, which checks an already-running container instead), runs the check suite below, tears down unless `--keep`/`--attach`; exits non-zero on any failure. `--deep` adds an end-to-end System 2 round-trip check. `--name` overrides which container is checked (default `alfred-<branch>`) |
 
 ### Worktree/branch isolation
 

@@ -163,7 +163,7 @@ def _capture_smoke_name(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
         seen["name"] = name
         return [smoke_mod.SmokeCheck("health", True, "GET /health → 200")]
 
-    monkeypatch.setattr(main.rt, "detect", lambda runtime: Runtime("docker", "docker"))
+    _stub_smoke_deps(monkeypatch, [])
     monkeypatch.setattr(main, "_resolve_url", lambda r, plan: "http://localhost:8081")
     monkeypatch.setattr(main.smoke_mod, "run_checks", _fake_run_checks)
     return seen
@@ -180,3 +180,12 @@ def test_smoke_without_name_keeps_branch_container(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(main.rt, "container_name", lambda: "alfred-somebranch")
     main.smoke(attach=True)
     assert seen["name"] == "alfred-somebranch"
+
+
+def test_smoke_name_without_attach_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--name only makes sense against an already-running container; without --attach,
+    smoke boots its own (branch-named) container, so a --name override would silently
+    check a container that was never started. Nothing in main.rt/up/down is stubbed
+    here — the guard must fire before any of that runs."""
+    with pytest.raises(typer.BadParameter):
+        main.smoke(attach=False, name="alfred")

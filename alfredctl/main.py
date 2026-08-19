@@ -265,6 +265,10 @@ def smoke(
     ] = False,
 ) -> None:
     """Boot (seed mode) + verify the containerized stack, then tear it down."""
+    if name and not attach:
+        raise typer.BadParameter(
+            "--name only applies with --attach; smoke starts its own container otherwise"
+        )
     r = rt.detect(runtime)
     if not attach:
         up(runtime=r.name, mode="seed", hf_cache=hf_cache)
