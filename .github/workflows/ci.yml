@@ -123,19 +123,101 @@ jobs:
             exit 1
           fi
 
+  # A merge that only touches documentation (README tweak, a backlog ticket) carries no
+  # runtime change, so rebuilding the fat image and restarting the live container is pure
+  # cost — it disrupts the user's home automation for zero effect. This job decides whether
+  # the current push is docs-only.
+  #
+  # It MUST fail open: any case where it cannot prove the change is docs-only — a missing or
+  # zeroed `before` SHA (new branch, force-push), a `before` commit not present in this clone
+  # (shallow history / rewritten history), the diff itself failing, or an empty diff — is
+  # treated as "deploy", never as "skip". A filter that wrongly skips leaves the running
+  # house on stale code with no signal that anything was withheld, which is far worse than
+  # one unnecessary rebuild. The `deploy` job's `if:` below pairs with this: it also deploys
+  # if this job doesn't cleanly succeed.
+  changes:
+    name: docs-only path filter
+    runs-on: ubuntu-latest
+    outputs:
+      deploy: ${{ steps.filter.outputs.deploy }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Decide whether this push warrants a deploy
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+
+          deploy=true  # fail-open default; every branch below either proves docs-only
+                       # (and flips this to false) or states its fail-open reason explicitly.
+          reason="default: fail open"
+
+          if [ "$EVENT_NAME" != "push" ]; then
+            reason="not a push event ($EVENT_NAME) — no diff to inspect; a dispatch means home-service changed"
+          elif [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            reason="no usable 'before' SHA (new branch or force-push)"
+          elif ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            reason="'before' SHA not present in this clone (shallow history or rewritten history)"
+          else
+            files=$(git diff --name-only "$BEFORE" "$SHA")
+            diff_status=$?
+            echo "changed files ($BEFORE..$SHA):"
+            echo "$files"
+            if [ $diff_status -ne 0 ]; then
+              reason="git diff failed (exit $diff_status)"
+            elif [ -z "$files" ]; then
+              reason="empty diff"
+            else
+              non_docs=""
+              while IFS= read -r f; do
+                [ -z "$f" ] && continue
+                case "$f" in
+                  docs/*|research/*) ;;      # docs/ or research/ anywhere under the path
+                  *.md)
+                    case "$f" in
+                      */*) non_docs="$non_docs$f"$'\n' ;;  # nested *.md — not root-level
+                      *) ;;                                 # root-level *.md — docs
+                    esac
+                    ;;
+                  *) non_docs="$non_docs$f"$'\n' ;;
+                esac
+              done <<< "$files"
+              if [ -z "$non_docs" ]; then
+                deploy=false
+                reason="every changed path is documentation"
+              else
+                reason="non-doc path(s) changed"
+              fi
+            fi
+          fi
+
+          echo "decision: deploy=$deploy ($reason)"
+          echo "deploy=$deploy" >> "$GITHUB_OUTPUT"
+
   deploy:
     name: deploy to lath-server
-    needs: [gate]
+    needs: [gate, changes]
     # `always() &&` is load-bearing. Without it this job inherits the implicit success()
     # check, and a SKIPPED job anywhere upstream propagates down the needs graph even when
     # `gate` itself succeeded — a deploy that silently skips on every push. Taking over the
     # condition with always() stops the propagation; the explicit result check is then what
     # gates the deploy. This cost ha-home-panel a run to diagnose.
+    #
+    # The final clause pairs with the `changes` job's fail-open contract: deploy unless
+    # `changes` both ran to completion AND explicitly said skip. If `changes` errors, is
+    # cancelled, or never runs, `needs.changes.result != 'success'` is true and the deploy
+    # proceeds anyway — an inconclusive filter must never silently suppress a deploy.
     if: >-
       ${{ always()
       && needs.gate.result == 'success'
       && ((github.event_name == 'push' && github.ref == 'refs/heads/master')
-      || github.event_name == 'repository_dispatch') }}
+      || github.event_name == 'repository_dispatch')
+      && (needs.changes.result != 'success' || needs.changes.outputs.deploy == 'true') }}
     runs-on: [self-hosted, linux, alfred-deploy]
     timeout-minutes: 60
     # Two deploys at once would race between building an image and starting the container
