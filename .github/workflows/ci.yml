@@ -122,3 +122,109 @@ jobs:
             echo "::error::a required job did not succeed"
             exit 1
           fi
+
+  deploy:
+    name: deploy to lath-server
+    needs: [gate]
+    # `always() &&` is load-bearing. Without it this job inherits the implicit success()
+    # check, and a SKIPPED job anywhere upstream propagates down the needs graph even when
+    # `gate` itself succeeded — a deploy that silently skips on every push. Taking over the
+    # condition with always() stops the propagation; the explicit result check is then what
+    # gates the deploy. This cost ha-home-panel a run to diagnose.
+    if: >-
+      ${{ always()
+      && needs.gate.result == 'success'
+      && ((github.event_name == 'push' && github.ref == 'refs/heads/master')
+          || github.event_name == 'repository_dispatch') }}
+    runs-on: [self-hosted, linux, alfred-deploy]
+    timeout-minutes: 60
+    # Two deploys at once would race between building an image and starting the container
+    # it replaces. Queue, never cancel.
+    concurrency:
+      group: deploy-alfred
+      cancel-in-progress: false
+    env:
+      DEPLOY_DIR: /home/anirudhlath/code/alfred-deploy
+    steps:
+      # Both repos as siblings under $GITHUB_WORKSPACE: the fat image build stages
+      # `git ls-files` from each, resolving home-service as a sibling of the alfred
+      # checkout. A nested checkout would not be found.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: alfred
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: anirudhlath/alfred-home-service
+          path: home-service
+
+      # The box's system Python is 3.14; a fresh checkout would otherwise default to it.
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - name: Install alfredctl
+        working-directory: alfred
+        run: uv sync
+
+      # Before the build, not after: a misconfigured box should fail in seconds rather than
+      # after a full fat-image build. Offline because a deploy must not fail on a transient
+      # outage of an external endpoint — what is checked is that the config is sane.
+      - name: Preflight
+        working-directory: alfred
+        run: uv run alfredctl doctor --offline --env-file "$DEPLOY_DIR/.env"
+
+      - name: Record the running image for rollback
+        id: rollback
+        run: |
+          if id=$(docker image inspect -f '{{.Id}}' alfred:latest 2>/dev/null); then
+            echo "image=$id" >> "$GITHUB_OUTPUT"
+            echo "rollback target: $id"
+          else
+            echo "image=none" >> "$GITHUB_OUTPUT"
+            echo "::notice::no existing alfred:latest — first deploy, nothing to roll back to"
+          fi
+
+      - name: Build
+        working-directory: alfred
+        run: |
+          uv run alfredctl build --tag alfred:latest
+          docker tag alfred:latest "alfred:${{ github.sha }}"
+
+      # Copied, not symlinked: the deploy workspace must keep working when the runner wipes
+      # its checkout between runs.
+      - name: Publish the compose file to the deploy workspace
+        run: cp alfred/docker-compose.yml "$DEPLOY_DIR/docker-compose.yml"
+
+      - name: Start
+        id: start
+        working-directory: /home/anirudhlath/code/alfred-deploy
+        run: docker compose up -d
+
+      # Polls /health, then checks redis, the RediSearch modules and mosquitto INSIDE the
+      # running container. `--name alfred` matches the pinned container_name.
+      - name: Verify
+        id: verify
+        working-directory: alfred
+        run: uv run alfredctl smoke --attach --name alfred
+
+      # A rollback that itself fails is louder, not quieter: this exits non-zero either way.
+      - name: Roll back
+        if: failure() && (steps.start.outcome == 'failure' || steps.verify.outcome == 'failure')
+        env:
+          TARGET: ${{ steps.rollback.outputs.image }}
+        run: |
+          if [ "$TARGET" = "none" ]; then
+            echo "::error::deploy failed and there is no previous image to restore"
+            exit 1
+          fi
+          echo "::warning::deploy failed — restoring $TARGET"
+          docker tag "$TARGET" alfred:latest
+          cd "$DEPLOY_DIR"
+          docker compose up -d
+          cd "$GITHUB_WORKSPACE/alfred"
+          if uv run alfredctl smoke --attach --name alfred; then
+            echo "::error::deploy failed; rolled back to $TARGET and it verified"
+          else
+            echo "::error::deploy failed AND the rollback to $TARGET did not verify — alfred may be down"
+          fi
+          exit 1
