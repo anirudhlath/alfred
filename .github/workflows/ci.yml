@@ -5,6 +5,10 @@ on:
     branches: [master]
   pull_request:
     types: [opened, edited, synchronize, reopened]
+  # home-service is baked into the fat image and has no deployment of its own; a merge
+  # there fires this so alfred is rebuilt with the new home-service on the trunk.
+  repository_dispatch:
+    types: [home-service-merged]
 
 permissions:
   contents: read
