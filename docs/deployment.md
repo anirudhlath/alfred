@@ -128,12 +128,10 @@ More runtime-specific troubleshooting (Apple `container`, Podman) is in
 ## Continuous deployment
 
 Every merge to `alfred`'s `master` deploys to lath-server automatically — nobody runs
-`docker compose up -d` by hand for it anymore. The other two repos in this design are at
-different stages: `alfred-home-service` has the dispatch job written but not yet merged
-(`alfred-home-service#19`, blocked on minting `ALFRED_DISPATCH_TOKEN`), and
-`alfred-satellite`'s fleet-rollout tool is built and unit-tested but is still run by hand
-(`alfred-satellite#2`, fixing a bug in the rollout sequence itself, is the remaining
-blocker before it gets wired to a merge trigger). Design:
+`docker compose up -d` by hand for it anymore. Every merge to `alfred-satellite`'s
+`master` rolls out to the Pi fleet the same way. `alfred-home-service` is the one piece
+still pending: its dispatch job is written but not yet merged
+(`alfred-home-service#19`, blocked on minting `ALFRED_DISPATCH_TOKEN`). Design:
 `docs/superpowers/specs/2026-08-18-cd-local-runner-design.md`.
 
 ### The shape
@@ -276,6 +274,59 @@ cd ~/code/alfred-deploy && docker compose up -d   # env_file is read at containe
 
 Credentials held in the keyring (not `.env`) rotate through the Settings page instead.
 
+### What an automated satellite rollout does
+
+Every push to `alfred-satellite`'s `master` runs the `deploy to the satellite fleet` job
+on the self-hosted `alfred-satellite` runner, gated on `ci-ok` exactly like alfred's —
+confirmed live: on the PR that added this job, the `deploy` job itself showed **skipped**,
+so a pull-request build has the same "cannot reach this house" property alfred has.
+`concurrency: {group: deploy-satellites, cancel-in-progress: false}` (two rollouts racing
+over the same `.prev` directory on every Pi would corrupt it) and `timeout-minutes: 30`.
+The job is thin glue around the tested tool:
+
+```bash
+uv run python -m dev.deploy_satellites \
+  --checkout . \
+  --inventory ~/code/alfred-deploy/satellites.yaml \
+  --key ~/code/alfred-deploy/id_ed25519_satellites \
+  --user anirudhlath
+```
+
+(`--user` is passed explicitly even though it matches the CLI default, so the workflow
+stays self-documenting rather than silently depending on a default that could change.
+`setup-uv` runs `enable-cache: false` for the same reason as alfred's job — the runner's
+own `~/.cache/uv` shouldn't be churned by a caching action built for ephemeral GitHub
+runners.)
+
+Per device, the tool:
+
+1. Refuses to proceed if `/opt/alfred-satellite/config.env` is missing.
+2. Rsyncs the checkout to `/opt/alfred-satellite-src` as `anirudhlath` over SSH (excluding
+   `.git`, `.venv`, `.venv-dev`, `__pycache__`), using `--rsync-path="sudo rsync"` so the
+   remote side runs privileged — `/opt` is root-owned, and every other command in the
+   sequence already runs under `sudo` — **never directly onto `/opt/alfred-satellite`**.
+   `scripts/setup.sh` installs *into* `/opt/alfred-satellite` from wherever it's run; an
+   earlier version of this design rsynced the checkout onto that same directory, which a
+   dry run (`rsync -n --delete`) showed would have deleted thousands of files, including
+   the device's `config.env` and both virtualenvs the systemd units execute.
+3. Copies the device's own `config.env` into the source dir.
+4. Moves `/opt/alfred-satellite` to `/opt/alfred-satellite.prev`.
+5. Runs `sudo /opt/alfred-satellite-src/scripts/setup.sh`, which rebuilds the install dir
+   from scratch (apt packages, a fresh `wyoming-satellite` clone, both virtualenvs).
+6. Restarts both units (`wyoming-satellite.service`, `wyoming-openwakeword.service`),
+   confirms both report `systemctl is-active`, then probes the Wyoming port — up to 30
+   times, 2 seconds apart. The retry is load-bearing, not defensive padding: `is-active`
+   returns as soon as the process starts, before `wyoming-satellite` has loaded its models
+   and bound the port, and a single immediate probe rolled back a perfectly healthy device
+   on the live fleet during rehearsal.
+7. Any failure from step 4 onward restores `.prev` and restarts.
+
+Rehearsing against the real Pi (not just the unit tests) is what surfaced both of the
+defects above — the `--rsync-path="sudo rsync"` fix and the port-probe retry — neither of
+which a dry run or a mock-transport test could have caught. The port-probe rollback in
+particular is good evidence the rollback path itself works: the device came back with the
+install dir restored, both units active, and its identity (`config.env`) intact.
+
 ### Adding a satellite
 
 The rollout tool lives in `alfred-satellite` (`dev/deploy_satellites.py`) and defaults to
@@ -284,42 +335,23 @@ The rollout tool lives in `alfred-satellite` (`dev/deploy_satellites.py`) and de
 1. Flash and network the Pi. **The fleet's SSH user is `anirudhlath`, not `pi`** — the `pi`
    account does not exist on these images — then trust the deploy key:
    `ssh-copy-id -i ~/code/alfred-deploy/id_ed25519_satellites.pub anirudhlath@<host>`
-2. Provision it once, by hand: copy the `alfred-satellite` checkout to the device, fill in
-   its `config.env` (device name, area, wake word, mic device), and run
-   `sudo scripts/setup.sh`. The rollout tool refuses to touch a device that has never been
-   provisioned — a missing `/opt/alfred-satellite/config.env` is reported, never silently
-   provisioned.
+2. **Provision it once, by hand** — this step is not automated and never will be: copy the
+   `alfred-satellite` checkout to the device, fill in its `config.env` (device name, area,
+   wake word, mic device), and run `sudo scripts/setup.sh`. The automated rollout refuses
+   to touch a device that has never been provisioned this way — a missing
+   `/opt/alfred-satellite/config.env` is reported, never silently provisioned, by design.
 3. Add it to `~/code/alfred-deploy/satellites.yaml` with `name`, `host`, `port` and an
    `area` that matches a Home Assistant area name exactly.
-4. Rehearse from an `alfred-satellite` checkout: `uv run python -m dev.deploy_satellites --dry-run`
-5. Roll it out: `uv run python -m dev.deploy_satellites`
+4. Rehearse from an `alfred-satellite` checkout before trusting the change:
+   `uv run python -m dev.deploy_satellites --dry-run`
+5. Merge anything to `alfred-satellite`'s `master` (or run the same command without
+   `--dry-run` to roll out immediately, off-cycle). The merge path is the normal one now —
+   see "What an automated satellite rollout does" above.
 
 A Pi that answers mDNS but is missing from `satellites.yaml` is still deployed to, with a
 warning. So is one in the file that does not answer mDNS. Both sources exist because the
 file is authoritative today while discovery earns trust; retiring the file is
 `docs/backlog/medium/satellite-mdns-only-inventory.md`.
-
-**Rolling out is a manual step today, not yet a merge trigger.** The `alfred-satellite`
-runner is registered and idle; wiring a `deploy` job to run this automatically on every
-merge to `master` is open work, gated on `alfred-satellite#2` (a fix to the rollout
-sequence itself) landing first.
-
-Per device, the rollout tool:
-
-1. Refuses to proceed if `/opt/alfred-satellite/config.env` is missing.
-2. Rsyncs the checkout to `/opt/alfred-satellite-src` (excluding `.git`, `.venv`,
-   `.venv-dev`, `__pycache__`) — **never directly onto `/opt/alfred-satellite`**.
-   `scripts/setup.sh` installs *into* `/opt/alfred-satellite` from wherever it's run; an
-   earlier version of this design rsynced the checkout onto that same directory, which a
-   dry run (`rsync -n --delete`) showed would have deleted thousands of files, including the
-   device's `config.env` and both virtualenvs the systemd units execute.
-3. Copies the device's own `config.env` into the source dir.
-4. Moves `/opt/alfred-satellite` to `/opt/alfred-satellite.prev`.
-5. Runs `sudo /opt/alfred-satellite-src/scripts/setup.sh`, which rebuilds the install dir
-   from scratch (apt packages, a fresh `wyoming-satellite` clone, both virtualenvs).
-6. Restarts both units, confirms both report `systemctl is-active`, and probes the Wyoming
-   port.
-7. Any failure from step 4 onward restores `.prev` and restarts.
 
 ### When a deploy fails
 
@@ -333,6 +365,8 @@ Per device, the rollout tool:
 | A new `alfred-deploy_*` volume appeared | The `name: alfred` pin was removed from `docker-compose.yml`. Restore it before anything else — the running stack is on empty volumes. |
 | Local `docker-compose.yml` edits keep disappearing | Every deploy overwrites it from the checkout. Use `docker-compose.override.yml` instead. |
 | Satellite rollout fails with one device red | Read the per-device table; the failed device was rolled back to `/opt/alfred-satellite.prev`. The rest of the fleet did deploy — a partial rollout is a failure, never a pass. |
+| Satellite `deploy` job **skipped** on a PR | Expected and correct — the job only runs on `push` to `master`. This is the same "a PR can never reach this house" property alfred has; confirmed live on `alfred-satellite#3`'s own PR. |
+| A satellite device's own rollback failed too | `/opt/alfred-satellite.prev` may still hold the last good tree. SSH in as `anirudhlath` and restore by hand: `sudo rm -rf /opt/alfred-satellite && sudo mv /opt/alfred-satellite.prev /opt/alfred-satellite && sudo systemctl restart wyoming-satellite wyoming-openwakeword`. |
 
 A failed alfred deploy's outage floor is roughly 10–12 minutes even in the best case: up to
 300s of `/health` polling before the rollback starts, then up to another 300s verifying the
