@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import pytest
 import typer
 
+from alfredctl import doctor as doctor_mod
 from alfredctl import main
 from alfredctl import runtime as rt
 from alfredctl import smoke as smoke_mod
@@ -189,3 +190,32 @@ def test_smoke_name_without_attach_rejected(monkeypatch: pytest.MonkeyPatch) -> 
     here — the guard must fire before any of that runs."""
     with pytest.raises(typer.BadParameter):
         main.smoke(attach=False, name="alfred")
+
+
+def _capture_doctor_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
+    """Run main.doctor with the real checks stubbed; capture the .env path it validates."""
+    seen: dict[str, Path] = {}
+
+    def _fake_run_checks(env_file: Path, *, online: bool = True) -> list[doctor_mod.DoctorCheck]:
+        seen["env_file"] = env_file
+        return [doctor_mod.DoctorCheck(".env", "pass", str(env_file))]
+
+    monkeypatch.setattr(main.doctor_mod, "run_checks", _fake_run_checks)
+    return seen
+
+
+def test_doctor_env_file_option_overrides_repo_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    seen = _capture_doctor_env(monkeypatch)
+    main.doctor(online=False, env_file=tmp_path / "deploy.env")
+    assert seen["env_file"] == tmp_path / "deploy.env"
+
+
+def test_doctor_without_env_file_uses_repo_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    seen = _capture_doctor_env(monkeypatch)
+    monkeypatch.setattr(main.staging, "repo_root", lambda: tmp_path)
+    main.doctor(online=False)
+    assert seen["env_file"] == tmp_path / ".env"
