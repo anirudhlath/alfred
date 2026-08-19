@@ -17,8 +17,8 @@ same pattern to Alfred itself.
 3. **Build on the runner** (`alfredctl build` → `docker compose up -d`). Pushing images to
    a registry is deferred to a ticket.
 4. **Smoke check with automatic rollback** — a failed deploy restores the previous image.
-5. **Landing `feat/containerization` is Phase 0**, not a separate spec: its design already
-   exists as `2026-07-19-alfred-containerization-design.md` on the trunk.
+5. **Containerization is already on the trunk** — see §3. This spec builds directly on
+   `alfredctl` and the compose-of-one; there is no prerequisite phase.
 6. **Deploy on every merge to the trunk**, not on release tags.
 7. **Satellite inventory is a file on the runner plus mDNS discovery**, aiming to retire
    the file in favour of discovery alone.
@@ -50,31 +50,32 @@ trunk.
 | `signal-bridge` | No | Scaffold; no GitHub remote |
 | `alfred-ios` | No | Needs a macOS runner and a TestFlight pipeline — separate project |
 
-## 3 · Phase 0 — land `feat/containerization`
+## 3 · What the trunk already provides
 
-The deploy step calls `alfredctl`, which does not exist on the trunk. The implementation
-does exist: 41 commits, +7,258/−484 across 88 files, in a **locked local worktree that was
-never pushed** (`worktree-feat+containerization`). Its design spec
-(`2026-07-19-alfred-containerization-design.md`) and its operator guide
-(`docs/containerization.md`, 443 lines) already describe the production path:
+Containerization landed as PR #156 (`feat: single fat OCI container + alfredctl
+launcher`), refined by #158 (`feat(deploy): one-command onboarding — doctor preflight,
+ungated defaults, self-managing secrets`), #159 and #160. The trunk therefore already
+carries everything this design builds on:
 
-```bash
-uv run alfredctl build --tag alfred:latest
-ALFRED_SECRETS_PASSPHRASE=… docker compose up -d
-```
+| On `master` | Relevance to CD |
+|---|---|
+| `Containerfile` — redis 8 + mosquitto + 6 core services + home-service under `tini` → `python -m runner` | The artifact a deploy builds |
+| `docker-compose.yml` — compose-of-one, named volumes, `:8081` only | The deploy's run mechanism |
+| `alfredctl build / up / smoke / doctor` | Build, verify and preflight |
+| `.github/workflows/container-build.yml` — amd64 + arm64 image builds | Proves the image builds in CI already |
+| `docs/deployment.md` (126 lines) | The operator guide this spec extends |
 
-Phase 0 is therefore a landing task, not a design task: unlock the worktree, push the
-branch as `feat/containerization`, merge `origin/master` into it (12 commits of drift,
-predominantly dependabot), open a PR with a conventional title, get `ci-ok` green,
-squash-merge.
+Two consequences worth stating explicitly, because they simplify the design:
 
-**Why this is a blocker and not a nice-to-have.** The trunk's current
-`docker-compose.yml` starts redis, mosquitto, `bus`, `core.reflex` and `home-service` —
-but not `core.conscious`, `core.triggers`, `core.channels` or `core.librarian`. Deploying
-it would ship an Alfred with no System 2, no trigger engine and no web UI. There is no
-"fully deployed" on the trunk today.
+- **Secrets self-manage.** The passphrase is generated and persisted in the data volume
+  on first boot; `ALFRED_SECRETS_PASSPHRASE` in `.env` is an override, not a requirement.
+  The deploy workspace does not need to hold one.
+- **`alfredctl doctor` is a config preflight** that validates `.env` and prerequisites and
+  exits non-zero on failure. The deploy job should run it *before* building, so a
+  misconfigured box fails in seconds rather than after a full image build.
 
 ## 4 · Phase 1 — runner infrastructure on lath-server
+
 
 lath-server already runs one runner (`linux-server`, labels `self-hosted, Linux, X64,
 home-panel`, registered to `ha-home-panel`). It stays untouched. Two more join it:
@@ -92,11 +93,14 @@ ever writes:
 
 ```
 ~/alfred-deploy/
-  .env                  # HA_TOKEN, CLAUDE_API_KEY, OLLAMA_HOST, … (0600)
-  passphrase            # ALFRED_SECRETS_PASSPHRASE (0600)
+  .env                  # OPENROUTER_API_KEY, HA_TOKEN, OLLAMA_HOST, … (0600)
+  docker-compose.yml    # copied from the checkout each deploy
   satellites.yaml       # Pi inventory: name, host, port, area
   id_ed25519_satellites # SSH key trusted by every Pi (0600)
 ```
+
+No passphrase file: since #158 the secrets passphrase is generated and persisted in the
+`alfred_data` volume on first boot.
 
 The alfred deploy job runs `docker compose` from this directory against a compose file
 copied from the checkout, so the container's `env_file` and volumes are stable across
@@ -158,16 +162,20 @@ the container it replaces.
    public, so the default token suffices.
 2. **Set up Python** — `uv venv --python 3.13 && uv sync`. Worktrees and fresh checkouts
    default to system Python, which may be 3.14.
-3. **Record the current image** — `docker image inspect -f '{{.Id}}' alfred:latest`,
+3. **Preflight** — `uv run alfredctl doctor --offline` against `~/alfred-deploy/.env`.
+   Offline because a deploy must not fail on a transient outage of an external endpoint;
+   what is being checked is that the box's configuration is sane before spending minutes
+   on an image build.
+4. **Record the current image** — `docker image inspect -f '{{.Id}}' alfred:latest`,
    saved as the rollback target. On a first deploy there is no such image; the job
    records "none" and, if a later step fails, fails red without attempting a rollback
    rather than pretending one happened.
-4. **Build** — `uv run alfredctl build --tag alfred:latest`, then tag the same image
+5. **Build** — `uv run alfredctl build --tag alfred:latest`, then tag the same image
    `alfred:${{ github.sha }}` so history is addressable.
-5. **Start** — `docker compose up -d` from `~/alfred-deploy/`.
-6. **Verify** — `uv run alfredctl smoke --attach --name alfred`, which polls `/health`
+6. **Start** — `docker compose up -d` from `~/alfred-deploy/`.
+7. **Verify** — `uv run alfredctl smoke --attach --name alfred`, which polls `/health`
    then checks redis, RediSearch modules and mosquitto *inside the running container*.
-7. **Roll back on any failure of 5 or 6** — retag the recorded image id back to
+8. **Roll back on any failure of 6 or 7** — retag the recorded image id back to
    `alfred:latest`, `docker compose up -d`, re-run the smoke check, and fail the job red
    regardless of whether the rollback succeeded. A rollback that itself fails is louder,
    not quieter.
@@ -304,9 +312,10 @@ QA-backlog items (per the workspace convention, deleted once verified):
 
 ## 10 · Documentation
 
-- **New:** `docs/deployment.md` in `alfred` — runner installation runbook, what a deploy
-  does step by step, how to roll back by hand, how to rotate secrets, how to add a
-  satellite.
+- **Extended:** `docs/deployment.md` in `alfred` already covers manual deployment
+  (`doctor`, the two run mechanisms, host tuning, LAN access, troubleshooting). It gains
+  a CD section: runner installation runbook, what an automated deploy does step by step,
+  how to roll back by hand, how to rotate secrets, how to add a satellite.
 - **Updated:** workspace `CLAUDE.md` gains a CD section; `alfred/CLAUDE.md` and
   `home-service/CLAUDE.md` note that merges deploy.
 
@@ -314,7 +323,7 @@ QA-backlog items (per the workspace convention, deleted once verified):
 
 | Ticket | Why deferred |
 |---|---|
-| `docs/backlog/low/registry-publish-images.md` (**exists** on the containerization branch — extend to cover the CD path: build and push on a GitHub runner, pull a digest on the box) | Building on the runner works and needs no registry auth |
+| `docs/backlog/low/registry-publish-images.md` (**exists on `master`** — extend to cover the CD path: build and push on a GitHub runner, pull a digest on the box) | Building on the runner works and needs no registry auth |
 | `docs/backlog/medium/deploy-env-from-github-secrets.md` (**new**) — render `.env` from repo secrets instead of a hand-managed file | A pre-placed file is the smallest thing that works; rotation via SSH is tolerable for now |
 | `docs/backlog/medium/satellite-mdns-only-inventory.md` (**new**) — retire `satellites.yaml` once discovery is trusted | Discovery must prove itself against a known-good inventory first |
 
@@ -322,11 +331,14 @@ QA-backlog items (per the workspace convention, deleted once verified):
 
 | Phase | Deliverable | Depends on |
 |---|---|---|
-| 0 | `feat/containerization` merged to `master` | — |
-| 1 | Two runner services + `~/alfred-deploy/` on lath-server | 0 (nothing to deploy before it) |
-| 2 | `alfredctl smoke --name`, pinned `container_name`, gate fix, alfred deploy job | 0, 1 |
+| 1 | Two runner services + `~/alfred-deploy/` on lath-server (preflight first) | — |
+| 2 | `alfredctl smoke --name`, pinned `container_name`, gate fix, alfred deploy job | 1 |
 | 3 | home-service gate fix + dispatch job, PAT | 2 |
 | 4 | satellite CI, `deploy_satellites.py`, satellite deploy job | 1 |
-| 5 | `docs/deployment.md`, CLAUDE.md updates, backlog + QA-backlog tickets | 2–4 |
+| 5 | `docs/deployment.md` CD section, CLAUDE.md updates, backlog + QA-backlog tickets | 2–4 |
 
 Phases 2 and 4 are independent once Phase 1 lands and can proceed in parallel.
+
+Phase 2's `alfredctl smoke --name` and the pinned `container_name` are code changes to
+`alfred` and can be written and merged ahead of the runner existing — they are ordinary
+PRs, gated by ordinary CI. Only the deploy job itself needs the runner online.
