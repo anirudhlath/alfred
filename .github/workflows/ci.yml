@@ -135,7 +135,7 @@ jobs:
       ${{ always()
       && needs.gate.result == 'success'
       && ((github.event_name == 'push' && github.ref == 'refs/heads/master')
-          || github.event_name == 'repository_dispatch') }}
+      || github.event_name == 'repository_dispatch') }}
     runs-on: [self-hosted, linux, alfred-deploy]
     timeout-minutes: 60
     # Two deploys at once would race between building an image and starting the container
@@ -161,7 +161,12 @@ jobs:
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           python-version: "3.13"
-          enable-cache: true
+          # Self-hosted: the runner's HOME is the real user's ~/.cache/uv, already
+          # persistent across runs. enable-cache would run `uv cache prune --ci` against
+          # that cache every deploy and round-trip it to the GitHub Actions cache over
+          # WAN for no benefit, competing with the spa/voice-smoke jobs for the repo's
+          # 10GB quota.
+          enable-cache: false
       - name: Install alfredctl
         working-directory: alfred
         run: uv sync
@@ -176,12 +181,18 @@ jobs:
       - name: Record the running image for rollback
         id: rollback
         run: |
-          if id=$(docker image inspect -f '{{.Id}}' alfred:latest 2>/dev/null); then
+          # `alfred` is the pinned container_name (Phase 2a). `alfred-alfred-1` is the
+          # compose-default name the container had before that pin took effect — kept as
+          # a fallback purely so the first deploy under this workflow still finds a
+          # rollback target instead of treating it as a from-scratch deploy.
+          if id=$(docker inspect -f '{{.Image}}' alfred 2>/dev/null) \
+             || id=$(docker inspect -f '{{.Image}}' alfred-alfred-1 2>/dev/null); then
+            docker tag "$id" alfred:rollback
             echo "image=$id" >> "$GITHUB_OUTPUT"
             echo "rollback target: $id"
           else
             echo "image=none" >> "$GITHUB_OUTPUT"
-            echo "::notice::no existing alfred:latest — first deploy, nothing to roll back to"
+            echo "::notice::no running alfred container — first deploy, nothing to roll back to"
           fi
 
       - name: Build
@@ -197,8 +208,10 @@ jobs:
 
       - name: Start
         id: start
-        working-directory: /home/anirudhlath/code/alfred-deploy
-        run: docker compose up -d
+        working-directory: ${{ env.DEPLOY_DIR }}
+        run: |
+          docker compose up -d
+          echo "started=1" >> "$GITHUB_OUTPUT"
 
       # Polls /health, then checks redis, the RediSearch modules and mosquitto INSIDE the
       # running container. `--name alfred` matches the pinned container_name.
@@ -207,12 +220,23 @@ jobs:
         working-directory: alfred
         run: uv run alfredctl smoke --attach --name alfred
 
-      # A rollback that itself fails is louder, not quieter: this exits non-zero either way.
+      # `always()` replaces `failure()` here: `failure()` is false when the job is
+      # cancelled or hits `timeout-minutes`, so a cancel mid-Verify would leave alfred
+      # running an unverified image with rollback silently skipped. Gating on the
+      # `started` output (not `steps.start.outcome`/`steps.verify.outcome`) is deliberate
+      # too — a step's `outcome` is not reliably `'skipped'` for a step that never ran, so
+      # the explicit marker is the only safe signal that Start actually replaced the
+      # running container. `set +e` in the script below keeps every diagnostic path
+      # reachable even if `docker tag` or the rollback's `docker compose up -d` itself
+      # fails — otherwise bash's default `-e` would abort mid-script and the final
+      # "rollback did not verify" error would never print. A rollback that itself fails
+      # is louder, not quieter: the script exits non-zero either way.
       - name: Roll back
-        if: failure() && (steps.start.outcome == 'failure' || steps.verify.outcome == 'failure')
+        if: always() && steps.start.outputs.started == '1' && steps.verify.outcome != 'success'
         env:
           TARGET: ${{ steps.rollback.outputs.image }}
         run: |
+          set +e
           if [ "$TARGET" = "none" ]; then
             echo "::error::deploy failed and there is no previous image to restore"
             exit 1
@@ -228,3 +252,31 @@ jobs:
             echo "::error::deploy failed AND the rollback to $TARGET did not verify — alfred may be down"
           fi
           exit 1
+
+      # Keeps disk growth bounded. Every `Build` step above pins a new `alfred:<sha>` tag
+      # forever with nothing to prune it otherwise — measured on this box, `alfred:latest`
+      # alone is ~8.8GB unique, images + build cache already reclaim 200GB+, and
+      # /var/lib/docker shares the LUKS btrfs root with Home Assistant, vLLM and
+      # ~/models. Runs even when the deploy failed so a bad run doesn't also leak disk.
+      # `latest` and `rollback` never match the 40-hex-char SHA pattern below, so they
+      # are excluded by construction, not by name-listing. Pruning a tag whose image
+      # backs the running container only removes the *tag*, not the image, so this
+      # cannot affect the live deployment.
+      - name: Prune old deploy images
+        if: always()
+        run: |
+          set +e
+          stale=$(docker images alfred --format '{{.CreatedAt}}|{{.Tag}}' \
+            | grep -E '\|[0-9a-f]{40}$' \
+            | sort -r \
+            | tail -n +6 \
+            | cut -d'|' -f2)
+          if [ -n "$stale" ]; then
+            echo "removing stale deploy image tags:"
+            echo "$stale"
+            echo "$stale" | xargs -I{} docker rmi "alfred:{}"
+          else
+            echo "no stale deploy image tags eligible for removal"
+          fi
+          docker builder prune --filter until=168h -f
+          exit 0
