@@ -210,8 +210,13 @@ jobs:
         id: start
         working-directory: ${{ env.DEPLOY_DIR }}
         run: |
-          docker compose up -d
+          # Written BEFORE the command, not after: `docker compose up -d` stops and renames
+          # the running container before it creates the replacement, so a failure part-way
+          # through leaves alfred down. The marker must mean "we were about to replace the
+          # container", not "we succeeded" — otherwise the rollback below cannot fire for
+          # the very failure it exists to catch.
           echo "started=1" >> "$GITHUB_OUTPUT"
+          docker compose up -d
 
       # Polls /health, then checks redis, the RediSearch modules and mosquitto INSIDE the
       # running container. `--name alfred` matches the pinned container_name.
@@ -278,5 +283,9 @@ jobs:
           else
             echo "no stale deploy image tags eligible for removal"
           fi
-          docker builder prune --filter until=168h -f
+          # `docker builder prune` is global, not alfred-scoped — it also evicts build
+          # cache belonging to the other projects on this box (usher, usher-web,
+          # ha-home-panel, comfyui). 14 days is the gentler setting; 7 was costing them
+          # occasional cold rebuilds.
+          docker builder prune --filter until=336h -f
           exit 0
