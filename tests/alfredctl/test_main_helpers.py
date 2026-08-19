@@ -151,3 +151,32 @@ def test_smoke_exits_nonzero_when_checks_fail(monkeypatch: pytest.MonkeyPatch) -
 
     assert exc_info.value.exit_code == 1
     assert down_calls == [Runtime("docker", "docker").name]
+
+
+def _capture_smoke_name(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """Run main.smoke with every side effect stubbed; capture the container it targets."""
+    seen: dict[str, str] = {}
+
+    def _fake_run_checks(
+        exe: str, name: str, base_url: str, timeout: float = 300.0, *, deep: bool = False
+    ) -> list[smoke_mod.SmokeCheck]:
+        seen["name"] = name
+        return [smoke_mod.SmokeCheck("health", True, "GET /health → 200")]
+
+    monkeypatch.setattr(main.rt, "detect", lambda runtime: Runtime("docker", "docker"))
+    monkeypatch.setattr(main, "_resolve_url", lambda r, plan: "http://localhost:8081")
+    monkeypatch.setattr(main.smoke_mod, "run_checks", _fake_run_checks)
+    return seen
+
+
+def test_smoke_name_option_targets_that_container(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _capture_smoke_name(monkeypatch)
+    main.smoke(attach=True, name="alfred")
+    assert seen["name"] == "alfred"
+
+
+def test_smoke_without_name_keeps_branch_container(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _capture_smoke_name(monkeypatch)
+    monkeypatch.setattr(main.rt, "container_name", lambda: "alfred-somebranch")
+    main.smoke(attach=True)
+    assert seen["name"] == "alfred-somebranch"

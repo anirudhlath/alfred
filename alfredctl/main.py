@@ -249,6 +249,10 @@ def smoke(
     attach: Annotated[
         bool, typer.Option("--attach", help="Check the already-running container")
     ] = False,
+    name: Annotated[
+        str | None,
+        typer.Option("--name", help="Container to check (default: alfred-<branch>)"),
+    ] = None,
     hf_cache: Annotated[
         Path | None, typer.Option(help="Existing HF cache to mount at /models/hf")
     ] = None,
@@ -267,7 +271,7 @@ def smoke(
     plan = launch.LaunchPlan(
         run_args=[],
         url_hint="resolve-ip" if r.name == "container" else "http://localhost:8081",
-        name=rt.container_name(),
+        name=name or rt.container_name(),
         image=rt.image_tag(),
     )
     base_url = _resolve_url(r, plan)
