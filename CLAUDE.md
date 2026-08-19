@@ -123,6 +123,14 @@ cd web && npm run lint && npm run test && npm run build   # build emits web/dist
 - Never emit `[skip ci]`/`[no ci]` on PR branches.
 - CI gate is the single `ci-ok` aggregate check (python, web, spa, pr-title,
   artifact-guard). See `docs/superpowers/specs/2026-07-18-branching-strategy-design.md`.
+- **Merging to `master` deploys.** The `deploy to lath-server` job on the self-hosted
+  `alfred-deploy` runner rebuilds the fat image on lath-server, restarts the stack from
+  `~/code/alfred-deploy/`, smoke-checks it, and rolls back automatically on failure. See
+  "Continuous deployment" in `docs/deployment.md`. A merge to `alfred-home-service` will
+  trigger the same deploy via `repository_dispatch` once its dispatch job merges.
+- The aggregate job's **id** is `gate` and its **display name** is `ci-ok`. Keep it that
+  way: `needs.ci-ok.result` never evaluates (a hyphen parses as subtraction in a GitHub
+  expression path), and the required-check setting matches the display name.
 - GitHub-dispatched agents exist: commenting `@claude <task>` on an issue/PR (write-access
   users only) runs an agent via Actions; every human PR gets an automatic Claude review
   (once the Claude GitHub App + OAuth token are configured).
@@ -289,3 +297,13 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - The cryptfile keyring is shared by all 9 processes and `CryptFileKeyring` read-modify-writes the whole `.cfg` per call, so concurrent writes used to interleave into duplicate `[alfred]` sections — fatal, because the backend is built at *import* time (took production down 2026-07-27). `shared/secrets.py` now wraps every get/set/delete in `_keyring_lock()` (re-entrant, always-exclusive `flock`; re-entrancy is REQUIRED because the backend nests `_init_file`→`set_password` and `_unlock`→`get_password`), and `repair_keyring_file()` self-heals an already-corrupt file at startup by merging duplicates (later write wins). Never construct `CryptFileKeyring` directly — go through `configure_backend()`
 - Apple `container`'s `inspect`/`network inspect` JSON nests fields under a `status` key, not top-level — `networks[].ipv4Address` and `ipv4Subnet` live at `entry["status"]["networks"][0]["ipv4Address"]` / `entry["status"]["ipv4Subnet"]` (see `alfredctl/runtime.py`, `alfredctl/main.py`)
 - Mosquitto's config is generated at runtime, not shipped as a static file — `runner/__main__.py:_write_mosquitto_conf()` writes `data_path("mosquitto")/mosquitto.conf` with `persistence` set from `ALFRED_DATA_MODE` (`infra/mosquitto.conf` was deleted as dead — the old compose file was its only consumer)
+- `docker-compose.yml` pins `name: alfred` — do NOT remove it. CD runs `docker compose up -d`
+  from `~/code/alfred-deploy/`, and without the pin compose derives the project name
+  `alfred-deploy` from that directory, creating empty volumes (losing the secrets
+  passphrase persisted in `alfred_data`) while the old container keeps holding `:8081`.
+  `container_name: alfred` is pinned for the same deploy, so
+  `alfredctl smoke --attach --name alfred` can find the running container. The deploy job
+  also overwrites `~/code/alfred-deploy/docker-compose.yml` from the checkout on every run
+  — local additions there (e.g. uncommenting the `1883:1883` port) belong in a
+  `docker-compose.override.yml` next to it, which Compose merges automatically and CD never
+  touches.
