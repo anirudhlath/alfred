@@ -22,7 +22,7 @@ jobs:
         if: env.HAS_OAUTH == 'true'
         with:
           fetch-depth: 1
-      - uses: anthropics/claude-code-action@3553f84341b92da26052e28acf1aa898f9511f32 # v1
+      - uses: anthropics/claude-code-action@9d7150bc8a3dae8149739a88019d192b579ad90c # v1
         if: env.HAS_OAUTH == 'true'
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
