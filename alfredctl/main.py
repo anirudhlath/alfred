@@ -74,10 +74,14 @@ def doctor(
     online: Annotated[
         bool, typer.Option("--online/--offline", help="Live-probe external endpoints")
     ] = True,
+    env_file: Annotated[
+        Path | None,
+        typer.Option("--env-file", help="The .env to validate (default: <repo>/.env)"),
+    ] = None,
 ) -> None:
     """Validate .env and prerequisites before starting the stack (config preflight)."""
-    env_file = staging.repo_root() / ".env"
-    failed = _render_doctor(doctor_mod.run_checks(env_file, online=online))
+    target = env_file or staging.repo_root() / ".env"
+    failed = _render_doctor(doctor_mod.run_checks(target, online=online))
     if failed:
         console.print("[red]Preflight failed — fix the ✗ rows above, then re-run.[/red]")
         raise typer.Exit(code=1)
@@ -249,6 +253,12 @@ def smoke(
     attach: Annotated[
         bool, typer.Option("--attach", help="Check the already-running container")
     ] = False,
+    name: Annotated[
+        str | None,
+        typer.Option(
+            "--name", help="Container to check, requires --attach (default: alfred-<branch>)"
+        ),
+    ] = None,
     hf_cache: Annotated[
         Path | None, typer.Option(help="Existing HF cache to mount at /models/hf")
     ] = None,
@@ -261,13 +271,17 @@ def smoke(
     ] = False,
 ) -> None:
     """Boot (seed mode) + verify the containerized stack, then tear it down."""
+    if name and not attach:
+        raise typer.BadParameter(
+            "--name only applies with --attach; smoke starts its own container otherwise"
+        )
     r = rt.detect(runtime)
     if not attach:
         up(runtime=r.name, mode="seed", hf_cache=hf_cache)
     plan = launch.LaunchPlan(
         run_args=[],
         url_hint="resolve-ip" if r.name == "container" else "http://localhost:8081",
-        name=rt.container_name(),
+        name=name or rt.container_name(),
         image=rt.image_tag(),
     )
     base_url = _resolve_url(r, plan)

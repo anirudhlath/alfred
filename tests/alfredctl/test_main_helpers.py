@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import pytest
 import typer
 
+from alfredctl import doctor as doctor_mod
 from alfredctl import main
 from alfredctl import runtime as rt
 from alfredctl import smoke as smoke_mod
@@ -151,3 +152,70 @@ def test_smoke_exits_nonzero_when_checks_fail(monkeypatch: pytest.MonkeyPatch) -
 
     assert exc_info.value.exit_code == 1
     assert down_calls == [Runtime("docker", "docker").name]
+
+
+def _capture_smoke_name(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """Run main.smoke with every side effect stubbed; capture the container it targets."""
+    seen: dict[str, str] = {}
+
+    def _fake_run_checks(
+        exe: str, name: str, base_url: str, timeout: float = 300.0, *, deep: bool = False
+    ) -> list[smoke_mod.SmokeCheck]:
+        seen["name"] = name
+        return [smoke_mod.SmokeCheck("health", True, "GET /health → 200")]
+
+    _stub_smoke_deps(monkeypatch, [])
+    monkeypatch.setattr(main, "_resolve_url", lambda r, plan: "http://localhost:8081")
+    monkeypatch.setattr(main.smoke_mod, "run_checks", _fake_run_checks)
+    return seen
+
+
+def test_smoke_name_option_targets_that_container(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _capture_smoke_name(monkeypatch)
+    main.smoke(attach=True, name="alfred")
+    assert seen["name"] == "alfred"
+
+
+def test_smoke_without_name_keeps_branch_container(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _capture_smoke_name(monkeypatch)
+    monkeypatch.setattr(main.rt, "container_name", lambda: "alfred-somebranch")
+    main.smoke(attach=True)
+    assert seen["name"] == "alfred-somebranch"
+
+
+def test_smoke_name_without_attach_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--name only makes sense against an already-running container; without --attach,
+    smoke boots its own (branch-named) container, so a --name override would silently
+    check a container that was never started. Nothing in main.rt/up/down is stubbed
+    here — the guard must fire before any of that runs."""
+    with pytest.raises(typer.BadParameter):
+        main.smoke(attach=False, name="alfred")
+
+
+def _capture_doctor_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
+    """Run main.doctor with the real checks stubbed; capture the .env path it validates."""
+    seen: dict[str, Path] = {}
+
+    def _fake_run_checks(env_file: Path, *, online: bool = True) -> list[doctor_mod.DoctorCheck]:
+        seen["env_file"] = env_file
+        return [doctor_mod.DoctorCheck(".env", "pass", str(env_file))]
+
+    monkeypatch.setattr(main.doctor_mod, "run_checks", _fake_run_checks)
+    return seen
+
+
+def test_doctor_env_file_option_overrides_repo_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    seen = _capture_doctor_env(monkeypatch)
+    main.doctor(online=False, env_file=tmp_path / "deploy.env")
+    assert seen["env_file"] == tmp_path / "deploy.env"
+
+
+def test_doctor_without_env_file_uses_repo_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    seen = _capture_doctor_env(monkeypatch)
+    monkeypatch.setattr(main.staging, "repo_root", lambda: tmp_path)
+    main.doctor(online=False)
+    assert seen["env_file"] == tmp_path / ".env"
