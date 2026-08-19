@@ -100,7 +100,11 @@ jobs:
           fi
           exit $fail
 
-  ci-ok:
+  # Job id `gate`, display name `ci-ok`. The id is what `needs.` expressions below refer
+  # to, and `needs.ci-ok.result` would parse as a subtraction — hyphens are not legal in a
+  # property path. The required-check setting matches the NAME, so it is unaffected.
+  gate:
+    name: ci-ok
     if: always()
     needs: [python, web, spa, pr-title, artifact-guard]
     runs-on: ubuntu-latest
