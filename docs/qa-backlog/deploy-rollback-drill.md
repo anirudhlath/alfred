@@ -3,6 +3,10 @@
 **Feature:** Continuous deployment (Phase 2, `ci.yml` `deploy` job)
 **Priority:** high
 **Type:** functional / failure-mode
+**Status:** pending — this is about alfred's container rollback specifically. The
+satellite fleet's independent rollback mechanism has already been exercised for real and
+passed; see `docs/qa-backlog/satellite-rollback-exercised.md`. That is not evidence for
+this drill — the two are separate implementations on separate runners.
 
 ## Prerequisites
 - `first-live-deploy-lath-server.md` has passed, so a known-good `alfred` is running.
