@@ -10,7 +10,9 @@ Pass ``--debug`` to enable verbose LiteLLM logging.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
+import pwd
 import shutil
 import sys
 from pathlib import Path
@@ -19,6 +21,8 @@ from runner.supervisor import ServiceSpec, Supervisor
 from shared.config import AlfredConfig, data_mode, data_path, data_root
 from shared.logging import configure_logging
 from shared.otel import init_tracing
+
+logger = logging.getLogger(__name__)
 
 # Env vars pointing at host services — localhost inside a container means the container
 # itself, not the host. Rewrite to the container→host gateway so `docker compose up` with
@@ -164,7 +168,29 @@ def _write_mosquitto_conf() -> Path:
         f"persistence_location {conf.parent}/\n"
         "log_dest stdout\n"
     )
+    _grant_broker_ownership(conf.parent)
     return conf
+
+
+def _grant_broker_ownership(persistence_dir: Path) -> None:
+    """Hand the persistence dir to the ``mosquitto`` user.
+
+    Started as root, mosquitto drops privileges to ``mosquitto`` — but the runner
+    creates this directory as root, so the broker cannot create ``mosquitto.db``
+    inside it and every autosave fails with EACCES. No-op when the runner is
+    already unprivileged (native dev) or the user does not exist.
+    """
+    if os.geteuid() != 0:
+        return
+    try:
+        broker = pwd.getpwnam("mosquitto")
+    except KeyError:
+        logger.debug("No 'mosquitto' user — leaving %s owned by root", persistence_dir)
+        return
+    try:
+        os.chown(persistence_dir, broker.pw_uid, broker.pw_gid)
+    except OSError:
+        logger.warning("Could not chown %s — MQTT persistence may fail", persistence_dir)
 
 
 def main() -> None:
