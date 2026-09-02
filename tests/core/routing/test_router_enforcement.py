@@ -140,3 +140,34 @@ async def test_no_redis_skips_enforcement() -> None:
     router.register("home-service", agent)
     result = await router.route(_action("reflex-engine", "home.unlock_door"))
     assert result.status == "success"
+
+
+@pytest.mark.asyncio
+async def test_reflex_unregistered_tool_rejected() -> None:
+    """A tool absent from the registry has unknown risk — reflex must not execute it.
+
+    Regression: the Reflex SLM emitted `home.light_turn_on`, a name absent from the
+    manifest. Unknown risk read as benign, so the autonomy gate passed it through and
+    the house acted on an unconfirmed, unregistered action.
+    """
+    router, agent, redis, notifier = _router()
+    result = await router.route(_action("reflex-engine", "home.light_turn_on"))
+
+    assert result.status == "error"
+    assert result.error is not None and result.error.startswith("autonomy_violation")
+    assert agent.calls == []
+    notifier.publish.assert_not_awaited()
+    streams = [call.args[0] for call in redis.xadd.await_args_list]
+    assert "alfred:reflex:observations" in streams
+
+
+@pytest.mark.asyncio
+async def test_conscious_unregistered_tool_still_dispatches() -> None:
+    """Fail-closed applies to reflex autonomy only — System 2 keeps full action rights."""
+    router, agent, redis, notifier = _router()
+    result = await router.route(_action("conscious-engine", "home.light_turn_on"))
+
+    assert result.status == "success"
+    assert len(agent.calls) == 1
+    redis.set.assert_not_called()
+    notifier.publish.assert_not_awaited()

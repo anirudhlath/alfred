@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import signal
+import time
 from typing import TYPE_CHECKING
 
 from bus.schemas.events import TriggerFired
@@ -22,7 +23,12 @@ from core.reflex import inference
 from core.reflex.attention import AttentionSet
 from core.reflex.context_reader import ContextReader
 from core.reflex.engine import ReflexEngine, build_notification_body
-from core.reflex.runner import ensure_consumer_group, process_stream_entry, publish_observation
+from core.reflex.runner import (
+    ensure_consumer_group,
+    process_stream_entry,
+    publish_observation,
+    reclaim_replayable,
+)
 from core.reflex.tool_registry import ToolRegistry
 from core.routing.domain_router import DomainRouter
 from core.warmup import start_warmup
@@ -50,6 +56,8 @@ logger = logging.getLogger(__name__)
 STREAM = HOME_STATE_STREAM
 GROUP = "reflex-engine"
 CONSUMER = "worker-1"
+# One PEL recovery pass per minute at the loop's 5s block.
+_PEL_RECLAIM_EVERY = 12
 RESULT_STREAM = HOME_ACTION_RESULTS_STREAM
 
 _shutdown = asyncio.Event()
@@ -57,6 +65,8 @@ _shutdown = asyncio.Event()
 
 EVENTS_GROUP = "reflex-trigger-fired"
 EVENTS_CONSUMER = "worker-1"
+# One PEL recovery pass per minute at the loop's 5s block.
+_PEL_RECLAIM_EVERY = 12
 
 
 def _handle_signal() -> None:
@@ -216,28 +226,40 @@ async def run(config: AlfredConfig) -> None:
 
     logger.info("Reflex Runner started. Listening on stream '%s'...", STREAM)
 
+    pel_counter = 0
     try:
         while not _shutdown.is_set():
             entries = await read_group(r, GROUP, CONSUMER, {STREAM: ">"}, count=10, block=5000)
+            batch = [pair for _stream_key, stream_entries in entries for pair in stream_entries]
 
-            for _stream_key, stream_entries in entries:
-                for entry_id, entry_data in stream_entries:
-                    try:
-                        await process_stream_entry(
-                            entry_data=entry_data,
-                            engine=engine,
-                            agent=router,
-                            redis=r,
-                            result_stream=RESULT_STREAM,
-                            observation_stream=REFLEX_OBSERVATIONS_STREAM,
-                            attention=attention,
-                        )
-                        # ACK only on success — retriable errors (Ollama down)
-                        # propagate as exceptions and the message stays pending
-                        # for redelivery on next XREADGROUP cycle.
-                        await r.xack(STREAM, GROUP, entry_id)
-                    except Exception as e:
-                        logger.error("Error processing entry %s: %s — will retry", entry_id, e)
+            # XREADGROUP '>' only ever delivers NEW messages, so an entry left
+            # un-ACKed by a failed cycle is never redelivered on its own — without
+            # this it is dropped silently and the PEL grows without bound.
+            pel_counter += 1
+            if pel_counter >= _PEL_RECLAIM_EVERY:
+                pel_counter = 0
+                batch.extend(
+                    await reclaim_replayable(
+                        r, STREAM, GROUP, CONSUMER, now_ms=int(time.time() * 1000)
+                    )
+                )
+
+            for entry_id, entry_data in batch:
+                try:
+                    await process_stream_entry(
+                        entry_data=entry_data,
+                        engine=engine,
+                        agent=router,
+                        redis=r,
+                        result_stream=RESULT_STREAM,
+                        observation_stream=REFLEX_OBSERVATIONS_STREAM,
+                        attention=attention,
+                    )
+                    # ACK only on success — retriable errors (Ollama down) leave the
+                    # entry pending for the reclaim pass above to pick back up.
+                    await r.xack(STREAM, GROUP, entry_id)
+                except Exception as e:
+                    logger.error("Error processing entry %s: %s — will retry", entry_id, e)
     finally:
         logger.info("Shutting down Reflex Runner...")
         warmup_task.cancel()

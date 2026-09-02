@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 import redis.asyncio as aioredis
+from loguru import logger
 
 if TYPE_CHECKING:
     from shared.types import AioRedis
@@ -76,5 +77,38 @@ async def revrange(
     entries: list[tuple[bytes | str, dict[bytes | str, bytes | str]]]
     entries = await redis.xrevrange(  # type: ignore[assignment,misc,unused-ignore]
         stream, count=count
+    )
+    return entries
+
+
+async def reclaim_stale(
+    redis: AioRedis,
+    stream: str,
+    group: str,
+    consumer: str,
+    *,
+    min_idle_ms: int = 60_000,
+    count: int = 10,
+) -> list[tuple[bytes | str, dict[bytes | str, bytes | str]]]:
+    """Typed ``XAUTOCLAIM`` — reclaim messages a consumer read but never ACKed.
+
+    ``XREADGROUP`` with ``>`` only ever delivers messages the group has never seen,
+    so an un-ACKed entry is NOT redelivered — it sits in the pending-entries list
+    until something explicitly claims it. Every consumer loop that ACKs on success
+    only needs to call this periodically or it silently drops failed work and grows
+    an unbounded PEL.
+
+    Returns the claimed entries, or ``[]`` when nothing is stale (or the server is
+    too old for XAUTOCLAIM — degrade rather than kill the caller's loop).
+    """
+    try:
+        claimed: Any = await redis.xautoclaim(  # type: ignore[misc,unused-ignore]
+            stream, group, consumer, min_idle_time=min_idle_ms, start_id="0-0", count=count
+        )
+    except Exception as exc:
+        logger.warning("XAUTOCLAIM unavailable on '{}' ({}) — skipping PEL recovery", stream, exc)
+        return []
+    entries: list[tuple[bytes | str, dict[bytes | str, bytes | str]]] = (
+        claimed[1] if claimed and len(claimed) > 1 and claimed[1] else []
     )
     return entries

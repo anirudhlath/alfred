@@ -95,8 +95,9 @@ runtime honors ignore files at all.
 `.dockerignore` at the repo root is a **secondary, defense-in-depth** exclusion list —
 it only takes effect if someone runs `docker build` directly against an unstaged repo
 checkout (bypassing `alfredctl`). It mirrors the same personal-data patterns
-(`core/memory/preferences/*` / `core/memory/profile/*`, keeping the `.example` template
-subdirectories) so that path is safe too.
+(`core/memory/preferences/*` / `core/memory/profile/*` / `core/memory/routines/*.yaml`) so
+that path is safe too. Nothing under those paths is tracked, so an image never carries
+memory content of any kind.
 
 `container-build.yml` CI builds the image on both `amd64` and `arm64` via this same
 staged-context path and asserts `bus`/`core.reflex`/`runner`/`alfred_sdk`/`app.server`
@@ -111,10 +112,12 @@ Mosquitto config) resolves through `shared.config.data_root()` / `data_path()`:
 - **`ALFRED_DATA_DIR`** — root for all runtime-writable state. Container default `/data`;
   native default `./data`.
 
-Package-shipped preference/profile/routine files under `core/memory/` are read-only
-templates; `core.memory.paths.seed_defaults()` copies them into the data dir on first
-boot only (never overwrites an existing file — see `core/memory/paths.py` for the
-two-pass real-file-then-`.example` promotion order).
+`core.memory.paths.seed_defaults()` copies any preference/profile/routine files found
+under `core/memory/` into the data dir on first boot only (never overwriting an existing
+file — see `core/memory/paths.py` for the two-pass real-file-then-`.example` promotion
+order). **The repo ships none**: those paths are gitignored and empty in a fresh clone,
+so a production instance starts with genuinely empty memory. The mechanism exists for a
+developer's own local, untracked fixtures.
 
 **`ALFRED_DATA_MODE`** (`persistent` | `ephemeral` | `seed`) is a pure env switch read by
 `shared.config.data_mode()`; `alfredctl up --mode` sets it and wires the matching volume

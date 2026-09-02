@@ -28,11 +28,12 @@ core/memory/triggers/
 # Runtime state (ALFRED_DATA_DIR) — consolidated scratchpad/routines/preferences/secrets/dbs
 /data/
 
-# Personal memory files — only examples are tracked
+# Personal memory files — NOTHING here is tracked. Seeding a shipped preference or
+# routine into a real house makes a fixture indistinguishable from something the
+# user actually said; core/memory/tests enforce that the package stays empty.
 core/memory/preferences/*
-!core/memory/preferences/.example/
 core/memory/profile/*
-!core/memory/profile/.example/
+core/memory/routines/*.yaml
 
 # Claude Code local settings
 .claude/settings.local.json
