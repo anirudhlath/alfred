@@ -12,7 +12,7 @@ import logging
 from typing import Any
 
 from core.memory.paths import scratchpad_path as _scratchpad_path
-from shared.streams import SCRATCHPAD_QUEUE
+from shared.streams import LIBRARIAN_QUEUE, SCRATCHPAD_QUEUE
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +27,12 @@ class ScratchpadWriter:
         redis: Any,
         queue_key: str = SCRATCHPAD_QUEUE,
         scratchpad_path: str | None = None,
+        librarian_queue: str = LIBRARIAN_QUEUE,
     ) -> None:
         self.redis = redis
         self.queue_key = queue_key
         self.scratchpad_path = scratchpad_path or str(_scratchpad_path())
+        self.librarian_queue = librarian_queue
 
     async def drain_once(self) -> int:
         """Drain pending entries from the Redis List to the scratchpad file.
@@ -59,6 +61,11 @@ class ScratchpadWriter:
         with open(self.scratchpad_path, "a") as f:
             for entry in entries:
                 f.write(f"\n{entry}")
+
+        # Hand the same entries to the Librarian. This writer polls every 5s and the
+        # Librarian consolidates hourly, so sharing one queue meant the writer always
+        # drained it first and consolidation saw an empty queue, forever.
+        await self.redis.rpush(self.librarian_queue, *entries)
 
         logger.info("Drained %d entries to scratchpad", len(entries))
         return len(entries)

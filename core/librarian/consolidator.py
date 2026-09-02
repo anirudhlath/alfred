@@ -24,7 +24,7 @@ from pydantic import BaseModel
 from core.memory.paths import preferences_dir as _preferences_dir
 from core.memory.paths import profile_dir as _profile_dir
 from core.memory.schemas import EpisodicEntry, RoutineSpec, RoutineStep, SignificanceScore
-from shared.streams import SCRATCHPAD_QUEUE
+from shared.streams import LIBRARIAN_QUEUE
 
 if TYPE_CHECKING:
     from core.memory.context_index import ContextIndexManager
@@ -164,7 +164,7 @@ class Librarian:
         self._routine_suggestion_cooldown_hours = routine_suggestion_cooldown_hours
         self._indexed_routine_content: dict[str, str] = {}
 
-    _PROCESSING_KEY = f"{SCRATCHPAD_QUEUE}:processing"
+    _PROCESSING_KEY = f"{LIBRARIAN_QUEUE}:processing"
 
     async def _drain_scratchpad(self) -> list[str]:
         """Atomically drain the scratchpad queue.
@@ -180,7 +180,7 @@ class Librarian:
         if not leftover:
             # Atomically move the queue to the processing key
             try:
-                await self._redis.rename(SCRATCHPAD_QUEUE, self._PROCESSING_KEY)
+                await self._redis.rename(LIBRARIAN_QUEUE, self._PROCESSING_KEY)
             except Exception:
                 # RENAME fails if the source key doesn't exist (empty queue)
                 return []

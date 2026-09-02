@@ -29,10 +29,32 @@ visibility). Tier 2: only attention-set members fire the Reflex SLM.
    prompt only from registry tools tagged `audience: "reflex"` (untagged
    tools default to `"conscious"`).
 2. **Dispatch layer:** `DomainRouter.route()` looks up the tool's risk
-   (`core/routing/risk.py: tool_risk()`, default `"benign"`). An
-   ActionRequest whose `source` starts with `"reflex"` targeting risk above
-   benign is rejected (`autonomy_violation:`), logged, and recorded as a
+   (`core/routing/risk.py: tool_risk()`). An ActionRequest whose `source`
+   starts with `"reflex"` targeting anything other than `"benign"` is
+   rejected (`autonomy_violation:`), logged, and recorded as a
    `ReflexObservation`.
+
+### The dispatch layer fails closed
+
+`tool_risk()` returns three kinds of answer:
+
+| Registry state | Risk | Reflex may execute |
+|---|---|---|
+| Tool declared with a `risk` field | that value | only if `benign` |
+| Tool declared, no `risk` field | `benign` | yes (legacy manifests predate risk tagging) |
+| Tool **not** declared, service absent, or manifest unparseable | `unknown` | no |
+
+The last row is the important one. The registry is the only evidence a tool
+exists at all, so a name it has never heard of gets no autonomy. This is not
+hypothetical: the Reflex SLM emitted `home.light_turn_on` — absent from
+`home-service`'s generated manifest — and while unknown risk read as
+`"benign"` the gate passed it straight through to a real house, unconfirmed,
+for weeks. Prompt-layer filtering (rule 1) cannot prevent this on its own,
+because a model is free to emit a tool name that was never in its prompt.
+
+Note the asymmetry: `"unknown"` blocks *reflex* only. System 2 keeps full
+action rights over undeclared tools, since an incomplete manifest must not
+stop the user from asking Alfred for something directly.
 
 ## Confirmation flow for critical actions
 

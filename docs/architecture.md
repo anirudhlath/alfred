@@ -453,11 +453,13 @@ YAML-defined routines (e.g., morning routine, bedtime routine) that encode learn
 
 **Scratchpad** (`core/memory/scratchpad.md`):
 
-Append-only log of runtime observations. Components push entries to `alfred:scratchpad:queue` via `LPUSH`. The `ScratchpadWriter` drains the queue every 5 seconds and appends to disk.
+Append-only log of runtime observations. Components push entries to `alfred:scratchpad:queue` via `LPUSH`. The `ScratchpadWriter` drains the queue every 5 seconds, appends to disk, and forwards the same entries to `alfred:librarian:queue` (`RPUSH`) for consolidation.
+
+The writer is the **only** consumer of `alfred:scratchpad:queue`. When the Librarian also drained it, the 5-second writer beat the hourly Librarian every time and consolidation always saw an empty queue — nothing a user said ever reached long-term memory. Give any new consumer its own fan-out queue rather than a second claim on this one.
 
 **Librarian** (`core/librarian/consolidator.py`):
 
-Nightly consolidation process. Drains the scratchpad via atomic `RENAME`, extracts episodic entries, archives to cold storage, and updates semantic profiles. Run via `python -m core.librarian`.
+Nightly consolidation process. Drains `alfred:librarian:queue` via atomic `RENAME` (to `alfred:librarian:queue:processing`, deleted only after episodic writes succeed, so a crash mid-cycle replays rather than loses), extracts episodic entries, archives to cold storage, and updates semantic profiles. Run via `python -m core.librarian`.
 
 ### 3.8 Conscious Engine (System 2)
 
@@ -687,7 +689,8 @@ All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `
 | `alfred:home:state_changed` | Stream | State change events from the home domain |
 | `alfred:home:action_results` | Stream | Action execution results |
 | `alfred:tool_registry` | Hash | Service name to tool manifest JSON |
-| `alfred:scratchpad:queue` | List | Pending scratchpad observations |
+| `alfred:scratchpad:queue` | List | Pending scratchpad observations (drained by `ScratchpadWriter` only) |
+| `alfred:librarian:queue` | List | Consolidation feed — writer fan-out, drained by the Librarian |
 | `alfred:context:{service}` | String (JSON) | Service entity context snapshot (TTL 600s) |
 | `alfred:triggers` | Hash | Trigger ID → JSON (Trigger Engine runtime store) |
 | `alfred:triggers:changed` | Pub/Sub | Cross-process `TriggerStore` coherence (saved/deleted/tz-changed) |

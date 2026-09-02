@@ -3,6 +3,10 @@
 EVENTS_STREAM = "alfred:events"
 ACTIONS_STREAM = "alfred:actions"
 SCRATCHPAD_QUEUE = "alfred:scratchpad:queue"
+# Consolidation feed. The ScratchpadWriter forwards here after appending to
+# scratchpad.md, so the Librarian has its own queue to drain instead of racing
+# the writer for SCRATCHPAD_QUEUE (which the writer always won).
+LIBRARIAN_QUEUE = "alfred:librarian:queue"
 TRIGGERS_KEY = "alfred:triggers"
 TOOL_REGISTRY_KEY = "alfred:tool_registry"
 CONTEXT_KEY_PREFIX = "alfred:context:"
