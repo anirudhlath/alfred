@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.reflex.runner import MAX_REPLAY_AGE_MS, is_replayable, reclaim_replayable
+from shared.redis_streams import MAX_REPLAY_AGE_MS, is_replayable, reclaim_replayable
 
 
 def test_a_fresh_entry_is_replayable() -> None:
@@ -59,4 +59,22 @@ async def test_reclaim_with_nothing_pending_is_a_noop() -> None:
     redis.xautoclaim.return_value = ["0-0", [], []]
 
     assert await reclaim_replayable(redis, "s", "g", "c", now_ms=1) == []
+    redis.xack.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_replay_window_is_configurable_per_consumer() -> None:
+    """Each engine picks its own window — a stale voice request and a stale state
+    change go stale on different timescales."""
+    now = 2_000_000
+    older_than_default = (f"{now - MAX_REPLAY_AGE_MS - 1}-0".encode(), {b"event": b"{}"})
+
+    redis = AsyncMock()
+    redis.xautoclaim.return_value = ["0-0", [older_than_default], []]
+
+    kept = await reclaim_replayable(
+        redis, "s", "g", "c", now_ms=now, max_age_ms=MAX_REPLAY_AGE_MS * 10
+    )
+
+    assert kept == [older_than_default]
     redis.xack.assert_not_awaited()
