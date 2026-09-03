@@ -163,11 +163,11 @@ async def reclaim_replayable(
         await redis.xack(stream, group, entry_id)
     if expired:
         logger.warning(
-            "Dropped %d stale pending entries on '%s' (older than %dms)",
+            "Dropped {} stale pending entries on '{}' (older than {}ms)",
             len(expired),
             stream,
             max_age_ms,
         )
     if replayable:
-        logger.info("Reclaimed %d pending entries on '%s'", len(replayable), stream)
+        logger.info("Reclaimed {} pending entries on '{}'", len(replayable), stream)
     return replayable
