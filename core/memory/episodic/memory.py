@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from core.memory.vector_store import VectorStore
 
 from core.memory.schemas import EpisodicEntry, EpisodicResult, SignificanceScore
-from core.memory.vector_store import ContextMetadata, SearchResult
+from core.memory.vector_store import ContextMetadata, SearchResult, record_retrievals
 
 
 class EpisodicMemory:
@@ -108,22 +108,10 @@ class EpisodicMemory:
         merged.sort(key=lambda x: x[0].score, reverse=True)
         merged = merged[:limit]
 
-        # Persist retrieval stats for hot-store results (parallel writes)
+        # Persist retrieval stats for hot-store results (cold results have no hash
+        # to update). Shares one implementation with ContextIndexManager.
         if update_stats:
-            now_ts = datetime.now(UTC).timestamp()
-            update_coros = [
-                self._hot.update_metadata(
-                    sr.id,
-                    {
-                        "retrieval_count": sr.metadata.retrieval_count + 1,
-                        "last_retrieved": now_ts,
-                    },
-                )
-                for sr, store in merged
-                if store == "hot"
-            ]
-            if update_coros:
-                await asyncio.gather(*update_coros)
+            await record_retrievals(self._hot, [sr for sr, store in merged if store == "hot"])
 
         # Convert to EpisodicResult, increment retrieval_count
         episodic_results: list[EpisodicResult] = []

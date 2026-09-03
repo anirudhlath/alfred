@@ -267,36 +267,70 @@ class RedisVectorStore(VectorStore):
 # ------------------------------------------------------------------
 
 
-def _parse_ft_results(raw: object, min_similarity: float) -> list[SearchResult]:
-    """Parse the flat list returned by FT.SEARCH into SearchResult objects."""
+def _decoded(value: object) -> str:
+    """Bytes or str from Redis → str."""
+    return value.decode() if isinstance(value, bytes) else str(value)
+
+
+def _ft_documents(raw: object) -> list[tuple[str, dict[str, str]]]:
+    """Normalise an FT.SEARCH reply to (doc_key, fields) pairs.
+
+    The reply shape depends on the negotiated protocol, which redis-py picks —
+    RESP2 gives a flat array ``[total, key, [f, v, ...], ...]`` while RESP3 gives a
+    mapping ``{"results": [{"id": ..., "extra_attributes": {...}}, ...]}``. Handle
+    both: pinning one protocol would work until the next client upgrade silently
+    switched it back, and the failure mode here is empty results, not an error.
+    """
+    if isinstance(raw, dict):
+        decoded_top = {_decoded(k): v for k, v in raw.items()}
+        documents = decoded_top.get("results")
+        if not isinstance(documents, (list, tuple)):
+            return []
+        pairs: list[tuple[str, dict[str, str]]] = []
+        for document in documents:
+            if not isinstance(document, dict):
+                continue
+            entry = {_decoded(k): v for k, v in document.items()}
+            attributes = entry.get("extra_attributes")
+            if not isinstance(attributes, dict):
+                continue
+            pairs.append(
+                (
+                    _decoded(entry.get("id", "")),
+                    {_decoded(k): _decoded(v) for k, v in attributes.items()},
+                )
+            )
+        return pairs
+
     if not isinstance(raw, (list, tuple)) or len(raw) < 1:
         return []
 
     items = list(raw)
     # First element is the total count; then pairs of (key, [field, value, ...])
-    results: list[SearchResult] = []
+    pairs = []
     i = 1
     while i + 1 < len(items):
-        doc_key = items[i]
-        fields_raw = items[i + 1]
+        doc_key, fields_raw = items[i], items[i + 1]
         i += 2
-
         if not isinstance(fields_raw, (list, tuple)):
             continue
-
-        fields: dict[str, str] = {}
-        j = 0
         field_list = list(fields_raw)
-        while j + 1 < len(field_list):
-            fname = field_list[j]
-            fval = field_list[j + 1]
-            if isinstance(fname, bytes):
-                fname = fname.decode()
-            if isinstance(fval, bytes):
-                fval = fval.decode()
-            fields[str(fname)] = str(fval)
-            j += 2
+        pairs.append(
+            (
+                _decoded(doc_key),
+                {
+                    _decoded(field_list[j]): _decoded(field_list[j + 1])
+                    for j in range(0, len(field_list) - 1, 2)
+                },
+            )
+        )
+    return pairs
 
+
+def _parse_ft_results(raw: object, min_similarity: float) -> list[SearchResult]:
+    """Parse an FT.SEARCH reply (RESP2 or RESP3) into SearchResult objects."""
+    results: list[SearchResult] = []
+    for doc_key, fields in _ft_documents(raw):
         score_str = fields.get("__score", "1.0")
         try:
             # RediSearch cosine distance: 0 = identical, 2 = opposite.
@@ -309,9 +343,7 @@ def _parse_ft_results(raw: object, min_similarity: float) -> list[SearchResult]:
         if score < min_similarity:
             continue
 
-        doc_id = str(doc_key)
-        if isinstance(doc_key, bytes):
-            doc_id = doc_key.decode()
+        doc_id = doc_key
         # Strip the CONTEXT_PREFIX to get the bare id
         if doc_id.startswith(CONTEXT_PREFIX):
             doc_id = doc_id[len(CONTEXT_PREFIX) :]
@@ -340,17 +372,10 @@ def _parse_ft_results(raw: object, min_similarity: float) -> list[SearchResult]:
 
 
 def _parse_ft_info(raw: object) -> dict[str, object]:
-    """Parse the flat alternating key/value list from FT.INFO."""
+    """Parse an FT.INFO reply (RESP2 alternating list, or RESP3 mapping)."""
+    if isinstance(raw, dict):
+        return {_decoded(key): value for key, value in raw.items()}
     if not isinstance(raw, (list, tuple)):
         return {}
     items = list(raw)
-    result: dict[str, object] = {}
-    i = 0
-    while i + 1 < len(items):
-        key = items[i]
-        val = items[i + 1]
-        if isinstance(key, bytes):
-            key = key.decode()
-        result[str(key)] = val
-        i += 2
-    return result
+    return {_decoded(items[i]): items[i + 1] for i in range(0, len(items) - 1, 2)}

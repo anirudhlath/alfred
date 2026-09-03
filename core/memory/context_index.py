@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from core.memory.embedding_provider import EmbeddingProvider
     from core.memory.vector_store import VectorStore
 
-from core.memory.vector_store import ContextMetadata, SearchResult
+from core.memory.vector_store import ContextMetadata, SearchResult, record_retrievals
 
 
 class ContextIndexManager:
@@ -121,6 +121,8 @@ class ContextIndexManager:
         limit: int = 10,
         min_similarity: float = 0.0,
         include_compressed: bool = False,
+        *,
+        update_stats: bool = False,
     ) -> list[SearchResult]:
         """Search the unified context index by text query (embeds internally)."""
         query_embedding = await self._embedder.embed(query)
@@ -129,6 +131,7 @@ class ContextIndexManager:
             limit=limit,
             min_similarity=min_similarity,
             include_compressed=include_compressed,
+            update_stats=update_stats,
         )
 
     async def search(
@@ -137,22 +140,31 @@ class ContextIndexManager:
         limit: int = 10,
         min_similarity: float = 0.0,
         include_compressed: bool = False,
+        *,
+        update_stats: bool = False,
     ) -> list[SearchResult]:
         """Search the unified context index.
 
         By default compressed entries (compressed="yes") are excluded.
         Pass ``include_compressed=True`` for deliberate recall of compressed
         entries.
+
+        ``update_stats`` records the hits as retrieved. It defaults to False
+        because most callers here are not deliberate recall: the Librarian's decay
+        pass *reads* these stats, and involuntary context assembly runs every turn.
         """
         filters: dict[str, str | float | int] | None = None
         if not include_compressed:
             filters = {"compressed": ""}
-        return await self._store.search(
+        results = await self._store.search(
             query_embedding=query_embedding,
             limit=limit,
             filters=filters,
             min_similarity=min_similarity,
         )
+        if update_stats and results:
+            await record_retrievals(self._store, results)
+        return results
 
     async def remove(self, id: str) -> None:  # noqa: A002
         """Remove an entry from the index."""
