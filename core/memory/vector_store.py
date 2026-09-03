@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 
 class ContextMetadata(BaseModel):
@@ -70,3 +76,26 @@ class VectorStore(ABC):
     ) -> None:
         """Update specific metadata fields in-place (no re-embedding)."""
         ...
+
+
+async def record_retrievals(store: VectorStore, results: Iterable[SearchResult]) -> None:
+    """Mark search results as retrieved, bumping count and stamping the time.
+
+    The Librarian's decay pass reads both fields to let recalled memories resist
+    migration to cold storage, so only *deliberate* recall should call this — a
+    caller that reads these stats (decay) or that fires on every turn (involuntary
+    context assembly) would flatten the signal it depends on.
+    """
+    now_ts = datetime.now(UTC).timestamp()
+    updates = [
+        store.update_metadata(
+            result.id,
+            {
+                "retrieval_count": result.metadata.retrieval_count + 1,
+                "last_retrieved": now_ts,
+            },
+        )
+        for result in results
+    ]
+    if updates:
+        await asyncio.gather(*updates)

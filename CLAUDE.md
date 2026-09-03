@@ -242,6 +242,7 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - Worktrees default to system Python (may be 3.14) — always run `uv venv --python 3.13` in new worktrees
 - Redis Stack (not vanilla redis) required for dev — `uv run alfredctl up` bundles it in the container; native dev installs it yourself via `brew install redis-stack`
 - RediSearch `FT.SEARCH RETURN N` — N must EXACTLY match the number of field names that follow; mismatch silently drops fields
+- **RediSearch replies change shape with the negotiated protocol.** redis-py 8 uses RESP3, where `FT.SEARCH` returns `{"results": [{"id", "extra_attributes"}], "total_results"}` and `FT.INFO` returns a mapping — not RESP2's flat arrays. `_parse_ft_results`/`_parse_ft_info` normalise both via `_ft_documents`; never add an `isinstance(raw, list)` guard. This shipped broken: the RESP2-only guard made every semantic recall return `[]` and `count()` return 0, with no exception and no log line — Redis was matching and scoring correctly the whole time
 - sqlite-vec `vec0` cosine distance: 0=identical, ≥1=orthogonal — convert to similarity via `1 - distance`
 - `ContextIndexManager.search_text()` embeds query internally — callers should NOT hold an EmbeddingProvider separately
 - Memory tools are INTERNAL to Conscious Engine — dispatched in-process like integration/trigger tools, NOT via BaseFeature/SDK/ToolRegistry
@@ -255,7 +256,7 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - `require_trusted_network` (`core/channels/web_server.py`) trusts loopback + private LAN (RFC1918) + Tailscale CGNAT by default — the sane self-hosted default so localhost/Docker/LAN all work. `ALFRED_TRUSTED_NETWORKS_STRICT=1` drops the RFC1918 defaults (loopback + Tailscale + explicit `ALFRED_TRUSTED_NETWORKS` only). 403s name the rejected IP
 - `_group_by_entity_date()` is a module-level function in `consolidator.py` — used by `_apply_decay()` for compression grouping
 - Decay formula is subtractive: `age_factor - significance*2 - recency*1.5 - frequency*1.0` — high values RESIST migration (negative pressure = stays in hot)
-- `EpisodicMemory.recall()` persists retrieval stats to hot store — each recall triggers HSET on Redis (retrieval_count + last_retrieved)
+- Retrieval stats (`retrieval_count`/`last_retrieved`) are written by `record_retrievals()` (`core/memory/vector_store.py`), shared by `EpisodicMemory.recall(update_stats=True)` and `ContextIndexManager.search(update_stats=True)`. Each recall triggers an HSET. `ContextIndexManager` defaults to **False** on purpose: the Librarian's decay pass *reads* these fields, and involuntary context assembly runs every turn — only deliberate recall (`memory_recall_memories`) opts in, or the signal decay depends on gets flattened
 - Routines are indexed in `idx:context` on detection and removed on archive — search via `type="routine"` filter
 - Proactive routine suggestions run every 15 minutes in the conscious process background loop
 - Compression at cold migration groups by entity+date — summary goes to cold, originals marked `compressed="yes"`

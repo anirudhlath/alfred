@@ -91,6 +91,7 @@ async def _recall_memories(
         query=query,
         limit=limit,
         include_compressed=True,  # Deliberate recall includes compressed
+        update_stats=True,  # Deliberate recall counts as using the memory
     )
 
     # Filter by type if specified
