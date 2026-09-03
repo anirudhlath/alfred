@@ -112,3 +112,62 @@ async def reclaim_stale(
         claimed[1] if claimed and len(claimed) > 1 and claimed[1] else []
     )
     return entries
+
+
+# A reclaimed entry is only worth acting on while it still describes the present.
+MAX_REPLAY_AGE_MS = 300_000  # 5 minutes
+
+
+def is_replayable(
+    entry_id: bytes | str, *, now_ms: int, max_age_ms: int = MAX_REPLAY_AGE_MS
+) -> bool:
+    """Is this reclaimed stream entry recent enough to still act on?
+
+    Redis stream ids are ``<unix-ms>-<seq>``. Entries older than ``max_age_ms`` are
+    ACKed and dropped rather than replayed — reacting to a stale state change, or
+    answering a question asked hours ago, is worse than missing it. An id we cannot
+    parse is treated as too old (fail closed).
+    """
+    raw = entry_id.decode() if isinstance(entry_id, bytes) else entry_id
+    try:
+        created_ms = int(raw.split("-", 1)[0])
+    except ValueError:
+        return False
+    return now_ms - created_ms <= max_age_ms
+
+
+async def reclaim_replayable(
+    redis: AioRedis,
+    stream: str,
+    group: str,
+    consumer: str,
+    *,
+    now_ms: int,
+    max_age_ms: int = MAX_REPLAY_AGE_MS,
+) -> list[tuple[bytes | str, dict[bytes | str, bytes | str]]]:
+    """Reclaim un-ACKed entries, returning only those still worth acting on.
+
+    Entries past ``max_age_ms`` are ACKed and discarded: they still have to leave the
+    pending-entries list (that is the leak being fixed), but replaying an hours-old
+    entry would drive the system from history rather than from now.
+    """
+    claimed = await reclaim_stale(redis, stream, group, consumer)
+    replayable: list[tuple[bytes | str, dict[bytes | str, bytes | str]]] = []
+    expired: list[bytes | str] = []
+    for entry_id, entry_data in claimed:
+        if is_replayable(entry_id, now_ms=now_ms, max_age_ms=max_age_ms):
+            replayable.append((entry_id, entry_data))
+        else:
+            expired.append(entry_id)
+    for entry_id in expired:
+        await redis.xack(stream, group, entry_id)
+    if expired:
+        logger.warning(
+            "Dropped %d stale pending entries on '%s' (older than %dms)",
+            len(expired),
+            stream,
+            max_age_ms,
+        )
+    if replayable:
+        logger.info("Reclaimed %d pending entries on '%s'", len(replayable), stream)
+    return replayable

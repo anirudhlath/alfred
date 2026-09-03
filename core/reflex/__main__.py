@@ -23,12 +23,7 @@ from core.reflex import inference
 from core.reflex.attention import AttentionSet
 from core.reflex.context_reader import ContextReader
 from core.reflex.engine import ReflexEngine, build_notification_body
-from core.reflex.runner import (
-    ensure_consumer_group,
-    process_stream_entry,
-    publish_observation,
-    reclaim_replayable,
-)
+from core.reflex.runner import ensure_consumer_group, process_stream_entry, publish_observation
 from core.reflex.tool_registry import ToolRegistry
 from core.routing.domain_router import DomainRouter
 from core.warmup import start_warmup
@@ -36,7 +31,7 @@ from domains.home.home_agent import HomeAgent
 from sdk.alfred_sdk.telemetry import clear_telemetry_buffer, get_telemetry_buffer
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
-from shared.redis_streams import create_redis, read_group
+from shared.redis_streams import create_redis, read_group, reclaim_replayable
 from shared.streams import (
     EVENTS_STREAM,
     HOME_ACTION_RESULTS_STREAM,
