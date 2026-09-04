@@ -471,8 +471,15 @@ git commit -m "feat(memory): add OpenAI-compatible embedding provider"
 ### Task 3: The backend factory
 
 **Files:**
+- Modify: `shared/config.py` (add `embedding_api_key`)
 - Create: `core/memory/embedding_backend.py`
 - Test: `tests/core/memory/test_embedding_backend.py`
+
+First add an `embedding_api_key: str = ""` field to `AlfredConfig` beside the other
+embedding fields, wired in `from_env` as `os.getenv("EMBEDDING_API_KEY", "")`. A vLLM
+started with `--api-key`, or real OpenAI, is otherwise unreachable through the factory
+because the factory passes no pre-configured client. Add a test asserting it defaults to
+empty and reads the env var.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -576,6 +583,7 @@ def build_embedding_provider(config: AlfredConfig) -> EmbeddingProvider:
             model_name=config.embedding_model,
             host=config.embedding_host,
             dim=config.embedding_dim,
+            api_key=config.embedding_api_key,
         )
 
     from core.memory.embedding_provider import SentenceTransformerProvider
@@ -780,14 +788,31 @@ configured/actual dimension mismatch surface at startup instead of never.
 Run: `uv run pytest tests/core/memory/test_embedding_backend.py -v`
 Expected: PASS — 4 passed.
 
-- [ ] **Step 9: Verify nothing else regressed**
+- [ ] **Step 9: Close the provider on shutdown**
+
+Task 2 added `EmbeddingProvider.aclose()` (a no-op by default; the HTTP backend closes its
+connection pool). Nothing calls it, so every service leaks a pool — worst in the librarian,
+which runs a cycle and exits. In each of the four services, close the provider in the same
+`finally` block that already tears down Redis:
+
+```python
+        await embedder.aclose()
+```
+
+Match each file's existing teardown: `core/conscious/__main__.py` and
+`core/memory/ingestor_main.py` have a `finally:` around their run loop;
+`core/librarian/__main__.py` and `core/channels/admin_api.py` build a provider per call, so
+close it where that scope ends. Where `embedder` is `Optional`, guard with
+`if embedder is not None:`.
+
+- [ ] **Step 10: Verify nothing else regressed**
 
 Run: `uv run pytest tests/core/ tests/shared/ -q`
 Expected: PASS, except the four pre-existing CUDA out-of-memory failures in
 `tests/core/memory/test_embedding_provider.py` (they load a real model onto the GPU and
 fail whenever the box's vLLM containers hold the VRAM — unrelated to this branch).
 
-- [ ] **Step 10: Lint, type-check, commit**
+- [ ] **Step 11: Lint, type-check, commit**
 
 ```bash
 ruff check . --fix && ruff format .
@@ -1291,6 +1316,12 @@ backend collapses that onto one resident model. vLLM serves embeddings when star
 `EMBEDDING_MODEL` names the model under either backend, so `EMBEDDING_DIM` keeps tracking it
 via `embedding_dim_for()`. Both vector stores refuse to start against an index built at a
 different dimension — see the gotcha in `CLAUDE.md`.
+
+The backends differ on over-long input: `sentence-transformers` silently truncates at the
+model's max sequence length, while an OpenAI-compatible server returns HTTP 400. A long
+preferences or profile document that indexes today can therefore fail outright after the
+switch. `EMBEDDING_API_KEY` is sent as a bearer token when set, for servers started with
+`--api-key`.
 ```
 
 - [ ] **Step 2: Update the PRD Capability Catalog**
