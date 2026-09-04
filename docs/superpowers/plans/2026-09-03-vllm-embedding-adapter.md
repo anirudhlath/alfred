@@ -801,9 +801,15 @@ which runs a cycle and exits. In each of the four services, close the provider i
 
 Match each file's existing teardown: `core/conscious/__main__.py` and
 `core/memory/ingestor_main.py` have a `finally:` around their run loop;
-`core/librarian/__main__.py` and `core/channels/admin_api.py` build a provider per call, so
-close it where that scope ends. Where `embedder` is `Optional`, guard with
-`if embedder is not None:`.
+`core/librarian/__main__.py` runs one cycle per invocation and is the biggest leak, so it
+matters most. Where `embedder` is `Optional`, guard with `if embedder is not None:`.
+
+`core/channels/admin_api.py:89-112` is the exception — it caches `_episodic_memory` in a
+**module global**, so the provider outlives any single request and must not be closed per
+call. Leave that one open, and add a comment saying why, or a later request reuses a closed
+client. (A provider cached in a module global is also how an httpx client ends up bound to a
+stale event loop; `_post` now rewraps that as "the HTTP client is unusable" with the
+original preserved as `__cause__`.)
 
 - [ ] **Step 10: Verify nothing else regressed**
 
