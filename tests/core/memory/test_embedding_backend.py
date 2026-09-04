@@ -7,7 +7,7 @@ import dataclasses
 import pytest
 
 from core.memory.embedding_backend import _BACKENDS, build_embedding_provider
-from shared.config import DEFAULT_EMBEDDING_BACKEND, AlfredConfig
+from shared.config import DEFAULT_EMBEDDING_BACKEND, EMBEDDING_BACKENDS, AlfredConfig
 
 
 def _config(**overrides: object) -> AlfredConfig:
@@ -33,6 +33,7 @@ def test_openai_backend_builds_the_http_provider() -> None:
             embedding_api_key="sk-test",
             embedding_model="BAAI/bge-m3",
             embedding_dim=1024,
+            embedding_timeout_seconds=12.5,
         )
     )
     assert isinstance(provider, OpenAICompatEmbeddingProvider)
@@ -40,6 +41,10 @@ def test_openai_backend_builds_the_http_provider() -> None:
     assert provider.dimension() == 1024
     assert provider._host == "http://embed:8001"
     assert provider._headers == {"Authorization": "Bearer sk-test"}
+    assert provider._timeout.read == 12.5
+    # The connect budget is deliberately NOT the configured one: involuntary recall
+    # embeds inline in the reply path, so an unreachable host must fail in seconds.
+    assert provider._timeout.connect == 5.0
 
 
 def test_openai_backend_sends_no_auth_header_without_a_key() -> None:
@@ -67,7 +72,10 @@ def test_every_registered_backend_has_a_builder() -> None:
     """
     from core.memory.embedding_provider import EmbeddingProvider
 
-    assert set(_BACKENDS) == {DEFAULT_EMBEDDING_BACKEND, "openai"}
+    # Compared against shared.config's tuple, not a re-spelled literal: that tuple is
+    # what AlfredConfig.from_env validates against, so a name accepted there and
+    # missing here would pass config load and then fail at provider construction.
+    assert set(_BACKENDS) == set(EMBEDDING_BACKENDS)
     for name in _BACKENDS:
         provider = build_embedding_provider(_config(embedding_backend=name))
         assert isinstance(provider, EmbeddingProvider)
@@ -125,3 +133,11 @@ def test_no_service_constructs_a_provider_directly() -> None:
         if "SentenceTransformerProvider(" in (repo_root / path).read_text()
     ]
     assert offenders == []
+
+
+def test_openai_backend_uses_the_configured_default_timeout() -> None:
+    """A server that accepts and then stalls is only bounded by the read budget."""
+    from shared.config import DEFAULT_EMBEDDING_TIMEOUT_SECONDS
+
+    provider = build_embedding_provider(_config(embedding_backend="openai"))
+    assert provider._timeout.read == DEFAULT_EMBEDDING_TIMEOUT_SECONDS  # type: ignore[attr-defined]

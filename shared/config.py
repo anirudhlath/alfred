@@ -48,6 +48,18 @@ DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 # /v1/embeddings server (vLLM --runner pooling) at ``DEFAULT_EMBEDDING_HOST``.
 DEFAULT_EMBEDDING_BACKEND = "sentence_transformers"
 DEFAULT_EMBEDDING_HOST = "http://localhost:8001"
+
+# Every accepted EMBEDDING_BACKEND. Lives here, not in the factory, so from_env can
+# reject a typo before any service starts; core.memory.embedding_backend's registry is
+# asserted equal to this tuple by its tests, so the two cannot drift apart.
+EMBEDDING_BACKENDS: tuple[str, ...] = (DEFAULT_EMBEDDING_BACKEND, "openai")
+
+# Read/write budget for one embedding request, in seconds. The connect budget is
+# separate and much tighter (the provider pins it) because involuntary recall embeds
+# inline in the reply path. This one guards the other hang: a server that accepts the
+# connection and then stalls — a vLLM mid-model-load does exactly that. 2048 bge-m3
+# inputs measured 1.72s, so 30s is a hang detector, not a throughput limit.
+DEFAULT_EMBEDDING_TIMEOUT_SECONDS = 30.0
 _KNOWN_EMBEDDING_DIMS: dict[str, int] = {
     "sentence-transformers/all-MiniLM-L6-v2": 384,
     "sentence-transformers/all-mpnet-base-v2": 768,
@@ -82,6 +94,25 @@ def normalize_embedding_host(raw: str) -> str:
     if host.endswith("/v1"):
         host = host.removesuffix("/v1").rstrip("/")
     return host or DEFAULT_EMBEDDING_HOST
+
+
+def normalize_embedding_backend(raw: str) -> str:
+    """Normalise and validate ``EMBEDDING_BACKEND``; blank means the default.
+
+    Validated at config load rather than at provider construction because one typo
+    used to produce three different outcomes: the conscious engine and the librarian
+    caught it and ran on with memory silently disabled, the admin API cached it as a
+    permanent failure, and the ingestor died with a traceback. Failing here makes a
+    typo fail once, loudly and identically, in every process, before any of them can
+    diverge. The factory keeps its own check for configs built by hand.
+    """
+    backend = raw.strip().lower() or DEFAULT_EMBEDDING_BACKEND
+    if backend not in EMBEDDING_BACKENDS:
+        raise RuntimeError(
+            f"Unknown EMBEDDING_BACKEND {raw!r} (read as {backend!r}; expected one of: "
+            f"{', '.join(EMBEDDING_BACKENDS)})"
+        )
+    return backend
 
 
 def models_root() -> Path:
@@ -137,6 +168,7 @@ class AlfredConfig:
     # backend. Empty means "send no Authorization header at all".
     embedding_backend: str = DEFAULT_EMBEDDING_BACKEND
     embedding_host: str = DEFAULT_EMBEDDING_HOST
+    embedding_timeout_seconds: float = DEFAULT_EMBEDDING_TIMEOUT_SECONDS
     embedding_api_key: str = ""
     embedding_model: str = DEFAULT_EMBEDDING_MODEL
     embedding_dim: int = 384
@@ -193,8 +225,9 @@ class AlfredConfig:
         # Both read through a blank-means-default guard rather than os.getenv's
         # default: a key present but empty (``EMBEDDING_HOST=`` in .env) is "" here.
         embedding_host = normalize_embedding_host(os.getenv("EMBEDDING_HOST", ""))
-        embedding_backend = (
-            os.getenv("EMBEDDING_BACKEND", "").strip().lower() or DEFAULT_EMBEDDING_BACKEND
+        embedding_backend = normalize_embedding_backend(os.getenv("EMBEDDING_BACKEND", ""))
+        embedding_timeout_seconds = float(
+            os.getenv("EMBEDDING_TIMEOUT_SECONDS", "").strip() or DEFAULT_EMBEDDING_TIMEOUT_SECONDS
         )
         return cls(
             redis_host=os.getenv("REDIS_HOST", "localhost"),
@@ -226,6 +259,7 @@ class AlfredConfig:
             # Memory: Embedding (env-configurable; see above for the dim default).
             embedding_backend=embedding_backend,
             embedding_host=embedding_host,
+            embedding_timeout_seconds=embedding_timeout_seconds,
             embedding_api_key=os.getenv("EMBEDDING_API_KEY", ""),
             embedding_model=embedding_model,
             embedding_dim=embedding_dim,

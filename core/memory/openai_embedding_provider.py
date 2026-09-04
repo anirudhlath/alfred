@@ -29,11 +29,9 @@ import logging
 import httpx
 
 from core.memory.embedding_provider import EmbeddingProvider
+from shared.config import DEFAULT_EMBEDDING_TIMEOUT_SECONDS
 
 logger = logging.getLogger(__name__)
-
-# Embedding calls are short; the ceiling is a large batch on a busy server.
-_DEFAULT_TIMEOUT_SECONDS = 60.0
 # Connect gets its own, much tighter budget: involuntary recall embeds the user's
 # query inline in the reply path (core/conscious/engine.py:654), so an unreachable
 # host must fail in seconds rather than hold a reply for the whole read budget.
@@ -53,7 +51,8 @@ class OpenAICompatEmbeddingProvider(EmbeddingProvider):
 
     ``timeout`` is applied per request, so it holds for an injected ``client`` too
     (that client's own default timeout is overridden). ``connect`` is pinned at
-    ``_CONNECT_TIMEOUT_SECONDS`` regardless; ``timeout`` sets read/write/pool.
+    ``_CONNECT_TIMEOUT_SECONDS`` regardless; ``timeout`` sets read/write/pool, and
+    is tunable via ``EMBEDDING_TIMEOUT_SECONDS`` through the factory.
     """
 
     def __init__(
@@ -63,7 +62,7 @@ class OpenAICompatEmbeddingProvider(EmbeddingProvider):
         dim: int,
         api_key: str = "",
         client: httpx.AsyncClient | None = None,
-        timeout: float = _DEFAULT_TIMEOUT_SECONDS,
+        timeout: float = DEFAULT_EMBEDDING_TIMEOUT_SECONDS,
     ) -> None:
         self._model_name = model_name
         self._host = host.rstrip("/")

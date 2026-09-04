@@ -122,3 +122,54 @@ def test_embedding_api_key_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
     # through the factory, which passes no pre-configured client.
     monkeypatch.setenv("EMBEDDING_API_KEY", "sk-secret")
     assert config.AlfredConfig.from_env().embedding_api_key == "sk-secret"
+
+
+def test_unknown_backend_is_rejected_at_config_load(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One typo, one failure — not four services diverging.
+
+    Before validation moved here, a bad EMBEDDING_BACKEND reached the factory in each
+    process and produced three different outcomes: conscious and the librarian caught
+    it and ran on with memory silently disabled, the admin API cached a permanent
+    failure, and the ingestor died with a traceback.
+    """
+    monkeypatch.setenv("EMBEDDING_BACKEND", "banana")
+    with pytest.raises(RuntimeError, match="Unknown EMBEDDING_BACKEND"):
+        config.AlfredConfig.from_env()
+
+
+def test_backend_rejection_quotes_the_raw_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The normalised spelling appears nowhere in the user's .env.
+    monkeypatch.setenv("EMBEDDING_BACKEND", "Sentence Transformers")
+    with pytest.raises(RuntimeError, match=r"'Sentence Transformers'"):
+        config.AlfredConfig.from_env()
+
+
+@pytest.mark.parametrize("raw", ["openai", "OpenAI", "  openai  "])
+def test_known_backends_are_accepted_and_normalised(
+    monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    monkeypatch.setenv("EMBEDDING_BACKEND", raw)
+    assert config.AlfredConfig.from_env().embedding_backend == "openai"
+
+
+def test_blank_backend_means_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    # `EMBEDDING_BACKEND=` in .env sets the key to "", defeating os.getenv's default.
+    monkeypatch.setenv("EMBEDDING_BACKEND", "")
+    assert config.AlfredConfig.from_env().embedding_backend == config.DEFAULT_EMBEDDING_BACKEND
+
+
+def test_embedding_timeout_defaults_and_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """30s is a hang detector, not a throughput limit — 2048 bge-m3 inputs took 1.72s.
+
+    It matters because a server that accepts the connection and then stalls (a vLLM
+    mid-model-load) is not covered by the tighter connect budget, and involuntary
+    recall embeds inline in the reply path.
+    """
+    monkeypatch.delenv("EMBEDDING_TIMEOUT_SECONDS", raising=False)
+    assert config.AlfredConfig.from_env().embedding_timeout_seconds == 30.0
+
+    monkeypatch.setenv("EMBEDDING_TIMEOUT_SECONDS", "5")
+    assert config.AlfredConfig.from_env().embedding_timeout_seconds == 5.0
+
+    monkeypatch.setenv("EMBEDDING_TIMEOUT_SECONDS", "")
+    assert config.AlfredConfig.from_env().embedding_timeout_seconds == 30.0

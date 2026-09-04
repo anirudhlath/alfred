@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from core.integrations.base import CredentialSchema
 
 from bus.schemas.events import UserRequest
-from core.channels.admin_api import create_admin_router, require_authenticated
+from core.channels.admin_api import aclose_episodic, create_admin_router, require_authenticated
 from core.channels.request_bus import publish_and_wait
 from core.channels.satellite.bridge import SatelliteBridge
 from core.channels.satellite.config import load_satellites
@@ -378,6 +378,9 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         await apns.close()
 
     await credential_store.close()
+    # The admin API's episodic provider is a module-level singleton (it must outlive
+    # any single request), so this hook is the only place it can be closed.
+    await aclose_episodic()
     await app.state.http.aclose()
     await pool.close()
 

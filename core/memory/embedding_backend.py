@@ -42,6 +42,7 @@ def _build_openai(config: AlfredConfig) -> EmbeddingProvider:
         host=config.embedding_host,
         dim=config.embedding_dim,
         api_key=config.embedding_api_key,
+        timeout=config.embedding_timeout_seconds,
     )
 
 

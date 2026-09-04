@@ -1222,6 +1222,8 @@ In `.env.example`, replace the existing embedding block (the comment plus
 # EMBEDDING_DIM auto-tracks known models (set it only for an unknown model).
 # Changing the model changes the vector index width — the stores refuse to start
 # against an index built at a different dimension rather than silently mismatch.
+# An unrecognised EMBEDDING_BACKEND is rejected when config loads, so a typo fails
+# once and identically in every service rather than disabling memory in three of them.
 EMBEDDING_BACKEND=sentence_transformers
 # For EMBEDDING_BACKEND=openai (no /v1 suffix; the client appends it; a trailing
 # /v1 is stripped for you). Only needed if the server requires auth:
@@ -1229,6 +1231,11 @@ EMBEDDING_HOST=http://localhost:8001
 EMBEDDING_API_KEY=
 EMBEDDING_MODEL=
 EMBEDDING_DIM=
+# Read/write budget for one embedding request, in seconds (default 30). The connect
+# budget is separate and fixed at 5s because involuntary recall embeds inline in the
+# reply path; this one bounds a server that accepts and then stalls (vLLM loading a
+# model). 2048 bge-m3 inputs measure ~1.7s, so 30s is a hang detector, not a limit.
+EMBEDDING_TIMEOUT_SECONDS=
 ```
 
 - [ ] **Step 6: Report the backend in doctor**
@@ -1263,6 +1270,12 @@ def _check_embeddings(env: dict[str, str]) -> DoctorCheck:
         )
     return DoctorCheck("memory embeddings", "pass", f"model={model}")
 ```
+
+Note: `shared/config.py` now exports `normalize_embedding_backend()`, which normalises
+*and* validates. Doctor reads a plain env dict rather than `AlfredConfig.from_env()`, so
+it does not get that validation for free — prefer calling it (guarding the `RuntimeError`)
+over the `.strip().lower()` shown above, so an unrecognised backend is reported as a
+failed check instead of echoed back as if it were valid.
 
 The gated-model warning now sits below the `openai` branch on purpose: with a remote
 server nothing is downloaded locally, so an HF token is not required and warning about

@@ -43,6 +43,7 @@ from core.reflex.context_reader import ContextReader
 from core.reflex.runner import ensure_consumer_group
 from core.reflex.tool_registry import ToolRegistry
 from core.routing.domain_router import DomainRouter
+from core.shutdown import close_all, drain_tasks
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
 from core.triggers.store import TriggerStore
 from core.warmup import start_warmup
@@ -411,23 +412,29 @@ async def run(config: AlfredConfig) -> None:
                 )
     finally:
         log.info("Shutting down Conscious Engine...")
-        if warmup_task is not None:
-            warmup_task.cancel()
-        writer_task.cancel()
-        if librarian_task is not None:
-            librarian_task.cancel()
-        internal_actions_task.cancel()
-        trigger_refresh_task.cancel()
-        if routine_suggestion_task is not None:
-            routine_suggestion_task.cancel()
-        delivery_task.cancel()
-        await trigger_store.stop_sync()
-        if embedder is not None:
-            # Unconditional: the EmbeddingProvider type does not say which backend
-            # this is, and the HTTP one owns a connection pool (the in-process one
-            # owns nothing and no-ops).
-            await embedder.aclose()
-        await r.aclose()
+        # Awaited, not merely cancelled: librarian_task runs consolidate() -> embed(),
+        # so closing the provider while it is still in flight would surface as a
+        # warning blaming EMBEDDING_HOST for a close we caused ourselves.
+        await drain_tasks(
+            warmup_task,
+            writer_task,
+            librarian_task,
+            internal_actions_task,
+            trigger_refresh_task,
+            routine_suggestion_task,
+            delivery_task,
+        )
+        # Each close is independent: one failure must not strand the others. Closing
+        # the provider is unconditional because the EmbeddingProvider type does not
+        # say which backend this is — the HTTP one owns a connection pool, the
+        # in-process one owns nothing and no-ops.
+        await close_all(
+            {
+                "trigger store sync": trigger_store.stop_sync,
+                "embedding provider": embedder.aclose if embedder is not None else None,
+                "redis": r.aclose,
+            }
+        )
 
 
 def main() -> None:

@@ -11,6 +11,7 @@ for shared state, ACTIONS_STREAM publishes for process-owned behavior.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 from datetime import UTC, datetime
@@ -48,6 +49,9 @@ if TYPE_CHECKING:
 
 _FAILED = object()
 _episodic_memory: Any = None
+# Held separately from _episodic_memory so shutdown can close it without reaching
+# into EpisodicMemory's private attributes.
+_episodic_embedder: Any = None
 
 
 class DndRequest(BaseModel):
@@ -89,12 +93,12 @@ async def _publish_trigger_action(
 def _get_episodic_lazy(redis: AioRedis) -> Any | None:
     """Build EpisodicMemory once; heavy embedder loads on first vector search.
 
-    Deliberately never calls ``embedder.aclose()`` — unlike the four service entry
-    points, the provider here is cached in the ``_episodic_memory`` module global and
-    outlives every request. Closing it after a search would leave the next one holding
-    a closed httpx client. It is released when the channels process exits.
+    The provider is cached for the process lifetime, so it must not be closed per
+    request — a later search would find a closed httpx client. It is closed instead by
+    :func:`aclose_episodic` from the web server's shutdown hook, alongside the other
+    client-like resources torn down there.
     """
-    global _episodic_memory
+    global _episodic_memory, _episodic_embedder
     if _episodic_memory is _FAILED:
         return None
     if _episodic_memory is None:
@@ -105,16 +109,31 @@ def _get_episodic_lazy(redis: AioRedis) -> Any | None:
             from core.memory.sqlite_vec_store import SqliteVecStore
 
             config = AlfredConfig.from_env()
+            _episodic_embedder = build_embedding_provider(config)
             _episodic_memory = EpisodicMemory(
                 hot=RedisVectorStore(redis=redis, dim=config.embedding_dim),
                 cold=SqliteVecStore(db_path=str(episodic_cold_path()), dim=config.embedding_dim),
-                embedder=build_embedding_provider(config),
+                embedder=_episodic_embedder,
             )
         except Exception as exc:
             logger.error("EpisodicMemory unavailable for admin search: {}", exc)
             _episodic_memory = _FAILED
             return None
     return _episodic_memory
+
+
+async def aclose_episodic() -> None:
+    """Release the cached embedding provider. Called from the web server's shutdown.
+
+    Idempotent, and never raises: shutdown runs after ``yield`` in the lifespan, where
+    an exception would skip the teardown that follows it.
+    """
+    global _episodic_memory, _episodic_embedder
+    embedder, _episodic_embedder, _episodic_memory = _episodic_embedder, None, None
+    if embedder is None:
+        return
+    with contextlib.suppress(Exception):
+        await embedder.aclose()
 
 
 def _base_overview() -> dict[str, Any]:
@@ -337,7 +356,17 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
             memory = _get_episodic_lazy(r)
             if memory is None:
                 raise HTTPException(status_code=503, detail="Vector search unavailable")
-            results = await memory.recall(query=q, limit=limit, update_stats=False)
+            try:
+                results = await memory.recall(query=q, limit=limit, update_stats=False)
+            except Exception as exc:
+                # Construction no longer proves usability. SentenceTransformerProvider
+                # loaded its model in __init__, so a broken embedder failed above, in
+                # _get_episodic_lazy. The HTTP backend's __init__ only builds an httpx
+                # client, so a down or restarting embedding server first surfaces here —
+                # recall() embeds the query before it touches either store. Uncaught,
+                # that is a 500 from a module that promises reads never 500.
+                logger.error("Episodic vector search failed: {}", exc)
+                raise HTTPException(status_code=503, detail="Vector search unavailable") from exc
             return {
                 "entries": [
                     {
