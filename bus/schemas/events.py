@@ -136,11 +136,12 @@ class TriggerCreated(BaseEvent):
 
 
 class ReflexObservation(BaseEvent):
-    """A structured observation of a Reflex Engine action for System 2 awareness.
+    """A structured observation of a Reflex Engine event for System 2 awareness.
 
-    Published after every Reflex action execution. The Memory Ingestor
-    consumes these and writes them to episodic memory so that the
-    Conscious Engine can recall Reflex actions during context assembly.
+    Published after a Reflex action executes, and also when the Reflex
+    Engine considers an event and takes no action (``action is None``).
+    The Memory Ingestor consumes these and writes them to episodic memory
+    so that the Conscious Engine can recall them during context assembly.
     """
 
     event_type: str = "reflex_observation"
@@ -149,8 +150,11 @@ class ReflexObservation(BaseEvent):
     trigger_event: dict[str, Any] = Field(
         description="The originating event payload (StateChanged or TriggerFired)"
     )
-    action: ActionRequest
-    result: ActionResult
+    # None means: this event was seen, considered, and no action was taken.
+    # Passive observations exist so pattern detection has something to read;
+    # without them Alfred only remembers what it did, never what it saw.
+    action: ActionRequest | None = None
+    result: ActionResult | None = None
     decision_context: str | None = None
 
 

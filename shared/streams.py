@@ -32,6 +32,22 @@ VOICEPRINT_KEY = "alfred:identity:voiceprint"
 CONTEXT_INDEX = "idx:context"
 CONTEXT_PREFIX = "ctx:"
 ENTITY_FREQUENCY_KEY = "alfred:entity:freq"
+# Passive observations are scored against their own frequency population.
+# Sharing ENTITY_FREQUENCY_KEY would drive every count high enough that
+# novelty (1/count) collapses to ~0 for real reflex actions too.
+OBSERVED_FREQUENCY_KEY = "alfred:entity:freq:observed"
+
+# Per-entry delivery-attempt counters for the Memory Ingestor (hash field ->
+# count, whole-key TTL as a crash-safety net). Bounds retries of an entry that
+# parses but fails deterministically downstream: without a cap it is reclaimed
+# forever, burning a ZINCRBY on the observed-frequency key every pass and
+# consuming the reclaim budget of everything behind it in the PEL.
+INGEST_ATTEMPTS_KEY = "alfred:memory:ingest:attempts"
+
+# Per-entity debounce for passive observation (SET NX EX). One noisy device
+# accounted for 64% of qualifying events on the live instance, so this is
+# what keeps episodic memory readable.
+OBSERVED_ENTITY_PREFIX = "alfred:observer:seen:"
 
 # Phase 3: Runtime config + cost
 RUNTIME_CONFIG_KEY = "alfred:config:runtime"

@@ -85,7 +85,7 @@ config change, not a rearchitecture.
   gated EmbeddingGemma default; the current ungated default is far smaller, but
   the multiplier is still one copy per process. `EMBEDDING_BACKEND=openai`
   removes the duplication outright by embedding against a shared server
-  (architecture.md §3.7.1); folding the ingestor into conscious remains a
+  (architecture.md §3.7.2); folding the ingestor into conscious remains a
   legitimate consolidation if memory pressure ever matters.
 - A supervisor's worth of moving parts, and six log prefixes instead of one.
 - Occasional cross-process coordination bugs (the schema race above) — real,

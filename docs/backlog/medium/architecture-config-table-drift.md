@@ -15,7 +15,7 @@ environment variables `shared/config.py` reads appear in it; the System 2 API ke
 `REFLEX_BACKEND` seam and every `EMBEDDING_*` variable do not.
 
 **This is not a regression from the vLLM embedding branch.** The wrong `OLLAMA_MODEL` default
-entered the file in `7231fd6` (2026-03-10), and that branch's only change to §3.7/§3.7.1 left
+entered the file in `7231fd6` (2026-03-10), and that branch's only change to §3.7/§3.7.2 left
 §6 untouched. It is recorded here because the branch's own review surfaced it, not because it
 broke anything.
 
@@ -36,7 +36,7 @@ Verified against `shared/config.py` on 2026-09-04:
   the System 2 engine this same document describes has no configuration entry at all. No
   `REFLEX_BACKEND` (nor `OPENAI_COMPAT_HOST`/`_MODEL`, `LMSTUDIO_HOST`), despite §3.2
   documenting that seam. No `EMBEDDING_BACKEND` / `EMBEDDING_HOST` / `EMBEDDING_MODEL` /
-  `EMBEDDING_DIM` / `EMBEDDING_API_KEY` / `EMBEDDING_TIMEOUT_SECONDS`, despite §3.7.1 now
+  `EMBEDDING_DIM` / `EMBEDDING_API_KEY` / `EMBEDDING_TIMEOUT_SECONDS`, despite §3.7.2 now
   documenting that seam. Also absent: `ALFRED_TRUSTED_NETWORKS`,
   `ALFRED_SECRETS_PASSPHRASE`, `ALFRED_DATA_DIR`/`ALFRED_DATA_MODE`, and the voice knobs.
 - **Scale.** `grep -o 'os\.getenv("[A-Z_0-9]*"' shared/config.py | sort -u | wc -l` → 40.

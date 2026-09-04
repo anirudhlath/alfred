@@ -19,9 +19,18 @@ from shared.streams import ENTITY_FREQUENCY_KEY
 class SignificanceScorer:
     """Heuristic significance scoring (the Amygdala)."""
 
-    def __init__(self, redis: AioRedis, config: AlfredConfig) -> None:
+    def __init__(
+        self,
+        redis: AioRedis,
+        config: AlfredConfig,
+        frequency_key: str = ENTITY_FREQUENCY_KEY,
+    ) -> None:
         self._redis = redis
         self._config = config
+        # Passive observations are scored against their own population — see
+        # OBSERVED_FREQUENCY_KEY. Sharing one key would collapse novelty for
+        # everything, because novelty is 1/count.
+        self._frequency_key = frequency_key
 
     async def score(self, entry: EpisodicEntry) -> SignificanceScore:
         """Compute heuristic significance from structured fields."""
@@ -66,7 +75,7 @@ class SignificanceScorer:
         novelty_scores: list[float] = []
         for entity in entry.entities:
             # Increment frequency and get current count
-            count = await self._redis.zincrby(ENTITY_FREQUENCY_KEY, 1, entity)
+            count = await self._redis.zincrby(self._frequency_key, 1, entity)
             # ZINCRBY always returns the resulting score for a real sorted set member;
             # the stub's Optional is defensive typing, not an observed runtime case.
             assert count is not None, "ZINCRBY must return a score"

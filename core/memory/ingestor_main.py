@@ -24,6 +24,7 @@ from core.warmup import start_warmup
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
 from shared.redis_streams import create_redis
+from shared.streams import OBSERVED_FREQUENCY_KEY
 
 if TYPE_CHECKING:
     from core.memory.embedding_provider import EmbeddingProvider
@@ -60,6 +61,12 @@ async def run(config: AlfredConfig) -> None:
         )
         episodic = EpisodicMemory(hot=hot, cold=cold, embedder=embedder)
         scorer = SignificanceScorer(redis=r, config=config)
+        # Passive observations score against their own entity-frequency population.
+        # ~250/day on the shared key would drive novelty (1/count) to ~0 for real
+        # reflex actions too.
+        passive_scorer = SignificanceScorer(
+            redis=r, config=config, frequency_key=OBSERVED_FREQUENCY_KEY
+        )
 
         # Load memory components in the background — the first observation then
         # skips the embedding-model lazy-load hit.
@@ -72,7 +79,7 @@ async def run(config: AlfredConfig) -> None:
             },
         )
 
-        await run_ingestor(r, episodic, scorer, shutdown_event=_shutdown)
+        await run_ingestor(r, episodic, scorer, passive_scorer, shutdown_event=_shutdown)
     finally:
         # Drained before closing: the warmup task holds the provider, so cancelling
         # without waiting can close the pool out from under an in-flight embed.

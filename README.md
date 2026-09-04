@@ -151,7 +151,7 @@ conscious engine embeds inline while composing a reply — and long documents th
 silently truncated in-process instead fail with HTTP 400 against a server enforcing its
 context limit. Changing model or backend also changes the vector width, which both memory
 stores refuse to run against an index built at the old one. Details:
-[architecture.md §3.7.1](docs/architecture.md#371-embedding-backends).
+[architecture.md §3.7.2](docs/architecture.md#372-embedding-backends).
 
 ### Prerequisites
 

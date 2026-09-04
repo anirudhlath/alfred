@@ -1,6 +1,6 @@
 # Alfred — Product Requirements Document
 
-**Status:** Living document. Capability statuses current as of **2026-07-24**.
+**Status:** Living document. Capability statuses current as of **2026-09-03**.
 **Maintenance rule:** any PR that adds or changes a user-facing capability updates the
 relevant row(s) in the [Capability Catalog](#4-capability-catalog) in the same branch.
 
@@ -106,6 +106,7 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 | Nightly librarian consolidation: conflict resolution, pattern detection, contextual decay | Shipped | same |
 | Two-stage recall: automatic context assembly + deliberate memory search during reasoning | Shipped | same |
 | Significance scoring (a heuristic amygdala deciding what is worth remembering) | Shipped | same |
+| Passive observation: home state changes the reflex sees but chooses not to act on are still remembered | In review | spec `2026-09-03-passive-observation-design.md` |
 | System 2 observation of System 1 (the conscious mind learns from reflex actions) | Shipped | spec `2026-04-16-d8-system2-observation-design.md` |
 
 ### 4.4 Smart home
