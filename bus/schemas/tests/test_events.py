@@ -269,7 +269,9 @@ def test_reflex_observation_schema() -> None:
     assert obs.observation_id  # auto-generated
     assert obs.timestamp  # auto-generated
     assert obs.origin == "state_change"
+    assert obs.action is not None
     assert obs.action.tool_name == "lighting.dim_lights"
+    assert obs.result is not None
     assert obs.result.status == "success"
     assert obs.decision_context is not None
 
@@ -277,6 +279,7 @@ def test_reflex_observation_schema() -> None:
     json_str = obs.model_dump_json()
     restored = ReflexObservation.model_validate_json(json_str)
     assert restored.observation_id == obs.observation_id
+    assert restored.action is not None
     assert restored.action.tool_name == "lighting.dim_lights"
 
 

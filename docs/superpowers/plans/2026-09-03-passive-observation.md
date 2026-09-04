@@ -473,13 +473,50 @@ from shared.streams import OBSERVED_ENTITY_PREFIX, decode_stream_value
 
 After the `logger = logging.getLogger(__name__)` line (line 29), add:
 
+> **As-built (2026-09-03).** This step originally read
+> `OBSERVATION_DEBOUNCE_SECONDS = int(os.getenv("OBSERVATION_DEBOUNCE_SECONDS", "300"))`.
+> That bare parse was replaced during implementation (`a1462dd`, `790a169`) and the
+> snippet below is what shipped. **Do not revert it.** `core.reflex.runner` is imported
+> at module scope by several unrelated services (for `ensure_consumer_group`), so a
+> malformed `.env` value would raise `ValueError` at import and take all of them down.
+> The clamp is separate: `redis.set(..., ex=0)` is rejected outright by Redis, so a
+> below-minimum value had to become 1 rather than 0 — and it warns, because silently
+> clamping made "set it to 0 to disable" look like it worked.
+
 ```python
+def _debounce_default() -> int:
+    """Read the debounce window from the env, tolerating garbage.
+
+    This module is imported at module scope by several unrelated services
+    (for ``ensure_consumer_group``), so a malformed value must never raise
+    at import time and take them down with it.
+    """
+    raw = os.getenv("OBSERVATION_DEBOUNCE_SECONDS", "").strip()
+    if not raw:
+        return 300
+    try:
+        seconds = int(raw)
+    except ValueError:
+        logger.warning("Invalid OBSERVATION_DEBOUNCE_SECONDS %r — using 300", raw)
+        return 300
+    if seconds < 1:
+        # Silently clamping made "0 to disable" look like it worked while
+        # actually recording on a 1-second window.
+        logger.warning(
+            "OBSERVATION_DEBOUNCE_SECONDS %r is below the 1s minimum — clamping to 1. "
+            "Passive observation cannot be disabled this way.",
+            raw,
+        )
+        return 1
+    return seconds
+
+
 # Per-entity window for passive observation. Deliberately separate from the
 # attention gate's 5-second cooldown: that one asks "is this SLM call worth
 # making", this one asks "is this worth remembering". Values differ by two
 # orders of magnitude. Tunable without a rebuild — see the review point in
 # docs/superpowers/specs/2026-09-03-passive-observation-design.md.
-OBSERVATION_DEBOUNCE_SECONDS = int(os.getenv("OBSERVATION_DEBOUNCE_SECONDS", "300"))
+OBSERVATION_DEBOUNCE_SECONDS = _debounce_default()
 ```
 
 Then add the function directly after `publish_observation` (after line 48):
@@ -958,7 +995,7 @@ async def test_summary_describes_the_transition(scorer: AsyncMock) -> None:
     entry: EpisodicEntry = episodic.write.call_args.args[0]
     assert entry.summary == (
         "[observation] media_player.living_room_apple_tv: "
-        "paused → playing (Harry Potter)"
+        "paused → playing (media_title=Harry Potter)"
     )
 
 
@@ -994,7 +1031,9 @@ async def test_salient_attributes_are_folded_in_declared_order(scorer: AsyncMock
     )
 
     entry: EpisodicEntry = episodic.write.call_args.args[0]
-    assert entry.summary == "[observation] light.kitchen: off → on (178, Kitchen Light)"
+    assert entry.summary == (
+        "[observation] light.kitchen: off → on (brightness=178, friendly_name=Kitchen Light)"
+    )
     assert "ignored" not in entry.summary
 
 
@@ -1114,22 +1153,46 @@ SALIENT_ATTRIBUTES = ("media_title", "brightness", "temperature", "friendly_name
 
 Add these three helpers after `_extract_entities` (after line 62):
 
+> **As-built (2026-09-03).** Three corrections were made to this snippet during
+> implementation and are already folded in below; the tests above assert the shipped
+> behaviour. (1) Salient attributes render as `key=value`, not bare values (`b99b1c0`) —
+> a lone `178` or `0` is uninterpretable to the consolidation LLM, which sees only
+> `- {summary}`, and is close to noise in the embedding. (2) `_transition` treats only
+> `None` as missing, not any falsy value: a sensor reading of `0` or an empty string is a
+> real state and must not be rewritten to `"unknown"`. (3) `attributes` is
+> `isinstance`-checked rather than `or {}`, because `trigger_event` is an untyped
+> `dict[str, Any]` off the wire and a non-dict there would crash the ingest loop.
+
 ```python
 def _transition(obs: ReflexObservation) -> tuple[str, str, str]:
-    """Entity, old state, new state — from the raw trigger_event dict."""
+    """Entity, old state, new state — from the raw trigger_event dict.
+
+    Absent values become "unknown"; falsy ones do not. A sensor reading of ``0``
+    or an empty string is a real state, and rewriting it matches neither the
+    salient-attribute filter (which deliberately keeps a ``0``) nor the truth.
+    """
     event = obs.trigger_event
-    entity = str(event.get("entity_id") or "unknown")
-    old_state = str(event.get("old_state") or "unknown")
-    new_state = str(event.get("new_state") or "unknown")
-    return entity, old_state, new_state
+
+    def _state(key: str) -> str:
+        value = event.get(key)
+        return "unknown" if value is None else str(value)
+
+    return _state("entity_id"), _state("old_state"), _state("new_state")
 
 
 def _build_observation_summary(obs: ReflexObservation) -> str:
-    """Summarise a state change nobody acted on."""
+    """Summarise a state change nobody acted on.
+
+    Salient attributes are rendered ``key=value``. A bare ``178`` or ``0`` is
+    uninterpretable to the consolidation LLM, which sees only ``- {summary}``,
+    and is close to noise in the embedding.
+    """
     entity, old_state, new_state = _transition(obs)
-    attributes = obs.trigger_event.get("attributes") or {}
+    attributes = obs.trigger_event.get("attributes")
+    if not isinstance(attributes, dict):
+        attributes = {}
     salient = [
-        str(attributes[key])
+        f"{key}={attributes[key]}"
         for key in SALIENT_ATTRIBUTES
         if attributes.get(key) not in (None, "")
     ]
@@ -1138,6 +1201,7 @@ def _build_observation_summary(obs: ReflexObservation) -> str:
 
 
 def _build_observation_semantic_key(obs: ReflexObservation) -> str:
+    """Build a semantic key optimised for vector search over passive observations."""
     entity, old_state, new_state = _transition(obs)
     return f"Observed {entity} change from {old_state} to {new_state}"
 ```

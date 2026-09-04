@@ -123,6 +123,14 @@ Salient attributes (`media_title`, `brightness`, `temperature`, `friendly_name`)
 are folded into the summary so the consolidation LLM has something to correlate
 on. Entities come from `trigger_event.entity_id`.
 
+> **As-built note (2026-09-03).** The example above is left as it was approved.
+> What shipped renders salient attributes as `key=value`, not as bare values —
+> `[observation] media_player.living_room_apple_tv: paused → playing
+> (media_title=Harry Potter)`. A lone `178` or `0` is uninterpretable to the
+> consolidation LLM, which sees only `- {summary}`, and is close to noise in the
+> embedding. See `_build_observation_summary` in `core/memory/ingestor.py` and
+> architecture.md §3.7.1 for the shipped format.
+
 `EpisodicEntry.source` is a plain `str`, not a `Literal`, so no schema change is
 needed to introduce a new source value.
 
@@ -199,12 +207,30 @@ After ~7 days of real data, open the Memory page and judge:
 3. Are the conclusions you want obvious from the raw entries, or do they need an
    interpretive pass? That answer — not a guess made in advance — decides whether
    D33 gets built, and what categories it should use.
+4. **Is the novelty dimension still discriminating anything?** `_score_novelty`
+   returns `round(1.0 / count, 3)`, so once an entity has been seen ~1000 times it
+   is pinned at `0.001` and past ~2000 it rounds to a flat `0.0` — at which point
+   novelty's 0.25 weight contributes nothing and significance is decided by the
+   other three dimensions alone. At 200–300 observations a day across ~37 firing
+   entities, the noisiest few reach that in weeks. Neither `alfred:entity:freq` nor
+   `alfred:entity:freq:observed` has any decay or windowing, so the counts only ever
+   go up. Dump both sorted sets (`ZREVRANGE … WITHSCORES`) at the review point and
+   check the spread of scored `novelty` values before concluding the split worked;
+   separating the populations prevents *cross*-contamination, not saturation.
 
 ## Risks
 
 - **Volume growth.** ~250/day, ~7,500/month. Existing decay and cold-migration
   handle it; `source="observation"` scores low on the personal dimension, so
   these age out ahead of conversation. Worth re-measuring at the review point.
+
+  > **As-built note (2026-09-03).** The first clause did not survive review. In
+  > `Librarian._apply_decay` the migration pressure is bounded above by `1.0` while
+  > `decay_migration_threshold` defaults to exactly `1.0`, so `pressure > threshold`
+  > is never true and cold migration cannot fire at all. Nothing ages out of hot
+  > storage today. Tracked in
+  > `docs/backlog/high/librarian-decay-threshold-unreachable.md`; that ticket must
+  > close before this risk can be called mitigated.
 - **Attention set drift.** 87 entities today, seeded lazily from
   `attention_seed.yaml`. It grows on first sight of any entity in a seeded domain,
   so observation volume grows with it. `attention_remove` is sticky and available.
