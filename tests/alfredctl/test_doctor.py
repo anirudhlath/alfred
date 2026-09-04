@@ -254,18 +254,34 @@ def test_probe_reads_the_served_width() -> None:
     assert "200" in detail
 
 
-@pytest.mark.parametrize("status", [404, 405])
-def test_probe_proves_a_wrong_host(status: int) -> None:
-    """No embeddings route is proof, not ambiguity — EMBEDDING_HOST is simply wrong.
+@pytest.mark.parametrize(
+    ("status", "body", "marker"),
+    [
+        # The first two are the exact bodies the vLLM on this box returns, 2026-09-04.
+        (404, {"detail": "Not Found"}, "Not Found"),  # POST /v1/embeddings — no route
+        (
+            404,  # a route that exists, asked for a model it does not serve
+            {"error": {"message": "The model `x` does not exist.", "type": "NotFoundError"}},
+            "does not exist",
+        ),
+        (405, {"detail": "Method Not Allowed"}, "Method Not Allowed"),
+    ],
+)
+def test_probe_proves_the_pair_cannot_work(
+    status: int, body: dict[str, object], marker: str
+) -> None:
+    """404/405 is proof, but not proof of *which* knob is wrong.
 
-    The live instance on this box: the chat vLLM on :8000 answers GET /v1/models with
-    200 and POST /v1/embeddings with 404, because the embedding server is a separate
-    container on :8001.
+    The same status covers a host with no embeddings route and a host that has one but
+    does not serve this model — a correct EMBEDDING_HOST with a typo'd EMBEDDING_MODEL.
+    Both are definite misconfigurations, so the verdict stays fail; naming only
+    EMBEDDING_HOST would send half of them to the wrong knob, so the body that tells
+    them apart is quoted.
     """
     import httpx
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(status, json={"detail": "Not Found"})
+        return httpx.Response(status, json=body)
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         width, verdict, detail = doctor._probe_embedding_dim(
@@ -273,7 +289,10 @@ def test_probe_proves_a_wrong_host(status: int) -> None:
         )
     assert (width, verdict) == (None, "fail")
     assert str(status) in detail
-    assert "wrong server" in detail
+    assert "EMBEDDING_HOST" in detail
+    assert "EMBEDDING_MODEL" in detail
+    # The server's own words, the only thing separating the two causes.
+    assert marker in detail
 
 
 @pytest.mark.parametrize(

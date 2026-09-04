@@ -108,10 +108,12 @@ def _probe_embedding_dim(
 
     ``fail`` — proof:
 
-    * **404 / 405.** This host has no /v1/embeddings route at all, so EMBEDDING_HOST
-      names the wrong server. Not hypothetical: a box running the chat model on :8000
-      and the embedding model on :8001 answers exactly this way when the two are
-      transposed, while GET /v1/models on :8000 still returns 200.
+    * **404 / 405.** The (host, model) pair cannot work — though not which half is
+      wrong, which is why the body is quoted and both variables are named. Two causes,
+      both observed on the vLLM on this box: no /v1/embeddings route at all (the chat
+      server on :8000, which still answers GET /v1/models with 200) replies
+      ``{"detail":"Not Found"}``, while a route that exists but does not serve the
+      model replies ``{"error":{"message":"The model `x` does not exist."}}``.
 
     ``warn`` — inconclusive, so the operator is told rather than blamed:
 
@@ -144,8 +146,9 @@ def _probe_embedding_dim(
             None,
             "fail",
             (
-                f"{url} answered HTTP {resp.status_code} — this host serves no embeddings "
-                f"route, so EMBEDDING_HOST names the wrong server"
+                f"{url} answered HTTP {resp.status_code}{_probe_body_excerpt(resp)} — either "
+                f"EMBEDDING_HOST names a server with no embeddings route, or that server "
+                f"does not serve EMBEDDING_MODEL; its answer above says which"
             ),
         )
     if resp.status_code >= 400:
