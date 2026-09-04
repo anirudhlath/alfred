@@ -1085,6 +1085,7 @@ git commit -m "fix(memory): reject a cold store built at a different dimension"
 
 **Files:**
 - Modify: `runner/__main__.py:30-36`
+- Modify: `alfredctl/launch.py:17-23`
 - Modify: `.env.example:33-37`
 - Modify: `alfredctl/doctor.py:140-151`
 - Test: `tests/runner/test_gateway_rewrite.py`
@@ -1104,6 +1105,18 @@ def test_rewrites_embedding_host(monkeypatch: pytest.MonkeyPatch) -> None:
     }
     rewrite_host_gateway(env)
     assert env["EMBEDDING_HOST"] == "http://host.docker.internal:8001"
+
+
+def test_gateway_rewrite_keys_stay_in_sync() -> None:
+    """Two copies of this tuple exist; a key added to one and not the other is a silent gap.
+
+    `runner/__main__.py` rewrites for `python -m runner`; `alfredctl/launch.py` rewrites
+    for `alfredctl up`. Drift means a host is rewritten on one launch path only.
+    """
+    from alfredctl.launch import _GATEWAY_REWRITE_KEYS as launch_keys
+    from runner.__main__ import _GATEWAY_REWRITE_KEYS as runner_keys
+
+    assert set(launch_keys) == set(runner_keys)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1111,9 +1124,12 @@ def test_rewrites_embedding_host(monkeypatch: pytest.MonkeyPatch) -> None:
 Run: `uv run pytest tests/runner/test_gateway_rewrite.py -k embedding -v`
 Expected: FAIL — `assert 'http://localhost:8001' == 'http://host.docker.internal:8001'`.
 
-- [ ] **Step 3: Add the key**
+- [ ] **Step 3: Add the key to BOTH copies of the tuple**
 
-In `runner/__main__.py`, in `_GATEWAY_REWRITE_KEYS`, add after `"OPENAI_COMPAT_HOST",`:
+`_GATEWAY_REWRITE_KEYS` is duplicated: `runner/__main__.py:30-36` covers `python -m runner`,
+and `alfredctl/launch.py:17-23` covers `alfredctl up`. Adding the key to only one leaves
+`alfredctl up` pointing the embedding host at the container's own localhost. In **both**
+files, add after `"OPENAI_COMPAT_HOST",`:
 
 ```python
     "EMBEDDING_HOST",
@@ -1191,7 +1207,7 @@ Expected: exits without traceback; the `memory embeddings` line reads `pass`.
 ```bash
 ruff check . --fix && ruff format .
 mypy --strict alfredctl/ runner/
-git add runner/__main__.py .env.example alfredctl/doctor.py tests/runner/test_gateway_rewrite.py
+git add runner/__main__.py alfredctl/launch.py .env.example alfredctl/doctor.py tests/runner/test_gateway_rewrite.py
 git commit -m "feat(config): plumb EMBEDDING_HOST through the container gateway and doctor"
 ```
 
