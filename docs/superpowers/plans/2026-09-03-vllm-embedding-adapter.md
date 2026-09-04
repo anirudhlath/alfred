@@ -1013,135 +1013,97 @@ vec0(embedding float[{dim}])`. On an already-migrated database that DDL never ru
 so a dimension change leaves the old width in place and every insert fails at runtime.
 Detect it at schema time with the same actionable error as Task 5.
 
+Three corrections to the original draft of this task, made while implementing it and
+verified against a real sqlite-vec database:
+
+1. **The draft's skip guard meant the test never ran.** It read `reopened._vec_ready` on a
+   freshly constructed store, but `_vec_ready` is only set inside `_connect()`, so it is
+   always `False` there and the test skipped unconditionally. Read it off the store that
+   *built* the schema instead.
+2. **The draft's recovery message was not true.** It said "re-embed into a fresh cold
+   store (delete the sqlite file and restart)". Nothing re-embeds: `_migrate_v2`'s
+   back-fill runs only when `SqliteVecStore` is constructed with an `embedder`, and none
+   of the four production call sites (`core/conscious/__main__.py`,
+   `core/librarian/__main__.py`, `core/memory/ingestor_main.py`,
+   `core/channels/admin_api.py`) passes one. And deleting the file is *destructive*: cold
+   is the last stop, since `copy_to_cold_and_remove()` deletes from the hot store once it
+   has written here. The non-destructive recovery is to drop both vec0 tables and reset
+   `schema_version` to 1 — verified to rebuild them at the new width while keeping every
+   `episodic_entries` row — while saying plainly that the rebuilt tables come up empty.
+3. **The guard belongs before the DDL, not after it.** The draft called it from the fast
+   path *and* from the end of `_ensure_schema`. The end call cannot fire on a fresh
+   database (the tables were just created at `self._dim`), and on a half-migrated one it
+   fires only after `_migrate_v2` has already committed `version = 2` over a database it
+   is about to reject. One call immediately after `_connect()` covers every path and does
+   no work first.
+
 - [ ] **Step 1: Write the failing tests**
 
-Append to `tests/core/memory/test_sqlite_vec_store.py`:
+Append a dimension-guard section to `tests/core/memory/test_sqlite_vec_store.py`, driven
+against a real sqlite-vec file rather than a stub — the width the guard reads comes out of
+sqlite's stored DDL, and a hand-written DDL string would pass even if vec0 recorded
+something else. Cover, at minimum:
 
-```python
-@pytest.mark.asyncio
-async def test_schema_rejects_a_dimension_mismatch(tmp_path: Path) -> None:
-    """An existing vec0 table at another width must fail loudly at schema time."""
-    from core.memory.sqlite_vec_store import SqliteVecStore
-
-    db_path = tmp_path / "cold.db"
-    store = SqliteVecStore(str(db_path), dim=384)
-    await store._ensure_schema()
-    await store.close()
-
-    reopened = SqliteVecStore(str(db_path), dim=1024)
-    try:
-        if not reopened._vec_ready:
-            pytest.skip("sqlite-vec extension unavailable — nothing to guard")
-        with pytest.raises(RuntimeError, match="dim=384"):
-            await reopened._ensure_schema()
-    finally:
-        await reopened.close()
-
-
-@pytest.mark.asyncio
-async def test_schema_accepts_a_matching_dimension(tmp_path: Path) -> None:
-    from core.memory.sqlite_vec_store import SqliteVecStore
-
-    db_path = tmp_path / "cold.db"
-    store = SqliteVecStore(str(db_path), dim=384)
-    await store._ensure_schema()
-    await store.close()
-
-    reopened = SqliteVecStore(str(db_path), dim=384)
-    try:
-        await reopened._ensure_schema()
-    finally:
-        await reopened.close()
-```
+- a mismatch raises `RuntimeError`, naming the stored width and the configured width in
+  *that* order (so swapping them in the message fails the test);
+- a matching width is accepted;
+- the prescribed recovery is spelled out in the message **and actually works** when the
+  test executes it against the file;
+- a mismatch in `vec_episodic_semantic` alone is caught (both tables carry a width);
+- a half-migrated database (`schema_version` reset to 1) raises *without* the migration
+  having run — assert `MAX(version)` is still 1 afterwards;
+- the mismatch is latched: fix the file underneath a store that already raised, and it
+  must still raise;
+- `add()` raises too, not just `_ensure_schema()`;
+- an unparseable DDL logs a "dimension guard skipped" warning and does not raise.
 
 The signatures are confirmed: `SqliteVecStore(db_path, dim=384, embedder=None)`
-(`core/memory/sqlite_vec_store.py:54-58`) and `async def close()`
-(`core/memory/sqlite_vec_store.py:418`). Add `import pytest` and `from pathlib import Path`
-to the test file if they are not already there.
+(`core/memory/sqlite_vec_store.py:54-58`) and `async def close()`. The test module needs
+`logging`, `sqlite3`, `sqlite_vec` and — under `TYPE_CHECKING`, or ruff's TC003 fires —
+`pathlib.Path`.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `uv run pytest tests/core/memory/test_sqlite_vec_store.py -k dimension -v`
+Run: `uv run pytest tests/core/memory/test_sqlite_vec_store.py -k "dimension or mismatch" -v`
 Expected: FAIL — `DID NOT RAISE <class 'RuntimeError'>` (or SKIP if sqlite-vec is not
 installed, in which case install the `memory` extra and re-run: `uv sync --all-extras`).
 
 - [ ] **Step 3: Add the guard**
 
-In `core/memory/sqlite_vec_store.py`, add this method to the class, immediately after
-`_ensure_schema`:
+Add `import re` to the module (it does not currently import it) and a module-level
+`_VEC_TABLES = ("vec_episodic_content", "vec_episodic_semantic")`, plus a
+`self._dim_mismatch: str | None = None` latch in `__init__` mirroring `RedisVectorStore`.
+Then add `_verify_vec_dim(db)` after `_ensure_schema`: for each table in `_VEC_TABLES`,
+read `sql` from `sqlite_master`, `re.search(r"float\[(\d+)\]", ...)`, and on a proven
+mismatch set `self._dim_mismatch` and raise it. Skip when `self._vec_ready` is False (the
+store full-scans, so the width is not load-bearing); `continue` when the table does not
+exist yet; and **warn, never return silently**, when the DDL does not expose a width.
+
+The message must give the recovery from correction 2 above — the drop/reset SQL, the
+caveat that the rebuilt tables come up empty, and an explicit "do not delete the sqlite
+file" — not a promise of a re-embed that nothing performs.
+
+- [ ] **Step 4: Call the guard once, before any DDL**
+
+In `_ensure_schema`, raise the latch first, then call the guard immediately after
+`_connect()` and before the fast-path `schema_version` read:
 
 ```python
-    async def _verify_vec_dim(self, db: aiosqlite.Connection) -> None:
-        """Fail loudly if the vec0 tables were created at a different dimension.
+        if self._dim_mismatch is not None:
+            raise RuntimeError(self._dim_mismatch)
 
-        ``CREATE VIRTUAL TABLE IF NOT EXISTS`` is a no-op on an existing table, so a
-        changed EMBEDDING_MODEL/EMBEDDING_BACKEND leaves the old width in place and
-        every insert fails later, far from the cause. The declared width is recoverable
-        from the stored DDL.
-        """
-        if not self._vec_ready:
-            return
-        cursor = await db.execute(
-            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
-            ("vec_episodic_content",),
-        )
-        row = await cursor.fetchone()
-        if row is None or not row[0]:
-            return  # table not created yet — _migrate_v2 will build it at self._dim
-        match = re.search(r"float\[(\d+)\]", row[0])
-        if match is None:
-            return
-        existing = int(match.group(1))
-        if existing == self._dim:
-            return
-        raise RuntimeError(
-            f"Cold store vec0 tables were built with dim={existing} but the configured "
-            f"embedding model produces dim={self._dim}. Re-embed into a fresh cold store "
-            f"(delete the sqlite file and restart), or restore the previous "
-            f"EMBEDDING_MODEL/EMBEDDING_BACKEND."
-        )
-```
+        db = await self._connect()
 
-Add `import re` to the module's imports — `core/memory/sqlite_vec_store.py` does not
-currently import it.
-
-- [ ] **Step 4: Call the guard from both schema paths**
-
-In `_ensure_schema`, the fast path returns early on an already-migrated database, so the
-check must run there too. Replace:
-
-```python
-            if row is not None and row[0] == 1 and row[1] is not None and row[1] >= 2:
-                self._schema_ready = True
-                return
-```
-
-with:
-
-```python
-            if row is not None and row[0] == 1 and row[1] is not None and row[1] >= 2:
-                await self._verify_vec_dim(db)
-                self._schema_ready = True
-                return
-```
-
-and replace the end of the method:
-
-```python
-        self._schema_ready = True
-```
-
-with:
-
-```python
         await self._verify_vec_dim(db)
-        self._schema_ready = True
 ```
+
+Because the guard raises before `self._schema_ready = True`, every later `_get_db()` call
+re-enters `_ensure_schema` and hits the latch, so `add`/`search`/`count` all fail closed.
 
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `uv run pytest tests/core/memory/test_sqlite_vec_store.py -v`
-Expected: PASS (whole file, including the two new tests).
+Expected: PASS (whole file, including the new tests).
 
 - [ ] **Step 6: Lint, type-check, commit**
 
