@@ -16,7 +16,11 @@ from loguru import logger
 from bus.schemas.events import ReflexObservation
 from core.memory.schemas import EpisodicEntry, SignificanceScore
 from shared.redis_streams import read_group, reclaim_stale
-from shared.streams import REFLEX_OBSERVATIONS_STREAM, decode_stream_value
+from shared.streams import (
+    INGEST_ATTEMPTS_KEY,
+    REFLEX_OBSERVATIONS_STREAM,
+    decode_stream_value,
+)
 
 if TYPE_CHECKING:
     import asyncio
@@ -31,6 +35,27 @@ GROUP = "memory-ingestor"
 CONSUMER = "worker-1"
 # One PEL recovery pass per minute at the loop's 5s block.
 _PEL_RECLAIM_EVERY = 12
+# XAUTOCLAIM budget per reclaim pass. reclaim_stale always rescans from the head
+# of the PEL (start_id="0-0") and discards the cursor, so this is a *window on
+# the head*, not a page — see _MAX_DELIVERY_ATTEMPTS.
+_PEL_RECLAIM_COUNT = 10
+# How many times one stream entry may be delivered before it is ACKed away.
+#
+# Two problems, one cap. (1) SignificanceScorer._score_novelty ZINCRBYs before
+# EpisodicMemory.write, so every reclaim of an entry that dies on the embed path
+# counts its entities again and permanently deflates novelty (1/count) once the
+# outage clears. (2) A parseable entry that fails deterministically sits at the
+# head of the PEL and eats the whole _PEL_RECLAIM_COUNT budget every pass, so
+# nothing behind it is ever reclaimed. Bounding deliveries fixes both.
+#
+# Five is ~5 minutes of transient tolerance at the one-reclaim-per-minute
+# cadence, which covers a GPU-OOM blip on the embed path. Past that the entry is
+# ACKed and logged at ERROR: a passive observation is cheap to lose (~250/day of
+# a highly redundant signal) and a wedged PEL is not.
+_MAX_DELIVERY_ATTEMPTS = 5
+# Counters are deleted on success and on drop; the whole-key TTL only bounds
+# what a crash between increment and cleanup can leak.
+_ATTEMPTS_TTL_SECONDS = 3600
 
 # Folded into passive observation summaries so the consolidation LLM has
 # something to correlate on beyond the bare state transition.
@@ -147,6 +172,31 @@ async def ingest_observation(
     logger.debug("Ingested observation {}: {}", obs.observation_id, entry.summary)
 
 
+async def _record_failed_attempt(redis: AioRedis, entry_id: bytes | str) -> int:
+    """Count this delivery of ``entry_id`` and return the running total.
+
+    Bookkeeping is best-effort: if the hash write fails we report 1, which
+    degrades to the old unbounded-retry behaviour rather than dropping an entry
+    because Redis hiccuped.
+    """
+    field = decode_stream_value(entry_id)
+    try:
+        attempts = int(await redis.hincrby(INGEST_ATTEMPTS_KEY, field, 1))
+        await redis.expire(INGEST_ATTEMPTS_KEY, _ATTEMPTS_TTL_SECONDS)
+    except Exception as exc:
+        logger.warning("Could not record a delivery attempt for {}: {}", entry_id, exc)
+        return 1
+    return attempts
+
+
+async def _clear_attempts(redis: AioRedis, entry_id: bytes | str) -> None:
+    """Forget an entry's delivery history once it has left the PEL."""
+    try:
+        await redis.hdel(INGEST_ATTEMPTS_KEY, decode_stream_value(entry_id))
+    except Exception as exc:
+        logger.warning("Could not clear the delivery counter for {}: {}", entry_id, exc)
+
+
 async def _ingest_entry(
     redis: AioRedis,
     entry_id: bytes | str,
@@ -165,6 +215,13 @@ async def _ingest_entry(
     * **Transient** (the embed/write path: GPU OOM, Redis blip) — left un-ACKed
       so the next reclaim pass picks it back up. This is the case the loop
       previously lost outright.
+
+    The third case is an entry that *parses* but fails deterministically
+    downstream: indistinguishable from transient at the failure site, so it is
+    retried — but only ``_MAX_DELIVERY_ATTEMPTS`` times, after which it is ACKed
+    and logged at ERROR. Otherwise it is reclaimed forever, re-incrementing the
+    observed-frequency counters for its entities on every pass and holding the
+    head of the PEL against everything behind it.
     """
     raw = entry_data.get("event") or entry_data.get(b"event")
     if raw is None:
@@ -180,13 +237,31 @@ async def _ingest_entry(
         return
 
     try:
-        await ingest_observation(obs, episodic_memory, scorer, passive_scorer=passive_scorer)
+        await ingest_observation(obs, episodic_memory, scorer, passive_scorer)
     except Exception as e:
+        attempts = await _record_failed_attempt(redis, entry_id)
+        if attempts >= _MAX_DELIVERY_ATTEMPTS:
+            logger.error(
+                "Observation {} failed {} deliveries — giving up and dropping it: {}",
+                entry_id,
+                attempts,
+                e,
+            )
+            await redis.xack(REFLEX_OBSERVATIONS_STREAM, GROUP, entry_id)
+            await _clear_attempts(redis, entry_id)
+            return
         # Deliberately NOT ACKed — the reclaim pass retries it.
-        logger.error("Error ingesting observation {} — left pending for reclaim: {}", entry_id, e)
+        logger.error(
+            "Error ingesting observation {} (attempt {}/{}) — left pending for reclaim: {}",
+            entry_id,
+            attempts,
+            _MAX_DELIVERY_ATTEMPTS,
+            e,
+        )
         return
 
     await redis.xack(REFLEX_OBSERVATIONS_STREAM, GROUP, entry_id)
+    await _clear_attempts(redis, entry_id)
 
 
 async def run_ingestor(
@@ -203,6 +278,7 @@ async def run_ingestor(
     logger.info("Memory Ingestor started. Consuming '{}'...", REFLEX_OBSERVATIONS_STREAM)
 
     pel_counter = 0
+    full_batch_streak = 0
     while not (shutdown_event and shutdown_event.is_set()):
         entries = await read_group(
             redis,
@@ -222,11 +298,32 @@ async def run_ingestor(
         pel_counter += 1
         if pel_counter >= _PEL_RECLAIM_EVERY:
             pel_counter = 0
-            reclaimed = await reclaim_stale(redis, REFLEX_OBSERVATIONS_STREAM, GROUP, CONSUMER)
+            reclaimed = await reclaim_stale(
+                redis,
+                REFLEX_OBSERVATIONS_STREAM,
+                GROUP,
+                CONSUMER,
+                count=_PEL_RECLAIM_COUNT,
+            )
             if reclaimed:
                 logger.info(
                     "Reclaimed {} pending observations on '{}'",
                     len(reclaimed),
+                    REFLEX_OBSERVATIONS_STREAM,
+                )
+            # reclaim_stale rescans from the head of the PEL every pass, so a
+            # full batch two passes running means the head is not draining and
+            # whatever sits behind it is never being reached.
+            if len(reclaimed) >= _PEL_RECLAIM_COUNT:
+                full_batch_streak += 1
+            else:
+                full_batch_streak = 0
+            if full_batch_streak >= 2:
+                logger.warning(
+                    "A full reclaim batch ({}) came back {} passes running on '{}' — "
+                    "the head of the PEL is not draining and entries behind it are starving",
+                    _PEL_RECLAIM_COUNT,
+                    full_batch_streak,
                     REFLEX_OBSERVATIONS_STREAM,
                 )
             batch.extend(reclaimed)
