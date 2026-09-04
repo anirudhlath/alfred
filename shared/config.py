@@ -127,8 +127,11 @@ def normalize_embedding_host(raw: str) -> str:
     return host or DEFAULT_EMBEDDING_HOST
 
 
-def positive_float(name: str, raw: str, default: float) -> float:
-    """Parse a positive float, naming the variable in every failure; blank means default.
+def positive_seconds(name: str, raw: str, default: float) -> float:
+    """Parse a positive number of seconds, naming the variable in every failure.
+
+    Blank means the default. Named for its unit because the messages are ("must be a
+    number of seconds"): a different quantity needs its own noun, not this one.
 
     ``float(...)`` raises ``could not convert string to float: \'abc\'``, which names
     neither the variable nor the file it came from, and it accepts ``0`` and negatives —
@@ -153,9 +156,9 @@ def positive_float(name: str, raw: str, default: float) -> float:
     return value
 
 
-def positive_float_env(name: str, default: float) -> float:
-    """Read a positive float env var through :func:`positive_float`."""
-    return positive_float(name, os.getenv(name, ""), default)
+def positive_seconds_env(name: str, default: float) -> float:
+    """Read a positive number of seconds from the environment."""
+    return positive_seconds(name, os.getenv(name, ""), default)
 
 
 def normalize_embedding_backend(raw: str) -> str:
@@ -288,7 +291,7 @@ class AlfredConfig:
         # default: a key present but empty (``EMBEDDING_HOST=`` in .env) is "" here.
         embedding_host = normalize_embedding_host(os.getenv("EMBEDDING_HOST", ""))
         embedding_backend = normalize_embedding_backend(os.getenv("EMBEDDING_BACKEND", ""))
-        embedding_timeout_seconds = positive_float_env(
+        embedding_timeout_seconds = positive_seconds_env(
             "EMBEDDING_TIMEOUT_SECONDS", DEFAULT_EMBEDDING_TIMEOUT_SECONDS
         )
         return cls(

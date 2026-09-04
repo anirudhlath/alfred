@@ -152,7 +152,7 @@ def _check_embeddings(env: dict[str, str]) -> DoctorCheck:
         normalize_embedding_dim,
         normalize_embedding_host,
         normalize_embedding_model,
-        positive_float,
+        positive_seconds,
     )
 
     model = normalize_embedding_model(env.get("EMBEDDING_MODEL", ""))
@@ -161,7 +161,7 @@ def _check_embeddings(env: dict[str, str]) -> DoctorCheck:
         dim = normalize_embedding_dim(env.get("EMBEDDING_DIM", ""), model)
         # Applies to the openai backend only, but from_env parses it whatever the
         # backend is — so a bad value takes every service down, not just that path.
-        timeout = positive_float(
+        timeout = positive_seconds(
             "EMBEDDING_TIMEOUT_SECONDS",
             env.get("EMBEDDING_TIMEOUT_SECONDS", ""),
             DEFAULT_EMBEDDING_TIMEOUT_SECONDS,
