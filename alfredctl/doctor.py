@@ -17,6 +17,7 @@ warning, never a hard failure, so ``doctor`` is safe to run anywhere.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -64,6 +65,22 @@ def _host_side(url: str) -> str:
     return url.replace("host.docker.internal", "localhost").replace(
         "host.containers.internal", "localhost"
     )
+
+
+# Authority-only: the userinfo of a URL is everything between "scheme://" and the "@"
+# that ends it, so an @ inside a path is left alone and this cannot raise the way
+# urlsplit can on a malformed authority.
+_USERINFO_RE = re.compile(r"^([a-zA-Z][\w+.-]*://)[^/@]*@")
+
+
+def _redact_userinfo(url: str) -> str:
+    """Hide any ``user:password@`` before a URL is printed.
+
+    Doctor output is pasted into issues and chat, and EMBEDDING_HOST / HA_HOST /
+    OLLAMA_HOST can carry basic-auth credentials. Display only — the request itself is
+    still made with the URL as configured.
+    """
+    return _USERINFO_RE.sub(r"\1***@", url)
 
 
 def _probe(url: str, headers: dict[str, str] | None = None) -> tuple[bool, str]:
@@ -130,6 +147,7 @@ def _probe_embedding_dim(
     import httpx
 
     url = _host_side(f"{host.rstrip('/')}/v1/embeddings")
+    shown = _redact_userinfo(url)
     key = api_key.strip()
     headers = {"Authorization": f"Bearer {key}"} if key else {}
     body = {"model": model, "input": "alfredctl doctor probe"}
@@ -140,26 +158,26 @@ def _probe_embedding_dim(
             with httpx.Client(timeout=_PROBE_TIMEOUT_SECONDS) as owned:
                 resp = owned.post(url, json=body, headers=headers)
     except Exception as exc:
-        return None, "warn", f"{url} unreachable ({type(exc).__name__})"
+        return None, "warn", f"{shown} unreachable ({type(exc).__name__})"
     if resp.status_code in (404, 405):
         return (
             None,
             "fail",
             (
-                f"{url} answered HTTP {resp.status_code}{_probe_body_excerpt(resp)} — either "
+                f"{shown} answered HTTP {resp.status_code}{_probe_body_excerpt(resp)} — either "
                 f"EMBEDDING_HOST names a server with no embeddings route, or that server "
                 f"does not serve EMBEDDING_MODEL; its answer above says which"
             ),
         )
     if resp.status_code >= 400:
-        return None, "warn", f"{url} answered HTTP {resp.status_code}{_probe_body_excerpt(resp)}"
+        return None, "warn", f"{shown} answered HTTP {resp.status_code}{_probe_body_excerpt(resp)}"
     try:
         width = len(resp.json()["data"][0]["embedding"])
     except Exception:
         return (
             None,
             "warn",
-            f"{url} answered HTTP {resp.status_code}, but not an embeddings response",
+            f"{shown} answered HTTP {resp.status_code}, but not an embeddings response",
         )
     return width, "pass", f"HTTP {resp.status_code}"
 
@@ -207,17 +225,23 @@ def _check_reflex(env: dict[str, str], online: bool) -> DoctorCheck:
         if online:
             ok, detail = _probe(f"{host.rstrip('/')}/v1/models")
             status: Status = "pass" if ok else "warn"
-            return DoctorCheck("reflex (System 1)", status, f"openai backend {host} ({detail})")
-        return DoctorCheck("reflex (System 1)", "pass", f"openai backend {host}, model={model}")
+            return DoctorCheck(
+                "reflex (System 1)", status, f"openai backend {_redact_userinfo(host)} ({detail})"
+            )
+        return DoctorCheck(
+            "reflex (System 1)", "pass", f"openai backend {_redact_userinfo(host)}, model={model}"
+        )
     host = env.get("OLLAMA_HOST", "http://localhost:11434").strip()
     if online:
         ok, detail = _probe(f"{host.rstrip('/')}/api/tags")
         if not ok:
             return DoctorCheck(
-                "reflex (System 1)", "warn", f"Ollama at {host} unreachable: {detail}"
+                "reflex (System 1)",
+                "warn",
+                f"Ollama at {_redact_userinfo(host)} unreachable: {detail}",
             )
         return DoctorCheck("reflex (System 1)", "pass", f"Ollama reachable ({detail})")
-    return DoctorCheck("reflex (System 1)", "pass", f"ollama backend {host}")
+    return DoctorCheck("reflex (System 1)", "pass", f"ollama backend {_redact_userinfo(host)}")
 
 
 def _check_home_assistant(env: dict[str, str], online: bool) -> DoctorCheck:
@@ -234,7 +258,9 @@ def _check_home_assistant(env: dict[str, str], online: bool) -> DoctorCheck:
             f"{host.rstrip('/')}/api/", headers={"Authorization": f"Bearer {token}"}
         )
         if not ok:
-            return DoctorCheck("home assistant", "warn", f"token set but {host} probe: {detail}")
+            return DoctorCheck(
+                "home assistant", "warn", f"token set but {_redact_userinfo(host)} probe: {detail}"
+            )
         return DoctorCheck("home assistant", "pass", f"reachable ({detail})")
     return DoctorCheck("home assistant", "pass", "token set")
 
@@ -310,7 +336,8 @@ def _check_embeddings(env: dict[str, str], online: bool) -> DoctorCheck:
 
     if backend == "openai":
         # Gating is irrelevant on this path — the server holds the weights, not us.
-        where = f"via {host} (timeout {timeout:g}s)"
+        # Redacted for display only; the probe below still uses the configured host.
+        where = f"via {_redact_userinfo(host)} (timeout {timeout:g}s)"
         if not online:
             return DoctorCheck("memory embeddings", status, f"model={model} {where}, {note}")
         served, verdict, detail = _probe_embedding_dim(
@@ -325,7 +352,8 @@ def _check_embeddings(env: dict[str, str], online: bool) -> DoctorCheck:
             return DoctorCheck(
                 "memory embeddings",
                 "fail",
-                f"{host} emits {served} dims for {model} but the index is built at {dim} — "
+                f"{_redact_userinfo(host)} emits {served} dims for {model} but the index is "
+                f"built at {dim} — "
                 f"the vector store refuses to start on the mismatch",
             )
         return DoctorCheck(

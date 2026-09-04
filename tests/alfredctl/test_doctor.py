@@ -374,3 +374,55 @@ def test_check_reports_a_proven_wrong_host_as_fail(monkeypatch: pytest.MonkeyPat
     check = doctor._check_embeddings(_openai_env(), online=True)
     assert check.status == "fail"
     assert "serves no embeddings route" in check.detail
+
+
+@pytest.mark.parametrize(
+    ("raw", "shown"),
+    [
+        ("http://user:pw@vllm.example:8001", "http://***@vllm.example:8001"),
+        ("https://tok@embed.example/v1", "https://***@embed.example/v1"),
+        # No userinfo, and an @ that belongs to the path: both left alone.
+        ("http://vllm.example:8001", "http://vllm.example:8001"),
+        ("http://vllm.example/models/a@b", "http://vllm.example/models/a@b"),
+        ("", ""),
+    ],
+)
+def test_redact_userinfo(raw: str, shown: str) -> None:
+    assert doctor._redact_userinfo(raw) == shown
+
+
+def test_embedding_host_credentials_are_not_echoed(tmp_path: Path) -> None:
+    """Operators paste doctor output into issues; basic-auth in a host must not ride along."""
+    env = _write_env(
+        tmp_path,
+        "OPENROUTER_API_KEY=sk-or-v1-abc\n"
+        "EMBEDDING_BACKEND=openai\n"
+        "EMBEDDING_HOST=http://alfred:hunter2@embed.example:8001\n",
+    )
+    detail = _detail(doctor.run_checks(env, online=False), "memory embeddings")
+    assert "hunter2" not in detail
+    assert "***@embed.example:8001" in detail
+
+
+def test_reflex_host_credentials_are_not_echoed(tmp_path: Path) -> None:
+    env = _write_env(tmp_path, "OPENROUTER_API_KEY=sk-or-v1-abc\nOLLAMA_HOST=http://a:hunter2@ol\n")
+    detail = _detail(doctor.run_checks(env, online=False), "reflex (System 1)")
+    assert "hunter2" not in detail
+
+
+def test_probe_detail_redacts_credentials() -> None:
+    import httpx
+
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(404, json={"detail": "Not Found"})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        _, _, detail = doctor._probe_embedding_dim(
+            "http://alfred:hunter2@embed.example:8001", "BAAI/bge-m3", "", client=client
+        )
+    # Redacted where it is printed, intact where it is sent.
+    assert "hunter2" not in detail
+    assert "hunter2" in seen["url"]
