@@ -42,6 +42,12 @@ def data_mode() -> str:
 # acceptance. Known models map to their output dimension so ``EMBEDDING_DIM`` stays in
 # sync automatically — the vector index dimension must match the model, or search breaks.
 DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+
+# How the embedding model is run, and where. ``sentence_transformers`` keeps a fresh
+# clone working with no server; ``openai`` talks to an OpenAI-compatible
+# /v1/embeddings server (vLLM --runner pooling) at ``DEFAULT_EMBEDDING_HOST``.
+DEFAULT_EMBEDDING_BACKEND = "sentence_transformers"
+DEFAULT_EMBEDDING_HOST = "http://localhost:8001"
 _KNOWN_EMBEDDING_DIMS: dict[str, int] = {
     "sentence-transformers/all-MiniLM-L6-v2": 384,
     "sentence-transformers/all-mpnet-base-v2": 768,
@@ -59,6 +65,23 @@ def embedding_dim_for(model: str) -> int:
     setting ``EMBEDDING_MODEL`` to a known model auto-selects the right index dimension.
     """
     return _KNOWN_EMBEDDING_DIMS.get(model, 384)
+
+
+def normalize_embedding_host(raw: str) -> str:
+    """Normalise ``EMBEDDING_HOST`` to a bare origin the client appends ``/v1/...`` to.
+
+    Two ways this bites, both silent at config time and opaque at first embed:
+
+    * **Blank.** ``.env`` carrying ``EMBEDDING_HOST=`` sets the key to ``""``, which
+      satisfies ``os.getenv`` and defeats its default. The provider would then build
+      a schemeless ``"/v1/embeddings"`` and httpx raises ``UnsupportedProtocol``.
+    * **A trailing ``/v1``.** That is exactly how vLLM and the OpenAI docs print base
+      URLs, and keeping it yields ``/v1/v1/embeddings`` — a 404 from a healthy server.
+    """
+    host = raw.strip().rstrip("/")
+    if host.endswith("/v1"):
+        host = host.removesuffix("/v1").rstrip("/")
+    return host or DEFAULT_EMBEDDING_HOST
 
 
 def models_root() -> Path:
@@ -109,8 +132,8 @@ class AlfredConfig:
     # /v1/embeddings server (vLLM --runner pooling) at ``embedding_host``.
     # ``embedding_model`` names the model either way, so ``embedding_dim``
     # keeps tracking it through ``embedding_dim_for()``.
-    embedding_backend: str = "sentence_transformers"
-    embedding_host: str = "http://localhost:8001"
+    embedding_backend: str = DEFAULT_EMBEDDING_BACKEND
+    embedding_host: str = DEFAULT_EMBEDDING_HOST
     embedding_model: str = DEFAULT_EMBEDDING_MODEL
     embedding_dim: int = 384
 
@@ -163,12 +186,11 @@ class AlfredConfig:
         # never silently drift out of sync (a mismatch breaks vector search).
         embedding_model = os.getenv("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
         embedding_dim = int(os.getenv("EMBEDDING_DIM", str(embedding_dim_for(embedding_model))))
-        # Host has no /v1 suffix — the client appends the path, matching
-        # OPENAI_COMPAT_HOST. Strip a trailing slash so we never build "//v1".
-        embedding_host = os.getenv("EMBEDDING_HOST", "http://localhost:8001").strip().rstrip("/")
+        # Both read through a blank-means-default guard rather than os.getenv's
+        # default: a key present but empty (``EMBEDDING_HOST=`` in .env) is "" here.
+        embedding_host = normalize_embedding_host(os.getenv("EMBEDDING_HOST", ""))
         embedding_backend = (
-            os.getenv("EMBEDDING_BACKEND", "sentence_transformers").strip().lower()
-            or "sentence_transformers"
+            os.getenv("EMBEDDING_BACKEND", "").strip().lower() or DEFAULT_EMBEDDING_BACKEND
         )
         return cls(
             redis_host=os.getenv("REDIS_HOST", "localhost"),
