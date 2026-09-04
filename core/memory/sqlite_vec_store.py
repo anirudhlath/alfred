@@ -203,6 +203,15 @@ class SqliteVecStore(VectorStore):
         failure silently and forever, which is this guard's own failure mode in the
         other direction — but it means a cold-store width change disables episodic
         recall entirely, not just its archive half. The message below says so.
+
+        The latch also makes the file quiescent, which is what lets the recovery
+        run against a live deployment: ``add``/``search``/``delete``/``exists``/
+        ``count`` all enter through ``_get_db()``, so even the two that only read
+        ``episodic_entries`` raise before opening a cursor. Exactly one reader
+        escapes that — ``GET /memory/episodic`` without ``?q=`` opens the file
+        itself with ``aiosqlite`` (``core/channels/admin_api.py:394``) rather than
+        going through this class — but it is read-only, short-lived and never
+        names the vec0 tables, so it does not block the drop.
         """
         if not self._vec_ready:
             # Without the extension the store full-scans instead of using vec0, so
@@ -242,15 +251,22 @@ class SqliteVecStore(VectorStore):
                 f"GET /memory/episodic?q= returns 503. "
                 f"To go back: restore the previous EMBEDDING_MODEL/EMBEDDING_BACKEND "
                 f"— nothing has been lost. "
-                f"To go forward: stop Alfred, then drop the two vec0 tables and "
-                f"reset the schema version. DROP TABLE on a vec0 table needs the "
-                f"extension loaded — without it sqlite fails with 'no such "
-                f"module: vec0' — so run this from an interpreter that has "
-                f"Alfred's own dependencies. Do not reach for the sqlite3 CLI: "
-                f"the host that has it does not have sqlite-vec, and the image "
-                f"that has sqlite-vec does not ship the CLI. In a container "
-                f"deployment prefix the line below with, for example, "
-                f"'docker exec <alfred-container>':\n"
+                f"To go forward: drop the two vec0 tables, reset the schema "
+                f"version, and restart. You do NOT need to stop Alfred first. "
+                f"This mismatch is latched, so every operation on this store — "
+                f"add, search, delete, exists and count, including the two that "
+                f"only read episodic_entries — already raises before it touches "
+                f"the file, and nothing is writing to it. The one path that "
+                f"still reads it, GET /memory/episodic without ?q=, opens the "
+                f"file directly and read-only and never touches the vec0 "
+                f"tables, so it cannot block the drop. DROP TABLE on a vec0 "
+                f"table does need the extension loaded — without it sqlite "
+                f"fails with 'no such module: vec0' — so run this from an "
+                f"interpreter that has Alfred's own dependencies. Do not reach "
+                f"for the sqlite3 CLI: the host that has it does not have "
+                f"sqlite-vec, and the image that has sqlite-vec does not ship "
+                f"the CLI. In a container deployment prefix the line below "
+                f"with, for example, 'docker exec <alfred-container>':\n"
                 f"""  python -c "import sqlite3, sqlite_vec; """
                 f"""db = sqlite3.connect('{self._db_path}'); """
                 f"""db.enable_load_extension(True); sqlite_vec.load(db); """
@@ -258,7 +274,9 @@ class SqliteVecStore(VectorStore):
                 f"""db.execute('DROP TABLE vec_episodic_semantic'); """
                 f"""db.execute('UPDATE schema_version SET version = 1'); """
                 f"""db.commit()"\n"""
-                f"Restarting then rebuilds both tables at dim={self._dim} and keeps "
+                f"The restart is not optional: this latch is per-process and "
+                f"nothing clears it in place. Restarting then rebuilds both "
+                f"tables at dim={self._dim} and keeps "
                 f"every episodic_entries row. But they come back EMPTY and nothing "
                 f"re-embeds them: the v2 migration back-fills only when "
                 f"SqliteVecStore is constructed with an embedder, and no service "

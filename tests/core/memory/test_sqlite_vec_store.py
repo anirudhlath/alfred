@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import aiosqlite
 import pytest
 
 from core.memory.sqlite_vec_store import SqliteVecStore, _pack
@@ -773,6 +774,11 @@ async def test_dimension_mismatch_recovery_message_is_one_an_operator_can_run(
     # It must name *this* store's file rather than a placeholder: in the container
     # the real path is /data/episodic_cold.db, which no operator should have to guess.
     assert db_path in _prescribed_command(message)
+    # It must say the recovery is safe against a running deployment *and why*, or the
+    # operator stops Alfred and hits the no-sqlite-vec-on-the-host wall instead.
+    assert "You do NOT need to stop Alfred first" in message
+    assert "already raises before it touches" in message
+    assert "The restart is not optional" in message
 
     result = _run_prescribed_recovery(message)
     assert result.returncode == 0, f"prescribed recovery failed: {result.stderr}"
@@ -1006,3 +1012,99 @@ async def test_guard_is_skipped_when_the_vec_extension_is_unavailable(
             assert await reopened.search(query_embedding=_emb(dim=1024), limit=5) == []
         finally:
             await reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_a_latched_mismatch_makes_every_store_operation_inert(tmp_path: Path) -> None:
+    """The message tells the operator not to stop Alfred. This is why that is true.
+
+    Every entry point routes through ``_get_db()``, so the latch stops the two
+    operations that never touch vec0 (``exists``, ``count``) just as firmly as the
+    vector ones. If any of these started succeeding, the file would no longer be
+    quiescent and the "no need to stop Alfred" guidance would be unsafe.
+    """
+    db_path = str(tmp_path / "cold.db")
+    if not await _cold_store_at(db_path, 4):
+        pytest.skip("sqlite-vec extension unavailable — nothing to guard")
+
+    store = SqliteVecStore(db_path, dim=8)
+    try:
+        with pytest.raises(RuntimeError, match="dim=4"):
+            await store._ensure_schema()
+
+        with pytest.raises(RuntimeError, match="dim=4"):
+            await store.add(
+                id="ep-1",
+                content="c",
+                semantic_key="k",
+                embedding_content=_emb(dim=8),
+                embedding_semantic=_emb(dim=8),
+                metadata=_meta(),
+            )
+        with pytest.raises(RuntimeError, match="dim=4"):
+            await store.search(query_embedding=_emb(dim=8), limit=5)
+        with pytest.raises(RuntimeError, match="dim=4"):
+            await store.delete("ep-1")
+        # The two that read episodic_entries only — no vec0 involvement at all.
+        with pytest.raises(RuntimeError, match="dim=4"):
+            await store.exists("ep-1")
+        with pytest.raises(RuntimeError, match="dim=4"):
+            await store.count()
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_recovery_succeeds_with_the_admin_reader_attached(tmp_path: Path) -> None:
+    """Safe against a live deployment, including the one reader that bypasses the store.
+
+    ``GET /memory/episodic`` without ``?q=`` opens the file itself with aiosqlite
+    (``core/channels/admin_api.py:394``) instead of going through SqliteVecStore, so
+    the latch does not stop it. It is read-only and never names the vec0 tables, so
+    the drop must still succeed with it attached — and the entry must survive.
+    """
+    db_path = str(tmp_path / "cold.db")
+    if not await _cold_store_at(db_path, 4):
+        pytest.skip("sqlite-vec extension unavailable — nothing to guard")
+
+    seeded = SqliteVecStore(db_path, dim=4)
+    try:
+        await seeded.add(
+            id="ep-keep",
+            content="keep me",
+            semantic_key="k",
+            embedding_content=_emb(dim=4),
+            embedding_semantic=_emb(dim=4),
+            metadata=_meta(),
+        )
+    finally:
+        await seeded.close()
+
+    mismatched = SqliteVecStore(db_path, dim=8)
+    try:
+        with pytest.raises(RuntimeError) as excinfo:
+            await mismatched._ensure_schema()
+    finally:
+        await mismatched.close()
+
+    # Hold the admin-style reader open across the recovery, exactly as that
+    # endpoint would while an operator is watching the memory page.
+    reader = await aiosqlite.connect(db_path)
+    try:
+        async with reader.execute("SELECT id FROM episodic_entries") as cur:
+            assert [r[0] for r in await cur.fetchall()] == ["ep-keep"]
+
+        result = _run_prescribed_recovery(str(excinfo.value))
+        assert result.returncode == 0, f"recovery failed with a reader attached: {result.stderr}"
+
+        async with reader.execute("SELECT id FROM episodic_entries") as cur:
+            assert [r[0] for r in await cur.fetchall()] == ["ep-keep"]
+    finally:
+        await reader.close()
+
+    restarted = SqliteVecStore(db_path, dim=8)
+    try:
+        assert await restarted.count() == 1
+        assert "float[8]" in _vec_sql(db_path)["vec_episodic_content"]
+    finally:
+        await restarted.close()
