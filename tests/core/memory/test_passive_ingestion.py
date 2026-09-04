@@ -77,7 +77,8 @@ async def test_summary_describes_the_transition(
 
     entry: EpisodicEntry = episodic.write.call_args.args[0]
     assert entry.summary == (
-        "[observation] media_player.living_room_apple_tv: paused → playing (Harry Potter)"
+        "[observation] media_player.living_room_apple_tv: "
+        "paused → playing (media_title=Harry Potter)"
     )
 
 
@@ -100,6 +101,7 @@ async def test_summary_without_salient_attributes(
 async def test_salient_attributes_are_folded_in_declared_order(
     scorer: AsyncMock, passive_scorer: AsyncMock
 ) -> None:
+    """Rendered ``key=value``: a bare ``178`` is uninterpretable to the consolidation LLM."""
     from core.memory.ingestor import ingest_observation
 
     episodic = AsyncMock()
@@ -120,7 +122,9 @@ async def test_salient_attributes_are_folded_in_declared_order(
     )
 
     entry: EpisodicEntry = episodic.write.call_args.args[0]
-    assert entry.summary == "[observation] light.kitchen: off → on (178, Kitchen Light)"
+    assert entry.summary == (
+        "[observation] light.kitchen: off → on (brightness=178, friendly_name=Kitchen Light)"
+    )
     assert "ignored" not in entry.summary
 
 

@@ -104,11 +104,18 @@ def _transition(obs: ReflexObservation) -> tuple[str, str, str]:
 
 
 def _build_observation_summary(obs: ReflexObservation) -> str:
-    """Summarise a state change nobody acted on."""
+    """Summarise a state change nobody acted on.
+
+    Salient attributes are rendered ``key=value``. A bare ``178`` or ``0`` is
+    uninterpretable to the consolidation LLM, which sees only ``- {summary}``,
+    and is close to noise in the embedding.
+    """
     entity, old_state, new_state = _transition(obs)
     attributes = obs.trigger_event.get("attributes") or {}
     salient = [
-        str(attributes[key]) for key in SALIENT_ATTRIBUTES if attributes.get(key) not in (None, "")
+        f"{key}={attributes[key]}"
+        for key in SALIENT_ATTRIBUTES
+        if attributes.get(key) not in (None, "")
     ]
     suffix = f" ({', '.join(salient)})" if salient else ""
     return f"[observation] {entity}: {old_state} → {new_state}{suffix}"
