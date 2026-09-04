@@ -31,12 +31,57 @@ def test_from_env_default_pairs_model_and_dim(monkeypatch: pytest.MonkeyPatch) -
     assert cfg.embedding_dim == config.embedding_dim_for(config.DEFAULT_EMBEDDING_MODEL)
 
 
+def test_from_env_blank_model_falls_back_to_the_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``EMBEDDING_MODEL=`` in .env is "" — the shipped .env.example line, in fact.
+
+    os.getenv's own default does not fire for a key that is present but empty, so
+    without the guard every service builds its provider with an empty model name:
+    ``SentenceTransformer("")`` on one backend, a 404/400 from the server on the other.
+    Matches the same blank-means-default rule already applied to host and backend.
+    """
+    monkeypatch.setenv("EMBEDDING_MODEL", "")
+    monkeypatch.delenv("EMBEDDING_DIM", raising=False)
+    cfg = config.AlfredConfig.from_env()
+    assert cfg.embedding_model == config.DEFAULT_EMBEDDING_MODEL
+    assert cfg.embedding_dim == config.embedding_dim_for(config.DEFAULT_EMBEDDING_MODEL)
+
+
 def test_from_env_dim_tracks_known_model(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("EMBEDDING_DIM", raising=False)
     monkeypatch.setenv("EMBEDDING_MODEL", "sentence-transformers/all-mpnet-base-v2")
     assert config.AlfredConfig.from_env().embedding_dim == 768
     monkeypatch.setenv("EMBEDDING_MODEL", "BAAI/bge-m3")
     assert config.AlfredConfig.from_env().embedding_dim == 1024
+
+
+def test_from_env_blank_dim_tracks_the_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``EMBEDDING_DIM=`` is what .env.example ships — ``int("")`` would raise.
+
+    Not a soft failure: config loads in every service at import, so a blank key here
+    used to take the whole stack down with a ValueError naming no variable.
+    """
+    monkeypatch.setenv("EMBEDDING_MODEL", "BAAI/bge-m3")
+    monkeypatch.setenv("EMBEDDING_DIM", "")
+    assert config.AlfredConfig.from_env().embedding_dim == 1024
+
+
+@pytest.mark.parametrize("raw", ["abc", "768.5"])
+def test_from_env_unparseable_dim_names_the_variable(
+    raw: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("EMBEDDING_DIM", raw)
+    with pytest.raises(RuntimeError, match="EMBEDDING_DIM must be a whole number"):
+        config.AlfredConfig.from_env()
+
+
+@pytest.mark.parametrize("raw", ["0", "-1"])
+def test_from_env_non_positive_dim_rejected(raw: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A zero-width vector index is not a smaller index, it is a broken one.
+    monkeypatch.setenv("EMBEDDING_DIM", raw)
+    with pytest.raises(RuntimeError, match="EMBEDDING_DIM must be greater than 0"):
+        config.AlfredConfig.from_env()
 
 
 def test_from_env_explicit_dim_wins(monkeypatch: pytest.MonkeyPatch) -> None:

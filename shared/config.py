@@ -79,6 +79,37 @@ def embedding_dim_for(model: str) -> int:
     return _KNOWN_EMBEDDING_DIMS.get(model, 384)
 
 
+def normalize_embedding_dim(raw: str, model: str) -> int:
+    """Resolve ``EMBEDDING_DIM``; blank means "track ``EMBEDDING_MODEL``".
+
+    ``int("")`` raises ``invalid literal for int() with base 10: \'\'`` — no variable
+    name, no file — and ``.env.example`` ships the key blank, so that traceback greeted
+    every service at import at once. Zero and negatives are rejected too: they would
+    create a vector index no embedding can ever be written to.
+    """
+    text = raw.strip()
+    if not text:
+        return embedding_dim_for(model)
+    try:
+        value = int(text)
+    except ValueError:
+        raise RuntimeError(f"EMBEDDING_DIM must be a whole number, got {text!r}") from None
+    if value <= 0:
+        raise RuntimeError(f"EMBEDDING_DIM must be greater than 0, got {text!r}")
+    return value
+
+
+def normalize_embedding_model(raw: str) -> str:
+    """Normalise ``EMBEDDING_MODEL``; blank means the default model.
+
+    ``.env.example`` ships the key blank ("leave blank to accept the default"), and a
+    key present but empty is ``""``, which satisfies ``os.getenv`` and defeats its
+    default. Without this guard every service would build a provider named ``""`` —
+    ``SentenceTransformer("")`` in-process, or a model the server has never heard of.
+    """
+    return raw.strip() or DEFAULT_EMBEDDING_MODEL
+
+
 def normalize_embedding_host(raw: str) -> str:
     """Normalise ``EMBEDDING_HOST`` to a bare origin the client appends ``/v1/...`` to.
 
@@ -96,26 +127,35 @@ def normalize_embedding_host(raw: str) -> str:
     return host or DEFAULT_EMBEDDING_HOST
 
 
-def positive_float_env(name: str, default: float) -> float:
-    """Read a positive float env var, naming the variable in every failure.
+def positive_float(name: str, raw: str, default: float) -> float:
+    """Parse a positive float, naming the variable in every failure; blank means default.
 
-    ``float(os.getenv(...))`` raises ``could not convert string to float: \'abc\'``,
-    which names neither the variable nor the file it came from, and it accepts ``0`` and
-    negatives — both of which reach ``httpx.Timeout`` as "give up immediately" rather
-    than the "wait longer" the operator meant.
+    ``float(...)`` raises ``could not convert string to float: \'abc\'``, which names
+    neither the variable nor the file it came from, and it accepts ``0`` and negatives —
+    both of which reach ``httpx.Timeout`` as "give up immediately" rather than the "wait
+    longer" the operator meant.
+
+    Takes the value rather than reading it, so a caller that already holds one validates
+    it by exactly the rule the services apply: ``alfredctl doctor`` reads a merged
+    ``.env`` dict where ``os.environ`` does not have the last word.
     """
-    raw = os.getenv(name, "").strip()
-    if not raw:
+    text = raw.strip()
+    if not text:
         # A key present but empty (``EMBEDDING_TIMEOUT_SECONDS=`` in .env) is "" here,
         # which would defeat os.getenv's own default.
         return default
     try:
-        value = float(raw)
+        value = float(text)
     except ValueError:
-        raise RuntimeError(f"{name} must be a number of seconds, got {raw!r}") from None
+        raise RuntimeError(f"{name} must be a number of seconds, got {text!r}") from None
     if value <= 0:
-        raise RuntimeError(f"{name} must be greater than 0, got {raw!r}")
+        raise RuntimeError(f"{name} must be greater than 0, got {text!r}")
     return value
+
+
+def positive_float_env(name: str, default: float) -> float:
+    """Read a positive float env var through :func:`positive_float`."""
+    return positive_float(name, os.getenv(name, ""), default)
 
 
 def normalize_embedding_backend(raw: str) -> str:
@@ -242,8 +282,8 @@ class AlfredConfig:
     def from_env(cls) -> AlfredConfig:
         # EMBEDDING_DIM defaults to the known dimension for EMBEDDING_MODEL so the two
         # never silently drift out of sync (a mismatch breaks vector search).
-        embedding_model = os.getenv("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
-        embedding_dim = int(os.getenv("EMBEDDING_DIM", str(embedding_dim_for(embedding_model))))
+        embedding_model = normalize_embedding_model(os.getenv("EMBEDDING_MODEL", ""))
+        embedding_dim = normalize_embedding_dim(os.getenv("EMBEDDING_DIM", ""), embedding_model)
         # Both read through a blank-means-default guard rather than os.getenv's
         # default: a key present but empty (``EMBEDDING_HOST=`` in .env) is "" here.
         embedding_host = normalize_embedding_host(os.getenv("EMBEDDING_HOST", ""))
