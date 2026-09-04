@@ -29,6 +29,14 @@ class EmbeddingProvider(ABC):
     @abstractmethod
     def model_name(self) -> str: ...
 
+    async def warmup(self) -> None:
+        """Force any lazy initialization so the first real request doesn't pay for it.
+
+        The default embeds one string, which is exactly what the services' warmup
+        lambdas did. Backends with more to verify override this.
+        """
+        await self.embed("warmup")
+
 
 class SentenceTransformerProvider(EmbeddingProvider):
     """EmbeddingProvider backed by sentence-transformers."""
