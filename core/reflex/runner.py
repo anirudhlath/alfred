@@ -29,12 +29,28 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def _debounce_default() -> int:
+    """Read the debounce window from the env, tolerating garbage.
+
+    This module is imported at module scope by several unrelated services
+    (for ``ensure_consumer_group``), so a malformed value must never raise
+    at import time and take them down with it.
+    """
+    raw = os.getenv("OBSERVATION_DEBOUNCE_SECONDS", "").strip()
+    try:
+        return max(1, int(raw)) if raw else 300
+    except ValueError:
+        logger.warning("Invalid OBSERVATION_DEBOUNCE_SECONDS %r — using 300", raw)
+        return 300
+
+
 # Per-entity window for passive observation. Deliberately separate from the
 # attention gate's 5-second cooldown: that one asks "is this SLM call worth
 # making", this one asks "is this worth remembering". Values differ by two
 # orders of magnitude. Tunable without a rebuild — see the review point in
 # docs/superpowers/specs/2026-09-03-passive-observation-design.md.
-OBSERVATION_DEBOUNCE_SECONDS = int(os.getenv("OBSERVATION_DEBOUNCE_SECONDS", "300"))
+OBSERVATION_DEBOUNCE_SECONDS = _debounce_default()
 
 
 async def publish_observation(
@@ -68,7 +84,9 @@ async def observe_passively(
     memory. Returns True if an observation was published.
     """
     seen_key = f"{OBSERVED_ENTITY_PREFIX}{event.entity_id}"
-    if not await redis.set(seen_key, "1", nx=True, ex=debounce_seconds):
+    # Redis rejects a zero TTL outright ("invalid expire time"), which under
+    # the no-action path would raise on every event it is meant to record.
+    if not await redis.set(seen_key, "1", nx=True, ex=max(1, debounce_seconds)):
         logger.debug("Observation debounced: %s", event.entity_id)
         return False
 
@@ -77,7 +95,13 @@ async def observe_passively(
         origin="state_change",
         trigger_event=event.model_dump(),
     )
-    await redis.xadd(stream, {"event": observation.model_dump_json()})
+    try:
+        await redis.xadd(stream, {"event": observation.model_dump_json()})
+    except Exception:
+        # Release the window, or the redelivered event finds the key already
+        # set and the retry silently records nothing.
+        await redis.delete(seen_key)
+        raise
     logger.debug("Observed: %s (%s → %s)", event.entity_id, event.old_state, event.new_state)
     return True
 

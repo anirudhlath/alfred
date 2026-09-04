@@ -264,3 +264,154 @@ async def test_action_path_observation_is_unchanged() -> None:
     assert obs.action is not None
     assert obs.action.tool_name == "home.light_turn_on"
     assert obs.result is not None
+
+
+# --- Configuration hardening -------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("5m", 300),  # malformed — would raise on a bare int()
+        ("", 300),  # unset/blank
+        ("   ", 300),  # whitespace only
+        ("not-a-number", 300),
+        ("600", 600),  # valid override
+        (" 600 ", 600),  # valid, padded
+        ("0", 1),  # Redis rejects a zero TTL
+        ("-5", 1),  # negative is meaningless as a window
+    ],
+)
+def test_malformed_debounce_env_falls_back_instead_of_raising(
+    monkeypatch: pytest.MonkeyPatch, raw: str, expected: int
+) -> None:
+    """A bad .env value must not raise — this module is imported by four services."""
+    from core.reflex.runner import _debounce_default
+
+    monkeypatch.setenv("OBSERVATION_DEBOUNCE_SECONDS", raw)
+
+    assert _debounce_default() == expected
+
+
+def test_debounce_default_when_env_is_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    from core.reflex.runner import _debounce_default
+
+    monkeypatch.delenv("OBSERVATION_DEBOUNCE_SECONDS", raising=False)
+
+    assert _debounce_default() == 300
+
+
+def test_importing_runner_survives_a_malformed_env_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: a ValueError here took down every service importing this module."""
+    import importlib
+
+    import core.reflex.runner as runner_module
+
+    monkeypatch.setenv("OBSERVATION_DEBOUNCE_SECONDS", "5m")
+
+    reloaded = importlib.reload(runner_module)
+    try:
+        assert reloaded.OBSERVATION_DEBOUNCE_SECONDS == 300
+    finally:
+        monkeypatch.delenv("OBSERVATION_DEBOUNCE_SECONDS", raising=False)
+        importlib.reload(runner_module)
+
+
+@pytest.mark.asyncio
+async def test_ttl_is_never_zero_even_if_caller_passes_zero() -> None:
+    """ex=0 makes Redis reply 'ERR invalid expire time in set'."""
+    from core.reflex.runner import observe_passively
+
+    redis = AsyncMock()
+    redis.set = AsyncMock(return_value=True)
+
+    await observe_passively(redis, STREAM, _event(), debounce_seconds=0)
+
+    assert redis.set.await_args.kwargs["ex"] == 1
+
+
+# --- Failure handling --------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_failed_publish_releases_the_debounce_key_and_propagates() -> None:
+    """Otherwise the redelivered event is suppressed and the retry records nothing."""
+    from core.reflex.runner import observe_passively
+
+    redis = AsyncMock()
+    redis.set = AsyncMock(return_value=True)
+    redis.xadd = AsyncMock(side_effect=ConnectionError("redis went away"))
+
+    with pytest.raises(ConnectionError):
+        await observe_passively(redis, STREAM, _event("light.kitchen"))
+
+    redis.delete.assert_awaited_once_with(f"{OBSERVED_ENTITY_PREFIX}light.kitchen")
+
+
+@pytest.mark.asyncio
+async def test_retry_after_a_failed_publish_records_the_event() -> None:
+    """The end-to-end point of releasing the key: redelivery actually works.
+
+    Uses a Redis double that honours NX rather than a mock that always
+    succeeds, so the retry genuinely depends on the key having been released.
+    """
+    from core.reflex.runner import observe_passively
+
+    keys: set[str] = set()
+
+    async def fake_set(key: str, _value: str, *, nx: bool = False, ex: int = 0) -> bool | None:
+        if nx and key in keys:
+            return None
+        keys.add(key)
+        return True
+
+    redis = AsyncMock()
+    redis.set = AsyncMock(side_effect=fake_set)
+    redis.delete = AsyncMock(side_effect=lambda key: keys.discard(key))
+    redis.xadd = AsyncMock(side_effect=[ConnectionError("redis went away"), None])
+
+    with pytest.raises(ConnectionError):
+        await observe_passively(redis, STREAM, _event())
+
+    # Redelivery: the key was released, so NX succeeds again and this one lands.
+    published = await observe_passively(redis, STREAM, _event())
+
+    assert published is True
+    assert redis.xadd.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_debounce_still_holds_when_publish_succeeded() -> None:
+    """The counterpart: a successful publish keeps the entity suppressed."""
+    from core.reflex.runner import observe_passively
+
+    keys: set[str] = set()
+
+    async def fake_set(key: str, _value: str, *, nx: bool = False, ex: int = 0) -> bool | None:
+        if nx and key in keys:
+            return None
+        keys.add(key)
+        return True
+
+    redis = AsyncMock()
+    redis.set = AsyncMock(side_effect=fake_set)
+
+    first = await observe_passively(redis, STREAM, _event())
+    second = await observe_passively(redis, STREAM, _event())
+
+    assert (first, second) == (True, False)
+    assert redis.xadd.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_successful_publish_keeps_the_debounce_key() -> None:
+    from core.reflex.runner import observe_passively
+
+    redis = AsyncMock()
+    redis.set = AsyncMock(return_value=True)
+
+    await observe_passively(redis, STREAM, _event())
+
+    redis.delete.assert_not_awaited()
