@@ -1223,8 +1223,10 @@ In `.env.example`, replace the existing embedding block (the comment plus
 # Changing the model changes the vector index width — the stores refuse to start
 # against an index built at a different dimension rather than silently mismatch.
 EMBEDDING_BACKEND=sentence_transformers
-# For EMBEDDING_BACKEND=openai (no /v1 suffix; the client appends it):
+# For EMBEDDING_BACKEND=openai (no /v1 suffix; the client appends it; a trailing
+# /v1 is stripped for you). Only needed if the server requires auth:
 EMBEDDING_HOST=http://localhost:8001
+EMBEDDING_API_KEY=
 EMBEDDING_MODEL=
 EMBEDDING_DIM=
 ```
