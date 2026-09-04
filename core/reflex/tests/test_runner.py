@@ -218,6 +218,7 @@ async def test_process_stream_entry_handles_bytes_keys() -> None:
     mock_engine.process_event.return_value = None
     mock_agent = AsyncMock()
     mock_redis = AsyncMock()
+    mock_redis.set = AsyncMock(return_value=True)  # NX succeeds — see the sibling test
 
     result = await process_stream_entry(
         entry_data={b"event": event.model_dump_json().encode()},

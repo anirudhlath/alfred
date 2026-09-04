@@ -505,3 +505,48 @@ async def test_the_action_path_still_propagates_write_failures() -> None:
             result_stream="alfred:home:action_results",
             observation_stream=STREAM,
         )
+
+
+@pytest.mark.asyncio
+async def test_a_failing_cleanup_does_not_mask_the_original_error() -> None:
+    """The operator must see why the publish failed, not why the cleanup did."""
+    from core.reflex.runner import observe_passively
+
+    redis = AsyncMock()
+    redis.set = AsyncMock(return_value=True)
+    redis.xadd = AsyncMock(side_effect=ConnectionError("redis went away"))
+    redis.delete = AsyncMock(side_effect=Exception("DEL also failed"))
+
+    with pytest.raises(ConnectionError, match="redis went away"):
+        await observe_passively(redis, STREAM, _event())
+
+
+def test_a_below_minimum_debounce_value_is_logged(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Setting 0 to 'disable' debouncing silently gives a 1-second window."""
+    import logging
+
+    from core.reflex.runner import _debounce_default
+
+    monkeypatch.setenv("OBSERVATION_DEBOUNCE_SECONDS", "0")
+
+    with caplog.at_level(logging.WARNING, logger="core.reflex.runner"):
+        assert _debounce_default() == 1
+
+    assert any("clamping to 1" in r.getMessage() for r in caplog.records)
+
+
+def test_a_valid_debounce_value_logs_nothing(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
+    from core.reflex.runner import _debounce_default
+
+    monkeypatch.setenv("OBSERVATION_DEBOUNCE_SECONDS", "600")
+
+    with caplog.at_level(logging.WARNING, logger="core.reflex.runner"):
+        assert _debounce_default() == 600
+
+    assert caplog.records == []

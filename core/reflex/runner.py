@@ -6,6 +6,7 @@ dispatches actions via a DomainAgent, and publishes structured observations.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 from typing import TYPE_CHECKING
@@ -38,11 +39,23 @@ def _debounce_default() -> int:
     at import time and take them down with it.
     """
     raw = os.getenv("OBSERVATION_DEBOUNCE_SECONDS", "").strip()
+    if not raw:
+        return 300
     try:
-        return max(1, int(raw)) if raw else 300
+        seconds = int(raw)
     except ValueError:
         logger.warning("Invalid OBSERVATION_DEBOUNCE_SECONDS %r — using 300", raw)
         return 300
+    if seconds < 1:
+        # Silently clamping made "0 to disable" look like it worked while
+        # actually recording on a 1-second window.
+        logger.warning(
+            "OBSERVATION_DEBOUNCE_SECONDS %r is below the 1s minimum — clamping to 1. "
+            "Passive observation cannot be disabled this way.",
+            raw,
+        )
+        return 1
+    return seconds
 
 
 # Per-entity window for passive observation. Deliberately separate from the
@@ -99,8 +112,10 @@ async def observe_passively(
         await redis.xadd(stream, {"event": observation.model_dump_json()})
     except Exception:
         # Release the window, or the redelivered event finds the key already
-        # set and the retry silently records nothing.
-        await redis.delete(seen_key)
+        # set and the retry silently records nothing. Suppressed: a failing DEL
+        # would replace the original exception and hide why the publish failed.
+        with contextlib.suppress(Exception):
+            await redis.delete(seen_key)
         raise
     logger.debug("Observed: %s (%s → %s)", event.entity_id, event.old_state, event.new_state)
     return True
