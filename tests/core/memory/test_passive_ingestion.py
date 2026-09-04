@@ -191,3 +191,19 @@ async def test_action_observations_still_use_the_default_scorer(scorer: AsyncMoc
     assert "home.light_turn_on" in entry.summary
     scorer.score.assert_awaited_once()
     passive_scorer.score.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Entry-point wiring
+# ---------------------------------------------------------------------------
+
+
+def test_ingestor_main_builds_a_passive_scorer_on_the_observed_key() -> None:
+    """Guard the one wiring mistake that would fail silently in production."""
+    import inspect
+
+    from core.memory import ingestor_main
+
+    source = inspect.getsource(ingestor_main.run)
+    assert "OBSERVED_FREQUENCY_KEY" in source
+    assert "passive_scorer" in source
