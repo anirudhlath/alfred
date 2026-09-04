@@ -551,6 +551,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from shared.config import DEFAULT_EMBEDDING_BACKEND
+
 if TYPE_CHECKING:
     from core.memory.embedding_provider import EmbeddingProvider
     from shared.config import AlfredConfig
@@ -560,7 +562,7 @@ _BACKENDS = ("sentence_transformers", "openai")
 
 def build_embedding_provider(config: AlfredConfig) -> EmbeddingProvider:
     """Construct the embedding provider named by ``config.embedding_backend``."""
-    backend = config.embedding_backend.strip().lower() or "sentence_transformers"
+    backend = config.embedding_backend.strip().lower() or DEFAULT_EMBEDDING_BACKEND
     if backend not in _BACKENDS:
         raise RuntimeError(
             f"Unknown EMBEDDING_BACKEND {backend!r} (expected one of: {', '.join(_BACKENDS)})"
@@ -1167,19 +1169,20 @@ In `alfredctl/doctor.py`, replace the whole body of `_check_embeddings` (lines 1
 
 ```python
 def _check_embeddings(env: dict[str, str]) -> DoctorCheck:
-    from shared.config import DEFAULT_EMBEDDING_MODEL
+    from shared.config import (
+        DEFAULT_EMBEDDING_BACKEND,
+        DEFAULT_EMBEDDING_MODEL,
+        normalize_embedding_host,
+    )
 
     model = env.get("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL).strip()
-    backend = env.get("EMBEDDING_BACKEND", "sentence_transformers").strip().lower()
+    backend = env.get("EMBEDDING_BACKEND", "").strip().lower() or DEFAULT_EMBEDDING_BACKEND
 
     if backend == "openai":
-        host = env.get("EMBEDDING_HOST", "").strip()
-        if not host:
-            return DoctorCheck(
-                "memory embeddings",
-                "fail",
-                "EMBEDDING_BACKEND=openai requires EMBEDDING_HOST",
-            )
+        # Report the host the runtime will actually use. Task 1 made a blank
+        # EMBEDDING_HOST fall back to the default, so calling it a failure here
+        # would contradict the config layer.
+        host = normalize_embedding_host(env.get("EMBEDDING_HOST", ""))
         # Gating is irrelevant on this path — the server holds the weights, not us.
         return DoctorCheck("memory embeddings", "pass", f"model={model} via {host}")
 
@@ -1195,7 +1198,8 @@ def _check_embeddings(env: dict[str, str]) -> DoctorCheck:
 
 The gated-model warning now sits below the `openai` branch on purpose: with a remote
 server nothing is downloaded locally, so an HF token is not required and warning about
-one would be wrong.
+one would be wrong. Reuse `normalize_embedding_host` from `shared/config.py` rather than
+re-deriving the default here — doctor must report the host the runtime will actually use.
 
 - [ ] **Step 7: Verify doctor still runs**
 
