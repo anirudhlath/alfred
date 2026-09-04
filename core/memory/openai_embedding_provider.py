@@ -73,12 +73,11 @@ class OpenAICompatEmbeddingProvider(EmbeddingProvider):
         )
         # Servers started with --api-key reject anonymous requests; sending an empty
         # bearer token to one that was not is worse than sending no header at all.
-        self._headers = {"Authorization": f"Bearer {api_key}"} if api_key.strip() else {}
+        # Strip once: a padded key sent verbatim 401s with nothing visible to blame.
+        key = api_key.strip()
+        self._headers = {"Authorization": f"Bearer {key}"} if key else {}
         self._owns_client = client is None
         self._client = client if client is not None else httpx.AsyncClient(timeout=self._timeout)
-        # The dimension is proven once, on the first response; every later response is
-        # the same model on the same server, so re-checking would buy nothing.
-        self._dim_verified = False
 
     def _failure(self, detail: str) -> RuntimeError:
         """One error shape for every failure: what broke, plus which server and model."""
@@ -87,6 +86,9 @@ class OpenAICompatEmbeddingProvider(EmbeddingProvider):
         )
 
     async def _post(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            # Both public callers already guard; this keeps the private path total.
+            return []
         try:
             resp = await self._client.post(
                 f"{self._host}/v1/embeddings",
@@ -107,6 +109,12 @@ class OpenAICompatEmbeddingProvider(EmbeddingProvider):
                 f"cannot reach the server ({type(exc).__name__}: {exc}). Is it running, "
                 f"and is EMBEDDING_HOST correct?"
             ) from exc
+        except RuntimeError as exc:
+            # httpx raises a plain RuntimeError ("Cannot send a request, as the client
+            # has been closed.") for use after aclose(). It is not a RequestError, so
+            # without this it would escape with no host or model attached. Nothing
+            # inside the try block raises our own RuntimeError, so this cannot swallow one.
+            raise self._failure(f"the HTTP client is unusable ({exc})") from exc
         try:
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
@@ -159,24 +167,28 @@ class OpenAICompatEmbeddingProvider(EmbeddingProvider):
                 raise self._failure(
                     f"an item's 'embedding' is {type(vector).__name__}, expected a list of floats"
                 )
+            # Every vector, not just the first: a ragged batch would otherwise pass.
+            self._verify_dim(len(vector))
             # Values are used as-is: json already decoded them, and re-running float()
             # over every element costs ~2.1M conversions on a 2048-item bge-m3 batch.
             # An int-valued element (JSON "0" rather than "0.0") is accepted by every
             # consumer — struct.pack("<Nf") and numpy both take ints for float slots.
             vectors.append(vector)
-        self._verify_dim(len(vectors[0]))
         return vectors
 
     def _verify_dim(self, actual: int) -> None:
-        """Check the served width against the configured one, once.
+        """Check the served width against the configured one, on every vector.
 
         This lives on the request path on purpose. ``warmup()`` is best-effort —
         ``core/warmup.py`` logs a warning and continues — so a guard that only ran there
         would let a mismatched service carry on writing wrong-width vectors into the
         index, which is exactly the silent corruption this backend makes easy.
+
+        It is never cached, either: the shared server can be restarted onto a different
+        model while a service holds this provider for days, and an ``int`` comparison
+        costs nothing next to the round trip that produced the vector. Downstream is no
+        safety net — ``RedisVectorStore.add()`` packs and HSETs whatever width it gets.
         """
-        if self._dim_verified:
-            return
         if actual != self._dim:
             raise RuntimeError(
                 f"Embedding server at {self._host!r} returns {actual}-dim vectors for "
@@ -184,7 +196,6 @@ class OpenAICompatEmbeddingProvider(EmbeddingProvider):
                 f"EMBEDDING_DIM={actual} (or correct EMBEDDING_MODEL) — a mismatch "
                 f"silently breaks vector search."
             )
-        self._dim_verified = True
 
     async def embed(self, text: str) -> list[float]:
         vectors = await self._post([text])
@@ -205,12 +216,12 @@ class OpenAICompatEmbeddingProvider(EmbeddingProvider):
     async def warmup(self) -> None:
         """Prove the server is reachable AND agrees with the configured dimension.
 
-        The check itself lives in ``_verify_dim`` on the request path; doing it here
-        too turns a startup misconfiguration into an immediate log line instead of a
-        surprise at the first real memory write.
+        The width check itself is on the request path (every response passes through
+        ``_verify_dim``), so this adds no guarantee — it moves the signal earlier,
+        turning a misconfiguration into a startup log line rather than a surprise at
+        the first real memory write.
         """
         actual = len(await self.embed("warmup"))
-        self._verify_dim(actual)
         logger.info(
             "Embedding backend ready: %s at %s (dim=%d)", self._model_name, self._host, actual
         )

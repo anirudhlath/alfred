@@ -38,6 +38,7 @@ def _ok(*vectors: list[float]) -> Callable[[httpx.Request], httpx.Response]:
     return handler
 
 
+@pytest.mark.asyncio
 async def test_embed_returns_the_vector() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v1/embeddings"
@@ -47,6 +48,7 @@ async def test_embed_returns_the_vector() -> None:
     assert await provider.embed("hello") == [0.1, 0.2, 0.3, 0.4]
 
 
+@pytest.mark.asyncio
 async def test_embed_sends_model_input_and_float_encoding() -> None:
     seen: dict[str, object] = {}
 
@@ -62,6 +64,7 @@ async def test_embed_sends_model_input_and_float_encoding() -> None:
     assert seen["encoding_format"] == "float"
 
 
+@pytest.mark.asyncio
 async def test_embed_batch_reorders_by_index() -> None:
     """The API may return items out of order — index, not position, is authoritative."""
 
@@ -82,6 +85,7 @@ async def test_embed_batch_reorders_by_index() -> None:
     assert [r[0] for r in results] == [0.0, 1.0, 2.0]
 
 
+@pytest.mark.asyncio
 async def test_embed_batch_rejects_duplicate_indices() -> None:
     """Two items at index 0 survive the length check and mispair under a stable sort."""
 
@@ -101,6 +105,7 @@ async def test_embed_batch_rejects_duplicate_indices() -> None:
         await provider.embed_batch(["a", "b"])
 
 
+@pytest.mark.asyncio
 async def test_embed_batch_empty_makes_no_request() -> None:
     def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
         raise AssertionError("empty input must not hit the server")
@@ -109,6 +114,7 @@ async def test_embed_batch_empty_makes_no_request() -> None:
     assert await provider.embed_batch([]) == []
 
 
+@pytest.mark.asyncio
 async def test_embed_raises_on_short_response() -> None:
     """A truncated batch response must fail loudly, not return fewer vectors."""
 
@@ -120,6 +126,7 @@ async def test_embed_raises_on_short_response() -> None:
         await provider.embed_batch(["a", "b"])
 
 
+@pytest.mark.asyncio
 async def test_embed_error_carries_the_server_message() -> None:
     """vLLM explains exactly what is wrong; raise_for_status alone throws that away."""
 
@@ -144,6 +151,7 @@ async def test_embed_error_carries_the_server_message() -> None:
     assert isinstance(excinfo.value.__cause__, httpx.HTTPStatusError)
 
 
+@pytest.mark.asyncio
 async def test_embed_error_truncates_a_huge_body() -> None:
     """An HTML error page from a proxy must not paste kilobytes into every log line."""
 
@@ -156,6 +164,7 @@ async def test_embed_error_truncates_a_huge_body() -> None:
     assert len(str(excinfo.value)) < 1_000
 
 
+@pytest.mark.asyncio
 async def test_embed_wraps_a_connect_failure() -> None:
     """httpx's ConnectError says "Connection refused" and never names the host."""
 
@@ -170,6 +179,7 @@ async def test_embed_wraps_a_connect_failure() -> None:
     assert isinstance(excinfo.value.__cause__, httpx.ConnectError)
 
 
+@pytest.mark.asyncio
 async def test_embed_raises_on_a_non_json_response() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, text="<html>gateway</html>")
@@ -179,6 +189,7 @@ async def test_embed_raises_on_a_non_json_response() -> None:
         await provider.embed("hello")
 
 
+@pytest.mark.asyncio
 async def test_embed_raises_on_a_missing_embedding_key() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"data": [{"index": 0}]})
@@ -188,6 +199,7 @@ async def test_embed_raises_on_a_missing_embedding_key() -> None:
         await provider.embed("hello")
 
 
+@pytest.mark.asyncio
 async def test_embed_raises_on_a_base64_embedding() -> None:
     """Defence in depth behind encoding_format=float — a string is not a vector."""
 
@@ -199,6 +211,7 @@ async def test_embed_raises_on_a_base64_embedding() -> None:
         await provider.embed("hello")
 
 
+@pytest.mark.asyncio
 async def test_embed_raises_on_a_missing_data_array() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"object": "list"})
@@ -217,6 +230,7 @@ def test_dimension_and_model_name_need_no_network() -> None:
     assert provider.model_name() == "BAAI/bge-m3"
 
 
+@pytest.mark.asyncio
 async def test_embed_rejects_a_dimension_mismatch_without_warmup() -> None:
     """warmup() is best-effort (core/warmup.py logs and continues), so the real
     embed path must refuse wrong-width vectors on its own."""
@@ -225,12 +239,14 @@ async def test_embed_rejects_a_dimension_mismatch_without_warmup() -> None:
         await provider.embed("hello")
 
 
+@pytest.mark.asyncio
 async def test_embed_keeps_working_after_the_dimension_check_passes() -> None:
     provider = _provider(_ok([1.0] * 4), dim=4)
     assert len(await provider.embed("one")) == 4
     assert len(await provider.embed("two")) == 4
 
 
+@pytest.mark.asyncio
 async def test_warmup_rejects_a_dimension_mismatch() -> None:
     """Configured dim must match what the server actually returns."""
     provider = _provider(_ok([1.0] * 8), dim=4)
@@ -238,11 +254,13 @@ async def test_warmup_rejects_a_dimension_mismatch() -> None:
         await provider.warmup()
 
 
+@pytest.mark.asyncio
 async def test_warmup_passes_when_dimensions_agree() -> None:
     provider = _provider(_ok([1.0] * 4), dim=4)
     await provider.warmup()
 
 
+@pytest.mark.asyncio
 async def test_api_key_is_sent_as_a_bearer_token() -> None:
     seen: dict[str, str] = {}
 
@@ -255,6 +273,7 @@ async def test_api_key_is_sent_as_a_bearer_token() -> None:
     assert seen["auth"] == "Bearer sk-secret"
 
 
+@pytest.mark.asyncio
 async def test_no_authorization_header_without_an_api_key() -> None:
     seen: dict[str, bool] = {}
 
@@ -267,6 +286,7 @@ async def test_no_authorization_header_without_an_api_key() -> None:
     assert seen["has_auth"] is False
 
 
+@pytest.mark.asyncio
 async def test_a_trailing_slash_on_the_host_does_not_double_the_path() -> None:
     seen: dict[str, str] = {}
 
@@ -279,6 +299,7 @@ async def test_a_trailing_slash_on_the_host_does_not_double_the_path() -> None:
     assert seen["url"] == "http://embed:8001/v1/embeddings"
 
 
+@pytest.mark.asyncio
 async def test_connect_timeout_is_short_even_with_an_injected_client() -> None:
     """Involuntary recall runs inline in the reply path — an unreachable host
     must fail fast, not stall a user-facing response for the read budget."""
@@ -297,6 +318,7 @@ async def test_connect_timeout_is_short_even_with_an_injected_client() -> None:
     assert seen["read"] == 30.0
 
 
+@pytest.mark.asyncio
 async def test_aclose_closes_a_client_it_created() -> None:
     provider = OpenAICompatEmbeddingProvider(
         model_name="BAAI/bge-m3", host="http://embed:8001", dim=4
@@ -305,6 +327,7 @@ async def test_aclose_closes_a_client_it_created() -> None:
     assert provider._client.is_closed
 
 
+@pytest.mark.asyncio
 async def test_aclose_leaves_an_injected_client_open() -> None:
     """The owner of an injected client closes it; a shared client must survive."""
     client = httpx.AsyncClient(transport=httpx.MockTransport(_ok([1.0] * 4)))
@@ -314,3 +337,83 @@ async def test_aclose_leaves_an_injected_client_open() -> None:
     await provider.aclose()
     assert not client.is_closed
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_later_response_of_the_wrong_width_still_raises() -> None:
+    """The width is re-checked on every response, not just the first.
+
+    The shared server this backend targets gets restarted with a different model while
+    long-lived services hold their providers, and nothing downstream notices:
+    RedisVectorStore.add() packs and HSETs whatever width it is handed, so the vectors
+    land in Redis and simply never match a query.
+    """
+    widths = [4, 8]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"data": [{"index": 0, "embedding": [1.0] * widths.pop(0)}]}
+        )
+
+    provider = _provider(handler, dim=4)
+    assert len(await provider.embed("first")) == 4
+    with pytest.raises(RuntimeError, match="EMBEDDING_DIM"):
+        await provider.embed("second")
+
+
+@pytest.mark.asyncio
+async def test_embed_batch_rejects_a_ragged_batch() -> None:
+    """Checking only the first vector lets a mixed-width batch through."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"index": 0, "embedding": [1.0] * 4},
+                    {"index": 1, "embedding": [1.0] * 7},
+                ]
+            },
+        )
+
+    provider = _provider(handler, dim=4)
+    with pytest.raises(RuntimeError, match="EMBEDDING_DIM"):
+        await provider.embed_batch(["a", "b"])
+
+
+@pytest.mark.asyncio
+async def test_post_with_no_texts_returns_empty() -> None:
+    """Both public callers guard, but the private path must not IndexError."""
+
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("empty input must not hit the server")
+
+    provider = _provider(handler)
+    assert await provider._post([]) == []
+
+
+@pytest.mark.asyncio
+async def test_use_after_aclose_names_the_host_and_model() -> None:
+    """httpx raises a bare RuntimeError for a closed client — not a RequestError."""
+    provider = OpenAICompatEmbeddingProvider(
+        model_name="BAAI/bge-m3", host="http://embed:8001", dim=4
+    )
+    await provider.aclose()
+    with pytest.raises(RuntimeError) as excinfo:
+        await provider.embed("hello")
+    assert "http://embed:8001" in str(excinfo.value)
+    assert "BAAI/bge-m3" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_api_key_whitespace_is_stripped_from_the_header() -> None:
+    """A padded key would be sent verbatim and 401 with nothing to point at."""
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["auth"] = request.headers.get("authorization", "")
+        return httpx.Response(200, json={"data": [{"index": 0, "embedding": [1.0] * 4}]})
+
+    provider = _provider(handler, api_key="  sk-pad  ")
+    await provider.embed("hello")
+    assert seen["auth"] == "Bearer sk-pad"
