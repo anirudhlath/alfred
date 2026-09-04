@@ -50,8 +50,11 @@ def test_openai_backend_builds_the_http_provider() -> None:
 def test_openai_backend_sends_no_auth_header_without_a_key() -> None:
     # The common case: a vLLM started without --api-key. An empty bearer token is
     # worse than no header, so the blank key must not become one.
+    from core.memory.openai_embedding_provider import OpenAICompatEmbeddingProvider
+
     provider = build_embedding_provider(_config(embedding_backend="openai"))
-    assert provider._headers == {}  # type: ignore[attr-defined]
+    assert isinstance(provider, OpenAICompatEmbeddingProvider)
+    assert provider._headers == {}
 
 
 def test_default_backend_builds_sentence_transformers() -> None:
@@ -137,7 +140,9 @@ def test_no_service_constructs_a_provider_directly() -> None:
 
 def test_openai_backend_uses_the_configured_default_timeout() -> None:
     """A server that accepts and then stalls is only bounded by the read budget."""
+    from core.memory.openai_embedding_provider import OpenAICompatEmbeddingProvider
     from shared.config import DEFAULT_EMBEDDING_TIMEOUT_SECONDS
 
     provider = build_embedding_provider(_config(embedding_backend="openai"))
-    assert provider._timeout.read == DEFAULT_EMBEDDING_TIMEOUT_SECONDS  # type: ignore[attr-defined]
+    assert isinstance(provider, OpenAICompatEmbeddingProvider)
+    assert provider._timeout.read == DEFAULT_EMBEDDING_TIMEOUT_SECONDS
