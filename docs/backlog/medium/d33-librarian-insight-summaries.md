@@ -25,19 +25,48 @@ These aren't routines to automate. They're understanding — the kind of knowled
 
 ## Blocked on
 
-**There is no data to draw insights from.** As of 2026-09-03 episodic memory
-holds 0 entries. Alfred has consumed 404,000 `state_changed` events and recorded
-none of them: `ReflexObservation` requires `action` and `result`, so an event it
-saw but did not act on is unrepresentable and gets dropped. Every insight
-example above ("works from home on Mondays", "jazz correlates with cooking")
-requires exactly the observations that are being discarded.
+**Originally: there was no data to draw insights from.** As of 2026-09-03
+episodic memory held 0 entries. The spec puts the count of `state_changed` events
+Alfred had consumed and recorded none of at 404,000. The cause was structural:
+`ReflexObservation` required `action` and `result`, so an event Alfred saw but did
+not act on was unrepresentable and was dropped on the early return in
+`process_stream_entry()`. Every insight example above ("works from home on
+Mondays", "jazz correlates with cooking") required exactly the observations that
+were being discarded.
 
-Blocked on `docs/superpowers/specs/2026-09-03-passive-observation-design.md`.
-Building the interpretive pass first would repeat the mistake that produced the
-rest of the unused memory machinery — a decay formula tuned for recall counts
+**That blocker is cleared.** Passive observation
+(`docs/superpowers/specs/2026-09-03-passive-observation-design.md`, branch
+`feat/passive-observation`) made `action`/`result` optional, and
+`observe_passively()` now publishes a per-entity-debounced `ReflexObservation` on
+the no-action path. The Memory Ingestor writes those as `source="observation"`
+with a `[observation] {entity}: {old} → {new}` summary. Expected steady state is
+~200–300 entries/day, so the consolidation window stops being empty as soon as
+that lands.
+
+Building the interpretive pass first would still repeat the mistake that produced
+the rest of the unused memory machinery — a decay formula tuned for recall counts
 that were structurally frozen at 0, compression that has never compressed an
-entry, a routine lifecycle whose `active` state is unreachable. All built ahead
-of their data, all correct-looking, none load-bearing.
+entry, a routine lifecycle whose `active` state is unreachable. All built ahead of
+their data, all correct-looking, none load-bearing. So this stays **blocked, on
+evidence rather than on plumbing**:
+
+- **~7 days of accumulated observations**, then the Review point below answered
+  from real entries on the Memory page. Recording started only when passive
+  observation merged; the clock starts there, not at ticket-filing.
+- **Confirmation that the entries are worth interpreting.** The debounce is
+  per-entity and five minutes wide, and one flapping device was 64% of qualifying
+  events in the measured window — if the episodic tab turns out to be 200 lines a
+  day of `media_player.macbook_pro`, the fix is `OBSERVATION_DEBOUNCE_SECONDS` or
+  the attention set, not a second LLM pass over noise.
+- **`docs/backlog/high/librarian-decay-threshold-unreachable.md`.** Nothing has
+  ever migrated out of hot storage, so the volume this ticket now depends on also
+  accumulates without an eviction path. Worth resolving before adding a consumer
+  that reads the whole window each cycle.
+
+What D33 still needs beyond that is unchanged: the `InsightSpec` model, the LLM
+pass (extended or second — question 2 below), `type="insight"` indexing in
+`idx:context`, the staleness/re-evaluation loop, and the surfacing described further
+down. Passive observation supplies the *input*; none of that machinery exists yet.
 
 ## Review point — what decides whether this gets built
 
@@ -66,4 +95,7 @@ considered and rejected.
 ## Dependencies
 - D29 (reindex on startup) — same pattern applies to insights
 - Passive observation (spec `2026-09-03-passive-observation-design.md`) — hard
-  prerequisite; without it the consolidation window is empty
+  prerequisite, **satisfied** on branch `feat/passive-observation`; the
+  consolidation window now fills at ~200–300 entries/day
+- `docs/backlog/high/librarian-decay-threshold-unreachable.md` — cold migration
+  has never fired, so that window only grows
