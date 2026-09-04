@@ -69,6 +69,7 @@ class FakeRedis:
         self.acked: list[bytes] = []
         self.reads = 0
         self.claims = 0
+        self.blocks: list[int | None] = []
         self.hashes: dict[str, dict[str, int]] = {}
 
     async def xgroup_create(self, *_args: Any, **_kwargs: Any) -> bool:
@@ -83,6 +84,7 @@ class FakeRedis:
         block: int | None = None,
     ) -> list[tuple[bytes, list[tuple[bytes, dict[bytes, bytes]]]]]:
         self.reads += 1
+        self.blocks.append(block)
         if self.reads >= self._max_reads:
             self._shutdown.set()
         if not self._new:
@@ -226,22 +228,69 @@ async def test_an_entry_without_an_event_field_is_acked(
 
 
 @pytest.mark.asyncio
-async def test_reclaim_is_periodic_not_every_iteration(
+async def test_the_reclaim_counter_resets_between_passes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """XAUTOCLAIM every 5s block would hammer Redis — the cadence guard is real."""
+    """XAUTOCLAIM on every 5s block would hammer Redis — the cadence guard is real.
+
+    Seven iterations at a cadence of three must reclaim exactly twice, on
+    iterations 3 and 6. Driving three iterations against a cadence of twelve and
+    asserting no claims only restates that 3 < 12, and never exercises the reset.
+    """
     shutdown = asyncio.Event()
-    redis = FakeRedis([], shutdown, max_reads=3)
+    redis = FakeRedis([], shutdown, max_reads=7)
+
+    await _run(redis, shutdown, monkeypatch=monkeypatch, reclaim_every=3)
+
+    assert redis.reads == 7
+    assert redis.claims == 2
+
+
+@pytest.mark.asyncio
+async def test_the_reclaim_cadence_is_about_a_minute_of_real_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_PEL_RECLAIM_EVERY``'s "12 x 5s block" is only true if the block is 5s.
+
+    Asserting ``_PEL_RECLAIM_EVERY == 12`` restates the constant and would stay
+    green if the block dropped to 1s, making the real cadence 12 seconds. This
+    reads the block the loop actually hands XREADGROUP.
+    """
+    from core.memory.ingestor import _PEL_RECLAIM_EVERY
+
+    shutdown = asyncio.Event()
+    redis = FakeRedis([], shutdown, max_reads=1)
 
     await _run(redis, shutdown, monkeypatch=monkeypatch, reclaim_every=None)
 
-    assert redis.claims == 0
+    assert redis.blocks == [5000]
+    assert _PEL_RECLAIM_EVERY * redis.blocks[0] == 60_000
 
 
-def test_reclaim_cadence_is_roughly_one_minute() -> None:
-    from core.memory.ingestor import _PEL_RECLAIM_EVERY
+@pytest.mark.asyncio
+async def test_an_xack_failure_does_not_kill_the_ingestor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The batch loop must survive a Redis blip on the ACK, like the reflex loop does.
 
-    assert _PEL_RECLAIM_EVERY == 12  # 12 x 5s block
+    ``core/reflex/__main__.py`` wraps ``process_stream_entry`` + ``xack``
+    together for exactly this reason. An unguarded ``xack`` here propagates out
+    of ``run_ingestor`` and takes the process down.
+    """
+    shutdown = asyncio.Event()
+    redis = FakeRedis([(b"100-0", _payload()), (b"200-0", _payload())], shutdown, max_reads=4)
+    original_xack = redis.xack
+
+    async def flaky_xack(stream: str, group: str, entry_id: bytes) -> int:
+        if entry_id == b"100-0":
+            raise ConnectionError("Redis went away mid-ACK")
+        return await original_xack(stream, group, entry_id)
+
+    redis.xack = flaky_xack  # type: ignore[method-assign]
+
+    await _run(redis, shutdown, monkeypatch=monkeypatch, reclaim_every=None)
+
+    assert b"200-0" in redis.acked, "an xack failure took the whole ingestor down"
 
 
 # ---------------------------------------------------------------------------

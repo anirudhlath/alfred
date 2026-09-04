@@ -17,7 +17,7 @@ def _passive(
     entity_id: str = "media_player.living_room_apple_tv",
     old_state: str = "paused",
     new_state: str = "playing",
-    attributes: dict[str, object] | None = None,
+    attributes: object = None,
 ) -> ReflexObservation:
     return ReflexObservation(
         source="reflex-engine",
@@ -126,6 +126,72 @@ async def test_salient_attributes_are_folded_in_declared_order(
         "[observation] light.kitchen: off → on (brightness=178, friendly_name=Kitchen Light)"
     )
     assert "ignored" not in entry.summary
+
+
+@pytest.mark.asyncio
+async def test_a_zero_valued_attribute_is_still_rendered(
+    scorer: AsyncMock, passive_scorer: AsyncMock
+) -> None:
+    """``brightness=0`` is a real reading — the filter drops None and "" only."""
+    from core.memory.ingestor import ingest_observation
+
+    episodic = AsyncMock()
+    await ingest_observation(
+        _passive("light.kitchen", "on", "off", attributes={"brightness": 0}),
+        episodic,
+        scorer,
+        passive_scorer,
+    )
+
+    entry: EpisodicEntry = episodic.write.call_args.args[0]
+    assert entry.summary == "[observation] light.kitchen: on → off (brightness=0)"
+
+
+@pytest.mark.asyncio
+async def test_non_mapping_attributes_do_not_crash_the_ingest(
+    scorer: AsyncMock, passive_scorer: AsyncMock
+) -> None:
+    """``trigger_event`` is a raw dict off the wire — ``attributes`` may be anything.
+
+    Its neighbours already guard their shapes (``_extract_entities`` checks
+    ``isinstance(val, str)``, ``_transition`` coerces with ``str()``); a list
+    here raised ``AttributeError: 'list' object has no attribute 'get'``.
+    """
+    from core.memory.ingestor import ingest_observation
+
+    episodic = AsyncMock()
+    await ingest_observation(
+        _passive("light.kitchen", "off", "on", attributes=["not", "a", "dict"]),
+        episodic,
+        scorer,
+        passive_scorer,
+    )
+
+    entry: EpisodicEntry = episodic.write.call_args.args[0]
+    assert entry.summary == "[observation] light.kitchen: off → on"
+
+
+@pytest.mark.asyncio
+async def test_a_falsy_state_is_not_rewritten_as_unknown(
+    scorer: AsyncMock, passive_scorer: AsyncMock
+) -> None:
+    """``0`` and ``""`` are states, not missing states — only ``None`` is unknown.
+
+    The attribute filter two functions away deliberately keeps a ``0``; the
+    transition renderer's ``or "unknown"`` did not.
+    """
+    from core.memory.ingestor import ingest_observation
+
+    episodic = AsyncMock()
+    obs = ReflexObservation(
+        source="reflex-engine",
+        origin="state_change",
+        trigger_event={"entity_id": "sensor.power", "old_state": 0, "new_state": 42},
+    )
+    await ingest_observation(obs, episodic, scorer, passive_scorer)
+
+    entry: EpisodicEntry = episodic.write.call_args.args[0]
+    assert entry.summary == "[observation] sensor.power: 0 → 42"
 
 
 @pytest.mark.asyncio

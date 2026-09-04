@@ -95,12 +95,19 @@ def _extract_entities(obs: ReflexObservation) -> list[str]:
 
 
 def _transition(obs: ReflexObservation) -> tuple[str, str, str]:
-    """Entity, old state, new state — from the raw trigger_event dict."""
+    """Entity, old state, new state — from the raw trigger_event dict.
+
+    Absent values become "unknown"; falsy ones do not. A sensor reading of ``0``
+    or an empty string is a real state, and rewriting it matches neither the
+    salient-attribute filter (which deliberately keeps a ``0``) nor the truth.
+    """
     event = obs.trigger_event
-    entity = str(event.get("entity_id") or "unknown")
-    old_state = str(event.get("old_state") or "unknown")
-    new_state = str(event.get("new_state") or "unknown")
-    return entity, old_state, new_state
+
+    def _state(key: str) -> str:
+        value = event.get(key)
+        return "unknown" if value is None else str(value)
+
+    return _state("entity_id"), _state("old_state"), _state("new_state")
 
 
 def _build_observation_summary(obs: ReflexObservation) -> str:
@@ -111,7 +118,9 @@ def _build_observation_summary(obs: ReflexObservation) -> str:
     and is close to noise in the embedding.
     """
     entity, old_state, new_state = _transition(obs)
-    attributes = obs.trigger_event.get("attributes") or {}
+    attributes = obs.trigger_event.get("attributes")
+    if not isinstance(attributes, dict):
+        attributes = {}
     salient = [
         f"{key}={attributes[key]}"
         for key in SALIENT_ATTRIBUTES
@@ -122,6 +131,7 @@ def _build_observation_summary(obs: ReflexObservation) -> str:
 
 
 def _build_observation_semantic_key(obs: ReflexObservation) -> str:
+    """Build a semantic key optimised for vector search over passive observations."""
     entity, old_state, new_state = _transition(obs)
     return f"Observed {entity} change from {old_state} to {new_state}"
 
@@ -336,6 +346,13 @@ async def run_ingestor(
             batch.extend(reclaimed)
 
         for entry_id, entry_data in batch:
-            await _ingest_entry(
-                redis, entry_id, entry_data, episodic_memory, scorer, passive_scorer
-            )
+            # _ingest_entry's own xack calls are outside its try, and the loop
+            # owns no guard of its own — so a Redis blip on the ACK would escape
+            # run_ingestor and kill the process. The reflex loop wraps
+            # process_stream_entry + xack together for the same reason.
+            try:
+                await _ingest_entry(
+                    redis, entry_id, entry_data, episodic_memory, scorer, passive_scorer
+                )
+            except Exception as e:
+                logger.error("Ingest loop failed on observation {} — will retry: {}", entry_id, e)
