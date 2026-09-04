@@ -779,6 +779,9 @@ async def test_dimension_mismatch_recovery_message_is_one_an_operator_can_run(
     assert "You do NOT need to stop Alfred first" in message
     assert "already raises before it touches" in message
     assert "The restart is not optional" in message
+    assert "conscious, memory-ingestor, librarian, channels/admin" in message
+    # Both stores were built at the old width, so one fix is never the whole job.
+    assert "Expect to do this twice" in message
 
     result = _run_prescribed_recovery(message)
     assert result.returncode == 0, f"prescribed recovery failed: {result.stderr}"

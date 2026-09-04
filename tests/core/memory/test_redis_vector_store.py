@@ -436,6 +436,17 @@ async def test_ensure_index_rejects_a_dimension_mismatch() -> None:
     # entries only reach cold SQLite via the Librarian's decay pass.
     assert "WITHOUT 'DD'" in message
     assert "DELETES every ctx:* hash" in message
+    # Same bar as the cold store's message: a runnable command, where to run it, and
+    # whether the deployment has to come down first. "run FT.DROPINDEX and restart"
+    # left the operator to discover that Redis lives inside the Alfred container.
+    # Verified against the running container on 2026-09-04.
+    assert "redis-cli FT.DROPINDEX idx:context" in message
+    assert "docker exec <alfred-container>" in message
+    assert "You do NOT need to stop Alfred first" in message
+    assert "The restart is not optional" in message
+    assert "conscious, memory-ingestor, librarian, channels/admin" in message
+    # Both stores were built at the old width, so one fix is never the whole job.
+    assert "Expect to do this twice" in message
     assert store._index_ready is False
 
 
