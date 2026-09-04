@@ -746,7 +746,7 @@ graph LR
 | `UserRequest` | Interaction channels | Inbound user interaction (text/audio) | `channel`, `session_id`, `identity_claim`, `content_type`, `content` |
 | `AlfredResponse` | Conscious Engine | Outbound response to user | `channel`, `session_id`, `text`, `actions_taken`, `mood` |
 | `TriggerCreated` | Trigger Engine | A trigger was dynamically created | `trigger_type`, `name`, `conditions`, `action`, `one_shot` |
-| `ReflexObservation` | Reflex Runner | Records what the reflex did — or saw and chose not to do (`action`/`result` are `None`) | `origin`, `trigger_event`, `action`, `result`, `decision_context` |
+| `ReflexObservation` | Reflex Runner, DomainRouter | Records what the reflex did — or saw and chose not to do (`action`/`result` are `None`) | `origin`, `trigger_event`, `action`, `result`, `decision_context` |
 
 All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `timestamp`, and `source`.
 
