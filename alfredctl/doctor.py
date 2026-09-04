@@ -67,10 +67,13 @@ def _host_side(url: str) -> str:
     )
 
 
-# Authority-only: the userinfo of a URL is everything between "scheme://" and the "@"
-# that ends it, so an @ inside a path is left alone and this cannot raise the way
-# urlsplit can on a malformed authority.
-_USERINFO_RE = re.compile(r"^([a-zA-Z][\w+.-]*://)[^/@]*@")
+# Authority-only: userinfo is everything between the start of the authority and the
+# last "@" before the path, so an @ inside a path is left alone and this cannot raise
+# the way urlsplit can on a malformed authority. Two details earn their keep:
+# ``[^/]*@`` is greedy to the *last* @ because httpx delimits there too (a password may
+# contain one), and the scheme is optional because a schemeless host still reaches the
+# output — httpx rejects it, and the rejection detail quotes the URL back.
+_USERINFO_RE = re.compile(r"^([a-zA-Z][\w+.-]*://|//)?[^/]*@")
 
 
 def _redact_userinfo(url: str) -> str:

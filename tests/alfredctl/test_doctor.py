@@ -381,9 +381,17 @@ def test_check_reports_a_proven_wrong_host_as_fail(monkeypatch: pytest.MonkeyPat
     [
         ("http://user:pw@vllm.example:8001", "http://***@vllm.example:8001"),
         ("https://tok@embed.example/v1", "https://***@embed.example/v1"),
-        # No userinfo, and an @ that belongs to the path: both left alone.
+        # A password containing @: httpx reads the *last* @ as the delimiter, so
+        # stopping at the first one leaves the tail of the password on screen.
+        ("http://user:p@ss@vllm.example:8001", "http://***@vllm.example:8001"),
+        # No scheme at all: httpx rejects it, but doctor still prints it in the
+        # UnsupportedProtocol detail, so it has to be redacted before it gets there.
+        ("user:pw@vllm.example:8001", "***@vllm.example:8001"),
+        ("//user:pw@vllm.example:8001", "//***@vllm.example:8001"),
+        # No userinfo, and an @ that belongs to the path: all left alone.
         ("http://vllm.example:8001", "http://vllm.example:8001"),
         ("http://vllm.example/models/a@b", "http://vllm.example/models/a@b"),
+        ("vllm.example:8001/models/p@th", "vllm.example:8001/models/p@th"),
         ("", ""),
     ],
 )
@@ -397,11 +405,24 @@ def test_embedding_host_credentials_are_not_echoed(tmp_path: Path) -> None:
         tmp_path,
         "OPENROUTER_API_KEY=sk-or-v1-abc\n"
         "EMBEDDING_BACKEND=openai\n"
-        "EMBEDDING_HOST=http://alfred:hunter2@embed.example:8001\n",
+        # A password with an @ in it, which is where the first version stopped looking.
+        "EMBEDDING_HOST=http://alfred:hunter2@x@embed.example:8001\n",
     )
     detail = _detail(doctor.run_checks(env, online=False), "memory embeddings")
     assert "hunter2" not in detail
     assert "***@embed.example:8001" in detail
+
+
+def test_schemeless_host_credentials_are_not_echoed(tmp_path: Path) -> None:
+    """httpx rejects it, but the rejection detail still quotes the URL back."""
+    env = _write_env(
+        tmp_path,
+        "OPENROUTER_API_KEY=sk-or-v1-abc\n"
+        "EMBEDDING_BACKEND=openai\n"
+        "EMBEDDING_HOST=alfred:hunter2@embed.example:8001\n",
+    )
+    detail = _detail(doctor.run_checks(env, online=False), "memory embeddings")
+    assert "hunter2" not in detail
 
 
 def test_reflex_host_credentials_are_not_echoed(tmp_path: Path) -> None:
@@ -421,7 +442,7 @@ def test_probe_detail_redacts_credentials() -> None:
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         _, _, detail = doctor._probe_embedding_dim(
-            "http://alfred:hunter2@embed.example:8001", "BAAI/bge-m3", "", client=client
+            "http://alfred:hunter2@x@embed.example:8001", "BAAI/bge-m3", "", client=client
         )
     # Redacted where it is printed, intact where it is sent.
     assert "hunter2" not in detail
