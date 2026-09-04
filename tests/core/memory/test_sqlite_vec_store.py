@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
 import sqlite3
 import struct
 import subprocess
@@ -650,31 +649,38 @@ def _setup_on_file(db_path: str, script: str) -> None:
 
 
 def _prescribed_command(message: str) -> str:
-    """The shell command the error message tells the operator to run, verbatim."""
-    lines = [ln.strip() for ln in message.split("\n") if ln.strip().startswith("sqlite3 ")]
-    assert len(lines) == 1, f"expected exactly one sqlite3 command, got {lines!r}"
+    """The shell command the error message tells the operator to run, verbatim.
+
+    Deliberately a `python -c` line and not a `sqlite3` one: neither real
+    environment can run the CLI form. The host has /usr/bin/sqlite3 but no
+    sqlite_vec module; Alfred's image has the module but ships no sqlite3 binary.
+    Only a dev venv has both, which is precisely where such guidance gets
+    "verified" while stranding every actual operator.
+    """
+    lines = [ln.strip() for ln in message.split("\n") if ln.strip().startswith("python -c ")]
+    assert len(lines) == 1, f"expected exactly one python -c command, got {lines!r}"
     return lines[0]
 
 
-def _run_prescribed_recovery(message: str) -> subprocess.CompletedProcess[str]:
-    """Run the message's own command through a real shell, as an operator would.
+def _run_in_shell(command: str) -> subprocess.CompletedProcess[str]:
+    """Run a command through a real shell, with this interpreter first on PATH.
 
-    Deliberately *not* pre-loading the extension: the whole point is that
-    ``DROP TABLE`` on a vec0 table needs the module, and guidance that only works
-    with it already loaded strands the operator.
+    The prescription asks for "an interpreter that has Alfred's dependencies"; in
+    the test environment that is the venv running pytest, not the bare `python`.
     """
-    # The command resolves sqlite-vec through `python -c`, so the interpreter that
-    # has it must be the one on PATH — in a venv that is not the bare `python`.
     env = dict(os.environ)
     env["PATH"] = f"{Path(sys.executable).parent}{os.pathsep}{env['PATH']}"
-    return subprocess.run(
-        _prescribed_command(message),
-        shell=True,
-        capture_output=True,
-        text=True,
-        env=env,
-        check=False,
-    )
+    return subprocess.run(command, shell=True, capture_output=True, text=True, env=env, check=False)
+
+
+def _run_prescribed_recovery(message: str) -> subprocess.CompletedProcess[str]:
+    """Run the message's own command, unmodified, as an operator would.
+
+    Nothing is pre-loaded here: the whole point is that ``DROP TABLE`` on a vec0
+    table needs the extension, and guidance that only works with it already loaded
+    strands the operator.
+    """
+    return _run_in_shell(_prescribed_command(message))
 
 
 async def _cold_store_at(db_path: str, dim: int) -> bool:
@@ -740,8 +746,6 @@ async def test_dimension_mismatch_recovery_message_is_one_an_operator_can_run(
     that only works with sqlite-vec already loaded is one the operator — who has
     just stopped Alfred — cannot perform.
     """
-    if shutil.which("sqlite3") is None:
-        pytest.skip("sqlite3 CLI unavailable — cannot exercise the operator path")
     db_path = str(tmp_path / "cold.db")
     if not await _cold_store_at(db_path, 384):
         pytest.skip("sqlite-vec extension unavailable — nothing to guard")
@@ -762,10 +766,13 @@ async def test_dimension_mismatch_recovery_message_is_one_an_operator_can_run(
     # The blast radius is the whole recall, not the cold half — say so.
     assert "not just its cold half" in message
     assert "503" in message
-    # And it must tell the operator to load the extension, since the stock CLI cannot
-    # parse DROP TABLE on a vec0 table without it.
-    assert ".load" in message
+    # It must tell the operator to load the extension, since DROP TABLE on a vec0
+    # table cannot be parsed without it.
+    assert "sqlite_vec.load(db)" in message
     assert "no such module: vec0" in message
+    # It must name *this* store's file rather than a placeholder: in the container
+    # the real path is /data/episodic_cold.db, which no operator should have to guess.
+    assert db_path in _prescribed_command(message)
 
     result = _run_prescribed_recovery(message)
     assert result.returncode == 0, f"prescribed recovery failed: {result.stderr}"
@@ -781,27 +788,33 @@ async def test_dimension_mismatch_recovery_message_is_one_an_operator_can_run(
     assert "float[1024]" in _vec_sql(db_path)["vec_episodic_semantic"]
 
 
-def test_the_recovery_needs_the_load_prefix_it_prescribes(tmp_path: Path) -> None:
-    """Pins *why* the message carries a .load: without it the stock CLI dead-ends.
+@pytest.mark.asyncio
+async def test_the_recovery_needs_the_extension_load_it_prescribes(tmp_path: Path) -> None:
+    """Pins *why* the command carries sqlite_vec.load: without it the drop dead-ends.
 
-    If this ever starts passing, the .load guidance has become unnecessary noise and
-    the message should lose it.
+    The naive form is derived from the message's own command rather than hand-written,
+    so it cannot drift away from what is actually prescribed. If this ever starts
+    passing, the load step has become unnecessary and the message should lose it.
     """
-    if shutil.which("sqlite3") is None:
-        pytest.skip("sqlite3 CLI unavailable — cannot exercise the operator path")
     db_path = str(tmp_path / "cold.db")
-    _setup_on_file(
-        db_path,
-        "CREATE VIRTUAL TABLE vec_episodic_content USING vec0(embedding float[384]);",
-    )
-    naive = subprocess.run(
-        ["sqlite3", db_path, "DROP TABLE vec_episodic_content;"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert naive.returncode != 0
-    assert "no such module: vec0" in naive.stderr
+    if not await _cold_store_at(db_path, 384):
+        pytest.skip("sqlite-vec extension unavailable — nothing to guard")
+
+    reopened = SqliteVecStore(db_path, dim=1024)
+    try:
+        with pytest.raises(RuntimeError) as excinfo:
+            await reopened._ensure_schema()
+    finally:
+        await reopened.close()
+
+    prescribed = _prescribed_command(str(excinfo.value))
+    naive = prescribed.replace("db.enable_load_extension(True); sqlite_vec.load(db); ", "")
+    assert naive != prescribed, "expected to strip the load step from the prescription"
+
+    result = _run_in_shell(naive)
+    assert result.returncode != 0
+    assert "no such module: vec0" in result.stderr
+    assert _vec_sql(db_path) != {}, "the failed attempt must not have dropped anything"
 
 
 @pytest.mark.asyncio
