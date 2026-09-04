@@ -20,11 +20,11 @@ Episodic + semantic + procedural, biologically inspired.
 - `openai_embedding_provider.py` — `OpenAICompatEmbeddingProvider`: `/v1/embeddings` over HTTP (vLLM `--runner pooling`), verifies the served width on every response
 - `embedding_backend.py` — `build_embedding_provider(config)`: the `EMBEDDING_BACKEND` seam (registry keyed by backend name); services call this, never a concrete provider
 - `vector_store.py` — VectorStore ABC with dual-embedding search (content + semantic key) + `update_metadata()` for retrieval stats
-- `redis_vector_store.py` — Hot store (RediSearch HNSW), uses CONTEXT_INDEX/CONTEXT_PREFIX
-- `sqlite_vec_store.py` — Cold store (sqlite-vec), with v1→v2 migration
+- `redis_vector_store.py` — Hot store (RediSearch HNSW), uses CONTEXT_INDEX/CONTEXT_PREFIX; latches a proven dimension mismatch against the existing index and raises from `add`/`search`/`count` — `delete`/`exists`/`update_metadata` skip `ensure_index()` and keep working
+- `sqlite_vec_store.py` — Cold store (sqlite-vec), with v1→v2 migration; the same dimension latch, raised from every operation that opens the file (they all reach `_ensure_schema()` via `_get_db()`)
 - `significance.py` — SignificanceScorer: 4 dims (safety/novelty/personal/emotional)
 - `context_index.py` — ContextIndexManager: unified search across all memory types, owns RedisVectorStore
-- `episodic/memory.py` — EpisodicMemory: hot+cold unified interface
+- `episodic/memory.py` — EpisodicMemory: hot+cold unified interface; `recall()` gathers hot and cold with `return_exceptions=False` **on purpose** (see Gotchas)
 - `schemas.py` — Memory-specific Pydantic models
 - `routines/patterns.py` — `match_trigger_pattern()`: shared by engine + librarian
 - `ingestor.py` — Memory Ingestor (hippocampus): consumes `ReflexObservation` from `REFLEX_OBSERVATIONS_STREAM`, writes to `EpisodicMemory` via `SignificanceScorer`
@@ -153,6 +153,8 @@ uv run python -m core.channels   # Web + Signal channels
 - Memory tools are INTERNAL — dispatched in-process, NOT via BaseFeature/SDK/ToolRegistry
 - `ContextIndexManager.search_text()` embeds query internally — callers don't need separate EmbeddingProvider
 - `SentenceTransformerProvider._load()` is thread-safe and blocks on first call — services warm it via `core/warmup.py` (`start_warmup()`) background tasks at startup, warming through `EmbeddingProvider.warmup()` so the check is the backend's own
+- `EpisodicMemory.recall()` gathers the hot and cold searches at the default `return_exceptions=False`, so a cold-store failure discards the hot results that already succeeded and admin search returns 503 — do NOT "fix" that by flipping it: `return_exceptions=True` swallows every cold failure silently and forever, which is the dimension guard's own failure mode in the other direction (`sqlite_vec_store._verify_vec_dim` documents the trade)
+- Both vector stores refuse to run against a store built at a different embedding width and latch it; the recovery is the exception text they print (per-store, and the hot store's `DD` flag is destructive) — never a summary of it
 - Never construct an embedding provider directly in a service — go through `build_embedding_provider()` (`memory/embedding_backend.py`, dispatches on `EMBEDDING_BACKEND`) and release it with `provider.aclose()` inside `core/shutdown.py`'s `teardown()`; the HTTP backend owns a connection pool, the in-process one no-ops
 - Trigger type modules must be imported before use to trigger `@TriggerRegistry.register_type()` decorators
 - Channel adapter modules must be imported to trigger `@ChannelRegistry.register()` decorators
