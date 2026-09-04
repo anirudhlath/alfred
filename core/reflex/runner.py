@@ -7,12 +7,13 @@ dispatches actions via a DomainAgent, and publishes structured observations.
 from __future__ import annotations
 
 import logging
+import os
 from typing import TYPE_CHECKING
 
 import redis.asyncio as aioredis
 
 from bus.schemas.events import ReflexObservation, StateChangedEvent
-from shared.streams import decode_stream_value
+from shared.streams import OBSERVED_ENTITY_PREFIX, decode_stream_value
 from shared.types import AioRedis as AioRedis  # noqa: TC001  # re-export for backward compat
 
 if TYPE_CHECKING:
@@ -27,6 +28,13 @@ if TYPE_CHECKING:
     from core.routing.domain_router import DomainAgent
 
 logger = logging.getLogger(__name__)
+
+# Per-entity window for passive observation. Deliberately separate from the
+# attention gate's 5-second cooldown: that one asks "is this SLM call worth
+# making", this one asks "is this worth remembering". Values differ by two
+# orders of magnitude. Tunable without a rebuild — see the review point in
+# docs/superpowers/specs/2026-09-03-passive-observation-design.md.
+OBSERVATION_DEBOUNCE_SECONDS = int(os.getenv("OBSERVATION_DEBOUNCE_SECONDS", "300"))
 
 
 async def publish_observation(
@@ -46,6 +54,32 @@ async def publish_observation(
         result=result,
     )
     await redis.xadd(stream, {"event": observation.model_dump_json()})
+
+
+async def observe_passively(
+    redis: AioRedis,
+    stream: str,
+    event: StateChangedEvent,
+    debounce_seconds: int = OBSERVATION_DEBOUNCE_SECONDS,
+) -> bool:
+    """Record an event the Reflex Engine saw but took no action on.
+
+    Debounced per entity so one flapping device cannot flood episodic
+    memory. Returns True if an observation was published.
+    """
+    seen_key = f"{OBSERVED_ENTITY_PREFIX}{event.entity_id}"
+    if not await redis.set(seen_key, "1", nx=True, ex=debounce_seconds):
+        logger.debug("Observation debounced: %s", event.entity_id)
+        return False
+
+    observation = ReflexObservation(
+        source="reflex-engine",
+        origin="state_change",
+        trigger_event=event.model_dump(),
+    )
+    await redis.xadd(stream, {"event": observation.model_dump_json()})
+    logger.debug("Observed: %s (%s → %s)", event.entity_id, event.old_state, event.new_state)
+    return True
 
 
 async def ensure_consumer_group(
