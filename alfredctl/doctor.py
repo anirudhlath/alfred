@@ -6,7 +6,8 @@ checklist, whether each subsystem is configured before you ever start the stack:
 - System 2 (Conscious) — the cloud LLM API key
 - System 1 (Reflex)    — the local inference backend (Ollama or OpenAI-compatible)
 - Home Assistant        — the long-lived token
-- Memory embeddings     — ungated by default; gated models need HF_TOKEN
+- Memory embeddings     — the backend and model; gated models need HF_TOKEN
+                          in-process, none of it applies to a remote server
 - Build prerequisites    — the home-service sibling repo
 
 Live probes (``--online``) are best-effort: a network failure downgrades to a
@@ -138,9 +139,47 @@ def _check_home_assistant(env: dict[str, str], online: bool) -> DoctorCheck:
 
 
 def _check_embeddings(env: dict[str, str]) -> DoctorCheck:
-    from shared.config import DEFAULT_EMBEDDING_MODEL
+    """Report the embedding backend the services will actually build.
 
-    model = env.get("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL).strip()
+    Every value is resolved through the same ``shared.config`` helpers ``AlfredConfig``
+    uses, so doctor cannot describe a configuration the runtime would read differently —
+    and the two that ``from_env`` rejects outright (an unknown backend, an unparseable
+    timeout) are reported here as failures rather than echoed back as valid.
+    """
+    from shared.config import (
+        DEFAULT_EMBEDDING_TIMEOUT_SECONDS,
+        normalize_embedding_backend,
+        normalize_embedding_dim,
+        normalize_embedding_host,
+        normalize_embedding_model,
+        positive_float,
+    )
+
+    model = normalize_embedding_model(env.get("EMBEDDING_MODEL", ""))
+    try:
+        backend = normalize_embedding_backend(env.get("EMBEDDING_BACKEND", ""))
+        dim = normalize_embedding_dim(env.get("EMBEDDING_DIM", ""), model)
+        # Applies to the openai backend only, but from_env parses it whatever the
+        # backend is — so a bad value takes every service down, not just that path.
+        timeout = positive_float(
+            "EMBEDDING_TIMEOUT_SECONDS",
+            env.get("EMBEDDING_TIMEOUT_SECONDS", ""),
+            DEFAULT_EMBEDDING_TIMEOUT_SECONDS,
+        )
+    except RuntimeError as exc:
+        return DoctorCheck("memory embeddings", "fail", str(exc))
+
+    if backend == "openai":
+        # A blank EMBEDDING_HOST falls back to the default at config load, so calling
+        # it a failure here would contradict the runtime.
+        host = normalize_embedding_host(env.get("EMBEDDING_HOST", ""))
+        # Gating is irrelevant on this path — the server holds the weights, not us.
+        return DoctorCheck(
+            "memory embeddings",
+            "pass",
+            f"model={model} dim={dim} via {host} (timeout {timeout:g}s)",
+        )
+
     gated = model.startswith("google/embeddinggemma")
     if gated and not env.get("HF_TOKEN", "").strip():
         return DoctorCheck(
@@ -148,7 +187,7 @@ def _check_embeddings(env: dict[str, str]) -> DoctorCheck:
             "warn",
             f"{model} is gated — set HF_TOKEN + accept its license, or use the ungated default",
         )
-    return DoctorCheck("memory embeddings", "pass", f"model={model}")
+    return DoctorCheck("memory embeddings", "pass", f"model={model} dim={dim} in-process")
 
 
 def _check_home_service() -> DoctorCheck:

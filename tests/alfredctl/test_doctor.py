@@ -17,6 +17,10 @@ def _status(checks: list[doctor.DoctorCheck], name: str) -> str:
     return next(c.status for c in checks if c.name == name)
 
 
+def _detail(checks: list[doctor.DoctorCheck], name: str) -> str:
+    return next(c.detail for c in checks if c.name == name)
+
+
 def test_missing_env_fails(tmp_path: Path) -> None:
     checks = doctor.run_checks(tmp_path / ".env", online=False)
     assert checks[0].name == ".env"
@@ -71,3 +75,77 @@ def test_default_embedding_passes(tmp_path: Path) -> None:
     env = _write_env(tmp_path, "OPENROUTER_API_KEY=sk-or-v1-abc\n")
     checks = doctor.run_checks(env, online=False)
     assert _status(checks, "memory embeddings") == "pass"
+
+
+def test_openai_embedding_backend_reports_the_host(tmp_path: Path) -> None:
+    """The remote server holds the weights, so doctor must name it, not just the model."""
+    env = _write_env(
+        tmp_path,
+        "OPENROUTER_API_KEY=sk-or-v1-abc\n"
+        "EMBEDDING_BACKEND=openai\n"
+        # Written the way vLLM prints its base URL — the /v1 is stripped for the caller.
+        "EMBEDDING_HOST=http://vllm.example:8001/v1\n",
+    )
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, "memory embeddings") == "pass"
+    assert "http://vllm.example:8001" in _detail(checks, "memory embeddings")
+    assert "/v1" not in _detail(checks, "memory embeddings")
+
+
+def test_blank_embedding_host_reports_the_runtime_default(tmp_path: Path) -> None:
+    """`EMBEDDING_HOST=` in .env is "" — the runtime falls back, so doctor must too."""
+    from shared.config import DEFAULT_EMBEDDING_HOST
+
+    env = _write_env(
+        tmp_path,
+        "OPENROUTER_API_KEY=sk-or-v1-abc\nEMBEDDING_BACKEND=openai\nEMBEDDING_HOST=\n",
+    )
+    checks = doctor.run_checks(env, online=False)
+    assert DEFAULT_EMBEDDING_HOST in _detail(checks, "memory embeddings")
+
+
+def test_gated_model_needs_no_token_on_the_openai_backend(tmp_path: Path) -> None:
+    """Nothing is downloaded locally, so warning about HF_TOKEN would be wrong."""
+    env = _write_env(
+        tmp_path,
+        "OPENROUTER_API_KEY=sk-or-v1-abc\n"
+        "EMBEDDING_BACKEND=openai\n"
+        "EMBEDDING_MODEL=google/embeddinggemma-300m\n"
+        "HF_TOKEN=\n",
+    )
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, "memory embeddings") == "pass"
+
+
+def test_unknown_embedding_backend_fails(tmp_path: Path) -> None:
+    """Config load rejects it, so every service dies at startup — doctor says so first."""
+    env = _write_env(tmp_path, "OPENROUTER_API_KEY=sk-or-v1-abc\nEMBEDDING_BACKEND=vllm\n")
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, "memory embeddings") == "fail"
+    assert "EMBEDDING_BACKEND" in _detail(checks, "memory embeddings")
+
+
+def test_unparseable_embedding_timeout_fails(tmp_path: Path) -> None:
+    """Same reason: AlfredConfig.from_env raises on it whatever the backend is."""
+    env = _write_env(tmp_path, "OPENROUTER_API_KEY=sk-or-v1-abc\nEMBEDDING_TIMEOUT_SECONDS=abc\n")
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, "memory embeddings") == "fail"
+    assert "EMBEDDING_TIMEOUT_SECONDS" in _detail(checks, "memory embeddings")
+
+
+def test_blank_embedding_model_reports_the_runtime_default(tmp_path: Path) -> None:
+    """`.env.example` ships `EMBEDDING_MODEL=` blank; doctor must not print `model=`."""
+    from shared.config import DEFAULT_EMBEDDING_MODEL
+
+    env = _write_env(tmp_path, "OPENROUTER_API_KEY=sk-or-v1-abc\nEMBEDDING_MODEL=\n")
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, "memory embeddings") == "pass"
+    assert DEFAULT_EMBEDDING_MODEL in _detail(checks, "memory embeddings")
+
+
+def test_unparseable_embedding_dim_fails(tmp_path: Path) -> None:
+    """The index width is the one value a mismatch corrupts silently — never guess it."""
+    env = _write_env(tmp_path, "OPENROUTER_API_KEY=sk-or-v1-abc\nEMBEDDING_DIM=abc\n")
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, "memory embeddings") == "fail"
+    assert "EMBEDDING_DIM" in _detail(checks, "memory embeddings")
