@@ -20,7 +20,7 @@ from core.memory.redis_vector_store import RedisVectorStore
 from core.memory.routines.store import RoutineStore
 from core.memory.significance import SignificanceScorer
 from core.memory.sqlite_vec_store import SqliteVecStore
-from core.shutdown import close_all
+from core.shutdown import teardown
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
 from shared.redis_streams import create_redis
@@ -83,8 +83,8 @@ async def run() -> None:
     finally:
         # This process runs one cycle and exits, so a pool left open here is leaked on
         # every single invocation.
-        await close_all(
-            {
+        await teardown(
+            closers={
                 "embedding provider": embedder.aclose if embedder is not None else None,
                 "redis": r.aclose,
             }

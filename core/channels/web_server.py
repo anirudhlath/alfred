@@ -46,6 +46,7 @@ from core.identity.ws_auth import require_ws_auth
 from core.notifications.adapters.satellite import SatelliteChannelAdapter
 from core.notifications.channels import ChannelRegistry
 from core.routing.pending import confirm_pending_action
+from core.shutdown import teardown
 from core.warmup import start_warmup
 from shared.redis_streams import create_redis
 from shared.usertime import is_valid_timezone
@@ -366,23 +367,23 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     yield
 
     shutdown.set()
-    delivery_task.cancel()
-    credential_push_task.cancel()
-    warmup_task.cancel()
-
-    if satellite_bridge is not None:
-        await satellite_bridge.stop()
-
     apns = ChannelRegistry.get_instance("apns")
-    if apns is not None and hasattr(apns, "close"):
-        await apns.close()
-
-    await credential_store.close()
-    # The admin API's episodic provider is a module-level singleton (it must outlive
-    # any single request), so this hook is the only place it can be closed.
-    await aclose_episodic()
-    await app.state.http.aclose()
-    await pool.close()
+    # One protected sequence rather than a bare chain: every close here used to sit
+    # behind the one before it, so a single raiser (or a cancellation during shutdown)
+    # silently skipped the rest — leaking the http client and the Redis pool.
+    await teardown(
+        tasks=[delivery_task, credential_push_task, warmup_task],
+        closers={
+            "satellite bridge": satellite_bridge.stop if satellite_bridge is not None else None,
+            "apns adapter": getattr(apns, "close", None) if apns is not None else None,
+            "credential store": credential_store.close,
+            # The admin API's episodic embedding provider is a module-level singleton
+            # (it must outlive any single request), so this hook is its only close.
+            "admin episodic provider": aclose_episodic,
+            "http client": app.state.http.aclose,
+            "redis pool": pool.close,
+        },
+    )
 
 
 def _ensure_integrations_registered() -> None:

@@ -96,6 +96,28 @@ def normalize_embedding_host(raw: str) -> str:
     return host or DEFAULT_EMBEDDING_HOST
 
 
+def positive_float_env(name: str, default: float) -> float:
+    """Read a positive float env var, naming the variable in every failure.
+
+    ``float(os.getenv(...))`` raises ``could not convert string to float: \'abc\'``,
+    which names neither the variable nor the file it came from, and it accepts ``0`` and
+    negatives — both of which reach ``httpx.Timeout`` as "give up immediately" rather
+    than the "wait longer" the operator meant.
+    """
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        # A key present but empty (``EMBEDDING_TIMEOUT_SECONDS=`` in .env) is "" here,
+        # which would defeat os.getenv's own default.
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        raise RuntimeError(f"{name} must be a number of seconds, got {raw!r}") from None
+    if value <= 0:
+        raise RuntimeError(f"{name} must be greater than 0, got {raw!r}")
+    return value
+
+
 def normalize_embedding_backend(raw: str) -> str:
     """Normalise and validate ``EMBEDDING_BACKEND``; blank means the default.
 
@@ -226,8 +248,8 @@ class AlfredConfig:
         # default: a key present but empty (``EMBEDDING_HOST=`` in .env) is "" here.
         embedding_host = normalize_embedding_host(os.getenv("EMBEDDING_HOST", ""))
         embedding_backend = normalize_embedding_backend(os.getenv("EMBEDDING_BACKEND", ""))
-        embedding_timeout_seconds = float(
-            os.getenv("EMBEDDING_TIMEOUT_SECONDS", "").strip() or DEFAULT_EMBEDDING_TIMEOUT_SECONDS
+        embedding_timeout_seconds = positive_float_env(
+            "EMBEDDING_TIMEOUT_SECONDS", DEFAULT_EMBEDDING_TIMEOUT_SECONDS
         )
         return cls(
             redis_host=os.getenv("REDIS_HOST", "localhost"),

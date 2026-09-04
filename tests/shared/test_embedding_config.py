@@ -173,3 +173,25 @@ def test_embedding_timeout_defaults_and_reads_env(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setenv("EMBEDDING_TIMEOUT_SECONDS", "")
     assert config.AlfredConfig.from_env().embedding_timeout_seconds == 30.0
+
+
+def test_non_numeric_timeout_names_the_variable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`could not convert string to float: 'abc'` names neither the var nor the file."""
+    monkeypatch.setenv("EMBEDDING_TIMEOUT_SECONDS", "abc")
+    with pytest.raises(RuntimeError, match="EMBEDDING_TIMEOUT_SECONDS must be a number"):
+        config.AlfredConfig.from_env()
+
+
+@pytest.mark.parametrize("raw", ["0", "-1", "-0.5"])
+def test_non_positive_timeout_is_rejected(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    """httpx reads these as "give up immediately", never as the "wait longer" intended."""
+    monkeypatch.setenv("EMBEDDING_TIMEOUT_SECONDS", raw)
+    with pytest.raises(RuntimeError, match="EMBEDDING_TIMEOUT_SECONDS must be greater than 0"):
+        config.AlfredConfig.from_env()
+
+
+def test_timeout_error_quotes_the_raw_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The operator greps their .env for what they typed, not for a parsed float.
+    monkeypatch.setenv("EMBEDDING_TIMEOUT_SECONDS", " 0 ")
+    with pytest.raises(RuntimeError, match=r"'0'"):
+        config.AlfredConfig.from_env()

@@ -19,7 +19,7 @@ from core.memory.paths import episodic_cold_path
 from core.memory.redis_vector_store import RedisVectorStore
 from core.memory.significance import SignificanceScorer
 from core.memory.sqlite_vec_store import SqliteVecStore
-from core.shutdown import close_all, drain_tasks
+from core.shutdown import teardown
 from core.warmup import start_warmup
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
@@ -76,12 +76,12 @@ async def run(config: AlfredConfig) -> None:
     finally:
         # Drained before closing: the warmup task holds the provider, so cancelling
         # without waiting can close the pool out from under an in-flight embed.
-        await drain_tasks(warmup_task)
-        await close_all(
-            {
+        await teardown(
+            tasks=[warmup_task],
+            closers={
                 "embedding provider": embedder.aclose if embedder is not None else None,
                 "redis": r.aclose,
-            }
+            },
         )
 
 

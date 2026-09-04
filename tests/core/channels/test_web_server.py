@@ -311,3 +311,60 @@ def test_auth_status_not_shadowed_by_spa_catch_all(tmp_path: Path) -> None:
             activity = client.get("/activity")
             assert activity.status_code == 200
             assert "alfred" in activity.text
+
+
+def test_lifespan_shutdown_closes_everything_past_a_failing_closer(tmp_path: Path) -> None:
+    """Shutdown used to be a bare await chain, so one raiser skipped everything behind it.
+
+    The channels process is the fourth service that builds an embedding provider, and
+    its provider is closed here — behind the credential store. With the old sequence a
+    failing `credential_store.close()` leaked the provider, the shared httpx client and
+    the Redis pool in one go, silently, after `yield` where nothing reports it.
+    """
+    from fastapi.testclient import TestClient
+
+    import core.channels.web_server as ws_mod
+
+    dist = _make_spa_dist(tmp_path)
+
+    mock_redis = AsyncMock()
+    mock_redis.hgetall = AsyncMock(return_value={})
+    mock_redis.close = AsyncMock()
+
+    mock_store = AsyncMock()
+    mock_store.initialize = AsyncMock()
+    mock_store.get_user_id = AsyncMock(return_value=None)
+    mock_store.list_credentials = AsyncMock(return_value=[])
+    mock_store.has_any_credential = AsyncMock(return_value=False)
+    # The closer that fails. Everything after it in the dict must still run.
+    mock_store.close = AsyncMock(side_effect=RuntimeError("credential store is wedged"))
+
+    aclose_episodic = AsyncMock()
+    http_aclose = AsyncMock()
+
+    with (
+        patch.object(ws_mod, "_SPA_DIST", dist),
+        patch("core.channels.web_server.aioredis.from_url", return_value=mock_redis),
+        patch("core.channels.web_server.CredentialStore", return_value=mock_store),
+        patch("core.channels.web_server._init_apns_adapter", new=AsyncMock()),
+        patch(
+            "core.notifications.delivery.notification_delivery_worker",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.channels.service_credentials.credential_push_worker",
+            new=AsyncMock(return_value=None),
+        ),
+        patch("core.channels.web_server.start_warmup", return_value=MagicMock()),
+        patch("core.channels.web_server.aclose_episodic", new=aclose_episodic),
+        patch("httpx.AsyncClient.aclose", new=http_aclose),
+    ):
+        app = create_app(redis_url="redis://localhost:6379")
+        with TestClient(app) as client:
+            assert client.get("/health").status_code == 200
+
+    # All three sit *after* the failing credential store in the closers dict.
+    assert mock_store.close.await_count == 1
+    assert aclose_episodic.await_count == 1
+    assert http_aclose.await_count == 1
+    assert mock_redis.close.await_count == 1
