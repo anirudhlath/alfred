@@ -11,7 +11,7 @@ from loguru import logger
 from core.shutdown import teardown
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import AsyncIterator, Iterator
 
 
 @pytest.fixture
@@ -32,7 +32,7 @@ class Stubborn:
 
     def __init__(self) -> None:
         self.refusing = True
-        self.task: asyncio.Task[None]
+        self.task: asyncio.Task[None] | None = None
 
     async def start(self) -> asyncio.Task[None]:
         async def _run() -> None:
@@ -49,10 +49,27 @@ class Stubborn:
         return self.task
 
     async def kill(self) -> None:
+        if self.task is None:
+            return
         self.refusing = False
         while not self.task.done():
             self.task.cancel()
             await asyncio.sleep(0)
+
+
+@pytest.fixture
+async def stubborn_worker() -> AsyncIterator[Stubborn]:
+    """Release the worker even when an assertion above it fails.
+
+    Killing it as a test's last statement is not enough: a failed assertion skips the
+    kill, the task then refuses cancellation forever, and the suite hangs at teardown
+    instead of reporting the failure red.
+    """
+    worker = Stubborn()
+    try:
+        yield worker
+    finally:
+        await worker.kill()
 
 
 async def test_teardown_runs_closers_in_order() -> None:
@@ -113,13 +130,14 @@ async def test_teardown_reraises_a_cancellation_raised_by_a_closer(
     assert any("cancelled while closing embedding provider" in line for line in captured_logs)
 
 
-async def test_teardown_closes_everything_when_cancelled_during_the_drain() -> None:
+async def test_teardown_closes_everything_when_cancelled_during_the_drain(
+    stubborn_worker: Stubborn,
+) -> None:
     """The drain is the first await in every caller's finally, so it must defer too.
 
     Composed as drain-then-close at a call site, a cancellation here propagated out and
     no closer ever ran: neither the embedding provider nor Redis was released.
     """
-    stubborn_worker = Stubborn()
     stubborn = await stubborn_worker.start()
     closed: list[str] = []
 
@@ -142,8 +160,6 @@ async def test_teardown_closes_everything_when_cancelled_during_the_drain() -> N
     with pytest.raises(asyncio.CancelledError):
         await running
     assert closed == ["embedding provider", "redis"]
-
-    await stubborn_worker.kill()
 
 
 async def test_teardown_waits_for_cancellation_to_land() -> None:
@@ -175,9 +191,9 @@ async def test_teardown_waits_for_cancellation_to_land() -> None:
 
 async def test_teardown_does_not_hang_on_an_uncancellable_task(
     captured_logs: list[str],
+    stubborn_worker: Stubborn,
 ) -> None:
     """A task that swallows cancellation is named and left behind, never waited on forever."""
-    stubborn_worker = Stubborn()
     stubborn = await stubborn_worker.start()
     closed: list[str] = []
 
@@ -192,8 +208,6 @@ async def test_teardown_does_not_hang_on_an_uncancellable_task(
     assert any("stubborn" in line for line in captured_logs)
     # And the resources still got released.
     assert closed == ["redis"]
-
-    await stubborn_worker.kill()
 
 
 async def test_teardown_reports_a_task_that_failed_rather_than_cancelled(

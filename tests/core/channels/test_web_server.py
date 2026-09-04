@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -288,7 +288,9 @@ def test_auth_status_not_shadowed_by_spa_catch_all(tmp_path: Path) -> None:
             new=AsyncMock(return_value=None),
         ),
         # Skip warmup — real Whisper/Piper loads in to_thread outlive the TestClient.
-        patch("core.channels.web_server.start_warmup", return_value=MagicMock()),
+        # None, not a MagicMock: a mock never fires add_done_callback, so asyncio.wait
+        # in teardown burns its full timeout. teardown skips None tasks.
+        patch("core.channels.web_server.start_warmup", return_value=None),
         # httpx.AsyncClient.aclose() is called on shutdown.
         patch("httpx.AsyncClient.aclose", new=AsyncMock()),
     ):
@@ -355,7 +357,9 @@ def test_lifespan_shutdown_closes_everything_past_a_failing_closer(tmp_path: Pat
             "core.channels.service_credentials.credential_push_worker",
             new=AsyncMock(return_value=None),
         ),
-        patch("core.channels.web_server.start_warmup", return_value=MagicMock()),
+        # None, not a MagicMock: a mock never fires add_done_callback, so asyncio.wait
+        # in teardown burns its full timeout. teardown skips None tasks.
+        patch("core.channels.web_server.start_warmup", return_value=None),
         patch("core.channels.web_server.aclose_episodic", new=aclose_episodic),
         patch("httpx.AsyncClient.aclose", new=http_aclose),
     ):
