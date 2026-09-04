@@ -38,28 +38,39 @@ async def test_async_embed(provider: SentenceTransformerProvider) -> None:
     assert len(result) == provider.dimension()
 
 
+class RecordingProvider(EmbeddingProvider):
+    """Minimal concrete provider — pins what the ABC gives a backend for free."""
+
+    def __init__(self) -> None:
+        self.embedded: list[str] = []
+
+    async def embed(self, text: str) -> list[float]:
+        self.embedded.append(text)
+        return [0.0]
+
+    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        return [[0.0] for _ in texts]
+
+    def dimension(self) -> int:
+        return 1
+
+    def model_name(self) -> str:
+        return "recording"
+
+
 @pytest.mark.asyncio
 async def test_warmup_defaults_to_one_embed() -> None:
     """The ABC default must stay equivalent to the ``lambda: embedder.embed("warmup")``
     that services used to hand start_warmup(); services now pass ``.warmup`` instead."""
-
-    class RecordingProvider(EmbeddingProvider):
-        def __init__(self) -> None:
-            self.embedded: list[str] = []
-
-        async def embed(self, text: str) -> list[float]:
-            self.embedded.append(text)
-            return [0.0]
-
-        async def embed_batch(self, texts: list[str]) -> list[list[float]]:
-            return [[0.0] for _ in texts]
-
-        def dimension(self) -> int:
-            return 1
-
-        def model_name(self) -> str:
-            return "recording"
-
     provider = RecordingProvider()
     await provider.warmup()
     assert provider.embedded == ["warmup"]
+
+
+@pytest.mark.asyncio
+async def test_aclose_defaults_to_a_noop() -> None:
+    """On the ABC so services can release a provider's resources through the base type;
+    a backend holding nothing (sentence-transformers) simply has nothing to do."""
+    provider = RecordingProvider()
+    await provider.aclose()
+    assert provider.embedded == []

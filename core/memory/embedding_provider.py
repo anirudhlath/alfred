@@ -37,6 +37,16 @@ class EmbeddingProvider(ABC):
         """
         await self.embed("warmup")
 
+    # B027: the empty body is the point — a concrete no-op default, not an
+    # unimplemented abstract method. Backends that hold nothing need not override it.
+    async def aclose(self) -> None:  # noqa: B027
+        """Release any resources the backend holds. No-op unless a backend needs it.
+
+        On the ABC so a service holding the ``EmbeddingProvider`` type can shut a
+        provider down without knowing which backend it got — the HTTP backend owns a
+        connection pool, the in-process one owns nothing.
+        """
+
 
 class SentenceTransformerProvider(EmbeddingProvider):
     """EmbeddingProvider backed by sentence-transformers."""
