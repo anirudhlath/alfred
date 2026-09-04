@@ -99,7 +99,7 @@ async def ingest_observation(
     obs: ReflexObservation,
     episodic_memory: EpisodicMemory,
     scorer: SignificanceScorer,
-    passive_scorer: SignificanceScorer | None = None,
+    passive_scorer: SignificanceScorer,
 ) -> None:
     """Convert a ReflexObservation into an episodic entry and store it.
 
@@ -107,38 +107,38 @@ async def ingest_observation(
     action. Those are stored under source ``"observation"`` and scored by
     ``passive_scorer`` (which tracks its own entity-frequency population, so
     passive volume cannot flatten novelty for real reflex actions).
+
+    ``passive_scorer`` is REQUIRED, deliberately: it had a ``None`` default for
+    one commit, the sole production caller omitted it, and every passive
+    observation was silently scored against the shared ``ENTITY_FREQUENCY_KEY``
+    — the exact contamination this split exists to prevent, with nothing raised
+    and nothing logged. A required argument makes that omission a type error.
     """
-    # Bound to locals so mypy narrows them for the action branch below.
-    # An action without a result is unreachable in practice (publish_observation
-    # always sets both) — treating it as passive degrades gracefully rather
-    # than crashing the ingest loop.
+    # `action`/`result` are bound to locals inside the branch so mypy narrows
+    # them for the summary builders. An action without a result is unreachable
+    # in practice (publish_observation always sets both) — treating it as
+    # passive degrades gracefully rather than crashing the ingest loop.
     action, result = obs.action, obs.result
-    passive = action is None or result is None
-
     if action is None or result is None:
-        entry = EpisodicEntry(
-            id=str(uuid4()),
-            timestamp=obs.timestamp,
-            source="observation",
-            summary=_build_observation_summary(obs),
-            entities=_extract_entities(obs),
-            significance=SignificanceScore(overall=0.0),  # placeholder, scored below
-            semantic_key=_build_observation_semantic_key(obs),
-            valence="neutral",
-        )
+        active_scorer, source = passive_scorer, "observation"
+        summary = _build_observation_summary(obs)
+        semantic_key = _build_observation_semantic_key(obs)
     else:
-        entry = EpisodicEntry(
-            id=str(uuid4()),
-            timestamp=obs.timestamp,
-            source="reflex",
-            summary=_build_summary(obs, action, result),
-            entities=_extract_entities(obs),
-            significance=SignificanceScore(overall=0.0),  # placeholder, scored below
-            semantic_key=_build_semantic_key(obs, action),
-            valence="neutral",
-        )
+        active_scorer, source = scorer, "reflex"
+        summary = _build_summary(obs, action, result)
+        semantic_key = _build_semantic_key(obs, action)
 
-    active_scorer = passive_scorer if (passive and passive_scorer is not None) else scorer
+    entry = EpisodicEntry(
+        id=str(uuid4()),
+        timestamp=obs.timestamp,
+        source=source,
+        summary=summary,
+        entities=_extract_entities(obs),
+        significance=SignificanceScore(overall=0.0),  # placeholder, scored below
+        semantic_key=semantic_key,
+        valence="neutral",
+    )
+
     significance = await active_scorer.score(entry)
     await episodic_memory.write(entry, significance)
     logger.debug("Ingested observation {}: {}", obs.observation_id, entry.summary)
@@ -150,7 +150,7 @@ async def _ingest_entry(
     entry_data: Mapping[bytes | str, bytes | str],
     episodic_memory: EpisodicMemory,
     scorer: SignificanceScorer,
-    passive_scorer: SignificanceScorer | None,
+    passive_scorer: SignificanceScorer,
 ) -> None:
     """Ingest one stream entry, deciding whether it may stay pending.
 
@@ -190,8 +190,8 @@ async def run_ingestor(
     redis: AioRedis,
     episodic_memory: EpisodicMemory,
     scorer: SignificanceScorer,
+    passive_scorer: SignificanceScorer,
     shutdown_event: asyncio.Event | None = None,
-    passive_scorer: SignificanceScorer | None = None,
 ) -> None:
     """Consumer loop — reads REFLEX_OBSERVATIONS_STREAM, writes to episodic memory."""
     from core.reflex.runner import ensure_consumer_group

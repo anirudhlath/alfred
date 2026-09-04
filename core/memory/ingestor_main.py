@@ -70,9 +70,7 @@ async def run(config: AlfredConfig) -> None:
     )
 
     try:
-        await run_ingestor(
-            r, episodic, scorer, shutdown_event=_shutdown, passive_scorer=passive_scorer
-        )
+        await run_ingestor(r, episodic, scorer, passive_scorer, shutdown_event=_shutdown)
     finally:
         warmup_task.cancel()
         await r.aclose()

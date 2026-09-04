@@ -119,8 +119,11 @@ async def _run(
     monkeypatch.setattr(ingestor, "ingest_observation", ingest)
 
     scorer: SignificanceScorer = AsyncMock()
+    passive_scorer: SignificanceScorer = AsyncMock()
     await asyncio.wait_for(
-        ingestor.run_ingestor(redis, AsyncMock(), scorer, shutdown_event=shutdown),  # type: ignore[arg-type]
+        ingestor.run_ingestor(  # type: ignore[arg-type]
+            redis, AsyncMock(), scorer, passive_scorer, shutdown_event=shutdown
+        ),
         timeout=5,
     )
     return ingest
