@@ -55,10 +55,11 @@ class RedisVectorStore(VectorStore):
         """Create the RediSearch index if it does not already exist.
 
         A proven dimension mismatch is latched and re-raised without touching
-        Redis again. It cannot resolve itself while the process runs, and every
-        ``add``/``search``/``count`` enters here — re-probing would replay the
-        40-argument ``FT.CREATE`` plus an ``FT.INFO``, and log a traceback, on
-        every memory operation for the life of the process.
+        Redis again: every ``add``/``search``/``count`` enters here, so re-probing
+        would replay the 40-argument ``FT.CREATE`` plus an ``FT.INFO``, and log a
+        traceback, on every memory operation for the life of the process. The
+        latch holds until restart even if an operator fixes the index externally
+        — which the recovery message already tells them to do anyway.
         """
         if self._dim_mismatch is not None:
             raise RuntimeError(self._dim_mismatch)
@@ -183,8 +184,9 @@ class RedisVectorStore(VectorStore):
             f"{CONTEXT_PREFIX}* hash — but entries still holding old-width vectors "
             f"fail to index (FT.INFO hash_indexing_failures) and stay unsearchable, "
             f"because nothing re-embeds them: semantic entries are rebuilt from disk "
-            f"on the Librarian's next reindex_semantic_files() cycle, episodic entries "
-            f"have no re-embed path at all, so only new writes become searchable. "
+            f"on the Librarian's next reindex_semantic_files() cycle and routines are "
+            f"re-derived from YAML on restart, but episodic entries have no re-embed "
+            f"path at all, so only new writes become searchable. "
             f"Do NOT add 'DD' unless you accept the loss: it DELETES every "
             f"{CONTEXT_PREFIX}* hash, and episodic entries live in the hot store until "
             f"the Librarian's decay pass copies them to cold SQLite, so 'DD' "
