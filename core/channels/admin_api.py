@@ -87,13 +87,19 @@ async def _publish_trigger_action(
 
 
 def _get_episodic_lazy(redis: AioRedis) -> Any | None:
-    """Build EpisodicMemory once; heavy embedder loads on first vector search."""
+    """Build EpisodicMemory once; heavy embedder loads on first vector search.
+
+    Deliberately never calls ``embedder.aclose()`` — unlike the four service entry
+    points, the provider here is cached in the ``_episodic_memory`` module global and
+    outlives every request. Closing it after a search would leave the next one holding
+    a closed httpx client. It is released when the channels process exits.
+    """
     global _episodic_memory
     if _episodic_memory is _FAILED:
         return None
     if _episodic_memory is None:
         try:
-            from core.memory.embedding_provider import SentenceTransformerProvider
+            from core.memory.embedding_backend import build_embedding_provider
             from core.memory.episodic.memory import EpisodicMemory
             from core.memory.redis_vector_store import RedisVectorStore
             from core.memory.sqlite_vec_store import SqliteVecStore
@@ -102,7 +108,7 @@ def _get_episodic_lazy(redis: AioRedis) -> Any | None:
             _episodic_memory = EpisodicMemory(
                 hot=RedisVectorStore(redis=redis, dim=config.embedding_dim),
                 cold=SqliteVecStore(db_path=str(episodic_cold_path()), dim=config.embedding_dim),
-                embedder=SentenceTransformerProvider(config.embedding_model),
+                embedder=build_embedding_provider(config),
             )
         except Exception as exc:
             logger.error("EpisodicMemory unavailable for admin search: {}", exc)

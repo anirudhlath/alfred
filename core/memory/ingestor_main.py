@@ -38,10 +38,10 @@ async def run(config: AlfredConfig) -> None:
 
     r = create_redis(config.redis_url)
 
-    # Lazy-load embedding provider
-    from core.memory.embedding_provider import SentenceTransformerProvider
+    # The factory imports the concrete backend lazily (torch only on the in-process path).
+    from core.memory.embedding_backend import build_embedding_provider
 
-    embedder = SentenceTransformerProvider(config.embedding_model)
+    embedder = build_embedding_provider(config)
 
     hot = RedisVectorStore(redis=r, dim=config.embedding_dim)
     cold = SqliteVecStore(
@@ -56,7 +56,7 @@ async def run(config: AlfredConfig) -> None:
     warmup_task = start_warmup(
         "memory-ingestor",
         {
-            "embedding model": lambda: embedder.embed("warmup"),
+            "embedding model": embedder.warmup,
             "redis vector index": hot.ensure_index,
             "sqlite cold store": cold._get_db,
         },
@@ -66,6 +66,8 @@ async def run(config: AlfredConfig) -> None:
         await run_ingestor(r, episodic, scorer, shutdown_event=_shutdown)
     finally:
         warmup_task.cancel()
+        # No-op for the in-process backend; releases the HTTP backend's pool.
+        await embedder.aclose()
         await r.aclose()
 
 

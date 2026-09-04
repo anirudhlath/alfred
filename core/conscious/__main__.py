@@ -25,7 +25,7 @@ from core.conscious.identity import IdentityGate
 from core.conscious.runner import process_request_entry
 from core.conscious.session import SessionManager
 from core.memory.context_index import ContextIndexManager
-from core.memory.embedding_provider import SentenceTransformerProvider
+from core.memory.embedding_backend import build_embedding_provider
 from core.memory.episodic.memory import EpisodicMemory
 from core.memory.paths import (
     episodic_cold_path,
@@ -172,7 +172,7 @@ async def run(config: AlfredConfig) -> None:
     hot_store = None
     cold_store = None
     try:
-        embedder = SentenceTransformerProvider(config.embedding_model)
+        embedder = build_embedding_provider(config)
         hot_store = RedisVectorStore(redis=r, dim=config.embedding_dim)
         cold_store = SqliteVecStore(
             db_path=str(episodic_cold_path()),
@@ -204,7 +204,7 @@ async def run(config: AlfredConfig) -> None:
         warmup_task = start_warmup(
             "conscious",
             {
-                "embedding model": lambda: warm_embedder.embed("warmup"),
+                "embedding model": warm_embedder.warmup,
                 "redis vector index": warm_hot.ensure_index,
                 "sqlite cold store": warm_cold._get_db,
             },
@@ -422,6 +422,11 @@ async def run(config: AlfredConfig) -> None:
             routine_suggestion_task.cancel()
         delivery_task.cancel()
         await trigger_store.stop_sync()
+        if embedder is not None:
+            # Unconditional: the EmbeddingProvider type does not say which backend
+            # this is, and the HTTP one owns a connection pool (the in-process one
+            # owns nothing and no-ops).
+            await embedder.aclose()
         await r.aclose()
 
 

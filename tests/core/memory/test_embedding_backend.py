@@ -103,3 +103,25 @@ def test_blank_backend_falls_back_to_the_default() -> None:
 
     provider = build_embedding_provider(_config(embedding_backend="   "))
     assert isinstance(provider, SentenceTransformerProvider)
+
+
+def test_no_service_constructs_a_provider_directly() -> None:
+    """Services must go through the factory, or EMBEDDING_BACKEND is a lie in that process."""
+    import pathlib
+
+    # Anchored to the repo root rather than the cwd: pytest can be invoked from
+    # anywhere, and a relative read would make this test pass vacuously (it would
+    # error, not silently pass — but only where the files happen to resolve).
+    repo_root = pathlib.Path(__file__).resolve().parents[3]
+    entry_points = [
+        "core/conscious/__main__.py",
+        "core/channels/admin_api.py",
+        "core/memory/ingestor_main.py",
+        "core/librarian/__main__.py",
+    ]
+    offenders = [
+        path
+        for path in entry_points
+        if "SentenceTransformerProvider(" in (repo_root / path).read_text()
+    ]
+    assert offenders == []
