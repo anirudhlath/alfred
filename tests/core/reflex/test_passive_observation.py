@@ -415,3 +415,93 @@ async def test_successful_publish_keeps_the_debounce_key() -> None:
     await observe_passively(redis, STREAM, _event())
 
     redis.delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_observation_write_does_not_block_the_ack() -> None:
+    """Recording is bookkeeping — it must never wedge the event loop.
+
+    Under Redis ``maxmemory`` pressure Redis rejects ``deny-oom`` commands
+    (SET, XADD) while XREADGROUP/XACK still succeed. If the no-action path
+    propagated, nothing would ever be ACKed, the PEL would grow, and the
+    reclaim pass would replay every entry into a fresh SLM inference.
+    """
+    from core.reflex.runner import process_stream_entry
+
+    engine = AsyncMock()
+    engine.process_event = AsyncMock(return_value=None)
+    redis = AsyncMock()
+    redis.set = AsyncMock(return_value=True)
+    redis.xadd = AsyncMock(
+        side_effect=Exception("OOM command not allowed when used memory > 'maxmemory'")
+    )
+
+    took_action = await process_stream_entry(
+        entry_data=_entry(_event()),
+        engine=engine,
+        agent=AsyncMock(),
+        redis=redis,
+        result_stream="alfred:home:action_results",
+        observation_stream=STREAM,
+    )
+
+    assert took_action is False  # caller ACKs — the event was already handled
+
+
+@pytest.mark.asyncio
+async def test_a_failed_debounce_write_does_not_block_the_ack() -> None:
+    """Same for the debounce SET, which is equally deny-oom."""
+    from core.reflex.runner import process_stream_entry
+
+    engine = AsyncMock()
+    engine.process_event = AsyncMock(return_value=None)
+    redis = AsyncMock()
+    redis.set = AsyncMock(side_effect=Exception("OOM command not allowed"))
+
+    took_action = await process_stream_entry(
+        entry_data=_entry(_event()),
+        engine=engine,
+        agent=AsyncMock(),
+        redis=redis,
+        result_stream="alfred:home:action_results",
+        observation_stream=STREAM,
+    )
+
+    assert took_action is False
+
+
+@pytest.mark.asyncio
+async def test_the_action_path_still_propagates_write_failures() -> None:
+    """Only the bookkeeping path is isolated — a failed action result must retry."""
+    from bus.schemas.events import ActionRequest, ActionResult
+    from core.reflex.runner import process_stream_entry
+
+    action = ActionRequest(
+        source="reflex-engine",
+        target_service="home-service",
+        tool_name="home.light_turn_on",
+        parameters={"entity_id": "light.hallway"},
+    )
+    engine = AsyncMock()
+    engine.process_event = AsyncMock(return_value=action)
+    agent = AsyncMock()
+    agent.execute_action = AsyncMock(
+        return_value=ActionResult(
+            source="home-service",
+            request_id=action.request_id,
+            tool_name="home.light_turn_on",
+            status="success",
+        )
+    )
+    redis = AsyncMock()
+    redis.xadd = AsyncMock(side_effect=ConnectionError("redis went away"))
+
+    with pytest.raises(ConnectionError):
+        await process_stream_entry(
+            entry_data=_entry(_event()),
+            engine=engine,
+            agent=agent,
+            redis=redis,
+            result_stream="alfred:home:action_results",
+            observation_stream=STREAM,
+        )

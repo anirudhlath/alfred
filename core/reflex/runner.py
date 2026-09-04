@@ -133,10 +133,11 @@ async def process_stream_entry(
 ) -> bool:
     """Process a single Redis Stream entry. Returns True if an action was taken.
 
-    Raises on retriable errors (e.g., Ollama down) so the caller can
-    choose not to ACK the message. Returns False for skip-worthy errors
-    (malformed event, no action needed) AND for attention-gated events —
-    gated events are still ACKed by the caller.
+    Raises on retriable errors (e.g., Ollama down) so the caller can choose not
+    to ACK the message. Returns False — and is ACKed by the caller — for
+    malformed events, attention-gated events, and events the engine chose not
+    to act on. That last branch is not a no-op: it records a debounced passive
+    observation, best-effort, so a failed write never blocks the ACK.
     """
     raw_event = entry_data.get("event") or entry_data.get(b"event")
     if raw_event is None:
@@ -168,7 +169,17 @@ async def process_stream_entry(
         # Record it rather than dropping it. Without this Alfred remembers
         # only what it did, never what it saw, and pattern detection has
         # nothing to run over.
-        await observe_passively(redis, observation_stream, event)
+        #
+        # Isolated — failures don't block ACK. Recording is bookkeeping for an
+        # event the engine has already finished handling, and under Redis
+        # maxmemory the deny-oom commands it needs (SET, XADD) are rejected
+        # while XREADGROUP/XACK still succeed. Propagating would leave every
+        # no-action event un-ACKed and feed each one back into a fresh SLM
+        # inference on the next reclaim pass.
+        try:
+            await observe_passively(redis, observation_stream, event)
+        except Exception as e:
+            logger.warning("Passive observation failed for %s: %s", event.entity_id, e)
         return False
 
     result = await agent.execute_action(action)
