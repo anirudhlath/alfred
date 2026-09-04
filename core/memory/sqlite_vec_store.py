@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import struct
 from pathlib import Path
@@ -20,6 +21,10 @@ logger = logging.getLogger(__name__)
 
 _SCHEMA_V1_PATH = Path(__file__).parent / "episodic" / "schema.sql"
 _MIGRATION_V2_PATH = Path(__file__).parent / "episodic" / "migrations" / "v2.sql"
+
+# The vec0 virtual tables built by _migrate_v2. Both carry the embedding width in
+# their DDL, so both have to be checked (see _verify_vec_dim).
+_VEC_TABLES = ("vec_episodic_content", "vec_episodic_semantic")
 
 # Default significance JSON for data-migration of pre-v2 entries.
 _DEFAULT_SIGNIFICANCE = (
@@ -49,6 +54,11 @@ class SqliteVecStore(VectorStore):
     via ``_ensure_schema()``.  If the database already contains rows the data
     migration step embeds each existing summary so the vec0 tables are
     consistent from the start.
+
+    A vec0 table built at a different embedding width is the one case that is
+    deliberately *not* graceful (see ``_verify_vec_dim``): it is latched and
+    re-raised from ``_ensure_schema()``, which every operation reaches through
+    ``_get_db()``.
     """
 
     def __init__(
@@ -65,6 +75,8 @@ class SqliteVecStore(VectorStore):
         # Tracked separately from the connection: a warmup task may call
         # _connect() first, and that must not skip schema creation/migration.
         self._schema_ready: bool = False
+        # Set once a dimension mismatch is proven; see _ensure_schema().
+        self._dim_mismatch: str | None = None
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -97,8 +109,24 @@ class SqliteVecStore(VectorStore):
         return db
 
     async def _ensure_schema(self) -> None:
-        """Run schema migrations up to v2 if needed."""
+        """Run schema migrations up to v2 if needed.
+
+        A proven dimension mismatch is latched and re-raised without touching the
+        database again: every ``add``/``search``/``count`` reaches here via
+        ``_get_db()`` while ``_schema_ready`` stays False, so re-probing would
+        replay the sqlite_master reads on every memory operation. The latch holds
+        for the life of the store even if an operator fixes the file underneath it
+        — which the recovery message tells them to do with Alfred stopped anyway.
+        """
+        if self._dim_mismatch is not None:
+            raise RuntimeError(self._dim_mismatch)
+
         db = await self._connect()
+
+        # Before any DDL: an existing table at the wrong width makes both the
+        # fast path and the migration below wrong, and _migrate_v2 would commit
+        # version=2 over a database we are about to reject.
+        await self._verify_vec_dim(db)
 
         # Fast path: already migrated and clean — stay read-only. Multiple
         # processes share this file and warm concurrently at startup while the
@@ -141,6 +169,68 @@ class SqliteVecStore(VectorStore):
                     raise
 
         self._schema_ready = True
+
+    async def _verify_vec_dim(self, db: aiosqlite.Connection) -> None:
+        """Refuse to use vec0 tables that were built at a different vector width.
+
+        ``CREATE VIRTUAL TABLE IF NOT EXISTS`` is a no-op against an existing table,
+        so a changed EMBEDDING_MODEL/EMBEDDING_BACKEND leaves the old width in place.
+        What follows is not a clean failure: ``add`` dies deep in sqlite with
+        "Dimension mismatch for inserted vector", and ``_knn_search`` swallows the
+        same error per table (``KNN query on ... failed``) and returns ``[]``, so
+        cold recall silently goes empty. The declared width is recoverable from the
+        DDL sqlite stores in ``sqlite_master``, so say it plainly and up front.
+        """
+        if not self._vec_ready:
+            # Without the extension the store full-scans instead of using vec0, so
+            # the declared width is not load-bearing and nothing can be proven here.
+            return
+        for table in _VEC_TABLES:
+            cursor = await db.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (table,),
+            )
+            row = await cursor.fetchone()
+            if row is None or not row[0]:
+                continue  # not created yet — _migrate_v2 will build it at self._dim
+            match = re.search(r"float\[(\d+)\]", row[0])
+            if match is None:
+                # Never silent. A guard that quietly gives up is indistinguishable
+                # from no guard, which is the exact failure it exists to prevent.
+                logger.warning(
+                    "Could not determine the vector dimension of %s from its DDL (%s) "
+                    "— dimension guard skipped, an embedding model change will NOT be "
+                    "caught here",
+                    table,
+                    row[0],
+                )
+                continue
+            existing = int(match.group(1))
+            if existing == self._dim:
+                continue
+            self._dim_mismatch = (
+                f"Cold store {self._db_path} has {table} built with dim={existing} "
+                f"but the configured embedding model produces dim={self._dim}; "
+                f"inserts of the new width are rejected by vec0 and KNN queries "
+                f"return nothing, so the cold store refuses to run. "
+                f"To go back: restore the previous EMBEDDING_MODEL/EMBEDDING_BACKEND "
+                f"— nothing has been lost. "
+                f"To go forward: stop Alfred, then run "
+                f"'DROP TABLE vec_episodic_content; "
+                f"DROP TABLE vec_episodic_semantic; "
+                f"UPDATE schema_version SET version = 1;' against that file and "
+                f"restart, which rebuilds both tables at dim={self._dim} and keeps "
+                f"every episodic_entries row. But they come back EMPTY and nothing "
+                f"re-embeds them: the v2 migration back-fills only when "
+                f"SqliteVecStore is constructed with an embedder, and no service "
+                f"does that, so archived entries stay unsearchable and only newly "
+                f"decayed ones become findable again. "
+                f"Do NOT delete the sqlite file unless you accept the loss: cold is "
+                f"the last stop — copy_to_cold_and_remove() deletes from the hot "
+                f"store once it has written here — so deleting it destroys every "
+                f"archived memory permanently."
+            )
+            raise RuntimeError(self._dim_mismatch)
 
     async def _migrate_v2(self, db: aiosqlite.Connection) -> None:
         """Apply v2 migration DDL, then back-fill vec0 tables for existing rows."""

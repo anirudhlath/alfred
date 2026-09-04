@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import logging
+import sqlite3
 import struct
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import sqlite_vec
 
 from core.memory.sqlite_vec_store import SqliteVecStore, _pack
 from core.memory.vector_store import ContextMetadata
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -586,3 +593,250 @@ async def test_close_clears_db_reference() -> None:
     assert s._db is not None
     await s.close()
     assert s._db is None
+
+
+# ---------------------------------------------------------------------------
+# Dimension guard tests
+#
+# These run against a real sqlite-vec database rather than a stub: the width the
+# guard reads comes out of sqlite_master's stored DDL, and a hand-written DDL
+# string would pass even if vec0 recorded something else entirely.
+# ---------------------------------------------------------------------------
+
+
+def _vec_sql(db_path: str) -> dict[str, str]:
+    """The stored DDL of both vec0 tables, keyed by table name."""
+    raw = sqlite3.connect(db_path)
+    try:
+        rows = raw.execute(
+            "SELECT name, sql FROM sqlite_master WHERE name IN"
+            " ('vec_episodic_content', 'vec_episodic_semantic')"
+        ).fetchall()
+    finally:
+        raw.close()
+    return {name: sql for name, sql in rows}
+
+
+def _execute_on_file(db_path: str, script: str) -> None:
+    """Run operator-style SQL directly on the file, with vec0 loaded."""
+    raw = sqlite3.connect(db_path)
+    try:
+        raw.enable_load_extension(True)
+        raw.load_extension(sqlite_vec.loadable_path())
+        raw.enable_load_extension(False)
+        raw.executescript(script)
+        raw.commit()
+    finally:
+        raw.close()
+
+
+async def _cold_store_at(db_path: str, dim: int) -> bool:
+    """Build a cold store at ``dim``; return whether vec0 was actually available."""
+    store = SqliteVecStore(db_path, dim=dim)
+    try:
+        await store._ensure_schema()
+        return store._vec_ready
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_schema_rejects_a_dimension_mismatch(tmp_path: Path) -> None:
+    """An existing vec0 table at another width must fail loudly at schema time."""
+    db_path = str(tmp_path / "cold.db")
+    # _vec_ready is only set once _connect() has run, so it must be read from the
+    # store that built the schema — reading it off a freshly constructed store
+    # would always be False and skip this test unconditionally.
+    if not await _cold_store_at(db_path, 384):
+        pytest.skip("sqlite-vec extension unavailable — nothing to guard")
+    assert "float[384]" in _vec_sql(db_path)["vec_episodic_content"]
+
+    reopened = SqliteVecStore(db_path, dim=1024)
+    try:
+        with pytest.raises(RuntimeError, match="dim=384") as excinfo:
+            await reopened._ensure_schema()
+        assert reopened._schema_ready is False
+    finally:
+        await reopened.close()
+
+    message = str(excinfo.value)
+    # Ordered, so swapping the two widths in the message fails here: the table is
+    # the one at 384, the configured model is the one at 1024.
+    assert "vec_episodic_content built with dim=384" in message
+    assert "produces dim=1024" in message
+
+
+@pytest.mark.asyncio
+async def test_schema_accepts_a_matching_dimension(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "cold.db")
+    await _cold_store_at(db_path, 384)
+
+    reopened = SqliteVecStore(db_path, dim=384)
+    try:
+        await reopened._ensure_schema()
+        assert reopened._schema_ready is True
+    finally:
+        await reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_dimension_mismatch_recovery_message_is_one_that_works(tmp_path: Path) -> None:
+    """The message must name a recovery that exists and admit what it does not do.
+
+    ``_migrate_v2``'s back-fill re-embeds existing rows only when the store was
+    constructed with an embedder, and no service constructs it with one, so the
+    rebuilt tables come up empty. Promising a re-embed here would be a lie.
+    """
+    db_path = str(tmp_path / "cold.db")
+    if not await _cold_store_at(db_path, 384):
+        pytest.skip("sqlite-vec extension unavailable — nothing to guard")
+
+    reopened = SqliteVecStore(db_path, dim=1024)
+    try:
+        with pytest.raises(RuntimeError) as excinfo:
+            await reopened._ensure_schema()
+    finally:
+        await reopened.close()
+    message = str(excinfo.value)
+
+    assert "DROP TABLE vec_episodic_content" in message
+    assert "DROP TABLE vec_episodic_semantic" in message
+    assert "UPDATE schema_version SET version = 1" in message
+    assert "EMPTY" in message
+    assert "Do NOT delete the sqlite file" in message
+
+    # And the recovery it prescribes actually rebuilds at the new width.
+    _execute_on_file(
+        db_path,
+        "DROP TABLE vec_episodic_content;"
+        " DROP TABLE vec_episodic_semantic;"
+        " UPDATE schema_version SET version = 1;",
+    )
+    recovered = SqliteVecStore(db_path, dim=1024)
+    try:
+        await recovered._ensure_schema()
+        assert recovered._schema_ready is True
+    finally:
+        await recovered.close()
+    assert "float[1024]" in _vec_sql(db_path)["vec_episodic_content"]
+    assert "float[1024]" in _vec_sql(db_path)["vec_episodic_semantic"]
+
+
+@pytest.mark.asyncio
+async def test_dimension_mismatch_in_the_semantic_table_alone_is_caught(tmp_path: Path) -> None:
+    """Both vec0 tables carry a width; checking only one leaves half the hole open."""
+    db_path = str(tmp_path / "cold.db")
+    if not await _cold_store_at(db_path, 384):
+        pytest.skip("sqlite-vec extension unavailable — nothing to guard")
+    # Leave only the semantic table behind, at the old width.
+    _execute_on_file(db_path, "DROP TABLE vec_episodic_content;")
+
+    reopened = SqliteVecStore(db_path, dim=1024)
+    try:
+        with pytest.raises(RuntimeError, match="vec_episodic_semantic built with dim=384"):
+            await reopened._ensure_schema()
+    finally:
+        await reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_dimension_mismatch_is_caught_before_the_v2_migration_runs(tmp_path: Path) -> None:
+    """A half-migrated database skips the fast path — the guard must still fire.
+
+    ``CREATE VIRTUAL TABLE IF NOT EXISTS`` is a no-op against the old-width table,
+    so running the migration first would commit version=2 over a database the guard
+    is about to reject.
+    """
+    db_path = str(tmp_path / "cold.db")
+    if not await _cold_store_at(db_path, 384):
+        pytest.skip("sqlite-vec extension unavailable — nothing to guard")
+    _execute_on_file(db_path, "UPDATE schema_version SET version = 1;")
+
+    reopened = SqliteVecStore(db_path, dim=1024)
+    try:
+        with pytest.raises(RuntimeError, match="dim=384"):
+            await reopened._ensure_schema()
+        db = reopened._db
+        assert db is not None
+        cursor = await db.execute("SELECT MAX(version) FROM schema_version")
+        row = await cursor.fetchone()
+        assert row is not None
+        assert row[0] == 1, "migration must not have run"
+    finally:
+        await reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_dimension_mismatch_is_latched(tmp_path: Path) -> None:
+    """Once proven, the mismatch holds until restart — no per-operation re-probe.
+
+    Pinned by fixing the database underneath a store that has already raised: a
+    guard that re-read sqlite_master would now happily proceed.
+    """
+    db_path = str(tmp_path / "cold.db")
+    if not await _cold_store_at(db_path, 384):
+        pytest.skip("sqlite-vec extension unavailable — nothing to guard")
+
+    reopened = SqliteVecStore(db_path, dim=1024)
+    try:
+        with pytest.raises(RuntimeError, match="dim=384"):
+            await reopened._ensure_schema()
+        _execute_on_file(
+            db_path,
+            "DROP TABLE vec_episodic_content;"
+            " DROP TABLE vec_episodic_semantic;"
+            " UPDATE schema_version SET version = 1;",
+        )
+        with pytest.raises(RuntimeError, match="dim=384"):
+            await reopened._ensure_schema()
+    finally:
+        await reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_add_refuses_on_a_dimension_mismatch(tmp_path: Path) -> None:
+    """The guard has to reach real callers, not just _ensure_schema()."""
+    db_path = str(tmp_path / "cold.db")
+    if not await _cold_store_at(db_path, 4):
+        pytest.skip("sqlite-vec extension unavailable — nothing to guard")
+
+    reopened = SqliteVecStore(db_path, dim=8)
+    try:
+        with pytest.raises(RuntimeError, match="dim=4"):
+            await reopened.add(
+                id="ep-mismatch",
+                content="hello",
+                semantic_key="key",
+                embedding_content=_emb(dim=8),
+                embedding_semantic=_emb(dim=8),
+                metadata=_meta(),
+            )
+    finally:
+        await reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_unreadable_vec_dimension_warns_instead_of_passing_silently(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A width the DDL does not expose must not disable the guard in silence."""
+    db_path = str(tmp_path / "cold.db")
+    if not await _cold_store_at(db_path, 384):
+        pytest.skip("sqlite-vec extension unavailable — nothing to guard")
+    _execute_on_file(
+        db_path,
+        "DROP TABLE vec_episodic_content;"
+        " DROP TABLE vec_episodic_semantic;"
+        " CREATE TABLE vec_episodic_content (rowid INTEGER PRIMARY KEY, embedding BLOB);"
+        " CREATE TABLE vec_episodic_semantic (rowid INTEGER PRIMARY KEY, embedding BLOB);",
+    )
+
+    reopened = SqliteVecStore(db_path, dim=1024)
+    try:
+        with caplog.at_level(logging.WARNING, logger="core.memory.sqlite_vec_store"):
+            await reopened._ensure_schema()
+        assert reopened._schema_ready is True
+        assert "dimension guard skipped" in caplog.text
+    finally:
+        await reopened.close()
