@@ -439,7 +439,7 @@ Alfred's memory is biologically-inspired with three layers:
 
 **Episodic Memory** (`core/memory/episodic/`):
 
-Two-tier storage: Redis for hot (recent) entries, SQLite for cold archive. Entries are `EpisodicEntry` models with timestamps, source, content, and importance scores. Embeddings are computed via `sentence-transformers` for semantic search. A `DecayScheduler` handles time-based importance decay.
+Two-tier storage: Redis for hot (recent) entries, SQLite for cold archive. Entries are `EpisodicEntry` models with timestamps, source, content, and importance scores. Embeddings are computed via the configured embedding backend (see below) for semantic search. A `DecayScheduler` handles time-based importance decay.
 
 **Semantic Memory** (`core/memory/profile/`, `core/memory/preferences/`):
 
@@ -460,6 +460,56 @@ The writer is the **only** consumer of `alfred:scratchpad:queue`. When the Libra
 **Librarian** (`core/librarian/consolidator.py`):
 
 Nightly consolidation process. Drains `alfred:librarian:queue` via atomic `RENAME` (to `alfred:librarian:queue:processing`, deleted only after episodic writes succeed, so a crash mid-cycle replays rather than loses), extracts episodic entries, archives to cold storage, and updates semantic profiles. Run via `python -m core.librarian`.
+
+#### 3.7.1 Embedding backends
+
+`EmbeddingProvider` (`core/memory/embedding_provider.py`) has two implementations, selected
+per process by `EMBEDDING_BACKEND` through `build_embedding_provider()`
+(`core/memory/embedding_backend.py`) — the memory counterpart of the `REFLEX_BACKEND` seam in
+`core/reflex/inference.py`:
+
+| Backend | Class | Where the model lives |
+|---|---|---|
+| `sentence_transformers` (default) | `SentenceTransformerProvider` | In-process, one copy per service |
+| `openai` | `OpenAICompatEmbeddingProvider` | A shared OpenAI-compatible `/v1/embeddings` server at `EMBEDDING_HOST` |
+
+Four services construct a provider (conscious, channels/admin, memory ingestor, librarian).
+Under the default backend each loads its own copy of the model and of torch; the `openai`
+backend collapses that onto one resident model. vLLM serves embeddings when started with
+`--runner pooling`. The factory is a registry keyed by backend name — an accepted name and
+its builder are the same entry, so a backend cannot be added and then silently fall through
+to another one's provider — and `AlfredConfig.from_env()` rejects an unrecognised
+`EMBEDDING_BACKEND` before any service starts, so a typo fails once and identically
+everywhere rather than disabling memory in some processes and crashing others.
+
+`EMBEDDING_MODEL` names the model under either backend, so `EMBEDDING_DIM` keeps tracking it
+via `embedding_dim_for()`. Width is then checked in three places, because a mismatch is
+otherwise silent: the HTTP provider verifies **every** response against `EMBEDDING_DIM` (not
+only at warmup — a shared server can be restarted onto a different model while a service
+holds a provider for days), both vector stores refuse to run against an index built at a
+different width and latch that refusal with the recovery procedure in the error text (see the
+gotcha in `CLAUDE.md`), and `alfredctl doctor --online` POSTs one embedding and compares what
+the server actually emits.
+
+`EmbeddingProvider` carries concrete `warmup()` and `aclose()` defaults, so a caller holding
+the ABC never needs to know which backend it got. Services warm through `core/warmup.py` and
+release through `teardown()` (`core/shutdown.py`), which drains the background tasks holding
+the provider before closing it — the HTTP backend owns an httpx connection pool, the
+in-process one owns nothing and no-ops.
+
+Two behavioural differences are worth knowing before switching. **Over-long input:**
+`sentence-transformers` silently truncates at the model's max sequence length, while an
+OpenAI-compatible server hard-fails with HTTP 400, so a long preferences or profile document
+that indexes today can fail outright after the switch (the server's own message is preserved
+in the raised error). **Round trips:** `EpisodicMemory.write()`, its migration path and
+`ContextIndexManager.index_episodic()` each `asyncio.gather` two `embed()` calls — cheap
+in-process, but two HTTP requests where one `embed_batch()` would do.
+
+Three further env vars apply to the `openai` backend: `EMBEDDING_API_KEY` is sent as a bearer
+token when set (for a server started with `--api-key`), `EMBEDDING_TIMEOUT_SECONDS` bounds
+read/write per request (default 30s; connect is pinned at 5s because involuntary recall embeds
+the user's query inline in the reply path), and `EMBEDDING_HOST` is rewritten from `localhost`
+to the container→host gateway by both launch paths via `shared/gateway.py`.
 
 ### 3.8 Conscious Engine (System 2)
 

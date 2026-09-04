@@ -16,7 +16,9 @@ Fast event → action loop via local SLM (Ollama).
 
 Episodic + semantic + procedural, biologically inspired.
 
-- `embedding_provider.py` — EmbeddingProvider ABC + SentenceTransformer (lazy-loaded, async via to_thread)
+- `embedding_provider.py` — EmbeddingProvider ABC (concrete `warmup()`/`aclose()` defaults) + SentenceTransformer (lazy-loaded, async via to_thread)
+- `openai_embedding_provider.py` — `OpenAICompatEmbeddingProvider`: `/v1/embeddings` over HTTP (vLLM `--runner pooling`), verifies the served width on every response
+- `embedding_backend.py` — `build_embedding_provider(config)`: the `EMBEDDING_BACKEND` seam (registry keyed by backend name); services call this, never a concrete provider
 - `vector_store.py` — VectorStore ABC with dual-embedding search (content + semantic key) + `update_metadata()` for retrieval stats
 - `redis_vector_store.py` — Hot store (RediSearch HNSW), uses CONTEXT_INDEX/CONTEXT_PREFIX
 - `sqlite_vec_store.py` — Cold store (sqlite-vec), with v1→v2 migration
@@ -150,7 +152,8 @@ uv run python -m core.channels   # Web + Signal channels
 
 - Memory tools are INTERNAL — dispatched in-process, NOT via BaseFeature/SDK/ToolRegistry
 - `ContextIndexManager.search_text()` embeds query internally — callers don't need separate EmbeddingProvider
-- `SentenceTransformerProvider._load()` is thread-safe and blocks on first call — services warm it via `core/warmup.py` (`start_warmup()`) background tasks at startup
+- `SentenceTransformerProvider._load()` is thread-safe and blocks on first call — services warm it via `core/warmup.py` (`start_warmup()`) background tasks at startup, warming through `EmbeddingProvider.warmup()` so the check is the backend's own
+- Never construct an embedding provider directly in a service — go through `build_embedding_provider()` (`memory/embedding_backend.py`, dispatches on `EMBEDDING_BACKEND`) and release it with `provider.aclose()` inside `core/shutdown.py`'s `teardown()`; the HTTP backend owns a connection pool, the in-process one no-ops
 - Trigger type modules must be imported before use to trigger `@TriggerRegistry.register_type()` decorators
 - Channel adapter modules must be imported to trigger `@ChannelRegistry.register()` decorators
 - Web server uses `_FAILED` sentinel to avoid repeated import failures on lazy-load
