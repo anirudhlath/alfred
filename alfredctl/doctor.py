@@ -77,15 +77,53 @@ def _probe(url: str, headers: dict[str, str] | None = None) -> tuple[bool, str]:
     return resp.status_code < 400, f"HTTP {resp.status_code}"
 
 
+# Enough of the server's own words to explain a refusal, short enough not to paste an
+# HTML error page into a table cell.
+_MAX_PROBE_BODY_CHARS = 120
+
+
+def _probe_body_excerpt(resp: httpx.Response) -> str:
+    """One truncated line of the response body, or "" when it says nothing."""
+    text = " ".join(resp.text.split())
+    if not text:
+        return ""
+    if len(text) > _MAX_PROBE_BODY_CHARS:
+        text = text[:_MAX_PROBE_BODY_CHARS] + "…"
+    return f": {text}"
+
+
 def _probe_embedding_dim(
     host: str, model: str, api_key: str, client: httpx.Client | None = None
-) -> tuple[int | None, str]:
-    """Embed one string and return (served width, detail); ``None`` means no answer.
+) -> tuple[int | None, Status, str]:
+    """Embed one string; return (served width, verdict, detail). No width means no answer.
 
     A POST to /v1/embeddings rather than a GET of /v1/models because the width the
     server actually emits is ground truth about the pair (server, model) — it settles
     what EMBEDDING_DIM only asserts, and a chat-only server (vLLM without
-    ``--runner pooling``) fails it while happily listing the model.
+    ``--runner pooling``) refuses it while happily listing the model.
+
+    The verdict answers one question, and a status added here later belongs in whichever
+    bucket that question puts it in: did the probe **prove** the configuration cannot
+    work, or did it only **fail to confirm** it?
+
+    ``fail`` — proof:
+
+    * **404 / 405.** This host has no /v1/embeddings route at all, so EMBEDDING_HOST
+      names the wrong server. Not hypothetical: a box running the chat model on :8000
+      and the embedding model on :8001 answers exactly this way when the two are
+      transposed, while GET /v1/models on :8000 still returns 200.
+
+    ``warn`` — inconclusive, so the operator is told rather than blamed:
+
+    * **401 / 403.** A missing or wrong EMBEDDING_API_KEY and a wrong host are
+      indistinguishable from out here.
+    * **5xx.** The server exists and may be mid-load — a vLLM still reading weights
+      answers this way, and it will pass a minute later.
+    * **400.** Servers do not agree on what it means (unknown model, malformed body,
+      input too long), and treating it as proof would fail configurations that work,
+      so the body is quoted instead of judged.
+    * **Connect errors and timeouts**, and a 200 that is not an embeddings response
+      (a proxy, a login page): nothing was measured either way.
     """
     import httpx
 
@@ -100,14 +138,27 @@ def _probe_embedding_dim(
             with httpx.Client(timeout=_PROBE_TIMEOUT_SECONDS) as owned:
                 resp = owned.post(url, json=body, headers=headers)
     except Exception as exc:
-        return None, f"{url} unreachable ({type(exc).__name__})"
+        return None, "warn", f"{url} unreachable ({type(exc).__name__})"
+    if resp.status_code in (404, 405):
+        return (
+            None,
+            "fail",
+            (
+                f"{url} answered HTTP {resp.status_code} — this host serves no embeddings "
+                f"route, so EMBEDDING_HOST names the wrong server"
+            ),
+        )
     if resp.status_code >= 400:
-        return None, f"{url} answered HTTP {resp.status_code}"
+        return None, "warn", f"{url} answered HTTP {resp.status_code}{_probe_body_excerpt(resp)}"
     try:
         width = len(resp.json()["data"][0]["embedding"])
     except Exception:
-        return None, f"{url} answered HTTP {resp.status_code}, but not an embeddings response"
-    return width, f"HTTP {resp.status_code}"
+        return (
+            None,
+            "warn",
+            f"{url} answered HTTP {resp.status_code}, but not an embeddings response",
+        )
+    return width, "pass", f"HTTP {resp.status_code}"
 
 
 def _check_conscious(env: dict[str, str], online: bool) -> DoctorCheck:
@@ -259,11 +310,14 @@ def _check_embeddings(env: dict[str, str], online: bool) -> DoctorCheck:
         where = f"via {host} (timeout {timeout:g}s)"
         if not online:
             return DoctorCheck("memory embeddings", status, f"model={model} {where}, {note}")
-        served, detail = _probe_embedding_dim(host, model, env.get("EMBEDDING_API_KEY", ""))
+        served, verdict, detail = _probe_embedding_dim(
+            host, model, env.get("EMBEDDING_API_KEY", "")
+        )
         if served is None:
-            # Best-effort, like every other probe here: doctor has to be runnable from
-            # anywhere, so an unreachable server warns and never hard-fails.
-            return DoctorCheck("memory embeddings", "warn", f"model={model} {where} — {detail}")
+            # The verdict carries the split: fail only where the probe proved the
+            # configuration cannot work, warn where it merely failed to confirm it —
+            # doctor has to stay runnable from anywhere.
+            return DoctorCheck("memory embeddings", verdict, f"model={model} {where} — {detail}")
         if served != dim:
             return DoctorCheck(
                 "memory embeddings",

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path  # noqa: TC003
 
-import pytest  # noqa: TC002
+import pytest
 
 from alfredctl import doctor
 
@@ -206,14 +206,14 @@ def test_online_probe_disagreeing_with_the_configured_dim_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The served width is ground truth — it outranks both the table and EMBEDDING_DIM."""
-    monkeypatch.setattr(doctor, "_probe_embedding_dim", lambda *a, **k: (768, "HTTP 200"))
+    monkeypatch.setattr(doctor, "_probe_embedding_dim", lambda *a, **k: (768, "pass", "HTTP 200"))
     check = doctor._check_embeddings(_openai_env(), online=True)
     assert check.status == "fail"
     assert "768" in check.detail and "1024" in check.detail
 
 
 def test_online_probe_confirms_the_dim(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(doctor, "_probe_embedding_dim", lambda *a, **k: (1024, "HTTP 200"))
+    monkeypatch.setattr(doctor, "_probe_embedding_dim", lambda *a, **k: (1024, "pass", "HTTP 200"))
     check = doctor._check_embeddings(_openai_env(), online=True)
     assert check.status == "pass"
     assert "confirmed" in check.detail
@@ -222,7 +222,9 @@ def test_online_probe_confirms_the_dim(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_unreachable_embedding_host_warns(monkeypatch: pytest.MonkeyPatch) -> None:
     # Best-effort: doctor runs anywhere, so a network failure never hard-fails.
     monkeypatch.setattr(
-        doctor, "_probe_embedding_dim", lambda *a, **k: (None, "unreachable (ConnectError)")
+        doctor,
+        "_probe_embedding_dim",
+        lambda *a, **k: (None, "warn", "unreachable (ConnectError)"),
     )
     check = doctor._check_embeddings(_openai_env(), online=True)
     assert check.status == "warn"
@@ -230,7 +232,7 @@ def test_unreachable_embedding_host_warns(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_offline_never_probes(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _boom(*args: object, **kwargs: object) -> tuple[int | None, str]:
+    def _boom(*args: object, **kwargs: object) -> tuple[int | None, str, str]:
         raise AssertionError("--offline must not touch the network")
 
     monkeypatch.setattr(doctor, "_probe_embedding_dim", _boom)
@@ -245,26 +247,87 @@ def test_probe_reads_the_served_width() -> None:
         return httpx.Response(200, json={"data": [{"index": 0, "embedding": [0.1] * 1024}]})
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        width, detail = doctor._probe_embedding_dim(
+        width, verdict, detail = doctor._probe_embedding_dim(
             "http://vllm.example:8001", "BAAI/bge-m3", "sekret", client=client
         )
-    assert width == 1024
+    assert (width, verdict) == (1024, "pass")
     assert "200" in detail
 
 
-def test_probe_reports_an_http_error_rather_than_a_width() -> None:
+@pytest.mark.parametrize("status", [404, 405])
+def test_probe_proves_a_wrong_host(status: int) -> None:
+    """No embeddings route is proof, not ambiguity — EMBEDDING_HOST is simply wrong.
+
+    The live instance on this box: the chat vLLM on :8000 answers GET /v1/models with
+    200 and POST /v1/embeddings with 404, because the embedding server is a separate
+    container on :8001.
+    """
     import httpx
 
     def handler(request: httpx.Request) -> httpx.Response:
-        # What a chat-only vLLM answers on /v1/embeddings.
-        return httpx.Response(400, json={"error": "model does not support embeddings"})
+        return httpx.Response(status, json={"detail": "Not Found"})
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        width, detail = doctor._probe_embedding_dim(
+        width, verdict, detail = doctor._probe_embedding_dim(
+            "http://vllm.example:8000", "BAAI/bge-m3", "", client=client
+        )
+    assert (width, verdict) == (None, "fail")
+    assert str(status) in detail
+    assert "wrong server" in detail
+
+
+@pytest.mark.parametrize(
+    ("status", "why"),
+    [
+        (400, "servers disagree on what it means"),
+        (401, "could be the key rather than the host"),
+        (403, "could be the key rather than the host"),
+        (500, "may be mid-load"),
+        (503, "may be mid-load"),
+    ],
+)
+def test_probe_stays_inconclusive(status: int, why: str) -> None:
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, json={"error": "no"})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        width, verdict, detail = doctor._probe_embedding_dim(
             "http://vllm.example:8001", "BAAI/bge-m3", "", client=client
         )
-    assert width is None
-    assert "400" in detail
+    assert (width, verdict) == (None, "warn"), why
+    assert str(status) in detail
+
+
+def test_probe_quotes_what_the_server_said() -> None:
+    """A 400 is not judged, so the server's own words have to reach the operator."""
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": "model 'BAAI/bge-m3' does not exist"})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        _, _, detail = doctor._probe_embedding_dim(
+            "http://vllm.example:8001", "BAAI/bge-m3", "", client=client
+        )
+    assert "does not exist" in detail
+
+
+def test_probe_truncates_a_long_body() -> None:
+    # An HTML error page from a proxy must not take the terminal with it.
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(502, text="<html>" + "x" * 5000 + "</html>")
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        _, verdict, detail = doctor._probe_embedding_dim(
+            "http://vllm.example:8001", "BAAI/bge-m3", "", client=client
+        )
+    assert verdict == "warn"
+    assert len(detail) < 250
+    assert detail.endswith("…")
 
 
 def test_probe_survives_a_non_embeddings_response() -> None:
@@ -275,8 +338,20 @@ def test_probe_survives_a_non_embeddings_response() -> None:
         return httpx.Response(200, text="<html>hello</html>")
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        width, detail = doctor._probe_embedding_dim(
+        width, verdict, detail = doctor._probe_embedding_dim(
             "http://vllm.example:8001", "BAAI/bge-m3", "", client=client
         )
-    assert width is None
+    assert (width, verdict) == (None, "warn")
     assert detail
+
+
+def test_check_reports_a_proven_wrong_host_as_fail(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The verdict has to survive the trip out of the probe, not just be computed."""
+    monkeypatch.setattr(
+        doctor,
+        "_probe_embedding_dim",
+        lambda *a, **k: (None, "fail", "…serves no embeddings route…"),
+    )
+    check = doctor._check_embeddings(_openai_env(), online=True)
+    assert check.status == "fail"
+    assert "serves no embeddings route" in check.detail
