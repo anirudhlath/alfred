@@ -21,7 +21,7 @@ Episodic + semantic + procedural, biologically inspired.
 - `embedding_backend.py` — `build_embedding_provider(config)`: the `EMBEDDING_BACKEND` seam (registry keyed by backend name); services call this, never a concrete provider
 - `vector_store.py` — VectorStore ABC with dual-embedding search (content + semantic key) + `update_metadata()` for retrieval stats
 - `redis_vector_store.py` — Hot store (RediSearch HNSW), uses CONTEXT_INDEX/CONTEXT_PREFIX; latches a proven dimension mismatch against the existing index and raises from `add`/`search`/`count` — `delete`/`exists`/`update_metadata` skip `ensure_index()` and keep working
-- `sqlite_vec_store.py` — Cold store (sqlite-vec), with v1→v2 migration; the same dimension latch, raised from every operation that opens the file (they all reach `_ensure_schema()` via `_get_db()`)
+- `sqlite_vec_store.py` — Cold store (sqlite-vec), with v1→v2 migration; the same dimension latch, raised from every operation that opens the file (they all reach `_ensure_schema()` via `_get_db()`). **Cold is the last stop** — `copy_to_cold_and_remove()` deletes the hot copy once it has written here, so deleting this file discards archived memories permanently, with no re-embed path to rebuild them
 - `significance.py` — SignificanceScorer: 4 dims (safety/novelty/personal/emotional)
 - `context_index.py` — ContextIndexManager: unified search across all memory types, owns RedisVectorStore
 - `episodic/memory.py` — EpisodicMemory: hot+cold unified interface; `recall()` gathers hot and cold with `return_exceptions=False` **on purpose** (see Gotchas)

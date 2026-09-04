@@ -489,8 +489,8 @@ via `embedding_dim_for()`. Width is then checked in three places, because a mism
 otherwise silent: the HTTP provider verifies **every** response against `EMBEDDING_DIM` (not
 only at warmup — a shared server can be restarted onto a different model while a service
 holds a provider for days), both vector stores refuse to run against an index built at a
-different width and latch that refusal with the recovery procedure in the error text (see the
-gotcha in `CLAUDE.md`), and `alfredctl doctor --online` POSTs one embedding and compares what
+different width and latch that refusal with the recovery procedure in the error text (indexed
+by symptom in `docs/deployment.md`), and `alfredctl doctor --online` POSTs one embedding and compares what
 the server actually emits.
 
 None of the three is a preflight against the data you already have. All three compare
