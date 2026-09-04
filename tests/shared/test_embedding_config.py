@@ -108,3 +108,17 @@ def test_embedding_host_keeps_a_path_prefix(monkeypatch: pytest.MonkeyPatch) -> 
     # Only a trailing /v1 is the docs' base-URL idiom; a proxy path must survive.
     monkeypatch.setenv("EMBEDDING_HOST", "http://gateway/openai/v1")
     assert config.AlfredConfig.from_env().embedding_host == "http://gateway/openai"
+
+
+def test_embedding_api_key_defaults_to_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    # No key is the common case: a vLLM started without --api-key rejects nothing,
+    # and sending an empty bearer token to it would be worse than sending none.
+    monkeypatch.delenv("EMBEDDING_API_KEY", raising=False)
+    assert config.AlfredConfig.from_env().embedding_api_key == ""
+
+
+def test_embedding_api_key_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A server started with --api-key (or real OpenAI) is otherwise unreachable
+    # through the factory, which passes no pre-configured client.
+    monkeypatch.setenv("EMBEDDING_API_KEY", "sk-secret")
+    assert config.AlfredConfig.from_env().embedding_api_key == "sk-secret"

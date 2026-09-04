@@ -132,8 +132,12 @@ class AlfredConfig:
     # /v1/embeddings server (vLLM --runner pooling) at ``embedding_host``.
     # ``embedding_model`` names the model either way, so ``embedding_dim``
     # keeps tracking it through ``embedding_dim_for()``.
+    # ``embedding_api_key`` is the bearer token for that server — needed by a vLLM
+    # started with ``--api-key`` (or real OpenAI), and ignored by the in-process
+    # backend. Empty means "send no Authorization header at all".
     embedding_backend: str = DEFAULT_EMBEDDING_BACKEND
     embedding_host: str = DEFAULT_EMBEDDING_HOST
+    embedding_api_key: str = ""
     embedding_model: str = DEFAULT_EMBEDDING_MODEL
     embedding_dim: int = 384
 
@@ -222,6 +226,7 @@ class AlfredConfig:
             # Memory: Embedding (env-configurable; see above for the dim default).
             embedding_backend=embedding_backend,
             embedding_host=embedding_host,
+            embedding_api_key=os.getenv("EMBEDDING_API_KEY", ""),
             embedding_model=embedding_model,
             embedding_dim=embedding_dim,
             # Memory: Involuntary recall (env-configurable)
