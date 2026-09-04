@@ -740,19 +740,54 @@ with:
         embedder = build_embedding_provider(config)
 ```
 
-- [ ] **Step 7: Run the test to verify it passes**
+- [ ] **Step 7: Warm through the provider contract, not a lambda**
+
+Both warmup sites call `lambda: embedder.embed("warmup")`, which bypasses
+`EmbeddingProvider.warmup()` — and with it the HTTP backend's dimension check, making that
+check dead code in production. Task 2 put `warmup()` on the ABC with the equivalent default
+body, so call it directly.
+
+In `core/conscious/__main__.py:207`, replace:
+
+```python
+                "embedding model": lambda: warm_embedder.embed("warmup"),
+```
+
+with:
+
+```python
+                "embedding model": warm_embedder.warmup,
+```
+
+In `core/memory/ingestor_main.py:60`, replace:
+
+```python
+            "embedding model": lambda: embedder.embed("warmup"),
+```
+
+with:
+
+```python
+            "embedding model": embedder.warmup,
+```
+
+Behaviour is unchanged for the sentence-transformers backend (the ABC default still embeds
+one string, which is what forces the lazy load). For the HTTP backend this is what makes a
+configured/actual dimension mismatch surface at startup instead of never.
+
+- [ ] **Step 8: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/core/memory/test_embedding_backend.py -v`
 Expected: PASS — 4 passed.
 
-- [ ] **Step 8: Verify nothing else regressed**
+- [ ] **Step 9: Verify nothing else regressed**
 
 Run: `uv run pytest tests/core/ tests/shared/ -q`
 Expected: PASS, except the four pre-existing CUDA out-of-memory failures in
 `tests/core/memory/test_embedding_provider.py` (they load a real model onto the GPU and
 fail whenever the box's vLLM containers hold the VRAM — unrelated to this branch).
 
-- [ ] **Step 9: Lint, type-check, commit**
+- [ ] **Step 10: Lint, type-check, commit**
 
 ```bash
 ruff check . --fix && ruff format .
