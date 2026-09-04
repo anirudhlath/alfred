@@ -1040,7 +1040,16 @@ verified against a real sqlite-vec database:
    guaranteed present wherever Alfred runs, and interpolate `self._db_path` so the
    message names the real file (`/data/episodic_cold.db` in the container). Name
    `docker exec <container>` as the containerized form in the prose; do not bake a
-   container name into the store. The test must run the emitted command through a real
+   container name into the store. Do **not** tell the operator to stop Alfred first —
+   that is what strands them on a host with no sqlite-vec. Once latched, every
+   `SqliteVecStore` entry point routes through `_get_db()` and raises, including
+   `exists` and `count`, which only read `episodic_entries`; nothing is writing to the
+   file, so the DDL is safe against a running container. State that reasoning in the
+   message, or the operator stops the stack anyway. One reader does bypass the store —
+   `GET /memory/episodic` without `?q=` opens the file directly with `aiosqlite`
+   (`core/channels/admin_api.py:394`) — but it is read-only and never names the vec0
+   tables, so say "the store is inert", not "nothing can touch the file". Keep the
+   restart and mark it non-optional: the latch is per-process. The test must run the emitted command through a real
    shell — a recovery proved only against a pre-loaded connection, or only in the venv
    that verified it, is one the operator cannot perform.
 3. **The guard belongs before the DDL, not after it.** The draft called it from the fast
@@ -1070,6 +1079,10 @@ something else. Cover, at minimum:
   does not shadow the `embedding` one;
 - the `_vec_ready` early return holds: a store whose extension will not load must still
   open against a mismatched file, since it full-scans and never touches vec0;
+- a latched mismatch makes *every* store operation raise — `add`, `search`, `delete`,
+  `exists`, `count` — which is what makes the "no need to stop Alfred" guidance true;
+- the recovery still succeeds with an admin-style `aiosqlite` reader held open across
+  it, and the `episodic_entries` row survives;
 - a mismatch in `vec_episodic_semantic` alone is caught (both tables carry a width);
 - a half-migrated database (`schema_version` reset to 1) raises *without* the migration
   having run — assert `MAX(version)` is still 1 afterwards;
