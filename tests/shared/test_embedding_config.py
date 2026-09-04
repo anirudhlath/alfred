@@ -42,3 +42,40 @@ def test_from_env_explicit_dim_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("EMBEDDING_DIM", "512")
     cfg = config.AlfredConfig.from_env()
     assert cfg.embedding_dim == 512
+
+
+def test_bge_m3_dimension_is_known() -> None:
+    from shared.config import embedding_dim_for
+
+    assert embedding_dim_for("BAAI/bge-m3") == 1024
+
+
+def test_embedding_backend_defaults_to_sentence_transformers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shared.config import AlfredConfig
+
+    monkeypatch.delenv("EMBEDDING_BACKEND", raising=False)
+    monkeypatch.delenv("EMBEDDING_HOST", raising=False)
+    config = AlfredConfig.from_env()
+    assert config.embedding_backend == "sentence_transformers"
+    assert config.embedding_host == "http://localhost:8001"
+
+
+def test_embedding_backend_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    from shared.config import AlfredConfig
+
+    monkeypatch.setenv("EMBEDDING_BACKEND", "OpenAI")
+    monkeypatch.setenv("EMBEDDING_HOST", "http://vllm:8001/")
+    config = AlfredConfig.from_env()
+    # Normalised: lowercased, and no trailing slash (the client appends /v1/...).
+    assert config.embedding_backend == "openai"
+    assert config.embedding_host == "http://vllm:8001"
+
+
+def test_embedding_dim_tracks_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    from shared.config import AlfredConfig
+
+    monkeypatch.setenv("EMBEDDING_MODEL", "BAAI/bge-m3")
+    monkeypatch.delenv("EMBEDDING_DIM", raising=False)
+    assert AlfredConfig.from_env().embedding_dim == 1024

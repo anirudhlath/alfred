@@ -47,6 +47,7 @@ _KNOWN_EMBEDDING_DIMS: dict[str, int] = {
     "sentence-transformers/all-mpnet-base-v2": 768,
     "BAAI/bge-small-en-v1.5": 384,
     "BAAI/bge-base-en-v1.5": 768,
+    "BAAI/bge-m3": 1024,
     "google/embeddinggemma-300m": 768,  # gated — requires HF_TOKEN + license acceptance
 }
 
@@ -102,7 +103,14 @@ class AlfredConfig:
     # Phase 3: Cost
     daily_cost_cap_usd: float = 5.0
 
-    # Memory: Embedding
+    # Memory: Embedding. ``embedding_backend`` picks how the model is run, not
+    # which model: ``sentence_transformers`` loads it in-process (default — a
+    # fresh clone needs no server), ``openai`` calls an OpenAI-compatible
+    # /v1/embeddings server (vLLM --runner pooling) at ``embedding_host``.
+    # ``embedding_model`` names the model either way, so ``embedding_dim``
+    # keeps tracking it through ``embedding_dim_for()``.
+    embedding_backend: str = "sentence_transformers"
+    embedding_host: str = "http://localhost:8001"
     embedding_model: str = DEFAULT_EMBEDDING_MODEL
     embedding_dim: int = 384
 
@@ -155,6 +163,13 @@ class AlfredConfig:
         # never silently drift out of sync (a mismatch breaks vector search).
         embedding_model = os.getenv("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
         embedding_dim = int(os.getenv("EMBEDDING_DIM", str(embedding_dim_for(embedding_model))))
+        # Host has no /v1 suffix — the client appends the path, matching
+        # OPENAI_COMPAT_HOST. Strip a trailing slash so we never build "//v1".
+        embedding_host = os.getenv("EMBEDDING_HOST", "http://localhost:8001").strip().rstrip("/")
+        embedding_backend = (
+            os.getenv("EMBEDDING_BACKEND", "sentence_transformers").strip().lower()
+            or "sentence_transformers"
+        )
         return cls(
             redis_host=os.getenv("REDIS_HOST", "localhost"),
             redis_port=int(os.getenv("REDIS_PORT", "6379")),
@@ -183,6 +198,8 @@ class AlfredConfig:
             # Phase 3: Cost
             daily_cost_cap_usd=float(os.getenv("DAILY_COST_CAP_USD", "5.0")),
             # Memory: Embedding (env-configurable; see above for the dim default).
+            embedding_backend=embedding_backend,
+            embedding_host=embedding_host,
             embedding_model=embedding_model,
             embedding_dim=embedding_dim,
             # Memory: Involuntary recall (env-configurable)
