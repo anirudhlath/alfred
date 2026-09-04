@@ -137,9 +137,12 @@ working default.
 - **Local inference** — for the fast System 1 path, a local [Ollama](https://ollama.com)
   (`ollama pull gpt-oss:20b`) or any OpenAI-compatible server (vLLM/LM Studio).
 
-Sensible defaults handle the rest: memory embeddings use an **ungated** model (no HF token
-needed), the secrets passphrase is **generated and persisted** on first boot, and host
-services reachable at `localhost` are **auto-rewritten** to the container gateway.
+Sensible defaults handle the rest: memory embeddings run **in-process** on an **ungated**
+model (no HF token, and no embedding server — a fresh clone needs nothing extra; point
+`EMBEDDING_BACKEND=openai` at a shared `/v1/embeddings` server only if you'd rather not
+load a copy of the model in each service), the secrets passphrase is **generated and
+persisted** on first boot, and host services reachable at `localhost` are
+**auto-rewritten** to the container gateway.
 
 ### Prerequisites
 
@@ -251,7 +254,9 @@ annotated source of truth, split into a short **REQUIRED** section and defaulted
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama API (localhost auto-rewritten in-container) |
 | `HA_HOST` | `http://localhost:8123` | Home Assistant base URL |
 | `HA_TOKEN` | — | HA long-lived token (required for home control) |
-| `EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Ungated by default; `EMBEDDING_DIM` auto-tracks it |
+| `EMBEDDING_BACKEND` | `sentence_transformers` | Memory embeddings: in-process (default, no server) \| `openai` |
+| `EMBEDDING_HOST` | `http://localhost:8001` | Only for `EMBEDDING_BACKEND=openai`: an OpenAI-compatible `/v1/embeddings` server (localhost auto-rewritten in-container) |
+| `EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | The model under either backend; ungated by default, `EMBEDDING_DIM` auto-tracks it |
 | `ALFRED_TRUSTED_NETWORKS` | — | Extra trusted CIDRs (loopback + LAN + Tailscale trusted by default) |
 | `ALFRED_SECRETS_PASSPHRASE` | auto-generated | Keyring passphrase; persisted on first boot if unset |
 
