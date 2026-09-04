@@ -141,7 +141,10 @@ async def process_stream_entry(
     # so the caller does NOT ACK the message — Redis will redeliver it.
     action = await engine.process_event(event)
     if action is None:
-        logger.debug("No action for event %s", event.entity_id)
+        # Record it rather than dropping it. Without this Alfred remembers
+        # only what it did, never what it saw, and pattern detection has
+        # nothing to run over.
+        await observe_passively(redis, observation_stream, event)
         return False
 
     result = await agent.execute_action(action)

@@ -114,8 +114,8 @@ async def test_process_stream_entry_publishes_reflex_observation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_process_stream_entry_no_action() -> None:
-    """An irrelevant event should not produce an action."""
+async def test_process_stream_entry_no_action_records_an_observation() -> None:
+    """An event the SLM ignores is recorded passively, not dropped."""
     from core.reflex.runner import process_stream_entry
 
     event = StateChangedEvent(
@@ -130,6 +130,7 @@ async def test_process_stream_entry_no_action() -> None:
 
     mock_agent = AsyncMock()
     mock_redis = AsyncMock()
+    mock_redis.set = AsyncMock(return_value=True)
 
     result = await process_stream_entry(
         entry_data={"event": event.model_dump_json()},
@@ -143,7 +144,9 @@ async def test_process_stream_entry_no_action() -> None:
     assert result is False
     mock_engine.process_event.assert_called_once()
     mock_agent.execute_action.assert_not_called()
-    mock_redis.xadd.assert_not_called()
+    # No action result — but the observation is recorded.
+    streams_written = [c.args[0] for c in mock_redis.xadd.await_args_list]
+    assert streams_written == ["alfred:reflex:observations"]
 
 
 @pytest.mark.asyncio
