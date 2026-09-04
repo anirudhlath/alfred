@@ -156,10 +156,14 @@ and never re-download gigabytes on teardown:
   re-fetching them into the container's own cache.
 - `alfredctl up --models <path>` overrides the general model volume itself (default
   `~/.cache/alfred/models`, shared across all worktrees/branches on the host).
-- **`HF_TOKEN`** — the default embedding model (`google/embeddinggemma-300m`) is
-  HuggingFace-license-gated. `alfredctl` passes `HF_TOKEN` through from your host
-  environment if set; without it, first download of a memory-enabled service fails with
-  an HF access error. See
+- **`HF_TOKEN`** — only needed for a *gated* `EMBEDDING_MODEL`. The default
+  (`sentence-transformers/all-MiniLM-L6-v2`) is ungated and downloads with no token;
+  point `EMBEDDING_MODEL` at a gated model such as `google/embeddinggemma-300m` and the
+  first download of a memory-enabled service fails with an HF access error unless
+  `alfredctl` can pass a `HF_TOKEN` through from your host environment. With
+  `EMBEDDING_BACKEND=openai` no embedding weights are downloaded into the container at
+  all — the external server holds the model, and `HF_TOKEN` is irrelevant to embeddings.
+  See
   [`docs/backlog/high/embedding-model-gated-first-run.md`](backlog/high/embedding-model-gated-first-run.md)
   (that ticket also tracks evaluating a non-gated default, which would remove this
   friction entirely).
