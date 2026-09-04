@@ -10,18 +10,10 @@ from typing import TYPE_CHECKING
 from dotenv import dotenv_values
 
 from alfredctl.runtime import Runtime, container_name, host_gateway, image_tag, trusted_subnet
+from shared.gateway import GATEWAY_REWRITE_KEYS
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-_GATEWAY_REWRITE_KEYS = (
-    "OLLAMA_HOST",
-    "LMSTUDIO_HOST",
-    "OPENAI_COMPAT_HOST",
-    "EMBEDDING_HOST",
-    "HA_HOST",
-    "OTEL_EXPORTER_OTLP_ENDPOINT",
-)
 
 
 @dataclass(frozen=True)
@@ -42,9 +34,9 @@ def _env_pairs(
     merged: dict[str, str] = {}
     if env_file is not None and env_file.is_file():
         merged.update({k: v for k, v in dotenv_values(env_file).items() if v is not None})
-    if any(key in merged for key in _GATEWAY_REWRITE_KEYS):
+    if any(key in merged for key in GATEWAY_REWRITE_KEYS):
         gateway = host_gateway(rt)
-        for key in _GATEWAY_REWRITE_KEYS:
+        for key in GATEWAY_REWRITE_KEYS:
             if key in merged:
                 merged[key] = (
                     merged[key].replace("localhost", gateway).replace("127.0.0.1", gateway)

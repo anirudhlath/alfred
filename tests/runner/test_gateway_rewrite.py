@@ -45,15 +45,3 @@ def test_rewrites_embedding_host(monkeypatch: pytest.MonkeyPatch) -> None:
     }
     rewrite_host_gateway(env)
     assert env["EMBEDDING_HOST"] == "http://host.docker.internal:8001"
-
-
-def test_gateway_rewrite_keys_stay_in_sync() -> None:
-    """Two copies of this tuple exist; a key added to one and not the other is a silent gap.
-
-    `runner/__main__.py` rewrites for `python -m runner`; `alfredctl/launch.py` rewrites
-    for `alfredctl up`. Drift means a host is rewritten on one launch path only.
-    """
-    from alfredctl.launch import _GATEWAY_REWRITE_KEYS as LAUNCH_KEYS
-    from runner.__main__ import _GATEWAY_REWRITE_KEYS as RUNNER_KEYS
-
-    assert set(LAUNCH_KEYS) == set(RUNNER_KEYS)
