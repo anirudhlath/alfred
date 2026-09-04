@@ -3,19 +3,19 @@
 from __future__ import annotations
 
 import logging
+import os
+import shutil
 import sqlite3
 import struct
-from typing import TYPE_CHECKING
+import subprocess
+import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
-import sqlite_vec
 
 from core.memory.sqlite_vec_store import SqliteVecStore, _pack
 from core.memory.vector_store import ContextMetadata
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -617,17 +617,64 @@ def _vec_sql(db_path: str) -> dict[str, str]:
     return {name: sql for name, sql in rows}
 
 
-def _execute_on_file(db_path: str, script: str) -> None:
-    """Run operator-style SQL directly on the file, with vec0 loaded."""
+def _loadable_path() -> str:
+    """sqlite-vec's extension path, imported lazily.
+
+    sqlite-vec ships in the ``memory`` extra rather than the core dependencies, so a
+    module-level import would turn "these tests skip" into "this module fails to
+    collect" wherever the extra is absent — which would quietly falsify the
+    ``pytest.skip`` guards below.
+    """
+    import sqlite_vec
+
+    path: str = sqlite_vec.loadable_path()
+    return path
+
+
+def _setup_on_file(db_path: str, script: str) -> None:
+    """Arrange test state on the file directly. Setup only — not the operator path.
+
+    This loads the extension in-process, which an operator at a stock ``sqlite3``
+    prompt does not get for free. Anything claiming to prove a *recovery* must go
+    through ``_run_prescribed_recovery`` instead.
+    """
     raw = sqlite3.connect(db_path)
     try:
         raw.enable_load_extension(True)
-        raw.load_extension(sqlite_vec.loadable_path())
+        raw.load_extension(_loadable_path())
         raw.enable_load_extension(False)
         raw.executescript(script)
         raw.commit()
     finally:
         raw.close()
+
+
+def _prescribed_command(message: str) -> str:
+    """The shell command the error message tells the operator to run, verbatim."""
+    lines = [ln.strip() for ln in message.split("\n") if ln.strip().startswith("sqlite3 ")]
+    assert len(lines) == 1, f"expected exactly one sqlite3 command, got {lines!r}"
+    return lines[0]
+
+
+def _run_prescribed_recovery(message: str) -> subprocess.CompletedProcess[str]:
+    """Run the message's own command through a real shell, as an operator would.
+
+    Deliberately *not* pre-loading the extension: the whole point is that
+    ``DROP TABLE`` on a vec0 table needs the module, and guidance that only works
+    with it already loaded strands the operator.
+    """
+    # The command resolves sqlite-vec through `python -c`, so the interpreter that
+    # has it must be the one on PATH — in a venv that is not the bare `python`.
+    env = dict(os.environ)
+    env["PATH"] = f"{Path(sys.executable).parent}{os.pathsep}{env['PATH']}"
+    return subprocess.run(
+        _prescribed_command(message),
+        shell=True,
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
 
 
 async def _cold_store_at(db_path: str, dim: int) -> bool:
@@ -680,13 +727,21 @@ async def test_schema_accepts_a_matching_dimension(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_dimension_mismatch_recovery_message_is_one_that_works(tmp_path: Path) -> None:
-    """The message must name a recovery that exists and admit what it does not do.
+async def test_dimension_mismatch_recovery_message_is_one_an_operator_can_run(
+    tmp_path: Path,
+) -> None:
+    """The prescribed command must run as written, in a shell, and actually fix it.
 
     ``_migrate_v2``'s back-fill re-embeds existing rows only when the store was
     constructed with an embedder, and no service constructs it with one, so the
     rebuilt tables come up empty. Promising a re-embed here would be a lie.
+
+    Executed through a real shell rather than a pre-loaded connection: a recovery
+    that only works with sqlite-vec already loaded is one the operator — who has
+    just stopped Alfred — cannot perform.
     """
+    if shutil.which("sqlite3") is None:
+        pytest.skip("sqlite3 CLI unavailable — cannot exercise the operator path")
     db_path = str(tmp_path / "cold.db")
     if not await _cold_store_at(db_path, 384):
         pytest.skip("sqlite-vec extension unavailable — nothing to guard")
@@ -704,14 +759,18 @@ async def test_dimension_mismatch_recovery_message_is_one_that_works(tmp_path: P
     assert "UPDATE schema_version SET version = 1" in message
     assert "EMPTY" in message
     assert "Do NOT delete the sqlite file" in message
+    # The blast radius is the whole recall, not the cold half — say so.
+    assert "not just its cold half" in message
+    assert "503" in message
+    # And it must tell the operator to load the extension, since the stock CLI cannot
+    # parse DROP TABLE on a vec0 table without it.
+    assert ".load" in message
+    assert "no such module: vec0" in message
 
-    # And the recovery it prescribes actually rebuilds at the new width.
-    _execute_on_file(
-        db_path,
-        "DROP TABLE vec_episodic_content;"
-        " DROP TABLE vec_episodic_semantic;"
-        " UPDATE schema_version SET version = 1;",
-    )
+    result = _run_prescribed_recovery(message)
+    assert result.returncode == 0, f"prescribed recovery failed: {result.stderr}"
+    assert _vec_sql(db_path) == {}, "recovery should have dropped both vec0 tables"
+
     recovered = SqliteVecStore(db_path, dim=1024)
     try:
         await recovered._ensure_schema()
@@ -722,6 +781,29 @@ async def test_dimension_mismatch_recovery_message_is_one_that_works(tmp_path: P
     assert "float[1024]" in _vec_sql(db_path)["vec_episodic_semantic"]
 
 
+def test_the_recovery_needs_the_load_prefix_it_prescribes(tmp_path: Path) -> None:
+    """Pins *why* the message carries a .load: without it the stock CLI dead-ends.
+
+    If this ever starts passing, the .load guidance has become unnecessary noise and
+    the message should lose it.
+    """
+    if shutil.which("sqlite3") is None:
+        pytest.skip("sqlite3 CLI unavailable — cannot exercise the operator path")
+    db_path = str(tmp_path / "cold.db")
+    _setup_on_file(
+        db_path,
+        "CREATE VIRTUAL TABLE vec_episodic_content USING vec0(embedding float[384]);",
+    )
+    naive = subprocess.run(
+        ["sqlite3", db_path, "DROP TABLE vec_episodic_content;"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert naive.returncode != 0
+    assert "no such module: vec0" in naive.stderr
+
+
 @pytest.mark.asyncio
 async def test_dimension_mismatch_in_the_semantic_table_alone_is_caught(tmp_path: Path) -> None:
     """Both vec0 tables carry a width; checking only one leaves half the hole open."""
@@ -729,7 +811,7 @@ async def test_dimension_mismatch_in_the_semantic_table_alone_is_caught(tmp_path
     if not await _cold_store_at(db_path, 384):
         pytest.skip("sqlite-vec extension unavailable — nothing to guard")
     # Leave only the semantic table behind, at the old width.
-    _execute_on_file(db_path, "DROP TABLE vec_episodic_content;")
+    _setup_on_file(db_path, "DROP TABLE vec_episodic_content;")
 
     reopened = SqliteVecStore(db_path, dim=1024)
     try:
@@ -750,7 +832,7 @@ async def test_dimension_mismatch_is_caught_before_the_v2_migration_runs(tmp_pat
     db_path = str(tmp_path / "cold.db")
     if not await _cold_store_at(db_path, 384):
         pytest.skip("sqlite-vec extension unavailable — nothing to guard")
-    _execute_on_file(db_path, "UPDATE schema_version SET version = 1;")
+    _setup_on_file(db_path, "UPDATE schema_version SET version = 1;")
 
     reopened = SqliteVecStore(db_path, dim=1024)
     try:
@@ -781,7 +863,7 @@ async def test_dimension_mismatch_is_latched(tmp_path: Path) -> None:
     try:
         with pytest.raises(RuntimeError, match="dim=384"):
             await reopened._ensure_schema()
-        _execute_on_file(
+        _setup_on_file(
             db_path,
             "DROP TABLE vec_episodic_content;"
             " DROP TABLE vec_episodic_semantic;"
@@ -824,7 +906,7 @@ async def test_unreadable_vec_dimension_warns_instead_of_passing_silently(
     db_path = str(tmp_path / "cold.db")
     if not await _cold_store_at(db_path, 384):
         pytest.skip("sqlite-vec extension unavailable — nothing to guard")
-    _execute_on_file(
+    _setup_on_file(
         db_path,
         "DROP TABLE vec_episodic_content;"
         " DROP TABLE vec_episodic_semantic;"
@@ -840,3 +922,74 @@ async def test_unreadable_vec_dimension_warns_instead_of_passing_silently(
         assert "dimension guard skipped" in caplog.text
     finally:
         await reopened.close()
+
+
+@pytest.mark.parametrize(
+    ("label", "ddl"),
+    [
+        ("uppercase", "vec0(embedding FLOAT[384])"),
+        ("padded", "vec0(  embedding   float [ 384 ] )"),
+        ("second_column", "vec0(other float[8], embedding float[384])"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_dimension_is_read_from_ddl_spelling_variants(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    label: str,
+    ddl: str,
+) -> None:
+    """vec0 stores its arguments verbatim, so the guard must read every legal form.
+
+    Each of these creates a working 384-wide table. Asserted through a *mismatch*:
+    a variant the regex cannot read falls into the warning branch and silently
+    disables the guard, which a "matching width is accepted" test would not catch.
+    ``second_column`` also pins the anchor — an unanchored search reads 8 here.
+    """
+    db_path = str(tmp_path / "cold.db")
+    if not await _cold_store_at(db_path, 384):
+        pytest.skip("sqlite-vec extension unavailable — nothing to guard")
+    _setup_on_file(
+        db_path,
+        f"DROP TABLE vec_episodic_content; CREATE VIRTUAL TABLE vec_episodic_content USING {ddl};",
+    )
+
+    reopened = SqliteVecStore(db_path, dim=1024)
+    try:
+        with (
+            caplog.at_level(logging.WARNING, logger="core.memory.sqlite_vec_store"),
+            pytest.raises(RuntimeError, match="vec_episodic_content built with dim=384"),
+        ):
+            await reopened._ensure_schema()
+        assert "dimension guard skipped" not in caplog.text
+    finally:
+        await reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_guard_is_skipped_when_the_vec_extension_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    """No vec0 means no vec0 constraint — a full-scan store must still open.
+
+    Without the ``_vec_ready`` early return this hard-fails a store that works
+    fine: ``search()`` falls back to ``_full_scan_search`` and never touches the
+    vec0 tables, so their declared width is not load-bearing.
+    """
+    db_path = str(tmp_path / "cold.db")
+    if not await _cold_store_at(db_path, 384):
+        pytest.skip("sqlite-vec extension unavailable — nothing to guard")
+
+    reopened = SqliteVecStore(db_path, dim=1024)
+    # Mirror a build where the extension will not load: _connect() catches it, logs,
+    # and leaves _vec_ready False, so the store degrades to sequential scan.
+    with patch("sqlite_vec.loadable_path", side_effect=RuntimeError("no extension")):
+        try:
+            await reopened._ensure_schema()
+            assert reopened._vec_ready is False
+            assert reopened._schema_ready is True
+            assert reopened._dim_mismatch is None
+            # And it is genuinely usable: search falls back to a full scan.
+            assert await reopened.search(query_embedding=_emb(dim=1024), limit=5) == []
+        finally:
+            await reopened.close()
