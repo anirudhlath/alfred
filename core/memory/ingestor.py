@@ -10,7 +10,6 @@ Runs as a background task in the unified runner.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from uuid import uuid4
 
 from loguru import logger
 
@@ -129,7 +128,11 @@ async def ingest_observation(
         semantic_key = _build_semantic_key(obs, action)
 
     entry = EpisodicEntry(
-        id=str(uuid4()),
+        # The observation id, NOT a fresh uuid: it is minted at publish time and
+        # serialized into the stream, so it survives redelivery. RedisVectorStore
+        # HSETs at f"{CONTEXT_PREFIX}{id}", which makes a reclaim-driven retry an
+        # idempotent overwrite instead of a second copy of the same event.
+        id=obs.observation_id,
         timestamp=obs.timestamp,
         source=source,
         summary=summary,

@@ -170,6 +170,55 @@ async def test_semantic_key_is_searchable(scorer: AsyncMock, passive_scorer: Asy
 
 
 @pytest.mark.asyncio
+async def test_the_entry_is_keyed_by_the_stable_observation_id(
+    scorer: AsyncMock, passive_scorer: AsyncMock
+) -> None:
+    """``RedisVectorStore.add`` HSETs at ``ctx:{id}`` — a fresh uuid duplicates on retry."""
+    from core.memory.ingestor import ingest_observation
+
+    episodic = AsyncMock()
+    obs = _passive()
+    await ingest_observation(obs, episodic, scorer, passive_scorer)
+
+    entry: EpisodicEntry = episodic.write.call_args.args[0]
+    assert entry.id == obs.observation_id
+
+
+@pytest.mark.asyncio
+async def test_reprocessing_an_observation_does_not_create_a_second_entry(
+    scorer: AsyncMock, passive_scorer: AsyncMock
+) -> None:
+    """The PEL reclaim pass makes retries real — an overwrite, not a duplicate.
+
+    ``observation_id`` is generated at publish time and serialized into the
+    stream, so it survives redelivery; a ``uuid4()`` minted per ingest attempt
+    does not, and every reclaim would leave another copy behind at a new
+    ``ctx:{id}`` key.
+    """
+    from core.memory.ingestor import ingest_observation
+
+    store: dict[str, EpisodicEntry] = {}
+
+    async def write(entry: EpisodicEntry, _significance: object) -> None:
+        store[entry.id] = entry
+
+    episodic = AsyncMock()
+    episodic.write = AsyncMock(side_effect=write)
+
+    # Round-trip through the wire the way a redelivered stream entry does.
+    raw = _passive().model_dump_json()
+    await ingest_observation(
+        ReflexObservation.model_validate_json(raw), episodic, scorer, passive_scorer
+    )
+    await ingest_observation(
+        ReflexObservation.model_validate_json(raw), episodic, scorer, passive_scorer
+    )
+
+    assert episodic.write.await_count == 2
+    assert len(store) == 1, "a redelivered observation wrote a second episodic entry"
+
+
+@pytest.mark.asyncio
 async def test_passive_scorer_is_used_when_supplied(
     scorer: AsyncMock, passive_scorer: AsyncMock
 ) -> None:
