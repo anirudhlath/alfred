@@ -70,13 +70,30 @@ _KNOWN_EMBEDDING_DIMS: dict[str, int] = {
 }
 
 
+# What an unknown model's width is assumed to be. A guess, and the reason
+# ``known_embedding_dim`` exists: only the caller can decide whether a guess is
+# reportable as fact.
+_ASSUMED_EMBEDDING_DIM = 384
+
+
+def known_embedding_dim(model: str) -> int | None:
+    """The width this build knows ``model`` emits, or ``None`` if it has never seen it.
+
+    ``embedding_dim_for`` answers 384 for an unknown model, which is an assumption, not
+    a measurement. A caller that reports a dimension to an operator — ``alfredctl
+    doctor`` — has to be able to tell the two apart, or it states a guess as fact.
+    """
+    return _KNOWN_EMBEDDING_DIMS.get(model)
+
+
 def embedding_dim_for(model: str) -> int:
-    """Output dimension for a known embedding model (default 384 for unknown models).
+    """Output dimension for a known embedding model (assumed 384 for unknown models).
 
     An explicit ``EMBEDDING_DIM`` env var always wins; this is only the fallback so
     setting ``EMBEDDING_MODEL`` to a known model auto-selects the right index dimension.
     """
-    return _KNOWN_EMBEDDING_DIMS.get(model, 384)
+    known = known_embedding_dim(model)
+    return _ASSUMED_EMBEDDING_DIM if known is None else known
 
 
 def normalize_embedding_dim(raw: str, model: str) -> int:

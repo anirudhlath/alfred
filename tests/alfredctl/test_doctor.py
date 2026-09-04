@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path  # noqa: TC003
 
+import pytest  # noqa: TC002
+
 from alfredctl import doctor
 
 
@@ -84,12 +86,16 @@ def test_openai_embedding_backend_reports_the_host(tmp_path: Path) -> None:
         "OPENROUTER_API_KEY=sk-or-v1-abc\n"
         "EMBEDDING_BACKEND=openai\n"
         # Written the way vLLM prints its base URL — the /v1 is stripped for the caller.
-        "EMBEDDING_HOST=http://vllm.example:8001/v1\n",
+        "EMBEDDING_HOST=http://vllm.example:8001/v1\n"
+        # Not the 30s default, so the rendering cannot pass by hardcoding it.
+        "EMBEDDING_TIMEOUT_SECONDS=7.5\n",
     )
     checks = doctor.run_checks(env, online=False)
     assert _status(checks, "memory embeddings") == "pass"
-    assert "http://vllm.example:8001" in _detail(checks, "memory embeddings")
-    assert "/v1" not in _detail(checks, "memory embeddings")
+    detail = _detail(checks, "memory embeddings")
+    assert "http://vllm.example:8001" in detail
+    assert "/v1" not in detail
+    assert "timeout 7.5s" in detail
 
 
 def test_blank_embedding_host_reports_the_runtime_default(tmp_path: Path) -> None:
@@ -149,3 +155,128 @@ def test_unparseable_embedding_dim_fails(tmp_path: Path) -> None:
     checks = doctor.run_checks(env, online=False)
     assert _status(checks, "memory embeddings") == "fail"
     assert "EMBEDDING_DIM" in _detail(checks, "memory embeddings")
+
+
+def test_dim_disagreeing_with_the_known_model_fails(tmp_path: Path) -> None:
+    """The store refuses to start on a width mismatch — doctor must not call it pass."""
+    env = _write_env(
+        tmp_path,
+        "OPENROUTER_API_KEY=sk-or-v1-abc\nEMBEDDING_MODEL=BAAI/bge-m3\nEMBEDDING_DIM=384\n",
+    )
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, "memory embeddings") == "fail"
+    detail = _detail(checks, "memory embeddings")
+    assert "384" in detail and "1024" in detail
+
+
+def test_unknown_model_without_a_dim_warns_that_384_is_a_guess(tmp_path: Path) -> None:
+    env = _write_env(
+        tmp_path,
+        "OPENROUTER_API_KEY=sk-or-v1-abc\nEMBEDDING_MODEL=nomic-ai/nomic-embed-text-v1.5\n",
+    )
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, "memory embeddings") == "warn"
+    assert "EMBEDDING_DIM" in _detail(checks, "memory embeddings")
+
+
+def test_unknown_model_with_an_explicit_dim_passes_but_says_unverified(tmp_path: Path) -> None:
+    # The documented use of EMBEDDING_DIM. doctor cannot confirm it offline, and says so.
+    env = _write_env(
+        tmp_path,
+        "OPENROUTER_API_KEY=sk-or-v1-abc\n"
+        "EMBEDDING_MODEL=nomic-ai/nomic-embed-text-v1.5\n"
+        "EMBEDDING_DIM=768\n",
+    )
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, "memory embeddings") == "pass"
+    assert "unverified" in _detail(checks, "memory embeddings")
+
+
+def _openai_env(**extra: str) -> dict[str, str]:
+    env = {
+        "EMBEDDING_BACKEND": "openai",
+        "EMBEDDING_HOST": "http://vllm.example:8001",
+        "EMBEDDING_MODEL": "BAAI/bge-m3",
+    }
+    env.update(extra)
+    return env
+
+
+def test_online_probe_disagreeing_with_the_configured_dim_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The served width is ground truth — it outranks both the table and EMBEDDING_DIM."""
+    monkeypatch.setattr(doctor, "_probe_embedding_dim", lambda *a, **k: (768, "HTTP 200"))
+    check = doctor._check_embeddings(_openai_env(), online=True)
+    assert check.status == "fail"
+    assert "768" in check.detail and "1024" in check.detail
+
+
+def test_online_probe_confirms_the_dim(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(doctor, "_probe_embedding_dim", lambda *a, **k: (1024, "HTTP 200"))
+    check = doctor._check_embeddings(_openai_env(), online=True)
+    assert check.status == "pass"
+    assert "confirmed" in check.detail
+
+
+def test_unreachable_embedding_host_warns(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Best-effort: doctor runs anywhere, so a network failure never hard-fails.
+    monkeypatch.setattr(
+        doctor, "_probe_embedding_dim", lambda *a, **k: (None, "unreachable (ConnectError)")
+    )
+    check = doctor._check_embeddings(_openai_env(), online=True)
+    assert check.status == "warn"
+    assert "unreachable" in check.detail
+
+
+def test_offline_never_probes(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _boom(*args: object, **kwargs: object) -> tuple[int | None, str]:
+        raise AssertionError("--offline must not touch the network")
+
+    monkeypatch.setattr(doctor, "_probe_embedding_dim", _boom)
+    assert doctor._check_embeddings(_openai_env(), online=False).status == "pass"
+
+
+def test_probe_reads_the_served_width() -> None:
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["Authorization"] == "Bearer sekret"
+        return httpx.Response(200, json={"data": [{"index": 0, "embedding": [0.1] * 1024}]})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        width, detail = doctor._probe_embedding_dim(
+            "http://vllm.example:8001", "BAAI/bge-m3", "sekret", client=client
+        )
+    assert width == 1024
+    assert "200" in detail
+
+
+def test_probe_reports_an_http_error_rather_than_a_width() -> None:
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # What a chat-only vLLM answers on /v1/embeddings.
+        return httpx.Response(400, json={"error": "model does not support embeddings"})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        width, detail = doctor._probe_embedding_dim(
+            "http://vllm.example:8001", "BAAI/bge-m3", "", client=client
+        )
+    assert width is None
+    assert "400" in detail
+
+
+def test_probe_survives_a_non_embeddings_response() -> None:
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # A proxy that 200s everything, say.
+        return httpx.Response(200, text="<html>hello</html>")
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        width, detail = doctor._probe_embedding_dim(
+            "http://vllm.example:8001", "BAAI/bge-m3", "", client=client
+        )
+    assert width is None
+    assert detail

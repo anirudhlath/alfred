@@ -6,8 +6,9 @@ checklist, whether each subsystem is configured before you ever start the stack:
 - System 2 (Conscious) — the cloud LLM API key
 - System 1 (Reflex)    — the local inference backend (Ollama or OpenAI-compatible)
 - Home Assistant        — the long-lived token
-- Memory embeddings     — the backend and model; gated models need HF_TOKEN
-                          in-process, none of it applies to a remote server
+- Memory embeddings     — the backend, model and index width; gated models need
+                          HF_TOKEN in-process, and with a remote server the width
+                          is checked against what it actually serves
 - Build prerequisites    — the home-service sibling repo
 
 Live probes (``--online``) are best-effort: a network failure downgrades to a
@@ -23,6 +24,8 @@ from dotenv import dotenv_values
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    import httpx
 
 Status = Literal["pass", "warn", "fail"]
 
@@ -47,20 +50,64 @@ def load_env(env_file: Path) -> dict[str, str]:
     return env
 
 
+# Short on purpose: doctor is a preflight, not a health check, and a server still
+# loading a model should read as a warning rather than hang the CLI.
+_PROBE_TIMEOUT_SECONDS = 4.0
+
+
+def _host_side(url: str) -> str:
+    """Rewrite a container-gateway hostname to localhost so host-side probes work.
+
+    host.docker.internal / host.containers.internal only resolve inside a container;
+    from the host the same service is on localhost.
+    """
+    return url.replace("host.docker.internal", "localhost").replace(
+        "host.containers.internal", "localhost"
+    )
+
+
 def _probe(url: str, headers: dict[str, str] | None = None) -> tuple[bool, str]:
     """Best-effort GET; returns (ok, detail). Network errors are reported, not raised."""
     import httpx
 
-    # host.docker.internal / host.containers.internal only resolve inside a container;
-    # from the host the service is on localhost. Rewrite so host-side probes work.
-    probe_url = url.replace("host.docker.internal", "localhost").replace(
-        "host.containers.internal", "localhost"
-    )
     try:
-        resp = httpx.get(probe_url, headers=headers, timeout=4.0)
+        resp = httpx.get(_host_side(url), headers=headers, timeout=_PROBE_TIMEOUT_SECONDS)
     except Exception as exc:
         return False, f"unreachable ({type(exc).__name__})"
     return resp.status_code < 400, f"HTTP {resp.status_code}"
+
+
+def _probe_embedding_dim(
+    host: str, model: str, api_key: str, client: httpx.Client | None = None
+) -> tuple[int | None, str]:
+    """Embed one string and return (served width, detail); ``None`` means no answer.
+
+    A POST to /v1/embeddings rather than a GET of /v1/models because the width the
+    server actually emits is ground truth about the pair (server, model) — it settles
+    what EMBEDDING_DIM only asserts, and a chat-only server (vLLM without
+    ``--runner pooling``) fails it while happily listing the model.
+    """
+    import httpx
+
+    url = _host_side(f"{host.rstrip('/')}/v1/embeddings")
+    key = api_key.strip()
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    body = {"model": model, "input": "alfredctl doctor probe"}
+    try:
+        if client is not None:
+            resp = client.post(url, json=body, headers=headers)
+        else:
+            with httpx.Client(timeout=_PROBE_TIMEOUT_SECONDS) as owned:
+                resp = owned.post(url, json=body, headers=headers)
+    except Exception as exc:
+        return None, f"{url} unreachable ({type(exc).__name__})"
+    if resp.status_code >= 400:
+        return None, f"{url} answered HTTP {resp.status_code}"
+    try:
+        width = len(resp.json()["data"][0]["embedding"])
+    except Exception:
+        return None, f"{url} answered HTTP {resp.status_code}, but not an embeddings response"
+    return width, f"HTTP {resp.status_code}"
 
 
 def _check_conscious(env: dict[str, str], online: bool) -> DoctorCheck:
@@ -138,13 +185,40 @@ def _check_home_assistant(env: dict[str, str], online: bool) -> DoctorCheck:
     return DoctorCheck("home assistant", "pass", "token set")
 
 
-def _check_embeddings(env: dict[str, str]) -> DoctorCheck:
+def _embedding_dim_note(model: str, dim: int, raw_dim: str) -> tuple[Status, str]:
+    """How much doctor actually knows about the configured width, and how sure it is.
+
+    Three different states used to print identically as ``dim=384``: the width this
+    build knows the model emits, a width it cannot check, and a fallback that is a
+    guess about a model it has never heard of. Only the first is a fact.
+    """
+    from shared.config import known_embedding_dim
+
+    known = known_embedding_dim(model)
+    if known is not None and known != dim:
+        return "fail", (
+            f"EMBEDDING_DIM={dim} but {model} emits {known} — the vector store refuses to "
+            f"start on a width mismatch; unset EMBEDDING_DIM to track the model"
+        )
+    if known is not None:
+        return "pass", f"dim={dim}"
+    # The model is named by the caller, so these two do not repeat it.
+    if raw_dim.strip():
+        return "pass", f"dim={dim} unverified (model not in this build's dim table)"
+    return "warn", (
+        f"dim={dim} assumed — model unknown here, so set EMBEDDING_DIM to the width it "
+        f"emits or memory search breaks on the first embed"
+    )
+
+
+def _check_embeddings(env: dict[str, str], online: bool) -> DoctorCheck:
     """Report the embedding backend the services will actually build.
 
     Every value is resolved through the same ``shared.config`` helpers ``AlfredConfig``
     uses, so doctor cannot describe a configuration the runtime would read differently —
-    and the two that ``from_env`` rejects outright (an unknown backend, an unparseable
-    timeout) are reported here as failures rather than echoed back as valid.
+    and the three that ``from_env`` rejects outright (an unknown backend, an unparseable
+    timeout, an unparseable dim) are reported here as failures rather than echoed back
+    as valid.
     """
     from shared.config import (
         DEFAULT_EMBEDDING_TIMEOUT_SECONDS,
@@ -155,12 +229,18 @@ def _check_embeddings(env: dict[str, str]) -> DoctorCheck:
         positive_seconds,
     )
 
-    model = normalize_embedding_model(env.get("EMBEDDING_MODEL", ""))
     try:
+        # All of it inside the try: these helpers validate, and the day one of them
+        # starts raising, doctor must print a fail row rather than traceback — nothing
+        # up the stack catches.
+        model = normalize_embedding_model(env.get("EMBEDDING_MODEL", ""))
         backend = normalize_embedding_backend(env.get("EMBEDDING_BACKEND", ""))
         dim = normalize_embedding_dim(env.get("EMBEDDING_DIM", ""), model)
-        # Applies to the openai backend only, but from_env parses it whatever the
-        # backend is — so a bad value takes every service down, not just that path.
+        # A blank EMBEDDING_HOST falls back to the default at config load, so calling
+        # it a failure here would contradict the runtime.
+        host = normalize_embedding_host(env.get("EMBEDDING_HOST", ""))
+        # The timeout applies to the openai backend only, but from_env parses it
+        # whatever the backend is — a bad value takes every service down, not one path.
         timeout = positive_seconds(
             "EMBEDDING_TIMEOUT_SECONDS",
             env.get("EMBEDDING_TIMEOUT_SECONDS", ""),
@@ -169,25 +249,40 @@ def _check_embeddings(env: dict[str, str]) -> DoctorCheck:
     except RuntimeError as exc:
         return DoctorCheck("memory embeddings", "fail", str(exc))
 
+    status, note = _embedding_dim_note(model, dim, env.get("EMBEDDING_DIM", ""))
+    if status == "fail":
+        # A width that cannot work is the whole story — nothing after it matters.
+        return DoctorCheck("memory embeddings", "fail", note)
+
     if backend == "openai":
-        # A blank EMBEDDING_HOST falls back to the default at config load, so calling
-        # it a failure here would contradict the runtime.
-        host = normalize_embedding_host(env.get("EMBEDDING_HOST", ""))
         # Gating is irrelevant on this path — the server holds the weights, not us.
+        where = f"via {host} (timeout {timeout:g}s)"
+        if not online:
+            return DoctorCheck("memory embeddings", status, f"model={model} {where}, {note}")
+        served, detail = _probe_embedding_dim(host, model, env.get("EMBEDDING_API_KEY", ""))
+        if served is None:
+            # Best-effort, like every other probe here: doctor has to be runnable from
+            # anywhere, so an unreachable server warns and never hard-fails.
+            return DoctorCheck("memory embeddings", "warn", f"model={model} {where} — {detail}")
+        if served != dim:
+            return DoctorCheck(
+                "memory embeddings",
+                "fail",
+                f"{host} emits {served} dims for {model} but the index is built at {dim} — "
+                f"the vector store refuses to start on the mismatch",
+            )
         return DoctorCheck(
-            "memory embeddings",
-            "pass",
-            f"model={model} dim={dim} via {host} (timeout {timeout:g}s)",
+            "memory embeddings", "pass", f"model={model} {where}, dim={dim} confirmed by the server"
         )
 
     gated = model.startswith("google/embeddinggemma")
-    if gated and not env.get("HF_TOKEN", "").strip():
+    if status == "pass" and gated and not env.get("HF_TOKEN", "").strip():
         return DoctorCheck(
             "memory embeddings",
             "warn",
             f"{model} is gated — set HF_TOKEN + accept its license, or use the ungated default",
         )
-    return DoctorCheck("memory embeddings", "pass", f"model={model} dim={dim} in-process")
+    return DoctorCheck("memory embeddings", status, f"model={model} in-process, {note}")
 
 
 def _check_home_service() -> DoctorCheck:
@@ -217,6 +312,6 @@ def run_checks(env_file: Path, *, online: bool = True) -> list[DoctorCheck]:
     checks.append(_check_conscious(env, online))
     checks.append(_check_reflex(env, online))
     checks.append(_check_home_assistant(env, online))
-    checks.append(_check_embeddings(env))
+    checks.append(_check_embeddings(env, online))
     checks.append(_check_home_service())
     return checks
