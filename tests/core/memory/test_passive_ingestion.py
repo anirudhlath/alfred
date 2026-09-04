@@ -207,3 +207,60 @@ def test_ingestor_main_builds_a_passive_scorer_on_the_observed_key() -> None:
     source = inspect.getsource(ingestor_main.run)
     assert "OBSERVED_FREQUENCY_KEY" in source
     assert "passive_scorer" in source
+
+
+@pytest.mark.asyncio
+async def test_ingestor_main_forwards_a_scorer_bound_to_the_observed_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Behavioural counterpart to the source-text guard above.
+
+    That one greps ``run``'s source, so it stays green on the exact mistake it
+    exists to catch — dropping ``frequency_key=`` while the explanatory comment
+    still names ``OBSERVED_FREQUENCY_KEY``, or forwarding the shared scorer as
+    ``passive_scorer=``. This one runs the wiring.
+    """
+    from core.memory import ingestor_main
+    from shared.config import AlfredConfig
+    from shared.streams import ENTITY_FREQUENCY_KEY, OBSERVED_FREQUENCY_KEY
+
+    built: list[tuple[dict[str, object], object]] = []
+
+    class RecordingScorer:
+        def __init__(self, **kwargs: object) -> None:
+            built.append((kwargs, self))
+
+    forwarded: dict[str, object] = {}
+
+    async def fake_run_ingestor(
+        _redis: object,
+        _episodic: object,
+        scorer: object,
+        shutdown_event: object = None,
+        passive_scorer: object = None,
+    ) -> None:
+        forwarded["scorer"] = scorer
+        forwarded["passive_scorer"] = passive_scorer
+
+    monkeypatch.setattr(ingestor_main, "SignificanceScorer", RecordingScorer)
+    monkeypatch.setattr(ingestor_main, "run_ingestor", fake_run_ingestor)
+    monkeypatch.setattr(ingestor_main, "create_redis", lambda _url: AsyncMock())
+    monkeypatch.setattr(ingestor_main, "RedisVectorStore", lambda **_kw: MagicMock())
+    monkeypatch.setattr(ingestor_main, "SqliteVecStore", lambda **_kw: MagicMock())
+    monkeypatch.setattr(ingestor_main, "EpisodicMemory", lambda **_kw: MagicMock())
+    monkeypatch.setattr(ingestor_main, "start_warmup", lambda *_a, **_kw: MagicMock())
+
+    await ingestor_main.run(AlfredConfig())
+
+    assert len(built) == 2, "expected a shared scorer and a passive scorer"
+    shared_kwargs, shared_scorer = built[0]
+    passive_kwargs, passive_scorer = built[1]
+
+    # The reflex-action scorer keeps the shared population.
+    assert shared_kwargs.get("frequency_key", ENTITY_FREQUENCY_KEY) == ENTITY_FREQUENCY_KEY
+    # The passive one counts against its own, or ~250 observations/day flatten
+    # novelty (1/count) for real reflex actions too.
+    assert passive_kwargs.get("frequency_key") == OBSERVED_FREQUENCY_KEY
+
+    assert forwarded["scorer"] is shared_scorer
+    assert forwarded["passive_scorer"] is passive_scorer
