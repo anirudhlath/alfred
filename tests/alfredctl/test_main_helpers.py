@@ -241,3 +241,34 @@ def test_render_doctor_survives_markup_in_a_probe_body() -> None:
 def test_render_doctor_still_reports_failure() -> None:
     # The escape must not cost the return value the caller exits on.
     assert main._render_doctor([doctor_mod.DoctorCheck("x", "fail", "[/oops]")]) is True
+
+
+class _StopBeforeDockerError(Exception):
+    """Raised in place of the build, to prove the preflight print was survived."""
+
+
+def test_up_preflight_survives_markup_in_a_detail(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`up` renders the same details `doctor` does, through its own f-string.
+
+    A `[/...]` in a detail parses as a closing tag and raised MarkupError — the crash
+    _render_doctor was fixed for, reached through the other renderer. `up` runs its
+    preflight offline, so today the shape arrives from an operator-supplied .env value
+    rather than a server, and the day that preflight goes online it arrives from both.
+    """
+
+    def _stop(**kwargs: object) -> None:
+        raise _StopBeforeDockerError
+
+    monkeypatch.setattr(main.rt, "detect", lambda name: APPLE)
+    monkeypatch.setattr(
+        main.doctor_mod,
+        "run_checks",
+        lambda *a, **k: [
+            doctor_mod.DoctorCheck(
+                "memory embeddings", "warn", "model=[/models/bge-m3] in-process, dim=384 assumed"
+            )
+        ],
+    )
+    monkeypatch.setattr(main, "build", _stop)
+    with pytest.raises(_StopBeforeDockerError):
+        main.up()

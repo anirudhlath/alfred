@@ -142,7 +142,12 @@ def up(
         console.print("[yellow]Preflight notes (run `alfredctl doctor` for detail):[/yellow]")
         for c in pre:
             style = _STATUS_STYLE[c.status]
-            console.print(f"  [{style}]{_STATUS_GLYPH[c.status]}[/{style}] {c.name}: {c.detail}")
+            # Escaped for the same reason _render_doctor is: details carry values this
+            # command did not write, and `[/...]` in one is a closing tag to rich.
+            console.print(
+                f"  [{style}]{_STATUS_GLYPH[c.status]}[/{style}] "
+                f"{escape(c.name)}: {escape(c.detail)}"
+            )
     if do_build:
         build(runtime=r.name, tag=None)
     repo = staging.repo_root()
