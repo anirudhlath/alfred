@@ -32,8 +32,10 @@ _VEC_TABLES = ("vec_episodic_content", "vec_episodic_semantic")
 # came first; case- and whitespace-tolerant because vec0 accepts (and sqlite then
 # stores) ``FLOAT[4]`` and ``embedding float [ 4 ]`` just as happily as the form
 # _migrate_v2 writes. ``\W+`` rather than ``\s+`` so a quoted ``"embedding"``
-# still matches.
-_VEC_DIM_RE = re.compile(r"embedding\W+float\s*\[\s*(\d+)\s*\]", re.IGNORECASE)
+# still matches, and a leading ``\b`` so a longer column name cannot be mistaken
+# for it — without it, ``vec0(prior_embedding float[8], embedding float[384])``
+# reads 8 and the guard silently checks the wrong column.
+_VEC_DIM_RE = re.compile(r"\bembedding\W+float\s*\[\s*(\d+)\s*\]", re.IGNORECASE)
 
 # Default significance JSON for data-migration of pre-v2 entries.
 _DEFAULT_SIGNIFICANCE = (
@@ -124,8 +126,10 @@ class SqliteVecStore(VectorStore):
         database again: every ``add``/``search``/``count`` reaches here via
         ``_get_db()`` while ``_schema_ready`` stays False, so re-probing would
         replay the sqlite_master reads on every memory operation. The latch holds
-        for the life of the store even if an operator fixes the file underneath it
-        — which the recovery message tells them to do with Alfred stopped anyway.
+        for the life of the store even if an operator fixes the file underneath it,
+        which is why the recovery message marks the restart as non-optional. The
+        recovery itself needs no downtime — a latched store has already stopped
+        touching the file.
         """
         if self._dim_mismatch is not None:
             raise RuntimeError(self._dim_mismatch)
