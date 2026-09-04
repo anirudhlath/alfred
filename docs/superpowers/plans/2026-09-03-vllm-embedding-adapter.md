@@ -1030,11 +1030,19 @@ verified against a real sqlite-vec database:
    has written here. The non-destructive recovery is to drop both vec0 tables and reset
    `schema_version` to 1 — verified to rebuild them at the new width while keeping every
    `episodic_entries` row — while saying plainly that the rebuilt tables come up empty.
-   That `DROP TABLE` needs the vec0 module loaded: the stock `sqlite3` CLI fails with
-   `Parse error: no such module: vec0`, so the message must prescribe the `.load` form
-   (`sqlite3 <db> ".load $(python -c 'import sqlite_vec;print(sqlite_vec.loadable_path())')" "DROP ..."`)
-   and the test must run that command through a real shell — a recovery proved only
-   against a pre-loaded connection is one the operator cannot perform.
+   That `DROP TABLE` needs the vec0 module loaded, or sqlite fails with
+   `no such module: vec0`. **Do not reach for the `sqlite3` CLI to do it.** Measured on
+   this box: the host has `/usr/bin/sqlite3` but no `sqlite_vec` module, and Alfred's
+   image has the module (`/usr/local/lib/python3.13/site-packages/sqlite_vec/vec0`) but
+   ships no `sqlite3` binary — so a CLI recipe runs in neither place, only in a dev venv
+   that happens to have both. Prescribe a `python -c` snippet using `sqlite_vec.load(db)`
+   instead, since an interpreter carrying Alfred's dependencies is the one thing
+   guaranteed present wherever Alfred runs, and interpolate `self._db_path` so the
+   message names the real file (`/data/episodic_cold.db` in the container). Name
+   `docker exec <container>` as the containerized form in the prose; do not bake a
+   container name into the store. The test must run the emitted command through a real
+   shell — a recovery proved only against a pre-loaded connection, or only in the venv
+   that verified it, is one the operator cannot perform.
 3. **The guard belongs before the DDL, not after it.** The draft called it from the fast
    path *and* from the end of `_ensure_schema`. The end call cannot fire on a fresh
    database (the tables were just created at `self._dim`), and on a half-migrated one it
@@ -1053,8 +1061,10 @@ something else. Cover, at minimum:
   *that* order (so swapping them in the message fails the test);
 - a matching width is accepted;
 - the prescribed recovery is spelled out in the message **and actually works** when the
-  test runs the message's own command through a shell (plus a test pinning that the
-  naive form without `.load` really does dead-end, so the guidance is not stale noise);
+  test runs the message's own command through a shell, including that the command names
+  the store's real `db_path` (plus a companion test that derives the naive form by
+  stripping the `sqlite_vec.load(db)` call from that same command and pins that it
+  dead-ends, so neither the guidance nor its justification can drift);
 - vec0's other legal spellings of the width — `FLOAT[384]`, `embedding float [ 384 ]` —
   are read, and a second vector column (`vec0(other float[8], embedding float[384])`)
   does not shadow the `embedding` one;
@@ -1070,7 +1080,7 @@ something else. Cover, at minimum:
 
 The signatures are confirmed: `SqliteVecStore(db_path, dim=384, embedder=None)`
 (`core/memory/sqlite_vec_store.py:54-58`) and `async def close()`. The test module needs
-`logging`, `os`, `shutil`, `sqlite3`, `subprocess`, `sys` and `pathlib.Path`. Import
+`logging`, `os`, `sqlite3`, `subprocess`, `sys` and `pathlib.Path`. Import
 `sqlite_vec` *lazily inside a helper*, not at module level: it ships in the `memory`
 extra, so a top-level import turns "these tests skip" into "the module fails to collect"
 wherever the extra is absent, falsifying the `pytest.skip` guards.
