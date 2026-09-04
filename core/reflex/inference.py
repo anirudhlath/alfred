@@ -16,10 +16,14 @@ _BACKENDS = ("ollama", "openai")
 
 
 def _backend() -> str:
-    name = os.getenv("REFLEX_BACKEND", "ollama").strip().lower() or "ollama"
+    raw = os.getenv("REFLEX_BACKEND", "ollama")
+    name = raw.strip().lower() or "ollama"
     if name not in _BACKENDS:
         raise RuntimeError(
-            f"Unknown REFLEX_BACKEND {name!r} (expected one of: {', '.join(_BACKENDS)})"
+            # Both spellings: the normalised name is what was matched, but only the
+            # raw one greps against the user's .env.
+            f"Unknown REFLEX_BACKEND {raw!r} "
+            f"(read as {name!r}; expected one of: {', '.join(_BACKENDS)})"
         )
     return name
 
