@@ -33,19 +33,35 @@ class RedisVectorStore(VectorStore):
     Index creation is deferred to the first operation via ``ensure_index()``.
     If RediSearch is unavailable the store degrades gracefully — ``add`` and
     ``delete`` still work on plain Redis hashes, but ``search`` returns ``[]``.
+
+    A dimension mismatch against an existing index is the one case that is
+    deliberately *not* graceful (see ``_verify_index_dim``): it is latched and
+    re-raised from ``ensure_index()``, so ``add``, ``search`` and ``count`` all
+    raise rather than write vectors the index can never match.
     """
 
     def __init__(self, redis: AioRedis, dim: int = 384) -> None:
         self._redis = redis
         self._dim = dim
         self._index_ready: bool = False
+        # Set once a dimension mismatch is proven; see ensure_index().
+        self._dim_mismatch: str | None = None
 
     # ------------------------------------------------------------------
     # Index lifecycle
     # ------------------------------------------------------------------
 
     async def ensure_index(self) -> None:
-        """Create the RediSearch index if it does not already exist."""
+        """Create the RediSearch index if it does not already exist.
+
+        A proven dimension mismatch is latched and re-raised without touching
+        Redis again. It cannot resolve itself while the process runs, and every
+        ``add``/``search``/``count`` enters here — re-probing would replay the
+        40-argument ``FT.CREATE`` plus an ``FT.INFO``, and log a traceback, on
+        every memory operation for the life of the process.
+        """
+        if self._dim_mismatch is not None:
+            raise RuntimeError(self._dim_mismatch)
         if self._index_ready:
             return
         try:
@@ -117,30 +133,64 @@ class RedisVectorStore(VectorStore):
                 # Leave _index_ready = False so search degrades gracefully
 
     async def _verify_index_dim(self) -> None:
-        """Fail loudly if the existing index was built at a different dimension.
+        """Refuse to use an index that was built at a different vector width.
 
-        Changing EMBEDDING_MODEL (or EMBEDDING_BACKEND) changes the vector width.
-        Writing those vectors into an index built at the old width produces no
-        exception and no log — searches simply stop matching. Refuse to start.
+        Changing EMBEDDING_MODEL (or EMBEDDING_BACKEND) changes the width. Writing
+        those vectors into an index built at the old one produces no exception and
+        no log — searches simply stop matching.
+
+        "Refuse" is narrower than "refuse to start": both warmup call sites
+        (``core/conscious/__main__.py``, ``core/memory/ingestor_main.py``) go through
+        ``start_warmup``, and ``core/warmup.py:_warm_one`` catches ``Exception`` and
+        only warns, so the service comes up and everything but memory keeps working.
+        What stops is every store operation, since ``add``/``search``/``count`` all
+        call ``ensure_index()`` first. In the ingestor that means the stream entry is
+        never ``XACK``ed (``core/memory/ingestor.py:121``), so the pending list grows
+        while ingestion is stuck — nothing is lost and it replays once the dimension
+        is fixed, but an operator watching the PEL should know why it is growing.
         """
         try:
             raw = await self._redis.execute_command("FT.INFO", CONTEXT_INDEX)  # type: ignore[no-untyped-call]
         except Exception as exc:
             # Only a mismatch we can *prove* is worth failing on: an FT.INFO that
-            # errors tells us nothing about the width, and refusing to start on it
-            # would turn a transient Redis hiccup into an outage.
+            # errors tells us nothing about the width, and refusing to run on it
+            # would turn a transient Redis hiccup into a memory outage.
             logger.warning("Could not read %s dimension (FT.INFO failed): %s", CONTEXT_INDEX, exc)
             return
         existing = _index_vector_dim(_parse_ft_info(raw))
-        if existing is None or existing == self._dim:
+        if existing is None:
+            # Never silent. A parser that quietly returns None disables this guard,
+            # which is the exact failure the guard exists to prevent — and this file
+            # has form: the RESP2-only reply parser shipped broken with no exception
+            # and no log line (see the RediSearch gotcha in CLAUDE.md).
+            logger.warning(
+                "Could not determine the vector dimension of existing index %s from "
+                "FT.INFO — dimension guard skipped, an embedding model change will "
+                "NOT be caught here",
+                CONTEXT_INDEX,
+            )
             return
-        raise RuntimeError(
+        if existing == self._dim:
+            return
+        self._dim_mismatch = (
             f"RediSearch index {CONTEXT_INDEX} was built with dim={existing} but the "
-            f"configured embedding model produces dim={self._dim}. Vector search would "
-            f"silently return nothing. Re-embed into a fresh index "
-            f"(FT.DROPINDEX {CONTEXT_INDEX} DD, then restart), or restore the previous "
-            f"EMBEDDING_MODEL/EMBEDDING_BACKEND."
+            f"configured embedding model produces dim={self._dim}; vectors of the new "
+            f"width can never match, so memory refuses to run. "
+            f"To go back: restore the previous EMBEDDING_MODEL/EMBEDDING_BACKEND — "
+            f"nothing has been lost. "
+            f"To go forward: run FT.DROPINDEX {CONTEXT_INDEX} (WITHOUT 'DD') and "
+            f"restart, which recreates the index at dim={self._dim} and keeps every "
+            f"{CONTEXT_PREFIX}* hash — but entries still holding old-width vectors "
+            f"fail to index (FT.INFO hash_indexing_failures) and stay unsearchable, "
+            f"because nothing re-embeds them: semantic entries are rebuilt from disk "
+            f"on the Librarian's next reindex_semantic_files() cycle, episodic entries "
+            f"have no re-embed path at all, so only new writes become searchable. "
+            f"Do NOT add 'DD' unless you accept the loss: it DELETES every "
+            f"{CONTEXT_PREFIX}* hash, and episodic entries live in the hot store until "
+            f"the Librarian's decay pass copies them to cold SQLite, so 'DD' "
+            f"permanently destroys the most recent memories."
         )
+        raise RuntimeError(self._dim_mismatch)
 
     # ------------------------------------------------------------------
     # VectorStore interface
@@ -428,9 +478,12 @@ def _index_vector_dim(info: dict[str, object]) -> int | None:
         else:
             continue
         raw_dim = fields.get("dim")
-        if isinstance(raw_dim, (bytes, str, int)):
+        # RediSearch already returns doubles for some numeric attributes (a live
+        # RESP3 reply carries ``b'WEIGHT': 1.0``), so a ``dim`` of ``768.0`` must
+        # read as 768 rather than silently disabling the guard.
+        if isinstance(raw_dim, (bytes, str, int, float)):
             try:
                 return int(raw_dim)
-            except ValueError:
+            except (ValueError, OverflowError):
                 return None
     return None
