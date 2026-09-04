@@ -12,6 +12,7 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from alfredctl import doctor as doctor_mod
@@ -64,7 +65,15 @@ def _render_doctor(checks: list[doctor_mod.DoctorCheck]) -> bool:
     table.add_column("detail", overflow="fold")
     for c in checks:
         style = _STATUS_STYLE[c.status]
-        table.add_row(c.name, f"[{style}]{_STATUS_GLYPH[c.status]} {c.status}[/{style}]", c.detail)
+        # Details quote what a remote server said, and rich reads `[...]` as markup: a
+        # 4xx body naming a path (`[/models/bge-m3]`) parses as a closing tag and raises
+        # MarkupError out of add_row. Markup is only ever wanted in the status column,
+        # which is built right here, so escaping the rest costs nothing.
+        table.add_row(
+            escape(c.name),
+            f"[{style}]{_STATUS_GLYPH[c.status]} {c.status}[/{style}]",
+            escape(c.detail),
+        )
     console.print(table)
     return any(c.status == "fail" for c in checks)
 

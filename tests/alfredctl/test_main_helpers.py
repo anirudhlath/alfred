@@ -219,3 +219,25 @@ def test_doctor_without_env_file_uses_repo_root(
     monkeypatch.setattr(main.staging, "repo_root", lambda: tmp_path)
     main.doctor(online=False)
     assert seen["env_file"] == tmp_path / ".env"
+
+
+def test_render_doctor_survives_markup_in_a_probe_body() -> None:
+    """Details quote remote text verbatim, and rich reads `[...]` as markup.
+
+    Observed shape: a model server naming a path in its error body. `[/models/bge-m3]`
+    parses as a closing tag and raised MarkupError out of `table.add_row` — a traceback
+    from the command whose whole contract is "safe to run anywhere".
+    """
+    checks = [
+        doctor_mod.DoctorCheck(
+            "memory embeddings",
+            "warn",
+            'HTTP 400: {"error":"model not found at [/models/bge-m3]"}',
+        )
+    ]
+    assert main._render_doctor(checks) is False
+
+
+def test_render_doctor_still_reports_failure() -> None:
+    # The escape must not cost the return value the caller exits on.
+    assert main._render_doctor([doctor_mod.DoctorCheck("x", "fail", "[/oops]")]) is True
