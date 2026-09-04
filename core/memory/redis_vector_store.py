@@ -107,6 +107,7 @@ class RedisVectorStore(VectorStore):
             # Index may already exist — that is fine
             err = str(exc)
             if "Index already exists" in err or "already exists" in err.lower():
+                await self._verify_index_dim()
                 self._index_ready = True
                 logger.debug("RediSearch index %s already exists", CONTEXT_INDEX)
             else:
@@ -114,6 +115,32 @@ class RedisVectorStore(VectorStore):
                     "RediSearch unavailable — vector search disabled: %s", exc, exc_info=True
                 )
                 # Leave _index_ready = False so search degrades gracefully
+
+    async def _verify_index_dim(self) -> None:
+        """Fail loudly if the existing index was built at a different dimension.
+
+        Changing EMBEDDING_MODEL (or EMBEDDING_BACKEND) changes the vector width.
+        Writing those vectors into an index built at the old width produces no
+        exception and no log — searches simply stop matching. Refuse to start.
+        """
+        try:
+            raw = await self._redis.execute_command("FT.INFO", CONTEXT_INDEX)  # type: ignore[no-untyped-call]
+        except Exception as exc:
+            # Only a mismatch we can *prove* is worth failing on: an FT.INFO that
+            # errors tells us nothing about the width, and refusing to start on it
+            # would turn a transient Redis hiccup into an outage.
+            logger.warning("Could not read %s dimension (FT.INFO failed): %s", CONTEXT_INDEX, exc)
+            return
+        existing = _index_vector_dim(_parse_ft_info(raw))
+        if existing is None or existing == self._dim:
+            return
+        raise RuntimeError(
+            f"RediSearch index {CONTEXT_INDEX} was built with dim={existing} but the "
+            f"configured embedding model produces dim={self._dim}. Vector search would "
+            f"silently return nothing. Re-embed into a fresh index "
+            f"(FT.DROPINDEX {CONTEXT_INDEX} DD, then restart), or restore the previous "
+            f"EMBEDDING_MODEL/EMBEDDING_BACKEND."
+        )
 
     # ------------------------------------------------------------------
     # VectorStore interface
@@ -379,3 +406,31 @@ def _parse_ft_info(raw: object) -> dict[str, object]:
         return {}
     items = list(raw)
     return {_decoded(items[i]): items[i + 1] for i in range(0, len(items) - 1, 2)}
+
+
+def _index_vector_dim(info: dict[str, object]) -> int | None:
+    """Vector dimension declared by an existing index, or None if undeterminable.
+
+    ``FT.INFO``'s ``attributes`` entry is a list of per-field descriptors whose shape
+    follows the negotiated protocol: RESP3 gives dicts, RESP2 gives flat alternating
+    lists. Normalise both, then read ``dim`` off the first vector field. Returning
+    None (rather than guessing) keeps a parse quirk from failing startup.
+    """
+    attributes = info.get("attributes")
+    if not isinstance(attributes, (list, tuple)):
+        return None
+    for attribute in attributes:
+        if isinstance(attribute, dict):
+            fields = {_decoded(k): v for k, v in attribute.items()}
+        elif isinstance(attribute, (list, tuple)):
+            items = list(attribute)
+            fields = {_decoded(items[i]): items[i + 1] for i in range(0, len(items) - 1, 2)}
+        else:
+            continue
+        raw_dim = fields.get("dim")
+        if isinstance(raw_dim, (bytes, str, int)):
+            try:
+                return int(raw_dim)
+            except ValueError:
+                return None
+    return None

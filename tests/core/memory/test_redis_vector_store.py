@@ -359,3 +359,60 @@ async def test_update_metadata_calls_hset(store: RedisVectorStore, mock_redis: A
     mock_redis.hset.assert_called_once_with(
         "ctx:ep-1", mapping={"retrieval_count": 5, "last_retrieved": 1711000000.0}
     )
+
+
+# ---------------------------------------------------------------------------
+# Dimension guard tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ensure_index_rejects_a_dimension_mismatch() -> None:
+    """An existing index at another dim must fail loudly, not silently mismatch."""
+    from core.memory.redis_vector_store import RedisVectorStore
+
+    class ExistingIndexRedis:
+        async def execute_command(self, *args: object) -> object:
+            if args[0] == "FT.CREATE":
+                raise RuntimeError("Index already exists")
+            if args[0] == "FT.INFO":
+                return {"attributes": [{"attribute": "embedding_content", "dim": "768"}]}
+            raise AssertionError(f"unexpected command {args[0]!r}")
+
+    store = RedisVectorStore(ExistingIndexRedis(), dim=1024)  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match=r"FT\.DROPINDEX"):
+        await store.ensure_index()
+
+
+@pytest.mark.asyncio
+async def test_ensure_index_accepts_a_matching_dimension() -> None:
+    from core.memory.redis_vector_store import RedisVectorStore
+
+    class MatchingIndexRedis:
+        async def execute_command(self, *args: object) -> object:
+            if args[0] == "FT.CREATE":
+                raise RuntimeError("Index already exists")
+            if args[0] == "FT.INFO":
+                return {"attributes": [{"attribute": "embedding_content", "dim": "1024"}]}
+            raise AssertionError(f"unexpected command {args[0]!r}")
+
+    store = MatchingIndexRedis()
+    vector_store = RedisVectorStore(store, dim=1024)  # type: ignore[arg-type]
+    await vector_store.ensure_index()
+
+
+@pytest.mark.asyncio
+async def test_ensure_index_tolerates_an_unreadable_dimension() -> None:
+    """If FT.INFO cannot be parsed we proceed — a parse quirk must not take memory down."""
+    from core.memory.redis_vector_store import RedisVectorStore
+
+    class OpaqueIndexRedis:
+        async def execute_command(self, *args: object) -> object:
+            if args[0] == "FT.CREATE":
+                raise RuntimeError("Index already exists")
+            if args[0] == "FT.INFO":
+                return {"attributes": []}
+            raise AssertionError(f"unexpected command {args[0]!r}")
+
+    vector_store = RedisVectorStore(OpaqueIndexRedis(), dim=1024)  # type: ignore[arg-type]
+    await vector_store.ensure_index()
