@@ -294,6 +294,12 @@ class AlfredConfig:
         embedding_timeout_seconds = positive_seconds_env(
             "EMBEDDING_TIMEOUT_SECONDS", DEFAULT_EMBEDDING_TIMEOUT_SECONDS
         )
+        # Same blank-means-default rule on the reflex side: `.env.example` ships
+        # OPENAI_COMPAT_HOST empty, and "" would satisfy os.getenv, defeat the
+        # LMSTUDIO_HOST fallback this chain documents, and leave the reflex client
+        # building a schemeless "" + "/v1/chat/completions" (httpx UnsupportedProtocol).
+        lmstudio_host = os.getenv("LMSTUDIO_HOST", "").strip() or "http://localhost:1234"
+        openai_compat_host = os.getenv("OPENAI_COMPAT_HOST", "").strip() or lmstudio_host
         return cls(
             redis_host=os.getenv("REDIS_HOST", "localhost"),
             redis_port=int(os.getenv("REDIS_PORT", "6379")),
@@ -301,12 +307,10 @@ class AlfredConfig:
             mqtt_port=int(os.getenv("MQTT_PORT", "1883")),
             ollama_host=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
             ollama_model=os.getenv("OLLAMA_MODEL", "llama3:8b"),
-            lmstudio_host=os.getenv("LMSTUDIO_HOST", "http://localhost:1234"),
+            lmstudio_host=lmstudio_host,
             reflex_backend=os.getenv("REFLEX_BACKEND", "ollama"),
             # Falls back to LMSTUDIO_HOST — LM Studio is the same protocol
-            openai_compat_host=os.getenv(
-                "OPENAI_COMPAT_HOST", os.getenv("LMSTUDIO_HOST", "http://localhost:1234")
-            ),
+            openai_compat_host=openai_compat_host,
             openai_compat_model=os.getenv("OPENAI_COMPAT_MODEL", ""),
             ha_host=os.getenv("HA_HOST", "http://homeassistant.local:8123"),
             ha_token=os.getenv("HA_TOKEN", ""),

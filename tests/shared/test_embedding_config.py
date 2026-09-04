@@ -56,6 +56,28 @@ def test_from_env_dim_tracks_known_model(monkeypatch: pytest.MonkeyPatch) -> Non
     assert config.AlfredConfig.from_env().embedding_dim == 1024
 
 
+@pytest.mark.parametrize("raw", ["", "   ", "\t"])
+def test_normalize_model_treats_whitespace_as_blank(raw: str) -> None:
+    # python-dotenv strips unquoted .env values, but `alfredctl up -e EMBEDDING_MODEL= `
+    # and a quoted value do not — a padded name is not a model anywhere.
+    assert config.normalize_embedding_model(raw) == config.DEFAULT_EMBEDDING_MODEL
+
+
+def test_normalize_model_strips_padding() -> None:
+    assert config.normalize_embedding_model("  BAAI/bge-m3  ") == "BAAI/bge-m3"
+
+
+@pytest.mark.parametrize("raw", ["", "   ", "\t"])
+def test_normalize_dim_treats_whitespace_as_blank(raw: str) -> None:
+    assert config.normalize_embedding_dim(raw, "BAAI/bge-m3") == 1024
+
+
+def test_normalize_dim_names_the_padded_value_it_rejects() -> None:
+    # int() tolerates surrounding whitespace, so only the message shows the strip.
+    with pytest.raises(RuntimeError, match="got '0'"):
+        config.normalize_embedding_dim(" 0 ", "BAAI/bge-m3")
+
+
 def test_from_env_blank_dim_tracks_the_model(monkeypatch: pytest.MonkeyPatch) -> None:
     """``EMBEDDING_DIM=`` is what .env.example ships — ``int("")`` would raise.
 
