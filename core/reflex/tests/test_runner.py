@@ -109,6 +109,7 @@ async def test_process_stream_entry_publishes_reflex_observation() -> None:
     obs_json = obs_call.args[1]["event"]
     obs = ReflexObservation.model_validate_json(obs_json)
     assert obs.origin == "state_change"
+    assert obs.action is not None
     assert obs.action.tool_name == "smart_home.turn_on"
 
 
