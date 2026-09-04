@@ -1030,6 +1030,11 @@ verified against a real sqlite-vec database:
    has written here. The non-destructive recovery is to drop both vec0 tables and reset
    `schema_version` to 1 — verified to rebuild them at the new width while keeping every
    `episodic_entries` row — while saying plainly that the rebuilt tables come up empty.
+   That `DROP TABLE` needs the vec0 module loaded: the stock `sqlite3` CLI fails with
+   `Parse error: no such module: vec0`, so the message must prescribe the `.load` form
+   (`sqlite3 <db> ".load $(python -c 'import sqlite_vec;print(sqlite_vec.loadable_path())')" "DROP ..."`)
+   and the test must run that command through a real shell — a recovery proved only
+   against a pre-loaded connection is one the operator cannot perform.
 3. **The guard belongs before the DDL, not after it.** The draft called it from the fast
    path *and* from the end of `_ensure_schema`. The end call cannot fire on a fresh
    database (the tables were just created at `self._dim`), and on a half-migrated one it
@@ -1048,7 +1053,13 @@ something else. Cover, at minimum:
   *that* order (so swapping them in the message fails the test);
 - a matching width is accepted;
 - the prescribed recovery is spelled out in the message **and actually works** when the
-  test executes it against the file;
+  test runs the message's own command through a shell (plus a test pinning that the
+  naive form without `.load` really does dead-end, so the guidance is not stale noise);
+- vec0's other legal spellings of the width — `FLOAT[384]`, `embedding float [ 384 ]` —
+  are read, and a second vector column (`vec0(other float[8], embedding float[384])`)
+  does not shadow the `embedding` one;
+- the `_vec_ready` early return holds: a store whose extension will not load must still
+  open against a mismatched file, since it full-scans and never touches vec0;
 - a mismatch in `vec_episodic_semantic` alone is caught (both tables carry a width);
 - a half-migrated database (`schema_version` reset to 1) raises *without* the migration
   having run — assert `MAX(version)` is still 1 afterwards;
@@ -1059,8 +1070,10 @@ something else. Cover, at minimum:
 
 The signatures are confirmed: `SqliteVecStore(db_path, dim=384, embedder=None)`
 (`core/memory/sqlite_vec_store.py:54-58`) and `async def close()`. The test module needs
-`logging`, `sqlite3`, `sqlite_vec` and — under `TYPE_CHECKING`, or ruff's TC003 fires —
-`pathlib.Path`.
+`logging`, `os`, `shutil`, `sqlite3`, `subprocess`, `sys` and `pathlib.Path`. Import
+`sqlite_vec` *lazily inside a helper*, not at module level: it ships in the `memory`
+extra, so a top-level import turns "these tests skip" into "the module fails to collect"
+wherever the extra is absent, falsifying the `pytest.skip` guards.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -1074,8 +1087,11 @@ Add `import re` to the module (it does not currently import it) and a module-lev
 `_VEC_TABLES = ("vec_episodic_content", "vec_episodic_semantic")`, plus a
 `self._dim_mismatch: str | None = None` latch in `__init__` mirroring `RedisVectorStore`.
 Then add `_verify_vec_dim(db)` after `_ensure_schema`: for each table in `_VEC_TABLES`,
-read `sql` from `sqlite_master`, `re.search(r"float\[(\d+)\]", ...)`, and on a proven
-mismatch set `self._dim_mismatch` and raise it. Skip when `self._vec_ready` is False (the
+read `sql` from `sqlite_master`, match it against
+`re.compile(r"embedding\W+float\s*\[\s*(\d+)\s*\]", re.IGNORECASE)` — anchored to the
+column, since vec0 allows several vector columns, and case/whitespace tolerant, since
+sqlite stores the module arguments verbatim — and on a proven mismatch set
+`self._dim_mismatch` and raise it. Skip when `self._vec_ready` is False (the
 store full-scans, so the width is not load-bearing); `continue` when the table does not
 exist yet; and **warn, never return silently**, when the DDL does not expose a width.
 
