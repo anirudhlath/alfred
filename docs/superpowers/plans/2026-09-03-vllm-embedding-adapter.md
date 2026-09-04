@@ -981,6 +981,11 @@ and add this method immediately after `ensure_index()`:
         )
 ```
 
+> **Correction (post-review):** the recovery text above is wrong and the implemented code
+> does not use it. `DD` deletes every `ctx:*` hash, which destroys every episodic memory not
+> yet decayed to cold, and nothing in that command re-embeds anything. See the shipped
+> message in `core/memory/redis_vector_store.py` for the accurate wording.
+
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `uv run pytest tests/core/memory/test_redis_vector_store.py -v`
@@ -1375,8 +1380,12 @@ ungated". Immediately after it, add:
   width**, and both stores used to accept that silently: `FT.CREATE` returns "Index already
   exists" and `CREATE VIRTUAL TABLE IF NOT EXISTS` is a no-op, so vectors of the new width
   went into an index of the old one and recall returned nothing with no exception and no
-  log. Both now compare dimensions at startup and refuse to run — re-embed into a fresh
-  index (`FT.DROPINDEX idx:context DD` + delete the cold sqlite file) when you change models.
+  log. Both now compare dimensions and raise instead. Recovering means re-embedding, and
+  the obvious command is a trap: `FT.DROPINDEX idx:context DD` deletes every `ctx:*` hash,
+  and since `EpisodicMemory.write()` writes hot-only — entries reach cold SQLite solely via
+  the Librarian's decay pass — that destroys every episodic memory not yet decayed, i.e. the
+  most recent ones. Semantic entries survive because `reindex_semantic_files()` rebuilds
+  them from disk. Use the message the store itself prints, and read it before typing `DD`.
 ```
 
 - [ ] **Step 4: Update core/CLAUDE.md**
