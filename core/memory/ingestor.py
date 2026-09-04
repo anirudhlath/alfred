@@ -16,11 +16,12 @@ from loguru import logger
 
 from bus.schemas.events import ReflexObservation
 from core.memory.schemas import EpisodicEntry, SignificanceScore
-from shared.redis_streams import read_group
+from shared.redis_streams import read_group, reclaim_stale
 from shared.streams import REFLEX_OBSERVATIONS_STREAM, decode_stream_value
 
 if TYPE_CHECKING:
     import asyncio
+    from collections.abc import Mapping
 
     from bus.schemas.events import ActionRequest, ActionResult
     from core.memory.episodic.memory import EpisodicMemory
@@ -29,6 +30,8 @@ if TYPE_CHECKING:
 
 GROUP = "memory-ingestor"
 CONSUMER = "worker-1"
+# One PEL recovery pass per minute at the loop's 5s block.
+_PEL_RECLAIM_EVERY = 12
 
 # Folded into passive observation summaries so the consolidation LLM has
 # something to correlate on beyond the bare state transition.
@@ -141,6 +144,48 @@ async def ingest_observation(
     logger.debug("Ingested observation {}: {}", obs.observation_id, entry.summary)
 
 
+async def _ingest_entry(
+    redis: AioRedis,
+    entry_id: bytes | str,
+    entry_data: Mapping[bytes | str, bytes | str],
+    episodic_memory: EpisodicMemory,
+    scorer: SignificanceScorer,
+    passive_scorer: SignificanceScorer | None,
+) -> None:
+    """Ingest one stream entry, deciding whether it may stay pending.
+
+    Two failure classes, two dispositions:
+
+    * **Permanent** (no ``event`` field, or a payload that cannot be parsed) —
+      ACKed and dropped. Retrying cannot change the outcome, and ``reclaim_stale``
+      never ACKs, so a poison entry left pending would be reclaimed for eternity.
+    * **Transient** (the embed/write path: GPU OOM, Redis blip) — left un-ACKed
+      so the next reclaim pass picks it back up. This is the case the loop
+      previously lost outright.
+    """
+    raw = entry_data.get("event") or entry_data.get(b"event")
+    if raw is None:
+        logger.warning("Observation {} has no 'event' field — discarding", entry_id)
+        await redis.xack(REFLEX_OBSERVATIONS_STREAM, GROUP, entry_id)
+        return
+
+    try:
+        obs = ReflexObservation.model_validate_json(decode_stream_value(raw))
+    except Exception as e:
+        logger.error("Observation {} is unparseable — discarding: {}", entry_id, e)
+        await redis.xack(REFLEX_OBSERVATIONS_STREAM, GROUP, entry_id)
+        return
+
+    try:
+        await ingest_observation(obs, episodic_memory, scorer, passive_scorer=passive_scorer)
+    except Exception as e:
+        # Deliberately NOT ACKed — the reclaim pass retries it.
+        logger.error("Error ingesting observation {} — left pending for reclaim: {}", entry_id, e)
+        return
+
+    await redis.xack(REFLEX_OBSERVATIONS_STREAM, GROUP, entry_id)
+
+
 async def run_ingestor(
     redis: AioRedis,
     episodic_memory: EpisodicMemory,
@@ -154,6 +199,7 @@ async def run_ingestor(
     await ensure_consumer_group(redis, REFLEX_OBSERVATIONS_STREAM, GROUP)
     logger.info("Memory Ingestor started. Consuming '{}'...", REFLEX_OBSERVATIONS_STREAM)
 
+    pel_counter = 0
     while not (shutdown_event and shutdown_event.is_set()):
         entries = await read_group(
             redis,
@@ -163,24 +209,26 @@ async def run_ingestor(
             count=10,
             block=5000,
         )
+        batch = [pair for _stream_key, stream_entries in entries for pair in stream_entries]
 
-        for _stream_key, stream_entries in entries:
-            for entry_id, entry_data in stream_entries:
-                try:
-                    raw = entry_data.get("event") or entry_data.get(b"event")
-                    if raw is None:
-                        await redis.xack(REFLEX_OBSERVATIONS_STREAM, GROUP, entry_id)
-                        continue
+        # XREADGROUP '>' only ever delivers NEW messages, so an entry left
+        # un-ACKed by a failed ingest is never redelivered on its own — without
+        # this it is lost and its PEL slot leaks. reclaim_stale, NOT
+        # reclaim_replayable: the 5-minute replay window means "too stale to act
+        # on", and a ten-minute-old observation is still worth remembering.
+        pel_counter += 1
+        if pel_counter >= _PEL_RECLAIM_EVERY:
+            pel_counter = 0
+            reclaimed = await reclaim_stale(redis, REFLEX_OBSERVATIONS_STREAM, GROUP, CONSUMER)
+            if reclaimed:
+                logger.info(
+                    "Reclaimed {} pending observations on '{}'",
+                    len(reclaimed),
+                    REFLEX_OBSERVATIONS_STREAM,
+                )
+            batch.extend(reclaimed)
 
-                    event_str = decode_stream_value(raw)
-                    obs = ReflexObservation.model_validate_json(event_str)
-                    await ingest_observation(
-                        obs, episodic_memory, scorer, passive_scorer=passive_scorer
-                    )
-                    await redis.xack(REFLEX_OBSERVATIONS_STREAM, GROUP, entry_id)
-                except Exception as e:
-                    logger.error(
-                        "Error ingesting observation {} — will retry: {}",
-                        entry_id,
-                        e,
-                    )
+        for entry_id, entry_data in batch:
+            await _ingest_entry(
+                redis, entry_id, entry_data, episodic_memory, scorer, passive_scorer
+            )
