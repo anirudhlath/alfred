@@ -448,8 +448,10 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
             while True:
                 try:
                     data = await websocket.receive_json()
-                except json.JSONDecodeError:
-                    data = None  # malformed text — refused below with non-object frames
+                except (json.JSONDecodeError, KeyError):
+                    # KeyError: starlette indexes message["text"], which a binary frame
+                    # does not carry. Both refused below with non-object frames.
+                    data = None
 
                 if not isinstance(data, dict):
                     # Malformed JSON, or a bare JSON scalar/array with no .get. Refuse it

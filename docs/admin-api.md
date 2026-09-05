@@ -435,8 +435,8 @@ subscription set is untouched:
 Followed by a 1-second backoff before the pump retries `XREAD`. The connection is kept
 alive; the client can continue sending subscribe/unsubscribe messages during the backoff.
 
-**Error** — sent when the client sends malformed JSON, or a frame that is valid JSON
-but not an object (`[]`, `"str"`, `1`):
+**Error** — sent when the client sends malformed JSON, a frame that is valid JSON but not
+an object (`[]`, `"str"`, `1`), or a binary frame instead of a text one:
 
 ```json
 {"type": "error", "message": "invalid JSON"}

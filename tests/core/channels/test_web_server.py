@@ -401,6 +401,12 @@ def test_ws_non_object_frame_is_refused_and_socket_stays_open(web_client: TestCl
         assert error["type"] == "error"
         assert error["text"] == "Expected a JSON object"
 
+        # So does a binary frame (starlette's text receive has no "text" key for it).
+        ws.send_bytes(b"\x00\x01")
+        error = ws.receive_json()
+        assert error["type"] == "error"
+        assert error["text"] == "Expected a JSON object"
+
         # The socket survived: a normal turn still works.
         ws.send_json({"type": "text", "content": "hello"})
         response = ws.receive_json()

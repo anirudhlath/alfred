@@ -174,9 +174,10 @@ conscious-engine turn (`publish_and_wait` timeout 60s) — pong latency is not a
 signal. Note that this admin SPA (`ChatSocket`/`TelemetrySocket`) does **not** send
 keepalives today; the server accepts them for the PWA client, which pings every 30s.
 
-A frame that is malformed JSON, or valid JSON but not an object (`[]`, `"str"`, `1`), is
-refused with `{"type": "error", "text": "Expected a JSON object", "session_id": "<id>"}`
-and the connection stays open.
+A frame that is malformed JSON, valid JSON but not an object (`[]`, `"str"`, `1`), or
+binary rather than text, is refused with
+`{"type": "error", "text": "Expected a JSON object", "session_id": "<id>"}` and the
+connection stays open.
 
 `session_id` is sent only on the first message of a new connection and is read from
 `localStorage` under key `alfred_session_id`. After the first send, `firstMessageSent`

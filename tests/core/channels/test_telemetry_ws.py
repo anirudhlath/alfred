@@ -190,6 +190,9 @@ def test_telemetry_ws_non_object_frame_is_refused_and_socket_stays_open() -> Non
         for frame in ("[]", '"str"', "1"):
             ws.send_text(frame)
             assert ws.receive_json() == {"type": "error", "message": "invalid JSON"}
+        # A binary frame takes the same refusal path (no "text" key to decode).
+        ws.send_bytes(b"\x00\x01")
+        assert ws.receive_json() == {"type": "error", "message": "invalid JSON"}
         # The socket survived: a normal subscribe still works.
         ws.send_text(json.dumps({"type": "subscribe", "streams": ["events"]}))
         assert ws.receive_json() == {"type": "subscribed", "streams": ["events"]}
