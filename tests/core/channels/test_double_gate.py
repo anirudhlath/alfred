@@ -71,20 +71,22 @@ def test_trusted_peer_without_a_session_rejected(
 
 
 def test_network_gate_runs_before_the_session_gate(app: Any) -> None:
-    """Untrusted peer + a *valid* cookie → 403, never 401.
+    """Untrusted peer + NO cookie → 403, not 401.
 
-    Order is load-bearing: if the session gate ran first, the 401-vs-403 split would
-    tell an anonymous internet caller whether a stolen cookie is still live.
+    The anonymous cell is the only witness to the order. With a valid cookie the
+    session gate passes either way, so a 403 there is produced by both orderings and
+    proves nothing; it is asserted below only as the companion case. Signed out, the
+    two orderings genuinely disagree — network-first refuses on the network (403),
+    session-first refuses on the session (401) — and 401 is exactly the answer that
+    would tell an anonymous internet caller their cookie is the thing that is missing.
     """
-    resp = _client(app, signed_in=True).post(
-        "/api/devices/register",
-        json={
-            "device_token": "aabbccdd11223344aabbccdd11223344",
-            "platform": "ios",
-            "identity": "sir",
-        },
-    )
-    assert resp.status_code == 403
+    body = {
+        "device_token": "aabbccdd11223344aabbccdd11223344",
+        "platform": "ios",
+        "identity": "sir",
+    }
+    assert _client(app, signed_in=False).post("/api/devices/register", json=body).status_code == 403
+    assert _client(app, signed_in=True).post("/api/devices/register", json=body).status_code == 403
 
 
 def test_anonymous_403_withholds_operator_guidance(app: Any) -> None:
