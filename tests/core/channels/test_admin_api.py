@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 
 import core.channels.admin_api as admin_api
@@ -58,15 +58,24 @@ def test_admin_requires_auth_cookie() -> None:
     assert resp.status_code == 401
 
 
-def test_admin_requires_trusted_network() -> None:
-    client = make_admin_client(_overview_redis())
+def test_admin_reads_and_controls_need_only_a_session() -> None:
+    """Admin is gated by the passkey session alone — a public caller with a valid
+    cookie gets reads AND controls. The network gate is reserved for endpoints that
+    can mint or widen credentials (registration, credential writes, device tokens)."""
+    r = _overview_redis()
+    r.set = AsyncMock()
+    client = make_admin_client(r)
 
-    def _reject() -> None:
+    async def _untrusted(request: Request) -> None:
         raise HTTPException(status_code=403, detail="untrusted")
 
-    client.app.dependency_overrides[require_trusted_network] = _reject  # type: ignore[attr-defined]
-    resp = client.get("/api/admin/overview")
-    assert resp.status_code == 403
+    # Even if the process-wide network gate rejected everyone, admin must not care.
+    client.app.dependency_overrides[require_trusted_network] = _untrusted  # type: ignore[attr-defined]
+    try:
+        assert client.get("/api/admin/overview").status_code == 200
+        assert client.post("/api/admin/dnd", json={"active": True}).status_code == 200
+    finally:
+        client.app.dependency_overrides.pop(require_trusted_network, None)  # type: ignore[attr-defined]
 
 
 def test_overview_shape() -> None:

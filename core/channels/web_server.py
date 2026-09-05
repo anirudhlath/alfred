@@ -819,7 +819,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         logger.info("Unregistered device token")
         return {"status": "ok"}
 
-    app.include_router(create_admin_router(require_trusted_network))
+    app.include_router(create_admin_router())
     register_telemetry_ws(app)
 
     class NoCacheStaticMiddleware(BaseHTTPMiddleware):
