@@ -372,7 +372,8 @@ def test_ws_ping_is_a_no_op_and_does_not_lock_the_session(web_client: TestClient
 
 
 def test_ws_non_object_frame_is_refused_and_socket_stays_open(web_client: TestClient) -> None:
-    """A valid-JSON non-object (array/scalar) gets an error frame, not a 1011 close."""
+    """Malformed JSON and valid-JSON non-objects (array/scalar) both get an error
+    frame rather than killing the socket with a 1011."""
     from bus.schemas.events import AlfredResponse
 
     alfred_resp = AlfredResponse(
@@ -393,6 +394,12 @@ def test_ws_non_object_frame_is_refused_and_socket_stays_open(web_client: TestCl
             assert error["type"] == "error"
             assert error["text"] == "Expected a JSON object"
             assert "session_id" in error
+
+        # Text that is not JSON at all takes the same refusal path.
+        ws.send_text("not json")
+        error = ws.receive_json()
+        assert error["type"] == "error"
+        assert error["text"] == "Expected a JSON object"
 
         # The socket survived: a normal turn still works.
         ws.send_json({"type": "text", "content": "hello"})

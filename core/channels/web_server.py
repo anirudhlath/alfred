@@ -446,11 +446,16 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
         try:
             while True:
-                data = await websocket.receive_json()
+                try:
+                    data = await websocket.receive_json()
+                except json.JSONDecodeError:
+                    data = None  # malformed text — refused below with non-object frames
 
                 if not isinstance(data, dict):
-                    # A bare JSON scalar/array has no .get — refuse it rather than
-                    # dying with a 1011 and taking the socket down.
+                    # Malformed JSON, or a bare JSON scalar/array with no .get. Refuse it
+                    # rather than dying with a 1011 and taking the socket down. (The
+                    # handler catches only WebSocketDisconnect, so an escaping
+                    # JSONDecodeError would close the connection.)
                     await websocket.send_json(
                         {
                             "type": "error",

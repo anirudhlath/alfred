@@ -435,7 +435,8 @@ subscription set is untouched:
 Followed by a 1-second backoff before the pump retries `XREAD`. The connection is kept
 alive; the client can continue sending subscribe/unsubscribe messages during the backoff.
 
-**Error** — sent when the client sends malformed JSON:
+**Error** — sent when the client sends malformed JSON, or a frame that is valid JSON
+but not an object (`[]`, `"str"`, `1`):
 
 ```json
 {"type": "error", "message": "invalid JSON"}
@@ -443,9 +444,14 @@ alive; the client can continue sending subscribe/unsubscribe messages during the
 
 ### Cursor Semantics
 
-The pump starts each subscribed stream at cursor `"$"` — the Redis "deliver only new entries"
-sentinel. **There is no history replay on connect.** The web app receives only entries that
-arrive after the subscription is established. To see history, use `GET /api/admin/streams/{name}`.
+On subscribe, `_last_id` (`core/channels/telemetry_ws.py`) resolves each stream's current
+last-generated id via `XREVRANGE` and the pump starts strictly after it — `"0-0"` when the
+stream is empty. The literal `"$"` sentinel is deliberately **not** used: it re-evaluates on
+every `XREAD`, so entries landing between two blocking reads on a stream that has not yet
+delivered on this connection would be silently skipped. Pinning a concrete id closes that
+window without replaying history. **There is still no history replay on connect** — the web
+app receives only entries that arrive after the subscription is established. To see history,
+use `GET /api/admin/streams/{name}`.
 
 The pump updates the per-stream cursor after each delivered entry so that on temporary
 `XREAD` failure (Redis blip), entries are not re-delivered.
