@@ -468,3 +468,106 @@ class TestTransportEnumConversion:
         from webauthn.helpers.structs import AuthenticatorTransport
 
         assert exclude[0].transports == [AuthenticatorTransport.INTERNAL]
+
+
+class TestSessionLifetime:
+    """Sessions last 8 hours (spec §3.2) and the cookie is Secure whenever the
+    request arrived over HTTPS — including via a trusted reverse proxy."""
+
+    def _complete_login(
+        self, store: CredentialStore, redis_mock: AsyncMock, *, wrap: object = None
+    ) -> tuple[TestClient, object]:
+        from webauthn.helpers import bytes_to_base64url
+
+        stored_b64 = bytes_to_base64url(b"\x01\x02\x03\x04")
+        redis_mock.get = AsyncMock(return_value=stored_b64.encode())
+
+        app = FastAPI()
+        app.include_router(create_auth_router(store=store, redis=redis_mock))
+        client = TestClient(wrap(app) if callable(wrap) else app)
+        return client, app
+
+    @pytest.mark.asyncio
+    async def test_session_and_cookie_last_eight_hours(
+        self, store: CredentialStore, redis_mock: AsyncMock
+    ) -> None:
+        await store.save_credential(
+            credential_id="AQID",
+            public_key=b"\x03",
+            sign_count=0,
+            device_name="Phone",
+            transports=["internal"],
+        )
+        client, _ = self._complete_login(store, redis_mock)
+
+        verification = MagicMock()
+        verification.new_sign_count = 1
+        with patch(
+            "core.identity.auth_routes.verify_authentication_response",
+            return_value=verification,
+        ):
+            resp = client.post(
+                "/api/auth/login/complete",
+                json={
+                    "_challenge_id": "c1",
+                    "id": "AQID",
+                    "rawId": "AQID",
+                    "type": "public-key",
+                    "response": {
+                        "clientDataJSON": "e30",
+                        "authenticatorData": "e30",
+                        "signature": "e30",
+                    },
+                },
+            )
+
+        assert resp.status_code == 200
+        _key, ttl = redis_mock.expire.call_args[0]
+        assert ttl == 8 * 3600
+        cookie = resp.headers["set-cookie"]
+        assert "Max-Age=28800" in cookie
+        assert "Secure" not in cookie  # plain http in this test
+
+    @pytest.mark.asyncio
+    async def test_cookie_is_secure_behind_https_proxy(
+        self, store: CredentialStore, redis_mock: AsyncMock
+    ) -> None:
+        from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+        await store.save_credential(
+            credential_id="AQID",
+            public_key=b"\x03",
+            sign_count=0,
+            device_name="Phone",
+            transports=["internal"],
+        )
+        client, _ = self._complete_login(
+            store,
+            redis_mock,
+            wrap=lambda app: ProxyHeadersMiddleware(app, trusted_hosts="testclient"),
+        )
+
+        verification = MagicMock()
+        verification.new_sign_count = 1
+        with patch(
+            "core.identity.auth_routes.verify_authentication_response",
+            return_value=verification,
+        ):
+            resp = client.post(
+                "/api/auth/login/complete",
+                headers={"X-Forwarded-Proto": "https"},
+                json={
+                    "_challenge_id": "c1",
+                    "id": "AQID",
+                    "rawId": "AQID",
+                    "type": "public-key",
+                    "response": {
+                        "clientDataJSON": "e30",
+                        "authenticatorData": "e30",
+                        "signature": "e30",
+                    },
+                },
+            )
+
+        assert resp.status_code == 200
+        assert "Secure" in resp.headers["set-cookie"]

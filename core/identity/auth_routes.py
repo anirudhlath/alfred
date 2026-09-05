@@ -32,7 +32,7 @@ from shared.streams import AUTH_SESSION_PREFIX, WEBAUTHN_CHALLENGE_PREFIX
 if TYPE_CHECKING:
     from core.identity.credentials import CredentialStore
 
-_AUTH_SESSION_TTL = 86400  # 24 hours
+_AUTH_SESSION_TTL = 8 * 3600  # 8 hours — a phone re-auths with Face ID, cheap to renew
 _CHALLENGE_TTL = 300  # 5 minutes
 
 
