@@ -19,6 +19,53 @@ from core.notifications.channels import ChannelRegistry
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
 
+# uvicorn's own default: trust loopback only.
+_DEFAULT_FORWARDED_ALLOW_IPS = "127.0.0.1"
+
+
+def _resolve_forwarded_allow_ips() -> str:
+    """Read FORWARDED_ALLOW_IPS, defaulting it, and warn about values that will not
+    do what the operator expects. The result is handed to uvicorn verbatim.
+
+    Behind a reverse proxy the peer address is the proxy; uvicorn rewrites
+    request.client / scheme from X-Forwarded-For / -Proto, but only for peers listed
+    here (IPs or CIDRs). Everything downstream — the trusted-network gate, Secure
+    cookies, the 403 detail naming the client — depends on it.
+    """
+    # A blank value (how .env.example ships keys, and what compose injects for an
+    # unset key) makes uvicorn trust *nothing*, so the headers are never rewritten
+    # and the gate sees the proxy's own RFC1918 address — which would admit the
+    # whole internet. Fall back to uvicorn's own loopback default instead.
+    value = os.getenv("FORWARDED_ALLOW_IPS", "").strip() or _DEFAULT_FORWARDED_ALLOW_IPS
+
+    # uvicorn only wildcards when the *whole* value is "*" (its always_trust flag).
+    # Inside a list, "*" decays to a literal that matches no IP — so let it fall
+    # through to the warning below rather than treating it as a valid entry.
+    if value != "*":
+        for raw_entry in value.split(","):
+            candidate = raw_entry.strip()
+            if not candidate:
+                continue
+            try:
+                ipaddress.ip_network(candidate, strict=False)
+            except ValueError:
+                logger.warning(
+                    "FORWARDED_ALLOW_IPS entry {!r} is not a valid IP or CIDR; uvicorn "
+                    "keeps it as an exact literal, so it will never match an IP peer "
+                    "and X-Forwarded-* stays ignored for that peer",
+                    candidate,
+                )
+
+    # Heuristic — only the exact default is caught. Equivalents that are just as
+    # loopback-only ("127.0.0.1/32", "127.0.0.1,::1", "localhost") will not warn.
+    if value == _DEFAULT_FORWARDED_ALLOW_IPS:
+        logger.warning(
+            "FORWARDED_ALLOW_IPS is the loopback default — a reverse proxy on the "
+            "container network will not match it, so X-Forwarded-* will not be "
+            "rewritten; the trusted-network gate will see the proxy's own IP"
+        )
+    return value
+
 
 def main() -> None:
     configure_logging(service="web-channel")
@@ -34,34 +81,7 @@ def main() -> None:
 
     app = create_app(redis_url=config.redis_url)
     port = int(os.getenv("CHANNELS_PORT", "8081"))
-    # Behind a reverse proxy the peer address is the proxy; uvicorn rewrites
-    # request.client / scheme from X-Forwarded-For / -Proto, but only for peers in
-    # FORWARDED_ALLOW_IPS (IPs or CIDRs). Everything downstream — the trusted-network
-    # gate, Secure cookies, the 403 detail naming the client — depends on this.
-    # A blank value (how .env.example ships keys, and what compose injects for an
-    # unset key) makes uvicorn trust *nothing*, so the headers are never rewritten
-    # and the gate sees the proxy's own RFC1918 address — which would admit the
-    # whole internet. Fall back to uvicorn's own loopback default instead.
-    forwarded_allow_ips = os.getenv("FORWARDED_ALLOW_IPS", "").strip() or "127.0.0.1"
-    for raw_entry in forwarded_allow_ips.split(","):
-        candidate = raw_entry.strip()
-        # "*" means "trust every peer" — valid (if blunt), just not an IP/CIDR.
-        if not candidate or candidate == "*":
-            continue
-        try:
-            ipaddress.ip_network(candidate, strict=False)
-        except ValueError:
-            logger.warning(
-                "FORWARDED_ALLOW_IPS entry {!r} is not a valid IP or CIDR; uvicorn "
-                "will never match it, so X-Forwarded-* stays ignored for that peer",
-                candidate,
-            )
-    if forwarded_allow_ips == "127.0.0.1":
-        logger.warning(
-            "FORWARDED_ALLOW_IPS is the loopback default — a reverse proxy on the "
-            "container network will not match it, so X-Forwarded-* will not be "
-            "rewritten; the trusted-network gate will see the proxy's own IP"
-        )
+    forwarded_allow_ips = _resolve_forwarded_allow_ips()
     logger.info("Trusting X-Forwarded-* headers from: {}", forwarded_allow_ips)
     for attempt in range(5):
         try:
