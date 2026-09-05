@@ -231,7 +231,20 @@ port.
   `ALFRED_TRUSTED_NETWORKS_STRICT=1` (in the env file or via `--env`) `alfredctl up`
   leaves the container subnet out entirely, because "trust only what I listed" would
   otherwise silently re-trust every peer on the container network — a reverse proxy
-  included. List the addresses you actually want in `ALFRED_TRUSTED_NETWORKS`.
+  included — and print a line saying so:
+
+  ```
+  ALFRED_TRUSTED_NETWORKS_STRICT set: not adding container subnet 172.16.0.0/12 —
+  list your LAN CIDRs explicitly.
+  ```
+
+  **The consequence is the mechanism described above, now working against you:** a
+  browser on the host hitting the published port still arrives as the bridge gateway, so
+  first-run passkey registration returns 403. Register from a device on one of the LAN
+  CIDRs you listed (through your reverse proxy, once `FORWARDED_ALLOW_IPS` is set) or
+  over Tailscale. **Do not add the container subnet back** to silence the 403 — on an
+  internet-facing host that re-trusts the proxy and with it every caller behind it. Full
+  procedure: [`deployment.md` → Behind a reverse proxy](deployment.md).
 
 ## 8. `alfredctl` command reference
 
