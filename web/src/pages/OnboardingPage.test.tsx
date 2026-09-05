@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { OnboardingPage } from "./OnboardingPage";
+import type { IntegrationInfo } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -45,21 +46,64 @@ function renderPage() {
   );
 }
 
-function setupMocks(authStatus: unknown = { registered: false, authenticated: false }) {
+const SPOTIFY: IntegrationInfo = {
+  name: "spotify",
+  category: "media",
+  schema: {
+    fields: {
+      client_id: {
+        label: "Client ID",
+        field_type: "text",
+        required: true,
+        placeholder: "",
+        default: "",
+        help_text: "",
+        transient: false,
+      },
+    },
+  },
+  configured: { client_id: false },
+};
+
+function setupMocks(
+  authStatus: unknown = { registered: false, authenticated: false },
+  integrations: unknown = [],
+) {
+  let status = authStatus;
   vi.mocked(api).mockImplementation((url: string) => {
-    if (url === "/api/auth/status") return Promise.resolve(authStatus);
-    if (url === "/api/integrations") return Promise.resolve([]);
+    if (url === "/api/auth/status") return Promise.resolve(status);
+    if (url === "/api/integrations") return Promise.resolve(integrations);
     return Promise.reject(new Error(`Unexpected URL: ${url}`));
   });
   vi.mocked(post).mockResolvedValue({});
-  vi.mocked(registerPasskey).mockResolvedValue(undefined);
+  // A successful ceremony sets the auth cookie server-side, so /api/auth/status
+  // changes with it. The wizard re-reads that status before advancing, so a mock
+  // that resolves without granting a session models a *broken* server, not a
+  // working one — every test that walks past step 0 needs this to be honest.
+  vi.mocked(registerPasskey).mockImplementation(() => {
+    status = { registered: true, authenticated: true };
+    return Promise.resolve();
+  });
 }
+
+/** Every path api() was called with. Asserting on this rather than
+ * `toHaveBeenCalledWith(path)` keeps the check honest when a caller adds a second
+ * argument (api(path, init)) — a whole-arguments matcher silently stops matching. */
+const requestedPaths = () => vi.mocked(api).mock.calls.map((c) => c[0]);
 
 /** Register a passkey to advance from step 0 → step 1. */
 async function advancePastPasskey() {
   await userEvent.type(screen.getByPlaceholderText("e.g. MacBook Pro"), "My Mac");
   await userEvent.click(screen.getByRole("button", { name: "Register passkey" }));
   await waitFor(() => expect(screen.getByText("A few particulars")).toBeInTheDocument());
+}
+
+/** From the personal step (1) to the Connections step (4). */
+async function advanceToConnections() {
+  await userEvent.click(screen.getByRole("button", { name: "Continue" })); // proactivity
+  await userEvent.click(screen.getByRole("button", { name: "Continue" })); // guest
+  await userEvent.click(screen.getByRole("button", { name: "Continue" })); // connections
+  await screen.findByText("Connections");
 }
 
 // ---------------------------------------------------------------------------
@@ -94,7 +138,7 @@ describe("OnboardingPage", () => {
     );
     // GET /api/integrations requires a session; firing it here would 401 and api()
     // would bounce the user to /login mid-wizard.
-    expect(vi.mocked(api)).not.toHaveBeenCalledWith("/api/integrations");
+    expect(requestedPaths()).not.toContain("/api/integrations");
   });
 
   it("sends a signed-out skipper to /login instead of into the wizard", async () => {
@@ -110,9 +154,44 @@ describe("OnboardingPage", () => {
     // advancing would waste five steps of input.
     expect(navigate).toHaveBeenCalledWith("/login", { replace: true });
     expect(screen.queryByText("A few particulars")).toBeNull();
+    // The 401 this redirect exists to avoid: nothing may reach the submit endpoint.
+    expect(vi.mocked(post).mock.calls.map((c) => c[0])).not.toContain("/api/onboarding");
   });
 
   it("fetches the integrations list once the passkey grants a session", async () => {
+    setupMocks(undefined, [SPOTIFY]);
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText("Register your device")).toBeInTheDocument());
+    expect(requestedPaths()).not.toContain("/api/integrations");
+
+    await advancePastPasskey();
+    await waitFor(() => expect(requestedPaths()).toContain("/api/integrations"));
+
+    // ...and it landed before the Connections step needs it. Asserting on the
+    // rendered IntegrationCard, not the static "Connections" heading, is what makes
+    // this a test of the fetched data — the heading renders either way.
+    await advanceToConnections();
+    expect(screen.getByText("SPOTIFY")).toBeInTheDocument();
+  });
+
+  it("fetches integrations right away on a return visit that is already signed in", async () => {
+    // The auto-skip path never runs register.onSuccess, so the query has to be
+    // enabled by the initial status alone.
+    setupMocks({ registered: true, authenticated: true }, [SPOTIFY]);
+    renderPage();
+    await waitFor(() => expect(screen.getByText("A few particulars")).toBeInTheDocument());
+
+    await waitFor(() => expect(requestedPaths()).toContain("/api/integrations"));
+    await advanceToConnections();
+    expect(screen.getByText("SPOTIFY")).toBeInTheDocument();
+  });
+
+  it("sends the user to /login when registration leaves the session unauthenticated", async () => {
+    // registerPasskey resolving is not proof of a session: a Set-Cookie the browser
+    // rejects (Secure over plain http, SameSite, a proxy stripping it) leaves the
+    // caller anonymous. Advancing anyway costs five steps of input and a 401 on
+    // POST /api/onboarding that discards all of it.
     let authStatus: unknown = { registered: false, authenticated: false };
     vi.mocked(api).mockImplementation((url: string) => {
       if (url === "/api/auth/status") return Promise.resolve(authStatus);
@@ -120,24 +199,45 @@ describe("OnboardingPage", () => {
       return Promise.reject(new Error(`Unexpected URL: ${url}`));
     });
     vi.mocked(post).mockResolvedValue({});
-    // Registration is what sets the auth cookie server-side.
     vi.mocked(registerPasskey).mockImplementation(() => {
-      authStatus = { registered: true, authenticated: true };
+      authStatus = { registered: true, authenticated: false };
       return Promise.resolve();
     });
 
     renderPage();
     await waitFor(() => expect(screen.getByText("Register your device")).toBeInTheDocument());
-    expect(vi.mocked(api)).not.toHaveBeenCalledWith("/api/integrations");
+    await userEvent.type(screen.getByPlaceholderText("e.g. MacBook Pro"), "My Mac");
+    await userEvent.click(screen.getByRole("button", { name: "Register passkey" }));
 
-    await advancePastPasskey();
-    await waitFor(() => expect(vi.mocked(api)).toHaveBeenCalledWith("/api/integrations"));
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith("/login", { replace: true }));
+    expect(screen.queryByText("A few particulars")).toBeNull();
+  });
 
-    // ...and it landed before the Connections step needs it.
-    await userEvent.click(screen.getByRole("button", { name: "Continue" })); // proactivity
-    await userEvent.click(screen.getByRole("button", { name: "Continue" })); // guest
-    await userEvent.click(screen.getByRole("button", { name: "Continue" })); // connections
-    expect(screen.getByText("Connections")).toBeInTheDocument();
+  it("shows a loading state while the integrations query is in flight", async () => {
+    vi.mocked(api).mockImplementation((url: string) => {
+      if (url === "/api/auth/status")
+        return Promise.resolve({ registered: true, authenticated: true });
+      if (url === "/api/integrations") return new Promise(() => {}); // never settles
+      return Promise.reject(new Error(`Unexpected URL: ${url}`));
+    });
+    vi.mocked(post).mockResolvedValue({});
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText("A few particulars")).toBeInTheDocument());
+    await advanceToConnections();
+
+    // Otherwise a slow (or hung) request renders as a wizard step with nothing on it.
+    expect(screen.getByText("Loading integrations…")).toBeInTheDocument();
+  });
+
+  it("says so when there are no integrations to connect", async () => {
+    setupMocks({ registered: true, authenticated: true }, []);
+    renderPage();
+    await waitFor(() => expect(screen.getByText("A few particulars")).toBeInTheDocument());
+    await advanceToConnections();
+
+    // An empty list and a failed fetch look identical without this.
+    expect(await screen.findByText("No integrations available")).toBeInTheDocument();
   });
 
   it("auto-skips the passkey step when already registered and authenticated", async () => {
