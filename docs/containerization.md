@@ -206,19 +206,32 @@ trade-off, not the end state — see
 
 ## 7. Trusted networks
 
-`core/channels/web_server.py` gates WebAuthn registration and the admin API to trusted
-CIDRs (localhost + Tailscale CGNAT `100.64.0.0/10` by default). Requests arriving
-through a container network appear to come from the **bridge/vmnet gateway**, not
-localhost — which would block first-run passkey registration from a browser hitting the
-container's published port.
+`require_trusted_network` in `core/channels/web_server.py` gates the endpoints that can
+mint or widen credentials — WebAuthn **registration**, credential writes, device-token
+writes, voice enrolment. The admin API (reads *and* controls) and the two integration
+reads are **not** network-gated; they need only a signed-in passkey session. See
+[`admin-api.md` → Auth Model](admin-api.md#auth-model) for the full split.
+
+The default trusted set is loopback + private LAN (RFC1918) + Tailscale CGNAT
+`100.64.0.0/10`. That matters here because requests arriving through a container network
+appear to come from the **bridge/vmnet gateway**, not localhost — which would otherwise
+block first-run passkey registration from a browser hitting the container's published
+port.
 
 - **`ALFRED_TRUSTED_NETWORKS`** — comma-separated extra trusted CIDRs.
+- **`ALFRED_TRUSTED_NETWORKS_STRICT=1`** — trust only loopback, Tailscale and what you
+  listed. Set this for anything internet-facing.
 - `alfredctl up` computes the active runtime's container subnet
   (`alfredctl/runtime.py:trusted_subnet()` — Docker `172.16.0.0/12`, Podman
   `10.88.0.0/16`, Apple `container` `192.168.64.0/24`) and appends it to whatever's
   already in your `.env`, automatically. Plain `docker compose` does **not** do this —
-  if you need WebAuthn/admin access over compose, set `ALFRED_TRUSTED_NETWORKS`
+  if you need registration/credential access over compose, set `ALFRED_TRUSTED_NETWORKS`
   yourself in `.env`.
+- **Strict mode suppresses that auto-append.** Under
+  `ALFRED_TRUSTED_NETWORKS_STRICT=1` (in the env file or via `--env`) `alfredctl up`
+  leaves the container subnet out entirely, because "trust only what I listed" would
+  otherwise silently re-trust every peer on the container network — a reverse proxy
+  included. List the addresses you actually want in `ALFRED_TRUSTED_NETWORKS`.
 
 ## 8. `alfredctl` command reference
 

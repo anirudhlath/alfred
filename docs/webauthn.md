@@ -31,7 +31,7 @@ sequenceDiagram
     B->>S: POST /api/auth/login/complete
     S->>R: Verify & delete challenge
     S->>DB: Verify sign count, update
-    S->>R: Create auth session
+    S->>R: Create auth session (8h TTL)
     S-->>B: Set alfred_auth cookie
 ```
 
@@ -42,7 +42,7 @@ sequenceDiagram
 | CredentialStore | `core/identity/credentials.py` | SQLite CRUD for WebAuthn credentials |
 | Auth Routes | `core/identity/auth_routes.py` | 6 REST endpoints for registration/login/logout |
 | Auth Middleware | `core/identity/auth_middleware.py` | Cookie validation on every request |
-| Frontend Auth | `web/auth.js` | Client-side WebAuthn ceremonies + Conditional UI |
+| Frontend Auth | `web/src/lib/webauthn.ts` | Client-side WebAuthn ceremonies + Conditional UI |
 
 ## Data Stores
 
@@ -54,8 +54,11 @@ sequenceDiagram
 
 ## Security Properties
 
-- Registration requires a trusted network (`require_trusted_network`); admin reads and
-  controls need only the session
+- Registration requires a trusted network (`require_trusted_network`) — as do the other
+  credential-minting endpoints (credential writes, `POST`/`DELETE
+  /api/devices/register`, `POST /api/voice/enroll`); see
+  [`admin-api.md` → Auth Model](admin-api.md#auth-model). Admin reads and controls need
+  only the session
 - **The RP ID is the request's `Host`.** Passkeys are bound to the hostname Alfred is
   served from — behind a public proxy that is the public hostname, which must therefore
   never change once passkeys exist
