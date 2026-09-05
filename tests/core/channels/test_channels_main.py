@@ -70,6 +70,16 @@ def test_main_passes_forwarded_allow_ips(
     assert kwargs["port"] == 18081
 
 
+def test_main_uses_the_resolver() -> None:
+    """main() forwards whatever the resolver returns, without re-deriving it. Pinned
+    with a sentinel so this wiring stays covered independently of the resolver's own
+    rules — no env var is set here, because the resolver is what reads it."""
+    with patch.object(entry, "_resolve_forwarded_allow_ips", return_value="sentinel"):
+        run = _run_main()
+
+    assert run.call_args.kwargs["forwarded_allow_ips"] == "sentinel"
+
+
 # --- the seam: _resolve_forwarded_allow_ips() defaults, validates, warns -----------
 
 
