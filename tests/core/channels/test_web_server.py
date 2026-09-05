@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
     from fastapi.testclient import TestClient
@@ -241,17 +243,16 @@ def _make_spa_dist(tmp_path: Path) -> Path:
     return dist
 
 
-def test_auth_status_not_shadowed_by_spa_catch_all(tmp_path: Path) -> None:
-    """Regression: GET /api/auth/status must return JSON, not the SPA index.html.
+@contextmanager
+def _live_channels_client(dist: Path) -> Iterator[TestClient]:
+    """A TestClient over the real create_app, with every external dependency mocked.
 
-    The SPA /{full_path:path} catch-all must be registered AFTER the lifespan
-    adds the auth router, or every /api/auth/* request is silently swallowed.
+    The lifespan has to actually run — it is what registers the auth router ahead of
+    the SPA catch-all — so everything it reaches for is patched out here.
     """
     from fastapi.testclient import TestClient
 
     import core.channels.web_server as ws_mod
-
-    dist = _make_spa_dist(tmp_path)
 
     # Minimal mock Redis — handles auth-session lookup and any other calls.
     mock_redis = AsyncMock()
@@ -296,23 +297,45 @@ def test_auth_status_not_shadowed_by_spa_catch_all(tmp_path: Path) -> None:
     ):
         app = create_app(redis_url="redis://localhost:6379")
         with TestClient(app) as client:
-            # /api/auth/status must return JSON (registered key is the "registered" field).
-            resp = client.get("/api/auth/status")
-            assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
-            ct = resp.headers.get("content-type", "")
-            assert "application/json" in ct, f"Expected JSON, got content-type: {ct!r}"
-            data = resp.json()
-            assert "registered" in data, f"Missing 'registered' key in: {data}"
+            yield client
 
-            # SPA root must still serve index.html.
-            root = client.get("/")
-            assert root.status_code == 200
-            assert "alfred" in root.text
 
-            # SPA fallback for unknown client-side route must serve index.html.
-            activity = client.get("/activity")
-            assert activity.status_code == 200
-            assert "alfred" in activity.text
+def test_auth_status_not_shadowed_by_spa_catch_all(tmp_path: Path) -> None:
+    """Regression: GET /api/auth/status must return JSON, not the SPA index.html.
+
+    The SPA /{full_path:path} catch-all must be registered AFTER the lifespan
+    adds the auth router, or every /api/auth/* request is silently swallowed.
+    """
+    with _live_channels_client(_make_spa_dist(tmp_path)) as client:
+        # /api/auth/status must return JSON (registered key is the "registered" field).
+        resp = client.get("/api/auth/status")
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+        ct = resp.headers.get("content-type", "")
+        assert "application/json" in ct, f"Expected JSON, got content-type: {ct!r}"
+        data = resp.json()
+        assert "registered" in data, f"Missing 'registered' key in: {data}"
+
+        # SPA root must still serve index.html.
+        root = client.get("/")
+        assert root.status_code == 200
+        assert "alfred" in root.text
+
+        # SPA fallback for unknown client-side route must serve index.html.
+        activity = client.get("/activity")
+        assert activity.status_code == 200
+        assert "alfred" in activity.text
+
+
+def test_spa_cache_middleware_is_wired_into_create_app(tmp_path: Path) -> None:
+    """SpaCacheMiddleware must actually be installed on the real app.
+
+    core/channels/test_spa.py exercises the middleware in isolation, so dropping the
+    add_middleware call in create_app would leave that file — and the rest of the
+    suite — green while every browser cached index.html again.
+    """
+    with _live_channels_client(_make_spa_dist(tmp_path)) as client:
+        assert client.get("/").headers["cache-control"] == "no-cache, no-store, must-revalidate"
+        assert "cache-control" not in client.get("/api/auth/status").headers
 
 
 def test_lifespan_shutdown_closes_everything_past_a_failing_closer(tmp_path: Path) -> None:

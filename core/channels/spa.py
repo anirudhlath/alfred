@@ -18,9 +18,6 @@ if TYPE_CHECKING:
     from starlette.requests import Request
     from starlette.responses import Response
 
-_IMMUTABLE = "public, max-age=31536000, immutable"
-_NO_STORE = "no-cache, no-store, must-revalidate"
-
 # Prefixes that must 404 (not fall back to index.html) so REST/WS clients — including
 # the iOS AlfredKit client hitting a renamed endpoint — get a real 404 rather than a
 # 200 HTML page they would try to parse as JSON.
@@ -52,19 +49,37 @@ def mount_spa(app: FastAPI, dist: Path) -> None:
         return FileResponse(dist / "index.html")
 
 
+_IMMUTABLE = "public, max-age=31536000, immutable"
+_NO_STORE = "no-cache, no-store, must-revalidate"
+_NO_CACHE = "no-cache, must-revalidate"
+
+
 class SpaCacheMiddleware(BaseHTTPMiddleware):
-    """Cache policy for the SPA. Vite content-hashes everything under ``/assets/``,
-    so those responses are immutable for a year; every other non-API path
-    (``/``, ``/index.html``, SPA-fallback routes, the service worker, the manifest)
-    is the un-hashed entry surface and must be revalidated on every load so a deploy
-    takes effect immediately. ``/api/*`` is left untouched.
+    """Stamp the SPA's cache policy on every response outside ``/api/``.
+
+    Three tiers, and ``/api/*`` is the only thing left untouched — ``/health`` and a
+    plain HTTP GET to ``/ws`` are stamped too:
+
+    * ``/assets/*`` that did not error — Vite content-hashes these filenames, so the
+      bytes behind a URL never change and they are immutable for a year. A 304 keeps
+      that; a 4xx/5xx does not, because pinning a 404 for a year leaves no URL to bust.
+    * ``text/html`` — the entry point and every SPA-fallback route (``/``,
+      ``/index.html``, ``/activity``). Not stored at all, so a deploy is picked up on
+      the next load.
+    * everything else — unhashed ``web/public/`` files such as ``/favicon.svg`` and
+      ``/manifest.json``. Revalidated on every load, but a 304 saves re-sending bytes
+      that a deploy usually leaves unchanged.
     """
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         response: Response = await call_next(request)
         path = request.url.path
-        if path.startswith("/assets/"):
+        if path.startswith("/api/"):
+            return response
+        if path.startswith("/assets/") and response.status_code < 400:
             response.headers["Cache-Control"] = _IMMUTABLE
-        elif not path.startswith("/api/"):
+        elif response.headers.get("content-type", "").startswith("text/html"):
             response.headers["Cache-Control"] = _NO_STORE
+        else:
+            response.headers["Cache-Control"] = _NO_CACHE
         return response
