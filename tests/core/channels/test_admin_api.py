@@ -5,10 +5,11 @@ from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-from fastapi import HTTPException, Request
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 import core.channels.admin_api as admin_api
+from core.channels.admin_api import require_authenticated
 from core.channels.web_server import create_app, require_trusted_network
 from shared.streams import AUTH_SESSION_PREFIX
 
@@ -62,20 +63,25 @@ def test_admin_reads_and_controls_need_only_a_session() -> None:
     """Admin is gated by the passkey session alone — a public caller with a valid
     cookie gets reads AND controls. The network gate is reserved for endpoints that
     can mint or widen credentials (registration, credential writes, device tokens)."""
-    r = _overview_redis()
-    r.set = AsyncMock()
-    client = make_admin_client(r)
+    client = make_admin_client(_overview_redis())
 
-    async def _untrusted(request: Request) -> None:
-        raise HTTPException(status_code=403, detail="untrusted")
+    # Structural half: no admin route may carry a network gate, and every one must
+    # carry the session gate. Asserting on the route table (rather than overriding a
+    # dependency) catches a gate re-added under a different callable.
+    admin_routes = [
+        route
+        for route in client.app.routes  # type: ignore[attr-defined]
+        if isinstance(route, APIRoute) and route.path.startswith("/api/admin")
+    ]
+    assert admin_routes, "no admin routes registered"
+    for route in admin_routes:
+        deps = [d.call for d in route.dependant.dependencies]
+        assert require_authenticated in deps, route.path
+        assert require_trusted_network not in deps, route.path
 
-    # Even if the process-wide network gate rejected everyone, admin must not care.
-    client.app.dependency_overrides[require_trusted_network] = _untrusted  # type: ignore[attr-defined]
-    try:
-        assert client.get("/api/admin/overview").status_code == 200
-        assert client.post("/api/admin/dnd", json={"active": True}).status_code == 200
-    finally:
-        client.app.dependency_overrides.pop(require_trusted_network, None)  # type: ignore[attr-defined]
+    # Behavioural half: a read and a control both succeed on a session alone.
+    assert client.get("/api/admin/overview").status_code == 200
+    assert client.post("/api/admin/dnd", json={"active": True}).status_code == 200
 
 
 def test_overview_shape() -> None:
@@ -438,6 +444,43 @@ def test_devices_list() -> None:
     client = make_admin_client(r)
     resp = client.get("/api/admin/devices")
     assert resp.json()["devices"][0]["platform"] == "ios"
+
+
+def test_devices_list_truncates_the_device_token() -> None:
+    """A full APNs token is credential-equivalent; admin is session-only, so the
+    route returns a 12-char prefix — enough to tell devices apart — and no more."""
+    full_token = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+    r = _overview_redis()
+
+    async def _hgetall(key: str) -> dict[bytes, bytes]:
+        if key == f"{AUTH_SESSION_PREFIX}{_SESSION}":
+            return {b"authenticated": b"1"}
+        return {full_token.encode(): json.dumps({"platform": "ios"}).encode()}
+
+    r.hgetall = AsyncMock(side_effect=_hgetall)
+    client = make_admin_client(r)
+    resp = client.get("/api/admin/devices")
+
+    assert resp.json()["devices"][0]["device_token"] == full_token[:12]
+    assert full_token not in resp.text
+
+
+def test_devices_list_truncates_the_token_on_corrupt_metadata() -> None:
+    """The except branch truncates too — corrupt JSON must not leak the full token."""
+    full_token = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+    r = _overview_redis()
+
+    async def _hgetall(key: str) -> dict[bytes, bytes]:
+        if key == f"{AUTH_SESSION_PREFIX}{_SESSION}":
+            return {b"authenticated": b"1"}
+        return {full_token.encode(): b"not json"}
+
+    r.hgetall = AsyncMock(side_effect=_hgetall)
+    client = make_admin_client(r)
+    resp = client.get("/api/admin/devices")
+
+    assert resp.json()["devices"] == [{"device_token": full_token[:12]}]
+    assert full_token not in resp.text
 
 
 # ---------------------------------------------------------------------------

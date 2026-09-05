@@ -329,7 +329,10 @@ def create_admin_router() -> APIRouter:
         )
         out: list[dict[str, Any]] = []
         for token, value in raw_devices.items():
-            tok = decode_stream_value(token)
+            # Truncated: a full APNs token is credential-equivalent and this route is
+            # reachable from the public hostname with only a session. 12 chars is what
+            # the UI renders and is enough to tell devices apart.
+            tok = decode_stream_value(token)[:12]
             val = decode_stream_value(value)
             try:
                 out.append({"device_token": tok, **json.loads(val)})

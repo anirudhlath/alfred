@@ -253,6 +253,11 @@ Reads `HGETALL alfred:push:devices`. Each field is a device token; each value is
 object with registration metadata (channel, registered_at, etc.). Corrupt values fall back
 to `{"device_token": tok}`.
 
+`device_token` is **truncated to its first 12 characters and never returned in full** — a
+whole APNs token is credential-equivalent, and this route needs only a session, so it is
+reachable from the public hostname. 12 characters is what the UI renders and is enough to
+distinguish devices.
+
 ---
 
 ### Controls

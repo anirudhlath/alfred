@@ -692,15 +692,13 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
             healthy = False
         return {"name": name, "healthy": healthy}
 
-    @app.post("/api/onboarding")
-    async def save_onboarding(payload: OnboardingPayload, request: Request) -> dict[str, str]:
+    @app.post("/api/onboarding", dependencies=[Depends(require_authenticated)])
+    async def save_onboarding(payload: OnboardingPayload) -> dict[str, str]:
         """Save onboarding preferences to semantic memory files.
 
         Writes default values for any null fields. Skips writing if the
         preference file already exists (prevents clobbering Librarian data).
         """
-        if not getattr(request.state, "authenticated", False):
-            raise HTTPException(status_code=401, detail="Authentication required")
         today = datetime.now(UTC).strftime("%Y-%m-%d")
         prefs_dir, profile_dir = _get_prefs_dirs()
         prefs_dir.mkdir(parents=True, exist_ok=True)
@@ -749,15 +747,13 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         logger.info("Onboarding preferences saved ({} fields)", n_fields)
         return {"status": "ok"}
 
-    @app.post("/api/actions/{request_id}/confirm")
-    async def confirm_action(request_id: str, request: Request) -> dict[str, str]:
+    @app.post("/api/actions/{request_id}/confirm", dependencies=[Depends(require_authenticated)])
+    async def confirm_action(request_id: str) -> dict[str, str]:
         """Confirm a pending critical action — republishes it with confirmed=True.
 
         The pending entry was stored by the DomainRouter's critical-action
         interception (TTL 5 min). Expired or unknown IDs return 404.
         """
-        if not getattr(request.state, "authenticated", False):
-            raise HTTPException(status_code=401, detail="Authentication required")
         r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
         confirmed = await confirm_pending_action(r, request_id)
         if confirmed is None:
