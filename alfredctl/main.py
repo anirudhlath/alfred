@@ -172,10 +172,13 @@ def up(
         memory=memory,
         cpus=cpus,
     )
-    _run([r.exe, "rm", "-f", plan.name], check=False)
-    _run([r.exe, *plan.run_args])
+    # Before the launch, not after: `_run` raises on a non-zero exit, and a container
+    # that fails to start would otherwise swallow the one line explaining why passkey
+    # registration from this host is about to 403.
     for note in plan.notes:
         console.print(f"[yellow]{escape(note)}[/yellow]")
+    _run([r.exe, "rm", "-f", plan.name], check=False)
+    _run([r.exe, *plan.run_args])
     console.print(f"[green]{plan.name} started[/green] → {_resolve_url(r, plan)}")
 
 

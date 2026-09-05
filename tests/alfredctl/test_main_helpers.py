@@ -369,3 +369,61 @@ def test_smoke_rejects_port_with_attach() -> None:
     """Contradictory: --attach reads the port off a container that already chose one."""
     with pytest.raises(typer.BadParameter, match="--port does not apply with --attach"):
         main.smoke(runtime=None, attach=True, port=8082)
+
+
+def _stub_up_deps(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, notes: tuple[str, ...] = ()
+) -> None:
+    """Stand up everything `up()` touches outside the container runtime: runtime
+    detection, the offline preflight, the repo root, and the plan itself."""
+    monkeypatch.setattr(rt, "detect", lambda preferred: Runtime("docker", "docker"))
+    monkeypatch.setattr(main.doctor_mod, "run_checks", lambda *a, **k: [])
+    monkeypatch.setattr(main.staging, "repo_root", lambda: tmp_path)
+    plan = LaunchPlan(
+        run_args=[],
+        url_hint="http://localhost:8081",
+        name="alfred-x",
+        image="alfred:x",
+        notes=notes,
+    )
+    monkeypatch.setattr(main.launch, "build_plan", lambda *a, **k: plan)
+    monkeypatch.setattr(main, "_resolve_url", lambda r, plan: "http://localhost:8081")
+
+
+def _run_up(tmp_path: Path) -> None:
+    main.up(mode="ephemeral", models=tmp_path / "models", do_build=False)
+
+
+def test_up_prints_plan_notes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`plan.notes` is the only channel for decisions invisible in `run_args` — today
+    that is the withheld container subnet, which costs the operator host access to
+    passkey registration. Computing it and never showing it is the same as not having
+    it."""
+    _stub_up_deps(monkeypatch, tmp_path, notes=("strict-mode-note",))
+    monkeypatch.setattr(main, "_run", lambda cmd, check=True: None)
+
+    _run_up(tmp_path)
+
+    assert "strict-mode-note" in capsys.readouterr().out
+
+
+def test_up_prints_plan_notes_even_when_the_launch_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Printed after `_run`, a container that fails to start swallows the note — and a
+    strict-mode launch that dies on some unrelated misconfiguration is exactly when the
+    operator is about to go hunting for why registration 403s."""
+    _stub_up_deps(monkeypatch, tmp_path, notes=("strict-mode-note",))
+
+    def _fail(cmd: list[str], *, check: bool = True) -> None:
+        if check:  # the `rm -f` precursor passes check=False and is allowed through
+            raise subprocess.CalledProcessError(125, cmd)
+
+    monkeypatch.setattr(main, "_run", _fail)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        _run_up(tmp_path)
+
+    assert "strict-mode-note" in capsys.readouterr().out

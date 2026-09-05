@@ -10,6 +10,7 @@ from alfredctl.launch import LaunchPlan, build_plan
 from alfredctl.runtime import Runtime
 
 DOCKER = Runtime("docker", "docker")
+PODMAN = Runtime("podman", "podman")
 APPLE = Runtime("container", "container")
 
 
@@ -219,6 +220,44 @@ def test_strict_mode_warns_that_the_subnet_was_withheld(tmp_path: Path) -> None:
     assert len(notes) == 1
     assert "ALFRED_TRUSTED_NETWORKS_STRICT" in notes[0]
     assert "172.16.0.0/12" in notes[0]
+
+
+@pytest.mark.parametrize(
+    ("rt_", "subnet"),
+    [
+        (DOCKER, "172.16.0.0/12"),
+        (PODMAN, "10.88.0.0/16"),
+        (APPLE, "192.168.64.0/24"),
+    ],
+)
+def test_strict_mode_note_names_the_active_runtimes_subnet(
+    tmp_path: Path, rt_: Runtime, subnet: str
+) -> None:
+    """The note tells the operator which CIDR was withheld, so it has to come from
+    trusted_subnet(rt) rather than the Docker value everything else is tested with —
+    a Podman or Apple operator reading "172.16.0.0/12" would go looking for a bridge
+    that does not exist on their host. (The autouse Apple-gateway guard also holds
+    here: no gateway-rewrite key is present, so nothing may shell out.)"""
+    env_file = tmp_path / ".env"
+    env_file.write_text("ALFRED_TRUSTED_NETWORKS_STRICT=1\n")
+    notes = _plan(rt=rt_, env_file=env_file).notes
+    assert len(notes) == 1
+    assert subnet in notes[0]
+
+
+def test_strict_mode_with_extra_env_networks_lists_exactly_those(tmp_path: Path) -> None:
+    """The note's own recommended recipe — strict mode plus an explicit LAN CIDR —
+    must produce that CIDR and nothing else. Combining the two paths is where an
+    ordering slip would show up: `--env ALFRED_TRUSTED_NETWORKS` used to be applied
+    after the subnet merge, and the auto-append is skipped by a separate branch."""
+    args = _plan(
+        extra_env=[
+            "ALFRED_TRUSTED_NETWORKS_STRICT=1",
+            "ALFRED_TRUSTED_NETWORKS=10.9.0.0/16",
+        ]
+    ).run_args
+    entry = next(a for a in args if a.startswith("ALFRED_TRUSTED_NETWORKS="))
+    assert entry.split("=", 1)[1].split(",") == ["10.9.0.0/16"]
 
 
 def test_no_note_when_the_subnet_is_added() -> None:
