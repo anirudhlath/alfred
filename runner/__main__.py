@@ -19,6 +19,7 @@ from pathlib import Path
 
 from runner.supervisor import ServiceSpec, Supervisor
 from shared.config import AlfredConfig, data_mode, data_path, data_root
+from shared.env import is_truthy_flag
 from shared.gateway import GATEWAY_REWRITE_KEYS
 from shared.logging import configure_logging
 from shared.otel import init_tracing
@@ -88,7 +89,7 @@ def build_services() -> list[ServiceSpec]:
         ),
         ServiceSpec(name="memory-ingestor", module="core.memory.ingestor_main", delay=1.5),
     ]
-    if os.getenv("ALFRED_MANAGE_INFRA", "").lower() in ("1", "true", "yes"):
+    if is_truthy_flag(os.getenv("ALFRED_MANAGE_INFRA")):
         services = _infra_services() + services
     return services
 

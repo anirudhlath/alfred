@@ -30,6 +30,7 @@ from core.integrations.base import IntegrationRequest
 from core.integrations.registry import IntegrationRegistry
 from core.triggers.feature import TriggerFeature  # noqa: TC001 (runtime use)
 from sdk.alfred_sdk.telemetry import track_latency
+from shared.env import is_truthy_flag
 from shared.streams import SCRATCHPAD_QUEUE
 from shared.traced import traced
 from shared.type_map import PYTHON_TO_JSON_SCHEMA
@@ -39,7 +40,7 @@ from shared.usertime import (
     set_user_timezone,
 )
 
-_debug = os.getenv("ALFRED_DEBUG", "").lower() in ("1", "true", "yes")
+_debug = is_truthy_flag(os.getenv("ALFRED_DEBUG"))
 # LiteLLM logging: use LITELLM_LOG env var (official API).
 # Set to ERROR by default to suppress verbose debug spam; ALFRED_DEBUG overrides to DEBUG.
 if not os.getenv("LITELLM_LOG"):

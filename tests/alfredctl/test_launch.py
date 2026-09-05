@@ -148,24 +148,24 @@ def test_strict_mode_from_env_file_skips_container_subnet(tmp_path: Path) -> Non
     subnet would silently re-trust every peer on the Docker network, including a
     reverse proxy fronting the internet."""
     env_file = tmp_path / ".env"
-    env_file.write_text("ALFRED_TRUSTED_NETWORKS=203.0.113.7\nALFRED_TRUSTED_NETWORKS_STRICT=1\n")
+    env_file.write_text("ALFRED_TRUSTED_NETWORKS=10.9.0.7\nALFRED_TRUSTED_NETWORKS_STRICT=1\n")
     args = _plan(env_file=env_file).run_args
     entry = next(a for a in args if a.startswith("ALFRED_TRUSTED_NETWORKS="))
     values = entry.split("=", 1)[1].split(",")
     assert "172.16.0.0/12" not in values
-    assert values == ["203.0.113.7"]
+    assert values == ["10.9.0.7"]
 
 
 def test_strict_mode_from_extra_env_skips_container_subnet(tmp_path: Path) -> None:
     """--env ALFRED_TRUSTED_NETWORKS_STRICT=1 must be honoured too, not just the flag
     in the env file."""
     env_file = tmp_path / ".env"
-    env_file.write_text("ALFRED_TRUSTED_NETWORKS=203.0.113.7\n")
+    env_file.write_text("ALFRED_TRUSTED_NETWORKS=10.9.0.7\n")
     args = _plan(env_file=env_file, extra_env=["ALFRED_TRUSTED_NETWORKS_STRICT=true"]).run_args
     entry = next(a for a in args if a.startswith("ALFRED_TRUSTED_NETWORKS="))
     values = entry.split("=", 1)[1].split(",")
     assert "172.16.0.0/12" not in values
-    assert values == ["203.0.113.7"]
+    assert values == ["10.9.0.7"]
 
 
 def test_extra_env_overrides_env_file_strict_flag(tmp_path: Path) -> None:
@@ -182,10 +182,10 @@ def test_extra_env_trusted_networks_keeps_container_subnet(tmp_path: Path) -> No
     """--env ALFRED_TRUSTED_NETWORKS=... must merge with the auto-appended subnet the
     same way an env-file value does. Applied after the merge it silently replaced it,
     so `alfredctl up --env ALFRED_TRUSTED_NETWORKS=...` broke host access."""
-    args = _plan(extra_env=["ALFRED_TRUSTED_NETWORKS=203.0.113.0/24"]).run_args
+    args = _plan(extra_env=["ALFRED_TRUSTED_NETWORKS=10.9.0.0/16"]).run_args
     entry = next(a for a in args if a.startswith("ALFRED_TRUSTED_NETWORKS="))
     values = entry.split("=", 1)[1].split(",")
-    assert values == ["203.0.113.0/24", "172.16.0.0/12"]
+    assert values == ["10.9.0.0/16", "172.16.0.0/12"]
 
 
 @pytest.mark.parametrize("flag", ["1", "true", "YES"])

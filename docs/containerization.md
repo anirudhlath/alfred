@@ -231,11 +231,13 @@ port.
   `ALFRED_TRUSTED_NETWORKS_STRICT=1` (in the env file or via `--env`) `alfredctl up`
   leaves the container subnet out entirely, because "trust only what I listed" would
   otherwise silently re-trust every peer on the container network — a reverse proxy
-  included — and print a line saying so:
+  included — and prints a line saying so:
 
   ```
   ALFRED_TRUSTED_NETWORKS_STRICT set: not adding container subnet 172.16.0.0/12 —
-  list your LAN CIDRs explicitly.
+  list your LAN CIDRs explicitly. A browser on this host will now reach Alfred as the
+  bridge gateway and be refused; register passkeys from a listed LAN CIDR or over
+  Tailscale instead.
   ```
 
   **The consequence is the mechanism described above, now working against you:** a
