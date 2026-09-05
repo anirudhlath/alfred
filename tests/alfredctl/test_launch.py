@@ -157,8 +157,8 @@ def test_strict_mode_from_env_file_skips_container_subnet(tmp_path: Path) -> Non
 
 
 def test_strict_mode_from_extra_env_skips_container_subnet(tmp_path: Path) -> None:
-    """--env ALFRED_TRUSTED_NETWORKS_STRICT=1 must be honoured too: extra_env is
-    applied after the merge, so reading only the env file would miss it."""
+    """--env ALFRED_TRUSTED_NETWORKS_STRICT=1 must be honoured too, not just the flag
+    in the env file."""
     env_file = tmp_path / ".env"
     env_file.write_text("ALFRED_TRUSTED_NETWORKS=203.0.113.7\n")
     args = _plan(env_file=env_file, extra_env=["ALFRED_TRUSTED_NETWORKS_STRICT=true"]).run_args
@@ -168,15 +168,61 @@ def test_strict_mode_from_extra_env_skips_container_subnet(tmp_path: Path) -> No
     assert values == ["203.0.113.7"]
 
 
-@pytest.mark.parametrize("flag", ["1", "true", "YES", " Yes "])
+def test_extra_env_overrides_env_file_strict_flag(tmp_path: Path) -> None:
+    """--env wins over the env file, not the other way round: an operator turning the
+    flag off for one run must actually get the container subnet back."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("ALFRED_TRUSTED_NETWORKS_STRICT=1\n")
+    args = _plan(env_file=env_file, extra_env=["ALFRED_TRUSTED_NETWORKS_STRICT=0"]).run_args
+    entry = next(a for a in args if a.startswith("ALFRED_TRUSTED_NETWORKS="))
+    assert "172.16.0.0/12" in entry.split("=", 1)[1].split(",")
+
+
+def test_extra_env_trusted_networks_keeps_container_subnet(tmp_path: Path) -> None:
+    """--env ALFRED_TRUSTED_NETWORKS=... must merge with the auto-appended subnet the
+    same way an env-file value does. Applied after the merge it silently replaced it,
+    so `alfredctl up --env ALFRED_TRUSTED_NETWORKS=...` broke host access."""
+    args = _plan(extra_env=["ALFRED_TRUSTED_NETWORKS=203.0.113.0/24"]).run_args
+    entry = next(a for a in args if a.startswith("ALFRED_TRUSTED_NETWORKS="))
+    values = entry.split("=", 1)[1].split(",")
+    assert values == ["203.0.113.0/24", "172.16.0.0/12"]
+
+
+@pytest.mark.parametrize("flag", ["1", "true", "YES"])
 def test_strict_mode_truthy_spellings(tmp_path: Path, flag: str) -> None:
     """Truthiness must match _strict_networks() in core/channels/web_server.py, or
-    alfredctl and the server disagree about what strict mode means."""
+    alfredctl and the server disagree about what strict mode means. Both now route
+    through shared.env.is_truthy_flag."""
     env_file = tmp_path / ".env"
     env_file.write_text(f"ALFRED_TRUSTED_NETWORKS_STRICT={flag}\n")
     args = _plan(env_file=env_file).run_args
     entry = next(a for a in args if a.startswith("ALFRED_TRUSTED_NETWORKS="))
     assert "172.16.0.0/12" not in entry
+
+
+@pytest.mark.parametrize("flag", [" 1 ", " Yes "])
+def test_strict_mode_tolerates_whitespace_on_the_env_flag_path(flag: str) -> None:
+    """Whitespace has to be stripped, and --env is the only route that can carry it:
+    python-dotenv already strips env-file values, so an env-file case cannot fail if
+    the strip() is deleted."""
+    args = _plan(extra_env=[f"ALFRED_TRUSTED_NETWORKS_STRICT={flag}"]).run_args
+    entry = next(a for a in args if a.startswith("ALFRED_TRUSTED_NETWORKS="))
+    assert "172.16.0.0/12" not in entry
+
+
+def test_strict_mode_warns_that_the_subnet_was_withheld(tmp_path: Path) -> None:
+    """Withholding the subnet is invisible in run_args and costs the operator host
+    access to passkey registration — say so rather than let them discover it as a 403."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("ALFRED_TRUSTED_NETWORKS_STRICT=1\n")
+    notes = _plan(env_file=env_file).notes
+    assert len(notes) == 1
+    assert "ALFRED_TRUSTED_NETWORKS_STRICT" in notes[0]
+    assert "172.16.0.0/12" in notes[0]
+
+
+def test_no_note_when_the_subnet_is_added() -> None:
+    assert _plan().notes == ()
 
 
 @pytest.mark.parametrize("flag", ["0", "", "false", "no"])

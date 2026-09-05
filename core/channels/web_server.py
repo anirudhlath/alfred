@@ -46,6 +46,7 @@ from core.notifications.channels import ChannelRegistry
 from core.routing.pending import confirm_pending_action
 from core.shutdown import teardown
 from core.warmup import start_warmup
+from shared.env import is_truthy_flag
 from shared.redis_streams import create_redis
 from shared.usertime import is_valid_timezone
 
@@ -195,7 +196,7 @@ _TAILSCALE_RANGE = "100.64.0.0/10"
 
 def _strict_networks() -> bool:
     """True → drop the RFC1918 LAN defaults (loopback + Tailscale + explicit list only)."""
-    return os.getenv("ALFRED_TRUSTED_NETWORKS_STRICT", "").strip().lower() in ("1", "true", "yes")
+    return is_truthy_flag(os.getenv("ALFRED_TRUSTED_NETWORKS_STRICT"))
 
 
 def _trusted_networks() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:

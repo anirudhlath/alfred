@@ -174,6 +174,8 @@ def up(
     )
     _run([r.exe, "rm", "-f", plan.name], check=False)
     _run([r.exe, *plan.run_args])
+    for note in plan.notes:
+        console.print(f"[yellow]{escape(note)}[/yellow]")
     console.print(f"[green]{plan.name} started[/green] → {_resolve_url(r, plan)}")
 
 
