@@ -53,10 +53,19 @@ graph TD
 ## Security
 
 - Credential values are never returned in GET responses — only boolean configured status
-- PUT/DELETE endpoints are double-gated: `Depends(require_trusted_network)` (localhost +
-  RFC1918 LAN + Tailscale CGNAT `100.64.0.0/10`) **and** `Depends(require_authenticated)`
-  (the `alfred_auth` passkey session cookie) — credential writes are credential-equivalent,
-  and "on the LAN" is not an identity on an internet-facing host
+- PUT/DELETE endpoints are double-gated: `Depends(require_trusted_network)` **and**
+  `Depends(require_authenticated)` (the `alfred_auth` passkey session cookie) — credential
+  writes are credential-equivalent, and "on the LAN" is not an identity on an
+  internet-facing host. The network gate runs first, so an anonymous caller from an
+  untrusted network gets 403 without the session ever being consulted (401-vs-403 would
+  otherwise leak whether a stolen cookie is still live)
+- The default trusted set is `_LAN_DEFAULT_RANGES` + Tailscale CGNAT `100.64.0.0/10`:
+  `127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`
+  (link-local), `::1/128`, `fc00::/7` (IPv6 ULA), `fe80::/10` (IPv6 link-local).
+  `ALFRED_TRUSTED_NETWORKS` (comma-separated CIDRs) *extends* that set;
+  `ALFRED_TRUSTED_NETWORKS_STRICT=1` *drops the LAN defaults*, leaving loopback +
+  Tailscale + whatever you listed — set it whenever the host is exposed to the internet,
+  or every RFC1918 peer a reverse proxy can present counts as trusted
 - The two reads (`GET /api/integrations`, `GET .../status`) require a session but are
   deliberately NOT network-gated — the PWA reads them from the public host. They disclose
   every `credentials_schema` and per-field `configured` map, plus proxied `/health` payloads

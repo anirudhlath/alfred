@@ -15,13 +15,22 @@ Tailscale-encrypted transport and uvicorn `proxy_headers`. **Acceptance:** deriv
 defaulting to `True` in non-dev. (Touches security-critical, working passkey code —
 verify the full register→login cycle after.)
 
-### 2. Integration credential endpoints gated by trusted-network only
-`PUT/DELETE /api/integrations/{name}/credentials` (`web_server.py`) require only
-`require_trusted_network`, not `require_authenticated` (the admin surface requires
-both). **Note:** onboarding may set integration credentials before a passkey session
-exists (trusted-network is the intended pre-auth gate there), so adding
-`require_authenticated` naively would break onboarding — resolve that first (e.g. allow
-during unregistered onboarding, require auth once registered).
+### 2. Integration credential endpoints gated by trusted-network only — RESOLVED
+**Resolved by the PWA Phase 0 security branch.** `PUT/DELETE
+/api/integrations/{name}/credentials` and `POST/DELETE /api/devices/register` now carry
+both `require_trusted_network` and `require_authenticated`; the network gate runs first
+so 401-vs-403 cannot be used as a session-validity oracle. The two reads (`GET
+/api/integrations`, `GET .../status`) got `require_authenticated` only — the PWA reads
+them from the public host.
+
+The onboarding hazard this note warned about turned out not to need the "allow during
+unregistered onboarding" mechanism it proposed. Wizard ordering already resolves it: the
+passkey is step 0 and registration sets the session cookie, so by the time the
+Connections step (step 4) writes any credential the caller is authenticated. The one
+remaining hole — "Skip — already registered" while signed out — now redirects to
+`/login` instead of advancing, and the integrations query is gated on
+`authStatus.authenticated` so a signed-out wizard never fires a 401 that would bounce
+the user mid-flow.
 
 ### 3. `/ws/telemetry` (and `/ws`) trusted-network gate
 Both WS endpoints authenticate by session cookie only; the companion admin REST also

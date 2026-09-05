@@ -16,11 +16,11 @@
 3. From a non-trusted network path (e.g. disable Tailscale on the second device and hit the same endpoint over public IP/LAN, or use a device never added to the tailnet), repeat the same PUT.
 4. Confirm the request is rejected (403) by `require_trusted_network` and no keyring write or push occurs.
 5. Repeat steps 1-4 for `DELETE /api/integrations/{service_name}/credentials`.
-6. Confirm `GET /api/integrations` and `GET /api/integrations/{name}/status` remain accessible from the non-trusted path (per `docs/secrets.md`, these are unauthenticated/no trusted-network requirement) — verifying the gate is scoped correctly to only the mutating endpoints.
+6. Confirm `GET /api/integrations` and `GET /api/integrations/{name}/status` remain reachable from the non-trusted path **when signed in** — they are session-gated (`require_authenticated`) but deliberately NOT network-gated, because the PWA reads them from the public host. Repeat both without the `alfred_auth` cookie and confirm 401. This verifies the network gate is scoped to the mutating endpoints only.
 
 ## Expected Result
 - Only genuinely trusted-network clients (localhost or real Tailscale CGNAT peers) can write or delete service credentials; all other network paths are rejected with 403.
-- Read endpoints remain reachable as designed, confirming the gate isn't over- or under-scoped.
+- Read endpoints remain reachable from any network **for a signed-in caller**, and 401 for an anonymous one — confirming the gate isn't over- or under-scoped.
 
 ## Notes
 - `require_trusted_network`'s CIDR logic is presumably unit-tested against synthetic IPs, but real Tailscale traffic (MagicDNS, NAT traversal, subnet routers, exit nodes) can present addresses or routing behavior that differs from a synthetic `100.64.0.0/10` test — this is the only way to catch a real-world mismatch (e.g. a Tailscale relay altering the apparent source IP as seen by FastAPI/uvicorn).
