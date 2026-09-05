@@ -213,6 +213,45 @@ describe("OnboardingPage", () => {
     expect(screen.queryByText("A few particulars")).toBeNull();
   });
 
+  it("does not offer a retry when the ceremony succeeded but the session read failed", async () => {
+    // The credential already exists server-side, so "Passkey registration failed" is
+    // the one thing this must not say: pressing Register again either throws
+    // InvalidStateError or mints a duplicate credential.
+    let statusReads = 0;
+    vi.mocked(api).mockImplementation((url: string) => {
+      if (url === "/api/auth/status") {
+        statusReads += 1;
+        // The initial render's read lands; the post-ceremony confirmation does not.
+        return statusReads === 1
+          ? Promise.resolve({ registered: false, authenticated: false })
+          : Promise.reject(new TypeError("Failed to fetch"));
+      }
+      if (url === "/api/integrations") return Promise.resolve([]);
+      return Promise.reject(new Error(`Unexpected URL: ${url}`));
+    });
+    vi.mocked(post).mockResolvedValue({});
+    vi.mocked(registerPasskey).mockResolvedValue(undefined);
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText("Register your device")).toBeInTheDocument());
+    await userEvent.type(screen.getByPlaceholderText("e.g. MacBook Pro"), "My Mac");
+    await userEvent.click(screen.getByRole("button", { name: "Register passkey" }));
+
+    expect(
+      await screen.findByText(
+        "Passkey registered, but the session couldn't be confirmed — reload the page.",
+      ),
+    ).toBeInTheDocument();
+    // Distinct from a failed ceremony, and the retry-as-new-registration path is gone.
+    expect(screen.queryByText("Passkey registration failed")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Register passkey" })).toBeNull();
+    // Nothing advanced, nothing navigated, nothing submitted.
+    expect(screen.getByText("STEP 1/6")).toBeInTheDocument();
+    expect(screen.queryByText("A few particulars")).toBeNull();
+    expect(navigate).not.toHaveBeenCalled();
+    expect(vi.mocked(post).mock.calls.map((c) => c[0])).not.toContain("/api/onboarding");
+  });
+
   it("shows a loading state while the integrations query is in flight", async () => {
     vi.mocked(api).mockImplementation((url: string) => {
       if (url === "/api/auth/status")

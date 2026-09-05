@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
-import { api, post, type ApiError } from "@/lib/api";
+import { api, post } from "@/lib/api";
 import { registerPasskey } from "@/lib/webauthn";
 import { cn } from "@/lib/utils";
 import type { AuthStatus, IntegrationInfo } from "@/lib/types";
@@ -42,6 +42,14 @@ const GUEST_CONTROLS = [
   { value: "Door locks", label: "Door locks", defaultOn: false },
 ];
 
+/** Narrow an unknown rejection to a message. Mirrors LoginPage's `friendlyError`:
+ * either mutation can reject with a bare `TypeError` from fetch (or with a
+ * DOMException from the WebAuthn ceremony), so typing these handlers `ApiError` was
+ * a lie that only held on the HTTP paths. */
+function friendlyError(e: unknown, fallback: string): string {
+  return (e instanceof Error ? e.message : String(e)) || fallback;
+}
+
 interface OnboardingPayload {
   wake_time?: string;
   work_address?: string;
@@ -58,6 +66,12 @@ export function OnboardingPage() {
   // Step 0 (passkey)
   const [deviceName, setDeviceName] = useState("");
   const [passkeyError, setPasskeyError] = useState<string | null>(null);
+  // Ceremony succeeded, confirmation read did not. Tracked apart from passkeyError
+  // because the credential now EXISTS server-side: the user must not press Register
+  // again, which would either throw InvalidStateError (see the auto-skip note below)
+  // or mint a duplicate credential. Reloading re-reads /api/auth/status and lands
+  // them wherever they actually are.
+  const [sessionUnconfirmed, setSessionUnconfirmed] = useState(false);
 
   // Step 1 (personal)
   const [wakeTime, setWakeTime] = useState("07:00");
@@ -108,14 +122,22 @@ export function OnboardingPage() {
       // and only advance on a real session: walking the remaining five steps
       // unauthenticated ends in a 401 on POST /api/onboarding, which api() turns into
       // location.assign("/login") — losing every answer the user just typed.
-      const status = await qc.fetchQuery(authStatusQuery);
+      let status: AuthStatus;
+      try {
+        status = await qc.fetchQuery(authStatusQuery);
+      } catch {
+        // Only the read failed — the passkey is registered. Reporting this through
+        // passkeyError would offer a retry that re-runs the ceremony.
+        setSessionUnconfirmed(true);
+        return;
+      }
       if (!status.authenticated) {
         navigate("/login", { replace: true });
         return;
       }
       setStep(1);
     },
-    onError: (e: ApiError) => setPasskeyError(e.message || "Passkey registration failed"),
+    onError: (e: unknown) => setPasskeyError(friendlyError(e, "Passkey registration failed")),
   });
 
   const finish = useMutation({
@@ -135,7 +157,7 @@ export function OnboardingPage() {
       await qc.invalidateQueries({ queryKey: ["auth-status"] });
       navigate("/", { replace: true });
     },
-    onError: (e: ApiError) => toast.error(e.message),
+    onError: (e: unknown) => toast.error(friendlyError(e, "Could not save your preferences")),
   });
 
   const toggleGuest = (value: string) =>
@@ -175,14 +197,22 @@ export function OnboardingPage() {
                 />
               </label>
               {passkeyError && <p className="font-mono text-xs text-bad">{passkeyError}</p>}
+              {sessionUnconfirmed && (
+                <p className="font-mono text-xs text-warn">
+                  Passkey registered, but the session couldn't be confirmed — reload the page.
+                </p>
+              )}
               <div className="flex gap-2">
-                <Button
-                  className="font-mono"
-                  disabled={register.isPending}
-                  onClick={() => register.mutate()}
-                >
-                  Register passkey
-                </Button>
+                {/* Withheld once the passkey exists: this button re-runs the ceremony. */}
+                {!sessionUnconfirmed && (
+                  <Button
+                    className="font-mono"
+                    disabled={register.isPending}
+                    onClick={() => register.mutate()}
+                  >
+                    Register passkey
+                  </Button>
+                )}
                 {authStatus?.registered && (
                   <Button
                     variant="outline"
