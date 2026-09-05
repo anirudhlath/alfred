@@ -170,7 +170,7 @@ Then:
 - Proxied WebSockets are closed after ~100 s idle by Cloudflare. The server answers
   `{"type":"ping"}` with `{"type":"pong"}` on both `/ws` and `/ws/telemetry`, so a client
   *should* send a periodic ping to hold the socket open — but nothing in this repo does
-  yet (the admin SPA sends no keepalives; the PWA that will is Phase 4). Expect idle
+  yet; the admin SPA sends no keepalives, and the replacement client will. Expect idle
   drops and reconnects behind Cloudflare until a client starts pinging.
 - **Optionally close the direct path.** If the proxy shares Alfred's Docker network it can
   reach the container on 8081 without a published port, so `docker-compose.yml`'s
