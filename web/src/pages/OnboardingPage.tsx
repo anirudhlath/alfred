@@ -83,9 +83,15 @@ export function OnboardingPage() {
   const alreadySetUp = Boolean(authStatus?.registered && authStatus?.authenticated);
   const activeStep = step === 0 && alreadySetUp ? 1 : step;
 
+  // GET /api/integrations is session-gated (it exposes every credentials_schema).
+  // Step 0 runs before a passkey exists, so firing it unauthenticated would 401 and
+  // api() would bounce a first-run user to /login. Passkey registration sets the
+  // cookie and invalidates ["auth-status"], which enables this before the
+  // connections step renders.
   const { data: integrations } = useQuery<IntegrationInfo[]>({
     queryKey: ["integrations"],
     queryFn: () => api("/api/integrations"),
+    enabled: Boolean(authStatus?.authenticated),
   });
 
   const register = useMutation({

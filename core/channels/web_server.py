@@ -540,7 +540,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         finally:
             _active_websockets.pop(websocket, None)
 
-    @app.get("/api/integrations")
+    @app.get("/api/integrations", dependencies=[Depends(require_authenticated)])
     async def list_integrations() -> list[dict[str, Any]]:
         """List integration adapters + registry-declared sovereign services (C5)."""
         from core.channels.service_credentials import (
@@ -675,7 +675,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
             "detail": payload,
         }
 
-    @app.get("/api/integrations/{name}/status")
+    @app.get("/api/integrations/{name}/status", dependencies=[Depends(require_authenticated)])
     async def integration_status(name: str) -> dict[str, Any]:
         """Health check for an adapter (in-process) or service (proxied /health)."""
         from core.integrations.registry import IntegrationRegistry

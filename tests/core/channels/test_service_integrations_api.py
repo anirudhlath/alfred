@@ -376,3 +376,18 @@ def test_delete_credentials_requires_session(service_client: TestClient) -> None
     service_client.cookies.clear()
     resp = service_client.delete("/api/integrations/home-service/credentials")
     assert resp.status_code == 401
+
+
+def test_list_integrations_requires_session(service_client: TestClient) -> None:
+    """The listing leaks every credentials_schema and per-field configured map —
+    session-gated, but NOT network-gated (the PWA reads it from the public host)."""
+    service_client.cookies.clear()
+    resp = service_client.get("/api/integrations")
+    assert resp.status_code == 401
+
+
+def test_integration_status_requires_session(service_client: TestClient) -> None:
+    """Status proxies the service's /health payload — session-gated."""
+    service_client.cookies.clear()
+    resp = service_client.get("/api/integrations/home-service/status")
+    assert resp.status_code == 401
