@@ -156,10 +156,14 @@ and never re-download gigabytes on teardown:
   re-fetching them into the container's own cache.
 - `alfredctl up --models <path>` overrides the general model volume itself (default
   `~/.cache/alfred/models`, shared across all worktrees/branches on the host).
-- **`HF_TOKEN`** — the default embedding model (`google/embeddinggemma-300m`) is
-  HuggingFace-license-gated. `alfredctl` passes `HF_TOKEN` through from your host
-  environment if set; without it, first download of a memory-enabled service fails with
-  an HF access error. See
+- **`HF_TOKEN`** — only needed for a *gated* `EMBEDDING_MODEL`. The default
+  (`sentence-transformers/all-MiniLM-L6-v2`) is ungated and downloads with no token;
+  point `EMBEDDING_MODEL` at a gated model such as `google/embeddinggemma-300m` and the
+  first download of a memory-enabled service fails with an HF access error unless
+  `alfredctl` can pass a `HF_TOKEN` through from your host environment. With
+  `EMBEDDING_BACKEND=openai` no embedding weights are downloaded into the container at
+  all — the external server holds the model, and `HF_TOKEN` is irrelevant to embeddings.
+  See
   [`docs/backlog/high/embedding-model-gated-first-run.md`](backlog/high/embedding-model-gated-first-run.md)
   (that ticket also tracks evaluating a non-gated default, which would remove this
   friction entirely).
@@ -294,8 +298,10 @@ ALFRED_SECRETS_PASSPHRASE=... docker compose up -d
 Two things `alfredctl up` does for you that plain `docker compose` does **not**:
 
 - **Gateway rewriting** — `alfredctl` rewrites `localhost`/`127.0.0.1` in `OLLAMA_HOST`
-  (and `LMSTUDIO_HOST`, `OPENAI_COMPAT_HOST`, `HA_HOST`, `OTEL_EXPORTER_OTLP_ENDPOINT`) to the runtime's host
-  gateway. Compose passes `.env` through **untouched** — if Ollama runs on the compose
+  (and `LMSTUDIO_HOST`, `OPENAI_COMPAT_HOST`, `EMBEDDING_HOST`, `HA_HOST`,
+  `OTEL_EXPORTER_OTLP_ENDPOINT` — the list is `GATEWAY_REWRITE_KEYS` in
+  `shared/gateway.py`) to the runtime's host gateway. Compose passes `.env` through
+  **untouched** — if Ollama runs on the compose
   host, set `OLLAMA_HOST=http://host.docker.internal:11434` in `.env` yourself (the
   `extra_hosts` entry above makes that hostname resolve on Linux; Docker Desktop
   provides it natively on macOS/Windows).

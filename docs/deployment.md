@@ -81,7 +81,15 @@ No passphrase or host-networking flags to remember — the compose file needs on
 uv run alfredctl smoke             # boots seed mode, health-checks infra + SPA, tears down
 uv run alfredctl smoke --deep      # ALSO drives a real request through System 2 (needs a
                                    # valid OPENROUTER_API_KEY) and confirms a reply comes back
+uv run alfredctl smoke --port 8082 # publish somewhere else, so the run can coexist with an
+                                   # Alfred already holding 8081 (the case on a deploy host)
 ```
+
+`--port` applies only to the container smoke starts itself. With `--attach` the port is read
+off the running container (`docker port <name> 8081`) rather than assumed, and smoke refuses
+to run if it cannot be determined — assuming 8081 meant that on a host already serving Alfred
+there, the HTTP checks probed *that* container while the `docker exec` checks ran against the
+named one, producing a single report describing two different containers.
 
 `--deep` is the check that actually exercises the cloud-LLM path end to end — use it after
 setting your key to confirm reasoning is live, not just that the web server is up.
@@ -117,6 +125,9 @@ A rejected request returns a 403 that names the offending IP and how to allow it
 |---------|-------------|
 | `alfredctl doctor` shows System 2 ✗ | `OPENROUTER_API_KEY` missing/placeholder — set it in `.env`. |
 | Memory recall disabled in logs | You set a gated `EMBEDDING_MODEL` without `HF_TOKEN`. Use the ungated default or provide the token + accept the license. |
+| `memory refuses to run` or `episodic recall refuses to run` in logs, naming two different `dim=` values | You changed `EMBEDDING_MODEL` or `EMBEDDING_BACKEND`, so the new vector width no longer matches the index the store was built at; both stores latch and refuse rather than write vectors search can never match. **Quickest undo:** put the previous model/backend back and restart — nothing has been lost. **To go forward:** follow the recovery in the error text itself; it is per-store, tells you whether Alfred has to stop, and one wrong flag (`FT.DROPINDEX … DD`) permanently deletes every episodic memory not yet decayed to cold. Expect to do it twice — hot (Redis) and cold (SQLite) were both built at the old width. Check widths *before* changing models with `docker exec <alfred-container> redis-cli FT.INFO idx:context`. |
+| `dimension guard skipped, an embedding model change will NOT be caught here` in logs | The guard could not read the stored width (an `FT.INFO` reply it cannot parse, or vec0 DDL that does not match the expected shape), so it stepped aside rather than guess. A model change will now surface as a raw store error instead of the actionable message above. Check the width by hand — `docker exec <alfred-container> redis-cli FT.INFO idx:context` — before changing `EMBEDDING_MODEL`/`EMBEDDING_BACKEND`. |
+| Recall stays empty after that recovery; `FT.INFO idx:context` shows `hash_indexing_failures` climbing | Expected, and not a second fault: dropping the index keeps every `ctx:*` hash but nothing re-embeds the old-width entries. Semantic entries return on the Librarian's next reindex, routines on restart; episodic ones have no re-embed path, so only new writes become searchable. |
 | 403 registering a passkey | Your client IP isn't trusted — add its subnet to `ALFRED_TRUSTED_NETWORKS` (the 403 message names the IP). |
 | `home-service repo not found` | `alfredctl build` auto-clones it; if you build by hand, `git clone https://github.com/anirudhlath/alfred-home-service ../home-service`. |
 | Signal delivery disabled | Optional — install `signal-cli` to enable it. |

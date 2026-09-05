@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -61,7 +61,9 @@ def spa_client() -> Iterator[TestClient]:
             new=AsyncMock(return_value=None),
         ),
         # Skip warmup — real Whisper/Piper loads in to_thread outlive the TestClient.
-        patch("core.channels.web_server.start_warmup", return_value=MagicMock()),
+        # None, not a MagicMock: a mock never fires add_done_callback, so asyncio.wait
+        # in teardown burns its full timeout. teardown skips None tasks.
+        patch("core.channels.web_server.start_warmup", return_value=None),
         # httpx.AsyncClient.aclose() is called on shutdown.
         patch("httpx.AsyncClient.aclose", new=AsyncMock()),
     ):

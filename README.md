@@ -137,9 +137,21 @@ working default.
 - **Local inference** — for the fast System 1 path, a local [Ollama](https://ollama.com)
   (`ollama pull gpt-oss:20b`) or any OpenAI-compatible server (vLLM/LM Studio).
 
-Sensible defaults handle the rest: memory embeddings use an **ungated** model (no HF token
-needed), the secrets passphrase is **generated and persisted** on first boot, and host
-services reachable at `localhost` are **auto-rewritten** to the container gateway.
+Sensible defaults handle the rest: memory embeddings run **in-process** on an **ungated**
+model — no HF token, and no embedding server, so a fresh clone needs nothing extra — the
+secrets passphrase is **generated and persisted** on first boot, and host services
+reachable at `localhost` are **auto-rewritten** to the container gateway.
+
+Optionally, `EMBEDDING_BACKEND=openai` points every service at one shared
+OpenAI-compatible embeddings server instead (vLLM must be started with `--runner
+pooling`; set `EMBEDDING_HOST` to its base URL, without the `/v1` suffix), so the model
+is resident once rather than once per service. It is a trade, not a free win: that server
+has to serve your `EMBEDDING_MODEL`, memory then depends on it staying reachable — the
+conscious engine embeds inline while composing a reply — and long documents that are
+silently truncated in-process instead fail with HTTP 400 against a server enforcing its
+context limit. Changing model or backend also changes the vector width, which both memory
+stores refuse to run against an index built at the old one. Details:
+[architecture.md §3.7.2](docs/architecture.md#372-embedding-backends).
 
 ### Prerequisites
 
@@ -251,7 +263,8 @@ annotated source of truth, split into a short **REQUIRED** section and defaulted
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama API (localhost auto-rewritten in-container) |
 | `HA_HOST` | `http://localhost:8123` | Home Assistant base URL |
 | `HA_TOKEN` | — | HA long-lived token (required for home control) |
-| `EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Ungated by default; `EMBEDDING_DIM` auto-tracks it |
+| `EMBEDDING_BACKEND` | `sentence_transformers` | Memory embedding backend: `sentence_transformers` \| `openai` |
+| `EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Model under either backend; ungated, `EMBEDDING_DIM` auto-tracks it |
 | `ALFRED_TRUSTED_NETWORKS` | — | Extra trusted CIDRs (loopback + LAN + Tailscale trusted by default) |
 | `ALFRED_SECRETS_PASSPHRASE` | auto-generated | Keyring passphrase; persisted on first boot if unset |
 

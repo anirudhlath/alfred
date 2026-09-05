@@ -640,3 +640,61 @@ def test_set_trigger_enabled_corrupt_json_returns_500() -> None:
     resp = client.post("/api/admin/triggers/t1/enabled", json={"enabled": True})
     assert resp.status_code == 500
     assert "corrupt" in resp.json()["detail"].lower()
+
+
+def test_memory_episodic_search_returns_503_when_embedding_fails(
+    monkeypatch: Any,
+) -> None:
+    """A failing embed is a 503, not a 500.
+
+    Construction stopped proving usability when the HTTP embedding backend arrived:
+    ``OpenAICompatEmbeddingProvider.__init__`` only builds an httpx client, so a down
+    or restarting embedding server first surfaces inside ``recall()``, which embeds
+    the query before touching either store. Uncaught, that is a stack trace from a
+    module whose contract is that reads never 500.
+    """
+
+    class _UnreachableMemory:
+        async def recall(self, **kwargs: Any) -> list[Any]:
+            raise RuntimeError("Embedding request failed: cannot reach the server")
+
+    monkeypatch.setattr(admin_api, "_get_episodic_lazy", lambda r: _UnreachableMemory())
+    client = make_admin_client(_overview_redis())
+    resp = client.get("/api/admin/memory/episodic?q=lights")
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "Vector search unavailable"
+
+
+async def test_aclose_episodic_closes_the_cached_provider() -> None:
+    """The cached provider is closed on shutdown — it is not closed per request."""
+
+    class _FakeEmbedder:
+        def __init__(self) -> None:
+            self.closed = 0
+
+        async def aclose(self) -> None:
+            self.closed += 1
+
+    embedder = _FakeEmbedder()
+    admin_api._episodic_embedder = embedder
+    admin_api._episodic_memory = object()
+
+    await admin_api.aclose_episodic()
+    assert embedder.closed == 1
+    # Idempotent: the hook can run after a failed startup, or twice.
+    await admin_api.aclose_episodic()
+    assert embedder.closed == 1
+    assert admin_api._episodic_memory is None
+
+
+async def test_aclose_episodic_survives_a_failing_close() -> None:
+    """Shutdown runs after `yield` in the lifespan; raising there skips the rest of it."""
+
+    class _AngryEmbedder:
+        async def aclose(self) -> None:
+            raise RuntimeError("pool already gone")
+
+    admin_api._episodic_embedder = _AngryEmbedder()
+    admin_api._episodic_memory = object()
+    await admin_api.aclose_episodic()
+    assert admin_api._episodic_embedder is None

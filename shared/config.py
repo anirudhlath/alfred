@@ -42,22 +42,159 @@ def data_mode() -> str:
 # acceptance. Known models map to their output dimension so ``EMBEDDING_DIM`` stays in
 # sync automatically — the vector index dimension must match the model, or search breaks.
 DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+
+# How the embedding model is run, and where. ``sentence_transformers`` keeps a fresh
+# clone working with no server; ``openai`` talks to an OpenAI-compatible
+# /v1/embeddings server (vLLM --runner pooling) at ``DEFAULT_EMBEDDING_HOST``.
+DEFAULT_EMBEDDING_BACKEND = "sentence_transformers"
+DEFAULT_EMBEDDING_HOST = "http://localhost:8001"
+
+# Every accepted EMBEDDING_BACKEND. Lives here, not in the factory, so from_env can
+# reject a typo before any service starts; core.memory.embedding_backend's registry is
+# asserted equal to this tuple by its tests, so the two cannot drift apart.
+EMBEDDING_BACKENDS: tuple[str, ...] = (DEFAULT_EMBEDDING_BACKEND, "openai")
+
+# Read/write budget for one embedding request, in seconds. The connect budget is
+# separate and much tighter (the provider pins it) because involuntary recall embeds
+# inline in the reply path. This one guards the other hang: a server that accepts the
+# connection and then stalls — a vLLM mid-model-load does exactly that. 2048 bge-m3
+# inputs measured 1.72s, so 30s is a hang detector, not a throughput limit.
+DEFAULT_EMBEDDING_TIMEOUT_SECONDS = 30.0
 _KNOWN_EMBEDDING_DIMS: dict[str, int] = {
     "sentence-transformers/all-MiniLM-L6-v2": 384,
     "sentence-transformers/all-mpnet-base-v2": 768,
     "BAAI/bge-small-en-v1.5": 384,
     "BAAI/bge-base-en-v1.5": 768,
+    "BAAI/bge-m3": 1024,
     "google/embeddinggemma-300m": 768,  # gated — requires HF_TOKEN + license acceptance
 }
 
 
+# What an unknown model's width is assumed to be. A guess, and the reason
+# ``known_embedding_dim`` exists: only the caller can decide whether a guess is
+# reportable as fact.
+_ASSUMED_EMBEDDING_DIM = 384
+
+
+def known_embedding_dim(model: str) -> int | None:
+    """The width this build knows ``model`` emits, or ``None`` if it has never seen it.
+
+    ``embedding_dim_for`` answers 384 for an unknown model, which is an assumption, not
+    a measurement. A caller that reports a dimension to an operator — ``alfredctl
+    doctor`` — has to be able to tell the two apart, or it states a guess as fact.
+    """
+    return _KNOWN_EMBEDDING_DIMS.get(model)
+
+
 def embedding_dim_for(model: str) -> int:
-    """Output dimension for a known embedding model (default 384 for unknown models).
+    """Output dimension for a known embedding model (assumed 384 for unknown models).
 
     An explicit ``EMBEDDING_DIM`` env var always wins; this is only the fallback so
     setting ``EMBEDDING_MODEL`` to a known model auto-selects the right index dimension.
     """
-    return _KNOWN_EMBEDDING_DIMS.get(model, 384)
+    known = known_embedding_dim(model)
+    return _ASSUMED_EMBEDDING_DIM if known is None else known
+
+
+def normalize_embedding_dim(raw: str, model: str) -> int:
+    """Resolve ``EMBEDDING_DIM``; blank means "track ``EMBEDDING_MODEL``".
+
+    ``int("")`` raises ``invalid literal for int() with base 10: \'\'`` — no variable
+    name, no file — and ``.env.example`` ships the key blank, so that traceback greeted
+    every service at import at once. Zero and negatives are rejected too: they would
+    create a vector index no embedding can ever be written to.
+    """
+    text = raw.strip()
+    if not text:
+        return embedding_dim_for(model)
+    try:
+        value = int(text)
+    except ValueError:
+        raise RuntimeError(f"EMBEDDING_DIM must be a whole number, got {text!r}") from None
+    if value <= 0:
+        raise RuntimeError(f"EMBEDDING_DIM must be greater than 0, got {text!r}")
+    return value
+
+
+def normalize_embedding_model(raw: str) -> str:
+    """Normalise ``EMBEDDING_MODEL``; blank means the default model.
+
+    ``.env.example`` ships the key blank ("leave blank to accept the default"), and a
+    key present but empty is ``""``, which satisfies ``os.getenv`` and defeats its
+    default. Without this guard every service would build a provider named ``""`` —
+    ``SentenceTransformer("")`` in-process, or a model the server has never heard of.
+    """
+    return raw.strip() or DEFAULT_EMBEDDING_MODEL
+
+
+def normalize_embedding_host(raw: str) -> str:
+    """Normalise ``EMBEDDING_HOST`` to a bare origin the client appends ``/v1/...`` to.
+
+    Two ways this bites, both silent at config time and opaque at first embed:
+
+    * **Blank.** ``.env`` carrying ``EMBEDDING_HOST=`` sets the key to ``""``, which
+      satisfies ``os.getenv`` and defeats its default. The provider would then build
+      a schemeless ``"/v1/embeddings"`` and httpx raises ``UnsupportedProtocol``.
+    * **A trailing ``/v1``.** That is exactly how vLLM and the OpenAI docs print base
+      URLs, and keeping it yields ``/v1/v1/embeddings`` — a 404 from a healthy server.
+    """
+    host = raw.strip().rstrip("/")
+    if host.endswith("/v1"):
+        host = host.removesuffix("/v1").rstrip("/")
+    return host or DEFAULT_EMBEDDING_HOST
+
+
+def positive_seconds(name: str, raw: str, default: float) -> float:
+    """Parse a positive number of seconds, naming the variable in every failure.
+
+    Blank means the default. Named for its unit because the messages are ("must be a
+    number of seconds"): a different quantity needs its own noun, not this one.
+
+    ``float(...)`` raises ``could not convert string to float: \'abc\'``, which names
+    neither the variable nor the file it came from, and it accepts ``0`` and negatives —
+    both of which reach ``httpx.Timeout`` as "give up immediately" rather than the "wait
+    longer" the operator meant.
+
+    Takes the value rather than reading it, so a caller that already holds one validates
+    it by exactly the rule the services apply: ``alfredctl doctor`` reads a merged
+    ``.env`` dict where ``os.environ`` does not have the last word.
+    """
+    text = raw.strip()
+    if not text:
+        # A key present but empty (``EMBEDDING_TIMEOUT_SECONDS=`` in .env) is "" here,
+        # which would defeat os.getenv's own default.
+        return default
+    try:
+        value = float(text)
+    except ValueError:
+        raise RuntimeError(f"{name} must be a number of seconds, got {text!r}") from None
+    if value <= 0:
+        raise RuntimeError(f"{name} must be greater than 0, got {text!r}")
+    return value
+
+
+def positive_seconds_env(name: str, default: float) -> float:
+    """Read a positive number of seconds from the environment."""
+    return positive_seconds(name, os.getenv(name, ""), default)
+
+
+def normalize_embedding_backend(raw: str) -> str:
+    """Normalise and validate ``EMBEDDING_BACKEND``; blank means the default.
+
+    Validated at config load rather than at provider construction because one typo
+    used to produce three different outcomes: the conscious engine and the librarian
+    caught it and ran on with memory silently disabled, the admin API cached it as a
+    permanent failure, and the ingestor died with a traceback. Failing here makes a
+    typo fail once, loudly and identically, in every process, before any of them can
+    diverge. The factory keeps its own check for configs built by hand.
+    """
+    backend = raw.strip().lower() or DEFAULT_EMBEDDING_BACKEND
+    if backend not in EMBEDDING_BACKENDS:
+        raise RuntimeError(
+            f"Unknown EMBEDDING_BACKEND {raw!r} (read as {backend!r}; expected one of: "
+            f"{', '.join(EMBEDDING_BACKENDS)})"
+        )
+    return backend
 
 
 def models_root() -> Path:
@@ -102,7 +239,19 @@ class AlfredConfig:
     # Phase 3: Cost
     daily_cost_cap_usd: float = 5.0
 
-    # Memory: Embedding
+    # Memory: Embedding. ``embedding_backend`` picks how the model is run, not
+    # which model: ``sentence_transformers`` loads it in-process (default — a
+    # fresh clone needs no server), ``openai`` calls an OpenAI-compatible
+    # /v1/embeddings server (vLLM --runner pooling) at ``embedding_host``.
+    # ``embedding_model`` names the model either way, so ``embedding_dim``
+    # keeps tracking it through ``embedding_dim_for()``.
+    # ``embedding_api_key`` is the bearer token for that server — needed by a vLLM
+    # started with ``--api-key`` (or real OpenAI), and ignored by the in-process
+    # backend. Empty means "send no Authorization header at all".
+    embedding_backend: str = DEFAULT_EMBEDDING_BACKEND
+    embedding_host: str = DEFAULT_EMBEDDING_HOST
+    embedding_timeout_seconds: float = DEFAULT_EMBEDDING_TIMEOUT_SECONDS
+    embedding_api_key: str = ""
     embedding_model: str = DEFAULT_EMBEDDING_MODEL
     embedding_dim: int = 384
 
@@ -153,8 +302,21 @@ class AlfredConfig:
     def from_env(cls) -> AlfredConfig:
         # EMBEDDING_DIM defaults to the known dimension for EMBEDDING_MODEL so the two
         # never silently drift out of sync (a mismatch breaks vector search).
-        embedding_model = os.getenv("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
-        embedding_dim = int(os.getenv("EMBEDDING_DIM", str(embedding_dim_for(embedding_model))))
+        embedding_model = normalize_embedding_model(os.getenv("EMBEDDING_MODEL", ""))
+        embedding_dim = normalize_embedding_dim(os.getenv("EMBEDDING_DIM", ""), embedding_model)
+        # Both read through a blank-means-default guard rather than os.getenv's
+        # default: a key present but empty (``EMBEDDING_HOST=`` in .env) is "" here.
+        embedding_host = normalize_embedding_host(os.getenv("EMBEDDING_HOST", ""))
+        embedding_backend = normalize_embedding_backend(os.getenv("EMBEDDING_BACKEND", ""))
+        embedding_timeout_seconds = positive_seconds_env(
+            "EMBEDDING_TIMEOUT_SECONDS", DEFAULT_EMBEDDING_TIMEOUT_SECONDS
+        )
+        # Same blank-means-default rule on the reflex side: `.env.example` ships
+        # OPENAI_COMPAT_HOST empty, and "" would satisfy os.getenv, defeat the
+        # LMSTUDIO_HOST fallback this chain documents, and leave the reflex client
+        # building a schemeless "" + "/v1/chat/completions" (httpx UnsupportedProtocol).
+        lmstudio_host = os.getenv("LMSTUDIO_HOST", "").strip() or "http://localhost:1234"
+        openai_compat_host = os.getenv("OPENAI_COMPAT_HOST", "").strip() or lmstudio_host
         return cls(
             redis_host=os.getenv("REDIS_HOST", "localhost"),
             redis_port=int(os.getenv("REDIS_PORT", "6379")),
@@ -162,12 +324,10 @@ class AlfredConfig:
             mqtt_port=int(os.getenv("MQTT_PORT", "1883")),
             ollama_host=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
             ollama_model=os.getenv("OLLAMA_MODEL", "llama3:8b"),
-            lmstudio_host=os.getenv("LMSTUDIO_HOST", "http://localhost:1234"),
+            lmstudio_host=lmstudio_host,
             reflex_backend=os.getenv("REFLEX_BACKEND", "ollama"),
             # Falls back to LMSTUDIO_HOST — LM Studio is the same protocol
-            openai_compat_host=os.getenv(
-                "OPENAI_COMPAT_HOST", os.getenv("LMSTUDIO_HOST", "http://localhost:1234")
-            ),
+            openai_compat_host=openai_compat_host,
             openai_compat_model=os.getenv("OPENAI_COMPAT_MODEL", ""),
             ha_host=os.getenv("HA_HOST", "http://homeassistant.local:8123"),
             ha_token=os.getenv("HA_TOKEN", ""),
@@ -183,6 +343,10 @@ class AlfredConfig:
             # Phase 3: Cost
             daily_cost_cap_usd=float(os.getenv("DAILY_COST_CAP_USD", "5.0")),
             # Memory: Embedding (env-configurable; see above for the dim default).
+            embedding_backend=embedding_backend,
+            embedding_host=embedding_host,
+            embedding_timeout_seconds=embedding_timeout_seconds,
+            embedding_api_key=os.getenv("EMBEDDING_API_KEY", ""),
             embedding_model=embedding_model,
             embedding_dim=embedding_dim,
             # Memory: Involuntary recall (env-configurable)

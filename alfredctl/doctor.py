@@ -6,7 +6,9 @@ checklist, whether each subsystem is configured before you ever start the stack:
 - System 2 (Conscious) — the cloud LLM API key
 - System 1 (Reflex)    — the local inference backend (Ollama or OpenAI-compatible)
 - Home Assistant        — the long-lived token
-- Memory embeddings     — ungated by default; gated models need HF_TOKEN
+- Memory embeddings     — the backend, model and index width; gated models need
+                          HF_TOKEN in-process, and with a remote server the width
+                          is checked against what it actually serves
 - Build prerequisites    — the home-service sibling repo
 
 Live probes (``--online``) are best-effort: a network failure downgrades to a
@@ -15,6 +17,7 @@ warning, never a hard failure, so ``doctor`` is safe to run anywhere.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -22,6 +25,8 @@ from dotenv import dotenv_values
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    import httpx
 
 Status = Literal["pass", "warn", "fail"]
 
@@ -46,20 +51,138 @@ def load_env(env_file: Path) -> dict[str, str]:
     return env
 
 
+# Short on purpose: doctor is a preflight, not a health check, and a server still
+# loading a model should read as a warning rather than hang the CLI.
+_PROBE_TIMEOUT_SECONDS = 4.0
+
+
+def _host_side(url: str) -> str:
+    """Rewrite a container-gateway hostname to localhost so host-side probes work.
+
+    host.docker.internal / host.containers.internal only resolve inside a container;
+    from the host the same service is on localhost.
+    """
+    return url.replace("host.docker.internal", "localhost").replace(
+        "host.containers.internal", "localhost"
+    )
+
+
+# Authority-only: userinfo is everything between the start of the authority and the
+# last "@" before the path, so an @ inside a path is left alone and this cannot raise
+# the way urlsplit can on a malformed authority. Two details earn their keep:
+# ``[^/]*@`` is greedy to the *last* @ because httpx delimits there too (a password may
+# contain one), and the scheme is optional because a schemeless host still reaches the
+# output — httpx rejects it, and the rejection detail quotes the URL back.
+_USERINFO_RE = re.compile(r"^([a-zA-Z][\w+.-]*://|//)?[^/]*@")
+
+
+def _redact_userinfo(url: str) -> str:
+    """Hide any ``user:password@`` before a URL is printed.
+
+    Doctor output is pasted into issues and chat, and EMBEDDING_HOST / HA_HOST /
+    OLLAMA_HOST can carry basic-auth credentials. Display only — the request itself is
+    still made with the URL as configured.
+    """
+    return _USERINFO_RE.sub(r"\1***@", url)
+
+
 def _probe(url: str, headers: dict[str, str] | None = None) -> tuple[bool, str]:
     """Best-effort GET; returns (ok, detail). Network errors are reported, not raised."""
     import httpx
 
-    # host.docker.internal / host.containers.internal only resolve inside a container;
-    # from the host the service is on localhost. Rewrite so host-side probes work.
-    probe_url = url.replace("host.docker.internal", "localhost").replace(
-        "host.containers.internal", "localhost"
-    )
     try:
-        resp = httpx.get(probe_url, headers=headers, timeout=4.0)
+        resp = httpx.get(_host_side(url), headers=headers, timeout=_PROBE_TIMEOUT_SECONDS)
     except Exception as exc:
         return False, f"unreachable ({type(exc).__name__})"
     return resp.status_code < 400, f"HTTP {resp.status_code}"
+
+
+# Enough of the server's own words to explain a refusal, short enough not to paste an
+# HTML error page into a table cell.
+_MAX_PROBE_BODY_CHARS = 120
+
+
+def _probe_body_excerpt(resp: httpx.Response) -> str:
+    """One truncated line of the response body, or "" when it says nothing."""
+    text = " ".join(resp.text.split())
+    if not text:
+        return ""
+    if len(text) > _MAX_PROBE_BODY_CHARS:
+        text = text[:_MAX_PROBE_BODY_CHARS] + "…"
+    return f": {text}"
+
+
+def _probe_embedding_dim(
+    host: str, model: str, api_key: str, client: httpx.Client | None = None
+) -> tuple[int | None, Status, str]:
+    """Embed one string; return (served width, verdict, detail). No width means no answer.
+
+    A POST to /v1/embeddings rather than a GET of /v1/models because the width the
+    server actually emits is ground truth about the pair (server, model) — it settles
+    what EMBEDDING_DIM only asserts, and a chat-only server (vLLM without
+    ``--runner pooling``) refuses it while happily listing the model.
+
+    The verdict answers one question, and a status added here later belongs in whichever
+    bucket that question puts it in: did the probe **prove** the configuration cannot
+    work, or did it only **fail to confirm** it?
+
+    ``fail`` — proof:
+
+    * **404 / 405.** The (host, model) pair cannot work — though not which half is
+      wrong, which is why the body is quoted and both variables are named. Two causes,
+      both observed on the vLLM on this box: no /v1/embeddings route at all (the chat
+      server on :8000, which still answers GET /v1/models with 200) replies
+      ``{"detail":"Not Found"}``, while a route that exists but does not serve the
+      model replies ``{"error":{"message":"The model `x` does not exist."}}``.
+
+    ``warn`` — inconclusive, so the operator is told rather than blamed:
+
+    * **401 / 403.** A missing or wrong EMBEDDING_API_KEY and a wrong host are
+      indistinguishable from out here.
+    * **5xx.** The server exists and may be mid-load — a vLLM still reading weights
+      answers this way, and it will pass a minute later.
+    * **400.** Servers do not agree on what it means (unknown model, malformed body,
+      input too long), and treating it as proof would fail configurations that work,
+      so the body is quoted instead of judged.
+    * **Connect errors and timeouts**, and a 200 that is not an embeddings response
+      (a proxy, a login page): nothing was measured either way.
+    """
+    import httpx
+
+    url = _host_side(f"{host.rstrip('/')}/v1/embeddings")
+    shown = _redact_userinfo(url)
+    key = api_key.strip()
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    body = {"model": model, "input": "alfredctl doctor probe"}
+    try:
+        if client is not None:
+            resp = client.post(url, json=body, headers=headers)
+        else:
+            with httpx.Client(timeout=_PROBE_TIMEOUT_SECONDS) as owned:
+                resp = owned.post(url, json=body, headers=headers)
+    except Exception as exc:
+        return None, "warn", f"{shown} unreachable ({type(exc).__name__})"
+    if resp.status_code in (404, 405):
+        return (
+            None,
+            "fail",
+            (
+                f"{shown} answered HTTP {resp.status_code}{_probe_body_excerpt(resp)} — either "
+                f"EMBEDDING_HOST names a server with no embeddings route, or that server "
+                f"does not serve EMBEDDING_MODEL; its answer above says which"
+            ),
+        )
+    if resp.status_code >= 400:
+        return None, "warn", f"{shown} answered HTTP {resp.status_code}{_probe_body_excerpt(resp)}"
+    try:
+        width = len(resp.json()["data"][0]["embedding"])
+    except Exception:
+        return (
+            None,
+            "warn",
+            f"{shown} answered HTTP {resp.status_code}, but not an embeddings response",
+        )
+    return width, "pass", f"HTTP {resp.status_code}"
 
 
 def _check_conscious(env: dict[str, str], online: bool) -> DoctorCheck:
@@ -105,17 +228,23 @@ def _check_reflex(env: dict[str, str], online: bool) -> DoctorCheck:
         if online:
             ok, detail = _probe(f"{host.rstrip('/')}/v1/models")
             status: Status = "pass" if ok else "warn"
-            return DoctorCheck("reflex (System 1)", status, f"openai backend {host} ({detail})")
-        return DoctorCheck("reflex (System 1)", "pass", f"openai backend {host}, model={model}")
+            return DoctorCheck(
+                "reflex (System 1)", status, f"openai backend {_redact_userinfo(host)} ({detail})"
+            )
+        return DoctorCheck(
+            "reflex (System 1)", "pass", f"openai backend {_redact_userinfo(host)}, model={model}"
+        )
     host = env.get("OLLAMA_HOST", "http://localhost:11434").strip()
     if online:
         ok, detail = _probe(f"{host.rstrip('/')}/api/tags")
         if not ok:
             return DoctorCheck(
-                "reflex (System 1)", "warn", f"Ollama at {host} unreachable: {detail}"
+                "reflex (System 1)",
+                "warn",
+                f"Ollama at {_redact_userinfo(host)} unreachable: {detail}",
             )
         return DoctorCheck("reflex (System 1)", "pass", f"Ollama reachable ({detail})")
-    return DoctorCheck("reflex (System 1)", "pass", f"ollama backend {host}")
+    return DoctorCheck("reflex (System 1)", "pass", f"ollama backend {_redact_userinfo(host)}")
 
 
 def _check_home_assistant(env: dict[str, str], online: bool) -> DoctorCheck:
@@ -132,23 +261,116 @@ def _check_home_assistant(env: dict[str, str], online: bool) -> DoctorCheck:
             f"{host.rstrip('/')}/api/", headers={"Authorization": f"Bearer {token}"}
         )
         if not ok:
-            return DoctorCheck("home assistant", "warn", f"token set but {host} probe: {detail}")
+            return DoctorCheck(
+                "home assistant", "warn", f"token set but {_redact_userinfo(host)} probe: {detail}"
+            )
         return DoctorCheck("home assistant", "pass", f"reachable ({detail})")
     return DoctorCheck("home assistant", "pass", "token set")
 
 
-def _check_embeddings(env: dict[str, str]) -> DoctorCheck:
-    from shared.config import DEFAULT_EMBEDDING_MODEL
+def _embedding_dim_note(model: str, dim: int, raw_dim: str) -> tuple[Status, str]:
+    """How much doctor actually knows about the configured width, and how sure it is.
 
-    model = env.get("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL).strip()
+    Three different states used to print identically as ``dim=384``: the width this
+    build knows the model emits, a width it cannot check, and a fallback that is a
+    guess about a model it has never heard of. Only the first is a fact.
+    """
+    from shared.config import known_embedding_dim
+
+    known = known_embedding_dim(model)
+    if known is not None and known != dim:
+        return "fail", (
+            f"EMBEDDING_DIM={dim} but {model} emits {known} — the vector store refuses to "
+            f"start on a width mismatch; unset EMBEDDING_DIM to track the model"
+        )
+    if known is not None:
+        return "pass", f"dim={dim}"
+    # The model is named by the caller, so these two do not repeat it.
+    if raw_dim.strip():
+        return "pass", f"dim={dim} unverified (model not in this build's dim table)"
+    return "warn", (
+        f"dim={dim} assumed — model unknown here, so set EMBEDDING_DIM to the width it "
+        f"emits or memory search breaks on the first embed"
+    )
+
+
+def _check_embeddings(env: dict[str, str], online: bool) -> DoctorCheck:
+    """Report the embedding backend the services will actually build.
+
+    Every value is resolved through the same ``shared.config`` helpers ``AlfredConfig``
+    uses, so doctor cannot describe a configuration the runtime would read differently —
+    and the three that ``from_env`` rejects outright (an unknown backend, an unparseable
+    timeout, an unparseable dim) are reported here as failures rather than echoed back
+    as valid.
+    """
+    from shared.config import (
+        DEFAULT_EMBEDDING_TIMEOUT_SECONDS,
+        normalize_embedding_backend,
+        normalize_embedding_dim,
+        normalize_embedding_host,
+        normalize_embedding_model,
+        positive_seconds,
+    )
+
+    try:
+        # All of it inside the try: these helpers validate, and the day one of them
+        # starts raising, doctor must print a fail row rather than traceback — nothing
+        # up the stack catches.
+        model = normalize_embedding_model(env.get("EMBEDDING_MODEL", ""))
+        backend = normalize_embedding_backend(env.get("EMBEDDING_BACKEND", ""))
+        dim = normalize_embedding_dim(env.get("EMBEDDING_DIM", ""), model)
+        # A blank EMBEDDING_HOST falls back to the default at config load, so calling
+        # it a failure here would contradict the runtime.
+        host = normalize_embedding_host(env.get("EMBEDDING_HOST", ""))
+        # The timeout applies to the openai backend only, but from_env parses it
+        # whatever the backend is — a bad value takes every service down, not one path.
+        timeout = positive_seconds(
+            "EMBEDDING_TIMEOUT_SECONDS",
+            env.get("EMBEDDING_TIMEOUT_SECONDS", ""),
+            DEFAULT_EMBEDDING_TIMEOUT_SECONDS,
+        )
+    except RuntimeError as exc:
+        return DoctorCheck("memory embeddings", "fail", str(exc))
+
+    status, note = _embedding_dim_note(model, dim, env.get("EMBEDDING_DIM", ""))
+    if status == "fail":
+        # A width that cannot work is the whole story — nothing after it matters.
+        return DoctorCheck("memory embeddings", "fail", note)
+
+    if backend == "openai":
+        # Gating is irrelevant on this path — the server holds the weights, not us.
+        # Redacted for display only; the probe below still uses the configured host.
+        where = f"via {_redact_userinfo(host)} (timeout {timeout:g}s)"
+        if not online:
+            return DoctorCheck("memory embeddings", status, f"model={model} {where}, {note}")
+        served, verdict, detail = _probe_embedding_dim(
+            host, model, env.get("EMBEDDING_API_KEY", "")
+        )
+        if served is None:
+            # The verdict carries the split: fail only where the probe proved the
+            # configuration cannot work, warn where it merely failed to confirm it —
+            # doctor has to stay runnable from anywhere.
+            return DoctorCheck("memory embeddings", verdict, f"model={model} {where} — {detail}")
+        if served != dim:
+            return DoctorCheck(
+                "memory embeddings",
+                "fail",
+                f"{_redact_userinfo(host)} emits {served} dims for {model} but the index is "
+                f"built at {dim} — "
+                f"the vector store refuses to start on the mismatch",
+            )
+        return DoctorCheck(
+            "memory embeddings", "pass", f"model={model} {where}, dim={dim} confirmed by the server"
+        )
+
     gated = model.startswith("google/embeddinggemma")
-    if gated and not env.get("HF_TOKEN", "").strip():
+    if status == "pass" and gated and not env.get("HF_TOKEN", "").strip():
         return DoctorCheck(
             "memory embeddings",
             "warn",
             f"{model} is gated — set HF_TOKEN + accept its license, or use the ungated default",
         )
-    return DoctorCheck("memory embeddings", "pass", f"model={model}")
+    return DoctorCheck("memory embeddings", status, f"model={model} in-process, {note}")
 
 
 def _check_home_service() -> DoctorCheck:
@@ -178,6 +400,6 @@ def run_checks(env_file: Path, *, online: bool = True) -> list[DoctorCheck]:
     checks.append(_check_conscious(env, online))
     checks.append(_check_reflex(env, online))
     checks.append(_check_home_assistant(env, online))
-    checks.append(_check_embeddings(env))
+    checks.append(_check_embeddings(env, online))
     checks.append(_check_home_service())
     return checks

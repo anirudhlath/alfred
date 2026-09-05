@@ -32,6 +32,7 @@ flowchart TB
     subgraph HOST["Host (macOS dev / CachyOS prod)"]
         Browser["Browser / iOS app"]
         Ollama["Ollama (optional, external)"]
+        Embed["Embedding server (optional, external)"]
         OR["OpenRouter (external)"]
         subgraph C["alfred container — one fat OCI image"]
             tini["tini (PID 1)"]
@@ -49,6 +50,7 @@ flowchart TB
     end
     Browser -->|"only :8081 exposed"| core
     core -.->|OLLAMA_HOST / OPENROUTER_API_KEY| Ollama
+    core -.->|"EMBEDDING_HOST (only when EMBEDDING_BACKEND=openai)"| Embed
     core -.-> OR
     C -.->|"volume: /data (persistent mode)"| DataVol[("data volume")]
     C -.->|"volume: /models (HF + voice model cache)"| ModelVol[("model cache volume")]
@@ -459,7 +461,7 @@ Alfred's memory is biologically-inspired with three layers:
 
 **Episodic Memory** (`core/memory/episodic/`):
 
-Two-tier storage: Redis for hot (recent) entries, SQLite for cold archive. Entries are `EpisodicEntry` models with timestamps, source, content, and importance scores. Embeddings are computed via `sentence-transformers` for semantic search. A `DecayScheduler` handles time-based importance decay.
+Two-tier storage: Redis for hot (recent) entries, SQLite for cold archive. Entries are `EpisodicEntry` models with timestamps, source, content, and importance scores. Embeddings are computed via the configured embedding backend (see [3.7.2](#372-embedding-backends)) for semantic search. A `DecayScheduler` handles time-based importance decay.
 
 **Semantic Memory** (`core/memory/profile/`, `core/memory/preferences/`):
 
@@ -527,6 +529,69 @@ Passive observations surface in the episodic tab of the web Memory page, rendere
 `web/src/lib/format.ts` as `{entity}: {old} → {new}` rather than the bare word
 "observation". Full rationale and the seven-day review point:
 [docs/superpowers/specs/2026-09-03-passive-observation-design.md](superpowers/specs/2026-09-03-passive-observation-design.md).
+
+#### 3.7.2 Embedding backends
+
+`EmbeddingProvider` (`core/memory/embedding_provider.py`) has two implementations, selected
+per process by `EMBEDDING_BACKEND` through `build_embedding_provider()`
+(`core/memory/embedding_backend.py`) — the memory counterpart of the `REFLEX_BACKEND` seam in
+`core/reflex/inference.py`:
+
+| Backend | Class | Where the model lives |
+|---|---|---|
+| `sentence_transformers` (default) | `SentenceTransformerProvider` | In-process, one copy per service |
+| `openai` | `OpenAICompatEmbeddingProvider` | A shared OpenAI-compatible embeddings server at `EMBEDDING_HOST` |
+
+Four services construct a provider (conscious, channels/admin, memory ingestor, librarian).
+Under the default backend each loads its own copy of the model and of torch; the `openai`
+backend collapses that onto one resident model. vLLM serves embeddings when started with
+`--runner pooling`. The factory is a registry keyed by backend name — an accepted name and
+its builder are the same entry, so a backend cannot be added and then silently fall through
+to another one's provider — and `AlfredConfig.from_env()` rejects an unrecognised
+`EMBEDDING_BACKEND` before any service starts, so a typo fails once and identically
+everywhere rather than disabling memory in some processes and crashing others.
+
+`EMBEDDING_MODEL` names the model under either backend, so `EMBEDDING_DIM` keeps tracking it
+via `embedding_dim_for()`. Width is then checked in three places, because a mismatch is
+otherwise silent: the HTTP provider verifies **every** response against `EMBEDDING_DIM` (not
+only at warmup — a shared server can be restarted onto a different model while a service
+holds a provider for days), both vector stores refuse to run against an index built at a
+different width and latch that refusal with the recovery procedure in the error text (indexed
+by symptom in `docs/deployment.md`), and `alfredctl doctor --online` POSTs one embedding and compares what
+the server actually emits.
+
+None of the three is a preflight against the data you already have. All three compare
+config to the *server*; nothing compares config to the **existing index**, which is what
+actually breaks — `doctor` never opens Redis or the cold SQLite file, so it reports a green
+embeddings row for a model change that will latch both stores on the next start. Look before
+you change `EMBEDDING_MODEL`/`EMBEDDING_BACKEND`: `redis-cli FT.INFO idx:context` reports the
+hot index's `dim` (`docker exec <alfred-container> redis-cli …` in a container deployment),
+and the cold widths are in the `vec_episodic_content`/`vec_episodic_semantic` DDL in
+`sqlite_master`. If either differs from the width of the model you are moving to, plan the
+recovery in `docs/deployment.md` before restarting, not after.
+
+`EmbeddingProvider` carries concrete `warmup()` and `aclose()` defaults, so a caller holding
+the ABC never needs to know which backend it got. Services warm through `core/warmup.py` and
+release through `teardown()` (`core/shutdown.py`), which drains the background tasks holding
+the provider before closing it — the HTTP backend owns an httpx connection pool, the
+in-process one owns nothing and no-ops.
+
+Two behavioural differences are worth knowing before switching. **Over-long input:**
+`sentence-transformers` silently truncates at the model's max sequence length, while an
+OpenAI-compatible server hard-fails with HTTP 400, so a long preferences or profile document
+that indexes today can fail outright after the switch (the server's own message is preserved
+in the raised error). **Round trips:** `EpisodicMemory.write()`, its migration path and
+`ContextIndexManager.index_episodic()` each `asyncio.gather` two `embed()` calls — cheap
+in-process, but two HTTP requests where one `embed_batch()` would do.
+
+`EMBEDDING_HOST` is a **bare origin** — the client appends `/v1/embeddings` itself, and a
+trailing `/v1` (exactly how vLLM and the OpenAI docs print base URLs) is stripped for you
+rather than producing `/v1/v1/embeddings`, a 404 from an otherwise healthy server. It is also
+rewritten from `localhost` to the container→host gateway by both launch paths, via
+`shared/gateway.py`. Two more env vars apply to this backend: `EMBEDDING_API_KEY` is sent as a
+bearer token when set (for a server started with `--api-key`), and `EMBEDDING_TIMEOUT_SECONDS`
+bounds read/write per request (default 30s; connect is pinned at 5s because involuntary recall
+embeds the user's query inline in the reply path).
 
 ### 3.8 Conscious Engine (System 2)
 

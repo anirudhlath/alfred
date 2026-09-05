@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import struct
 from unittest.mock import AsyncMock
 
@@ -359,3 +360,173 @@ async def test_update_metadata_calls_hset(store: RedisVectorStore, mock_redis: A
     mock_redis.hset.assert_called_once_with(
         "ctx:ep-1", mapping={"retrieval_count": 5, "last_retrieved": 1711000000.0}
     )
+
+
+# ---------------------------------------------------------------------------
+# Dimension guard tests
+#
+# The FT.INFO replies below are the real shapes, captured from a live Redis
+# Stack: bytes keys with int values, dicts under RESP3 and flat alternating
+# lists under RESP2. Fakes built from str keys and str values pass even when the
+# parser is broken, so they would pin nothing.
+# ---------------------------------------------------------------------------
+
+
+class _ExistingIndexRedis:
+    """A Redis whose index already exists, answering FT.INFO with a fixed reply."""
+
+    def __init__(self, info_reply: object) -> None:
+        self._info_reply = info_reply
+        self.commands: list[str] = []
+
+    async def execute_command(self, *args: object) -> object:
+        self.commands.append(str(args[0]))
+        if args[0] == "FT.CREATE":
+            raise RuntimeError("Index already exists")
+        if args[0] == "FT.INFO":
+            if isinstance(self._info_reply, Exception):
+                raise self._info_reply
+            return self._info_reply
+        raise AssertionError(f"unexpected command {args[0]!r}")
+
+
+def _resp3_info(dim: object) -> dict[bytes, object]:
+    """FT.INFO as redis-py 8 returns it under RESP3: a mapping of bytes keys."""
+    return {
+        b"index_name": b"idx:context",
+        b"attributes": [
+            {b"identifier": b"content", b"attribute": b"content", b"type": b"TEXT"},
+            {b"identifier": b"embedding_content", b"attribute": b"embedding_content", b"dim": dim},
+        ],
+    }
+
+
+def _resp2_info(dim: object) -> list[object]:
+    """FT.INFO as RESP2 returns it: a flat alternating list, attributes nested."""
+    return [
+        b"index_name",
+        b"idx:context",
+        b"attributes",
+        [
+            [b"identifier", b"content", b"attribute", b"content", b"type", b"TEXT"],
+            [
+                b"identifier",
+                b"embedding_content",
+                b"type",
+                b"VECTOR",
+                b"dim",
+                dim,
+            ],
+        ],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ensure_index_rejects_a_dimension_mismatch() -> None:
+    """An existing index at another dim must fail loudly, not silently mismatch."""
+    redis = _ExistingIndexRedis(_resp3_info(768))
+    store = RedisVectorStore(redis, dim=1024)  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match=r"FT\.DROPINDEX") as excinfo:
+        await store.ensure_index()
+    message = str(excinfo.value)
+    assert "dim=768" in message
+    assert "dim=1024" in message
+    # The recovery instruction must name the data loss rather than promise a
+    # re-embed no command performs: 'DD' deletes every ctx:* hash, and episodic
+    # entries only reach cold SQLite via the Librarian's decay pass.
+    assert "WITHOUT 'DD'" in message
+    assert "DELETES every ctx:* hash" in message
+    # Same bar as the cold store's message: a runnable command, where to run it, and
+    # whether the deployment has to come down first. "run FT.DROPINDEX and restart"
+    # left the operator to discover that Redis lives inside the Alfred container.
+    # Verified against the running container on 2026-09-04.
+    assert "redis-cli FT.DROPINDEX idx:context" in message
+    assert "docker exec <alfred-container>" in message
+    assert "You do NOT need to stop Alfred first" in message
+    assert "The restart is not optional" in message
+    assert "conscious, memory-ingestor, librarian, channels/admin" in message
+    # Both stores were built at the old width, so one fix is never the whole job.
+    assert "Expect to do this twice" in message
+    assert store._index_ready is False
+
+
+@pytest.mark.asyncio
+async def test_ensure_index_rejects_a_dimension_mismatch_over_resp2() -> None:
+    """RESP2 nests attributes as flat lists — the parser must read those too."""
+    redis = _ExistingIndexRedis(_resp2_info(768))
+    store = RedisVectorStore(redis, dim=1024)  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="dim=768"):
+        await store.ensure_index()
+
+
+@pytest.mark.asyncio
+async def test_ensure_index_accepts_a_matching_dimension() -> None:
+    redis = _ExistingIndexRedis(_resp3_info(1024))
+    store = RedisVectorStore(redis, dim=1024)  # type: ignore[arg-type]
+    await store.ensure_index()
+    assert store._index_ready is True
+
+
+@pytest.mark.asyncio
+async def test_ensure_index_reads_a_float_dimension() -> None:
+    """RediSearch returns doubles for some numeric attributes — 768.0 is still 768.
+
+    Asserted through a *mismatch*: a matching float would also pass if the parser
+    gave up and skipped the guard, so it would pin nothing.
+    """
+    mismatched = _ExistingIndexRedis(_resp3_info(768.0))
+    store = RedisVectorStore(mismatched, dim=1024)  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="dim=768"):
+        await store.ensure_index()
+
+    matched = _ExistingIndexRedis(_resp3_info(1024.0))
+    ok_store = RedisVectorStore(matched, dim=1024)  # type: ignore[arg-type]
+    await ok_store.ensure_index()
+    assert ok_store._index_ready is True
+
+
+@pytest.mark.asyncio
+async def test_ensure_index_tolerates_an_unreadable_dimension(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A parse quirk must not take memory down — but must never be silent."""
+    redis = _ExistingIndexRedis({b"attributes": []})
+    store = RedisVectorStore(redis, dim=1024)  # type: ignore[arg-type]
+    with caplog.at_level(logging.WARNING, logger="core.memory.redis_vector_store"):
+        await store.ensure_index()
+    assert store._index_ready is True
+    assert "dimension guard skipped" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_ensure_index_tolerates_an_ft_info_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """FT.INFO erroring proves nothing about the width — don't fail memory on it."""
+    redis = _ExistingIndexRedis(RuntimeError("LOADING Redis is loading the dataset"))
+    store = RedisVectorStore(redis, dim=1024)  # type: ignore[arg-type]
+    with caplog.at_level(logging.WARNING, logger="core.memory.redis_vector_store"):
+        await store.ensure_index()
+    assert store._index_ready is True
+    assert "FT.INFO failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_dimension_mismatch_is_latched_not_reprobed() -> None:
+    """Every add/search/count enters ensure_index — re-probing would never stop."""
+    redis = _ExistingIndexRedis(_resp3_info(768))
+    store = RedisVectorStore(redis, dim=1024)  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError):
+        await store.ensure_index()
+    assert redis.commands == ["FT.CREATE", "FT.INFO"]
+
+    with pytest.raises(RuntimeError, match="dim=768"):
+        await store.add(
+            id="ep-1",
+            content="c",
+            semantic_key="k",
+            embedding_content=[0.1] * 1024,
+            embedding_semantic=[0.1] * 1024,
+            metadata=_meta(),
+        )
+    assert redis.commands == ["FT.CREATE", "FT.INFO"]

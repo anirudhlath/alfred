@@ -19,21 +19,15 @@ from pathlib import Path
 
 from runner.supervisor import ServiceSpec, Supervisor
 from shared.config import AlfredConfig, data_mode, data_path, data_root
+from shared.gateway import GATEWAY_REWRITE_KEYS
 from shared.logging import configure_logging
 from shared.otel import init_tracing
 
 logger = logging.getLogger(__name__)
 
-# Env vars pointing at host services — localhost inside a container means the container
-# itself, not the host. Rewrite to the container→host gateway so `docker compose up` with
-# OLLAMA_HOST=localhost "just works", matching what `alfredctl up` already does.
-_GATEWAY_REWRITE_KEYS = (
-    "OLLAMA_HOST",
-    "LMSTUDIO_HOST",
-    "OPENAI_COMPAT_HOST",
-    "HA_HOST",
-    "OTEL_EXPORTER_OTLP_ENDPOINT",
-)
+# Which env vars get rewritten lives in shared/gateway.py, one copy for both launch
+# paths, so `docker compose up` with OLLAMA_HOST=localhost "just works" and means the
+# same thing as `alfredctl up`.
 # Docker adds host.docker.internal via extra_hosts; Podman uses host.containers.internal.
 _GATEWAY_HOSTS = ("host.docker.internal", "host.containers.internal")
 
@@ -63,7 +57,7 @@ def rewrite_host_gateway(env: dict[str, str] | None = None) -> None:
     gateway = _reachable_gateway()
     if gateway is None:
         return
-    for key in _GATEWAY_REWRITE_KEYS:
+    for key in GATEWAY_REWRITE_KEYS:
         value = target.get(key, "")
         if "localhost" in value or "127.0.0.1" in value:
             target[key] = value.replace("localhost", gateway).replace("127.0.0.1", gateway)

@@ -12,6 +12,7 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from alfredctl import doctor as doctor_mod
@@ -64,7 +65,15 @@ def _render_doctor(checks: list[doctor_mod.DoctorCheck]) -> bool:
     table.add_column("detail", overflow="fold")
     for c in checks:
         style = _STATUS_STYLE[c.status]
-        table.add_row(c.name, f"[{style}]{_STATUS_GLYPH[c.status]} {c.status}[/{style}]", c.detail)
+        # Details quote what a remote server said, and rich reads `[...]` as markup: a
+        # 4xx body naming a path (`[/models/bge-m3]`) parses as a closing tag and raises
+        # MarkupError out of add_row. Markup is only ever wanted in the status column,
+        # which is built right here, so escaping the rest costs nothing.
+        table.add_row(
+            escape(c.name),
+            f"[{style}]{_STATUS_GLYPH[c.status]} {c.status}[/{style}]",
+            escape(c.detail),
+        )
     console.print(table)
     return any(c.status == "fail" for c in checks)
 
@@ -133,7 +142,12 @@ def up(
         console.print("[yellow]Preflight notes (run `alfredctl doctor` for detail):[/yellow]")
         for c in pre:
             style = _STATUS_STYLE[c.status]
-            console.print(f"  [{style}]{_STATUS_GLYPH[c.status]}[/{style}] {c.name}: {c.detail}")
+            # Escaped for the same reason _render_doctor is: details carry values this
+            # command did not write, and `[/...]` in one is a closing tag to rich.
+            console.print(
+                f"  [{style}]{_STATUS_GLYPH[c.status]}[/{style}] "
+                f"{escape(c.name)}: {escape(c.detail)}"
+            )
     if do_build:
         build(runtime=r.name, tag=None)
     repo = staging.repo_root()
@@ -179,6 +193,30 @@ def _passphrase(mode: str, persist_dir: Path | None) -> str:
             os.close(fd)
         return value
     return secrets.token_urlsafe(32)  # ephemeral/seed: fresh per run
+
+
+def _published_port(exe: str, name: str) -> int | None:
+    """Host port bound to the container's 8081, or None if it cannot be determined.
+
+    `smoke --attach` used to assume 8081. On a host already running Alfred on that
+    port, that silently probed the *other* container and reported it green — a pass
+    for something the operator never asked about. Ask the runtime instead of guessing,
+    and let the caller fail loudly when the answer is unavailable.
+    """
+    try:
+        out = subprocess.run(
+            [exe, "port", name, "8081"], check=False, capture_output=True, text=True
+        )
+    except OSError:
+        return None
+    if out.returncode != 0:
+        return None
+    for line in out.stdout.splitlines():
+        # "0.0.0.0:8082" / "[::]:8082" — the port is whatever follows the last colon.
+        _, _, host_port = line.strip().rpartition(":")
+        if host_port.isdigit():
+            return int(host_port)
+    return None
 
 
 def _resolve_url(r: rt.Runtime, plan: launch.LaunchPlan) -> str:
@@ -262,6 +300,10 @@ def smoke(
     hf_cache: Annotated[
         Path | None, typer.Option(help="Existing HF cache to mount at /models/hf")
     ] = None,
+    port: Annotated[
+        int | None,
+        typer.Option(help="Host port to publish (docker/podman); derived when --attach"),
+    ] = None,
     timeout: Annotated[float, typer.Option(help="Seconds to wait for /health")] = 300.0,
     deep: Annotated[
         bool,
@@ -275,13 +317,30 @@ def smoke(
         raise typer.BadParameter(
             "--name only applies with --attach; smoke starts its own container otherwise"
         )
+    if port is not None and attach:
+        raise typer.BadParameter(
+            "--port does not apply with --attach; the port is read from the running container"
+        )
     r = rt.detect(runtime)
+    target = name or rt.container_name()
     if not attach:
-        up(runtime=r.name, mode="seed", hf_cache=hf_cache)
+        # Default only applies to the container smoke starts itself.
+        port = port if port is not None else 8081
+        up(runtime=r.name, mode="seed", hf_cache=hf_cache, port=port)
+    elif r.name != "container":
+        # Never assume 8081: on a host already running Alfred there, that probes the
+        # wrong container and reports it green. Ask the runtime, and fail if it cannot say.
+        port = _published_port(r.exe, target)
+        if port is None:
+            raise typer.BadParameter(
+                f"could not determine which host port {target!r} publishes for 8081 — "
+                f"is it running, and does it publish that port? "
+                f"(`{r.exe} port {target} 8081`)"
+            )
     plan = launch.LaunchPlan(
         run_args=[],
-        url_hint="resolve-ip" if r.name == "container" else "http://localhost:8081",
-        name=name or rt.container_name(),
+        url_hint="resolve-ip" if r.name == "container" else f"http://localhost:{port}",
+        name=target,
         image=rt.image_tag(),
     )
     base_url = _resolve_url(r, plan)
