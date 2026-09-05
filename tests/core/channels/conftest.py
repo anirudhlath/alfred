@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+import core.channels.web_server as ws_mod
 from core.channels.web_server import create_app
 from shared.streams import AUTH_SESSION_PREFIX
 
@@ -67,8 +68,6 @@ def live_channels_client(dist: Path | None = None) -> Iterator[TestClient]:
     SPA catch-all — so everything it reaches for is patched out here. Pass `dist` to point
     `_SPA_DIST` at a fixture tree; leave it None to serve the real `web/dist/`.
     """
-    import core.channels.web_server as ws_mod
-
     # Minimal mock Redis — handles auth-session lookup and any other calls.
     mock_redis = AsyncMock()
     mock_redis.hgetall = AsyncMock(return_value={})
