@@ -171,8 +171,10 @@ Used by `ChatSocket` (`lib/chat-socket.ts`).
 first message, so `session_id` restore still works after any number of them. The pong is
 answered on the same serial receive loop as chat turns, so it can lag a full
 conscious-engine turn (`publish_and_wait` timeout 60s) — pong latency is not a liveness
-signal. Note that this admin SPA (`ChatSocket`/`TelemetrySocket`) does **not** send
-keepalives today; the server accepts them for the PWA client, which pings every 30s.
+signal. Note that **nothing in this repo sends keepalives today** — not this admin SPA
+(`ChatSocket`/`TelemetrySocket`) and not any other client here. The server answers pings
+so the replacement PWA client (Phase 4) can send them; until it exists, expect idle
+sockets to drop at the proxy's timeout.
 
 A frame that is malformed JSON, valid JSON but not an object (`[]`, `"str"`, `1`), or
 binary rather than text, is refused with
@@ -280,7 +282,7 @@ Home and reflex stream churn (high volume) does not trigger refetches.
 | Path | Component | Notes |
 |---|---|---|
 | `/login` | `LoginPage` | WebAuthn conditional UI login |
-| `/onboarding` | `OnboardingPage` | 6-step setup wizard, no auth required |
+| `/onboarding` | `OnboardingPage` | 6-step setup wizard. Step 0 (passkey registration) is reachable unauthenticated — it is how the first session is created — but the wizard re-reads `/api/auth/status` after the ceremony and redirects to `/login` unless a session actually took, so every step past 0 requires one |
 | `/` | `ChatPage` | Default after auth; chat + TelemetryRail |
 | `/activity` | `ActivityPage` | Live event feed; pause/filter/inspect |
 | `/memory` | `MemoryPage` | Episodic / semantic / routines / scratchpad tabs |

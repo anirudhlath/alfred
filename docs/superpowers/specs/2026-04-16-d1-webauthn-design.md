@@ -4,6 +4,11 @@
 **Status:** Approved
 **Priority:** Highest (prod-blocking)
 
+> **Superseded 2026-09-05:** the 24-hour session TTL below (Auth Sessions, and `Max-Age`
+> under Cookie Properties) shipped, but is now **8 hours with no sliding renewal**. This
+> file is the historical design record and is deliberately not rewritten;
+> [`docs/webauthn.md`](../../webauthn.md) is the current reference.
+
 ## Overview
 
 Implement WebAuthn (passkey) authentication for Alfred's web PWA. Replaces the current zero-auth model where anyone who connects gets "sir" identity at 0.7 confidence via a hardcoded `identity_claim`. After D1, the web channel enforces a hard authentication gate — no chat without a valid passkey session.

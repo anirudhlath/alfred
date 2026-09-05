@@ -74,3 +74,45 @@ simplify the frontend.
 `admin_api.py` overview probes Ollama and LM Studio sequentially via the 2s httpx
 client, so a single overview poll can wait ~4s when inference is down. **Acceptance:**
 `asyncio.gather` the two probes and use a shorter (~500ms) health-probe timeout.
+
+## Hardening
+
+### 8. `require_trusted_network` short-circuits on the literal peer `"testclient"`
+`core/channels/web_server.py:require_trusted_network` returns early when
+`request.client.host == "testclient"` — Starlette's `TestClient` default peer — so the
+whole network gate is skipped under test. It is not only a test-time concern: `testclient`
+is a *string*, and uvicorn writes whatever `X-Forwarded-For` says into
+`request.client.host`, so a proxy configuration that trusts too much (`FORWARDED_ALLOW_IPS=*`
+being the worst case) turns the header `X-Forwarded-For: testclient` into a 200 on every
+gated route. The process now warns about `*` at boot, but the bypass itself should go.
+
+**Acceptance:** delete the `"testclient"` branch and give each test a real peer via
+`TestClient(app, client=("192.168.1.10", 50000))`. Five modules depend on the bypass today
+and all five must be migrated in the same change:
+
+- `tests/core/channels/test_settings_api.py`
+- `tests/core/channels/test_service_credentials.py`
+- `tests/core/channels/test_voice_enroll.py`
+- `tests/core/channels/test_device_registration.py`
+- `tests/integration/test_webauthn_flow.py`
+
+Note `tests/core/channels/test_trusted_network.py` deliberately uses `"testclient"` as a
+*trusted proxy* entry in `FORWARDED_ALLOW_IPS` to exercise the forwarded-header path; that
+usage is unrelated and stays.
+
+### 9. No rate limiting on the unauthenticated surface
+Everything reachable before a session exists is unmetered: `GET /api/auth/status`,
+`POST /api/auth/login/begin`, `POST /api/auth/login/complete`, and the `/ws` + `/ws/telemetry`
+upgrades. The WebSocket case is the cheapest to abuse — `require_ws_auth()` accepts the
+socket *before* authenticating (deliberately, so the browser sees close code 4001 instead
+of a bare 403), so every anonymous connect costs a Redis `HGETALL` and a socket. `login/begin`
+additionally writes a challenge key per call.
+
+Operationally this is covered today by Cloudflare rate-limiting rules in front of the public
+hostname, which is why this is low and not higher — but the origin has no defence of its own,
+and the LAN/tailnet path does not pass through Cloudflare at all.
+
+**Acceptance:** a per-IP limiter on the four unauthenticated routes plus the WS upgrade,
+applied at the origin rather than only at the edge. Mind that the peer must be read the same
+way the trusted-network gate reads it (post-`ProxyHeadersMiddleware` `request.client.host`),
+or a single proxy address becomes one shared bucket for the whole internet.

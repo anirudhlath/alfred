@@ -231,7 +231,9 @@ port.
   `ALFRED_TRUSTED_NETWORKS_STRICT=1` (in the env file or via `--env`) `alfredctl up`
   leaves the container subnet out entirely, because "trust only what I listed" would
   otherwise silently re-trust every peer on the container network — a reverse proxy
-  included — and prints a line saying so:
+  included. `alfredctl up` prints a line saying so before it launches the container
+  (plain `docker compose` never appends the subnet in the first place, so it has
+  nothing to report):
 
   ```
   ALFRED_TRUSTED_NETWORKS_STRICT set: not adding container subnet 172.16.0.0/12 —
@@ -334,7 +336,8 @@ Two things `alfredctl up` does for you that plain `docker compose` does **not**:
   `extra_hosts` entry above makes that hostname resolve on Linux; Docker Desktop
   provides it natively on macOS/Windows).
 - **Trusted-network injection** — see Section 7; set `ALFRED_TRUSTED_NETWORKS` in `.env`
-  yourself if you need WebAuthn/admin access through compose.
+  yourself if you need passkey registration or credential writes through compose. The
+  admin API itself needs only a session, so it is reachable regardless.
 
 Named volumes (`alfred_data`, `alfred_models`) persist across `docker compose down`/`up`
 as long as you don't pass `-v`. Data mode is hardcoded to `persistent` in this file —
@@ -470,11 +473,24 @@ service — the runner logs each supervised process with its own name prefix.
 ### WebAuthn registration returns 403 through the container
 
 You're hitting the trusted-network gate from an IP the server doesn't recognize as
-trusted (Section 7). Loopback, private LAN (RFC1918), and Tailscale are trusted by
-default, so this is rare — it usually means you set `ALFRED_TRUSTED_NETWORKS_STRICT=1`
-(which drops the LAN defaults) or you're reaching Alfred over a public/VPN range. The
-403 response names the offending IP; add its subnet to `ALFRED_TRUSTED_NETWORKS`
-(e.g. `10.1.2.0/24`).
+trusted ([Section 7](#7-trusted-networks)). The 403 names the offending IP, and which
+fix is right depends on which IP that is.
+
+- **A device on a LAN range you never listed** — add that subnet to
+  `ALFRED_TRUSTED_NETWORKS` (e.g. `10.1.2.0/24`). Loopback, RFC1918 and Tailscale are
+  trusted by default, so this only arises under `ALFRED_TRUSTED_NETWORKS_STRICT=1`
+  (which drops those defaults) or when you reach Alfred over a public/VPN range.
+- **The bridge gateway, from a browser on the container host, under strict mode** —
+  **working as designed; there is nothing to fix.** Strict mode is exactly what stops
+  `alfredctl up` auto-appending the container subnet, so a host browser hitting the
+  published port arrives as an untrusted peer. Register the passkey from a device on one
+  of the LAN CIDRs you listed (through your reverse proxy) or over Tailscale.
+
+**Never add the container subnet back** to silence this on an internet-facing host. That
+subnet holds the reverse proxy, and trusting the proxy trusts every caller behind it —
+the proxy's address belongs in `FORWARDED_ALLOW_IPS`, never in
+`ALFRED_TRUSTED_NETWORKS`. Section 7 and
+[`deployment.md` → Behind a reverse proxy](deployment.md) both spell out why.
 
 ## 14. What's deferred
 

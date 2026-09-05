@@ -30,9 +30,15 @@ Every admin endpoint — reads and controls alike — enforces exactly one FastA
 
 There is deliberately **no** trusted-network gate here: the admin API is usable from the
 public hostname once signed in with a passkey. The network gate (`require_trusted_network`,
-HTTP 403) is reserved for endpoints that can mint or widen credentials — passkey
-registration, `PUT/DELETE /api/integrations/{name}/credentials`, `POST/DELETE
-/api/devices/register`, `POST /api/voice/enroll` — which carry **both** dependencies.
+HTTP 403) is reserved for endpoints that can mint or widen credentials, and it comes in
+two shapes:
+
+| Endpoints | Gates | Why |
+|---|---|---|
+| `PUT/DELETE /api/integrations/{name}/credentials`, `POST/DELETE /api/devices/register`, `POST /api/voice/enroll` | **both** (`_CREDENTIAL_GATES`, network first) | A caller who can write these can widen Alfred's reach, so being on the LAN/tailnet *and* signed in are both required. |
+| `POST /api/auth/register/{begin,complete}` | **network only** (`Depends(trusted_network_dep)` in `core/identity/auth_routes.py`, injected from `web_server.py`) | Registration is how the first session comes into existence — the first-run user has no cookie yet, so a session gate here would be unsatisfiable. Physical network position is the whole of the trust. |
+
+See [`webauthn.md` → Security Properties](webauthn.md) for the registration side.
 
 The dependency is applied at router creation time:
 
@@ -257,9 +263,9 @@ the key existed, `{"deleted": false}` if not. Logs at INFO regardless.
 |---|---|---|
 | `GET` | `/api/admin/devices` | List registered APNs device tokens |
 
-Reads `HGETALL alfred:push:devices`. Each field is a device token; each value is a JSON
-object with registration metadata (channel, registered_at, etc.). Corrupt values fall back
-to `{"device_token": tok}`.
+Reads `HGETALL alfred:push:devices`. Each field is a device token; each value is the JSON
+object `POST /api/devices/register` wrote — `platform`, `identity` and `registered_at`
+(`web_server.py`). Corrupt values fall back to `{"device_token": tok}`.
 
 `device_token` is **truncated to its first 12 characters and never returned in full** — a
 whole APNs token is credential-equivalent, and this route needs only a session, so it is
@@ -374,8 +380,11 @@ Upgrade: websocket
 Cookie: alfred_auth=<session_id>
 ```
 
-Auth is checked before `accept()`. Unauthenticated connections are closed immediately with
-code **4001**.
+The socket is **accepted first**, then authenticated; an unauthenticated connection is
+closed immediately afterwards with code **4001**. The ordering is deliberate and lives in
+`require_ws_auth()` (`core/identity/ws_auth.py`): closing before `accept()` surfaces to
+the browser as a bare HTTP 403 upgrade rejection carrying no close code, so the client
+never sees 4001 and reconnects forever.
 
 ### Client Messages (send to server)
 
