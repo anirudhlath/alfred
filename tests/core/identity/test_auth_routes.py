@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -18,7 +18,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from httpx import Response
-    from starlette.types import ASGIApp
 
 
 @pytest.fixture
@@ -88,7 +87,7 @@ def _build_client(
     store: CredentialStore,
     redis_mock: AsyncMock,
     challenge: bytes,
-    wrap: Callable[[FastAPI], ASGIApp] | None,
+    wrap: Callable[[FastAPI], Any] | None,
 ) -> TestClient:
     """App + client with the stored challenge stubbed the way production returns it.
 
@@ -105,7 +104,7 @@ async def _login(
     store: CredentialStore,
     redis_mock: AsyncMock,
     *,
-    wrap: Callable[[FastAPI], ASGIApp] | None = None,
+    wrap: Callable[[FastAPI], Any] | None = None,
     headers: dict[str, str] | None = None,
     challenge: bytes = _CHALLENGE,
     verify: Callable[..., object] | None = None,
@@ -132,7 +131,7 @@ async def _login(
         return client.post("/api/auth/login/complete", headers=headers, json=_LOGIN_BODY)
 
 
-def _register(
+async def _register(
     store: CredentialStore,
     redis_mock: AsyncMock,
     *,
@@ -306,7 +305,7 @@ class TestRegisterCompleteBytesDecode:
             result.sign_count = 0
             return result
 
-        _register(store, redis_mock, challenge=raw_challenge, verify=_capture_verify)
+        await _register(store, redis_mock, challenge=raw_challenge, verify=_capture_verify)
 
         # The fix must have fired: challenge was decoded to str before base64url_to_bytes
         assert "expected_challenge" in captured_kwargs, (
@@ -535,7 +534,7 @@ class TestSessionLifetime:
         self, store: CredentialStore, redis_mock: AsyncMock
     ) -> None:
         """register/complete signs the new device in, so it gets the same short session."""
-        resp = _register(store, redis_mock)
+        resp = await _register(store, redis_mock)
 
         assert resp.status_code == 200
         _key, ttl = redis_mock.expire.call_args[0]
@@ -548,10 +547,15 @@ class TestSessionLifetime:
     ) -> None:
         from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
+        def _behind_proxy(app: FastAPI) -> Any:
+            # uvicorn types its middleware against its own strict ASGIApplication
+            # protocol, which starlette's looser scope signature never satisfies.
+            return ProxyHeadersMiddleware(app, trusted_hosts="testclient")  # type: ignore[arg-type]
+
         resp = await _login(
             store,
             redis_mock,
-            wrap=lambda app: ProxyHeadersMiddleware(app, trusted_hosts="testclient"),
+            wrap=_behind_proxy,
             headers={"X-Forwarded-Proto": "https"},
         )
 
