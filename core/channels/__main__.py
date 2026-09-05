@@ -41,7 +41,18 @@ def _resolve_forwarded_allow_ips() -> str:
     # uvicorn only wildcards when the *whole* value is "*" (its always_trust flag).
     # Inside a list, "*" decays to a literal that matches no IP — so let it fall
     # through to the warning below rather than treating it as a valid entry.
-    if value != "*":
+    if value == "*":
+        # always_trust skips uvicorn's rightmost-untrusted walk entirely and returns
+        # the LEFTMOST X-Forwarded-For entry, unvalidated, for every peer. The header
+        # is client-supplied, so any caller then chooses the address
+        # require_trusted_network judges — the gate stops being a perimeter.
+        logger.warning(
+            "FORWARDED_ALLOW_IPS is '*': uvicorn trusts the leftmost X-Forwarded-For "
+            "entry from any peer, unvalidated, so any caller can choose the client IP "
+            "the trusted-network gate judges. This defeats the gate and must never be "
+            "used on an internet-facing host — set the proxy's own address instead"
+        )
+    else:
         for raw_entry in value.split(","):
             candidate = raw_entry.strip()
             if not candidate:

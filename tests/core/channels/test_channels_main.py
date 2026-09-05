@@ -125,13 +125,20 @@ def test_entry_that_cannot_match_an_ip_is_warned(
     assert resolved == value
 
 
-def test_bare_wildcard_is_accepted_silently(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A whole-value "*" is uvicorn's always_trust — blunt, but it does trust every
-    peer, so flagging it as unmatched would be a false alarm."""
+def test_bare_wildcard_is_warned_as_a_gate_bypass(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A whole-value "*" is uvicorn's always_trust: it takes the LEFTMOST
+    X-Forwarded-For entry from *any* peer with no validation, so a stranger picks the
+    IP the trusted-network gate judges. That is a full perimeter bypass, not the
+    "unmatched literal" the per-entry check warns about — it needs its own warning.
+    Still passed through: filtering it would silently change what the operator asked
+    for, and uvicorn is the one place this value is interpreted."""
     resolved, fake_logger = _resolve(monkeypatch, "*")
 
     assert resolved == "*"
-    fake_logger.warning.assert_not_called()
+    text = _warning_text(fake_logger)
+    assert "X-Forwarded-For" in text
+    assert "trusted-network" in text
+    assert "internet-facing" in text
 
 
 def test_loopback_default_is_warned(monkeypatch: pytest.MonkeyPatch) -> None:

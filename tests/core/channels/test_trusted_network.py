@@ -195,8 +195,18 @@ def test_forwarded_for_from_trusted_proxy_reaches_gate(monkeypatch: pytest.Monke
 
 def test_forwarded_for_uses_rightmost_untrusted_hop(monkeypatch: pytest.MonkeyPatch) -> None:
     """With a chain of proxies uvicorn walks right-to-left and stops at the first
-    hop it does not trust — NOT the leftmost, which any client can forge. Pinned
-    here so a uvicorn bump cannot change the gate's notion of "the client" in silence."""
+    hop it does not trust — NOT the leftmost, which any client can forge.
+
+    THIS TEST IS THE PIN on uvicorn's rightmost-untrusted semantics. Nothing in
+    `pyproject.toml` bounds uvicorn's version (deliberately — a `<0.x` ceiling would
+    block routine `uv lock` upgrades), so this behaviour is held by a test rather than
+    by a dependency pin. The whole perimeter rests on it: `require_trusted_network`
+    judges `request.client.host`, which behind a proxy is entirely whatever
+    `ProxyHeadersMiddleware` decided the client was. If a uvicorn bump ever switched to
+    the leftmost entry, every gated route (passkey registration, credential writes,
+    device registration, voice enrollment) would accept a forged `X-Forwarded-For` and
+    this test is what turns that into a red build instead of a silent open door.
+    """
     monkeypatch.delenv("ALFRED_TRUSTED_NETWORKS", raising=False)
     monkeypatch.delenv("ALFRED_TRUSTED_NETWORKS_STRICT", raising=False)
 
