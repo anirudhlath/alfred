@@ -599,7 +599,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.put(
         "/api/integrations/{name}/credentials",
-        dependencies=[Depends(require_trusted_network)],
+        dependencies=[Depends(require_trusted_network), Depends(require_authenticated)],
     )
     async def save_credentials(name: str, request: Request) -> dict[str, Any]:
         """Save credentials to the OS keyring (adapters + registry-declared services)."""
@@ -619,7 +619,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.delete(
         "/api/integrations/{name}/credentials",
-        dependencies=[Depends(require_trusted_network)],
+        dependencies=[Depends(require_trusted_network), Depends(require_authenticated)],
     )
     async def delete_credentials(name: str) -> dict[str, str]:
         """Clear all credentials for an adapter or service from the OS keyring."""
@@ -784,7 +784,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.post(
         "/api/devices/register",
-        dependencies=[Depends(require_trusted_network)],
+        dependencies=[Depends(require_trusted_network), Depends(require_authenticated)],
     )
     async def register_device(payload: DeviceRegistration) -> dict[str, str]:
         """Register an APNs device token for push notifications."""
@@ -804,7 +804,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.delete(
         "/api/devices/register",
-        dependencies=[Depends(require_trusted_network)],
+        dependencies=[Depends(require_trusted_network), Depends(require_authenticated)],
     )
     async def unregister_device(payload: DeviceUnregistration) -> dict[str, str]:
         """Remove an APNs device token."""

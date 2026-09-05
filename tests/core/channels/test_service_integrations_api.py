@@ -360,3 +360,19 @@ def test_status_unreachable_service(
 def test_status_unknown_name_404(service_client: TestClient) -> None:
     resp = service_client.get("/api/integrations/nonexistent/status")
     assert resp.status_code == 404
+
+
+def test_put_credentials_requires_session(service_client: TestClient) -> None:
+    """Credential writes are double-gated: trusted network AND passkey session."""
+    service_client.cookies.clear()
+    resp = service_client.put(
+        "/api/integrations/home-service/credentials",
+        json={"url": "http://ha.local:8123", "token": "t"},
+    )
+    assert resp.status_code == 401
+
+
+def test_delete_credentials_requires_session(service_client: TestClient) -> None:
+    service_client.cookies.clear()
+    resp = service_client.delete("/api/integrations/home-service/credentials")
+    assert resp.status_code == 401

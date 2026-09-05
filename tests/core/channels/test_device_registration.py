@@ -4,15 +4,25 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from shared.streams import AUTH_SESSION_PREFIX
+
+_SESSION = "device-test-session"
+
 
 @pytest.fixture
 def mock_redis():
     mock = AsyncMock()
     mock.hset = AsyncMock()
     mock.hdel = AsyncMock()
-    mock.hgetall = AsyncMock(return_value={})
     mock.close = AsyncMock()
     mock.xread = AsyncMock(return_value=[])
+
+    async def _fake_hgetall(key: str) -> dict[bytes, bytes]:
+        if key == f"{AUTH_SESSION_PREFIX}{_SESSION}":
+            return {b"authenticated": b"1"}
+        return {}
+
+    mock.hgetall = AsyncMock(side_effect=_fake_hgetall)
     return mock
 
 
@@ -29,7 +39,39 @@ def app(mock_redis):
 
 @pytest.fixture
 def client(app):
+    """Signed-in client. Device tokens are credential-equivalent: the endpoint needs
+    a passkey session *and* a trusted network (TestClient's peer is trusted)."""
+    c = TestClient(app)
+    c.cookies.set("alfred_auth", _SESSION)
+    return c
+
+
+@pytest.fixture
+def anon_client(app):
     return TestClient(app)
+
+
+def test_register_device_requires_session(anon_client, mock_redis) -> None:
+    resp = anon_client.post(
+        "/api/devices/register",
+        json={
+            "device_token": "aabbccdd11223344aabbccdd11223344",
+            "platform": "ios",
+            "identity": "sir",
+        },
+    )
+    assert resp.status_code == 401
+    mock_redis.hset.assert_not_called()
+
+
+def test_unregister_device_requires_session(anon_client, mock_redis) -> None:
+    resp = anon_client.request(
+        "DELETE",
+        "/api/devices/register",
+        json={"device_token": "aabbccdd11223344aabbccdd11223344"},
+    )
+    assert resp.status_code == 401
+    mock_redis.hdel.assert_not_called()
 
 
 def test_register_device_stores_token(client, mock_redis) -> None:
