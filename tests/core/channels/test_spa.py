@@ -123,3 +123,37 @@ def test_missing_dist_logs_warning(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 
     fake_logger.warning.assert_called_once()
     assert "npm run build" in str(fake_logger.warning.call_args)
+
+
+_IMMUTABLE = "public, max-age=31536000, immutable"
+_NO_STORE = "no-cache, no-store, must-revalidate"
+
+
+def _cached_app(tmp_path: Path) -> TestClient:
+    from core.channels.spa import SpaCacheMiddleware
+
+    app = FastAPI()
+
+    @app.get("/api/thing")
+    async def thing() -> dict[str, bool]:
+        return {"ok": True}
+
+    mount_spa(app, _dist(tmp_path))
+    app.add_middleware(SpaCacheMiddleware)
+    return TestClient(app)
+
+
+def test_hashed_assets_are_immutable(tmp_path: Path) -> None:
+    client = _cached_app(tmp_path)
+    assert client.get("/assets/app.js").headers["cache-control"] == _IMMUTABLE
+
+
+def test_entry_point_is_never_cached(tmp_path: Path) -> None:
+    client = _cached_app(tmp_path)
+    for path in ("/", "/index.html", "/activity"):
+        assert client.get(path).headers["cache-control"] == _NO_STORE, path
+
+
+def test_api_responses_are_left_alone(tmp_path: Path) -> None:
+    client = _cached_app(tmp_path)
+    assert "cache-control" not in client.get("/api/thing").headers

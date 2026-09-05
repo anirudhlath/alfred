@@ -18,11 +18,8 @@ import redis.asyncio as aioredis  # noqa: TC002 — patched at runtime by tests 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from loguru import logger
 from pydantic import BaseModel, Field
-from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 if TYPE_CHECKING:
-    from starlette.responses import Response
-
     from core.integrations.base import CredentialSchema
 
 from bus.schemas.events import UserRequest
@@ -31,6 +28,7 @@ from core.channels.request_bus import publish_and_wait
 from core.channels.satellite.bridge import SatelliteBridge
 from core.channels.satellite.config import load_satellites
 from core.channels.satellite.pipeline import SatellitePipeline
+from core.channels.spa import SpaCacheMiddleware
 from core.channels.telemetry_ws import register_telemetry_ws
 from core.channels.voice_models import (  # re-exported for tests (see __all__)
     aget_speaker_id,
@@ -829,14 +827,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
     app.include_router(create_admin_router())
     register_telemetry_ws(app)
 
-    class NoCacheStaticMiddleware(BaseHTTPMiddleware):
-        async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-            response: Response = await call_next(request)
-            if request.url.path.endswith((".css", ".js", ".html")):
-                response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-            return response
-
-    app.add_middleware(NoCacheStaticMiddleware)
+    app.add_middleware(SpaCacheMiddleware)
     app.add_middleware(AuthCookieMiddleware)
 
     return app
