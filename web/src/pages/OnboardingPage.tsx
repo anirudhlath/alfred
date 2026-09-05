@@ -171,7 +171,14 @@ export function OnboardingPage() {
                   Register passkey
                 </Button>
                 {authStatus?.registered && (
-                  <Button variant="outline" className="font-mono" onClick={next}>
+                  <Button
+                    variant="outline"
+                    className="font-mono"
+                    // Registered but signed out: skipping would walk the user through five
+                    // steps of input, show an empty (session-gated) Connections step, and
+                    // then 401 on POST /api/onboarding. Send them to sign in instead.
+                    onClick={() => (authStatus.authenticated ? next() : navigate("/login"))}
+                  >
                     Skip — already registered
                   </Button>
                 )}

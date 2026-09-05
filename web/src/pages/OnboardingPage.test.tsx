@@ -86,6 +86,60 @@ describe("OnboardingPage", () => {
     );
   });
 
+  it("does not fetch the session-gated integrations list while signed out", async () => {
+    setupMocks({ registered: true, authenticated: false });
+    renderPage();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Skip — already registered" })).toBeInTheDocument(),
+    );
+    // GET /api/integrations requires a session; firing it here would 401 and api()
+    // would bounce the user to /login mid-wizard.
+    expect(vi.mocked(api)).not.toHaveBeenCalledWith("/api/integrations");
+  });
+
+  it("sends a signed-out skipper to /login instead of into the wizard", async () => {
+    setupMocks({ registered: true, authenticated: false });
+    renderPage();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Skip — already registered" })).toBeInTheDocument(),
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Skip — already registered" }));
+
+    // Without a session the wizard's own submit (POST /api/onboarding) 401s, so
+    // advancing would waste five steps of input.
+    expect(navigate).toHaveBeenCalledWith("/login");
+    expect(screen.queryByText("A few particulars")).toBeNull();
+  });
+
+  it("fetches the integrations list once the passkey grants a session", async () => {
+    let authStatus: unknown = { registered: false, authenticated: false };
+    vi.mocked(api).mockImplementation((url: string) => {
+      if (url === "/api/auth/status") return Promise.resolve(authStatus);
+      if (url === "/api/integrations") return Promise.resolve([]);
+      return Promise.reject(new Error(`Unexpected URL: ${url}`));
+    });
+    vi.mocked(post).mockResolvedValue({});
+    // Registration is what sets the auth cookie server-side.
+    vi.mocked(registerPasskey).mockImplementation(() => {
+      authStatus = { registered: true, authenticated: true };
+      return Promise.resolve();
+    });
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText("Register your device")).toBeInTheDocument());
+    expect(vi.mocked(api)).not.toHaveBeenCalledWith("/api/integrations");
+
+    await advancePastPasskey();
+    await waitFor(() => expect(vi.mocked(api)).toHaveBeenCalledWith("/api/integrations"));
+
+    // ...and it landed before the Connections step needs it.
+    await userEvent.click(screen.getByRole("button", { name: "Continue" })); // proactivity
+    await userEvent.click(screen.getByRole("button", { name: "Continue" })); // guest
+    await userEvent.click(screen.getByRole("button", { name: "Continue" })); // connections
+    expect(screen.getByText("Connections")).toBeInTheDocument();
+  });
+
   it("auto-skips the passkey step when already registered and authenticated", async () => {
     setupMocks({ registered: true, authenticated: true });
     renderPage();
