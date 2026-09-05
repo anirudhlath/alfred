@@ -5,6 +5,7 @@ Usage: python -m core.channels
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import time
 
@@ -37,7 +38,30 @@ def main() -> None:
     # request.client / scheme from X-Forwarded-For / -Proto, but only for peers in
     # FORWARDED_ALLOW_IPS (IPs or CIDRs). Everything downstream — the trusted-network
     # gate, Secure cookies, the 403 detail naming the client — depends on this.
-    forwarded_allow_ips = os.getenv("FORWARDED_ALLOW_IPS", "127.0.0.1")
+    # A blank value (how .env.example ships keys, and what compose injects for an
+    # unset key) makes uvicorn trust *nothing*, so the headers are never rewritten
+    # and the gate sees the proxy's own RFC1918 address — which would admit the
+    # whole internet. Fall back to uvicorn's own loopback default instead.
+    forwarded_allow_ips = os.getenv("FORWARDED_ALLOW_IPS", "").strip() or "127.0.0.1"
+    for raw_entry in forwarded_allow_ips.split(","):
+        candidate = raw_entry.strip()
+        # "*" means "trust every peer" — valid (if blunt), just not an IP/CIDR.
+        if not candidate or candidate == "*":
+            continue
+        try:
+            ipaddress.ip_network(candidate, strict=False)
+        except ValueError:
+            logger.warning(
+                "FORWARDED_ALLOW_IPS entry {!r} is not a valid IP or CIDR; uvicorn "
+                "will never match it, so X-Forwarded-* stays ignored for that peer",
+                candidate,
+            )
+    if forwarded_allow_ips == "127.0.0.1":
+        logger.warning(
+            "FORWARDED_ALLOW_IPS is the loopback default — a reverse proxy on the "
+            "container network will not match it, so X-Forwarded-* will not be "
+            "rewritten; the trusted-network gate will see the proxy's own IP"
+        )
     logger.info("Trusting X-Forwarded-* headers from: {}", forwarded_allow_ips)
     for attempt in range(5):
         try:
