@@ -12,8 +12,7 @@ import core.channels.admin_api as admin_api
 from core.channels.admin_api import require_authenticated
 from core.channels.web_server import create_app, require_trusted_network
 from shared.streams import AUTH_SESSION_PREFIX
-
-_SESSION = "admin-test-session"
+from tests.core.channels.conftest import _TEST_SESSION_ID, make_session_redis
 
 
 def _aiter(items: list[Any]) -> AsyncIterator[Any]:
@@ -26,19 +25,15 @@ def _aiter(items: list[Any]) -> AsyncIterator[Any]:
 
 def make_admin_client(mock_redis: AsyncMock, *, authed: bool = True) -> TestClient:
     """App with mocked redis; cookie optional to exercise the 401 path."""
-
-    async def _fake_hgetall(key: str) -> dict[bytes, bytes]:
-        if key == f"{AUTH_SESSION_PREFIX}{_SESSION}":
-            return {b"authenticated": b"1"}
-        return {}
-
+    # Tests that need HGETALL for their own data install their own side effect (and
+    # delegate the session key to the same shared fake); the rest get it from here.
     if mock_redis.hgetall._mock_side_effect is None:
-        mock_redis.hgetall = AsyncMock(side_effect=_fake_hgetall)
+        mock_redis.hgetall = make_session_redis().hgetall
     app = create_app(redis_url="redis://localhost:6379")
     app.state.redis = mock_redis
     client = TestClient(app)
     if authed:
-        client.cookies.set("alfred_auth", _SESSION)
+        client.cookies.set("alfred_auth", _TEST_SESSION_ID)
     return client
 
 
@@ -213,7 +208,7 @@ def test_memory_episodic_recent_lists_hot_and_cold(tmp_path: Any, monkeypatch: A
     # route by key, otherwise the request 401s before reaching the endpoint.
     async def _hgetall(key: Any) -> dict[bytes, bytes]:
         key_str = key.decode() if isinstance(key, bytes) else key
-        if key_str == f"{AUTH_SESSION_PREFIX}{_SESSION}":
+        if key_str == f"{AUTH_SESSION_PREFIX}{_TEST_SESSION_ID}":
             return {b"authenticated": b"1"}
         return {
             b"content": b"User asked about lights",
@@ -282,7 +277,7 @@ def test_memory_episodic_hot_scan_filters_out_non_episodic(tmp_path: Any, monkey
 
     async def _hgetall(key: Any) -> dict[bytes, bytes]:
         key_str = key.decode() if isinstance(key, bytes) else key
-        if key_str == f"{AUTH_SESSION_PREFIX}{_SESSION}":
+        if key_str == f"{AUTH_SESSION_PREFIX}{_TEST_SESSION_ID}":
             return {b"authenticated": b"1"}
         if b"episodic1" in (key if isinstance(key, bytes) else key.encode()):
             return {
@@ -358,7 +353,7 @@ def test_triggers_list() -> None:
     r = _overview_redis()
 
     async def _hgetall(key: str) -> dict[bytes, bytes]:
-        if key == f"{AUTH_SESSION_PREFIX}{_SESSION}":
+        if key == f"{AUTH_SESSION_PREFIX}{_TEST_SESSION_ID}":
             return {b"authenticated": b"1"}
         return {
             b"t1": json.dumps(
@@ -406,7 +401,7 @@ def test_sessions_list_populated() -> None:
     r.scan_iter = MagicMock(return_value=_aiter([b"alfred:sessions:s2"]))
 
     async def _hgetall(key: str) -> dict[bytes, bytes]:
-        if key == f"{AUTH_SESSION_PREFIX}{_SESSION}":
+        if key == f"{AUTH_SESSION_PREFIX}{_TEST_SESSION_ID}":
             return {b"authenticated": b"1"}
         # Session hash for s2
         return {
@@ -436,7 +431,7 @@ def test_devices_list() -> None:
     r = _overview_redis()
 
     async def _hgetall(key: str) -> dict[bytes, bytes]:
-        if key == f"{AUTH_SESSION_PREFIX}{_SESSION}":
+        if key == f"{AUTH_SESSION_PREFIX}{_TEST_SESSION_ID}":
             return {b"authenticated": b"1"}
         return {b"tok1": json.dumps({"platform": "ios", "identity": "sir"}).encode()}
 
@@ -453,7 +448,7 @@ def test_devices_list_truncates_the_device_token() -> None:
     r = _overview_redis()
 
     async def _hgetall(key: str) -> dict[bytes, bytes]:
-        if key == f"{AUTH_SESSION_PREFIX}{_SESSION}":
+        if key == f"{AUTH_SESSION_PREFIX}{_TEST_SESSION_ID}":
             return {b"authenticated": b"1"}
         return {full_token.encode(): json.dumps({"platform": "ios"}).encode()}
 
@@ -471,7 +466,7 @@ def test_devices_list_truncates_the_token_on_corrupt_metadata() -> None:
     r = _overview_redis()
 
     async def _hgetall(key: str) -> dict[bytes, bytes]:
-        if key == f"{AUTH_SESSION_PREFIX}{_SESSION}":
+        if key == f"{AUTH_SESSION_PREFIX}{_TEST_SESSION_ID}":
             return {b"authenticated": b"1"}
         return {full_token.encode(): b"not json"}
 

@@ -18,21 +18,36 @@ _AUTH_SESSION_DATA: dict[bytes, bytes] = {
 }
 
 
-@pytest.fixture
-def web_client() -> TestClient:
-    """Create a TestClient with a mocked Redis connection and auth session."""
-    mock_redis = AsyncMock()
+def make_session_redis(session_id: str = _TEST_SESSION_ID) -> AsyncMock:
+    """A Redis fake that recognises exactly one live auth session.
+
+    AuthCookieMiddleware reads `{AUTH_SESSION_PREFIX}{cookie}` and treats
+    `authenticated == "1"` as signed in, so every "signed-in client" test wants this
+    same HGETALL side effect plus the usual no-op writers. Callers that need more
+    (a tool registry, a ctx hash, a stream) override that one method on the mock and
+    delegate the miss back to this one, rather than restating the session branch.
+    """
+    mock = AsyncMock()
 
     async def _fake_hgetall(key: str) -> dict[bytes, bytes]:
-        if key == f"{AUTH_SESSION_PREFIX}{_TEST_SESSION_ID}":
+        if key == f"{AUTH_SESSION_PREFIX}{session_id}":
             return _AUTH_SESSION_DATA
         return {}
 
-    mock_redis.hgetall = AsyncMock(side_effect=_fake_hgetall)
-    mock_redis.hget = AsyncMock(return_value=None)
+    mock.hgetall = AsyncMock(side_effect=_fake_hgetall)
+    mock.hget = AsyncMock(return_value=None)
+    mock.hset = AsyncMock()
+    mock.hdel = AsyncMock()
+    mock.close = AsyncMock()
+    mock.xread = AsyncMock(return_value=[])
+    return mock
 
+
+@pytest.fixture
+def web_client() -> TestClient:
+    """Create a TestClient with a mocked Redis connection and auth session."""
     app = create_app(redis_url="redis://localhost:6379")
-    app.state.redis = mock_redis
+    app.state.redis = make_session_redis()
     client = TestClient(app)
     client.cookies.set("alfred_auth", _TEST_SESSION_ID)
     return client

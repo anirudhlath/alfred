@@ -29,14 +29,8 @@ from core.integrations.base import (
     IntegrationResult,
 )
 from core.integrations.registry import IntegrationRegistry
-from shared.streams import AUTH_SESSION_PREFIX, TOOL_REGISTRY_KEY
-
-_TEST_SESSION_ID = "test-auth-session"
-_AUTH_SESSION_DATA: dict[bytes, bytes] = {
-    b"authenticated": b"1",
-    b"credential_id": b"test-cred",
-    b"created_at": b"2026-04-16T00:00:00",
-}
+from shared.streams import TOOL_REGISTRY_KEY
+from tests.core.channels.conftest import _TEST_SESSION_ID, make_session_redis
 
 
 class _KindAdapter(Integration):
@@ -91,7 +85,7 @@ def service_handler() -> _ServiceHttpHandler:
 
 
 def _build_service_client(
-    manifest: dict[str, Any], service_handler: _ServiceHttpHandler
+    manifest: dict[str, Any], service_handler: _ServiceHttpHandler, *, signed_in: bool = True
 ) -> Iterator[TestClient]:
     """Shared TestClient builder: home-service manifest in a mocked tool registry
     + fake service HTTP. Factored out so variant manifests (e.g. missing
@@ -99,14 +93,16 @@ def _build_service_client(
     """
     registry_data = {b"home-service": json.dumps(manifest).encode()}
 
-    mock_redis = AsyncMock()
+    # The session half of the fake is shared (conftest); overlay the tool registry
+    # and delegate every other key back to it.
+    mock_redis = make_session_redis()
+    session_hgetall = mock_redis.hgetall
 
     async def _fake_hgetall(key: str) -> dict[bytes, bytes]:
-        if key == f"{AUTH_SESSION_PREFIX}{_TEST_SESSION_ID}":
-            return _AUTH_SESSION_DATA
         if key == TOOL_REGISTRY_KEY:
             return registry_data
-        return {}
+        result: dict[bytes, bytes] = await session_hgetall(key)
+        return result
 
     async def _fake_hget(key: str, field: str) -> bytes | None:
         if key == TOOL_REGISTRY_KEY:
@@ -132,7 +128,8 @@ def _build_service_client(
     app.state.redis = mock_redis
     app.state.http = httpx.AsyncClient(transport=httpx.MockTransport(service_handler))
     client = TestClient(app)
-    client.cookies.set("alfred_auth", _TEST_SESSION_ID)
+    if signed_in:
+        client.cookies.set("alfred_auth", _TEST_SESSION_ID)
     try:
         yield client
     finally:
@@ -148,6 +145,14 @@ def service_client(
 ) -> Iterator[TestClient]:
     """TestClient with home-service in a mocked tool registry + fake service HTTP."""
     yield from _build_service_client(home_service_manifest, service_handler)
+
+
+@pytest.fixture
+def anon_service_client(
+    service_handler: _ServiceHttpHandler, home_service_manifest: dict[str, Any]
+) -> Iterator[TestClient]:
+    """Same wiring as `service_client`, but never signed in — for the 401 paths."""
+    yield from _build_service_client(home_service_manifest, service_handler, signed_in=False)
 
 
 @pytest.fixture
@@ -362,32 +367,28 @@ def test_status_unknown_name_404(service_client: TestClient) -> None:
     assert resp.status_code == 404
 
 
-def test_put_credentials_requires_session(service_client: TestClient) -> None:
+def test_put_credentials_requires_session(anon_service_client: TestClient) -> None:
     """Credential writes are double-gated: trusted network AND passkey session."""
-    service_client.cookies.clear()
-    resp = service_client.put(
+    resp = anon_service_client.put(
         "/api/integrations/home-service/credentials",
         json={"url": "http://ha.local:8123", "token": "t"},
     )
     assert resp.status_code == 401
 
 
-def test_delete_credentials_requires_session(service_client: TestClient) -> None:
-    service_client.cookies.clear()
-    resp = service_client.delete("/api/integrations/home-service/credentials")
+def test_delete_credentials_requires_session(anon_service_client: TestClient) -> None:
+    resp = anon_service_client.delete("/api/integrations/home-service/credentials")
     assert resp.status_code == 401
 
 
-def test_list_integrations_requires_session(service_client: TestClient) -> None:
+def test_list_integrations_requires_session(anon_service_client: TestClient) -> None:
     """The listing leaks every credentials_schema and per-field configured map —
     session-gated, but NOT network-gated (the PWA reads it from the public host)."""
-    service_client.cookies.clear()
-    resp = service_client.get("/api/integrations")
+    resp = anon_service_client.get("/api/integrations")
     assert resp.status_code == 401
 
 
-def test_integration_status_requires_session(service_client: TestClient) -> None:
+def test_integration_status_requires_session(anon_service_client: TestClient) -> None:
     """Status proxies the service's /health payload — session-gated."""
-    service_client.cookies.clear()
-    resp = service_client.get("/api/integrations/home-service/status")
+    resp = anon_service_client.get("/api/integrations/home-service/status")
     assert resp.status_code == 401

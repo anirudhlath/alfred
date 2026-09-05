@@ -9,15 +9,13 @@ address so both halves run, and pin the *order* the two gates run in.
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
 
 from core.channels.web_server import create_app
-from shared.streams import AUTH_SESSION_PREFIX
+from tests.core.channels.conftest import _TEST_SESSION_ID, make_session_redis
 
-_SESSION = "double-gate-session"
 _UNTRUSTED = ("203.0.113.9", 12345)  # TEST-NET-3 — never RFC1918, CGNAT or loopback
 
 # (method, path, json body) for every route carrying both gates.
@@ -39,25 +37,15 @@ def app(monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.delenv("ALFRED_TRUSTED_NETWORKS", raising=False)
     monkeypatch.delenv("ALFRED_TRUSTED_NETWORKS_STRICT", raising=False)
 
-    mock_redis = AsyncMock()
-
-    async def _fake_hgetall(key: str) -> dict[bytes, bytes]:
-        if key == f"{AUTH_SESSION_PREFIX}{_SESSION}":
-            return {b"authenticated": b"1"}
-        return {}
-
-    mock_redis.hgetall = AsyncMock(side_effect=_fake_hgetall)
-    mock_redis.hget = AsyncMock(return_value=None)
-
     app = create_app(redis_url="redis://localhost:6379")
-    app.state.redis = mock_redis
+    app.state.redis = make_session_redis()
     return app
 
 
 def _client(app: Any, *, signed_in: bool, peer: tuple[str, int] = _UNTRUSTED) -> TestClient:
     client = TestClient(app, client=peer)
     if signed_in:
-        client.cookies.set("alfred_auth", _SESSION)
+        client.cookies.set("alfred_auth", _TEST_SESSION_ID)
     return client
 
 

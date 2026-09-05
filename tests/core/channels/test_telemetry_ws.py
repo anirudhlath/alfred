@@ -10,18 +10,11 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from core.channels.web_server import create_app
-from shared.streams import AUTH_SESSION_PREFIX
-
-_SESSION = "telemetry-test-session"
+from tests.core.channels.conftest import _TEST_SESSION_ID, make_session_redis
 
 
 def _make_client(mock_redis: AsyncMock, *, authed: bool = True) -> TestClient:
-    async def _fake_hgetall(key: str) -> dict[bytes, bytes]:
-        if key == f"{AUTH_SESSION_PREFIX}{_SESSION}":
-            return {b"authenticated": b"1"}
-        return {}
-
-    mock_redis.hgetall = AsyncMock(side_effect=_fake_hgetall)
+    mock_redis.hgetall = make_session_redis().hgetall
     # Default: empty stream so _last_id resolves subscriptions to "0-0" deterministically.
     if not isinstance(mock_redis.xrevrange, AsyncMock):
         mock_redis.xrevrange = AsyncMock(return_value=[])
@@ -29,7 +22,7 @@ def _make_client(mock_redis: AsyncMock, *, authed: bool = True) -> TestClient:
     app.state.redis = mock_redis
     client = TestClient(app)
     if authed:
-        client.cookies.set("alfred_auth", _SESSION)
+        client.cookies.set("alfred_auth", _TEST_SESSION_ID)
     return client
 
 
