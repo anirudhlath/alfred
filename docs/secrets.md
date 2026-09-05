@@ -45,15 +45,21 @@ graph TD
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| GET | `/api/integrations` | none | List integrations with schema + configured status |
-| PUT | `/api/integrations/{name}/credentials` | trusted network | Save credentials to keyring |
-| DELETE | `/api/integrations/{name}/credentials` | trusted network | Clear credentials |
-| GET | `/api/integrations/{name}/status` | none | Run health check |
+| GET | `/api/integrations` | session | List integrations with schema + configured status |
+| PUT | `/api/integrations/{name}/credentials` | session + trusted network | Save credentials to keyring |
+| DELETE | `/api/integrations/{name}/credentials` | session + trusted network | Clear credentials |
+| GET | `/api/integrations/{name}/status` | session | Run health check |
 
 ## Security
 
 - Credential values are never returned in GET responses — only boolean configured status
-- PUT/DELETE endpoints restricted to the trusted network via `Depends(require_trusted_network)` (localhost + Tailscale CGNAT `100.64.0.0/10`)
+- PUT/DELETE endpoints are double-gated: `Depends(require_trusted_network)` (localhost +
+  RFC1918 LAN + Tailscale CGNAT `100.64.0.0/10`) **and** `Depends(require_authenticated)`
+  (the `alfred_auth` passkey session cookie) — credential writes are credential-equivalent,
+  and "on the LAN" is not an identity on an internet-facing host
+- The two reads (`GET /api/integrations`, `GET .../status`) require a session but are
+  deliberately NOT network-gated — the PWA reads them from the public host. They disclose
+  every `credentials_schema` and per-field `configured` map, plus proxied `/health` payloads
 - Password fields are never pre-filled in the UI
 - Transient fields (e.g. MFA codes) are passed to the adapter but not persisted
 
@@ -75,7 +81,7 @@ Core stays the single credential authority (`core/channels/service_credentials.p
 - `GET /api/integrations` merges adapters (`"kind": "adapter"`) with
   registry-declared services (`"kind": "service"`, `category` = `"service"`);
   the schema-driven `IntegrationCard` renders both with no special-casing.
-- `PUT /api/integrations/{name}/credentials` (service, trusted network):
+- `PUT /api/integrations/{name}/credentials` (service, session + trusted network):
   validate against the registry schema → store non-transient fields in the OS
   keyring (namespace = service name) → POST the flat field dict to the
   service's `credentials_endpoint`. Push failure → HTTP 502, but the keyring
