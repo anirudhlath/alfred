@@ -81,7 +81,15 @@ No passphrase or host-networking flags to remember — the compose file needs on
 uv run alfredctl smoke             # boots seed mode, health-checks infra + SPA, tears down
 uv run alfredctl smoke --deep      # ALSO drives a real request through System 2 (needs a
                                    # valid OPENROUTER_API_KEY) and confirms a reply comes back
+uv run alfredctl smoke --port 8082 # publish somewhere else, so the run can coexist with an
+                                   # Alfred already holding 8081 (the case on a deploy host)
 ```
+
+`--port` applies only to the container smoke starts itself. With `--attach` the port is read
+off the running container (`docker port <name> 8081`) rather than assumed, and smoke refuses
+to run if it cannot be determined — assuming 8081 meant that on a host already serving Alfred
+there, the HTTP checks probed *that* container while the `docker exec` checks ran against the
+named one, producing a single report describing two different containers.
 
 `--deep` is the check that actually exercises the cloud-LLM path end to end — use it after
 setting your key to confirm reasoning is live, not just that the web server is up.

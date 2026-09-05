@@ -195,6 +195,30 @@ def _passphrase(mode: str, persist_dir: Path | None) -> str:
     return secrets.token_urlsafe(32)  # ephemeral/seed: fresh per run
 
 
+def _published_port(exe: str, name: str) -> int | None:
+    """Host port bound to the container's 8081, or None if it cannot be determined.
+
+    `smoke --attach` used to assume 8081. On a host already running Alfred on that
+    port, that silently probed the *other* container and reported it green — a pass
+    for something the operator never asked about. Ask the runtime instead of guessing,
+    and let the caller fail loudly when the answer is unavailable.
+    """
+    try:
+        out = subprocess.run(
+            [exe, "port", name, "8081"], check=False, capture_output=True, text=True
+        )
+    except OSError:
+        return None
+    if out.returncode != 0:
+        return None
+    for line in out.stdout.splitlines():
+        # "0.0.0.0:8082" / "[::]:8082" — the port is whatever follows the last colon.
+        _, _, host_port = line.strip().rpartition(":")
+        if host_port.isdigit():
+            return int(host_port)
+    return None
+
+
 def _resolve_url(r: rt.Runtime, plan: launch.LaunchPlan) -> str:
     if plan.url_hint != "resolve-ip":
         return plan.url_hint
@@ -276,6 +300,10 @@ def smoke(
     hf_cache: Annotated[
         Path | None, typer.Option(help="Existing HF cache to mount at /models/hf")
     ] = None,
+    port: Annotated[
+        int | None,
+        typer.Option(help="Host port to publish (docker/podman); derived when --attach"),
+    ] = None,
     timeout: Annotated[float, typer.Option(help="Seconds to wait for /health")] = 300.0,
     deep: Annotated[
         bool,
@@ -289,13 +317,30 @@ def smoke(
         raise typer.BadParameter(
             "--name only applies with --attach; smoke starts its own container otherwise"
         )
+    if port is not None and attach:
+        raise typer.BadParameter(
+            "--port does not apply with --attach; the port is read from the running container"
+        )
     r = rt.detect(runtime)
+    target = name or rt.container_name()
     if not attach:
-        up(runtime=r.name, mode="seed", hf_cache=hf_cache)
+        # Default only applies to the container smoke starts itself.
+        port = port if port is not None else 8081
+        up(runtime=r.name, mode="seed", hf_cache=hf_cache, port=port)
+    elif r.name != "container":
+        # Never assume 8081: on a host already running Alfred there, that probes the
+        # wrong container and reports it green. Ask the runtime, and fail if it cannot say.
+        port = _published_port(r.exe, target)
+        if port is None:
+            raise typer.BadParameter(
+                f"could not determine which host port {target!r} publishes for 8081 — "
+                f"is it running, and does it publish that port? "
+                f"(`{r.exe} port {target} 8081`)"
+            )
     plan = launch.LaunchPlan(
         run_args=[],
-        url_hint="resolve-ip" if r.name == "container" else "http://localhost:8081",
-        name=name or rt.container_name(),
+        url_hint="resolve-ip" if r.name == "container" else f"http://localhost:{port}",
+        name=target,
         image=rt.image_tag(),
     )
     base_url = _resolve_url(r, plan)

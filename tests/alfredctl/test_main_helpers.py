@@ -165,6 +165,9 @@ def _capture_smoke_name(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
         return [smoke_mod.SmokeCheck("health", True, "GET /health → 200")]
 
     _stub_smoke_deps(monkeypatch, [])
+    # These tests are about which container is targeted, not which port; give the
+    # attach path a port so it gets past the guard that now refuses to assume one.
+    monkeypatch.setattr(main, "_published_port", lambda exe, name: 8081)
     monkeypatch.setattr(main, "_resolve_url", lambda r, plan: "http://localhost:8081")
     monkeypatch.setattr(main.smoke_mod, "run_checks", _fake_run_checks)
     return seen
@@ -272,3 +275,97 @@ def test_up_preflight_survives_markup_in_a_detail(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(main, "build", _stop)
     with pytest.raises(_StopBeforeDockerError):
         main.up()
+
+
+# --- smoke: which host port to probe -------------------------------------------------
+#
+# `smoke --attach` used to hardcode 8081. On a host already running Alfred there — the
+# normal case for a deployment box — that probed the *other* container and reported it
+# green, a pass for something nobody asked about. The port is now read from the runtime.
+
+
+@pytest.mark.parametrize(
+    ("stdout", "expected"),
+    [
+        ("0.0.0.0:8082\n[::]:8082\n", 8082),  # docker publishes both families
+        ("0.0.0.0:8081\n", 8081),
+        ("[::]:9000\n", 9000),
+        ("", None),  # published nothing for 8081
+        ("garbage\n", None),
+    ],
+)
+def test_published_port_reads_the_runtime(
+    monkeypatch: pytest.MonkeyPatch, stdout: str, expected: int | None
+) -> None:
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout, ""),
+    )
+    assert main._published_port("docker", "alfred-x") == expected
+
+
+def test_published_port_is_none_when_the_runtime_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 1, "", "No such container"),
+    )
+    assert main._published_port("docker", "alfred-gone") is None
+
+
+def test_smoke_attach_probes_the_containers_own_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The regression: attaching to a container on 8082 must not probe 8081."""
+    _stub_smoke_deps(monkeypatch, [])
+    monkeypatch.setattr(main, "_published_port", lambda exe, name: 8082)
+    seen: list[str] = []
+
+    def _capture(
+        exe: str, name: str, base_url: str, **kwargs: object
+    ) -> list[smoke_mod.SmokeCheck]:
+        seen.append(base_url)
+        return [smoke_mod.SmokeCheck("health", True, "ok")]
+
+    monkeypatch.setattr(smoke_mod, "run_checks", _capture)
+    main.smoke(runtime=None, attach=True, name="alfred-other", timeout=1.0)
+    assert seen == ["http://localhost:8082"]
+
+
+def test_smoke_attach_fails_loudly_when_the_port_is_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Falling back to 8081 here is what produced a green result for the wrong container."""
+    _stub_smoke_deps(monkeypatch, [])
+    monkeypatch.setattr(main, "_published_port", lambda exe, name: None)
+    monkeypatch.setattr(
+        smoke_mod, "run_checks", lambda *a, **k: pytest.fail("must not probe an assumed port")
+    )
+    with pytest.raises(typer.BadParameter, match="could not determine which host port"):
+        main.smoke(runtime=None, attach=True, name="alfred-stopped", timeout=1.0)
+
+
+def test_smoke_forwards_its_port_to_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--port exists so a smoke run can coexist with an Alfred already on 8081."""
+    fake_runtime = Runtime("docker", "docker")
+    monkeypatch.setattr(rt, "detect", lambda preferred: fake_runtime)
+    monkeypatch.setattr(main, "down", lambda runtime=None: None)
+    up_kwargs: dict[str, object] = {}
+    monkeypatch.setattr(main, "up", lambda **kwargs: up_kwargs.update(kwargs))
+    seen: list[str] = []
+
+    def _capture(
+        exe: str, name: str, base_url: str, **kwargs: object
+    ) -> list[smoke_mod.SmokeCheck]:
+        seen.append(base_url)
+        return [smoke_mod.SmokeCheck("health", True, "ok")]
+
+    monkeypatch.setattr(smoke_mod, "run_checks", _capture)
+    main.smoke(runtime=None, port=8082, timeout=1.0)
+    assert up_kwargs["port"] == 8082
+    assert seen == ["http://localhost:8082"]
+
+
+def test_smoke_rejects_port_with_attach() -> None:
+    """Contradictory: --attach reads the port off a container that already chose one."""
+    with pytest.raises(typer.BadParameter, match="--port does not apply with --attach"):
+        main.smoke(runtime=None, attach=True, port=8082)
