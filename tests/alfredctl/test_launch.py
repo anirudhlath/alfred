@@ -143,6 +143,51 @@ def test_trusted_networks_merge(tmp_path: Path) -> None:
     assert "172.16.0.0/12" in values
 
 
+def test_strict_mode_from_env_file_skips_container_subnet(tmp_path: Path) -> None:
+    """Strict mode means "trust only what I listed" — auto-appending the container
+    subnet would silently re-trust every peer on the Docker network, including a
+    reverse proxy fronting the internet."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("ALFRED_TRUSTED_NETWORKS=203.0.113.7\nALFRED_TRUSTED_NETWORKS_STRICT=1\n")
+    args = _plan(env_file=env_file).run_args
+    entry = next(a for a in args if a.startswith("ALFRED_TRUSTED_NETWORKS="))
+    values = entry.split("=", 1)[1].split(",")
+    assert "172.16.0.0/12" not in values
+    assert values == ["203.0.113.7"]
+
+
+def test_strict_mode_from_extra_env_skips_container_subnet(tmp_path: Path) -> None:
+    """--env ALFRED_TRUSTED_NETWORKS_STRICT=1 must be honoured too: extra_env is
+    applied after the merge, so reading only the env file would miss it."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("ALFRED_TRUSTED_NETWORKS=203.0.113.7\n")
+    args = _plan(env_file=env_file, extra_env=["ALFRED_TRUSTED_NETWORKS_STRICT=true"]).run_args
+    entry = next(a for a in args if a.startswith("ALFRED_TRUSTED_NETWORKS="))
+    values = entry.split("=", 1)[1].split(",")
+    assert "172.16.0.0/12" not in values
+    assert values == ["203.0.113.7"]
+
+
+@pytest.mark.parametrize("flag", ["1", "true", "YES", " Yes "])
+def test_strict_mode_truthy_spellings(tmp_path: Path, flag: str) -> None:
+    """Truthiness must match _strict_networks() in core/channels/web_server.py, or
+    alfredctl and the server disagree about what strict mode means."""
+    env_file = tmp_path / ".env"
+    env_file.write_text(f"ALFRED_TRUSTED_NETWORKS_STRICT={flag}\n")
+    args = _plan(env_file=env_file).run_args
+    entry = next(a for a in args if a.startswith("ALFRED_TRUSTED_NETWORKS="))
+    assert "172.16.0.0/12" not in entry
+
+
+@pytest.mark.parametrize("flag", ["0", "", "false", "no"])
+def test_non_strict_still_appends_container_subnet(tmp_path: Path, flag: str) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(f"ALFRED_TRUSTED_NETWORKS_STRICT={flag}\n")
+    args = _plan(env_file=env_file).run_args
+    entry = next(a for a in args if a.startswith("ALFRED_TRUSTED_NETWORKS="))
+    assert "172.16.0.0/12" in entry.split("=", 1)[1].split(",")
+
+
 def test_apple_container_gets_memory_and_cpus() -> None:
     args = _plan(rt=APPLE).run_args
     assert "--memory" in args and args[args.index("--memory") + 1] == "8g"

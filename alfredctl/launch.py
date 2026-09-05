@@ -24,6 +24,22 @@ class LaunchPlan:
     image: str
 
 
+def _strict_trusted_networks(merged: dict[str, str], extra_env: list[str]) -> bool:
+    """True when ALFRED_TRUSTED_NETWORKS_STRICT is set to a truthy value.
+
+    Truthiness mirrors ``_strict_networks()`` in ``core/channels/web_server.py`` — if the
+    two disagree, alfredctl and the server disagree about what "strict" means. ``--env``
+    items are checked as well as the env file because ``extra_env`` is applied after the
+    merge, so a flag passed on the command line would otherwise be invisible here.
+    """
+    value = merged.get("ALFRED_TRUSTED_NETWORKS_STRICT", "")
+    for item in extra_env:
+        key, _, raw = item.partition("=")
+        if key == "ALFRED_TRUSTED_NETWORKS_STRICT":
+            value = raw
+    return value.strip().lower() in ("1", "true", "yes")
+
+
 def _env_pairs(
     rt: Runtime,
     mode: str,
@@ -41,7 +57,13 @@ def _env_pairs(
                 merged[key] = (
                     merged[key].replace("localhost", gateway).replace("127.0.0.1", gateway)
                 )
-    subnets = (merged.get("ALFRED_TRUSTED_NETWORKS", ""), trusted_subnet(rt))
+    # The container subnet is auto-trusted so the SPA works out of the box from the
+    # host — but strict mode means "trust only what I listed", and appending it anyway
+    # would silently re-trust every peer on that network, including a reverse proxy
+    # fronting the internet. Strict mode only drops the *built-in* LAN defaults on the
+    # server side, so this list is the one place the subnet can be withheld.
+    subnet = "" if _strict_trusted_networks(merged, extra_env) else trusted_subnet(rt)
+    subnets = (merged.get("ALFRED_TRUSTED_NETWORKS", ""), subnet)
     trusted = ",".join(x for x in subnets if x)
     merged["ALFRED_TRUSTED_NETWORKS"] = trusted
     merged["ALFRED_DATA_MODE"] = mode
