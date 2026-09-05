@@ -167,9 +167,11 @@ Then:
   `X-Forwarded-Proto: https` — the latter is what makes the `alfred_auth` cookie `Secure`.
 - **The hostname is the WebAuthn RP ID.** Passkeys are bound to it; renaming the host
   orphans every registered passkey. Pick it once.
-- Proxied WebSockets are closed after ~100 s idle by Cloudflare; clients send
-  `{"type":"ping"}` (answered with `{"type":"pong"}`) on `/ws` and `/ws/telemetry` to
-  keep them open.
+- Proxied WebSockets are closed after ~100 s idle by Cloudflare. The server answers
+  `{"type":"ping"}` with `{"type":"pong"}` on both `/ws` and `/ws/telemetry`, so a client
+  *should* send a periodic ping to hold the socket open — but nothing in this repo does
+  yet (the admin SPA sends no keepalives; the PWA that will is Phase 4). Expect idle
+  drops and reconnects behind Cloudflare until a client starts pinging.
 - **Optionally close the direct path.** If the proxy shares Alfred's Docker network it can
   reach the container on 8081 without a published port, so `docker-compose.yml`'s
   `"8081:8081"` can be narrowed to `"127.0.0.1:8081:8081"` or dropped, leaving the proxy

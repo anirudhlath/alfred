@@ -11,7 +11,7 @@ sequenceDiagram
     participant R as Redis
     participant DB as SQLite
 
-    Note over B,DB: Registration (first visit; trusted network only)
+    Note over B,DB: Registration (first visit, trusted network only)
     B->>S: POST /api/auth/register/begin
     S->>R: Store challenge (5min TTL)
     S-->>B: PublicKeyCredentialCreationOptions
