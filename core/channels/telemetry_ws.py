@@ -108,6 +108,11 @@ def register_telemetry_ws(app: FastAPI) -> None:
                 except json.JSONDecodeError:
                     await websocket.send_json({"type": "error", "message": "invalid JSON"})
                     continue
+                if not isinstance(msg, dict):
+                    # A bare JSON scalar/array parses fine but has no .get — refuse it
+                    # rather than dying with a 1011 and taking the socket down.
+                    await websocket.send_json({"type": "error", "message": "invalid JSON"})
+                    continue
                 if msg.get("type") == "ping":
                     await websocket.send_json({"type": "pong"})
                     continue

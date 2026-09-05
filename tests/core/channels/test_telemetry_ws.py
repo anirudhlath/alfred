@@ -13,10 +13,21 @@ from core.channels.web_server import create_app
 from tests.core.channels.conftest import _TEST_SESSION_ID, session_hgetall
 
 
+def _parked_xread() -> AsyncMock:
+    """An xread that blocks forever — the pump parks and never produces entries."""
+
+    async def _block(*args: Any, **kwargs: Any) -> Any:
+        await asyncio.Event().wait()
+
+    return AsyncMock(side_effect=_block)
+
+
 def _make_client(mock_redis: AsyncMock, *, authed: bool = True) -> TestClient:
     mock_redis.hgetall = session_hgetall()
     # Default: empty stream so _last_id resolves subscriptions to "0-0" deterministically.
-    if not isinstance(mock_redis.xrevrange, AsyncMock):
+    # __dict__, not isinstance: an auto-created AsyncMock child passes isinstance, so an
+    # isinstance guard would never apply the default and _last_id would store a MagicMock.
+    if "xrevrange" not in mock_redis.__dict__:
         mock_redis.xrevrange = AsyncMock(return_value=[])
     app = create_app(redis_url="redis://localhost:6379")
     app.state.redis = mock_redis
@@ -91,11 +102,7 @@ def test_telemetry_ws_subscribe_and_receive_entry() -> None:
 def test_telemetry_ws_unsubscribe_ack() -> None:
     """Unsubscribing a stream removes it from the subscribed ack."""
     mock_redis = AsyncMock()
-
-    async def _xread_block(*args: Any, **kwargs: Any) -> Any:
-        await asyncio.Event().wait()  # block forever — pump never produces entries
-
-    mock_redis.xread = AsyncMock(side_effect=_xread_block)
+    mock_redis.xread = _parked_xread()
     client = _make_client(mock_redis)
     with client.websocket_connect("/ws/telemetry") as ws:
         ws.send_text(json.dumps({"type": "subscribe", "streams": ["events", "actions"]}))
@@ -110,11 +117,7 @@ def test_telemetry_ws_unsubscribe_ack() -> None:
 def test_telemetry_ws_invalid_json() -> None:
     """Non-JSON text produces an error frame; the connection stays open."""
     mock_redis = AsyncMock()
-
-    async def _xread_block(*args: Any, **kwargs: Any) -> Any:
-        await asyncio.Event().wait()
-
-    mock_redis.xread = AsyncMock(side_effect=_xread_block)
+    mock_redis.xread = _parked_xread()
     client = _make_client(mock_redis)
     with client.websocket_connect("/ws/telemetry") as ws:
         ws.send_text("not json")
@@ -150,11 +153,7 @@ def test_telemetry_ws_redis_error_frame() -> None:
 def test_telemetry_ws_unknown_stream_subscribe() -> None:
     """Subscribing only unknown streams yields an empty subscribed ack."""
     mock_redis = AsyncMock()
-
-    async def _xread_block(*args: Any, **kwargs: Any) -> Any:
-        await asyncio.Event().wait()
-
-    mock_redis.xread = AsyncMock(side_effect=_xread_block)
+    mock_redis.xread = _parked_xread()
     client = _make_client(mock_redis)
     with client.websocket_connect("/ws/telemetry") as ws:
         ws.send_text(json.dumps({"type": "subscribe", "streams": ["bogus"]}))
@@ -163,16 +162,34 @@ def test_telemetry_ws_unknown_stream_subscribe() -> None:
 
 
 def test_telemetry_ws_ping_gets_pong_not_subscribed_ack() -> None:
+    """A ping is answered with a pong only: it never emits a subscribed ack and never
+    adds to or removes from the subscription set, before or after subscribing."""
     mock_redis = AsyncMock()
-
-    async def _xread_block(*args: Any, **kwargs: Any) -> Any:
-        await asyncio.Event().wait()
-
-    mock_redis.xread = AsyncMock(side_effect=_xread_block)
+    mock_redis.xread = _parked_xread()
     client = _make_client(mock_redis)
     with client.websocket_connect("/ws/telemetry") as ws:
         ws.send_text(json.dumps({"type": "ping"}))
         assert ws.receive_json() == {"type": "pong"}
         # Subscriptions still work afterwards and the ack lists only real streams.
+        ws.send_text(json.dumps({"type": "subscribe", "streams": ["events"]}))
+        assert ws.receive_json() == {"type": "subscribed", "streams": ["events"]}
+
+        # Pinging while subscribed is equally invisible: pong, no ack, subs untouched.
+        ws.send_text(json.dumps({"type": "ping"}))
+        assert ws.receive_json() == {"type": "pong"}
+        ws.send_text(json.dumps({"type": "subscribe", "streams": []}))
+        assert ws.receive_json() == {"type": "subscribed", "streams": ["events"]}
+
+
+def test_telemetry_ws_non_object_frame_is_refused_and_socket_stays_open() -> None:
+    """A valid-JSON non-object (array/scalar) gets the invalid-JSON error, not a 1011."""
+    mock_redis = AsyncMock()
+    mock_redis.xread = _parked_xread()
+    client = _make_client(mock_redis)
+    with client.websocket_connect("/ws/telemetry") as ws:
+        for frame in ("[]", '"str"', "1"):
+            ws.send_text(frame)
+            assert ws.receive_json() == {"type": "error", "message": "invalid JSON"}
+        # The socket survived: a normal subscribe still works.
         ws.send_text(json.dumps({"type": "subscribe", "streams": ["events"]}))
         assert ws.receive_json() == {"type": "subscribed", "streams": ["events"]}

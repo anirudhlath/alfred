@@ -383,8 +383,16 @@ code **4001**.
 {"type": "unsubscribe", "streams": ["home_state"]}
 ```
 
+**Ping** — keepalive; Cloudflare drops proxied WebSockets idle ~100s:
+
+```json
+{"type": "ping"}
+```
+
 Stream names must match the `STREAM_CATALOG` keys (see table above). Unknown names are
-silently ignored.
+silently ignored. A frame that is valid JSON but not an object (`[]`, `"str"`, `1`) is
+answered with the `{"type": "error", "message": "invalid JSON"}` frame; the connection
+stays open.
 
 ### Server Messages (received by client)
 
@@ -410,6 +418,13 @@ valid stream names were in the request.
 
 `decode_entry` is applied — the `event` field contains the deserialized payload object, not
 a raw JSON string.
+
+**Pong** — the only reply to a `ping`. No `subscribed` ack is emitted and the
+subscription set is untouched:
+
+```json
+{"type": "pong"}
+```
 
 **Status** — sent on transient pump errors:
 

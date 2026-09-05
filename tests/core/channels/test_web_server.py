@@ -350,8 +350,9 @@ def test_ws_ping_is_a_no_op_and_does_not_lock_the_session(web_client: TestClient
         session_id="ignored-by-handler",
         text="Certainly, sir.",
     )
+    publish = AsyncMock(return_value=alfred_resp)
     with (
-        patch("core.channels.web_server.publish_and_wait", new=AsyncMock(return_value=alfred_resp)),
+        patch("core.channels.web_server.publish_and_wait", new=publish),
         web_client.websocket_connect("/ws") as ws,
     ):
         assert ws.receive_json()["type"] == "session"
@@ -366,3 +367,35 @@ def test_ws_ping_is_a_no_op_and_does_not_lock_the_session(web_client: TestClient
 
     assert response["type"] == "response"
     assert response["session_id"] == "restored-session"
+    # Only the real message reached the engine — the two pings never did.
+    assert publish.await_count == 1
+
+
+def test_ws_non_object_frame_is_refused_and_socket_stays_open(web_client: TestClient) -> None:
+    """A valid-JSON non-object (array/scalar) gets an error frame, not a 1011 close."""
+    from bus.schemas.events import AlfredResponse
+
+    alfred_resp = AlfredResponse(
+        source="conscious",
+        channel="web_pwa",
+        session_id="s",
+        text="Certainly, sir.",
+    )
+    with (
+        patch("core.channels.web_server.publish_and_wait", new=AsyncMock(return_value=alfred_resp)),
+        web_client.websocket_connect("/ws") as ws,
+    ):
+        assert ws.receive_json()["type"] == "session"
+
+        for frame in ([], "str", 1):
+            ws.send_json(frame)
+            error = ws.receive_json()
+            assert error["type"] == "error"
+            assert error["text"] == "Expected a JSON object"
+            assert "session_id" in error
+
+        # The socket survived: a normal turn still works.
+        ws.send_json({"type": "text", "content": "hello"})
+        response = ws.receive_json()
+
+    assert response["type"] == "response"

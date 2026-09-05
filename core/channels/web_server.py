@@ -448,9 +448,23 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
             while True:
                 data = await websocket.receive_json()
 
+                if not isinstance(data, dict):
+                    # A bare JSON scalar/array has no .get — refuse it rather than
+                    # dying with a 1011 and taking the socket down.
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "text": "Expected a JSON object",
+                            "session_id": session_id,
+                        }
+                    )
+                    continue
+
                 # Keepalive (Cloudflare drops proxied sockets idle ~100s). Answered
                 # before the session-restore block so pings never count as the
-                # client's first message.
+                # client's first message. Note the pong rides the same serial receive
+                # loop as chat turns, so it can lag a full conscious-engine turn
+                # (publish_and_wait timeout 60s) — pong latency is not a liveness signal.
                 if data.get("type") == "ping":
                     await websocket.send_json({"type": "pong"})
                     continue

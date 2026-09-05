@@ -163,7 +163,15 @@ Used by `ChatSocket` (`lib/chat-socket.ts`).
 ```json
 {"type": "text",  "content": "<message>", "channel": "web_pwa", "session_id": "<id>"}
 {"type": "audio", "content": "<base64-webm-data-url>", "channel": "web_pwa"}
+{"type": "ping"}
 ```
+
+`ping` is a keepalive (Cloudflare drops proxied sockets idle ~100s); the server answers
+`{"type": "pong"}` and does nothing else — in particular a ping does not count as the
+first message, so `session_id` restore still works after any number of them. The pong is
+answered on the same serial receive loop as chat turns, so it can lag a full
+conscious-engine turn (`publish_and_wait` timeout 60s) — pong latency is not a liveness
+signal.
 
 `session_id` is sent only on the first message of a new connection and is read from
 `localStorage` under key `alfred_session_id`. After the first send, `firstMessageSent`
@@ -179,6 +187,7 @@ is set and session_id is omitted from subsequent payloads.
 | { type: "notification";  title: string; body: string; urgency: string;
                             notification_id: string; audio?: string }
 | { type: "error";         text: string; session_id?: string }
+| { type: "pong" }
 ```
 
 - `response.actions_taken` — optional list of tool names the Conscious Engine executed.
@@ -209,7 +218,11 @@ stream entries.
 ```json
 {"type": "subscribe",   "streams": ["events", "actions", "user_requests"]}
 {"type": "unsubscribe", "streams": ["home_state"]}
+{"type": "ping"}
 ```
+
+`ping` is the same keepalive as on `/ws`: answered with `{"type": "pong"}`, and it emits
+no `subscribed` ack and leaves the subscription set untouched.
 
 On reconnect, all current subscriptions are re-sent automatically (`onopen` replays
 `this.subscriptions`). `TelemetrySocket.subscribe()` persists the set so reconnects
@@ -221,6 +234,7 @@ restore state without consumer involvement.
 | { type: "subscribed"; streams: string[] }
 | { type: "entry"; stream: string; id: string; event: Record<string, unknown> }
 | { type: "status"; detail: string }
+| { type: "pong" }
 ```
 
 - `subscribed` — full current subscription set, sent after every subscribe/unsubscribe.
