@@ -157,7 +157,7 @@ def test_missing_assets_are_not_pinned(tmp_path: Path) -> None:
     it does not exist, so a year-long pin is unrecoverable for that client."""
     resp = _cached_app(tmp_path).get("/assets/missing-Bx3kYp9z.js")
     assert resp.status_code == 404
-    assert resp.headers["cache-control"] != _IMMUTABLE
+    assert resp.headers["cache-control"] == _NO_CACHE
 
 
 def test_entry_point_is_never_cached(tmp_path: Path) -> None:

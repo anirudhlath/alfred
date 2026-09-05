@@ -11,15 +11,15 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, patch
 
 import pytest
-from fastapi.testclient import TestClient
 
-from core.channels.web_server import create_app
+from tests.core.channels.conftest import live_channels_client
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+    from fastapi.testclient import TestClient
 
 DIST = Path(__file__).resolve().parents[3] / "web" / "dist"
 
@@ -29,47 +29,8 @@ pytestmark = pytest.mark.skipif(not (DIST / "index.html").exists(), reason="web/
 @pytest.fixture
 def spa_client() -> Iterator[TestClient]:
     """A real-lifespan TestClient serving the actual built `web/dist/`."""
-    mock_redis = AsyncMock()
-    mock_redis.hgetall = AsyncMock(return_value={})
-    mock_redis.close = AsyncMock()
-
-    # Minimal mock CredentialStore — initialize/close are no-ops; reports no credentials.
-    mock_store = AsyncMock()
-    mock_store.initialize = AsyncMock()
-    mock_store.close = AsyncMock()
-    mock_store.get_user_id = AsyncMock(return_value=None)
-    mock_store.list_credentials = AsyncMock(return_value=[])
-    mock_store.has_any_credential = AsyncMock(return_value=False)
-
-    with (
-        # Prevent aioredis.from_url from connecting to a real Redis.
-        patch("core.channels.web_server.aioredis.from_url", return_value=mock_redis),
-        # Skip the real CredentialStore (writes to data/credentials.db).
-        patch("core.channels.web_server.CredentialStore", return_value=mock_store),
-        # Skip APNs adapter init (needs .p8 key on disk).
-        patch("core.channels.web_server._init_apns_adapter", new=AsyncMock()),
-        # Skip the notification delivery worker background task (imported inside lifespan).
-        patch(
-            "core.notifications.delivery.notification_delivery_worker",
-            new=AsyncMock(return_value=None),
-        ),
-        # Skip the credential push worker — the real one busy-spins against the
-        # AsyncMock redis (xreadgroup returns instantly, never suspends), starving
-        # the lifespan event loop so requests never complete.
-        patch(
-            "core.channels.service_credentials.credential_push_worker",
-            new=AsyncMock(return_value=None),
-        ),
-        # Skip warmup — real Whisper/Piper loads in to_thread outlive the TestClient.
-        # None, not a MagicMock: a mock never fires add_done_callback, so asyncio.wait
-        # in teardown burns its full timeout. teardown skips None tasks.
-        patch("core.channels.web_server.start_warmup", return_value=None),
-        # httpx.AsyncClient.aclose() is called on shutdown.
-        patch("httpx.AsyncClient.aclose", new=AsyncMock()),
-    ):
-        app = create_app(redis_url="redis://localhost:6379")
-        with TestClient(app) as client:
-            yield client
+    with live_channels_client() as client:
+        yield client
 
 
 def test_spa_index_served(spa_client: TestClient) -> None:

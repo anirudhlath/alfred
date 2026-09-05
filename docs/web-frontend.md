@@ -343,7 +343,14 @@ untouched:
 | --- | --- | --- |
 | `/assets/*`, status < 400 | `public, max-age=31536000, immutable` | Content-hashed, so the bytes behind a URL never change. Errors are excluded — a pinned 404 has no URL to bust it. |
 | `text/html` | `no-cache, no-store, must-revalidate` | `index.html` and every SPA-fallback route: never stored, so a deploy is picked up on the next load. |
-| everything else | `no-cache, must-revalidate` | Unhashed `web/public/` files (`/favicon.svg`, `/manifest.json`): revalidated every load, but a 304 skips re-sending the bytes. |
+| everything else | `no-cache, must-revalidate` | Unhashed `web/public/` files (`/favicon.svg`, `/manifest.json`): revalidated on every load. |
+
+Tier 3 does not save bandwidth today. `mount_spa`'s fallback serves those files through a
+bare `FileResponse`, which ignores `If-None-Match`/`If-Modified-Since` — only
+`StaticFiles.get_response` honours conditional requests — so a revalidation returns 200
+with the full body, not a 304. `no-cache, must-revalidate` is still the correct header:
+it is what a caching proxy in front of Alfred needs, and the 304 arrives for free if the
+fallback ever grows conditional handling.
 
 ---
 

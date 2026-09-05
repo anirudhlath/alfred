@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
     from pathlib import Path
 
     from fastapi.testclient import TestClient
 
 from core.channels.web_server import create_app
+from tests.core.channels.conftest import live_channels_client
 
 
 def test_health_endpoint(web_client: TestClient) -> None:
@@ -243,70 +242,13 @@ def _make_spa_dist(tmp_path: Path) -> Path:
     return dist
 
 
-@contextmanager
-def _live_channels_client(dist: Path) -> Iterator[TestClient]:
-    """A TestClient over the real create_app, with every external dependency mocked.
-
-    The lifespan has to actually run — it is what registers the auth router ahead of
-    the SPA catch-all — so everything it reaches for is patched out here.
-    """
-    from fastapi.testclient import TestClient
-
-    import core.channels.web_server as ws_mod
-
-    # Minimal mock Redis — handles auth-session lookup and any other calls.
-    mock_redis = AsyncMock()
-    mock_redis.hgetall = AsyncMock(return_value={})
-    mock_redis.close = AsyncMock()
-
-    # Minimal mock CredentialStore — initialize/close are no-ops; reports no credentials.
-    mock_store = AsyncMock()
-    mock_store.initialize = AsyncMock()
-    mock_store.close = AsyncMock()
-    mock_store.get_user_id = AsyncMock(return_value=None)
-    mock_store.list_credentials = AsyncMock(return_value=[])
-    mock_store.has_any_credential = AsyncMock(return_value=False)
-
-    with (
-        # Point _SPA_DIST at our tmp dist so mount_spa actually mounts.
-        patch.object(ws_mod, "_SPA_DIST", dist),
-        # Prevent aioredis.from_url from connecting to a real Redis.
-        patch("core.channels.web_server.aioredis.from_url", return_value=mock_redis),
-        # Skip the real CredentialStore (writes to data/credentials.db).
-        patch("core.channels.web_server.CredentialStore", return_value=mock_store),
-        # Skip APNs adapter init (needs .p8 key on disk).
-        patch("core.channels.web_server._init_apns_adapter", new=AsyncMock()),
-        # Skip the notification delivery worker background task (imported inside lifespan).
-        patch(
-            "core.notifications.delivery.notification_delivery_worker",
-            new=AsyncMock(return_value=None),
-        ),
-        # Skip the credential push worker — the real one busy-spins against the
-        # AsyncMock redis (xreadgroup returns instantly, never suspends), starving
-        # the lifespan event loop so requests never complete.
-        patch(
-            "core.channels.service_credentials.credential_push_worker",
-            new=AsyncMock(return_value=None),
-        ),
-        # Skip warmup — real Whisper/Piper loads in to_thread outlive the TestClient.
-        # None, not a MagicMock: a mock never fires add_done_callback, so asyncio.wait
-        # in teardown burns its full timeout. teardown skips None tasks.
-        patch("core.channels.web_server.start_warmup", return_value=None),
-        # httpx.AsyncClient.aclose() is called on shutdown.
-        patch("httpx.AsyncClient.aclose", new=AsyncMock()),
-    ):
-        app = create_app(redis_url="redis://localhost:6379")
-        with TestClient(app) as client:
-            yield client
-
-
 def test_auth_status_not_shadowed_by_spa_catch_all(tmp_path: Path) -> None:
     """Regression: GET /api/auth/status must return JSON, not the SPA index.html.
 
     The SPA /{full_path:path} catch-all must be registered AFTER the lifespan
     adds the auth router, or every /api/auth/* request is silently swallowed.
     """
-    with _live_channels_client(_make_spa_dist(tmp_path)) as client:
+    with live_channels_client(_make_spa_dist(tmp_path)) as client:
         # /api/auth/status must return JSON (registered key is the "registered" field).
         resp = client.get("/api/auth/status")
         assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
@@ -329,11 +271,11 @@ def test_auth_status_not_shadowed_by_spa_catch_all(tmp_path: Path) -> None:
 def test_spa_cache_middleware_is_wired_into_create_app(tmp_path: Path) -> None:
     """SpaCacheMiddleware must actually be installed on the real app.
 
-    core/channels/test_spa.py exercises the middleware in isolation, so dropping the
+    tests/core/channels/test_spa.py exercises the middleware in isolation, so dropping the
     add_middleware call in create_app would leave that file — and the rest of the
     suite — green while every browser cached index.html again.
     """
-    with _live_channels_client(_make_spa_dist(tmp_path)) as client:
+    with live_channels_client(_make_spa_dist(tmp_path)) as client:
         assert client.get("/").headers["cache-control"] == "no-cache, no-store, must-revalidate"
         assert "cache-control" not in client.get("/api/auth/status").headers
 

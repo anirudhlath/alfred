@@ -67,8 +67,12 @@ class SpaCacheMiddleware(BaseHTTPMiddleware):
       ``/index.html``, ``/activity``). Not stored at all, so a deploy is picked up on
       the next load.
     * everything else — unhashed ``web/public/`` files such as ``/favicon.svg`` and
-      ``/manifest.json``. Revalidated on every load, but a 304 saves re-sending bytes
-      that a deploy usually leaves unchanged.
+      ``/manifest.json``. Revalidated on every load, which today costs the full body:
+      :func:`mount_spa`'s fallback serves these through a bare ``FileResponse``, which
+      ignores ``If-None-Match``/``If-Modified-Since`` (only ``StaticFiles.get_response``
+      honours conditional requests), so revalidation answers 200, not 304. The header is
+      still the semantically right one — a caching proxy in front of Alfred needs it, and
+      the 304 lands for free if the fallback ever grows conditional handling.
     """
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
