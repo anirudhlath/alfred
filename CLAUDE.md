@@ -73,9 +73,9 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `core/identity/credentials.py` — `CredentialStore` (async SQLite, WebAuthn credential CRUD)
 - `core/identity/auth_routes.py` — WebAuthn registration/login/logout endpoints (6 routes under `/api/auth/`)
 - `core/identity/auth_middleware.py` — `AuthCookieMiddleware` (cookie → Redis session lookup)
-- `core/identity/ws_auth.py` — `authenticate_ws_cookie()` (shared WS cookie auth for `/ws` + `/ws/telemetry`)
+- `core/identity/ws_auth.py` — `require_ws_auth()` (accept → cookie auth → close 4001) wrapping `authenticate_ws_cookie()`; shared by `/ws` + `/ws/telemetry`
 - `core/channels/web_server.py` — `create_app()` web channel FastAPI app (chat WS, auth, SPA, admin); run via `python -m core.channels`
-- `core/channels/admin_api.py` — `create_admin_router()` (`/api/admin/*` — 11 reads + 6 controls, cookie + trusted-network gated)
+- `core/channels/admin_api.py` — `create_admin_router()` (`/api/admin/*` — 11 reads + 6 controls, session-cookie gated; the trusted-network gate is NOT applied here, see docs/admin-api.md "Auth Model")
 - `core/channels/telemetry_ws.py` — `/ws/telemetry` live stream fan-out (cookie-authed)
 - `core/channels/stream_catalog.py` — Redis stream catalog + defensive entry decoding for admin reads
 - `core/channels/spa.py` — `mount_spa()` (serves `web/dist/`: real assets + index.html fallback for client-side routes)
@@ -98,7 +98,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - Device registration: `POST/DELETE /api/devices/register` — stores APNs tokens in Redis hash `alfred:push:devices`
 - Settings page: `web/src/pages/SettingsPage.tsx` — React SPA route at `/settings` (integration credential cards via `IntegrationCard`)
 - WebAuthn credentials: SQLite at `data/credentials.db` — credential ID, public key, sign count, device name
-- Auth sessions: Redis at `alfred:auth:{session_id}` — 24hr TTL, HttpOnly cookie `alfred_auth`
+- Auth sessions: Redis at `alfred:auth:{session_id}` — 8h TTL (hard cap from login, no sliding renewal), HttpOnly cookie `alfred_auth` (Secure when the request arrived over HTTPS, including via a trusted proxy)
 - WebAuthn challenges: Redis at `alfred:webauthn:challenge:{id}` — 5min TTL, one-time use
 - Sovereign services declare `credentials_schema`/`credentials_endpoint` via `AlfredClient`; `register()` publishes `ServiceRegistered` to `alfred:events` AFTER the registry hset
 - `core/channels/service_credentials.py` — service credential helpers + `credential_push_worker` (consumer group `channels-credentials` on `alfred:events`) re-pushes keyring credentials whenever a service re-registers
@@ -267,7 +267,7 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - Compression at cold migration groups by entity+date — summary goes to cold, originals marked `compressed="yes"`
 - `VectorStore` ABC has `update_metadata(id, fields)` — use for retrieval stats, do NOT mutate Redis hash fields directly
 - Ignored routine suggestions decrement confidence by 0.05/cycle — archived at threshold 0.3, removed from context index
-- WebAuthn registration endpoints require trusted network — passkey creation is gated to localhost/Tailscale
+- WebAuthn registration endpoints require trusted network (`require_trusted_network`) — login does not; the default trusted set is loopback + RFC1918 + Tailscale
 - `AuthCookieMiddleware` reads Redis lazily from `request.app.state.redis` — redis is not available at middleware init time (lifespan hasn't run yet)
 - WebSocket auth gate parses cookies manually (BaseHTTPMiddleware doesn't run for WS upgrades) — cookie name constant is `COOKIE_NAME` from `core.identity.auth_middleware`
 - `identity_claim` in WS handler is server-derived from auth state (`"sir"` if authenticated), not client-supplied — frontend no longer sends `identity` field
@@ -279,7 +279,7 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - Admin trigger mutations (fire/enable) go through `ACTIONS_STREAM` → triggers process (consumer group `triggers-internal`) — NEVER write `alfred:triggers` directly from other processes; `TriggerStore` keeps Redis + YAML in sync. Internal action handlers live in `core/triggers/__main__.py` and `core/conscious/__main__.py` (`run_librarian`).
 - `TriggerFired.fired_by` records provenance (admin vs engine fires) — set it when publishing a fire.
 - Use `EpisodicMemory.recall(..., update_stats=False)` for non-mutating reads (admin search) — the default `True` persists retrieval stats (HSET per recall).
-- `core/channels/admin_api.py` + `telemetry_ws.py` are gated by BOTH `require_trusted_network` AND `require_authenticated` (session cookie) — `/ws/telemetry` authenticates via the shared `authenticate_ws_cookie()` helper.
+- `core/channels/admin_api.py` is gated by `require_authenticated` (session cookie) only; the credential-equivalent writes (`/api/integrations/{name}/credentials` PUT/DELETE, `/api/devices/register` POST/DELETE, `/api/voice/enroll` POST) and WebAuthn registration keep BOTH gates via `_CREDENTIAL_GATES` (network gate first). `/ws/telemetry` is not network-gated and authenticates via the shared `require_ws_auth()` helper. `X-Forwarded-*` is honoured only from `FORWARDED_ALLOW_IPS` (uvicorn `proxy_headers`).
 - Frontend (`web/src`): `erasableSyntaxOnly` TS flag is on — no parameter properties (declare + assign fields explicitly). `eslint-plugin-react-hooks` v7 purity rule bans `Date.now()`/`Math.random()` in render — compute them in effects/handlers, not in the render body.
 - Wyoming satellites stop mic streaming only on `Transcript`/`Error` — always send `Transcript` even for empty/failed runs, or the satellite streams forever
 - Announcements are bare `AudioStart`/`AudioChunk`/`AudioStop` streams — no announce event exists in the Wyoming usage here; it's the same code path as a spoken reply

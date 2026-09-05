@@ -108,16 +108,74 @@ This lets Redis background-save reliably under memory pressure. It's a host-leve
 
 ## Access from your LAN
 
-WebAuthn passkey registration and the admin API are gated to trusted networks. By default
-Alfred trusts **loopback, private LAN (RFC1918), and Tailscale** — so localhost, the Docker
-bridge, and your own home network all work with no configuration. To reach it from another
-device, browse to the host's LAN IP on port 8081 and register a passkey.
+Endpoints that can mint or widen credentials — WebAuthn passkey **registration**,
+credential writes (`PUT`/`DELETE /api/integrations/{name}/credentials`), push device
+tokens (`POST`/`DELETE /api/devices/register`) and voice enrolment
+(`POST /api/voice/enroll`) — are gated to trusted networks. Everything else, including
+the admin API's reads and controls, needs only a signed-in passkey session. By default
+Alfred trusts **loopback, private LAN (RFC1918), and Tailscale** — so localhost, the
+Docker bridge, and your own home network all work with no configuration. To reach it from
+another device, browse to the host's LAN IP on port 8081 and register a passkey.
 
 - Add extra ranges with `ALFRED_TRUSTED_NETWORKS=10.1.2.0/24,…` (comma-separated).
 - Lock it down with `ALFRED_TRUSTED_NETWORKS_STRICT=1` to trust **only** loopback,
   Tailscale, and the CIDRs you list explicitly (passkeys remain the primary auth either way).
 
-A rejected request returns a 403 that names the offending IP and how to allow it.
+A rejected request returns
+`403 Access restricted to trusted networks: <ip> is not trusted.` The IP named is the
+peer the *process* saw — which is exactly the number you need when a proxy is in the path
+(below). The guidance on how to allow it (the env-var name, an example CIDR, the Tailscale
+hint) is appended only when the caller already holds a valid session: the network gate
+runs before the session gate, so on an internet-facing host that body is readable by a
+stranger, and naming the knob would describe the perimeter.
+
+## Behind a reverse proxy
+
+When a proxy (nginx-proxy-manager, Caddy, Cloudflare in front of either) terminates TLS,
+the process sees the proxy as the peer. Set `FORWARDED_ALLOW_IPS` to the proxy's address
+or CIDR so uvicorn rewrites the client IP and scheme from `X-Forwarded-For` /
+`X-Forwarded-Proto`; the trusted-network gate, `Secure` cookies and the 403 detail all
+key off that. Nothing changes until you set it — unset falls back to uvicorn's loopback
+default, and the channels process says so on every boot:
+
+```
+FORWARDED_ALLOW_IPS is the loopback default — a reverse proxy on the container network
+will not match it, so X-Forwarded-* will not be rewritten; the trusted-network gate will
+see the proxy's own IP
+```
+
+Then:
+
+- **Set `ALFRED_TRUSTED_NETWORKS_STRICT=1` and list your LAN CIDR** in
+  `ALFRED_TRUSTED_NETWORKS`. Public exposure with the permissive default would trust every
+  RFC1918 range — i.e. any network a caller happens to be on. It is also the only hard
+  stop for a *mis-set* `FORWARDED_ALLOW_IPS`, which fails **open** for LAN trust: with the
+  headers unrewritten the gate judges the proxy's own Docker-network address, which is
+  RFC1918 and therefore trusted by default. Strict mode drops those defaults, so the
+  proxy's address stops being trusted by accident.
+- **`FORWARDED_ALLOW_IPS` is one hop, not a CDN's range list.** Put the proxy container's
+  own address there (or the CIDR of the Docker network it shares with Alfred, e.g.
+  `172.16.0.0/12`) — never Cloudflare's published ranges. uvicorn walks `X-Forwarded-For`
+  from the right and takes the first *untrusted* hop as the client, so trusting the CDN's
+  ranges here would hand the decision to whatever the edge appended. The proxy must
+  instead present the real visitor itself: in nginx-proxy-manager that is
+  `set_real_ip_from <cloudflare range>;` + `real_ip_header CF-Connecting-IP;` in the
+  host's advanced config, so `$remote_addr` is the visitor before nginx writes
+  `X-Forwarded-For`.
+- The proxy must send a **single** `X-Forwarded-For` holding the real client (behind
+  Cloudflare that is what the `CF-Connecting-IP` rule above produces), plus
+  `X-Forwarded-Proto: https` — the latter is what makes the `alfred_auth` cookie `Secure`.
+- **The hostname is the WebAuthn RP ID.** Passkeys are bound to it; renaming the host
+  orphans every registered passkey. Pick it once.
+- Proxied WebSockets are closed after ~100 s idle by Cloudflare; clients send
+  `{"type":"ping"}` (answered with `{"type":"pong"}`) on `/ws` and `/ws/telemetry` to
+  keep them open.
+- **Optionally close the direct path.** If the proxy shares Alfred's Docker network it can
+  reach the container on 8081 without a published port, so `docker-compose.yml`'s
+  `"8081:8081"` can be narrowed to `"127.0.0.1:8081:8081"` or dropped, leaving the proxy
+  as the only route in. The shipped file publishes on all interfaces on purpose — LAN
+  clients use 8081 directly today — so this is opt-in, and it belongs in a
+  `docker-compose.override.yml` (CD overwrites `docker-compose.yml` on every deploy).
 
 ## Troubleshooting
 
@@ -129,6 +187,9 @@ A rejected request returns a 403 that names the offending IP and how to allow it
 | `dimension guard skipped, an embedding model change will NOT be caught here` in logs | The guard could not read the stored width (an `FT.INFO` reply it cannot parse, or vec0 DDL that does not match the expected shape), so it stepped aside rather than guess. A model change will now surface as a raw store error instead of the actionable message above. Check the width by hand — `docker exec <alfred-container> redis-cli FT.INFO idx:context` — before changing `EMBEDDING_MODEL`/`EMBEDDING_BACKEND`. |
 | Recall stays empty after that recovery; `FT.INFO idx:context` shows `hash_indexing_failures` climbing | Expected, and not a second fault: dropping the index keeps every `ctx:*` hash but nothing re-embeds the old-width entries. Semantic entries return on the Librarian's next reindex, routines on restart; episodic ones have no re-embed path, so only new writes become searchable. |
 | 403 registering a passkey | Your client IP isn't trusted — add its subnet to `ALFRED_TRUSTED_NETWORKS` (the 403 message names the IP). |
+| `403 Access restricted to trusted networks: <ip> is not trusted.` naming the proxy's or Docker's address, from a device that *is* on the LAN or tailnet | `FORWARDED_ALLOW_IPS` does not include the proxy, so `X-Forwarded-For` was never trusted and the gate is judging the proxy's own address. Put the address the 403 names into `FORWARDED_ALLOW_IPS` and restart. Without strict mode you get the *silent* version of this instead — the proxy's RFC1918 address is trusted by default, so every internet caller passes the gate. |
+| Boot log: `FORWARDED_ALLOW_IPS is the loopback default — a reverse proxy on the container network will not match it` | The variable is unset (or blank), so uvicorn trusts loopback only and `X-Forwarded-*` is ignored. Harmless without a proxy; if you have one, set `FORWARDED_ALLOW_IPS` to its address or CIDR. |
+| Boot log: `FORWARDED_ALLOW_IPS entry '…' is not a valid IP or CIDR; uvicorn keeps it as an exact literal, so it will never match an IP peer` | A hostname, typo, or a `*` inside a comma-separated list. uvicorn only wildcards when the *whole* value is `*`; anything unparseable becomes a literal that no IP peer can match. Use the proxy's IP or CIDR. |
 | `home-service repo not found` | `alfredctl build` auto-clones it; if you build by hand, `git clone https://github.com/anirudhlath/alfred-home-service ../home-service`. |
 | Signal delivery disabled | Optional — install `signal-cli` to enable it. |
 | Redis overcommit warning | Set `vm.overcommit_memory=1` on the host (see Host tuning). |

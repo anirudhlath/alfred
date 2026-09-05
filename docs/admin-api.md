@@ -22,38 +22,46 @@ that handles chat WebSocket connections on port 8081.
 
 ## Auth Model
 
-Every admin endpoint enforces **both** of the following FastAPI dependencies — missing either
-results in an error before any Redis/disk access.
+Every admin endpoint — reads and controls alike — enforces exactly one FastAPI dependency:
 
 | Dependency | Gate | Error |
 |---|---|---|
-| `require_trusted_network` | Caller's IP must be localhost (`127.0.0.1` / `::1`) or in the Tailscale CGNAT range (`100.64.0.0/10`) | HTTP 403 |
 | `require_authenticated` | `AuthCookieMiddleware` must have marked `request.state.authenticated = True` via a valid `alfred_auth` session cookie | HTTP 401 |
 
-Both dependencies are applied at router creation time:
+There is deliberately **no** trusted-network gate here: the admin API is usable from the
+public hostname once signed in with a passkey. The network gate (`require_trusted_network`,
+HTTP 403) is reserved for endpoints that can mint or widen credentials — passkey
+registration, `PUT/DELETE /api/integrations/{name}/credentials`, `POST/DELETE
+/api/devices/register`, `POST /api/voice/enroll` — which carry **both** dependencies.
+
+The dependency is applied at router creation time:
 
 ```python
 router = APIRouter(
     prefix="/api/admin",
-    dependencies=[Depends(trusted_network_dep), Depends(require_authenticated)],
+    dependencies=[Depends(require_authenticated)],
 )
 ```
 
-The `trusted_network_dep` is injected at mount time from `web_server.py` so the same
-`require_trusted_network` function handles both admin and credential endpoints.
-
 ### Telemetry WebSocket Auth
 
-`/ws/telemetry` uses `authenticate_ws_cookie(websocket, redis)` — the same helper used by
-the main `/ws` endpoint. Because `BaseHTTPMiddleware` does not run for WebSocket upgrade
-requests, the cookie is parsed manually from the `cookie` header. An unauthenticated
-connection is closed with **code 4001** (not 401 — WS close codes are numeric):
+`/ws/telemetry` calls `require_ws_auth(websocket, redis)` from `core/identity/ws_auth.py`
+— the same helper the main `/ws` endpoint uses. It owns the whole handshake:
 
 ```python
-if not await authenticate_ws_cookie(websocket, r):
-    await websocket.close(code=4001, reason="Authentication required")
+if not await require_ws_auth(websocket, r):
     return
 ```
+
+Inside, it **accepts the socket first**, then authenticates, and closes with **code 4001**
+(not 401 — WS close codes are numeric) if the session is missing or invalid. The ordering
+is load-bearing: closing before accepting surfaces to the browser as a plain HTTP 403 on
+the upgrade with no close code, so the client never sees 4001 and reconnects forever.
+Authentication itself is `authenticate_ws_cookie()`, which parses the `alfred_auth` cookie
+straight out of the `cookie` header — `BaseHTTPMiddleware` does not run for WebSocket
+upgrades — and checks the `alfred:auth:{session_id}` hash in Redis.
+
+`/ws/telemetry` is **not** network-gated, matching the admin REST surface above.
 
 ---
 

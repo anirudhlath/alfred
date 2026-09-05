@@ -5,15 +5,19 @@
 
 ## Auth-surface consistency (pre-existing, amplified by the new admin surface)
 
-### 1. Session cookie `Secure` flag ignores forwarded proto
-`core/identity/auth_routes.py` (register/login complete) sets the `alfred_auth` cookie
-with `secure=request.url.scheme == "https"`, while `_get_origin` honors
-`x-forwarded-proto`. Behind a TLS-terminating proxy the backend sees `http`, so the
-24h cookie is issued without `Secure`. Mitigated today by HttpOnly + SameSite=Strict +
-Tailscale-encrypted transport and uvicorn `proxy_headers`. **Acceptance:** derive
-`secure` from the same forwarded-proto logic as `_get_origin`, or a config flag
-defaulting to `True` in non-dev. (Touches security-critical, working passkey code —
-verify the full register→login cycle after.)
+### 1. Session cookie `Secure` flag ignores forwarded proto — RESOLVED
+**Resolved by the PWA Phase 0 security branch.** The cookie still reads
+`secure=request.url.scheme == "https"`, but `core/channels/__main__.py` now runs uvicorn
+with `proxy_headers=True` and `forwarded_allow_ips=FORWARDED_ALLOW_IPS`, so a trusted
+proxy's `X-Forwarded-Proto: https` rewrites the scope's scheme before the route sees it
+and the cookie is issued `Secure`. Pinned by
+`test_cookie_is_secure_behind_https_proxy` in `tests/core/identity/test_auth_routes.py`,
+which drives the login through uvicorn's own `ProxyHeadersMiddleware`.
+
+The operator's half is `FORWARDED_ALLOW_IPS`: unset, it defaults to loopback only and the
+process logs a warning at boot saying a proxy on the container network will not match it.
+Documented in `.env.example` and `docs/deployment.md` ("Behind a reverse proxy"). The
+session TTL also dropped from 24h to 8h in the same branch.
 
 ### 2. Integration credential endpoints gated by trusted-network only — RESOLVED
 **Resolved by the PWA Phase 0 security branch.** `PUT/DELETE
@@ -32,11 +36,13 @@ remaining hole — "Skip — already registered" while signed out — now redire
 `authStatus.authenticated` so a signed-out wizard never fires a 401 that would bounce
 the user mid-flow.
 
-### 3. `/ws/telemetry` (and `/ws`) trusted-network gate
-Both WS endpoints authenticate by session cookie only; the companion admin REST also
-requires trusted-network. Telemetry fans out all internal streams. **Acceptance:**
-decide whether WS endpoints should also enforce trusted-network (defense-in-depth) and
-apply consistently to `/ws` + `/ws/telemetry`.
+### 3. `/ws/telemetry` (and `/ws`) trusted-network gate — WON'T FIX (consistent as of Phase 0)
+Both WS endpoints authenticate by session cookie only, and so does the companion admin
+REST surface now — the inconsistency this note was written about is gone. Telemetry still
+fans out all internal streams, so if defense-in-depth is ever wanted here it has to be
+argued on its own merits, not as a consistency fix: network-gating the sockets would break
+the admin UI from the public hostname, which is the deployment Phase 0 deliberately
+enabled.
 
 ## Performance
 

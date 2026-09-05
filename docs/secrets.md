@@ -20,7 +20,7 @@ graph TD
 1. Each `Integration` adapter declares a `credentials_schema` (`CredentialSchema`) listing its credential fields with types, labels, and validation rules.
 2. `shared/secrets.py` wraps the `keyring` library — all credentials stored under service name `"alfred"` with key format `"{integration}.{field}"`.
 3. `IntegrationRegistry.get()` auto-populates adapter constructor kwargs from keyring when no explicit kwargs are provided.
-4. REST endpoints on the web server provide CRUD operations restricted to the trusted network (localhost + Tailscale CGNAT).
+4. REST endpoints on the web server provide CRUD operations: the writes are restricted to a trusted network *and* an authenticated passkey session, the reads to a session only (see Security below).
 5. The frontend settings page and onboarding wizard render credential forms dynamically from the adapter schemas.
 
 ## Credential Fields

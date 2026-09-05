@@ -47,7 +47,7 @@
   credential, memory/preference/trigger, integration credential, and the reused (not
   regenerated) secrets passphrase.
 - No re-onboarding is required on the second `up` — the SPA should land the user in an
-  already-authenticated state (subject to the auth session's own 24hr TTL, which is
+  already-authenticated state (subject to the auth session's own 8h TTL, which is
   independent of this test).
 
 ## Notes

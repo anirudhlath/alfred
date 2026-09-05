@@ -24,4 +24,4 @@
 
 ## Notes
 - `require_trusted_network`'s CIDR logic is presumably unit-tested against synthetic IPs, but real Tailscale traffic (MagicDNS, NAT traversal, subnet routers, exit nodes) can present addresses or routing behavior that differs from a synthetic `100.64.0.0/10` test — this is the only way to catch a real-world mismatch (e.g. a Tailscale relay altering the apparent source IP as seen by FastAPI/uvicorn).
-- Also good to confirm behavior behind a reverse proxy if one is used in prod (X-Forwarded-For handling), since that would change what IP `require_trusted_network` actually sees.
+- Also good to confirm behavior behind a reverse proxy if one is used in prod, since that changes what IP `require_trusted_network` actually sees: uvicorn only rewrites the client from `X-Forwarded-For` for peers listed in `FORWARDED_ALLOW_IPS`, so with it unset the gate judges the proxy's own address (which is RFC1918, hence trusted by default — a fail-open worth exercising).
