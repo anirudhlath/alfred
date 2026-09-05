@@ -128,3 +128,49 @@ async def test_container_subnet_allowed_when_configured(monkeypatch: pytest.Monk
 
     request.client.host = "192.168.64.5"
     await require_trusted_network(request)  # apple container vmnet — no raise
+
+
+def test_forwarded_for_from_trusted_proxy_reaches_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Through uvicorn's ProxyHeadersMiddleware the gate sees the *forwarded* client,
+    not the proxy — so a public caller behind NPM is rejected by IP, and the 403
+    names that IP (the operator uses it to pick FORWARDED_ALLOW_IPS)."""
+    from fastapi import Depends, FastAPI
+    from fastapi.testclient import TestClient
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+    monkeypatch.delenv("ALFRED_TRUSTED_NETWORKS", raising=False)
+    monkeypatch.delenv("ALFRED_TRUSTED_NETWORKS_STRICT", raising=False)
+
+    app = FastAPI()
+
+    @app.get("/gated", dependencies=[Depends(require_trusted_network)])
+    async def gated() -> dict[str, bool]:
+        return {"ok": True}
+
+    # TestClient's peer is the literal "testclient"; trust it as the proxy.
+    client = TestClient(ProxyHeadersMiddleware(app, trusted_hosts="testclient"))
+
+    public = client.get("/gated", headers={"X-Forwarded-For": "203.0.113.9"})
+    assert public.status_code == 403
+    assert "203.0.113.9" in public.json()["detail"]
+
+    lan = client.get("/gated", headers={"X-Forwarded-For": "192.168.1.20"})
+    assert lan.status_code == 200
+
+
+def test_forwarded_for_from_untrusted_peer_is_ignored() -> None:
+    """A peer that is not in FORWARDED_ALLOW_IPS cannot spoof its way in or out."""
+    from fastapi import Depends, FastAPI
+    from fastapi.testclient import TestClient
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+    app = FastAPI()
+
+    @app.get("/gated", dependencies=[Depends(require_trusted_network)])
+    async def gated() -> dict[str, bool]:
+        return {"ok": True}
+
+    client = TestClient(ProxyHeadersMiddleware(app, trusted_hosts="10.9.9.9"))
+    # Header ignored → peer stays "testclient" → the test bypass applies → 200.
+    resp = client.get("/gated", headers={"X-Forwarded-For": "203.0.113.9"})
+    assert resp.status_code == 200

@@ -33,9 +33,22 @@ def main() -> None:
 
     app = create_app(redis_url=config.redis_url)
     port = int(os.getenv("CHANNELS_PORT", "8081"))
+    # Behind a reverse proxy the peer address is the proxy; uvicorn rewrites
+    # request.client / scheme from X-Forwarded-For / -Proto, but only for peers in
+    # FORWARDED_ALLOW_IPS (IPs or CIDRs). Everything downstream — the trusted-network
+    # gate, Secure cookies, the 403 detail naming the client — depends on this.
+    forwarded_allow_ips = os.getenv("FORWARDED_ALLOW_IPS", "127.0.0.1")
+    logger.info("Trusting X-Forwarded-* headers from: {}", forwarded_allow_ips)
     for attempt in range(5):
         try:
-            uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+            uvicorn.run(
+                app,
+                host="0.0.0.0",
+                port=port,
+                log_level="info",
+                proxy_headers=True,
+                forwarded_allow_ips=forwarded_allow_ips,
+            )
             break
         except OSError as e:
             if e.errno == 48 and attempt < 4:
