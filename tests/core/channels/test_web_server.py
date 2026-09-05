@@ -337,3 +337,32 @@ def test_lifespan_shutdown_closes_everything_past_a_failing_closer(tmp_path: Pat
     assert aclose_episodic.await_count == 1
     assert http_aclose.await_count == 1
     assert mock_redis.close.await_count == 1
+
+
+def test_ws_ping_is_a_no_op_and_does_not_lock_the_session(web_client: TestClient) -> None:
+    """Keepalive pings get a pong and are otherwise invisible: the client's first
+    *real* message can still restore a previous session_id after any number of pings."""
+    from bus.schemas.events import AlfredResponse
+
+    alfred_resp = AlfredResponse(
+        source="conscious",
+        channel="web_pwa",
+        session_id="ignored-by-handler",
+        text="Certainly, sir.",
+    )
+    with (
+        patch("core.channels.web_server.publish_and_wait", new=AsyncMock(return_value=alfred_resp)),
+        web_client.websocket_connect("/ws") as ws,
+    ):
+        assert ws.receive_json()["type"] == "session"
+
+        ws.send_json({"type": "ping"})
+        assert ws.receive_json() == {"type": "pong"}
+        ws.send_json({"type": "ping"})
+        assert ws.receive_json() == {"type": "pong"}
+
+        ws.send_json({"type": "text", "content": "hello", "session_id": "restored-session"})
+        response = ws.receive_json()
+
+    assert response["type"] == "response"
+    assert response["session_id"] == "restored-session"

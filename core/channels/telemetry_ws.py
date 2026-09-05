@@ -108,6 +108,9 @@ def register_telemetry_ws(app: FastAPI) -> None:
                 except json.JSONDecodeError:
                     await websocket.send_json({"type": "error", "message": "invalid JSON"})
                     continue
+                if msg.get("type") == "ping":
+                    await websocket.send_json({"type": "pong"})
+                    continue
                 names = [n for n in msg.get("streams", []) if n in STREAM_CATALOG]
                 if msg.get("type") == "subscribe":
                     for name in names:

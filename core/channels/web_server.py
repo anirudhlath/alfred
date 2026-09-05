@@ -448,6 +448,13 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
             while True:
                 data = await websocket.receive_json()
 
+                # Keepalive (Cloudflare drops proxied sockets idle ~100s). Answered
+                # before the session-restore block so pings never count as the
+                # client's first message.
+                if data.get("type") == "ping":
+                    await websocket.send_json({"type": "pong"})
+                    continue
+
                 # Allow client to restore a previous session on its first message only
                 if not session_locked and (client_sid := data.get("session_id")):
                     session_id = client_sid

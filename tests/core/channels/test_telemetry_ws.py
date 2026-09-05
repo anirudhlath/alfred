@@ -160,3 +160,19 @@ def test_telemetry_ws_unknown_stream_subscribe() -> None:
         ws.send_text(json.dumps({"type": "subscribe", "streams": ["bogus"]}))
         ack = ws.receive_json()
         assert ack == {"type": "subscribed", "streams": []}
+
+
+def test_telemetry_ws_ping_gets_pong_not_subscribed_ack() -> None:
+    mock_redis = AsyncMock()
+
+    async def _xread_block(*args: Any, **kwargs: Any) -> Any:
+        await asyncio.Event().wait()
+
+    mock_redis.xread = AsyncMock(side_effect=_xread_block)
+    client = _make_client(mock_redis)
+    with client.websocket_connect("/ws/telemetry") as ws:
+        ws.send_text(json.dumps({"type": "ping"}))
+        assert ws.receive_json() == {"type": "pong"}
+        # Subscriptions still work afterwards and the ack lists only real streams.
+        ws.send_text(json.dumps({"type": "subscribe", "streams": ["events"]}))
+        assert ws.receive_json() == {"type": "subscribed", "streams": ["events"]}
