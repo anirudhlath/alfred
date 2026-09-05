@@ -18,7 +18,7 @@ from tests.core.channels.conftest import _TEST_SESSION_ID, make_session_redis
 
 _UNTRUSTED = ("203.0.113.9", 12345)  # TEST-NET-3 — never RFC1918, CGNAT or loopback
 
-# (method, path, json body) for every route carrying both gates.
+# (method, path, json body) for every route carrying _CREDENTIAL_GATES.
 DOUBLE_GATED: list[tuple[str, str, dict[str, str] | None]] = [
     ("PUT", "/api/integrations/home-service/credentials", {"url": "http://x", "token": "t"}),
     ("DELETE", "/api/integrations/home-service/credentials", None),
@@ -28,6 +28,7 @@ DOUBLE_GATED: list[tuple[str, str, dict[str, str] | None]] = [
         {"device_token": "aabbccdd11223344aabbccdd11223344", "platform": "ios", "identity": "sir"},
     ),
     ("DELETE", "/api/devices/register", {"device_token": "aabbccdd11223344aabbccdd11223344"}),
+    ("POST", "/api/voice/enroll", {"identity": "sir", "samples": []}),
 ]
 
 
@@ -84,7 +85,6 @@ def test_network_gate_runs_before_the_session_gate(app: Any) -> None:
         },
     )
     assert resp.status_code == 403
-    assert resp.status_code != 401
 
 
 def test_anonymous_403_withholds_operator_guidance(app: Any) -> None:

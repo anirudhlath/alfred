@@ -56,9 +56,14 @@ graph TD
 - PUT/DELETE endpoints are double-gated: `Depends(require_trusted_network)` **and**
   `Depends(require_authenticated)` (the `alfred_auth` passkey session cookie) — credential
   writes are credential-equivalent, and "on the LAN" is not an identity on an
-  internet-facing host. The network gate runs first, so an anonymous caller from an
-  untrusted network gets 403 without the session ever being consulted (401-vs-403 would
-  otherwise leak whether a stolen cookie is still live)
+  internet-facing host. Both gates come from one shared `_CREDENTIAL_GATES` list, so a new
+  credential-equivalent route cannot pick up half the pair. The network gate runs first,
+  so an anonymous caller from an untrusted network gets 403 without the session ever being
+  consulted (401-vs-403 would otherwise leak whether a stolen cookie is still live)
+- That 403 names only the observed peer IP when the caller is anonymous. The operator
+  guidance — the `ALFRED_TRUSTED_NETWORKS` env-var name, an example CIDR, the Tailscale
+  hint — is appended only for an authenticated caller, so a stranger cannot read the
+  perimeter's configuration out of an error body
 - The default trusted set is `_LAN_DEFAULT_RANGES` + Tailscale CGNAT `100.64.0.0/10`:
   `127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`
   (link-local), `::1/128`, `fc00::/7` (IPv6 ULA), `fe80::/10` (IPv6 link-local).

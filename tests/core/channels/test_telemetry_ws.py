@@ -10,11 +10,11 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from core.channels.web_server import create_app
-from tests.core.channels.conftest import _TEST_SESSION_ID, make_session_redis
+from tests.core.channels.conftest import _TEST_SESSION_ID, session_hgetall
 
 
 def _make_client(mock_redis: AsyncMock, *, authed: bool = True) -> TestClient:
-    mock_redis.hgetall = make_session_redis().hgetall
+    mock_redis.hgetall = session_hgetall()
     # Default: empty stream so _last_id resolves subscriptions to "0-0" deterministically.
     if not isinstance(mock_redis.xrevrange, AsyncMock):
         mock_redis.xrevrange = AsyncMock(return_value=[])

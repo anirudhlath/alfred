@@ -412,6 +412,14 @@ async def _validate_and_store(name: str, schema: CredentialSchema, body: dict[st
     )
 
 
+# The credential-equivalent routes (credential writes, device-token writes, voice
+# enrolment) carry BOTH gates. Order is load-bearing: the network gate runs FIRST so an
+# anonymous caller is refused on network grounds without the session ever being
+# consulted — a session-first order would make 401-vs-403 a session-validity oracle for
+# a stolen cookie. Kept as one list so a new route cannot pick up half the pair.
+_CREDENTIAL_GATES = [Depends(require_trusted_network), Depends(require_authenticated)]
+
+
 def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
     """Create the FastAPI application for the web channel."""
     _ensure_integrations_registered()
@@ -602,10 +610,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.put(
         "/api/integrations/{name}/credentials",
-        # Gate order is load-bearing: the network gate runs FIRST so an anonymous
-        # caller is refused on network grounds without the session being consulted —
-        # a session-first order would make 401-vs-403 a session-validity oracle.
-        dependencies=[Depends(require_trusted_network), Depends(require_authenticated)],
+        dependencies=_CREDENTIAL_GATES,
     )
     async def save_credentials(name: str, request: Request) -> dict[str, Any]:
         """Save credentials to the OS keyring (adapters + registry-declared services)."""
@@ -625,10 +630,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.delete(
         "/api/integrations/{name}/credentials",
-        # Gate order is load-bearing: the network gate runs FIRST so an anonymous
-        # caller is refused on network grounds without the session being consulted —
-        # a session-first order would make 401-vs-403 a session-validity oracle.
-        dependencies=[Depends(require_trusted_network), Depends(require_authenticated)],
+        dependencies=_CREDENTIAL_GATES,
     )
     async def delete_credentials(name: str) -> dict[str, str]:
         """Clear all credentials for an adapter or service from the OS keyring."""
@@ -774,7 +776,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.post(
         "/api/voice/enroll",
-        dependencies=[Depends(require_trusted_network), Depends(require_authenticated)],
+        dependencies=_CREDENTIAL_GATES,
     )
     async def voice_enroll(payload: VoiceEnrollmentPayload) -> dict[str, str]:
         """Enroll a voiceprint from mic samples (trusted network + session only)."""
@@ -793,10 +795,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.post(
         "/api/devices/register",
-        # Gate order is load-bearing: the network gate runs FIRST so an anonymous
-        # caller is refused on network grounds without the session being consulted —
-        # a session-first order would make 401-vs-403 a session-validity oracle.
-        dependencies=[Depends(require_trusted_network), Depends(require_authenticated)],
+        dependencies=_CREDENTIAL_GATES,
     )
     async def register_device(payload: DeviceRegistration) -> dict[str, str]:
         """Register an APNs device token for push notifications."""
@@ -816,10 +815,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.delete(
         "/api/devices/register",
-        # Gate order is load-bearing: the network gate runs FIRST so an anonymous
-        # caller is refused on network grounds without the session being consulted —
-        # a session-first order would make 401-vs-403 a session-validity oracle.
-        dependencies=[Depends(require_trusted_network), Depends(require_authenticated)],
+        dependencies=_CREDENTIAL_GATES,
     )
     async def unregister_device(payload: DeviceUnregistration) -> dict[str, str]:
         """Remove an APNs device token."""

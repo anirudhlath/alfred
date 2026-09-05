@@ -18,6 +18,22 @@ _AUTH_SESSION_DATA: dict[bytes, bytes] = {
 }
 
 
+def session_hgetall(session_id: str = _TEST_SESSION_ID) -> AsyncMock:
+    """The HGETALL half of `make_session_redis`, on its own.
+
+    For tests that build their own Redis fake: assign it (`r.hgetall = session_hgetall()`)
+    when the session is all HGETALL has to serve, or `await` it from a composite side
+    effect and fall through on the empty result when it also has to serve test data.
+    """
+
+    async def _fake_hgetall(key: str) -> dict[bytes, bytes]:
+        if key == f"{AUTH_SESSION_PREFIX}{session_id}":
+            return _AUTH_SESSION_DATA
+        return {}
+
+    return AsyncMock(side_effect=_fake_hgetall)
+
+
 def make_session_redis(session_id: str = _TEST_SESSION_ID) -> AsyncMock:
     """A Redis fake that recognises exactly one live auth session.
 
@@ -28,13 +44,7 @@ def make_session_redis(session_id: str = _TEST_SESSION_ID) -> AsyncMock:
     delegate the miss back to this one, rather than restating the session branch.
     """
     mock = AsyncMock()
-
-    async def _fake_hgetall(key: str) -> dict[bytes, bytes]:
-        if key == f"{AUTH_SESSION_PREFIX}{session_id}":
-            return _AUTH_SESSION_DATA
-        return {}
-
-    mock.hgetall = AsyncMock(side_effect=_fake_hgetall)
+    mock.hgetall = session_hgetall(session_id)
     mock.hget = AsyncMock(return_value=None)
     mock.hset = AsyncMock()
     mock.hdel = AsyncMock()

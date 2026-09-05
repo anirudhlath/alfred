@@ -128,13 +128,39 @@ async def test_private_lan_blocked_in_strict_mode(monkeypatch: pytest.MonkeyPatc
 
 @pytest.mark.asyncio
 async def test_403_detail_names_client_ip(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The 403 tells the operator exactly which IP was rejected (actionable)."""
+    """The 403 names the rejected IP even for an anonymous caller — the deploy runbook
+    has the operator read the observed peer out of this body — but nothing else.
+
+    `request.state.authenticated` is set explicitly: a bare MagicMock attribute is
+    truthy, which would silently exercise the authenticated branch instead.
+    """
     monkeypatch.setenv("ALFRED_TRUSTED_NETWORKS_STRICT", "1")
     request = MagicMock()
     request.client.host = "203.0.113.99"
+    request.state.authenticated = False
     with pytest.raises(HTTPException) as exc_info:
         await require_trusted_network(request)
-    assert "203.0.113.99" in exc_info.value.detail
+    assert exc_info.value.detail == (
+        "Access restricted to trusted networks: 203.0.113.99 is not trusted."
+    )
+
+
+@pytest.mark.asyncio
+async def test_403_detail_adds_guidance_for_authenticated_callers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A signed-in operator on the wrong network gets told how to fix it; an anonymous
+    internet caller does not, because the knob names describe the perimeter."""
+    monkeypatch.setenv("ALFRED_TRUSTED_NETWORKS_STRICT", "1")
+    request = MagicMock()
+    request.client.host = "203.0.113.99"
+    request.state.authenticated = True
+    with pytest.raises(HTTPException) as exc_info:
+        await require_trusted_network(request)
+    detail = exc_info.value.detail
+    assert "203.0.113.99" in detail
+    assert "ALFRED_TRUSTED_NETWORKS" in detail
+    assert "Tailscale" in detail
 
 
 @pytest.mark.asyncio
