@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from webauthn.helpers import bytes_to_base64url
 
 from core.identity.auth_routes import create_auth_router
 from core.identity.credentials import CredentialStore
 from shared.streams import AUTH_SESSION_PREFIX
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from httpx import Response
+    from starlette.types import ASGIApp
 
 
 @pytest.fixture
@@ -46,6 +54,106 @@ def app(store: CredentialStore, redis_mock: AsyncMock) -> FastAPI:
 @pytest.fixture
 def client(app: FastAPI) -> TestClient:
     return TestClient(app)
+
+
+_CREDENTIAL_ID = "AQID"
+_CHALLENGE = b"\x01\x02\x03\x04"
+
+_LOGIN_BODY: dict[str, object] = {
+    "_challenge_id": "c1",
+    "id": _CREDENTIAL_ID,
+    "rawId": _CREDENTIAL_ID,
+    "type": "public-key",
+    "response": {
+        "clientDataJSON": "e30",
+        "authenticatorData": "e30",
+        "signature": "e30",
+    },
+}
+
+_REGISTER_BODY: dict[str, object] = {
+    "_challenge_id": "c1",
+    "_device_name": "Phone",
+    "id": _CREDENTIAL_ID,
+    "rawId": _CREDENTIAL_ID,
+    "type": "public-key",
+    "response": {
+        "clientDataJSON": "e30",
+        "attestationObject": "e30",
+    },
+}
+
+
+def _build_client(
+    store: CredentialStore,
+    redis_mock: AsyncMock,
+    challenge: bytes,
+    wrap: Callable[[FastAPI], ASGIApp] | None,
+) -> TestClient:
+    """App + client with the stored challenge stubbed the way production returns it.
+
+    The Redis pool runs with ``decode_responses=False``, so a stored challenge always
+    comes back as bytes — the decode regressions below depend on that.
+    """
+    redis_mock.get = AsyncMock(return_value=bytes_to_base64url(challenge).encode())
+    app = FastAPI()
+    app.include_router(create_auth_router(store=store, redis=redis_mock))
+    return TestClient(wrap(app) if wrap is not None else app)
+
+
+async def _login(
+    store: CredentialStore,
+    redis_mock: AsyncMock,
+    *,
+    wrap: Callable[[FastAPI], ASGIApp] | None = None,
+    headers: dict[str, str] | None = None,
+    challenge: bytes = _CHALLENGE,
+    verify: Callable[..., object] | None = None,
+) -> Response:
+    """Register a passkey, then POST an assertion to ``login/complete``."""
+
+    def _default_verify(**_kwargs: object) -> MagicMock:
+        result = MagicMock()
+        result.new_sign_count = 1
+        return result
+
+    await store.save_credential(
+        credential_id=_CREDENTIAL_ID,
+        public_key=b"\x03",
+        sign_count=0,
+        device_name="Phone",
+        transports=["internal"],
+    )
+    client = _build_client(store, redis_mock, challenge, wrap)
+    with patch(
+        "core.identity.auth_routes.verify_authentication_response",
+        side_effect=verify or _default_verify,
+    ):
+        return client.post("/api/auth/login/complete", headers=headers, json=_LOGIN_BODY)
+
+
+def _register(
+    store: CredentialStore,
+    redis_mock: AsyncMock,
+    *,
+    challenge: bytes = _CHALLENGE,
+    verify: Callable[..., object] | None = None,
+) -> Response:
+    """POST an attestation to ``register/complete`` on a freshly built app."""
+
+    def _default_verify(**_kwargs: object) -> MagicMock:
+        result = MagicMock()
+        result.credential_id = b"\x01\x02"
+        result.credential_public_key = b"\x03"
+        result.sign_count = 0
+        return result
+
+    client = _build_client(store, redis_mock, challenge, None)
+    with patch(
+        "core.identity.auth_routes.verify_registration_response",
+        side_effect=verify or _default_verify,
+    ):
+        return client.post("/api/auth/register/complete", json=_REGISTER_BODY)
 
 
 class TestAuthStatus:
@@ -181,23 +289,13 @@ class TestRegisterCompleteBytesDecode:
     registration attempt.  The fix decodes bytes → str before passing to the helper.
     """
 
-    def test_register_complete_bytes_challenge_not_corrupted(
+    @pytest.mark.asyncio
+    async def test_register_complete_bytes_challenge_not_corrupted(
         self, store: CredentialStore, redis_mock: AsyncMock
     ) -> None:
         """verify_registration_response receives the correct expected_challenge bytes
         when redis returns the stored challenge as bytes (decode_responses=False)."""
-        from webauthn.helpers import bytes_to_base64url
-
         raw_challenge = b"\xde\xad\xbe\xef\xca\xfe"
-        stored_b64 = bytes_to_base64url(raw_challenge)
-        # Simulate decode_responses=False: redis returns bytes, not str
-        redis_mock.get = AsyncMock(return_value=stored_b64.encode())
-
-        app = FastAPI()
-        router = create_auth_router(store=store, redis=redis_mock)
-        app.include_router(router)
-        client = TestClient(app)
-
         captured_kwargs: dict[str, object] = {}
 
         def _capture_verify(**kwargs: object) -> MagicMock:
@@ -208,24 +306,7 @@ class TestRegisterCompleteBytesDecode:
             result.sign_count = 0
             return result
 
-        with patch(
-            "core.identity.auth_routes.verify_registration_response",
-            side_effect=_capture_verify,
-        ):
-            client.post(
-                "/api/auth/register/complete",
-                json={
-                    "_challenge_id": "test-challenge-id",
-                    "_device_name": "Test Device",
-                    "id": "AQID",
-                    "rawId": "AQID",
-                    "type": "public-key",
-                    "response": {
-                        "clientDataJSON": "e30",
-                        "attestationObject": "e30",
-                    },
-                },
-            )
+        _register(store, redis_mock, challenge=raw_challenge, verify=_capture_verify)
 
         # The fix must have fired: challenge was decoded to str before base64url_to_bytes
         assert "expected_challenge" in captured_kwargs, (
@@ -244,28 +325,7 @@ class TestLoginCompleteBytesDecode:
     ) -> None:
         """verify_authentication_response receives the correct expected_challenge bytes
         when redis returns the stored challenge as bytes (decode_responses=False)."""
-        from webauthn.helpers import bytes_to_base64url
-
         raw_challenge = b"\xfe\xed\xfa\xce\xba\xbe"
-        stored_b64 = bytes_to_base64url(raw_challenge)
-        # Simulate decode_responses=False: redis returns bytes, not str
-        redis_mock.get = AsyncMock(return_value=stored_b64.encode())
-
-        # Pre-register a credential so get_credential doesn't short-circuit with 401
-        cred_id = "dGVzdC1sb2dpbg"
-        await store.save_credential(
-            credential_id=cred_id,
-            public_key=b"\x04\x05\x06",
-            sign_count=0,
-            device_name="Regression Test Device",
-            transports=["internal"],
-        )
-
-        app = FastAPI()
-        router = create_auth_router(store=store, redis=redis_mock)
-        app.include_router(router)
-        client = TestClient(app)
-
         captured_kwargs: dict[str, object] = {}
 
         def _capture_verify(**kwargs: object) -> MagicMock:
@@ -274,24 +334,7 @@ class TestLoginCompleteBytesDecode:
             result.new_sign_count = 1
             return result
 
-        with patch(
-            "core.identity.auth_routes.verify_authentication_response",
-            side_effect=_capture_verify,
-        ):
-            client.post(
-                "/api/auth/login/complete",
-                json={
-                    "_challenge_id": "test-login-challenge-id",
-                    "id": cred_id,
-                    "rawId": cred_id,
-                    "type": "public-key",
-                    "response": {
-                        "clientDataJSON": "e30",
-                        "authenticatorData": "e30",
-                        "signature": "e30",
-                    },
-                },
-            )
+        await _login(store, redis_mock, challenge=raw_challenge, verify=_capture_verify)
 
         assert "expected_challenge" in captured_kwargs, (
             "verify_authentication_response was not called — challenge decode failed"
@@ -474,59 +517,30 @@ class TestSessionLifetime:
     """Sessions last 8 hours (spec §3.2) and the cookie is Secure whenever the
     request arrived over HTTPS — including via a trusted reverse proxy."""
 
-    def _complete_login(
-        self, store: CredentialStore, redis_mock: AsyncMock, *, wrap: object = None
-    ) -> tuple[TestClient, object]:
-        from webauthn.helpers import bytes_to_base64url
-
-        stored_b64 = bytes_to_base64url(b"\x01\x02\x03\x04")
-        redis_mock.get = AsyncMock(return_value=stored_b64.encode())
-
-        app = FastAPI()
-        app.include_router(create_auth_router(store=store, redis=redis_mock))
-        client = TestClient(wrap(app) if callable(wrap) else app)
-        return client, app
-
     @pytest.mark.asyncio
     async def test_session_and_cookie_last_eight_hours(
         self, store: CredentialStore, redis_mock: AsyncMock
     ) -> None:
-        await store.save_credential(
-            credential_id="AQID",
-            public_key=b"\x03",
-            sign_count=0,
-            device_name="Phone",
-            transports=["internal"],
-        )
-        client, _ = self._complete_login(store, redis_mock)
-
-        verification = MagicMock()
-        verification.new_sign_count = 1
-        with patch(
-            "core.identity.auth_routes.verify_authentication_response",
-            return_value=verification,
-        ):
-            resp = client.post(
-                "/api/auth/login/complete",
-                json={
-                    "_challenge_id": "c1",
-                    "id": "AQID",
-                    "rawId": "AQID",
-                    "type": "public-key",
-                    "response": {
-                        "clientDataJSON": "e30",
-                        "authenticatorData": "e30",
-                        "signature": "e30",
-                    },
-                },
-            )
+        resp = await _login(store, redis_mock)
 
         assert resp.status_code == 200
         _key, ttl = redis_mock.expire.call_args[0]
-        assert ttl == 8 * 3600
+        assert ttl == 28800
         cookie = resp.headers["set-cookie"]
         assert "Max-Age=28800" in cookie
         assert "Secure" not in cookie  # plain http in this test
+
+    @pytest.mark.asyncio
+    async def test_registration_session_and_cookie_last_eight_hours(
+        self, store: CredentialStore, redis_mock: AsyncMock
+    ) -> None:
+        """register/complete signs the new device in, so it gets the same short session."""
+        resp = _register(store, redis_mock)
+
+        assert resp.status_code == 200
+        _key, ttl = redis_mock.expire.call_args[0]
+        assert ttl == 28800
+        assert "Max-Age=28800" in resp.headers["set-cookie"]
 
     @pytest.mark.asyncio
     async def test_cookie_is_secure_behind_https_proxy(
@@ -534,40 +548,12 @@ class TestSessionLifetime:
     ) -> None:
         from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
-        await store.save_credential(
-            credential_id="AQID",
-            public_key=b"\x03",
-            sign_count=0,
-            device_name="Phone",
-            transports=["internal"],
-        )
-        client, _ = self._complete_login(
+        resp = await _login(
             store,
             redis_mock,
             wrap=lambda app: ProxyHeadersMiddleware(app, trusted_hosts="testclient"),
+            headers={"X-Forwarded-Proto": "https"},
         )
-
-        verification = MagicMock()
-        verification.new_sign_count = 1
-        with patch(
-            "core.identity.auth_routes.verify_authentication_response",
-            return_value=verification,
-        ):
-            resp = client.post(
-                "/api/auth/login/complete",
-                headers={"X-Forwarded-Proto": "https"},
-                json={
-                    "_challenge_id": "c1",
-                    "id": "AQID",
-                    "rawId": "AQID",
-                    "type": "public-key",
-                    "response": {
-                        "clientDataJSON": "e30",
-                        "authenticatorData": "e30",
-                        "signature": "e30",
-                    },
-                },
-            )
 
         assert resp.status_code == 200
         assert "Secure" in resp.headers["set-cookie"]
