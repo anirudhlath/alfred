@@ -108,7 +108,7 @@ describe("OnboardingPage", () => {
 
     // Without a session the wizard's own submit (POST /api/onboarding) 401s, so
     // advancing would waste five steps of input.
-    expect(navigate).toHaveBeenCalledWith("/login");
+    expect(navigate).toHaveBeenCalledWith("/login", { replace: true });
     expect(screen.queryByText("A few particulars")).toBeNull();
   });
 
