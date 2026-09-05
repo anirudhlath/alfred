@@ -232,15 +232,18 @@ async def require_trusted_network(request: Request) -> None:
         with suppress(TypeError):  # IPv4 addr vs IPv6 net → TypeError, skip
             if addr in net:
                 return
-    # Actionable 403: name the rejected IP and how to allow it.
-    raise HTTPException(
-        status_code=403,
-        detail=(
-            f"Access restricted to trusted networks: {client_host} is not trusted. "
-            f"Add its subnet to ALFRED_TRUSTED_NETWORKS (e.g. '{client_host}/24'), "
+    # The rejected IP is named either way — the deploy runbook has the operator read
+    # the observed peer out of this body. The *guidance* (env-var name, example CIDR,
+    # Tailscale hint) is withheld from anonymous callers: this gate deliberately runs
+    # before the session gate, so on an internet-facing host the body is reachable by
+    # a stranger, and naming the knob describes how the perimeter is configured.
+    detail = f"Access restricted to trusted networks: {client_host} is not trusted."
+    if getattr(request.state, "authenticated", False):
+        detail += (
+            f" Add its subnet to ALFRED_TRUSTED_NETWORKS (e.g. '{client_host}/24'), "
             "or reach Alfred via localhost or Tailscale."
-        ),
-    )
+        )
+    raise HTTPException(status_code=403, detail=detail)
 
 
 async def _init_apns_adapter(pool: aioredis.Redis) -> None:
@@ -599,6 +602,9 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.put(
         "/api/integrations/{name}/credentials",
+        # Gate order is load-bearing: the network gate runs FIRST so an anonymous
+        # caller is refused on network grounds without the session being consulted —
+        # a session-first order would make 401-vs-403 a session-validity oracle.
         dependencies=[Depends(require_trusted_network), Depends(require_authenticated)],
     )
     async def save_credentials(name: str, request: Request) -> dict[str, Any]:
@@ -619,6 +625,9 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.delete(
         "/api/integrations/{name}/credentials",
+        # Gate order is load-bearing: the network gate runs FIRST so an anonymous
+        # caller is refused on network grounds without the session being consulted —
+        # a session-first order would make 401-vs-403 a session-validity oracle.
         dependencies=[Depends(require_trusted_network), Depends(require_authenticated)],
     )
     async def delete_credentials(name: str) -> dict[str, str]:
@@ -784,6 +793,9 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.post(
         "/api/devices/register",
+        # Gate order is load-bearing: the network gate runs FIRST so an anonymous
+        # caller is refused on network grounds without the session being consulted —
+        # a session-first order would make 401-vs-403 a session-validity oracle.
         dependencies=[Depends(require_trusted_network), Depends(require_authenticated)],
     )
     async def register_device(payload: DeviceRegistration) -> dict[str, str]:
@@ -804,6 +816,9 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.delete(
         "/api/devices/register",
+        # Gate order is load-bearing: the network gate runs FIRST so an anonymous
+        # caller is refused on network grounds without the session being consulted —
+        # a session-first order would make 401-vs-403 a session-validity oracle.
         dependencies=[Depends(require_trusted_network), Depends(require_authenticated)],
     )
     async def unregister_device(payload: DeviceUnregistration) -> dict[str, str]:
