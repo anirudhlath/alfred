@@ -209,9 +209,6 @@ def create_auth_router(
         from core.channels.web_server import require_trusted_network
 
         trusted_network_dep = require_trusted_network
-    # A nested function does not see a parameter's narrowed type, so the gate is
-    # re-bound under a name that is already non-optional.
-    network_gate: Callable[[Request], Awaitable[None]] = trusted_network_dep
 
     router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -274,6 +271,11 @@ def create_auth_router(
     async def _pairing_code_valid(code: str) -> bool:
         """Constant-time check against the active code; count and cap wrong guesses.
 
+        The cap is a deliberate denial-of-pairing trade: this route is reachable
+        from any network, so any caller who can spell six digits can burn a fresh
+        code in ten tries. Recovery is cheap (mint another from a signed-in
+        device); the alternative — an uncapped code — is a guessable one.
+
         A Redis outage is 503, never a 403: a device holding a good code must not be
         told the code is wrong because the store could not be read.
         """
@@ -283,14 +285,21 @@ def create_auth_router(
             # back as bytes; a decoded pool hands back str.
             if isinstance(active, bytes):
                 active = active.decode()
-            if active and secrets.compare_digest(str(active).encode(), code.encode()):
+            if not active:
+                # Nothing live to guess at, so nothing to count: an expired or
+                # already-burned code must not cost a GET+INCR+EXPIRE per attempt,
+                # nor let a caller hold the counter's TTL open indefinitely.
+                return False
+            if secrets.compare_digest(str(active).encode(), code.encode()):
                 return True
             fails = int(await redis.incr(WEBAUTHN_PAIRING_FAILS_KEY))
+            # INCR then EXPIRE is not atomic: a crash between the two leaves the
+            # counter without a TTL until the next mint deletes it. Pipelining it
+            # would be a novel pattern in this repo (nothing calls ``.pipeline()``)
+            # for a key that self-heals, so the two round-trips stand.
             await redis.expire(WEBAUTHN_PAIRING_FAILS_KEY, _PAIRING_TTL)
-            if active and fails >= _PAIRING_MAX_FAILURES:
-                # Only while there is still a code to burn: every guess past the cap
-                # reads an empty key, and re-deleting it would say the code burned
-                # again each time.
+            logger.warning("Pairing code guess {} of {} rejected", fails, _PAIRING_MAX_FAILURES)
+            if fails >= _PAIRING_MAX_FAILURES:
                 await redis.delete(WEBAUTHN_PAIRING_KEY)
                 logger.warning("Pairing code burned after {} wrong guesses", fails)
         except Exception as e:
@@ -298,29 +307,32 @@ def create_auth_router(
             raise HTTPException(status_code=503, detail="Session store unavailable") from e
         return False
 
-    async def registration_gate(
+    async def _registration_gate(
         request: Request,
         x_pairing_code: str | None = Header(default=None, alias="X-Pairing-Code"),
-    ) -> None:
+    ) -> bool:
         """Let registration through with a valid pairing code, else require the LAN.
 
-        With no header this is the plain network gate it has always been — no Redis
-        read, no guess counted — so a LAN enrolment behaves exactly as before.
+        Returns whether a pairing code was spent, so ``register/complete`` knows to
+        consume it. An absent — or empty, or all-whitespace — header is the plain
+        network gate this has always been: no Redis read, no guess counted, a LAN
+        enrolment exactly as before. Empty counts as absent because a PWA fetch
+        spells the optional header ``code ?? ""``, and 403ing that would lock the
+        LAN flow out of registration entirely.
         """
-        if x_pairing_code is not None:
-            code = x_pairing_code.strip()
+        code = (x_pairing_code or "").strip()
+        if code:
             if not _PAIRING_CODE_RE.fullmatch(code):
-                # A header that is not six digits can never equal a minted code, so
-                # it is refused before Redis is touched and *not* counted: counting
-                # it would let a stream of junk headers burn the code the real
-                # device is holding, which is a free denial of pairing.
-                logger.warning("Rejected a malformed X-Pairing-Code header")
+                # Six digits or nothing: a malformed header can never equal a minted
+                # code, so it is refused without an ``incr``. That only keeps junk
+                # out of the counter — the real budget is _PAIRING_MAX_FAILURES.
+                logger.debug("Rejected a malformed X-Pairing-Code header")
                 raise HTTPException(status_code=403, detail=_PAIRING_INVALID_DETAIL)
             if not await _pairing_code_valid(code):
                 raise HTTPException(status_code=403, detail=_PAIRING_INVALID_DETAIL)
-            request.state.pairing_code = code
-            return
-        await network_gate(request)
+            return True
+        await trusted_network_dep(request)
+        return False
 
     @router.get("/status")
     async def auth_status(request: Request) -> JSONResponse:
@@ -332,7 +344,7 @@ def create_auth_router(
     async def register_begin(
         body: RegisterBeginRequest,
         request: Request,
-        _: None = Depends(registration_gate),
+        paired: bool = Depends(_registration_gate),
     ) -> JSONResponse:
         user_id_hex = await store.get_or_create_user_id()
         user_id_bytes = bytes.fromhex(user_id_hex)
@@ -375,7 +387,7 @@ def create_auth_router(
     @router.post("/register/complete")
     async def register_complete(
         request: Request,
-        _: None = Depends(registration_gate),
+        paired: bool = Depends(_registration_gate),
     ) -> JSONResponse:
         body = await request.json()
         challenge_id = body.get("_challenge_id", "")
@@ -413,7 +425,7 @@ def create_auth_router(
             transports=body.get("response", {}).get("transports", []),
         )
 
-        if getattr(request.state, "pairing_code", None):
+        if paired:
             try:
                 await redis.delete(WEBAUTHN_PAIRING_KEY)
                 await redis.delete(WEBAUTHN_PAIRING_FAILS_KEY)
@@ -438,9 +450,15 @@ def create_auth_router(
     ) -> JSONResponse:
         """Mint a one-shot code that lets a new device register from any network.
 
-        The 401 comes from the session dependency and so lands before Redis is
-        touched: an anonymous caller cannot overwrite the code a real device is
-        waiting on. Minting replaces the active code and resets its guess counter.
+        Deliberately session-gated only, unlike the two-part ``_CREDENTIAL_GATES``
+        in web_server: requiring the LAN here would defeat the point, since the
+        signed-in device doing the minting is often the one that is away. What
+        stands in for the network half is the code's own budget — five minutes and
+        ten guesses (``_PAIRING_TTL``, ``_PAIRING_MAX_FAILURES``).
+
+        The session dependency answers first, so the pairing key is never written
+        for an unauthenticated caller: nobody can overwrite the code a real device
+        is waiting on. Minting replaces the active code and resets its counter.
         """
         code = f"{secrets.randbelow(10**_PAIRING_CODE_DIGITS):0{_PAIRING_CODE_DIGITS}d}"
         try:

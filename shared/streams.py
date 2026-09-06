@@ -76,7 +76,9 @@ TRIGGER_SYNC_OP_TZ_CHANGED = "tz-changed"
 AUTH_SESSION_PREFIX: str = "alfred:auth:"
 WEBAUTHN_CHALLENGE_PREFIX: str = "alfred:webauthn:challenge:"
 WEBAUTHN_PAIRING_KEY: str = "alfred:webauthn:pairing"  # the active 6-digit code, 5 min
-WEBAUTHN_PAIRING_FAILS_KEY: str = "alfred:webauthn:pairing:fails"  # wrong guesses; burns at 10
+WEBAUTHN_PAIRING_FAILS_KEY: str = "alfred:webauthn:pairing:fails"
+"""Wrong guesses at the active pairing code; the cap that burns it is
+``_PAIRING_MAX_FAILURES`` in core/identity/auth_routes.py."""
 
 
 def decode_stream_value(raw: str | bytes) -> str:
