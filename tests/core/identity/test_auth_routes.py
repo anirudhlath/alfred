@@ -271,6 +271,10 @@ _DEVICE_B = "198.51.100.9"
 _V6_A = "2001:db8::1"
 _V6_A_SIBLING = "2001:db8::2"
 _V6_OTHER_64 = "2001:db8:0:1::1"
+# What a dual-stack listener (nginx on an `::` socket) hands over for an IPv4 client:
+# the v4 address embedded in a v6 one. Every such peer lives in ``::/64``.
+_V4_MAPPED_A = f"::ffff:{_DEVICE_A}"
+_V4_MAPPED_B = f"::ffff:{_DEVICE_B}"
 
 
 def _serve_pairing_code(
@@ -1884,7 +1888,8 @@ class TestPasskeysApi:
 class TestPairingCode:
     """A signed-in device mints a 6-digit code; a new device registers with it from
     any network. The code lives 5 minutes and is single-use; wrong guesses are budgeted
-    per client address, so a stranger's ten misses lock out the stranger, not the code."""
+    per client address — a single IPv4 address or an IPv6 /64 — so a stranger's ten
+    misses lock out the stranger, not the code."""
 
     @pytest.fixture
     def untrusted(self, store: CredentialStore, redis_mock: AsyncMock) -> TestClient:
@@ -2066,6 +2071,33 @@ class TestPairingCode:
 
         assert _guess(sibling, active_code).status_code == 403
 
+    def test_ipv4_mapped_peers_do_not_share_one_budget(
+        self, store: CredentialStore, redis_mock: AsyncMock, active_code: str
+    ) -> None:
+        """A dual-stack listener hands over `::ffff:203.0.113.5` for an IPv4 client, and
+        *every* such peer lives in `::/64` — bucketing that by prefix would put the whole
+        IPv4 internet in one budget and bring the denial of pairing straight back."""
+        guesser = _client_with_gate(store, redis_mock, _reject_network, peer=_V4_MAPPED_A)
+        other = _client_with_gate(store, redis_mock, _reject_network, peer=_V4_MAPPED_B)
+
+        _spend_guesses(guesser, 10)
+
+        assert _guess(guesser, active_code).status_code == 403
+        assert _guess(other, active_code).status_code == 200
+
+    def test_a_mapped_peer_shares_the_budget_of_its_plain_ipv4_form(
+        self, store: CredentialStore, redis_mock: AsyncMock, active_code: str
+    ) -> None:
+        """The same client reaching a dual-stack and a v4-only listener is one client,
+        so unwrapping must land it on the same key rather than a second budget."""
+        mapped = _client_with_gate(store, redis_mock, _reject_network, peer=_V4_MAPPED_A)
+        plain = _client_with_gate(store, redis_mock, _reject_network, peer=_DEVICE_A)
+
+        _spend_guesses(mapped, 5)
+        _spend_guesses(plain, 5)
+
+        assert _guess(plain, active_code).status_code == 403
+
     def test_a_different_ipv6_prefix_keeps_its_own_budget(
         self, store: CredentialStore, redis_mock: AsyncMock, active_code: str
     ) -> None:
@@ -2092,6 +2124,13 @@ class TestPairingCode:
                 "alfred:webauthn:pairing:fails:2001:db8::/64",
             ),
             (_V6_OTHER_64, "alfred:webauthn:pairing:fails:2001:db8:0:1::/64"),
+            # IPv4-mapped: unwrapped to the embedded v4 address, because every mapped
+            # peer sits in ``::/64`` and would otherwise share one bucket.
+            (_V4_MAPPED_A, "alfred:webauthn:pairing:fails:203.0.113.5"),
+            (_V4_MAPPED_B, "alfred:webauthn:pairing:fails:198.51.100.9"),
+            ("::FFFF:203.0.113.5", "alfred:webauthn:pairing:fails:203.0.113.5"),
+            # A real v6 loopback is not mapped, so it keeps the /64 treatment.
+            ("::1", "alfred:webauthn:pairing:fails:::/64"),
             # Not an IP at all: TestClient's peer, or the empty string when the ASGI
             # scope carries no client. Still one bucket, keyed on what we were given.
             ("testclient", "alfred:webauthn:pairing:fails:testclient"),

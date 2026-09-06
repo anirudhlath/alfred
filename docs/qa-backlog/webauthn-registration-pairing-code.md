@@ -9,7 +9,7 @@
 - Device A: already has a passkey registered and a live `alfred_auth` session (this is what mints the code)
 - Device B: a real second device with a browser supporting WebAuthn, on a network path the trusted-network gate rejects — confirm it is genuinely untrusted before starting (step 1)
 - `FORWARDED_ALLOW_IPS` correctly set if a reverse proxy is in the path, or the gate will judge the proxy and device B will look trusted
-- Redis reachable (the code, its TTL and the per-client failure counters all live there). The counter key is bucketed: the bare address for IPv4, the enclosing /64 for IPv6 (`alfred:webauthn:pairing:fails:2001:db8::/64`) — check the right key for whichever family your devices actually use
+- Redis reachable (the code, its TTL and the per-client failure counters all live there). The counter key is bucketed: the bare address for IPv4, the enclosing /64 for IPv6 (`alfred:webauthn:pairing:fails:2001:db8::/64`), and an IPv4-mapped peer (`::ffff:203.0.113.5`, what a dual-stack listener reports for a v4 client) keys on the plain `203.0.113.5` — check the right key for whichever family your devices actually use
 - A **device C** on a third network path (or the same path from a different public IP — a phone on cellular alongside B on Wi-Fi), for the cross-address case in step 6
 
 ## Test Steps

@@ -128,15 +128,22 @@ def _pairing_fails_key(client_address: str) -> str:
     """Redis key holding one client's wrong-guess count.
 
     The bucket is a single IPv4 address, or the IPv6 /64 the peer sits in — see
-    ``_PAIRING_V6_BUDGET_PREFIX``. A peer that is not an IP at all (TestClient's
-    ``"testclient"``, or the empty string when the ASGI scope carries no client) keys
-    on the raw value: still one bucket, so such a caller is budgeted rather than
-    exempt.
+    ``_PAIRING_V6_BUDGET_PREFIX``. An IPv4-mapped peer (``::ffff:203.0.113.5``, which is
+    what a dual-stack listener such as nginx on an ``::`` socket reports for an IPv4
+    client) is unwrapped to the address it embeds: every mapped peer lives in ``::/64``,
+    so bucketing one by prefix would put the whole IPv4 internet in a single budget and
+    hand back the denial of pairing. Unwrapping also keeps one client on one key whether
+    it arrived through the dual-stack listener or a v4-only one. A peer that is not an IP
+    at all (TestClient's ``"testclient"``, or the empty string when the ASGI scope carries
+    no client) keys on the raw value: still one bucket, so such a caller is budgeted
+    rather than exempt.
     """
     try:
         addr = ipaddress.ip_address(client_address)
     except ValueError:
         return f"{WEBAUTHN_PAIRING_FAILS_PREFIX}{client_address}"
+    if addr.version == 6 and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
     if addr.version == 4:
         return f"{WEBAUTHN_PAIRING_FAILS_PREFIX}{addr}"
     net = ipaddress.ip_network(f"{addr}/{_PAIRING_V6_BUDGET_PREFIX}", strict=False)
