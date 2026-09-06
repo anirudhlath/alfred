@@ -69,7 +69,7 @@ sequenceDiagram
 
     CE->>DR: ActionRequest (risk=critical, confirmed=false)
     DR->>R: SET alfred:pending_actions:{id} EX 300
-    DR->>N: URGENT notification (metadata.pending_action_id)
+    DR->>N: URGENT notification (metadata: pending_action_id, tool_name, parameters, reason)
     DR-->>CE: ActionResult error "confirmation_required:{id}"
     U->>R: POST /api/actions/{id}/confirm  OR  confirm_pending_action tool
     R->>R: GETDEL pending key (atomic), republish to alfred:actions confirmed=true
@@ -77,6 +77,14 @@ sequenceDiagram
     DR->>DR: risk=critical but confirmed → pass through
 ```
 
+- Confirmation metadata: the URGENT notification carries `pending_action_id`,
+  `tool_name`, `parameters` and `reason` — enough for a client to render the prompt
+  without a second lookup. `reason` is the actor's one-sentence justification, offered
+  as an extra argument on critical tools and moved off `parameters` by
+  `ConsciousEngine._dispatch_tool_call()` so the domain service never sees it.
+  It is **null for every non-conscious source** (trigger-fired actions —
+  `core/triggers/engine.py` — and any caller that omits it), so clients must render
+  the prompt without a reason rather than assuming one is present.
 - Pending store helpers: `core/routing/pending.py` (`PENDING_TTL_SECONDS=300`).
   `confirm_pending_action()` uses an atomic `GETDEL` (not GET-then-DELETE) so two
   concurrent confirms of the same id can never both republish — only one caller ever
