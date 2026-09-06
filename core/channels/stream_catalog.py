@@ -96,11 +96,17 @@ async def _rate_5m(redis: AioRedis, key: str, now_ms: int) -> float:
 
     Fewer than ``_RATE_SAMPLE_SIZE`` entries came back → the scan was not truncated,
     so the sample *is* the whole window and ``n / 300`` is exact. A full sample means
-    the window holds at least that many, so the rate is extrapolated from the span the
-    newest ``_RATE_SAMPLE_SIZE`` actually cover — which is what lets a busy stream read
-    above the old 16.667 ceiling. A sample that spans no time (or whose oldest id will
-    not parse) has nothing to extrapolate from and falls back to the window, the floor
-    of the estimate.
+    the window holds at least that many, so the rate is extrapolated: the count over
+    the interval from the **oldest sampled entry up to now**, which is what lets a busy
+    stream read above the old 16.667 ceiling.
+
+    Note that interval is measured to ``now``, not to the newest sampled entry, so an
+    idle tail is part of the denominator. That is the conservative reading and the one
+    we want: a stream that fired 100 entries and then went quiet decays toward zero as
+    the quiet stretches, rather than reporting the burst's rate indefinitely.
+
+    A sample that spans no time (or whose oldest id will not parse) has nothing to
+    extrapolate from and falls back to the window, the floor of the estimate.
     """
     try:
         recent = await revrange(

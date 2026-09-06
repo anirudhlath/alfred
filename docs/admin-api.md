@@ -165,11 +165,20 @@ Missing streams (stream key does not exist in Redis yet) report `{"length": 0, "
 `XREVRANGE key + {now-300s} COUNT 100` per stream (`_RATE_SAMPLE_SIZE` in
 `core/channels/stream_catalog.py`). Fewer than 100 entries come back → the scan was not
 truncated, the sample is the whole window, and the figure is exact (`n / 300`). Exactly 100
-come back → the window holds at least that many, so the rate is **extrapolated** from the
-span the newest 100 actually cover (`100 / (now - oldest_sampled_ts)`), which is how a busy
-stream reports its real rate rather than saturating. A full sample spanning no time — or one
-whose oldest entry id will not parse — falls back to the window (`100 / 300`), the floor of
-the estimate. `0.0` covers both an idle stream and any Redis failure.
+come back → the window holds at least that many, so the rate is **extrapolated**:
+`100 / (now - oldest_sampled_ts)`, which is how a busy stream reports its real rate rather
+than saturating. A full sample spanning no time — or one whose oldest entry id will not
+parse — falls back to the window (`100 / 300`), the floor of the estimate. `0.0` covers both
+an idle stream and any Redis failure.
+
+The extrapolated denominator runs to **now**, not to the newest sampled entry, so a quiet
+stretch after a burst is counted against the rate. That is deliberate: a stream that fired
+100 entries and then stopped decays toward zero as the silence grows, instead of reporting
+the burst's rate until those entries age out of the window. **For client authors:** once the
+sample fills, `rate_5m` tracks the interval the newest 100 entries span up to now, so it
+responds faster — in both directions — than a flat 300-second mean would. Two polls a few
+seconds apart can legitimately differ on an unchanged stream; render it as a live rate, not
+as a stable five-minute average.
 
 **`GET /api/admin/streams/{name}`** parameters:
 

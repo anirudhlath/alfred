@@ -141,8 +141,8 @@ async def test_rate_is_extrapolated_once_the_sample_fills(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """100 entries means the scan was truncated — the window holds at least that many,
-    so the rate comes from the span the newest 100 actually cover (here 50 s → 2.0/s),
-    not from a count that would read as 0.333 and saturate."""
+    so the rate comes from the interval between the oldest sampled entry and *now*
+    (here 50 s → 2.0/s), not from a count that would read as 0.333 and saturate."""
     _pinned_clock(monkeypatch)
 
     redis = AsyncMock()
