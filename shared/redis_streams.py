@@ -72,11 +72,17 @@ async def revrange(
     stream: str,
     *,
     count: int,
+    max_id: str = "+",
+    min_id: str = "-",
 ) -> list[tuple[bytes | str, dict[bytes | str, bytes | str]]]:
-    """Typed ``XREVRANGE`` — owns the stub-gap ignore for the whole codebase."""
+    """Typed ``XREVRANGE`` — owns the stub-gap ignore for the whole codebase.
+
+    ``max_id``/``min_id`` bound the scan (newest first); the defaults cover
+    the whole stream.
+    """
     entries: list[tuple[bytes | str, dict[bytes | str, bytes | str]]]
     entries = await redis.xrevrange(  # type: ignore[assignment,misc,unused-ignore]
-        stream, count=count
+        stream, max=max_id, min=min_id, count=count
     )
     return entries
 

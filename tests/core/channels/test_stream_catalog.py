@@ -31,7 +31,7 @@ async def test_stream_summaries_defensive_on_missing_stream() -> None:
     redis = AsyncMock()
     redis.xinfo_stream = AsyncMock(side_effect=Exception("no such key"))
     out: dict[str, dict[str, Any]] = await stream_summaries(redis)
-    assert out["events"] == {"length": 0, "last_id": None, "last_ts": None}
+    assert out["events"] == {"length": 0, "last_id": None, "last_ts": None, "rate_5m": 0.0}
 
 
 async def test_stream_summaries_extracts_length_and_ts() -> None:
@@ -61,3 +61,33 @@ async def test_stream_summaries_bytes_keys() -> None:
     assert out["events"]["length"] == 42
     assert out["events"]["last_id"] == "1718000000123-0"
     assert out["events"]["last_ts"] == 1718000000.123
+
+
+async def test_stream_summaries_reports_rate_over_five_minutes() -> None:
+    redis = AsyncMock()
+    redis.xinfo_stream = AsyncMock(
+        return_value={"length": 42, "last-entry": (b"1718000000123-0", {b"event": b"{}"})}
+    )
+    redis.xrevrange = AsyncMock(return_value=[("2-0", {}), ("1-0", {})])
+
+    out = await stream_summaries(redis)
+
+    assert out["events"]["rate_5m"] == round(2 / 300, 3)
+    kwargs = redis.xrevrange.await_args.kwargs
+    assert kwargs["max"] == "+"
+    assert kwargs["count"] == 5000
+    assert kwargs["min"].endswith("-0")
+    assert int(kwargs["min"].split("-")[0]) > 0
+
+
+async def test_stream_summaries_rate_is_zero_when_revrange_fails() -> None:
+    redis = AsyncMock()
+    redis.xinfo_stream = AsyncMock(
+        return_value={"length": 1, "last-entry": (b"1718000000123-0", {b"event": b"{}"})}
+    )
+    redis.xrevrange = AsyncMock(side_effect=Exception("boom"))
+
+    out = await stream_summaries(redis)
+
+    assert out["events"]["length"] == 1
+    assert out["events"]["rate_5m"] == 0.0

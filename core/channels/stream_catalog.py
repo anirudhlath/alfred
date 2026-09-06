@@ -14,8 +14,10 @@ Stream entry shapes vary by stream:
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
+from shared.redis_streams import revrange
 from shared.streams import (
     ACTIONS_STREAM,
     EVENTS_STREAM,
@@ -81,10 +83,29 @@ def _id_to_ts(entry_id: str) -> float | None:
         return None
 
 
+_RATE_WINDOW_SECONDS = 300
+_RATE_SAMPLE_CAP = 5000  # a stream busier than ~16/s saturates the figure instead of the scan
+
+
+async def _rate_5m(redis: AioRedis, key: str, now_ms: int) -> float:
+    """Entries per second over the last five minutes (0.0 on any failure)."""
+    try:
+        recent = await revrange(
+            redis,
+            key,
+            count=_RATE_SAMPLE_CAP,
+            min_id=f"{now_ms - _RATE_WINDOW_SECONDS * 1000}-0",
+        )
+    except Exception:
+        return 0.0
+    return round(len(recent) / _RATE_WINDOW_SECONDS, 3)
+
+
 async def stream_summaries(redis: AioRedis) -> dict[str, dict[str, Any]]:
-    """Length + last-entry recency for every catalog stream. Missing streams
-    report zero — never raise."""
+    """Length, last-entry recency and 5-minute rate for every catalog stream.
+    Missing streams report zero — never raise."""
     out: dict[str, dict[str, Any]] = {}
+    now_ms = int(time.time() * 1000)
     for name, key in STREAM_CATALOG.items():
         try:
             raw: Any = await redis.xinfo_stream(key)
@@ -95,7 +116,8 @@ async def stream_summaries(redis: AioRedis) -> dict[str, dict[str, Any]]:
                 "length": int(info.get("length") or info.get(b"length") or 0),
                 "last_id": last_id,
                 "last_ts": _id_to_ts(last_id) if last_id else None,
+                "rate_5m": await _rate_5m(redis, key, now_ms),
             }
         except Exception:
-            out[name] = {"length": 0, "last_id": None, "last_ts": None}
+            out[name] = {"length": 0, "last_id": None, "last_ts": None, "rate_5m": 0.0}
     return out
