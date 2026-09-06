@@ -35,6 +35,34 @@ from shared.streams import TOOL_REGISTRY_KEY
 from tests.core.channels.conftest import _TEST_SESSION_ID, make_session_redis
 
 
+class _FakeClock:
+    """Deterministic stand-in for the ``time`` module — advances only when told.
+
+    Substituted for ``web_server.time`` so a test can charge a known cost to the
+    manifest lookup and a different one to the probe, making both the *scope* and
+    the *precision* of ``latency_ms`` exactly assertable.
+    """
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def perf_counter(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+# The work that must NOT be timed (the manifest lookup, adapter construction) is
+# charged an absurd cost and the probe a small one with a second decimal, so a
+# timer that starts too early or rounds too finely can't produce
+# _EXPECTED_PROBE_MS.
+_LOOKUP_SECONDS = 500.0
+_CONSTRUCT_SECONDS = 500.0
+_PROBE_SECONDS = 0.0021239
+_EXPECTED_PROBE_MS = 2.1
+
+
 class _KindAdapter(Integration):
     """Minimal in-process adapter to verify kind='adapter' marking."""
 
@@ -55,6 +83,34 @@ class _KindAdapter(Integration):
         return True
 
 
+class _TimedAdapter(Integration):
+    """Adapter charging fake time to construction and to health_check separately.
+
+    `IntegrationRegistry.get` constructs lazily and blocks on a keyring read, so
+    this pins that latency_ms bills the probe and not that cold start.
+    """
+
+    name = "timed_adapter"
+    category = "testing"
+    credentials_schema = CredentialSchema(fields={})
+    clock: _FakeClock | None = None
+
+    def __init__(self) -> None:
+        if _TimedAdapter.clock is not None:
+            _TimedAdapter.clock.advance(_CONSTRUCT_SECONDS)
+
+    async def get_capabilities(self) -> list[IntegrationCapability]:
+        return []
+
+    async def execute(self, request: IntegrationRequest) -> IntegrationResult:
+        return IntegrationResult(data={}, freshness=datetime.now(UTC), confidence=0.0)
+
+    async def health_check(self) -> bool:
+        if _TimedAdapter.clock is not None:
+            _TimedAdapter.clock.advance(_PROBE_SECONDS)
+        return True
+
+
 class _ServiceHttpHandler:
     """Programmable fake sovereign service for httpx.MockTransport."""
 
@@ -64,6 +120,8 @@ class _ServiceHttpHandler:
         self.unreachable = False
         # Fired on every request — lets a test charge fake time to the probe.
         self.on_request: Callable[[], None] | None = None
+        # Raised instead of responding — for the unexpected-error probe path.
+        self.crash: Exception | None = None
         self.health: dict[str, Any] = {
             "status": "ok",
             "service": "home-service",
@@ -73,6 +131,8 @@ class _ServiceHttpHandler:
     def __call__(self, request: httpx.Request) -> httpx.Response:
         if self.on_request is not None:
             self.on_request()
+        if self.crash is not None:
+            raise self.crash
         if self.unreachable:
             raise httpx.ConnectError("connection refused")
         if request.url.path == "/credentials":
@@ -83,32 +143,6 @@ class _ServiceHttpHandler:
         if request.url.path == "/health":
             return httpx.Response(200, json=self.health)
         return httpx.Response(404)
-
-
-class _FakeClock:
-    """Deterministic stand-in for the ``time`` module — advances only when told.
-
-    Substituted for ``web_server.time`` so a test can charge a known cost to the
-    manifest lookup and a different one to the probe, making both the *scope* and
-    the *precision* of ``latency_ms`` exactly assertable.
-    """
-
-    def __init__(self) -> None:
-        self.now = 0.0
-
-    def perf_counter(self) -> float:
-        return self.now
-
-    def advance(self, seconds: float) -> None:
-        self.now += seconds
-
-
-# The manifest lookup is charged an absurd cost and the probe a small one with
-# a second decimal, so a timer that starts too early or rounds too finely can't
-# produce _EXPECTED_PROBE_MS.
-_LOOKUP_SECONDS = 500.0
-_PROBE_SECONDS = 0.0021239
-_EXPECTED_PROBE_MS = 2.1
 
 
 @pytest.fixture
@@ -194,7 +228,7 @@ def anon_service_client(
 
 
 @pytest.fixture
-def home_service_manifest_no_endpoint(
+def home_service_manifest_no_credentials_endpoint(
     home_service_manifest: dict[str, Any],
 ) -> dict[str, Any]:
     """Manifest variant with a credentials_schema but no credentials_endpoint —
@@ -205,31 +239,23 @@ def home_service_manifest_no_endpoint(
 
 
 @pytest.fixture
-def service_client_no_endpoint(
-    service_handler: _ServiceHttpHandler, home_service_manifest_no_endpoint: dict[str, Any]
+def service_client_no_credentials_endpoint(
+    service_handler: _ServiceHttpHandler,
+    home_service_manifest_no_credentials_endpoint: dict[str, Any],
 ) -> Iterator[TestClient]:
     """TestClient for a home-service manifest with no credentials_endpoint."""
-    yield from _build_service_client(home_service_manifest_no_endpoint, service_handler)
+    yield from _build_service_client(home_service_manifest_no_credentials_endpoint, service_handler)
 
 
 @pytest.fixture
 def home_service_manifest_without_any_endpoint(
-    home_service_manifest_no_endpoint: dict[str, Any],
+    home_service_manifest_no_credentials_endpoint: dict[str, Any],
 ) -> dict[str, Any]:
     """Manifest variant declaring *neither* endpoint — distinct from
-    `home_service_manifest_no_endpoint`, which still has a service_endpoint."""
-    manifest = dict(home_service_manifest_no_endpoint)
+    `home_service_manifest_no_credentials_endpoint`, which still has a service_endpoint."""
+    manifest = dict(home_service_manifest_no_credentials_endpoint)
     manifest.pop("service_endpoint", None)
     return manifest
-
-
-@pytest.fixture
-def service_client_without_any_endpoint(
-    service_handler: _ServiceHttpHandler,
-    home_service_manifest_without_any_endpoint: dict[str, Any],
-) -> Iterator[TestClient]:
-    """TestClient for a manifest with nothing to probe at all."""
-    yield from _build_service_client(home_service_manifest_without_any_endpoint, service_handler)
 
 
 @contextmanager
@@ -368,11 +394,11 @@ def test_put_service_error_response_502_keyring_persists(
 
 
 def test_put_no_credentials_endpoint_returns_pushed_false(
-    service_client_no_endpoint: TestClient, service_handler: _ServiceHttpHandler
+    service_client_no_credentials_endpoint: TestClient, service_handler: _ServiceHttpHandler
 ) -> None:
     """A manifest with a credentials_schema but no credentials_endpoint stores
     to keyring and reports pushed=False without attempting an HTTP push."""
-    resp = service_client_no_endpoint.put(
+    resp = service_client_no_credentials_endpoint.put(
         "/api/integrations/home-service/credentials",
         json={"url": "http://192.168.50.159:8123", "token": "abc123"},
     )
@@ -459,9 +485,11 @@ def test_status_unknown_name_404(service_client: TestClient) -> None:
 
 
 def test_status_no_endpoint_has_null_latency(
-    service_client_without_any_endpoint: TestClient,
+    service_handler: _ServiceHttpHandler,
+    home_service_manifest_without_any_endpoint: dict[str, Any],
 ) -> None:
-    resp = service_client_without_any_endpoint.get("/api/integrations/home-service/status")
+    with _service_client_for(home_service_manifest_without_any_endpoint, service_handler) as client:
+        resp = client.get("/api/integrations/home-service/status")
     data = resp.json()
     assert data["healthy"] is False
     assert data["detail"] == {"error": "no endpoint declared"}
@@ -480,6 +508,60 @@ def test_status_times_the_probe_not_the_manifest_lookup(timed_service_client: Te
     data = resp.json()
     assert data["healthy"] is True
     assert data["latency_ms"] == _EXPECTED_PROBE_MS
+
+
+def test_status_unexpected_probe_error_is_unhealthy_not_500(
+    service_client: TestClient, service_handler: _ServiceHttpHandler
+) -> None:
+    """The narrow except tuple can't enumerate every failure — a closed
+    app.state.http raises RuntimeError, which is neither HTTPError, InvalidURL
+    nor ValueError. The operator gets an unhealthy row, not a 500."""
+    service_handler.crash = RuntimeError("Cannot send a request, as the client has been closed.")
+    resp = service_client.get("/api/integrations/home-service/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["healthy"] is False
+    assert data["detail"]["error"].startswith("RuntimeError: ")
+    assert isinstance(data["latency_ms"], float)
+
+
+def test_status_times_the_adapter_probe_not_its_construction(
+    monkeypatch: pytest.MonkeyPatch,
+    service_handler: _ServiceHttpHandler,
+    home_service_manifest: dict[str, Any],
+) -> None:
+    """Adapter path: `IntegrationRegistry.get` constructs lazily and reads the
+    keyring, so a cold first call must not bill that to the probe."""
+    clock = _FakeClock()
+    monkeypatch.setattr(web_server, "time", clock)
+    monkeypatch.setattr(_TimedAdapter, "clock", clock)
+    with _service_client_for(home_service_manifest, service_handler) as client:
+        IntegrationRegistry._registry["timed_adapter"] = _TimedAdapter
+        IntegrationRegistry._instances.pop("timed_adapter", None)  # force a cold get()
+        resp = client.get("/api/integrations/timed_adapter/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["healthy"] is True
+    assert data["latency_ms"] == _EXPECTED_PROBE_MS
+
+
+def test_status_adapter_construction_failure_has_null_latency(
+    service_handler: _ServiceHttpHandler, home_service_manifest: dict[str, Any]
+) -> None:
+    """An adapter that can't even be built was never probed — no latency to report."""
+
+    class _BrokenAdapter(_TimedAdapter):
+        def __init__(self) -> None:
+            raise RuntimeError("keyring locked")
+
+    with _service_client_for(home_service_manifest, service_handler) as client:
+        IntegrationRegistry._registry["timed_adapter"] = _BrokenAdapter
+        IntegrationRegistry._instances.pop("timed_adapter", None)
+        resp = client.get("/api/integrations/timed_adapter/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["healthy"] is False
+    assert data["latency_ms"] is None
 
 
 @pytest.mark.parametrize("endpoint", ["http://[::1", "http://\x00bad"])

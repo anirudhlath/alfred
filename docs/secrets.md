@@ -106,6 +106,10 @@ Core stays the single credential authority (`core/channels/service_credentials.p
   `/health` URL is resolved via `urljoin(endpoint, "/health")` against the
   service's registered endpoint host — services MUST expose `/health` at the
   root of that host (not under a sub-path) for the status proxy to work.
+  The response also carries `latency_ms`: wall-clock milliseconds around the
+  probe alone (the manifest lookup is excluded), rounded to one decimal, and
+  `null` when the manifest declares no usable endpoint — there was nothing to
+  probe, not a zero-cost probe.
 - Self-healing re-push: the channels process consumes `ServiceRegistered`
   from `alfred:events` (consumer group `channels-credentials`) and re-pushes
   stored credentials — services keep credentials in memory only and recover

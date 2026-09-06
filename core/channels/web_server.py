@@ -732,6 +732,17 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
                 "detail": {"error": str(exc)},
                 "latency_ms": _elapsed_ms(started),
             }
+        except Exception as exc:
+            # The narrow tuple above is the known-and-expected set; anything else
+            # (a closed app.state.http raises RuntimeError, and InvalidURL was
+            # already missed once) is a bug report, not a 500 for the operator.
+            logger.warning("Status probe for service {} failed unexpectedly: {}", name, exc)
+            return {
+                "name": name,
+                "healthy": False,
+                "detail": {"error": f"{type(exc).__name__}: {exc}"},
+                "latency_ms": _elapsed_ms(started),
+            }
         return {
             "name": name,
             "healthy": service_payload_healthy(resp.status_code, payload),
@@ -749,9 +760,16 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         except KeyError:
             return await _service_status(name)
 
-        started = time.perf_counter()
+        # get() lazily constructs the adapter and blocks on a keyring read, so
+        # timing it would bill the first call after boot/reconfigure for the
+        # cold start. Construct first, then time the probe alone.
         try:
             instance = IntegrationRegistry.get(name)
+        except Exception:
+            return {"name": name, "healthy": False, "latency_ms": None}
+
+        started = time.perf_counter()
+        try:
             healthy = await instance.health_check()
         except Exception:
             healthy = False
