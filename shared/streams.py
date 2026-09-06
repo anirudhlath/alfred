@@ -77,12 +77,15 @@ AUTH_SESSION_PREFIX: str = "alfred:auth:"
 WEBAUTHN_CHALLENGE_PREFIX: str = "alfred:webauthn:challenge:"
 WEBAUTHN_PAIRING_KEY: str = "alfred:webauthn:pairing"  # the active 6-digit code, 5 min
 WEBAUTHN_PAIRING_FAILS_PREFIX: str = "alfred:webauthn:pairing:fails:"
-"""+ client address -> wrong guesses at the pairing code from that address (TTL 300s).
+"""+ client bucket -> wrong guesses at the pairing code from that client (TTL 300s).
 
-Per address rather than one global counter: this route is reachable from any network, so
-a single counter let a stranger's guesses lock out the code a real device was waiting on.
-Spending the budget (``_PAIRING_MAX_FAILURES`` in core/identity/auth_routes.py) refuses
-that address for the rest of the TTL; the code itself stays live for everyone else."""
+The bucket is a single IPv4 address or an IPv6 /64 (``_pairing_fails_key`` in
+core/identity/auth_routes.py — a v6 end site is delegated a whole /64, so keying on the
+bare address would give one guesser 2**64 budgets). Per client rather than one global
+counter: this route is reachable from any network, so a single counter let a stranger's
+guesses lock out the code a real device was waiting on. Spending the budget
+(``_PAIRING_MAX_FAILURES``) refuses that client for the rest of the TTL; the code itself
+stays live for everyone else."""
 
 
 def decode_stream_value(raw: str | bytes) -> str:

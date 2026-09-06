@@ -105,8 +105,8 @@ Everything reachable before a session exists is unmetered: `GET /api/auth/status
 `POST /api/auth/login/begin`, `POST /api/auth/login/complete`,
 `POST /api/auth/register/begin`, `POST /api/auth/register/complete`, and the `/ws` +
 `/ws/telemetry` upgrades. The two `register/*` routes carry a per-client-address budget of
-their own on the pairing path (`alfred:webauthn:pairing:fails:{client_ip}`, 10 guesses per
-300 s) — but only for a well-formed `X-Pairing-Code`; a call with no header, or a malformed
+their own on the pairing path (`alfred:webauthn:pairing:fails:{bucket}`, 10 guesses per
+300 s, bucketed to a single IPv4 address or an IPv6 /64) — but only for a well-formed `X-Pairing-Code`; a call with no header, or a malformed
 one, is refused before Redis and is not metered at all. The WebSocket case is the cheapest to abuse — `require_ws_auth()` accepts the
 socket *before* authenticating (deliberately, so the browser sees close code 4001 instead
 of a bare 403), so every anonymous connect costs a Redis `HGETALL` and a socket. `login/begin`

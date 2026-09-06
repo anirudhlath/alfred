@@ -266,6 +266,11 @@ _PAIRING_TTL_SECONDS = 300
 # Two devices off the LAN, and the proxy in front of them (RFC 5737 documentation nets).
 _DEVICE_A = "203.0.113.5"
 _DEVICE_B = "198.51.100.9"
+# The same two, over IPv6 (RFC 3849 documentation prefix). ``_V6_A``/``_V6_A_SIBLING``
+# share a /64 the way two devices on one residential line do; ``_V6_OTHER_64`` does not.
+_V6_A = "2001:db8::1"
+_V6_A_SIBLING = "2001:db8::2"
+_V6_OTHER_64 = "2001:db8:0:1::1"
 
 
 def _serve_pairing_code(
@@ -2012,6 +2017,66 @@ class TestPairingCode:
         # itself was never deleted.
         assert redis_mock.get.await_args.args[0] == _pairing_fails_key(_DEVICE_A)
         redis_mock.delete.assert_not_awaited()
+
+    def test_an_ipv6_client_cannot_buy_a_fresh_budget_from_its_own_prefix(
+        self, store: CredentialStore, redis_mock: AsyncMock, active_code: str
+    ) -> None:
+        """A residential IPv6 line is handed a whole /64, so keying on the bare address
+        would hand one guesser 2**64 budgets and the cap would mean nothing over v6.
+        The bucket is the /64: a sibling address inherits the lockout."""
+        guesser = _client_with_gate(store, redis_mock, _reject_network, peer=_V6_A)
+        sibling = _client_with_gate(store, redis_mock, _reject_network, peer=_V6_A_SIBLING)
+
+        _spend_guesses(guesser, 10)
+
+        assert _guess(sibling, active_code).status_code == 403
+
+    def test_a_different_ipv6_prefix_keeps_its_own_budget(
+        self, store: CredentialStore, redis_mock: AsyncMock, active_code: str
+    ) -> None:
+        """The bucket must not be so wide it re-creates the denial of pairing: another
+        subscriber's /64 is a different bucket and still pairs."""
+        guesser = _client_with_gate(store, redis_mock, _reject_network, peer=_V6_A)
+        elsewhere = _client_with_gate(store, redis_mock, _reject_network, peer=_V6_OTHER_64)
+
+        _spend_guesses(guesser, 10)
+
+        assert _guess(elsewhere, active_code).status_code == 200
+
+    @pytest.mark.parametrize(
+        ("peer", "expected"),
+        [
+            # IPv4 is its own bucket — one address, one budget, unchanged.
+            (_DEVICE_A, "alfred:webauthn:pairing:fails:203.0.113.5"),
+            (_DEVICE_B, "alfred:webauthn:pairing:fails:198.51.100.9"),
+            # IPv6 collapses to the /64 the address sits in, however it is spelled.
+            (_V6_A, "alfred:webauthn:pairing:fails:2001:db8::/64"),
+            (_V6_A_SIBLING, "alfred:webauthn:pairing:fails:2001:db8::/64"),
+            (
+                "2001:0db8:0000:0000:0000:0000:0000:0003",  # long form of the same /64
+                "alfred:webauthn:pairing:fails:2001:db8::/64",
+            ),
+            (_V6_OTHER_64, "alfred:webauthn:pairing:fails:2001:db8:0:1::/64"),
+            # Not an IP at all: TestClient's peer, or the empty string when the ASGI
+            # scope carries no client. Still one bucket, keyed on what we were given.
+            ("testclient", "alfred:webauthn:pairing:fails:testclient"),
+            ("", "alfred:webauthn:pairing:fails:"),
+        ],
+    )
+    def test_the_fails_key_buckets_the_peer(self, peer: str, expected: str) -> None:
+        assert _pairing_fails_key(peer) == expected
+
+    def test_an_unparseable_peer_still_gets_a_budget(
+        self, store: CredentialStore, redis_mock: AsyncMock, active_code: str
+    ) -> None:
+        """A peer that is not an IP — a unix socket, an odd proxy — must not fall out
+        of the budget entirely; it just shares one bucket with every other such peer."""
+        odd = _client_with_gate(store, redis_mock, _reject_network, peer=None)
+
+        _spend_guesses(odd, 10)
+
+        assert _guess(odd, active_code).status_code == 403
+        redis_mock.incr.assert_awaited_with(_pairing_fails_key("testclient"))
 
     def test_a_locked_out_address_does_not_burn_the_code_for_another_device(
         self, untrusted: TestClient, untrusted_b: TestClient, active_code: str

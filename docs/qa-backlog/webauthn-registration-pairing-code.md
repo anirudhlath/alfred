@@ -9,7 +9,7 @@
 - Device A: already has a passkey registered and a live `alfred_auth` session (this is what mints the code)
 - Device B: a real second device with a browser supporting WebAuthn, on a network path the trusted-network gate rejects — confirm it is genuinely untrusted before starting (step 1)
 - `FORWARDED_ALLOW_IPS` correctly set if a reverse proxy is in the path, or the gate will judge the proxy and device B will look trusted
-- Redis reachable (the code, its TTL and the per-address failure counters all live there)
+- Redis reachable (the code, its TTL and the per-client failure counters all live there). The counter key is bucketed: the bare address for IPv4, the enclosing /64 for IPv6 (`alfred:webauthn:pairing:fails:2001:db8::/64`) — check the right key for whichever family your devices actually use
 - A **device C** on a third network path (or the same path from a different public IP — a phone on cellular alongside B on Wi-Fi), for the cross-address case in step 6
 
 ## Test Steps
@@ -29,8 +29,9 @@
 - The registration that spends a code is indistinguishable from a LAN registration afterwards — same credential row, same session, same login path.
 
 ## Notes
-- Minting is **session-gated only**, deliberately: requiring the LAN to mint would defeat the point, since the signed-in device is often the one that is away. The five-minute life plus a per-address ten-guess budget stands in for the network half.
-- Minting again overwrites any active code but deliberately clears **no** failure counter — they are per client address, not per code, and are not cheaply enumerable. A locked-out address waits out its 300 s TTL; a re-mint does not release it.
+- Minting is **session-gated only**, deliberately: requiring the LAN to mint would defeat the point, since the signed-in device is often the one that is away. The five-minute life plus a per-client ten-guess budget — one IPv4 address, or one IPv6 /64 — stands in for the network half.
+- Minting again overwrites any active code but deliberately clears **no** failure counter — they are per client address (or IPv6 /64), not per code, and are not cheaply enumerable. A locked-out client waits out its 300 s TTL; a re-mint does not release it, though minting and pairing from a *different* address works at once.
+- **If device B is on IPv6, step 6's device C must be outside B's /64** — two addresses on one residential line share a budget by design, so a C picked from the same prefix will (correctly) be refused and read as a failure of this case.
 - **`FORWARDED_ALLOW_IPS` must be set for the per-address budget to mean anything.** Unlisted, the reverse proxy's own address is the only peer Alfred ever sees, so the whole internet shares one counter and the pre-fix denial-of-pairing is back in a new shape. That is the same setting step 1 depends on, for the same reason.
 - This case complements [`webauthn-registration-trusted-network.md`](webauthn-registration-trusted-network.md) (the LAN path) and [`web-passkey-flows.md`](web-passkey-flows.md) (register/login/logout/WS on localhost).
 - Worth running once behind the real reverse proxy: if `FORWARDED_ALLOW_IPS` is wrong, device B may be judged by the proxy's RFC1918 address and pass the network gate outright, which would silently make this whole case pass for the wrong reason. Step 1 is what catches that.

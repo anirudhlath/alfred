@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 import secrets
@@ -57,7 +58,7 @@ _SESSION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _CREDENTIAL_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,1364}")
 _LAST_PASSKEY_DETAIL = "Cannot remove the last passkey — register another first"
 _PAIRING_TTL = 300  # a pairing code lives 5 minutes
-_PAIRING_MAX_FAILURES = 10  # wrong guesses before one client address is locked out
+_PAIRING_MAX_FAILURES = 10  # wrong guesses before one client bucket is locked out
 _PAIRING_CODE_DIGITS = 6  # short enough to read off one screen and type on another
 # What a pairing header must be, after stripping: exactly six ASCII digits. ``[0-9]``
 # rather than ``\d``, which also matches Unicode decimal digits no minted code can
@@ -96,14 +97,36 @@ def _client_address(request: Request) -> str:
     ``request.client.host`` is the socket peer, already rewritten from
     ``X-Forwarded-For`` by uvicorn's ``ProxyHeadersMiddleware`` for peers listed in
     ``FORWARDED_ALLOW_IPS`` — so behind a proxy that is *not* trusted there, every
-    caller shares the proxy's address and therefore one guess budget.
+    caller shares the proxy's address and therefore one guess budget. Returned raw;
+    ``_pairing_fails_key`` is what buckets it.
     """
     return request.client.host if request.client else ""
 
 
+# An IPv6 client is routinely delegated a whole /64, so keying the budget on the bare
+# address would hand one guesser 2**64 of them and the ten-guess cap would hold over
+# IPv4 only. /64 is the smallest prefix an end site is guaranteed, and narrow enough
+# that another subscriber's line is still its own bucket.
+_PAIRING_V6_BUDGET_PREFIX = 64
+
+
 def _pairing_fails_key(client_address: str) -> str:
-    """Redis key holding one client address's wrong-guess count."""
-    return f"{WEBAUTHN_PAIRING_FAILS_PREFIX}{client_address}"
+    """Redis key holding one client's wrong-guess count.
+
+    The bucket is a single IPv4 address, or the IPv6 /64 the peer sits in — see
+    ``_PAIRING_V6_BUDGET_PREFIX``. A peer that is not an IP at all (TestClient's
+    ``"testclient"``, or the empty string when the ASGI scope carries no client) keys
+    on the raw value: still one bucket, so such a caller is budgeted rather than
+    exempt.
+    """
+    try:
+        addr = ipaddress.ip_address(client_address)
+    except ValueError:
+        return f"{WEBAUTHN_PAIRING_FAILS_PREFIX}{client_address}"
+    if addr.version == 4:
+        return f"{WEBAUTHN_PAIRING_FAILS_PREFIX}{addr}"
+    net = ipaddress.ip_network(f"{addr}/{_PAIRING_V6_BUDGET_PREFIX}", strict=False)
+    return f"{WEBAUTHN_PAIRING_FAILS_PREFIX}{net}"
 
 
 def _get_rp_id(request: Request) -> str:
@@ -323,10 +346,11 @@ def create_auth_router(
     async def _pairing_code_valid(code: str, client_address: str) -> bool:
         """Constant-time check against the active code; budget wrong guesses per address.
 
-        The budget is per client address, not global. This route is reachable from any
-        network, and one shared counter meant ten wrong guesses from anyone destroyed
-        the code a real device was waiting on — a denial of pairing whose fallback, the
-        LAN, is exactly what an away device does not have. Now the address that spends
+        The budget is per client address — a single IPv4 address or an IPv6 /64 (see
+        ``_pairing_fails_key``) — not global. This route is reachable from any network,
+        and one shared counter meant ten wrong guesses from anyone destroyed the code a
+        real device was waiting on — a denial of pairing whose fallback, the LAN, is
+        exactly what an away device does not have. Now the address that spends
         ``_PAIRING_MAX_FAILURES`` guesses inside ``_PAIRING_TTL`` is the thing refused,
         for the rest of that TTL and even with the right code; the code stays live for
         every other address.
@@ -496,8 +520,8 @@ def create_auth_router(
 
         if paired:
             try:
-                # Only the code: the guess counters are per client address and are not
-                # cheaply enumerable, and they expire on their own TTL anyway.
+                # Only the code: the guess counters are per client address (or IPv6
+                # /64) and are not cheaply enumerable, and they expire on their own TTL.
                 await redis.delete(WEBAUTHN_PAIRING_KEY)
             except Exception as e:
                 # The passkey is already saved. Failing the request here would tell
@@ -529,9 +553,10 @@ def create_auth_router(
         The session dependency answers first, so the pairing key is never written
         for an unauthenticated caller: nobody can overwrite the code a real device
         is waiting on. Minting replaces the active code and touches nothing else —
-        the guess budgets are per client address, not per code, so a locked-out
-        address waits out its own TTL rather than being freed by a re-mint (and the
-        keys are not cheaply enumerable to clear anyway).
+        the guess budgets are per client address — a single IPv4 address or an IPv6
+        /64 — not per code, so a locked-out client waits out its own TTL rather than
+        being freed by a re-mint (and the keys are not cheaply enumerable to clear
+        anyway).
         """
         code = f"{secrets.randbelow(10**_PAIRING_CODE_DIGITS):0{_PAIRING_CODE_DIGITS}d}"
         try:

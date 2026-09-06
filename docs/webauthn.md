@@ -52,8 +52,8 @@ sequenceDiagram
   register/login-complete and never renewed, so activity does not extend a session
 - **Challenges:** Redis at `alfred:webauthn:challenge:{id}` -- 5min TTL, one-time use
 - **Pairing code:** Redis at `alfred:webauthn:pairing` -- 5min TTL, single-use; wrong
-  guesses are counted per client address in `alfred:webauthn:pairing:fails:{client_ip}`
-  (5min TTL each) and lock that address out at 10. The code itself is never destroyed by
+  guesses are counted per client address — a single IPv4 address or an IPv6 /64 — in
+  `alfred:webauthn:pairing:fails:{bucket}` (5min TTL each) and lock that client out at 10. The code itself is never destroyed by
   a wrong guess
 
 ## Security Properties
@@ -170,7 +170,13 @@ resets the guess counter, and the route is session-gated *only* — deliberately
 requiring the LAN here would defeat the point: the signed-in device doing the minting is
 often the one that is away. What stands in for the network half is the code's own life —
 five minutes, single use — plus a ten-guess budget charged to each *client address*
-separately (`alfred:webauthn:pairing:fails:{client_ip}`, 5-minute TTL).
+separately (`alfred:webauthn:pairing:fails:{bucket}`, 5-minute TTL).
+
+The bucket is a **single IPv4 address, or an IPv6 /64**. A v6 end site is routinely
+delegated a whole /64, so keying on the bare address would hand one guesser 2^64
+independent budgets and the cap would hold over IPv4 only; /64 is the smallest prefix an
+end site is guaranteed, and narrow enough that another subscriber is still its own bucket.
+A peer that is not an IP at all keys on the raw value — budgeted, not exempt.
 
 Because the budget is keyed on `request.client.host`, `FORWARDED_ALLOW_IPS` must list the
 reverse proxy or every internet caller shares the proxy's address — and therefore one

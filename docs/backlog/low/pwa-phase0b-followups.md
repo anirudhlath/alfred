@@ -60,10 +60,11 @@ Pre-existing. **Acceptance:** one `_consume_challenge(challenge_id) -> bytes` he
 both.
 
 ## 7. The pairing failure counter is `INCR` then `EXPIRE`
-`_pairing_code_valid` increments `alfred:webauthn:pairing:fails:{client_ip}` and then sets
+`_pairing_code_valid` increments `alfred:webauthn:pairing:fails:{bucket}` and then sets
 its TTL in a second round trip (documented as deliberate in the code: nothing else in the
 repo calls `.pipeline()`). A crash between the two leaves that address's counter with no
-TTL — and now that the counters are per client address, nothing else ever deletes one, so
+TTL — and now that the counters are per client address (or IPv6 /64), nothing else ever
+deletes one, so
 the address stays locked out until Redis is cleared by hand rather than only until the next
 mint. Still low: it takes a crash inside a two-instruction window, and the blast radius is
 one address. **Acceptance:** if a pipeline lands anywhere else in the codebase, fold this
