@@ -7,12 +7,14 @@ Everything below was found while building the plan-0b backend surface (overview
 reflex/librarian blocks, probe latency, sessions/passkeys/pairing) and deliberately left
 out of its scope. None of it blocks the branch.
 
-## 1. `Overview` in `web/src/lib/types.ts` lacks the new blocks
+## 1. `Overview` in `web/src/lib/types.ts` lacks the new fields
 `GET /api/admin/overview` now returns `reflex` (`model`, `last_ms`, `p50_ms`) and
 `librarian` (`last_run_at`, `reviewed`, `next_run_at`) — see
-[`admin-api.md` → Overview](../../admin-api.md#overview) — but the hand-mirrored TS
-`Overview` interface has neither, so the frontend cannot consume them without a cast.
-**Acceptance:** add both keys (all fields nullable) to `web/src/lib/types.ts` in the client
+[`admin-api.md` → Overview](../../admin-api.md#overview-1) — but the hand-mirrored TS
+`Overview` interface has neither, so the frontend cannot consume them without a cast. Its
+`cost` member is short of the same drift from `629c140`: `request_count` and `avg_usd` are
+returned (and documented) but absent from the type. **Acceptance:** add the two blocks (all
+fields nullable) and the two optional `cost` fields to `web/src/lib/types.ts` in the client
 task that renders them.
 
 ## 2. No timeout around an adapter's `health_check()`
@@ -23,13 +25,14 @@ lifespan `httpx.AsyncClient` and is fine. **Acceptance:** wrap the adapter probe
 `asyncio.wait_for` with a budget close to the service client's, and report the timeout as
 `healthy: false` with the elapsed time.
 
-## 3. Adapter `latency_ms` is "dispatch + probe" on the first call only
-The same route times `health_check()` alone and constructs the adapter beforehand, which
-is what the plan asked for — but `IntegrationRegistry.get()` is where the cold construction
-and the keyring read happen, so a first-call-after-boot figure is not comparable with the
-steady-state one for a *different* reason than the clock. Worth a note in the UI rather
-than a code change. **Acceptance:** either surface "first probe since boot" in the client,
-or warm the registry at startup so the distinction disappears.
+## 3. Adapter first-call latency is not comparable, and `latency_ms` doesn't show why
+The clock is placed correctly — `IntegrationRegistry.get()` runs *before* `perf_counter()`,
+so constructing the adapter and reading the keyring are already excluded. The first probe
+after a boot or a reconfigure is still slower than the steady-state one, because the freshly
+built adapter opens its connection inside `health_check()` itself, and nothing in the
+response distinguishes that reading from a later one. **Acceptance:** either surface "first
+probe since boot" in the client, or warm the registry at startup so the distinction
+disappears.
 
 ## 4. A non-dict JSON body `AttributeError`s the completion routes
 `register/complete` and `login/complete` in `core/identity/auth_routes.py` do
@@ -47,7 +50,7 @@ pipeline the pair (or use `hset` + `hexpire` on Redis 7.4+). Note this churns th
 (`tests/core/identity/test_auth_routes.py`).
 
 ## 6. The challenge fetch/decode/delete block is duplicated
-`register/complete` and `login/complete` carry the same eight lines: read
+`register/complete` and `login/complete` carry the same block: read
 `alfred:webauthn:challenge:{id}`, 400 if missing, decode bytes, delete, `base64url_to_bytes`.
 Pre-existing. **Acceptance:** one `_consume_challenge(challenge_id) -> bytes` helper used by
 both.

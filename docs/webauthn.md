@@ -78,71 +78,100 @@ sequenceDiagram
 ## Sessions, passkeys and pairing
 
 Every session hash (`alfred:auth:{session_id}`) records `authenticated`, `credential_id`,
-`created_at`, `ip`, `user_agent` (truncated to 200 characters) and `channel` -- `web`,
-`pwa` or `ios`, sent by the client as `_channel` in the `*/complete` body; any other
-value, or none, is stored as `web`. `ip` is the peer the request arrived from as the
-process sees it, so it is the real client only where uvicorn has already rewritten the
-peer from `X-Forwarded-For` (`FORWARDED_ALLOW_IPS`) -- an untrusted caller cannot name
-its own address.
+`created_at`, `ip`, `user_agent` (truncated to 200 characters) and `channel` — `web`,
+`pwa` or `ios`, which a client will send as `_channel` in the `*/complete` body; any
+other value, or none, is stored as `web`. No client sends it yet (nothing in `web/src`
+does), so every session recorded so far carries the `web` default. `ip` is the peer the
+request arrived from as the process sees it, so it is the real client only where uvicorn
+has already rewritten the peer from `X-Forwarded-For` (`FORWARDED_ALLOW_IPS`) — an
+untrusted caller cannot name its own address.
 
 | Method   | Path                                    | Auth    | Purpose |
 |----------|-----------------------------------------|---------|---------|
-| `GET`    | `/api/auth/sessions`                    | session | Every live session, newest first; `current: true` marks the caller's and `expires_in` counts the seconds left (never negative) |
-| `DELETE` | `/api/auth/sessions/{session_id}`       | session | End one session -> `{"deleted": bool}`; clears the cookie when it is your own |
+| `GET`    | `/api/auth/sessions`                    | session | Every live session, newest first |
+| `DELETE` | `/api/auth/sessions/{session_id}`       | session | End one session → `{"deleted": bool}`; clears the cookie when it is your own |
 | `POST`   | `/api/auth/logout?all=1`                | cookie  | End every session; without `all` only the caller's |
-| `GET`    | `/api/auth/credentials`                 | session | Registered passkeys: `credential_id`, `device_name`, `transports`, `created_at`, `last_used_at`, `current` -- never the public key or the sign count |
-| `DELETE` | `/api/auth/credentials/{credential_id}` | session | Remove a passkey and end its sessions -> `{"deleted": true, "sessions_ended": N}`; 409 if it is the last one |
+| `GET`    | `/api/auth/credentials`                 | session | Every registered passkey |
+| `DELETE` | `/api/auth/credentials/{credential_id}` | session | Remove a passkey and end its sessions → `{"deleted": true, "sessions_ended": N}`; 409 if it is the last one |
 | `POST`   | `/api/auth/pairing`                     | session | Mint a 6-digit pairing code: `{"code", "expires_at", "ttl_seconds": 300}` |
+
+Every route above except `logout` is session-gated: a missing cookie, or one that names no
+authenticated session, is **401** `Authentication required`. `logout` takes the cookie as
+it finds it and always answers 200 with the cookie cleared, so a client can always shed a
+session it cannot read.
+
+`GET /api/auth/sessions` returns `{"sessions": [...]}`, each entry carrying `session_id`,
+`credential_id`, `device_name` (looked up in the credential store — `Unknown device` when
+the passkey behind the session is gone), `channel`, `ip`, `user_agent`, `created_at`,
+`expires_in` (seconds left, reported as 0 for a key that is missing, has no expiry, or
+returns a TTL that will not parse) and `current` (true for the session the cookie names).
+The list is sorted by `created_at`, newest first; a session with no readable stamp sorts
+last.
+
+`GET /api/auth/credentials` returns `{"credentials": [...]}` with six fields per passkey:
+`credential_id`, `device_name`, `transports`, `created_at`, `last_used_at` and `current`
+(the passkey *this* session signed in with). Deliberately never the public key and never
+the sign count.
 
 **Ending sessions.** `DELETE /api/auth/sessions/{session_id}` refuses an id outside
 `[A-Za-z0-9_-]{1,128}` with **400** `Invalid session id`, before Redis or the log line
-sees it. On `POST /api/auth/logout` the `all` parameter is read as a *flag* -- `1`,
-`true` or `yes`, case-insensitively -- so `?all=on` and a bare `?all` end only the
+sees it. On `POST /api/auth/logout` the `all` parameter is read as a *flag* — `1`,
+`true` or `yes`, case-insensitively — so `?all=on` and a bare `?all` end only the
 caller's own session rather than 422ing a client that cannot then log out at all. The
 caller's own key is deleted first, before the sweep, so the cookie cleared on the way out
-never names a live session; the cookie is cleared even when the answer is 503.
+never names a live session; the cookie is cleared even when the answer is 503. The sweep
+itself runs only when the caller's own hash reads `authenticated == "1"`, so a guessed
+cookie value can never log the real user out of every device.
 
 **Removing a passkey.** `DELETE /api/auth/credentials/{credential_id}` refuses an id that
 is not unpadded base64url of at most 1364 characters (CTAP2's 1023-byte credential-id
 ceiling, encoded) with **400** `Invalid credential id`, an unknown id with **404**
 `Passkey not found`, and the last remaining passkey with **409**
-`Cannot remove the last passkey — register another first`. The last-passkey rule is a
-condition inside the `DELETE` statement (`CredentialStore.delete_credential`), not a
-read-then-delete, so two concurrent removals of *different* passkeys cannot both pass and
-lock the house out; the loser gets the same 409 after its sessions are already gone. That
-ordering is deliberate: the passkey's sessions are ended **before** the credential row is
-deleted, so a failure between the two leaves a passkey with fewer sessions rather than a
-live session for a passkey that no longer exists. If the caller's own session was among
-those ended, the cookie is cleared -- including on the 503 path, so the PWA is never left
-holding a session id that has already been deleted.
+`Cannot remove the last passkey — register another first`. The route reads the credential
+list first, and that read is what answers the 404 and the ordinary 409; the authoritative
+guard is a condition inside the `DELETE` statement itself
+(`CredentialStore.delete_credential`), so two concurrent removals of *different* passkeys
+cannot both pass and lock the house out — the loser gets the same 409 back from the store,
+by which point its sessions are already gone. That ordering is deliberate: the passkey's
+sessions are ended **before** the credential row is deleted, so a failure between the two
+leaves a passkey with fewer sessions rather than a live session for a passkey that no
+longer exists. If the caller's own session was among those ended, the cookie is cleared —
+including on the 503 path, so the PWA is never left holding a session id that has already
+been deleted.
 
 Note the gate: removing a passkey needs **only the session**, unlike
 `DELETE /api/integrations/{name}/credentials` and `POST`/`DELETE /api/devices/register`,
 which also require a trusted network. Removal neither mints nor widens a credential, so
 the rule that reserves the network gate does not reach it.
 
-**Outages.** Every failure in this router answers **503**
-`{"detail": "Session store unavailable"}` -- one vocabulary, so a client branches once.
-That includes the credential store behind `GET /api/auth/credentials` and the passkey
-delete: the wording names the router, not the store that failed.
+**Outages.** Every store failure on the sessions, passkeys, pairing and logout routes
+answers **503** `{"detail": "Session store unavailable"}` — one vocabulary, so a client
+branches once. That includes the credential store behind `GET /api/auth/credentials` and
+behind the passkey delete: the wording names the router, not the store that failed.
+Registration, login and `/status` are **not** part of this and are unchanged — they carry
+no such guard, so a Redis or credential-store outage surfaces there as a 500. Separate
+again are the deliberate refusals — 400 for a malformed id, 401 for no session, 403 for a
+bad pairing code, 404 for an unknown passkey, 409 for the last one — which mean the
+request was understood and declined, not that a store was unreachable.
 
 **Pairing a new phone.** The signed-in device calls `POST /api/auth/pairing` and shows the
 code; the new device sends it as `X-Pairing-Code` on `register/begin` **and**
 `register/complete`, from any network. Minting overwrites any code already active and
-resets the guess counter, and the route is session-gated *only* -- deliberately, because
-the device doing the minting is usually the one that is away. What stands in for the
-network half is the code's own budget: five minutes and ten guesses.
+resets the guess counter, and the route is session-gated *only* — deliberately, because
+requiring the LAN here would defeat the point: the signed-in device doing the minting is
+often the one that is away. What stands in for the network half is the code's own budget:
+five minutes and ten guesses.
 
 - An absent, empty or all-whitespace header is treated as no header at all and falls
   through to the trusted-network gate (a PWA fetch spells the optional header
   `code ?? ""`, and 403ing that would lock the LAN flow out of registration).
-- A malformed non-empty header -- anything but exactly six ASCII digits -- is **403**
+- A malformed non-empty header — anything but exactly six ASCII digits — is **403**
   `Invalid or expired pairing code` without being counted; it could never equal a minted
   code.
 - Well-formed wrong guesses are counted only while a code is actually live, and the tenth
   burns it. A guess after the burn is another 403 and does not burn anything twice.
 - The code is consumed once the new passkey is saved. A consume that fails is logged and
-  the registration stands -- telling a device that is registered that it is not would
+  the registration stands — telling a device that is registered that it is not would
   leave it unable to retry the ceremony.
 - Ten wrong guesses from off-LAN will burn a code someone is waiting on. That is an
   accepted trade: the alternative to a capped code is a guessable one, and recovery is

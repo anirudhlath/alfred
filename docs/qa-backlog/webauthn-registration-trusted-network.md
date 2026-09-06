@@ -28,5 +28,7 @@
   valid `X-Pairing-Code` header on both `register/begin` and `register/complete` — a
   6-digit code minted by an already-signed-in device via `POST /api/auth/pairing`
   (5-minute TTL, single-use, burned after 10 wrong guesses). This case covers the
-  network path; the pairing path needs a second device already registered.
+  network path; the pairing path is
+  [`webauthn-registration-pairing-code.md`](webauthn-registration-pairing-code.md),
+  which needs a second device already registered.
 - If attempted from an untrusted network with no code, should get 403 error

@@ -39,12 +39,17 @@ two shapes:
 | `PUT/DELETE /api/integrations/{name}/credentials`, `POST/DELETE /api/devices/register`, `POST /api/voice/enroll` | **both** (`_CREDENTIAL_GATES`, network first) | A caller who can write these can widen Alfred's reach, so being on the LAN/tailnet *and* signed in are both required. |
 | `POST /api/auth/register/{begin,complete}` | **network or pairing code** (`_registration_gate` in `core/identity/auth_routes.py`, wrapping `trusted_network_dep` injected from `web_server.py`) | Registration is how the first session comes into existence — the first-run user has no cookie yet, so a session gate here would be unsatisfiable. Trust therefore comes from network position, or from a short-lived `X-Pairing-Code` an already-signed-in device minted. |
 
-The pairing code is what makes the second row's alternative possible: it is minted by
-`POST /api/auth/pairing`, which — like removing a passkey
-(`DELETE /api/auth/credentials/{credential_id}`) — sits on the **session only**, as the admin
-surface does. Neither mints nor widens a credential, so the rule above does not reach them.
-The code must then be presented on **both** `register/begin` and `register/complete`; it lives
-5 minutes, is consumed when the passkey is saved, and is burned after 10 wrong guesses.
+Removing a passkey (`DELETE /api/auth/credentials/{credential_id}`) sits on the **session
+only**, like the admin surface: it neither mints nor widens a credential, so the rule above
+does not reach it.
+
+Minting the code that makes the second row's alternative possible
+(`POST /api/auth/pairing`) is **session only** for a different reason — the code it hands
+out *does* authorise a passkey mint from off-LAN, so the rule would reach it. Requiring the
+LAN here would defeat the point: the signed-in device doing the minting is often the one
+that is away. What stands in for the network half is the code's own budget — it must be
+presented on **both** `register/begin` and `register/complete`, it lives 5 minutes, it is
+consumed the moment the passkey is saved, and ten wrong guesses burn it.
 
 See [`webauthn.md` → Sessions, passkeys and pairing](webauthn.md) for that whole surface.
 
