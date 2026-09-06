@@ -197,12 +197,19 @@ def _passkey_login(
         return client.post("/api/auth/login/complete", json=body, headers=headers)
 
 
-def _aiter(items: list[str]) -> AsyncIterator[str]:
-    async def gen() -> AsyncIterator[str]:
+def _aiter(items: list[bytes | str]) -> AsyncIterator[bytes | str]:
+    async def gen() -> AsyncIterator[bytes | str]:
         for item in items:
             yield item
 
     return gen()
+
+
+def _scanned_keys(sessions: dict[str, dict[bytes, bytes]]) -> list[bytes | str]:
+    """Keys as SCAN hands them over: bytes on the production pool
+    (``decode_responses=False``), with the first left as str so both branches of
+    ``_key_suffix`` are exercised."""
+    return [key if index == 0 else key.encode() for index, key in enumerate(sessions)]
 
 
 def _session_record(credential_id: str, channel: str, created_at: str) -> dict[bytes, bytes]:
@@ -763,10 +770,18 @@ class TestSessionsApi:
             f"{AUTH_SESSION_PREFIX}s-older": _session_record(
                 "other-cred", "web", "2026-09-03T08:00:00+00:00"
             ),
+            # Pre-upgrade shape: signed in before Task 10 started recording metadata.
+            f"{AUTH_SESSION_PREFIX}s-legacy": {
+                b"authenticated": b"1",
+                b"credential_id": _CREDENTIAL_ID.encode(),
+            },
             f"{AUTH_SESSION_PREFIX}s-pending": {b"authenticated": b"0"},
         }
         redis_mock.hgetall = AsyncMock(side_effect=lambda key: sessions.get(key, {}))
-        redis_mock.scan_iter = MagicMock(side_effect=lambda match="*": _aiter(list(sessions)))
+        # Built per call, so a test can add a session and have the scan see it.
+        redis_mock.scan_iter = MagicMock(
+            side_effect=lambda match="*", count=100: _aiter(_scanned_keys(sessions))
+        )
         redis_mock.ttl = AsyncMock(return_value=1200)
         redis_mock.delete = AsyncMock(return_value=1)
         return sessions
@@ -786,8 +801,8 @@ class TestSessionsApi:
 
         assert resp.status_code == 200
         body = resp.json()["sessions"]
-        # newest first; the unauthenticated record is skipped
-        assert [s["session_id"] for s in body] == ["s-current", "s-older"]
+        # newest first, stamp-less last; the unauthenticated record is skipped
+        assert [s["session_id"] for s in body] == ["s-current", "s-older", "s-legacy"]
         assert body[0] == {
             "session_id": "s-current",
             "credential_id": _CREDENTIAL_ID,
@@ -801,6 +816,83 @@ class TestSessionsApi:
         }
         assert body[1]["device_name"] == "Unknown device"
         assert body[1]["current"] is False
+        # The house SCAN pattern — an unbounded scan stalls the event loop on a
+        # keyspace with many sessions.
+        redis_mock.scan_iter.assert_called_with(match=f"{AUTH_SESSION_PREFIX}*", count=100)
+
+    def test_current_follows_the_cookie_not_the_ordering(
+        self, client: TestClient, sessions: dict[str, dict[bytes, bytes]]
+    ) -> None:
+        """``current`` is the cookie's session — not the newest row, nor the first."""
+        client.cookies.set("alfred_auth", "s-older")
+
+        body = client.get("/api/auth/sessions").json()["sessions"]
+
+        assert [s["session_id"] for s in body] == ["s-current", "s-older", "s-legacy"]
+        assert [s["current"] for s in body] == [False, True, False]
+
+    def test_pre_upgrade_session_falls_back_and_sorts_last(
+        self, client: TestClient, sessions: dict[str, dict[bytes, bytes]]
+    ) -> None:
+        """A session written before Task 10 has no ip/user_agent/channel/created_at."""
+        client.cookies.set("alfred_auth", "s-current")
+
+        body = client.get("/api/auth/sessions").json()["sessions"]
+
+        assert body[-1] == {
+            "session_id": "s-legacy",
+            "credential_id": _CREDENTIAL_ID,
+            "device_name": "Unknown device",
+            "channel": "web",
+            "ip": "",
+            "user_agent": "",
+            "created_at": "",
+            "expires_in": 1200,
+            "current": False,
+        }
+
+    def test_unreadable_created_at_never_sorts_newest(
+        self, client: TestClient, sessions: dict[str, dict[bytes, bytes]]
+    ) -> None:
+        """Garbage in the stamp sorts oldest — a raw string sort would float 'zzz' first."""
+        sessions[f"{AUTH_SESSION_PREFIX}s-garbage"] = _session_record(
+            "other-cred", "web", "zzz-not-a-date"
+        )
+        client.cookies.set("alfred_auth", "s-current")
+
+        body = client.get("/api/auth/sessions").json()["sessions"]
+
+        assert body[0]["session_id"] == "s-current"
+        assert {s["session_id"] for s in body[-2:]} == {"s-legacy", "s-garbage"}
+
+    @pytest.mark.parametrize("ttl", [-1, -2, None, b"nope"])
+    def test_non_positive_or_junk_ttl_reports_zero(
+        self,
+        client: TestClient,
+        redis_mock: AsyncMock,
+        sessions: dict[str, dict[bytes, bytes]],
+        ttl: object,
+    ) -> None:
+        """A persistent key, a vanished key or a junk TTL is 0 seconds, never a 500."""
+        redis_mock.ttl = AsyncMock(return_value=ttl)
+        client.cookies.set("alfred_auth", "s-current")
+
+        resp = client.get("/api/auth/sessions")
+
+        assert resp.status_code == 200
+        assert [s["expires_in"] for s in resp.json()["sessions"]] == [0, 0, 0]
+
+    def test_list_is_503_when_the_session_store_is_down(
+        self, client: TestClient, redis_mock: AsyncMock, sessions: dict[str, dict[bytes, bytes]]
+    ) -> None:
+        """A Redis outage mid-scan is a 503, not an unhandled 500."""
+        redis_mock.scan_iter = MagicMock(side_effect=ConnectionError("redis is down"))
+        client.cookies.set("alfred_auth", "s-current")
+
+        resp = client.get("/api/auth/sessions")
+
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "Session store unavailable"
 
     def test_sessions_require_an_authenticated_cookie(
         self, client: TestClient, sessions: dict[str, dict[bytes, bytes]]
@@ -822,6 +914,35 @@ class TestSessionsApi:
         redis_mock.delete.assert_awaited_once_with(f"{AUTH_SESSION_PREFIX}s-older")
         assert "set-cookie" not in resp.headers
 
+    def test_delete_unknown_session_reports_not_deleted(
+        self, client: TestClient, redis_mock: AsyncMock, sessions: dict[str, dict[bytes, bytes]]
+    ) -> None:
+        """Redis deleting nothing must surface as ``deleted: false``, not a blanket true."""
+        redis_mock.delete = AsyncMock(return_value=0)
+        client.cookies.set("alfred_auth", "s-current")
+
+        resp = client.delete("/api/auth/sessions/s-gone")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"deleted": False}
+
+    @pytest.mark.parametrize("bad_id", ["%00", "a%00b", "x" * 129, "s older", "s.older"])
+    def test_delete_rejects_a_malformed_session_id(
+        self,
+        client: TestClient,
+        redis_mock: AsyncMock,
+        sessions: dict[str, dict[bytes, bytes]],
+        bad_id: str,
+    ) -> None:
+        """A NUL byte or an overlong id is refused before it reaches Redis or the log."""
+        client.cookies.set("alfred_auth", "s-current")
+
+        resp = client.delete(f"/api/auth/sessions/{bad_id}")
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "Invalid session id"
+        redis_mock.delete.assert_not_awaited()
+
     def test_delete_own_session_clears_cookie(
         self, client: TestClient, redis_mock: AsyncMock, sessions: dict[str, dict[bytes, bytes]]
     ) -> None:
@@ -831,7 +952,11 @@ class TestSessionsApi:
 
         assert resp.status_code == 200
         redis_mock.delete.assert_awaited_once_with(f"{AUTH_SESSION_PREFIX}s-current")
-        assert "Max-Age=0" in resp.headers["set-cookie"]
+        cookie = resp.headers["set-cookie"]
+        # Same flags as _set_session_cookie, or the browser keeps the live cookie.
+        assert "Max-Age=0" in cookie
+        assert "HttpOnly" in cookie
+        assert "samesite=strict" in cookie.lower()
 
     def test_logout_all_ends_every_authenticated_session(
         self, client: TestClient, redis_mock: AsyncMock, sessions: dict[str, dict[bytes, bytes]]
@@ -845,7 +970,55 @@ class TestSessionsApi:
         assert deleted == {
             f"{AUTH_SESSION_PREFIX}s-current",
             f"{AUTH_SESSION_PREFIX}s-older",
+            f"{AUTH_SESSION_PREFIX}s-legacy",
         }
+        assert "Max-Age=0" in resp.headers["set-cookie"]
+
+    @pytest.mark.parametrize("query", ["?all", "?all=maybe", "?all=0", "?all=", ""])
+    def test_an_unrecognised_all_flag_still_logs_this_session_out(
+        self,
+        client: TestClient,
+        redis_mock: AsyncMock,
+        sessions: dict[str, dict[bytes, bytes]],
+        query: str,
+    ) -> None:
+        """A bare or unknown ``all`` must never 422 — that would strand the caller
+        with a live session and no way to end it."""
+        client.cookies.set("alfred_auth", "s-current")
+
+        resp = client.post(f"/api/auth/logout{query}")
+
+        assert resp.status_code == 200
+        redis_mock.delete.assert_awaited_once_with(f"{AUTH_SESSION_PREFIX}s-current")
+        assert "Max-Age=0" in resp.headers["set-cookie"]
+
+    @pytest.mark.parametrize("query", ["?all=1", "?all=true", "?all=YES"])
+    def test_every_truthy_all_spelling_sweeps(
+        self,
+        client: TestClient,
+        redis_mock: AsyncMock,
+        sessions: dict[str, dict[bytes, bytes]],
+        query: str,
+    ) -> None:
+        client.cookies.set("alfred_auth", "s-current")
+
+        client.post(f"/api/auth/logout{query}")
+
+        deleted = {call.args[0] for call in redis_mock.delete.await_args_list}
+        assert f"{AUTH_SESSION_PREFIX}s-older" in deleted
+
+    def test_logout_all_ends_this_session_even_if_the_sweep_fails(
+        self, client: TestClient, redis_mock: AsyncMock, sessions: dict[str, dict[bytes, bytes]]
+    ) -> None:
+        """A Redis failure mid-sweep must not leave the caller signed in with no
+        working logout: own key first, cookie cleared, 503 to say the rest is unknown."""
+        redis_mock.scan_iter = MagicMock(side_effect=ConnectionError("redis is down"))
+        client.cookies.set("alfred_auth", "s-current")
+
+        resp = client.post("/api/auth/logout?all=1")
+
+        assert resp.status_code == 503
+        redis_mock.delete.assert_awaited_once_with(f"{AUTH_SESSION_PREFIX}s-current")
         assert "Max-Age=0" in resp.headers["set-cookie"]
 
     def test_logout_all_needs_an_authenticated_cookie(

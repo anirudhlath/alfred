@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -27,6 +28,7 @@ from webauthn.helpers.structs import (
     UserVerificationRequirement,
 )
 
+from shared.env import is_truthy_flag
 from shared.streams import AUTH_SESSION_PREFIX, WEBAUTHN_CHALLENGE_PREFIX
 
 if TYPE_CHECKING:
@@ -35,6 +37,10 @@ if TYPE_CHECKING:
 _AUTH_SESSION_TTL = 8 * 3600  # 8 hours — a phone re-auths with Face ID, cheap to renew
 _CHALLENGE_TTL = 300  # 5 minutes
 _MAX_USER_AGENT_LEN = 200  # bounds what a hostile client can park in the session hash
+# Session ids are uuid4 strings; the class also covers a token_urlsafe id should
+# the generator ever change. Anything else is refused before it reaches Redis or
+# the log line, so a %00 or a 5000-character path segment goes nowhere.
+_SESSION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 
 class RegisterBeginRequest(BaseModel):
@@ -91,6 +97,42 @@ def _set_session_cookie(response: JSONResponse, request: Request, session_id: st
         samesite="strict",
         secure=request.url.scheme == "https",
     )
+
+
+def _clear_session_cookie(response: JSONResponse, request: Request) -> None:
+    """Expire the session cookie using the flags it was set with.
+
+    A browser only replaces a cookie when the clearing ``Set-Cookie`` matches on
+    path, samesite and secure, so this must mirror ``_set_session_cookie``.
+    """
+    response.delete_cookie(
+        key="alfred_auth",
+        httponly=True,
+        samesite="strict",
+        secure=request.url.scheme == "https",
+    )
+
+
+def _created_at_key(value: str) -> datetime:
+    """Sort key for a session's ``created_at`` — unreadable or missing sorts oldest.
+
+    Pre-upgrade sessions carry no stamp at all, and a naive one (written before
+    Task 10 made them tz-aware) is read as UTC so the comparison never TypeErrors.
+    """
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return datetime.min.replace(tzinfo=UTC)
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _expires_in(ttl: Any) -> int:
+    """Seconds left on a session key: a missing key (-2), a persistent key (-1)
+    or anything non-numeric all report 0 rather than 500ing the list."""
+    try:
+        return max(int(ttl), 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _decode_session(raw: Any) -> dict[str, str]:
@@ -167,7 +209,7 @@ def create_auth_router(
     async def _all_sessions() -> list[tuple[str, dict[str, str]]]:
         """Every live, authenticated session as ``(session_id, record)``."""
         found: list[tuple[str, dict[str, str]]] = []
-        async for key in redis.scan_iter(match=f"{AUTH_SESSION_PREFIX}*"):
+        async for key in redis.scan_iter(match=f"{AUTH_SESSION_PREFIX}*", count=100):
             session_id = _key_suffix(key, AUTH_SESSION_PREFIX)
             record = _decode_session(await redis.hgetall(f"{AUTH_SESSION_PREFIX}{session_id}"))
             if record.get("authenticated") == "1":
@@ -356,60 +398,82 @@ def create_auth_router(
         current_id, _ = current
         names = {c.credential_id: c.device_name for c in await store.list_credentials()}
         sessions: list[dict[str, Any]] = []
-        for session_id, record in await _all_sessions():
-            ttl = await redis.ttl(f"{AUTH_SESSION_PREFIX}{session_id}")
-            credential_id = record.get("credential_id", "")
-            sessions.append(
-                {
-                    "session_id": session_id,
-                    "credential_id": credential_id,
-                    "device_name": names.get(credential_id, "Unknown device"),
-                    "channel": record.get("channel", "web"),
-                    "ip": record.get("ip", ""),
-                    "user_agent": record.get("user_agent", ""),
-                    "created_at": record.get("created_at", ""),
-                    "expires_in": max(int(ttl), 0),
-                    "current": session_id == current_id,
-                }
-            )
-        sessions.sort(key=lambda s: str(s["created_at"]), reverse=True)
+        try:
+            for session_id, record in await _all_sessions():
+                ttl = await redis.ttl(f"{AUTH_SESSION_PREFIX}{session_id}")
+                credential_id = record.get("credential_id", "")
+                sessions.append(
+                    {
+                        "session_id": session_id,
+                        "credential_id": credential_id,
+                        "device_name": names.get(credential_id, "Unknown device"),
+                        "channel": record.get("channel", "web"),
+                        "ip": record.get("ip", ""),
+                        "user_agent": record.get("user_agent", ""),
+                        "created_at": record.get("created_at", ""),
+                        "expires_in": _expires_in(ttl),
+                        "current": session_id == current_id,
+                    }
+                )
+        except Exception as e:
+            logger.warning("Could not list auth sessions: {}", e)
+            raise HTTPException(status_code=503, detail="Session store unavailable") from e
+        sessions.sort(key=lambda s: _created_at_key(str(s["created_at"])), reverse=True)
         return JSONResponse({"sessions": sessions})
 
     @router.delete("/sessions/{session_id}")
     async def delete_session(
         session_id: str,
+        request: Request,
         current: tuple[str, dict[str, str]] = Depends(current_session),
     ) -> JSONResponse:
         """End one session. Ending your own also clears the cookie."""
+        if not _SESSION_ID_RE.fullmatch(session_id):
+            raise HTTPException(status_code=400, detail="Invalid session id")
         deleted = await redis.delete(f"{AUTH_SESSION_PREFIX}{session_id}")
         logger.info("Auth session {} ended via the sessions API", session_id)
         response = JSONResponse({"deleted": bool(deleted)})
         if session_id == current[0]:
-            response.delete_cookie(key="alfred_auth")
+            _clear_session_cookie(response, request)
         return response
 
     @router.post("/logout")
     async def logout(
+        request: Request,
         alfred_auth: str | None = Cookie(default=None),
-        all_sessions: bool = Query(default=False, alias="all"),
+        all_sessions: str = Query(default="", alias="all"),
     ) -> JSONResponse:
         """End the caller's session — or every session with ``?all=1``.
 
-        ``all`` is only honoured for an authenticated caller, so a guessed
-        cookie value can never log the real user out of every device.
+        ``all`` is read as a flag rather than typed as a bool: a bare ``?all`` or
+        a spelling Alfred doesn't recognise must still end *this* session instead
+        of 422ing, or a client with an odd query string can never log out at all.
+        It is only honoured for an authenticated caller, so a guessed cookie value
+        can never log the real user out of every device.
         """
+        ended = True
         if alfred_auth:
             own_key = f"{AUTH_SESSION_PREFIX}{alfred_auth}"
-            record = _decode_session(await redis.hgetall(own_key))
-            if all_sessions and record.get("authenticated") == "1":
-                for session_id, _ in await _all_sessions():
-                    await redis.delete(f"{AUTH_SESSION_PREFIX}{session_id}")
-                logger.info("All auth sessions ended via logout?all=1")
-            else:
+            try:
+                record = _decode_session(await redis.hgetall(own_key))
+                # The caller's own key goes first: however the sweep below fares,
+                # the cookie cleared on the way out must not still name a session.
                 await redis.delete(own_key)
+                if is_truthy_flag(all_sessions) and record.get("authenticated") == "1":
+                    for session_id, _ in await _all_sessions():
+                        await redis.delete(f"{AUTH_SESSION_PREFIX}{session_id}")
+                    logger.info("All auth sessions ended via logout?all=1")
+            except Exception as e:
+                logger.warning("Logout could not end every session: {}", e)
+                ended = False
 
-        response = JSONResponse({"status": "ok"})
-        response.delete_cookie(key="alfred_auth")
+        response = JSONResponse(
+            {"status": "ok"}
+            if ended
+            else {"status": "error", "detail": "Session store unavailable"},
+            status_code=200 if ended else 503,
+        )
+        _clear_session_cookie(response, request)
         return response
 
     return router
