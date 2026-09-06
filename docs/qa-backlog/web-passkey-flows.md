@@ -8,7 +8,8 @@
 
 - Alfred runner started, channels process on port 8081
 - Fresh browser profile OR cleared `alfred_auth` cookie and `alfred_session_id` localStorage
-- Accessing via `localhost` (trusted network — required for registration)
+- Accessing via `localhost` (trusted network — the path this case registers on; the
+  alternative is a pairing code, exercised elsewhere)
 - Browser supports WebAuthn / passkeys (Chrome 108+, Safari 16+, Firefox 119+)
 
 ## Test Steps
@@ -58,7 +59,9 @@
 
 ## Notes
 
-- Registration is gated to trusted network (localhost / Tailscale CGNAT). Attempting from an untrusted IP returns HTTP 403.
+- Registration is gated to trusted network (localhost / Tailscale CGNAT) **or** a valid
+  `X-Pairing-Code` header on both `register/begin` and `register/complete`. Attempting
+  from an untrusted IP with no code — or with a wrong/expired one — returns HTTP 403.
 - If the user is already registered when reaching `/onboarding`, the passkey step shows a "Skip — already registered" button to avoid `InvalidStateError`.
 - The "already set up" path (`alreadySetUp` flag in `OnboardingPage`) auto-advances step 0 → step 1 if the user is both registered and authenticated.
 - The chat WebSocket (`/ws`) also enforces auth with the same 4001 mechanism.

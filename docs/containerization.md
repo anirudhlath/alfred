@@ -208,8 +208,11 @@ trade-off, not the end state — see
 
 `require_trusted_network` in `core/channels/web_server.py` gates the endpoints that can
 mint or widen credentials — WebAuthn **registration**, credential writes, device-token
-writes, voice enrolment. The admin API (reads *and* controls) and the two integration
-reads are **not** network-gated; they need only a signed-in passkey session. See
+writes, voice enrolment. Registration alone has a second way through: an `X-Pairing-Code`
+header carrying a 6-digit code minted by an already-signed-in device
+([`webauthn.md` → Sessions, passkeys and pairing](webauthn.md)), which passes from any
+network. The admin API (reads *and* controls) and the two integration reads are **not**
+network-gated; they need only a signed-in passkey session. See
 [`admin-api.md` → Auth Model](admin-api.md#auth-model) for the full split.
 
 The default trusted set is loopback + private LAN (RFC1918) + Tailscale CGNAT
@@ -485,6 +488,11 @@ fix is right depends on which IP that is.
   `alfredctl up` auto-appending the container subnet, so a host browser hitting the
   published port arrives as an untrusted peer. Register the passkey from a device on one
   of the LAN CIDRs you listed (through your reverse proxy) or over Tailscale.
+
+Once one passkey exists, there is a way out that needs no network change at all:
+mint a pairing code from the signed-in device (`POST /api/auth/pairing`) and send it as
+`X-Pairing-Code` on both registration calls. It does not help the *first* registration —
+there is no session yet to mint it with.
 
 **Never add the container subnet back** to silence this on an internet-facing host. That
 subnet holds the reverse proxy, and trusting the proxy trusts every caller behind it —

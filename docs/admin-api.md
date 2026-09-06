@@ -37,13 +37,14 @@ two shapes:
 | Endpoints | Gates | Why |
 |---|---|---|
 | `PUT/DELETE /api/integrations/{name}/credentials`, `POST/DELETE /api/devices/register`, `POST /api/voice/enroll` | **both** (`_CREDENTIAL_GATES`, network first) | A caller who can write these can widen Alfred's reach, so being on the LAN/tailnet *and* signed in are both required. |
-| `POST /api/auth/register/{begin,complete}` | **network only** (`Depends(trusted_network_dep)` in `core/identity/auth_routes.py`, injected from `web_server.py`) | Registration is how the first session comes into existence — the first-run user has no cookie yet, so a session gate here would be unsatisfiable. Physical network position is the whole of the trust. |
+| `POST /api/auth/register/{begin,complete}` | **network or pairing code** (`_registration_gate` in `core/identity/auth_routes.py`, wrapping `trusted_network_dep` injected from `web_server.py`) | Registration is how the first session comes into existence — the first-run user has no cookie yet, so a session gate here would be unsatisfiable. Trust therefore comes from network position, or from a short-lived `X-Pairing-Code` an already-signed-in device minted. |
 
-Removing a passkey (`DELETE /api/auth/credentials/{credential_id}`) and minting a pairing
-code (`POST /api/auth/pairing`) sit on the **session only**, like the admin surface: neither
-mints nor widens a credential, so the rule above does not reach them. Registration also
-passes with a valid `X-Pairing-Code` header instead of the network, which is what the mint
-exists for.
+The pairing code is what makes the second row's alternative possible: it is minted by
+`POST /api/auth/pairing`, which — like removing a passkey
+(`DELETE /api/auth/credentials/{credential_id}`) — sits on the **session only**, as the admin
+surface does. Neither mints nor widens a credential, so the rule above does not reach them.
+The code must then be presented on **both** `register/begin` and `register/complete`; it lives
+5 minutes, is consumed when the passkey is saved, and is burned after 10 wrong guesses.
 
 See [`webauthn.md` → Sessions, passkeys and pairing](webauthn.md) for that whole surface.
 
