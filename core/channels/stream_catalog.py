@@ -84,21 +84,40 @@ def _id_to_ts(entry_id: str) -> float | None:
 
 
 _RATE_WINDOW_SECONDS = 300
-_RATE_SAMPLE_CAP = 5000  # a stream busier than ~16/s saturates the figure instead of the scan
+# The overview reads this for all eight streams on every call, so the scan is bounded
+# rather than sized to the window: 100 entries are enough to measure a rate, and the
+# 5000 this used to transfer (whole entries, only to take their len()) both cost the
+# most on the busiest stream and still saturated at ~16.7/s.
+_RATE_SAMPLE_SIZE = 100
 
 
 async def _rate_5m(redis: AioRedis, key: str, now_ms: int) -> float:
-    """Entries per second over the last five minutes (0.0 on any failure)."""
+    """Entries per second over the last five minutes (0.0 on any failure).
+
+    Fewer than ``_RATE_SAMPLE_SIZE`` entries came back → the scan was not truncated,
+    so the sample *is* the whole window and ``n / 300`` is exact. A full sample means
+    the window holds at least that many, so the rate is extrapolated from the span the
+    newest ``_RATE_SAMPLE_SIZE`` actually cover — which is what lets a busy stream read
+    above the old 16.667 ceiling. A sample that spans no time (or whose oldest id will
+    not parse) has nothing to extrapolate from and falls back to the window, the floor
+    of the estimate.
+    """
     try:
         recent = await revrange(
             redis,
             key,
-            count=_RATE_SAMPLE_CAP,
+            count=_RATE_SAMPLE_SIZE,
             min_id=f"{now_ms - _RATE_WINDOW_SECONDS * 1000}-0",
         )
     except Exception:
         return 0.0
-    return round(len(recent) / _RATE_WINDOW_SECONDS, 3)
+    if len(recent) < _RATE_SAMPLE_SIZE:
+        return round(len(recent) / _RATE_WINDOW_SECONDS, 3)
+    oldest_ts = _id_to_ts(decode_stream_value(recent[-1][0]))  # newest first, so oldest last
+    span_seconds = now_ms / 1000.0 - oldest_ts if oldest_ts is not None else 0.0
+    if span_seconds <= 0:
+        span_seconds = _RATE_WINDOW_SECONDS
+    return round(_RATE_SAMPLE_SIZE / span_seconds, 3)
 
 
 async def stream_summaries(redis: AioRedis) -> dict[str, dict[str, Any]]:

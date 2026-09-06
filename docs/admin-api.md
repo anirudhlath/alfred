@@ -157,10 +157,15 @@ error.
 
 Missing streams (stream key does not exist in Redis yet) report `{"length": 0, "last_id": null, "last_ts": null, "rate_5m": 0.0}` — never raises.
 
-`rate_5m` is entries per second averaged over the trailing 300 seconds, measured with one
-`XREVRANGE key + {now-300s} COUNT 5000` per stream. The 5000-sample cap means a stream busier
-than ~16.7 entries/s reads as `16.667` rather than climbing further; `0.0` covers both an idle
-stream and any Redis failure.
+`rate_5m` is entries per second over the trailing 300 seconds, measured with one bounded
+`XREVRANGE key + {now-300s} COUNT 100` per stream (`_RATE_SAMPLE_SIZE` in
+`core/channels/stream_catalog.py`). Fewer than 100 entries come back → the scan was not
+truncated, the sample is the whole window, and the figure is exact (`n / 300`). Exactly 100
+come back → the window holds at least that many, so the rate is **extrapolated** from the
+span the newest 100 actually cover (`100 / (now - oldest_sampled_ts)`), which is how a busy
+stream reports its real rate rather than saturating. A full sample spanning no time — or one
+whose oldest entry id will not parse — falls back to the window (`100 / 300`), the floor of
+the estimate. `0.0` covers both an idle stream and any Redis failure.
 
 **`GET /api/admin/streams/{name}`** parameters:
 
