@@ -82,7 +82,7 @@ upgrades — and checks the `alfred:auth:{session_id}` hash in Redis.
 Returns a single JSON object with:
 
 - `redis.connected` — bool, from a `PING` probe
-- `cost` — current `alfred:cost:daily` value (JSON object) or `null` if unset; `request_count`/`avg_usd` are absent until the first spend of the day is recorded
+- `cost` — current `alfred:cost:daily` value (JSON object) or `null` if unset. The blob is written only on spend, so before the day's first `record_spend` it is the previous day's state (check `date`); `request_count`/`avg_usd` are absent entirely from state written before the upgrade — treat both as optional
 - `dnd` — current `alfred:memory:dnd` value, defaulting to `{"active": false}`
 - `counts.sessions` — number of active `alfred:sessions:*` keys (scan-based)
 - `counts.devices` — `HLEN alfred:push:devices`
