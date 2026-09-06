@@ -58,6 +58,7 @@ def client(app: FastAPI) -> TestClient:
 
 
 _CREDENTIAL_ID = "AQID"
+_LAPTOP_CREDENTIAL_ID = "laptop-cred"
 _CHALLENGE = b"\x01\x02\x03\x04"
 
 _LOGIN_BODY: dict[str, object] = {
@@ -109,6 +110,17 @@ async def _register_test_passkey(store: CredentialStore) -> None:
         sign_count=0,
         device_name="Phone",
         transports=["internal"],
+    )
+
+
+async def _register_laptop_passkey(store: CredentialStore) -> None:
+    """A second passkey, so removing one is not removing the last one."""
+    await store.save_credential(
+        credential_id=_LAPTOP_CREDENTIAL_ID,
+        public_key=b"\x04",
+        sign_count=0,
+        device_name="Laptop",
+        transports=["usb"],
     )
 
 
@@ -1108,3 +1120,320 @@ class TestSessionsApi:
 
         # Only its own (unauthenticated) key is touched — never everyone else's
         redis_mock.delete.assert_awaited_once_with(f"{AUTH_SESSION_PREFIX}s-pending")
+
+
+class TestPasskeysApi:
+    """``GET /api/auth/credentials`` and ``DELETE /api/auth/credentials/{id}``."""
+
+    @pytest.fixture
+    def sessions(self, redis_mock: AsyncMock) -> dict[str, dict[bytes, bytes]]:
+        sessions = {
+            f"{AUTH_SESSION_PREFIX}s-current": _session_record(
+                _CREDENTIAL_ID, "pwa", "2026-09-04T08:00:00+00:00"
+            ),
+            f"{AUTH_SESSION_PREFIX}s-laptop": _session_record(
+                _LAPTOP_CREDENTIAL_ID, "web", "2026-09-03T08:00:00+00:00"
+            ),
+            # Pre-upgrade shape: signed in before Task 10 recorded a credential_id.
+            f"{AUTH_SESSION_PREFIX}s-legacy": {b"authenticated": b"1"},
+            f"{AUTH_SESSION_PREFIX}s-pending": {b"authenticated": b"0"},
+        }
+        redis_mock.hgetall = AsyncMock(side_effect=lambda key: sessions.get(key, {}))
+        # Built per call, so a test can add a session and have the scan see it.
+        redis_mock.scan_iter = MagicMock(
+            side_effect=lambda match="*", count=100: _aiter(_scanned_keys(sessions))
+        )
+        redis_mock.delete = AsyncMock(return_value=1)
+        return sessions
+
+    @pytest.mark.asyncio
+    async def test_list_credentials_marks_current(
+        self,
+        store: CredentialStore,
+        client: TestClient,
+        sessions: dict[str, dict[bytes, bytes]],
+    ) -> None:
+        await _register_test_passkey(store)
+        await _register_laptop_passkey(store)
+        client.cookies.set("alfred_auth", "s-current")
+
+        resp = client.get("/api/auth/credentials")
+
+        assert resp.status_code == 200
+        creds = {c["credential_id"]: c for c in resp.json()["credentials"]}
+        assert set(creds) == {_CREDENTIAL_ID, _LAPTOP_CREDENTIAL_ID}
+        assert creds[_CREDENTIAL_ID]["device_name"] == "Phone"
+        assert creds[_CREDENTIAL_ID]["transports"] == ["internal"]
+        assert creds[_CREDENTIAL_ID]["current"] is True
+        assert creds[_LAPTOP_CREDENTIAL_ID]["current"] is False
+        # No public_key and no sign_count: the sheet never needs either, and the
+        # key is the one secret in the row.
+        assert set(creds[_CREDENTIAL_ID]) == {
+            "credential_id",
+            "device_name",
+            "transports",
+            "created_at",
+            "last_used_at",
+            "current",
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_session_with_no_credential_marks_nothing_current(
+        self,
+        store: CredentialStore,
+        client: TestClient,
+        sessions: dict[str, dict[bytes, bytes]],
+    ) -> None:
+        """A pre-upgrade session records no credential_id — an empty match must
+        not mark every passkey (or an empty-id one) as the current passkey."""
+        await _register_test_passkey(store)
+        await _register_laptop_passkey(store)
+        client.cookies.set("alfred_auth", "s-legacy")
+
+        resp = client.get("/api/auth/credentials")
+
+        assert resp.status_code == 200
+        assert [c["current"] for c in resp.json()["credentials"]] == [False, False]
+
+    def test_credentials_require_an_authenticated_cookie(
+        self, client: TestClient, sessions: dict[str, dict[bytes, bytes]]
+    ) -> None:
+        assert client.get("/api/auth/credentials").status_code == 401
+        assert client.delete(f"/api/auth/credentials/{_LAPTOP_CREDENTIAL_ID}").status_code == 401
+        client.cookies.set("alfred_auth", "s-pending")
+        assert client.get("/api/auth/credentials").status_code == 401
+        assert client.delete(f"/api/auth/credentials/{_LAPTOP_CREDENTIAL_ID}").status_code == 401
+
+    def test_401_beats_a_malformed_credential_id(
+        self, client: TestClient, sessions: dict[str, dict[bytes, bytes]]
+    ) -> None:
+        """An anonymous caller learns nothing about which ids are well-formed."""
+        assert client.delete("/api/auth/credentials/not a cred").status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_delete_credential_ends_its_sessions(
+        self,
+        store: CredentialStore,
+        client: TestClient,
+        redis_mock: AsyncMock,
+        sessions: dict[str, dict[bytes, bytes]],
+    ) -> None:
+        await _register_test_passkey(store)
+        await _register_laptop_passkey(store)
+        client.cookies.set("alfred_auth", "s-current")
+
+        resp = client.delete(f"/api/auth/credentials/{_LAPTOP_CREDENTIAL_ID}")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"deleted": True, "sessions_ended": 1}
+        assert await store.get_credential(_LAPTOP_CREDENTIAL_ID) is None
+        assert await store.get_credential(_CREDENTIAL_ID) is not None
+        # Only that passkey's sessions — the caller's own is left signed in.
+        redis_mock.delete.assert_awaited_once_with(f"{AUTH_SESSION_PREFIX}s-laptop")
+        assert "set-cookie" not in resp.headers
+
+    @pytest.mark.asyncio
+    async def test_delete_own_credential_clears_cookie(
+        self,
+        store: CredentialStore,
+        client: TestClient,
+        redis_mock: AsyncMock,
+        sessions: dict[str, dict[bytes, bytes]],
+    ) -> None:
+        await _register_test_passkey(store)
+        await _register_laptop_passkey(store)
+        client.cookies.set("alfred_auth", "s-current")
+
+        resp = client.delete(f"/api/auth/credentials/{_CREDENTIAL_ID}")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"deleted": True, "sessions_ended": 1}
+        redis_mock.delete.assert_awaited_once_with(f"{AUTH_SESSION_PREFIX}s-current")
+        # Parsed, not substring-matched: a cookie scoped to the wrong path adds a
+        # second one instead of replacing the live session cookie.
+        morsel = SimpleCookie(resp.headers["set-cookie"])["alfred_auth"]
+        assert morsel["path"] == "/"
+        assert morsel["max-age"] == "0"
+        assert morsel["samesite"].lower() == "strict"
+        assert morsel["httponly"]
+
+    @pytest.mark.asyncio
+    async def test_cannot_delete_last_credential(
+        self,
+        store: CredentialStore,
+        client: TestClient,
+        redis_mock: AsyncMock,
+        sessions: dict[str, dict[bytes, bytes]],
+    ) -> None:
+        await _register_test_passkey(store)
+        client.cookies.set("alfred_auth", "s-current")
+
+        resp = client.delete(f"/api/auth/credentials/{_CREDENTIAL_ID}")
+
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == "Cannot remove the last passkey — register another first"
+        assert await store.get_credential(_CREDENTIAL_ID) is not None
+        # The refusal is total: no session was ended on the way to it.
+        redis_mock.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_delete_unknown_credential_is_404(
+        self,
+        store: CredentialStore,
+        client: TestClient,
+        redis_mock: AsyncMock,
+        sessions: dict[str, dict[bytes, bytes]],
+    ) -> None:
+        await _register_test_passkey(store)
+        await _register_laptop_passkey(store)
+        client.cookies.set("alfred_auth", "s-current")
+
+        resp = client.delete("/api/auth/credentials/nope")
+
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Passkey not found"
+        redis_mock.delete.assert_not_awaited()
+
+    @pytest.mark.parametrize("bad_id", ["%00", "a%00b", "x" * 1365, "cred id", "cred.id", "AQ=="])
+    def test_delete_rejects_a_malformed_credential_id(
+        self,
+        store: CredentialStore,
+        client: TestClient,
+        redis_mock: AsyncMock,
+        sessions: dict[str, dict[bytes, bytes]],
+        bad_id: str,
+    ) -> None:
+        """Outside the base64url alphabet, or overlong: refused before the store
+        or the log line ever sees it."""
+        client.cookies.set("alfred_auth", "s-current")
+
+        with patch.object(store, "list_credentials", AsyncMock(return_value=[])) as listed:
+            resp = client.delete(f"/api/auth/credentials/{bad_id}")
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "Invalid credential id"
+        listed.assert_not_awaited()
+        redis_mock.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_list_is_503_when_the_credential_store_is_down(
+        self,
+        store: CredentialStore,
+        client: TestClient,
+        sessions: dict[str, dict[bytes, bytes]],
+    ) -> None:
+        await _register_test_passkey(store)
+        client.cookies.set("alfred_auth", "s-current")
+
+        with patch.object(
+            store, "list_credentials", AsyncMock(side_effect=OSError("database is locked"))
+        ):
+            resp = client.get("/api/auth/credentials")
+
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "Session store unavailable"
+
+    @pytest.mark.asyncio
+    async def test_delete_is_503_when_the_credential_store_cannot_be_read(
+        self,
+        store: CredentialStore,
+        client: TestClient,
+        redis_mock: AsyncMock,
+        sessions: dict[str, dict[bytes, bytes]],
+    ) -> None:
+        """Without the list there is no telling whether this is the last passkey."""
+        await _register_test_passkey(store)
+        await _register_laptop_passkey(store)
+        client.cookies.set("alfred_auth", "s-current")
+
+        with patch.object(
+            store, "list_credentials", AsyncMock(side_effect=OSError("database is locked"))
+        ):
+            resp = client.delete(f"/api/auth/credentials/{_LAPTOP_CREDENTIAL_ID}")
+
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "Session store unavailable"
+        redis_mock.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_session_sweep_keeps_the_passkey(
+        self,
+        store: CredentialStore,
+        client: TestClient,
+        redis_mock: AsyncMock,
+        sessions: dict[str, dict[bytes, bytes]],
+    ) -> None:
+        """Sessions are ended first: an outage there must leave the passkey in
+        place, never a live session for a credential that is already gone."""
+        await _register_test_passkey(store)
+        await _register_laptop_passkey(store)
+        redis_mock.scan_iter = MagicMock(side_effect=ConnectionError("redis is down"))
+        client.cookies.set("alfred_auth", "s-current")
+
+        resp = client.delete(f"/api/auth/credentials/{_LAPTOP_CREDENTIAL_ID}")
+
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "Session store unavailable"
+        assert await store.get_credential(_LAPTOP_CREDENTIAL_ID) is not None
+
+    @pytest.mark.asyncio
+    async def test_a_failed_session_delete_keeps_the_passkey(
+        self,
+        store: CredentialStore,
+        client: TestClient,
+        redis_mock: AsyncMock,
+        sessions: dict[str, dict[bytes, bytes]],
+    ) -> None:
+        await _register_test_passkey(store)
+        await _register_laptop_passkey(store)
+        redis_mock.delete = AsyncMock(side_effect=ConnectionError("redis is down"))
+        client.cookies.set("alfred_auth", "s-current")
+
+        resp = client.delete(f"/api/auth/credentials/{_LAPTOP_CREDENTIAL_ID}")
+
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "Session store unavailable"
+        assert await store.get_credential(_LAPTOP_CREDENTIAL_ID) is not None
+
+    @pytest.mark.asyncio
+    async def test_delete_is_503_when_the_passkey_cannot_be_removed(
+        self,
+        store: CredentialStore,
+        client: TestClient,
+        sessions: dict[str, dict[bytes, bytes]],
+    ) -> None:
+        """The sessions are gone by then, so the caller must be told the removal
+        itself did not land rather than shown a cheerful 200."""
+        await _register_test_passkey(store)
+        await _register_laptop_passkey(store)
+        client.cookies.set("alfred_auth", "s-current")
+
+        with patch.object(
+            store, "delete_credential", AsyncMock(side_effect=OSError("database is locked"))
+        ):
+            resp = client.delete(f"/api/auth/credentials/{_LAPTOP_CREDENTIAL_ID}")
+
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "Session store unavailable"
+
+    @pytest.mark.asyncio
+    async def test_routes_are_503_when_the_auth_lookup_is_down(
+        self,
+        store: CredentialStore,
+        client: TestClient,
+        redis_mock: AsyncMock,
+        sessions: dict[str, dict[bytes, bytes]],
+    ) -> None:
+        """An outage in the session lookup is 503, never a 500 — and never a 401,
+        which would tell a signed-in caller they are signed out."""
+        await _register_test_passkey(store)
+        await _register_laptop_passkey(store)
+        redis_mock.hgetall = AsyncMock(side_effect=ConnectionError("redis is down"))
+        client.cookies.set("alfred_auth", "s-current")
+
+        for resp in (
+            client.get("/api/auth/credentials"),
+            client.delete(f"/api/auth/credentials/{_LAPTOP_CREDENTIAL_ID}"),
+        ):
+            assert resp.status_code == 503
+            assert resp.json()["detail"] == "Session store unavailable"

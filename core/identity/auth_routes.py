@@ -6,7 +6,7 @@ import json
 import re
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
@@ -45,6 +45,22 @@ _MAX_USER_AGENT_LEN = 200  # bounds what a hostile client can park in the sessio
 # the generator ever change. Anything else is refused before it reaches Redis or
 # the log line, so a %00 or a 5000-character path segment goes nowhere.
 _SESSION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
+# Credential ids are unpadded base64url (``bytes_to_base64url``), so the same
+# alphabet with CTAP2's 1023-byte ceiling on a credential id — 1364 characters
+# once encoded. Anything else cannot name a stored passkey, so it is refused
+# before the store or the log line sees it.
+_CREDENTIAL_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,1364}")
+
+
+class _CurrentSession(NamedTuple):
+    """The caller's session: the id from the cookie, and the record behind it.
+
+    Carried together so a route that needs the record (which passkey signed this
+    session in) does not re-read a hash the 401 check has already fetched.
+    """
+
+    session_id: str
+    record: dict[str, str]
 
 
 class RegisterBeginRequest(BaseModel):
@@ -194,8 +210,8 @@ def create_auth_router(
 
     async def _current_session(
         alfred_auth: str | None = Cookie(default=None),
-    ) -> str:
-        """The caller's authenticated session id, else 401 — or 503 if Redis is down.
+    ) -> _CurrentSession:
+        """The caller's authenticated session, else 401 — or 503 if Redis is down.
 
         Reads Redis directly rather than trusting ``request.state`` so the router
         also works without ``AuthCookieMiddleware`` (as in its tests). An outage is
@@ -210,7 +226,12 @@ def create_auth_router(
             raise HTTPException(status_code=503, detail="Session store unavailable") from e
         if record.get("authenticated") != "1":
             raise HTTPException(status_code=401, detail="Authentication required")
-        return alfred_auth
+        return _CurrentSession(alfred_auth, record)
+
+    # Held as a name, not called in each default: ruff's B008 exempts an inline
+    # ``Depends(...)`` only under a simple annotation, and the session routes are
+    # annotated with ``_CurrentSession``.
+    _session_dep = Depends(_current_session)
 
     async def _all_sessions() -> list[tuple[str, dict[str, str]]]:
         """Every live, authenticated session as ``(session_id, record)``."""
@@ -400,7 +421,9 @@ def create_auth_router(
         return response
 
     @router.get("/sessions")
-    async def list_sessions(current_id: str = Depends(_current_session)) -> JSONResponse:
+    async def list_sessions(
+        current: _CurrentSession = _session_dep,
+    ) -> JSONResponse:
         """Every live session, newest first, with the caller's marked ``current``."""
         sessions: list[dict[str, Any]] = []
         try:
@@ -418,7 +441,7 @@ def create_auth_router(
                         "user_agent": record.get("user_agent", ""),
                         "created_at": record.get("created_at", ""),
                         "expires_in": _expires_in(ttl),
-                        "current": session_id == current_id,
+                        "current": session_id == current.session_id,
                     }
                 )
         except Exception as e:
@@ -433,7 +456,7 @@ def create_auth_router(
     async def delete_session(
         session_id: str,
         request: Request,
-        current_id: str = Depends(_current_session),
+        current: _CurrentSession = _session_dep,
     ) -> JSONResponse:
         """End one session. Ending your own also clears the cookie."""
         if not _SESSION_ID_RE.fullmatch(session_id):
@@ -447,7 +470,93 @@ def create_auth_router(
             "Auth session {} ended via the sessions API (deleted={})", session_id, bool(deleted)
         )
         response = JSONResponse({"deleted": bool(deleted)})
-        if session_id == current_id:
+        if session_id == current.session_id:
+            _clear_session_cookie(response, request)
+        return response
+
+    @router.get("/credentials")
+    async def list_passkeys(
+        current: _CurrentSession = _session_dep,
+    ) -> JSONResponse:
+        """Every registered passkey, with the one this session signed in with marked.
+
+        Deliberately no ``public_key`` and no ``sign_count``: the sheet needs
+        neither, and the key is the one secret on the row.
+        """
+        try:
+            credentials = await store.list_credentials()
+        except Exception as e:
+            logger.warning("Could not list passkeys: {}", e)
+            raise HTTPException(status_code=503, detail="Session store unavailable") from e
+        # No default: a pre-upgrade session records no credential_id, and ``None``
+        # matches no passkey rather than every one of them.
+        current_credential = current.record.get("credential_id")
+        return JSONResponse(
+            {
+                "credentials": [
+                    {
+                        "credential_id": c.credential_id,
+                        "device_name": c.device_name,
+                        "transports": c.transports,
+                        "created_at": c.created_at,
+                        "last_used_at": c.last_used_at,
+                        "current": c.credential_id == current_credential,
+                    }
+                    for c in credentials
+                ]
+            }
+        )
+
+    @router.delete("/credentials/{credential_id}")
+    async def delete_passkey(
+        credential_id: str,
+        request: Request,
+        current: _CurrentSession = _session_dep,
+    ) -> JSONResponse:
+        """Remove a passkey and end every session it opened. Never the last one."""
+        if not _CREDENTIAL_ID_RE.fullmatch(credential_id):
+            raise HTTPException(status_code=400, detail="Invalid credential id")
+        try:
+            # One read answers both questions: does it exist, and is it the last
+            # one. Without it there is no telling either way, so an outage here
+            # must not fall through to a removal.
+            existing = await store.list_credentials()
+        except Exception as e:
+            logger.warning("Could not read the passkeys before removing {}: {}", credential_id, e)
+            raise HTTPException(status_code=503, detail="Session store unavailable") from e
+        if not any(c.credential_id == credential_id for c in existing):
+            raise HTTPException(status_code=404, detail="Passkey not found")
+        if len(existing) <= 1:
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot remove the last passkey — register another first",
+            )
+
+        ended = 0
+        ended_own = False
+        try:
+            # Sessions first, and only then the credential: a failure between the
+            # two leaves a passkey with fewer sessions, which is harmless, rather
+            # than a live session for a passkey that no longer exists.
+            for session_id, record in await _all_sessions():
+                if record.get("credential_id") != credential_id:
+                    continue
+                await redis.delete(f"{AUTH_SESSION_PREFIX}{session_id}")
+                ended += 1
+                ended_own = ended_own or session_id == current.session_id
+        except Exception as e:
+            logger.warning("Could not end the sessions for passkey {}: {}", credential_id, e)
+            raise HTTPException(status_code=503, detail="Session store unavailable") from e
+
+        try:
+            await store.delete_credential(credential_id)
+        except Exception as e:
+            logger.warning("Could not remove passkey {}: {}", credential_id, e)
+            raise HTTPException(status_code=503, detail="Session store unavailable") from e
+        logger.info("Passkey {} removed, {} session(s) ended", credential_id, ended)
+
+        response = JSONResponse({"deleted": True, "sessions_ended": ended})
+        if ended_own:
             _clear_session_cookie(response, request)
         return response
 
