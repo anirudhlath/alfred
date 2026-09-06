@@ -64,6 +64,9 @@ _PAIRING_CODE_DIGITS = 6  # short enough to read off one screen and type on anot
 # contain, and ``fullmatch`` so a longer string cannot pass on a prefix.
 _PAIRING_CODE_RE = re.compile(rf"[0-9]{{{_PAIRING_CODE_DIGITS}}}")
 _PAIRING_INVALID_DETAIL = "Invalid or expired pairing code"
+# One ceiling for a passkey's label, enforced at both ends of the ceremony:
+# pydantic on ``register/begin``, ``_validated_device_name`` on ``register/complete``.
+_DEVICE_NAME_MAX_LEN = 100
 
 
 class _CurrentSession(NamedTuple):
@@ -84,7 +87,7 @@ class _CurrentSession(NamedTuple):
 
 
 class RegisterBeginRequest(BaseModel):
-    device_name: str = Field(max_length=100)
+    device_name: str = Field(max_length=_DEVICE_NAME_MAX_LEN)
 
 
 def _client_address(request: Request) -> str:
@@ -114,6 +117,39 @@ def _get_origin(request: Request) -> str:
     scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
     host = request.headers.get("host", "localhost")
     return f"{scheme}://{host}"
+
+
+def _validated_device_name(raw: Any) -> str:
+    """The device name from a completion body, or 400.
+
+    ``register/begin`` bounds this with pydantic, but ``register/complete`` reads a raw
+    JSON body and puts the value straight into the credential row: an unbounded string
+    went to disk, and a non-string raised *after* ``save_credential`` — a passkey stored
+    on a request the client saw fail, with no way to retry the ceremony. Checked before
+    anything is consumed, so a refusal costs the caller nothing but the retry.
+    """
+    if not isinstance(raw, str):
+        raise HTTPException(status_code=400, detail="Invalid device name")
+    name = raw.strip()
+    if not 1 <= len(name) <= _DEVICE_NAME_MAX_LEN:
+        raise HTTPException(status_code=400, detail="Invalid device name")
+    return name
+
+
+def _validated_transports(response: Any) -> list[str]:
+    """The authenticator transports from a completion body's ``response``, or 400.
+
+    These are stored too, so a bad value outlives the request: ``_to_transports``
+    raises on a non-string, and ``login/begin`` builds its allow-list from *every*
+    stored credential — one unusable row would lock every passkey out. A missing or
+    absent ``transports`` is not an error; the field is optional.
+    """
+    raw = response.get("transports") if isinstance(response, dict) else None
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or not all(isinstance(t, str) for t in raw):
+        raise HTTPException(status_code=400, detail="Invalid transports")
+    return raw
 
 
 def _to_transports(values: list[str]) -> list[AuthenticatorTransport] | None:
@@ -420,7 +456,11 @@ def create_auth_router(
     ) -> JSONResponse:
         body = await request.json()
         challenge_id = body.get("_challenge_id", "")
-        device_name = body.get("_device_name", "Unknown Device")
+        # Both are validated here, before the challenge is consumed and before the
+        # ceremony runs: they are what gets *stored*, and a refusal must leave the
+        # client able to retry.
+        device_name = _validated_device_name(body.get("_device_name", "Unknown Device"))
+        transports = _validated_transports(body.get("response"))
 
         stored_challenge_b64 = await redis.get(f"{WEBAUTHN_CHALLENGE_PREFIX}{challenge_id}")
         if not stored_challenge_b64:
@@ -451,7 +491,7 @@ def create_auth_router(
             public_key=verification.credential_public_key,
             sign_count=verification.sign_count,
             device_name=device_name,
-            transports=body.get("response", {}).get("transports", []),
+            transports=transports,
         )
 
         if paired:

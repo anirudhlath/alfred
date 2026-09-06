@@ -106,7 +106,7 @@ Returns a single JSON object with:
 - `streams` — same payload as `GET /api/admin/streams`
 - `inference.ollama` — bool: probe `{OLLAMA_HOST}/api/tags` returns < 500
 - `inference.lmstudio` — bool: probe `{LMSTUDIO_HOST}/v1/models` returns < 500
-- `reflex.model` — the model the Reflex Engine decides with: `OPENAI_COMPAT_MODEL` when `REFLEX_BACKEND=openai` (matched case-insensitively, as the dispatcher does), otherwise `OLLAMA_MODEL`, or `null` when the selected backend's model is unconfigured
+- `reflex.model` — the model the Reflex Engine decides with: `OPENAI_COMPAT_MODEL` when `REFLEX_BACKEND=openai`, `OLLAMA_MODEL` when it is `ollama` (both matched case-insensitively after stripping, as the dispatcher does). `null` when that backend's model is unconfigured **or** when `REFLEX_BACKEND` names a backend the dispatcher does not accept — `core/reflex/inference.py` raises on those, so no model runs at all, and the overview mirrors its `REFLEX_BACKENDS` set rather than retyping it
 - `reflex.last_ms` — decision latency of the newest `reflex_observations` entry, in ms, rounded to 0.1 ms
 - `reflex.p50_ms` — median of those latencies over the newest 20 observations, in ms, rounded to 0.1 ms
 - `librarian.last_run_at` — ISO timestamp of the Librarian's last pass, or `null` before its first run
@@ -335,7 +335,9 @@ distinguish devices.
 `GET` returns `{"domains": [{"domain": "home", "members": [...], "seen": [...]}, ...]}`,
 sorted by domain, with both member lists sorted. A domain appears if it has an attention
 set **or** a `:seen` set. One unreadable domain costs its own row (logged, skipped); a
-failed scan degrades the whole page to `{"domains": []}` rather than raising.
+failed **scan** is **503** `Attention store unavailable`, like the `PUT`. It deliberately
+does not degrade to `{"domains": []}` — that is the shape "nothing is configured" has, and
+a client's setup gate must not read an outage as an empty configuration.
 
 `PUT` takes `{"allow": ["light.kitchen"], "ask": ["binary_sensor.motion"]}` — `allow`
 entities go through `attention_add` (into the set, marked seen); `ask` entities go through

@@ -5,9 +5,14 @@ from __future__ import annotations
 from datetime import datetime  # noqa: TC003
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from core.triggers.models import ActionPayload  # noqa: TC001
+
+# How many lifecycle-cycle confidence samples a routine keeps (the sparkline on the
+# Triggers bench). Owned here, next to the field, and imported by the Librarian's
+# `_append_confidence` so the write cap and the load cap cannot drift apart.
+CONFIDENCE_HISTORY_LEN = 8
 
 
 class SignificanceScore(BaseModel):
@@ -68,4 +73,15 @@ class RoutineSpec(BaseModel):
     last_hit: datetime | None = None
     consecutive_misses: int = 0
     last_suggested: datetime | None = None
-    confidence_history: list[float] = Field(default_factory=list)  # newest last, ≤8 (Librarian)
+    confidence_history: list[float] = Field(default_factory=list)  # newest last (Librarian)
+
+    @field_validator("confidence_history")
+    @classmethod
+    def _trim_confidence_history(cls, value: list[float]) -> list[float]:
+        """Keep the newest ``CONFIDENCE_HISTORY_LEN`` samples.
+
+        Trim rather than reject: routines are YAML on disk, so a hand-edited or
+        pre-cap file must still load. Refusing it would take the whole routine out
+        of the Librarian's lifecycle over its own history.
+        """
+        return value[-CONFIDENCE_HISTORY_LEN:]

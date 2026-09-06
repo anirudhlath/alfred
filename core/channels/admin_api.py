@@ -36,6 +36,7 @@ from core.reflex.attention import (
     attention_remove,
     attention_seen_list,
 )
+from core.reflex.inference import REFLEX_BACKENDS
 from shared.config import AlfredConfig
 from shared.redis_streams import revrange
 from shared.streams import (
@@ -83,6 +84,8 @@ class TriggerEnabledRequest(BaseModel):
 _DOMAIN_RE = re.compile(r"[a-z0-9_]{1,64}")
 _MAX_ENTITY_ID_LEN = 256
 _MAX_ENTITIES_PER_LIST = 200
+# One vocabulary for an unreachable attention store, shared by the GET and the PUT.
+_ATTENTION_STORE_DOWN = "Attention store unavailable"
 
 
 class AttentionUpdate(BaseModel):
@@ -359,11 +362,17 @@ def create_admin_router() -> APIRouter:
         }
         latencies = await _reflex_latencies(r)
         # Normalised like the dispatcher does (core/reflex/inference.py), so
-        # REFLEX_BACKEND=OpenAI names the model the engine will actually use.
+        # REFLEX_BACKEND=OpenAI names the model the engine will actually use — and
+        # judged against the dispatcher's own accepted set, imported rather than
+        # retyped: a backend it refuses runs no model, so this reports null instead
+        # of quietly naming OLLAMA_MODEL for, say, REFLEX_BACKEND=vllm.
         backend = cfg.reflex_backend.strip().lower()
-        reflex_model = (
-            cfg.openai_compat_model if backend == "openai" else cfg.ollama_model
-        ) or None
+        if backend not in REFLEX_BACKENDS:
+            reflex_model = None
+        else:
+            reflex_model = (
+                cfg.openai_compat_model if backend == "openai" else cfg.ollama_model
+            ) or None
         out["reflex"] = {
             "model": reflex_model,
             "last_ms": latencies[0] if latencies else None,
@@ -676,8 +685,11 @@ def create_admin_router() -> APIRouter:
         try:
             domains = await attention_domains(r)
         except Exception as exc:
+            # Not `{"domains": []}`: that is the shape "nothing is configured" has, and
+            # the PWA's setup gate branches on exactly that. An outage says so instead,
+            # in the same vocabulary as the sibling PUT.
             logger.warning("Attention read failed: {}", exc)
-            return {"domains": []}
+            raise HTTPException(status_code=503, detail=_ATTENTION_STORE_DOWN) from exc
         # Per-domain, so one unreadable set costs its own row rather than the page.
         out: list[dict[str, Any]] = []
         for domain in domains:
@@ -717,7 +729,7 @@ def create_admin_router() -> APIRouter:
                 len(body.allow) + len(body.ask),
                 exc,
             )
-            raise HTTPException(status_code=503, detail="Attention store unavailable") from exc
+            raise HTTPException(status_code=503, detail=_ATTENTION_STORE_DOWN) from exc
         logger.info(
             "Attention set '{}' updated via admin: +{} -{}",
             domain,

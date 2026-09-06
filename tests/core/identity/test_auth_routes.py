@@ -12,7 +12,11 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from webauthn.helpers import bytes_to_base64url
 
-from core.identity.auth_routes import _pairing_fails_key, create_auth_router
+from core.identity.auth_routes import (
+    _DEVICE_NAME_MAX_LEN,
+    _pairing_fails_key,
+    create_auth_router,
+)
 from core.identity.credentials import CredentialStore
 from shared.streams import (
     AUTH_SESSION_PREFIX,
@@ -78,16 +82,18 @@ _LOGIN_BODY: dict[str, object] = {
     },
 }
 
+_REGISTER_RESPONSE: dict[str, object] = {
+    "clientDataJSON": "e30",
+    "attestationObject": "e30",
+}
+
 _REGISTER_BODY: dict[str, object] = {
     "_challenge_id": "c1",
     "_device_name": "Phone",
     "id": _CREDENTIAL_ID,
     "rawId": _CREDENTIAL_ID,
     "type": "public-key",
-    "response": {
-        "clientDataJSON": "e30",
-        "attestationObject": "e30",
-    },
+    "response": _REGISTER_RESPONSE,
 }
 
 
@@ -414,6 +420,121 @@ class TestRegistrationComplete:
         resp = untrusted.post("/api/auth/register/complete", json={"credential": "{}"})
 
         assert resp.status_code == 403
+
+
+class TestRegistrationCompleteBodyValidation:
+    """``register/complete`` reads a raw JSON body, and both the device name and the
+    transports are *stored*. Anything the credential row cannot hold is refused before
+    the ceremony — a 400 after ``verify_registration_response`` would leave a passkey
+    saved on a request that failed."""
+
+    @pytest.fixture
+    def complete(
+        self, client: TestClient, redis_mock: AsyncMock
+    ) -> Callable[[dict[str, object]], Response]:
+        """POST ``register/complete`` with the signature check patched out."""
+        redis_mock.get = AsyncMock(return_value=b"AQID")
+
+        def _post(body_extra: dict[str, object]) -> Response:
+            with patch(
+                "core.identity.auth_routes.verify_registration_response",
+                return_value=_register_complete_verification(),
+            ):
+                return client.post(
+                    "/api/auth/register/complete", json={**_REGISTER_BODY, **body_extra}
+                )
+
+        return _post
+
+    @pytest.mark.asyncio
+    async def test_a_device_name_at_the_cap_is_accepted_and_stored(
+        self, complete: Callable[[dict[str, object]], Response], store: CredentialStore
+    ) -> None:
+        """100 is the accept edge — the same ceiling ``register/begin`` enforces."""
+        name = "n" * _DEVICE_NAME_MAX_LEN
+
+        resp = complete({"_device_name": name})
+
+        assert resp.status_code == 200
+        cred = await store.get_credential("AQID")
+        assert cred is not None
+        assert cred.device_name == name
+
+    def test_a_device_name_one_over_the_cap_is_refused(
+        self, complete: Callable[[dict[str, object]], Response]
+    ) -> None:
+        resp = complete({"_device_name": "n" * (_DEVICE_NAME_MAX_LEN + 1)})
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "Invalid device name"
+
+    @pytest.mark.parametrize("name", [7, None, ["Phone"], {"name": "Phone"}, "", "   "])
+    def test_a_device_name_that_is_not_a_usable_string_is_refused(
+        self, complete: Callable[[dict[str, object]], Response], name: object
+    ) -> None:
+        """A non-string used to 500 *after* the passkey was saved: the row went to
+        SQLite and the request failed anyway."""
+        resp = complete({"_device_name": name})
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "Invalid device name"
+
+    @pytest.mark.asyncio
+    async def test_an_absent_device_name_still_falls_back_to_the_default(
+        self, client: TestClient, redis_mock: AsyncMock, store: CredentialStore
+    ) -> None:
+        redis_mock.get = AsyncMock(return_value=b"AQID")
+        body = {k: v for k, v in _REGISTER_BODY.items() if k != "_device_name"}
+
+        with patch(
+            "core.identity.auth_routes.verify_registration_response",
+            return_value=_register_complete_verification(),
+        ):
+            resp = client.post("/api/auth/register/complete", json=body)
+
+        assert resp.status_code == 200
+        cred = await store.get_credential("AQID")
+        assert cred is not None
+        assert cred.device_name == "Unknown Device"
+
+    @pytest.mark.asyncio
+    async def test_a_list_of_transport_strings_is_accepted(
+        self, complete: Callable[[dict[str, object]], Response], store: CredentialStore
+    ) -> None:
+        resp = complete({"response": {**_REGISTER_RESPONSE, "transports": ["usb", "nfc"]}})
+
+        assert resp.status_code == 200
+        cred = await store.get_credential("AQID")
+        assert cred is not None
+        assert cred.transports == ["usb", "nfc"]
+
+    @pytest.mark.parametrize("transports", [7, "usb", {"0": "usb"}, ["usb", 7], [None]])
+    def test_transports_that_are_not_a_list_of_strings_are_refused(
+        self, complete: Callable[[dict[str, object]], Response], transports: object
+    ) -> None:
+        """Stored, so the damage outlives the request: ``_to_transports`` TypeErrors on
+        a non-string, and ``login/begin`` builds its allow-list from *every* stored
+        credential — one bad row locks everyone out."""
+        resp = complete({"response": {**_REGISTER_RESPONSE, "transports": transports}})
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "Invalid transports"
+
+    def test_a_refused_body_never_reaches_the_ceremony(
+        self, client: TestClient, redis_mock: AsyncMock
+    ) -> None:
+        """The 400 lands before the challenge is consumed and before the signature is
+        checked, so the client can fix the body and retry the same ceremony."""
+        redis_mock.get = AsyncMock(return_value=b"AQID")
+
+        with patch("core.identity.auth_routes.verify_registration_response") as verify:
+            resp = client.post(
+                "/api/auth/register/complete", json={**_REGISTER_BODY, "_device_name": 7}
+            )
+
+        assert resp.status_code == 400
+        verify.assert_not_called()
+        redis_mock.delete.assert_not_awaited()
 
 
 class TestLoginBegin:

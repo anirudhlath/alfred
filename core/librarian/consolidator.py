@@ -23,7 +23,13 @@ from pydantic import BaseModel
 
 from core.memory.paths import preferences_dir as _preferences_dir
 from core.memory.paths import profile_dir as _profile_dir
-from core.memory.schemas import EpisodicEntry, RoutineSpec, RoutineStep, SignificanceScore
+from core.memory.schemas import (
+    CONFIDENCE_HISTORY_LEN,
+    EpisodicEntry,
+    RoutineSpec,
+    RoutineStep,
+    SignificanceScore,
+)
 from shared.streams import LIBRARIAN_QUEUE, LIBRARIAN_STATUS_KEY
 
 if TYPE_CHECKING:
@@ -102,13 +108,14 @@ def _group_by_entity_date(
     return groups, ungrouped
 
 
-# How many lifecycle-cycle confidence samples a routine keeps (sparkline on the Triggers bench)
-_CONFIDENCE_HISTORY_LEN = 8
-
-
 def _append_confidence(history: list[float], value: float) -> list[float]:
-    """Return `history` with `value` appended, trimmed to the newest samples."""
-    return [*history, round(value, 4)][-_CONFIDENCE_HISTORY_LEN:]
+    """Return `history` with `value` appended, trimmed to the newest samples.
+
+    The cap lives on the field (`CONFIDENCE_HISTORY_LEN` in core/memory/schemas.py),
+    which enforces the same bound on load — one number, so a file written here and a
+    file edited by hand are trimmed identically.
+    """
+    return [*history, round(value, 4)][-CONFIDENCE_HISTORY_LEN:]
 
 
 def _routine_index_content(routine: RoutineSpec) -> str:

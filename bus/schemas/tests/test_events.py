@@ -2,6 +2,8 @@
 
 import pytest
 
+from bus.schemas.events import REASON_MAX_LEN, ActionRequest
+
 
 def test_state_changed_event_creation() -> None:
     from bus.schemas.events import StateChangedEvent
@@ -309,3 +311,38 @@ def test_reflex_observation_defaults() -> None:
 
     assert obs.decision_context is None
     assert obs.event_type == "reflex_observation"
+
+
+def test_action_request_reason_is_truncated_at_the_cap() -> None:
+    """The reason rides into APNs metadata, which has a 4 KB ceiling. Truncate rather
+    than reject: a long model-generated reason must not drop the action itself."""
+    action = ActionRequest(
+        source="conscious-engine",
+        target_service="home-service",
+        tool_name="home.unlock_door",
+        reason="r" * 600,
+    )
+
+    assert len(action.reason or "") == REASON_MAX_LEN == 500
+
+
+def test_action_request_reason_at_the_cap_is_unchanged() -> None:
+    """500 is the accept edge — exactly the cap survives verbatim."""
+    reason = "r" * REASON_MAX_LEN
+
+    action = ActionRequest(
+        source="conscious-engine",
+        target_service="home-service",
+        tool_name="home.unlock_door",
+        reason=reason,
+    )
+
+    assert action.reason == reason
+
+
+def test_action_request_reason_stays_optional() -> None:
+    action = ActionRequest(
+        source="conscious-engine", target_service="home-service", tool_name="home.dim"
+    )
+
+    assert action.reason is None

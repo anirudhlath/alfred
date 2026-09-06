@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 import core.channels.admin_api as admin_api
 from core.channels.admin_api import require_authenticated
 from core.channels.web_server import create_app, require_trusted_network
+from core.reflex.inference import REFLEX_BACKENDS
 from tests.core.channels.conftest import _TEST_SESSION_ID, session_hgetall
 
 
@@ -214,6 +215,35 @@ def test_overview_reflex_model_is_null_when_unconfigured(monkeypatch: Any) -> No
     client = make_admin_client(_overview_redis())
 
     assert client.get("/api/admin/overview").json()["reflex"]["model"] is None
+
+
+def test_overview_reflex_model_is_null_for_a_backend_the_dispatcher_rejects(
+    monkeypatch: Any,
+) -> None:
+    """`core/reflex/inference.py` raises on anything outside its accepted set, so
+    `REFLEX_BACKEND=vllm` runs no model at all. Falling back to `OLLAMA_MODEL` would
+    name a model the engine will never reach — and hide a misconfiguration that is
+    otherwise only visible in a crash."""
+    monkeypatch.setenv("REFLEX_BACKEND", "vllm")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen3:8b")
+    monkeypatch.setenv("OPENAI_COMPAT_MODEL", "Qwen/Qwen3-8B")
+    client = make_admin_client(_overview_redis())
+
+    assert client.get("/api/admin/overview").json()["reflex"]["model"] is None
+
+
+def test_overview_reflex_model_covers_every_backend_the_dispatcher_accepts(
+    monkeypatch: Any,
+) -> None:
+    """The overview mirrors the dispatcher's set rather than retyping it, so a new
+    backend cannot be added there and silently report null here."""
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen3:8b")
+    monkeypatch.setenv("OPENAI_COMPAT_MODEL", "Qwen/Qwen3-8B")
+    client = make_admin_client(_overview_redis())
+
+    for backend in REFLEX_BACKENDS:
+        monkeypatch.setenv("REFLEX_BACKEND", backend)
+        assert client.get("/api/admin/overview").json()["reflex"]["model"] is not None
 
 
 def test_overview_reflex_skips_mixed_timezone_entries(monkeypatch: Any) -> None:
@@ -1001,15 +1031,18 @@ def test_attention_get_skips_only_the_domain_that_fails() -> None:
     }
 
 
-def test_attention_get_degrades_to_empty_on_redis_error() -> None:
+def test_attention_get_is_503_when_the_attention_store_is_down() -> None:
+    """An outage must not read as "nothing configured": `{"domains": []}` is the one
+    shape the PWA setup gate cannot afford to confuse, so the scan failure answers
+    503 in the same vocabulary as its sibling PUT."""
     r = _overview_redis()
     r.scan_iter = MagicMock(side_effect=ConnectionError("down"))
     client = make_admin_client(r)
 
     resp = client.get("/api/admin/attention")
 
-    assert resp.status_code == 200
-    assert resp.json() == {"domains": []}
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "Attention store unavailable"
 
 
 def test_attention_put_adds_and_removes() -> None:
