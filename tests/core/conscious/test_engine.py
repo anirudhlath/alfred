@@ -592,3 +592,111 @@ async def test_dispatch_moves_reason_onto_the_action(
         "entity_id": "lock.front_door",
         "reason": "The dog walker is here.",
     }
+
+
+def _critical_tool_with_own_reason() -> ToolInfo:
+    """A critical tool that declares `reason` as its own domain parameter."""
+    return ToolInfo(
+        name="home.log_incident",
+        description="Log an incident",
+        parameters={"reason": {"type": "str", "description": "Incident reason for the audit log"}},
+        feature_name="home",
+        feature_description="Home control",
+        target_service="home-service",
+        risk="critical",
+    )
+
+
+def test_tool_declaring_its_own_reason_keeps_its_schema(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """The injected `reason` never overwrites a tool's own `reason` parameter."""
+    engine = ConsciousEngine(**mock_deps)
+
+    schema = engine._tools_to_openai_format([_critical_tool_with_own_reason()])[0]["function"][
+        "parameters"
+    ]
+
+    assert schema["properties"]["reason"]["description"] == "Incident reason for the audit log"
+    assert "reason" in schema["required"]  # the tool's own required parameter
+
+
+@pytest.mark.asyncio
+async def test_dispatch_preserves_a_tools_own_reason_parameter(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """A critical tool declaring its own `reason` still receives it in `parameters`."""
+    mock_deps["domain_router"].route.return_value = MagicMock(status="success", result={"ok": True})
+    engine = ConsciousEngine(**mock_deps)
+
+    await engine._dispatch_tool_call(
+        {"id": "tc-1", "name": "home.log_incident", "input": {"reason": "Smoke alarm tripped."}},
+        tools=[_critical_tool_with_own_reason()],
+    )
+
+    routed = mock_deps["domain_router"].route.call_args[0][0]
+    assert routed.parameters == {"reason": "Smoke alarm tripped."}
+    assert routed.reason is None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_leaves_reason_alone_for_benign_tools(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """Only critical tools are offered `reason`, so benign tools keep theirs verbatim."""
+    mock_deps["domain_router"].route.return_value = MagicMock(status="success", result={"ok": True})
+    engine = ConsciousEngine(**mock_deps)
+    benign = ToolInfo(
+        name="home.log_note",
+        description="Log a note",
+        parameters={"reason": {"type": "str", "description": "Why"}},
+        feature_name="home",
+        feature_description="Home control",
+        target_service="home-service",
+    )
+
+    await engine._dispatch_tool_call(
+        {"id": "tc-1", "name": "home.log_note", "input": {"reason": "Just because."}},
+        tools=[benign],
+    )
+
+    routed = mock_deps["domain_router"].route.call_args[0][0]
+    assert routed.parameters == {"reason": "Just because."}
+    assert routed.reason is None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_tolerates_null_tool_input(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """`input: null` (a model emitting the JSON literal) must not raise — `json.loads("null")`."""
+    engine = ConsciousEngine(**mock_deps)
+
+    result = await engine._dispatch_tool_call(
+        {"id": "tc-1", "name": "integration_weather_get_current", "input": None}, tools=[]
+    )
+
+    assert result["tool_use_id"] == "tc-1"
+    assert "Error" in result["content"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_ignores_non_string_and_blank_reasons(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """A non-string or whitespace-only `reason` is dropped, never str()-repr'd onto the action."""
+    mock_deps["domain_router"].route.return_value = MagicMock(status="success", result={"ok": True})
+    engine = ConsciousEngine(**mock_deps)
+
+    for bad_reason in ({"why": "nested"}, "   "):
+        await engine._dispatch_tool_call(
+            {
+                "id": "tc-1",
+                "name": "home.unlock_door",
+                "input": {"entity_id": "lock.front_door", "reason": bad_reason},
+            },
+            tools=[_critical_tool()],
+        )
+        routed = mock_deps["domain_router"].route.call_args[0][0]
+        assert routed.reason is None, bad_reason
+        assert routed.parameters == {"entity_id": "lock.front_door"}

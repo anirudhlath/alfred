@@ -203,6 +203,10 @@ class ConsciousEngine:
         return self._routines is not None
 
     _TYPE_MAP: ClassVar[dict[str, str]] = PYTHON_TO_JSON_SCHEMA
+    # Prefix for integration tool names to distinguish from domain tools
+    _INTEGRATION_PREFIX: ClassVar[str] = "integration_"
+    # Extra argument offered on critical tools; moved off `parameters` onto ActionRequest.reason
+    _REASON_PARAM: ClassVar[str] = "reason"
 
     @staticmethod
     def _sanitize_tool_name(name: str) -> str:
@@ -264,11 +268,6 @@ class ConsciousEngine:
                 }
             )
         return openai_tools
-
-    # Prefix for integration tool names to distinguish from domain tools
-    _INTEGRATION_PREFIX: ClassVar[str] = "integration_"
-    # Extra argument offered on critical tools; moved off `parameters` onto ActionRequest.reason
-    _REASON_PARAM: ClassVar[str] = "reason"
 
     async def _integrations_to_openai_format(self) -> list[dict[str, Any]]:
         """Convert integration capabilities to OpenAI function-calling format."""
@@ -433,7 +432,10 @@ class ConsciousEngine:
         dispatch from ``process_request`` always passes the resolved identity.
         """
         name = tc["name"]
-        params = dict(tc.get("input", {}))
+        # A model can emit `"arguments": "null"`, which `_call_llm` parses to None.
+        # Copy defensively: the caller's dict must not be mutated by the `reason` pop.
+        raw_input = tc.get("input") or {}
+        params = dict(raw_input) if isinstance(raw_input, dict) else {}
 
         # 1. Integration tools — direct call via IntegrationRegistry
         if name.startswith(self._INTEGRATION_PREFIX):
@@ -488,22 +490,30 @@ class ConsciousEngine:
         # 4. Domain tools — route to external service via DomainRouter
         target = ""
         risk = "benign"
+        declares_own_reason = False
         for t in tools:
             if t.name == name:
                 target = t.target_service
                 risk = t.risk
+                # A tool may own a `reason` parameter; `_tools_to_openai_format` leaves
+                # that schema alone, so it belongs to the service and must not be popped.
+                declares_own_reason = self._REASON_PARAM in t.parameters
                 break
 
         if not target:
             return self._make_tool_result(tc["id"], f"Error: tool '{name}' not found in registry")
 
-        reason = params.pop(self._REASON_PARAM, None) if risk == "critical" else None
+        reason = (
+            params.pop(self._REASON_PARAM, None)
+            if risk == "critical" and not declares_own_reason
+            else None
+        )
         action = ActionRequest(
             source="conscious-engine",
             target_service=target,
             tool_name=name,
             parameters=params,
-            reason=str(reason) if reason else None,
+            reason=reason if isinstance(reason, str) and reason.strip() else None,
         )
         action_result = await self._router.route(action)
         content = str(
