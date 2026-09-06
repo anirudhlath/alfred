@@ -70,7 +70,9 @@ _SESSION_CHANNELS = frozenset({"web", "pwa", "ios"})
 def _session_channel(body: dict[str, Any]) -> str:
     """Which client completed the ceremony — ``_channel`` in the completion body."""
     channel = body.get("_channel", "web")
-    return channel if channel in _SESSION_CHANNELS else "web"
+    # A JSON array/object would be unhashable — and this runs after the ceremony's
+    # side effects, so an exception here means a 500 and a sessionless passkey.
+    return channel if isinstance(channel, str) and channel in _SESSION_CHANNELS else "web"
 
 
 def _set_session_cookie(response: JSONResponse, request: Request, session_id: str) -> None:

@@ -166,6 +166,16 @@ async def _register_test_passkey(store: CredentialStore) -> None:
     )
 
 
+class _NoPeerApp:
+    """ASGI shim that blanks the peer address, as an odd proxy or a unix socket does."""
+
+    def __init__(self, app: Any) -> None:
+        self._app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        await self._app({**scope, "client": None}, receive, send)
+
+
 def _passkey_login(
     client: TestClient,
     redis_mock: AsyncMock,
@@ -618,21 +628,65 @@ class TestSessionMetadata:
         assert mapping["user_agent"] == "AlfredPWA/1.0"
         assert mapping["ip"] == "testclient"
         datetime.fromisoformat(mapping["created_at"])
+        # The TTL must land on the hash it belongs to, not a near-miss key.
+        assert redis_mock.expire.await_args.args[0] == key
+        assert set(mapping) == {
+            "authenticated",
+            "credential_id",
+            "created_at",
+            "ip",
+            "user_agent",
+            "channel",
+        }
         assert "alfred_auth=" in resp.headers["set-cookie"]
 
     @pytest.mark.asyncio
-    async def test_unknown_or_missing_channel_is_web(
+    async def test_unknown_missing_or_non_string_channel_is_web(
         self, store: CredentialStore, client: TestClient, redis_mock: AsyncMock
     ) -> None:
         await _register_test_passkey(store)
 
-        _passkey_login(client, redis_mock, body_extra={"_channel": "toaster"})
+        resp = _passkey_login(client, redis_mock, body_extra={"_channel": "toaster"})
+        assert resp.status_code == 200
         assert redis_mock.hset.call_args.kwargs["mapping"]["channel"] == "web"
 
-        _passkey_login(client, redis_mock)
+        resp = _passkey_login(client, redis_mock)
+        assert resp.status_code == 200
         assert redis_mock.hset.call_args.kwargs["mapping"]["channel"] == "web"
 
-    def test_registration_records_channel_too(
+        # A JSON array is unhashable: an unguarded `in` lookup 500s *after* the sign
+        # count was bumped, leaving the caller with a spent assertion and no session.
+        resp = _passkey_login(client, redis_mock, body_extra={"_channel": ["pwa"]})
+        assert resp.status_code == 200
+        assert redis_mock.hset.call_args.kwargs["mapping"]["channel"] == "web"
+
+    @pytest.mark.asyncio
+    async def test_user_agent_is_truncated_to_200_chars(
+        self, store: CredentialStore, client: TestClient, redis_mock: AsyncMock
+    ) -> None:
+        """A hostile client must not park an unbounded string in the session hash."""
+        await _register_test_passkey(store)
+
+        resp = _passkey_login(client, redis_mock, headers={"user-agent": "U" * 5000})
+
+        assert resp.status_code == 200
+        assert redis_mock.hset.call_args.kwargs["mapping"]["user_agent"] == "U" * 200
+
+    @pytest.mark.asyncio
+    async def test_missing_peer_records_empty_ip(
+        self, store: CredentialStore, redis_mock: AsyncMock
+    ) -> None:
+        """No peer address on the scope → empty ip, never an AttributeError."""
+        await _register_test_passkey(store)
+        client = _build_client(store, redis_mock, _CHALLENGE, _NoPeerApp)
+
+        resp = _passkey_login(client, redis_mock)
+
+        assert resp.status_code == 200
+        assert redis_mock.hset.call_args.kwargs["mapping"]["ip"] == ""
+
+    @pytest.mark.asyncio
+    async def test_registration_records_channel_too(
         self, store: CredentialStore, client: TestClient, redis_mock: AsyncMock
     ) -> None:
         redis_mock.get = AsyncMock(return_value=b"AQID")
