@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 
 _AUTH_SESSION_TTL = 8 * 3600  # 8 hours — a phone re-auths with Face ID, cheap to renew
 _CHALLENGE_TTL = 300  # 5 minutes
+_MAX_USER_AGENT_LEN = 200  # bounds what a hostile client can park in the session hash
 
 
 class RegisterBeginRequest(BaseModel):
@@ -64,6 +65,11 @@ def _to_transports(values: list[str]) -> list[AuthenticatorTransport] | None:
     return out or None
 
 
+# Where an auth session was *started* — deliberately distinct from the message
+# channel vocabulary in core/channels/web_server.py (`_CHANNEL_SOURCE_MAP`:
+# "web_pwa"/"voice"/"ios"). "pwa" here is the session-origin spelling of that
+# map's "web_pwa"; "web" has no counterpart there, and "voice" rides an
+# existing session rather than starting one. The wire values are frozen by spec.
 _SESSION_CHANNELS = frozenset({"web", "pwa", "ios"})
 
 
@@ -108,7 +114,7 @@ def create_auth_router(
 
     router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-    async def _start_session(request: Request, credential_id: str, channel: str) -> str:
+    async def _start_session(request: Request, *, credential_id: str, channel: str) -> str:
         """Create an authenticated session hash (TTL 8h) and return its id."""
         session_id = str(uuid.uuid4())
         key = f"{AUTH_SESSION_PREFIX}{session_id}"
@@ -119,7 +125,7 @@ def create_auth_router(
                 "credential_id": credential_id,
                 "created_at": datetime.now(UTC).isoformat(),
                 "ip": request.client.host if request.client else "",
-                "user_agent": request.headers.get("user-agent", "")[:200],
+                "user_agent": request.headers.get("user-agent", "")[:_MAX_USER_AGENT_LEN],
                 "channel": channel,
             },
         )
@@ -217,7 +223,9 @@ def create_auth_router(
             transports=body.get("response", {}).get("transports", []),
         )
 
-        session_id = await _start_session(request, credential_id, _session_channel(body))
+        session_id = await _start_session(
+            request, credential_id=credential_id, channel=_session_channel(body)
+        )
         response = JSONResponse({"status": "ok", "credential_id": credential_id})
         _set_session_cookie(response, request, session_id)
         return response
@@ -291,7 +299,9 @@ def create_auth_router(
 
         await store.update_sign_count(cred.credential_id, verification.new_sign_count)
 
-        session_id = await _start_session(request, cred.credential_id, _session_channel(body))
+        session_id = await _start_session(
+            request, credential_id=cred.credential_id, channel=_session_channel(body)
+        )
         response = JSONResponse({"status": "ok"})
         _set_session_cookie(response, request, session_id)
         return response

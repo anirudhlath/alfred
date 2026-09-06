@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -101,6 +101,16 @@ def _build_client(
     return TestClient(wrap(app) if wrap is not None else app)
 
 
+async def _register_test_passkey(store: CredentialStore) -> None:
+    await store.save_credential(
+        credential_id=_CREDENTIAL_ID,
+        public_key=b"\x03",
+        sign_count=0,
+        device_name="Phone",
+        transports=["internal"],
+    )
+
+
 async def _login(
     store: CredentialStore,
     redis_mock: AsyncMock,
@@ -117,13 +127,7 @@ async def _login(
         result.new_sign_count = 1
         return result
 
-    await store.save_credential(
-        credential_id=_CREDENTIAL_ID,
-        public_key=b"\x03",
-        sign_count=0,
-        device_name="Phone",
-        transports=["internal"],
-    )
+    await _register_test_passkey(store)
     client = _build_client(store, redis_mock, challenge, wrap)
     with patch(
         "core.identity.auth_routes.verify_authentication_response",
@@ -156,14 +160,13 @@ async def _register(
         return client.post("/api/auth/register/complete", json=_REGISTER_BODY)
 
 
-async def _register_test_passkey(store: CredentialStore) -> None:
-    await store.save_credential(
-        credential_id=_CREDENTIAL_ID,
-        public_key=b"\x03",
-        sign_count=0,
-        device_name="Phone",
-        transports=["internal"],
-    )
+def _behind_proxy(app: FastAPI) -> Any:
+    """Wrap the app as uvicorn does once ``FORWARDED_ALLOW_IPS`` trusts the peer."""
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+    # uvicorn types its middleware against its own strict ASGIApplication
+    # protocol, which starlette's looser scope signature never satisfies.
+    return ProxyHeadersMiddleware(app, trusted_hosts="testclient")  # type: ignore[arg-type]
 
 
 class _NoPeerApp:
@@ -184,7 +187,7 @@ def _passkey_login(
     headers: dict[str, str] | None = None,
 ) -> Response:
     """Drive /login/complete with the WebAuthn signature check patched out."""
-    redis_mock.get = AsyncMock(return_value=b"AQID")  # the stored challenge, base64url
+    redis_mock.get = AsyncMock(return_value=bytes_to_base64url(_CHALLENGE).encode())
     verification = MagicMock()
     verification.new_sign_count = 1
     body: dict[str, object] = {**_LOGIN_BODY, **(body_extra or {})}
@@ -584,13 +587,6 @@ class TestSessionLifetime:
     async def test_cookie_is_secure_behind_https_proxy(
         self, store: CredentialStore, redis_mock: AsyncMock
     ) -> None:
-        from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
-
-        def _behind_proxy(app: FastAPI) -> Any:
-            # uvicorn types its middleware against its own strict ASGIApplication
-            # protocol, which starlette's looser scope signature never satisfies.
-            return ProxyHeadersMiddleware(app, trusted_hosts="testclient")  # type: ignore[arg-type]
-
         resp = await _login(
             store,
             redis_mock,
@@ -627,7 +623,9 @@ class TestSessionMetadata:
         assert mapping["channel"] == "pwa"
         assert mapping["user_agent"] == "AlfredPWA/1.0"
         assert mapping["ip"] == "testclient"
-        datetime.fromisoformat(mapping["created_at"])
+        # Task 11 subtracts this from an aware "now" — a naive stamp would TypeError.
+        created = datetime.fromisoformat(mapping["created_at"])
+        assert created.utcoffset() == timedelta(0)
         # The TTL must land on the hash it belongs to, not a near-miss key.
         assert redis_mock.expire.await_args.args[0] == key
         assert set(mapping) == {
@@ -686,10 +684,35 @@ class TestSessionMetadata:
         assert redis_mock.hset.call_args.kwargs["mapping"]["ip"] == ""
 
     @pytest.mark.asyncio
+    async def test_ip_is_the_proxied_peer_behind_a_trusted_proxy(
+        self, store: CredentialStore, redis_mock: AsyncMock
+    ) -> None:
+        """Behind a trusted proxy uvicorn has already rewritten the peer — record that."""
+        await _register_test_passkey(store)
+        client = _build_client(store, redis_mock, _CHALLENGE, _behind_proxy)
+
+        resp = _passkey_login(client, redis_mock, headers={"X-Forwarded-For": "192.0.2.10"})
+
+        assert resp.status_code == 200
+        assert redis_mock.hset.call_args.kwargs["mapping"]["ip"] == "192.0.2.10"
+
+    @pytest.mark.asyncio
+    async def test_untrusted_caller_cannot_pick_its_own_ip(
+        self, store: CredentialStore, client: TestClient, redis_mock: AsyncMock
+    ) -> None:
+        """The peer, never the header — an untrusted caller cannot pick its own ip."""
+        await _register_test_passkey(store)
+
+        resp = _passkey_login(client, redis_mock, headers={"X-Forwarded-For": "198.51.100.7"})
+
+        assert resp.status_code == 200
+        assert redis_mock.hset.call_args.kwargs["mapping"]["ip"] == "testclient"
+
+    @pytest.mark.asyncio
     async def test_registration_records_channel_too(
         self, store: CredentialStore, client: TestClient, redis_mock: AsyncMock
     ) -> None:
-        redis_mock.get = AsyncMock(return_value=b"AQID")
+        redis_mock.get = AsyncMock(return_value=bytes_to_base64url(_CHALLENGE).encode())
         verification = MagicMock()
         verification.credential_id = b"\x01\x02\x03"
         verification.credential_public_key = b"\x03"
@@ -699,15 +722,7 @@ class TestSessionMetadata:
         ):
             resp = client.post(
                 "/api/auth/register/complete",
-                json={
-                    "_challenge_id": "c1",
-                    "_device_name": "Phone",
-                    "_channel": "ios",
-                    "id": _CREDENTIAL_ID,
-                    "rawId": _CREDENTIAL_ID,
-                    "type": "public-key",
-                    "response": {"clientDataJSON": "e30", "attestationObject": "e30"},
-                },
+                json={**_REGISTER_BODY, "_channel": "ios"},
                 headers={"user-agent": "AlfredApp/2.0"},
             )
 
