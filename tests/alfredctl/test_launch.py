@@ -10,6 +10,7 @@ from alfredctl.launch import LaunchPlan, build_plan
 from alfredctl.runtime import Runtime
 
 DOCKER = Runtime("docker", "docker")
+PODMAN = Runtime("podman", "podman")
 APPLE = Runtime("container", "container")
 
 
@@ -141,6 +142,135 @@ def test_trusted_networks_merge(tmp_path: Path) -> None:
     values = entry.split("=", 1)[1].split(",")
     assert "10.1.0.0/16" in values
     assert "172.16.0.0/12" in values
+
+
+def test_strict_mode_from_env_file_skips_container_subnet(tmp_path: Path) -> None:
+    """Strict mode means "trust only what I listed" — auto-appending the container
+    subnet would silently re-trust every peer on the Docker network, including a
+    reverse proxy fronting the internet."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("ALFRED_TRUSTED_NETWORKS=10.9.0.7\nALFRED_TRUSTED_NETWORKS_STRICT=1\n")
+    args = _plan(env_file=env_file).run_args
+    entry = next(a for a in args if a.startswith("ALFRED_TRUSTED_NETWORKS="))
+    values = entry.split("=", 1)[1].split(",")
+    assert "172.16.0.0/12" not in values
+    assert values == ["10.9.0.7"]
+
+
+def test_strict_mode_from_extra_env_skips_container_subnet(tmp_path: Path) -> None:
+    """--env ALFRED_TRUSTED_NETWORKS_STRICT=1 must be honoured too, not just the flag
+    in the env file."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("ALFRED_TRUSTED_NETWORKS=10.9.0.7\n")
+    args = _plan(env_file=env_file, extra_env=["ALFRED_TRUSTED_NETWORKS_STRICT=true"]).run_args
+    entry = next(a for a in args if a.startswith("ALFRED_TRUSTED_NETWORKS="))
+    values = entry.split("=", 1)[1].split(",")
+    assert "172.16.0.0/12" not in values
+    assert values == ["10.9.0.7"]
+
+
+def test_extra_env_overrides_env_file_strict_flag(tmp_path: Path) -> None:
+    """--env wins over the env file, not the other way round: an operator turning the
+    flag off for one run must actually get the container subnet back."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("ALFRED_TRUSTED_NETWORKS_STRICT=1\n")
+    args = _plan(env_file=env_file, extra_env=["ALFRED_TRUSTED_NETWORKS_STRICT=0"]).run_args
+    entry = next(a for a in args if a.startswith("ALFRED_TRUSTED_NETWORKS="))
+    assert "172.16.0.0/12" in entry.split("=", 1)[1].split(",")
+
+
+def test_extra_env_trusted_networks_keeps_container_subnet(tmp_path: Path) -> None:
+    """--env ALFRED_TRUSTED_NETWORKS=... must merge with the auto-appended subnet the
+    same way an env-file value does. Applied after the merge it silently replaced it,
+    so `alfredctl up --env ALFRED_TRUSTED_NETWORKS=...` broke host access."""
+    args = _plan(extra_env=["ALFRED_TRUSTED_NETWORKS=10.9.0.0/16"]).run_args
+    entry = next(a for a in args if a.startswith("ALFRED_TRUSTED_NETWORKS="))
+    values = entry.split("=", 1)[1].split(",")
+    assert values == ["10.9.0.0/16", "172.16.0.0/12"]
+
+
+@pytest.mark.parametrize("flag", ["1", "true", "YES"])
+def test_strict_mode_truthy_spellings(tmp_path: Path, flag: str) -> None:
+    """Truthiness must match _strict_networks() in core/channels/web_server.py, or
+    alfredctl and the server disagree about what strict mode means. Both now route
+    through shared.env.is_truthy_flag."""
+    env_file = tmp_path / ".env"
+    env_file.write_text(f"ALFRED_TRUSTED_NETWORKS_STRICT={flag}\n")
+    args = _plan(env_file=env_file).run_args
+    entry = next(a for a in args if a.startswith("ALFRED_TRUSTED_NETWORKS="))
+    assert "172.16.0.0/12" not in entry
+
+
+@pytest.mark.parametrize("flag", [" 1 ", " Yes "])
+def test_strict_mode_tolerates_whitespace_on_the_env_flag_path(flag: str) -> None:
+    """Whitespace has to be stripped, and --env is the only route that can carry it:
+    python-dotenv already strips env-file values, so an env-file case cannot fail if
+    the strip() is deleted."""
+    args = _plan(extra_env=[f"ALFRED_TRUSTED_NETWORKS_STRICT={flag}"]).run_args
+    entry = next(a for a in args if a.startswith("ALFRED_TRUSTED_NETWORKS="))
+    assert "172.16.0.0/12" not in entry
+
+
+def test_strict_mode_warns_that_the_subnet_was_withheld(tmp_path: Path) -> None:
+    """Withholding the subnet is invisible in run_args and costs the operator host
+    access to passkey registration — say so rather than let them discover it as a 403."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("ALFRED_TRUSTED_NETWORKS_STRICT=1\n")
+    notes = _plan(env_file=env_file).notes
+    assert len(notes) == 1
+    assert "ALFRED_TRUSTED_NETWORKS_STRICT" in notes[0]
+    assert "172.16.0.0/12" in notes[0]
+
+
+@pytest.mark.parametrize(
+    ("rt_", "subnet"),
+    [
+        (DOCKER, "172.16.0.0/12"),
+        (PODMAN, "10.88.0.0/16"),
+        (APPLE, "192.168.64.0/24"),
+    ],
+)
+def test_strict_mode_note_names_the_active_runtimes_subnet(
+    tmp_path: Path, rt_: Runtime, subnet: str
+) -> None:
+    """The note tells the operator which CIDR was withheld, so it has to come from
+    trusted_subnet(rt) rather than the Docker value everything else is tested with —
+    a Podman or Apple operator reading "172.16.0.0/12" would go looking for a bridge
+    that does not exist on their host. (The autouse Apple-gateway guard also holds
+    here: no gateway-rewrite key is present, so nothing may shell out.)"""
+    env_file = tmp_path / ".env"
+    env_file.write_text("ALFRED_TRUSTED_NETWORKS_STRICT=1\n")
+    notes = _plan(rt=rt_, env_file=env_file).notes
+    assert len(notes) == 1
+    assert subnet in notes[0]
+
+
+def test_strict_mode_with_extra_env_networks_lists_exactly_those(tmp_path: Path) -> None:
+    """The note's own recommended recipe — strict mode plus an explicit LAN CIDR —
+    must produce that CIDR and nothing else. Combining the two paths is where an
+    ordering slip would show up: `--env ALFRED_TRUSTED_NETWORKS` used to be applied
+    after the subnet merge, and the auto-append is skipped by a separate branch."""
+    args = _plan(
+        extra_env=[
+            "ALFRED_TRUSTED_NETWORKS_STRICT=1",
+            "ALFRED_TRUSTED_NETWORKS=10.9.0.0/16",
+        ]
+    ).run_args
+    entry = next(a for a in args if a.startswith("ALFRED_TRUSTED_NETWORKS="))
+    assert entry.split("=", 1)[1].split(",") == ["10.9.0.0/16"]
+
+
+def test_no_note_when_the_subnet_is_added() -> None:
+    assert _plan().notes == ()
+
+
+@pytest.mark.parametrize("flag", ["0", "", "false", "no"])
+def test_non_strict_still_appends_container_subnet(tmp_path: Path, flag: str) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(f"ALFRED_TRUSTED_NETWORKS_STRICT={flag}\n")
+    args = _plan(env_file=env_file).run_args
+    entry = next(a for a in args if a.startswith("ALFRED_TRUSTED_NETWORKS="))
+    assert "172.16.0.0/12" in entry.split("=", 1)[1].split(",")
 
 
 def test_apple_container_gets_memory_and_cpus() -> None:

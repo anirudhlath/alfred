@@ -61,10 +61,12 @@ export type ChatServerMessage =
       actions_taken?: string[]; mood?: string }
   | { type: "notification"; title: string; body: string; urgency: string;
       notification_id: string; audio?: string; metadata?: Record<string, unknown> }
-  | { type: "error"; text: string; session_id?: string };
+  | { type: "error"; text: string; session_id?: string }
+  | { type: "pong" };
 
 /** Telemetry WS messages (Step 1 protocol) */
 export type TelemetryMessage =
   | { type: "subscribed"; streams: string[] }
   | { type: "entry"; stream: string; id: string; event: Record<string, unknown> }
-  | { type: "status"; detail: string };
+  | { type: "status"; detail: string }
+  | { type: "pong" };

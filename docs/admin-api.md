@@ -22,38 +22,52 @@ that handles chat WebSocket connections on port 8081.
 
 ## Auth Model
 
-Every admin endpoint enforces **both** of the following FastAPI dependencies — missing either
-results in an error before any Redis/disk access.
+Every admin endpoint — reads and controls alike — enforces exactly one FastAPI dependency:
 
 | Dependency | Gate | Error |
 |---|---|---|
-| `require_trusted_network` | Caller's IP must be localhost (`127.0.0.1` / `::1`) or in the Tailscale CGNAT range (`100.64.0.0/10`) | HTTP 403 |
 | `require_authenticated` | `AuthCookieMiddleware` must have marked `request.state.authenticated = True` via a valid `alfred_auth` session cookie | HTTP 401 |
 
-Both dependencies are applied at router creation time:
+There is deliberately **no** trusted-network gate here: the admin API is usable from the
+public hostname once signed in with a passkey. The network gate (`require_trusted_network`,
+HTTP 403) is reserved for endpoints that can mint or widen credentials, and it comes in
+two shapes:
+
+| Endpoints | Gates | Why |
+|---|---|---|
+| `PUT/DELETE /api/integrations/{name}/credentials`, `POST/DELETE /api/devices/register`, `POST /api/voice/enroll` | **both** (`_CREDENTIAL_GATES`, network first) | A caller who can write these can widen Alfred's reach, so being on the LAN/tailnet *and* signed in are both required. |
+| `POST /api/auth/register/{begin,complete}` | **network only** (`Depends(trusted_network_dep)` in `core/identity/auth_routes.py`, injected from `web_server.py`) | Registration is how the first session comes into existence — the first-run user has no cookie yet, so a session gate here would be unsatisfiable. Physical network position is the whole of the trust. |
+
+See [`webauthn.md` → Security Properties](webauthn.md) for the registration side.
+
+The dependency is applied at router creation time:
 
 ```python
 router = APIRouter(
     prefix="/api/admin",
-    dependencies=[Depends(trusted_network_dep), Depends(require_authenticated)],
+    dependencies=[Depends(require_authenticated)],
 )
 ```
 
-The `trusted_network_dep` is injected at mount time from `web_server.py` so the same
-`require_trusted_network` function handles both admin and credential endpoints.
-
 ### Telemetry WebSocket Auth
 
-`/ws/telemetry` uses `authenticate_ws_cookie(websocket, redis)` — the same helper used by
-the main `/ws` endpoint. Because `BaseHTTPMiddleware` does not run for WebSocket upgrade
-requests, the cookie is parsed manually from the `cookie` header. An unauthenticated
-connection is closed with **code 4001** (not 401 — WS close codes are numeric):
+`/ws/telemetry` calls `require_ws_auth(websocket, redis)` from `core/identity/ws_auth.py`
+— the same helper the main `/ws` endpoint uses. It owns the whole handshake:
 
 ```python
-if not await authenticate_ws_cookie(websocket, r):
-    await websocket.close(code=4001, reason="Authentication required")
+if not await require_ws_auth(websocket, r):
     return
 ```
+
+Inside, it **accepts the socket first**, then authenticates, and closes with **code 4001**
+(not 401 — WS close codes are numeric) if the session is missing or invalid. The ordering
+is load-bearing: closing before accepting surfaces to the browser as a plain HTTP 403 on
+the upgrade with no close code, so the client never sees 4001 and reconnects forever.
+Authentication itself is `authenticate_ws_cookie()`, which parses the `alfred_auth` cookie
+straight out of the `cookie` header — `BaseHTTPMiddleware` does not run for WebSocket
+upgrades — and checks the `alfred:auth:{session_id}` hash in Redis.
+
+`/ws/telemetry` is **not** network-gated, matching the admin REST surface above.
 
 ---
 
@@ -249,9 +263,14 @@ the key existed, `{"deleted": false}` if not. Logs at INFO regardless.
 |---|---|---|
 | `GET` | `/api/admin/devices` | List registered APNs device tokens |
 
-Reads `HGETALL alfred:push:devices`. Each field is a device token; each value is a JSON
-object with registration metadata (channel, registered_at, etc.). Corrupt values fall back
-to `{"device_token": tok}`.
+Reads `HGETALL alfred:push:devices`. Each field is a device token; each value is the JSON
+object `POST /api/devices/register` wrote — `platform`, `identity` and `registered_at`
+(`web_server.py`). Corrupt values fall back to `{"device_token": tok}`.
+
+`device_token` is **truncated to its first 12 characters and never returned in full** — a
+whole APNs token is credential-equivalent, and this route needs only a session, so it is
+reachable from the public hostname. 12 characters is what the UI renders and is enough to
+distinguish devices.
 
 ---
 
@@ -361,8 +380,11 @@ Upgrade: websocket
 Cookie: alfred_auth=<session_id>
 ```
 
-Auth is checked before `accept()`. Unauthenticated connections are closed immediately with
-code **4001**.
+The socket is **accepted first**, then authenticated; an unauthenticated connection is
+closed immediately afterwards with code **4001**. The ordering is deliberate and lives in
+`require_ws_auth()` (`core/identity/ws_auth.py`): closing before `accept()` surfaces to
+the browser as a bare HTTP 403 upgrade rejection carrying no close code, so the client
+never sees 4001 and reconnects forever.
 
 ### Client Messages (send to server)
 
@@ -378,8 +400,16 @@ code **4001**.
 {"type": "unsubscribe", "streams": ["home_state"]}
 ```
 
+**Ping** — keepalive; Cloudflare drops proxied WebSockets idle ~100s:
+
+```json
+{"type": "ping"}
+```
+
 Stream names must match the `STREAM_CATALOG` keys (see table above). Unknown names are
-silently ignored.
+silently ignored. A frame that is valid JSON but not an object (`[]`, `"str"`, `1`) is
+answered with the `{"type": "error", "message": "invalid JSON"}` frame; the connection
+stays open.
 
 ### Server Messages (received by client)
 
@@ -406,6 +436,13 @@ valid stream names were in the request.
 `decode_entry` is applied — the `event` field contains the deserialized payload object, not
 a raw JSON string.
 
+**Pong** — the only reply to a `ping`. No `subscribed` ack is emitted and the
+subscription set is untouched:
+
+```json
+{"type": "pong"}
+```
+
 **Status** — sent on transient pump errors:
 
 ```json
@@ -415,7 +452,8 @@ a raw JSON string.
 Followed by a 1-second backoff before the pump retries `XREAD`. The connection is kept
 alive; the client can continue sending subscribe/unsubscribe messages during the backoff.
 
-**Error** — sent when the client sends malformed JSON:
+**Error** — sent when the client sends malformed JSON, a frame that is valid JSON but not
+an object (`[]`, `"str"`, `1`), or a binary frame instead of a text one:
 
 ```json
 {"type": "error", "message": "invalid JSON"}
@@ -423,9 +461,14 @@ alive; the client can continue sending subscribe/unsubscribe messages during the
 
 ### Cursor Semantics
 
-The pump starts each subscribed stream at cursor `"$"` — the Redis "deliver only new entries"
-sentinel. **There is no history replay on connect.** The web app receives only entries that
-arrive after the subscription is established. To see history, use `GET /api/admin/streams/{name}`.
+On subscribe, `_last_id` (`core/channels/telemetry_ws.py`) resolves each stream's current
+last-generated id via `XREVRANGE` and the pump starts strictly after it — `"0-0"` when the
+stream is empty. The literal `"$"` sentinel is deliberately **not** used: it re-evaluates on
+every `XREAD`, so entries landing between two blocking reads on a stream that has not yet
+delivered on this connection would be silently skipped. Pinning a concrete id closes that
+window without replaying history. **There is still no history replay on connect** — the web
+app receives only entries that arrive after the subscription is established. To see history,
+use `GET /api/admin/streams/{name}`.
 
 The pump updates the per-stream cursor after each delivered entry so that on temporary
 `XREAD` failure (Redis blip), entries are not re-delivered.

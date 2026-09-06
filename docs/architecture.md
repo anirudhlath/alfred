@@ -648,8 +648,10 @@ pipeline.
 **Admin API** (`core/channels/admin_api.py`):
 
 Read-only observability endpoints plus curated controls, all under `/api/admin/`. Requires
-both a trusted network IP (localhost or Tailscale CGNAT) and a valid `alfred_auth` session
-cookie. See [docs/admin-api.md](admin-api.md) for full details.
+a valid `alfred_auth` session cookie and nothing else — the trusted-network gate is reserved
+for the endpoints that can mint or widen credentials (passkey registration, credential
+writes, device tokens, voice enrolment). See [docs/admin-api.md](admin-api.md) for full
+details.
 
 **Telemetry WebSocket** (`core/channels/telemetry_ws.py`):
 
@@ -780,7 +782,7 @@ by urgency level. URGENT notifications always bypass DND.
 
 ## 4.5 Authentication (WebAuthn)
 
-The web PWA uses passkey-based authentication via the WebAuthn standard. Registration is gated to the Tailscale trusted network. Auth sessions are stored in Redis and carried via HttpOnly cookies. The WebSocket handler validates the cookie on connection and rejects unauthenticated clients (code 4001). See [docs/webauthn.md](webauthn.md) for details.
+The web PWA uses passkey-based authentication via the WebAuthn standard. Registration is gated to trusted networks (loopback, RFC1918 and Tailscale by default; tune with `ALFRED_TRUSTED_NETWORKS` / `ALFRED_TRUSTED_NETWORKS_STRICT`). Auth sessions are stored in Redis (8h TTL, no sliding renewal) and carried via HttpOnly cookies. The WebSocket handler validates the cookie on connection and rejects unauthenticated clients (code 4001). See [docs/webauthn.md](webauthn.md) for details.
 
 ## 5. Data Flow
 

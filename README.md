@@ -266,6 +266,8 @@ annotated source of truth, split into a short **REQUIRED** section and defaulted
 | `EMBEDDING_BACKEND` | `sentence_transformers` | Memory embedding backend: `sentence_transformers` \| `openai` |
 | `EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Model under either backend; ungated, `EMBEDDING_DIM` auto-tracks it |
 | `ALFRED_TRUSTED_NETWORKS` | — | Extra trusted CIDRs (loopback + LAN + Tailscale trusted by default) |
+| `ALFRED_TRUSTED_NETWORKS_STRICT` | — | Trust **only** loopback, Tailscale and the CIDRs above — drops the RFC1918 defaults. Required when Alfred is reachable from the internet |
+| `FORWARDED_ALLOW_IPS` | loopback | The reverse proxy's own address, so uvicorn rewrites the client IP and scheme from `X-Forwarded-*`. Never `*`. See [`docs/deployment.md`](docs/deployment.md) "Behind a reverse proxy" |
 | `ALFRED_SECRETS_PASSPHRASE` | auto-generated | Keyring passphrase; persisted on first boot if unset |
 
 See [`docs/deployment.md`](docs/deployment.md) for the guided walkthrough and

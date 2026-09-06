@@ -19,7 +19,7 @@ sequenceDiagram
     B->>S: POST /api/auth/register/complete
     S->>R: Verify & delete challenge
     S->>DB: Save credential
-    S->>R: Create auth session (24hr TTL)
+    S->>R: Create auth session (8h TTL)
     S-->>B: Set alfred_auth cookie
 
     Note over B,DB: Login (return visit)
@@ -31,7 +31,7 @@ sequenceDiagram
     B->>S: POST /api/auth/login/complete
     S->>R: Verify & delete challenge
     S->>DB: Verify sign count, update
-    S->>R: Create auth session
+    S->>R: Create auth session (8h TTL)
     S-->>B: Set alfred_auth cookie
 ```
 
@@ -42,18 +42,29 @@ sequenceDiagram
 | CredentialStore | `core/identity/credentials.py` | SQLite CRUD for WebAuthn credentials |
 | Auth Routes | `core/identity/auth_routes.py` | 6 REST endpoints for registration/login/logout |
 | Auth Middleware | `core/identity/auth_middleware.py` | Cookie validation on every request |
-| Frontend Auth | `web/auth.js` | Client-side WebAuthn ceremonies + Conditional UI |
+| Frontend Auth | `web/src/lib/webauthn.ts` | Client-side WebAuthn ceremonies + Conditional UI |
 
 ## Data Stores
 
 - **Credentials:** SQLite at `data/credentials.db` -- credential ID, public key, sign count, device name
-- **Auth Sessions:** Redis at `alfred:auth:{session_id}` -- 24hr TTL
+- **Auth Sessions:** Redis at `alfred:auth:{session_id}` -- 8h TTL, a hard cap from
+  login: the cookie's `max_age` and the Redis key's TTL are both set once at
+  register/login-complete and never renewed, so activity does not extend a session
 - **Challenges:** Redis at `alfred:webauthn:challenge:{id}` -- 5min TTL, one-time use
 
 ## Security Properties
 
-- Registration requires Tailscale trusted network
-- Cookies: HttpOnly, SameSite=Strict, Secure (HTTPS)
+- Registration requires a trusted network (`require_trusted_network`) — as do the other
+  credential-minting endpoints (credential writes, `POST`/`DELETE
+  /api/devices/register`, `POST /api/voice/enroll`); see
+  [`admin-api.md` → Auth Model](admin-api.md#auth-model). Admin reads and controls need
+  only the session
+- **The RP ID is the request's `Host`.** Passkeys are bound to the hostname Alfred is
+  served from — behind a public proxy that is the public hostname, which must therefore
+  never change once passkeys exist
+- Cookies: HttpOnly, SameSite=Strict, Secure (HTTPS — including behind a trusted proxy
+  that sends `X-Forwarded-Proto`, see `FORWARDED_ALLOW_IPS`)
+- Sessions expire 8h after login with no sliding renewal — a phone re-auths with Face ID
 - Challenges: one-time use, 5min expiry
 - Sign count verification on each login (clone detection)
 - Hard gate: unauthenticated WebSocket connections are rejected (code 4001)

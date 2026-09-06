@@ -9,6 +9,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from shared.env import is_truthy_flag
+
 # Load .env from project root (walk up from this file to find it).
 #
 # Skipped under pytest: the suite must not inherit the developer's real config.
@@ -332,7 +334,7 @@ class AlfredConfig:
             ha_host=os.getenv("HA_HOST", "http://homeassistant.local:8123"),
             ha_token=os.getenv("HA_TOKEN", ""),
             research_vault_path=os.getenv("RESEARCH_VAULT_PATH", str(data_root() / "research")),
-            signoz_enabled=os.getenv("SIGNOZ_ENABLED", "true").lower() == "true",
+            signoz_enabled=is_truthy_flag(os.getenv("SIGNOZ_ENABLED", "true")),
             otel_endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317"),
             # Phase 3: Conscious Engine
             claude_api_key=os.getenv("OPENROUTER_API_KEY", os.getenv("CLAUDE_API_KEY", "")),
@@ -362,7 +364,7 @@ class AlfredConfig:
             signal_phone_number=os.getenv("SIGNAL_PHONE_NUMBER", ""),
             # Phase 3: Logging
             log_level=os.getenv("LOG_LEVEL", "INFO"),
-            log_json=os.getenv("LOG_JSON", "false").lower() == "true",
+            log_json=is_truthy_flag(os.getenv("LOG_JSON", "false")),
         )
 
     @property

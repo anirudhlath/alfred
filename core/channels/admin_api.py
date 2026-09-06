@@ -1,7 +1,10 @@
 """Admin API — read-only observability + curated controls for the web app.
 
-All endpoints require BOTH an authenticated session cookie and a trusted
-network (localhost/Tailscale), mirroring the credentials endpoints.
+Every endpoint requires an authenticated passkey session (``require_authenticated``,
+HTTP 401 otherwise) and nothing else: admin reads and controls are usable from the
+public hostname once signed in. The trusted-network gate is reserved for endpoints
+that can mint or widen credentials — passkey registration, credential writes, device
+tokens, voice enrolment — which live in ``web_server.py`` / ``auth_routes.py``.
 
 Reads are defensive: missing keys/streams/files yield empty results, never 500s.
 Controls map to operations the system already performs — direct Redis writes
@@ -40,8 +43,6 @@ from shared.streams import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     import httpx
 
     from shared.types import AioRedis
@@ -203,10 +204,10 @@ async def _check_http(request: Request, url: str) -> bool:
         return False
 
 
-def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
+def create_admin_router() -> APIRouter:
     router = APIRouter(
         prefix="/api/admin",
-        dependencies=[Depends(trusted_network_dep), Depends(require_authenticated)],
+        dependencies=[Depends(require_authenticated)],
     )
 
     @router.get("/overview")
@@ -328,7 +329,10 @@ def create_admin_router(trusted_network_dep: Callable[..., Any]) -> APIRouter:
         )
         out: list[dict[str, Any]] = []
         for token, value in raw_devices.items():
-            tok = decode_stream_value(token)
+            # Truncated: a full APNs token is credential-equivalent and this route is
+            # reachable from the public hostname with only a session. 12 chars is what
+            # the UI renders and is enough to tell devices apart.
+            tok = decode_stream_value(token)[:12]
             val = decode_stream_value(value)
             try:
                 out.append({"device_token": tok, **json.loads(val)})

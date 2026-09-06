@@ -20,7 +20,7 @@ graph TD
 1. Each `Integration` adapter declares a `credentials_schema` (`CredentialSchema`) listing its credential fields with types, labels, and validation rules.
 2. `shared/secrets.py` wraps the `keyring` library — all credentials stored under service name `"alfred"` with key format `"{integration}.{field}"`.
 3. `IntegrationRegistry.get()` auto-populates adapter constructor kwargs from keyring when no explicit kwargs are provided.
-4. REST endpoints on the web server provide CRUD operations restricted to the trusted network (localhost + Tailscale CGNAT).
+4. REST endpoints on the web server provide CRUD operations: the writes are restricted to a trusted network *and* an authenticated passkey session, the reads to a session only (see Security below).
 5. The frontend settings page and onboarding wizard render credential forms dynamically from the adapter schemas.
 
 ## Credential Fields
@@ -45,15 +45,35 @@ graph TD
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| GET | `/api/integrations` | none | List integrations with schema + configured status |
-| PUT | `/api/integrations/{name}/credentials` | trusted network | Save credentials to keyring |
-| DELETE | `/api/integrations/{name}/credentials` | trusted network | Clear credentials |
-| GET | `/api/integrations/{name}/status` | none | Run health check |
+| GET | `/api/integrations` | session | List integrations with schema + configured status |
+| PUT | `/api/integrations/{name}/credentials` | session + trusted network | Save credentials to keyring |
+| DELETE | `/api/integrations/{name}/credentials` | session + trusted network | Clear credentials |
+| GET | `/api/integrations/{name}/status` | session | Run health check |
 
 ## Security
 
 - Credential values are never returned in GET responses — only boolean configured status
-- PUT/DELETE endpoints restricted to the trusted network via `Depends(require_trusted_network)` (localhost + Tailscale CGNAT `100.64.0.0/10`)
+- PUT/DELETE endpoints are double-gated: `Depends(require_trusted_network)` **and**
+  `Depends(require_authenticated)` (the `alfred_auth` passkey session cookie) — credential
+  writes are credential-equivalent, and "on the LAN" is not an identity on an
+  internet-facing host. Both gates come from one shared `_CREDENTIAL_GATES` list, so a new
+  credential-equivalent route cannot pick up half the pair. The network gate runs first,
+  so an anonymous caller from an untrusted network gets 403 without the session ever being
+  consulted (401-vs-403 would otherwise leak whether a stolen cookie is still live)
+- That 403 names only the observed peer IP when the caller is anonymous. The operator
+  guidance — the `ALFRED_TRUSTED_NETWORKS` env-var name, an example CIDR, the Tailscale
+  hint — is appended only for an authenticated caller, so a stranger cannot read the
+  perimeter's configuration out of an error body
+- The default trusted set is `_LAN_DEFAULT_RANGES` + Tailscale CGNAT `100.64.0.0/10`:
+  `127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`
+  (link-local), `::1/128`, `fc00::/7` (IPv6 ULA), `fe80::/10` (IPv6 link-local).
+  `ALFRED_TRUSTED_NETWORKS` (comma-separated CIDRs) *extends* that set;
+  `ALFRED_TRUSTED_NETWORKS_STRICT=1` *drops the LAN defaults*, leaving loopback +
+  Tailscale + whatever you listed — set it whenever the host is exposed to the internet,
+  or every RFC1918 peer a reverse proxy can present counts as trusted
+- The two reads (`GET /api/integrations`, `GET .../status`) require a session but are
+  deliberately NOT network-gated — the PWA reads them from the public host. They disclose
+  every `credentials_schema` and per-field `configured` map, plus proxied `/health` payloads
 - Password fields are never pre-filled in the UI
 - Transient fields (e.g. MFA codes) are passed to the adapter but not persisted
 
@@ -75,7 +95,7 @@ Core stays the single credential authority (`core/channels/service_credentials.p
 - `GET /api/integrations` merges adapters (`"kind": "adapter"`) with
   registry-declared services (`"kind": "service"`, `category` = `"service"`);
   the schema-driven `IntegrationCard` renders both with no special-casing.
-- `PUT /api/integrations/{name}/credentials` (service, trusted network):
+- `PUT /api/integrations/{name}/credentials` (service, session + trusted network):
   validate against the registry schema → store non-transient fields in the OS
   keyring (namespace = service name) → POST the flat field dict to the
   service's `credentials_endpoint`. Push failure → HTTP 502, but the keyring

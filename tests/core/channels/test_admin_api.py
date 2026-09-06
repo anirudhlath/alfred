@@ -5,14 +5,13 @@ from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-from fastapi import HTTPException
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 import core.channels.admin_api as admin_api
+from core.channels.admin_api import require_authenticated
 from core.channels.web_server import create_app, require_trusted_network
-from shared.streams import AUTH_SESSION_PREFIX
-
-_SESSION = "admin-test-session"
+from tests.core.channels.conftest import _TEST_SESSION_ID, session_hgetall
 
 
 def _aiter(items: list[Any]) -> AsyncIterator[Any]:
@@ -25,19 +24,15 @@ def _aiter(items: list[Any]) -> AsyncIterator[Any]:
 
 def make_admin_client(mock_redis: AsyncMock, *, authed: bool = True) -> TestClient:
     """App with mocked redis; cookie optional to exercise the 401 path."""
-
-    async def _fake_hgetall(key: str) -> dict[bytes, bytes]:
-        if key == f"{AUTH_SESSION_PREFIX}{_SESSION}":
-            return {b"authenticated": b"1"}
-        return {}
-
+    # Tests that need HGETALL for their own data install their own side effect (and
+    # delegate the session key to the same shared fake); the rest get it from here.
     if mock_redis.hgetall._mock_side_effect is None:
-        mock_redis.hgetall = AsyncMock(side_effect=_fake_hgetall)
+        mock_redis.hgetall = session_hgetall()
     app = create_app(redis_url="redis://localhost:6379")
     app.state.redis = mock_redis
     client = TestClient(app)
     if authed:
-        client.cookies.set("alfred_auth", _SESSION)
+        client.cookies.set("alfred_auth", _TEST_SESSION_ID)
     return client
 
 
@@ -58,15 +53,29 @@ def test_admin_requires_auth_cookie() -> None:
     assert resp.status_code == 401
 
 
-def test_admin_requires_trusted_network() -> None:
+def test_admin_reads_and_controls_need_only_a_session() -> None:
+    """Admin is gated by the passkey session alone — a public caller with a valid
+    cookie gets reads AND controls. The network gate is reserved for endpoints that
+    can mint or widen credentials (registration, credential writes, device tokens)."""
     client = make_admin_client(_overview_redis())
 
-    def _reject() -> None:
-        raise HTTPException(status_code=403, detail="untrusted")
+    # Structural half: no admin route may carry a network gate, and every one must
+    # carry the session gate. Asserting on the route table (rather than overriding a
+    # dependency) catches a gate re-added under a different callable.
+    admin_routes = [
+        route
+        for route in client.app.routes  # type: ignore[attr-defined]
+        if isinstance(route, APIRoute) and route.path.startswith("/api/admin")
+    ]
+    assert admin_routes, "no admin routes registered"
+    for route in admin_routes:
+        deps = [d.call for d in route.dependant.dependencies]
+        assert require_authenticated in deps, route.path
+        assert require_trusted_network not in deps, route.path
 
-    client.app.dependency_overrides[require_trusted_network] = _reject  # type: ignore[attr-defined]
-    resp = client.get("/api/admin/overview")
-    assert resp.status_code == 403
+    # Behavioural half: a read and a control both succeed on a session alone.
+    assert client.get("/api/admin/overview").status_code == 200
+    assert client.post("/api/admin/dnd", json={"active": True}).status_code == 200
 
 
 def test_overview_shape() -> None:
@@ -196,10 +205,11 @@ def test_memory_episodic_recent_lists_hot_and_cold(tmp_path: Any, monkeypatch: A
 
     # hgetall serves BOTH the auth middleware (session key) and the ctx hash —
     # route by key, otherwise the request 401s before reaching the endpoint.
+    session = session_hgetall()
+
     async def _hgetall(key: Any) -> dict[bytes, bytes]:
-        key_str = key.decode() if isinstance(key, bytes) else key
-        if key_str == f"{AUTH_SESSION_PREFIX}{_SESSION}":
-            return {b"authenticated": b"1"}
+        if session_data := await session(key):
+            return session_data
         return {
             b"content": b"User asked about lights",
             b"type": b"episodic",
@@ -265,10 +275,11 @@ def test_memory_episodic_hot_scan_filters_out_non_episodic(tmp_path: Any, monkey
     # Two ctx keys: one episodic, one routine
     r.scan_iter = MagicMock(return_value=_aiter([b"ctx:episodic1", b"ctx:routine1"]))
 
+    session = session_hgetall()
+
     async def _hgetall(key: Any) -> dict[bytes, bytes]:
-        key_str = key.decode() if isinstance(key, bytes) else key
-        if key_str == f"{AUTH_SESSION_PREFIX}{_SESSION}":
-            return {b"authenticated": b"1"}
+        if session_data := await session(key):
+            return session_data
         if b"episodic1" in (key if isinstance(key, bytes) else key.encode()):
             return {
                 b"content": b"User asked about lights",
@@ -342,9 +353,11 @@ def test_memory_episodic_search_success_and_no_stat_mutation(
 def test_triggers_list() -> None:
     r = _overview_redis()
 
+    session = session_hgetall()
+
     async def _hgetall(key: str) -> dict[bytes, bytes]:
-        if key == f"{AUTH_SESSION_PREFIX}{_SESSION}":
-            return {b"authenticated": b"1"}
+        if session_data := await session(key):
+            return session_data
         return {
             b"t1": json.dumps(
                 {
@@ -390,9 +403,11 @@ def test_sessions_list_populated() -> None:
     r = _overview_redis()
     r.scan_iter = MagicMock(return_value=_aiter([b"alfred:sessions:s2"]))
 
+    session = session_hgetall()
+
     async def _hgetall(key: str) -> dict[bytes, bytes]:
-        if key == f"{AUTH_SESSION_PREFIX}{_SESSION}":
-            return {b"authenticated": b"1"}
+        if session_data := await session(key):
+            return session_data
         # Session hash for s2
         return {
             b"channel": b"web_pwa",
@@ -420,15 +435,58 @@ def test_sessions_list_populated() -> None:
 def test_devices_list() -> None:
     r = _overview_redis()
 
+    session = session_hgetall()
+
     async def _hgetall(key: str) -> dict[bytes, bytes]:
-        if key == f"{AUTH_SESSION_PREFIX}{_SESSION}":
-            return {b"authenticated": b"1"}
+        if session_data := await session(key):
+            return session_data
         return {b"tok1": json.dumps({"platform": "ios", "identity": "sir"}).encode()}
 
     r.hgetall = AsyncMock(side_effect=_hgetall)
     client = make_admin_client(r)
     resp = client.get("/api/admin/devices")
     assert resp.json()["devices"][0]["platform"] == "ios"
+
+
+def test_devices_list_truncates_the_device_token() -> None:
+    """A full APNs token is credential-equivalent; admin is session-only, so the
+    route returns a 12-char prefix — enough to tell devices apart — and no more."""
+    full_token = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+    r = _overview_redis()
+
+    session = session_hgetall()
+
+    async def _hgetall(key: str) -> dict[bytes, bytes]:
+        if session_data := await session(key):
+            return session_data
+        return {full_token.encode(): json.dumps({"platform": "ios"}).encode()}
+
+    r.hgetall = AsyncMock(side_effect=_hgetall)
+    client = make_admin_client(r)
+    resp = client.get("/api/admin/devices")
+
+    assert resp.json()["devices"][0]["device_token"] == full_token[:12]
+    assert full_token not in resp.text
+
+
+def test_devices_list_truncates_the_token_on_corrupt_metadata() -> None:
+    """The except branch truncates too — corrupt JSON must not leak the full token."""
+    full_token = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+    r = _overview_redis()
+
+    session = session_hgetall()
+
+    async def _hgetall(key: str) -> dict[bytes, bytes]:
+        if session_data := await session(key):
+            return session_data
+        return {full_token.encode(): b"not json"}
+
+    r.hgetall = AsyncMock(side_effect=_hgetall)
+    client = make_admin_client(r)
+    resp = client.get("/api/admin/devices")
+
+    assert resp.json()["devices"] == [{"device_token": full_token[:12]}]
+    assert full_token not in resp.text
 
 
 # ---------------------------------------------------------------------------

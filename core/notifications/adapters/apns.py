@@ -12,6 +12,7 @@ from loguru import logger
 
 from core.notifications.channels import ChannelAdapter, ChannelRegistry
 from core.notifications.schema import Notification, Urgency
+from shared.env import is_truthy_flag
 from shared.streams import DEVICE_TOKENS_KEY
 
 if TYPE_CHECKING:
@@ -51,7 +52,7 @@ class APNsChannelAdapter(ChannelAdapter):
         self._private_key = private_key.replace("\\n", "\n")
         self._bundle_id = bundle_id
         if sandbox is None:
-            sandbox = os.getenv("APNS_SANDBOX", "").lower() in ("1", "true", "yes")
+            sandbox = is_truthy_flag(os.getenv("APNS_SANDBOX"))
         self._base_url = APNS_SANDBOX_URL if sandbox else APNS_PRODUCTION_URL
         self._client: httpx.AsyncClient | None = None
         self._token: str | None = None

@@ -18,11 +18,8 @@ import redis.asyncio as aioredis  # noqa: TC002 — patched at runtime by tests 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from loguru import logger
 from pydantic import BaseModel, Field
-from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 if TYPE_CHECKING:
-    from starlette.responses import Response
-
     from core.integrations.base import CredentialSchema
 
 from bus.schemas.events import UserRequest
@@ -31,6 +28,7 @@ from core.channels.request_bus import publish_and_wait
 from core.channels.satellite.bridge import SatelliteBridge
 from core.channels.satellite.config import load_satellites
 from core.channels.satellite.pipeline import SatellitePipeline
+from core.channels.spa import SpaCacheMiddleware
 from core.channels.telemetry_ws import register_telemetry_ws
 from core.channels.voice_models import (  # re-exported for tests (see __all__)
     aget_speaker_id,
@@ -48,6 +46,7 @@ from core.notifications.channels import ChannelRegistry
 from core.routing.pending import confirm_pending_action
 from core.shutdown import teardown
 from core.warmup import start_warmup
+from shared.env import is_truthy_flag
 from shared.redis_streams import create_redis
 from shared.usertime import is_valid_timezone
 
@@ -197,7 +196,7 @@ _TAILSCALE_RANGE = "100.64.0.0/10"
 
 def _strict_networks() -> bool:
     """True → drop the RFC1918 LAN defaults (loopback + Tailscale + explicit list only)."""
-    return os.getenv("ALFRED_TRUSTED_NETWORKS_STRICT", "").strip().lower() in ("1", "true", "yes")
+    return is_truthy_flag(os.getenv("ALFRED_TRUSTED_NETWORKS_STRICT"))
 
 
 def _trusted_networks() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
@@ -232,15 +231,18 @@ async def require_trusted_network(request: Request) -> None:
         with suppress(TypeError):  # IPv4 addr vs IPv6 net → TypeError, skip
             if addr in net:
                 return
-    # Actionable 403: name the rejected IP and how to allow it.
-    raise HTTPException(
-        status_code=403,
-        detail=(
-            f"Access restricted to trusted networks: {client_host} is not trusted. "
-            f"Add its subnet to ALFRED_TRUSTED_NETWORKS (e.g. '{client_host}/24'), "
+    # The rejected IP is named either way — the deploy runbook has the operator read
+    # the observed peer out of this body. The *guidance* (env-var name, example CIDR,
+    # Tailscale hint) is withheld from anonymous callers: this gate deliberately runs
+    # before the session gate, so on an internet-facing host the body is reachable by
+    # a stranger, and naming the knob describes how the perimeter is configured.
+    detail = f"Access restricted to trusted networks: {client_host} is not trusted."
+    if getattr(request.state, "authenticated", False):
+        detail += (
+            f" Add its subnet to ALFRED_TRUSTED_NETWORKS (e.g. '{client_host}/24'), "
             "or reach Alfred via localhost or Tailscale."
-        ),
-    )
+        )
+    raise HTTPException(status_code=403, detail=detail)
 
 
 async def _init_apns_adapter(pool: aioredis.Redis) -> None:
@@ -409,6 +411,14 @@ async def _validate_and_store(name: str, schema: CredentialSchema, body: dict[st
     )
 
 
+# The credential-equivalent routes (credential writes, device-token writes, voice
+# enrolment) carry BOTH gates. Order is load-bearing: the network gate runs FIRST so an
+# anonymous caller is refused on network grounds without the session ever being
+# consulted — a session-first order would make 401-vs-403 a session-validity oracle for
+# a stolen cookie. Kept as one list so a new route cannot pick up half the pair.
+_CREDENTIAL_GATES = [Depends(require_trusted_network), Depends(require_authenticated)]
+
+
 def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
     """Create the FastAPI application for the web channel."""
     _ensure_integrations_registered()
@@ -437,7 +447,35 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
         try:
             while True:
-                data = await websocket.receive_json()
+                try:
+                    data = await websocket.receive_json()
+                except (json.JSONDecodeError, KeyError):
+                    # KeyError: starlette indexes message["text"], which a binary frame
+                    # does not carry. Both refused below with non-object frames.
+                    data = None
+
+                if not isinstance(data, dict):
+                    # Malformed JSON, or a bare JSON scalar/array with no .get. Refuse it
+                    # rather than dying with a 1011 and taking the socket down. (The
+                    # handler catches only WebSocketDisconnect, so an escaping
+                    # JSONDecodeError would close the connection.)
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "text": "Expected a JSON object",
+                            "session_id": session_id,
+                        }
+                    )
+                    continue
+
+                # Keepalive (Cloudflare drops proxied sockets idle ~100s). Answered
+                # before the session-restore block so pings never count as the
+                # client's first message. Note the pong rides the same serial receive
+                # loop as chat turns, so it can lag a full conscious-engine turn
+                # (publish_and_wait timeout 60s) — pong latency is not a liveness signal.
+                if data.get("type") == "ping":
+                    await websocket.send_json({"type": "pong"})
+                    continue
 
                 # Allow client to restore a previous session on its first message only
                 if not session_locked and (client_sid := data.get("session_id")):
@@ -540,7 +578,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         finally:
             _active_websockets.pop(websocket, None)
 
-    @app.get("/api/integrations")
+    @app.get("/api/integrations", dependencies=[Depends(require_authenticated)])
     async def list_integrations() -> list[dict[str, Any]]:
         """List integration adapters + registry-declared sovereign services (C5)."""
         from core.channels.service_credentials import (
@@ -599,7 +637,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.put(
         "/api/integrations/{name}/credentials",
-        dependencies=[Depends(require_trusted_network)],
+        dependencies=_CREDENTIAL_GATES,
     )
     async def save_credentials(name: str, request: Request) -> dict[str, Any]:
         """Save credentials to the OS keyring (adapters + registry-declared services)."""
@@ -619,7 +657,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.delete(
         "/api/integrations/{name}/credentials",
-        dependencies=[Depends(require_trusted_network)],
+        dependencies=_CREDENTIAL_GATES,
     )
     async def delete_credentials(name: str) -> dict[str, str]:
         """Clear all credentials for an adapter or service from the OS keyring."""
@@ -675,7 +713,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
             "detail": payload,
         }
 
-    @app.get("/api/integrations/{name}/status")
+    @app.get("/api/integrations/{name}/status", dependencies=[Depends(require_authenticated)])
     async def integration_status(name: str) -> dict[str, Any]:
         """Health check for an adapter (in-process) or service (proxied /health)."""
         from core.integrations.registry import IntegrationRegistry
@@ -692,15 +730,13 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
             healthy = False
         return {"name": name, "healthy": healthy}
 
-    @app.post("/api/onboarding")
-    async def save_onboarding(payload: OnboardingPayload, request: Request) -> dict[str, str]:
+    @app.post("/api/onboarding", dependencies=[Depends(require_authenticated)])
+    async def save_onboarding(payload: OnboardingPayload) -> dict[str, str]:
         """Save onboarding preferences to semantic memory files.
 
         Writes default values for any null fields. Skips writing if the
         preference file already exists (prevents clobbering Librarian data).
         """
-        if not getattr(request.state, "authenticated", False):
-            raise HTTPException(status_code=401, detail="Authentication required")
         today = datetime.now(UTC).strftime("%Y-%m-%d")
         prefs_dir, profile_dir = _get_prefs_dirs()
         prefs_dir.mkdir(parents=True, exist_ok=True)
@@ -749,15 +785,13 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         logger.info("Onboarding preferences saved ({} fields)", n_fields)
         return {"status": "ok"}
 
-    @app.post("/api/actions/{request_id}/confirm")
-    async def confirm_action(request_id: str, request: Request) -> dict[str, str]:
+    @app.post("/api/actions/{request_id}/confirm", dependencies=[Depends(require_authenticated)])
+    async def confirm_action(request_id: str) -> dict[str, str]:
         """Confirm a pending critical action — republishes it with confirmed=True.
 
         The pending entry was stored by the DomainRouter's critical-action
         interception (TTL 5 min). Expired or unknown IDs return 404.
         """
-        if not getattr(request.state, "authenticated", False):
-            raise HTTPException(status_code=401, detail="Authentication required")
         r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
         confirmed = await confirm_pending_action(r, request_id)
         if confirmed is None:
@@ -769,7 +803,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.post(
         "/api/voice/enroll",
-        dependencies=[Depends(require_trusted_network), Depends(require_authenticated)],
+        dependencies=_CREDENTIAL_GATES,
     )
     async def voice_enroll(payload: VoiceEnrollmentPayload) -> dict[str, str]:
         """Enroll a voiceprint from mic samples (trusted network + session only)."""
@@ -788,7 +822,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.post(
         "/api/devices/register",
-        dependencies=[Depends(require_trusted_network)],
+        dependencies=_CREDENTIAL_GATES,
     )
     async def register_device(payload: DeviceRegistration) -> dict[str, str]:
         """Register an APNs device token for push notifications."""
@@ -808,7 +842,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.delete(
         "/api/devices/register",
-        dependencies=[Depends(require_trusted_network)],
+        dependencies=_CREDENTIAL_GATES,
     )
     async def unregister_device(payload: DeviceUnregistration) -> dict[str, str]:
         """Remove an APNs device token."""
@@ -819,17 +853,10 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         logger.info("Unregistered device token")
         return {"status": "ok"}
 
-    app.include_router(create_admin_router(require_trusted_network))
+    app.include_router(create_admin_router())
     register_telemetry_ws(app)
 
-    class NoCacheStaticMiddleware(BaseHTTPMiddleware):
-        async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-            response: Response = await call_next(request)
-            if request.url.path.endswith((".css", ".js", ".html")):
-                response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-            return response
-
-    app.add_middleware(NoCacheStaticMiddleware)
+    app.add_middleware(SpaCacheMiddleware)
     app.add_middleware(AuthCookieMiddleware)
 
     return app

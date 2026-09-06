@@ -85,6 +85,15 @@ at import time and are initialized via `set_instance()` during startup.
 | WebSocketChannelAdapter | Important, Urgent | JSON payload to all connected WS sessions |
 | VoiceChannelAdapter | Urgent only | TTS synthesis → base64 audio via WebSocket |
 
+### Device Registration (APNs)
+
+Native clients register their APNs token with `POST /api/devices/register` (and `DELETE`
+to unregister); tokens live in the `alfred:push:devices` Redis hash. Both routes are
+double-gated — `require_trusted_network` **and** `require_authenticated` — so a client
+must be on the LAN/tailnet *and* send a valid `alfred_auth` passkey session cookie. A
+native client that presents only a device token gets 403 (untrusted network) or 401 (no
+session), never a registration.
+
 ### Adding a New Channel Adapter
 
 1. Create `core/notifications/adapters/myservice.py`

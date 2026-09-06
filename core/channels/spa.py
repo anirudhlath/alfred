@@ -8,11 +8,15 @@ from fastapi import HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
+from starlette.middleware.base import BaseHTTPMiddleware
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from fastapi import FastAPI
+    from starlette.middleware.base import RequestResponseEndpoint
+    from starlette.requests import Request
+    from starlette.responses import Response
 
 # Prefixes that must 404 (not fall back to index.html) so REST/WS clients — including
 # the iOS AlfredKit client hitting a renamed endpoint — get a real 404 rather than a
@@ -43,3 +47,43 @@ def mount_spa(app: FastAPI, dist: Path) -> None:
         if full_path and candidate.is_file() and candidate.is_relative_to(dist.resolve()):
             return FileResponse(candidate)
         return FileResponse(dist / "index.html")
+
+
+_IMMUTABLE = "public, max-age=31536000, immutable"
+_NO_STORE = "no-cache, no-store, must-revalidate"
+_NO_CACHE = "no-cache, must-revalidate"
+
+
+class SpaCacheMiddleware(BaseHTTPMiddleware):
+    """Stamp the SPA's cache policy on every response outside ``/api/``.
+
+    Three tiers, and ``/api/*`` is the only thing left untouched — ``/health`` and a
+    plain HTTP GET to ``/ws`` are stamped too:
+
+    * ``/assets/*`` that did not error — Vite content-hashes these filenames, so the
+      bytes behind a URL never change and they are immutable for a year. A 304 keeps
+      that; a 4xx/5xx does not, because pinning a 404 for a year leaves no URL to bust.
+    * ``text/html`` — the entry point and every SPA-fallback route (``/``,
+      ``/index.html``, ``/activity``). Not stored at all, so a deploy is picked up on
+      the next load.
+    * everything else — unhashed ``web/public/`` files such as ``/favicon.svg`` and
+      ``/manifest.json``. Revalidated on every load, which today costs the full body:
+      :func:`mount_spa`'s fallback serves these through a bare ``FileResponse``, which
+      ignores ``If-None-Match``/``If-Modified-Since`` (only ``StaticFiles.get_response``
+      honours conditional requests), so revalidation answers 200, not 304. The header is
+      still the semantically right one — a caching proxy in front of Alfred needs it, and
+      the 304 lands for free if the fallback ever grows conditional handling.
+    """
+
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        response: Response = await call_next(request)
+        path = request.url.path
+        if path.startswith("/api/"):
+            return response
+        if path.startswith("/assets/") and response.status_code < 400:
+            response.headers["Cache-Control"] = _IMMUTABLE
+        elif response.headers.get("content-type", "").startswith("text/html"):
+            response.headers["Cache-Control"] = _NO_STORE
+        else:
+            response.headers["Cache-Control"] = _NO_CACHE
+        return response
