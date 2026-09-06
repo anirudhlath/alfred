@@ -17,6 +17,7 @@ import asyncio
 import contextlib
 import json
 import re
+import statistics
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -37,6 +38,8 @@ from shared.streams import (
     DEFERRED_NOTIFICATIONS_KEY,
     DEVICE_TOKENS_KEY,
     DND_STATE_KEY,
+    LIBRARIAN_STATUS_KEY,
+    REFLEX_OBSERVATIONS_STREAM,
     SCRATCHPAD_QUEUE,
     SESSIONS_KEY_PREFIX,
     TRIGGERS_KEY,
@@ -150,6 +153,8 @@ def _base_overview() -> dict[str, Any]:
         "counts": {"sessions": 0, "devices": 0, "deferred": 0, "triggers": 0},
         "streams": {},
         "inference": {"ollama": False, "lmstudio": False},
+        "reflex": {"model": None, "last_ms": None, "p50_ms": None},
+        "librarian": {"last_run_at": None, "reviewed": None, "next_run_at": None},
     }
 
 
@@ -176,6 +181,43 @@ def _decode_hash(fields: dict[bytes | str, Any]) -> dict[str, Any]:
             continue
         out[key] = v.decode(errors="replace") if isinstance(v, bytes) else v
     return out
+
+
+_REFLEX_LATENCY_SAMPLES = 20
+
+
+async def _reflex_latencies(r: AioRedis, *, count: int = _REFLEX_LATENCY_SAMPLES) -> list[float]:
+    """Decision latency (ms) of the newest Reflex observations, newest first.
+
+    Each observation stamps its own ``timestamp`` and carries the originating
+    event under ``trigger_event.timestamp``; the difference is how long the
+    Reflex Engine took. Entries that don't parse are skipped; any Redis error
+    yields an empty list so the overview never 500s.
+    """
+    try:
+        entries = await revrange(r, REFLEX_OBSERVATIONS_STREAM, count=count)
+    except Exception:
+        return []
+    out: list[float] = []
+    for _entry_id, fields in entries:
+        try:
+            event = decode_entry(fields)
+            observed = datetime.fromisoformat(event["timestamp"])
+            triggered = datetime.fromisoformat(event["trigger_event"]["timestamp"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        out.append(round((observed - triggered).total_seconds() * 1000, 1))
+    return out
+
+
+def _librarian_status(fields: dict[str, Any]) -> dict[str, Any]:
+    """Shape the ``alfred:librarian:status`` hash for the overview."""
+    reviewed = fields.get("reviewed")
+    return {
+        "last_run_at": fields.get("last_run_at"),
+        "reviewed": int(reviewed) if isinstance(reviewed, str) and reviewed.isdigit() else None,
+        "next_run_at": fields.get("next_run_at"),
+    }
 
 
 async def require_authenticated(request: Request) -> None:
@@ -241,6 +283,16 @@ def create_admin_router() -> APIRouter:
             "ollama": await _check_http(request, cfg.ollama_host.rstrip("/") + "/api/tags"),
             "lmstudio": await _check_http(request, cfg.lmstudio_host.rstrip("/") + "/v1/models"),
         }
+        latencies = await _reflex_latencies(r)
+        reflex_model = (
+            cfg.openai_compat_model if cfg.reflex_backend == "openai" else cfg.ollama_model
+        )
+        out["reflex"] = {
+            "model": reflex_model,
+            "last_ms": latencies[0] if latencies else None,
+            "p50_ms": round(statistics.median(latencies), 1) if latencies else None,
+        }
+        out["librarian"] = _librarian_status(_decode_hash(await r.hgetall(LIBRARIAN_STATUS_KEY)))
         return out
 
     @router.get("/streams")
