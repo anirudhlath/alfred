@@ -25,12 +25,12 @@ class CostState(BaseModel):
     spend_usd: float
     cap_usd: float
     alert_sent: bool = False
-    request_count: int = 0  # LLM calls recorded today
+    request_count: int = 0  # record_spend calls today (one per handled request)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def avg_usd(self) -> float:
-        """Mean spend per recorded call today (0.0 before the first call)."""
+        """Mean spend per recorded request today (0.0 before the first)."""
         return round(self.spend_usd / self.request_count, 6) if self.request_count else 0.0
 
 
