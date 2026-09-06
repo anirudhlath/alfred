@@ -91,9 +91,25 @@ Returns a single JSON object with:
 - `streams` — same payload as `GET /api/admin/streams`
 - `inference.ollama` — bool: probe `{OLLAMA_HOST}/api/tags` returns < 500
 - `inference.lmstudio` — bool: probe `{LMSTUDIO_HOST}/v1/models` returns < 500
+- `reflex.model` — the model the Reflex Engine decides with: `OPENAI_COMPAT_MODEL` when `REFLEX_BACKEND=openai`, otherwise `OLLAMA_MODEL`
+- `reflex.last_ms` — decision latency of the newest `reflex_observations` entry, in ms
+- `reflex.p50_ms` — median of those latencies over the newest 20 observations, in ms
+- `librarian.last_run_at` — ISO timestamp of the Librarian's last pass, or `null` before its first run
+- `librarian.reviewed` — int: memories reviewed on that pass, or `null` when unset or non-numeric
+- `librarian.next_run_at` — ISO timestamp of the next scheduled pass, or `null` when none is scheduled
 
 Inference probes use the lifespan-owned `httpx.AsyncClient` (`request.app.state.http`).
 In tests (no lifespan) the client is absent and both bools are deterministically `false`.
+
+Reflex latency is derived, not stored: each observation stamps its own `timestamp` and carries
+the originating event under `trigger_event.timestamp`, so the difference is how long the engine
+took to decide. The overview reads the newest 20 with one `XREVRANGE`; entries that don't parse
+(and mixed naive/aware timestamps, which can't be subtracted) are skipped, and `last_ms`/`p50_ms`
+are both `null` when nothing usable remains or the stream is unreadable.
+
+The `librarian.*` fields come from the `alfred:librarian:status` hash, which the Librarian writes
+at the end of each pass. A missing hash or a failed read yields all three as `null` rather than an
+error.
 
 ---
 

@@ -195,6 +195,51 @@ def test_overview_reports_reflex_latency_and_librarian_status(monkeypatch: Any) 
     r.xrevrange.assert_awaited_once_with("alfred:reflex:observations", max="+", min="-", count=20)
 
 
+def test_overview_reflex_skips_mixed_timezone_entries(monkeypatch: Any) -> None:
+    """A naive/aware timestamp pair raises on subtraction — skip it, never 500."""
+    monkeypatch.setenv("REFLEX_BACKEND", "ollama")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen3:8b")
+    r = _overview_redis()
+    r.xrevrange = AsyncMock(
+        return_value=[
+            # Aware observation, naive trigger: `observed - triggered` is a TypeError.
+            _observation("2026-09-04T10:00:00.400+00:00", "2026-09-04T10:00:00.000"),
+            _observation("2026-09-04T09:59:00.250+00:00", "2026-09-04T09:59:00.000+00:00"),
+        ]
+    )
+    client = make_admin_client(r)
+
+    resp = client.get("/api/admin/overview")
+
+    assert resp.status_code == 200
+    # Only the well-formed entry counts, so it is both the latest and the median.
+    assert resp.json()["reflex"] == {"model": "qwen3:8b", "last_ms": 250.0, "p50_ms": 250.0}
+
+
+def test_overview_librarian_survives_hash_failure() -> None:
+    """A failing status hash read nulls the librarian block, it doesn't 500."""
+    r = _overview_redis()
+
+    session = session_hgetall()
+
+    async def _hgetall(key: str) -> dict[bytes, bytes]:
+        if session_data := await session(key):
+            return session_data
+        raise ConnectionError("hash read failed")
+
+    r.hgetall = AsyncMock(side_effect=_hgetall)
+    client = make_admin_client(r)
+
+    resp = client.get("/api/admin/overview")
+
+    assert resp.status_code == 200
+    assert resp.json()["librarian"] == {
+        "last_run_at": None,
+        "reviewed": None,
+        "next_run_at": None,
+    }
+
+
 def test_overview_reflex_survives_stream_failure(monkeypatch: Any) -> None:
     monkeypatch.setenv("REFLEX_BACKEND", "openai")
     monkeypatch.setenv("OPENAI_COMPAT_MODEL", "Qwen/Qwen3-8B")

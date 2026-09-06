@@ -204,14 +204,26 @@ async def _reflex_latencies(r: AioRedis, *, count: int = _REFLEX_LATENCY_SAMPLES
             event = decode_entry(fields)
             observed = datetime.fromisoformat(event["timestamp"])
             triggered = datetime.fromisoformat(event["trigger_event"]["timestamp"])
+            # Inside the try: subtracting a naive from an aware datetime is a
+            # TypeError, and one mixed-tz entry must not take down the overview.
+            latency_ms = (observed - triggered).total_seconds() * 1000
         except (KeyError, TypeError, ValueError):
             continue
-        out.append(round((observed - triggered).total_seconds() * 1000, 1))
+        out.append(round(latency_ms, 1))
     return out
 
 
-def _librarian_status(fields: dict[str, Any]) -> dict[str, Any]:
-    """Shape the ``alfred:librarian:status`` hash for the overview."""
+async def _librarian_status(r: AioRedis) -> dict[str, Any]:
+    """The ``alfred:librarian:status`` hash, shaped for the overview.
+
+    Every field is optional: the hash doesn't exist until the Librarian's first
+    run, and any Redis error is swallowed the same way the reflex read swallows
+    its own, so a nulled-out block is the worst case rather than a 500.
+    """
+    try:
+        fields = _decode_hash(await r.hgetall(LIBRARIAN_STATUS_KEY))
+    except Exception:
+        fields = {}
     reviewed = fields.get("reviewed")
     return {
         "last_run_at": fields.get("last_run_at"),
@@ -292,7 +304,7 @@ def create_admin_router() -> APIRouter:
             "last_ms": latencies[0] if latencies else None,
             "p50_ms": round(statistics.median(latencies), 1) if latencies else None,
         }
-        out["librarian"] = _librarian_status(_decode_hash(await r.hgetall(LIBRARIAN_STATUS_KEY)))
+        out["librarian"] = await _librarian_status(r)
         return out
 
     @router.get("/streams")
