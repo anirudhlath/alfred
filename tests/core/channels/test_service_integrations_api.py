@@ -33,6 +33,7 @@ from core.integrations.base import (
 from core.integrations.registry import IntegrationRegistry
 from shared.streams import TOOL_REGISTRY_KEY
 from tests.core.channels.conftest import _TEST_SESSION_ID, make_session_redis
+from tests.helpers import pinned_probe_clock
 
 
 class _FakeClock:
@@ -440,15 +441,16 @@ def test_delete_unknown_name_404(service_client: TestClient) -> None:
 
 
 def test_status_proxies_health_connected(service_client: TestClient) -> None:
-    resp = service_client.get("/api/integrations/home-service/status")
+    with pinned_probe_clock() as elapsed_ms:
+        resp = service_client.get("/api/integrations/home-service/status")
+
     assert resp.status_code == 200
     data = resp.json()
     assert data["name"] == "home-service"
     assert data["healthy"] is True
     assert data["detail"]["ha"]["state"] == "connected"
-    assert isinstance(data["latency_ms"], float)
-    assert data["latency_ms"] >= 0.0
-    assert data["latency_ms"] == round(data["latency_ms"], 1)
+    # The exact figure, not ">= 0.0": that one is true of any clock, and of none.
+    assert data["latency_ms"] == elapsed_ms
 
 
 def test_status_unhealthy_on_auth_failed(
@@ -469,14 +471,17 @@ def test_status_unhealthy_on_auth_failed(
 def test_status_unreachable_service(
     service_client: TestClient, service_handler: _ServiceHttpHandler
 ) -> None:
+    """The failure path is still timed — a probe that never answered still cost the
+    caller the wait, so the elapsed figure has to survive the error branch."""
     service_handler.unreachable = True
-    resp = service_client.get("/api/integrations/home-service/status")
+
+    with pinned_probe_clock() as elapsed_ms:
+        resp = service_client.get("/api/integrations/home-service/status")
+
     data = resp.json()
     assert data["healthy"] is False
     assert "error" in data["detail"]
-    assert isinstance(data["latency_ms"], float)
-    assert data["latency_ms"] >= 0.0
-    assert data["latency_ms"] == round(data["latency_ms"], 1)
+    assert data["latency_ms"] == elapsed_ms
 
 
 def test_status_unknown_name_404(service_client: TestClient) -> None:

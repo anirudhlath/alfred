@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime, timedelta
 from http.cookies import SimpleCookie
 from typing import TYPE_CHECKING, Any
@@ -10,7 +11,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
-from webauthn.helpers import bytes_to_base64url
+from webauthn.helpers import base64url_to_bytes, bytes_to_base64url
+from webauthn.helpers.structs import AuthenticatorTransport
 
 from core.identity.auth_routes import (
     _DEVICE_NAME_MAX_LEN,
@@ -24,9 +26,10 @@ from shared.streams import (
     WEBAUTHN_PAIRING_FAILS_PREFIX,
     WEBAUTHN_PAIRING_KEY,
 )
+from tests.helpers import aiter_values
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable
+    from collections.abc import Awaitable, Callable
 
     from httpx import Response
 
@@ -221,14 +224,6 @@ def _passkey_login(
         return client.post("/api/auth/login/complete", json=body, headers=headers)
 
 
-def _aiter(items: list[bytes | str]) -> AsyncIterator[bytes | str]:
-    async def gen() -> AsyncIterator[bytes | str]:
-        for item in items:
-            yield item
-
-    return gen()
-
-
 def _scanned_keys(sessions: dict[str, dict[bytes, bytes]]) -> list[bytes | str]:
     """Keys as SCAN hands them over: bytes on the production pool
     (``decode_responses=False``), with the first left as str so both branches of
@@ -246,7 +241,7 @@ def _install_sessions(
     """
     redis_mock.hgetall = AsyncMock(side_effect=lambda key: sessions.get(key, {}))
     redis_mock.scan_iter = MagicMock(
-        side_effect=lambda match="*", count=100: _aiter(_scanned_keys(sessions))
+        side_effect=lambda match="*", count=100: aiter_values(_scanned_keys(sessions))
     )
     redis_mock.ttl = AsyncMock(return_value=1200)
     redis_mock.delete = AsyncMock(return_value=1)
@@ -395,14 +390,35 @@ def _client_with_gate(
 
 
 class TestRegistrationBegin:
-    def test_returns_options(self, client: TestClient) -> None:
+    @pytest.mark.asyncio
+    async def test_returns_options(self, client: TestClient, store: CredentialStore) -> None:
+        """The options the route builds are the contract — the RP the passkey binds to,
+        and the exclude list that stops a device registering a second passkey. Asserting
+        only that the stub was called proves nothing about any of it."""
+        await _register_test_passkey(store)
         gen, to_json = _registration_options_patched()
+
         with gen as mock_gen, to_json:
             resp = client.post("/api/auth/register/begin", json={"device_name": "MacBook Pro"})
 
         assert resp.status_code == 200
-        assert resp.json()["ok"] is True
-        mock_gen.assert_called_once()
+        kwargs = mock_gen.call_args.kwargs
+        # The RP id is the request Host, which is what a passkey is bound to for life.
+        assert kwargs["rp_id"] == "testserver"
+        assert kwargs["rp_name"] == "Alfred"
+        assert kwargs["user_name"] == "sir"
+        assert kwargs["user_display_name"] == "Sir"
+        # The existing passkey is excluded, as an enum member and not the stored string
+        # — `options_to_json` calls `.value` on each transport.
+        [descriptor] = kwargs["exclude_credentials"]
+        assert descriptor.id == base64url_to_bytes(_CREDENTIAL_ID)
+        assert descriptor.transports == [AuthenticatorTransport.INTERNAL]
+
+        body = resp.json()
+        assert body["ok"] is True  # from the patched options_to_json
+        # The two fields the route adds itself, which the client sends back on complete.
+        assert body["_device_name"] == "MacBook Pro"
+        assert uuid.UUID(body["_challenge_id"])
 
     def test_rejects_untrusted_network(self, store: CredentialStore, redis_mock: AsyncMock) -> None:
         untrusted = _client_with_gate(store, redis_mock, _reject_network)
@@ -1152,6 +1168,18 @@ class TestSessionsApi:
         assert resp.status_code == 200
         assert resp.json() == {"deleted": False}
 
+    def test_delete_accepts_a_session_id_at_the_length_cap(
+        self, client: TestClient, redis_mock: AsyncMock, sessions: dict[str, dict[bytes, bytes]]
+    ) -> None:
+        """128 is the accept edge — the reject case below sits exactly one past it."""
+        session_id = "s" * 128
+        client.cookies.set("alfred_auth", "s-current")
+
+        resp = client.delete(f"/api/auth/sessions/{session_id}")
+
+        assert resp.status_code == 200
+        redis_mock.delete.assert_awaited_once_with(f"{AUTH_SESSION_PREFIX}{session_id}")
+
     @pytest.mark.parametrize("bad_id", ["%00", "a%00b", "x" * 129, "s older", "s.older"])
     def test_delete_rejects_a_malformed_session_id(
         self,
@@ -1502,6 +1530,25 @@ class TestPasskeysApi:
         assert resp.status_code == 404
         assert resp.json()["detail"] == "Passkey not found"
         redis_mock.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_delete_accepts_a_credential_id_at_the_length_cap(
+        self,
+        store: CredentialStore,
+        client: TestClient,
+        redis_mock: AsyncMock,
+        sessions: dict[str, dict[bytes, bytes]],
+    ) -> None:
+        """1364 characters is CTAP2's 1023-byte ceiling once base64url-encoded, and the
+        accept edge: it reaches the store (404, not 400) where 1365 is refused below."""
+        await _register_test_passkey(store)
+        await _register_laptop_passkey(store)
+        client.cookies.set("alfred_auth", "s-current")
+
+        resp = client.delete(f"/api/auth/credentials/{'c' * 1364}")
+
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Passkey not found"
 
     @pytest.mark.parametrize("bad_id", ["%00", "a%00b", "x" * 1365, "cred id", "cred.id", "AQ=="])
     def test_delete_rejects_a_malformed_credential_id(

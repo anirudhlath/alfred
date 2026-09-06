@@ -1875,6 +1875,9 @@ async def test_record_next_run_writes_next_run_at() -> None:
 
 @pytest.mark.asyncio
 async def test_status_write_failure_does_not_break_consolidation() -> None:
+    """`_record_run` is best-effort: the stamp fails, the cycle still reports."""
+    from shared.streams import LIBRARIAN_STATUS_KEY
+
     librarian = _make_librarian(api_key="")
     librarian._redis.lrange.return_value = []
     librarian._redis.rename.side_effect = Exception("no such key")
@@ -1883,6 +1886,13 @@ async def test_status_write_failure_does_not_break_consolidation() -> None:
     result = await librarian.consolidate()
 
     assert result["entries_processed"] == 0
+    # The write has to have been attempted, or this passes against a consolidator that
+    # never stamps the status hash — which is what it is meant to prove survives.
+    assert librarian._redis.hset.await_args.args[0] == LIBRARIAN_STATUS_KEY
+    assert set(librarian._redis.hset.await_args.kwargs["mapping"]) == {
+        "last_run_at",
+        "reviewed",
+    }
 
 
 @pytest.mark.asyncio

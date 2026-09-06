@@ -1,7 +1,6 @@
 """Tests for the admin API router: auth gating + overview."""
 
 import json
-from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -10,18 +9,16 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 import core.channels.admin_api as admin_api
-from core.channels.admin_api import require_authenticated
+from core.channels.admin_api import (
+    _MAX_ENTITIES_PER_LIST,
+    _MAX_ENTITY_ID_LEN,
+    _REFLEX_LATENCY_SAMPLES,
+    require_authenticated,
+)
 from core.channels.web_server import create_app, require_trusted_network
 from core.reflex.inference import REFLEX_BACKENDS
 from tests.core.channels.conftest import _TEST_SESSION_ID, session_hgetall
-
-
-def _aiter(items: list[Any]) -> AsyncIterator[Any]:
-    async def gen() -> AsyncIterator[Any]:
-        for item in items:
-            yield item
-
-    return gen()
+from tests.helpers import aiter_values, attention_redis
 
 
 def make_admin_client(mock_redis: AsyncMock, *, authed: bool = True) -> TestClient:
@@ -44,7 +41,7 @@ def _overview_redis() -> AsyncMock:
     r.get = AsyncMock(return_value=None)
     r.hlen = AsyncMock(return_value=0)
     r.llen = AsyncMock(return_value=0)
-    r.scan_iter = MagicMock(return_value=_aiter([]))
+    r.scan_iter = MagicMock(return_value=aiter_values([]))
     r.xinfo_stream = AsyncMock(side_effect=Exception("missing"))
     r.xrevrange = AsyncMock(return_value=[])
     return r
@@ -246,6 +243,35 @@ def test_overview_reflex_model_covers_every_backend_the_dispatcher_accepts(
         assert client.get("/api/admin/overview").json()["reflex"]["model"] is not None
 
 
+def test_overview_reflex_reads_only_the_newest_samples(monkeypatch: Any) -> None:
+    """The window is the newest 20 observations. Pinned by what it *does* to the
+    median — a fake that honours `count` the way Redis does — rather than by
+    asserting the argument, which a cap of any size would satisfy."""
+    monkeypatch.setenv("REFLEX_BACKEND", "ollama")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen3:8b")
+    # Newest first: 1..20 ms, then one much older and much slower entry.
+    entries = [
+        _observation(f"2026-09-04T10:00:00.{ms:06d}Z", "2026-09-04T10:00:00.000000Z")
+        for ms in [n * 1000 for n in range(1, _REFLEX_LATENCY_SAMPLES + 1)]
+    ]
+    entries.append(_observation("2026-09-04T09:00:01.000000Z", "2026-09-04T09:00:00.000000Z"))
+    r = _overview_redis()
+
+    async def _revrange(_stream: str, count: int | None = None, **_bounds: str) -> list[Any]:
+        """XREVRANGE honouring `count`, which is what makes the window observable."""
+        return entries[: count if count is not None else len(entries)]
+
+    r.xrevrange = AsyncMock(side_effect=_revrange)
+    client = make_admin_client(r)
+
+    reflex = client.get("/api/admin/overview").json()["reflex"]
+
+    assert _REFLEX_LATENCY_SAMPLES == 20
+    # Median of 1..20 ms. Reading the 21st (a 1000 ms outlier) would move it to 11.0.
+    assert reflex["p50_ms"] == 10.5
+    assert reflex["last_ms"] == 1.0
+
+
 def test_overview_reflex_skips_mixed_timezone_entries(monkeypatch: Any) -> None:
     """A naive/aware timestamp pair raises on subtraction — skip it, never 500."""
     monkeypatch.setenv("REFLEX_BACKEND", "ollama")
@@ -395,7 +421,7 @@ def test_stream_history_notification_payload_decode() -> None:
 
 def test_memory_episodic_recent_lists_hot_and_cold(tmp_path: Any, monkeypatch: Any) -> None:
     r = _overview_redis()
-    r.scan_iter = MagicMock(return_value=_aiter([b"ctx:abc"]))
+    r.scan_iter = MagicMock(return_value=aiter_values([b"ctx:abc"]))
 
     # hgetall serves BOTH the auth middleware (session key) and the ctx hash —
     # route by key, otherwise the request 401s before reaching the endpoint.
@@ -467,7 +493,7 @@ def test_memory_episodic_hot_scan_filters_out_non_episodic(tmp_path: Any, monkey
     """Hot scan must return only type=episodic entries, skipping routine/semantic."""
     r = _overview_redis()
     # Two ctx keys: one episodic, one routine
-    r.scan_iter = MagicMock(return_value=_aiter([b"ctx:episodic1", b"ctx:routine1"]))
+    r.scan_iter = MagicMock(return_value=aiter_values([b"ctx:episodic1", b"ctx:routine1"]))
 
     session = session_hgetall()
 
@@ -583,7 +609,7 @@ def test_deferred_notifications() -> None:
 
 def test_sessions_list() -> None:
     r = _overview_redis()
-    r.scan_iter = MagicMock(return_value=_aiter([b"alfred:sessions:s1"]))
+    r.scan_iter = MagicMock(return_value=aiter_values([b"alfred:sessions:s1"]))
     r.ttl = AsyncMock(return_value=1200)
     client = make_admin_client(r)
     resp = client.get("/api/admin/sessions")
@@ -595,7 +621,7 @@ def test_sessions_list() -> None:
 def test_sessions_list_populated() -> None:
     """Sessions list with a real session hash — channel, turns, created_at, and ttl populated."""
     r = _overview_redis()
-    r.scan_iter = MagicMock(return_value=_aiter([b"alfred:sessions:s2"]))
+    r.scan_iter = MagicMock(return_value=aiter_values([b"alfred:sessions:s2"]))
 
     session = session_hgetall()
 
@@ -952,32 +978,6 @@ async def test_aclose_episodic_survives_a_failing_close() -> None:
     assert admin_api._episodic_embedder is None
 
 
-def _attention_redis(sets: dict[str, set[str]]) -> AsyncMock:
-    """AsyncMock Redis whose SET commands operate on a shared dict."""
-    r = AsyncMock()
-
-    async def _sadd(key: str, member: str) -> int:
-        sets.setdefault(key, set()).add(member)
-        return 1
-
-    async def _srem(key: str, member: str) -> int:
-        sets.get(key, set()).discard(member)
-        return 1
-
-    async def _smembers(key: str) -> set[bytes]:
-        return {m.encode() for m in sets.get(key, set())}
-
-    r.sadd = AsyncMock(side_effect=_sadd)
-    r.srem = AsyncMock(side_effect=_srem)
-    r.smembers = AsyncMock(side_effect=_smembers)
-    # Bytes in insertion order, like the real pool: sorting and decoding are the
-    # helper's job, not the scan's.
-    r.scan_iter = MagicMock(
-        side_effect=lambda match="*", count=100: _aiter([k.encode() for k in sets])
-    )
-    return r
-
-
 def test_attention_get_lists_every_domain() -> None:
     """Three domains, keyed out of order — the response is sorted by domain."""
     sets = {
@@ -986,7 +986,7 @@ def test_attention_get_lists_every_domain() -> None:
         "alfred:attention:home:seen": {"light.kitchen", "sensor.dryer_power"},
         "alfred:attention:calendar": {"calendar.work"},
     }
-    r = _attention_redis(sets)
+    r = attention_redis(sets)
     client = make_admin_client(r)
 
     resp = client.get("/api/admin/attention")
@@ -1012,7 +1012,7 @@ def test_attention_get_skips_only_the_domain_that_fails() -> None:
         "alfred:attention:home": {"light.kitchen"},
         "alfred:attention:media": {"player.living_room"},
     }
-    r = _attention_redis(sets)
+    r = attention_redis(sets)
     healthy = r.smembers
 
     async def _flaky(key: str) -> set[bytes]:
@@ -1047,7 +1047,7 @@ def test_attention_get_is_503_when_the_attention_store_is_down() -> None:
 
 def test_attention_put_adds_and_removes() -> None:
     sets: dict[str, set[str]] = {"alfred:attention:home": {"sensor.dryer_power"}}
-    client = make_admin_client(_attention_redis(sets))
+    client = make_admin_client(attention_redis(sets))
 
     resp = client.put(
         "/api/admin/attention/home",
@@ -1079,7 +1079,7 @@ def test_attention_put_adds_and_removes() -> None:
     ],
 )
 def test_attention_put_rejects_bad_domain(domain: str) -> None:
-    client = make_admin_client(_attention_redis({}))
+    client = make_admin_client(attention_redis({}))
 
     resp = client.put(f"/api/admin/attention/{domain}", json={"allow": ["x"]})
 
@@ -1088,7 +1088,7 @@ def test_attention_put_rejects_bad_domain(domain: str) -> None:
 
 def test_attention_put_accepts_a_lowercase_underscored_domain() -> None:
     sets: dict[str, set[str]] = {}
-    client = make_admin_client(_attention_redis(sets))
+    client = make_admin_client(attention_redis(sets))
 
     resp = client.put("/api/admin/attention/home_2", json={"allow": ["light.kitchen"]})
 
@@ -1097,7 +1097,7 @@ def test_attention_put_accepts_a_lowercase_underscored_domain() -> None:
 
 
 def test_attention_put_returns_503_when_the_store_fails() -> None:
-    r = _attention_redis({})
+    r = attention_redis({})
     r.sadd = AsyncMock(side_effect=ConnectionError("down"))
     client = make_admin_client(r)
 
@@ -1113,7 +1113,7 @@ def test_attention_put_accepts_an_empty_body() -> None:
         "alfred:attention:home": {"light.kitchen"},
         "alfred:attention:home:seen": {"light.kitchen"},
     }
-    client = make_admin_client(_attention_redis(sets))
+    client = make_admin_client(attention_redis(sets))
 
     resp = client.put("/api/admin/attention/home", json={})
 
@@ -1132,7 +1132,7 @@ def test_attention_put_accepts_an_empty_body() -> None:
 def test_attention_put_applies_ask_after_allow() -> None:
     """An entity in both lists ends up removed and sticky — `ask` is applied last."""
     sets: dict[str, set[str]] = {}
-    client = make_admin_client(_attention_redis(sets))
+    client = make_admin_client(attention_redis(sets))
 
     resp = client.put(
         "/api/admin/attention/home",
@@ -1144,36 +1144,76 @@ def test_attention_put_applies_ask_after_allow() -> None:
 
 
 def test_attention_put_rejects_an_oversized_list() -> None:
-    client = make_admin_client(_attention_redis({}))
+    client = make_admin_client(attention_redis({}))
 
     resp = client.put(
         "/api/admin/attention/home",
-        json={"allow": [f"light.l{i}" for i in range(201)]},
+        json={"allow": [f"light.l{i}" for i in range(_MAX_ENTITIES_PER_LIST + 1)]},
     )
 
     assert resp.status_code == 422
 
 
 def test_attention_put_rejects_a_non_list_body() -> None:
-    client = make_admin_client(_attention_redis({}))
+    client = make_admin_client(attention_redis({}))
 
     resp = client.put("/api/admin/attention/home", json={"allow": "notalist"})
 
     assert resp.status_code == 422
 
 
-@pytest.mark.parametrize("entity_id", ["", "   ", "x" * 300])
+@pytest.mark.parametrize("entity_id", ["", "   ", "x" * (_MAX_ENTITY_ID_LEN + 1)])
 def test_attention_put_rejects_a_bad_entity_id(entity_id: str) -> None:
-    client = make_admin_client(_attention_redis({}))
+    """257 characters, not some number well past the cap: the reject edge has to sit
+    exactly one past the accept edge or an off-by-one moves unnoticed."""
+    client = make_admin_client(attention_redis({}))
 
     resp = client.put("/api/admin/attention/home", json={"allow": [entity_id]})
 
     assert resp.status_code == 422
 
 
+def test_attention_put_accepts_an_entity_id_at_the_length_cap() -> None:
+    """256 is the accept edge."""
+    sets: dict[str, set[str]] = {}
+    entity_id = "x" * _MAX_ENTITY_ID_LEN
+    client = make_admin_client(attention_redis(sets))
+
+    resp = client.put("/api/admin/attention/home", json={"allow": [entity_id]})
+
+    assert resp.status_code == 200
+    assert _MAX_ENTITY_ID_LEN == 256
+    assert sets["alfred:attention:home"] == {entity_id}
+
+
+def test_attention_put_accepts_a_full_list() -> None:
+    """200 entries is the accept edge; 201 is refused above."""
+    sets: dict[str, set[str]] = {}
+    allow = [f"light.l{i}" for i in range(_MAX_ENTITIES_PER_LIST)]
+    client = make_admin_client(attention_redis(sets))
+
+    resp = client.put("/api/admin/attention/home", json={"allow": allow})
+
+    assert resp.status_code == 200
+    assert _MAX_ENTITIES_PER_LIST == 200
+    assert sets["alfred:attention:home"] == set(allow)
+
+
+def test_attention_put_accepts_a_domain_at_the_length_cap() -> None:
+    """64 characters is the accept edge of `_DOMAIN_RE`; 65 is refused above."""
+    sets: dict[str, set[str]] = {}
+    domain = "d" * 64
+    client = make_admin_client(attention_redis(sets))
+
+    resp = client.put(f"/api/admin/attention/{domain}", json={"allow": ["light.kitchen"]})
+
+    assert resp.status_code == 200
+    assert sets[f"alfred:attention:{domain}"] == {"light.kitchen"}
+
+
 def test_attention_put_strips_surrounding_whitespace() -> None:
     sets: dict[str, set[str]] = {}
-    client = make_admin_client(_attention_redis(sets))
+    client = make_admin_client(attention_redis(sets))
 
     resp = client.put("/api/admin/attention/home", json={"allow": ["  light.kitchen  "]})
 
@@ -1182,7 +1222,7 @@ def test_attention_put_strips_surrounding_whitespace() -> None:
 
 
 def test_attention_requires_auth() -> None:
-    client = make_admin_client(_attention_redis({}), authed=False)
+    client = make_admin_client(attention_redis({}), authed=False)
     assert client.get("/api/admin/attention").status_code == 401
     assert client.put("/api/admin/attention/home", json={"allow": []}).status_code == 401
     # The gate runs before validation: a malformed body must not leak a 422 either.

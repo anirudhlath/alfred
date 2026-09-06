@@ -3,20 +3,12 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from bus.schemas.events import ActionRequest
-
-if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-
-
-async def _aiter(items: list[str]) -> AsyncIterator[str]:
-    for item in items:
-        yield item
+from tests.helpers import aiter_values
 
 
 def _action() -> ActionRequest:
@@ -152,7 +144,7 @@ async def test_list_pending_scans_prefix_and_sorts_oldest_first() -> None:
         "alfred:pending_actions:vanished": None,
     }
     redis = AsyncMock()
-    redis.scan_iter = MagicMock(return_value=_aiter(list(store)))
+    redis.scan_iter = MagicMock(return_value=aiter_values(list(store)))
     redis.get = AsyncMock(side_effect=lambda key: store[key])
     redis.ttl = AsyncMock(return_value=200)
 
@@ -174,7 +166,7 @@ async def test_list_pending_skips_unreadable_entry() -> None:
         f"alfred:pending_actions:{good.request_id}": good.model_dump_json().encode(),
     }
     redis = AsyncMock()
-    redis.scan_iter = MagicMock(return_value=_aiter(list(store)))
+    redis.scan_iter = MagicMock(return_value=aiter_values(list(store)))
     redis.get = AsyncMock(side_effect=lambda key: store[key])
     redis.ttl = AsyncMock(return_value=60)
 
@@ -196,7 +188,7 @@ async def test_list_pending_sorts_naive_timestamp_without_raising() -> None:
         f"alfred:pending_actions:{naive.request_id}": naive.model_dump_json().encode(),
     }
     redis = AsyncMock()
-    redis.scan_iter = MagicMock(return_value=_aiter(list(store)))
+    redis.scan_iter = MagicMock(return_value=aiter_values(list(store)))
     redis.get = AsyncMock(side_effect=lambda key: store[key])
     redis.ttl = AsyncMock(return_value=60)
 

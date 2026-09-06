@@ -2,39 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from bus.schemas.events import StateChangedEvent
+from tests.helpers import attention_redis
 
-
-class FakeSetRedis:
-    """Minimal in-memory Redis supporting the SET commands AttentionSet uses."""
-
-    def __init__(self) -> None:
-        self.sets: dict[str, set[str]] = {}
-
-    async def sadd(self, key: str, member: str) -> int:
-        self.sets.setdefault(key, set()).add(member)
-        return 1
-
-    async def srem(self, key: str, member: str) -> int:
-        self.sets.get(key, set()).discard(member)
-        return 1
-
-    async def sismember(self, key: str, member: str) -> bool:
-        return member in self.sets.get(key, set())
-
-    async def smembers(self, key: str) -> set[str]:
-        return set(self.sets.get(key, set()))
-
-    async def scan_iter(self, match: str = "*", count: int = 10) -> Any:
-        """Bytes, like the real `decode_responses=False` pool; `count` is a hint."""
-        prefix = match.rstrip("*")
-        for key in list(self.sets):
-            if key.startswith(prefix):
-                yield key.encode()
+if TYPE_CHECKING:
+    from unittest.mock import AsyncMock
 
 
 def _event(
@@ -53,7 +29,7 @@ def _event(
     )
 
 
-def _attention(redis: FakeSetRedis, cooldown: float = 0.0) -> Any:
+def _attention(redis: AsyncMock, cooldown: float = 0.0) -> Any:
     from core.reflex.attention import AttentionSet
 
     return AttentionSet(redis=redis, cooldown_seconds=cooldown)  # type: ignore[arg-type]
@@ -62,7 +38,7 @@ def _attention(redis: FakeSetRedis, cooldown: float = 0.0) -> Any:
 @pytest.mark.asyncio
 async def test_seeds_by_domain_prefix() -> None:
     """light.* is in the seed domains — first sight joins and fires."""
-    redis = FakeSetRedis()
+    redis = attention_redis()
     attention = _attention(redis)
     assert await attention.should_fire(_event("light.kitchen")) is True
     assert "light.kitchen" in redis.sets["alfred:attention:home"]
@@ -72,7 +48,7 @@ async def test_seeds_by_domain_prefix() -> None:
 @pytest.mark.asyncio
 async def test_seeds_by_device_class() -> None:
     """binary_sensor is not a seed domain, but device_class=motion is."""
-    redis = FakeSetRedis()
+    redis = attention_redis()
     attention = _attention(redis)
     event = _event("binary_sensor.hallway_motion", attributes={"device_class": "motion"})
     assert await attention.should_fire(event) is True
@@ -81,7 +57,7 @@ async def test_seeds_by_device_class() -> None:
 
 @pytest.mark.asyncio
 async def test_non_matching_entity_is_gated_and_marked_seen() -> None:
-    redis = FakeSetRedis()
+    redis = attention_redis()
     attention = _attention(redis)
     event = _event("sensor.dryer_power", old="100", new="150")
     assert await attention.should_fire(event) is False
@@ -94,7 +70,7 @@ async def test_removal_is_sticky_against_reseeding() -> None:
     """attention_remove marks the entity seen — the seed rule never re-adds it."""
     from core.reflex.attention import attention_remove
 
-    redis = FakeSetRedis()
+    redis = attention_redis()
     attention = _attention(redis)
     assert await attention.should_fire(_event("light.bedroom")) is True
     await attention_remove(redis, "home", "light.bedroom")  # type: ignore[arg-type]
@@ -105,7 +81,7 @@ async def test_removal_is_sticky_against_reseeding() -> None:
 async def test_add_and_list_helpers() -> None:
     from core.reflex.attention import attention_add, attention_list
 
-    redis = FakeSetRedis()
+    redis = attention_redis()
     await attention_add(redis, "home", "sensor.dryer_power")  # type: ignore[arg-type]
     assert await attention_list(redis, "home") == ["sensor.dryer_power"]  # type: ignore[arg-type]
     # Manually added entities fire even though the seed rule would reject them
@@ -116,14 +92,14 @@ async def test_add_and_list_helpers() -> None:
 @pytest.mark.asyncio
 async def test_attribute_only_update_is_gated() -> None:
     """new_state == old_state (attribute-only forward per contract C11) never fires."""
-    redis = FakeSetRedis()
+    redis = attention_redis()
     attention = _attention(redis)
     assert await attention.should_fire(_event("light.kitchen", old="on", new="on")) is False
 
 
 @pytest.mark.asyncio
 async def test_cooldown_collapses_bursts() -> None:
-    redis = FakeSetRedis()
+    redis = attention_redis()
     attention = _attention(redis, cooldown=1000.0)
     assert await attention.should_fire(_event("light.kitchen")) is True
     assert await attention.should_fire(_event("light.kitchen", old="on", new="off")) is False
@@ -131,7 +107,7 @@ async def test_cooldown_collapses_bursts() -> None:
 
 @pytest.mark.asyncio
 async def test_cooldown_is_per_entity() -> None:
-    redis = FakeSetRedis()
+    redis = attention_redis()
     attention = _attention(redis, cooldown=1000.0)
     assert await attention.should_fire(_event("light.kitchen")) is True
     assert await attention.should_fire(_event("light.bedroom")) is True
@@ -173,7 +149,7 @@ async def test_seen_list_and_domains_helpers() -> None:
         attention_seen_list,
     )
 
-    redis = FakeSetRedis()
+    redis = attention_redis()
     # Six domains keyed in reverse-sorted order: the sort is the helper's job, not
     # the scan's, and six is enough that an unsorted return cannot pass by luck.
     await attention_add(redis, "weather", "weather.home")  # type: ignore[arg-type]
@@ -203,7 +179,7 @@ async def test_domains_skips_a_bare_prefix_key() -> None:
     """`alfred:attention:` names no domain — a "" row is unaddressable by PUT."""
     from core.reflex.attention import attention_add, attention_domains
 
-    redis = FakeSetRedis()
+    redis = attention_redis()
     await attention_add(redis, "home", "light.kitchen")  # type: ignore[arg-type]
     redis.sets["alfred:attention:"] = {"orphan"}
     redis.sets["alfred:attention::seen"] = {"orphan"}

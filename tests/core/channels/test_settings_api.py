@@ -22,6 +22,7 @@ from core.integrations.base import (
     IntegrationResult,
 )
 from core.integrations.registry import IntegrationRegistry
+from tests.helpers import pinned_probe_clock
 
 
 class _TestAdapter(Integration):
@@ -162,11 +163,13 @@ def test_health_check_endpoint(web_client: TestClient) -> None:
     IntegrationRegistry.reconfigure("test_adapter")
 
     client = web_client
-    resp = client.get("/api/integrations/test_adapter/status")
+    with pinned_probe_clock() as elapsed_ms:
+        resp = client.get("/api/integrations/test_adapter/status")
+
     assert resp.status_code == 200
     data = resp.json()
     assert data["name"] == "test_adapter"
     assert data["healthy"] is True
-    assert isinstance(data["latency_ms"], float)
-    assert data["latency_ms"] >= 0.0
-    assert data["latency_ms"] == round(data["latency_ms"], 1)
+    # The adapter branch times the probe alone — the registry lookup runs before the
+    # clock starts — so the reported figure is exactly the two readings apart.
+    assert data["latency_ms"] == elapsed_ms

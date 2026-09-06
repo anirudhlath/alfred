@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -11,14 +10,7 @@ from fastapi.testclient import TestClient
 from bus.schemas.events import ActionRequest
 from core.channels.web_server import create_app
 from shared.streams import ACTIONS_STREAM
-
-if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-
-
-async def _aiter(items: list[str]) -> AsyncIterator[str]:
-    for item in items:
-        yield item
+from tests.helpers import aiter_values
 
 
 def _pending_action() -> ActionRequest:
@@ -99,7 +91,7 @@ def test_list_pending_actions(web_client: TestClient) -> None:
     action = _pending_action()
     redis: AsyncMock = web_client.app.state.redis  # type: ignore[attr-defined]
     redis.scan_iter = MagicMock(
-        return_value=_aiter([f"alfred:pending_actions:{action.request_id}"])
+        return_value=aiter_values([f"alfred:pending_actions:{action.request_id}"])
     )
     redis.get = AsyncMock(return_value=action.model_dump_json().encode())
     redis.ttl = AsyncMock(return_value=250)
@@ -141,7 +133,7 @@ def test_list_pending_actions_skips_the_corrupt_entry_the_single_read_404s(
     """The pair has to agree: the same unreadable value the single read tombstones
     is skipped by the list, which stays 200 with an empty set."""
     redis: AsyncMock = web_client.app.state.redis  # type: ignore[attr-defined]
-    redis.scan_iter = MagicMock(return_value=_aiter(["alfred:pending_actions:corrupt-id"]))
+    redis.scan_iter = MagicMock(return_value=aiter_values(["alfred:pending_actions:corrupt-id"]))
     redis.get = AsyncMock(return_value=b"{not json")
     redis.ttl = AsyncMock(return_value=42)
 

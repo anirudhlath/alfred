@@ -86,6 +86,7 @@ async def test_scheduler_records_next_run_after_each_cycle() -> None:
 
 @pytest.mark.asyncio
 async def test_scheduler_survives_record_next_run_failure() -> None:
+    """The stamp is best-effort: a Redis outage must not stop the cycles."""
     mock_librarian = AsyncMock()
     mock_librarian.consolidate = AsyncMock(return_value={"entries_processed": 0})
     mock_librarian.record_next_run = AsyncMock(side_effect=ConnectionError("redis down"))
@@ -97,6 +98,9 @@ async def test_scheduler_survives_record_next_run_failure() -> None:
     with contextlib.suppress(asyncio.CancelledError):
         await task
 
+    # The stamp has to have been *attempted* — without this the test passes against a
+    # scheduler that never calls `record_next_run` at all, which is the whole feature.
+    assert mock_librarian.record_next_run.await_count >= 1
     assert mock_librarian.consolidate.call_count >= 2
 
 
