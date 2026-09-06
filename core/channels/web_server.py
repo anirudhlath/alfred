@@ -43,7 +43,12 @@ from core.identity.credentials import CredentialStore
 from core.identity.ws_auth import require_ws_auth
 from core.notifications.adapters.satellite import SatelliteChannelAdapter
 from core.notifications.channels import ChannelRegistry
-from core.routing.pending import confirm_pending_action
+from core.routing.pending import (
+    confirm_pending_action,
+    get_pending_action,
+    list_pending_actions,
+    pending_action_payload,
+)
 from core.shutdown import teardown
 from core.warmup import start_warmup
 from shared.env import is_truthy_flag
@@ -784,6 +789,23 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         n_fields = len(payload.model_dump(exclude_none=True))
         logger.info("Onboarding preferences saved ({} fields)", n_fields)
         return {"status": "ok"}
+
+    @app.get("/api/actions/pending", dependencies=[Depends(require_authenticated)])
+    async def list_pending() -> dict[str, list[dict[str, Any]]]:
+        """Every critical action still waiting for confirmation, oldest first."""
+        r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
+        items = await list_pending_actions(r)
+        return {"actions": [pending_action_payload(a, ttl) for a, ttl in items]}
+
+    @app.get("/api/actions/{request_id}", dependencies=[Depends(require_authenticated)])
+    async def get_pending(request_id: str) -> dict[str, Any]:
+        """One pending action with its remaining fuse. Does not consume it."""
+        r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
+        item = await get_pending_action(r, request_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="Pending action not found or expired")
+        action, ttl = item
+        return pending_action_payload(action, ttl)
 
     @app.post("/api/actions/{request_id}/confirm", dependencies=[Depends(require_authenticated)])
     async def confirm_action(request_id: str) -> dict[str, str]:

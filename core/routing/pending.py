@@ -9,7 +9,8 @@ silent (Redis TTL) — a confirm after expiry simply finds nothing.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
@@ -55,3 +56,44 @@ async def confirm_pending_action(redis: AioRedis, request_id: str) -> ActionRequ
     await redis.xadd(ACTIONS_STREAM, {"event": confirmed.model_dump_json()})
     logger.info("Pending action {} confirmed → republished '{}'", request_id, confirmed.tool_name)
     return confirmed
+
+
+async def get_pending_action(redis: AioRedis, request_id: str) -> tuple[ActionRequest, int] | None:
+    """Read a pending action and its remaining TTL without consuming it.
+
+    Returns None when the entry is missing or expired. A TTL of -2 (key gone
+    between GET and TTL) or -1 (no expiry, should never happen) is clamped to 0.
+    """
+    raw: bytes | str | None = await redis.get(pending_key(request_id))
+    if raw is None:
+        return None
+    action = ActionRequest.model_validate_json(decode_stream_value(raw))
+    ttl = await redis.ttl(pending_key(request_id))
+    return action, max(int(ttl), 0)
+
+
+async def list_pending_actions(redis: AioRedis) -> list[tuple[ActionRequest, int]]:
+    """Every pending action with its remaining TTL, oldest request first."""
+    found: list[tuple[ActionRequest, int]] = []
+    async for key in redis.scan_iter(match=f"{PENDING_ACTIONS_PREFIX}*"):
+        request_id = decode_stream_value(key)[len(PENDING_ACTIONS_PREFIX) :]
+        item = await get_pending_action(redis, request_id)
+        if item is not None:  # may have expired mid-scan
+            found.append(item)
+    found.sort(key=lambda pair: pair[0].timestamp)
+    return found
+
+
+def pending_action_payload(action: ActionRequest, ttl_seconds: int) -> dict[str, Any]:
+    """JSON shape the web clients render for one pending action."""
+    return {
+        "request_id": action.request_id,
+        "tool_name": action.tool_name,
+        "target_service": action.target_service,
+        "parameters": action.parameters,
+        "reason": action.reason,
+        "source": action.source,
+        "timestamp": action.timestamp.isoformat(),
+        "ttl_seconds": ttl_seconds,
+        "expires_at": (datetime.now(UTC) + timedelta(seconds=ttl_seconds)).isoformat(),
+    }

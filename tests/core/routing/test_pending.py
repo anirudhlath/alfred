@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from bus.schemas.events import ActionRequest
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+
+async def _aiter(items: list[str]) -> AsyncIterator[str]:
+    for item in items:
+        yield item
 
 
 def _action() -> ActionRequest:
@@ -93,3 +103,79 @@ async def test_confirm_is_atomic_second_concurrent_confirm_is_noop() -> None:
     assert first.confirmed is True
     assert second is None
     redis.xadd.assert_awaited_once()  # only the first confirm republished — no double execution
+
+
+@pytest.mark.asyncio
+async def test_get_pending_returns_action_and_ttl_without_consuming() -> None:
+    from core.routing.pending import get_pending_action
+
+    redis = AsyncMock()
+    action = _action()
+    redis.get = AsyncMock(return_value=action.model_dump_json().encode())
+    redis.ttl = AsyncMock(return_value=120)
+
+    found = await get_pending_action(redis, action.request_id)
+
+    assert found is not None
+    got, ttl = found
+    assert got.request_id == action.request_id
+    assert ttl == 120
+    redis.get.assert_awaited_once_with(f"alfred:pending_actions:{action.request_id}")
+    redis.getdel.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_pending_missing_returns_none_and_negative_ttl_clamps() -> None:
+    from core.routing.pending import get_pending_action
+
+    redis = AsyncMock()
+    redis.get = AsyncMock(return_value=None)
+    assert await get_pending_action(redis, "ghost") is None
+
+    action = _action()
+    redis.get = AsyncMock(return_value=action.model_dump_json())
+    redis.ttl = AsyncMock(return_value=-2)  # key vanished between GET and TTL
+    found = await get_pending_action(redis, action.request_id)
+    assert found is not None
+    assert found[1] == 0
+
+
+@pytest.mark.asyncio
+async def test_list_pending_scans_prefix_and_sorts_oldest_first() -> None:
+    from core.routing.pending import list_pending_actions
+
+    older = _action().model_copy(update={"timestamp": datetime(2026, 9, 4, 8, 0, tzinfo=UTC)})
+    newer = _action().model_copy(update={"timestamp": datetime(2026, 9, 4, 8, 1, tzinfo=UTC)})
+    store = {
+        f"alfred:pending_actions:{newer.request_id}": newer.model_dump_json().encode(),
+        f"alfred:pending_actions:{older.request_id}": older.model_dump_json().encode(),
+        "alfred:pending_actions:vanished": None,
+    }
+    redis = AsyncMock()
+    redis.scan_iter = MagicMock(return_value=_aiter(list(store)))
+    redis.get = AsyncMock(side_effect=lambda key: store[key])
+    redis.ttl = AsyncMock(return_value=200)
+
+    items = await list_pending_actions(redis)
+
+    assert [a.request_id for a, _ in items] == [older.request_id, newer.request_id]
+    assert all(ttl == 200 for _, ttl in items)
+    redis.scan_iter.assert_called_once_with(match="alfred:pending_actions:*")
+
+
+def test_pending_action_payload_shape() -> None:
+    from core.routing.pending import pending_action_payload
+
+    action = _action().model_copy(update={"reason": "The dog walker is here."})
+    payload = pending_action_payload(action, 90)
+
+    assert payload["request_id"] == action.request_id
+    assert payload["tool_name"] == "home.unlock_door"
+    assert payload["target_service"] == "home-service"
+    assert payload["parameters"] == {"entity_id": "lock.front_door"}
+    assert payload["reason"] == "The dog walker is here."
+    assert payload["source"] == "conscious-engine"
+    assert payload["timestamp"] == action.timestamp.isoformat()
+    assert payload["ttl_seconds"] == 90
+    expires = datetime.fromisoformat(payload["expires_at"])
+    assert 85 <= (expires - datetime.now(UTC)).total_seconds() <= 90
