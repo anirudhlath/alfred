@@ -101,7 +101,7 @@ In tests (no lifespan) the client is absent and both bools are deterministically
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/api/admin/streams` | Length + recency for all catalog streams |
+| `GET` | `/api/admin/streams` | Length, recency + 5-minute rate for all catalog streams |
 | `GET` | `/api/admin/streams/{name}` | Paginated history for a named stream |
 
 **Stream names** (from `STREAM_CATALOG` in `core/channels/stream_catalog.py`):
@@ -121,12 +121,17 @@ In tests (no lifespan) the client is absent and both bools are deterministically
 
 ```json
 {
-  "events": {"length": 1042, "last_id": "1749600000000-0", "last_ts": 1749600000.0},
-  "actions": {"length": 87, "last_id": "1749599990000-0", "last_ts": 1749599990.0}
+  "events": {"length": 1042, "last_id": "1749600000000-0", "last_ts": 1749600000.0, "rate_5m": 1.234},
+  "actions": {"length": 87, "last_id": "1749599990000-0", "last_ts": 1749599990.0, "rate_5m": 0.0}
 }
 ```
 
-Missing streams (stream key does not exist in Redis yet) report `{"length": 0, "last_id": null, "last_ts": null}` — never raises.
+Missing streams (stream key does not exist in Redis yet) report `{"length": 0, "last_id": null, "last_ts": null, "rate_5m": 0.0}` — never raises.
+
+`rate_5m` is entries per second averaged over the trailing 300 seconds, measured with one
+`XREVRANGE key + {now-300s} COUNT 5000` per stream. The 5000-sample cap means a stream busier
+than ~16.7 entries/s reads as `16.667` rather than climbing further; `0.0` covers both an idle
+stream and any Redis failure.
 
 **`GET /api/admin/streams/{name}`** parameters:
 

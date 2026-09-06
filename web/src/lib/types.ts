@@ -1,4 +1,4 @@
-export interface StreamSummary { length: number; last_id: string | null; last_ts: number | null }
+export interface StreamSummary { length: number; last_id: string | null; last_ts: number | null; rate_5m: number }
 
 export interface Overview {
   redis: { connected: boolean };

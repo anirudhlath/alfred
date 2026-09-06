@@ -3,6 +3,9 @@
 from typing import Any
 from unittest.mock import AsyncMock
 
+import pytest
+
+from core.channels import stream_catalog
 from core.channels.stream_catalog import (
     STREAM_CATALOG,
     decode_entry,
@@ -63,7 +66,18 @@ async def test_stream_summaries_bytes_keys() -> None:
     assert out["events"]["last_ts"] == 1718000000.123
 
 
-async def test_stream_summaries_reports_rate_over_five_minutes() -> None:
+async def test_stream_summaries_reports_rate_over_five_minutes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock_reads = 0
+
+    def _fake_time() -> float:
+        nonlocal clock_reads
+        clock_reads += 1
+        return 1_718_000_400.0
+
+    monkeypatch.setattr(stream_catalog.time, "time", _fake_time)
+
     redis = AsyncMock()
     redis.xinfo_stream = AsyncMock(
         return_value={"length": 42, "last-entry": (b"1718000000123-0", {b"event": b"{}"})}
@@ -73,11 +87,15 @@ async def test_stream_summaries_reports_rate_over_five_minutes() -> None:
     out = await stream_summaries(redis)
 
     assert out["events"]["rate_5m"] == round(2 / 300, 3)
-    kwargs = redis.xrevrange.await_args.kwargs
-    assert kwargs["max"] == "+"
-    assert kwargs["count"] == 5000
-    assert kwargs["min"].endswith("-0")
-    assert int(kwargs["min"].split("-")[0]) > 0
+    calls = redis.xrevrange.await_args_list
+    assert len(calls) == len(STREAM_CATALOG)
+    # One boundary shared by every stream, exactly 300s back from a single clock read.
+    assert {c.kwargs["min"] for c in calls} == {"1718000100000-0"}
+    assert clock_reads == 1
+    assert {c.kwargs["max"] for c in calls} == {"+"}
+    assert {c.kwargs["count"] for c in calls} == {5000}
+    # Scanned by the redis key, not the friendly catalog name.
+    assert {c.args[0] for c in calls} == set(STREAM_CATALOG.values())
 
 
 async def test_stream_summaries_rate_is_zero_when_revrange_fails() -> None:
