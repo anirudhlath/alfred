@@ -166,9 +166,11 @@ request was understood and declined, not that a store was unreachable.
 **Pairing a new phone.** The signed-in device calls `POST /api/auth/pairing` and shows the
 code; the new device sends it as `X-Pairing-Code` on `register/begin` **and**
 `register/complete`, from any network. Minting overwrites any code already active and
-resets the guess counter, and the route is session-gated *only* — deliberately, because
-requiring the LAN here would defeat the point: the signed-in device doing the minting is
-often the one that is away. What stands in for the network half is the code's own life —
+clears **no** guess counter — `create_pairing_code` issues a single `SET` — so a client
+that has spent its budget stays locked out until its own counter expires, while a device
+on any other address pairs with the new code at once. The route is session-gated *only*
+— deliberately, because requiring the LAN here would defeat the point: the signed-in
+device doing the minting is often the one that is away. What stands in for the network half is the code's own life —
 five minutes, single use — plus a ten-guess budget charged to each *client address*
 separately (`alfred:webauthn:pairing:fails:{bucket}`, 5-minute TTL).
 
