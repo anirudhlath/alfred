@@ -196,7 +196,8 @@ async def _reflex_latencies(r: AioRedis, *, count: int = _REFLEX_LATENCY_SAMPLES
     """
     try:
         entries = await revrange(r, REFLEX_OBSERVATIONS_STREAM, count=count)
-    except Exception:
+    except Exception as exc:
+        logger.warning("Reflex observation read failed: {}", exc)
         return []
     out: list[float] = []
     for _entry_id, fields in entries:
@@ -213,6 +214,18 @@ async def _reflex_latencies(r: AioRedis, *, count: int = _REFLEX_LATENCY_SAMPLES
     return out
 
 
+def _int_or_none(raw: Any) -> int | None:
+    """Parse an int, or None when the value is missing or not one.
+
+    ``str.isdigit()`` is not a safe pre-test: it accepts non-decimal Unicode
+    digits such as U+00B2 that ``int()`` then rejects. Ask ``int()`` directly.
+    """
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 async def _librarian_status(r: AioRedis) -> dict[str, Any]:
     """The ``alfred:librarian:status`` hash, shaped for the overview.
 
@@ -222,12 +235,12 @@ async def _librarian_status(r: AioRedis) -> dict[str, Any]:
     """
     try:
         fields = _decode_hash(await r.hgetall(LIBRARIAN_STATUS_KEY))
-    except Exception:
+    except Exception as exc:
+        logger.warning("Librarian status read failed: {}", exc)
         fields = {}
-    reviewed = fields.get("reviewed")
     return {
         "last_run_at": fields.get("last_run_at"),
-        "reviewed": int(reviewed) if isinstance(reviewed, str) and reviewed.isdigit() else None,
+        "reviewed": _int_or_none(fields.get("reviewed")),
         "next_run_at": fields.get("next_run_at"),
     }
 
@@ -296,9 +309,12 @@ def create_admin_router() -> APIRouter:
             "lmstudio": await _check_http(request, cfg.lmstudio_host.rstrip("/") + "/v1/models"),
         }
         latencies = await _reflex_latencies(r)
+        # Normalised like the dispatcher does (core/reflex/inference.py), so
+        # REFLEX_BACKEND=OpenAI names the model the engine will actually use.
+        backend = cfg.reflex_backend.strip().lower()
         reflex_model = (
-            cfg.openai_compat_model if cfg.reflex_backend == "openai" else cfg.ollama_model
-        )
+            cfg.openai_compat_model if backend == "openai" else cfg.ollama_model
+        ) or None
         out["reflex"] = {
             "model": reflex_model,
             "last_ms": latencies[0] if latencies else None,

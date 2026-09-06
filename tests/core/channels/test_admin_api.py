@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
@@ -161,9 +162,9 @@ def test_overview_reports_reflex_latency_and_librarian_status(monkeypatch: Any) 
     # newest first, as XREVRANGE returns them
     r.xrevrange = AsyncMock(
         return_value=[
-            _observation("2026-09-04T10:00:00.400+00:00", "2026-09-04T10:00:00.000+00:00"),
-            _observation("2026-09-04T09:59:00.250+00:00", "2026-09-04T09:59:00.000+00:00"),
-            _observation("2026-09-04T09:58:00.100+00:00", "2026-09-04T09:58:00.000+00:00"),
+            _observation("2026-09-04T10:00:00.900123Z", "2026-09-04T10:00:00.000000Z"),
+            _observation("2026-09-04T09:59:00.250125Z", "2026-09-04T09:59:00.000000Z"),
+            _observation("2026-09-04T09:58:00.100000Z", "2026-09-04T09:58:00.000000Z"),
             (b"0-0", {b"event": b"not json"}),  # corrupt entry is skipped
         ]
     )
@@ -186,13 +187,33 @@ def test_overview_reports_reflex_latency_and_librarian_status(monkeypatch: Any) 
 
     data = client.get("/api/admin/overview").json()
 
-    assert data["reflex"] == {"model": "qwen3:8b", "last_ms": 400.0, "p50_ms": 250.0}
+    assert data["reflex"] == {"model": "qwen3:8b", "last_ms": 900.1, "p50_ms": 250.1}
     assert data["librarian"] == {
         "last_run_at": "2026-09-04T09:00:00+00:00",
         "reviewed": 23,
         "next_run_at": "2026-09-04T10:00:00+00:00",
     }
     r.xrevrange.assert_awaited_once_with("alfred:reflex:observations", max="+", min="-", count=20)
+
+
+def test_overview_reflex_model_normalises_the_backend_name(monkeypatch: Any) -> None:
+    """The dispatcher strips and lowercases REFLEX_BACKEND before matching it
+    (core/reflex/inference.py); so must the overview, or `REFLEX_BACKEND=OpenAI`
+    reports a model the engine never runs."""
+    monkeypatch.setenv("REFLEX_BACKEND", " OpenAI ")
+    monkeypatch.setenv("OPENAI_COMPAT_MODEL", "Qwen/Qwen3-8B")
+    client = make_admin_client(_overview_redis())
+
+    assert client.get("/api/admin/overview").json()["reflex"]["model"] == "Qwen/Qwen3-8B"
+
+
+def test_overview_reflex_model_is_null_when_unconfigured(monkeypatch: Any) -> None:
+    """OPENAI_COMPAT_MODEL defaults to "" — report null, not an empty string."""
+    monkeypatch.setenv("REFLEX_BACKEND", "openai")
+    monkeypatch.setenv("OPENAI_COMPAT_MODEL", "")
+    client = make_admin_client(_overview_redis())
+
+    assert client.get("/api/admin/overview").json()["reflex"]["model"] is None
 
 
 def test_overview_reflex_skips_mixed_timezone_entries(monkeypatch: Any) -> None:
@@ -203,8 +224,8 @@ def test_overview_reflex_skips_mixed_timezone_entries(monkeypatch: Any) -> None:
     r.xrevrange = AsyncMock(
         return_value=[
             # Aware observation, naive trigger: `observed - triggered` is a TypeError.
-            _observation("2026-09-04T10:00:00.400+00:00", "2026-09-04T10:00:00.000"),
-            _observation("2026-09-04T09:59:00.250+00:00", "2026-09-04T09:59:00.000+00:00"),
+            _observation("2026-09-04T10:00:00.400000Z", "2026-09-04T10:00:00.000000"),
+            _observation("2026-09-04T09:59:00.250125Z", "2026-09-04T09:59:00.000000Z"),
         ]
     )
     client = make_admin_client(r)
@@ -213,7 +234,37 @@ def test_overview_reflex_skips_mixed_timezone_entries(monkeypatch: Any) -> None:
 
     assert resp.status_code == 200
     # Only the well-formed entry counts, so it is both the latest and the median.
-    assert resp.json()["reflex"] == {"model": "qwen3:8b", "last_ms": 250.0, "p50_ms": 250.0}
+    assert resp.json()["reflex"] == {"model": "qwen3:8b", "last_ms": 250.1, "p50_ms": 250.1}
+
+
+@pytest.mark.parametrize(
+    "reviewed",
+    [
+        pytest.param(b"abc", id="not-a-number"),
+        # U+00B2 SUPERSCRIPT TWO: str.isdigit() says yes, int() raises.
+        pytest.param(b"\xc2\xb2", id="superscript-two"),
+    ],
+)
+def test_overview_librarian_reviewed_rejects_non_integers(reviewed: bytes) -> None:
+    r = _overview_redis()
+
+    session = session_hgetall()
+
+    async def _hgetall(key: str) -> dict[bytes, bytes]:
+        if session_data := await session(key):
+            return session_data
+        return {b"last_run_at": b"2026-09-04T09:00:00+00:00", b"reviewed": reviewed}
+
+    r.hgetall = AsyncMock(side_effect=_hgetall)
+    client = make_admin_client(r)
+
+    resp = client.get("/api/admin/overview")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["librarian"]["reviewed"] is None
+    # The unparseable count must not blank the fields around it.
+    assert data["librarian"]["last_run_at"] == "2026-09-04T09:00:00+00:00"
 
 
 def test_overview_librarian_survives_hash_failure() -> None:

@@ -91,9 +91,9 @@ Returns a single JSON object with:
 - `streams` — same payload as `GET /api/admin/streams`
 - `inference.ollama` — bool: probe `{OLLAMA_HOST}/api/tags` returns < 500
 - `inference.lmstudio` — bool: probe `{LMSTUDIO_HOST}/v1/models` returns < 500
-- `reflex.model` — the model the Reflex Engine decides with: `OPENAI_COMPAT_MODEL` when `REFLEX_BACKEND=openai`, otherwise `OLLAMA_MODEL`
-- `reflex.last_ms` — decision latency of the newest `reflex_observations` entry, in ms
-- `reflex.p50_ms` — median of those latencies over the newest 20 observations, in ms
+- `reflex.model` — the model the Reflex Engine decides with: `OPENAI_COMPAT_MODEL` when `REFLEX_BACKEND=openai` (matched case-insensitively, as the dispatcher does), otherwise `OLLAMA_MODEL`, or `null` when the selected backend's model is unconfigured
+- `reflex.last_ms` — decision latency of the newest `reflex_observations` entry, in ms, rounded to 0.1 ms
+- `reflex.p50_ms` — median of those latencies over the newest 20 observations, in ms, rounded to 0.1 ms
 - `librarian.last_run_at` — ISO timestamp of the Librarian's last pass, or `null` before its first run
 - `librarian.reviewed` — int: memories reviewed on that pass, or `null` when unset or non-numeric
 - `librarian.next_run_at` — ISO timestamp of the next scheduled pass, or `null` when none is scheduled
