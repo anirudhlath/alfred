@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -153,6 +154,34 @@ async def _register(
         side_effect=verify or _default_verify,
     ):
         return client.post("/api/auth/register/complete", json=_REGISTER_BODY)
+
+
+async def _register_test_passkey(store: CredentialStore) -> None:
+    await store.save_credential(
+        credential_id=_CREDENTIAL_ID,
+        public_key=b"\x03",
+        sign_count=0,
+        device_name="Phone",
+        transports=["internal"],
+    )
+
+
+def _passkey_login(
+    client: TestClient,
+    redis_mock: AsyncMock,
+    *,
+    body_extra: dict[str, object] | None = None,
+    headers: dict[str, str] | None = None,
+) -> Response:
+    """Drive /login/complete with the WebAuthn signature check patched out."""
+    redis_mock.get = AsyncMock(return_value=b"AQID")  # the stored challenge, base64url
+    verification = MagicMock()
+    verification.new_sign_count = 1
+    body: dict[str, object] = {**_LOGIN_BODY, **(body_extra or {})}
+    with patch(
+        "core.identity.auth_routes.verify_authentication_response", return_value=verification
+    ):
+        return client.post("/api/auth/login/complete", json=body, headers=headers)
 
 
 class TestAuthStatus:
@@ -561,3 +590,75 @@ class TestSessionLifetime:
 
         assert resp.status_code == 200
         assert "Secure" in resp.headers["set-cookie"]
+
+
+class TestSessionMetadata:
+    """Every session records where it came from (spec §10: sessions sheet)."""
+
+    @pytest.mark.asyncio
+    async def test_login_records_ip_user_agent_and_channel(
+        self, store: CredentialStore, client: TestClient, redis_mock: AsyncMock
+    ) -> None:
+        await _register_test_passkey(store)
+
+        resp = _passkey_login(
+            client,
+            redis_mock,
+            body_extra={"_channel": "pwa"},
+            headers={"user-agent": "AlfredPWA/1.0"},
+        )
+
+        assert resp.status_code == 200
+        key = redis_mock.hset.call_args[0][0]
+        mapping = redis_mock.hset.call_args.kwargs["mapping"]
+        assert key.startswith(AUTH_SESSION_PREFIX)
+        assert mapping["authenticated"] == "1"
+        assert mapping["credential_id"] == _CREDENTIAL_ID
+        assert mapping["channel"] == "pwa"
+        assert mapping["user_agent"] == "AlfredPWA/1.0"
+        assert mapping["ip"] == "testclient"
+        datetime.fromisoformat(mapping["created_at"])
+        assert "alfred_auth=" in resp.headers["set-cookie"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_or_missing_channel_is_web(
+        self, store: CredentialStore, client: TestClient, redis_mock: AsyncMock
+    ) -> None:
+        await _register_test_passkey(store)
+
+        _passkey_login(client, redis_mock, body_extra={"_channel": "toaster"})
+        assert redis_mock.hset.call_args.kwargs["mapping"]["channel"] == "web"
+
+        _passkey_login(client, redis_mock)
+        assert redis_mock.hset.call_args.kwargs["mapping"]["channel"] == "web"
+
+    def test_registration_records_channel_too(
+        self, store: CredentialStore, client: TestClient, redis_mock: AsyncMock
+    ) -> None:
+        redis_mock.get = AsyncMock(return_value=b"AQID")
+        verification = MagicMock()
+        verification.credential_id = b"\x01\x02\x03"
+        verification.credential_public_key = b"\x03"
+        verification.sign_count = 0
+        with patch(
+            "core.identity.auth_routes.verify_registration_response", return_value=verification
+        ):
+            resp = client.post(
+                "/api/auth/register/complete",
+                json={
+                    "_challenge_id": "c1",
+                    "_device_name": "Phone",
+                    "_channel": "ios",
+                    "id": _CREDENTIAL_ID,
+                    "rawId": _CREDENTIAL_ID,
+                    "type": "public-key",
+                    "response": {"clientDataJSON": "e30", "attestationObject": "e30"},
+                },
+                headers={"user-agent": "AlfredApp/2.0"},
+            )
+
+        assert resp.status_code == 200
+        mapping = redis_mock.hset.call_args.kwargs["mapping"]
+        assert mapping["channel"] == "ios"
+        assert mapping["user_agent"] == "AlfredApp/2.0"
+        assert mapping["ip"] == "testclient"

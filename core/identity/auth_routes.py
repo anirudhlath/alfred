@@ -64,6 +64,27 @@ def _to_transports(values: list[str]) -> list[AuthenticatorTransport] | None:
     return out or None
 
 
+_SESSION_CHANNELS = frozenset({"web", "pwa", "ios"})
+
+
+def _session_channel(body: dict[str, Any]) -> str:
+    """Which client completed the ceremony — ``_channel`` in the completion body."""
+    channel = body.get("_channel", "web")
+    return channel if channel in _SESSION_CHANNELS else "web"
+
+
+def _set_session_cookie(response: JSONResponse, request: Request, session_id: str) -> None:
+    """Attach the HttpOnly session cookie (Secure whenever the request was HTTPS)."""
+    response.set_cookie(
+        key="alfred_auth",
+        value=session_id,
+        max_age=_AUTH_SESSION_TTL,
+        httponly=True,
+        samesite="strict",
+        secure=request.url.scheme == "https",
+    )
+
+
 def create_auth_router(
     *,
     store: CredentialStore,
@@ -84,6 +105,24 @@ def create_auth_router(
         trusted_network_dep = require_trusted_network
 
     router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+    async def _start_session(request: Request, credential_id: str, channel: str) -> str:
+        """Create an authenticated session hash (TTL 8h) and return its id."""
+        session_id = str(uuid.uuid4())
+        key = f"{AUTH_SESSION_PREFIX}{session_id}"
+        await redis.hset(
+            key,
+            mapping={
+                "authenticated": "1",
+                "credential_id": credential_id,
+                "created_at": datetime.now(UTC).isoformat(),
+                "ip": request.client.host if request.client else "",
+                "user_agent": request.headers.get("user-agent", "")[:200],
+                "channel": channel,
+            },
+        )
+        await redis.expire(key, _AUTH_SESSION_TTL)
+        return session_id
 
     @router.get("/status")
     async def auth_status(request: Request) -> JSONResponse:
@@ -176,27 +215,9 @@ def create_auth_router(
             transports=body.get("response", {}).get("transports", []),
         )
 
-        session_id = str(uuid.uuid4())
-        now = datetime.now(UTC).isoformat()
-        await redis.hset(
-            f"{AUTH_SESSION_PREFIX}{session_id}",
-            mapping={
-                "authenticated": "1",
-                "credential_id": credential_id,
-                "created_at": now,
-            },
-        )
-        await redis.expire(f"{AUTH_SESSION_PREFIX}{session_id}", _AUTH_SESSION_TTL)
-
+        session_id = await _start_session(request, credential_id, _session_channel(body))
         response = JSONResponse({"status": "ok", "credential_id": credential_id})
-        response.set_cookie(
-            key="alfred_auth",
-            value=session_id,
-            max_age=_AUTH_SESSION_TTL,
-            httponly=True,
-            samesite="strict",
-            secure=request.url.scheme == "https",
-        )
+        _set_session_cookie(response, request, session_id)
         return response
 
     @router.post("/login/begin")
@@ -268,27 +289,9 @@ def create_auth_router(
 
         await store.update_sign_count(cred.credential_id, verification.new_sign_count)
 
-        session_id = str(uuid.uuid4())
-        now = datetime.now(UTC).isoformat()
-        await redis.hset(
-            f"{AUTH_SESSION_PREFIX}{session_id}",
-            mapping={
-                "authenticated": "1",
-                "credential_id": cred.credential_id,
-                "created_at": now,
-            },
-        )
-        await redis.expire(f"{AUTH_SESSION_PREFIX}{session_id}", _AUTH_SESSION_TTL)
-
+        session_id = await _start_session(request, cred.credential_id, _session_channel(body))
         response = JSONResponse({"status": "ok"})
-        response.set_cookie(
-            key="alfred_auth",
-            value=session_id,
-            max_age=_AUTH_SESSION_TTL,
-            httponly=True,
-            samesite="strict",
-            secure=request.url.scheme == "https",
-        )
+        _set_session_cookie(response, request, session_id)
         return response
 
     @router.post("/logout")
