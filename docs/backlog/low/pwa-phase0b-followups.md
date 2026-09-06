@@ -12,10 +12,10 @@ out of its scope. None of it blocks the branch.
 `librarian` (`last_run_at`, `reviewed`, `next_run_at`) — see
 [`admin-api.md` → Overview](../../admin-api.md#overview-1) — but the hand-mirrored TS
 `Overview` interface has neither, so the frontend cannot consume them without a cast. Its
-`cost` member is short of the same drift from `629c140`: `request_count` and `avg_usd` are
-returned (and documented) but absent from the type. **Acceptance:** add the two blocks (all
-fields nullable) and the two optional `cost` fields to `web/src/lib/types.ts` in the client
-task that renders them.
+`cost` member carries the same drift from the earlier overview upgrade that added
+`cost.request_count` and `cost.avg_usd` (plan 0b): both are returned, and documented, but
+absent from the type. **Acceptance:** add the two blocks (all fields nullable) and the two
+optional `cost` fields to `web/src/lib/types.ts` in the client task that renders them.
 
 ## 2. No timeout around an adapter's `health_check()`
 `GET /api/integrations/{name}/status` (`core/channels/web_server.py`) awaits

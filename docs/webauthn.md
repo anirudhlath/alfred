@@ -96,9 +96,10 @@ untrusted caller cannot name its own address.
 | `POST`   | `/api/auth/pairing`                     | session | Mint a 6-digit pairing code: `{"code", "expires_at", "ttl_seconds": 300}` |
 
 Every route above except `logout` is session-gated: a missing cookie, or one that names no
-authenticated session, is **401** `Authentication required`. `logout` takes the cookie as
-it finds it and always answers 200 with the cookie cleared, so a client can always shed a
-session it cannot read.
+authenticated session, is **401** `Authentication required`. `logout` takes the cookie as it
+finds it — no 401 — and always clears it, so a client can shed a session it cannot read. The
+body is 200, or **503** `{"detail": "Session store unavailable"}` if the store failed on the
+way; the cookie is cleared either way.
 
 `GET /api/auth/sessions` returns `{"sessions": [...]}`, each entry carrying `session_id`,
 `credential_id`, `device_name` (looked up in the credential store — `Unknown device` when
