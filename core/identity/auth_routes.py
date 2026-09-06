@@ -539,9 +539,9 @@ def create_auth_router(
         def _reply(payload: dict[str, Any], status: int) -> JSONResponse:
             """Answer, clearing the cookie once the caller's own session is gone.
 
-            Every exit goes through here, the failures included: a 503 that left
-            the cookie in place would strand the PWA holding a session id that
-            has already been deleted, with no way to notice.
+            Every exit past the sweep goes through here, the failures included: a
+            503 that left the cookie in place would strand the PWA holding a
+            session id that has already been deleted, with no way to notice.
             """
             response = JSONResponse(payload, status_code=status)
             if ended_own:
@@ -560,7 +560,7 @@ def create_auth_router(
                 ended_own = ended_own or session_id == current.session_id
         except Exception as e:
             logger.warning(
-                "Passkey {} kept: could not end its sessions after ending {}: {}",
+                "Passkey {} kept: could not end its sessions after ending {} session(s): {}",
                 credential_id,
                 ended,
                 e,
