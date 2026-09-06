@@ -174,10 +174,14 @@ async def test_seen_list_and_domains_helpers() -> None:
     )
 
     redis = FakeSetRedis()
-    # Inserted out of order: the sort is the helper's job, not the scan's.
+    # Six domains keyed in reverse-sorted order: the sort is the helper's job, not
+    # the scan's, and six is enough that an unsorted return cannot pass by luck.
+    await attention_add(redis, "weather", "weather.home")  # type: ignore[arg-type]
+    await attention_add(redis, "presence", "person.resident")  # type: ignore[arg-type]
     await attention_add(redis, "media", "player.living_room")  # type: ignore[arg-type]
     await attention_add(redis, "home", "light.kitchen")  # type: ignore[arg-type]
     await attention_remove(redis, "home", "sensor.dryer_power")  # type: ignore[arg-type]
+    await attention_add(redis, "climate", "climate.office")  # type: ignore[arg-type]
     await attention_add(redis, "calendar", "calendar.work")  # type: ignore[arg-type]
 
     assert await attention_seen_list(redis, "home") == [  # type: ignore[arg-type]
@@ -186,8 +190,11 @@ async def test_seen_list_and_domains_helpers() -> None:
     ]
     assert await attention_domains(redis) == [  # type: ignore[arg-type]
         "calendar",
+        "climate",
         "home",
         "media",
+        "presence",
+        "weather",
     ]
 
 
