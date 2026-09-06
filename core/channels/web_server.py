@@ -790,6 +790,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         logger.info("Onboarding preferences saved ({} fields)", n_fields)
         return {"status": "ok"}
 
+    # Must stay above /api/actions/{request_id} — FastAPI matches in registration order.
     @app.get("/api/actions/pending", dependencies=[Depends(require_authenticated)])
     async def list_pending() -> dict[str, list[dict[str, Any]]]:
         """Every critical action still waiting for confirmation, oldest first."""

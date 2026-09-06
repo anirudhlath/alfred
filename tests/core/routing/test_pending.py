@@ -160,7 +160,49 @@ async def test_list_pending_scans_prefix_and_sorts_oldest_first() -> None:
 
     assert [a.request_id for a, _ in items] == [older.request_id, newer.request_id]
     assert all(ttl == 200 for _, ttl in items)
-    redis.scan_iter.assert_called_once_with(match="alfred:pending_actions:*")
+    redis.scan_iter.assert_called_once_with(match="alfred:pending_actions:*", count=100)
+
+
+@pytest.mark.asyncio
+async def test_list_pending_skips_unreadable_entry() -> None:
+    """One corrupt value must not 500 the whole list."""
+    from core.routing.pending import list_pending_actions
+
+    good = _action()
+    store = {
+        "alfred:pending_actions:corrupt": b"{not json",
+        f"alfred:pending_actions:{good.request_id}": good.model_dump_json().encode(),
+    }
+    redis = AsyncMock()
+    redis.scan_iter = MagicMock(return_value=_aiter(list(store)))
+    redis.get = AsyncMock(side_effect=lambda key: store[key])
+    redis.ttl = AsyncMock(return_value=60)
+
+    items = await list_pending_actions(redis)
+
+    assert [a.request_id for a, _ in items] == [good.request_id]
+
+
+@pytest.mark.asyncio
+async def test_list_pending_sorts_naive_timestamp_without_raising() -> None:
+    """`BaseEvent.timestamp` is a bare datetime — a naive one must not break the sort."""
+    from core.routing.pending import list_pending_actions
+
+    # Deliberately naive — no tzinfo, as a hand-written or legacy entry could carry.
+    naive = _action().model_copy(update={"timestamp": datetime(2026, 9, 4, 7, 0)})
+    aware = _action().model_copy(update={"timestamp": datetime(2026, 9, 4, 8, 0, tzinfo=UTC)})
+    store = {
+        f"alfred:pending_actions:{aware.request_id}": aware.model_dump_json().encode(),
+        f"alfred:pending_actions:{naive.request_id}": naive.model_dump_json().encode(),
+    }
+    redis = AsyncMock()
+    redis.scan_iter = MagicMock(return_value=_aiter(list(store)))
+    redis.get = AsyncMock(side_effect=lambda key: store[key])
+    redis.ttl = AsyncMock(return_value=60)
+
+    items = await list_pending_actions(redis)
+
+    assert [a.request_id for a, _ in items] == [naive.request_id, aware.request_id]
 
 
 def test_pending_action_payload_shape() -> None:

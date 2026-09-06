@@ -95,6 +95,16 @@ sequenceDiagram
 - Web confirm: `POST /api/actions/{request_id}/confirm` (auth cookie
   required; 404 when expired). The SPA renders a Confirm button on the
   notification toast (`web/src/lib/notifications.ts`).
+- Web reads: `GET /api/actions/pending` → `{"actions": [...]}`, oldest request first,
+  and `GET /api/actions/{request_id}` → one action (404 `Pending action not found or
+  expired` when it is missing or the TTL has run out). Both are session-gated by the
+  same auth cookie as the confirm route, and both are **non-consuming** — a plain `GET`,
+  never the `GETDEL` the confirm path uses — so a client may poll or re-open a push-tap
+  deep link without spending the confirmation. Each entry carries `request_id`,
+  `tool_name`, `target_service`, `parameters`, `reason`, `source`, `timestamp`,
+  `ttl_seconds` and `expires_at`. `ttl_seconds` is clamped at 0 (Redis reports -2 for a
+  key that vanished between the read and the TTL, -1 for one with no expiry), so clients
+  can render the remaining fuse directly without guarding for a negative.
 - Chat confirm: Conscious internal tool `confirm_pending_action(request_id)`
   (`core/conscious/action_tools.py`) — works over Signal/iOS/web chat. Action tools
   (confirm + `attention_*`) are offered to sir turns only in the tool manifest, and
