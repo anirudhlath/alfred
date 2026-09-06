@@ -57,12 +57,14 @@ Pre-existing. **Acceptance:** one `_consume_challenge(challenge_id) -> bytes` he
 both.
 
 ## 7. The pairing failure counter is `INCR` then `EXPIRE`
-`_pairing_code_valid` increments `alfred:webauthn:pairing:fails` and then sets its TTL in a
-second round trip (documented as deliberate in the code: nothing else in the repo calls
-`.pipeline()`, and the key self-heals on the next mint, which deletes it). A crash between
-the two leaves the counter without a TTL until then. **Acceptance:** if a pipeline lands
-anywhere else in the codebase, fold this in with it; not worth introducing the pattern
-alone.
+`_pairing_code_valid` increments `alfred:webauthn:pairing:fails:{client_ip}` and then sets
+its TTL in a second round trip (documented as deliberate in the code: nothing else in the
+repo calls `.pipeline()`). A crash between the two leaves that address's counter with no
+TTL — and now that the counters are per client address, nothing else ever deletes one, so
+the address stays locked out until Redis is cleared by hand rather than only until the next
+mint. Still low: it takes a crash inside a two-instruction window, and the blast radius is
+one address. **Acceptance:** if a pipeline lands anywhere else in the codebase, fold this
+in with it; not worth introducing the pattern alone.
 
 ## 8. `get_tools()` probes every attribute in `dir(self)`, not just methods
 `BaseFeature.get_tools()` (`sdk/alfred_sdk/feature.py:212-229`) walks `dir(self)`, binds

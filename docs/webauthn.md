@@ -52,7 +52,9 @@ sequenceDiagram
   register/login-complete and never renewed, so activity does not extend a session
 - **Challenges:** Redis at `alfred:webauthn:challenge:{id}` -- 5min TTL, one-time use
 - **Pairing code:** Redis at `alfred:webauthn:pairing` -- 5min TTL, single-use; wrong
-  guesses are counted in `alfred:webauthn:pairing:fails` and burn the code at 10
+  guesses are counted per client address in `alfred:webauthn:pairing:fails:{client_ip}`
+  (5min TTL each) and lock that address out at 10. The code itself is never destroyed by
+  a wrong guess
 
 ## Security Properties
 
@@ -62,8 +64,10 @@ sequenceDiagram
   /api/devices/register`, `POST /api/voice/enroll`) take the network gate *and* the
   session; see [`admin-api.md` → Auth Model](admin-api.md#auth-model). Admin reads and
   controls — and session/passkey management — need only the session
-- Pairing codes are minted only by an authenticated session, live 5 minutes, are consumed
-  the moment the new passkey is saved, and are burned after 10 wrong guesses
+- Pairing codes are minted only by an authenticated session, live 5 minutes, and are
+  consumed the moment the new passkey is saved. Ten wrong guesses refuse the **address**
+  that made them for the rest of its 5-minute counter, not the code — so a stranger
+  cannot deny pairing to the device holding the real one
 - The last passkey can never be deleted (409), so the account cannot lock itself out
 - **The RP ID is the request's `Host`.** Passkeys are bound to the hostname Alfred is
   served from — behind a public proxy that is the public hostname, which must therefore
@@ -160,8 +164,13 @@ code; the new device sends it as `X-Pairing-Code` on `register/begin` **and**
 `register/complete`, from any network. Minting overwrites any code already active and
 resets the guess counter, and the route is session-gated *only* — deliberately, because
 requiring the LAN here would defeat the point: the signed-in device doing the minting is
-often the one that is away. What stands in for the network half is the code's own budget:
-five minutes and ten guesses.
+often the one that is away. What stands in for the network half is the code's own life —
+five minutes, single use — plus a ten-guess budget charged to each *client address*
+separately (`alfred:webauthn:pairing:fails:{client_ip}`, 5-minute TTL).
+
+Because the budget is keyed on `request.client.host`, `FORWARDED_ALLOW_IPS` must list the
+reverse proxy or every internet caller shares the proxy's address — and therefore one
+budget — while the LAN and tailnet paths, which do not pass through it, keep their own.
 
 - An absent, empty or all-whitespace header is treated as no header at all and falls
   through to the trusted-network gate (a PWA fetch spells the optional header
@@ -169,14 +178,18 @@ five minutes and ten guesses.
 - A malformed non-empty header — anything but exactly six ASCII digits — is **403**
   `Invalid or expired pairing code` without being counted; it could never equal a minted
   code.
-- Well-formed wrong guesses are counted only while a code is actually live, and the tenth
-  burns it. A guess after the burn is another 403 and does not burn anything twice.
+- Well-formed wrong guesses are always counted, whether or not a code is live — the work
+  is uniform, so the round trips no longer tell a caller whether there is a code to guess
+  at. The tenth from one address refuses that address for the rest of its counter's TTL,
+  even when it later presents the correct code; the code stays live for every other
+  address, and a re-mint does not clear a spent budget.
 - The code is consumed once the new passkey is saved. A consume that fails is logged and
   the registration stands — telling a device that is registered that it is not would
   leave it unable to retry the ceremony.
-- Ten wrong guesses from off-LAN will burn a code someone is waiting on. That is an
-  accepted trade: the alternative to a capped code is a guessable one, and recovery is
-  minting another.
+- A locked-out address waits out its 5-minute counter; there is no key to clear by hand
+  in the general case, and minting a fresh code deliberately does not release it. The cap
+  still has to exist — the alternative to a budgeted code is a guessable one — but it now
+  costs the guesser rather than the device waiting to pair.
 
 ## Frontend Flow
 

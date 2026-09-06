@@ -102,8 +102,12 @@ usage is unrelated and stays.
 
 ### 9. No rate limiting on the unauthenticated surface
 Everything reachable before a session exists is unmetered: `GET /api/auth/status`,
-`POST /api/auth/login/begin`, `POST /api/auth/login/complete`, and the `/ws` + `/ws/telemetry`
-upgrades. The WebSocket case is the cheapest to abuse — `require_ws_auth()` accepts the
+`POST /api/auth/login/begin`, `POST /api/auth/login/complete`,
+`POST /api/auth/register/begin`, `POST /api/auth/register/complete`, and the `/ws` +
+`/ws/telemetry` upgrades. The two `register/*` routes carry a per-client-address budget of
+their own on the pairing path (`alfred:webauthn:pairing:fails:{client_ip}`, 10 guesses per
+300 s) — but only for a well-formed `X-Pairing-Code`; a call with no header, or a malformed
+one, is refused before Redis and is not metered at all. The WebSocket case is the cheapest to abuse — `require_ws_auth()` accepts the
 socket *before* authenticating (deliberately, so the browser sees close code 4001 instead
 of a bare 403), so every anonymous connect costs a Redis `HGETALL` and a socket. `login/begin`
 additionally writes a challenge key per call.
@@ -112,7 +116,9 @@ Operationally this is covered today by Cloudflare rate-limiting rules in front o
 hostname, which is why this is low and not higher — but the origin has no defence of its own,
 and the LAN/tailnet path does not pass through Cloudflare at all.
 
-**Acceptance:** a per-IP limiter on the four unauthenticated routes plus the WS upgrade,
+**Acceptance:** a per-IP limiter on the six unauthenticated routes plus the WS upgrade,
 applied at the origin rather than only at the edge. Mind that the peer must be read the same
-way the trusted-network gate reads it (post-`ProxyHeadersMiddleware` `request.client.host`),
-or a single proxy address becomes one shared bucket for the whole internet.
+way the trusted-network gate reads it (post-`ProxyHeadersMiddleware` `request.client.host`,
+which `_client_address()` in `core/identity/auth_routes.py` already wraps), or a single proxy
+address becomes one shared bucket for the whole internet — the exact failure mode the pairing
+budget now has to live with when `FORWARDED_ALLOW_IPS` is unset.

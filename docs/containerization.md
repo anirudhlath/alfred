@@ -211,7 +211,9 @@ mint or widen credentials — WebAuthn **registration**, credential writes, devi
 writes, voice enrolment. Registration alone has a second way through: an `X-Pairing-Code`
 header carrying a 6-digit code minted by an already-signed-in device
 ([`webauthn.md` → Sessions, passkeys and pairing](webauthn.md)), which passes from any
-network. The admin API (reads *and* controls) and the two integration reads are **not**
+network. Its ten-guess budget is charged per client address, so `FORWARDED_ALLOW_IPS`
+matters twice over: unlisted, the proxy's own address is the only one Alfred ever sees,
+and every internet caller shares one budget. The admin API (reads *and* controls) and the two integration reads are **not**
 network-gated; they need only a signed-in passkey session. See
 [`admin-api.md` → Auth Model](admin-api.md#auth-model) for the full split.
 
