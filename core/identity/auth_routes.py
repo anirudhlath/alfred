@@ -33,7 +33,7 @@ from shared.env import is_truthy_flag
 from shared.streams import (
     AUTH_SESSION_PREFIX,
     WEBAUTHN_CHALLENGE_PREFIX,
-    WEBAUTHN_PAIRING_FAILS_KEY,
+    WEBAUTHN_PAIRING_FAILS_PREFIX,
     WEBAUTHN_PAIRING_KEY,
     decode_stream_value,
 )
@@ -57,7 +57,7 @@ _SESSION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _CREDENTIAL_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,1364}")
 _LAST_PASSKEY_DETAIL = "Cannot remove the last passkey — register another first"
 _PAIRING_TTL = 300  # a pairing code lives 5 minutes
-_PAIRING_MAX_FAILURES = 10  # wrong guesses before the active code is burned
+_PAIRING_MAX_FAILURES = 10  # wrong guesses before one client address is locked out
 _PAIRING_CODE_DIGITS = 6  # short enough to read off one screen and type on another
 # What a pairing header must be, after stripping: exactly six ASCII digits. ``[0-9]``
 # rather than ``\d``, which also matches Unicode decimal digits no minted code can
@@ -85,6 +85,22 @@ class _CurrentSession(NamedTuple):
 
 class RegisterBeginRequest(BaseModel):
     device_name: str = Field(max_length=100)
+
+
+def _client_address(request: Request) -> str:
+    """The peer address, read exactly as ``require_trusted_network`` reads it.
+
+    ``request.client.host`` is the socket peer, already rewritten from
+    ``X-Forwarded-For`` by uvicorn's ``ProxyHeadersMiddleware`` for peers listed in
+    ``FORWARDED_ALLOW_IPS`` — so behind a proxy that is *not* trusted there, every
+    caller shares the proxy's address and therefore one guess budget.
+    """
+    return request.client.host if request.client else ""
+
+
+def _pairing_fails_key(client_address: str) -> str:
+    """Redis key holding one client address's wrong-guess count."""
+    return f"{WEBAUTHN_PAIRING_FAILS_PREFIX}{client_address}"
 
 
 def _get_rp_id(request: Request) -> str:
@@ -222,7 +238,7 @@ def create_auth_router(
                 "authenticated": "1",
                 "credential_id": credential_id,
                 "created_at": datetime.now(UTC).isoformat(),
-                "ip": request.client.host if request.client else "",
+                "ip": _client_address(request),
                 "user_agent": request.headers.get("user-agent", "")[:_MAX_USER_AGENT_LEN],
                 "channel": channel,
             },
@@ -268,40 +284,53 @@ def create_auth_router(
                 found.append((session_id, record))
         return found
 
-    async def _pairing_code_valid(code: str) -> bool:
-        """Constant-time check against the active code; count and cap wrong guesses.
+    async def _pairing_code_valid(code: str, client_address: str) -> bool:
+        """Constant-time check against the active code; budget wrong guesses per address.
 
-        The cap is a deliberate denial-of-pairing trade: this route is reachable
-        from any network, so any caller who can spell six digits can burn a fresh
-        code in ten tries. Recovery is cheap (mint another from a signed-in
-        device); the alternative — an uncapped code — is a guessable one.
+        The budget is per client address, not global. This route is reachable from any
+        network, and one shared counter meant ten wrong guesses from anyone destroyed
+        the code a real device was waiting on — a denial of pairing whose fallback, the
+        LAN, is exactly what an away device does not have. Now the address that spends
+        ``_PAIRING_MAX_FAILURES`` guesses inside ``_PAIRING_TTL`` is the thing refused,
+        for the rest of that TTL and even with the right code; the code stays live for
+        every other address.
+
+        The work is the same whether or not a code is live — a well-formed wrong guess
+        always costs the same reads and the same INCR+EXPIRE — so the round trips no
+        longer tell a caller whether there is a code to guess at. (A malformed guess is
+        refused before any of this, in ``_registration_gate``: that is static, not a
+        function of state, so it leaks nothing.)
 
         A Redis outage is 503, never a 403: a device holding a good code must not be
         told the code is wrong because the store could not be read.
         """
+        fails_key = _pairing_fails_key(client_address)
         try:
-            active = await redis.get(WEBAUTHN_PAIRING_KEY)
-            # The production pool runs decode_responses=False, so the code comes
+            # The production pool runs decode_responses=False, so both of these come
             # back as bytes; a decoded pool hands back str.
-            if isinstance(active, bytes):
-                active = active.decode()
-            if not active:
-                # Nothing live to guess at, so nothing to count: an expired or
-                # already-burned code must not cost a GET+INCR+EXPIRE per attempt,
-                # nor let a caller hold the counter's TTL open indefinitely.
+            raw_fails = await redis.get(fails_key)
+            spent = int(decode_stream_value(raw_fails)) if raw_fails else 0
+            if spent >= _PAIRING_MAX_FAILURES:
+                logger.warning(
+                    "Pairing refused: {} has spent its {} guesses", client_address, spent
+                )
                 return False
-            if secrets.compare_digest(str(active).encode(), code.encode()):
+            raw_active = await redis.get(WEBAUTHN_PAIRING_KEY)
+            active = decode_stream_value(raw_active) if raw_active else ""
+            if active and secrets.compare_digest(active.encode(), code.encode()):
                 return True
-            fails = int(await redis.incr(WEBAUTHN_PAIRING_FAILS_KEY))
-            # INCR then EXPIRE is not atomic: a crash between the two leaves the
-            # counter without a TTL until the next mint deletes it. Pipelining it
-            # would be a novel pattern in this repo (nothing calls ``.pipeline()``)
-            # for a key that self-heals, so the two round-trips stand.
-            await redis.expire(WEBAUTHN_PAIRING_FAILS_KEY, _PAIRING_TTL)
-            logger.warning("Pairing code guess {} of {} rejected", fails, _PAIRING_MAX_FAILURES)
-            if fails >= _PAIRING_MAX_FAILURES:
-                await redis.delete(WEBAUTHN_PAIRING_KEY)
-                logger.warning("Pairing code burned after {} wrong guesses", fails)
+            fails = int(await redis.incr(fails_key))
+            # INCR then EXPIRE is not atomic: a crash between the two leaves that
+            # address's counter without a TTL. Pipelining it would be a novel pattern
+            # in this repo (nothing calls ``.pipeline()``) for a key nothing else
+            # reads, so the two round-trips stand.
+            await redis.expire(fails_key, _PAIRING_TTL)
+            logger.warning(
+                "Pairing code guess {} of {} rejected from {}",
+                fails,
+                _PAIRING_MAX_FAILURES,
+                client_address,
+            )
         except Exception as e:
             logger.warning("Could not check the pairing code: {}", e)
             raise HTTPException(status_code=503, detail="Session store unavailable") from e
@@ -328,7 +357,7 @@ def create_auth_router(
                 # out of the counter — the real budget is _PAIRING_MAX_FAILURES.
                 logger.debug("Rejected a malformed X-Pairing-Code header")
                 raise HTTPException(status_code=403, detail=_PAIRING_INVALID_DETAIL)
-            if not await _pairing_code_valid(code):
+            if not await _pairing_code_valid(code, _client_address(request)):
                 raise HTTPException(status_code=403, detail=_PAIRING_INVALID_DETAIL)
             return True
         await trusted_network_dep(request)
@@ -427,8 +456,9 @@ def create_auth_router(
 
         if paired:
             try:
+                # Only the code: the guess counters are per client address and are not
+                # cheaply enumerable, and they expire on their own TTL anyway.
                 await redis.delete(WEBAUTHN_PAIRING_KEY)
-                await redis.delete(WEBAUTHN_PAIRING_FAILS_KEY)
             except Exception as e:
                 # The passkey is already saved. Failing the request here would tell
                 # a device that is registered that it is not, and it cannot retry
@@ -458,14 +488,14 @@ def create_auth_router(
 
         The session dependency answers first, so the pairing key is never written
         for an unauthenticated caller: nobody can overwrite the code a real device
-        is waiting on. Minting replaces the active code and resets its counter.
+        is waiting on. Minting replaces the active code and touches nothing else —
+        the guess budgets are per client address, not per code, so a locked-out
+        address waits out its own TTL rather than being freed by a re-mint (and the
+        keys are not cheaply enumerable to clear anyway).
         """
         code = f"{secrets.randbelow(10**_PAIRING_CODE_DIGITS):0{_PAIRING_CODE_DIGITS}d}"
         try:
-            # Code first, counter second: a failure between the two leaves the new
-            # code carrying the old counter — fewer guesses than intended, never more.
             await redis.set(WEBAUTHN_PAIRING_KEY, code, ex=_PAIRING_TTL)
-            await redis.delete(WEBAUTHN_PAIRING_FAILS_KEY)
         except Exception as e:
             logger.warning("Could not mint a pairing code: {}", e)
             raise HTTPException(status_code=503, detail="Session store unavailable") from e

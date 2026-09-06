@@ -12,12 +12,12 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from webauthn.helpers import bytes_to_base64url
 
-from core.identity.auth_routes import create_auth_router
+from core.identity.auth_routes import _pairing_fails_key, create_auth_router
 from core.identity.credentials import CredentialStore
 from shared.streams import (
     AUTH_SESSION_PREFIX,
     WEBAUTHN_CHALLENGE_PREFIX,
-    WEBAUTHN_PAIRING_FAILS_KEY,
+    WEBAUTHN_PAIRING_FAILS_PREFIX,
     WEBAUTHN_PAIRING_KEY,
 )
 
@@ -262,19 +262,56 @@ _PAIRING_CODE_BYTES = _PAIRING_CODE.encode()  # how the production pool hands it
 _PAIRING_TTL_SECONDS = 300
 
 
+# Two devices off the LAN, and the proxy in front of them (RFC 5737 documentation nets).
+_DEVICE_A = "203.0.113.5"
+_DEVICE_B = "198.51.100.9"
+
+
 def _serve_pairing_code(
     redis_mock: AsyncMock,
     stored: bytes | str = _PAIRING_CODE_BYTES,
     *,
     challenge: bytes | None = None,
 ) -> str:
-    """Serve ``stored`` as the active pairing code, and ``challenge`` for every other
-    key, the way the production pool does. Returns the code a client would send."""
-    redis_mock.get = AsyncMock(
-        side_effect=lambda key: stored if key == WEBAUTHN_PAIRING_KEY else challenge
-    )
-    redis_mock.incr = AsyncMock(return_value=1)
+    """Serve ``stored`` as the active pairing code and ``challenge`` for every other
+    key, the way the production pool does — plus a real per-address guess counter
+    behind INCR, so a test can spend a budget by making the requests rather than by
+    stubbing a return value. The counter reads back as bytes, as the production pool
+    (``decode_responses=False``) hands it over. Returns the code a client would send.
+    """
+    fails: dict[str, int] = {}
+
+    async def _get(key: str) -> bytes | str | None:
+        if key == WEBAUTHN_PAIRING_KEY:
+            return stored
+        if key.startswith(WEBAUTHN_PAIRING_FAILS_PREFIX):
+            return str(fails[key]).encode() if key in fails else None
+        return challenge
+
+    async def _incr(key: str) -> int:
+        fails[key] = fails.get(key, 0) + 1
+        return fails[key]
+
+    redis_mock.get = AsyncMock(side_effect=_get)
+    redis_mock.incr = AsyncMock(side_effect=_incr)
     return _PAIRING_CODE
+
+
+def _guess(client: TestClient, code: str) -> Response:
+    """One ``register/begin`` attempt carrying ``code`` as the pairing header."""
+    gen, to_json = _registration_options_patched()
+    with gen, to_json:
+        return client.post(
+            "/api/auth/register/begin",
+            json={"device_name": "Phone"},
+            headers={"X-Pairing-Code": code},
+        )
+
+
+def _spend_guesses(client: TestClient, n: int) -> None:
+    """Burn ``n`` wrong guesses from ``client``'s address, asserting each is refused."""
+    for _ in range(n):
+        assert _guess(client, "000000").status_code == 403
 
 
 def _register_complete_verification() -> MagicMock:
@@ -337,11 +374,18 @@ def _client_with_gate(
     store: CredentialStore,
     redis_mock: AsyncMock,
     gate: Callable[[Request], Awaitable[None]],
+    *,
+    peer: str | None = None,
 ) -> TestClient:
-    """A client whose registration routes fall back to ``gate`` off the LAN."""
+    """A client whose registration routes fall back to ``gate`` off the LAN.
+
+    ``peer`` sets the socket address the app sees (``request.client.host``), which is
+    what the per-address pairing budget is keyed on; the default is TestClient's own
+    ``"testclient"``.
+    """
     app = FastAPI()
     app.include_router(create_auth_router(store=store, redis=redis_mock, trusted_network_dep=gate))
-    return TestClient(app)
+    return TestClient(app) if peer is None else TestClient(app, client=(peer, 50000))
 
 
 class TestRegistrationBegin:
@@ -1631,11 +1675,17 @@ class TestPasskeysApi:
 
 class TestPairingCode:
     """A signed-in device mints a 6-digit code; a new device registers with it from
-    any network. The code lives 5 minutes, is single-use, and burns after 10 misses."""
+    any network. The code lives 5 minutes and is single-use; wrong guesses are budgeted
+    per client address, so a stranger's ten misses lock out the stranger, not the code."""
 
     @pytest.fixture
     def untrusted(self, store: CredentialStore, redis_mock: AsyncMock) -> TestClient:
-        return _client_with_gate(store, redis_mock, _reject_network)
+        return _client_with_gate(store, redis_mock, _reject_network, peer=_DEVICE_A)
+
+    @pytest.fixture
+    def untrusted_b(self, store: CredentialStore, redis_mock: AsyncMock) -> TestClient:
+        """A second off-LAN device, sharing the same Redis fake as ``untrusted``."""
+        return _client_with_gate(store, redis_mock, _reject_network, peer=_DEVICE_B)
 
     @pytest.fixture
     def active_code(self, redis_mock: AsyncMock) -> str:
@@ -1674,22 +1724,22 @@ class TestPairingCode:
             <= expires_at
             <= datetime.now(UTC) + timedelta(seconds=_PAIRING_TTL_SECONDS)
         )
-        # A plain SET (no NX): minting replaces whatever code was live, and the
-        # failure counter goes with it so the new code starts with 10 guesses.
+        # A plain SET (no NX): minting replaces whatever code was live, and touches
+        # nothing else — the guess budgets belong to client addresses, not to the code,
+        # so a locked-out address cannot free itself by asking for a re-mint.
         redis_mock.set.assert_awaited_once_with(
             WEBAUTHN_PAIRING_KEY, body["code"], ex=_PAIRING_TTL_SECONDS
         )
-        redis_mock.delete.assert_awaited_once_with(WEBAUTHN_PAIRING_FAILS_KEY)
+        redis_mock.delete.assert_not_awaited()
 
-    @pytest.mark.parametrize("failing", ["set", "delete"])
     def test_mint_is_503_when_the_pairing_store_is_down(
-        self, client: TestClient, redis_mock: AsyncMock, failing: str
+        self, client: TestClient, redis_mock: AsyncMock
     ) -> None:
-        """Neither half of the mint may 500 — the PWA shows "try again", not a crash."""
+        """The mint may not 500 — the PWA shows "try again", not a crash."""
         redis_mock.hgetall = AsyncMock(
             return_value={b"authenticated": b"1", b"credential_id": b"AQID"}
         )
-        setattr(redis_mock, failing, AsyncMock(side_effect=ConnectionError("redis is down")))
+        redis_mock.set = AsyncMock(side_effect=ConnectionError("redis is down"))
         client.cookies.set("alfred_auth", "s-current")
 
         resp = client.post("/api/auth/pairing")
@@ -1742,8 +1792,13 @@ class TestPairingCode:
 
         assert resp.status_code == 403
         assert resp.json()["detail"] == "Invalid or expired pairing code"
-        redis_mock.incr.assert_awaited_once_with(WEBAUTHN_PAIRING_FAILS_KEY)
-        redis_mock.expire.assert_awaited_once_with(WEBAUTHN_PAIRING_FAILS_KEY, _PAIRING_TTL_SECONDS)
+        # The counter is keyed on the guesser's address, and carries the code's own TTL
+        # so a spent budget is released five minutes later rather than held forever.
+        assert _pairing_fails_key(_DEVICE_A) == f"alfred:webauthn:pairing:fails:{_DEVICE_A}"
+        redis_mock.incr.assert_awaited_once_with(_pairing_fails_key(_DEVICE_A))
+        redis_mock.expire.assert_awaited_once_with(
+            _pairing_fails_key(_DEVICE_A), _PAIRING_TTL_SECONDS
+        )
         redis_mock.delete.assert_not_awaited()
 
     @pytest.mark.parametrize("code", ["12345", "1234567", "abcdef", "12 456", "12345a", "-12345"])
@@ -1751,8 +1806,9 @@ class TestPairingCode:
         self, untrusted: TestClient, redis_mock: AsyncMock, active_code: str, code: str
     ) -> None:
         """Anything that is not exactly six digits can never equal the active code,
-        so it is refused before Redis is touched — counting it would only let a
-        junk header burn a code the real device is still waiting to use."""
+        so it is refused before Redis is touched. That is static, not a function of
+        stored state, so refusing it early leaks nothing — and it keeps junk out of
+        an address's budget."""
         resp = untrusted.post(
             "/api/auth/register/begin",
             json={"device_name": "Phone"},
@@ -1764,62 +1820,61 @@ class TestPairingCode:
         redis_mock.get.assert_not_awaited()
         redis_mock.incr.assert_not_awaited()
 
-    @pytest.mark.parametrize(("fails", "burned"), [(9, False), (10, True)])
-    def test_the_code_burns_on_the_tenth_wrong_guess_and_not_the_ninth(
-        self,
-        untrusted: TestClient,
-        redis_mock: AsyncMock,
-        active_code: str,
-        fails: int,
-        burned: bool,
+    def test_nine_misses_leave_the_address_its_last_guess(
+        self, untrusted: TestClient, active_code: str
     ) -> None:
-        """Ten is the budget: the ninth miss leaves the code usable, the tenth ends it."""
-        redis_mock.incr = AsyncMock(return_value=fails)
+        """Ten is the budget, so the ninth miss must not spend it: the same device
+        still gets in on the correct code."""
+        _spend_guesses(untrusted, 9)
 
-        resp = untrusted.post(
-            "/api/auth/register/begin",
-            json={"device_name": "Phone"},
-            headers={"X-Pairing-Code": "000000"},
-        )
+        assert _guess(untrusted, active_code).status_code == 200
 
-        assert resp.status_code == 403
-        if burned:
-            redis_mock.delete.assert_awaited_once_with(WEBAUTHN_PAIRING_KEY)
-        else:
-            redis_mock.delete.assert_not_awaited()
-
-    def test_a_guess_after_the_burn_does_not_burn_again(
-        self, untrusted: TestClient, redis_mock: AsyncMock
+    def test_the_tenth_miss_locks_that_address_out_even_with_the_right_code(
+        self, untrusted: TestClient, active_code: str, redis_mock: AsyncMock
     ) -> None:
-        """Guess eleven: the code is already gone, so there is nothing to delete."""
-        redis_mock.get = AsyncMock(return_value=None)
-        redis_mock.incr = AsyncMock(return_value=11)
+        """Spending the budget refuses the address for the rest of the TTL — that is
+        what makes the cap mean anything against a guesser."""
+        _spend_guesses(untrusted, 10)
 
-        resp = untrusted.post(
-            "/api/auth/register/begin",
-            json={"device_name": "Phone"},
-            headers={"X-Pairing-Code": "000000"},
-        )
-
-        assert resp.status_code == 403
-        redis_mock.delete.assert_not_awaited()
-
-    def test_the_right_code_is_refused_once_it_has_been_burned(
-        self, untrusted: TestClient, redis_mock: AsyncMock
-    ) -> None:
-        """The burn is what makes the cap mean anything: the attacker's tenth miss
-        must lock out the code even for whoever holds the real one."""
-        redis_mock.get = AsyncMock(return_value=None)
-        redis_mock.incr = AsyncMock(return_value=11)
-
-        resp = untrusted.post(
-            "/api/auth/register/begin",
-            json={"device_name": "Phone"},
-            headers={"X-Pairing-Code": _PAIRING_CODE},
-        )
+        resp = _guess(untrusted, active_code)
 
         assert resp.status_code == 403
         assert resp.json()["detail"] == "Invalid or expired pairing code"
+        # Refused on its own counter, without even reading the code — and the code
+        # itself was never deleted.
+        assert redis_mock.get.await_args.args[0] == _pairing_fails_key(_DEVICE_A)
+        redis_mock.delete.assert_not_awaited()
+
+    def test_a_locked_out_address_does_not_burn_the_code_for_another_device(
+        self, untrusted: TestClient, untrusted_b: TestClient, active_code: str
+    ) -> None:
+        """The whole point of the per-address budget: ten misses from one address off
+        the LAN must not deny pairing to the device that holds the real code — whose
+        fallback, the LAN, is exactly what an away device does not have."""
+        _spend_guesses(untrusted, 10)
+
+        assert _guess(untrusted, active_code).status_code == 403
+        assert _guess(untrusted_b, active_code).status_code == 200
+
+    def test_each_address_gets_its_own_budget(
+        self,
+        untrusted: TestClient,
+        untrusted_b: TestClient,
+        active_code: str,
+        redis_mock: AsyncMock,
+    ) -> None:
+        """A second address's misses land on a second key, so they cannot add up to
+        a lockout of the first."""
+        _spend_guesses(untrusted, 9)
+        _spend_guesses(untrusted_b, 9)
+
+        incremented = [call.args[0] for call in redis_mock.incr.await_args_list]
+        assert set(incremented) == {
+            _pairing_fails_key(_DEVICE_A),
+            _pairing_fails_key(_DEVICE_B),
+        }
+        assert _guess(untrusted, active_code).status_code == 200
+        assert _guess(untrusted_b, active_code).status_code == 200
 
     @pytest.mark.parametrize("failing", ["get", "incr"])
     def test_the_gate_is_503_when_the_pairing_store_is_down(
@@ -1864,11 +1919,9 @@ class TestPairingCode:
 
         assert resp.status_code == 200
         deleted = [call.args[0] for call in redis_mock.delete.await_args_list]
-        assert deleted == [
-            f"{WEBAUTHN_CHALLENGE_PREFIX}c1",
-            WEBAUTHN_PAIRING_KEY,
-            WEBAUTHN_PAIRING_FAILS_KEY,
-        ]
+        # The code only: the guess counters are per address, not enumerable, and expire
+        # on their own TTL.
+        assert deleted == [f"{WEBAUTHN_CHALLENGE_PREFIX}c1", WEBAUTHN_PAIRING_KEY]
         assert await store.get_credential(_CREDENTIAL_ID) is not None
 
     @pytest.mark.asyncio
@@ -1960,13 +2013,14 @@ class TestPairingCode:
         redis_mock.get.assert_not_awaited()
         redis_mock.incr.assert_not_awaited()
 
-    def test_a_guess_with_no_code_live_is_not_counted(
+    def test_a_guess_with_no_code_live_costs_the_same_work_as_one_with(
         self, untrusted: TestClient, redis_mock: AsyncMock
     ) -> None:
-        """An expired or already-burned code leaves nothing to guess at: refuse on
-        the read alone. Counting here would let an internet-reachable route be made
-        to churn Redis and hold the counter's TTL open indefinitely."""
-        redis_mock.get = AsyncMock(return_value=None)
+        """Uniform work is the point: a well-formed guess does the same reads and the
+        same INCR+EXPIRE whether or not a code is live, so the round trips no longer
+        tell a caller which it is. Counting it is harmless now that the budget is the
+        guesser's own."""
+        _serve_pairing_code(redis_mock, stored=b"")  # nothing live to guess at
 
         resp = untrusted.post(
             "/api/auth/register/begin",
@@ -1976,9 +2030,14 @@ class TestPairingCode:
 
         assert resp.status_code == 403
         assert resp.json()["detail"] == "Invalid or expired pairing code"
-        redis_mock.get.assert_awaited_once_with(WEBAUTHN_PAIRING_KEY)
-        redis_mock.incr.assert_not_awaited()
-        redis_mock.expire.assert_not_awaited()
+        assert [c.args[0] for c in redis_mock.get.await_args_list] == [
+            _pairing_fails_key(_DEVICE_A),
+            WEBAUTHN_PAIRING_KEY,
+        ]
+        redis_mock.incr.assert_awaited_once_with(_pairing_fails_key(_DEVICE_A))
+        redis_mock.expire.assert_awaited_once_with(
+            _pairing_fails_key(_DEVICE_A), _PAIRING_TTL_SECONDS
+        )
 
     @pytest.mark.asyncio
     async def test_trusted_network_completion_does_not_touch_pairing_keys(

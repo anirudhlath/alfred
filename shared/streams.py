@@ -76,9 +76,13 @@ TRIGGER_SYNC_OP_TZ_CHANGED = "tz-changed"
 AUTH_SESSION_PREFIX: str = "alfred:auth:"
 WEBAUTHN_CHALLENGE_PREFIX: str = "alfred:webauthn:challenge:"
 WEBAUTHN_PAIRING_KEY: str = "alfred:webauthn:pairing"  # the active 6-digit code, 5 min
-WEBAUTHN_PAIRING_FAILS_KEY: str = "alfred:webauthn:pairing:fails"
-"""Wrong guesses at the active pairing code; the cap that burns it is
-``_PAIRING_MAX_FAILURES`` in core/identity/auth_routes.py."""
+WEBAUTHN_PAIRING_FAILS_PREFIX: str = "alfred:webauthn:pairing:fails:"
+"""+ client address -> wrong guesses at the pairing code from that address (TTL 300s).
+
+Per address rather than one global counter: this route is reachable from any network, so
+a single counter let a stranger's guesses lock out the code a real device was waiting on.
+Spending the budget (``_PAIRING_MAX_FAILURES`` in core/identity/auth_routes.py) refuses
+that address for the rest of the TTL; the code itself stays live for everyone else."""
 
 
 def decode_stream_value(raw: str | bytes) -> str:
