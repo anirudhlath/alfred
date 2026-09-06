@@ -8,16 +8,21 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from webauthn.helpers import bytes_to_base64url
 
 from core.identity.auth_routes import create_auth_router
 from core.identity.credentials import CredentialStore
-from shared.streams import AUTH_SESSION_PREFIX
+from shared.streams import (
+    AUTH_SESSION_PREFIX,
+    WEBAUTHN_CHALLENGE_PREFIX,
+    WEBAUTHN_PAIRING_FAILS_KEY,
+    WEBAUTHN_PAIRING_KEY,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     from httpx import Response
 
@@ -280,9 +285,24 @@ class TestAuthStatus:
         assert data["authenticated"] is False
 
 
-def _reject_network() -> None:
-    """Dependency override that always rejects as untrusted."""
+async def _reject_network(request: Request) -> None:
+    """Network gate that always rejects as untrusted."""
     raise HTTPException(status_code=403, detail="Access restricted to trusted networks")
+
+
+async def _allow_network(request: Request) -> None:
+    """Network gate that always passes."""
+
+
+def _client_with_gate(
+    store: CredentialStore,
+    redis_mock: AsyncMock,
+    gate: Callable[[Request], Awaitable[None]],
+) -> TestClient:
+    """A client whose registration routes fall back to ``gate`` off the LAN."""
+    app = FastAPI()
+    app.include_router(create_auth_router(store=store, redis=redis_mock, trusted_network_dep=gate))
+    return TestClient(app)
 
 
 class TestRegistrationBegin:
@@ -305,34 +325,22 @@ class TestRegistrationBegin:
             assert data["test"] == "options"
             mock_gen.assert_called_once()
 
-    def test_rejects_untrusted_network(self, app: FastAPI) -> None:
-        from core.channels.web_server import require_trusted_network
+    def test_rejects_untrusted_network(self, store: CredentialStore, redis_mock: AsyncMock) -> None:
+        untrusted = _client_with_gate(store, redis_mock, _reject_network)
 
-        app.dependency_overrides[require_trusted_network] = _reject_network
-        try:
-            untrusted_client = TestClient(app)
-            resp = untrusted_client.post(
-                "/api/auth/register/begin",
-                json={"device_name": "Test"},
-            )
-            assert resp.status_code == 403
-        finally:
-            app.dependency_overrides.pop(require_trusted_network, None)
+        resp = untrusted.post("/api/auth/register/begin", json={"device_name": "Test"})
+
+        assert resp.status_code == 403
+        assert resp.json()["detail"] == "Access restricted to trusted networks"
 
 
 class TestRegistrationComplete:
-    def test_rejects_untrusted_network(self, app: FastAPI, client: TestClient) -> None:
-        from core.channels.web_server import require_trusted_network
+    def test_rejects_untrusted_network(self, store: CredentialStore, redis_mock: AsyncMock) -> None:
+        untrusted = _client_with_gate(store, redis_mock, _reject_network)
 
-        app.dependency_overrides[require_trusted_network] = _reject_network
-        try:
-            resp = client.post(
-                "/api/auth/register/complete",
-                json={"credential": "{}"},
-            )
-            assert resp.status_code == 403
-        finally:
-            app.dependency_overrides.pop(require_trusted_network, None)
+        resp = untrusted.post("/api/auth/register/complete", json={"credential": "{}"})
+
+        assert resp.status_code == 403
 
 
 class TestLoginBegin:
@@ -586,12 +594,11 @@ class TestTransportEnumConversion:
             _app = FastAPI()
             from core.identity.auth_routes import create_auth_router
 
-            # trusted_network_dep=lambda: None bypasses the IP gate in tests
             _app.include_router(
                 create_auth_router(
                     store=store,
                     redis=redis_mock,
-                    trusted_network_dep=lambda: None,
+                    trusted_network_dep=_allow_network,
                 )
             )
             from fastapi.testclient import TestClient
@@ -1591,3 +1598,314 @@ class TestPasskeysApi:
         assert resp.json()["detail"] == "Cannot remove the last passkey — register another first"
         # Its sessions went first, so the caller's cookie is stale either way.
         assert SimpleCookie(resp.headers["set-cookie"])["alfred_auth"]["max-age"] == "0"
+
+
+def _registration_options_patched() -> tuple[Any, Any]:
+    """Patch the WebAuthn option builders so register/begin runs without a real RP."""
+    mock_options = MagicMock()
+    mock_options.challenge = b"\x01\x02\x03"
+    return (
+        patch("core.identity.auth_routes.generate_registration_options", return_value=mock_options),
+        patch("core.identity.auth_routes.options_to_json", return_value='{"ok": true}'),
+    )
+
+
+_PAIRING_CODE = "123456"
+
+
+def _serve_pairing_code(redis_mock: AsyncMock, stored: bytes | str = b"123456") -> str:
+    """Serve ``stored`` as the active pairing code and return the code to send."""
+    redis_mock.get = AsyncMock(
+        side_effect=lambda key: stored if key == WEBAUTHN_PAIRING_KEY else None
+    )
+    redis_mock.incr = AsyncMock(return_value=1)
+    return _PAIRING_CODE
+
+
+class TestPairingCode:
+    """A signed-in device mints a 6-digit code; a new device registers with it from
+    any network. The code lives 5 minutes, is single-use, and burns after 10 misses."""
+
+    @pytest.fixture
+    def untrusted(self, store: CredentialStore, redis_mock: AsyncMock) -> TestClient:
+        return _client_with_gate(store, redis_mock, _reject_network)
+
+    @pytest.fixture
+    def active_code(self, redis_mock: AsyncMock) -> str:
+        return _serve_pairing_code(redis_mock)
+
+    def test_minting_requires_auth(self, client: TestClient, redis_mock: AsyncMock) -> None:
+        """The 401 lands before Redis is touched — an anonymous caller cannot even
+        overwrite the active code, which would be a free denial of pairing."""
+        resp = client.post("/api/auth/pairing")
+
+        assert resp.status_code == 401
+        redis_mock.set.assert_not_awaited()
+        redis_mock.delete.assert_not_awaited()
+
+    def test_mint_stores_a_six_digit_code_for_five_minutes(
+        self, client: TestClient, redis_mock: AsyncMock
+    ) -> None:
+        redis_mock.hgetall = AsyncMock(
+            return_value={b"authenticated": b"1", b"credential_id": b"AQID"}
+        )
+        client.cookies.set("alfred_auth", "s-current")
+
+        resp = client.post("/api/auth/pairing")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body["code"]) == 6 and body["code"].isdigit()
+        assert body["ttl_seconds"] == 300
+        assert "expires_at" in body
+        # A plain SET (no NX): minting replaces whatever code was live, and the
+        # failure counter goes with it so the new code starts with 10 guesses.
+        redis_mock.set.assert_awaited_once_with(WEBAUTHN_PAIRING_KEY, body["code"], ex=300)
+        redis_mock.delete.assert_awaited_once_with(WEBAUTHN_PAIRING_FAILS_KEY)
+
+    @pytest.mark.parametrize("failing", ["set", "delete"])
+    def test_mint_is_503_when_the_pairing_store_is_down(
+        self, client: TestClient, redis_mock: AsyncMock, failing: str
+    ) -> None:
+        """Neither half of the mint may 500 — the PWA shows "try again", not a crash."""
+        redis_mock.hgetall = AsyncMock(
+            return_value={b"authenticated": b"1", b"credential_id": b"AQID"}
+        )
+        setattr(redis_mock, failing, AsyncMock(side_effect=ConnectionError("redis is down")))
+        client.cookies.set("alfred_auth", "s-current")
+
+        resp = client.post("/api/auth/pairing")
+
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "Session store unavailable"
+
+    @pytest.mark.parametrize("stored", [b"123456", "123456"])
+    def test_valid_code_lets_an_untrusted_network_begin_registration(
+        self, untrusted: TestClient, redis_mock: AsyncMock, stored: bytes | str
+    ) -> None:
+        """The production pool (``decode_responses=False``) returns bytes; a decoded
+        pool returns str. The active code must match either way."""
+        code = _serve_pairing_code(redis_mock, stored)
+        gen, to_json = _registration_options_patched()
+        with gen, to_json:
+            resp = untrusted.post(
+                "/api/auth/register/begin",
+                json={"device_name": "Phone"},
+                headers={"X-Pairing-Code": code},
+            )
+
+        assert resp.status_code == 200
+        redis_mock.incr.assert_not_awaited()
+
+    def test_valid_code_survives_whitespace_around_it(
+        self, untrusted: TestClient, redis_mock: AsyncMock, active_code: str
+    ) -> None:
+        """A code copied by hand arrives padded — strip before matching, or a
+        legitimate device is told its code is wrong."""
+        gen, to_json = _registration_options_patched()
+        with gen, to_json:
+            resp = untrusted.post(
+                "/api/auth/register/begin",
+                json={"device_name": "Phone"},
+                headers={"X-Pairing-Code": f"  {active_code}\t"},
+            )
+
+        assert resp.status_code == 200
+        redis_mock.incr.assert_not_awaited()
+
+    def test_wrong_code_is_rejected_and_counted(
+        self, untrusted: TestClient, redis_mock: AsyncMock, active_code: str
+    ) -> None:
+        resp = untrusted.post(
+            "/api/auth/register/begin",
+            json={"device_name": "Phone"},
+            headers={"X-Pairing-Code": "000000"},
+        )
+
+        assert resp.status_code == 403
+        assert resp.json()["detail"] == "Invalid or expired pairing code"
+        redis_mock.incr.assert_awaited_once_with(WEBAUTHN_PAIRING_FAILS_KEY)
+        redis_mock.expire.assert_awaited_once_with(WEBAUTHN_PAIRING_FAILS_KEY, 300)
+        redis_mock.delete.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "code", ["", "12345", "1234567", "abcdef", "12 456", "12345a", "-12345"]
+    )
+    def test_malformed_code_is_refused_without_counting(
+        self, untrusted: TestClient, redis_mock: AsyncMock, active_code: str, code: str
+    ) -> None:
+        """Anything that is not exactly six digits can never equal the active code,
+        so it is refused before Redis is touched — counting it would only let a
+        junk header burn a code the real device is still waiting to use."""
+        resp = untrusted.post(
+            "/api/auth/register/begin",
+            json={"device_name": "Phone"},
+            headers={"X-Pairing-Code": code},
+        )
+
+        assert resp.status_code == 403
+        assert resp.json()["detail"] == "Invalid or expired pairing code"
+        redis_mock.get.assert_not_awaited()
+        redis_mock.incr.assert_not_awaited()
+
+    def test_tenth_wrong_guess_burns_the_code(
+        self, untrusted: TestClient, redis_mock: AsyncMock, active_code: str
+    ) -> None:
+        redis_mock.incr = AsyncMock(return_value=10)
+
+        resp = untrusted.post(
+            "/api/auth/register/begin",
+            json={"device_name": "Phone"},
+            headers={"X-Pairing-Code": "000000"},
+        )
+
+        assert resp.status_code == 403
+        redis_mock.delete.assert_awaited_once_with(WEBAUTHN_PAIRING_KEY)
+
+    def test_a_guess_after_the_burn_does_not_burn_again(
+        self, untrusted: TestClient, redis_mock: AsyncMock
+    ) -> None:
+        """Guess eleven: the code is already gone, so there is nothing to delete."""
+        redis_mock.get = AsyncMock(return_value=None)
+        redis_mock.incr = AsyncMock(return_value=11)
+
+        resp = untrusted.post(
+            "/api/auth/register/begin",
+            json={"device_name": "Phone"},
+            headers={"X-Pairing-Code": "000000"},
+        )
+
+        assert resp.status_code == 403
+        redis_mock.delete.assert_not_awaited()
+
+    def test_the_right_code_is_refused_once_it_has_been_burned(
+        self, untrusted: TestClient, redis_mock: AsyncMock
+    ) -> None:
+        """The burn is what makes the cap mean anything: the attacker's tenth miss
+        must lock out the code even for whoever holds the real one."""
+        redis_mock.get = AsyncMock(return_value=None)
+        redis_mock.incr = AsyncMock(return_value=11)
+
+        resp = untrusted.post(
+            "/api/auth/register/begin",
+            json={"device_name": "Phone"},
+            headers={"X-Pairing-Code": _PAIRING_CODE},
+        )
+
+        assert resp.status_code == 403
+        assert resp.json()["detail"] == "Invalid or expired pairing code"
+
+    @pytest.mark.parametrize("failing", ["get", "incr"])
+    def test_the_gate_is_503_when_the_pairing_store_is_down(
+        self, untrusted: TestClient, redis_mock: AsyncMock, active_code: str, failing: str
+    ) -> None:
+        """An outage while checking the code is 503, never a 500 — and never the
+        403 that would tell a device with a good code to give up."""
+        setattr(redis_mock, failing, AsyncMock(side_effect=ConnectionError("redis is down")))
+
+        resp = untrusted.post(
+            "/api/auth/register/begin",
+            json={"device_name": "Phone"},
+            headers={"X-Pairing-Code": "000000"},
+        )
+
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "Session store unavailable"
+
+    def test_no_code_off_network_still_hits_the_network_gate(
+        self, untrusted: TestClient, redis_mock: AsyncMock
+    ) -> None:
+        resp = untrusted.post("/api/auth/register/begin", json={"device_name": "Phone"})
+
+        assert resp.status_code == 403
+        assert resp.json()["detail"] == "Access restricted to trusted networks"
+
+    @pytest.mark.asyncio
+    async def test_code_is_consumed_when_the_passkey_is_saved(
+        self, untrusted: TestClient, redis_mock: AsyncMock, store: CredentialStore
+    ) -> None:
+        code = _serve_pairing_code(redis_mock)
+        redis_mock.get = AsyncMock(
+            side_effect=lambda key: b"123456" if key == WEBAUTHN_PAIRING_KEY else b"AQID"
+        )
+        verification = MagicMock()
+        verification.credential_id = b"\x01\x02\x03"
+        verification.credential_public_key = b"\x03"
+        verification.sign_count = 0
+
+        with patch(
+            "core.identity.auth_routes.verify_registration_response", return_value=verification
+        ):
+            resp = untrusted.post(
+                "/api/auth/register/complete",
+                json=_REGISTER_BODY,
+                headers={"X-Pairing-Code": code},
+            )
+
+        assert resp.status_code == 200
+        deleted = [call.args[0] for call in redis_mock.delete.await_args_list]
+        assert deleted == [
+            f"{WEBAUTHN_CHALLENGE_PREFIX}c1",
+            WEBAUTHN_PAIRING_KEY,
+            WEBAUTHN_PAIRING_FAILS_KEY,
+        ]
+        assert await store.get_credential(_CREDENTIAL_ID) is not None
+
+    @pytest.mark.asyncio
+    async def test_a_failed_consume_keeps_the_registration(
+        self, untrusted: TestClient, redis_mock: AsyncMock, store: CredentialStore
+    ) -> None:
+        """Redis dies after the passkey is saved: the device is registered and gets
+        its session. Undoing that would strand a real passkey with no way in."""
+        code = _serve_pairing_code(redis_mock)
+        redis_mock.get = AsyncMock(
+            side_effect=lambda key: b"123456" if key == WEBAUTHN_PAIRING_KEY else b"AQID"
+        )
+        redis_mock.delete = AsyncMock(side_effect=[1, ConnectionError("redis is down")])
+        verification = MagicMock()
+        verification.credential_id = b"\x01\x02\x03"
+        verification.credential_public_key = b"\x03"
+        verification.sign_count = 0
+
+        with patch(
+            "core.identity.auth_routes.verify_registration_response", return_value=verification
+        ):
+            resp = untrusted.post(
+                "/api/auth/register/complete",
+                json=_REGISTER_BODY,
+                headers={"X-Pairing-Code": code},
+            )
+
+        assert resp.status_code == 200
+        assert SimpleCookie(resp.headers["set-cookie"])["alfred_auth"].value
+        assert await store.get_credential(_CREDENTIAL_ID) is not None
+
+    @pytest.mark.asyncio
+    async def test_a_wrong_code_on_complete_saves_no_passkey(
+        self, untrusted: TestClient, redis_mock: AsyncMock, store: CredentialStore, active_code: str
+    ) -> None:
+        """The gate runs before the body is read, so a miss on ``complete`` costs
+        the attacker a guess and nothing else."""
+        with patch("core.identity.auth_routes.verify_registration_response") as verify:
+            resp = untrusted.post(
+                "/api/auth/register/complete",
+                json=_REGISTER_BODY,
+                headers={"X-Pairing-Code": "000000"},
+            )
+
+        assert resp.status_code == 403
+        assert resp.json()["detail"] == "Invalid or expired pairing code"
+        verify.assert_not_called()
+        assert await store.get_credential(_CREDENTIAL_ID) is None
+
+    def test_trusted_network_registration_does_not_touch_pairing_keys(
+        self, client: TestClient, redis_mock: AsyncMock
+    ) -> None:
+        """No header, LAN caller: byte-identical to the pre-pairing behaviour."""
+        gen, to_json = _registration_options_patched()
+        with gen, to_json:
+            resp = client.post("/api/auth/register/begin", json={"device_name": "Phone"})
+
+        assert resp.status_code == 200
+        redis_mock.get.assert_not_awaited()
+        redis_mock.incr.assert_not_awaited()

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -32,10 +33,14 @@ from shared.env import is_truthy_flag
 from shared.streams import (
     AUTH_SESSION_PREFIX,
     WEBAUTHN_CHALLENGE_PREFIX,
+    WEBAUTHN_PAIRING_FAILS_KEY,
+    WEBAUTHN_PAIRING_KEY,
     decode_stream_value,
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from core.identity.credentials import CredentialStore
 
 _AUTH_SESSION_TTL = 8 * 3600  # 8 hours — a phone re-auths with Face ID, cheap to renew
@@ -51,6 +56,14 @@ _SESSION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
 # so it is refused before the store or the log line sees it.
 _CREDENTIAL_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,1364}")
 _LAST_PASSKEY_DETAIL = "Cannot remove the last passkey — register another first"
+_PAIRING_TTL = 300  # a pairing code lives 5 minutes
+_PAIRING_MAX_FAILURES = 10  # wrong guesses before the active code is burned
+_PAIRING_CODE_DIGITS = 6  # short enough to read off one screen and type on another
+# What a pairing header must be, after stripping: exactly six ASCII digits. ``[0-9]``
+# rather than ``\d``, which also matches Unicode decimal digits no minted code can
+# contain, and ``fullmatch`` so a longer string cannot pass on a prefix.
+_PAIRING_CODE_RE = re.compile(rf"[0-9]{{{_PAIRING_CODE_DIGITS}}}")
+_PAIRING_INVALID_DETAIL = "Invalid or expired pairing code"
 
 
 class _CurrentSession(NamedTuple):
@@ -180,20 +193,25 @@ def create_auth_router(
     *,
     store: CredentialStore,
     redis: Any,
-    trusted_network_dep: Any = None,
+    trusted_network_dep: Callable[[Request], Awaitable[None]] | None = None,
 ) -> APIRouter:
     """Build the auth APIRouter with all WebAuthn endpoints.
 
     Args:
         store: WebAuthn credential store.
         redis: Async Redis connection for sessions/challenges.
-        trusted_network_dep: FastAPI dependency for trusted network check.
-            If None, imports ``require_trusted_network`` from web_server (backwards compat).
+        trusted_network_dep: Async callable that raises 403 for an untrusted
+            ``Request``. If None, imports ``require_trusted_network`` from
+            web_server (backwards compat). Registration also passes with a valid
+            ``X-Pairing-Code`` header, from any network.
     """
     if trusted_network_dep is None:
         from core.channels.web_server import require_trusted_network
 
         trusted_network_dep = require_trusted_network
+    # A nested function does not see a parameter's narrowed type, so the gate is
+    # re-bound under a name that is already non-optional.
+    network_gate: Callable[[Request], Awaitable[None]] = trusted_network_dep
 
     router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -253,6 +271,57 @@ def create_auth_router(
                 found.append((session_id, record))
         return found
 
+    async def _pairing_code_valid(code: str) -> bool:
+        """Constant-time check against the active code; count and cap wrong guesses.
+
+        A Redis outage is 503, never a 403: a device holding a good code must not be
+        told the code is wrong because the store could not be read.
+        """
+        try:
+            active = await redis.get(WEBAUTHN_PAIRING_KEY)
+            # The production pool runs decode_responses=False, so the code comes
+            # back as bytes; a decoded pool hands back str.
+            if isinstance(active, bytes):
+                active = active.decode()
+            if active and secrets.compare_digest(str(active).encode(), code.encode()):
+                return True
+            fails = int(await redis.incr(WEBAUTHN_PAIRING_FAILS_KEY))
+            await redis.expire(WEBAUTHN_PAIRING_FAILS_KEY, _PAIRING_TTL)
+            if active and fails >= _PAIRING_MAX_FAILURES:
+                # Only while there is still a code to burn: every guess past the cap
+                # reads an empty key, and re-deleting it would say the code burned
+                # again each time.
+                await redis.delete(WEBAUTHN_PAIRING_KEY)
+                logger.warning("Pairing code burned after {} wrong guesses", fails)
+        except Exception as e:
+            logger.warning("Could not check the pairing code: {}", e)
+            raise HTTPException(status_code=503, detail="Session store unavailable") from e
+        return False
+
+    async def registration_gate(
+        request: Request,
+        x_pairing_code: str | None = Header(default=None, alias="X-Pairing-Code"),
+    ) -> None:
+        """Let registration through with a valid pairing code, else require the LAN.
+
+        With no header this is the plain network gate it has always been — no Redis
+        read, no guess counted — so a LAN enrolment behaves exactly as before.
+        """
+        if x_pairing_code is not None:
+            code = x_pairing_code.strip()
+            if not _PAIRING_CODE_RE.fullmatch(code):
+                # A header that is not six digits can never equal a minted code, so
+                # it is refused before Redis is touched and *not* counted: counting
+                # it would let a stream of junk headers burn the code the real
+                # device is holding, which is a free denial of pairing.
+                logger.warning("Rejected a malformed X-Pairing-Code header")
+                raise HTTPException(status_code=403, detail=_PAIRING_INVALID_DETAIL)
+            if not await _pairing_code_valid(code):
+                raise HTTPException(status_code=403, detail=_PAIRING_INVALID_DETAIL)
+            request.state.pairing_code = code
+            return
+        await network_gate(request)
+
     @router.get("/status")
     async def auth_status(request: Request) -> JSONResponse:
         registered = await store.has_any_credential()
@@ -263,7 +332,7 @@ def create_auth_router(
     async def register_begin(
         body: RegisterBeginRequest,
         request: Request,
-        _: None = Depends(trusted_network_dep),
+        _: None = Depends(registration_gate),
     ) -> JSONResponse:
         user_id_hex = await store.get_or_create_user_id()
         user_id_bytes = bytes.fromhex(user_id_hex)
@@ -306,7 +375,7 @@ def create_auth_router(
     @router.post("/register/complete")
     async def register_complete(
         request: Request,
-        _: None = Depends(trusted_network_dep),
+        _: None = Depends(registration_gate),
     ) -> JSONResponse:
         body = await request.json()
         challenge_id = body.get("_challenge_id", "")
@@ -344,12 +413,47 @@ def create_auth_router(
             transports=body.get("response", {}).get("transports", []),
         )
 
+        if getattr(request.state, "pairing_code", None):
+            try:
+                await redis.delete(WEBAUTHN_PAIRING_KEY)
+                await redis.delete(WEBAUTHN_PAIRING_FAILS_KEY)
+            except Exception as e:
+                # The passkey is already saved. Failing the request here would tell
+                # a device that is registered that it is not, and it cannot retry
+                # the ceremony — so the code is left to expire on its own TTL.
+                logger.warning("Could not consume the pairing code after registering: {}", e)
+            else:
+                logger.info("Pairing code consumed by new passkey {}", credential_id)
+
         session_id = await _start_session(
             request, credential_id=credential_id, channel=_session_channel(body)
         )
         response = JSONResponse({"status": "ok", "credential_id": credential_id})
         _set_session_cookie(response, request, session_id)
         return response
+
+    @router.post("/pairing")
+    async def create_pairing_code(
+        _: _CurrentSession = _session_dep,
+    ) -> JSONResponse:
+        """Mint a one-shot code that lets a new device register from any network.
+
+        The 401 comes from the session dependency and so lands before Redis is
+        touched: an anonymous caller cannot overwrite the code a real device is
+        waiting on. Minting replaces the active code and resets its guess counter.
+        """
+        code = f"{secrets.randbelow(10**_PAIRING_CODE_DIGITS):0{_PAIRING_CODE_DIGITS}d}"
+        try:
+            # Code first, counter second: a failure between the two leaves the new
+            # code carrying the old counter — fewer guesses than intended, never more.
+            await redis.set(WEBAUTHN_PAIRING_KEY, code, ex=_PAIRING_TTL)
+            await redis.delete(WEBAUTHN_PAIRING_FAILS_KEY)
+        except Exception as e:
+            logger.warning("Could not mint a pairing code: {}", e)
+            raise HTTPException(status_code=503, detail="Session store unavailable") from e
+        expires_at = (datetime.now(UTC) + timedelta(seconds=_PAIRING_TTL)).isoformat()
+        logger.info("Pairing code minted, valid for {}s", _PAIRING_TTL)
+        return JSONResponse({"code": code, "expires_at": expires_at, "ttl_seconds": _PAIRING_TTL})
 
     @router.post("/login/begin")
     async def login_begin(request: Request) -> JSONResponse:
