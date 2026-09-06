@@ -120,13 +120,20 @@ class CredentialStore:
         )
         await self._conn().commit()
 
-    async def delete_credential(self, credential_id: str) -> None:
-        """Delete a credential by ID."""
-        await self._conn().execute(
-            "DELETE FROM webauthn_credentials WHERE id = ?",
+    async def delete_credential(self, credential_id: str) -> int:
+        """Delete a credential unless it is the last one; rows removed (0 or 1).
+
+        The last-passkey rule is in the SQL rather than a read-then-delete because
+        two concurrent removals of *different* passkeys would otherwise both see
+        two credentials, both go through, and lock the user out of their own house.
+        """
+        cursor = await self._conn().execute(
+            "DELETE FROM webauthn_credentials "
+            "WHERE id = ? AND (SELECT COUNT(*) FROM webauthn_credentials) > 1",
             (credential_id,),
         )
         await self._conn().commit()
+        return int(cursor.rowcount)
 
     async def has_any_credential(self) -> bool:
         """Check if any credential is registered."""

@@ -47,9 +47,10 @@ _MAX_USER_AGENT_LEN = 200  # bounds what a hostile client can park in the sessio
 _SESSION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
 # Credential ids are unpadded base64url (``bytes_to_base64url``), so the same
 # alphabet with CTAP2's 1023-byte ceiling on a credential id — 1364 characters
-# once encoded. Anything else cannot name a stored passkey, so it is refused
-# before the store or the log line sees it.
+# once encoded (4 x ceil(1023/3)). Anything else cannot name a stored passkey,
+# so it is refused before the store or the log line sees it.
 _CREDENTIAL_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,1364}")
+_LAST_PASSKEY_DETAIL = "Cannot remove the last passkey — register another first"
 
 
 class _CurrentSession(NamedTuple):
@@ -61,6 +62,12 @@ class _CurrentSession(NamedTuple):
 
     session_id: str
     record: dict[str, str]
+
+    @property
+    def credential_id(self) -> str | None:
+        """The passkey that signed this session in — ``None`` for a pre-upgrade
+        session, which recorded none and so must match no stored id."""
+        return self.record.get("credential_id")
 
 
 class RegisterBeginRequest(BaseModel):
@@ -488,9 +495,6 @@ def create_auth_router(
         except Exception as e:
             logger.warning("Could not list passkeys: {}", e)
             raise HTTPException(status_code=503, detail="Session store unavailable") from e
-        # No default: a pre-upgrade session records no credential_id, and ``None``
-        # matches no passkey rather than every one of them.
-        current_credential = current.record.get("credential_id")
         return JSONResponse(
             {
                 "credentials": [
@@ -500,7 +504,7 @@ def create_auth_router(
                         "transports": c.transports,
                         "created_at": c.created_at,
                         "last_used_at": c.last_used_at,
-                        "current": c.credential_id == current_credential,
+                        "current": c.credential_id == current.credential_id,
                     }
                     for c in credentials
                 ]
@@ -527,13 +531,23 @@ def create_auth_router(
         if not any(c.credential_id == credential_id for c in existing):
             raise HTTPException(status_code=404, detail="Passkey not found")
         if len(existing) <= 1:
-            raise HTTPException(
-                status_code=409,
-                detail="Cannot remove the last passkey — register another first",
-            )
+            raise HTTPException(status_code=409, detail=_LAST_PASSKEY_DETAIL)
 
         ended = 0
         ended_own = False
+
+        def _reply(payload: dict[str, Any], status: int) -> JSONResponse:
+            """Answer, clearing the cookie once the caller's own session is gone.
+
+            Every exit goes through here, the failures included: a 503 that left
+            the cookie in place would strand the PWA holding a session id that
+            has already been deleted, with no way to notice.
+            """
+            response = JSONResponse(payload, status_code=status)
+            if ended_own:
+                _clear_session_cookie(response, request)
+            return response
+
         try:
             # Sessions first, and only then the credential: a failure between the
             # two leaves a passkey with fewer sessions, which is harmless, rather
@@ -545,20 +559,35 @@ def create_auth_router(
                 ended += 1
                 ended_own = ended_own or session_id == current.session_id
         except Exception as e:
-            logger.warning("Could not end the sessions for passkey {}: {}", credential_id, e)
-            raise HTTPException(status_code=503, detail="Session store unavailable") from e
+            logger.warning(
+                "Passkey {} kept: could not end its sessions after ending {}: {}",
+                credential_id,
+                ended,
+                e,
+            )
+            return _reply({"detail": "Session store unavailable"}, 503)
 
         try:
-            await store.delete_credential(credential_id)
+            removed = await store.delete_credential(credential_id)
         except Exception as e:
-            logger.warning("Could not remove passkey {}: {}", credential_id, e)
-            raise HTTPException(status_code=503, detail="Session store unavailable") from e
+            logger.warning(
+                "Passkey {} kept: could not remove it after ending {} session(s): {}",
+                credential_id,
+                ended,
+                e,
+            )
+            return _reply({"detail": "Session store unavailable"}, 503)
+        if not removed:
+            # The store refused: another removal landed between the read above and
+            # this delete, and this one would have been the last passkey. Its
+            # sessions are already gone — recoverable, unlike a locked-out house.
+            logger.warning(
+                "Passkey {} kept: it is the last one after a concurrent removal", credential_id
+            )
+            return _reply({"detail": _LAST_PASSKEY_DETAIL}, 409)
         logger.info("Passkey {} removed, {} session(s) ended", credential_id, ended)
 
-        response = JSONResponse({"deleted": True, "sessions_ended": ended})
-        if ended_own:
-            _clear_session_cookie(response, request)
-        return response
+        return _reply({"deleted": True, "sessions_ended": ended}, 200)
 
     @router.post("/logout")
     async def logout(

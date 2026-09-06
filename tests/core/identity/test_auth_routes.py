@@ -225,6 +225,23 @@ def _scanned_keys(sessions: dict[str, dict[bytes, bytes]]) -> list[bytes | str]:
     return [key if index == 0 else key.encode() for index, key in enumerate(sessions)]
 
 
+def _install_sessions(
+    redis_mock: AsyncMock, sessions: dict[str, dict[bytes, bytes]]
+) -> dict[str, dict[bytes, bytes]]:
+    """Serve ``sessions`` from the redis mock the way the production pool does.
+
+    Both reads are wired per call, so a test can add a session and have the scan
+    see it — insertion order is the order SCAN yields.
+    """
+    redis_mock.hgetall = AsyncMock(side_effect=lambda key: sessions.get(key, {}))
+    redis_mock.scan_iter = MagicMock(
+        side_effect=lambda match="*", count=100: _aiter(_scanned_keys(sessions))
+    )
+    redis_mock.ttl = AsyncMock(return_value=1200)
+    redis_mock.delete = AsyncMock(return_value=1)
+    return sessions
+
+
 def _session_record(credential_id: str, channel: str, created_at: str) -> dict[bytes, bytes]:
     """A session hash as the production pool returns it (decode_responses=False)."""
     return {
@@ -776,28 +793,23 @@ class TestSessionMetadata:
 class TestSessionsApi:
     @pytest.fixture
     def sessions(self, redis_mock: AsyncMock) -> dict[str, dict[bytes, bytes]]:
-        sessions = {
-            f"{AUTH_SESSION_PREFIX}s-current": _session_record(
-                _CREDENTIAL_ID, "pwa", "2026-09-04T08:00:00+00:00"
-            ),
-            f"{AUTH_SESSION_PREFIX}s-older": _session_record(
-                "other-cred", "web", "2026-09-03T08:00:00+00:00"
-            ),
-            # Pre-upgrade shape: signed in before Task 10 started recording metadata.
-            f"{AUTH_SESSION_PREFIX}s-legacy": {
-                b"authenticated": b"1",
-                b"credential_id": _CREDENTIAL_ID.encode(),
+        return _install_sessions(
+            redis_mock,
+            {
+                f"{AUTH_SESSION_PREFIX}s-current": _session_record(
+                    _CREDENTIAL_ID, "pwa", "2026-09-04T08:00:00+00:00"
+                ),
+                f"{AUTH_SESSION_PREFIX}s-older": _session_record(
+                    "other-cred", "web", "2026-09-03T08:00:00+00:00"
+                ),
+                # Pre-upgrade shape: signed in before Task 10 recorded metadata.
+                f"{AUTH_SESSION_PREFIX}s-legacy": {
+                    b"authenticated": b"1",
+                    b"credential_id": _CREDENTIAL_ID.encode(),
+                },
+                f"{AUTH_SESSION_PREFIX}s-pending": {b"authenticated": b"0"},
             },
-            f"{AUTH_SESSION_PREFIX}s-pending": {b"authenticated": b"0"},
-        }
-        redis_mock.hgetall = AsyncMock(side_effect=lambda key: sessions.get(key, {}))
-        # Built per call, so a test can add a session and have the scan see it.
-        redis_mock.scan_iter = MagicMock(
-            side_effect=lambda match="*", count=100: _aiter(_scanned_keys(sessions))
         )
-        redis_mock.ttl = AsyncMock(return_value=1200)
-        redis_mock.delete = AsyncMock(return_value=1)
-        return sessions
 
     @pytest.mark.asyncio
     async def test_list_sessions_newest_first_with_current_marked(
@@ -1127,24 +1139,20 @@ class TestPasskeysApi:
 
     @pytest.fixture
     def sessions(self, redis_mock: AsyncMock) -> dict[str, dict[bytes, bytes]]:
-        sessions = {
-            f"{AUTH_SESSION_PREFIX}s-current": _session_record(
-                _CREDENTIAL_ID, "pwa", "2026-09-04T08:00:00+00:00"
-            ),
-            f"{AUTH_SESSION_PREFIX}s-laptop": _session_record(
-                _LAPTOP_CREDENTIAL_ID, "web", "2026-09-03T08:00:00+00:00"
-            ),
-            # Pre-upgrade shape: signed in before Task 10 recorded a credential_id.
-            f"{AUTH_SESSION_PREFIX}s-legacy": {b"authenticated": b"1"},
-            f"{AUTH_SESSION_PREFIX}s-pending": {b"authenticated": b"0"},
-        }
-        redis_mock.hgetall = AsyncMock(side_effect=lambda key: sessions.get(key, {}))
-        # Built per call, so a test can add a session and have the scan see it.
-        redis_mock.scan_iter = MagicMock(
-            side_effect=lambda match="*", count=100: _aiter(_scanned_keys(sessions))
+        return _install_sessions(
+            redis_mock,
+            {
+                f"{AUTH_SESSION_PREFIX}s-current": _session_record(
+                    _CREDENTIAL_ID, "pwa", "2026-09-04T08:00:00+00:00"
+                ),
+                f"{AUTH_SESSION_PREFIX}s-laptop": _session_record(
+                    _LAPTOP_CREDENTIAL_ID, "web", "2026-09-03T08:00:00+00:00"
+                ),
+                # Pre-upgrade shape: signed in before Task 10 recorded a credential_id.
+                f"{AUTH_SESSION_PREFIX}s-legacy": {b"authenticated": b"1"},
+                f"{AUTH_SESSION_PREFIX}s-pending": {b"authenticated": b"0"},
+            },
         )
-        redis_mock.delete = AsyncMock(return_value=1)
-        return sessions
 
     @pytest.mark.asyncio
     async def test_list_credentials_marks_current(
@@ -1400,6 +1408,7 @@ class TestPasskeysApi:
         self,
         store: CredentialStore,
         client: TestClient,
+        redis_mock: AsyncMock,
         sessions: dict[str, dict[bytes, bytes]],
     ) -> None:
         """The sessions are gone by then, so the caller must be told the removal
@@ -1414,7 +1423,11 @@ class TestPasskeysApi:
             resp = client.delete(f"/api/auth/credentials/{_LAPTOP_CREDENTIAL_ID}")
 
         assert resp.status_code == 503
-        assert resp.json()["detail"] == "Session store unavailable"
+        assert resp.json() == {"detail": "Session store unavailable"}
+        # The sessions really are gone by then — that is what the cookie rule below
+        # is about. This caller's own is not among them, so nothing to clear.
+        redis_mock.delete.assert_awaited_once_with(f"{AUTH_SESSION_PREFIX}s-laptop")
+        assert "set-cookie" not in resp.headers
 
     @pytest.mark.asyncio
     async def test_routes_are_503_when_the_auth_lookup_is_down(
@@ -1437,3 +1450,144 @@ class TestPasskeysApi:
         ):
             assert resp.status_code == 503
             assert resp.json()["detail"] == "Session store unavailable"
+
+    @pytest.mark.asyncio
+    async def test_unknown_passkey_is_404_even_when_it_is_the_last_one(
+        self,
+        store: CredentialStore,
+        client: TestClient,
+        redis_mock: AsyncMock,
+        sessions: dict[str, dict[bytes, bytes]],
+    ) -> None:
+        """404 is settled before the last-passkey 409: an id that was never there
+        is not the passkey the 409 is protecting."""
+        await _register_test_passkey(store)
+        client.cookies.set("alfred_auth", "s-current")
+
+        resp = client.delete("/api/auth/credentials/nope")
+
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Passkey not found"
+        redis_mock.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_every_session_of_the_passkey_is_ended(
+        self,
+        store: CredentialStore,
+        client: TestClient,
+        redis_mock: AsyncMock,
+        sessions: dict[str, dict[bytes, bytes]],
+    ) -> None:
+        """A passkey signed in on two devices ends both, not just the first found."""
+        await _register_test_passkey(store)
+        await _register_laptop_passkey(store)
+        sessions[f"{AUTH_SESSION_PREFIX}s-laptop-2"] = _session_record(
+            _LAPTOP_CREDENTIAL_ID, "ios", "2026-09-02T08:00:00+00:00"
+        )
+        client.cookies.set("alfred_auth", "s-current")
+
+        resp = client.delete(f"/api/auth/credentials/{_LAPTOP_CREDENTIAL_ID}")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"deleted": True, "sessions_ended": 2}
+        assert {call.args[0] for call in redis_mock.delete.await_args_list} == {
+            f"{AUTH_SESSION_PREFIX}s-laptop",
+            f"{AUTH_SESSION_PREFIX}s-laptop-2",
+        }
+        assert "set-cookie" not in resp.headers
+
+    @pytest.mark.asyncio
+    async def test_the_cookie_is_cleared_even_when_another_session_follows(
+        self,
+        store: CredentialStore,
+        client: TestClient,
+        sessions: dict[str, dict[bytes, bytes]],
+    ) -> None:
+        """The caller's own session is not the last one the sweep touches — a
+        flag that took the last iteration's answer would leave the cookie live."""
+        await _register_test_passkey(store)
+        await _register_laptop_passkey(store)
+        sessions[f"{AUTH_SESSION_PREFIX}s-phone-2"] = _session_record(
+            _CREDENTIAL_ID, "ios", "2026-09-02T08:00:00+00:00"
+        )
+        client.cookies.set("alfred_auth", "s-current")
+
+        resp = client.delete(f"/api/auth/credentials/{_CREDENTIAL_ID}")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"deleted": True, "sessions_ended": 2}
+        assert SimpleCookie(resp.headers["set-cookie"])["alfred_auth"]["max-age"] == "0"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_removal_clears_the_cookie_it_already_invalidated(
+        self,
+        store: CredentialStore,
+        client: TestClient,
+        redis_mock: AsyncMock,
+        sessions: dict[str, dict[bytes, bytes]],
+    ) -> None:
+        """The sweep ended the caller's own session before the removal failed. A
+        503 that kept the cookie would strand the PWA on a session id that is gone."""
+        await _register_test_passkey(store)
+        await _register_laptop_passkey(store)
+        client.cookies.set("alfred_auth", "s-current")
+
+        with patch.object(
+            store, "delete_credential", AsyncMock(side_effect=OSError("database is locked"))
+        ):
+            resp = client.delete(f"/api/auth/credentials/{_CREDENTIAL_ID}")
+
+        assert resp.status_code == 503
+        assert resp.json() == {"detail": "Session store unavailable"}
+        redis_mock.delete.assert_awaited_once_with(f"{AUTH_SESSION_PREFIX}s-current")
+        morsel = SimpleCookie(resp.headers["set-cookie"])["alfred_auth"]
+        assert morsel["path"] == "/"
+        assert morsel["max-age"] == "0"
+        assert morsel["samesite"].lower() == "strict"
+        assert morsel["httponly"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_sweep_clears_the_cookie_for_the_session_it_did_end(
+        self,
+        store: CredentialStore,
+        client: TestClient,
+        redis_mock: AsyncMock,
+        sessions: dict[str, dict[bytes, bytes]],
+    ) -> None:
+        """Redis dies partway through the sweep, after the caller's own session
+        went: the passkey stays, the dead cookie still goes."""
+        await _register_test_passkey(store)
+        await _register_laptop_passkey(store)
+        sessions[f"{AUTH_SESSION_PREFIX}s-phone-2"] = _session_record(
+            _CREDENTIAL_ID, "ios", "2026-09-02T08:00:00+00:00"
+        )
+        redis_mock.delete = AsyncMock(side_effect=[1, ConnectionError("redis is down")])
+        client.cookies.set("alfred_auth", "s-current")
+
+        resp = client.delete(f"/api/auth/credentials/{_CREDENTIAL_ID}")
+
+        assert resp.status_code == 503
+        assert resp.json() == {"detail": "Session store unavailable"}
+        assert await store.get_credential(_CREDENTIAL_ID) is not None
+        assert SimpleCookie(resp.headers["set-cookie"])["alfred_auth"]["max-age"] == "0"
+
+    @pytest.mark.asyncio
+    async def test_a_lost_race_on_the_last_passkey_is_409(
+        self,
+        store: CredentialStore,
+        client: TestClient,
+        sessions: dict[str, dict[bytes, bytes]],
+    ) -> None:
+        """The store is the arbiter: if the atomic delete refuses because this
+        would have been the last passkey, the route says so rather than 200."""
+        await _register_test_passkey(store)
+        await _register_laptop_passkey(store)
+        client.cookies.set("alfred_auth", "s-current")
+
+        with patch.object(store, "delete_credential", AsyncMock(return_value=0)):
+            resp = client.delete(f"/api/auth/credentials/{_CREDENTIAL_ID}")
+
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == "Cannot remove the last passkey — register another first"
+        # Its sessions went first, so the caller's cookie is stale either way.
+        assert SimpleCookie(resp.headers["set-cookie"])["alfred_auth"]["max-age"] == "0"
