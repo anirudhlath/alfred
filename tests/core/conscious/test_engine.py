@@ -523,3 +523,72 @@ async def test_check_routine_suggestions_no_routines(
     now = _dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=_dt.UTC)
     await engine.check_routine_suggestions(now=now, notifier=notifier)
     notifier.publish.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Critical-action reason tests
+# ---------------------------------------------------------------------------
+
+
+def _critical_tool() -> ToolInfo:
+    return ToolInfo(
+        name="home.unlock_door",
+        description="Unlock a door",
+        parameters={"entity_id": {"type": "str", "description": "Lock entity"}},
+        feature_name="home",
+        feature_description="Home control",
+        target_service="home-service",
+        risk="critical",
+    )
+
+
+def test_critical_tools_get_a_reason_parameter(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """Critical tools are offered an optional `reason` argument; benign tools are not."""
+    engine = ConsciousEngine(**mock_deps)
+    benign = ToolInfo(
+        name="home.get_lights",
+        description="Get light state",
+        parameters={},
+        feature_name="home",
+        feature_description="Home control",
+        target_service="home-service",
+    )
+
+    result = engine._tools_to_openai_format([_critical_tool(), benign])
+
+    critical_schema = result[0]["function"]["parameters"]
+    assert critical_schema["properties"]["reason"]["type"] == "string"
+    assert "reason" not in critical_schema["required"]
+    assert "entity_id" in critical_schema["required"]
+    benign_schema = result[1]["function"]["parameters"]
+    assert "reason" not in benign_schema["properties"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_moves_reason_onto_the_action(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """`reason` leaves `parameters` (the domain service never sees it) and lands on the action."""
+    action_result = MagicMock()
+    action_result.status = "success"
+    action_result.result = {"ok": True}
+    mock_deps["domain_router"].route.return_value = action_result
+    engine = ConsciousEngine(**mock_deps)
+
+    tool_call = {
+        "id": "tc-1",
+        "name": "home.unlock_door",
+        "input": {"entity_id": "lock.front_door", "reason": "The dog walker is here."},
+    }
+    await engine._dispatch_tool_call(tool_call, tools=[_critical_tool()])
+
+    routed = mock_deps["domain_router"].route.call_args[0][0]
+    assert routed.reason == "The dog walker is here."
+    assert routed.parameters == {"entity_id": "lock.front_door"}
+    # The caller's dict is not mutated
+    assert tool_call["input"] == {
+        "entity_id": "lock.front_door",
+        "reason": "The dog walker is here.",
+    }

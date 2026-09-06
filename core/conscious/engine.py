@@ -240,6 +240,15 @@ class ConsciousEngine:
                 if "default" not in pinfo:
                     required.append(pname)
 
+            if t.risk == "critical" and self._REASON_PARAM not in properties:
+                properties[self._REASON_PARAM] = {
+                    "type": "string",
+                    "description": (
+                        "One sentence, addressed to the user, saying why this action is "
+                        "needed. It is shown on the confirmation prompt."
+                    ),
+                }
+
             openai_tools.append(
                 {
                     "type": "function",
@@ -258,6 +267,8 @@ class ConsciousEngine:
 
     # Prefix for integration tool names to distinguish from domain tools
     _INTEGRATION_PREFIX: ClassVar[str] = "integration_"
+    # Extra argument offered on critical tools; moved off `parameters` onto ActionRequest.reason
+    _REASON_PARAM: ClassVar[str] = "reason"
 
     async def _integrations_to_openai_format(self) -> list[dict[str, Any]]:
         """Convert integration capabilities to OpenAI function-calling format."""
@@ -422,7 +433,7 @@ class ConsciousEngine:
         dispatch from ``process_request`` always passes the resolved identity.
         """
         name = tc["name"]
-        params = tc.get("input", {})
+        params = dict(tc.get("input", {}))
 
         # 1. Integration tools — direct call via IntegrationRegistry
         if name.startswith(self._INTEGRATION_PREFIX):
@@ -476,19 +487,23 @@ class ConsciousEngine:
 
         # 4. Domain tools — route to external service via DomainRouter
         target = ""
+        risk = "benign"
         for t in tools:
             if t.name == name:
                 target = t.target_service
+                risk = t.risk
                 break
 
         if not target:
             return self._make_tool_result(tc["id"], f"Error: tool '{name}' not found in registry")
 
+        reason = params.pop(self._REASON_PARAM, None) if risk == "critical" else None
         action = ActionRequest(
             source="conscious-engine",
             target_service=target,
             tool_name=name,
             parameters=params,
+            reason=str(reason) if reason else None,
         )
         action_result = await self._router.route(action)
         content = str(

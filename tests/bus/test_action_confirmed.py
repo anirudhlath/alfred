@@ -49,3 +49,26 @@ def test_pending_and_attention_prefixes_exist() -> None:
 
     assert ATTENTION_PREFIX == "alfred:attention:"
     assert PENDING_ACTIONS_PREFIX == "alfred:pending_actions:"
+
+
+def test_reason_defaults_to_none_and_roundtrips_bus_to_sdk() -> None:
+    """`reason` is optional, and survives the bus → SDK → bus JSON roundtrip."""
+    from bus.schemas.events import ActionRequest as BusAction
+    from sdk.alfred_sdk.events import ActionRequest as SdkAction
+
+    bare = BusAction(
+        source="conscious-engine", target_service="home-service", tool_name="home.unlock_door"
+    )
+    assert bare.reason is None
+
+    bus_action = BusAction(
+        source="conscious-engine",
+        target_service="home-service",
+        tool_name="home.unlock_door",
+        parameters={"entity_id": "lock.front_door"},
+        reason="You asked me to let the dog walker in at 3pm.",
+    )
+    sdk_action = SdkAction.model_validate_json(bus_action.model_dump_json())
+    assert sdk_action.reason == "You asked me to let the dog walker in at 3pm."
+    back = BusAction.model_validate_json(sdk_action.model_dump_json())
+    assert back.reason == bus_action.reason
