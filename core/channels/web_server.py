@@ -7,6 +7,7 @@ import base64
 import ipaddress
 import json
 import os
+import re
 import time
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
@@ -49,6 +50,7 @@ from core.routing.pending import (
     get_pending_action,
     list_pending_actions,
     pending_action_payload,
+    pending_key,
 )
 from core.shutdown import teardown
 from core.warmup import start_warmup
@@ -142,6 +144,15 @@ class VoiceEnrollmentPayload(BaseModel):
 
 
 _DEVICE_TOKEN_PATTERN = r"^[a-fA-F0-9]+$"
+
+# ``ActionRequest.request_id`` is a uuid4 string (bus/schemas/events.py), 36 characters;
+# the class also covers the hand-written ids the schema allows, with the same 128-char
+# ceiling ``_SESSION_ID_RE`` uses in core/identity/auth_routes.py. Anything else cannot
+# name a parked action, so it is refused before Redis or the log line sees it.
+_REQUEST_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
+# One vocabulary for an unreachable action store, as with the auth router's
+# "Session store unavailable" and the admin router's "Attention store unavailable".
+_ACTION_STORE_DOWN = "Action store unavailable"
 
 
 class DeviceRegistration(BaseModel):
@@ -835,14 +846,32 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
     async def list_pending() -> dict[str, list[dict[str, Any]]]:
         """Every critical action still waiting for confirmation, oldest first."""
         r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
-        items = await list_pending_actions(r)
+        try:
+            items = await list_pending_actions(r)
+        except Exception as e:
+            logger.warning("Could not list the pending actions: {}", e)
+            raise HTTPException(status_code=503, detail=_ACTION_STORE_DOWN) from e
         return {"actions": [pending_action_payload(a, ttl) for a, ttl in items]}
 
     @app.get("/api/actions/{request_id}", dependencies=[Depends(require_authenticated)])
     async def get_pending(request_id: str) -> dict[str, Any]:
         """One pending action with its remaining fuse. Does not consume it."""
+        if not _REQUEST_ID_RE.fullmatch(request_id):
+            raise HTTPException(status_code=400, detail="Invalid request id")
         r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
-        item = await get_pending_action(r, request_id)
+        try:
+            item = await get_pending_action(r, request_id)
+        except ValueError:
+            # Same tombstone the list gives an unreadable entry (core/routing/pending.py):
+            # a value that no longer parses is gone as far as a client is concerned, and
+            # the two reads must not disagree about the same key.
+            logger.warning(
+                "Pending action key {} is unreadable — answering 404", pending_key(request_id)
+            )
+            item = None
+        except Exception as e:
+            logger.warning("Could not read pending action {}: {}", request_id, e)
+            raise HTTPException(status_code=503, detail=_ACTION_STORE_DOWN) from e
         if item is None:
             raise HTTPException(status_code=404, detail="Pending action not found or expired")
         action, ttl = item

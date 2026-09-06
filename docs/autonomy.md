@@ -102,8 +102,12 @@ sequenceDiagram
   notification toast (`web/src/lib/notifications.ts`).
 - Web reads: `GET /api/actions/pending` → `{"actions": [...]}`, oldest request first,
   and `GET /api/actions/{request_id}` → one action (404 `Pending action not found or
-  expired` when it is missing or the TTL has run out). Both are session-gated by the
-  same auth cookie as the confirm route, and both are **non-consuming** — a plain `GET`,
+  expired` when it is missing, the TTL has run out, or the stored value no longer parses
+  — the list skips exactly that entry, so the two reads agree). A `request_id` outside
+  `[A-Za-z0-9_-]{1,128}` is **400** `Invalid request id` before Redis is touched, and a
+  store failure on either read is **503** `Action store unavailable`. Both are
+  session-gated by the same auth cookie as the confirm route, and both are
+  **non-consuming** — a plain `GET`,
   never the `GETDEL` the confirm path uses — so a client may poll or re-open a push-tap
   deep link without spending the confirmation. Each entry carries `request_id`,
   `tool_name`, `target_service`, `parameters`, `reason`, `source`, `timestamp`,
