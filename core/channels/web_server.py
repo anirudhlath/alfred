@@ -710,19 +710,22 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
             or manifest.manifest.get("service_endpoint")
             or ""
         )
-        if not endpoint:
+        # Manifests are service-written, so the endpoint may be absent, empty or
+        # not even a string — all of which mean "nothing to probe", not a 500.
+        if not isinstance(endpoint, str) or not endpoint:
             return {
                 "name": name,
                 "healthy": False,
                 "detail": {"error": "no endpoint declared"},
                 "latency_ms": None,
             }
-        health_url = urljoin(endpoint, "/health")
         started = time.perf_counter()
         try:
-            resp = await app.state.http.get(health_url)
+            # urljoin is inside the try: a malformed endpoint ("http://[::1")
+            # raises ValueError here, and httpx.InvalidURL is not an HTTPError.
+            resp = await app.state.http.get(urljoin(endpoint, "/health"))
             payload: dict[str, Any] = resp.json()
-        except (httpx.HTTPError, ValueError) as exc:
+        except (httpx.HTTPError, httpx.InvalidURL, ValueError) as exc:
             return {
                 "name": name,
                 "healthy": False,

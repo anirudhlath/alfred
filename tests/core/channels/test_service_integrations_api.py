@@ -8,6 +8,7 @@ Contract C5: adapters (IntegrationRegistry) and sovereign services
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
@@ -17,8 +18,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
+from core.channels import web_server
 from core.channels.web_server import create_app
 from core.integrations.base import (
     CredentialField,
@@ -60,6 +62,8 @@ class _ServiceHttpHandler:
         self.pushes: list[dict[str, str]] = []
         self.push_fails = False
         self.unreachable = False
+        # Fired on every request — lets a test charge fake time to the probe.
+        self.on_request: Callable[[], None] | None = None
         self.health: dict[str, Any] = {
             "status": "ok",
             "service": "home-service",
@@ -67,6 +71,8 @@ class _ServiceHttpHandler:
         }
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
+        if self.on_request is not None:
+            self.on_request()
         if self.unreachable:
             raise httpx.ConnectError("connection refused")
         if request.url.path == "/credentials":
@@ -79,13 +85,43 @@ class _ServiceHttpHandler:
         return httpx.Response(404)
 
 
+class _FakeClock:
+    """Deterministic stand-in for the ``time`` module — advances only when told.
+
+    Substituted for ``web_server.time`` so a test can charge a known cost to the
+    manifest lookup and a different one to the probe, making both the *scope* and
+    the *precision* of ``latency_ms`` exactly assertable.
+    """
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def perf_counter(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+# The manifest lookup is charged an absurd cost and the probe a small one with
+# a second decimal, so a timer that starts too early or rounds too finely can't
+# produce _EXPECTED_PROBE_MS.
+_LOOKUP_SECONDS = 500.0
+_PROBE_SECONDS = 0.0021239
+_EXPECTED_PROBE_MS = 2.1
+
+
 @pytest.fixture
 def service_handler() -> _ServiceHttpHandler:
     return _ServiceHttpHandler()
 
 
 def _build_service_client(
-    manifest: dict[str, Any], service_handler: _ServiceHttpHandler, *, signed_in: bool = True
+    manifest: dict[str, Any],
+    service_handler: _ServiceHttpHandler,
+    *,
+    signed_in: bool = True,
+    on_manifest_read: Callable[[], None] | None = None,
 ) -> Iterator[TestClient]:
     """Shared TestClient builder: home-service manifest in a mocked tool registry
     + fake service HTTP. Factored out so variant manifests (e.g. missing
@@ -106,6 +142,8 @@ def _build_service_client(
 
     async def _fake_hget(key: str, field: str) -> bytes | None:
         if key == TOOL_REGISTRY_KEY:
+            if on_manifest_read is not None:
+                on_manifest_read()
             return registry_data.get(field.encode())
         return None
 
@@ -175,14 +213,50 @@ def service_client_no_endpoint(
 
 
 @pytest.fixture
-def service_client_no_endpoints(
-    service_handler: _ServiceHttpHandler, home_service_manifest_no_endpoint: dict[str, Any]
-) -> Iterator[TestClient]:
-    """TestClient for a manifest declaring neither endpoint — the status branch
-    that has nothing to probe."""
+def home_service_manifest_without_any_endpoint(
+    home_service_manifest_no_endpoint: dict[str, Any],
+) -> dict[str, Any]:
+    """Manifest variant declaring *neither* endpoint — distinct from
+    `home_service_manifest_no_endpoint`, which still has a service_endpoint."""
     manifest = dict(home_service_manifest_no_endpoint)
     manifest.pop("service_endpoint", None)
+    return manifest
+
+
+@pytest.fixture
+def service_client_without_any_endpoint(
+    service_handler: _ServiceHttpHandler,
+    home_service_manifest_without_any_endpoint: dict[str, Any],
+) -> Iterator[TestClient]:
+    """TestClient for a manifest with nothing to probe at all."""
+    yield from _build_service_client(home_service_manifest_without_any_endpoint, service_handler)
+
+
+@contextmanager
+def _service_client_for(
+    manifest: dict[str, Any], service_handler: _ServiceHttpHandler
+) -> Iterator[TestClient]:
+    """`_build_service_client` as a context manager — for one-off manifest
+    variants that don't warrant a dedicated fixture."""
     yield from _build_service_client(manifest, service_handler)
+
+
+@pytest.fixture
+def timed_service_client(
+    monkeypatch: pytest.MonkeyPatch,
+    service_handler: _ServiceHttpHandler,
+    home_service_manifest: dict[str, Any],
+) -> Iterator[TestClient]:
+    """`service_client` on a fake clock: the manifest lookup burns
+    `_LOOKUP_SECONDS`, the probe `_PROBE_SECONDS`, nothing else moves time."""
+    clock = _FakeClock()
+    monkeypatch.setattr(web_server, "time", clock)
+    service_handler.on_request = lambda: clock.advance(_PROBE_SECONDS)
+    yield from _build_service_client(
+        home_service_manifest,
+        service_handler,
+        on_manifest_read=lambda: clock.advance(_LOOKUP_SECONDS),
+    )
 
 
 # ── GET (merged listing) ──
@@ -348,6 +422,7 @@ def test_status_proxies_health_connected(service_client: TestClient) -> None:
     assert data["detail"]["ha"]["state"] == "connected"
     assert isinstance(data["latency_ms"], float)
     assert data["latency_ms"] >= 0.0
+    assert data["latency_ms"] == round(data["latency_ms"], 1)
 
 
 def test_status_unhealthy_on_auth_failed(
@@ -374,6 +449,8 @@ def test_status_unreachable_service(
     assert data["healthy"] is False
     assert "error" in data["detail"]
     assert isinstance(data["latency_ms"], float)
+    assert data["latency_ms"] >= 0.0
+    assert data["latency_ms"] == round(data["latency_ms"], 1)
 
 
 def test_status_unknown_name_404(service_client: TestClient) -> None:
@@ -381,8 +458,62 @@ def test_status_unknown_name_404(service_client: TestClient) -> None:
     assert resp.status_code == 404
 
 
-def test_status_no_endpoint_has_null_latency(service_client_no_endpoints: TestClient) -> None:
-    resp = service_client_no_endpoints.get("/api/integrations/home-service/status")
+def test_status_no_endpoint_has_null_latency(
+    service_client_without_any_endpoint: TestClient,
+) -> None:
+    resp = service_client_without_any_endpoint.get("/api/integrations/home-service/status")
+    data = resp.json()
+    assert data["healthy"] is False
+    assert data["detail"] == {"error": "no endpoint declared"}
+    assert data["latency_ms"] is None
+
+
+def test_status_times_the_probe_not_the_manifest_lookup(timed_service_client: TestClient) -> None:
+    """latency_ms reports the probe alone, rounded to one decimal.
+
+    The fake clock charges 500 s to the manifest lookup and 2.1239 ms to the
+    probe, so starting the timer before the lookup, or rounding to anything but
+    one decimal, cannot yield 2.1.
+    """
+    resp = timed_service_client.get("/api/integrations/home-service/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["healthy"] is True
+    assert data["latency_ms"] == _EXPECTED_PROBE_MS
+
+
+@pytest.mark.parametrize("endpoint", ["http://[::1", "http://\x00bad"])
+def test_status_malformed_endpoint_is_unhealthy_not_500(
+    endpoint: str,
+    service_handler: _ServiceHttpHandler,
+    home_service_manifest_without_any_endpoint: dict[str, Any],
+) -> None:
+    """A service can write any string into its manifest. An unclosed IPv6 host
+    raises ValueError out of urljoin; a non-printable byte in the host raises
+    httpx.InvalidURL, which is *not* an HTTPError. Neither may reach the client
+    as a 500."""
+    manifest = {**home_service_manifest_without_any_endpoint, "service_endpoint": endpoint}
+    with _service_client_for(manifest, service_handler) as client:
+        resp = client.get("/api/integrations/home-service/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["healthy"] is False
+    assert "error" in data["detail"]
+    assert isinstance(data["latency_ms"], float)
+
+
+def test_status_non_string_endpoint_has_null_latency(
+    service_handler: _ServiceHttpHandler,
+    home_service_manifest_without_any_endpoint: dict[str, Any],
+) -> None:
+    """A non-string endpoint is "nothing to probe", not a urljoin crash."""
+    manifest: dict[str, Any] = {
+        **home_service_manifest_without_any_endpoint,
+        "service_endpoint": 123,
+    }
+    with _service_client_for(manifest, service_handler) as client:
+        resp = client.get("/api/integrations/home-service/status")
+    assert resp.status_code == 200
     data = resp.json()
     assert data["healthy"] is False
     assert data["detail"] == {"error": "no endpoint declared"}

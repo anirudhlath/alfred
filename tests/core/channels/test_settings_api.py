@@ -168,3 +168,5 @@ def test_health_check_endpoint(web_client: TestClient) -> None:
     assert data["name"] == "test_adapter"
     assert data["healthy"] is True
     assert isinstance(data["latency_ms"], float)
+    assert data["latency_ms"] >= 0.0
+    assert data["latency_ms"] == round(data["latency_ms"], 1)
