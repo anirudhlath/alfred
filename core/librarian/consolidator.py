@@ -1061,10 +1061,11 @@ class Librarian:
             conflict_min_days=self._conflict_min_days,
         )
 
-        # 5. Pattern detection for procedural memory
+        # 5. Pattern detection for procedural memory (must precede the lifecycle pass below)
         patterns_detected = await self._detect_patterns(episodic_entries)
 
-        # 6. Routine lifecycle updates
+        # 6. Routine lifecycle updates — keep this after detection so a candidate created
+        #    this pass records its first confidence sample in the same pass
         lifecycle_updates = await self._update_routine_lifecycle()
 
         # 7. Decay processing
