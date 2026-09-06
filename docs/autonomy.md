@@ -17,6 +17,11 @@ visibility). Tier 2: only attention-set members fire the Reflex SLM.
   `attention_add(domain, entity_id)`, `attention_remove(domain, entity_id)`,
   `attention_list(domain)`. The Librarian may promote/demote entities during
   consolidation using the same helpers (`core/reflex/attention.py`).
+- HTTP surface: `GET /api/admin/attention` lists every domain with its members
+  and its sticky `seen` companion; `PUT /api/admin/attention/{domain}` runs the
+  same two primitives from a request body (`allow` → `attention_add`, `ask` →
+  `attention_remove`, `ask` applied second). Session-gated like the rest of the
+  admin API; see [`admin-api.md` → Attention](admin-api.md#attention).
 - Firing rules: real transitions only (`new_state != old_state` — attribute-only
   updates are forwarded with equal states and gated here) + per-entity 5s
   in-process cooldown.

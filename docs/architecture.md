@@ -782,7 +782,7 @@ by urgency level. URGENT notifications always bypass DND.
 
 ## 4.5 Authentication (WebAuthn)
 
-The web PWA uses passkey-based authentication via the WebAuthn standard. Registration is gated to trusted networks (loopback, RFC1918 and Tailscale by default; tune with `ALFRED_TRUSTED_NETWORKS` / `ALFRED_TRUSTED_NETWORKS_STRICT`). Auth sessions are stored in Redis (8h TTL, no sliding renewal) and carried via HttpOnly cookies. The WebSocket handler validates the cookie on connection and rejects unauthenticated clients (code 4001). See [docs/webauthn.md](webauthn.md) for details.
+The web PWA uses passkey-based authentication via the WebAuthn standard. Registration is gated to trusted networks (loopback, RFC1918 and Tailscale by default; tune with `ALFRED_TRUSTED_NETWORKS` / `ALFRED_TRUSTED_NETWORKS_STRICT`) **or** a valid `X-Pairing-Code` header — a 6-digit code minted by a signed-in device (`POST /api/auth/pairing`), good for 5 minutes and burned after 10 wrong guesses — which is how a phone enrols from outside the LAN. Auth sessions are stored in Redis (8h TTL, no sliding renewal) and carried via HttpOnly cookies; a signed-in session can list and end sessions, and list and remove passkeys (never the last one). The WebSocket handler validates the cookie on connection and rejects unauthenticated clients (code 4001). See [docs/webauthn.md](webauthn.md) for details.
 
 ## 5. Data Flow
 
@@ -846,6 +846,9 @@ All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `
 | `alfred:attention:{domain}` | Set | Tier-2 Reflex attention set membership (`core/reflex/attention.py`) |
 | `alfred:attention:{domain}:seen` | Set | Sticky removals -- entities the YAML seed must not re-add |
 | `alfred:pending_actions:{request_id}` | String (JSON) | Parked critical `ActionRequest` awaiting confirmation (TTL 300s, `core/routing/pending.py`) |
+| `alfred:auth:{session_id}` | Hash | Passkey session: `authenticated`, `credential_id`, `created_at`, `ip`, `user_agent`, `channel` (TTL 8h, `core/identity/auth_routes.py`) |
+| `alfred:webauthn:pairing` | String | The active 6-digit device-pairing code (TTL 300s, single-use) |
+| `alfred:webauthn:pairing:fails` | String (int) | Wrong guesses at that code; the code is burned at 10 |
 
 ### 5.3 Consumer Groups
 

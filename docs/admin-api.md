@@ -10,10 +10,11 @@ Two concerns:
 
 - **Read-only observability** — stream history with cursor pagination, memory snapshots
   (episodic, semantic, routines, scratchpad), trigger state, deferred notifications,
-  active sessions, registered devices, and a combined system overview.
+  active sessions, registered devices, the Reflex attention set, and a combined system
+  overview.
 - **Curated controls** — a small set of operations that mirror what the system already
   does internally (set DND, drain deferred notifications, run the Librarian, enable/disable
-  or manually fire a trigger, end a session).
+  or manually fire a trigger, end a session, edit an attention domain).
 
 All routes share the `/api/admin` prefix and are served by the same `core.channels` process
 that handles chat WebSocket connections on port 8081.
@@ -38,7 +39,13 @@ two shapes:
 | `PUT/DELETE /api/integrations/{name}/credentials`, `POST/DELETE /api/devices/register`, `POST /api/voice/enroll` | **both** (`_CREDENTIAL_GATES`, network first) | A caller who can write these can widen Alfred's reach, so being on the LAN/tailnet *and* signed in are both required. |
 | `POST /api/auth/register/{begin,complete}` | **network only** (`Depends(trusted_network_dep)` in `core/identity/auth_routes.py`, injected from `web_server.py`) | Registration is how the first session comes into existence — the first-run user has no cookie yet, so a session gate here would be unsatisfiable. Physical network position is the whole of the trust. |
 
-See [`webauthn.md` → Security Properties](webauthn.md) for the registration side.
+Removing a passkey (`DELETE /api/auth/credentials/{credential_id}`) and minting a pairing
+code (`POST /api/auth/pairing`) sit on the **session only**, like the admin surface: neither
+mints nor widens a credential, so the rule above does not reach them. Registration also
+passes with a valid `X-Pairing-Code` header instead of the network, which is what the mint
+exists for.
+
+See [`webauthn.md` → Sessions, passkeys and pairing](webauthn.md) for that whole surface.
 
 The dependency is applied at router creation time:
 
@@ -82,7 +89,7 @@ upgrades — and checks the `alfred:auth:{session_id}` hash in Redis.
 Returns a single JSON object with:
 
 - `redis.connected` — bool, from a `PING` probe
-- `cost` — current `alfred:cost:daily` value (JSON object) or `null` if unset. The blob is written only on spend, so before the day's first `record_spend` it is the previous day's state (check `date`); `request_count`/`avg_usd` are absent entirely from state written before the upgrade — treat both as optional
+- `cost` — current `alfred:cost:daily` value (JSON object) or `null` if unset. The blob is written only on spend, so before the day's first `record_spend` it is the previous day's state (check `date`); `request_count` (calls billed today) and `avg_usd` (spend per call) are absent entirely from state written before the upgrade — treat both as optional
 - `dnd` — current `alfred:memory:dnd` value, defaulting to `{"active": false}`
 - `counts.sessions` — number of active `alfred:sessions:*` keys (scan-based)
 - `counts.devices` — `HLEN alfred:push:devices`
@@ -295,6 +302,43 @@ distinguish devices.
 
 ---
 
+### Attention
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/admin/attention` | Every Reflex attention domain: `members` (entities that wake the SLM) and `seen` (entities already evaluated, which the YAML seed leaves alone) |
+| `PUT` | `/api/admin/attention/{domain}` | Add entities to, or sticky-remove them from, one domain |
+
+`GET` returns `{"domains": [{"domain": "home", "members": [...], "seen": [...]}, ...]}`,
+sorted by domain, with both member lists sorted. A domain appears if it has an attention
+set **or** a `:seen` set. One unreadable domain costs its own row (logged, skipped); a
+failed scan degrades the whole page to `{"domains": []}` rather than raising.
+
+`PUT` takes `{"allow": ["light.kitchen"], "ask": ["binary_sensor.motion"]}` — `allow`
+entities go through `attention_add` (into the set, marked seen); `ask` entities go through
+`attention_remove` (out of the set, marked seen so the seed cannot re-add them). `ask` is
+applied after `allow`, so an entity in both lists ends up removed and sticky. The refreshed
+domain is returned in the `GET` row shape, read back after the writes — a write is not
+confirmed until it reads.
+
+| Rejection | Status |
+|---|---|
+| Domain outside `[a-z0-9_]{1,64}` (`fullmatch`, so a trailing newline is not accepted) | **400** `Invalid domain` |
+| More than 200 entries in either list | **422** |
+| An entry that is blank/whitespace-only, or longer than 256 characters | **422** |
+| Redis failed part-way (the log line says how many of the changes landed) | **503** `Attention store unavailable` |
+
+Entries are stripped before they are written. Colons are deliberately allowed — these are
+set *members*, not key names, so an entity id cannot escape its domain; the domain grammar
+is what refuses `home:seen`, which would otherwise write straight into the sticky set. The
+writes are not transactional: a mid-list failure leaves the earlier changes applied.
+
+`AttentionSet.should_fire` checks membership with `SISMEMBER` per event, so an edit applies
+to the next state change — no reload, no restart. See
+[`autonomy.md` → Attention Set](autonomy.md) for what the set gates.
+
+---
+
 ### Controls
 
 | Method | Path | Purpose |
@@ -304,6 +348,7 @@ distinguish devices.
 | `POST` | `/api/admin/librarian/run` | Trigger an immediate Librarian consolidation |
 | `POST` | `/api/admin/triggers/{trigger_id}/enabled` | Enable or disable a trigger |
 | `POST` | `/api/admin/triggers/{trigger_id}/fire` | Manually fire a trigger |
+| `PUT` | `/api/admin/attention/{domain}` | Edit one Reflex attention domain ([Attention](#attention)) |
 
 All control endpoints log at INFO when they execute.
 
