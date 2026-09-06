@@ -940,15 +940,18 @@ def _attention_redis(sets: dict[str, set[str]]) -> AsyncMock:
     r.sadd = AsyncMock(side_effect=_sadd)
     r.srem = AsyncMock(side_effect=_srem)
     r.smembers = AsyncMock(side_effect=_smembers)
-    r.scan_iter = MagicMock(side_effect=lambda match="*": _aiter(sorted(sets)))
+    # Insertion order, like real SCAN — sorting the domains is the helper's job.
+    r.scan_iter = MagicMock(side_effect=lambda match="*", count=100: _aiter(list(sets)))
     return r
 
 
 def test_attention_get_lists_every_domain() -> None:
+    """Three domains, keyed out of order — the response is sorted by domain."""
     sets = {
+        "alfred:attention:media:seen": {"player.living_room"},
         "alfred:attention:home": {"light.kitchen"},
         "alfred:attention:home:seen": {"light.kitchen", "sensor.dryer_power"},
-        "alfred:attention:media:seen": {"player.living_room"},
+        "alfred:attention:calendar": {"calendar.work"},
     }
     client = make_admin_client(_attention_redis(sets))
 
@@ -957,6 +960,7 @@ def test_attention_get_lists_every_domain() -> None:
     assert resp.status_code == 200
     assert resp.json() == {
         "domains": [
+            {"domain": "calendar", "members": ["calendar.work"], "seen": []},
             {
                 "domain": "home",
                 "members": ["light.kitchen"],
@@ -964,6 +968,31 @@ def test_attention_get_lists_every_domain() -> None:
             },
             {"domain": "media", "members": [], "seen": ["player.living_room"]},
         ]
+    }
+
+
+def test_attention_get_skips_only_the_domain_that_fails() -> None:
+    """One unreadable set costs its own row, not the whole page."""
+    sets = {
+        "alfred:attention:home": {"light.kitchen"},
+        "alfred:attention:media": {"player.living_room"},
+    }
+    r = _attention_redis(sets)
+    healthy = r.smembers
+
+    async def _flaky(key: str) -> set[bytes]:
+        if key.startswith("alfred:attention:media"):
+            raise ConnectionError("down")
+        return await healthy(key)  # type: ignore[no-any-return]
+
+    r.smembers = AsyncMock(side_effect=_flaky)
+    client = make_admin_client(r)
+
+    resp = client.get("/api/admin/attention")
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "domains": [{"domain": "home", "members": ["light.kitchen"], "seen": []}]
     }
 
 
@@ -998,15 +1027,102 @@ def test_attention_put_adds_and_removes() -> None:
     assert "sensor.dryer_power" in sets["alfred:attention:home:seen"]
 
 
-def test_attention_put_rejects_bad_domain() -> None:
+@pytest.mark.parametrize(
+    "domain",
+    [
+        # The load-bearing case: this would write into another domain's sticky set.
+        "home:seen",
+        # Percent-encoded `..`: a literal `../x` is resolved away by the client
+        # (and an encoded slash 404s at the router), so this is the traversal
+        # shape that actually reaches the handler.
+        "%2E%2E",
+        "*",
+        "Home",
+        "a-b",
+        "a" * 65,
+    ],
+)
+def test_attention_put_rejects_bad_domain(domain: str) -> None:
     client = make_admin_client(_attention_redis({}))
 
-    resp = client.put("/api/admin/attention/Not-A-Domain", json={"allow": ["x"]})
+    resp = client.put(f"/api/admin/attention/{domain}", json={"allow": ["x"]})
 
     assert resp.status_code == 400
+
+
+def test_attention_put_accepts_a_lowercase_underscored_domain() -> None:
+    sets: dict[str, set[str]] = {}
+    client = make_admin_client(_attention_redis(sets))
+
+    resp = client.put("/api/admin/attention/home_2", json={"allow": ["light.kitchen"]})
+
+    assert resp.status_code == 200
+    assert sets["alfred:attention:home_2"] == {"light.kitchen"}
+
+
+def test_attention_put_returns_503_when_the_store_fails() -> None:
+    r = _attention_redis({})
+    r.sadd = AsyncMock(side_effect=ConnectionError("down"))
+    client = make_admin_client(r)
+
+    resp = client.put("/api/admin/attention/home", json={"allow": ["light.kitchen"]})
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "attention store unavailable"
+
+
+def test_attention_put_accepts_an_empty_body() -> None:
+    """Both lists default to empty: a no-op PUT reads the domain back untouched."""
+    sets: dict[str, set[str]] = {
+        "alfred:attention:home": {"light.kitchen"},
+        "alfred:attention:home:seen": {"light.kitchen"},
+    }
+    client = make_admin_client(_attention_redis(sets))
+
+    resp = client.put("/api/admin/attention/home", json={})
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "domain": "home",
+        "members": ["light.kitchen"],
+        "seen": ["light.kitchen"],
+    }
+    assert sets == {
+        "alfred:attention:home": {"light.kitchen"},
+        "alfred:attention:home:seen": {"light.kitchen"},
+    }
+
+
+def test_attention_put_rejects_a_non_list_body() -> None:
+    client = make_admin_client(_attention_redis({}))
+
+    resp = client.put("/api/admin/attention/home", json={"allow": "notalist"})
+
+    assert resp.status_code == 422
+
+
+@pytest.mark.parametrize("entity_id", ["", "   ", "x" * 300])
+def test_attention_put_rejects_a_bad_entity_id(entity_id: str) -> None:
+    client = make_admin_client(_attention_redis({}))
+
+    resp = client.put("/api/admin/attention/home", json={"allow": [entity_id]})
+
+    assert resp.status_code == 422
+
+
+def test_attention_put_strips_surrounding_whitespace() -> None:
+    sets: dict[str, set[str]] = {}
+    client = make_admin_client(_attention_redis(sets))
+
+    resp = client.put("/api/admin/attention/home", json={"allow": ["  light.kitchen  "]})
+
+    assert resp.status_code == 200
+    assert sets["alfred:attention:home"] == {"light.kitchen"}
 
 
 def test_attention_requires_auth() -> None:
     client = make_admin_client(_attention_redis({}), authed=False)
     assert client.get("/api/admin/attention").status_code == 401
     assert client.put("/api/admin/attention/home", json={"allow": []}).status_code == 401
+    # The gate runs before validation: a malformed body must not leak a 422 either.
+    assert client.put("/api/admin/attention/home", json={"allow": "x"}).status_code == 401

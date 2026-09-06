@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Request
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from bus.schemas.events import ActionRequest
 from core.channels.stream_catalog import STREAM_CATALOG, decode_entry, stream_summaries
@@ -82,8 +82,30 @@ class AttentionUpdate(BaseModel):
     allow: list[str] = Field(default_factory=list)
     ask: list[str] = Field(default_factory=list)
 
+    @field_validator("allow", "ask")
+    @classmethod
+    def _clean_entities(cls, entities: list[str]) -> list[str]:
+        """Strip, reject blanks, and cap length — 422 rather than a junk set member.
 
+        Colons are deliberately allowed: these are set *members*, not key names,
+        so an entity id has no way to escape the domain it is written under.
+        """
+        cleaned: list[str] = []
+        for raw in entities:
+            entity_id = raw.strip()
+            if not entity_id:
+                raise ValueError("entity id must not be blank")
+            if len(entity_id) > _MAX_ENTITY_ID_LEN:
+                raise ValueError(f"entity id exceeds {_MAX_ENTITY_ID_LEN} characters")
+            cleaned.append(entity_id)
+        return cleaned
+
+
+# Matches the domains the bus emits (``home``, ``media``); rejects anything that
+# could address another domain's keyspace — notably a ``:seen`` suffix, which
+# would write straight into the sticky set.
 _DOMAIN_RE = re.compile(r"^[a-z0-9_]{1,64}$")
+_MAX_ENTITY_ID_LEN = 256
 
 
 async def _publish_internal_action(redis: AioRedis, tool_name: str) -> None:
@@ -651,10 +673,17 @@ def create_admin_router() -> APIRouter:
         r = _redis(request)
         try:
             domains = await attention_domains(r)
-            return {"domains": [await _attention_domain(r, d) for d in domains]}
         except Exception as exc:
             logger.warning("Attention read failed: {}", exc)
             return {"domains": []}
+        # Per-domain, so one unreadable set costs its own row rather than the page.
+        out: list[dict[str, Any]] = []
+        for domain in domains:
+            try:
+                out.append(await _attention_domain(r, domain))
+            except Exception as exc:
+                logger.warning("Attention read for {} failed: {}", domain, exc)
+        return {"domains": out}
 
     @router.put("/attention/{domain}")
     async def update_attention(
@@ -664,17 +693,23 @@ def create_admin_router() -> APIRouter:
         if not _DOMAIN_RE.match(domain):
             raise HTTPException(status_code=400, detail="Invalid domain")
         r = _redis(request)
-        for entity_id in body.allow:
-            await attention_add(r, domain, entity_id)
-        for entity_id in body.ask:
-            await attention_remove(r, domain, entity_id)
+        try:
+            for entity_id in body.allow:
+                await attention_add(r, domain, entity_id)
+            for entity_id in body.ask:
+                await attention_remove(r, domain, entity_id)
+            # Read back inside the guard: a write is not confirmed until it reads.
+            updated = await _attention_domain(r, domain)
+        except Exception as exc:
+            logger.warning("Attention write for {} failed: {}", domain, exc)
+            raise HTTPException(status_code=503, detail="attention store unavailable") from exc
         logger.info(
             "Attention set '{}' updated via admin: +{} -{}",
             domain,
             len(body.allow),
             len(body.ask),
         )
-        return await _attention_domain(r, domain)
+        return updated
 
     return router
 

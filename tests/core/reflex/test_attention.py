@@ -29,9 +29,10 @@ class FakeSetRedis:
     async def smembers(self, key: str) -> set[str]:
         return set(self.sets.get(key, set()))
 
-    async def scan_iter(self, match: str = "*") -> Any:
+    async def scan_iter(self, match: str = "*", count: int = 10) -> Any:
+        """Insertion order — real SCAN's order is arbitrary; `count` is a hint."""
         prefix = match.rstrip("*")
-        for key in sorted(self.sets):
+        for key in list(self.sets):
             if key.startswith(prefix):
                 yield key
 
@@ -173,12 +174,31 @@ async def test_seen_list_and_domains_helpers() -> None:
     )
 
     redis = FakeSetRedis()
+    # Inserted out of order: the sort is the helper's job, not the scan's.
+    await attention_add(redis, "media", "player.living_room")  # type: ignore[arg-type]
     await attention_add(redis, "home", "light.kitchen")  # type: ignore[arg-type]
     await attention_remove(redis, "home", "sensor.dryer_power")  # type: ignore[arg-type]
-    await attention_add(redis, "media", "player.living_room")  # type: ignore[arg-type]
+    await attention_add(redis, "calendar", "calendar.work")  # type: ignore[arg-type]
 
     assert await attention_seen_list(redis, "home") == [  # type: ignore[arg-type]
         "light.kitchen",
         "sensor.dryer_power",
     ]
-    assert await attention_domains(redis) == ["home", "media"]  # type: ignore[arg-type]
+    assert await attention_domains(redis) == [  # type: ignore[arg-type]
+        "calendar",
+        "home",
+        "media",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_domains_skips_a_bare_prefix_key() -> None:
+    """`alfred:attention:` names no domain — a "" row is unaddressable by PUT."""
+    from core.reflex.attention import attention_add, attention_domains
+
+    redis = FakeSetRedis()
+    await attention_add(redis, "home", "light.kitchen")  # type: ignore[arg-type]
+    redis.sets["alfred:attention:"] = {"orphan"}
+    redis.sets["alfred:attention::seen"] = {"orphan"}
+
+    assert await attention_domains(redis) == ["home"]  # type: ignore[arg-type]
