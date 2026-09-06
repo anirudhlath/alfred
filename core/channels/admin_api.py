@@ -76,11 +76,20 @@ class TriggerEnabledRequest(BaseModel):
     enabled: bool
 
 
+# Matches the domains the bus emits (``home``, ``media``); rejects anything that
+# could address another domain's keyspace — notably a ``:seen`` suffix, which
+# would write straight into the sticky set. Applied with `fullmatch`: `$` would
+# also accept a trailing newline.
+_DOMAIN_RE = re.compile(r"[a-z0-9_]{1,64}")
+_MAX_ENTITY_ID_LEN = 256
+_MAX_ENTITIES_PER_LIST = 200
+
+
 class AttentionUpdate(BaseModel):
     """Entities to add to (`allow`) or remove from (`ask`) a domain's attention set."""
 
-    allow: list[str] = Field(default_factory=list)
-    ask: list[str] = Field(default_factory=list)
+    allow: list[str] = Field(default_factory=list, max_length=_MAX_ENTITIES_PER_LIST)
+    ask: list[str] = Field(default_factory=list, max_length=_MAX_ENTITIES_PER_LIST)
 
     @field_validator("allow", "ask")
     @classmethod
@@ -99,13 +108,6 @@ class AttentionUpdate(BaseModel):
                 raise ValueError(f"entity id exceeds {_MAX_ENTITY_ID_LEN} characters")
             cleaned.append(entity_id)
         return cleaned
-
-
-# Matches the domains the bus emits (``home``, ``media``); rejects anything that
-# could address another domain's keyspace — notably a ``:seen`` suffix, which
-# would write straight into the sticky set.
-_DOMAIN_RE = re.compile(r"^[a-z0-9_]{1,64}$")
-_MAX_ENTITY_ID_LEN = 256
 
 
 async def _publish_internal_action(redis: AioRedis, tool_name: str) -> None:
@@ -689,20 +691,33 @@ def create_admin_router() -> APIRouter:
     async def update_attention(
         request: Request, domain: str, body: AttentionUpdate
     ) -> dict[str, Any]:
-        """Add (`allow`) or sticky-remove (`ask`) entities for one domain."""
-        if not _DOMAIN_RE.match(domain):
+        """Add (`allow`) or sticky-remove (`ask`) entities for one domain.
+
+        `ask` is applied after `allow`, so an entity in both lists ends up
+        removed and sticky.
+        """
+        if not _DOMAIN_RE.fullmatch(domain):
             raise HTTPException(status_code=400, detail="Invalid domain")
         r = _redis(request)
+        applied = 0  # writes are not transactional — say how far we got
         try:
             for entity_id in body.allow:
                 await attention_add(r, domain, entity_id)
+                applied += 1
             for entity_id in body.ask:
                 await attention_remove(r, domain, entity_id)
+                applied += 1
             # Read back inside the guard: a write is not confirmed until it reads.
             updated = await _attention_domain(r, domain)
         except Exception as exc:
-            logger.warning("Attention write for {} failed: {}", domain, exc)
-            raise HTTPException(status_code=503, detail="attention store unavailable") from exc
+            logger.warning(
+                "Attention write for {} failed after {} of {} changes: {}",
+                domain,
+                applied,
+                len(body.allow) + len(body.ask),
+                exc,
+            )
+            raise HTTPException(status_code=503, detail="Attention store unavailable") from exc
         logger.info(
             "Attention set '{}' updated via admin: +{} -{}",
             domain,

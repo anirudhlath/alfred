@@ -71,15 +71,12 @@ async def attention_seen_list(redis: AioRedis, domain: str) -> list[str]:
 
 async def attention_domains(redis: AioRedis) -> list[str]:
     """Every domain that has an attention set (or a ``:seen`` set), sorted."""
-    # Dict-as-ordered-set: dedupes the `{domain}` / `{domain}:seen` pair while
-    # keeping scan order, so the sort below is the only thing deciding the output
-    # order. A set would make the unsorted order hash-dependent, and so untestable.
-    domains: dict[str, None] = {}
+    domains: set[str] = set()
     async for key in redis.scan_iter(match=f"{ATTENTION_PREFIX}*", count=100):
         suffix = decode_stream_value(key)[len(ATTENTION_PREFIX) :]
         domain = suffix.removesuffix(":seen")
         if domain:  # a bare `alfred:attention:` key names no domain — skip it
-            domains[domain] = None
+            domains.add(domain)
     return sorted(domains)
 
 

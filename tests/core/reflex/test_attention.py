@@ -30,11 +30,11 @@ class FakeSetRedis:
         return set(self.sets.get(key, set()))
 
     async def scan_iter(self, match: str = "*", count: int = 10) -> Any:
-        """Insertion order — real SCAN's order is arbitrary; `count` is a hint."""
+        """Bytes, like the real `decode_responses=False` pool; `count` is a hint."""
         prefix = match.rstrip("*")
         for key in list(self.sets):
             if key.startswith(prefix):
-                yield key
+                yield key.encode()
 
 
 def _event(

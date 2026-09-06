@@ -940,8 +940,11 @@ def _attention_redis(sets: dict[str, set[str]]) -> AsyncMock:
     r.sadd = AsyncMock(side_effect=_sadd)
     r.srem = AsyncMock(side_effect=_srem)
     r.smembers = AsyncMock(side_effect=_smembers)
-    # Insertion order, like real SCAN — sorting the domains is the helper's job.
-    r.scan_iter = MagicMock(side_effect=lambda match="*", count=100: _aiter(list(sets)))
+    # Bytes in insertion order, like the real pool: sorting and decoding are the
+    # helper's job, not the scan's.
+    r.scan_iter = MagicMock(
+        side_effect=lambda match="*", count=100: _aiter([k.encode() for k in sets])
+    )
     return r
 
 
@@ -953,11 +956,13 @@ def test_attention_get_lists_every_domain() -> None:
         "alfred:attention:home:seen": {"light.kitchen", "sensor.dryer_power"},
         "alfred:attention:calendar": {"calendar.work"},
     }
-    client = make_admin_client(_attention_redis(sets))
+    r = _attention_redis(sets)
+    client = make_admin_client(r)
 
     resp = client.get("/api/admin/attention")
 
     assert resp.status_code == 200
+    r.scan_iter.assert_called_once_with(match="alfred:attention:*", count=100)
     assert resp.json() == {
         "domains": [
             {"domain": "calendar", "members": ["calendar.work"], "seen": []},
@@ -1032,10 +1037,8 @@ def test_attention_put_adds_and_removes() -> None:
     [
         # The load-bearing case: this would write into another domain's sticky set.
         "home:seen",
-        # Percent-encoded `..`: a literal `../x` is resolved away by the client
-        # (and an encoded slash 404s at the router), so this is the traversal
-        # shape that actually reaches the handler.
-        "%2E%2E",
+        "%2E%2E",  # a literal `../x` is resolved away before it reaches the route
+        "home%0A",  # a trailing newline: `$` would accept it, `fullmatch` does not
         "*",
         "Home",
         "a-b",
@@ -1068,7 +1071,7 @@ def test_attention_put_returns_503_when_the_store_fails() -> None:
     resp = client.put("/api/admin/attention/home", json={"allow": ["light.kitchen"]})
 
     assert resp.status_code == 503
-    assert resp.json()["detail"] == "attention store unavailable"
+    assert resp.json()["detail"] == "Attention store unavailable"
 
 
 def test_attention_put_accepts_an_empty_body() -> None:
@@ -1091,6 +1094,31 @@ def test_attention_put_accepts_an_empty_body() -> None:
         "alfred:attention:home": {"light.kitchen"},
         "alfred:attention:home:seen": {"light.kitchen"},
     }
+
+
+def test_attention_put_applies_ask_after_allow() -> None:
+    """An entity in both lists ends up removed and sticky — `ask` is applied last."""
+    sets: dict[str, set[str]] = {}
+    client = make_admin_client(_attention_redis(sets))
+
+    resp = client.put(
+        "/api/admin/attention/home",
+        json={"allow": ["light.kitchen"], "ask": ["light.kitchen"]},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"domain": "home", "members": [], "seen": ["light.kitchen"]}
+
+
+def test_attention_put_rejects_an_oversized_list() -> None:
+    client = make_admin_client(_attention_redis({}))
+
+    resp = client.put(
+        "/api/admin/attention/home",
+        json={"allow": [f"light.l{i}" for i in range(201)]},
+    )
+
+    assert resp.status_code == 422
 
 
 def test_attention_put_rejects_a_non_list_body() -> None:
