@@ -24,7 +24,7 @@ from pydantic import BaseModel
 from core.memory.paths import preferences_dir as _preferences_dir
 from core.memory.paths import profile_dir as _profile_dir
 from core.memory.schemas import EpisodicEntry, RoutineSpec, RoutineStep, SignificanceScore
-from shared.streams import LIBRARIAN_QUEUE
+from shared.streams import LIBRARIAN_QUEUE, LIBRARIAN_STATUS_KEY
 
 if TYPE_CHECKING:
     from core.memory.context_index import ContextIndexManager
@@ -1012,6 +1012,23 @@ class Librarian:
             logger.info("Reindexed %d routines into context index", indexed)
         return indexed
 
+    async def _record_run(self, reviewed: int) -> None:
+        """Stamp the status hash after a cycle. Best-effort — never fails the cycle."""
+        try:
+            await self._redis.hset(
+                LIBRARIAN_STATUS_KEY,
+                mapping={
+                    "last_run_at": datetime.now(UTC).isoformat(),
+                    "reviewed": str(reviewed),
+                },
+            )
+        except Exception as exc:
+            logger.warning("Could not record Librarian run status: %s", exc)
+
+    async def record_next_run(self, at: datetime) -> None:
+        """Record when the scheduler will run the next cycle (shown on the dashboard)."""
+        await self._redis.hset(LIBRARIAN_STATUS_KEY, mapping={"next_run_at": at.isoformat()})
+
     async def consolidate(self) -> dict[str, Any]:
         """Run one consolidation cycle.
 
@@ -1026,6 +1043,7 @@ class Librarian:
         lines = await self._drain_scratchpad()
         if not lines:
             logger.info("Scratchpad empty — nothing to consolidate")
+            await self._record_run(0)
             return {"entries_processed": 0, "routines_reindexed": routines_reindexed}
 
         logger.info("Draining %d scratchpad entries", len(lines))
@@ -1087,4 +1105,5 @@ class Librarian:
             "timestamp": datetime.now(UTC).isoformat(),
         }
         logger.info("Consolidation complete: %s", result)
+        await self._record_run(len(lines))
         return result

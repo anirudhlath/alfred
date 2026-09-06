@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
@@ -52,3 +53,38 @@ async def test_scheduler_survives_consolidation_error() -> None:
         await task
 
     assert call_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_scheduler_records_next_run_after_each_cycle() -> None:
+    """After every cycle (success or failure) the scheduler stamps next_run_at."""
+    mock_librarian = AsyncMock()
+    mock_librarian.consolidate = AsyncMock(side_effect=RuntimeError("LLM unavailable"))
+    scheduler = LibrarianScheduler(librarian=mock_librarian, interval_seconds=0.01)
+
+    before = datetime.now(UTC)
+    task = asyncio.create_task(scheduler.run())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert mock_librarian.record_next_run.await_count >= 1
+    next_run = mock_librarian.record_next_run.await_args[0][0]
+    assert before <= next_run <= datetime.now(UTC) + timedelta(seconds=0.01)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_survives_record_next_run_failure() -> None:
+    mock_librarian = AsyncMock()
+    mock_librarian.consolidate = AsyncMock(return_value={"entries_processed": 0})
+    mock_librarian.record_next_run = AsyncMock(side_effect=ConnectionError("redis down"))
+    scheduler = LibrarianScheduler(librarian=mock_librarian, interval_seconds=0.01)
+
+    task = asyncio.create_task(scheduler.run())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert mock_librarian.consolidate.call_count >= 2

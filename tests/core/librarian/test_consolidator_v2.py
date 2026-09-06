@@ -1836,3 +1836,50 @@ async def test_compression_fallback_concatenation_when_no_api_key() -> None:
 
     mock_llm.assert_not_called()
     assert episodic_memory.copy_to_cold_and_remove.await_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_consolidate_records_status_on_empty_scratchpad() -> None:
+    """Even a no-op cycle stamps last_run_at/reviewed so the dashboard shows it ran."""
+    from shared.streams import LIBRARIAN_STATUS_KEY
+
+    librarian = _make_librarian(api_key="")
+    librarian._redis.lrange.return_value = []
+    librarian._redis.rename.side_effect = Exception("no such key")
+
+    await librarian.consolidate()
+
+    librarian._redis.hset.assert_awaited()
+    key, mapping = (
+        librarian._redis.hset.call_args[0][0],
+        librarian._redis.hset.call_args.kwargs["mapping"],
+    )
+    assert key == LIBRARIAN_STATUS_KEY
+    assert mapping["reviewed"] == "0"
+    datetime.datetime.fromisoformat(mapping["last_run_at"])  # ISO-8601, raises otherwise
+
+
+@pytest.mark.asyncio
+async def test_record_next_run_writes_next_run_at() -> None:
+    from shared.streams import LIBRARIAN_STATUS_KEY
+
+    librarian = _make_librarian(api_key="")
+    at = datetime.datetime(2026, 9, 4, 9, 30, tzinfo=_UTC)
+
+    await librarian.record_next_run(at)
+
+    librarian._redis.hset.assert_awaited_once_with(
+        LIBRARIAN_STATUS_KEY, mapping={"next_run_at": "2026-09-04T09:30:00+00:00"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_status_write_failure_does_not_break_consolidation() -> None:
+    librarian = _make_librarian(api_key="")
+    librarian._redis.lrange.return_value = []
+    librarian._redis.rename.side_effect = Exception("no such key")
+    librarian._redis.hset.side_effect = ConnectionError("redis down")
+
+    result = await librarian.consolidate()
+
+    assert result["entries_processed"] == 0

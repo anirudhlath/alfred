@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -34,5 +35,11 @@ class LibrarianScheduler:
                 raise
             except Exception as exc:
                 logger.error("Librarian consolidation failed: %s", exc)
+
+            next_run = datetime.now(UTC) + timedelta(seconds=self._interval)
+            try:
+                await self._librarian.record_next_run(next_run)
+            except Exception as exc:
+                logger.warning("Could not record next Librarian run: %s", exc)
 
             await asyncio.sleep(self._interval)

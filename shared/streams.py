@@ -7,6 +7,8 @@ SCRATCHPAD_QUEUE = "alfred:scratchpad:queue"
 # scratchpad.md, so the Librarian has its own queue to drain instead of racing
 # the writer for SCRATCHPAD_QUEUE (which the writer always won).
 LIBRARIAN_QUEUE = "alfred:librarian:queue"
+# HASH: last_run_at (ISO), reviewed (int as str), next_run_at (ISO) — read by the admin overview
+LIBRARIAN_STATUS_KEY = "alfred:librarian:status"
 TRIGGERS_KEY = "alfred:triggers"
 TOOL_REGISTRY_KEY = "alfred:tool_registry"
 CONTEXT_KEY_PREFIX = "alfred:context:"
