@@ -920,3 +920,93 @@ async def test_aclose_episodic_survives_a_failing_close() -> None:
     admin_api._episodic_memory = object()
     await admin_api.aclose_episodic()
     assert admin_api._episodic_embedder is None
+
+
+def _attention_redis(sets: dict[str, set[str]]) -> AsyncMock:
+    """AsyncMock Redis whose SET commands operate on a shared dict."""
+    r = AsyncMock()
+
+    async def _sadd(key: str, member: str) -> int:
+        sets.setdefault(key, set()).add(member)
+        return 1
+
+    async def _srem(key: str, member: str) -> int:
+        sets.get(key, set()).discard(member)
+        return 1
+
+    async def _smembers(key: str) -> set[bytes]:
+        return {m.encode() for m in sets.get(key, set())}
+
+    r.sadd = AsyncMock(side_effect=_sadd)
+    r.srem = AsyncMock(side_effect=_srem)
+    r.smembers = AsyncMock(side_effect=_smembers)
+    r.scan_iter = MagicMock(side_effect=lambda match="*": _aiter(sorted(sets)))
+    return r
+
+
+def test_attention_get_lists_every_domain() -> None:
+    sets = {
+        "alfred:attention:home": {"light.kitchen"},
+        "alfred:attention:home:seen": {"light.kitchen", "sensor.dryer_power"},
+        "alfred:attention:media:seen": {"player.living_room"},
+    }
+    client = make_admin_client(_attention_redis(sets))
+
+    resp = client.get("/api/admin/attention")
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "domains": [
+            {
+                "domain": "home",
+                "members": ["light.kitchen"],
+                "seen": ["light.kitchen", "sensor.dryer_power"],
+            },
+            {"domain": "media", "members": [], "seen": ["player.living_room"]},
+        ]
+    }
+
+
+def test_attention_get_degrades_to_empty_on_redis_error() -> None:
+    r = _overview_redis()
+    r.scan_iter = MagicMock(side_effect=ConnectionError("down"))
+    client = make_admin_client(r)
+
+    resp = client.get("/api/admin/attention")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"domains": []}
+
+
+def test_attention_put_adds_and_removes() -> None:
+    sets: dict[str, set[str]] = {"alfred:attention:home": {"sensor.dryer_power"}}
+    client = make_admin_client(_attention_redis(sets))
+
+    resp = client.put(
+        "/api/admin/attention/home",
+        json={"allow": ["light.kitchen"], "ask": ["sensor.dryer_power"]},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "domain": "home",
+        "members": ["light.kitchen"],
+        "seen": ["light.kitchen", "sensor.dryer_power"],
+    }
+    assert sets["alfred:attention:home"] == {"light.kitchen"}
+    # Removal is sticky: the entity stays in :seen so the seed rule can't re-add it
+    assert "sensor.dryer_power" in sets["alfred:attention:home:seen"]
+
+
+def test_attention_put_rejects_bad_domain() -> None:
+    client = make_admin_client(_attention_redis({}))
+
+    resp = client.put("/api/admin/attention/Not-A-Domain", json={"allow": ["x"]})
+
+    assert resp.status_code == 400
+
+
+def test_attention_requires_auth() -> None:
+    client = make_admin_client(_attention_redis({}), authed=False)
+    assert client.get("/api/admin/attention").status_code == 401
+    assert client.put("/api/admin/attention/home", json={"allow": []}).status_code == 401

@@ -29,6 +29,12 @@ class FakeSetRedis:
     async def smembers(self, key: str) -> set[str]:
         return set(self.sets.get(key, set()))
 
+    async def scan_iter(self, match: str = "*") -> Any:
+        prefix = match.rstrip("*")
+        for key in sorted(self.sets):
+            if key.startswith(prefix):
+                yield key
+
 
 def _event(
     entity_id: str,
@@ -155,3 +161,24 @@ def test_seed_yaml_matches_contract() -> None:
         "window",
         "garage_door",
     ]
+
+
+@pytest.mark.asyncio
+async def test_seen_list_and_domains_helpers() -> None:
+    from core.reflex.attention import (
+        attention_add,
+        attention_domains,
+        attention_remove,
+        attention_seen_list,
+    )
+
+    redis = FakeSetRedis()
+    await attention_add(redis, "home", "light.kitchen")  # type: ignore[arg-type]
+    await attention_remove(redis, "home", "sensor.dryer_power")  # type: ignore[arg-type]
+    await attention_add(redis, "media", "player.living_room")  # type: ignore[arg-type]
+
+    assert await attention_seen_list(redis, "home") == [  # type: ignore[arg-type]
+        "light.kitchen",
+        "sensor.dryer_power",
+    ]
+    assert await attention_domains(redis) == ["home", "media"]  # type: ignore[arg-type]

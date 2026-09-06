@@ -24,11 +24,18 @@ from typing import TYPE_CHECKING, Any
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Request
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from bus.schemas.events import ActionRequest
 from core.channels.stream_catalog import STREAM_CATALOG, decode_entry, stream_summaries
 from core.memory.paths import episodic_cold_path, preferences_dir, profile_dir, scratchpad_path
+from core.reflex.attention import (
+    attention_add,
+    attention_domains,
+    attention_list,
+    attention_remove,
+    attention_seen_list,
+)
 from shared.config import AlfredConfig
 from shared.redis_streams import revrange
 from shared.streams import (
@@ -67,6 +74,16 @@ class DndRequest(BaseModel):
 
 class TriggerEnabledRequest(BaseModel):
     enabled: bool
+
+
+class AttentionUpdate(BaseModel):
+    """Entities to add to (`allow`) or remove from (`ask`) a domain's attention set."""
+
+    allow: list[str] = Field(default_factory=list)
+    ask: list[str] = Field(default_factory=list)
+
+
+_DOMAIN_RE = re.compile(r"^[a-z0-9_]{1,64}$")
 
 
 async def _publish_internal_action(redis: AioRedis, tool_name: str) -> None:
@@ -242,6 +259,14 @@ async def _librarian_status(r: AioRedis) -> dict[str, Any]:
         "last_run_at": fields.get("last_run_at"),
         "reviewed": _int_or_none(fields.get("reviewed")),
         "next_run_at": fields.get("next_run_at"),
+    }
+
+
+async def _attention_domain(r: AioRedis, domain: str) -> dict[str, Any]:
+    return {
+        "domain": domain,
+        "members": await attention_list(r, domain),
+        "seen": await attention_seen_list(r, domain),
     }
 
 
@@ -619,6 +644,37 @@ def create_admin_router() -> APIRouter:
         deleted = await _redis(request).delete(f"{SESSIONS_KEY_PREFIX}{session_id}")
         logger.info("Admin deleted session {}", session_id)
         return {"deleted": bool(deleted)}
+
+    @router.get("/attention")
+    async def attention(request: Request) -> dict[str, Any]:
+        """Every domain's attention set and its sticky ``:seen`` companion."""
+        r = _redis(request)
+        try:
+            domains = await attention_domains(r)
+            return {"domains": [await _attention_domain(r, d) for d in domains]}
+        except Exception as exc:
+            logger.warning("Attention read failed: {}", exc)
+            return {"domains": []}
+
+    @router.put("/attention/{domain}")
+    async def update_attention(
+        request: Request, domain: str, body: AttentionUpdate
+    ) -> dict[str, Any]:
+        """Add (`allow`) or sticky-remove (`ask`) entities for one domain."""
+        if not _DOMAIN_RE.match(domain):
+            raise HTTPException(status_code=400, detail="Invalid domain")
+        r = _redis(request)
+        for entity_id in body.allow:
+            await attention_add(r, domain, entity_id)
+        for entity_id in body.ask:
+            await attention_remove(r, domain, entity_id)
+        logger.info(
+            "Attention set '{}' updated via admin: +{} -{}",
+            domain,
+            len(body.allow),
+            len(body.ask),
+        )
+        return await _attention_domain(r, domain)
 
     return router
 
