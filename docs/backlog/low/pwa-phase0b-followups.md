@@ -1,7 +1,8 @@
 # PWA plan 0b backend follow-ups
 
 **Priority:** low
-**Source:** plan 0b implementation + per-task quality reviews (Tasks 7, 8, 10)
+**Source:** out-of-scope findings from the per-task quality reviews and the task 15
+verification sweep (Tasks 7, 8, 10, 15)
 
 Everything below was found while building the plan-0b backend surface (overview
 reflex/librarian blocks, probe latency, sessions/passkeys/pairing) and deliberately left
@@ -62,3 +63,22 @@ second round trip (documented as deliberate in the code: nothing else in the rep
 the two leaves the counter without a TTL until then. **Acceptance:** if a pipeline lands
 anywhere else in the codebase, fold this in with it; not worth introducing the pattern
 alone.
+
+## 8. `get_tools()` probes every attribute in `dir(self)`, not just methods
+`BaseFeature.get_tools()` (`sdk/alfred_sdk/feature.py:212-229`) walks `dir(self)`, binds
+every name with `getattr(self, attr_name, None)`, and treats whatever answers
+`getattr(attr, "_tool_marker", False)` as a tool. Properties are therefore *evaluated*
+during discovery, and since that `getattr` swallows only `AttributeError`, a property
+raising anything else aborts the scan outright: `TriggerFeature().get_tools()` raises
+`RuntimeError: TriggerFeature used without TriggerFeatureContext`, leaving `to_manifest()`
+unusable on a context-less feature. Data attributes are probed as if they were methods too,
+so any permissive `__getattr__` answers truthily and is mistaken for a tool — task 15 saw
+unspecced `AsyncMock` stores do exactly that, turning the four `overrides.get(...)`
+arguments at `:223-226` into orphaned coroutines (see the commit history for the
+trigger-store mock fix). Pre-existing design, out of plan 0b scope. **Acceptance:** resolve
+each name statically with `inspect.getattr_static(self, name)` (or iterate
+`type(self).__dict__`) and skip anything that is not a function or `inspect.ismethod`
+*before* binding it; a `callable(attr)` guard does not do the job, since
+`callable(AsyncMock())` is `True` and `attr` is already the evaluated property.
+`core/triggers/feature.py:70`'s `isinstance(t.name, str)` guard only absorbs the symptom
+downstream and can go at the same time.
