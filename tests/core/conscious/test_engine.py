@@ -677,7 +677,9 @@ async def test_dispatch_tolerates_null_tool_input(
     )
 
     assert result["tool_use_id"] == "tc-1"
-    assert "Error" in result["content"]
+    # It reached the integration call (unregistered here) rather than being rejected
+    # as malformed — `null` means "no arguments", not "bad arguments".
+    assert result["content"] == "Error: unknown integration tool 'integration_weather_get_current'"
 
 
 @pytest.mark.asyncio
@@ -700,3 +702,29 @@ async def test_dispatch_ignores_non_string_and_blank_reasons(
         routed = mock_deps["domain_router"].route.call_args[0][0]
         assert routed.reason is None, bad_reason
         assert routed.parameters == {"entity_id": "lock.front_door"}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_rejects_malformed_tool_arguments(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """A non-null, non-object `input` is an error — never a zero-argument call."""
+    engine = ConsciousEngine(**mock_deps)
+    expected = "Error: malformed tool arguments (expected a JSON object)"
+
+    with patch.object(engine, "_execute_integration_call", new=AsyncMock()) as integration_call:
+        for bad_input in ([], "x", 5):
+            domain = await engine._dispatch_tool_call(
+                {"id": "tc-1", "name": "home.unlock_door", "input": bad_input},
+                tools=[_critical_tool()],
+            )
+            integration = await engine._dispatch_tool_call(
+                {"id": "tc-2", "name": "integration_weather_get_current", "input": bad_input},
+                tools=[],
+            )
+            assert domain["content"] == expected, bad_input
+            assert integration["content"] == expected, bad_input
+
+        # Nothing was dispatched anywhere on the malformed path.
+        integration_call.assert_not_called()
+    mock_deps["domain_router"].route.assert_not_called()

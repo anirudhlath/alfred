@@ -81,7 +81,9 @@ sequenceDiagram
   `tool_name`, `parameters` and `reason` — enough for a client to render the prompt
   without a second lookup. `reason` is the actor's one-sentence justification, offered
   as an extra argument on critical tools and moved off `parameters` by
-  `ConsciousEngine._dispatch_tool_call()` so the domain service never sees it.
+  `ConsciousEngine._dispatch_tool_call()` so the domain service never sees it —
+  unless the tool declares `reason` as its own parameter, in which case it belongs
+  to the service and `ActionRequest.reason` stays null.
   It is **null for every non-conscious source** (trigger-fired actions —
   `core/triggers/engine.py` — and any caller that omits it), so clients must render
   the prompt without a reason rather than assuming one is present.

@@ -432,10 +432,19 @@ class ConsciousEngine:
         dispatch from ``process_request`` always passes the resolved identity.
         """
         name = tc["name"]
-        # A model can emit `"arguments": "null"`, which `_call_llm` parses to None.
-        # Copy defensively: the caller's dict must not be mutated by the `reason` pop.
-        raw_input = tc.get("input") or {}
-        params = dict(raw_input) if isinstance(raw_input, dict) else {}
+        # A model can emit `"arguments": "null"`, which `_call_llm` parses to None —
+        # that means "no arguments". Anything else non-object is malformed and is
+        # refused rather than silently dispatched as a zero-argument call.
+        raw_input = tc.get("input")
+        if raw_input is None:
+            params: dict[str, Any] = {}
+        elif isinstance(raw_input, dict):
+            # Copy: the caller's dict must not be mutated by the `reason` pop below.
+            params = dict(raw_input)
+        else:
+            return self._make_tool_result(
+                tc["id"], "Error: malformed tool arguments (expected a JSON object)"
+            )
 
         # 1. Integration tools — direct call via IntegrationRegistry
         if name.startswith(self._INTEGRATION_PREFIX):
