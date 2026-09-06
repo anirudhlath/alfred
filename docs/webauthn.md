@@ -160,8 +160,20 @@ answers **503** `Session store unavailable` when the pairing store cannot be rea
 either register route's body runs — a device holding a good code must never be told the
 code is wrong because Redis was unreachable. Separate
 again are the deliberate refusals — 400 for a malformed id, 401 for no session, 403 for a
-bad pairing code, 404 for an unknown passkey, 409 for the last one — which mean the
-request was understood and declined, not that a store was unreachable.
+bad pairing code, 404 for an unknown passkey, 409 for the last one, 422 for a device name
+`register/begin` will not take — which mean the request was understood and declined, not
+that a store was unreachable.
+
+**Device names.** Both ends of the registration ceremony apply one rule: stripped,
+non-empty, at most 100 characters. `register/begin` enforces it with pydantic (**422**)
+and `register/complete` re-checks the raw body it is handed (**400** `Invalid device
+name`), because that body is what reaches the credential row. They agree deliberately —
+a name accepted at `begin` and refused at `complete` would fail *after* the user had
+answered the biometric prompt, with nothing left to retry. `begin` echoes the stripped
+name back as `_device_name`, so the client returns the exact value that will be stored.
+`transports` is validated on the same call and for the same reason (**400** `Invalid
+transports`): it is stored too, and `login/begin` builds its allow-list from every stored
+credential, so one unusable row would lock out every passkey.
 
 **Pairing a new phone.** The signed-in device calls `POST /api/auth/pairing` and shows the
 code; the new device sends it as `X-Pairing-Code` on `register/begin` **and**

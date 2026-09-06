@@ -8,12 +8,12 @@ import re
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Annotated, Any, NamedTuple
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, StringConstraints
 from webauthn import (
     generate_authentication_options,
     generate_registration_options,
@@ -65,8 +65,9 @@ _PAIRING_CODE_DIGITS = 6  # short enough to read off one screen and type on anot
 # contain, and ``fullmatch`` so a longer string cannot pass on a prefix.
 _PAIRING_CODE_RE = re.compile(rf"[0-9]{{{_PAIRING_CODE_DIGITS}}}")
 _PAIRING_INVALID_DETAIL = "Invalid or expired pairing code"
-# One ceiling for a passkey's label, enforced at both ends of the ceremony:
-# pydantic on ``register/begin``, ``_validated_device_name`` on ``register/complete``.
+# One ceiling for a passkey's label, enforced identically at both ends of the ceremony:
+# pydantic on ``register/begin`` (``RegisterBeginRequest``), ``_validated_device_name``
+# on ``register/complete``. Both strip first and both refuse an empty result.
 _DEVICE_NAME_MAX_LEN = 100
 
 
@@ -88,7 +89,20 @@ class _CurrentSession(NamedTuple):
 
 
 class RegisterBeginRequest(BaseModel):
-    device_name: str = Field(max_length=_DEVICE_NAME_MAX_LEN)
+    """The body of ``register/begin``.
+
+    ``device_name`` is constrained to exactly what ``register/complete`` will accept
+    (``_validated_device_name``): stripped, non-empty, at most ``_DEVICE_NAME_MAX_LEN``.
+    The two ends have to agree — ``begin`` used to take a blank or whitespace-only name
+    and refuse it at ``complete``, which lands *after* the user has answered the
+    biometric prompt, with nothing to retry. Stripping here also means the value echoed
+    back as ``_device_name`` is already the one that gets stored.
+    """
+
+    device_name: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=_DEVICE_NAME_MAX_LEN),
+    ]
 
 
 def _client_address(request: Request) -> str:

@@ -433,6 +433,41 @@ class TestRegistrationBegin:
         assert resp.status_code == 403
         assert resp.json()["detail"] == "Access restricted to trusted networks"
 
+    def test_accepts_a_device_name_at_the_cap(self, client: TestClient) -> None:
+        """100 is the accept edge, and the same ceiling ``register/complete`` applies."""
+        gen, to_json = _registration_options_patched()
+        with gen, to_json:
+            resp = client.post(
+                "/api/auth/register/begin", json={"device_name": "n" * _DEVICE_NAME_MAX_LEN}
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["_device_name"] == "n" * _DEVICE_NAME_MAX_LEN
+
+    @pytest.mark.parametrize("device_name", ["", "   ", "\t", "n" * (_DEVICE_NAME_MAX_LEN + 1)])
+    def test_rejects_a_device_name_complete_would_refuse(
+        self, client: TestClient, device_name: str
+    ) -> None:
+        """The two ends of the ceremony must agree. ``begin`` used to accept an empty or
+        whitespace-only name and an over-long one only by its raw length, so the 400 from
+        ``register/complete`` landed *after* the user had already answered the biometric
+        prompt — with no way to retry without starting over."""
+        gen, to_json = _registration_options_patched()
+        with gen, to_json:
+            resp = client.post("/api/auth/register/begin", json={"device_name": device_name})
+
+        assert resp.status_code == 422
+
+    def test_a_padded_device_name_is_stripped_before_it_is_echoed(self, client: TestClient) -> None:
+        """Stripped at begin, so the value the client sends back to complete is already
+        the one that will be stored."""
+        gen, to_json = _registration_options_patched()
+        with gen, to_json:
+            resp = client.post("/api/auth/register/begin", json={"device_name": "  Phone \t"})
+
+        assert resp.status_code == 200
+        assert resp.json()["_device_name"] == "Phone"
+
 
 class TestRegistrationComplete:
     def test_rejects_untrusted_network(self, store: CredentialStore, redis_mock: AsyncMock) -> None:
