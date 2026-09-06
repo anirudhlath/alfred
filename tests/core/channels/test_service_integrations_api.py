@@ -174,6 +174,17 @@ def service_client_no_endpoint(
     yield from _build_service_client(home_service_manifest_no_endpoint, service_handler)
 
 
+@pytest.fixture
+def service_client_no_endpoints(
+    service_handler: _ServiceHttpHandler, home_service_manifest_no_endpoint: dict[str, Any]
+) -> Iterator[TestClient]:
+    """TestClient for a manifest declaring neither endpoint — the status branch
+    that has nothing to probe."""
+    manifest = dict(home_service_manifest_no_endpoint)
+    manifest.pop("service_endpoint", None)
+    yield from _build_service_client(manifest, service_handler)
+
+
 # ── GET (merged listing) ──
 
 
@@ -335,6 +346,8 @@ def test_status_proxies_health_connected(service_client: TestClient) -> None:
     assert data["name"] == "home-service"
     assert data["healthy"] is True
     assert data["detail"]["ha"]["state"] == "connected"
+    assert isinstance(data["latency_ms"], float)
+    assert data["latency_ms"] >= 0.0
 
 
 def test_status_unhealthy_on_auth_failed(
@@ -360,11 +373,20 @@ def test_status_unreachable_service(
     data = resp.json()
     assert data["healthy"] is False
     assert "error" in data["detail"]
+    assert isinstance(data["latency_ms"], float)
 
 
 def test_status_unknown_name_404(service_client: TestClient) -> None:
     resp = service_client.get("/api/integrations/nonexistent/status")
     assert resp.status_code == 404
+
+
+def test_status_no_endpoint_has_null_latency(service_client_no_endpoints: TestClient) -> None:
+    resp = service_client_no_endpoints.get("/api/integrations/home-service/status")
+    data = resp.json()
+    assert data["healthy"] is False
+    assert data["detail"] == {"error": "no endpoint declared"}
+    assert data["latency_ms"] is None
 
 
 def test_put_credentials_requires_session(anon_service_client: TestClient) -> None:

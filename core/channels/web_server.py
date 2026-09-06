@@ -7,6 +7,7 @@ import base64
 import ipaddress
 import json
 import os
+import time
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -219,6 +220,11 @@ def _trusted_networks() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
             with suppress(ValueError):
                 nets.append(ipaddress.ip_network(cidr, strict=False))
     return nets
+
+
+def _elapsed_ms(started: float) -> float:
+    """Milliseconds since a ``time.perf_counter()`` reading, one decimal."""
+    return round((time.perf_counter() - started) * 1000, 1)
 
 
 async def require_trusted_network(request: Request) -> None:
@@ -705,17 +711,29 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
             or ""
         )
         if not endpoint:
-            return {"name": name, "healthy": False, "detail": {"error": "no endpoint declared"}}
+            return {
+                "name": name,
+                "healthy": False,
+                "detail": {"error": "no endpoint declared"},
+                "latency_ms": None,
+            }
         health_url = urljoin(endpoint, "/health")
+        started = time.perf_counter()
         try:
             resp = await app.state.http.get(health_url)
             payload: dict[str, Any] = resp.json()
         except (httpx.HTTPError, ValueError) as exc:
-            return {"name": name, "healthy": False, "detail": {"error": str(exc)}}
+            return {
+                "name": name,
+                "healthy": False,
+                "detail": {"error": str(exc)},
+                "latency_ms": _elapsed_ms(started),
+            }
         return {
             "name": name,
             "healthy": service_payload_healthy(resp.status_code, payload),
             "detail": payload,
+            "latency_ms": _elapsed_ms(started),
         }
 
     @app.get("/api/integrations/{name}/status", dependencies=[Depends(require_authenticated)])
@@ -728,12 +746,13 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         except KeyError:
             return await _service_status(name)
 
+        started = time.perf_counter()
         try:
             instance = IntegrationRegistry.get(name)
             healthy = await instance.health_check()
         except Exception:
             healthy = False
-        return {"name": name, "healthy": healthy}
+        return {"name": name, "healthy": healthy, "latency_ms": _elapsed_ms(started)}
 
     @app.post("/api/onboarding", dependencies=[Depends(require_authenticated)])
     async def save_onboarding(payload: OnboardingPayload) -> dict[str, str]:

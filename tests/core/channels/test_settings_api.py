@@ -167,3 +167,4 @@ def test_health_check_endpoint(web_client: TestClient) -> None:
     data = resp.json()
     assert data["name"] == "test_adapter"
     assert data["healthy"] is True
+    assert isinstance(data["latency_ms"], float)
