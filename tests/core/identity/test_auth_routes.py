@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from http.cookies import SimpleCookie
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -208,7 +209,7 @@ def _aiter(items: list[bytes | str]) -> AsyncIterator[bytes | str]:
 def _scanned_keys(sessions: dict[str, dict[bytes, bytes]]) -> list[bytes | str]:
     """Keys as SCAN hands them over: bytes on the production pool
     (``decode_responses=False``), with the first left as str so both branches of
-    ``_key_suffix`` are exercised."""
+    ``decode_stream_value`` are exercised."""
     return [key if index == 0 else key.encode() for index, key in enumerate(sessions)]
 
 
@@ -952,14 +953,14 @@ class TestSessionsApi:
 
         assert resp.status_code == 200
         redis_mock.delete.assert_awaited_once_with(f"{AUTH_SESSION_PREFIX}s-current")
-        cookie = resp.headers["set-cookie"]
-        # Name and path decide whether this replaces the live cookie or merely
-        # adds a second one; the remaining flags mirror _set_session_cookie.
-        assert "alfred_auth=" in cookie
-        assert "Path=/" in cookie
-        assert "Max-Age=0" in cookie
-        assert "HttpOnly" in cookie
-        assert "samesite=strict" in cookie.lower()
+        # Parsed, not substring-matched: Path=/api contains "Path=/" too, and a
+        # cookie scoped to the wrong path adds a second one instead of replacing
+        # the live session cookie (RFC 6265bis §5.6 identity is name+domain+path).
+        morsel = SimpleCookie(resp.headers["set-cookie"])["alfred_auth"]
+        assert morsel["path"] == "/"
+        assert morsel["max-age"] == "0"
+        assert morsel["samesite"].lower() == "strict"
+        assert morsel["httponly"]
 
     def test_logout_all_ends_every_authenticated_session(
         self, client: TestClient, redis_mock: AsyncMock, sessions: dict[str, dict[bytes, bytes]]
@@ -1026,19 +1027,36 @@ class TestSessionsApi:
         redis_mock.delete.assert_awaited_once_with(f"{AUTH_SESSION_PREFIX}s-current")
         assert "Max-Age=0" in resp.headers["set-cookie"]
 
-    def test_logout_still_ends_this_session_when_the_read_fails(
+    def test_logout_all_still_ends_this_session_when_the_read_fails(
         self, client: TestClient, redis_mock: AsyncMock, sessions: dict[str, dict[bytes, bytes]]
     ) -> None:
-        """A failed pre-delete read must not skip the delete: clearing the cookie
-        while the hash lives on leaves a valid session for the rest of its 8 hours."""
+        """A failed read must not skip the delete: clearing the cookie while the
+        hash lives on leaves a valid session for the rest of its 8 hours. The sweep
+        is skipped (the caller is unproven), so the 503 says so."""
+        redis_mock.hgetall = AsyncMock(side_effect=ConnectionError("redis is down"))
+        client.cookies.set("alfred_auth", "s-current")
+
+        resp = client.post("/api/auth/logout?all=1")
+
+        redis_mock.delete.assert_awaited_once_with(f"{AUTH_SESSION_PREFIX}s-current")
+        assert resp.status_code == 503
+        assert resp.json() == {"detail": "Session store unavailable"}
+        assert "Max-Age=0" in resp.headers["set-cookie"]
+
+    def test_plain_logout_never_reads_the_session_at_all(
+        self, client: TestClient, redis_mock: AsyncMock, sessions: dict[str, dict[bytes, bytes]]
+    ) -> None:
+        """Only the sweep needs the record. A plain logout that deleted the key
+        succeeded — reporting 503 off an unread hash would be a lie."""
         redis_mock.hgetall = AsyncMock(side_effect=ConnectionError("redis is down"))
         client.cookies.set("alfred_auth", "s-current")
 
         resp = client.post("/api/auth/logout")
 
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
         redis_mock.delete.assert_awaited_once_with(f"{AUTH_SESSION_PREFIX}s-current")
-        assert resp.status_code == 503
-        assert resp.json() == {"detail": "Session store unavailable"}
+        redis_mock.hgetall.assert_not_awaited()
         assert "Max-Age=0" in resp.headers["set-cookie"]
 
     def test_routes_are_503_when_the_auth_lookup_is_down(

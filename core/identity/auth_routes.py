@@ -468,20 +468,24 @@ def create_auth_router(
         ended = True
         if alfred_auth:
             own_key = f"{AUTH_SESSION_PREFIX}{alfred_auth}"
-            # The read is guarded on its own so a failure here can never skip the
-            # delete below — losing that leaves the caller cookie-less but still
-            # signed in, for up to the full 8-hour TTL, with no way to end it.
+            # Only the sweep needs the record, so the common logout skips the read
+            # entirely — a round-trip saved, and an outage on it can no longer make
+            # an ordinary logout that worked report 503. It is guarded separately
+            # from the delete either way: skipping the delete would leave the caller
+            # cookie-less but still signed in for the rest of the 8-hour TTL.
             record: dict[str, str] = {}
-            try:
-                record = _decode_session(await redis.hgetall(own_key))
-            except Exception as e:
-                logger.warning("Logout could not read the caller's session: {}", e)
-                ended = False
+            want_all = is_truthy_flag(all_sessions)
+            if want_all:
+                try:
+                    record = _decode_session(await redis.hgetall(own_key))
+                except Exception as e:
+                    logger.warning("Logout could not read the caller's session: {}", e)
+                    ended = False
             try:
                 # The caller's own key goes first: however the sweep below fares,
                 # the cookie cleared on the way out must not still name a session.
                 await redis.delete(own_key)
-                if is_truthy_flag(all_sessions) and record.get("authenticated") == "1":
+                if want_all and record.get("authenticated") == "1":
                     for session_id, _ in await _all_sessions():
                         await redis.delete(f"{AUTH_SESSION_PREFIX}{session_id}")
                     logger.info("All auth sessions ended via logout?all=1")
