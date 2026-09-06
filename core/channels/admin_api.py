@@ -29,6 +29,7 @@ from bus.schemas.events import ActionRequest
 from core.channels.stream_catalog import STREAM_CATALOG, decode_entry, stream_summaries
 from core.memory.paths import episodic_cold_path, preferences_dir, profile_dir, scratchpad_path
 from shared.config import AlfredConfig
+from shared.redis_streams import revrange
 from shared.streams import (
     ACTIONS_STREAM,
     CONTEXT_PREFIX,
@@ -259,9 +260,7 @@ def create_admin_router() -> APIRouter:
             raise HTTPException(status_code=404, detail=f"Unknown stream '{name}'")
         count = max(1, min(count, 200))
         max_id = f"({before}" if before else "+"
-        raw: list[tuple[bytes | str, dict[bytes | str, bytes | str]]] = await _redis(  # type: ignore[assignment,misc,unused-ignore]
-            request
-        ).xrevrange(key, max=max_id, min="-", count=count)
+        raw = await revrange(_redis(request), key, count=count, max_id=max_id)
         entries = [
             {"id": decode_stream_value(eid), "event": decode_entry(data)} for eid, data in raw
         ]
