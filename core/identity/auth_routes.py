@@ -29,7 +29,11 @@ from webauthn.helpers.structs import (
 )
 
 from shared.env import is_truthy_flag
-from shared.streams import AUTH_SESSION_PREFIX, WEBAUTHN_CHALLENGE_PREFIX
+from shared.streams import (
+    AUTH_SESSION_PREFIX,
+    WEBAUTHN_CHALLENGE_PREFIX,
+    decode_stream_value,
+)
 
 if TYPE_CHECKING:
     from core.identity.credentials import CredentialStore
@@ -100,10 +104,13 @@ def _set_session_cookie(response: JSONResponse, request: Request, session_id: st
 
 
 def _clear_session_cookie(response: JSONResponse, request: Request) -> None:
-    """Expire the session cookie using the flags it was set with.
+    """Expire the session cookie, mirroring the flags it was set with.
 
-    A browser only replaces a cookie when the clearing ``Set-Cookie`` matches on
-    path, samesite and secure, so this must mirror ``_set_session_cookie``.
+    What decides whether this replaces the live cookie rather than adding a second
+    one is name + domain + path (RFC 6265bis §5.6) — samesite is not part of that
+    identity. ``secure`` still matters: "Leave Secure Cookies Alone" (§5.5) stops a
+    plaintext response from clearing a Secure cookie at all. The rest is mirrored
+    from ``_set_session_cookie`` so the two spellings never drift.
     """
     response.delete_cookie(
         key="alfred_auth",
@@ -113,7 +120,7 @@ def _clear_session_cookie(response: JSONResponse, request: Request) -> None:
     )
 
 
-def _created_at_key(value: str) -> datetime:
+def _created_at_sort_key(value: str) -> datetime:
     """Sort key for a session's ``created_at`` — unreadable or missing sorts oldest.
 
     Pre-upgrade sessions carry no stamp at all, and a naive one (written before
@@ -144,12 +151,6 @@ def _decode_session(raw: Any) -> dict[str, str]:
         key = k.decode() if isinstance(k, bytes) else str(k)
         out[key] = v.decode(errors="replace") if isinstance(v, bytes) else str(v)
     return out
-
-
-def _key_suffix(key: Any, prefix: str) -> str:
-    """The part of a Redis key after ``prefix`` (keys arrive as bytes on the prod pool)."""
-    text = key.decode() if isinstance(key, bytes) else str(key)
-    return text[len(prefix) :]
 
 
 def create_auth_router(
@@ -191,26 +192,34 @@ def create_auth_router(
         await redis.expire(key, _AUTH_SESSION_TTL)
         return session_id
 
-    async def current_session(
+    async def _current_session(
         alfred_auth: str | None = Cookie(default=None),
-    ) -> tuple[str, dict[str, str]]:
-        """The caller's authenticated session as ``(session_id, record)``, else 401.
+    ) -> str:
+        """The caller's authenticated session id, else 401 — or 503 if Redis is down.
 
-        Reads Redis directly rather than trusting ``request.state`` so the
-        router also works without ``AuthCookieMiddleware`` (as in its tests).
+        Reads Redis directly rather than trusting ``request.state`` so the router
+        also works without ``AuthCookieMiddleware`` (as in its tests). An outage is
+        503 rather than 401: the caller may well be signed in, we just can't tell.
         """
         if not alfred_auth:
             raise HTTPException(status_code=401, detail="Authentication required")
-        record = _decode_session(await redis.hgetall(f"{AUTH_SESSION_PREFIX}{alfred_auth}"))
+        try:
+            record = _decode_session(await redis.hgetall(f"{AUTH_SESSION_PREFIX}{alfred_auth}"))
+        except Exception as e:
+            logger.warning("Could not read the caller's auth session: {}", e)
+            raise HTTPException(status_code=503, detail="Session store unavailable") from e
         if record.get("authenticated") != "1":
             raise HTTPException(status_code=401, detail="Authentication required")
-        return alfred_auth, record
+        return alfred_auth
 
     async def _all_sessions() -> list[tuple[str, dict[str, str]]]:
         """Every live, authenticated session as ``(session_id, record)``."""
         found: list[tuple[str, dict[str, str]]] = []
+        # The hgetall per key is a deliberate N+1, as in core/routing/pending.py: a
+        # handful of 8-hour sessions at most, so pipelining would be a novel pattern
+        # here for no measurable gain.
         async for key in redis.scan_iter(match=f"{AUTH_SESSION_PREFIX}*", count=100):
-            session_id = _key_suffix(key, AUTH_SESSION_PREFIX)
+            session_id = decode_stream_value(key).removeprefix(AUTH_SESSION_PREFIX)
             record = _decode_session(await redis.hgetall(f"{AUTH_SESSION_PREFIX}{session_id}"))
             if record.get("authenticated") == "1":
                 found.append((session_id, record))
@@ -391,14 +400,11 @@ def create_auth_router(
         return response
 
     @router.get("/sessions")
-    async def list_sessions(
-        current: tuple[str, dict[str, str]] = Depends(current_session),
-    ) -> JSONResponse:
+    async def list_sessions(current_id: str = Depends(_current_session)) -> JSONResponse:
         """Every live session, newest first, with the caller's marked ``current``."""
-        current_id, _ = current
-        names = {c.credential_id: c.device_name for c in await store.list_credentials()}
         sessions: list[dict[str, Any]] = []
         try:
+            names = {c.credential_id: c.device_name for c in await store.list_credentials()}
             for session_id, record in await _all_sessions():
                 ttl = await redis.ttl(f"{AUTH_SESSION_PREFIX}{session_id}")
                 credential_id = record.get("credential_id", "")
@@ -416,24 +422,32 @@ def create_auth_router(
                     }
                 )
         except Exception as e:
+            # Covers the credential store as well as Redis — either one missing
+            # means the list would be wrong rather than merely incomplete.
             logger.warning("Could not list auth sessions: {}", e)
             raise HTTPException(status_code=503, detail="Session store unavailable") from e
-        sessions.sort(key=lambda s: _created_at_key(str(s["created_at"])), reverse=True)
+        sessions.sort(key=lambda s: _created_at_sort_key(str(s["created_at"])), reverse=True)
         return JSONResponse({"sessions": sessions})
 
     @router.delete("/sessions/{session_id}")
     async def delete_session(
         session_id: str,
         request: Request,
-        current: tuple[str, dict[str, str]] = Depends(current_session),
+        current_id: str = Depends(_current_session),
     ) -> JSONResponse:
         """End one session. Ending your own also clears the cookie."""
         if not _SESSION_ID_RE.fullmatch(session_id):
             raise HTTPException(status_code=400, detail="Invalid session id")
-        deleted = await redis.delete(f"{AUTH_SESSION_PREFIX}{session_id}")
-        logger.info("Auth session {} ended via the sessions API", session_id)
+        try:
+            deleted = await redis.delete(f"{AUTH_SESSION_PREFIX}{session_id}")
+        except Exception as e:
+            logger.warning("Could not end auth session {}: {}", session_id, e)
+            raise HTTPException(status_code=503, detail="Session store unavailable") from e
+        logger.info(
+            "Auth session {} ended via the sessions API (deleted={})", session_id, bool(deleted)
+        )
         response = JSONResponse({"deleted": bool(deleted)})
-        if session_id == current[0]:
+        if session_id == current_id:
             _clear_session_cookie(response, request)
         return response
 
@@ -454,8 +468,16 @@ def create_auth_router(
         ended = True
         if alfred_auth:
             own_key = f"{AUTH_SESSION_PREFIX}{alfred_auth}"
+            # The read is guarded on its own so a failure here can never skip the
+            # delete below — losing that leaves the caller cookie-less but still
+            # signed in, for up to the full 8-hour TTL, with no way to end it.
+            record: dict[str, str] = {}
             try:
                 record = _decode_session(await redis.hgetall(own_key))
+            except Exception as e:
+                logger.warning("Logout could not read the caller's session: {}", e)
+                ended = False
+            try:
                 # The caller's own key goes first: however the sweep below fares,
                 # the cookie cleared on the way out must not still name a session.
                 await redis.delete(own_key)
@@ -468,9 +490,7 @@ def create_auth_router(
                 ended = False
 
         response = JSONResponse(
-            {"status": "ok"}
-            if ended
-            else {"status": "error", "detail": "Session store unavailable"},
+            {"status": "ok"} if ended else {"detail": "Session store unavailable"},
             status_code=200 if ended else 503,
         )
         _clear_session_cookie(response, request)

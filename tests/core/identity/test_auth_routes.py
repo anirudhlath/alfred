@@ -953,7 +953,10 @@ class TestSessionsApi:
         assert resp.status_code == 200
         redis_mock.delete.assert_awaited_once_with(f"{AUTH_SESSION_PREFIX}s-current")
         cookie = resp.headers["set-cookie"]
-        # Same flags as _set_session_cookie, or the browser keeps the live cookie.
+        # Name and path decide whether this replaces the live cookie or merely
+        # adds a second one; the remaining flags mirror _set_session_cookie.
+        assert "alfred_auth=" in cookie
+        assert "Path=/" in cookie
         assert "Max-Age=0" in cookie
         assert "HttpOnly" in cookie
         assert "samesite=strict" in cookie.lower()
@@ -1018,8 +1021,65 @@ class TestSessionsApi:
         resp = client.post("/api/auth/logout?all=1")
 
         assert resp.status_code == 503
+        # A bare {"detail": ...}, as every other error in this router spells it.
+        assert resp.json() == {"detail": "Session store unavailable"}
         redis_mock.delete.assert_awaited_once_with(f"{AUTH_SESSION_PREFIX}s-current")
         assert "Max-Age=0" in resp.headers["set-cookie"]
+
+    def test_logout_still_ends_this_session_when_the_read_fails(
+        self, client: TestClient, redis_mock: AsyncMock, sessions: dict[str, dict[bytes, bytes]]
+    ) -> None:
+        """A failed pre-delete read must not skip the delete: clearing the cookie
+        while the hash lives on leaves a valid session for the rest of its 8 hours."""
+        redis_mock.hgetall = AsyncMock(side_effect=ConnectionError("redis is down"))
+        client.cookies.set("alfred_auth", "s-current")
+
+        resp = client.post("/api/auth/logout")
+
+        redis_mock.delete.assert_awaited_once_with(f"{AUTH_SESSION_PREFIX}s-current")
+        assert resp.status_code == 503
+        assert resp.json() == {"detail": "Session store unavailable"}
+        assert "Max-Age=0" in resp.headers["set-cookie"]
+
+    def test_routes_are_503_when_the_auth_lookup_is_down(
+        self, client: TestClient, redis_mock: AsyncMock, sessions: dict[str, dict[bytes, bytes]]
+    ) -> None:
+        """An outage in the session lookup is 503, never a 500 — and never a 401,
+        which would tell a signed-in caller they are signed out."""
+        redis_mock.hgetall = AsyncMock(side_effect=ConnectionError("redis is down"))
+        client.cookies.set("alfred_auth", "s-current")
+
+        for resp in (
+            client.get("/api/auth/sessions"),
+            client.delete("/api/auth/sessions/s-older"),
+        ):
+            assert resp.status_code == 503
+            assert resp.json()["detail"] == "Session store unavailable"
+
+    def test_delete_is_503_when_the_delete_fails(
+        self, client: TestClient, redis_mock: AsyncMock, sessions: dict[str, dict[bytes, bytes]]
+    ) -> None:
+        redis_mock.delete = AsyncMock(side_effect=ConnectionError("redis is down"))
+        client.cookies.set("alfred_auth", "s-current")
+
+        resp = client.delete("/api/auth/sessions/s-older")
+
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "Session store unavailable"
+
+    def test_list_is_503_when_the_credential_store_is_down(
+        self, store: CredentialStore, client: TestClient, sessions: dict[str, dict[bytes, bytes]]
+    ) -> None:
+        """Device names come from sqlite, not Redis — that outage is a 503 too."""
+        client.cookies.set("alfred_auth", "s-current")
+
+        with patch.object(
+            store, "list_credentials", AsyncMock(side_effect=OSError("database is locked"))
+        ):
+            resp = client.get("/api/auth/sessions")
+
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "Session store unavailable"
 
     def test_logout_all_needs_an_authenticated_cookie(
         self, client: TestClient, redis_mock: AsyncMock, sessions: dict[str, dict[bytes, bytes]]
