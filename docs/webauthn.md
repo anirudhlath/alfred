@@ -153,8 +153,12 @@ the rule that reserves the network gate does not reach it.
 answers **503** `{"detail": "Session store unavailable"}` — one vocabulary, so a client
 branches once. That includes the credential store behind `GET /api/auth/credentials` and
 behind the passkey delete: the wording names the router, not the store that failed.
-Registration, login and `/status` are **not** part of this and are unchanged — they carry
-no such guard, so a Redis or credential-store outage surfaces there as a 500. Separate
+Registration, login and `/status` are **not** part of this and are unchanged — their route
+*bodies* carry no such guard, so a Redis or credential-store outage surfaces there as a 500.
+The registration **gate** is the exception: `_registration_gate` → `_pairing_code_valid`
+answers **503** `Session store unavailable` when the pairing store cannot be read, before
+either register route's body runs — a device holding a good code must never be told the
+code is wrong because Redis was unreachable. Separate
 again are the deliberate refusals — 400 for a malformed id, 401 for no session, 403 for a
 bad pairing code, 404 for an unknown passkey, 409 for the last one — which mean the
 request was understood and declined, not that a store was unreachable.

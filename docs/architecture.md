@@ -481,7 +481,7 @@ The writer is the **only** consumer of `alfred:scratchpad:queue`. When the Libra
 
 **Librarian** (`core/librarian/consolidator.py`):
 
-Nightly consolidation process. Drains `alfred:librarian:queue` via atomic `RENAME` (to `alfred:librarian:queue:processing`, deleted only after episodic writes succeed, so a crash mid-cycle replays rather than loses), extracts episodic entries, archives to cold storage, and updates semantic profiles. Stamps `alfred:librarian:status` after every cycle (including no-op cycles). Run via `python -m core.librarian`.
+Nightly consolidation process. Drains `alfred:librarian:queue` via atomic `RENAME` (to `alfred:librarian:queue:processing`, deleted only after episodic writes succeed, so a crash mid-cycle replays rather than loses), extracts episodic entries, archives to cold storage, and updates semantic profiles. Stamps `alfred:librarian:status` after every cycle that completes, no-op cycles included — a cycle that raises between the drain and the tail never reaches the stamp (`scheduler.py` swallows the exception and carries on), so the hash can lag a failing pass. Run via `python -m core.librarian`.
 
 #### 3.7.1 Memory Ingestor (Reflex → Episodic)
 

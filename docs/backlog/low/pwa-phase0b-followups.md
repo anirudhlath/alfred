@@ -15,8 +15,11 @@ out of its scope. None of it blocks the branch.
 `Overview` interface has neither, so the frontend cannot consume them without a cast. Its
 `cost` member carries the same drift from the earlier overview upgrade that added
 `cost.request_count` and `cost.avg_usd` (plan 0b): both are returned, and documented, but
-absent from the type. **Acceptance:** add the two blocks (all fields nullable) and the two
-optional `cost` fields to `web/src/lib/types.ts` in the client task that renders them.
+absent from the type. `Routine` has the same gap — `GET /api/admin/memory/routines` returns
+`confidence_history` (see [`admin-api.md` → Routines](../../admin-api.md#routines-memoryroutines))
+and the interface does not declare it. **Acceptance:** add the two blocks (all fields
+nullable), the two optional `cost` fields and `Routine.confidence_history` to
+`web/src/lib/types.ts` in the client task that renders them.
 
 ## 2. No timeout around an adapter's `health_check()`
 `GET /api/integrations/{name}/status` (`core/channels/web_server.py`) awaits

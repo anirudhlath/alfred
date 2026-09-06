@@ -110,7 +110,7 @@ Returns a single JSON object with:
 - `reflex.last_ms` — decision latency of the newest `reflex_observations` entry, in ms, rounded to 0.1 ms
 - `reflex.p50_ms` — median of those latencies over the newest 20 observations, in ms, rounded to 0.1 ms
 - `librarian.last_run_at` — ISO timestamp of the Librarian's last pass, or `null` before its first run
-- `librarian.reviewed` — int: memories reviewed on that pass, or `null` when unset or non-numeric
+- `librarian.reviewed` — int: scratchpad lines drained on that pass (`len(lines)` in `consolidator.py`, not a count of memories written), or `null` when unset or non-numeric
 - `librarian.next_run_at` — ISO timestamp of the next scheduled pass, or `null` when none is scheduled
 
 Inference probes use the lifespan-owned `httpx.AsyncClient` (`request.app.state.http`).
@@ -122,9 +122,11 @@ took to decide. The overview reads the newest 20 with one `XREVRANGE`; entries t
 (and mixed naive/aware timestamps, which can't be subtracted) are skipped, and `last_ms`/`p50_ms`
 are both `null` when nothing usable remains or the stream is unreadable.
 
-The `librarian.*` fields come from the `alfred:librarian:status` hash, which the Librarian writes
-at the end of each pass. A missing hash or a failed read yields all three as `null` rather than an
-error.
+The `librarian.*` fields come from the `alfred:librarian:status` hash. `last_run_at` and
+`reviewed` are written by the consolidator at the end of each pass (`_record_run`); `next_run_at`
+is written by `LibrarianScheduler.run` — once at startup, so the stamp is not left holding the
+previous process's value while the first cycle runs, and again after every cycle. A missing hash
+or a failed read yields all three as `null` rather than an error.
 
 ---
 
@@ -247,6 +249,14 @@ Uses `RoutineStore.list_all()` (sync glob + YAML reads). The blocking I/O is off
 `asyncio.to_thread()` so the channels event loop (which also serves chat WebSocket
 connections) is not blocked.
 
+Each routine carries `confidence_history` — a list of floats, oldest first, newest last,
+capped at the **8 newest**. The Librarian appends one sample per lifecycle cycle
+(`_append_confidence` in `core/librarian/consolidator.py`, rounded to 4 decimals), which is
+what the Triggers bench renders as a sparkline. The cap is enforced both on append and on
+load, so a hand-edited or legacy YAML file with more than 8 entries is trimmed to its newest
+8 rather than rejected — a routine must never fail to load over its own history. A routine
+that has not been through a lifecycle cycle yet reports `[]`.
+
 #### Scratchpad (`/memory/scratchpad`)
 
 Returns `content` (full text of `core/memory/scratchpad.md`, empty string if absent) and
@@ -362,6 +372,7 @@ to the next state change — no reload, no restart. See
 | `POST` | `/api/admin/triggers/{trigger_id}/enabled` | Enable or disable a trigger |
 | `POST` | `/api/admin/triggers/{trigger_id}/fire` | Manually fire a trigger |
 | `PUT` | `/api/admin/attention/{domain}` | Edit one Reflex attention domain ([Attention](#attention)) |
+| `DELETE` | `/api/admin/sessions/{session_id}` | Terminate a session ([Sessions](#sessions)) |
 
 All control endpoints log at INFO when they execute.
 
@@ -574,6 +585,7 @@ cleanly before the handler returns.
 | Drain deferred notifications | `XADD alfred:actions` (`drain_deferred_notifications`) | Conscious process `_INTERNAL_HANDLERS` |
 | Run Librarian | `XADD alfred:actions` (`run_librarian`) | Conscious process `_INTERNAL_HANDLERS` |
 | Fire trigger | `XADD alfred:actions` (`fire_trigger`, `target_service=trigger-engine`) | Triggers process (`triggers-internal` consumer → `TriggerEngine.fire`) |
+| Attention edit | Direct `SADD`/`SREM` on `alfred:attention:{domain}` + `:seen` | Admin API (channels process) |
 
 Direct Redis writes take effect immediately. `XADD`-based controls are queued into
 `alfred:actions` and executed asynchronously by the owning process. The admin API returns
