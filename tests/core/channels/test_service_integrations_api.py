@@ -308,7 +308,7 @@ def test_get_marks_adapters_with_kind(service_client: TestClient) -> None:
 def test_get_service_configured_after_secret_stored(service_client: TestClient) -> None:
     from shared.secrets import set_secret
 
-    set_secret("home-service", "url", "http://192.168.50.159:8123")
+    set_secret("home-service", "url", "http://192.168.1.10:8123")
     resp = service_client.get("/api/integrations")
     svc = next(e for e in resp.json() if e["name"] == "home-service")
     assert svc["configured"] == {"url": True, "token": False}
@@ -330,16 +330,16 @@ def test_put_stores_and_pushes(
 ) -> None:
     resp = service_client.put(
         "/api/integrations/home-service/credentials",
-        json={"url": "http://192.168.50.159:8123", "token": "abc123"},
+        json={"url": "http://192.168.1.10:8123", "token": "abc123"},
     )
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok", "pushed": True}
 
     from shared.secrets import get_secret
 
-    assert get_secret("home-service", "url") == "http://192.168.50.159:8123"
+    assert get_secret("home-service", "url") == "http://192.168.1.10:8123"
     assert get_secret("home-service", "token") == "abc123"
-    assert service_handler.pushes == [{"url": "http://192.168.50.159:8123", "token": "abc123"}]
+    assert service_handler.pushes == [{"url": "http://192.168.1.10:8123", "token": "abc123"}]
 
 
 def test_put_unknown_field_422(service_client: TestClient) -> None:
@@ -364,7 +364,7 @@ def test_put_unreachable_service_502_keyring_persists(
     service_handler.unreachable = True
     resp = service_client.put(
         "/api/integrations/home-service/credentials",
-        json={"url": "http://192.168.50.159:8123", "token": "abc123"},
+        json={"url": "http://192.168.1.10:8123", "token": "abc123"},
     )
     assert resp.status_code == 502
 
@@ -383,7 +383,7 @@ def test_put_service_error_response_502_keyring_persists(
     service_handler.push_fails = True
     resp = service_client.put(
         "/api/integrations/home-service/credentials",
-        json={"url": "http://192.168.50.159:8123", "token": "abc123"},
+        json={"url": "http://192.168.1.10:8123", "token": "abc123"},
     )
     assert resp.status_code == 502
 
@@ -400,7 +400,7 @@ def test_put_no_credentials_endpoint_returns_pushed_false(
     to keyring and reports pushed=False without attempting an HTTP push."""
     resp = service_client_no_credentials_endpoint.put(
         "/api/integrations/home-service/credentials",
-        json={"url": "http://192.168.50.159:8123", "token": "abc123"},
+        json={"url": "http://192.168.1.10:8123", "token": "abc123"},
     )
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok", "pushed": False}
@@ -408,7 +408,7 @@ def test_put_no_credentials_endpoint_returns_pushed_false(
 
     from shared.secrets import get_secret
 
-    assert get_secret("home-service", "url") == "http://192.168.50.159:8123"
+    assert get_secret("home-service", "url") == "http://192.168.1.10:8123"
     assert get_secret("home-service", "token") == "abc123"
 
 
