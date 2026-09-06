@@ -88,3 +88,18 @@ each name statically with `inspect.getattr_static(self, name)` (or iterate
 `callable(AsyncMock())` is `True` and `attr` is already the evaluated property.
 `core/triggers/feature.py:70`'s `isinstance(t.name, str)` guard only absorbs the symptom
 downstream and can go at the same time.
+
+## 9. `sdk/tests/__init__.py` with no `sdk/__init__.py` blocks any `tests/conftest.py`
+`sdk/tests/` is a package but `sdk/` is not, so pytest walks up from `sdk/tests/test_*.py`,
+stops at the first directory without an `__init__.py`, and names those modules `tests.*` —
+the same top-level name the repo-root `tests/` package owns. Nothing breaks today only
+because `testpaths` visits `sdk` before `tests`. A `tests/conftest.py` changes that: pytest
+loads initial conftests for **every** `testpaths` entry at startup, binding `sys.modules
+["tests"]` to the root package before `sdk/tests` is imported, and all six sdk test modules
+then fail collection with `ModuleNotFoundError: No module named 'tests.test_client'`.
+Verified — it is why the shared fakes live in a plain module and not a conftest, as
+`tests/helpers.py:7-11` records. The trap is repo-wide and silent until someone adds that
+file. **Acceptance:** fix the package layout first — add `sdk/__init__.py`, or drop
+`sdk/tests/__init__.py` so pytest names those modules by basename — confirm the full suite
+still collects, then move `tests/helpers.py` into `tests/conftest.py` and delete the
+docstring paragraph explaining the workaround.
