@@ -1743,7 +1743,7 @@ class TestPairingCode:
         assert resp.status_code == 403
         assert resp.json()["detail"] == "Invalid or expired pairing code"
         redis_mock.incr.assert_awaited_once_with(WEBAUTHN_PAIRING_FAILS_KEY)
-        redis_mock.expire.assert_awaited_once_with(WEBAUTHN_PAIRING_FAILS_KEY, 300)
+        redis_mock.expire.assert_awaited_once_with(WEBAUTHN_PAIRING_FAILS_KEY, _PAIRING_TTL_SECONDS)
         redis_mock.delete.assert_not_awaited()
 
     @pytest.mark.parametrize("code", ["12345", "1234567", "abcdef", "12 456", "12345a", "-12345"])
