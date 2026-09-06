@@ -481,7 +481,7 @@ The writer is the **only** consumer of `alfred:scratchpad:queue`. When the Libra
 
 **Librarian** (`core/librarian/consolidator.py`):
 
-Nightly consolidation process. Drains `alfred:librarian:queue` via atomic `RENAME` (to `alfred:librarian:queue:processing`, deleted only after episodic writes succeed, so a crash mid-cycle replays rather than loses), extracts episodic entries, archives to cold storage, and updates semantic profiles. Run via `python -m core.librarian`.
+Nightly consolidation process. Drains `alfred:librarian:queue` via atomic `RENAME` (to `alfred:librarian:queue:processing`, deleted only after episodic writes succeed, so a crash mid-cycle replays rather than loses), extracts episodic entries, archives to cold storage, and updates semantic profiles. Stamps `alfred:librarian:status` after every cycle (including no-op cycles). Run via `python -m core.librarian`.
 
 #### 3.7.1 Memory Ingestor (Reflex → Episodic)
 
@@ -826,6 +826,7 @@ All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `
 | `alfred:tool_registry` | Hash | Service name to tool manifest JSON |
 | `alfred:scratchpad:queue` | List | Pending scratchpad observations (drained by `ScratchpadWriter` only) |
 | `alfred:librarian:queue` | List | Consolidation feed — writer fan-out, drained by the Librarian |
+| `alfred:librarian:status` | Hash | Librarian run status — `last_run_at` (ISO), `reviewed` (count, as str), `next_run_at` (ISO); written best-effort by the consolidator and scheduler |
 | `alfred:context:{service}` | String (JSON) | Service entity context snapshot (TTL 600s) |
 | `alfred:triggers` | Hash | Trigger ID → JSON (Trigger Engine runtime store) |
 | `alfred:triggers:changed` | Pub/Sub | Cross-process `TriggerStore` coherence (saved/deleted/tz-changed) |

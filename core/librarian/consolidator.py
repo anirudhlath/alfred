@@ -1026,7 +1026,11 @@ class Librarian:
             logger.warning("Could not record Librarian run status: %s", exc)
 
     async def record_next_run(self, at: datetime) -> None:
-        """Record when the scheduler will run the next cycle (shown on the dashboard)."""
+        """Record when the scheduler will run the next cycle (shown on the dashboard).
+
+        Unlike `_record_run`, this propagates Redis errors — the caller owns the
+        best-effort guard (see `LibrarianScheduler.run`).
+        """
         await self._redis.hset(LIBRARIAN_STATUS_KEY, mapping={"next_run_at": at.isoformat()})
 
     async def consolidate(self) -> dict[str, Any]:

@@ -1883,3 +1883,37 @@ async def test_status_write_failure_does_not_break_consolidation() -> None:
     result = await librarian.consolidate()
 
     assert result["entries_processed"] == 0
+
+
+@pytest.mark.asyncio
+async def test_consolidate_records_reviewed_count_of_drained_lines() -> None:
+    """`reviewed` is the number of scratchpad lines drained, not a constant."""
+    from shared.streams import LIBRARIAN_STATUS_KEY
+
+    episodic_memory = AsyncMock()
+    scorer = AsyncMock()
+    scorer.score.return_value = SignificanceScore(
+        overall=0.4, safety=0.0, novelty=0.5, personal=0.3, emotional=0.2
+    )
+    context_index = AsyncMock()
+    context_index.reindex_semantic_files = AsyncMock()
+
+    librarian = _make_librarian(
+        api_key="",
+        episodic_memory=episodic_memory,
+        scorer=scorer,
+        context_index=context_index,
+    )
+
+    lines = [
+        b"2026-03-19T10:00:00Z [reflex] dim lights -> success",
+        b"2026-03-19T10:05:00Z [reflex] lock door -> success",
+    ]
+    librarian._redis.lrange.side_effect = [[], lines]
+    librarian._redis.rename.return_value = None
+    librarian._redis.delete.return_value = None
+
+    await librarian.consolidate()
+
+    assert librarian._redis.hset.call_args[0][0] == LIBRARIAN_STATUS_KEY
+    assert librarian._redis.hset.call_args.kwargs["mapping"]["reviewed"] == "2"

@@ -27,6 +27,13 @@ class LibrarianScheduler:
     async def run(self) -> None:
         """Run consolidation cycles forever until cancelled."""
         logger.info("Librarian scheduler started (interval=%ds)", int(self._interval))
+        # Refresh the stamp immediately: until the first (LLM-bound) cycle finishes the
+        # hash still holds the previous process's next_run_at, already in the past.
+        try:
+            await self._librarian.record_next_run(datetime.now(UTC))
+        except Exception as exc:
+            logger.warning("Could not record next Librarian run: %s", exc)
+
         while True:
             try:
                 result = await self._librarian.consolidate()

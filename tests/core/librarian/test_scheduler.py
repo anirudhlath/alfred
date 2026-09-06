@@ -88,3 +88,27 @@ async def test_scheduler_survives_record_next_run_failure() -> None:
         await task
 
     assert mock_librarian.consolidate.call_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_scheduler_stamps_next_run_at_startup() -> None:
+    """A restart refreshes next_run_at before the first (slow) cycle can finish."""
+    blocked = asyncio.Event()
+
+    async def _never_finishes() -> dict[str, int]:
+        await blocked.wait()
+        return {"entries_processed": 0}
+
+    mock_librarian = AsyncMock()
+    mock_librarian.consolidate = AsyncMock(side_effect=_never_finishes)
+    scheduler = LibrarianScheduler(librarian=mock_librarian, interval_seconds=0.01)
+
+    task = asyncio.create_task(scheduler.run())
+    await asyncio.sleep(0.05)
+
+    mock_librarian.consolidate.assert_awaited_once()  # still mid-cycle
+    assert mock_librarian.record_next_run.await_count == 1
+
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
