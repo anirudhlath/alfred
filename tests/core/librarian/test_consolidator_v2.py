@@ -1153,8 +1153,8 @@ async def test_update_routine_lifecycle_hit_appends_confidence_history() -> None
 
 
 @pytest.mark.asyncio
-async def test_update_routine_lifecycle_miss_records_decayed_confidence_and_caps_at_8() -> None:
-    """A miss appends the *new* (possibly decayed) confidence; the list never exceeds 8."""
+async def test_update_routine_lifecycle_miss_records_confidence_and_caps_at_8() -> None:
+    """A miss appends the new confidence (undecayed here); the list never exceeds 8."""
     from core.memory.schemas import RoutineSpec
 
     routine = RoutineSpec(
@@ -1185,8 +1185,59 @@ async def test_update_routine_lifecycle_miss_records_decayed_confidence_and_caps
 
 
 @pytest.mark.asyncio
-async def test_detect_patterns_seeds_confidence_history() -> None:
-    """A freshly detected candidate starts its history with its initial confidence."""
+async def test_update_routine_lifecycle_miss_records_the_decayed_confidence() -> None:
+    """A candidate past its suggestion cooldown decays, and the *decayed* value is recorded."""
+    import datetime as dt
+
+    from core.memory.schemas import RoutineSpec
+
+    routine = RoutineSpec(
+        name="evening_routine",
+        trigger_pattern="evening",  # 17:00-23:00, so a noon check is a miss
+        steps=[],
+        confidence=0.8,
+        learned_from=["ep-1"],
+        state="candidate",  # only candidates decay
+        consecutive_misses=0,
+        last_suggested=dt.datetime(2026, 3, 22, 12, 0, tzinfo=dt.UTC),  # 48h before "now"
+        confidence_history=[0.9, 0.85],
+    )
+    librarian, routine_store = _make_librarian_with_routine_store([routine])
+
+    with patch("core.librarian.consolidator.datetime") as mock_dt:
+        mock_dt.now.return_value = dt.datetime(2026, 3, 24, 12, 0, 0, tzinfo=dt.UTC)
+        mock_dt.UTC = dt.UTC
+        mock_dt.timedelta = dt.timedelta
+        await librarian._update_routine_lifecycle()
+
+    saved = routine_store.save.call_args[0][0]
+    assert saved.confidence == pytest.approx(0.75)
+    assert saved.confidence_history[-1] == pytest.approx(0.75)
+    assert saved.confidence_history[-1] < 0.8  # the pre-decay value was not recorded
+    assert saved.confidence_history[:2] == [0.9, 0.85]
+
+
+_PATTERN_LLM_PAYLOAD = [
+    {
+        "name": "evening_dim",
+        "trigger_pattern": "20:00 daily",
+        "steps": [{"description": "Dim living room lights to 30%"}],
+        "confidence": 0.8,
+        "learned_from": ["ep-0", "ep-2", "ep-4"],
+    }
+]
+
+
+def _pattern_llm_response() -> Any:
+    """An LLM response yielding one 0.8-confidence candidate."""
+    mock_response = AsyncMock()
+    mock_response.choices = [AsyncMock(message=AsyncMock(content=json.dumps(_PATTERN_LLM_PAYLOAD)))]
+    return mock_response
+
+
+@pytest.mark.asyncio
+async def test_detect_patterns_leaves_confidence_history_empty() -> None:
+    """Detection does not seed the history — the lifecycle pass writes the first sample."""
     from unittest.mock import MagicMock
 
     routine_store = MagicMock()
@@ -1194,22 +1245,44 @@ async def test_detect_patterns_seeds_confidence_history() -> None:
     librarian = _make_librarian()
     librarian._routines = routine_store
     entries = [_make_entry_with_id(f"ep-{i}", days_ago=i * 2) for i in range(5)]
-    llm_payload = [
-        {
-            "name": "evening_dim",
-            "trigger_pattern": "20:00 daily",
-            "steps": [{"description": "Dim living room lights to 30%"}],
-            "confidence": 0.8,
-            "learned_from": ["ep-0", "ep-2", "ep-4"],
-        }
-    ]
-    mock_response = AsyncMock()
-    mock_response.choices = [AsyncMock(message=AsyncMock(content=json.dumps(llm_payload)))]
 
-    with patch("litellm.acompletion", return_value=mock_response):
+    with patch("litellm.acompletion", return_value=_pattern_llm_response()):
         result = await librarian._detect_patterns(entries)
 
-    assert result[0].confidence_history == [0.8]
+    assert result[0].confidence_history == []
+
+
+@pytest.mark.asyncio
+async def test_new_candidate_records_exactly_one_sample_per_consolidation_pass() -> None:
+    """Detection + lifecycle run in the same cycle, so night one must be [c], not [c, c]."""
+    import datetime as dt
+    from unittest.mock import MagicMock
+
+    stored: list[Any] = []
+
+    def _save(routine: Any) -> None:
+        stored[:] = [r for r in stored if r.name != routine.name]
+        stored.append(routine)
+
+    routine_store = MagicMock()
+    routine_store.save.side_effect = _save
+    routine_store.list_all.side_effect = lambda: list(stored)
+
+    librarian = _make_librarian()
+    librarian._routines = routine_store
+    entries = [_make_entry_with_id(f"ep-{i}", days_ago=i * 2) for i in range(5)]
+
+    with patch("litellm.acompletion", return_value=_pattern_llm_response()):
+        await librarian._detect_patterns(entries)
+
+    with patch("core.librarian.consolidator.datetime") as mock_dt:
+        mock_dt.now.return_value = dt.datetime(2026, 3, 24, 12, 0, 0, tzinfo=dt.UTC)
+        mock_dt.UTC = dt.UTC
+        mock_dt.timedelta = dt.timedelta
+        await librarian._update_routine_lifecycle()
+
+    assert len(stored) == 1
+    assert stored[0].confidence_history == [0.8]
 
 
 def test_routine_spec_without_history_loads_empty() -> None:

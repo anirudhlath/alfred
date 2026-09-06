@@ -36,15 +36,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# How many lifecycle-cycle confidence samples a routine keeps (sparkline on the Triggers bench)
-_CONFIDENCE_HISTORY_LEN = 8
-
-
-def _append_confidence(history: list[float], value: float) -> list[float]:
-    """Return `history` with `value` appended, trimmed to the newest samples."""
-    return [*history, round(value, 4)][-_CONFIDENCE_HISTORY_LEN:]
-
-
 # ---------------------------------------------------------------------------
 # Semantic conflict resolution models
 # ---------------------------------------------------------------------------
@@ -109,6 +100,15 @@ def _group_by_entity_date(
             ungrouped.extend(bucket)
 
     return groups, ungrouped
+
+
+# How many lifecycle-cycle confidence samples a routine keeps (sparkline on the Triggers bench)
+_CONFIDENCE_HISTORY_LEN = 8
+
+
+def _append_confidence(history: list[float], value: float) -> list[float]:
+    """Return `history` with `value` appended, trimmed to the newest samples."""
+    return [*history, round(value, 4)][-_CONFIDENCE_HISTORY_LEN:]
 
 
 def _routine_index_content(routine: RoutineSpec) -> str:
@@ -826,7 +826,6 @@ class Librarian:
                     confidence=confidence,
                     learned_from=item.get("learned_from", []),
                     state="candidate",
-                    confidence_history=[round(confidence, 4)],
                 )
                 self._routines.save(candidate)
                 candidates.append(candidate)
