@@ -1124,6 +1124,111 @@ async def test_consolidate_includes_pattern_detection_in_result() -> None:
     assert result["patterns_detected"] == 0
 
 
+@pytest.mark.asyncio
+async def test_update_routine_lifecycle_hit_appends_confidence_history() -> None:
+    """Every lifecycle pass appends the routine's current confidence, newest last."""
+    from core.memory.schemas import RoutineSpec
+
+    routine = RoutineSpec(
+        name="morning_routine",
+        trigger_pattern="morning",
+        steps=[],
+        confidence=0.8,
+        learned_from=["ep-1"],
+        state="active",
+        confidence_history=[0.7],
+    )
+    librarian, routine_store = _make_librarian_with_routine_store([routine])
+
+    import datetime as dt
+
+    with patch("core.librarian.consolidator.datetime") as mock_dt:
+        mock_dt.now.return_value = dt.datetime(2026, 3, 24, 8, 0, 0, tzinfo=dt.UTC)
+        mock_dt.UTC = dt.UTC
+        mock_dt.timedelta = dt.timedelta
+        await librarian._update_routine_lifecycle()
+
+    saved = routine_store.save.call_args[0][0]
+    assert saved.confidence_history == [0.7, 0.8]
+
+
+@pytest.mark.asyncio
+async def test_update_routine_lifecycle_miss_records_decayed_confidence_and_caps_at_8() -> None:
+    """A miss appends the *new* (possibly decayed) confidence; the list never exceeds 8."""
+    from core.memory.schemas import RoutineSpec
+
+    routine = RoutineSpec(
+        name="evening_routine",
+        trigger_pattern="evening",  # 17:00-23:00, so a noon check is a miss
+        steps=[],
+        confidence=0.8,
+        learned_from=["ep-1"],
+        state="active",
+        consecutive_misses=0,
+        confidence_history=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
+    )
+    librarian, routine_store = _make_librarian_with_routine_store([routine])
+
+    import datetime as dt
+
+    with patch("core.librarian.consolidator.datetime") as mock_dt:
+        mock_dt.now.return_value = dt.datetime(2026, 3, 24, 12, 0, 0, tzinfo=dt.UTC)
+        mock_dt.UTC = dt.UTC
+        mock_dt.timedelta = dt.timedelta
+        await librarian._update_routine_lifecycle()
+
+    saved = routine_store.save.call_args[0][0]
+    assert saved.consecutive_misses == 1
+    assert len(saved.confidence_history) == 8
+    assert saved.confidence_history[-1] == saved.confidence
+    assert saved.confidence_history[0] == 0.2  # oldest sample dropped
+
+
+@pytest.mark.asyncio
+async def test_detect_patterns_seeds_confidence_history() -> None:
+    """A freshly detected candidate starts its history with its initial confidence."""
+    from unittest.mock import MagicMock
+
+    routine_store = MagicMock()
+    routine_store.list_all.return_value = []
+    librarian = _make_librarian()
+    librarian._routines = routine_store
+    entries = [_make_entry_with_id(f"ep-{i}", days_ago=i * 2) for i in range(5)]
+    llm_payload = [
+        {
+            "name": "evening_dim",
+            "trigger_pattern": "20:00 daily",
+            "steps": [{"description": "Dim living room lights to 30%"}],
+            "confidence": 0.8,
+            "learned_from": ["ep-0", "ep-2", "ep-4"],
+        }
+    ]
+    mock_response = AsyncMock()
+    mock_response.choices = [AsyncMock(message=AsyncMock(content=json.dumps(llm_payload)))]
+
+    with patch("litellm.acompletion", return_value=mock_response):
+        result = await librarian._detect_patterns(entries)
+
+    assert result[0].confidence_history == [0.8]
+
+
+def test_routine_spec_without_history_loads_empty() -> None:
+    """Routines saved before this change (no confidence_history key) still validate."""
+    from core.memory.schemas import RoutineSpec
+
+    loaded = RoutineSpec.model_validate(
+        {
+            "name": "old",
+            "trigger_pattern": "morning",
+            "steps": [],
+            "confidence": 0.5,
+            "learned_from": [],
+            "state": "active",
+        }
+    )
+    assert loaded.confidence_history == []
+
+
 # ---------------------------------------------------------------------------
 # Part J: Routine reindex on startup
 # ---------------------------------------------------------------------------

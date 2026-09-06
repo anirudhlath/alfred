@@ -36,6 +36,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# How many lifecycle-cycle confidence samples a routine keeps (sparkline on the Triggers bench)
+_CONFIDENCE_HISTORY_LEN = 8
+
+
+def _append_confidence(history: list[float], value: float) -> list[float]:
+    """Return `history` with `value` appended, trimmed to the newest samples."""
+    return [*history, round(value, 4)][-_CONFIDENCE_HISTORY_LEN:]
+
 
 # ---------------------------------------------------------------------------
 # Semantic conflict resolution models
@@ -818,6 +826,7 @@ class Librarian:
                     confidence=confidence,
                     learned_from=item.get("learned_from", []),
                     state="candidate",
+                    confidence_history=[round(confidence, 4)],
                 )
                 self._routines.save(candidate)
                 candidates.append(candidate)
@@ -889,6 +898,9 @@ class Librarian:
                     update={
                         "last_hit": now,
                         "consecutive_misses": 0,
+                        "confidence_history": _append_confidence(
+                            routine.confidence_history, routine.confidence
+                        ),
                     }
                 )
                 self._routines.save(routine)
@@ -931,6 +943,9 @@ class Librarian:
                         "consecutive_misses": new_misses,
                         "state": new_state,
                         "confidence": new_confidence,
+                        "confidence_history": _append_confidence(
+                            routine.confidence_history, new_confidence
+                        ),
                     }
                 )
                 self._routines.save(routine)

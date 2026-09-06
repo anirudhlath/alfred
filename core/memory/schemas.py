@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime  # noqa: TC003
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from core.triggers.models import ActionPayload  # noqa: TC001
 
@@ -68,3 +68,4 @@ class RoutineSpec(BaseModel):
     last_hit: datetime | None = None
     consecutive_misses: int = 0
     last_suggested: datetime | None = None
+    confidence_history: list[float] = Field(default_factory=list)  # newest last, ≤8 (Librarian)
