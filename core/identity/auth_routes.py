@@ -7,7 +7,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -93,6 +93,23 @@ def _set_session_cookie(response: JSONResponse, request: Request, session_id: st
     )
 
 
+def _decode_session(raw: Any) -> dict[str, str]:
+    """Normalise a session hash (bytes or str keys and values) to str → str."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for k, v in raw.items():
+        key = k.decode() if isinstance(k, bytes) else str(k)
+        out[key] = v.decode(errors="replace") if isinstance(v, bytes) else str(v)
+    return out
+
+
+def _key_suffix(key: Any, prefix: str) -> str:
+    """The part of a Redis key after ``prefix`` (keys arrive as bytes on the prod pool)."""
+    text = key.decode() if isinstance(key, bytes) else str(key)
+    return text[len(prefix) :]
+
+
 def create_auth_router(
     *,
     store: CredentialStore,
@@ -131,6 +148,31 @@ def create_auth_router(
         )
         await redis.expire(key, _AUTH_SESSION_TTL)
         return session_id
+
+    async def current_session(
+        alfred_auth: str | None = Cookie(default=None),
+    ) -> tuple[str, dict[str, str]]:
+        """The caller's authenticated session as ``(session_id, record)``, else 401.
+
+        Reads Redis directly rather than trusting ``request.state`` so the
+        router also works without ``AuthCookieMiddleware`` (as in its tests).
+        """
+        if not alfred_auth:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        record = _decode_session(await redis.hgetall(f"{AUTH_SESSION_PREFIX}{alfred_auth}"))
+        if record.get("authenticated") != "1":
+            raise HTTPException(status_code=401, detail="Authentication required")
+        return alfred_auth, record
+
+    async def _all_sessions() -> list[tuple[str, dict[str, str]]]:
+        """Every live, authenticated session as ``(session_id, record)``."""
+        found: list[tuple[str, dict[str, str]]] = []
+        async for key in redis.scan_iter(match=f"{AUTH_SESSION_PREFIX}*"):
+            session_id = _key_suffix(key, AUTH_SESSION_PREFIX)
+            record = _decode_session(await redis.hgetall(f"{AUTH_SESSION_PREFIX}{session_id}"))
+            if record.get("authenticated") == "1":
+                found.append((session_id, record))
+        return found
 
     @router.get("/status")
     async def auth_status(request: Request) -> JSONResponse:
@@ -306,13 +348,65 @@ def create_auth_router(
         _set_session_cookie(response, request, session_id)
         return response
 
+    @router.get("/sessions")
+    async def list_sessions(
+        current: tuple[str, dict[str, str]] = Depends(current_session),
+    ) -> JSONResponse:
+        """Every live session, newest first, with the caller's marked ``current``."""
+        current_id, _ = current
+        names = {c.credential_id: c.device_name for c in await store.list_credentials()}
+        sessions: list[dict[str, Any]] = []
+        for session_id, record in await _all_sessions():
+            ttl = await redis.ttl(f"{AUTH_SESSION_PREFIX}{session_id}")
+            credential_id = record.get("credential_id", "")
+            sessions.append(
+                {
+                    "session_id": session_id,
+                    "credential_id": credential_id,
+                    "device_name": names.get(credential_id, "Unknown device"),
+                    "channel": record.get("channel", "web"),
+                    "ip": record.get("ip", ""),
+                    "user_agent": record.get("user_agent", ""),
+                    "created_at": record.get("created_at", ""),
+                    "expires_in": max(int(ttl), 0),
+                    "current": session_id == current_id,
+                }
+            )
+        sessions.sort(key=lambda s: str(s["created_at"]), reverse=True)
+        return JSONResponse({"sessions": sessions})
+
+    @router.delete("/sessions/{session_id}")
+    async def delete_session(
+        session_id: str,
+        current: tuple[str, dict[str, str]] = Depends(current_session),
+    ) -> JSONResponse:
+        """End one session. Ending your own also clears the cookie."""
+        deleted = await redis.delete(f"{AUTH_SESSION_PREFIX}{session_id}")
+        logger.info("Auth session {} ended via the sessions API", session_id)
+        response = JSONResponse({"deleted": bool(deleted)})
+        if session_id == current[0]:
+            response.delete_cookie(key="alfred_auth")
+        return response
+
     @router.post("/logout")
     async def logout(
-        request: Request,
         alfred_auth: str | None = Cookie(default=None),
+        all_sessions: bool = Query(default=False, alias="all"),
     ) -> JSONResponse:
+        """End the caller's session — or every session with ``?all=1``.
+
+        ``all`` is only honoured for an authenticated caller, so a guessed
+        cookie value can never log the real user out of every device.
+        """
         if alfred_auth:
-            await redis.delete(f"{AUTH_SESSION_PREFIX}{alfred_auth}")
+            own_key = f"{AUTH_SESSION_PREFIX}{alfred_auth}"
+            record = _decode_session(await redis.hgetall(own_key))
+            if all_sessions and record.get("authenticated") == "1":
+                for session_id, _ in await _all_sessions():
+                    await redis.delete(f"{AUTH_SESSION_PREFIX}{session_id}")
+                logger.info("All auth sessions ended via logout?all=1")
+            else:
+                await redis.delete(own_key)
 
         response = JSONResponse({"status": "ok"})
         response.delete_cookie(key="alfred_auth")
