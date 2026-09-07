@@ -481,7 +481,7 @@ The writer is the **only** consumer of `alfred:scratchpad:queue`. When the Libra
 
 **Librarian** (`core/librarian/consolidator.py`):
 
-Nightly consolidation process. Drains `alfred:librarian:queue` via atomic `RENAME` (to `alfred:librarian:queue:processing`, deleted only after episodic writes succeed, so a crash mid-cycle replays rather than loses), extracts episodic entries, archives to cold storage, and updates semantic profiles. Run via `python -m core.librarian`.
+Nightly consolidation process. Drains `alfred:librarian:queue` via atomic `RENAME` (to `alfred:librarian:queue:processing`, deleted only after episodic writes succeed, so a crash mid-cycle replays rather than loses), extracts episodic entries, archives to cold storage, and updates semantic profiles. Stamps `alfred:librarian:status` after every cycle that completes, no-op cycles included — a cycle that raises between the drain and the tail never reaches the stamp (`scheduler.py` swallows the exception and carries on), so the hash can lag a failing pass. Run via `python -m core.librarian`.
 
 #### 3.7.1 Memory Ingestor (Reflex → Episodic)
 
@@ -782,7 +782,7 @@ by urgency level. URGENT notifications always bypass DND.
 
 ## 4.5 Authentication (WebAuthn)
 
-The web PWA uses passkey-based authentication via the WebAuthn standard. Registration is gated to trusted networks (loopback, RFC1918 and Tailscale by default; tune with `ALFRED_TRUSTED_NETWORKS` / `ALFRED_TRUSTED_NETWORKS_STRICT`). Auth sessions are stored in Redis (8h TTL, no sliding renewal) and carried via HttpOnly cookies. The WebSocket handler validates the cookie on connection and rejects unauthenticated clients (code 4001). See [docs/webauthn.md](webauthn.md) for details.
+The web PWA uses passkey-based authentication via the WebAuthn standard. Registration is gated to trusted networks (loopback, RFC1918 and Tailscale by default; tune with `ALFRED_TRUSTED_NETWORKS` / `ALFRED_TRUSTED_NETWORKS_STRICT`) **or** a valid `X-Pairing-Code` header — a 6-digit code minted by a signed-in device (`POST /api/auth/pairing`), good for 5 minutes, with wrong guesses budgeted per client address — a single IPv4 address or an IPv6 /64 — (10, then that client is refused for the rest of its 5-minute counter; the code is never destroyed by a guess) — which is how a phone enrols from outside the LAN. Auth sessions are stored in Redis (8h TTL, no sliding renewal) and carried via HttpOnly cookies; a signed-in session can list and end sessions, and list and remove passkeys (never the last one). The WebSocket handler validates the cookie on connection and rejects unauthenticated clients (code 4001). See [docs/webauthn.md](webauthn.md) for details.
 
 ## 5. Data Flow
 
@@ -826,6 +826,7 @@ All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `
 | `alfred:tool_registry` | Hash | Service name to tool manifest JSON |
 | `alfred:scratchpad:queue` | List | Pending scratchpad observations (drained by `ScratchpadWriter` only) |
 | `alfred:librarian:queue` | List | Consolidation feed — writer fan-out, drained by the Librarian |
+| `alfred:librarian:status` | Hash | Librarian run status — `last_run_at` (ISO), `reviewed` (count, as str), `next_run_at` (ISO); written best-effort by the consolidator and scheduler |
 | `alfred:context:{service}` | String (JSON) | Service entity context snapshot (TTL 600s) |
 | `alfred:triggers` | Hash | Trigger ID → JSON (Trigger Engine runtime store) |
 | `alfred:triggers:changed` | Pub/Sub | Cross-process `TriggerStore` coherence (saved/deleted/tz-changed) |
@@ -845,6 +846,9 @@ All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `
 | `alfred:attention:{domain}` | Set | Tier-2 Reflex attention set membership (`core/reflex/attention.py`) |
 | `alfred:attention:{domain}:seen` | Set | Sticky removals -- entities the YAML seed must not re-add |
 | `alfred:pending_actions:{request_id}` | String (JSON) | Parked critical `ActionRequest` awaiting confirmation (TTL 300s, `core/routing/pending.py`) |
+| `alfred:auth:{session_id}` | Hash | Passkey session: `authenticated`, `credential_id`, `created_at`, `ip`, `user_agent`, `channel` (TTL 8h, `core/identity/auth_routes.py`) |
+| `alfred:webauthn:pairing` | String | The active 6-digit device-pairing code (TTL 300s, single-use) |
+| `alfred:webauthn:pairing:fails:{bucket}` | String (int) | Wrong guesses from one client address — a single IPv4 address (`203.0.113.5`) or an IPv6 /64 (`2001:db8::/64`) (TTL 300s); at 10 that client is refused for the rest of the TTL, even with the correct code — the code itself stays live for every other client |
 
 ### 5.3 Consumer Groups
 

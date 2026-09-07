@@ -77,6 +77,8 @@ A request to execute an MCP tool on a target microservice. Produced by the Refle
 | `target_service` | `str`                | Which microservice handles this                   |
 | `tool_name`      | `str`                | MCP tool name, e.g. `smart_home.dim_lights`       |
 | `parameters`     | `dict[str, Any]`     | Tool-specific parameters                          |
+| `reason`         | `str \| None`        | Why the actor wants this; shown on the confirmation prompt. Null unless a conscious-engine critical call supplied it. **Truncated at 500 characters** (`REASON_MAX_LEN`) — it rides into APNs metadata, whose payload ceiling is 4 KB; a wordy reason is cut, never a dropped action |
+| `confirmed`      | `bool`               | Default false; set true only by the confirmation flow (contract C3) |
 
 ### ActionResult
 

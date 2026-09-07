@@ -203,6 +203,10 @@ class ConsciousEngine:
         return self._routines is not None
 
     _TYPE_MAP: ClassVar[dict[str, str]] = PYTHON_TO_JSON_SCHEMA
+    # Prefix for integration tool names to distinguish from domain tools
+    _INTEGRATION_PREFIX: ClassVar[str] = "integration_"
+    # Extra argument offered on critical tools; moved off `parameters` onto ActionRequest.reason
+    _REASON_PARAM: ClassVar[str] = "reason"
 
     @staticmethod
     def _sanitize_tool_name(name: str) -> str:
@@ -240,6 +244,15 @@ class ConsciousEngine:
                 if "default" not in pinfo:
                     required.append(pname)
 
+            if t.risk == "critical" and self._REASON_PARAM not in properties:
+                properties[self._REASON_PARAM] = {
+                    "type": "string",
+                    "description": (
+                        "One sentence, addressed to the user, saying why this action is "
+                        "needed. It is shown on the confirmation prompt."
+                    ),
+                }
+
             openai_tools.append(
                 {
                     "type": "function",
@@ -255,9 +268,6 @@ class ConsciousEngine:
                 }
             )
         return openai_tools
-
-    # Prefix for integration tool names to distinguish from domain tools
-    _INTEGRATION_PREFIX: ClassVar[str] = "integration_"
 
     async def _integrations_to_openai_format(self) -> list[dict[str, Any]]:
         """Convert integration capabilities to OpenAI function-calling format."""
@@ -422,7 +432,19 @@ class ConsciousEngine:
         dispatch from ``process_request`` always passes the resolved identity.
         """
         name = tc["name"]
-        params = tc.get("input", {})
+        # A model can emit `"arguments": "null"`, which `_call_llm` parses to None —
+        # that means "no arguments". Anything else non-object is malformed and is
+        # refused rather than silently dispatched as a zero-argument call.
+        raw_input = tc.get("input")
+        if raw_input is None:
+            params: dict[str, Any] = {}
+        elif isinstance(raw_input, dict):
+            # Copy: the caller's dict must not be mutated by the `reason` pop below.
+            params = dict(raw_input)
+        else:
+            return self._make_tool_result(
+                tc["id"], "Error: malformed tool arguments (expected a JSON object)"
+            )
 
         # 1. Integration tools — direct call via IntegrationRegistry
         if name.startswith(self._INTEGRATION_PREFIX):
@@ -476,19 +498,31 @@ class ConsciousEngine:
 
         # 4. Domain tools — route to external service via DomainRouter
         target = ""
+        risk = "benign"
+        declares_own_reason = False
         for t in tools:
             if t.name == name:
                 target = t.target_service
+                risk = t.risk
+                # A tool may own a `reason` parameter; `_tools_to_openai_format` leaves
+                # that schema alone, so it belongs to the service and must not be popped.
+                declares_own_reason = self._REASON_PARAM in t.parameters
                 break
 
         if not target:
             return self._make_tool_result(tc["id"], f"Error: tool '{name}' not found in registry")
 
+        reason = (
+            params.pop(self._REASON_PARAM, None)
+            if risk == "critical" and not declares_own_reason
+            else None
+        )
         action = ActionRequest(
             source="conscious-engine",
             target_service=target,
             tool_name=name,
             parameters=params,
+            reason=reason if isinstance(reason, str) and reason.strip() else None,
         )
         action_result = await self._router.route(action)
         content = str(

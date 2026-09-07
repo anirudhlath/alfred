@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from core.memory.schemas import (
+    CONFIDENCE_HISTORY_LEN,
     EpisodicEntry,
     EpisodicResult,
     RoutineSpec,
@@ -107,3 +108,39 @@ def test_cost_state_defaults() -> None:
 
     cost = CostState(date="2026-03-19", spend_usd=2.50, cap_usd=5.0)
     assert cost.alert_sent is False
+
+
+def _routine(**overrides: object) -> RoutineSpec:
+    """A minimal valid routine, with fields overridden per test."""
+    base: dict[str, object] = {
+        "name": "evening_wind_down",
+        "trigger_pattern": "time:22:00",
+        "steps": [RoutineStep(description="dim the lights")],
+        "confidence": 0.8,
+        "learned_from": ["ep-1"],
+        "state": "active",
+    }
+    return RoutineSpec.model_validate({**base, **overrides})
+
+
+def test_confidence_history_keeps_the_newest_samples_on_load() -> None:
+    """A hand-edited or legacy YAML file can carry more than the cap. Trim to the
+    NEWEST — never reject: a routine that will not load is a routine the Librarian
+    silently drops."""
+    history = [round(i / 100, 2) for i in range(12)]
+
+    routine = _routine(confidence_history=history)
+
+    assert routine.confidence_history == history[-CONFIDENCE_HISTORY_LEN:]
+    assert len(routine.confidence_history) == CONFIDENCE_HISTORY_LEN == 8
+
+
+def test_confidence_history_at_the_cap_is_untouched() -> None:
+    """8 is the accept edge — exactly the cap is kept whole, in order."""
+    history = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
+
+    assert _routine(confidence_history=history).confidence_history == history
+
+
+def test_confidence_history_defaults_to_empty() -> None:
+    assert _routine().confidence_history == []

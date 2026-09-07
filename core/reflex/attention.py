@@ -63,6 +63,23 @@ async def attention_list(redis: AioRedis, domain: str) -> list[str]:
     return sorted(decode_stream_value(m) for m in members)
 
 
+async def attention_seen_list(redis: AioRedis, domain: str) -> list[str]:
+    """Return sorted members of the sticky ``:seen`` companion set."""
+    members: set[bytes | str] = await redis.smembers(attention_seen_key(domain))
+    return sorted(decode_stream_value(m) for m in members)
+
+
+async def attention_domains(redis: AioRedis) -> list[str]:
+    """Every domain that has an attention set (or a ``:seen`` set), sorted."""
+    domains: set[str] = set()
+    async for key in redis.scan_iter(match=f"{ATTENTION_PREFIX}*", count=100):
+        suffix = decode_stream_value(key)[len(ATTENTION_PREFIX) :]
+        domain = suffix.removesuffix(":seen")
+        if domain:  # a bare `alfred:attention:` key names no domain — skip it
+            domains.add(domain)
+    return sorted(domains)
+
+
 class AttentionSet:
     """Decides whether a StateChangedEvent should reach the Reflex SLM."""
 

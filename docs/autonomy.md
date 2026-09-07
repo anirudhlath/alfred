@@ -17,6 +17,11 @@ visibility). Tier 2: only attention-set members fire the Reflex SLM.
   `attention_add(domain, entity_id)`, `attention_remove(domain, entity_id)`,
   `attention_list(domain)`. The Librarian may promote/demote entities during
   consolidation using the same helpers (`core/reflex/attention.py`).
+- HTTP surface: `GET /api/admin/attention` lists every domain with its members
+  and its sticky `seen` companion; `PUT /api/admin/attention/{domain}` runs the
+  same two primitives from a request body (`allow` → `attention_add`, `ask` →
+  `attention_remove`, `ask` applied second). Session-gated like the rest of the
+  admin API; see [`admin-api.md` → Attention](admin-api.md#attention).
 - Firing rules: real transitions only (`new_state != old_state` — attribute-only
   updates are forwarded with equal states and gated here) + per-entity 5s
   in-process cooldown.
@@ -69,7 +74,7 @@ sequenceDiagram
 
     CE->>DR: ActionRequest (risk=critical, confirmed=false)
     DR->>R: SET alfred:pending_actions:{id} EX 300
-    DR->>N: URGENT notification (metadata.pending_action_id)
+    DR->>N: URGENT notification (metadata: pending_action_id, tool_name, parameters, reason)
     DR-->>CE: ActionResult error "confirmation_required:{id}"
     U->>R: POST /api/actions/{id}/confirm  OR  confirm_pending_action tool
     R->>R: GETDEL pending key (atomic), republish to alfred:actions confirmed=true
@@ -77,6 +82,16 @@ sequenceDiagram
     DR->>DR: risk=critical but confirmed → pass through
 ```
 
+- Confirmation metadata: the URGENT notification carries `pending_action_id`,
+  `tool_name`, `parameters` and `reason` — enough for a client to render the prompt
+  without a second lookup. `reason` is the actor's one-sentence justification, offered
+  as an extra argument on critical tools and moved off `parameters` by
+  `ConsciousEngine._dispatch_tool_call()` so the domain service never sees it —
+  unless the tool declares `reason` as its own parameter, in which case it belongs
+  to the service and `ActionRequest.reason` stays null.
+  It is **null for every non-conscious source** (trigger-fired actions —
+  `core/triggers/engine.py` — and any caller that omits it), so clients must render
+  the prompt without a reason rather than assuming one is present.
 - Pending store helpers: `core/routing/pending.py` (`PENDING_TTL_SECONDS=300`).
   `confirm_pending_action()` uses an atomic `GETDEL` (not GET-then-DELETE) so two
   concurrent confirms of the same id can never both republish — only one caller ever
@@ -85,6 +100,20 @@ sequenceDiagram
 - Web confirm: `POST /api/actions/{request_id}/confirm` (auth cookie
   required; 404 when expired). The SPA renders a Confirm button on the
   notification toast (`web/src/lib/notifications.ts`).
+- Web reads: `GET /api/actions/pending` → `{"actions": [...]}`, oldest request first,
+  and `GET /api/actions/{request_id}` → one action (404 `Pending action not found or
+  expired` when it is missing, the TTL has run out, or the stored value no longer parses
+  — the list skips exactly that entry, so the two reads agree). A `request_id` outside
+  `[A-Za-z0-9_-]{1,128}` is **400** `Invalid request id` before Redis is touched, and a
+  store failure on either read is **503** `Action store unavailable`. Both are
+  session-gated by the same auth cookie as the confirm route, and both are
+  **non-consuming** — a plain `GET`,
+  never the `GETDEL` the confirm path uses — so a client may poll or re-open a push-tap
+  deep link without spending the confirmation. Each entry carries `request_id`,
+  `tool_name`, `target_service`, `parameters`, `reason`, `source`, `timestamp`,
+  `ttl_seconds` and `expires_at`. `ttl_seconds` is clamped at 0 (Redis reports -2 for a
+  key that vanished between the read and the TTL, -1 for one with no expiry), so clients
+  can render the remaining fuse directly without guarding for a negative.
 - Chat confirm: Conscious internal tool `confirm_pending_action(request_id)`
   (`core/conscious/action_tools.py`) — works over Signal/iOS/web chat. Action tools
   (confirm + `attention_*`) are offered to sir turns only in the tool manifest, and

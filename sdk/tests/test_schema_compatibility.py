@@ -143,3 +143,29 @@ def test_credential_models_match_core_field_shape() -> None:
 
     # Defaults must match too — core fills defaults for fields the SDK omitted.
     assert CoreField(label="x").model_dump() == SdkField(label="x").model_dump()
+
+
+def test_action_request_reason_roundtrips_and_fields_stay_in_lockstep() -> None:
+    """`reason` survives the bus → SDK hop, and the two ActionRequests stay field-identical.
+
+    The bus-side test lives in `tests/bus/`, which this suite does not collect when
+    run from `sdk/` — the mirror needs a guard on this side of the fence too.
+    """
+    from bus.schemas.events import ActionRequest as BusAction
+    from sdk.alfred_sdk.events import ActionRequest as SdkAction
+
+    assert _get_field_names(BusAction) == _get_field_names(SdkAction)
+    assert "reason" in _get_field_names(SdkAction)
+
+    bus_action = BusAction(
+        source="conscious-engine",
+        target_service="home-service",
+        tool_name="home.unlock_door",
+        parameters={"entity_id": "lock.front_door"},
+        reason="The dog walker is at the door.",
+    )
+    sdk_action = SdkAction.model_validate_json(bus_action.model_dump_json())
+
+    assert sdk_action.reason == "The dog walker is at the door."
+    assert sdk_action.parameters == {"entity_id": "lock.front_door"}
+    assert BusAction.model_validate_json(sdk_action.model_dump_json()).reason == bus_action.reason

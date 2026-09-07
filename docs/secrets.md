@@ -50,6 +50,17 @@ graph TD
 | DELETE | `/api/integrations/{name}/credentials` | session + trusted network | Clear credentials |
 | GET | `/api/integrations/{name}/status` | session | Run health check |
 
+`GET /api/integrations/{name}/status` answers for both kinds. For an **adapter** it
+calls the in-process `health_check()`; for a **service** it proxies `/health` (below).
+Either way the response carries `latency_ms` — wall-clock milliseconds around the probe
+alone, rounded to one decimal. On the adapter path `IntegrationRegistry.get()` runs
+*before* the clock starts, so the first call after a boot or a reconfigure is not billed
+for constructing the adapter and reading the keyring; a construction that fails reports
+`healthy: false` with `latency_ms: null`, since nothing was probed. A probe that raises
+is reported as unhealthy rather than 500ing — on the service path with the error under
+`detail.error` (an unexpected exception type is logged as well, then reported the same
+way), on the adapter path as a bare `healthy: false`.
+
 ## Security
 
 - Credential values are never returned in GET responses — only boolean configured status
@@ -106,6 +117,11 @@ Core stays the single credential authority (`core/channels/service_credentials.p
   `/health` URL is resolved via `urljoin(endpoint, "/health")` against the
   service's registered endpoint host — services MUST expose `/health` at the
   root of that host (not under a sub-path) for the status proxy to work.
+  The response also carries `latency_ms`: wall-clock milliseconds around the
+  probe alone (the manifest lookup is excluded), rounded to one decimal, and
+  `null` when the manifest declares no usable endpoint — there was nothing to
+  probe, not a zero-cost probe. A probe that fails still reports the elapsed
+  time, with the error under `detail.error`.
 - Self-healing re-push: the channels process consumes `ServiceRegistered`
   from `alfred:events` (consumer group `channels-credentials`) and re-pushes
   stored credentials — services keep credentials in memory only and recover

@@ -8,6 +8,7 @@ Contract C5: adapters (IntegrationRegistry) and sovereign services
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
@@ -17,8 +18,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
+from core.channels import web_server
 from core.channels.web_server import create_app
 from core.integrations.base import (
     CredentialField,
@@ -31,6 +33,35 @@ from core.integrations.base import (
 from core.integrations.registry import IntegrationRegistry
 from shared.streams import TOOL_REGISTRY_KEY
 from tests.core.channels.conftest import _TEST_SESSION_ID, make_session_redis
+from tests.helpers import pinned_probe_clock
+
+
+class _FakeClock:
+    """Deterministic stand-in for the ``time`` module — advances only when told.
+
+    Substituted for ``web_server.time`` so a test can charge a known cost to the
+    manifest lookup and a different one to the probe, making both the *scope* and
+    the *precision* of ``latency_ms`` exactly assertable.
+    """
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def perf_counter(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+# The work that must NOT be timed (the manifest lookup, adapter construction) is
+# charged an absurd cost and the probe a small one with a second decimal, so a
+# timer that starts too early or rounds too finely can't produce
+# _EXPECTED_PROBE_MS.
+_LOOKUP_SECONDS = 500.0
+_CONSTRUCT_SECONDS = 500.0
+_PROBE_SECONDS = 0.0021239
+_EXPECTED_PROBE_MS = 2.1
 
 
 class _KindAdapter(Integration):
@@ -53,6 +84,34 @@ class _KindAdapter(Integration):
         return True
 
 
+class _TimedAdapter(Integration):
+    """Adapter charging fake time to construction and to health_check separately.
+
+    `IntegrationRegistry.get` constructs lazily and blocks on a keyring read, so
+    this pins that latency_ms bills the probe and not that cold start.
+    """
+
+    name = "timed_adapter"
+    category = "testing"
+    credentials_schema = CredentialSchema(fields={})
+    clock: _FakeClock | None = None
+
+    def __init__(self) -> None:
+        if _TimedAdapter.clock is not None:
+            _TimedAdapter.clock.advance(_CONSTRUCT_SECONDS)
+
+    async def get_capabilities(self) -> list[IntegrationCapability]:
+        return []
+
+    async def execute(self, request: IntegrationRequest) -> IntegrationResult:
+        return IntegrationResult(data={}, freshness=datetime.now(UTC), confidence=0.0)
+
+    async def health_check(self) -> bool:
+        if _TimedAdapter.clock is not None:
+            _TimedAdapter.clock.advance(_PROBE_SECONDS)
+        return True
+
+
 class _ServiceHttpHandler:
     """Programmable fake sovereign service for httpx.MockTransport."""
 
@@ -60,6 +119,10 @@ class _ServiceHttpHandler:
         self.pushes: list[dict[str, str]] = []
         self.push_fails = False
         self.unreachable = False
+        # Fired on every request — lets a test charge fake time to the probe.
+        self.on_request: Callable[[], None] | None = None
+        # Raised instead of responding — for the unexpected-error probe path.
+        self.crash: Exception | None = None
         self.health: dict[str, Any] = {
             "status": "ok",
             "service": "home-service",
@@ -67,6 +130,10 @@ class _ServiceHttpHandler:
         }
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
+        if self.on_request is not None:
+            self.on_request()
+        if self.crash is not None:
+            raise self.crash
         if self.unreachable:
             raise httpx.ConnectError("connection refused")
         if request.url.path == "/credentials":
@@ -85,7 +152,11 @@ def service_handler() -> _ServiceHttpHandler:
 
 
 def _build_service_client(
-    manifest: dict[str, Any], service_handler: _ServiceHttpHandler, *, signed_in: bool = True
+    manifest: dict[str, Any],
+    service_handler: _ServiceHttpHandler,
+    *,
+    signed_in: bool = True,
+    on_manifest_read: Callable[[], None] | None = None,
 ) -> Iterator[TestClient]:
     """Shared TestClient builder: home-service manifest in a mocked tool registry
     + fake service HTTP. Factored out so variant manifests (e.g. missing
@@ -106,6 +177,8 @@ def _build_service_client(
 
     async def _fake_hget(key: str, field: str) -> bytes | None:
         if key == TOOL_REGISTRY_KEY:
+            if on_manifest_read is not None:
+                on_manifest_read()
             return registry_data.get(field.encode())
         return None
 
@@ -156,7 +229,7 @@ def anon_service_client(
 
 
 @pytest.fixture
-def home_service_manifest_no_endpoint(
+def home_service_manifest_no_credentials_endpoint(
     home_service_manifest: dict[str, Any],
 ) -> dict[str, Any]:
     """Manifest variant with a credentials_schema but no credentials_endpoint —
@@ -167,11 +240,50 @@ def home_service_manifest_no_endpoint(
 
 
 @pytest.fixture
-def service_client_no_endpoint(
-    service_handler: _ServiceHttpHandler, home_service_manifest_no_endpoint: dict[str, Any]
+def service_client_no_credentials_endpoint(
+    service_handler: _ServiceHttpHandler,
+    home_service_manifest_no_credentials_endpoint: dict[str, Any],
 ) -> Iterator[TestClient]:
     """TestClient for a home-service manifest with no credentials_endpoint."""
-    yield from _build_service_client(home_service_manifest_no_endpoint, service_handler)
+    yield from _build_service_client(home_service_manifest_no_credentials_endpoint, service_handler)
+
+
+@pytest.fixture
+def home_service_manifest_without_any_endpoint(
+    home_service_manifest_no_credentials_endpoint: dict[str, Any],
+) -> dict[str, Any]:
+    """Manifest variant declaring *neither* endpoint — distinct from
+    `home_service_manifest_no_credentials_endpoint`, which still has a service_endpoint."""
+    manifest = dict(home_service_manifest_no_credentials_endpoint)
+    manifest.pop("service_endpoint", None)
+    return manifest
+
+
+@contextmanager
+def _service_client_for(
+    manifest: dict[str, Any], service_handler: _ServiceHttpHandler
+) -> Iterator[TestClient]:
+    """`_build_service_client` as a context manager — for one-off manifest
+    variants that don't warrant a dedicated fixture."""
+    yield from _build_service_client(manifest, service_handler)
+
+
+@pytest.fixture
+def timed_service_client(
+    monkeypatch: pytest.MonkeyPatch,
+    service_handler: _ServiceHttpHandler,
+    home_service_manifest: dict[str, Any],
+) -> Iterator[TestClient]:
+    """`service_client` on a fake clock: the manifest lookup burns
+    `_LOOKUP_SECONDS`, the probe `_PROBE_SECONDS`, nothing else moves time."""
+    clock = _FakeClock()
+    monkeypatch.setattr(web_server, "time", clock)
+    service_handler.on_request = lambda: clock.advance(_PROBE_SECONDS)
+    yield from _build_service_client(
+        home_service_manifest,
+        service_handler,
+        on_manifest_read=lambda: clock.advance(_LOOKUP_SECONDS),
+    )
 
 
 # ── GET (merged listing) ──
@@ -197,7 +309,7 @@ def test_get_marks_adapters_with_kind(service_client: TestClient) -> None:
 def test_get_service_configured_after_secret_stored(service_client: TestClient) -> None:
     from shared.secrets import set_secret
 
-    set_secret("home-service", "url", "http://192.168.50.159:8123")
+    set_secret("home-service", "url", "http://192.168.1.10:8123")
     resp = service_client.get("/api/integrations")
     svc = next(e for e in resp.json() if e["name"] == "home-service")
     assert svc["configured"] == {"url": True, "token": False}
@@ -219,16 +331,16 @@ def test_put_stores_and_pushes(
 ) -> None:
     resp = service_client.put(
         "/api/integrations/home-service/credentials",
-        json={"url": "http://192.168.50.159:8123", "token": "abc123"},
+        json={"url": "http://192.168.1.10:8123", "token": "abc123"},
     )
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok", "pushed": True}
 
     from shared.secrets import get_secret
 
-    assert get_secret("home-service", "url") == "http://192.168.50.159:8123"
+    assert get_secret("home-service", "url") == "http://192.168.1.10:8123"
     assert get_secret("home-service", "token") == "abc123"
-    assert service_handler.pushes == [{"url": "http://192.168.50.159:8123", "token": "abc123"}]
+    assert service_handler.pushes == [{"url": "http://192.168.1.10:8123", "token": "abc123"}]
 
 
 def test_put_unknown_field_422(service_client: TestClient) -> None:
@@ -253,7 +365,7 @@ def test_put_unreachable_service_502_keyring_persists(
     service_handler.unreachable = True
     resp = service_client.put(
         "/api/integrations/home-service/credentials",
-        json={"url": "http://192.168.50.159:8123", "token": "abc123"},
+        json={"url": "http://192.168.1.10:8123", "token": "abc123"},
     )
     assert resp.status_code == 502
 
@@ -272,7 +384,7 @@ def test_put_service_error_response_502_keyring_persists(
     service_handler.push_fails = True
     resp = service_client.put(
         "/api/integrations/home-service/credentials",
-        json={"url": "http://192.168.50.159:8123", "token": "abc123"},
+        json={"url": "http://192.168.1.10:8123", "token": "abc123"},
     )
     assert resp.status_code == 502
 
@@ -283,13 +395,13 @@ def test_put_service_error_response_502_keyring_persists(
 
 
 def test_put_no_credentials_endpoint_returns_pushed_false(
-    service_client_no_endpoint: TestClient, service_handler: _ServiceHttpHandler
+    service_client_no_credentials_endpoint: TestClient, service_handler: _ServiceHttpHandler
 ) -> None:
     """A manifest with a credentials_schema but no credentials_endpoint stores
     to keyring and reports pushed=False without attempting an HTTP push."""
-    resp = service_client_no_endpoint.put(
+    resp = service_client_no_credentials_endpoint.put(
         "/api/integrations/home-service/credentials",
-        json={"url": "http://192.168.50.159:8123", "token": "abc123"},
+        json={"url": "http://192.168.1.10:8123", "token": "abc123"},
     )
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok", "pushed": False}
@@ -297,7 +409,7 @@ def test_put_no_credentials_endpoint_returns_pushed_false(
 
     from shared.secrets import get_secret
 
-    assert get_secret("home-service", "url") == "http://192.168.50.159:8123"
+    assert get_secret("home-service", "url") == "http://192.168.1.10:8123"
     assert get_secret("home-service", "token") == "abc123"
 
 
@@ -329,12 +441,16 @@ def test_delete_unknown_name_404(service_client: TestClient) -> None:
 
 
 def test_status_proxies_health_connected(service_client: TestClient) -> None:
-    resp = service_client.get("/api/integrations/home-service/status")
+    with pinned_probe_clock() as elapsed_ms:
+        resp = service_client.get("/api/integrations/home-service/status")
+
     assert resp.status_code == 200
     data = resp.json()
     assert data["name"] == "home-service"
     assert data["healthy"] is True
     assert data["detail"]["ha"]["state"] == "connected"
+    # The exact figure, not ">= 0.0": that one is true of any clock, and of none.
+    assert data["latency_ms"] == elapsed_ms
 
 
 def test_status_unhealthy_on_auth_failed(
@@ -355,16 +471,140 @@ def test_status_unhealthy_on_auth_failed(
 def test_status_unreachable_service(
     service_client: TestClient, service_handler: _ServiceHttpHandler
 ) -> None:
+    """The failure path is still timed — a probe that never answered still cost the
+    caller the wait, so the elapsed figure has to survive the error branch."""
     service_handler.unreachable = True
-    resp = service_client.get("/api/integrations/home-service/status")
+
+    with pinned_probe_clock() as elapsed_ms:
+        resp = service_client.get("/api/integrations/home-service/status")
+
     data = resp.json()
     assert data["healthy"] is False
     assert "error" in data["detail"]
+    assert data["latency_ms"] == elapsed_ms
 
 
 def test_status_unknown_name_404(service_client: TestClient) -> None:
     resp = service_client.get("/api/integrations/nonexistent/status")
     assert resp.status_code == 404
+
+
+def test_status_no_endpoint_has_null_latency(
+    service_handler: _ServiceHttpHandler,
+    home_service_manifest_without_any_endpoint: dict[str, Any],
+) -> None:
+    with _service_client_for(home_service_manifest_without_any_endpoint, service_handler) as client:
+        resp = client.get("/api/integrations/home-service/status")
+    data = resp.json()
+    assert data["healthy"] is False
+    assert data["detail"] == {"error": "no endpoint declared"}
+    assert data["latency_ms"] is None
+
+
+def test_status_times_the_probe_not_the_manifest_lookup(timed_service_client: TestClient) -> None:
+    """latency_ms reports the probe alone, rounded to one decimal.
+
+    The fake clock charges 500 s to the manifest lookup and 2.1239 ms to the
+    probe, so starting the timer before the lookup, or rounding to anything but
+    one decimal, cannot yield 2.1.
+    """
+    resp = timed_service_client.get("/api/integrations/home-service/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["healthy"] is True
+    assert data["latency_ms"] == _EXPECTED_PROBE_MS
+
+
+def test_status_unexpected_probe_error_is_unhealthy_not_500(
+    service_client: TestClient, service_handler: _ServiceHttpHandler
+) -> None:
+    """The narrow except tuple can't enumerate every failure — a closed
+    app.state.http raises RuntimeError, which is neither HTTPError, InvalidURL
+    nor ValueError. The operator gets an unhealthy row, not a 500."""
+    service_handler.crash = RuntimeError("Cannot send a request, as the client has been closed.")
+    resp = service_client.get("/api/integrations/home-service/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["healthy"] is False
+    assert data["detail"]["error"].startswith("RuntimeError: ")
+    assert isinstance(data["latency_ms"], float)
+
+
+def test_status_times_the_adapter_probe_not_its_construction(
+    monkeypatch: pytest.MonkeyPatch,
+    service_handler: _ServiceHttpHandler,
+    home_service_manifest: dict[str, Any],
+) -> None:
+    """Adapter path: `IntegrationRegistry.get` constructs lazily and reads the
+    keyring, so a cold first call must not bill that to the probe."""
+    clock = _FakeClock()
+    monkeypatch.setattr(web_server, "time", clock)
+    monkeypatch.setattr(_TimedAdapter, "clock", clock)
+    with _service_client_for(home_service_manifest, service_handler) as client:
+        IntegrationRegistry._registry["timed_adapter"] = _TimedAdapter
+        IntegrationRegistry._instances.pop("timed_adapter", None)  # force a cold get()
+        resp = client.get("/api/integrations/timed_adapter/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["healthy"] is True
+    assert data["latency_ms"] == _EXPECTED_PROBE_MS
+
+
+def test_status_adapter_construction_failure_has_null_latency(
+    service_handler: _ServiceHttpHandler, home_service_manifest: dict[str, Any]
+) -> None:
+    """An adapter that can't even be built was never probed — no latency to report."""
+
+    class _BrokenAdapter(_TimedAdapter):
+        def __init__(self) -> None:
+            raise RuntimeError("keyring locked")
+
+    with _service_client_for(home_service_manifest, service_handler) as client:
+        IntegrationRegistry._registry["timed_adapter"] = _BrokenAdapter
+        IntegrationRegistry._instances.pop("timed_adapter", None)
+        resp = client.get("/api/integrations/timed_adapter/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["healthy"] is False
+    assert data["latency_ms"] is None
+
+
+@pytest.mark.parametrize("endpoint", ["http://[::1", "http://\x00bad"])
+def test_status_malformed_endpoint_is_unhealthy_not_500(
+    endpoint: str,
+    service_handler: _ServiceHttpHandler,
+    home_service_manifest_without_any_endpoint: dict[str, Any],
+) -> None:
+    """A service can write any string into its manifest. An unclosed IPv6 host
+    raises ValueError out of urljoin; a non-printable byte in the host raises
+    httpx.InvalidURL, which is *not* an HTTPError. Neither may reach the client
+    as a 500."""
+    manifest = {**home_service_manifest_without_any_endpoint, "service_endpoint": endpoint}
+    with _service_client_for(manifest, service_handler) as client:
+        resp = client.get("/api/integrations/home-service/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["healthy"] is False
+    assert "error" in data["detail"]
+    assert isinstance(data["latency_ms"], float)
+
+
+def test_status_non_string_endpoint_has_null_latency(
+    service_handler: _ServiceHttpHandler,
+    home_service_manifest_without_any_endpoint: dict[str, Any],
+) -> None:
+    """A non-string endpoint is "nothing to probe", not a urljoin crash."""
+    manifest: dict[str, Any] = {
+        **home_service_manifest_without_any_endpoint,
+        "service_endpoint": 123,
+    }
+    with _service_client_for(manifest, service_handler) as client:
+        resp = client.get("/api/integrations/home-service/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["healthy"] is False
+    assert data["detail"] == {"error": "no endpoint declared"}
+    assert data["latency_ms"] is None
 
 
 def test_put_credentials_requires_session(anon_service_client: TestClient) -> None:

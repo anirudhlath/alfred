@@ -14,8 +14,10 @@ Stream entry shapes vary by stream:
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
+from shared.redis_streams import revrange
 from shared.streams import (
     ACTIONS_STREAM,
     EVENTS_STREAM,
@@ -81,10 +83,54 @@ def _id_to_ts(entry_id: str) -> float | None:
         return None
 
 
+_RATE_WINDOW_SECONDS = 300
+# The overview reads this for all eight streams on every call, so the scan is bounded
+# rather than sized to the window: 100 entries are enough to measure a rate, and the
+# 5000 this used to transfer (whole entries, only to take their len()) both cost the
+# most on the busiest stream and still saturated at ~16.7/s.
+_RATE_SAMPLE_SIZE = 100
+
+
+async def _rate_5m(redis: AioRedis, key: str, now_ms: int) -> float:
+    """Entries per second over the last five minutes (0.0 on any failure).
+
+    Fewer than ``_RATE_SAMPLE_SIZE`` entries came back → the scan was not truncated,
+    so the sample *is* the whole window and ``n / 300`` is exact. A full sample means
+    the window holds at least that many, so the rate is extrapolated: the count over
+    the interval from the **oldest sampled entry up to now**, which is what lets a busy
+    stream read above the old 16.667 ceiling.
+
+    Note that interval is measured to ``now``, not to the newest sampled entry, so an
+    idle tail is part of the denominator. That is the conservative reading and the one
+    we want: a stream that fired 100 entries and then went quiet decays toward zero as
+    the quiet stretches, rather than reporting the burst's rate indefinitely.
+
+    A sample that spans no time (or whose oldest id will not parse) has nothing to
+    extrapolate from and falls back to the window, the floor of the estimate.
+    """
+    try:
+        recent = await revrange(
+            redis,
+            key,
+            count=_RATE_SAMPLE_SIZE,
+            min_id=f"{now_ms - _RATE_WINDOW_SECONDS * 1000}-0",
+        )
+    except Exception:
+        return 0.0
+    if len(recent) < _RATE_SAMPLE_SIZE:
+        return round(len(recent) / _RATE_WINDOW_SECONDS, 3)
+    oldest_ts = _id_to_ts(decode_stream_value(recent[-1][0]))  # newest first, so oldest last
+    span_seconds = now_ms / 1000.0 - oldest_ts if oldest_ts is not None else 0.0
+    if span_seconds <= 0:
+        span_seconds = _RATE_WINDOW_SECONDS
+    return round(_RATE_SAMPLE_SIZE / span_seconds, 3)
+
+
 async def stream_summaries(redis: AioRedis) -> dict[str, dict[str, Any]]:
-    """Length + last-entry recency for every catalog stream. Missing streams
-    report zero — never raise."""
+    """Length, last-entry recency and 5-minute rate for every catalog stream.
+    Missing streams report zero — never raise."""
     out: dict[str, dict[str, Any]] = {}
+    now_ms = int(time.time() * 1000)
     for name, key in STREAM_CATALOG.items():
         try:
             raw: Any = await redis.xinfo_stream(key)
@@ -95,7 +141,8 @@ async def stream_summaries(redis: AioRedis) -> dict[str, dict[str, Any]]:
                 "length": int(info.get("length") or info.get(b"length") or 0),
                 "last_id": last_id,
                 "last_ts": _id_to_ts(last_id) if last_id else None,
+                "rate_5m": await _rate_5m(redis, key, now_ms),
             }
         except Exception:
-            out[name] = {"length": 0, "last_id": None, "last_ts": None}
+            out[name] = {"length": 0, "last_id": None, "last_ts": None, "rate_5m": 0.0}
     return out

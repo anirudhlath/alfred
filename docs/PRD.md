@@ -91,7 +91,7 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 | Client-timezone awareness (reminders in your timezone, wherever you are) | In review | PR #27 |
 | Proactive notifications with urgency levels, DND windows, deferred delivery | Shipped | `docs/notifications.md` |
 | Delivery to Signal, web (with spoken announcement when urgent), and iOS push | Shipped | `docs/notifications.md` |
-| Reflex "attention set" — Alfred tunes which entities wake the fast mind, and can retune itself | Planned | spec `2026-07-15-real-home-ha-integration-design.md` (Plan 3) |
+| Reflex "attention set" — Alfred tunes which entities wake the fast mind, and can retune itself (`attention_*` tools); readable and editable over `GET`/`PUT /api/admin/attention` | In review | branch `feat/pwa-phase0b-backend` |
 
 ### 4.3 Memory
 
@@ -144,7 +144,8 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 | Capability | Status | Reference |
 |---|---|---|
 | Passkey (WebAuthn) login: biometric sign-in, no passwords stored | Shipped | `docs/webauthn.md` |
-| Trusted-network gating for sensitive operations (localhost + Tailscale only) | Shipped | `docs/webauthn.md` |
+| Trusted-network gating for credential-equivalent operations, with a 5-minute pairing code minted by a signed-in device as the alternative for passkey registration only | In review | branch `feat/pwa-phase0b-backend` |
+| Session and passkey management: list/end sessions, log out everywhere, remove a passkey (never the last) | In review | branch `feat/pwa-phase0b-backend` |
 | Identity confidence levels per channel (Signal-verified vs local claim) | Shipped | `docs/architecture.md` |
 | Guest access choices captured at onboarding (which controls guests may use) | Shipped | onboarding wizard |
 | Guest boundary enforcement via tiered autonomy | Planned | HA integration spec, Plan 3 |

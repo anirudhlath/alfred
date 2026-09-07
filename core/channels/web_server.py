@@ -7,6 +7,8 @@ import base64
 import ipaddress
 import json
 import os
+import re
+import time
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -43,7 +45,13 @@ from core.identity.credentials import CredentialStore
 from core.identity.ws_auth import require_ws_auth
 from core.notifications.adapters.satellite import SatelliteChannelAdapter
 from core.notifications.channels import ChannelRegistry
-from core.routing.pending import confirm_pending_action
+from core.routing.pending import (
+    confirm_pending_action,
+    get_pending_action,
+    list_pending_actions,
+    pending_action_payload,
+    pending_key,
+)
 from core.shutdown import teardown
 from core.warmup import start_warmup
 from shared.env import is_truthy_flag
@@ -137,6 +145,15 @@ class VoiceEnrollmentPayload(BaseModel):
 
 _DEVICE_TOKEN_PATTERN = r"^[a-fA-F0-9]+$"
 
+# ``ActionRequest.request_id`` is a uuid4 string (bus/schemas/events.py), 36 characters;
+# the class also covers the hand-written ids the schema allows, with the same 128-char
+# ceiling ``_SESSION_ID_RE`` uses in core/identity/auth_routes.py. Anything else cannot
+# name a parked action, so it is refused before Redis or the log line sees it.
+_REQUEST_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
+# One vocabulary for an unreachable action store, as with the auth router's
+# "Session store unavailable" and the admin router's "Attention store unavailable".
+_ACTION_STORE_DOWN = "Action store unavailable"
+
 
 class DeviceRegistration(BaseModel):
     """APNs device token registration."""
@@ -214,6 +231,11 @@ def _trusted_networks() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
             with suppress(ValueError):
                 nets.append(ipaddress.ip_network(cidr, strict=False))
     return nets
+
+
+def _elapsed_ms(started: float) -> float:
+    """Milliseconds since a ``time.perf_counter()`` reading, one decimal."""
+    return round((time.perf_counter() - started) * 1000, 1)
 
 
 async def require_trusted_network(request: Request) -> None:
@@ -699,18 +721,44 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
             or manifest.manifest.get("service_endpoint")
             or ""
         )
-        if not endpoint:
-            return {"name": name, "healthy": False, "detail": {"error": "no endpoint declared"}}
-        health_url = urljoin(endpoint, "/health")
+        # Manifests are service-written, so the endpoint may be absent, empty or
+        # not even a string — all of which mean "nothing to probe", not a 500.
+        if not isinstance(endpoint, str) or not endpoint:
+            return {
+                "name": name,
+                "healthy": False,
+                "detail": {"error": "no endpoint declared"},
+                "latency_ms": None,
+            }
+        started = time.perf_counter()
         try:
-            resp = await app.state.http.get(health_url)
+            # urljoin is inside the try: a malformed endpoint ("http://[::1")
+            # raises ValueError here, and httpx.InvalidURL is not an HTTPError.
+            resp = await app.state.http.get(urljoin(endpoint, "/health"))
             payload: dict[str, Any] = resp.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            return {"name": name, "healthy": False, "detail": {"error": str(exc)}}
+        except (httpx.HTTPError, httpx.InvalidURL, ValueError) as exc:
+            return {
+                "name": name,
+                "healthy": False,
+                "detail": {"error": str(exc)},
+                "latency_ms": _elapsed_ms(started),
+            }
+        except Exception as exc:
+            # The narrow tuple above is the known-and-expected set; anything else
+            # (a closed app.state.http raises RuntimeError, and InvalidURL was
+            # already missed once) is a bug report, not a 500 for the operator.
+            logger.warning("Status probe for service {} failed unexpectedly: {}", name, exc)
+            return {
+                "name": name,
+                "healthy": False,
+                "detail": {"error": f"{type(exc).__name__}: {exc}"},
+                "latency_ms": _elapsed_ms(started),
+            }
         return {
             "name": name,
             "healthy": service_payload_healthy(resp.status_code, payload),
             "detail": payload,
+            "latency_ms": _elapsed_ms(started),
         }
 
     @app.get("/api/integrations/{name}/status", dependencies=[Depends(require_authenticated)])
@@ -723,12 +771,20 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         except KeyError:
             return await _service_status(name)
 
+        # get() lazily constructs the adapter and blocks on a keyring read, so
+        # timing it would bill the first call after boot/reconfigure for the
+        # cold start. Construct first, then time the probe alone.
         try:
             instance = IntegrationRegistry.get(name)
+        except Exception:
+            return {"name": name, "healthy": False, "latency_ms": None}
+
+        started = time.perf_counter()
+        try:
             healthy = await instance.health_check()
         except Exception:
             healthy = False
-        return {"name": name, "healthy": healthy}
+        return {"name": name, "healthy": healthy, "latency_ms": _elapsed_ms(started)}
 
     @app.post("/api/onboarding", dependencies=[Depends(require_authenticated)])
     async def save_onboarding(payload: OnboardingPayload) -> dict[str, str]:
@@ -784,6 +840,42 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         n_fields = len(payload.model_dump(exclude_none=True))
         logger.info("Onboarding preferences saved ({} fields)", n_fields)
         return {"status": "ok"}
+
+    # Must stay above /api/actions/{request_id} — FastAPI matches in registration order.
+    @app.get("/api/actions/pending", dependencies=[Depends(require_authenticated)])
+    async def list_pending() -> dict[str, list[dict[str, Any]]]:
+        """Every critical action still waiting for confirmation, oldest first."""
+        r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
+        try:
+            items = await list_pending_actions(r)
+        except Exception as e:
+            logger.warning("Could not list the pending actions: {}", e)
+            raise HTTPException(status_code=503, detail=_ACTION_STORE_DOWN) from e
+        return {"actions": [pending_action_payload(a, ttl) for a, ttl in items]}
+
+    @app.get("/api/actions/{request_id}", dependencies=[Depends(require_authenticated)])
+    async def get_pending(request_id: str) -> dict[str, Any]:
+        """One pending action with its remaining fuse. Does not consume it."""
+        if not _REQUEST_ID_RE.fullmatch(request_id):
+            raise HTTPException(status_code=400, detail="Invalid request id")
+        r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
+        try:
+            item = await get_pending_action(r, request_id)
+        except ValueError:
+            # Same tombstone the list gives an unreadable entry (core/routing/pending.py):
+            # a value that no longer parses is gone as far as a client is concerned, and
+            # the two reads must not disagree about the same key.
+            logger.warning(
+                "Pending action key {} is unreadable — answering 404", pending_key(request_id)
+            )
+            item = None
+        except Exception as e:
+            logger.warning("Could not read pending action {}: {}", request_id, e)
+            raise HTTPException(status_code=503, detail=_ACTION_STORE_DOWN) from e
+        if item is None:
+            raise HTTPException(status_code=404, detail="Pending action not found or expired")
+        action, ttl = item
+        return pending_action_payload(action, ttl)
 
     @app.post("/api/actions/{request_id}/confirm", dependencies=[Depends(require_authenticated)])
     async def confirm_action(request_id: str) -> dict[str, str]:

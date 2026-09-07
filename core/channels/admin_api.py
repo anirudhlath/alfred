@@ -17,18 +17,28 @@ import asyncio
 import contextlib
 import json
 import re
+import statistics
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Request
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from bus.schemas.events import ActionRequest
 from core.channels.stream_catalog import STREAM_CATALOG, decode_entry, stream_summaries
 from core.memory.paths import episodic_cold_path, preferences_dir, profile_dir, scratchpad_path
+from core.reflex.attention import (
+    attention_add,
+    attention_domains,
+    attention_list,
+    attention_remove,
+    attention_seen_list,
+)
+from core.reflex.inference import REFLEX_BACKENDS
 from shared.config import AlfredConfig
+from shared.redis_streams import revrange
 from shared.streams import (
     ACTIONS_STREAM,
     CONTEXT_PREFIX,
@@ -36,6 +46,8 @@ from shared.streams import (
     DEFERRED_NOTIFICATIONS_KEY,
     DEVICE_TOKENS_KEY,
     DND_STATE_KEY,
+    LIBRARIAN_STATUS_KEY,
+    REFLEX_OBSERVATIONS_STREAM,
     SCRATCHPAD_QUEUE,
     SESSIONS_KEY_PREFIX,
     TRIGGERS_KEY,
@@ -63,6 +75,42 @@ class DndRequest(BaseModel):
 
 class TriggerEnabledRequest(BaseModel):
     enabled: bool
+
+
+# Matches the domains the bus emits (``home``, ``media``); rejects anything that
+# could address another domain's keyspace — notably a ``:seen`` suffix, which
+# would write straight into the sticky set. Applied with `fullmatch`: `$` would
+# also accept a trailing newline.
+_DOMAIN_RE = re.compile(r"[a-z0-9_]{1,64}")
+_MAX_ENTITY_ID_LEN = 256
+_MAX_ENTITIES_PER_LIST = 200
+# One vocabulary for an unreachable attention store, shared by the GET and the PUT.
+_ATTENTION_STORE_DOWN = "Attention store unavailable"
+
+
+class AttentionUpdate(BaseModel):
+    """Entities to add to (`allow`) or remove from (`ask`) a domain's attention set."""
+
+    allow: list[str] = Field(default_factory=list, max_length=_MAX_ENTITIES_PER_LIST)
+    ask: list[str] = Field(default_factory=list, max_length=_MAX_ENTITIES_PER_LIST)
+
+    @field_validator("allow", "ask")
+    @classmethod
+    def _clean_entities(cls, entities: list[str]) -> list[str]:
+        """Strip, reject blanks, and cap length — 422 rather than a junk set member.
+
+        Colons are deliberately allowed: these are set *members*, not key names,
+        so an entity id has no way to escape the domain it is written under.
+        """
+        cleaned: list[str] = []
+        for raw in entities:
+            entity_id = raw.strip()
+            if not entity_id:
+                raise ValueError("entity id must not be blank")
+            if len(entity_id) > _MAX_ENTITY_ID_LEN:
+                raise ValueError(f"entity id exceeds {_MAX_ENTITY_ID_LEN} characters")
+            cleaned.append(entity_id)
+        return cleaned
 
 
 async def _publish_internal_action(redis: AioRedis, tool_name: str) -> None:
@@ -149,6 +197,8 @@ def _base_overview() -> dict[str, Any]:
         "counts": {"sessions": 0, "devices": 0, "deferred": 0, "triggers": 0},
         "streams": {},
         "inference": {"ollama": False, "lmstudio": False},
+        "reflex": {"model": None, "last_ms": None, "p50_ms": None},
+        "librarian": {"last_run_at": None, "reviewed": None, "next_run_at": None},
     }
 
 
@@ -175,6 +225,76 @@ def _decode_hash(fields: dict[bytes | str, Any]) -> dict[str, Any]:
             continue
         out[key] = v.decode(errors="replace") if isinstance(v, bytes) else v
     return out
+
+
+_REFLEX_LATENCY_SAMPLES = 20
+
+
+async def _reflex_latencies(r: AioRedis, *, count: int = _REFLEX_LATENCY_SAMPLES) -> list[float]:
+    """Decision latency (ms) of the newest Reflex observations, newest first.
+
+    Each observation stamps its own ``timestamp`` and carries the originating
+    event under ``trigger_event.timestamp``; the difference is how long the
+    Reflex Engine took. Entries that don't parse are skipped; any Redis error
+    yields an empty list so the overview never 500s.
+    """
+    try:
+        entries = await revrange(r, REFLEX_OBSERVATIONS_STREAM, count=count)
+    except Exception as exc:
+        logger.warning("Reflex observation read failed: {}", exc)
+        return []
+    out: list[float] = []
+    for _entry_id, fields in entries:
+        try:
+            event = decode_entry(fields)
+            observed = datetime.fromisoformat(event["timestamp"])
+            triggered = datetime.fromisoformat(event["trigger_event"]["timestamp"])
+            # Inside the try: subtracting a naive from an aware datetime is a
+            # TypeError, and one mixed-tz entry must not take down the overview.
+            latency_ms = (observed - triggered).total_seconds() * 1000
+        except (KeyError, TypeError, ValueError):
+            continue
+        out.append(round(latency_ms, 1))
+    return out
+
+
+def _int_or_none(raw: Any) -> int | None:
+    """Parse an int, or None when the value is missing or not one.
+
+    ``str.isdigit()`` is not a safe pre-test: it accepts non-decimal Unicode
+    digits such as U+00B2 that ``int()`` then rejects. Ask ``int()`` directly.
+    """
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _librarian_status(r: AioRedis) -> dict[str, Any]:
+    """The ``alfred:librarian:status`` hash, shaped for the overview.
+
+    Every field is optional: the hash doesn't exist until the Librarian's first
+    run, and any Redis error is swallowed the same way the reflex read swallows
+    its own, so a nulled-out block is the worst case rather than a 500.
+    """
+    try:
+        fields = _decode_hash(await r.hgetall(LIBRARIAN_STATUS_KEY))
+    except Exception as exc:
+        logger.warning("Librarian status read failed: {}", exc)
+        fields = {}
+    return {
+        "last_run_at": fields.get("last_run_at"),
+        "reviewed": _int_or_none(fields.get("reviewed")),
+        "next_run_at": fields.get("next_run_at"),
+    }
+
+
+async def _attention_domain(r: AioRedis, domain: str) -> dict[str, Any]:
+    return {
+        "domain": domain,
+        "members": await attention_list(r, domain),
+        "seen": await attention_seen_list(r, domain),
+    }
 
 
 async def require_authenticated(request: Request) -> None:
@@ -240,6 +360,25 @@ def create_admin_router() -> APIRouter:
             "ollama": await _check_http(request, cfg.ollama_host.rstrip("/") + "/api/tags"),
             "lmstudio": await _check_http(request, cfg.lmstudio_host.rstrip("/") + "/v1/models"),
         }
+        latencies = await _reflex_latencies(r)
+        # Normalised like the dispatcher does (core/reflex/inference.py), so
+        # REFLEX_BACKEND=OpenAI names the model the engine will actually use — and
+        # judged against the dispatcher's own accepted set, imported rather than
+        # retyped: a backend it refuses runs no model, so this reports null instead
+        # of quietly naming OLLAMA_MODEL for, say, REFLEX_BACKEND=vllm.
+        backend = cfg.reflex_backend.strip().lower()
+        if backend not in REFLEX_BACKENDS:
+            reflex_model = None
+        else:
+            reflex_model = (
+                cfg.openai_compat_model if backend == "openai" else cfg.ollama_model
+            ) or None
+        out["reflex"] = {
+            "model": reflex_model,
+            "last_ms": latencies[0] if latencies else None,
+            "p50_ms": round(statistics.median(latencies), 1) if latencies else None,
+        }
+        out["librarian"] = await _librarian_status(r)
         return out
 
     @router.get("/streams")
@@ -259,9 +398,7 @@ def create_admin_router() -> APIRouter:
             raise HTTPException(status_code=404, detail=f"Unknown stream '{name}'")
         count = max(1, min(count, 200))
         max_id = f"({before}" if before else "+"
-        raw: list[tuple[bytes | str, dict[bytes | str, bytes | str]]] = await _redis(  # type: ignore[assignment,misc,unused-ignore]
-            request
-        ).xrevrange(key, max=max_id, min="-", count=count)
+        raw = await revrange(_redis(request), key, count=count, max_id=max_id)
         entries = [
             {"id": decode_stream_value(eid), "event": decode_entry(data)} for eid, data in raw
         ]
@@ -540,6 +677,66 @@ def create_admin_router() -> APIRouter:
         deleted = await _redis(request).delete(f"{SESSIONS_KEY_PREFIX}{session_id}")
         logger.info("Admin deleted session {}", session_id)
         return {"deleted": bool(deleted)}
+
+    @router.get("/attention")
+    async def attention(request: Request) -> dict[str, Any]:
+        """Every domain's attention set and its sticky ``:seen`` companion."""
+        r = _redis(request)
+        try:
+            domains = await attention_domains(r)
+        except Exception as exc:
+            # Not `{"domains": []}`: that is the shape "nothing is configured" has, and
+            # the PWA's setup gate branches on exactly that. An outage says so instead,
+            # in the same vocabulary as the sibling PUT.
+            logger.warning("Attention read failed: {}", exc)
+            raise HTTPException(status_code=503, detail=_ATTENTION_STORE_DOWN) from exc
+        # Per-domain, so one unreadable set costs its own row rather than the page.
+        out: list[dict[str, Any]] = []
+        for domain in domains:
+            try:
+                out.append(await _attention_domain(r, domain))
+            except Exception as exc:
+                logger.warning("Attention read for {} failed: {}", domain, exc)
+        return {"domains": out}
+
+    @router.put("/attention/{domain}")
+    async def update_attention(
+        request: Request, domain: str, body: AttentionUpdate
+    ) -> dict[str, Any]:
+        """Add (`allow`) or sticky-remove (`ask`) entities for one domain.
+
+        `ask` is applied after `allow`, so an entity in both lists ends up
+        removed and sticky.
+        """
+        if not _DOMAIN_RE.fullmatch(domain):
+            raise HTTPException(status_code=400, detail="Invalid domain")
+        r = _redis(request)
+        applied = 0  # writes are not transactional — say how far we got
+        try:
+            for entity_id in body.allow:
+                await attention_add(r, domain, entity_id)
+                applied += 1
+            for entity_id in body.ask:
+                await attention_remove(r, domain, entity_id)
+                applied += 1
+            # Read back inside the guard: a write is not confirmed until it reads.
+            updated = await _attention_domain(r, domain)
+        except Exception as exc:
+            logger.warning(
+                "Attention write for {} failed after {} of {} changes: {}",
+                domain,
+                applied,
+                len(body.allow) + len(body.ask),
+                exc,
+            )
+            raise HTTPException(status_code=503, detail=_ATTENTION_STORE_DOWN) from exc
+        logger.info(
+            "Attention set '{}' updated via admin: +{} -{}",
+            domain,
+            len(body.allow),
+            len(body.ask),
+        )
+        return updated
 
     return router
 

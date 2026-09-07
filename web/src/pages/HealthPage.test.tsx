@@ -42,8 +42,8 @@ const OVERVIEW_RESPONSE = {
   dnd: { active: false, until: null, reason: null, source: "manual" },
   counts: { sessions: 1, devices: 1, deferred: 0, triggers: 2 },
   streams: {
-    "alfred:events": { length: 12, last_id: "123-0", last_ts: 1749542400 },
-    "alfred:actions": { length: 3, last_id: "456-0", last_ts: null },
+    "alfred:events": { length: 12, last_id: "123-0", last_ts: 1749542400, rate_5m: 0.04 },
+    "alfred:actions": { length: 3, last_id: "456-0", last_ts: null, rate_5m: 0.0 },
   },
   inference: { ollama: true, lmstudio: false },
 };

@@ -10,10 +10,11 @@ Two concerns:
 
 - **Read-only observability** — stream history with cursor pagination, memory snapshots
   (episodic, semantic, routines, scratchpad), trigger state, deferred notifications,
-  active sessions, registered devices, and a combined system overview.
+  active sessions, registered devices, the Reflex attention set, and a combined system
+  overview.
 - **Curated controls** — a small set of operations that mirror what the system already
   does internally (set DND, drain deferred notifications, run the Librarian, enable/disable
-  or manually fire a trigger, end a session).
+  or manually fire a trigger, end a session, edit an attention domain).
 
 All routes share the `/api/admin` prefix and are served by the same `core.channels` process
 that handles chat WebSocket connections on port 8081.
@@ -36,9 +37,23 @@ two shapes:
 | Endpoints | Gates | Why |
 |---|---|---|
 | `PUT/DELETE /api/integrations/{name}/credentials`, `POST/DELETE /api/devices/register`, `POST /api/voice/enroll` | **both** (`_CREDENTIAL_GATES`, network first) | A caller who can write these can widen Alfred's reach, so being on the LAN/tailnet *and* signed in are both required. |
-| `POST /api/auth/register/{begin,complete}` | **network only** (`Depends(trusted_network_dep)` in `core/identity/auth_routes.py`, injected from `web_server.py`) | Registration is how the first session comes into existence — the first-run user has no cookie yet, so a session gate here would be unsatisfiable. Physical network position is the whole of the trust. |
+| `POST /api/auth/register/{begin,complete}` | **network or pairing code** (`_registration_gate` in `core/identity/auth_routes.py`, wrapping `trusted_network_dep` injected from `web_server.py`) | Registration is how the first session comes into existence — the first-run user has no cookie yet, so a session gate here would be unsatisfiable. Trust therefore comes from network position, or from a short-lived `X-Pairing-Code` an already-signed-in device minted. |
 
-See [`webauthn.md` → Security Properties](webauthn.md) for the registration side.
+Removing a passkey (`DELETE /api/auth/credentials/{credential_id}`) sits on the **session
+only**, like the admin surface: it neither mints nor widens a credential, so the rule above
+does not reach it.
+
+Minting the code that makes the second row's alternative possible
+(`POST /api/auth/pairing`) is **session only** for a different reason — the code it hands
+out *does* authorise a passkey mint from off-LAN, so the rule would reach it. Requiring the
+LAN here would defeat the point: the signed-in device doing the minting is often the one
+that is away. What stands in for the network half is the code's own budget — it must be
+presented on **both** `register/begin` and `register/complete`, it lives 5 minutes, it is
+consumed the moment the passkey is saved, and ten wrong guesses from one client address —
+a single IPv4 address or an IPv6 /64 — refuse that client for the rest of its 5-minute counter — the code itself stays live for
+everyone else, so a stranger cannot deny pairing to the device that is waiting.
+
+See [`webauthn.md` → Sessions, passkeys and pairing](webauthn.md) for that whole surface.
 
 The dependency is applied at router creation time:
 
@@ -82,7 +97,7 @@ upgrades — and checks the `alfred:auth:{session_id}` hash in Redis.
 Returns a single JSON object with:
 
 - `redis.connected` — bool, from a `PING` probe
-- `cost` — current `alfred:cost:daily` value (JSON object) or `null` if unset
+- `cost` — current `alfred:cost:daily` value (JSON object) or `null` if unset. The blob is written only on spend, so before the day's first `record_spend` it is the previous day's state (check `date`); `request_count` (calls billed today) and `avg_usd` (spend per call) are absent entirely from state written before the upgrade — treat both as optional
 - `dnd` — current `alfred:memory:dnd` value, defaulting to `{"active": false}`
 - `counts.sessions` — number of active `alfred:sessions:*` keys (scan-based)
 - `counts.devices` — `HLEN alfred:push:devices`
@@ -91,9 +106,27 @@ Returns a single JSON object with:
 - `streams` — same payload as `GET /api/admin/streams`
 - `inference.ollama` — bool: probe `{OLLAMA_HOST}/api/tags` returns < 500
 - `inference.lmstudio` — bool: probe `{LMSTUDIO_HOST}/v1/models` returns < 500
+- `reflex.model` — the model the Reflex Engine decides with: `OPENAI_COMPAT_MODEL` when `REFLEX_BACKEND=openai`, `OLLAMA_MODEL` when it is `ollama` (both matched case-insensitively after stripping, as the dispatcher does). `null` when that backend's model is unconfigured **or** when `REFLEX_BACKEND` names a backend the dispatcher does not accept — `core/reflex/inference.py` raises on those, so no model runs at all, and the overview mirrors its `REFLEX_BACKENDS` set rather than retyping it
+- `reflex.last_ms` — decision latency of the newest `reflex_observations` entry, in ms, rounded to 0.1 ms
+- `reflex.p50_ms` — median of those latencies over the newest 20 observations, in ms, rounded to 0.1 ms
+- `librarian.last_run_at` — ISO timestamp of the Librarian's last pass, or `null` before its first run
+- `librarian.reviewed` — int: scratchpad lines drained on that pass (`len(lines)` in `consolidator.py`, not a count of memories written), or `null` when unset or non-numeric
+- `librarian.next_run_at` — ISO timestamp of the next scheduled pass, or `null` when none is scheduled
 
 Inference probes use the lifespan-owned `httpx.AsyncClient` (`request.app.state.http`).
 In tests (no lifespan) the client is absent and both bools are deterministically `false`.
+
+Reflex latency is derived, not stored: each observation stamps its own `timestamp` and carries
+the originating event under `trigger_event.timestamp`, so the difference is how long the engine
+took to decide. The overview reads the newest 20 with one `XREVRANGE`; entries that don't parse
+(and mixed naive/aware timestamps, which can't be subtracted) are skipped, and `last_ms`/`p50_ms`
+are both `null` when nothing usable remains or the stream is unreadable.
+
+The `librarian.*` fields come from the `alfred:librarian:status` hash. `last_run_at` and
+`reviewed` are written by the consolidator at the end of each pass (`_record_run`); `next_run_at`
+is written by `LibrarianScheduler.run` — once at startup, so the stamp is not left holding the
+previous process's value while the first cycle runs, and again after every cycle. A missing hash
+or a failed read yields all three as `null` rather than an error.
 
 ---
 
@@ -101,7 +134,7 @@ In tests (no lifespan) the client is absent and both bools are deterministically
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/api/admin/streams` | Length + recency for all catalog streams |
+| `GET` | `/api/admin/streams` | Length, recency + 5-minute rate for all catalog streams |
 | `GET` | `/api/admin/streams/{name}` | Paginated history for a named stream |
 
 **Stream names** (from `STREAM_CATALOG` in `core/channels/stream_catalog.py`):
@@ -121,12 +154,31 @@ In tests (no lifespan) the client is absent and both bools are deterministically
 
 ```json
 {
-  "events": {"length": 1042, "last_id": "1749600000000-0", "last_ts": 1749600000.0},
-  "actions": {"length": 87, "last_id": "1749599990000-0", "last_ts": 1749599990.0}
+  "events": {"length": 1042, "last_id": "1749600000000-0", "last_ts": 1749600000.0, "rate_5m": 1.234},
+  "actions": {"length": 87, "last_id": "1749599990000-0", "last_ts": 1749599990.0, "rate_5m": 0.0}
 }
 ```
 
-Missing streams (stream key does not exist in Redis yet) report `{"length": 0, "last_id": null, "last_ts": null}` — never raises.
+Missing streams (stream key does not exist in Redis yet) report `{"length": 0, "last_id": null, "last_ts": null, "rate_5m": 0.0}` — never raises.
+
+`rate_5m` is entries per second over the trailing 300 seconds, measured with one bounded
+`XREVRANGE key + {now-300s} COUNT 100` per stream (`_RATE_SAMPLE_SIZE` in
+`core/channels/stream_catalog.py`). Fewer than 100 entries come back → the scan was not
+truncated, the sample is the whole window, and the figure is exact (`n / 300`). Exactly 100
+come back → the window holds at least that many, so the rate is **extrapolated**:
+`100 / (now - oldest_sampled_ts)`, which is how a busy stream reports its real rate rather
+than saturating. A full sample spanning no time — or one whose oldest entry id will not
+parse — falls back to the window (`100 / 300`), the floor of the estimate. `0.0` covers both
+an idle stream and any Redis failure.
+
+The extrapolated denominator runs to **now**, not to the newest sampled entry, so a quiet
+stretch after a burst is counted against the rate. That is deliberate: a stream that fired
+100 entries and then stopped decays toward zero as the silence grows, instead of reporting
+the burst's rate until those entries age out of the window. **For client authors:** once the
+sample fills, `rate_5m` tracks the interval the newest 100 entries span up to now, so it
+responds faster — in both directions — than a flat 300-second mean would. Two polls a few
+seconds apart can legitimately differ on an unchanged stream; render it as a live rate, not
+as a stable five-minute average.
 
 **`GET /api/admin/streams/{name}`** parameters:
 
@@ -206,6 +258,14 @@ Uses `RoutineStore.list_all()` (sync glob + YAML reads). The blocking I/O is off
 `asyncio.to_thread()` so the channels event loop (which also serves chat WebSocket
 connections) is not blocked.
 
+Each routine carries `confidence_history` — a list of floats, oldest first, newest last,
+capped at the **8 newest**. The Librarian appends one sample per lifecycle cycle
+(`_append_confidence` in `core/librarian/consolidator.py`, rounded to 4 decimals), which is
+what the Triggers bench renders as a sparkline. The cap is enforced both on append and on
+load, so a hand-edited or legacy YAML file with more than 8 entries is trimmed to its newest
+8 rather than rejected — a routine must never fail to load over its own history. A routine
+that has not been through a lifecycle cycle yet reports `[]`.
+
 #### Scratchpad (`/memory/scratchpad`)
 
 Returns `content` (full text of `core/memory/scratchpad.md`, empty string if absent) and
@@ -274,6 +334,45 @@ distinguish devices.
 
 ---
 
+### Attention
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/admin/attention` | Every Reflex attention domain: `members` (entities that wake the SLM) and `seen` (entities already evaluated, which the YAML seed leaves alone) |
+| `PUT` | `/api/admin/attention/{domain}` | Add entities to, or sticky-remove them from, one domain |
+
+`GET` returns `{"domains": [{"domain": "home", "members": [...], "seen": [...]}, ...]}`,
+sorted by domain, with both member lists sorted. A domain appears if it has an attention
+set **or** a `:seen` set. One unreadable domain costs its own row (logged, skipped); a
+failed **scan** is **503** `Attention store unavailable`, like the `PUT`. It deliberately
+does not degrade to `{"domains": []}` — that is the shape "nothing is configured" has, and
+a client's setup gate must not read an outage as an empty configuration.
+
+`PUT` takes `{"allow": ["light.kitchen"], "ask": ["binary_sensor.motion"]}` — `allow`
+entities go through `attention_add` (into the set, marked seen); `ask` entities go through
+`attention_remove` (out of the set, marked seen so the seed cannot re-add them). `ask` is
+applied after `allow`, so an entity in both lists ends up removed and sticky. The refreshed
+domain is returned in the `GET` row shape, read back after the writes — a write is not
+confirmed until it reads.
+
+| Rejection | Status |
+|---|---|
+| Domain outside `[a-z0-9_]{1,64}` (`fullmatch`, so a trailing newline is not accepted) | **400** `Invalid domain` |
+| More than 200 entries in either list | **422** |
+| An entry that is blank/whitespace-only, or longer than 256 characters | **422** |
+| Redis failed part-way (the log line says how many of the changes landed) | **503** `Attention store unavailable` |
+
+Entries are stripped before they are written. Colons are deliberately allowed — these are
+set *members*, not key names, so an entity id cannot escape its domain; the domain grammar
+is what refuses `home:seen`, which would otherwise write straight into the sticky set. The
+writes are not transactional: a mid-list failure leaves the earlier changes applied.
+
+`AttentionSet.should_fire` checks membership with `SISMEMBER` per event, so an edit applies
+to the next state change — no reload, no restart. See
+[`autonomy.md` → Attention Set](autonomy.md) for what the set gates.
+
+---
+
 ### Controls
 
 | Method | Path | Purpose |
@@ -283,6 +382,8 @@ distinguish devices.
 | `POST` | `/api/admin/librarian/run` | Trigger an immediate Librarian consolidation |
 | `POST` | `/api/admin/triggers/{trigger_id}/enabled` | Enable or disable a trigger |
 | `POST` | `/api/admin/triggers/{trigger_id}/fire` | Manually fire a trigger |
+| `PUT` | `/api/admin/attention/{domain}` | Edit one Reflex attention domain ([Attention](#attention)) |
+| `DELETE` | `/api/admin/sessions/{session_id}` | Terminate a session ([Sessions](#sessions)) |
 
 All control endpoints log at INFO when they execute.
 
@@ -495,6 +596,7 @@ cleanly before the handler returns.
 | Drain deferred notifications | `XADD alfred:actions` (`drain_deferred_notifications`) | Conscious process `_INTERNAL_HANDLERS` |
 | Run Librarian | `XADD alfred:actions` (`run_librarian`) | Conscious process `_INTERNAL_HANDLERS` |
 | Fire trigger | `XADD alfred:actions` (`fire_trigger`, `target_service=trigger-engine`) | Triggers process (`triggers-internal` consumer → `TriggerEngine.fire`) |
+| Attention edit | Direct `SADD`/`SREM` on `alfred:attention:{domain}` + `:seen` | Admin API (channels process) |
 
 Direct Redis writes take effect immediately. `XADD`-based controls are queued into
 `alfred:actions` and executed asynchronously by the owning process. The admin API returns

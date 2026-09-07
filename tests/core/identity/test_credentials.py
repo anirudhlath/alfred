@@ -22,6 +22,17 @@ FAKE_CRED_ID = "dGVzdC1jcmVkLWlk"
 FAKE_PUBLIC_KEY = b"\x01\x02\x03\x04"
 FAKE_DEVICE_NAME = "MacBook Pro"
 FAKE_TRANSPORTS = ["internal", "hybrid"]
+SECOND_CRED_ID = "dGVzdC1jcmVkLWlkLTI"
+
+
+async def _save(store: CredentialStore, credential_id: str) -> None:
+    await store.save_credential(
+        credential_id=credential_id,
+        public_key=FAKE_PUBLIC_KEY,
+        sign_count=0,
+        device_name=FAKE_DEVICE_NAME,
+        transports=FAKE_TRANSPORTS,
+    )
 
 
 class TestCredentialStore:
@@ -96,17 +107,36 @@ class TestCredentialStore:
 
     @pytest.mark.asyncio
     async def test_delete_credential(self, store: CredentialStore) -> None:
-        await store.save_credential(
-            credential_id=FAKE_CRED_ID,
-            public_key=FAKE_PUBLIC_KEY,
-            sign_count=0,
-            device_name=FAKE_DEVICE_NAME,
-            transports=FAKE_TRANSPORTS,
-        )
+        await _save(store, FAKE_CRED_ID)
+        await _save(store, SECOND_CRED_ID)
+
+        assert await store.delete_credential(FAKE_CRED_ID) == 1
+
+        assert await store.get_credential(FAKE_CRED_ID) is None
+        assert await store.get_credential(SECOND_CRED_ID) is not None
+
+    @pytest.mark.asyncio
+    async def test_delete_refuses_the_last_credential(self, store: CredentialStore) -> None:
+        """The rule is in the SQL, not in the caller: two concurrent removals of
+        different passkeys would both pass a read-then-delete check and lock the
+        user out. Nothing removes the survivor."""
+        await _save(store, FAKE_CRED_ID)
+        await _save(store, SECOND_CRED_ID)
         await store.delete_credential(FAKE_CRED_ID)
-        cred = await store.get_credential(FAKE_CRED_ID)
-        assert cred is None
-        assert await store.has_any_credential() is False
+
+        assert await store.delete_credential(SECOND_CRED_ID) == 0
+
+        assert await store.get_credential(SECOND_CRED_ID) is not None
+        assert await store.has_any_credential() is True
+
+    @pytest.mark.asyncio
+    async def test_delete_of_an_unknown_id_removes_nothing(self, store: CredentialStore) -> None:
+        await _save(store, FAKE_CRED_ID)
+        await _save(store, SECOND_CRED_ID)
+
+        assert await store.delete_credential("does-not-exist") == 0
+
+        assert len(await store.list_credentials()) == 2
 
     @pytest.mark.asyncio
     async def test_get_nonexistent(self, store: CredentialStore) -> None:

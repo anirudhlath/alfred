@@ -117,6 +117,19 @@ async def test_critical_unconfirmed_intercepted() -> None:
     assert pub_kwargs["metadata"]["pending_action_id"] == action.request_id
     assert pub_kwargs["metadata"]["tool_name"] == "home.unlock_door"
     assert pub_kwargs["metadata"]["parameters"] == {"room": "living_room"}
+    assert pub_kwargs["metadata"]["reason"] is None  # _action() sets no reason
+
+
+@pytest.mark.asyncio
+async def test_critical_intercept_forwards_reason_to_notification() -> None:
+    router, _agent, _redis, notifier = _router()
+    action = _action("conscious-engine", "home.unlock_door").model_copy(
+        update={"reason": "The dog walker is at the door."}
+    )
+    await router.route(action)
+
+    pub_kwargs = notifier.publish.call_args.kwargs
+    assert pub_kwargs["metadata"]["reason"] == "The dog walker is at the door."
 
 
 @pytest.mark.asyncio

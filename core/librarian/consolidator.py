@@ -23,8 +23,14 @@ from pydantic import BaseModel
 
 from core.memory.paths import preferences_dir as _preferences_dir
 from core.memory.paths import profile_dir as _profile_dir
-from core.memory.schemas import EpisodicEntry, RoutineSpec, RoutineStep, SignificanceScore
-from shared.streams import LIBRARIAN_QUEUE
+from core.memory.schemas import (
+    CONFIDENCE_HISTORY_LEN,
+    EpisodicEntry,
+    RoutineSpec,
+    RoutineStep,
+    SignificanceScore,
+)
+from shared.streams import LIBRARIAN_QUEUE, LIBRARIAN_STATUS_KEY
 
 if TYPE_CHECKING:
     from core.memory.context_index import ContextIndexManager
@@ -35,7 +41,6 @@ if TYPE_CHECKING:
     from shared.types import AioRedis
 
 logger = logging.getLogger(__name__)
-
 
 # ---------------------------------------------------------------------------
 # Semantic conflict resolution models
@@ -101,6 +106,16 @@ def _group_by_entity_date(
             ungrouped.extend(bucket)
 
     return groups, ungrouped
+
+
+def _append_confidence(history: list[float], value: float) -> list[float]:
+    """Return `history` with `value` appended, trimmed to the newest samples.
+
+    The cap lives on the field (`CONFIDENCE_HISTORY_LEN` in core/memory/schemas.py),
+    which enforces the same bound on load — one number, so a file written here and a
+    file edited by hand are trimmed identically.
+    """
+    return [*history, round(value, 4)][-CONFIDENCE_HISTORY_LEN:]
 
 
 def _routine_index_content(routine: RoutineSpec) -> str:
@@ -889,6 +904,9 @@ class Librarian:
                     update={
                         "last_hit": now,
                         "consecutive_misses": 0,
+                        "confidence_history": _append_confidence(
+                            routine.confidence_history, routine.confidence
+                        ),
                     }
                 )
                 self._routines.save(routine)
@@ -931,6 +949,9 @@ class Librarian:
                         "consecutive_misses": new_misses,
                         "state": new_state,
                         "confidence": new_confidence,
+                        "confidence_history": _append_confidence(
+                            routine.confidence_history, new_confidence
+                        ),
                     }
                 )
                 self._routines.save(routine)
@@ -998,6 +1019,27 @@ class Librarian:
             logger.info("Reindexed %d routines into context index", indexed)
         return indexed
 
+    async def _record_run(self, reviewed: int) -> None:
+        """Stamp the status hash after a cycle. Best-effort — never fails the cycle."""
+        try:
+            await self._redis.hset(
+                LIBRARIAN_STATUS_KEY,
+                mapping={
+                    "last_run_at": datetime.now(UTC).isoformat(),
+                    "reviewed": str(reviewed),
+                },
+            )
+        except Exception as exc:
+            logger.warning("Could not record Librarian run status: %s", exc)
+
+    async def record_next_run(self, at: datetime) -> None:
+        """Record when the scheduler will run the next cycle (shown on the dashboard).
+
+        Unlike `_record_run`, this propagates Redis errors — the caller owns the
+        best-effort guard (see `LibrarianScheduler.run`).
+        """
+        await self._redis.hset(LIBRARIAN_STATUS_KEY, mapping={"next_run_at": at.isoformat()})
+
     async def consolidate(self) -> dict[str, Any]:
         """Run one consolidation cycle.
 
@@ -1012,6 +1054,7 @@ class Librarian:
         lines = await self._drain_scratchpad()
         if not lines:
             logger.info("Scratchpad empty — nothing to consolidate")
+            await self._record_run(0)
             return {"entries_processed": 0, "routines_reindexed": routines_reindexed}
 
         logger.info("Draining %d scratchpad entries", len(lines))
@@ -1047,10 +1090,11 @@ class Librarian:
             conflict_min_days=self._conflict_min_days,
         )
 
-        # 5. Pattern detection for procedural memory
+        # 5. Pattern detection for procedural memory (must precede the lifecycle pass below)
         patterns_detected = await self._detect_patterns(episodic_entries)
 
-        # 6. Routine lifecycle updates
+        # 6. Routine lifecycle updates — keep this after detection so a candidate created
+        #    this pass records its first confidence sample in the same pass
         lifecycle_updates = await self._update_routine_lifecycle()
 
         # 7. Decay processing
@@ -1072,4 +1116,5 @@ class Librarian:
             "timestamp": datetime.now(UTC).isoformat(),
         }
         logger.info("Consolidation complete: %s", result)
+        await self._record_run(len(lines))
         return result
