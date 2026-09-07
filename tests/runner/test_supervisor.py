@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import sys
 
 import pytest
 
-from runner.supervisor import ServiceSpec, Supervisor, _ManagedService
+from runner.supervisor import _PIPE_LINE_LIMIT, ServiceSpec, Supervisor, _ManagedService
 
 
 class TestServiceSpec:
@@ -133,3 +134,42 @@ class TestSupervisor:
 
         code = await asyncio.wait_for(task, timeout=15.0)
         assert code == 0
+
+
+# A child that writes one oversized line, then enough further output to fill the
+# 64 KiB pipe. If the supervisor stops draining after the long line, the child blocks
+# forever on its next write and never exits.
+_LONG_LINE_CHILD = (
+    "import sys\n"
+    "print('x' * int(sys.argv[1]), flush=True)\n"
+    "for i in range(20):\n"
+    "    print('tail-%d ' % i + 'y' * 8_000, flush=True)\n"
+    "print('last-line', flush=True)\n"
+)
+
+
+class TestPipeOutput:
+    @pytest.mark.parametrize(
+        ("line_len", "dropped"),
+        [
+            (100_000, False),  # over asyncio's 64 KiB default, under ours: passed through
+            (_PIPE_LINE_LIMIT + 1_000, True),  # over ours: dropped with a notice
+        ],
+    )
+    async def test_child_survives_oversized_line(
+        self, capsys: pytest.CaptureFixture[str], line_len: int, dropped: bool
+    ) -> None:
+        """One oversized log line must not deadlock the child (regression: the
+        conscious engine hung mid-turn after litellm dumped a >64 KiB request)."""
+        spec = ServiceSpec(
+            name="chatty",
+            command=[sys.executable, "-u", "-c", _LONG_LINE_CHILD, str(line_len)],
+            max_restarts=0,
+        )
+        supervisor = Supervisor([spec], reload=False)
+        code = await asyncio.wait_for(supervisor.run(), timeout=10.0)
+        assert code == 0
+        out = capsys.readouterr().out
+        assert ("[chatty] dropped a log line" in out) is dropped
+        assert "tail-19" in out
+        assert "last-line" in out
