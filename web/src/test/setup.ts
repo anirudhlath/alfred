@@ -28,10 +28,12 @@ if (typeof globalThis.localStorage === "undefined") {
   });
 }
 
-// jsdom implements none of matchMedia, ResizeObserver or visualViewport, and all
-// three are load-bearing: the reduced-motion branch in Layer, the timeline's scroll
-// anchoring (plan 1b), and installViewportVars. Stub them here so no test has to;
-// a test that needs a different answer overrides its own with vi.stubGlobal.
+// jsdom implements none of matchMedia, ResizeObserver or visualViewport. The first
+// and last are load-bearing — the reduced-motion branch in Layer, and
+// installViewportVars — and ResizeObserver is stubbed as a precaution: nothing in
+// phase 1 constructs one, and a component that starts to should not begin by
+// crashing every test. A test that needs a different answer overrides its own
+// with vi.stubGlobal.
 if (typeof window.matchMedia !== "function") {
   Object.defineProperty(window, "matchMedia", {
     configurable: true,

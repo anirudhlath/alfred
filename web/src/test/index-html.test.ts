@@ -23,13 +23,16 @@ describe("index.html", () => {
     expect(html).not.toContain("maximum-scale=1");
   });
 
-  it("ships one theme-color per scheme, matching the tokens", () => {
-    expect(html).toContain(
-      '<meta name="theme-color" content="#25221F" media="(prefers-color-scheme: dark)" />',
-    );
-    expect(html).toContain(
-      '<meta name="theme-color" content="#F6F3EE" media="(prefers-color-scheme: light)" />',
-    );
+  it("ships one theme-color, the dark first-paint token, for applyTheme() to rewrite", () => {
+    // The theme is the app's (stored choice, else the hour), never the OS scheme, so
+    // a per-scheme `media` pair would disagree with it for anyone whose phone is set
+    // the other way. applyTheme() keeps this one meta in step with data-theme.
+    expect(html).toContain('<meta name="theme-color" content="#25221F" />');
+    expect(html).not.toContain("prefers-color-scheme");
+  });
+
+  it("stops iOS turning ids and times into phone links", () => {
+    expect(html).toContain('<meta name="format-detection" content="telephone=no" />');
   });
 
   it("asks iOS for a standalone app with a translucent status bar", () => {
