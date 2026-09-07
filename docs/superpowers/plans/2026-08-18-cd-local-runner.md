@@ -14,7 +14,7 @@
 
 ## Preflight results (already run — 2026-08-18)
 
-The spec's §4 said lath-server was unreachable. **It is this box.** `192.168.50.158` is
+The spec's §4 said lath-server was unreachable. **It is this box.** `192.168.1.20` is
 `enp6s0`'s own address; hostname `linux-server`. The design machine was pinging itself.
 Everything §4 asked to confirm has now been confirmed directly:
 

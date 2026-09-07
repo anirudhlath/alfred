@@ -107,7 +107,7 @@ copied from the checkout, so the container's `env_file` and volumes are stable a
 deploys and independent of the runner's ephemeral workspace.
 
 **Preflight.** lath-server was unreachable from the design machine (`No route to host` on
-192.168.50.158), so nothing about its current state is verified. Phase 1 begins by
+192.168.1.20), so nothing about its current state is verified. Phase 1 begins by
 confirming `docker`, `uv`, Python 3.13, `git`, `rsync` and `avahi-browse` are present and
 that the existing `home-panel` runner is healthy, before anything is installed.
 
