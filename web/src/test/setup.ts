@@ -1,4 +1,4 @@
-import "@testing-library/jest-dom";
+import "@testing-library/jest-dom/vitest";
 
 // Node 22 leaves localStorage to jsdom. Node >=26 defines its own `localStorage`
 // global that stays `undefined` unless the process is started with
@@ -25,5 +25,61 @@ if (typeof globalThis.localStorage === "undefined") {
     value: memoryStorage,
     configurable: true,
     writable: true,
+  });
+}
+
+// jsdom implements none of matchMedia, ResizeObserver or visualViewport, and all
+// three are load-bearing: the reduced-motion branch in Layer, the timeline's scroll
+// anchoring (plan 1b), and installViewportVars. Stub them here so no test has to;
+// a test that needs a different answer overrides its own with vi.stubGlobal.
+if (typeof window.matchMedia !== "function") {
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    writable: true,
+    value: (query: string) =>
+      ({
+        matches: false,
+        media: query,
+        onchange: null,
+        addListener: () => {},
+        removeListener: () => {},
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        dispatchEvent: () => false,
+      }) as unknown as MediaQueryList,
+  });
+}
+
+if (typeof globalThis.ResizeObserver === "undefined") {
+  class TestResizeObserver implements ResizeObserver {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+  Object.defineProperty(globalThis, "ResizeObserver", {
+    configurable: true,
+    writable: true,
+    value: TestResizeObserver,
+  });
+}
+
+// A real EventTarget, so installViewportVars() can add listeners and a test can
+// dispatch `resize`/`scroll` at it. Defaults mirror the jsdom window, which means
+// keyboardInset() is 0 until a test says otherwise.
+class TestVisualViewport extends EventTarget {
+  width = window.innerWidth;
+  height = window.innerHeight;
+  offsetTop = 0;
+  offsetLeft = 0;
+  pageTop = 0;
+  pageLeft = 0;
+  scale = 1;
+}
+
+if (!window.visualViewport) {
+  Object.defineProperty(window, "visualViewport", {
+    configurable: true,
+    writable: true,
+    value: new TestVisualViewport() as unknown as VisualViewport,
   });
 }
