@@ -1,3 +1,5 @@
+> **Superseded.** This describes the Mission Control client removed in the phase 1 PWA rewrite; it is rewritten at the end of that work (see `web/README.md`).
+
 # Alfred Web Frontend
 
 ## Overview
