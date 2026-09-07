@@ -3150,7 +3150,7 @@ def build_credentials_schema() -> CredentialSchema:
                 label="Home Assistant URL",
                 field_type="url",
                 required=True,
-                placeholder="http://192.168.50.159:8123",
+                placeholder="http://192.168.1.10:8123",
                 default="http://homeassistant.local:8123",
                 help_text="Base URL of the Home Assistant instance.",
             ),
@@ -3714,13 +3714,13 @@ MIT — see [LICENSE](LICENSE).
 **Type:** e2e
 
 ## Prerequisites
-- Real apartment Home Assistant reachable (e.g. http://192.168.50.159:8123)
+- Real apartment Home Assistant reachable (e.g. http://192.168.1.10:8123)
 - Long-lived access token minted from the HA profile page
 - home-service running locally (Redis/MQTT optional for the first steps)
 
 ## Test Steps
 1. `curl -s http://localhost:8000/health` — expect `ha.state = "disconnected"`.
-2. `curl -s -X POST http://localhost:8000/credentials -H 'Content-Type: application/json' -d '{"url": "http://192.168.50.159:8123", "token": "<TOKEN>"}'`
+2. `curl -s -X POST http://localhost:8000/credentials -H 'Content-Type: application/json' -d '{"url": "http://192.168.1.10:8123", "token": "<TOKEN>"}'`
 3. `curl -s http://localhost:8000/health` — expect `connected` with real entity/area counts.
 4. Deliberately push a WRONG token — expect `ha.state = "auth_failed"` in the response health.
 5. Push the correct token again, then flip any light in the HA app; within seconds `curl -s http://localhost:8000/health` — `last_event_age_s` should reset to a small number.
