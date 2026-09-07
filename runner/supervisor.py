@@ -26,6 +26,10 @@ logger = logging.getLogger(__name__)
 # Directories that all services depend on — changes here restart everything.
 _SHARED_DIRS = ("shared", "sdk", "bus/schemas", "core/integrations")
 
+# Longest child log line the output pump accepts (asyncio's default is 64 KiB). Longer
+# lines are dropped, not fatal — see ``_pipe_output``.
+_PIPE_LINE_LIMIT = 1 << 20
+
 
 def _watch_dirs_for_module(module: str, root: Path) -> list[Path]:
     """Return directories to watch for a given service module."""
@@ -105,16 +109,33 @@ class Supervisor:
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            limit=_PIPE_LINE_LIMIT,
         )
         svc.process = proc
         logger.info("[%s] started (PID %d)", svc.spec.name, proc.pid)
 
     async def _pipe_output(self, svc: _ManagedService) -> None:
-        """Read child stdout and re-emit it. No prefix — loguru already tags with [service]."""
+        """Read child stdout and re-emit it. No prefix — loguru already tags with [service].
+
+        This loop must outlive any single bad line: if it stops draining, the child
+        blocks on its next write once the 64 KiB pipe fills and hangs for good.
+        ``readline`` raises ``ValueError`` for a line over the reader limit (after
+        discarding what it buffered); note it and keep reading.
+        """
         proc = svc.process
         if proc is None or proc.stdout is None:
             return
-        async for raw_line in proc.stdout:
+        while True:
+            try:
+                raw_line = await proc.stdout.readline()
+            except ValueError:
+                print(
+                    f"[{svc.spec.name}] dropped a log line over {_PIPE_LINE_LIMIT} bytes",
+                    flush=True,
+                )
+                continue
+            if not raw_line:
+                break
             line = raw_line.decode(errors="replace").rstrip("\n")
             if line:
                 print(line, flush=True)

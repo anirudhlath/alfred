@@ -41,10 +41,12 @@ from shared.usertime import (
 )
 
 _debug = is_truthy_flag(os.getenv("ALFRED_DEBUG"))
-# LiteLLM logging: use LITELLM_LOG env var (official API).
-# Set to ERROR by default to suppress verbose debug spam; ALFRED_DEBUG overrides to DEBUG.
-if not os.getenv("LITELLM_LOG"):
-    os.environ["LITELLM_LOG"] = "DEBUG" if _debug else "ERROR"
+# LiteLLM logging. LITELLM_LOG is litellm's official knob, but it is read once at import
+# time (already past by here), and configure_logging() drops the root logger to NOTSET — which
+# left litellm's own DEBUG handler dumping every request as one multi-hundred-KB line.
+# Pin the logger level; ALFRED_DEBUG (or an explicit LITELLM_LOG) opens it up.
+_litellm_level = os.getenv("LITELLM_LOG") or ("DEBUG" if _debug else "ERROR")
+logging.getLogger("LiteLLM").setLevel(_litellm_level.upper())
 litellm.suppress_debug_info = not _debug
 litellm.set_verbose = _debug  # type: ignore[attr-defined]
 
