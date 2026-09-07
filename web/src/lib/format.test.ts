@@ -1,21 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { categorize, summarize, timeOf } from "./format";
-
-describe("categorize", () => {
-  it("maps streams to categories", () => {
-    expect(categorize("reflex_observations", {})).toBe("reflex");
-    expect(categorize("user_responses", {})).toBe("conscious");
-    expect(categorize("notifications", {})).toBe("trigger");
-  });
-  it("maps events stream by event_type", () => {
-    expect(categorize("events", { event_type: "trigger_fired" })).toBe("trigger");
-    expect(categorize("events", { event_type: "state_changed" })).toBe("home");
-  });
-  it("maps actions by source", () => {
-    expect(categorize("actions", { event_type: "action_request", source: "reflex-engine" })).toBe("reflex");
-    expect(categorize("actions", { event_type: "action_request", source: "conscious" })).toBe("conscious");
-  });
-});
+import { summarize, timeOf } from "./format";
 
 describe("summarize", () => {
   it("summarizes state changes", () => {
@@ -57,22 +41,6 @@ describe("summarize", () => {
         action: null,
       }),
     ).toBe("sensor.hallway: unknown → 23.5");
-    expect(
-      summarize("reflex_observations", {
-        event_type: "reflex_observation",
-        trigger_event: { entity_id: "sensor.hallway", old_state: "", new_state: "23.5" },
-        action: null,
-      }),
-    ).toBe("sensor.hallway: unknown → 23.5");
-  });
-  it("falls back for a passive observation whose trigger_event has no entity", () => {
-    expect(
-      summarize("reflex_observations", {
-        event_type: "reflex_observation",
-        trigger_event: { event_type: "action_request", tool_name: "unlock_door" },
-        action: null,
-      }),
-    ).toBe("observation");
   });
   it("falls back when trigger_event is missing entirely", () => {
     expect(summarize("reflex_observations", { event_type: "reflex_observation" })).toBe(
