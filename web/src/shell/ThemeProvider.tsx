@@ -1,5 +1,5 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { applyTheme, resolveInitialTheme, storedTheme, type Theme } from "@/lib/theme";
+import { createContext, useContext, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
+import { applyTheme, rememberTheme, resolveInitialTheme, storedTheme, type Theme } from "@/lib/theme";
 
 export interface ThemeValue {
   theme: Theme;
@@ -13,14 +13,22 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // user while the app is open.
   const [theme, setTheme] = useState<Theme>(() => resolveInitialTheme(new Date(), storedTheme()));
 
-  useEffect(() => {
+  // A layout effect, so the attribute lands before the first paint: :root is dark
+  // until it is written, and a stored light theme must not flash dark on launch.
+  useLayoutEffect(() => {
     applyTheme(theme);
   }, [theme]);
 
   const value = useMemo<ThemeValue>(
     () => ({
       theme,
-      toggle: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
+      toggle: () => {
+        // Persisted here and not in the effect: only a choice is remembered, never
+        // the time-of-day fallback, or the first launch would fix the theme for good.
+        const next = theme === "dark" ? "light" : "dark";
+        rememberTheme(next);
+        setTheme(next);
+      },
     }),
     [theme],
   );

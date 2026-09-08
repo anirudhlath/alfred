@@ -1,5 +1,5 @@
 @import "tailwindcss";
-@import "@fontsource-variable/dm-sans/index.css";
+@import "@fontsource-variable/dm-sans/standard.css";
 @import "@fontsource/geist-mono/400.css";
 @import "@fontsource/geist-mono/500.css";
 
@@ -94,7 +94,9 @@
   html,
   body {
     height: 100%;
-    /* Constraint §4.6: a standalone app must not rubber-band like a web page. */
+    /* Constraint §4.6: a standalone app must not rubber-band like a web page.
+       The scroll containers inside the shell keep their own overscroll, so a
+       timeline can still bounce at its ends without moving the page. */
     overscroll-behavior: none;
   }
 
@@ -122,8 +124,7 @@
     cursor: pointer;
   }
 
-  /* The scroll containers inside the shell keep their own overscroll, so a
-     timeline can still bounce at its ends without moving the page. */
+  /* No scrollbars anywhere: iOS hides them anyway, and the app looks like iOS. */
   ::-webkit-scrollbar {
     display: none;
   }

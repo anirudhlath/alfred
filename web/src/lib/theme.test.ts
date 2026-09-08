@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { applyTheme, resolveInitialTheme, storedTheme, THEME_KEY } from "./theme";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { applyTheme, rememberTheme, resolveInitialTheme, storedTheme, THEME_KEY } from "./theme";
 
 afterEach(() => {
+  vi.restoreAllMocks();
   localStorage.clear();
   document.documentElement.removeAttribute("data-theme");
 });
@@ -30,18 +31,12 @@ describe("resolveInitialTheme", () => {
 });
 
 describe("applyTheme", () => {
-  it("uses the alfred.theme key", () => {
-    expect(THEME_KEY).toBe("alfred.theme");
-  });
-
-  it("writes data-theme on the document element and persists the choice", () => {
+  it("writes data-theme on the document element, and nothing to storage", () => {
     applyTheme("light");
     expect(document.documentElement.dataset.theme).toBe("light");
-    expect(localStorage.getItem(THEME_KEY)).toBe("light");
-
     applyTheme("dark");
     expect(document.documentElement.dataset.theme).toBe("dark");
-    expect(localStorage.getItem(THEME_KEY)).toBe("dark");
+    expect(localStorage.getItem(THEME_KEY)).toBeNull();
   });
 
   it("tints Safari's chrome to match", () => {
@@ -65,13 +60,38 @@ describe("applyTheme", () => {
   });
 });
 
+describe("rememberTheme", () => {
+  it("uses the alfred.theme key", () => {
+    expect(THEME_KEY).toBe("alfred.theme");
+  });
+
+  it("persists the choice", () => {
+    rememberTheme("light");
+    expect(localStorage.getItem(THEME_KEY)).toBe("light");
+  });
+
+  it("survives a storage that refuses to write", () => {
+    vi.spyOn(localStorage, "setItem").mockImplementation(() => {
+      throw new Error("QuotaExceededError");
+    });
+    expect(() => rememberTheme("light")).not.toThrow();
+  });
+});
+
 describe("storedTheme", () => {
   it("is null before anything is stored", () => {
     expect(storedTheme()).toBeNull();
   });
 
-  it("reads back what applyTheme wrote", () => {
-    applyTheme("light");
+  it("reads back what rememberTheme wrote", () => {
+    rememberTheme("light");
     expect(storedTheme()).toBe("light");
+  });
+
+  it("is null when storage cannot be read", () => {
+    vi.spyOn(localStorage, "getItem").mockImplementation(() => {
+      throw new Error("SecurityError");
+    });
+    expect(storedTheme()).toBeNull();
   });
 });

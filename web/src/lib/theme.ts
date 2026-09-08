@@ -12,12 +12,19 @@ export function resolveInitialTheme(now: Date, stored: string | null): Theme {
 /** `--bg` per theme, as index.css declares it. Safari's chrome reads it from the meta. */
 const THEME_COLOR: Record<Theme, string> = { dark: "#25221F", light: "#F6F3EE" };
 
-/** The one place the theme becomes visible: an attribute write plus persistence. */
+/** The one place the theme becomes visible: the attribute the palette hangs off. */
 export function applyTheme(theme: Theme): void {
   document.documentElement.dataset.theme = theme;
   // The theme is ours, not the OS's — a phone in system light mode runs dark here
   // at 21:00 — so the meta cannot carry a `prefers-color-scheme` pair; it follows.
   document.querySelector('meta[name="theme-color"]')?.setAttribute("content", THEME_COLOR[theme]);
+}
+
+/**
+ * Persist a choice. Only a choice: the time-of-day fallback is applied but never
+ * remembered, or the first launch would freeze the theme for every launch after.
+ */
+export function rememberTheme(theme: Theme): void {
   try {
     localStorage.setItem(THEME_KEY, theme);
   } catch {

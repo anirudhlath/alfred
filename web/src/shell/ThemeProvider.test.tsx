@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { THEME_KEY } from "@/lib/theme";
 import { ThemeProvider, useTheme } from "./ThemeProvider";
 import { ThemeToggle } from "./ThemeToggle";
@@ -11,6 +11,7 @@ function Probe() {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   localStorage.clear();
   document.documentElement.removeAttribute("data-theme");
 });
@@ -27,14 +28,30 @@ describe("ThemeProvider", () => {
     expect(document.documentElement.dataset.theme).toBe("light");
   });
 
-  it("falls back to the time of day when nothing is stored", () => {
+  it("falls back to the time of day when nothing is stored, and does not remember it", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 8, 7, 23, 0));
     render(
       <ThemeProvider>
         <Probe />
       </ThemeProvider>,
     );
-    const expected = new Date().getHours() >= 7 && new Date().getHours() < 19 ? "light" : "dark";
-    expect(screen.getByTestId("theme")).toHaveTextContent(expected);
+    expect(screen.getByTestId("theme")).toHaveTextContent("dark");
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    // Remembering the fallback would make tonight's dark tomorrow's noon.
+    expect(localStorage.getItem(THEME_KEY)).toBeNull();
+  });
+
+  it("is light by day", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 8, 7, 12, 0));
+    render(
+      <ThemeProvider>
+        <Probe />
+      </ThemeProvider>,
+    );
+    expect(screen.getByTestId("theme")).toHaveTextContent("light");
+    expect(document.documentElement.dataset.theme).toBe("light");
   });
 
   it("toggles, re-applies and persists", async () => {
