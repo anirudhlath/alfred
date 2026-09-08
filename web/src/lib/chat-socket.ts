@@ -16,6 +16,9 @@ export class ChatSocket {
     this.socket.onopen = () => { this.firstMessageSent = false; };
     this.socket.onmessage = (data) => {
       const msg = data as ChatServerMessage;
+      // Keepalive plumbing. `lastMessageAt` on the socket already recorded it;
+      // nothing above this layer should have to skip it.
+      if (msg.type === "pong") return;
       if (msg.type === "session") {
         // Server assigns; we may override with our stored id on first send.
         if (!this.sessionId) {

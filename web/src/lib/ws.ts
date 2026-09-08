@@ -2,6 +2,12 @@ export type SocketStatus = "connecting" | "online" | "reconnecting" | "offline" 
 
 const BASE_DELAY_MS = 500;
 const MAX_DELAY_MS = 8000;
+/** Cloudflare closes an idle proxied socket at ~100 s; 30 s keeps it comfortably alive. */
+const DEFAULT_PING_MS = 30_000;
+
+export interface SocketOptions {
+  pingIntervalMs?: number;
+}
 
 export class ReconnectingSocket {
   private path: string;
@@ -9,18 +15,40 @@ export class ReconnectingSocket {
   private attempts = 0;
   private stopped = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private pingIntervalMs: number;
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** `Date.now()` of the last frame from the server, pings included. */
+  lastMessageAt: number | null = null;
 
   onmessage: (data: unknown) => void = () => {};
   onstatus: (status: SocketStatus) => void = () => {};
   onopen: () => void = () => {};
 
-  constructor(path: string) {
+  constructor(path: string, options: SocketOptions = {}) {
     this.path = path;
+    this.pingIntervalMs = options.pingIntervalMs ?? DEFAULT_PING_MS;
   }
 
   private url(): string {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     return `${proto}//${location.host}${this.path}`;
+  }
+
+  private startPing(ws: WebSocket): void {
+    this.stopPing();
+    if (this.pingIntervalMs <= 0) return;
+    this.pingTimer = setInterval(() => {
+      if (this.ws !== ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ type: "ping" }));
+    }, this.pingIntervalMs);
+  }
+
+  private stopPing(): void {
+    if (this.pingTimer) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = null;
+    }
   }
 
   connect(): void {
@@ -42,17 +70,30 @@ export class ReconnectingSocket {
     ws.onopen = () => {
       if (this.ws !== ws) return;
       this.attempts = 0;
+      this.startPing(ws);
       this.onstatus("online");
       this.onopen();
     };
     ws.onmessage = (e) => {
       if (this.ws !== ws) return;
-      try { this.onmessage(JSON.parse(e.data as string)); } catch { /* non-JSON frame */ }
+      this.lastMessageAt = Date.now();
+      try {
+        this.onmessage(JSON.parse(e.data as string));
+      } catch {
+        /* non-JSON frame */
+      }
     };
     ws.onclose = (e) => {
-      if (this.ws !== ws) return;  // superseded socket — ignore its close
-      if (e.code === 4001) { this.onstatus("unauthorized"); return; }
-      if (this.stopped) { this.onstatus("offline"); return; }
+      if (this.ws !== ws) return; // superseded socket — ignore its close
+      this.stopPing();
+      if (e.code === 4001) {
+        this.onstatus("unauthorized");
+        return;
+      }
+      if (this.stopped) {
+        this.onstatus("offline");
+        return;
+      }
       this.onstatus("reconnecting");
       const delay = Math.min(BASE_DELAY_MS * 2 ** this.attempts, MAX_DELAY_MS);
       this.attempts += 1;
@@ -73,7 +114,11 @@ export class ReconnectingSocket {
 
   close(): void {
     this.stopped = true;
-    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+    this.stopPing();
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.ws?.close();
   }
 }

@@ -74,6 +74,68 @@ describe("ReconnectingSocket", () => {
     vi.advanceTimersByTime(60_000);
     expect(FakeWebSocket.instances).toHaveLength(2);  // no orphaned wsC
   });
+
+  it("pings every 30 s while open and stops once closed", () => {
+    const sock = new ReconnectingSocket("/ws/test");
+    sock.connect();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+
+    vi.advanceTimersByTime(30_000);
+    expect(ws.sent.map((s) => JSON.parse(s))).toEqual([{ type: "ping" }]);
+
+    vi.advanceTimersByTime(30_000);
+    expect(ws.sent).toHaveLength(2);
+
+    sock.close();
+    vi.advanceTimersByTime(120_000);
+    expect(ws.sent).toHaveLength(2);
+  });
+
+  it("does not ping before the socket is open", () => {
+    const sock = new ReconnectingSocket("/ws/test");
+    sock.connect();
+    vi.advanceTimersByTime(120_000);
+    expect(FakeWebSocket.instances[0].sent).toHaveLength(0);
+  });
+
+  it("takes a custom interval", () => {
+    const sock = new ReconnectingSocket("/ws/test", { pingIntervalMs: 1000 });
+    sock.connect();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+
+    vi.advanceTimersByTime(3000);
+
+    expect(ws.sent).toHaveLength(3);
+    sock.close();
+  });
+
+  it("stops pinging a socket the server dropped", () => {
+    const sock = new ReconnectingSocket("/ws/test");
+    sock.connect();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+    ws.emitClose(1006);
+
+    vi.advanceTimersByTime(30_000);
+
+    expect(ws.sent).toHaveLength(0);
+    sock.close();
+  });
+
+  it("stamps when the last frame arrived", () => {
+    const sock = new ReconnectingSocket("/ws/test");
+    expect(sock.lastMessageAt).toBeNull();
+    sock.connect();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+
+    ws.onmessage?.({ data: '{"type":"pong"}' });
+
+    expect(sock.lastMessageAt).toBeGreaterThan(0);
+    sock.close();
+  });
 });
 
 describe("TelemetrySocket", () => {
