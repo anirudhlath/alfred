@@ -22,7 +22,15 @@ class AuthEvents {
 
   emit(kind: AuthEventKind): void {
     // Copy first: a handler is allowed to unsubscribe itself while we iterate.
-    for (const fn of [...(this.handlers.get(kind) ?? [])]) fn();
+    for (const fn of [...(this.handlers.get(kind) ?? [])]) {
+      // `api()` emits on its way to throwing an ApiError; a handler that throws
+      // must not skip the others or replace the error the caller is catching.
+      try {
+        fn();
+      } catch (err) {
+        console.error("auth-events handler failed", err);
+      }
+    }
   }
 }
 

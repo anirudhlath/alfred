@@ -31,6 +31,13 @@ async function readDetail(resp: Response): Promise<string> {
   return text;
 }
 
+/**
+ * A rejected passkey assertion is a 401 too — that attempt failing, not a
+ * session lapsing. The gate that asked shows it; no Expired gate over it.
+ */
+const isPasskeyAttempt = (path: string): boolean =>
+  path.startsWith("/api/auth/login/") || path.startsWith("/api/auth/register/");
+
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(path, {
     ...init,
@@ -41,7 +48,7 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     const detail = await readDetail(resp);
     // Announce, never navigate: the gate rises over whatever is on screen, so the
     // last-known state stays visible behind it (spec §5.2, "live is not last-known").
-    if (resp.status === 401) authEvents.emit("expired");
+    if (resp.status === 401 && !isPasskeyAttempt(path)) authEvents.emit("expired");
     if (resp.status === 403) authEvents.emit("denied");
     throw new ApiError(resp.status, detail || resp.statusText);
   }

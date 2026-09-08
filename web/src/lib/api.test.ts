@@ -1,8 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError, del, post, put } from "./api";
-import { authEvents } from "./auth-events";
+import { authEvents, type AuthEventKind } from "./auth-events";
 
-afterEach(() => vi.unstubAllGlobals());
+// `authEvents` is a module singleton: unsubscribe in cleanup, not in the test
+// body, or one failed assertion leaks its handler into every later test.
+const subscriptions: Array<() => void> = [];
+function listen(kind: AuthEventKind, fn: () => void): void {
+  subscriptions.push(authEvents.on(kind, fn));
+}
+
+afterEach(() => {
+  for (const off of subscriptions.splice(0)) off();
+  vi.unstubAllGlobals();
+});
 
 function stubFetch(status: number, body: unknown) {
   const mock = vi.fn<typeof fetch>(
@@ -47,9 +57,21 @@ describe("api", () => {
     await expect(api("/x")).rejects.toMatchObject({ status: 502, detail: "upstream is down" });
   });
 
+  it("falls back to the status text when the error body is empty", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("", { status: 500, statusText: "Internal Server Error" })),
+    );
+    await expect(api("/x")).rejects.toMatchObject({
+      status: 500,
+      detail: "Internal Server Error",
+      message: "Internal Server Error",
+    });
+  });
+
   it("announces a lapsed session on 401 and still throws", async () => {
     const expired = vi.fn();
-    const off = authEvents.on("expired", expired);
+    listen("expired", expired);
     const assign = vi.fn();
     vi.stubGlobal("location", { assign, pathname: "/", hostname: "alfred.example.com" });
     stubFetch(401, { detail: "Authentication required" });
@@ -59,33 +81,43 @@ describe("api", () => {
     expect(expired).toHaveBeenCalledTimes(1);
     // The old client hard-redirected here; the Expired gate now rises over the room.
     expect(assign).not.toHaveBeenCalled();
-    off();
+  });
+
+  it("does not call a rejected passkey attempt a lapsed session", async () => {
+    const expired = vi.fn();
+    listen("expired", expired);
+    stubFetch(401, { detail: "Authentication failed" });
+
+    await expect(post("/api/auth/login/complete", {})).rejects.toMatchObject({
+      status: 401,
+      detail: "Authentication failed",
+    });
+    await expect(post("/api/auth/register/complete", {})).rejects.toMatchObject({ status: 401 });
+
+    expect(expired).not.toHaveBeenCalled();
   });
 
   it("announces a refused network on 403 and still throws", async () => {
     const denied = vi.fn();
-    const off = authEvents.on("denied", denied);
+    listen("denied", denied);
     stubFetch(403, { detail: "Request from untrusted network 192.168.1.24" });
 
     await expect(api("/x")).rejects.toMatchObject({ status: 403 });
 
     expect(denied).toHaveBeenCalledTimes(1);
-    off();
   });
 
   it("does not announce anything for other failures", async () => {
     const expired = vi.fn();
     const denied = vi.fn();
-    const offExpired = authEvents.on("expired", expired);
-    const offDenied = authEvents.on("denied", denied);
+    listen("expired", expired);
+    listen("denied", denied);
     stubFetch(500, { detail: "boom" });
 
     await expect(api("/x")).rejects.toMatchObject({ status: 500 });
 
     expect(expired).not.toHaveBeenCalled();
     expect(denied).not.toHaveBeenCalled();
-    offExpired();
-    offDenied();
   });
 });
 
