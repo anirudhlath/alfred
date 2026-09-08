@@ -12,6 +12,7 @@ import {
   timeOf,
   usd,
 } from "./format";
+import type { StreamSummary } from "./types";
 
 describe("summarize", () => {
   it("summarizes state changes", () => {
@@ -138,6 +139,12 @@ describe("evs", () => {
       }),
     ).toBe("2.1");
   });
+  it("counts a summary with no rate as 0, not NaN", () => {
+    const unrated = { length: 3, last_id: null, last_ts: null } as StreamSummary;
+    expect(evs({ events: unrated })).toBe("0");
+    const rated = { length: 1, last_id: null, last_ts: null, rate_5m: 0.2 };
+    expect(evs({ events: unrated, user_requests: rated })).toBe("0.2");
+  });
   it("says a bare 0 when nothing is flowing", () => {
     expect(evs({})).toBe("0");
     expect(evs({ events: { length: 0, last_id: null, last_ts: null, rate_5m: 0 } })).toBe("0");
@@ -184,5 +191,8 @@ describe("dayLabel", () => {
     expect(dayLabel(new Date(2026, 8, 7, 7, 2), now)).toBe("earlier today");
     expect(dayLabel(new Date(2026, 8, 6, 23, 59), now)).toBe("yesterday");
     expect(dayLabel(new Date(2026, 8, 4, 12, 0), now)).toBe("4 Sep");
+  });
+  it("calls a timestamp from a skewed clock today, not a day in the future", () => {
+    expect(dayLabel(new Date(2026, 8, 8, 9, 0), now)).toBe("earlier today");
   });
 });

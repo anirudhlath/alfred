@@ -25,6 +25,27 @@ describe("StatusLine", () => {
     ).toBeInTheDocument();
   });
 
+  it("stamps last true on a first run that is offline", () => {
+    render(<StatusLine overview={firstRunOverviewFixture} online={false} lastTrueAt={at2114} />);
+    expect(screen.getByText("last true 21:14 · cloud 0.00 / 5.00 · reflex ok")).toBeInTheDocument();
+  });
+
+  it("says reflex ok on a first run whatever the reflex reports", () => {
+    render(
+      <StatusLine
+        overview={{
+          ...firstRunOverviewFixture,
+          reflex: { model: "reflex-3b", last_ms: 380, p50_ms: 372 },
+        }}
+        online
+        lastTrueAt={at2114}
+      />,
+    );
+    expect(
+      screen.getByText("first run · cloud 0.00 / 5.00 · reflex ok · 0 ev/s"),
+    ).toBeInTheDocument();
+  });
+
   it("says reflex ok when nothing has been measured", () => {
     render(
       <StatusLine

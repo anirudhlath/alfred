@@ -88,19 +88,19 @@ export const attentionFixture: { domains: AttentionDomain[] } = {
   ],
 };
 
-/** A house that has been running a while: 2.1 ev/s, £1.42 of the £5 cap, reflex at 380 ms. */
+/** A house that has been running a while: 2.1 ev/s, $1.42 of the $5 cap, reflex at 380 ms. */
 export const overviewFixture: Overview = {
   redis: { connected: true },
   cost: { date: "2026-09-07", spend_usd: 1.42, cap_usd: 5, request_count: 38, avg_usd: 0.037 },
   dnd: { active: false },
   counts: { sessions: 1, devices: 1, deferred: 0, triggers: 6 },
   streams: {
-    events: { length: 412, last_id: "1757278440000-0", last_ts: 1757278440000, rate_5m: 1.4 },
-    user_requests: { length: 18, last_id: "1757278380000-0", last_ts: 1757278380000, rate_5m: 0.2 },
+    events: { length: 412, last_id: "1788814440000-0", last_ts: 1788814440000, rate_5m: 1.4 },
+    user_requests: { length: 18, last_id: "1788814380000-0", last_ts: 1788814380000, rate_5m: 0.2 },
     reflex_observations: {
       length: 96,
-      last_id: "1757278420000-0",
-      last_ts: 1757278420000,
+      last_id: "1788814420000-0",
+      last_ts: 1788814420000,
       rate_5m: 0.5,
     },
   },
@@ -113,14 +113,19 @@ export const overviewFixture: Overview = {
   },
 };
 
-/** The same house on its first morning: every stream empty, nothing spent, nothing measured. */
+/**
+ * The same house on its first morning: every stream empty, nothing spent, nothing
+ * measured, no triggers written, the Librarian yet to run for the first time.
+ */
 export const firstRunOverviewFixture: Overview = {
   ...overviewFixture,
   cost: { date: "2026-09-07", spend_usd: 0, cap_usd: 5, request_count: 0 },
+  counts: { sessions: 1, devices: 1, deferred: 0, triggers: 0 },
   streams: {
     events: { length: 0, last_id: null, last_ts: null, rate_5m: 0 },
     user_requests: { length: 0, last_id: null, last_ts: null, rate_5m: 0 },
     reflex_observations: { length: 0, last_id: null, last_ts: null, rate_5m: 0 },
   },
   reflex: { model: "reflex-3b", last_ms: null, p50_ms: null },
+  librarian: { last_run_at: null, reviewed: null, next_run_at: "2026-09-08T03:00:00Z" },
 };

@@ -25,11 +25,11 @@ export function StatusLine({ overview, online, lastTrueAt }: StatusLineProps) {
   // and every successful poll, and an unknown clock says so.
   const stamp = lastTrueAt ? hhmm(lastTrueAt) : "--:--";
 
-  const parts = firstRun
-    ? ["first run", cloud, reflex, `${evs(streams)} ev/s`]
-    : online
-      ? [stamp, cloud, reflex, `${evs(streams)} ev/s`]
-      : [`last true ${stamp}`, cloud, reflex];
+  // Offline outranks first run: §5.2's "live is not last-known" has no exception
+  // for a house where nothing has happened yet.
+  const parts = online
+    ? [firstRun ? "first run" : stamp, cloud, reflex, `${evs(streams)} ev/s`]
+    : [`last true ${stamp}`, cloud, reflex];
 
   return <div className="t-status">{parts.join(" · ")}</div>;
 }
