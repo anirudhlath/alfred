@@ -26,7 +26,9 @@ export function Sheet({ open, title, onClose, children }: SheetProps) {
   } as CSSProperties;
 
   return (
-    <div className="fixed inset-0 z-40 flex flex-col justify-end">
+    // z-20, under Layer's z-30: the handoff stacks sheet < Door < gate, so a
+    // critical action or a lapsed session paints over an open sheet, not under it.
+    <div className="fixed inset-0 z-20 flex flex-col justify-end">
       <button
         type="button"
         aria-label="Close"
