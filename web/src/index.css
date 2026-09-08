@@ -215,8 +215,12 @@
   .rise-in {
     animation: rise var(--layer-duration, 400ms) var(--ease-rise) both;
   }
+  /* `sink` is its own keyframes, not `rise` reversed: two classes on the same
+     animation-name would not restart it, so a layer re-opened mid-leave would
+     finish sinking. Same curve — the handoff has two, and this is not the
+     Door handle's `settle`. */
   .rise-out {
-    animation: rise var(--layer-duration, 400ms) var(--ease-rise) reverse both;
+    animation: sink var(--layer-duration, 400ms) var(--ease-rise) both;
   }
 
   /* The gates' static presence field: a dot grid that drifts a pixel and back. */
@@ -260,13 +264,31 @@
   }
 }
 
-/* Only used as the reduce-motion substitute for `rise`. */
+@keyframes sink {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(100%);
+  }
+}
+
+/* Only used as the reduce-motion substitutes for `rise` and `sink`. */
 @keyframes fade {
   from {
     opacity: 0;
   }
   to {
     opacity: 1;
+  }
+}
+
+@keyframes fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
   }
 }
 
@@ -304,8 +326,8 @@
 
 /* Handoff: "reduce-motion: presence field static, rise becomes a 200 ms opacity
    step". The blanket rule stops every other animation and transition; the two
-   class rules that follow it win on specificity and give `rise` its opacity
-   step. The canvas presence field checks the same query in JS (plan 1b). */
+   class rules that follow it win on specificity and give `rise` and `sink` their
+   opacity step. The canvas presence field checks the same query in JS (plan 1b). */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -319,6 +341,6 @@
     animation: fade 200ms linear both !important;
   }
   .rise-out {
-    animation: fade 200ms linear reverse both !important;
+    animation: fade-out 200ms linear both !important;
   }
 }

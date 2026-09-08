@@ -1,59 +1,6 @@
-import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
-
-/** The handoff's reduce-motion substitute for every rise. */
-const REDUCED_MOTION_MS = 200;
-
-function prefersReducedMotion(): boolean {
-  return (
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches
-  );
-}
-
-export interface Presence {
-  mounted: boolean;
-  leaving: boolean;
-}
-
-/**
- * Keep a surface mounted for the length of its leave animation.
- *
- * A timer, not `animationend`: jsdom fires no animation events, and a missed
- * event would strand a full-screen layer over the app forever. The duration is
- * the caller's, except under reduce-motion where every leave is 200 ms.
- */
-// eslint-disable-next-line react-refresh/only-export-components
-export function usePresence(open: boolean, durationMs: number): Presence {
-  const [mounted, setMounted] = useState(open);
-  const [leaving, setLeaving] = useState(false);
-  const [wasOpen, setWasOpen] = useState(open);
-
-  // State adjusted during render, the way react.dev documents for "storing
-  // information from previous renders": an opening layer is mounted on this
-  // very pass, and a closing one starts its leave, with no effect in between.
-  if (open !== wasOpen) {
-    setWasOpen(open);
-    if (open) {
-      setMounted(true);
-      setLeaving(false);
-    } else if (mounted) {
-      setLeaving(true);
-    }
-  }
-
-  useEffect(() => {
-    if (!leaving) return;
-    const ms = prefersReducedMotion() ? REDUCED_MOTION_MS : durationMs;
-    const timer = setTimeout(() => {
-      setMounted(false);
-      setLeaving(false);
-    }, ms);
-    // Re-opening mid-leave flips `leaving` back, which clears this.
-    return () => clearTimeout(timer);
-  }, [leaving, durationMs]);
-
-  return { mounted, leaving };
-}
+import { useRef, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+import { riseClass, riseStyle, useModalFocus, usePresence } from "./presence";
 
 export interface LayerProps {
   open: boolean;
@@ -61,29 +8,45 @@ export interface LayerProps {
   label: string;
   /** Sheets 380, workshop 400, door 420. */
   durationMs?: number;
+  /**
+   * The handoff's stack, sheet < door < gate: a lapsed session paints over an
+   * open Door, whatever order they were mounted in.
+   */
+  level?: "layer" | "gate";
   className?: string;
   children: ReactNode;
 }
 
-export function Layer({ open, label, durationMs = 400, className = "", children }: LayerProps) {
+/**
+ * A full-screen surface that rises from the bottom, stays for its leave
+ * animation, and holds focus while it is up. Rendered into `<body>` so the
+ * app in `#root` can be made inert behind it.
+ */
+export function Layer({
+  open,
+  label,
+  durationMs = 400,
+  level = "layer",
+  className = "",
+  children,
+}: LayerProps) {
   const { mounted, leaving } = usePresence(open, durationMs);
+  const panel = useRef<HTMLDivElement>(null);
+  useModalFocus(mounted, panel);
   if (!mounted) return null;
 
-  const style = {
-    background: "var(--bg)",
-    color: "var(--fg)",
-    "--layer-duration": `${durationMs}ms`,
-  } as CSSProperties;
-
-  return (
+  return createPortal(
     <div
+      ref={panel}
+      tabIndex={-1}
       role="dialog"
       aria-modal="true"
       aria-label={label}
-      className={`fixed inset-0 z-30 flex flex-col overflow-hidden ${leaving ? "rise-out" : "rise-in"} ${className}`}
-      style={style}
+      className={`fixed inset-0 ${level === "gate" ? "z-40" : "z-30"} flex flex-col overflow-hidden outline-none ${riseClass(leaving)} ${className}`}
+      style={riseStyle(durationMs)}
     >
       {children}
-    </div>
+    </div>,
+    document.body,
   );
 }
