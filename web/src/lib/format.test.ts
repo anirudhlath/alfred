@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { dayMonth, hhmm, summarize, timeOf } from "./format";
+import {
+  dayLabel,
+  dayMonth,
+  evs,
+  hhmm,
+  humaniseTool,
+  mmss,
+  rawCall,
+  shortId,
+  summarize,
+  timeOf,
+  usd,
+} from "./format";
 
 describe("summarize", () => {
   it("summarizes state changes", () => {
@@ -93,5 +105,84 @@ describe("dayMonth", () => {
     expect(dayMonth(new Date(2026, 7, 12))).toBe("12 Aug");
     expect(dayMonth(new Date(2026, 8, 4))).toBe("4 Sep");
     expect(dayMonth(new Date(2026, 0, 1))).toBe("1 Jan");
+  });
+});
+
+describe("mmss", () => {
+  it("formats a fuse", () => {
+    expect(mmss(252)).toBe("4:12");
+    expect(mmss(300)).toBe("5:00");
+    expect(mmss(9)).toBe("0:09");
+    expect(mmss(0)).toBe("0:00");
+  });
+  it("never counts below zero", () => {
+    expect(mmss(-5)).toBe("0:00");
+  });
+});
+
+describe("usd", () => {
+  it("is always two decimals", () => {
+    expect(usd(1.42)).toBe("1.42");
+    expect(usd(5)).toBe("5.00");
+    expect(usd(0)).toBe("0.00");
+  });
+});
+
+describe("evs", () => {
+  it("sums the five-minute rates to one decimal", () => {
+    expect(
+      evs({
+        events: { length: 1, last_id: null, last_ts: null, rate_5m: 1.4 },
+        user_requests: { length: 1, last_id: null, last_ts: null, rate_5m: 0.2 },
+        reflex_observations: { length: 1, last_id: null, last_ts: null, rate_5m: 0.5 },
+      }),
+    ).toBe("2.1");
+  });
+  it("says a bare 0 when nothing is flowing", () => {
+    expect(evs({})).toBe("0");
+    expect(evs({ events: { length: 0, last_id: null, last_ts: null, rate_5m: 0 } })).toBe("0");
+  });
+});
+
+describe("shortId", () => {
+  it("is the first four characters", () => {
+    expect(shortId("a91f3c2e-0b1d-4f8a")).toBe("a91f");
+    expect(shortId("ab")).toBe("ab");
+  });
+});
+
+describe("humaniseTool", () => {
+  it("reads the last segment as a sentence", () => {
+    expect(humaniseTool("home.lock_unlock")).toBe("Lock unlock");
+    expect(humaniseTool("home.light_set")).toBe("Light set");
+    expect(humaniseTool("speak")).toBe("Speak");
+  });
+  it("has something to say about nothing", () => {
+    expect(humaniseTool("")).toBe("Action");
+  });
+});
+
+describe("rawCall", () => {
+  it("renders the call exactly as the Door shows it", () => {
+    expect(
+      rawCall("home.lock_unlock", { entity_id: "lock.front_door", action: "unlock" }),
+    ).toBe('home.lock_unlock { entity_id: "lock.front_door", action: "unlock" }');
+  });
+  it("keeps non-string values as JSON", () => {
+    expect(rawCall("home.light_set", { brightness_pct: 30, on: true })).toBe(
+      "home.light_set { brightness_pct: 30, on: true }",
+    );
+  });
+  it("renders an empty call", () => {
+    expect(rawCall("home.ping", {})).toBe("home.ping {}");
+  });
+});
+
+describe("dayLabel", () => {
+  const now = new Date(2026, 8, 7, 21, 14);
+  it("names today, yesterday and everything before", () => {
+    expect(dayLabel(new Date(2026, 8, 7, 7, 2), now)).toBe("earlier today");
+    expect(dayLabel(new Date(2026, 8, 6, 23, 59), now)).toBe("yesterday");
+    expect(dayLabel(new Date(2026, 8, 4, 12, 0), now)).toBe("4 Sep");
   });
 });
