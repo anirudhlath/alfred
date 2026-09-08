@@ -6,6 +6,7 @@ import { ApiError } from "@/lib/api";
 import { authEvents } from "@/lib/auth-events";
 import { DEVICE_KEY } from "@/lib/auth";
 import type { AuthStatus } from "@/lib/types";
+import { ConnectionProvider } from "@/shell/ConnectionProvider";
 import { AuthGate } from "./AuthGate";
 
 const { loginPasskeyMock, registerPasskeyMock } = vi.hoisted(() => ({
@@ -15,6 +16,30 @@ const { loginPasskeyMock, registerPasskeyMock } = vi.hoisted(() => ({
 vi.mock("@/lib/webauthn", () => ({
   loginPasskey: loginPasskeyMock,
   registerPasskey: registerPasskeyMock,
+}));
+
+// The provider constructs both sockets at module load; jsdom has no WebSocket
+// server behind them, and this file is about the gates, not the wire.
+vi.mock("@/lib/chat-socket", () => ({
+  ChatSocket: class {
+    onstatus = () => {};
+    connect() {}
+    close() {}
+    listen() {
+      return () => {};
+    }
+  },
+}));
+vi.mock("@/lib/telemetry-socket", () => ({
+  TelemetrySocket: class {
+    onstatus = () => {};
+    connect() {}
+    close() {}
+    subscribe() {}
+    listen() {
+      return () => {};
+    }
+  },
 }));
 
 let status: AuthStatus = { registered: true, authenticated: true };
@@ -41,9 +66,11 @@ function renderGate() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const utils = render(
     <QueryClientProvider client={client}>
-      <AuthGate>
-        <main>the room</main>
-      </AuthGate>
+      <ConnectionProvider>
+        <AuthGate>
+          <main>the room</main>
+        </AuthGate>
+      </ConnectionProvider>
     </QueryClientProvider>,
   );
   return { ...utils, client };

@@ -8,10 +8,12 @@ import { SignInGate } from "@/gates/SignInGate";
 import { fetchAuthStatus } from "@/lib/auth";
 import { authEvents } from "@/lib/auth-events";
 import type { AuthStatus } from "@/lib/types";
+import { useConnection } from "@/shell/ConnectionProvider";
 import { Layer } from "@/shell/Layer";
 
 export function AuthGate({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
+  const { lastTrueAt } = useConnection();
   const { data, isPending } = useQuery({
     queryKey: ["auth-status"],
     queryFn: fetchAuthStatus,
@@ -94,7 +96,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
         />
       </Layer>
       <Layer open={denied} label="Not from here" level="gate" durationMs={400}>
-        <DeniedGate onDismiss={() => setDenied(false)} />
+        <DeniedGate lastTrue={lastTrueAt} onDismiss={() => setDenied(false)} />
       </Layer>
     </>
   );
