@@ -106,11 +106,20 @@ describe("installViewportVars", () => {
 
   it("follows window resizes, with or without a visual viewport", () => {
     install(null);
-    const uninstall = installViewportVars();
+    let uninstall = installViewportVars();
 
     resizeWindowTo(400);
 
     expect(appHeight()).toBe("400px");
+    expect(keyboard()).toBe("0px");
+
+    uninstall();
+    install(new FakeVisualViewport(300));
+    uninstall = installViewportVars();
+
+    resizeWindowTo(300);
+
+    expect(appHeight()).toBe("300px");
     expect(keyboard()).toBe("0px");
 
     uninstall();
@@ -123,6 +132,9 @@ describe("installViewportVars", () => {
     uninstall();
 
     viewport.resizeTo(500);
+    expect(keyboard()).toBe("0px");
+
+    viewport.scrollTo(60);
     expect(keyboard()).toBe("0px");
 
     resizeWindowTo(400);
