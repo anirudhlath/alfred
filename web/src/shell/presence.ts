@@ -54,29 +54,41 @@ export function usePresence(open: boolean, durationMs: number): Presence {
   return { mounted, leaving };
 }
 
-/** How many modal surfaces are up: the app behind them is inert until the last one goes. */
-let surfacesUp = 0;
+/** The modal surfaces that are up, bottom to top. Everything under the top one is inert. */
+const surfaces: HTMLElement[] = [];
 
 /**
- * While a modal surface is up, the app behind it is inert and focus lives in
- * the surface — Full Keyboard Access and VoiceOver must not wander into a room
- * they cannot see. Focus goes back where it was once the surface has left.
+ * While a modal surface is up, everything behind it is inert and focus lives
+ * in the surface — Full Keyboard Access and VoiceOver must not wander into a
+ * room they cannot see. That includes a surface under another one: a gate over
+ * an open sheet makes the sheet inert too, and gives it back when it leaves.
+ * Focus goes back where it was once the surface has left, unless that place
+ * is now behind another surface.
  *
  * `active` is the presence's `mounted`, so the surface stays inert-backed for
  * its leave animation too, and the panel ref is set by the time this runs.
  */
 export function useModalFocus(active: boolean, panel: RefObject<HTMLElement | null>): void {
   useEffect(() => {
-    if (!active) return;
+    const node = panel.current;
+    if (!active || !node) return;
     const app = document.getElementById("root");
     const previous = document.activeElement;
-    surfacesUp += 1;
     app?.setAttribute("inert", "");
-    panel.current?.focus({ preventScroll: true });
+    surfaces.at(-1)?.setAttribute("inert", "");
+    surfaces.push(node);
+    node.focus({ preventScroll: true });
     return () => {
-      surfacesUp -= 1;
-      if (surfacesUp === 0) app?.removeAttribute("inert");
-      if (previous instanceof HTMLElement && previous.isConnected) {
+      const index = surfaces.indexOf(node);
+      if (index >= 0) surfaces.splice(index, 1);
+      const top = surfaces.at(-1);
+      if (top) top.removeAttribute("inert");
+      else app?.removeAttribute("inert");
+      if (
+        previous instanceof HTMLElement &&
+        previous.isConnected &&
+        previous.closest("[inert]") === null
+      ) {
         previous.focus({ preventScroll: true });
       }
     };

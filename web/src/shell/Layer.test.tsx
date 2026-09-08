@@ -192,6 +192,58 @@ describe("Layer", () => {
     expect(screen.queryByRole("dialog", { name: "Door" })).toBeNull();
     expect(document.getElementById("root")).toHaveAttribute("inert");
   });
+
+  it("a gate over a sheet makes the sheet inert, swallows Escape, and keeps focus", () => {
+    mountApp().focus();
+    const onClose = vi.fn();
+    const stacked = (sheetOpen: boolean) => (
+      <>
+        <Sheet open={sheetOpen} title="Held back" onClose={onClose}>
+          <p>sheet</p>
+        </Sheet>
+        <Layer open label="Session lapsed" level="gate">
+          <button type="button">Sign in</button>
+        </Layer>
+      </>
+    );
+    const { rerender } = render(stacked(true));
+    const gate = screen.getByRole("dialog", { name: "Session lapsed" });
+    expect(document.activeElement).toBe(gate);
+    expect(screen.getByRole("dialog", { name: "Held back" })).toHaveAttribute("inert");
+
+    fireEvent.keyDown(gate, { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+
+    // The sheet leaves underneath: focus stays in the gate, the app stays inert.
+    rerender(stacked(false));
+    act(() => vi.advanceTimersByTime(380));
+    expect(screen.queryByRole("dialog", { name: "Held back" })).toBeNull();
+    expect(document.activeElement).toBe(gate);
+    expect(document.getElementById("root")).toHaveAttribute("inert");
+  });
+
+  it("gives the sheet back when the gate over it leaves", () => {
+    mountApp();
+    const stacked = (gateOpen: boolean) => (
+      <>
+        <Sheet open title="Held back" onClose={() => {}}>
+          <p>sheet</p>
+        </Sheet>
+        <Layer open={gateOpen} label="Session lapsed" level="gate">
+          <button type="button">Sign in</button>
+        </Layer>
+      </>
+    );
+    const { rerender } = render(stacked(true));
+    const sheet = screen.getByRole("dialog", { name: "Held back" });
+    rerender(stacked(false));
+    // Still inert while the gate sinks.
+    expect(sheet).toHaveAttribute("inert");
+    act(() => vi.advanceTimersByTime(400));
+    expect(sheet).not.toHaveAttribute("inert");
+    expect(document.activeElement).toBe(sheet);
+    expect(document.getElementById("root")).toHaveAttribute("inert");
+  });
 });
 
 describe("Sheet", () => {
@@ -207,7 +259,7 @@ describe("Sheet", () => {
     expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
   });
 
-  it("closes on Done, on the scrim and on Escape", () => {
+  it("closes on Done, on the scrim and on Escape from inside it", () => {
     const onClose = vi.fn();
     render(
       <Sheet open title="Held back" onClose={onClose}>
@@ -216,25 +268,8 @@ describe("Sheet", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
-    fireEvent.keyDown(document, { key: "Escape" });
+    fireEvent.keyDown(screen.getByRole("button", { name: "Done" }), { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(3);
-  });
-
-  it("stops listening for Escape once it has left", () => {
-    const onClose = vi.fn();
-    const { rerender } = render(
-      <Sheet open title="Held back" onClose={onClose}>
-        <p>three things</p>
-      </Sheet>,
-    );
-    rerender(
-      <Sheet open={false} title="Held back" onClose={onClose}>
-        <p>three things</p>
-      </Sheet>,
-    );
-    act(() => vi.advanceTimersByTime(380));
-    fireEvent.keyDown(document, { key: "Escape" });
-    expect(onClose).not.toHaveBeenCalled();
   });
 
   it("unmounts 380 ms after closing", () => {

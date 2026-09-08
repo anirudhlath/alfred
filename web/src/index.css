@@ -48,7 +48,7 @@
 }
 
 /* ---------------------------------------------------- theme-independent bits
-   The two easing curves, the font stacks, and the two viewport variables
+   The easing curves, the font stacks, and the two viewport variables
    installViewportVars() overwrites on the same element. The stream hues
    (h = 30 + 45·i in the handoff) are not tokens yet: phase 1 paints three of
    them, as literal `oklch(0.62 0.11 <h>)` values in ActRow and HeldBackSheet,
@@ -56,6 +56,9 @@
 :root {
   --ease-rise: cubic-bezier(0.2, 0.8, 0.2, 1);
   --ease-settle: cubic-bezier(0.2, 1.4, 0.3, 1);
+  /* `rise` mirrored in time, for the leave — what `animation-direction:
+     reverse` used to play. Not a third curve. */
+  --ease-sink: cubic-bezier(0.8, 0, 0.8, 0.2);
 
   --font-sans: "DM Sans Variable", -apple-system, Helvetica, sans-serif;
   --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, monospace;
@@ -217,10 +220,10 @@
   }
   /* `sink` is its own keyframes, not `rise` reversed: two classes on the same
      animation-name would not restart it, so a layer re-opened mid-leave would
-     finish sinking. Same curve — the handoff has two, and this is not the
-     Door handle's `settle`. */
+     finish sinking. Reversing the direction also reversed the easing, which
+     `--ease-sink` keeps: the leave still accelerates away. */
   .rise-out {
-    animation: sink var(--layer-duration, 400ms) var(--ease-rise) both;
+    animation: sink var(--layer-duration, 400ms) var(--ease-sink) both;
   }
 
   /* The gates' static presence field: a dot grid that drifts a pixel and back. */

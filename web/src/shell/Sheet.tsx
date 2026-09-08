@@ -22,13 +22,16 @@ export function Sheet({ open, title, onClose, children }: SheetProps) {
   const titleId = useId();
   useModalFocus(mounted, panel);
 
+  // On the panel, not `document`: the sheet holds focus while it is on top, so
+  // the key reaches it, and a gate over it swallows Escape instead.
   useEffect(() => {
-    if (!mounted) return;
+    const node = panel.current;
+    if (!mounted || !node) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
     };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
+    node.addEventListener("keydown", onKeyDown);
+    return () => node.removeEventListener("keydown", onKeyDown);
   }, [mounted, onClose]);
 
   if (!mounted) return null;
