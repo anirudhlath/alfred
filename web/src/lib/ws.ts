@@ -4,6 +4,16 @@ const BASE_DELAY_MS = 500;
 const MAX_DELAY_MS = 8000;
 /** Cloudflare closes an idle proxied socket at ~100 s; 30 s keeps it comfortably alive. */
 const DEFAULT_PING_MS = 30_000;
+/**
+ * How many keepalive rounds of silence make an open socket "quiet". Pong latency
+ * is not a liveness signal on this server: the pong rides the same serial receive
+ * loop as chat turns, so it can lag a whole conscious-engine turn (60 s, see
+ * `core/channels/web_server.py`, the ping handler) — and the last pong can predate
+ * that turn by up to a ping interval. Four rounds (120 s at the default) clears a
+ * full turn with room to spare; a socket the OS dropped is still caught on the
+ * next foreground return, which is the only time this is checked.
+ */
+const QUIET_AFTER_PINGS = 4;
 
 export interface SocketOptions {
   pingIntervalMs?: number;
@@ -53,15 +63,15 @@ export class ReconnectingSocket {
   }
 
   /**
-   * Whether the open socket has gone silent for two keepalive rounds. A socket
-   * that died while the PWA was suspended can still read OPEN — no close event
-   * arrives for a connection the OS dropped, and `send()` on it does not throw —
-   * so the pongs that stopped coming are the only evidence.
+   * Whether the open socket has gone silent for QUIET_AFTER_PINGS keepalive
+   * rounds. A socket that died while the PWA was suspended can still read OPEN —
+   * no close event arrives for a connection the OS dropped, and `send()` on it
+   * does not throw — so the pongs that stopped coming are the only evidence.
    */
   private quiet(ws: WebSocket): boolean {
     if (this.pingIntervalMs <= 0 || ws.readyState !== WebSocket.OPEN) return false;
     const lastSeen = Math.max(this.openedAt, this.lastMessageAt ?? 0);
-    return Date.now() - lastSeen > 2 * this.pingIntervalMs;
+    return Date.now() - lastSeen > QUIET_AFTER_PINGS * this.pingIntervalMs;
   }
 
   connect(): void {

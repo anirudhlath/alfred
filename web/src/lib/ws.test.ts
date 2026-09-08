@@ -152,8 +152,8 @@ describe("ReconnectingSocket", () => {
     const ws = FakeWebSocket.instances[0];
     ws.open();
 
-    // Two keepalive rounds, no pong: the connection died under a suspended app.
-    vi.advanceTimersByTime(61_000);
+    // Four keepalive rounds, no pong: the connection died under a suspended app.
+    vi.advanceTimersByTime(121_000);
     sock.connect();
 
     expect(ws.readyState).toBe(3);
@@ -171,6 +171,39 @@ describe("ReconnectingSocket", () => {
     vi.advanceTimersByTime(50_000);
     ws.onmessage?.({ data: '{"type":"pong"}' });
     vi.advanceTimersByTime(20_000);
+    sock.connect();
+
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(ws.readyState).toBe(1);
+    sock.close();
+  });
+
+  it("keeps a socket that opened recently and has not spoken yet", () => {
+    const sock = new ReconnectingSocket("/ws/test");
+    sock.connect();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+
+    // No frame at all yet — the first pong is still on its way. Opening counts.
+    vi.advanceTimersByTime(50_000);
+    sock.connect();
+
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(ws.readyState).toBe(1);
+    sock.close();
+  });
+
+  it("keeps a live socket through a long turn: pong latency is not liveness", () => {
+    const sock = new ReconnectingSocket("/ws/test");
+    sock.connect();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+
+    // One pong, then silence for a full conscious-engine turn (60 s), plus the
+    // ping interval the last pong can predate it by, plus slack for the round trip.
+    vi.advanceTimersByTime(30_000);
+    ws.onmessage?.({ data: '{"type":"pong"}' });
+    vi.advanceTimersByTime(100_000);
     sock.connect();
 
     expect(FakeWebSocket.instances).toHaveLength(1);
