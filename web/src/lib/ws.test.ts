@@ -88,6 +88,9 @@ describe("ReconnectingSocket", () => {
     expect(ws.sent).toHaveLength(2);
 
     sock.close();
+    // The interval is gone, not merely quiet: a closed fake socket refuses
+    // sends, so `sent` staying flat would not prove the timer was cleared.
+    expect(vi.getTimerCount()).toBe(0);
     vi.advanceTimersByTime(120_000);
     expect(ws.sent).toHaveLength(2);
   });
@@ -121,6 +124,9 @@ describe("ReconnectingSocket", () => {
     vi.advanceTimersByTime(30_000);
 
     expect(ws.sent).toHaveLength(0);
+    // The 500 ms reconnect has fired by now; the only timer left would be a
+    // leaked ping interval.
+    expect(vi.getTimerCount()).toBe(0);
     sock.close();
   });
 
@@ -130,6 +136,7 @@ describe("ReconnectingSocket", () => {
     sock.connect();
     const ws = FakeWebSocket.instances[0];
     ws.open();
+    expect(sock.lastMessageAt).toBeNull(); // opening is not a frame
 
     ws.onmessage?.({ data: '{"type":"pong"}' });
 

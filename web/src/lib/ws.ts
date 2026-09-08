@@ -18,7 +18,7 @@ export class ReconnectingSocket {
   private pingIntervalMs: number;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
 
-  /** `Date.now()` of the last frame from the server, pings included. */
+  /** `Date.now()` of the last frame from the server, keepalive pongs included. */
   lastMessageAt: number | null = null;
 
   onmessage: (data: unknown) => void = () => {};
