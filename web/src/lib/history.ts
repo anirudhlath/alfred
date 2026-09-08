@@ -53,6 +53,12 @@ function emptyHistory(): RoomHistory {
  * should cost the user that stream, not the whole conversation. A missing stream
  * is an empty list, which renders as a thread with a hole in it rather than a
  * blank screen with an error.
+ *
+ * That holds when all four are down too: the result is four empty lists, never a
+ * rejection, so `useRoomHistory().isError` is never true and an empty thread is
+ * indistinguishable here from a dark house. Deliberate — the Room does not
+ * announce outages; the status line and the offline note do, from the overview
+ * read (which does reject) and the socket.
  */
 export async function fetchRoomHistory(): Promise<RoomHistory> {
   const settled = await Promise.allSettled(

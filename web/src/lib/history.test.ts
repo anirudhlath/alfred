@@ -5,6 +5,7 @@ import {
   toTimelineItems,
   withDividers,
   type RoomHistory,
+  type RoomStream,
   type TimelineItem,
 } from "./history";
 import {
@@ -21,6 +22,18 @@ const HISTORY: RoomHistory = {
   reflex_observations: reflexObservationsPage.entries,
   notifications: notificationsPage.entries,
 };
+
+const EMPTY: RoomHistory = {
+  user_requests: [],
+  user_responses: [],
+  reflex_observations: [],
+  notifications: [],
+};
+
+/** A conversational turn at `at`, for the divider rules. */
+function turnAt(at: string): TimelineItem {
+  return { kind: "you", id: `you:${at}`, at, text: "And the windows?", state: "sent" };
+}
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -51,6 +64,9 @@ describe("fetchRoomHistory", () => {
       vi.fn(async (input: RequestInfo | URL) => {
         if (String(input).includes("notifications"))
           return new Response('{"detail":"redis is down"}', { status: 503 });
+        // A 200 with no entries at all: still a list, or the merge would throw.
+        if (String(input).includes("reflex_observations"))
+          return new Response('{"next_before":null}', { status: 200 });
         return new Response(JSON.stringify(userRequestsPage), { status: 200 });
       }),
     );
@@ -58,7 +74,17 @@ describe("fetchRoomHistory", () => {
     const history = await fetchRoomHistory();
 
     expect(history.notifications).toEqual([]);
+    expect(history.reflex_observations).toEqual([]);
     expect(history.user_requests).toHaveLength(2);
+  });
+
+  it("answers an empty thread, not an error, when every stream is down", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response('{"detail":"redis is down"}', { status: 503 })),
+    );
+
+    await expect(fetchRoomHistory()).resolves.toEqual(EMPTY);
   });
 });
 
@@ -80,27 +106,46 @@ describe("toTimelineItems", () => {
   });
 
   it("renders what you said as a sent bubble", () => {
-    const you = items.find((item) => item.kind === "you")!;
-    expect(you).toMatchObject({
+    const you = items.find((item) => item.kind === "you");
+    expect(you).toEqual({
       kind: "you",
+      id: "you:1788811923000-0",
+      at: "2026-09-07T20:52:03",
       text: "What have I got tomorrow morning?",
       state: "sent",
     });
   });
 
   it("carries mood and tools onto Alfred's row", () => {
-    const alfred = items.find((item) => item.kind === "alfred")!;
-    expect(alfred).toMatchObject({
+    const alfred = items.find((item) => item.kind === "alfred");
+    expect(alfred).toEqual({
       kind: "alfred",
+      id: "alfred:1788811926000-0",
+      at: "2026-09-07T20:52:06",
+      text: "The dentist at nine, sir. I'd leave by twenty to; there's rain forecast from eight.",
       mood: "pleased",
       actions: ["calendar.today", "weather.forecast"],
     });
   });
 
+  it("keeps only the tool names Alfred's row can print", () => {
+    const [alfred] = toTimelineItems({
+      ...EMPTY,
+      user_responses: [
+        {
+          id: "1-0",
+          event: { timestamp: "2026-09-07T21:14:06", text: "Done.", actions_taken: ["home.lock", 42, null] },
+        },
+      ],
+    });
+    expect(alfred.kind === "alfred" && alfred.actions).toEqual(["home.lock"]);
+  });
+
   it("reads a reflex act as its decision, in the RX hue", () => {
-    const act = items[0];
-    expect(act).toMatchObject({
+    expect(items[0]).toEqual({
       kind: "act",
+      id: "rx:1788800280000-0",
+      at: "2026-09-07T17:58:00",
       hue: 210,
       text: "movie started, evening, user home",
       meta: "17:58 · reflex · home.light_set",
@@ -124,11 +169,29 @@ describe("toTimelineItems", () => {
   });
 
   it("renders a notification as its title, in the NT hue", () => {
-    const nt = items.find((item) => item.kind === "act" && item.hue === 255)!;
-    expect(nt).toMatchObject({
+    const nt = items.find((item) => item.kind === "act" && item.hue === 255);
+    expect(nt).toEqual({
+      kind: "act",
+      id: "nt:1788801600000-0",
+      at: "2026-09-07T18:20:00",
+      hue: 255,
       text: "Your parcel arrived",
       meta: "18:20 · trigger:trg_parcel · important",
     });
+  });
+
+  it("files an unlabelled notification under the house, informational", () => {
+    // An empty source is no source; the fallbacks cover both.
+    const [nt] = toTimelineItems({
+      ...EMPTY,
+      notifications: [
+        {
+          id: "1-0",
+          event: { timestamp: "2026-09-07T18:20:00", title: "Bins go out tonight", source: "" },
+        },
+      ],
+    });
+    expect(nt.kind === "act" && nt.meta).toBe("18:20 · house · informational");
   });
 
   it("leaves confirmation requests to the Door", () => {
@@ -143,6 +206,18 @@ describe("toTimelineItems", () => {
     expect(toTimelineItems(HISTORY).map((item) => item.id)).toEqual(ids);
   });
 
+  it("keeps rows apart when Redis gave two streams the same id", () => {
+    // Stream ids are `<ms>-<seq>` per stream, so an observation and the
+    // notification it raised can share one. The row id carries the stream.
+    const shared = toTimelineItems({
+      user_requests: [{ id: "1-0", event: userRequestsPage.entries[0].event }],
+      user_responses: [{ id: "1-0", event: userResponsesPage.entries[0].event }],
+      reflex_observations: [{ id: "1-0", event: reflexObservationsPage.entries[2].event }],
+      notifications: [{ id: "1-0", event: notificationsPage.entries[1].event }],
+    });
+    expect(shared.map((item) => item.id).sort()).toEqual(["alfred:1-0", "nt:1-0", "rx:1-0", "you:1-0"]);
+  });
+
   it("skips an entry whose event is unreadable rather than dying", () => {
     const parsed = toTimelineItems({
       user_requests: [{ id: "1-0", event: {} }, ...userRequestsPage.entries],
@@ -151,6 +226,29 @@ describe("toTimelineItems", () => {
       notifications: [],
     });
     expect(parsed).toHaveLength(2);
+  });
+
+  // One guard at a time: a row without its text would print nothing, and a row
+  // without its stamp would sort on NaN and read "--:--". A response's text is
+  // `text`, never `content`; a request's is `content`, and an empty one is none.
+  const halfEntries: Array<[RoomStream, Record<string, unknown>, Record<string, unknown>]> = [
+    ["user_requests", { timestamp: "2026-09-07T21:14:00", content: "" }, { content: "Hello?" }],
+    [
+      "user_responses",
+      { timestamp: "2026-09-07T21:14:06", content: "Yes, sir." },
+      { text: "Yes, sir." },
+    ],
+    [
+      "reflex_observations",
+      { timestamp: "2026-09-07T17:58:00" },
+      { action: { tool_name: "home.light_set" } },
+    ],
+    ["notifications", { timestamp: "2026-09-07T18:20:00" }, { title: "Your parcel arrived" }],
+  ];
+
+  it.each(halfEntries)("drops a %s entry missing its text or its stamp", (stream, noText, noStamp) => {
+    const history = { ...EMPTY, [stream]: [{ id: "1-0", event: noText }, { id: "2-0", event: noStamp }] };
+    expect(toTimelineItems(history)).toEqual([]);
   });
 });
 
@@ -183,25 +281,28 @@ describe("withDividers", () => {
   });
 
   it("splits two turns more than thirty minutes apart", () => {
-    const first = toTimelineItems({
-      user_requests: userRequestsPage.entries,
-      user_responses: [],
-      reflex_observations: [],
-      notifications: [],
-    })[0];
-    const later: TimelineItem = {
-      kind: "you",
-      id: "you:later",
-      at: "2026-09-07T21:44:00",
-      text: "And the windows?",
-      state: "sent",
-    };
+    const first = toTimelineItems({ ...EMPTY, user_requests: userRequestsPage.entries })[0];
+    const later = turnAt("2026-09-07T21:44:00");
 
-    const labels = withDividers([first, later], now)
-      .filter((item) => item.kind === "divider")
-      .map((item) => (item.kind === "divider" ? item.label : ""));
+    const out = withDividers([first, later], now);
 
-    expect(labels).toEqual(["earlier today", "new conversation · 21:44"]);
+    expect(out.map((item) => (item.kind === "divider" ? item.label : item.kind))).toEqual([
+      "earlier today",
+      "you",
+      "new conversation · 21:44",
+      "you",
+    ]);
+    // A divider is stamped with the row it opens, so a live merge keeps it in place.
+    expect(out.map((item) => item.at)).toEqual([first.at, first.at, later.at, later.at]);
+  });
+
+  it("draws the line at exactly thirty minutes", () => {
+    const first = turnAt("2026-09-07T20:52:03");
+    const dividers = (items: TimelineItem[]) =>
+      withDividers(items, now).filter((item) => item.kind === "divider").length;
+
+    expect(dividers([first, turnAt("2026-09-07T21:22:02")])).toBe(1);
+    expect(dividers([first, turnAt("2026-09-07T21:22:03")])).toBe(2);
   });
 
   it("leaves an empty thread empty", () => {
@@ -209,7 +310,17 @@ describe("withDividers", () => {
   });
 
   it("gives every divider a unique id", () => {
-    const ids = withDividers(toTimelineItems(HISTORY), now).map((item) => item.id);
+    const twoDays = toTimelineItems({
+      ...EMPTY,
+      user_requests: [...userRequestsPage.entries, ...yesterdayRequestPage.entries],
+    });
+    const out = withDividers(
+      [...twoDays, turnAt("2026-09-07T21:44:00"), turnAt("2026-09-07T22:20:00")],
+      now,
+    );
+
+    expect(out.filter((item) => item.kind === "divider")).toHaveLength(4);
+    const ids = out.map((item) => item.id);
     expect(new Set(ids).size).toBe(ids.length);
   });
 });
@@ -217,6 +328,19 @@ describe("withDividers", () => {
 describe("pendingActionTitles", () => {
   it("names an approval by its tool, for the tombstone a deep link may need", () => {
     expect(pendingActionTitles(HISTORY)).toEqual({ a91f3c2e: "Lock unlock" });
+  });
+
+  it("falls back to the notification's title, then to the id", () => {
+    const titled = {
+      id: "1-0",
+      event: { title: "Unlock the front door?", metadata: { pending_action_id: "b7e21c40" } },
+    };
+    const bare = { id: "2-0", event: { metadata: { pending_action_id: "c3d9a0f1" } } };
+
+    expect(pendingActionTitles({ ...EMPTY, notifications: [titled, bare] })).toEqual({
+      b7e21c40: "Unlock the front door?",
+      c3d9a0f1: "Action c3d9",
+    });
   });
 
   it("is empty for an absent history", () => {
