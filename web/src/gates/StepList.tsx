@@ -45,10 +45,13 @@ function Ring({ style }: { style: CSSProperties }) {
   );
 }
 
+/**
+ * Both variants carry an explicit `role="list"`: preflight strips list-style,
+ * and WebKit strips the list semantics with it — VoiceOver would not say
+ * "3 items" without the attribute.
+ */
 export function StepList(props: StepListProps) {
   if (props.variant === "progress") {
-    // role="list": preflight strips list-style, and WebKit strips the list
-    // semantics with it — VoiceOver would not say "3 items" without this.
     return (
       <ol role="list" className="flex flex-col pt-2">
         {props.steps.map((step) => (

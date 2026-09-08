@@ -75,6 +75,7 @@ describe("StepList — toggle", () => {
       />,
     );
 
+    expect(screen.getByRole("list")).toHaveAttribute("role", "list");
     const light = screen.getByRole("button", { name: /Light · 6 found/ });
     const fan = screen.getByRole("button", { name: /Fan · 4 found/ });
     expect(light).toHaveTextContent("allowed");
