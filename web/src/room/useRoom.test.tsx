@@ -120,6 +120,35 @@ describe("useRoom — the merged thread", () => {
     expect(chat.sendText).toHaveBeenCalledWith("Is the back door locked?");
   });
 
+  it("merges history, tombstones and live rows by timestamp", () => {
+    // Older than the history row, and passed after it: only a real sort puts
+    // it first.
+    const tombstone: TimelineItem = {
+      kind: "tombstone",
+      id: "tomb:1",
+      at: "2026-09-01T09:00:00",
+      title: "Lock unlock",
+      meta: "expired · not done",
+    };
+    const { result } = renderRoom({ history: [historyRow], tombstones: [tombstone], online: true });
+
+    act(() => result.current.sendText("Is the back door locked?"));
+
+    expect(kinds(result.current.items)).toEqual(["tombstone", "alfred", "you", "thinking"]);
+  });
+
+  it("relabels the day when the app returns after midnight", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-01T23:59:00"));
+    const { result } = renderRoom({ history: [historyRow], online: true });
+    expect(result.current.items[0]).toMatchObject({ kind: "divider", label: "earlier today" });
+
+    vi.setSystemTime(new Date("2026-09-02T00:01:00"));
+    act(() => void document.dispatchEvent(new Event("visibilitychange")));
+
+    expect(result.current.items[0]).toMatchObject({ kind: "divider", label: "yesterday" });
+  });
+
   it("puts a day divider in front of the thread", () => {
     const { result } = renderRoom({ history: [historyRow], online: true });
     expect(result.current.items[0].kind).toBe("divider");
@@ -149,6 +178,29 @@ describe("useRoom — sending", () => {
     expect(JSON.parse(localStorage.getItem(UNSENT_KEY) ?? "[]")).toHaveLength(1);
   });
 
+  it("does not touch the socket while the house is unreachable", () => {
+    // The socket would accept it; the `online` flag alone must stop the send.
+    const { result, chat } = renderRoom({ history: [], online: false });
+
+    act(() => result.current.sendText("Turn the hall light off"));
+
+    expect(chat.sendText).not.toHaveBeenCalled();
+    const you = result.current.items.find((item) => item.kind === "you")!;
+    expect(you.kind === "you" && you.state).toBe("unsent");
+  });
+
+  it("keeps the turn in flight when a later message cannot leave", () => {
+    const { result, chat } = renderRoom({ history: [], online: true });
+    act(() => result.current.sendText("Anything tomorrow?"));
+
+    act(() => chat.onstatus("offline"));
+    sendSucceeds = false;
+    act(() => result.current.sendText("And the windows?"));
+
+    expect(kinds(result.current.items)).toEqual(["you", "thinking", "you"]);
+    expect(result.current.thinking).toBe(true);
+  });
+
   it("retries the queue in order when the connection returns", () => {
     sendSucceeds = false;
     const { result, chat } = renderRoom({ history: [], online: false });
@@ -165,6 +217,24 @@ describe("useRoom — sending", () => {
       result.current.items.every((item) => item.kind !== "you" || item.state === "sent"),
     ).toBe(true);
     expect(JSON.parse(localStorage.getItem(UNSENT_KEY) ?? "[]")).toHaveLength(0);
+    // What went out is a turn in flight.
+    expect(kinds(result.current.items)).toEqual(["you", "you", "thinking"]);
+    expect(result.current.thinking).toBe(true);
+  });
+
+  it("gives up on a retried turn the server never answers", () => {
+    vi.useFakeTimers();
+    sendSucceeds = false;
+    const { result, chat } = renderRoom({ history: [], online: false });
+    act(() => result.current.sendText("first"));
+
+    sendSucceeds = true;
+    act(() => chat.onstatus("online"));
+    act(() => void vi.advanceTimersByTime(60_000));
+
+    expect(result.current.thinking).toBe(false);
+    const alfred = result.current.items.find((item) => item.kind === "alfred")!;
+    expect(alfred.kind === "alfred" && alfred.text).toBe("No reply in 60 s.");
   });
 
   it("stops the retry at the first refusal rather than reordering", () => {
@@ -173,15 +243,19 @@ describe("useRoom — sending", () => {
 
     act(() => result.current.sendText("first"));
     act(() => result.current.sendText("second"));
+    act(() => result.current.sendText("third"));
     chat.sendText.mockClear();
+    // The third would go if it were tried; the refusal of the second must stop it.
+    sendSucceeds = true;
     chat.sendText.mockImplementationOnce(() => true).mockImplementationOnce(() => false);
 
     act(() => chat.onstatus("online"));
 
+    expect(chat.sendText.mock.calls.map((call) => call[0])).toEqual(["first", "second"]);
     const states = result.current.items
       .filter((item) => item.kind === "you")
       .map((item) => (item.kind === "you" ? item.state : ""));
-    expect(states).toEqual(["sent", "unsent"]);
+    expect(states).toEqual(["sent", "unsent", "unsent"]);
   });
 
   it("restores the queue after a cold launch", () => {
@@ -201,6 +275,19 @@ describe("useRoom — sending", () => {
 
   it("ignores a corrupt queue rather than refusing to start", () => {
     localStorage.setItem(UNSENT_KEY, "{not json");
+    const { result } = renderRoom({ history: [], online: false });
+    expect(result.current.items).toHaveLength(0);
+  });
+
+  // Valid JSON, wrong shape — one field short each. Without its timestamp a
+  // row would open the thread with a `NaN undefined` day divider; without its
+  // state it would never be retried and never be cleared.
+  it.each([
+    ["timestamp", { kind: "you", id: "you:cold", text: "held over", state: "unsent" }],
+    ["id", { kind: "you", at: "2026-09-07T21:00:00", text: "held over", state: "unsent" }],
+    ["unsent state", { kind: "you", id: "you:cold", at: "2026-09-07T21:00:00", text: "held over" }],
+  ])("ignores a persisted row without its %s", (_field, row) => {
+    localStorage.setItem(UNSENT_KEY, JSON.stringify([row]));
     const { result } = renderRoom({ history: [], online: false });
     expect(result.current.items).toHaveLength(0);
   });
@@ -252,6 +339,15 @@ describe("useRoom — what comes back", () => {
     expect(kinds(result.current.items)).toEqual(["you", "thinking"]);
     const you = result.current.items.find((item) => item.kind === "you")!;
     expect(you.kind === "you" && you.text).toBe("Is the back door locked?");
+  });
+
+  it("clears the dashed bubble when the turn errors", () => {
+    const { result, chat } = renderRoom({ history: [], online: true });
+    act(() => result.current.sendAudio("data:audio/mp4;base64,AAAA", 1.2));
+
+    act(() => chat.deliver({ type: "error", text: "Expected a JSON object" }));
+
+    expect(kinds(result.current.items)).toEqual(["alfred"]);
   });
 
   it("clears the dashed bubble when transcription failed outright", () => {
@@ -366,6 +462,27 @@ describe("useRoom — silence", () => {
     const alfred = result.current.items.find((item) => item.kind === "alfred")!;
     expect(alfred.kind === "alfred" && alfred.text).toBe("No reply in 60 s.");
     expect(alfred.kind === "alfred" && alfred.error).toBe(true);
+  });
+
+  it("does not restart the countdown when an unrelated frame arrives", () => {
+    vi.useFakeTimers();
+    const { result, chat } = renderRoom({ history: [], online: true });
+
+    act(() => result.current.sendText("Anything tomorrow?"));
+    act(() => void vi.advanceTimersByTime(59_000));
+    act(() =>
+      chat.deliver({
+        type: "notification",
+        title: "Bins go out tonight",
+        body: "Collection moved to Friday.",
+        urgency: "important",
+        notification_id: "ntf-5",
+        metadata: {},
+      }),
+    );
+    act(() => void vi.advanceTimersByTime(2_000));
+
+    expect(result.current.thinking).toBe(false);
   });
 
   it("cancels the timeout when the reply arrives in time", () => {

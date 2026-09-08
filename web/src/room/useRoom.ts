@@ -28,19 +28,27 @@ function isUnsent(item: TimelineItem): item is YouItem {
   return item.kind === "you" && item.state === "unsent";
 }
 
+// Every field, not just the kind: a row without its timestamp would put a
+// `NaN undefined` day divider at the top of the thread, and one without its
+// state would never be retried and never be cleared.
+function isPersistedUnsent(item: unknown): item is YouItem {
+  if (!item || typeof item !== "object") return false;
+  const row = item as Partial<YouItem>;
+  return (
+    row.kind === "you" &&
+    typeof row.id === "string" &&
+    typeof row.at === "string" &&
+    typeof row.text === "string" &&
+    row.state === "unsent"
+  );
+}
+
 function readUnsent(): TimelineItem[] {
   try {
     const raw = localStorage.getItem(UNSENT_KEY);
     if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (item): item is YouItem =>
-        !!item &&
-        typeof item === "object" &&
-        (item as YouItem).kind === "you" &&
-        typeof (item as YouItem).text === "string",
-    );
+    return Array.isArray(parsed) ? parsed.filter(isPersistedUnsent) : [];
   } catch {
     // Corrupt or unavailable storage loses the queue, never the app.
     return [];
@@ -91,9 +99,13 @@ export function useRoom({ history, tombstones }: UseRoomOptions): RoomValue {
       const at = new Date().toISOString();
       const sent = online && chat.sendText(text);
       setLive((current) => {
+        // Only a send that left starts a new turn. One that did not leaves the
+        // turn already in flight — and its countdown — exactly as it was.
         // Annotated: TS infers a type predicate from the filter and would
         // otherwise refuse to push a thinking row back in.
-        const next: TimelineItem[] = current.filter((item) => item.kind !== "thinking");
+        const next: TimelineItem[] = sent
+          ? current.filter((item) => item.kind !== "thinking")
+          : [...current];
         next.push({ kind: "you", id: uid("you"), at, text, state: sent ? "sent" : "unsent" });
         if (sent) next.push({ kind: "thinking", id: THINKING_ID, at, detail: "working" });
         return next;
@@ -118,6 +130,9 @@ export function useRoom({ history, tombstones }: UseRoomOptions): RoomValue {
 
   // Retry the queue, in order, the moment the socket says it is online. Stopping
   // at the first refusal keeps the conversation in the order it was written.
+  // What went out is a turn in flight like any other, so it gets the thinking
+  // row and, through it, the 60 s countdown; a reconnect the server never
+  // answers would otherwise show nothing at all.
   // Driven by the socket's own notification rather than the `online` flag: the
   // sends are an external side effect and the rows they settle are recorded in
   // the same callback, so the effect itself only subscribes. The queue is read
@@ -137,13 +152,18 @@ export function useRoom({ history, tombstones }: UseRoomOptions): RoomValue {
         }
         if (delivered.size === 0) return;
 
-        setLive((current) =>
-          current.map((item) =>
+        const at = new Date().toISOString();
+        setLive((current) => {
+          const settled: TimelineItem[] = current.map((item) =>
             item.kind === "you" && delivered.has(item.id)
               ? { kind: "you", id: item.id, at: item.at, text: item.text, state: "sent" }
               : item,
-          ),
-        );
+          );
+          return [
+            ...settled.filter((item) => item.kind !== "thinking"),
+            { kind: "thinking", id: THINKING_ID, at, detail: "working" },
+          ];
+        });
       }),
     [subscribeOnline, chat],
   );
