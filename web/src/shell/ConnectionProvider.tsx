@@ -12,6 +12,18 @@ import type { SocketStatus } from "@/lib/ws";
 const chat = new ChatSocket();
 const telemetry = new TelemetrySocket();
 
+/**
+ * Make sure both sockets are live. `connect()` reopens a closed socket, replaces
+ * one that has gone quiet and leaves a healthy one alone, so this is safe on
+ * every return to the foreground — and necessary after every sign-in: the server
+ * closes both sockets with 4001 while there is no session, and a 4001 is never
+ * retried.
+ */
+function reconnect(): void {
+  chat.connect();
+  telemetry.connect();
+}
+
 let lastTrue: Date | null = null;
 const lastTrueListeners = new Set<(at: Date) => void>();
 
@@ -57,6 +69,8 @@ export interface ConnectionValue {
   lastTrueAt: Date | null;
   /** The moment a queued send can succeed. See `subscribeOnline` above. */
   subscribeOnline: (fn: () => void) => () => void;
+  /** Reopen whatever is closed. The gates call it after a sign-in. See `reconnect` above. */
+  reconnect: () => void;
 }
 
 const ConnectionContext = createContext<ConnectionValue | null>(null);
@@ -81,16 +95,20 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     const stopListening = chat.listen(() => markTrue());
     const stopTrue = subscribeTrue(setLastTrueAt);
 
-    chat.connect();
-    telemetry.connect();
+    reconnect();
 
     const stopVisible = onVisible(() => {
-      chat.connect();
-      telemetry.connect();
+      reconnect();
       for (const queryKey of REHYDRATE_KEYS) void queryClient.invalidateQueries({ queryKey });
     });
 
     return () => {
+      // The singletons outlive this mount; leave nothing of it on them. The
+      // `close()` calls below still produce a close event each, and it must not
+      // reach a setState on an unmounted tree or flip `chatOnline` under the next
+      // mount.
+      chat.onstatus = () => {};
+      telemetry.onstatus = () => {};
       stopListening();
       stopTrue();
       stopVisible();
@@ -119,6 +137,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       online: chatStatus === "online",
       lastTrueAt,
       subscribeOnline,
+      reconnect,
     }),
     [chatStatus, telemetryStatus, lastTrueAt],
   );

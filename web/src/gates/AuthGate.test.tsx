@@ -1,29 +1,12 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError } from "@/lib/api";
-import { authEvents } from "@/lib/auth-events";
-import { DEVICE_KEY } from "@/lib/auth";
-import type { AuthStatus } from "@/lib/types";
-import { ConnectionProvider } from "@/shell/ConnectionProvider";
-import { AuthGate } from "./AuthGate";
-
-const { loginPasskeyMock, registerPasskeyMock } = vi.hoisted(() => ({
-  loginPasskeyMock: vi.fn(),
-  registerPasskeyMock: vi.fn(),
-}));
-vi.mock("@/lib/webauthn", () => ({
-  loginPasskey: loginPasskeyMock,
-  registerPasskey: registerPasskeyMock,
-}));
-
-// The provider constructs both sockets at module load; jsdom has no WebSocket
-// server behind them, and this file is about the gates, not the wire.
+import { ConnectionProvider, markTrue } from "@/shell/ConnectionProvider";
+/** Which sockets `connect()` was asked of, in order. */
+const { socketConnects } = vi.hoisted(() => ({ socketConnects: [] as string[] }));
 vi.mock("@/lib/chat-socket", () => ({
   ChatSocket: class {
     onstatus = () => {};
-    connect() {}
+    connect() {
+      socketConnects.push("chat");
+    }
     close() {}
     listen() {
       return () => {};
@@ -33,13 +16,34 @@ vi.mock("@/lib/chat-socket", () => ({
 vi.mock("@/lib/telemetry-socket", () => ({
   TelemetrySocket: class {
     onstatus = () => {};
-    connect() {}
+    connect() {
+      socketConnects.push("telemetry");
+    }
     close() {}
     subscribe() {}
     listen() {
       return () => {};
     }
   },
+}));
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/lib/api";
+import { authEvents } from "@/lib/auth-events";
+import { DEVICE_KEY } from "@/lib/auth";
+import { hhmm } from "@/lib/format";
+import type { AuthStatus } from "@/lib/types";
+import { AuthGate } from "./AuthGate";
+
+const { loginPasskeyMock, registerPasskeyMock } = vi.hoisted(() => ({
+  loginPasskeyMock: vi.fn(),
+  registerPasskeyMock: vi.fn(),
+}));
+vi.mock("@/lib/webauthn", () => ({
+  loginPasskey: loginPasskeyMock,
+  registerPasskey: registerPasskeyMock,
 }));
 
 let status: AuthStatus = { registered: true, authenticated: true };
@@ -79,6 +83,7 @@ function renderGate() {
 beforeEach(() => {
   status = { registered: true, authenticated: true };
   statusDown = false;
+  socketConnects.length = 0;
   loginPasskeyMock.mockReset().mockResolvedValue(undefined);
   registerPasskeyMock.mockReset().mockResolvedValue(undefined);
   vi.stubGlobal("location", { hostname: "alfred.example.com", pathname: "/" });
@@ -210,6 +215,21 @@ describe("AuthGate routing", () => {
     expect(await screen.findByText("the room")).toBeInTheDocument();
   });
 
+  it("reopens both sockets once signed in: a 4001 is never retried on its own", async () => {
+    const user = userEvent.setup();
+    status = { registered: true, authenticated: false };
+    renderGate();
+    await screen.findByRole("heading", { name: "Welcome back, sir." });
+    expect(socketConnects).toEqual(["chat", "telemetry"]); // the mount, and nothing since
+    socketConnects.length = 0;
+
+    status = { registered: true, authenticated: true };
+    await user.click(screen.getByRole("button", { name: "Sign in with Face ID" }));
+
+    await screen.findByText("the room");
+    expect(socketConnects).toEqual(["chat", "telemetry"]);
+  });
+
   it("reports a failed sign-in in the foot line, in its own words", async () => {
     const user = userEvent.setup();
     status = { registered: true, authenticated: false };
@@ -285,10 +305,16 @@ describe("AuthGate events", () => {
     renderGate();
     await screen.findByText("the room");
 
+    // The house answered at 21:15; the gate says so, since what is behind it dates from then.
+    const at = new Date(2026, 8, 8, 21, 15);
+    act(() => markTrue(at));
     act(() => authEvents.emit("denied"));
 
     expect(screen.getByRole("heading", { name: "Not from here." })).toBeInTheDocument();
     expect(screen.getByText("403 · off-network")).toBeInTheDocument();
+    expect(
+      screen.getByText(`Last true ${hhmm(at)} · everything shown behind this is last-known`),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Sign in with Face ID" })).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Back to the room" }));

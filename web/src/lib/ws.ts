@@ -20,6 +20,7 @@ export class ReconnectingSocket {
 
   /** `Date.now()` of the last frame from the server, keepalive pongs included. */
   lastMessageAt: number | null = null;
+  private openedAt = 0;
 
   onmessage: (data: unknown) => void = () => {};
   onstatus: (status: SocketStatus) => void = () => {};
@@ -51,7 +52,27 @@ export class ReconnectingSocket {
     }
   }
 
+  /**
+   * Whether the open socket has gone silent for two keepalive rounds. A socket
+   * that died while the PWA was suspended can still read OPEN — no close event
+   * arrives for a connection the OS dropped, and `send()` on it does not throw —
+   * so the pongs that stopped coming are the only evidence.
+   */
+  private quiet(ws: WebSocket): boolean {
+    if (this.pingIntervalMs <= 0 || ws.readyState !== WebSocket.OPEN) return false;
+    const lastSeen = Math.max(this.openedAt, this.lastMessageAt ?? 0);
+    return Date.now() - lastSeen > 2 * this.pingIntervalMs;
+  }
+
   connect(): void {
+    // A quiet socket is replaced, not kept: `this.ws` moves on first, so the
+    // close event the old one produces is ignored below as a superseded socket's.
+    if (this.ws && this.quiet(this.ws)) {
+      const dead = this.ws;
+      this.ws = null;
+      this.stopPing();
+      dead.close();
+    }
     // Bail if a socket is already live. Without this, a second connect() (React
     // StrictMode's setup→cleanup→setup, or a fast logout/login) overwrites this.ws
     // while the previous socket's onclose still fires and spawns a duplicate,
@@ -70,6 +91,7 @@ export class ReconnectingSocket {
     ws.onopen = () => {
       if (this.ws !== ws) return;
       this.attempts = 0;
+      this.openedAt = Date.now();
       this.startPing(ws);
       this.onstatus("online");
       this.onopen();

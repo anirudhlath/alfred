@@ -143,6 +143,51 @@ describe("ReconnectingSocket", () => {
     expect(sock.lastMessageAt).toBeGreaterThan(0);
     sock.close();
   });
+
+  it("replaces an open socket that has gone quiet", () => {
+    const statuses: string[] = [];
+    const sock = new ReconnectingSocket("/ws/test");
+    sock.onstatus = (s) => statuses.push(s);
+    sock.connect();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+
+    // Two keepalive rounds, no pong: the connection died under a suspended app.
+    vi.advanceTimersByTime(61_000);
+    sock.connect();
+
+    expect(ws.readyState).toBe(3);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(statuses).toEqual(["connecting", "online", "connecting"]);
+    sock.close();
+  });
+
+  it("keeps an open socket that answered recently", () => {
+    const sock = new ReconnectingSocket("/ws/test");
+    sock.connect();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+
+    vi.advanceTimersByTime(50_000);
+    ws.onmessage?.({ data: '{"type":"pong"}' });
+    vi.advanceTimersByTime(20_000);
+    sock.connect();
+
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(ws.readyState).toBe(1);
+    sock.close();
+  });
+
+  it("reopens a socket the server refused, once asked", () => {
+    const sock = new ReconnectingSocket("/ws/test");
+    sock.connect();
+    FakeWebSocket.instances[0].emitClose(4001);
+
+    sock.connect();
+
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    sock.close();
+  });
 });
 
 describe("TelemetrySocket", () => {

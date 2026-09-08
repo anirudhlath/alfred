@@ -13,7 +13,7 @@ import { Layer } from "@/shell/Layer";
 
 export function AuthGate({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
-  const { lastTrueAt } = useConnection();
+  const { lastTrueAt, reconnect } = useConnection();
   const { data, isPending } = useQuery({
     queryKey: ["auth-status"],
     queryFn: fetchAuthStatus,
@@ -40,9 +40,12 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const authenticated = data?.authenticated === true;
   if (expired && !authenticated) setExpired(false);
 
+  // A sign-in is the one moment the sockets need a push: the server closed them
+  // with 4001 while there was no session, and a 4001 is never retried.
   const refetchEverything = useCallback(() => {
+    reconnect();
     void queryClient.invalidateQueries();
-  }, [queryClient]);
+  }, [queryClient, reconnect]);
 
   let body: ReactNode;
   if (isPending) {

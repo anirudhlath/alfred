@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { useEffect } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { authEvents } from "@/lib/auth-events";
 import type { SocketStatus } from "@/lib/ws";
 import { ConnectionProvider, useConnection } from "./ConnectionProvider";
@@ -55,12 +55,13 @@ vi.mock("@/lib/telemetry-socket", () => {
 });
 
 function Probe() {
-  const { online, lastTrueAt, chatStatus } = useConnection();
+  const { online, lastTrueAt, chatStatus, reconnect } = useConnection();
   return (
     <div>
       <span data-testid="online">{String(online)}</span>
       <span data-testid="status">{chatStatus}</span>
-      <span data-testid="last-true">{lastTrueAt ? "stamped" : "none"}</span>
+      <span data-testid="last-true">{lastTrueAt ? lastTrueAt.toISOString() : "none"}</span>
+      <button onClick={reconnect}>reconnect</button>
     </div>
   );
 }
@@ -74,21 +75,40 @@ function Subscriber({ onOnline }: { onOnline: () => void }) {
 function renderProvider() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const invalidate = vi.spyOn(client, "invalidateQueries");
-  render(
+  const utils = render(
     <QueryClientProvider client={client}>
       <ConnectionProvider>
         <Probe />
       </ConnectionProvider>
     </QueryClientProvider>,
   );
-  return { invalidate, chat: chats[0] as FakeSocket, telemetry: telemetries[0] as FakeSocket };
+  return {
+    ...utils,
+    invalidate,
+    chat: chats[0] as FakeSocket,
+    telemetry: telemetries[0] as FakeSocket,
+  };
+}
+
+/** The app comes back to the foreground. */
+function comeBack(): void {
+  act(() => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
 }
 
 beforeEach(() => {
   // One module load means one pair of singletons for the whole file — which is the
   // behaviour under test, so reset their spies rather than expecting new instances.
-  (chats[0] as FakeSocket | undefined)?.connect.mockClear();
-  (telemetries[0] as FakeSocket | undefined)?.connect.mockClear();
+  for (const socket of [chats[0], telemetries[0]] as (FakeSocket | undefined)[]) {
+    socket?.connect.mockClear();
+    socket?.close.mockClear();
+  }
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("ConnectionProvider", () => {
@@ -102,11 +122,15 @@ describe("ConnectionProvider", () => {
     const { chat } = renderProvider();
     expect(screen.getByTestId("online")).toHaveTextContent("false");
 
+    // `lastTrue` is module state and an earlier test may have stamped it, so
+    // prove the stamp moved rather than that it exists.
+    const at = new Date("2031-05-04T09:41:00Z");
+    vi.setSystemTime(at);
     act(() => chat.onstatus("online"));
 
     expect(screen.getByTestId("online")).toHaveTextContent("true");
     expect(screen.getByTestId("status")).toHaveTextContent("online");
-    expect(screen.getByTestId("last-true")).toHaveTextContent("stamped");
+    expect(screen.getByTestId("last-true")).toHaveTextContent(at.toISOString());
 
     act(() => chat.onstatus("reconnecting"));
     expect(screen.getByTestId("online")).toHaveTextContent("false");
@@ -114,32 +138,39 @@ describe("ConnectionProvider", () => {
 
   it("stamps last-true on every frame from the house", () => {
     const { chat } = renderProvider();
+    const at = new Date("2031-05-04T09:42:00Z");
+    vi.setSystemTime(at);
+
     act(() => chat.deliver({ type: "response", text: "Quite so, sir.", session_id: "s_1" }));
-    expect(screen.getByTestId("last-true")).toHaveTextContent("stamped");
+
+    expect(screen.getByTestId("last-true")).toHaveTextContent(at.toISOString());
   });
 
-  it("turns a 4001 close into the expired gate", () => {
+  it("turns a 4001 close on either socket into the expired gate", () => {
     const expired = vi.fn();
     const off = authEvents.on("expired", expired);
-    const { chat } = renderProvider();
+    const { chat, telemetry } = renderProvider();
 
     act(() => chat.onstatus("unauthorized"));
+    expect(expired).toHaveBeenCalledTimes(1);
 
-    expect(expired).toHaveBeenCalled();
+    // The chat socket has since been reopened; the telemetry socket says so on its own.
+    act(() => chat.onstatus("connecting"));
+    act(() => telemetry.onstatus("unauthorized"));
+    expect(expired).toHaveBeenCalledTimes(2);
     off();
   });
 
-  it("reconnects and re-reads everything on the way back from the background", () => {
-    const { invalidate, chat } = renderProvider();
+  it("reconnects both sockets and re-reads everything on the way back from the background", () => {
+    const { invalidate, chat, telemetry } = renderProvider();
     chat.connect.mockClear();
+    telemetry.connect.mockClear();
     invalidate.mockClear();
 
-    act(() => {
-      Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
-      document.dispatchEvent(new Event("visibilitychange"));
-    });
+    comeBack();
 
-    expect(chat.connect).toHaveBeenCalled();
+    expect(chat.connect).toHaveBeenCalledTimes(1);
+    expect(telemetry.connect).toHaveBeenCalledTimes(1);
     const keys = invalidate.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
     expect(keys).toEqual([
       '["overview"]',
@@ -147,6 +178,17 @@ describe("ConnectionProvider", () => {
       '["pending-actions"]',
       '["deferred"]',
     ]);
+  });
+
+  it("reopens both sockets on reconnect()", () => {
+    const { chat, telemetry } = renderProvider();
+    chat.connect.mockClear();
+    telemetry.connect.mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: "reconnect" }));
+
+    expect(chat.connect).toHaveBeenCalledTimes(1);
+    expect(telemetry.connect).toHaveBeenCalledTimes(1);
   });
 
   it("tells a subscriber about every open, including one before it subscribed", () => {
@@ -181,6 +223,38 @@ describe("ConnectionProvider", () => {
     act(() => chat.onstatus("online"));
     expect(early).toHaveBeenCalledTimes(2);
     expect(late).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves nothing of itself on the singletons when it unmounts", () => {
+    const { invalidate, chat, telemetry, unmount } = renderProvider();
+    act(() => chat.onstatus("online"));
+
+    unmount();
+
+    expect(chat.close).toHaveBeenCalledTimes(1);
+    expect(telemetry.close).toHaveBeenCalledTimes(1);
+
+    // A foreground return after the unmount is nobody's business now.
+    chat.connect.mockClear();
+    invalidate.mockClear();
+    comeBack();
+    expect(chat.connect).not.toHaveBeenCalled();
+    expect(invalidate).not.toHaveBeenCalled();
+
+    // The close event `close()` produces lands after the cleanup. It must not
+    // reach the old callbacks — the next mount starts offline, whatever a stale
+    // status says.
+    act(() => chat.onstatus("online"));
+    const late = vi.fn();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <ConnectionProvider>
+          <Subscriber onOnline={late} />
+        </ConnectionProvider>
+      </QueryClientProvider>,
+    );
+    expect(late).not.toHaveBeenCalled();
   });
 
   it("refuses to be used outside the provider", () => {
