@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { THEME_KEY } from "@/lib/theme";
 import { overviewFixture } from "@/test/fixtures";
 import App from "./App";
 
@@ -43,6 +44,8 @@ afterEach(() => {
   vi.unstubAllGlobals();
   localStorage.clear();
   document.documentElement.removeAttribute("data-theme");
+  window.history.pushState({}, "", "/");
+  vi.useRealTimers();
 });
 
 describe("App", () => {
@@ -54,16 +57,32 @@ describe("App", () => {
     expect(await screen.findByText(/cloud 1.42 \/ 5.00/)).toBeInTheDocument();
   });
 
-  it("applies a theme to the document as it mounts", async () => {
+  it("holds a signed-out device at the gate, short of the room", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response('{"registered":true,"authenticated":false}', { status: 200 })),
+    );
     render(<App />);
-    await screen.findByRole("heading", { name: "Listening, sir." });
-    expect(["dark", "light"]).toContain(document.documentElement.dataset.theme);
+
+    expect(await screen.findByRole("heading", { name: "Welcome back, sir." })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Listening, sir." })).not.toBeInTheDocument();
   });
 
-  it("renders the room on the action deep link too", async () => {
+  it("applies the stored theme to the document as it mounts", async () => {
+    // Late at night, when the clock alone would say dark: only the stored choice
+    // can make this light.
+    vi.setSystemTime(new Date(2026, 8, 7, 23, 0));
+    localStorage.setItem(THEME_KEY, "light");
+    render(<App />);
+    await screen.findByRole("heading", { name: "Listening, sir." });
+    expect(document.documentElement.dataset.theme).toBe("light");
+  });
+
+  it("renders the room on the action deep link, and keeps the address", async () => {
     window.history.pushState({}, "", "/actions/a91f");
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Listening, sir." })).toBeInTheDocument();
-    window.history.pushState({}, "", "/");
+    // The catch-all route also lands in the room; only the path tells them apart.
+    expect(window.location.pathname).toBe("/actions/a91f");
   });
 });
