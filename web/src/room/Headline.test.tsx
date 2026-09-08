@@ -20,7 +20,7 @@ describe("OfflineNote", () => {
     render(<OfflineNote reconnecting={false} lastTrueAt={at2114} />);
     // A status message: the socket dropping is news, not decoration.
     expect(screen.getByRole("status")).toHaveTextContent(
-      "No connection to the house since 21:14. Everything below is last-known. Sending is paused.",
+      /^No connection to the house since 21:14\. Everything below is last-known\. Sending is paused\.$/,
     );
   });
 
