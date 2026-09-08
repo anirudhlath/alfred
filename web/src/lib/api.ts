@@ -1,6 +1,34 @@
+import { authEvents } from "./auth-events";
+
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) { super(message); this.status = status; }
+  /** The FastAPI `detail` string, or the raw body when it was not JSON. */
+  detail: string;
+
+  constructor(status: number, detail: string) {
+    super(detail);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+async function readDetail(resp: Response): Promise<string> {
+  const text = await resp.text();
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      "detail" in parsed &&
+      typeof (parsed as { detail: unknown }).detail === "string"
+    ) {
+      return (parsed as { detail: string }).detail;
+    }
+  } catch {
+    // Not JSON — the raw text is the most honest thing we have.
+  }
+  return text;
 }
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -8,32 +36,25 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: { "Content-Type": "application/json", ...init?.headers },
   });
-  if (resp.status === 401) {
-    if (location.pathname !== "/login") location.assign("/login");
-    throw new ApiError(401, "Authentication required");
-  }
+
   if (!resp.ok) {
-    const text = await resp.text();
-    let message = text;
-    try {
-      const parsed: unknown = JSON.parse(text);
-      if (
-        parsed &&
-        typeof parsed === "object" &&
-        "detail" in parsed &&
-        typeof (parsed as { detail: unknown }).detail === "string"
-      ) {
-        message = (parsed as { detail: string }).detail;
-      }
-    } catch {
-      // keep raw text
-    }
-    throw new ApiError(resp.status, message);
+    const detail = await readDetail(resp);
+    // Announce, never navigate: the gate rises over whatever is on screen, so the
+    // last-known state stays visible behind it (spec §5.2, "live is not last-known").
+    if (resp.status === 401) authEvents.emit("expired");
+    if (resp.status === 403) authEvents.emit("denied");
+    throw new ApiError(resp.status, detail || resp.statusText);
   }
+
+  // 204 has no body; `await resp.json()` would throw on it.
+  if (resp.status === 204) return undefined as T;
   return (await resp.json()) as T;
 }
 
 export const post = <T>(path: string, body?: unknown): Promise<T> =>
   api<T>(path, { method: "POST", body: body === undefined ? undefined : JSON.stringify(body) });
+
+export const put = <T>(path: string, body?: unknown): Promise<T> =>
+  api<T>(path, { method: "PUT", body: body === undefined ? undefined : JSON.stringify(body) });
 
 export const del = <T>(path: string): Promise<T> => api<T>(path, { method: "DELETE" });
