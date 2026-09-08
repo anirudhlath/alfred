@@ -10,19 +10,18 @@ const at2114 = new Date(2026, 8, 7, 21, 14);
 describe("Headline", () => {
   it("is the page's one heading", () => {
     render(<Headline text="Listening, sir." />);
-    const heading = screen.getByRole("heading", { name: "Listening, sir." });
+    const heading = screen.getByRole("heading", { level: 1, name: "Listening, sir." });
     expect(heading).toHaveClass("t-headline");
   });
 });
 
 describe("OfflineNote", () => {
-  it("stamps when the house was last reachable", () => {
+  it("stamps when the house was last reachable, and announces it", () => {
     render(<OfflineNote reconnecting={false} lastTrueAt={at2114} />);
-    expect(
-      screen.getByText(
-        "No connection to the house since 21:14. Everything below is last-known. Sending is paused.",
-      ),
-    ).toBeInTheDocument();
+    // A status message: the socket dropping is news, not decoration.
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "No connection to the house since 21:14. Everything below is last-known. Sending is paused.",
+    );
   });
 
   it("says it is still trying while reconnecting", () => {

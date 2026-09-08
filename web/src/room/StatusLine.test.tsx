@@ -79,4 +79,22 @@ describe("StatusLine", () => {
     );
     expect(screen.getByText("21:14 · cloud — · reflex 380 ms · 0 ev/s")).toBeInTheDocument();
   });
+
+  it("is not a first run while any stream has ever had an entry", () => {
+    render(
+      <StatusLine
+        overview={{
+          ...overviewFixture,
+          cost: null,
+          streams: {
+            events: { length: 412, last_id: "1-0", last_ts: 1, rate_5m: 0 },
+            notifications: { length: 0, last_id: null, last_ts: null, rate_5m: 0 },
+          },
+        }}
+        online
+        lastTrueAt={at2114}
+      />,
+    );
+    expect(screen.getByText("21:14 · cloud — · reflex 380 ms · 0 ev/s")).toBeInTheDocument();
+  });
 });

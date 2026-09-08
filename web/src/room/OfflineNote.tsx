@@ -17,6 +17,7 @@ export function OfflineNote({ reconnecting, lastTrueAt }: OfflineNoteProps) {
 
   return (
     <div
+      role="status"
       className="mt-2 flex items-center gap-2 rounded-[10px] px-3 py-2 text-[13px] leading-[1.4]"
       style={{ background: "var(--surface)" }}
     >
