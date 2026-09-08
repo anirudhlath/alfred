@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hhmm, summarize, timeOf } from "./format";
+import { dayMonth, hhmm, summarize, timeOf } from "./format";
 
 describe("summarize", () => {
   it("summarizes state changes", () => {
@@ -85,5 +85,13 @@ describe("hhmm", () => {
 
   it("says so rather than printing NaN", () => {
     expect(hhmm("not a time")).toBe("--:--");
+  });
+});
+
+describe("dayMonth", () => {
+  it("formats as the design writes it", () => {
+    expect(dayMonth(new Date(2026, 7, 12))).toBe("12 Aug");
+    expect(dayMonth(new Date(2026, 8, 4))).toBe("4 Sep");
+    expect(dayMonth(new Date(2026, 0, 1))).toBe("1 Jan");
   });
 });

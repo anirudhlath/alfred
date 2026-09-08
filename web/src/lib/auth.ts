@@ -1,4 +1,5 @@
 import { api } from "./api";
+import { dayMonth } from "./format";
 import type { AuthStatus } from "./types";
 
 export const DEVICE_KEY = "alfred.device";
@@ -71,4 +72,16 @@ export function failureText(error: unknown): string {
       : error.message;
   }
   return error instanceof Error ? error.message : "Something went wrong.";
+}
+
+/**
+ * The sign-in gate's foot line. `GET /api/auth/status` says nothing about the
+ * device before you are authenticated — correct on a public host — so this is
+ * the client's own memory, and it says so vaguely when it has none.
+ */
+export function deviceFootLine(device: RememberedDevice | null): string {
+  if (!device) return "Passkey · this phone";
+  const at = new Date(device.registeredAt);
+  if (Number.isNaN(at.getTime())) return `Passkey · ${device.name}`;
+  return `Passkey · ${device.name} · registered ${dayMonth(at)}`;
 }

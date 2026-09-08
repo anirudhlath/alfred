@@ -9,6 +9,16 @@ export function hhmm(value: string | number | Date): string {
   return `${hours}:${minutes}`;
 }
 
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * `12 Aug`. Written out rather than `toLocaleDateString("en-GB")`, whose short
+ * September became "Sept" in CLDR 42 — the design says `4 Sep`, on every ICU.
+ */
+export function dayMonth(date: Date): string {
+  return `${date.getDate()} ${MONTHS[date.getMonth()]}`;
+}
+
 /** One-line summary of a raw stream event, for feed rows. */
 export function summarize(stream: string, event: Ev): string {
   const type = String(event.event_type ?? "");

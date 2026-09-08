@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "./api";
-import { DEVICE_KEY, defaultDeviceName, failureText, fetchAuthStatus, rememberDevice, rememberedDevice } from "./auth";
+import { DEVICE_KEY, defaultDeviceName, deviceFootLine, failureText, fetchAuthStatus, rememberDevice, rememberedDevice } from "./auth";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -108,5 +108,21 @@ describe("failureText", () => {
       "Credential creation cancelled",
     );
     expect(failureText("nope")).toBe("Something went wrong.");
+  });
+});
+
+describe("deviceFootLine", () => {
+  it("names the remembered passkey and when it was made", () => {
+    expect(
+      deviceFootLine({ name: "iPhone", registeredAt: new Date(2026, 7, 12, 7, 2).toISOString() }),
+    ).toBe("Passkey · iPhone · registered 12 Aug");
+  });
+
+  it("says as little as it knows when nothing is remembered", () => {
+    expect(deviceFootLine(null)).toBe("Passkey · this phone");
+  });
+
+  it("drops the date rather than printing an invalid one", () => {
+    expect(deviceFootLine({ name: "iPad", registeredAt: "whenever" })).toBe("Passkey · iPad");
   });
 });
