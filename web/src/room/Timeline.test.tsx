@@ -6,6 +6,8 @@ import { Timeline } from "./Timeline";
 let scrollHeight = 1000;
 let clientHeight = 400;
 let resize: ResizeObserverCallback | null = null;
+let observed: Element[] = [];
+let disconnects = 0;
 
 beforeEach(() => {
   scrollHeight = 1000;
@@ -32,17 +34,23 @@ beforeEach(() => {
     },
   });
   // The setup stub observes nothing. Keep the latest observer's callback so a
-  // test can play a resize at it.
+  // test can play a resize at it, and record what it watched and let go of.
   resize = null;
+  observed = [];
+  disconnects = 0;
   vi.stubGlobal(
     "ResizeObserver",
     class {
       constructor(callback: ResizeObserverCallback) {
         resize = callback;
       }
-      observe() {}
+      observe(target: Element) {
+        observed.push(target);
+      }
       unobserve() {}
-      disconnect() {}
+      disconnect() {
+        disconnects += 1;
+      }
     },
   );
 });
@@ -73,9 +81,9 @@ function list(): HTMLElement {
 }
 
 describe("Timeline rows", () => {
-  it("is a log, named for what it holds", () => {
+  it("is a scrolling log, named for what it holds", () => {
     render(<Timeline items={[you]} firstDayGreeting={null} />);
-    expect(list()).toBeInTheDocument();
+    expect(list()).toHaveClass("overflow-y-auto");
   });
 
   it("draws a divider with its label", () => {
@@ -321,6 +329,18 @@ describe("Timeline anchoring", () => {
     scrollHeight = 1100; // the webfonts swapped in
     resize?.([], {} as ResizeObserver);
     expect(list().scrollTop).toBe(900);
+  });
+
+  it("watches both the box and its content, and lets them go", () => {
+    const { rerender, unmount } = render(<Timeline items={[you]} firstDayGreeting={null} />);
+    const box = list();
+    expect(observed).toEqual([box, box.firstElementChild]);
+
+    // One observer per thread: a row arriving replaces it, never adds one.
+    rerender(<Timeline items={[you, alfred]} firstDayGreeting={null} />);
+    expect(disconnects).toBe(1);
+    unmount();
+    expect(disconnects).toBe(2);
   });
 
   it("leaves a reader alone when the box resizes", () => {
