@@ -27,6 +27,13 @@ function ring(filled: boolean, border: string): CSSProperties {
   };
 }
 
+/** What a screen reader hears where a sighted user sees the ring's colour. */
+const STATE_WORD: Record<StepState, string | null> = {
+  done: "done",
+  current: null, // aria-current="step" says it
+  todo: "not done",
+};
+
 /** 22 px ring: accent filled = done/allowed, fg ring = current, line = ahead/ask me. */
 function Ring({ style }: { style: CSSProperties }) {
   return (
@@ -41,11 +48,12 @@ function Ring({ style }: { style: CSSProperties }) {
 export function StepList(props: StepListProps) {
   if (props.variant === "progress") {
     return (
-      <div className="flex flex-col pt-2">
+      <ol className="flex flex-col pt-2">
         {props.steps.map((step) => (
-          <div
+          <li
             key={step.label}
             data-step-state={step.state}
+            aria-current={step.state === "current" ? "step" : undefined}
             className="flex min-h-12 items-center gap-3"
             style={ROW}
           >
@@ -64,32 +72,33 @@ export function StepList(props: StepListProps) {
             >
               {step.label}
             </span>
+            {STATE_WORD[step.state] ? <span className="sr-only">{STATE_WORD[step.state]}</span> : null}
             {step.meta ? <span className="t-meta">{step.meta}</span> : null}
-          </div>
+          </li>
         ))}
-      </div>
+      </ol>
     );
   }
 
   return (
-    <div className="flex flex-col pt-2">
+    <ul className="flex flex-col pt-2">
       {props.steps.map((step) => (
-        <button
-          key={step.id}
-          type="button"
-          aria-pressed={step.allowed}
-          data-allowed={step.allowed}
-          onClick={() => props.onToggle(step.id)}
-          className="flex min-h-12 w-full items-center gap-3 border-0 bg-transparent text-left"
-          style={ROW}
-        >
-          <Ring style={step.allowed ? ring(true, "var(--accent)") : ring(false, "var(--line)")} />
-          <span className="t-row flex-1" style={{ color: "var(--fg)" }}>
-            {step.label}
-          </span>
-          <span className="t-meta">{step.allowed ? "allowed" : "ask me"}</span>
-        </button>
+        <li key={step.id}>
+          <button
+            type="button"
+            aria-pressed={step.allowed}
+            onClick={() => props.onToggle(step.id)}
+            className="flex min-h-12 w-full items-center gap-3 border-0 bg-transparent text-left"
+            style={ROW}
+          >
+            <Ring style={step.allowed ? ring(true, "var(--accent)") : ring(false, "var(--line)")} />
+            <span className="t-row flex-1" style={{ color: "var(--fg)" }}>
+              {step.label}
+            </span>
+            <span className="t-meta">{step.allowed ? "allowed" : "ask me"}</span>
+          </button>
+        </li>
       ))}
-    </div>
+    </ul>
   );
 }

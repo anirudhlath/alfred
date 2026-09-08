@@ -226,7 +226,7 @@
     animation: sink var(--layer-duration, 400ms) var(--ease-sink) both;
   }
 
-  /* The gates' static presence field: a dot grid that drifts a pixel and back. */
+  /* The gates' presence field: a dot grid that only drifts a pixel and back. */
   .gate-field {
     background-image: radial-gradient(
       circle,

@@ -30,6 +30,28 @@ describe("StepList — progress", () => {
     expect(screen.getByText("07:02")).toBeInTheDocument();
   });
 
+  it("tells a screen reader what the ring colours say", () => {
+    render(
+      <StepList
+        variant="progress"
+        steps={[
+          { label: "Register this iPhone", state: "done" },
+          { label: "Connect Home Assistant", state: "current" },
+          { label: "Choose what the reflex may touch", state: "todo" },
+        ]}
+      />,
+    );
+
+    const rows = screen.getAllByRole("listitem");
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toHaveTextContent("done");
+    expect(rows[0]).not.toHaveAttribute("aria-current");
+    expect(rows[1]).toHaveAttribute("aria-current", "step");
+    expect(rows[1]).not.toHaveTextContent(/done/);
+    expect(rows[2]).toHaveTextContent("not done");
+    expect(rows[2]).not.toHaveAttribute("aria-current");
+  });
+
   it("renders no buttons — a progress rail is not tappable", () => {
     render(
       <StepList variant="progress" steps={[{ label: "Register this iPhone", state: "current" }]} />,
