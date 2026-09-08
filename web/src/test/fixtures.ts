@@ -1,4 +1,4 @@
-import type { AttentionDomain, IntegrationInfo, Overview } from "@/lib/types";
+import type { AttentionDomain, IntegrationInfo, Overview, StreamPage } from "@/lib/types";
 
 /**
  * `GET /api/integrations`. Two entries on purpose: the setup gate must find
@@ -128,4 +128,182 @@ export const firstRunOverviewFixture: Overview = {
   },
   reflex: { model: "reflex-3b", last_ms: null, p50_ms: null },
   librarian: { last_run_at: null, reviewed: null, next_run_at: "2026-09-08T03:00:00Z" },
+};
+
+/**
+ * Four stream pages as `GET /api/admin/streams/{name}?count=50` returns them:
+ * newest first, each entry `{id, event}` with the event decoded from JSON.
+ *
+ * The clock in these is 2026-09-07: 17:58 a reflex act, 18:20 a notification,
+ * 20:52 one conversational turn, and — an hour and a half later, so the
+ * thirty-minute rule has something to fire on — 21:14 another.
+ */
+export const userRequestsPage: StreamPage = {
+  entries: [
+    {
+      id: "1788815640000-0",
+      event: {
+        event_id: "ur-2",
+        event_type: "user_request",
+        timestamp: "2026-09-07T21:14:00",
+        source: "web-pwa",
+        channel: "web_pwa",
+        session_id: "s_9f3",
+        content_type: "text",
+        content: "Is the back door locked?",
+      },
+    },
+    {
+      id: "1788811923000-0",
+      event: {
+        event_id: "ur-1",
+        event_type: "user_request",
+        timestamp: "2026-09-07T20:52:03",
+        source: "web-pwa",
+        channel: "web_pwa",
+        session_id: "s_9f2",
+        content_type: "text",
+        content: "What have I got tomorrow morning?",
+      },
+    },
+  ],
+  next_before: null,
+};
+
+export const userResponsesPage: StreamPage = {
+  entries: [
+    {
+      id: "1788815646000-0",
+      event: {
+        event_id: "al-2",
+        event_type: "alfred_response",
+        timestamp: "2026-09-07T21:14:06",
+        source: "conscious-engine",
+        session_id: "s_9f3",
+        text: "It is, sir. Locked since 19:40.",
+        actions_taken: ["home.get_state"],
+        mood: "neutral",
+      },
+    },
+    {
+      id: "1788811926000-0",
+      event: {
+        event_id: "al-1",
+        event_type: "alfred_response",
+        timestamp: "2026-09-07T20:52:06",
+        source: "conscious-engine",
+        session_id: "s_9f2",
+        text: "The dentist at nine, sir. I'd leave by twenty to; there's rain forecast from eight.",
+        actions_taken: ["calendar.today", "weather.forecast"],
+        mood: "pleased",
+      },
+    },
+  ],
+  next_before: null,
+};
+
+export const reflexObservationsPage: StreamPage = {
+  entries: [
+    {
+      // Passive: seen, considered, nothing done. Never a Room row.
+      id: "1788811000000-0",
+      event: {
+        observation_id: "obs-3",
+        event_type: "reflex_observation",
+        timestamp: "2026-09-07T20:36:40",
+        source: "reflex-runner",
+        origin: "state_change",
+        trigger_event: { entity_id: "binary_sensor.motion_hall", new_state: "on" },
+        action: null,
+        result: null,
+        decision_context: "user moving about, lights already on",
+      },
+    },
+    {
+      // Acted, and it failed. The meta says so.
+      id: "1788807660000-0",
+      event: {
+        observation_id: "obs-2",
+        event_type: "reflex_observation",
+        timestamp: "2026-09-07T19:41:00",
+        source: "reflex-runner",
+        origin: "state_change",
+        trigger_event: { entity_id: "fan.bathroom", new_state: "on" },
+        action: { request_id: "8d2a", tool_name: "home.fan_set", target_service: "home-service" },
+        result: { status: "error", error: "service unavailable" },
+        decision_context: null,
+      },
+    },
+    {
+      id: "1788800280000-0",
+      event: {
+        observation_id: "obs-1",
+        event_type: "reflex_observation",
+        timestamp: "2026-09-07T17:58:00",
+        source: "reflex-runner",
+        origin: "state_change",
+        trigger_event: { entity_id: "media_player.tv", new_state: "playing" },
+        action: { request_id: "4b1d", tool_name: "home.light_set", target_service: "home-service" },
+        result: { status: "success" },
+        decision_context: "movie started, evening, user home",
+      },
+    },
+  ],
+  next_before: null,
+};
+
+export const notificationsPage: StreamPage = {
+  entries: [
+    {
+      // A confirmation request: the Door's business, never a thread row.
+      id: "1788801700000-0",
+      event: {
+        notification_id: "ntf-2",
+        title: "Confirmation required",
+        body: "Alfred wants to run 'home.lock_unlock' on home-service — confirm?",
+        urgency: "urgent",
+        source: "domain-router",
+        timestamp: "2026-09-07T18:41:40",
+        metadata: {
+          pending_action_id: "a91f3c2e",
+          tool_name: "home.lock_unlock",
+          parameters: { entity_id: "lock.front_door", action: "unlock" },
+          reason: null,
+        },
+      },
+    },
+    {
+      id: "1788801600000-0",
+      event: {
+        notification_id: "ntf-1",
+        title: "Your parcel arrived",
+        body: "The door sensor saw it at 18:20.",
+        urgency: "important",
+        source: "trigger:trg_parcel",
+        timestamp: "2026-09-07T18:20:00",
+        metadata: {},
+      },
+    },
+  ],
+  next_before: null,
+};
+
+/** Yesterday, so the day-divider rule has two days to separate. */
+export const yesterdayRequestPage: StreamPage = {
+  entries: [
+    {
+      id: "1788721923000-0",
+      event: {
+        event_id: "ur-0",
+        event_type: "user_request",
+        timestamp: "2026-09-06T19:52:03",
+        source: "web-pwa",
+        channel: "web_pwa",
+        session_id: "s_9f0",
+        content_type: "text",
+        content: "Lock up for the night.",
+      },
+    },
+  ],
+  next_before: null,
 };
