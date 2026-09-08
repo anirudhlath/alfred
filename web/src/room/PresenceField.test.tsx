@@ -137,6 +137,38 @@ describe("PresenceField", () => {
     expect(recorded.cleared).toBe(2);
   });
 
+  it("keeps repainting while he is thinking, with no audio at all", () => {
+    const pending: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => pending.push(cb));
+    const signal = new PresenceSignal();
+    renderField(signal);
+    expect(recorded.cleared).toBe(1);
+
+    signal.setThinking(true);
+    pending.shift()!(16);
+    pending.shift()!(32);
+    // The pulse sweeps down the field: `level` never leaves zero, and every
+    // frame is still a different frame.
+    expect(recorded.cleared).toBe(3);
+  });
+
+  it("repaints a resting field when the pixel ratio changes under it", () => {
+    const pending: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => pending.push(cb));
+    renderField(new PresenceSignal());
+    expect(recorded.cleared).toBe(1);
+
+    pending.shift()!(16);
+    expect(recorded.cleared).toBe(1);
+
+    // A new backing store is a blank one, so the resting frame has to be painted
+    // again or the field disappears until something moves.
+    vi.stubGlobal("devicePixelRatio", 2);
+    pending.shift()!(32);
+    expect(recorded.cleared).toBe(2);
+    expect(recorded.arcs).toHaveLength(DOTS * 2);
+  });
+
   it("draws in amber when connected and in grey when not (dark theme)", () => {
     renderField(new PresenceSignal(), false);
     expect(recorded.fillStyles.some((s) => s.startsWith("rgba(232,178,132"))).toBe(true);
