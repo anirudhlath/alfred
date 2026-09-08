@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { PresenceSignal } from "@/lib/presence-signal";
+import { useReducedMotion } from "@/shell/presence";
 import { useTheme } from "@/shell/ThemeProvider";
 
 const W = 393;
@@ -8,13 +9,8 @@ const H = 190;
 const STEP = 12;
 /** The prototype's `dotResponse` prop. Fixed at its default; there is no control for it. */
 const GAIN = 1;
-
-function prefersReducedMotion(): boolean {
-  return (
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches
-  );
-}
+/** What a frozen frame is drawn from: a signal at rest, without asking the signal. */
+const ZERO_BANDS: number[] = [0, 0, 0, 0, 0, 0, 0, 0];
 
 export interface PresenceFieldProps {
   signal: PresenceSignal;
@@ -28,10 +24,13 @@ export interface PresenceFieldProps {
  */
 export function PresenceField({ signal, offline }: PresenceFieldProps) {
   const { theme } = useTheme();
+  const reduced = useReducedMotion();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const phaseRef = useRef(0);
   const thinkPhaseRef = useRef(0);
   const lastRef = useRef<number | null>(null);
+  /** Whether the frame on the canvas is the resting one, which never changes. */
+  const stillRef = useRef(false);
 
   useEffect(() => {
     signal.setOffline(offline);
@@ -42,13 +41,19 @@ export function PresenceField({ signal, offline }: PresenceFieldProps) {
     if (!canvas) return;
 
     const dark = theme === "dark";
-    const reduced = prefersReducedMotion();
+    // New colours, or a new signal: whatever is on the canvas is stale.
+    stillRef.current = false;
 
-    const draw = (now: number) => {
+    // One frame. `frozen` paints the grid at rest without ticking the signal —
+    // the reduce-motion and hidden-tab frame — so the envelopes keep running
+    // for whoever ticks next, and no mid-swell frame is ever left standing.
+    const draw = (now: number, frozen = false) => {
       const dpr = Math.min(2, window.devicePixelRatio || 1);
       if (canvas.width !== W * dpr) {
         canvas.width = W * dpr;
         canvas.height = H * dpr;
+        // Resizing wipes the bitmap, resting frame included.
+        stillRef.current = false;
       }
 
       // jsdom has no 2D context without the optional `canvas` package, and a
@@ -61,21 +66,29 @@ export function PresenceField({ signal, offline }: PresenceFieldProps) {
       }
       if (!g) return;
 
+      const frame = frozen ? null : signal.tick(now);
+      const e = frame?.level ?? 0;
+      const b = frame?.bands ?? ZERO_BANDS;
+      const th = frame?.think ?? 0;
+
+      // At rest every frame is the same frame. Paint it once and then leave the
+      // canvas alone; the loop keeps running so it notices when that changes.
+      const still = e === 0 && th === 0;
+      if (still && stillRef.current) return;
+      stillRef.current = still;
+
       g.setTransform(dpr, 0, 0, dpr, 0, 0);
       g.clearRect(0, 0, W, H);
 
-      const frame = signal.tick(now);
-      const e = frame.level;
-      const b = frame.bands;
-      const th = frame.think;
-
       // The wave phase only advances while something is flowing, so the field is
       // genuinely motionless at rest rather than slowly creeping.
-      if (lastRef.current === null) lastRef.current = now;
-      const dt = now - lastRef.current;
-      phaseRef.current += dt * (0.4 + e * 2.2);
-      thinkPhaseRef.current += dt * th;
-      lastRef.current = now;
+      if (!frozen) {
+        if (lastRef.current === null) lastRef.current = now;
+        const dt = now - lastRef.current;
+        phaseRef.current += dt * (0.4 + e * 2.2);
+        thinkPhaseRef.current += dt * th;
+        lastRef.current = now;
+      }
       const ph = phaseRef.current;
       const tph = thinkPhaseRef.current;
 
@@ -159,11 +172,11 @@ export function PresenceField({ signal, offline }: PresenceFieldProps) {
       raf = requestAnimationFrame(loop);
     };
 
-    // Reduce-motion: one frame at t=0, and never again. Constraint from the
+    // Reduce-motion: one frame at rest, and never again. Constraint from the
     // handoff's motion section, and the JS half of the CSS `prefers-reduced-motion`
     // block in index.css.
     if (reduced) {
-      draw(0);
+      draw(0, true);
       return;
     }
 
@@ -183,14 +196,14 @@ export function PresenceField({ signal, offline }: PresenceFieldProps) {
     const onVisibility = () => (document.hidden ? stop() : start());
     document.addEventListener("visibilitychange", onVisibility);
 
-    if (document.hidden) draw(0);
+    if (document.hidden) draw(0, true);
     else start();
 
     return () => {
       document.removeEventListener("visibilitychange", onVisibility);
       cancelAnimationFrame(raf);
     };
-  }, [signal, offline, theme]);
+  }, [signal, offline, theme, reduced]);
 
   return (
     <canvas

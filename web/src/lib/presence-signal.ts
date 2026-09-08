@@ -104,7 +104,9 @@ export class PresenceSignal {
 
     // Offline is a display decision, not a physics one. The envelopes keep
     // running — coming back should not snap — but nothing is handed out to draw.
-    // The prototype does the same thing one layer up: `e = offline ? 0 : signal(now)`.
+    // The prototype instead skips the tick entirely (`e = offline ? 0 : signal(now)`),
+    // which freezes its envelopes; ticking through means a reconnection mid-hold
+    // resumes at the level it would have had, rather than snapping up from stale state.
     if (this.offline) {
       this.out.fill(0);
       return { level: 0, bands: this.out, think: 0 };

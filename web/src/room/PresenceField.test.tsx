@@ -1,12 +1,17 @@
-import { render } from "@testing-library/react";
+import { act, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PresenceSignal } from "@/lib/presence-signal";
 import { THEME_KEY } from "@/lib/theme";
 import { ThemeProvider } from "@/shell/ThemeProvider";
 import { PresenceField } from "./PresenceField";
 
+/** 12 pt dot grid, W 393 / H 190: 34 columns x 17 rows. */
+const STEP = 12;
+const DOTS = 34 * 17;
+
 interface Recorded {
-  arcs: number;
+  /** Every dot drawn, as `[x, y, radius]`. */
+  arcs: Array<[number, number, number]>;
   ellipses: number;
   fillStyles: string[];
   cleared: number;
@@ -19,7 +24,7 @@ function fakeContext(): CanvasRenderingContext2D {
     setTransform: () => {},
     clearRect: () => void recorded.cleared++,
     beginPath: () => {},
-    arc: () => void recorded.arcs++,
+    arc: (x: number, y: number, r: number) => void recorded.arcs.push([x, y, r]),
     ellipse: () => void recorded.ellipses++,
     fill: () => {},
     set fillStyle(value: string) {
@@ -32,17 +37,27 @@ function fakeContext(): CanvasRenderingContext2D {
   return ctx as unknown as CanvasRenderingContext2D;
 }
 
-function stubReducedMotion(matches: boolean): void {
-  vi.stubGlobal("matchMedia", (query: string) => ({
+/** Stub the media query; the returned switch flips it while the field is mounted. */
+function stubReducedMotion(matches: boolean) {
+  const listeners = new Set<() => void>();
+  const query = {
     matches,
-    media: query,
+    media: "(prefers-reduced-motion: reduce)",
     onchange: null,
     addListener: () => {},
     removeListener: () => {},
-    addEventListener: () => {},
-    removeEventListener: () => {},
+    addEventListener: (_type: string, listener: () => void) => void listeners.add(listener),
+    removeEventListener: (_type: string, listener: () => void) => void listeners.delete(listener),
     dispatchEvent: () => false,
-  }));
+  };
+  vi.stubGlobal("matchMedia", () => query);
+  return {
+    flip(next: boolean) {
+      query.matches = next;
+      act(() => listeners.forEach((listener) => listener()));
+    },
+    listening: () => listeners.size,
+  };
 }
 
 function setHidden(hidden: boolean): void {
@@ -62,7 +77,7 @@ function renderField(signal: PresenceSignal, offline = false) {
 }
 
 beforeEach(() => {
-  recorded = { arcs: 0, ellipses: 0, fillStyles: [], cleared: 0 };
+  recorded = { arcs: [], ellipses: 0, fillStyles: [], cleared: 0 };
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
     fakeContext() as unknown as never,
   );
@@ -100,16 +115,33 @@ describe("PresenceField", () => {
 
   it("draws the whole grid on its first frame", () => {
     renderField(new PresenceSignal());
-    // 34 columns x 17 rows, one arc each.
     expect(recorded.cleared).toBeGreaterThanOrEqual(1);
-    expect(recorded.arcs).toBeGreaterThanOrEqual(34 * 17);
+    expect(recorded.arcs.length).toBeGreaterThanOrEqual(DOTS);
+  });
+
+  it("paints a resting field once, and leaves it alone until something moves", () => {
+    const pending: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => pending.push(cb));
+    const signal = new PresenceSignal();
+    renderField(signal);
+    expect(recorded.cleared).toBe(1);
+
+    // Two more frames at rest: the loop keeps running, the canvas is not touched.
+    pending.shift()!(16);
+    pending.shift()!(32);
+    expect(recorded.cleared).toBe(1);
+
+    // Speech arrives: the next frame paints again.
+    signal.setHolding(true);
+    pending.shift()!(48);
+    expect(recorded.cleared).toBe(2);
   });
 
   it("draws in amber when connected and in grey when not (dark theme)", () => {
     renderField(new PresenceSignal(), false);
     expect(recorded.fillStyles.some((s) => s.startsWith("rgba(232,178,132"))).toBe(true);
 
-    recorded = { arcs: 0, ellipses: 0, fillStyles: [], cleared: 0 };
+    recorded = { arcs: [], ellipses: 0, fillStyles: [], cleared: 0 };
     renderField(new PresenceSignal(), true);
     expect(recorded.fillStyles.some((s) => s.startsWith("rgba(154,145,134"))).toBe(true);
   });
@@ -127,19 +159,78 @@ describe("PresenceField", () => {
 
     renderField(new PresenceSignal());
 
-    expect(recorded.arcs).toBe(34 * 17);
+    expect(recorded.arcs).toHaveLength(DOTS);
     expect(raf).not.toHaveBeenCalled();
   });
 
-  it("does not animate a hidden tab", () => {
+  it("freezes a talking, thinking field flat under reduce-motion", () => {
+    stubReducedMotion(true);
+    const signal = new PresenceSignal();
+    signal.setHolding(true);
+    signal.setThinking(true);
+    // Warm the envelopes: a frame ticked from here would be anything but flat.
+    for (let i = 0; i < 60; i++) signal.tick(i / 60);
+
+    renderField(signal);
+
+    // Every dot on its grid point at its resting radius, and no shadows.
+    expect(recorded.arcs).toHaveLength(DOTS);
+    for (const [x, y, r] of recorded.arcs) {
+      expect(x % STEP).toBe(0);
+      expect(y % STEP).toBe(0);
+      expect(r).toBe(1);
+    }
+    expect(recorded.ellipses).toBe(0);
+  });
+
+  it("freezes when reduce-motion is switched on mid-session", () => {
+    const media = stubReducedMotion(false);
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
+    const cancel = vi.spyOn(window, "cancelAnimationFrame");
+    const { unmount } = renderField(new PresenceSignal());
+    expect(raf).toHaveBeenCalledTimes(1);
+
+    media.flip(true);
+
+    expect(cancel).toHaveBeenCalled();
+    expect(raf).toHaveBeenCalledTimes(1);
+    expect(recorded.cleared).toBe(2);
+
+    unmount();
+    expect(media.listening()).toBe(0);
+  });
+
+  it("does not animate a hidden tab, and paints it at rest", () => {
     setHidden(true);
     const raf = vi.spyOn(window, "requestAnimationFrame");
+    const signal = new PresenceSignal();
+    signal.setHolding(true);
+    for (let i = 0; i < 60; i++) signal.tick(i / 60);
 
-    renderField(new PresenceSignal());
+    renderField(signal);
 
     expect(raf).not.toHaveBeenCalled();
-    // Still painted once, so returning to the app never shows an empty canvas.
-    expect(recorded.arcs).toBe(34 * 17);
+    // Still painted once, so returning to the app never shows an empty canvas —
+    // and flat, so what it shows is not a wave caught mid-swell.
+    expect(recorded.arcs).toHaveLength(DOTS);
+    expect(recorded.arcs.every(([x, y, r]) => x % STEP === 0 && y % STEP === 0 && r === 1)).toBe(true);
+  });
+
+  it("stops the loop while the tab is hidden and resumes it once, not twice", () => {
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
+    const cancel = vi.spyOn(window, "cancelAnimationFrame");
+    renderField(new PresenceSignal());
+    expect(raf).toHaveBeenCalledTimes(1);
+
+    setHidden(true);
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(cancel).toHaveBeenCalledTimes(1);
+
+    setHidden(false);
+    document.dispatchEvent(new Event("visibilitychange"));
+    document.dispatchEvent(new Event("visibilitychange"));
+    // One new handle for the resume; the second event finds the loop running.
+    expect(raf).toHaveBeenCalledTimes(2);
   });
 
   it("stops the loop when it unmounts", () => {

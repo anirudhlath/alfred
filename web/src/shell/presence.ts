@@ -1,13 +1,34 @@
-import { useEffect, useState, type CSSProperties, type RefObject } from "react";
+import {
+  useEffect,
+  useState,
+  useSyncExternalStore,
+  type CSSProperties,
+  type RefObject,
+} from "react";
 
 /** The handoff's reduce-motion substitute for every rise. */
 const REDUCED_MOTION_MS = 200;
 
-function prefersReducedMotion(): boolean {
-  return (
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches
-  );
+const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
+
+export function prefersReducedMotion(): boolean {
+  return typeof window.matchMedia === "function" && window.matchMedia(REDUCED_MOTION_QUERY).matches;
+}
+
+function subscribeReducedMotion(onChange: () => void): () => void {
+  if (typeof window.matchMedia !== "function") return () => {};
+  const query = window.matchMedia(REDUCED_MOTION_QUERY);
+  query.addEventListener("change", onChange);
+  return () => query.removeEventListener("change", onChange);
+}
+
+/**
+ * `prefersReducedMotion()`, kept current. The setting can change while the app
+ * is open (Settings → Accessibility → Motion), and anything that read it once
+ * at mount — a canvas loop, say — would keep animating.
+ */
+export function useReducedMotion(): boolean {
+  return useSyncExternalStore(subscribeReducedMotion, prefersReducedMotion);
 }
 
 export interface Presence {

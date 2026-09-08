@@ -50,16 +50,16 @@ describe("PresenceSignal while holding", () => {
   });
 
   it("rises faster than it falls", () => {
-    const rise = new PresenceSignal();
-    rise.setHolding(true);
-    const afterRise = run(rise, 30).level;
+    const signal = new PresenceSignal();
+    signal.setHolding(true);
+    // Attack 0.35 per tick: the first frame of speech already carries a third
+    // of the way to the target...
+    const afterOneRise = signal.tick(0).level;
+    expect(afterOneRise).toBeGreaterThan(0.3);
 
-    rise.setHolding(false);
-    const afterOneFall = rise.tick(31 / 60).level;
-
-    // Attack 0.35 per tick, decay 0.06: one tick of silence must not undo
-    // half a second of speech.
-    expect(afterOneFall).toBeGreaterThan(afterRise * 0.9);
+    signal.setHolding(false);
+    // ...and decay 0.06: one frame of silence must not undo it.
+    expect(signal.tick(1 / 60).level).toBeGreaterThan(afterOneRise * 0.9);
   });
 
   it("decays to a hard zero once released", () => {
@@ -137,6 +137,14 @@ describe("PresenceSignal while thinking", () => {
 
     // In 0.08, out 0.035 — the field settles rather than snaps.
     expect(afterTen).toBeGreaterThan(peak * 0.6);
+  });
+
+  it("settles to a hard zero once the thought is done", () => {
+    const signal = new PresenceSignal();
+    signal.setThinking(true);
+    run(signal, 90);
+    signal.setThinking(false);
+    expect(run(signal, 400, 2).think).toBe(0);
   });
 
   it("is independent of the audio level", () => {
