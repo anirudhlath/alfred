@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 
 /** Below this, the inset is Safari's toolbar or a rotation artefact, not a keyboard. */
 export const KEYBOARD_OPEN_PX = 80;
@@ -15,51 +15,47 @@ export function keyboardInset(): number {
 }
 
 /**
- * Mirror the visual viewport into `--app-height` and `--keyboard-inset` on the
- * document element. Returns the uninstaller; `main.tsx` calls this once and never
- * uninstalls, tests always do.
+ * Call `fn` whenever the geometry may have changed. `scroll` matters as much as
+ * `resize`: iOS scrolls the visual viewport under a focused field rather than
+ * resizing it again, and offsetTop is part of the inset. Returns the unsubscriber.
+ */
+function subscribe(fn: () => void): () => void {
+  const viewport = window.visualViewport;
+  viewport?.addEventListener("resize", fn);
+  viewport?.addEventListener("scroll", fn);
+  window.addEventListener("resize", fn);
+  return () => {
+    viewport?.removeEventListener("resize", fn);
+    viewport?.removeEventListener("scroll", fn);
+    window.removeEventListener("resize", fn);
+  };
+}
+
+/**
+ * Mirror the window into `--app-height` and the keyboard into `--keyboard-inset`
+ * on the document element. Returns the uninstaller; `main.tsx` calls this once
+ * and never uninstalls, tests always do.
  */
 export function installViewportVars(): () => void {
   const root = document.documentElement;
 
   const apply = () => {
-    const viewport = window.visualViewport;
-    const height = viewport?.height ?? window.innerHeight;
-    root.style.setProperty("--app-height", `${Math.round(height)}px`);
+    // innerHeight, not visualViewport.height: the column must not shrink for the
+    // keyboard, because .pb-keyboard already pays for it and the composer would
+    // rise twice. innerHeight follows Safari's toolbars (100vh does not), and on
+    // browsers that honour `interactive-widget` it follows the keyboard too — in
+    // which case the inset below is 0, and nothing is paid twice either.
+    root.style.setProperty("--app-height", `${Math.round(window.innerHeight)}px`);
     root.style.setProperty("--keyboard-inset", `${Math.round(keyboardInset())}px`);
   };
 
   apply();
-
-  const viewport = window.visualViewport;
-  // `scroll` matters as much as `resize`: iOS scrolls the visual viewport under a
-  // focused field rather than resizing it again, and offsetTop is part of the inset.
-  viewport?.addEventListener("resize", apply);
-  viewport?.addEventListener("scroll", apply);
-  window.addEventListener("resize", apply);
-
-  return () => {
-    viewport?.removeEventListener("resize", apply);
-    viewport?.removeEventListener("scroll", apply);
-    window.removeEventListener("resize", apply);
-  };
+  return subscribe(apply);
 }
+
+const isKeyboardOpen = () => keyboardInset() > KEYBOARD_OPEN_PX;
 
 /** True while the software keyboard is up. Drives the composer's padding. */
 export function useKeyboardOpen(): boolean {
-  const [open, setOpen] = useState(() => keyboardInset() > KEYBOARD_OPEN_PX);
-
-  useEffect(() => {
-    const check = () => setOpen(keyboardInset() > KEYBOARD_OPEN_PX);
-    check();
-    const viewport = window.visualViewport;
-    viewport?.addEventListener("resize", check);
-    viewport?.addEventListener("scroll", check);
-    return () => {
-      viewport?.removeEventListener("resize", check);
-      viewport?.removeEventListener("scroll", check);
-    };
-  }, []);
-
-  return open;
+  return useSyncExternalStore(subscribe, isKeyboardOpen);
 }

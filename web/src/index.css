@@ -108,7 +108,7 @@
     -webkit-font-smoothing: antialiased;
   }
 
-  /* Constraint §4.4: 100vh is wrong in Safari. --app-height is the visualViewport
+  /* Constraint §4.4: 100vh is wrong in Safari. --app-height is the innerHeight
      mirror; the fallback keeps the shell full-height before the JS has run. One
      declaration, not two — an undefined var() is invalid at computed-value time
      and would fall all the way back to `auto`, not to a previous declaration. */
@@ -239,20 +239,13 @@
     );
   }
 
-  /* ---------------------------------------------------- safe areas + keyboard
-     Constraint §4.3 (island, home indicator) and §4.5 (the keyboard covers fixed
+  /* ---------------------------------------------------- keyboard + home indicator
+     Constraint §4.3 (home indicator) and §4.5 (the keyboard covers fixed
      elements). --keyboard-inset is written by installViewportVars() and is 0px
-     whenever the keyboard is down, so .pb-keyboard is safe to apply always. */
-  .safe-t {
-    padding-top: env(safe-area-inset-top, 0px);
-  }
-  .safe-b {
-    padding-bottom: env(safe-area-inset-bottom, 0px);
-  }
-  .safe-x {
-    padding-left: env(safe-area-inset-left, 0px);
-    padding-right: env(safe-area-inset-right, 0px);
-  }
+     whenever the keyboard is down, so .pb-keyboard is safe to apply always.
+     A Tailwind padding utility on the same element would out-rank this rule
+     outright — `utilities` is a later layer than `components` — and silently drop
+     the inset, so the element that carries .pb-keyboard carries no other padding. */
   .pb-keyboard {
     padding-bottom: calc(var(--keyboard-inset, 0px) + env(safe-area-inset-bottom, 0px));
   }

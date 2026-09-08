@@ -38,6 +38,11 @@ function setInnerHeight(value: number): void {
   Object.defineProperty(window, "innerHeight", { configurable: true, writable: true, value });
 }
 
+function resizeWindowTo(value: number): void {
+  setInnerHeight(value);
+  window.dispatchEvent(new Event("resize"));
+}
+
 const appHeight = () => document.documentElement.style.getPropertyValue("--app-height");
 const keyboard = () => document.documentElement.style.getPropertyValue("--keyboard-inset");
 
@@ -50,7 +55,7 @@ afterEach(() => {
 });
 
 describe("installViewportVars", () => {
-  it("mirrors the visual viewport onto the document element", () => {
+  it("mirrors the window onto the document element", () => {
     install(new FakeVisualViewport(852));
     const uninstall = installViewportVars();
 
@@ -60,15 +65,16 @@ describe("installViewportVars", () => {
     uninstall();
   });
 
-  it("reports the keyboard inset when the viewport shrinks", () => {
+  it("reports the keyboard inset when the viewport shrinks, and keeps the column", () => {
     const viewport = new FakeVisualViewport(852);
     install(viewport);
     const uninstall = installViewportVars();
 
     viewport.resizeTo(500);
 
-    expect(appHeight()).toBe("500px");
+    // .pb-keyboard pays for the keyboard; a shorter column would pay for it twice.
     expect(keyboard()).toBe("352px");
+    expect(appHeight()).toBe("852px");
 
     uninstall();
   });
@@ -82,16 +88,30 @@ describe("installViewportVars", () => {
 
     // 852 - 500 - 60: the offset is part of what is hidden.
     expect(keyboard()).toBe("292px");
+    expect(appHeight()).toBe("852px");
 
     uninstall();
   });
 
-  it("rounds fractional heights to whole pixels", () => {
+  it("rounds the inset to whole pixels", () => {
     const viewport = new FakeVisualViewport(500.4);
     install(viewport);
     const uninstall = installViewportVars();
 
-    expect(appHeight()).toBe("500px");
+    // 852 - 500.4 = 351.6
+    expect(keyboard()).toBe("352px");
+
+    uninstall();
+  });
+
+  it("follows window resizes, with or without a visual viewport", () => {
+    install(null);
+    const uninstall = installViewportVars();
+
+    resizeWindowTo(400);
+
+    expect(appHeight()).toBe("400px");
+    expect(keyboard()).toBe("0px");
 
     uninstall();
   });
@@ -102,12 +122,14 @@ describe("installViewportVars", () => {
     const uninstall = installViewportVars();
     uninstall();
 
-    viewport.resizeTo(400);
+    viewport.resizeTo(500);
+    expect(keyboard()).toBe("0px");
 
+    resizeWindowTo(400);
     expect(appHeight()).toBe("852px");
   });
 
-  it("falls back to innerHeight where there is no visual viewport", () => {
+  it("reports no keyboard where there is no visual viewport", () => {
     install(null);
     const uninstall = installViewportVars();
 
@@ -124,28 +146,28 @@ describe("installViewportVars", () => {
     const uninstall = installViewportVars();
 
     expect(keyboard()).toBe("0px");
+    expect(appHeight()).toBe("852px");
 
     uninstall();
   });
 });
 
 describe("useKeyboardOpen", () => {
-  it("is the 80 px threshold, not any inset at all", () => {
-    expect(KEYBOARD_OPEN_PX).toBe(80);
-  });
-
-  it("flips as the viewport crosses the threshold", () => {
+  it("flips as the inset crosses the threshold, not at any inset at all", () => {
     const viewport = new FakeVisualViewport(852);
     install(viewport);
 
     const { result } = renderHook(() => useKeyboardOpen());
     expect(result.current).toBe(false);
 
-    act(() => viewport.resizeTo(772)); // inset exactly 80 — not open
+    act(() => viewport.resizeTo(852 - KEYBOARD_OPEN_PX)); // inset exactly at the line — not open
     expect(result.current).toBe(false);
 
-    act(() => viewport.resizeTo(771)); // inset 81 — open
+    act(() => viewport.resizeTo(852 - KEYBOARD_OPEN_PX - 1)); // one past it — open
     expect(result.current).toBe(true);
+
+    act(() => viewport.scrollTo(1)); // the scroll takes it back to the line
+    expect(result.current).toBe(false);
 
     act(() => viewport.resizeTo(852));
     expect(result.current).toBe(false);
