@@ -47,8 +47,10 @@ function Ring({ style }: { style: CSSProperties }) {
 
 export function StepList(props: StepListProps) {
   if (props.variant === "progress") {
+    // role="list": preflight strips list-style, and WebKit strips the list
+    // semantics with it — VoiceOver would not say "3 items" without this.
     return (
-      <ol className="flex flex-col pt-2">
+      <ol role="list" className="flex flex-col pt-2">
         {props.steps.map((step) => (
           <li
             key={step.label}
@@ -81,7 +83,7 @@ export function StepList(props: StepListProps) {
   }
 
   return (
-    <ul className="flex flex-col pt-2">
+    <ul role="list" className="flex flex-col pt-2">
       {props.steps.map((step) => (
         <li key={step.id}>
           <button

@@ -44,7 +44,9 @@ describe("StepList — progress", () => {
 
     const rows = screen.getAllByRole("listitem");
     expect(rows).toHaveLength(3);
+    expect(screen.getByRole("list")).toHaveAttribute("role", "list");
     expect(rows[0]).toHaveTextContent("done");
+    expect(rows[0]).not.toHaveTextContent("not done");
     expect(rows[0]).not.toHaveAttribute("aria-current");
     expect(rows[1]).toHaveAttribute("aria-current", "step");
     expect(rows[1]).not.toHaveTextContent(/done/);
