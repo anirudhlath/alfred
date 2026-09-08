@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/lib/api";
 import { authEvents } from "@/lib/auth-events";
 import { DEVICE_KEY } from "@/lib/auth";
 import type { AuthStatus } from "@/lib/types";
@@ -17,13 +18,18 @@ vi.mock("@/lib/webauthn", () => ({
 }));
 
 let status: AuthStatus = { registered: true, authenticated: true };
+/** When set, the status read 500s — the store behind it is down. */
+let statusDown = false;
 
 function stubFetch(): void {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url === "/api/auth/status") return new Response(JSON.stringify(status), { status: 200 });
+      if (url === "/api/auth/status") {
+        if (statusDown) return new Response('{"detail":"redis is down"}', { status: 500 });
+        return new Response(JSON.stringify(status), { status: 200 });
+      }
       if (url === "/api/integrations") return new Response("[]", { status: 200 });
       if (url === "/api/admin/attention") return new Response('{"domains":[]}', { status: 200 });
       return new Response("{}", { status: 200 });
@@ -45,7 +51,9 @@ function renderGate() {
 
 beforeEach(() => {
   status = { registered: true, authenticated: true };
+  statusDown = false;
   loginPasskeyMock.mockReset().mockResolvedValue(undefined);
+  registerPasskeyMock.mockReset().mockResolvedValue(undefined);
   vi.stubGlobal("location", { hostname: "alfred.example.com", pathname: "/" });
   stubFetch();
 });
@@ -69,6 +77,48 @@ describe("AuthGate routing", () => {
     expect(
       await screen.findByRole("heading", { name: "Good evening. I am Alfred." }),
     ).toBeInTheDocument();
+  });
+
+  it("lets a finished setup through to the room", async () => {
+    const user = userEvent.setup();
+    status = { registered: false, authenticated: false };
+    renderGate();
+    await screen.findByRole("heading", { name: "Good evening. I am Alfred." });
+
+    // Registering is what makes the server say so; the cached status still says
+    // unregistered until the gate publishes the new truth.
+    status = { registered: true, authenticated: true };
+    await user.click(screen.getByRole("button", { name: "Create passkey with Face ID" }));
+    await screen.findByRole("heading", { name: "Registered." });
+    // No integrations to fill in and no attention rows: setup skips straight out.
+    await user.click(screen.getByRole("button", { name: "Do this later" }));
+
+    expect(await screen.findByText("the room")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Good evening. I am Alfred." })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Welcome back, sir." })).toBeNull();
+  });
+
+  it("raises the denied gate over setup when registration is off-network", async () => {
+    const user = userEvent.setup();
+    status = { registered: false, authenticated: false };
+    // What `api()` does with a 403: says so on the bus, then throws.
+    registerPasskeyMock.mockImplementation(async () => {
+      authEvents.emit("denied");
+      throw new ApiError(403, "Not from here");
+    });
+    renderGate();
+    await screen.findByRole("heading", { name: "Good evening. I am Alfred." });
+
+    await user.click(screen.getByRole("button", { name: "Create passkey with Face ID" }));
+
+    expect(await screen.findByRole("heading", { name: "Not from here." })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Back to the room" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: "Not from here." })).toBeNull(),
+    );
+    // Setup is still where it was, and did not repeat the news in its foot line.
+    expect(screen.getByRole("heading", { name: "Good evening. I am Alfred." })).toBeInTheDocument();
+    expect(screen.queryByText("Not from here")).toBeNull();
   });
 
   it("sends a registered but signed-out device to sign-in", async () => {
@@ -106,6 +156,20 @@ describe("AuthGate routing", () => {
     expect(await screen.findByRole("heading", { name: "Welcome back, sir." })).toBeInTheDocument();
   });
 
+  it("keeps the room when a background read of the status fails", async () => {
+    const { client } = renderGate();
+    await screen.findByText("the room");
+
+    statusDown = true;
+    await act(() => client.invalidateQueries({ queryKey: ["auth-status"] }));
+    await waitFor(() => expect(client.getQueryState(["auth-status"])?.status).toBe("error"));
+
+    // Nothing should change on screen, so give the observer its tick and look.
+    await act(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+    expect(screen.getByText("the room")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Welcome back, sir." })).toBeNull();
+  });
+
   it("signs in with the passkey and reveals the room", async () => {
     const user = userEvent.setup();
     status = { registered: true, authenticated: false };
@@ -130,7 +194,7 @@ describe("AuthGate routing", () => {
 
     await user.click(screen.getByRole("button", { name: "Sign in with Face ID" }));
 
-    expect(await screen.findByRole("status")).toHaveTextContent("Face ID was cancelled.");
+    expect(await screen.findByText("Face ID was cancelled.")).toBeInTheDocument();
   });
 });
 
@@ -159,6 +223,31 @@ describe("AuthGate events", () => {
 
     await user.click(screen.getByRole("button", { name: "Sign in with Face ID" }));
 
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: "Your session lapsed." })).toBeNull(),
+    );
+  });
+
+  it("drops the expired gate when the status says signed out, for good", async () => {
+    const user = userEvent.setup();
+    const { client } = renderGate();
+    await screen.findByText("the room");
+    act(() => authEvents.emit("expired"));
+    expect(screen.getByRole("heading", { name: "Your session lapsed." })).toBeInTheDocument();
+
+    // A refetch (the app refocused) confirms it: the sign-in gate takes over.
+    status = { registered: true, authenticated: false };
+    await act(() => client.invalidateQueries({ queryKey: ["auth-status"] }));
+    expect(await screen.findByRole("heading", { name: "Welcome back, sir." })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: "Your session lapsed." })).toBeNull(),
+    );
+
+    status = { registered: true, authenticated: true };
+    await user.click(screen.getByRole("button", { name: "Sign in with Face ID" }));
+
+    expect(await screen.findByText("the room")).toBeInTheDocument();
+    // The gate stays down: the latch went with the room it was raised over.
     await waitFor(() =>
       expect(screen.queryByRole("heading", { name: "Your session lapsed." })).toBeNull(),
     );

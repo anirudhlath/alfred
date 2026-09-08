@@ -7,11 +7,12 @@ import { SetupGate } from "@/gates/SetupGate";
 import { SignInGate } from "@/gates/SignInGate";
 import { fetchAuthStatus } from "@/lib/auth";
 import { authEvents } from "@/lib/auth-events";
+import type { AuthStatus } from "@/lib/types";
 import { Layer } from "@/shell/Layer";
 
 export function AuthGate({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
-  const { data, isPending, isError } = useQuery({
+  const { data, isPending } = useQuery({
     queryKey: ["auth-status"],
     queryFn: fetchAuthStatus,
   });
@@ -31,13 +32,20 @@ export function AuthGate({ children }: { children: ReactNode }) {
   // way react.dev documents for state that remembers a previous render.
   if (needsSetup && !setupActive) setSetupActive(true);
 
+  // A gate raised over the room must not outlive the room: if the status comes
+  // back signed-out while the expired gate is up, the sign-in gate takes over,
+  // and a latch left set here would cover the room again the moment it returned.
+  const authenticated = data?.authenticated === true;
+  if (expired && !authenticated) setExpired(false);
+
   const refetchEverything = useCallback(() => {
     void queryClient.invalidateQueries();
   }, [queryClient]);
 
+  let body: ReactNode;
   if (isPending) {
     // Nothing true to say yet. The field, and no copy.
-    return (
+    body = (
       <div
         className="relative flex flex-1 flex-col"
         style={{ background: "var(--bg)", color: "var(--fg)" }}
@@ -45,28 +53,38 @@ export function AuthGate({ children }: { children: ReactNode }) {
         <GateField />
       </div>
     );
-  }
-
-  if (needsSetup || setupActive) {
-    return (
+  } else if (needsSetup || setupActive) {
+    body = (
       <SetupGate
         onDone={() => {
           setSetupActive(false);
+          // Registration authenticated this session. Say so now: the cached
+          // status still reads `registered: false`, and the latch above would
+          // re-arm on it before the refetch landed — setup for ever.
+          queryClient.setQueryData<AuthStatus>(["auth-status"], {
+            registered: true,
+            authenticated: true,
+          });
           refetchEverything();
         }}
       />
     );
+  } else if (!authenticated) {
+    // Fail closed: a first read that errors leaves `data` undefined, and mounting
+    // the room with unknown auth state would show an empty house as if it were
+    // the truth. A failed *refetch* keeps the last good data, and the room with
+    // it — a session that has really lapsed arrives as the `expired` event.
+    body = <SignInGate onSignedIn={refetchEverything} />;
+  } else {
+    body = children;
   }
 
-  // Fail closed: a 5xx or a network blip leaves `data` undefined, and mounting the
-  // room with unknown auth state would show an empty house as if it were the truth.
-  if (isError || !data || !data.authenticated) {
-    return <SignInGate onSignedIn={refetchEverything} />;
-  }
-
+  // The two event gates sit outside the routing: `denied` means "not from this
+  // network", which is as true on the setup and sign-in gates as in the room —
+  // and setup swallows its 403s on the promise that this gate has already said it.
   return (
     <>
-      {children}
+      {body}
       <Layer open={expired} label="Session lapsed" level="gate" durationMs={400}>
         <ExpiredGate
           onSignedIn={() => {

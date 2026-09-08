@@ -142,7 +142,7 @@ describe("SetupGate — step 0, the passkey", () => {
 
     await user.click(screen.getByRole("button", { name: "Create passkey with Face ID" }));
 
-    expect(await screen.findByRole("status")).toHaveTextContent("Face ID was cancelled.");
+    expect(await screen.findByText("Face ID was cancelled.")).toBeInTheDocument();
     expect(screen.queryByText(/webauthn-2/)).toBeNull();
   });
 });
