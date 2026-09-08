@@ -1,5 +1,14 @@
 type Ev = Record<string, unknown>;
 
+/** `21:14` — the device's own clock, which is the only one the user reads. */
+export function hhmm(value: string | number | Date): string {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "--:--";
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
+
 /** One-line summary of a raw stream event, for feed rows. */
 export function summarize(stream: string, event: Ev): string {
   const type = String(event.event_type ?? "");

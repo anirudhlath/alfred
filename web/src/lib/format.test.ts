@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { summarize, timeOf } from "./format";
+import { hhmm, summarize, timeOf } from "./format";
 
 describe("summarize", () => {
   it("summarizes state changes", () => {
@@ -68,5 +68,22 @@ describe("summarize", () => {
 describe("timeOf", () => {
   it("formats a stream id as HH:MM:SS", () => {
     expect(timeOf("1718000000000-0")).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+  });
+});
+
+describe("hhmm", () => {
+  it("formats a Date as a zero-padded local clock time", () => {
+    expect(hhmm(new Date(2026, 8, 7, 21, 14))).toBe("21:14");
+    expect(hhmm(new Date(2026, 8, 7, 7, 2))).toBe("07:02");
+    expect(hhmm(new Date(2026, 8, 7, 0, 0))).toBe("00:00");
+  });
+
+  it("accepts an ISO string and an epoch", () => {
+    expect(hhmm("2026-09-07T21:14:00")).toBe("21:14");
+    expect(hhmm(new Date(2026, 8, 7, 18, 5).getTime())).toBe("18:05");
+  });
+
+  it("says so rather than printing NaN", () => {
+    expect(hhmm("not a time")).toBe("--:--");
   });
 });
