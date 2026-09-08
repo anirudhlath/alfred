@@ -19,3 +19,17 @@ export function useOverview() {
     refetchInterval: 30_000,
   });
 }
+
+/**
+ * True when every catalogued stream is empty — nothing has ever happened here.
+ *
+ * An *absent* streams map is a different thing entirely (Redis is down), and must
+ * not read as a first run. Shared by the status line and the headline so the two
+ * can never disagree about which morning this is.
+ */
+export function isFirstRun(overview: Overview | undefined): boolean {
+  const streams = overview?.streams ?? {};
+  return (
+    Object.keys(streams).length > 0 && Object.values(streams).every((stream) => stream.length === 0)
+  );
+}

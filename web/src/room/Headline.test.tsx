@@ -1,0 +1,72 @@
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
+import { DndRow } from "./DndRow";
+import { Headline } from "./Headline";
+import { OfflineNote } from "./OfflineNote";
+
+const at2114 = new Date(2026, 8, 7, 21, 14);
+
+describe("Headline", () => {
+  it("is the page's one heading", () => {
+    render(<Headline text="Listening, sir." />);
+    const heading = screen.getByRole("heading", { name: "Listening, sir." });
+    expect(heading).toHaveClass("t-headline");
+  });
+});
+
+describe("OfflineNote", () => {
+  it("stamps when the house was last reachable", () => {
+    render(<OfflineNote reconnecting={false} lastTrueAt={at2114} />);
+    expect(
+      screen.getByText(
+        "No connection to the house since 21:14. Everything below is last-known. Sending is paused.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("says it is still trying while reconnecting", () => {
+    render(<OfflineNote reconnecting lastTrueAt={at2114} />);
+    expect(
+      screen.getByText("Trying again. Everything below was last true at 21:14."),
+    ).toBeInTheDocument();
+  });
+
+  it("prints an unknown clock rather than a made-up one", () => {
+    render(<OfflineNote reconnecting={false} lastTrueAt={null} />);
+    expect(screen.getByText(/since --:--\./)).toBeInTheDocument();
+  });
+});
+
+describe("DndRow", () => {
+  it("names the hour quiet ends and how much is waiting", async () => {
+    const user = userEvent.setup();
+    const onOpen = vi.fn();
+    render(
+      <DndRow until={new Date(2026, 8, 8, 8, 30).toISOString()} heldCount={2} onOpen={onOpen} />,
+    );
+
+    const row = screen.getByRole("button", { name: /Do-not-disturb until 08:30/ });
+    expect(row).toHaveTextContent("2 held ›");
+
+    await user.click(row);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it("says there is no expiry when there is none", () => {
+    render(<DndRow until={null} heldCount={0} onOpen={() => {}} />);
+    expect(
+      screen.getByRole("button", { name: /Do-not-disturb · no expiry/ }),
+    ).toHaveTextContent("0 held ›");
+  });
+
+  it("treats an unparseable expiry as no expiry", () => {
+    render(<DndRow until="whenever" heldCount={1} onOpen={() => {}} />);
+    expect(screen.getByRole("button", { name: /Do-not-disturb · no expiry/ })).toBeInTheDocument();
+  });
+
+  it("is a 44 px tap target", () => {
+    render(<DndRow until={null} heldCount={0} onOpen={() => {}} />);
+    expect(screen.getByRole("button")).toHaveClass("min-h-11");
+  });
+});

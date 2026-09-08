@@ -1,5 +1,6 @@
 import { evs, hhmm, usd } from "@/lib/format";
 import type { Overview } from "@/lib/types";
+import { isFirstRun } from "@/room/useOverview";
 
 export interface StatusLineProps {
   overview: Overview | undefined;
@@ -9,10 +10,7 @@ export interface StatusLineProps {
 
 export function StatusLine({ overview, online, lastTrueAt }: StatusLineProps) {
   const streams = overview?.streams ?? {};
-  // Every catalogued stream empty means nothing has ever happened here. An *absent*
-  // streams map means Redis is down, which is a different thing entirely.
-  const firstRun =
-    Object.keys(streams).length > 0 && Object.values(streams).every((s) => s.length === 0);
+  const firstRun = isFirstRun(overview);
 
   const cost = overview?.cost;
   const cloud = cost ? `cloud ${usd(cost.spend_usd)} / ${usd(cost.cap_usd)}` : "cloud —";
