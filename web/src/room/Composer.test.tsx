@@ -12,10 +12,18 @@ function setViewport(height: number, innerHeight = 852): void {
 }
 
 const originalViewport = window.visualViewport;
+const originalInnerHeight = window.innerHeight;
+
+// Both, or the 852 px `innerHeight` outlives the test that set it and every
+// later test sees 84 px of phantom keyboard against setup.ts's 768 px viewport.
 afterEach(() => {
   Object.defineProperty(window, "visualViewport", {
     configurable: true,
     value: originalViewport,
+  });
+  Object.defineProperty(window, "innerHeight", {
+    configurable: true,
+    value: originalInnerHeight,
   });
 });
 
@@ -81,6 +89,16 @@ describe("Composer", () => {
     expect(onSend).toHaveBeenCalledWith("Anything tomorrow?");
   });
 
+  it("trims the draft before it goes out", async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    render(<Composer online onSend={onSend} hold={null} />);
+
+    await user.type(screen.getByPlaceholderText("Ask or tell Alfred"), "  hello  {Enter}");
+
+    expect(onSend).toHaveBeenCalledWith("hello");
+  });
+
   it("lets Enter confirm a composition instead of sending it", async () => {
     const user = userEvent.setup();
     const onSend = vi.fn();
@@ -102,6 +120,8 @@ describe("Composer", () => {
     await user.type(screen.getByPlaceholderText("Ask or tell Alfred"), "   {Enter}");
 
     expect(onSend).not.toHaveBeenCalled();
+    // Whitespace is not a draft: the hold slot stays, send never appears.
+    expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
   });
 
   it("says what will happen to a message typed offline, and still takes it", async () => {
