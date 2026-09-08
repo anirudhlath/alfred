@@ -5,6 +5,7 @@ import type { UserEvent } from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/api";
 import { defaultDeviceName, DEVICE_KEY } from "@/lib/auth";
+import { hhmm } from "@/lib/format";
 import { attentionFixture, integrationsFixture } from "@/test/fixtures";
 import { SetupGate } from "./SetupGate";
 
@@ -137,6 +138,23 @@ describe("SetupGate — step 0, the passkey", () => {
 });
 
 describe("SetupGate — step 1, Home Assistant", () => {
+  it("stamps the registration on the rail and moves the current ring on", async () => {
+    const user = userEvent.setup();
+    stubApi(HAPPY);
+    renderSetup();
+    await register(user);
+
+    const { registeredAt } = JSON.parse(localStorage.getItem(DEVICE_KEY) ?? "null") as {
+      registeredAt: string;
+    };
+    const registered = screen.getByText(`Register this ${defaultDeviceName()}`).closest("[data-step-state]");
+    expect(registered).toHaveAttribute("data-step-state", "done");
+    expect(registered).toHaveTextContent(hhmm(registeredAt));
+    const connect = screen.getByText("Connect Home Assistant").closest("[data-step-state]");
+    expect(connect).toHaveAttribute("data-step-state", "current");
+    expect(connect).toHaveAttribute("aria-current", "step");
+  });
+
   it("renders the home-service schema, not the weather adapter's", async () => {
     const user = userEvent.setup();
     stubApi(HAPPY);

@@ -206,6 +206,7 @@ export function SetupGate({ onDone }: SetupGateProps) {
         }}
         foot={footOverride ?? "Stored encrypted at rest on your hardware."}
       >
+        <StepList variant="progress" steps={progressSteps(1, deviceName, registeredAt)} />
         <div className="flex flex-col gap-3 pt-2">
           {fields.map(([key, field]) => (
             // The help text sits beside the label, not inside it, so the field's
