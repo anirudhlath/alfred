@@ -85,6 +85,10 @@ export function SetupGate({ onDone }: SetupGateProps) {
     enabled: step >= 1,
     // 503 is "the store is down", which is a skip, not something to retry at.
     retry: false,
+    // `finish()` writes the difference between the toggles and this data. A
+    // refetch — the app backgrounded and refocused before Finish — would move
+    // the baseline under a choice already made, and a grant could go unwritten.
+    staleTime: Infinity,
   });
 
   const homeService = integrations.data?.find((entry) => entry.name === HOME_SERVICE) ?? null;

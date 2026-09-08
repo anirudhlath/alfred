@@ -356,6 +356,36 @@ describe("SetupGate — step 2, the attention set", () => {
     expect(screen.getByRole("list").parentElement).toHaveClass("overflow-y-auto");
   });
 
+  it("keeps its baseline when the app is refocused before Finish", async () => {
+    const user = userEvent.setup();
+    const routes = { ...HAPPY };
+    stubApi(routes);
+    const { onDone } = renderSetup();
+    await reachAttention(user);
+    await user.click(screen.getByRole("button", { name: /Fan · 4 found/ }));
+
+    // The reflex seeds fan meanwhile; a refetch would now say the row started allowed.
+    routes["/api/admin/attention"] = {
+      body: {
+        domains: attentionFixture.domains.map((row) =>
+          row.domain === "fan" ? { ...row, members: ["fan.bathroom"] } : row,
+        ),
+      },
+    };
+    window.dispatchEvent(new Event("visibilitychange"));
+    await user.click(screen.getByRole("button", { name: "Finish" }));
+
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(calls.filter((call) => call.url === "/api/admin/attention")).toHaveLength(1);
+    expect(calls.filter((call) => call.url === "/api/admin/attention/fan")).toEqual([
+      {
+        url: "/api/admin/attention/fan",
+        method: "PUT",
+        body: { allow: ["fan.bathroom", "fan.study", "switch.desk", "switch.lamp"] },
+      },
+    ]);
+  });
+
   it("finishes with no writes when nothing was touched", async () => {
     const user = userEvent.setup();
     stubApi(HAPPY);
