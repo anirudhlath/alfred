@@ -201,6 +201,20 @@ describe("useRoom — sending", () => {
     expect(result.current.thinking).toBe(true);
   });
 
+  it("shows one thinking row when the queue goes out behind a turn in flight", () => {
+    const { result, chat } = renderRoom({ history: [], online: true });
+    act(() => result.current.sendText("Anything tomorrow?"));
+
+    act(() => chat.onstatus("offline"));
+    sendSucceeds = false;
+    act(() => result.current.sendText("And the windows?"));
+
+    sendSucceeds = true;
+    act(() => chat.onstatus("online"));
+
+    expect(result.current.items.filter((item) => item.kind === "thinking")).toHaveLength(1);
+  });
+
   it("retries the queue in order when the connection returns", () => {
     sendSucceeds = false;
     const { result, chat } = renderRoom({ history: [], online: false });
@@ -283,13 +297,31 @@ describe("useRoom — sending", () => {
   // row would open the thread with a `NaN undefined` day divider; without its
   // state it would never be retried and never be cleared.
   it.each([
-    ["timestamp", { kind: "you", id: "you:cold", text: "held over", state: "unsent" }],
+    ["kind", { id: "you:cold", at: "2026-09-07T21:00:00", text: "held over", state: "unsent" }],
     ["id", { kind: "you", at: "2026-09-07T21:00:00", text: "held over", state: "unsent" }],
+    ["timestamp", { kind: "you", id: "you:cold", text: "held over", state: "unsent" }],
+    ["text", { kind: "you", id: "you:cold", at: "2026-09-07T21:00:00", state: "unsent" }],
     ["unsent state", { kind: "you", id: "you:cold", at: "2026-09-07T21:00:00", text: "held over" }],
   ])("ignores a persisted row without its %s", (_field, row) => {
     localStorage.setItem(UNSENT_KEY, JSON.stringify([row]));
     const { result } = renderRoom({ history: [], online: false });
     expect(result.current.items).toHaveLength(0);
+  });
+
+  it("drops only the unreadable row, not the whole queue", () => {
+    // A `null` element must be refused by the shape check, not thrown on and
+    // caught — the catch loses everything that was queued behind it.
+    localStorage.setItem(
+      UNSENT_KEY,
+      JSON.stringify([
+        null,
+        { kind: "you", id: "you:cold", at: "2026-09-07T21:00:00", text: "held over", state: "unsent" },
+      ]),
+    );
+    const { result } = renderRoom({ history: [], online: false });
+    expect(result.current.items.some((item) => item.kind === "you" && item.text === "held over")).toBe(
+      true,
+    );
   });
 });
 
