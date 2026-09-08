@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Composer } from "./Composer";
@@ -12,7 +12,6 @@ function setViewport(height: number, innerHeight = 852): void {
 }
 
 const originalViewport = window.visualViewport;
-
 afterEach(() => {
   Object.defineProperty(window, "visualViewport", {
     configurable: true,
@@ -56,6 +55,22 @@ describe("Composer", () => {
     expect(field).toHaveValue("");
   });
 
+  it("hands focus back to the field after a click on send", async () => {
+    const user = userEvent.setup();
+    render(
+      <Composer online onSend={() => {}} hold={<button type="button">hold to talk</button>} />,
+    );
+    const field = screen.getByPlaceholderText("Ask or tell Alfred");
+
+    await user.type(field, "Turn the hall light off");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+
+    // The button node is patched into the hold slot, not replaced; without the
+    // hand-back that is where focus would land.
+    expect(field).toHaveFocus();
+    expect(screen.getByRole("button", { name: "hold to talk" })).not.toHaveFocus();
+  });
+
   it("sends on Enter", async () => {
     const user = userEvent.setup();
     const onSend = vi.fn();
@@ -64,6 +79,19 @@ describe("Composer", () => {
     await user.type(screen.getByPlaceholderText("Ask or tell Alfred"), "Anything tomorrow?{Enter}");
 
     expect(onSend).toHaveBeenCalledWith("Anything tomorrow?");
+  });
+
+  it("lets Enter confirm a composition instead of sending it", async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    render(<Composer online onSend={onSend} hold={null} />);
+    const field = screen.getByPlaceholderText("Ask or tell Alfred");
+
+    await user.type(field, "にほんg");
+    fireEvent.keyDown(field, { key: "Enter", isComposing: true });
+
+    expect(onSend).not.toHaveBeenCalled();
+    expect(field).toHaveValue("にほんg");
   });
 
   it("refuses to send an empty draft", async () => {

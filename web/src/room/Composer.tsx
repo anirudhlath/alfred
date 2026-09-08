@@ -1,4 +1,4 @@
-import { useState, type KeyboardEvent, type ReactNode } from "react";
+import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useKeyboardOpen } from "@/lib/viewport";
 
 export interface ComposerProps {
@@ -14,6 +14,7 @@ export interface ComposerProps {
  */
 export function Composer({ online, onSend, hold }: ComposerProps) {
   const [draft, setDraft] = useState("");
+  const field = useRef<HTMLInputElement>(null);
   const keyboardOpen = useKeyboardOpen();
   const hasDraft = draft.trim().length > 0;
 
@@ -22,9 +23,16 @@ export function Composer({ online, onSend, hold }: ComposerProps) {
     if (!text) return;
     onSend(text);
     setDraft("");
+    // The send button and the hold slot share one DOM node, so a click on
+    // "Send" would otherwise leave focus on "hold to talk" — and drop the
+    // keyboard. The next message starts in the field, like the last one did.
+    field.current?.focus();
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
+    // Enter while composing confirms the candidate on a CJK or predictive
+    // keyboard; it is not a send, and the half-composed draft must not go out.
+    if (event.nativeEvent.isComposing) return;
     if (event.key === "Enter") {
       event.preventDefault();
       send();
@@ -39,6 +47,7 @@ export function Composer({ online, onSend, hold }: ComposerProps) {
     <div className={`pb-keyboard relative z-[1] ${keyboardOpen ? "keyboard-up" : ""}`}>
       <div className="flex items-center gap-2.5 px-5 pb-2">
         <input
+          ref={field}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={onKeyDown}
@@ -48,7 +57,7 @@ export function Composer({ online, onSend, hold }: ComposerProps) {
           autoCapitalize="sentences"
           autoCorrect="on"
           enterKeyHint="send"
-          className="h-[50px] min-w-0 flex-1 rounded-[25px] border px-[18px] text-[15px] outline-none"
+          className="h-[50px] min-w-0 flex-1 rounded-[25px] border px-[18px] text-[15px]"
           style={{ background: "var(--field)", borderColor: "var(--line)", color: "var(--fg)" }}
         />
 
