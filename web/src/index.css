@@ -256,6 +256,13 @@
   .pb-keyboard {
     padding-bottom: calc(var(--keyboard-inset, 0px) + env(safe-area-inset-bottom, 0px));
   }
+
+  /* With the keyboard up, iOS has already covered the home-indicator strip.
+     Adding `env(safe-area-inset-bottom)` on top of `--keyboard-inset` then leaves
+     a visible band of background between the field and the keys. */
+  .pb-keyboard.keyboard-up {
+    padding-bottom: var(--keyboard-inset, 0px);
+  }
 }
 
 @keyframes rise {
