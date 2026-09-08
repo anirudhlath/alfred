@@ -1,0 +1,243 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { playWavBase64 } from "@/lib/audio";
+import { hhmm } from "@/lib/format";
+import { withDividers, type TimelineItem } from "@/lib/history";
+import { onVisible } from "@/lib/lifecycle";
+import type { ChatServerMessage } from "@/lib/types";
+import { useConnection } from "@/shell/ConnectionProvider";
+
+/** Messages typed while the house was unreachable, kept across a cold launch. */
+export const UNSENT_KEY = "alfred.unsent";
+/** The server's own `publish_and_wait` timeout. Past this, nothing is still coming. */
+export const NO_REPLY_MS = 60_000;
+
+const THINKING_ID = "thinking";
+const TRANSCRIBING_ID = "transcribing";
+
+// A monotonic counter rather than a random id: stable React keys, and a
+// deterministic order in tests. It only has to be unique within one page load.
+let seq = 0;
+function uid(prefix: string): string {
+  seq += 1;
+  return `${prefix}:${seq}`;
+}
+
+type YouItem = Extract<TimelineItem, { kind: "you" }>;
+
+function isUnsent(item: TimelineItem): item is YouItem {
+  return item.kind === "you" && item.state === "unsent";
+}
+
+function readUnsent(): TimelineItem[] {
+  try {
+    const raw = localStorage.getItem(UNSENT_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (item): item is YouItem =>
+        !!item &&
+        typeof item === "object" &&
+        (item as YouItem).kind === "you" &&
+        typeof (item as YouItem).text === "string",
+    );
+  } catch {
+    // Corrupt or unavailable storage loses the queue, never the app.
+    return [];
+  }
+}
+
+function writeUnsent(items: TimelineItem[]): void {
+  try {
+    localStorage.setItem(UNSENT_KEY, JSON.stringify(items.filter(isUnsent)));
+  } catch {
+    // Private mode. The queue survives in memory for this session only.
+  }
+}
+
+export interface UseRoomOptions {
+  /** `toTimelineItems(useRoomHistory().data)` — the thread as it stood on open. */
+  history: TimelineItem[];
+  /** Expired and already-answered approvals, from `tombstoneItems` (Task 25). */
+  tombstones?: TimelineItem[];
+}
+
+export interface RoomValue {
+  items: TimelineItem[];
+  /** A turn is in flight: something was sent and nothing has come back. */
+  thinking: boolean;
+  sendText: (text: string) => void;
+  sendAudio: (dataUrl: string, seconds: number) => void;
+}
+
+export function useRoom({ history, tombstones }: UseRoomOptions): RoomValue {
+  const { chat, online, subscribeOnline } = useConnection();
+  const [live, setLive] = useState<TimelineItem[]>(readUnsent);
+
+  // Read once at mount and again whenever the app comes back to the foreground.
+  // Day dividers are relative to it, and a PWA left open across midnight would
+  // otherwise still be calling yesterday "earlier today".
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => onVisible(() => setNow(new Date())), []);
+
+  useEffect(() => {
+    writeUnsent(live);
+  }, [live]);
+
+  const sendText = useCallback(
+    (raw: string) => {
+      const text = raw.trim();
+      if (!text) return;
+      const at = new Date().toISOString();
+      const sent = online && chat.sendText(text);
+      setLive((current) => {
+        // Annotated: TS infers a type predicate from the filter and would
+        // otherwise refuse to push a thinking row back in.
+        const next: TimelineItem[] = current.filter((item) => item.kind !== "thinking");
+        next.push({ kind: "you", id: uid("you"), at, text, state: sent ? "sent" : "unsent" });
+        if (sent) next.push({ kind: "thinking", id: THINKING_ID, at, detail: "working" });
+        return next;
+      });
+    },
+    [chat, online],
+  );
+
+  const sendAudio = useCallback(
+    (dataUrl: string, seconds: number) => {
+      // Nothing is shown unless the frame actually left: a dashed bubble waiting
+      // on a server that never heard the audio would never resolve.
+      if (!chat.sendAudio(dataUrl)) return;
+      const at = new Date().toISOString();
+      setLive((current) => [
+        ...current.filter((item) => item.kind !== "transcribing"),
+        { kind: "transcribing", id: TRANSCRIBING_ID, at, seconds },
+      ]);
+    },
+    [chat],
+  );
+
+  // Retry the queue, in order, the moment the socket says it is online. Stopping
+  // at the first refusal keeps the conversation in the order it was written.
+  // Driven by the socket's own notification rather than the `online` flag: the
+  // sends are an external side effect and the rows they settle are recorded in
+  // the same callback, so the effect itself only subscribes. The queue is read
+  // through a ref so that subscription is made once, not per timeline change.
+  const liveRef = useRef(live);
+  useEffect(() => {
+    liveRef.current = live;
+  }, [live]);
+
+  useEffect(
+    () =>
+      subscribeOnline(() => {
+        const delivered = new Set<string>();
+        for (const item of liveRef.current.filter(isUnsent)) {
+          if (!chat.sendText(item.text)) break;
+          delivered.add(item.id);
+        }
+        if (delivered.size === 0) return;
+
+        setLive((current) =>
+          current.map((item) =>
+            item.kind === "you" && delivered.has(item.id)
+              ? { kind: "you", id: item.id, at: item.at, text: item.text, state: "sent" }
+              : item,
+          ),
+        );
+      }),
+    [subscribeOnline, chat],
+  );
+
+  useEffect(() => {
+    return chat.listen((msg: ChatServerMessage) => {
+      const at = new Date();
+      const iso = at.toISOString();
+
+      if (msg.type === "response") {
+        setLive((current) => [
+          // Both transients go: a failed transcription answers with a `response`
+          // and never a `transcription`, so this is the only thing that clears it.
+          ...current.filter((item) => item.kind !== "thinking" && item.kind !== "transcribing"),
+          {
+            kind: "alfred",
+            id: uid("alfred"),
+            at: iso,
+            text: msg.text,
+            mood: msg.mood,
+            actions: msg.actions_taken ?? [],
+          },
+        ]);
+        if (msg.audio) playWavBase64(msg.audio);
+        return;
+      }
+
+      if (msg.type === "error") {
+        setLive((current) => [
+          ...current.filter((item) => item.kind !== "thinking" && item.kind !== "transcribing"),
+          { kind: "alfred", id: uid("alfred"), at: iso, text: msg.text, actions: [], error: true },
+        ]);
+        return;
+      }
+
+      if (msg.type === "transcription") {
+        setLive((current) => [
+          ...current.filter((item) => item.kind !== "transcribing"),
+          { kind: "you", id: uid("you"), at: iso, text: msg.text, state: "sent" },
+          { kind: "thinking", id: THINKING_ID, at: iso, detail: "working" },
+        ]);
+        return;
+      }
+
+      if (msg.type === "notification") {
+        // A confirmation request has a fuse and a Door; it is not a thread row.
+        if (typeof msg.metadata?.pending_action_id === "string") return;
+        setLive((current) => [
+          ...current,
+          {
+            kind: "act",
+            id: uid("nt"),
+            at: iso,
+            hue: 255,
+            text: msg.title,
+            // `live`, not a source: the /ws notification frame carries none
+            // (core/notifications/adapters/websocket.py). The same notification
+            // re-read from the stream later shows its real one.
+            meta: `${hhmm(at)} · live · ${msg.urgency}`,
+          },
+        ]);
+        if (msg.audio && msg.urgency === "urgent") playWavBase64(msg.audio);
+      }
+    });
+  }, [chat]);
+
+  // Keyed on the thinking row's own timestamp, so an unrelated notification
+  // arriving at 59 s does not quietly restart the countdown.
+  const thinkingAt = live.find((item) => item.kind === "thinking")?.at ?? null;
+
+  useEffect(() => {
+    if (!thinkingAt) return;
+    const timer = setTimeout(() => {
+      setLive((current) => [
+        ...current.filter((item) => item.kind !== "thinking"),
+        {
+          kind: "alfred",
+          id: uid("alfred"),
+          at: new Date().toISOString(),
+          text: "No reply in 60 s.",
+          actions: [],
+          error: true,
+        },
+      ]);
+    }, NO_REPLY_MS);
+    return () => clearTimeout(timer);
+  }, [thinkingAt]);
+
+  const items = useMemo(() => {
+    const merged = [...history, ...(tombstones ?? []), ...live].sort(
+      (a, b) => Date.parse(a.at) - Date.parse(b.at),
+    );
+    return withDividers(merged, now);
+  }, [history, tombstones, live, now]);
+
+  return { items, thinking: thinkingAt !== null, sendText, sendAudio };
+}
