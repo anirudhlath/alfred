@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Gate } from "@/gates/Gate";
 import { StepList, type ProgressStep } from "@/gates/StepList";
 import { api, ApiError, put } from "@/lib/api";
-import { defaultDeviceName, rememberDevice } from "@/lib/auth";
+import { defaultDeviceName, failureText, rememberDevice } from "@/lib/auth";
 import { hhmm } from "@/lib/format";
 import type { AttentionDomain, IntegrationInfo } from "@/lib/types";
 import { registerPasskey } from "@/lib/webauthn";
@@ -17,8 +17,19 @@ const HOME_SERVICE = "home-service";
  */
 const NEVER_AUTOMATIC = new Set(["lock", "alarm_control_panel", "cover"]);
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : "Something went wrong.";
+/**
+ * `AttentionUpdate` caps `allow` and `ask` at 200 entities (admin_api.py), and a
+ * domain's `:seen` set holds every entity that ever changed state — the sensors
+ * alone can pass that. Adding is additive, so a long list goes in pages.
+ */
+const MAX_ENTITIES_PER_PUT = 200;
+
+function pages<T>(list: T[]): T[][] {
+  const out: T[][] = [];
+  for (let start = 0; start < list.length; start += MAX_ENTITIES_PER_PUT) {
+    out.push(list.slice(start, start + MAX_ENTITIES_PER_PUT));
+  }
+  return out;
 }
 
 /** `media_player` → `Media player`. */
@@ -57,7 +68,6 @@ export function SetupGate({ onDone }: SetupGateProps) {
   const [registeredAt, setRegisteredAt] = useState<string | null>(null);
   const [credentials, setCredentials] = useState<Record<string, string>>({});
   const [allowed, setAllowed] = useState<Record<string, boolean>>({});
-  const [touched, setTouched] = useState<string[]>([]);
 
   // Both reads start as soon as the passkey exists, so step 2's skip decision is
   // already settled by the time the user presses Continue.
@@ -65,6 +75,8 @@ export function SetupGate({ onDone }: SetupGateProps) {
     queryKey: ["integrations"],
     queryFn: () => api<IntegrationInfo[]>("/api/integrations"),
     enabled: step >= 1,
+    // A failure here is shown in the foot line, not retried behind a dead button.
+    retry: false,
   });
 
   const attention = useQuery<{ domains: AttentionDomain[] }>({
@@ -88,14 +100,17 @@ export function SetupGate({ onDone }: SetupGateProps) {
 
   // `allowed` holds only the rows the user has touched. Until then a domain the
   // reflex already acts in reads as allowed, and everything else asks.
-  const isAllowed = (row: AttentionDomain): boolean =>
-    allowed[row.domain] ?? row.members.length > 0;
+  const startsAllowed = (row: AttentionDomain): boolean => row.members.length > 0;
+  const isAllowed = (row: AttentionDomain): boolean => allowed[row.domain] ?? startsAllowed(row);
 
   // Nothing to choose between (or nothing to choose from): the step does not exist.
+  // Latched: the parent's `onDone` is an inline closure that changes identity
+  // when it re-renders, and this must not fire again on that account.
+  const skipped = useRef(false);
   useEffect(() => {
-    if (step !== 2) return;
-    if (attention.isPending) return;
-    if (rows.length === 0) onDone();
+    if (step !== 2 || attention.isPending || rows.length > 0 || skipped.current) return;
+    skipped.current = true;
+    onDone();
   }, [step, attention.isPending, rows.length, onDone]);
 
   async function register(): Promise<void> {
@@ -111,7 +126,7 @@ export function SetupGate({ onDone }: SetupGateProps) {
       // 403 = off the house network. api() has already raised the Denied gate over
       // this one; repeating it in the foot would be the same news, twice.
       if (error instanceof ApiError && error.status === 403) return;
-      setFootOverride(errorText(error));
+      setFootOverride(failureText(error));
     } finally {
       setBusy(false);
     }
@@ -135,7 +150,7 @@ export function SetupGate({ onDone }: SetupGateProps) {
         setStep(2);
         return;
       }
-      setFootOverride(errorText(error));
+      setFootOverride(failureText(error));
     } finally {
       setBusy(false);
     }
@@ -145,20 +160,21 @@ export function SetupGate({ onDone }: SetupGateProps) {
     setBusy(true);
     setFootOverride(null);
     try {
-      for (const domain of touched) {
-        const row = rows.find((candidate) => candidate.domain === domain);
-        if (!row) continue;
+      // Only the rows that end up different from how they started are written:
+      // a row tapped twice looks untouched, and is.
+      for (const row of rows) {
+        const allow = isAllowed(row);
+        if (allow === startsAllowed(row)) continue;
         // `allow` adds what has been seen; `ask` removes what is a member today —
         // and the removal is sticky, so the YAML seed will not re-add it.
-        await put(
-          `/api/admin/attention/${domain}`,
-          isAllowed(row) ? { allow: row.seen } : { ask: row.members },
-        );
+        for (const page of pages(allow ? row.seen : row.members)) {
+          await put(`/api/admin/attention/${row.domain}`, allow ? { allow: page } : { ask: page });
+        }
       }
       onDone();
     } catch (error) {
       if (error instanceof ApiError && error.status === 403) return;
-      setFootOverride(errorText(error));
+      setFootOverride(failureText(error));
     } finally {
       setBusy(false);
     }
@@ -167,8 +183,7 @@ export function SetupGate({ onDone }: SetupGateProps) {
   function toggleDomain(domain: string): void {
     const row = rows.find((candidate) => candidate.domain === domain);
     if (!row) return;
-    setAllowed((current) => ({ ...current, [domain]: !(current[domain] ?? row.members.length > 0) }));
-    setTouched((current) => (current.includes(domain) ? current : [...current, domain]));
+    setAllowed((current) => ({ ...current, [domain]: !(current[domain] ?? startsAllowed(row)) }));
   }
 
   if (step === 0) {
@@ -203,8 +218,15 @@ export function SetupGate({ onDone }: SetupGateProps) {
             setFootOverride(null);
             setStep(2);
           },
+          // Walking away mid-write would leave the write to land on step 2's foot.
+          disabled: busy,
         }}
-        foot={footOverride ?? "Stored encrypted at rest on your hardware."}
+        foot={
+          footOverride ??
+          (integrations.isError
+            ? failureText(integrations.error)
+            : "Stored encrypted at rest on your hardware.")
+        }
       >
         <StepList variant="progress" steps={progressSteps(1, deviceName, registeredAt)} />
         <div className="flex flex-col gap-3 pt-2">
@@ -269,15 +291,20 @@ export function SetupGate({ onDone }: SetupGateProps) {
       }}
       foot={footOverride ?? "Change this any time under Workshop › System."}
     >
-      <StepList
-        variant="toggle"
-        onToggle={toggleDomain}
-        steps={rows.map((row) => ({
-          id: row.domain,
-          label: `${domainLabel(row.domain)} · ${row.seen.length} found`,
-          allowed: isAllowed(row),
-        }))}
-      />
+      {/* One row per domain the house has emitted — dozens on a real HA, not the
+          handful in the fixture — so the list scrolls under the pinned footer
+          rather than growing the page (the gate does not rubber-band, §4.6). */}
+      <div className="max-h-[40dvh] overflow-y-auto overscroll-contain">
+        <StepList
+          variant="toggle"
+          onToggle={toggleDomain}
+          steps={rows.map((row) => ({
+            id: row.domain,
+            label: `${domainLabel(row.domain)} · ${row.seen.length} found`,
+            allowed: isAllowed(row),
+          }))}
+        />
+      </div>
     </Gate>
   );
 }

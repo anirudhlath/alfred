@@ -57,3 +57,18 @@ export function rememberedDevice(): RememberedDevice | null {
     return null;
   }
 }
+
+/**
+ * One sentence for a gate's foot line. The server's own words when it has them
+ * (an `ApiError` carries `detail` as its message); a written line for the two
+ * DOMExceptions a cancelled or timed-out Face ID raises, whose messages are
+ * WebKit's paragraph about privacy considerations, not something Alfred says.
+ */
+export function failureText(error: unknown): string {
+  if (error instanceof DOMException) {
+    return error.name === "NotAllowedError" || error.name === "AbortError"
+      ? "Face ID was cancelled."
+      : error.message;
+  }
+  return error instanceof Error ? error.message : "Something went wrong.";
+}

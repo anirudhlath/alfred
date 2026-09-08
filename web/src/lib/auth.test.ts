@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DEVICE_KEY, defaultDeviceName, fetchAuthStatus, rememberDevice, rememberedDevice } from "./auth";
+import { ApiError } from "./api";
+import { DEVICE_KEY, defaultDeviceName, failureText, fetchAuthStatus, rememberDevice, rememberedDevice } from "./auth";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -79,5 +80,33 @@ describe("rememberDevice / rememberedDevice", () => {
       throw new Error("SecurityError");
     });
     expect(rememberedDevice()).toBeNull();
+  });
+});
+
+describe("failureText", () => {
+  it("repeats the server's own words", () => {
+    expect(failureText(new ApiError(503, "Attention store unavailable"))).toBe(
+      "Attention store unavailable",
+    );
+  });
+
+  it("writes its own line for a cancelled or timed-out Face ID", () => {
+    const webkit =
+      "The operation either timed out or was not allowed. See: https://www.w3.org/TR/webauthn-2/#sctn-privacy-considerations-client.";
+    expect(failureText(new DOMException(webkit, "NotAllowedError"))).toBe("Face ID was cancelled.");
+    expect(failureText(new DOMException("Aborted", "AbortError"))).toBe("Face ID was cancelled.");
+  });
+
+  it("keeps any other DOMException's message", () => {
+    expect(failureText(new DOMException("Already registered", "InvalidStateError"))).toBe(
+      "Already registered",
+    );
+  });
+
+  it("falls back for anything that is not an Error", () => {
+    expect(failureText(new Error("Credential creation cancelled"))).toBe(
+      "Credential creation cancelled",
+    );
+    expect(failureText("nope")).toBe("Something went wrong.");
   });
 });

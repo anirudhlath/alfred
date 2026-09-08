@@ -1,4 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { useState } from "react";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { UserEvent } from "@testing-library/user-event";
@@ -21,6 +22,8 @@ interface Call {
 interface Route {
   status?: number;
   body?: unknown;
+  /** Never answers — for what the gate does while a write is in flight. */
+  pending?: boolean;
 }
 
 let calls: Call[] = [];
@@ -34,6 +37,7 @@ function stubApi(routes: Record<string, Route>): void {
       calls.push({ url, method, body: init?.body ? JSON.parse(String(init.body)) : undefined });
       const route = routes[`${method} ${url}`] ?? routes[url];
       if (!route) return new Response(JSON.stringify({ detail: `unrouted ${method} ${url}` }), { status: 404 });
+      if (route.pending) return new Promise<Response>(() => {});
       return new Response(JSON.stringify(route.body ?? {}), { status: route.status ?? 200 });
     }),
   );
@@ -125,15 +129,21 @@ describe("SetupGate — step 0, the passkey", () => {
     expect(screen.queryByText("Request from untrusted network")).toBeNull();
   });
 
-  it("reports a cancelled Face ID in the foot line", async () => {
+  it("reports a cancelled Face ID in its own words, not WebKit's", async () => {
     const user = userEvent.setup();
     stubApi(HAPPY);
-    registerPasskeyMock.mockRejectedValue(new Error("Credential creation cancelled"));
+    registerPasskeyMock.mockRejectedValue(
+      new DOMException(
+        "The operation either timed out or was not allowed. See: https://www.w3.org/TR/webauthn-2/#sctn-privacy-considerations-client.",
+        "NotAllowedError",
+      ),
+    );
     renderSetup();
 
     await user.click(screen.getByRole("button", { name: "Create passkey with Face ID" }));
 
-    expect(await screen.findByText("Credential creation cancelled")).toBeInTheDocument();
+    expect(await screen.findByRole("status")).toHaveTextContent("Face ID was cancelled.");
+    expect(screen.queryByText(/webauthn-2/)).toBeNull();
   });
 });
 
@@ -211,6 +221,29 @@ describe("SetupGate — step 1, Home Assistant", () => {
     ).toBeInTheDocument();
   });
 
+  it("says why the form is empty when the integrations read fails", async () => {
+    const user = userEvent.setup();
+    stubApi({ ...HAPPY, "/api/integrations": { status: 503, body: { detail: "Keyring locked" } } });
+    renderSetup();
+    await register(user);
+
+    expect(await screen.findByText("Keyring locked")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+  });
+
+  it("holds Do this later while the credentials are being written", async () => {
+    const user = userEvent.setup();
+    stubApi({ ...HAPPY, "PUT /api/integrations/home-service/credentials": { pending: true } });
+    renderSetup();
+    await register(user);
+    await screen.findByLabelText("Access Token");
+
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+
+    expect(screen.getByRole("button", { name: "Do this later" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+  });
+
   it("skips the write entirely on Do this later", async () => {
     const user = userEvent.setup();
     stubApi(HAPPY);
@@ -271,6 +304,58 @@ describe("SetupGate — step 2, the attention set", () => {
     });
   });
 
+  it("writes nothing for a row tapped back to where it started", async () => {
+    const user = userEvent.setup();
+    stubApi(HAPPY);
+    const { onDone } = renderSetup();
+    await reachAttention(user);
+
+    await user.click(screen.getByRole("button", { name: /Light · 6 found/ }));
+    await user.click(screen.getByRole("button", { name: /Light · 6 found/ }));
+    expect(screen.getByRole("button", { name: /Light · 6 found/ })).toHaveTextContent("allowed");
+    await user.click(screen.getByRole("button", { name: "Finish" }));
+
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(calls.filter((call) => call.url.startsWith("/api/admin/attention/"))).toHaveLength(0);
+  });
+
+  it("pages a long list through the endpoint's 200-entity cap", async () => {
+    const user = userEvent.setup();
+    const seen = Array.from({ length: 250 }, (_, index) => `sensor.s${index}`);
+    stubApi({
+      ...HAPPY,
+      "/api/admin/attention": {
+        body: { domains: [...attentionFixture.domains, { domain: "sensor", members: [], seen }] },
+      },
+      "PUT /api/admin/attention/sensor": { body: { domain: "sensor", members: [], seen: [] } },
+    });
+    const { onDone } = renderSetup();
+    await reachAttention(user);
+
+    await user.click(screen.getByRole("button", { name: /Sensor · 250 found/ }));
+    await user.click(screen.getByRole("button", { name: "Finish" }));
+
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    const puts = calls.filter((call) => call.url === "/api/admin/attention/sensor");
+    expect(puts.map((call) => (call.body as { allow: string[] }).allow.length)).toEqual([200, 50]);
+    expect(puts.flatMap((call) => (call.body as { allow: string[] }).allow)).toEqual(seen);
+  });
+
+  it("scrolls a long list under the pinned footer", async () => {
+    const user = userEvent.setup();
+    const domains = Array.from({ length: 30 }, (_, index) => ({
+      domain: `domain_${index}`,
+      members: [],
+      seen: [`domain_${index}.one`],
+    }));
+    stubApi({ ...HAPPY, "/api/admin/attention": { body: { domains } } });
+    renderSetup();
+    await reachAttention(user);
+
+    expect(screen.getAllByRole("button", { name: /· 1 found/ })).toHaveLength(30);
+    expect(screen.getByRole("list").parentElement).toHaveClass("overflow-y-auto");
+  });
+
   it("finishes with no writes when nothing was touched", async () => {
     const user = userEvent.setup();
     stubApi(HAPPY);
@@ -293,6 +378,37 @@ describe("SetupGate — step 2, the attention set", () => {
 
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
     expect(screen.queryByRole("button", { name: "Finish" })).toBeNull();
+  });
+
+  it("skips once, even when the parent hands it a new onDone every render", async () => {
+    const user = userEvent.setup();
+    stubApi({ ...HAPPY, "/api/admin/attention": { body: { domains: [] } } });
+    const spy = vi.fn();
+    // What AuthGate does: an inline closure, so `onDone` is new on every render.
+    function Parent() {
+      const [renders, setRenders] = useState(0);
+      return (
+        <SetupGate
+          onDone={() => {
+            spy();
+            if (renders < 3) setRenders(renders + 1);
+          }}
+        />
+      );
+    }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <Parent />
+      </QueryClientProvider>,
+    );
+    await register(user);
+    await screen.findByLabelText("Access Token");
+    await user.click(screen.getByRole("button", { name: "Do this later" }));
+
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(spy).toHaveBeenCalledTimes(1);
   });
 
   it("skips the step when the attention store is down", async () => {

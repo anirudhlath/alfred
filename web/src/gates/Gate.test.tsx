@@ -75,6 +75,25 @@ describe("Gate", () => {
     expect(onClick).toHaveBeenCalledTimes(1);
   });
 
+  it("disables the secondary when asked", () => {
+    render(
+      <Gate
+        kicker="k"
+        title="t"
+        secondary={{ label: "Do this later", onClick: () => {}, disabled: true }}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Do this later" })).toBeDisabled();
+  });
+
+  it("speaks the foot line: it is a status region", () => {
+    const { rerender } = render(<Gate kicker="k" title="t" foot="Stored encrypted at rest." />);
+    expect(screen.getByRole("status")).toHaveTextContent("Stored encrypted at rest.");
+
+    rerender(<Gate kicker="k" title="t" foot="Face ID was cancelled." />);
+    expect(screen.getByRole("status")).toHaveTextContent("Face ID was cancelled.");
+  });
+
   it("renders children between the body and the footer", () => {
     render(
       <Gate kicker="k" title="t" body="b">

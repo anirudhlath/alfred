@@ -15,7 +15,11 @@ export interface GateProps {
   /** A step list, a credential form — anything between the body and the footer. */
   children?: ReactNode;
   primary?: GateAction;
-  secondary?: { label: string; onClick: () => void };
+  secondary?: Omit<GateAction, "busy">;
+  /**
+   * Rendered as a status region: the gates put their errors and caveats here,
+   * and a change to it must be spoken, not just painted.
+   */
   foot?: string;
 }
 
@@ -60,14 +64,19 @@ export function Gate({ kicker, title, body, children, primary, secondary, foot }
           <button
             type="button"
             onClick={secondary.onClick}
-            className="h-[50px] rounded-[25px] border-0 bg-transparent text-[15px] font-medium"
+            disabled={secondary.disabled === true}
+            className="h-[50px] rounded-[25px] border-0 bg-transparent text-[15px] font-medium disabled:opacity-60"
             style={{ color: "var(--fg)" }}
           >
             {secondary.label}
           </button>
         ) : null}
 
-        {foot ? <div className="t-meta text-center">{foot}</div> : null}
+        {foot ? (
+          <div role="status" className="t-meta text-center">
+            {foot}
+          </div>
+        ) : null}
       </div>
     </div>
   );
