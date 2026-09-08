@@ -95,7 +95,7 @@ def get_web_websockets() -> list[WebSocket]:
     return [ws for ws, ch in _active_websockets.items() if ch != "ios"]
 
 
-_ALLOWED_AUDIO_FORMATS = {"wav", "webm", "aac", "m4a", "ogg", "mp3"}
+_ALLOWED_AUDIO_FORMATS = {"wav", "webm", "aac", "m4a", "mp4", "ogg", "mp3"}
 
 
 def _decode_audio(data_url: str) -> tuple[bytes, str]:
