@@ -17,9 +17,10 @@ export function fetchAuthStatus(): Promise<AuthStatus> {
  * A first guess at what to call this passkey. The user never sees a prompt for
  * it in Phase 1, so it has to be right often and harmless when wrong.
  *
- * iPhone before iPad before Mac, because an iPad in desktop mode reports
- * "Macintosh" and there is nothing to tell them apart — an iPad that calls
- * itself a Mac is a better failure than a Mac that calls itself an iPad.
+ * iOS before Mac, because every iOS user agent carries "like Mac OS X" — a real
+ * iPad would be named "Mac" otherwise. An iPad in desktop mode reports plain
+ * "Macintosh" and no ordering can catch it; that is accepted, since an iPad that
+ * calls itself a Mac is a better failure than a Mac that calls itself an iPad.
  */
 export function defaultDeviceName(ua: string = navigator.userAgent): string {
   if (/iPhone/i.test(ua)) return "iPhone";

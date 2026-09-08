@@ -3,6 +3,7 @@ import { DEVICE_KEY, defaultDeviceName, fetchAuthStatus, rememberDevice, remembe
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   localStorage.clear();
 });
 
@@ -15,6 +16,7 @@ describe("fetchAuthStatus", () => {
 
     await expect(fetchAuthStatus()).resolves.toEqual({ registered: true, authenticated: false });
     expect(mock.mock.calls[0][0]).toBe("/api/auth/status");
+    expect((mock.mock.calls[0][1] as RequestInit | undefined)?.method ?? "GET").toBe("GET");
   });
 });
 
@@ -57,6 +59,25 @@ describe("rememberDevice / rememberedDevice", () => {
 
   it("is null for a value of the wrong shape", () => {
     localStorage.setItem(DEVICE_KEY, JSON.stringify({ name: 17 }));
+    expect(rememberedDevice()).toBeNull();
+  });
+
+  it("is null when registeredAt is missing", () => {
+    localStorage.setItem(DEVICE_KEY, JSON.stringify({ name: "iPhone" }));
+    expect(rememberedDevice()).toBeNull();
+  });
+
+  it("survives a storage that refuses to write", () => {
+    vi.spyOn(localStorage, "setItem").mockImplementation(() => {
+      throw new Error("QuotaExceededError");
+    });
+    expect(() => rememberDevice({ name: "iPhone", registeredAt: "2026-09-07T07:02:00.000Z" })).not.toThrow();
+  });
+
+  it("is null when storage cannot be read", () => {
+    vi.spyOn(localStorage, "getItem").mockImplementation(() => {
+      throw new Error("SecurityError");
+    });
     expect(rememberedDevice()).toBeNull();
   });
 });
