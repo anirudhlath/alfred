@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useLayoutEffect, useRef } from "react";
 import type { TimelineItem } from "@/lib/history";
 import { ActRow } from "@/room/rows/ActRow";
 import { AlfredRow } from "@/room/rows/AlfredRow";
@@ -46,19 +46,39 @@ function Row({ item }: { item: TimelineItem }) {
       return <TranscribingBubble seconds={item.seconds} />;
     case "thinking":
       return <ThinkingRow detail={item.detail} />;
+    default: {
+      // A ninth kind added to TimelineItem fails here at compile time instead
+      // of rendering nothing.
+      const exhaustive: never = item;
+      return exhaustive;
+    }
   }
 }
 
 export function Timeline({ items, firstDayGreeting }: TimelineProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   // Ref, not state: whether we are following the bottom must not re-render the
   // list, and the scroll handler fires on every frame of a flick.
   const followRef = useRef(true);
 
-  useEffect(() => {
+  // A layout effect, so an appended row is anchored before it is painted — a
+  // plain effect paints it at the old offset and then jumps. Rows are not the
+  // only thing that moves the bottom: the webfonts swap in after first paint
+  // and grow the content, and the keyboard shrinks the box (§4.5). Both are
+  // resizes, so the same anchor re-runs for them while we are following.
+  useLayoutEffect(() => {
     const el = scrollRef.current;
-    if (!el || !followRef.current) return;
-    el.scrollTop = el.scrollHeight;
+    const content = contentRef.current;
+    if (!el || !content) return;
+    const anchor = () => {
+      if (followRef.current) el.scrollTop = el.scrollHeight;
+    };
+    anchor();
+    const observer = new ResizeObserver(anchor);
+    observer.observe(el);
+    observer.observe(content);
+    return () => observer.disconnect();
   }, [items]);
 
   const onScroll = () => {
@@ -70,14 +90,18 @@ export function Timeline({ items, firstDayGreeting }: TimelineProps) {
   return (
     <div
       ref={scrollRef}
-      data-testid="timeline"
+      role="log"
+      aria-label="Conversation"
       onScroll={onScroll}
-      className="relative z-[1] flex flex-1 flex-col gap-4 overflow-y-auto px-6 pt-[22px] pb-3"
+      className="relative z-[1] flex flex-1 flex-col overflow-y-auto px-6 pt-[22px] pb-3"
     >
-      {items.length === 0 && firstDayGreeting ? <FirstDay greeting={firstDayGreeting} /> : null}
-      {items.map((item) => (
-        <Row key={item.id} item={item} />
-      ))}
+      {/* The observed content: `flex-1` so FirstDay can centre in an empty box. */}
+      <div ref={contentRef} className="flex flex-1 flex-col gap-4">
+        {items.length === 0 && firstDayGreeting ? <FirstDay greeting={firstDayGreeting} /> : null}
+        {items.map((item) => (
+          <Row key={item.id} item={item} />
+        ))}
+      </div>
     </div>
   );
 }

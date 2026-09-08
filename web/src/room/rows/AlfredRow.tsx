@@ -12,7 +12,8 @@ export interface AlfredRowProps {
 /**
  * No bubble — Alfred's voice is the page, one size above yours. Plain text with
  * `pre-line`, never markdown (decision 3), and a meta line naming the mood, the
- * tools he ran and when.
+ * tools he ran and when. The speaker is visible only to a screen reader — the
+ * missing bubble says it to eyes.
  */
 export function AlfredRow({ text, at, mood, actions, error }: AlfredRowProps) {
   // An error frame has no mood and ran no tools; `neutral · no tools` would be
@@ -29,6 +30,7 @@ export function AlfredRow({ text, at, mood, actions, error }: AlfredRowProps) {
         className="t-alfred whitespace-pre-line"
         style={{ color: error ? "var(--fg2)" : "var(--fg)" }}
       >
+        <span className="sr-only">Alfred: </span>
         {text}
       </div>
       <div className="t-meta">{meta}</div>
