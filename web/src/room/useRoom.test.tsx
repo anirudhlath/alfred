@@ -118,6 +118,8 @@ describe("useRoom — the merged thread", () => {
 
     expect(kinds(result.current.items)).toEqual(["alfred", "you", "thinking"]);
     expect(chat.sendText).toHaveBeenCalledWith("Is the back door locked?");
+    const thinking = result.current.items.find((item) => item.kind === "thinking")!;
+    expect(thinking.kind === "thinking" && thinking.detail).toBe("working");
   });
 
   it("merges history, tombstones and live rows by timestamp", () => {
@@ -234,6 +236,8 @@ describe("useRoom — sending", () => {
     // What went out is a turn in flight.
     expect(kinds(result.current.items)).toEqual(["you", "you", "thinking"]);
     expect(result.current.thinking).toBe(true);
+    const thinking = result.current.items.find((item) => item.kind === "thinking")!;
+    expect(thinking.kind === "thinking" && thinking.detail).toBe("working");
   });
 
   it("gives up on a retried turn the server never answers", () => {
@@ -363,6 +367,9 @@ describe("useRoom — what comes back", () => {
     const { result, chat } = renderRoom({ history: [], online: true });
     act(() => result.current.sendAudio("data:audio/mp4;base64,AAAA", 2.4));
     expect(kinds(result.current.items)).toEqual(["transcribing"]);
+    // The bubble shows how much audio is with the server; it must be what was sent.
+    const bubble = result.current.items.find((item) => item.kind === "transcribing")!;
+    expect(bubble.kind === "transcribing" && bubble.seconds).toBe(2.4);
 
     act(() =>
       chat.deliver({ type: "transcription", text: "Is the back door locked?", session_id: "s_9f2" }),
@@ -371,6 +378,8 @@ describe("useRoom — what comes back", () => {
     expect(kinds(result.current.items)).toEqual(["you", "thinking"]);
     const you = result.current.items.find((item) => item.kind === "you")!;
     expect(you.kind === "you" && you.text).toBe("Is the back door locked?");
+    const thinking = result.current.items.find((item) => item.kind === "thinking")!;
+    expect(thinking.kind === "thinking" && thinking.detail).toBe("working");
   });
 
   it("clears the dashed bubble when the turn errors", () => {
