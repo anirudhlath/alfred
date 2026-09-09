@@ -196,6 +196,10 @@ that asked rather than raising a second one.
 The session TTL is 8 hours, a hard cap from login with no sliding renewal, and the
 Expired gate says so.
 
+The copy region inside `Gate` scrolls, because the shell is a fixed height (§4.4) and
+cannot lean on the document the way it used to: an inner `mt-auto` column keeps short
+copy bottom-aligned while setup's tall credential step scrolls instead of clipping.
+
 ---
 
 ## The Room
@@ -481,10 +485,11 @@ Two of them bite hardest:
 - **`100vh` is wrong in Safari.** `installViewportVars()` writes `--app-height` from
   `innerHeight` and `--keyboard-inset` from `visualViewport`; `#root` is sized from the
   former — `height`, not `min-height`, with `overflow: hidden`, so the shell is the
-  viewport and the Timeline is the only scroller (a growing root scrolls the document
-  instead, taking the header and composer with it and leaving nothing for the
-  Timeline's follow-the-bottom anchor to scroll) — and the composer pays for the
-  keyboard once, via `.pb-keyboard`.
+  viewport and nothing scrolls but the regions that opt in — the Timeline, the Sheet
+  body, the gate's copy region. A growing root scrolls the document instead, taking
+  the header and composer with it and leaving nothing for the Timeline's
+  follow-the-bottom anchor to scroll, and the composer pays for the keyboard once,
+  via `.pb-keyboard`.
 - **Audio needs a gesture.** `installAudioUnlock()` runs in `main.tsx`, before the first
   tap. iOS will not retroactively allow a sound requested before a gesture resumed a
   context, so a fresh `new Audio()` is silently dropped.

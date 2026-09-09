@@ -302,8 +302,9 @@ export function SetupGate({ onDone }: SetupGateProps) {
       }
     >
       {/* One row per domain the house has emitted — dozens on a real HA, not the
-          handful in the fixture — so the list is capped and scrolls under the
-          pinned footer rather than pushing the buttons off the gate.
+          handful in the fixture — so the list is capped rather than filling the
+          gate's copy scroller on its own: 40dvh keeps the kicker, title and body
+          reachable above it.
 
           No `overscroll-contain`: it was here to stop the list rubber-banding
           the page, and the page can no longer move (html and body carry

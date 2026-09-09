@@ -130,8 +130,8 @@
      composer scroll away with it, and the Timeline never overflows — its
      follow-the-bottom anchor has nothing to scroll. Measured at 390x844 with a
      6600px thread: root 6773px and the Timeline's scrollHeight equal to its
-     clientHeight. A fixed height makes the shell the viewport and the Timeline
-     the only scroller. */
+     clientHeight. A fixed height makes the shell the viewport, and nothing
+     scrolls but the regions that opt in. */
   #root {
     display: flex;
     flex-direction: column;

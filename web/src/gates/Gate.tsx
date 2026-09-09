@@ -33,9 +33,9 @@ export function Gate({ kicker, title, body, children, primary, secondary, foot }
 
       {/* Copy sits at the bottom of the field, not the middle: padding 0 28 12.
 
-          It scrolls, because the shell is now a fixed height (§4.4) and the row
-          above is a clipper, not a scroller — there is no document scroll left to
-          borrow. The setup gate's credential step is the tall one: ~560px of
+          It scrolls, because the shell is now a fixed height (§4.4) and its
+          parent is a clipper, not a scroller — there is no document scroll left
+          to borrow. The setup gate's credential step is the tall one: ~560px of
           kicker, title, body, progress list and two fields, which does not fit a
           375x553 viewport once the footer is paid for.
 
@@ -45,10 +45,8 @@ export function Gate({ kicker, title, body, children, primary, secondary, foot }
           scrollHeight equal to clientHeight with the kicker 197px above the edge
           and no way to reach it, where this reports 363/560 and scrolls. An auto
           margin resolves to 0 once the free space is negative, so short copy
-          still sits on the bottom. Nothing here needs `overscroll-contain`: html
-          already carries `overscroll-behavior: none` and every ancestor between
-          is unscrollable, so a rubber-band cannot reach the page (§4.6). */}
-      <div className="relative flex min-h-0 flex-1 flex-col overflow-y-auto px-7 pb-3">
+          still sits on the bottom. */}
+      <div className="relative flex flex-1 flex-col overflow-y-auto px-7 pb-3">
         <div className="mt-auto flex flex-col gap-3">
           <div className="t-meta">{kicker}</div>
           <h1 className="t-gate">{title}</h1>

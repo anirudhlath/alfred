@@ -365,6 +365,8 @@ describe("SetupGate — step 2, the attention set", () => {
 
     expect(screen.getAllByRole("button", { name: /· 1 found/ })).toHaveLength(30);
     expect(screen.getByRole("list").parentElement).toHaveClass("overflow-y-auto");
+    // It must chain into the gate's copy scroller at its end, not stop dead.
+    expect(screen.getByRole("list").parentElement).not.toHaveClass("overscroll-contain");
   });
 
   it("keeps its baseline when the app is refocused before Finish", async () => {
