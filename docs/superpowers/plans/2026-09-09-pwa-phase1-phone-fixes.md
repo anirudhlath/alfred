@@ -1234,9 +1234,11 @@ them. Where the two disagree, the code wins.
 the turns since the last silence of `Overview.session.idle_minutes` (default 30 min,
 satellite turns included, they land on the same two streams) — plus the house's own rows
 for the day, or from the session's start if that came earlier; the live rows and the
-Door's tombstones `useRoom` merges in are never windowed. After a break the Room opens
-empty; older turns are the Activity view's (phase 2). A notification row's text is its
-body.
+Door's tombstones `useRoom` merges in are never windowed. After a break the Room opens on
+the day's house rows alone — on nothing at all when there are none; older turns are the
+Activity view's (phase 2). A notification row's text is its body, else the title
+(`notificationText` is `body || title || undefined` — the title is the fallback, not
+discarded).
 
 (b) The `localStorage` row gains `alfred.session-at`. The trailing "every key is
 `alfred.<noun>`" claim is kept but qualified — `session-at` is the one compound, and the
@@ -1252,8 +1254,9 @@ client that keeps its id for ever, which Task 5 ended. What it says now, from
   takes the stamp with it, and an id adopted but never sent on carries no stamp — which
   the next connection reads as idle.
 - On the first message of a connection, a stored id whose stamp is idle for the timeout
-  or longer is dropped (both keys) and the assigned id adopted. A missing or unreadable
-  stamp reads as idle.
+  or longer is dropped (both keys) and the assigned id adopted — but `forget()` adopts
+  only `if (this.assigned)`, so a first send that races ahead of the server's `session`
+  frame drops the id and adopts nothing. A missing or unreadable stamp reads as idle.
 - `session_id` is carried only when the surviving stored id differs from the assigned one
   — when they agree the frame says nothing, because the server named that id itself.
 - `firstMessageSent` and the stamp are committed in `send()`, after `socket.send()`
@@ -1339,16 +1342,24 @@ The rest holds: `check_routine_suggestions` publishes with no `metadata`, which
 only (`_eligible_candidates`) and only with `"candidate"`; `_ROUTINE_SUGGESTION_COOLDOWN_HOURS`
 is 24, checked by a 15-minute loop, and `_build_routine_hint` spends the same budget. Two
 corrections to the ask itself: routines are keyed by `name` (one YAML file each) and have
-no id, so the endpoint is `POST /api/routines/{name}/state`; and the re-firing is bounded
-— an ignored candidate loses 0.05 confidence per cycle and is archived below 0.3, which is
-decay rather than consent, and worth saying so.
+no id, so the endpoint is `POST /api/routines/{name}/state`; and the re-firing is **not**
+bounded in the case §8 is about. The 0.05 confidence decay looks like the brake and is
+not one: it sits in the `else` of `if pattern_fired:` *and* needs
+`now - last_suggested >= 24 h`, while both suggestion paths re-stamp `last_suggested` on
+every fire, so a daily re-firer never satisfies both. Three consecutive Librarian misses
+→ `dormant` is the only real stop, and `match_trigger_pattern` returning `True` for an
+unparseable pattern means such a routine never misses at all. Nothing anywhere records
+that a suggestion was ignored — `RoutineSpec` has no field for it.
 
 §9 is the missed-notification gap, naming the two recall-noise tickets already under
 `docs/backlog/high/`. §10 and §11 come from the Task 3 and Task 4 reviews: `monkeypatch: Any`
 in `tests/core/channels/test_admin_api.py` (17 uses against 196 `pytest.MonkeyPatch` in
-`tests/`), and the two `waitFor` timeouts seen only under 8-way vitest over-subscription
-(`web/src/main.test.ts`, `web/src/sheets/HeldBackSheet.test.tsx`) — same shape as the
-`useActionRoute` race fixed in `5d827f1`.
+`tests/`), and the two timeouts seen only under 8-way vitest over-subscription. Check
+what each one actually waits on before filing them together: `web/src/main.test.ts` has
+no `waitFor` or `findBy*`, so it blows vitest's 5 s **test** timeout on
+`await import("./main")`, while `"says queued, not delivered"`
+(`web/src/sheets/HeldBackSheet.test.tsx`) is a `findByRole` at the 1 s default — only the
+second is the `5d827f1` race shape.
 
 - [ ] **Step 5: Check for real hostnames and commit**
 

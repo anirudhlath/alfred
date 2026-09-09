@@ -226,9 +226,10 @@ Everything on screen is one timeline.
   still has in context — plus the house's own rows for the day, or from the session's
   start if that came earlier, and `useRoom` merges that with the live rows (what you
   sent, what Alfred said, what he did while you watched) plus the Door's tombstones,
-  neither of which is ever windowed. After a break the Room opens empty; older turns are
-  the Activity view's (phase 2). A notification row's text is its body (the title is a
-  label — "Routine Suggestion").
+  neither of which is ever windowed. After a break the Room opens on the day's house
+  rows alone — on nothing at all when there are none; older turns are the Activity
+  view's (phase 2). A notification row's text is its body, else the title (a title is
+  often a bare label — "Routine Suggestion").
 - **Composer and hold-to-talk** — text queues under `alfred.unsent` while the house is
   unreachable and retries in order on the next socket open; holding records through
   `MediaRecorder` with a one-second floor.
@@ -335,9 +336,11 @@ On the **first message of a connection**, `payload()` decides which session the 
 belongs to:
 
 - A stored id whose stamp is idle for the server's timeout or longer is dropped, both
-  keys with it, and this connection's assigned id is adopted in its place. A missing or
-  unreadable stamp reads as idle — one fresh session for a phone from before the stamp
-  existed.
+  keys with it, and this connection's assigned id is adopted in its place once the
+  server has named one — `forget()` adopts only `if (this.assigned)`, so a first send
+  that races ahead of the `session` frame drops the id and adopts nothing, and the frame
+  after it carries none. A missing or unreadable stamp reads as idle — one fresh session
+  for a phone from before the stamp existed.
 - `session_id` is then carried only if what remains is a stored id the server does not
   already have (`_sessionId !== assigned`). When the two agree the frame carries nothing:
   the server named that id and would only be told it again.

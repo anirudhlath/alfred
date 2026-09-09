@@ -120,20 +120,30 @@ to tap, and that is a backend gap, not a client one:
   place — `engine.py`'s `_eligible_candidates` — and only ever with `"candidate"`. The
   consolidator's lifecycle pass and `GET /api/admin/memory/routines` read `list_all()`.
   Accepting a suggestion today would change a label and nothing else.
-- **It re-fires daily while it stays a candidate.**
+- **It re-fires daily while it stays a candidate, and nothing bounds that.**
   `_ROUTINE_SUGGESTION_COOLDOWN_HOURS` is 24, checked by a 15-minute loop in
   `core/conscious/__main__.py`; `_build_routine_hint` spends the same budget, so a chat
   turn can be the day's suggestion instead. Observed on a live house: 47 of the last 50
-  notifications were the same coffee routine. It is bounded rather than endless — each
-  ignored cooldown window costs the candidate 0.05 confidence and the Librarian archives
-  it below 0.3 — but that is decay, not consent.
+  notifications were the same coffee routine. The obvious brake does not engage:
+  the Librarian's 0.05 confidence decay (`_update_routine_lifecycle`,
+  `core/librarian/consolidator.py`) sits in the `else` of `if pattern_fired:` **and**
+  needs `now - last_suggested >= 24 h`, but both suggestion paths re-stamp
+  `last_suggested = now` every time they fire — so for a candidate firing daily the two
+  conditions are never true together and the branch is effectively unreachable. What
+  does stop a suggestion is three consecutive Librarian misses → `dormant`, which takes
+  it out of `list_by_state("candidate")`. A routine whose `trigger_pattern` does not
+  parse escapes even that: `match_trigger_pattern`
+  (`core/memory/routines/patterns.py`) returns `True` for an unrecognised pattern, on
+  purpose — so it never misses, never goes dormant, never decays, and suggests itself
+  for ever. And "ignored" is never actually observed: `RoutineSpec`
+  (`core/memory/schemas.py`) has no field for a suggestion the user declined to answer.
 
 Do them in that order: a state endpoint (`POST /api/routines/{name}/state` behind the
 admin gate, plus a conscious-engine tool so "yes, do that" in the thread works too),
 `metadata.routine_name` on the notification, an executor for `active` routines, then the
 client's accept/decline on the row. Until the executor exists a button would be a lie —
-spec §5.2.3 names routine lifecycle as one of the two places where "Alfred knows this"
-has degrees.
+spec §5.2, item 3 names routine lifecycle as one of the two places where "Alfred knows
+this" has degrees.
 
 ## 9. Notifications missed between sessions surface nowhere
 
@@ -153,10 +163,19 @@ line at a time as the file is touched.
 
 ## 11. Two web tests time out under heavy suite parallelism
 
-Under eight concurrent vitest suites (load average ~118 on the dev box) two tests hit
-`waitFor` timeouts, twice each: `"installs the viewport and audio hooks, then renders the
-App under StrictMode"` (`web/src/main.test.ts`, the 5 s default) and `"says queued, not
-delivered"` (`web/src/sheets/HeldBackSheet.test.tsx`). Both are clean at four-way and
-single-suite, so nothing is broken today. Same shape as the `useActionRoute` race fixed in
-`5d827f1` — an assertion racing an effect rather than a slow machine — and the same fix
-would apply. File it against the CI change if the frontend suites are ever parallelised.
+Under eight concurrent vitest suites (load average ~118 on the dev box) two tests time
+out, twice each. They are not the same failure:
+
+- `"installs the viewport and audio hooks, then renders the App under StrictMode"`
+  (`web/src/main.test.ts`) has no `waitFor` or `findBy*` at all — it is
+  `await import("./main")` followed by synchronous expects, so what it exceeds is
+  vitest's own 5 s **test** timeout: a dynamic import that never settles under load.
+  Nothing to race, and no assertion to make more patient; if it recurs, the test timeout
+  or the suite concurrency is the lever.
+- `"says queued, not delivered"` (`web/src/sheets/HeldBackSheet.test.tsx`) is a
+  `findByRole` at the 1 s default. That one *is* the same shape as the `useActionRoute`
+  race fixed in `5d827f1` — an assertion racing an effect rather than a slow machine —
+  and the same fix would apply.
+
+Both are clean at four-way and single-suite, so nothing is broken today. File it against
+the CI change if the frontend suites are ever parallelised.
