@@ -42,6 +42,8 @@ describe("OfflineNote", () => {
     render(<OfflineNote online reconnecting={false} lastTrueAt={at2114} />);
     const region = screen.getByRole("status");
     expect(region).toBeEmptyDOMElement();
+    // Out of flow, or the header's gap would open around an empty box.
+    expect(region).toHaveClass("sr-only");
     expect(region).not.toHaveClass("mt-2");
   });
 });
