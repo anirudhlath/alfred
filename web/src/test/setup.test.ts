@@ -38,4 +38,16 @@ describe("test environment", () => {
     expect(localStorage.getItem("alfred.probe")).toBe("1");
     localStorage.removeItem("alfred.probe");
   });
+
+  it("constructs pointer events with coordinates", () => {
+    const event = new PointerEvent("pointerdown", { pointerId: 7, clientX: 42 });
+    expect(event.pointerId).toBe(7);
+    expect(event.clientX).toBe(42);
+  });
+
+  it("lets an element capture the pointer without throwing", () => {
+    const el = document.createElement("div");
+    expect(() => el.setPointerCapture(1)).not.toThrow();
+    expect(() => el.releasePointerCapture(1)).not.toThrow();
+  });
 });

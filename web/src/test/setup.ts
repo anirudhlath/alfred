@@ -83,3 +83,34 @@ if (!window.visualViewport) {
     value: new TestVisualViewport() as unknown as VisualViewport,
   });
 }
+
+// jsdom implements neither PointerEvent nor pointer capture, and both are
+// load-bearing: hold-to-talk and slide-to-confirm are pointer-driven, and both
+// capture the pointer so a finger that drifts off the control still reports up.
+if (typeof globalThis.PointerEvent !== "function") {
+  class TestPointerEvent extends MouseEvent {
+    pointerId: number;
+    pointerType: string;
+    isPrimary: boolean;
+
+    constructor(type: string, params: PointerEventInit = {}) {
+      super(type, params);
+      this.pointerId = params.pointerId ?? 1;
+      this.pointerType = params.pointerType ?? "touch";
+      this.isPrimary = params.isPrimary ?? true;
+    }
+  }
+  Object.defineProperty(globalThis, "PointerEvent", {
+    configurable: true,
+    writable: true,
+    value: TestPointerEvent,
+  });
+}
+
+if (typeof Element.prototype.setPointerCapture !== "function") {
+  Element.prototype.setPointerCapture = function setPointerCapture() {};
+  Element.prototype.releasePointerCapture = function releasePointerCapture() {};
+  Element.prototype.hasPointerCapture = function hasPointerCapture() {
+    return false;
+  };
+}
