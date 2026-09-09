@@ -302,9 +302,19 @@ export function SetupGate({ onDone }: SetupGateProps) {
       }
     >
       {/* One row per domain the house has emitted — dozens on a real HA, not the
-          handful in the fixture — so the list scrolls under the pinned footer
-          rather than growing the page (the gate does not rubber-band, §4.6). */}
-      <div className="max-h-[40dvh] overflow-y-auto overscroll-contain">
+          handful in the fixture — so the list is capped and scrolls under the
+          pinned footer rather than pushing the buttons off the gate.
+
+          No `overscroll-contain`: it was here to stop the list rubber-banding
+          the page, and the page can no longer move (html and body carry
+          `overscroll-behavior: none`, and #root is a fixed height, §4.6). What
+          it does now is break the chain to the copy scroller above — a drag
+          that starts on this list would stop dead at the list's end instead of
+          carrying on into the copy, which is reachable whenever the copy
+          overflows. Measured at 844x390 with a trusted wheel past the list's
+          end: with `overscroll-contain` the copy stays at scrollTop 0 of 40,
+          without it the copy scrolls to 40. */}
+      <div className="max-h-[40dvh] overflow-y-auto">
         <StepList
           variant="toggle"
           onToggle={toggleDomain}
