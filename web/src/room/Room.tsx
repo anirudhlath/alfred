@@ -40,7 +40,7 @@ export function Room() {
   const [hour, setHour] = useState(() => new Date().getHours());
   useEffect(() => onVisible(() => setHour(new Date().getHours())), []);
 
-  const historyItems = useMemo(() => (history ? toTimelineItems(history) : []), [history]);
+  const historyItems = useMemo(() => (history ? toTimelineItems(history) : undefined), [history]);
   const titles = useMemo(() => pendingActionTitles(history), [history]);
   const { tombstone } = useActionRoute(titles);
 

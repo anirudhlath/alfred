@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TimelineItem } from "@/lib/history";
 import type { ChatServerMessage } from "@/lib/types";
 import { ConnectionProvider } from "@/shell/ConnectionProvider";
-import { UNSENT_KEY, useRoom, type UseRoomOptions } from "./useRoom";
+import { NO_REPLY_MS, UNSENT_KEY, useRoom, type UseRoomOptions } from "./useRoom";
 
 const { chats, playWavBase64Mock } = vi.hoisted(() => ({
   chats: [] as unknown[],
@@ -539,5 +539,200 @@ describe("useRoom — silence", () => {
     expect(
       result.current.items.filter((item) => item.kind === "alfred"),
     ).toHaveLength(1);
+  });
+});
+
+describe("useRoom — what the house reads back", () => {
+  // Stamped by the server, as history rows are; the live rows carry the
+  // phone's clock, and nothing below compares the two.
+  const readBack = (kind: "you" | "alfred", id: string, text: string): TimelineItem =>
+    kind === "you"
+      ? { kind, id: `you:${id}`, at: "2026-09-07T21:00:00", text, state: "sent" }
+      : { kind, id: `alfred:${id}`, at: "2026-09-07T21:00:04", text, actions: [] };
+
+  it("shows a turn once when the history has read it back", () => {
+    const { result, chat, rerender } = renderRoom({ history: [], online: true });
+    act(() => result.current.sendText("Anything tomorrow?"));
+    act(() =>
+      chat.deliver({ type: "response", text: "The dentist at nine, sir.", session_id: "s_9f2" }),
+    );
+    expect(kinds(result.current.items)).toEqual(["you", "alfred"]);
+
+    // The app went to the background and came back: the streams now carry both.
+    rerender({
+      history: [
+        readBack("you", "1788814800000-0", "Anything tomorrow?"),
+        readBack("alfred", "1788814804000-0", "The dentist at nine, sir."),
+      ],
+    });
+
+    expect(kinds(result.current.items)).toEqual(["you", "alfred"]);
+    expect(result.current.items.map((item) => item.id)).toEqual([
+      expect.stringMatching(/^divider:/),
+      "you:1788814800000-0",
+      "alfred:1788814804000-0",
+    ]);
+  });
+
+  it("keeps a live turn the history has not caught up with", () => {
+    const { result, chat, rerender } = renderRoom({ history: [], online: true });
+    act(() => result.current.sendText("Anything tomorrow?"));
+    act(() =>
+      chat.deliver({ type: "response", text: "The dentist at nine, sir.", session_id: "s_9f2" }),
+    );
+
+    rerender({ history: [readBack("you", "1788814800000-0", "Anything tomorrow?")] });
+
+    expect(kinds(result.current.items)).toEqual(["you", "alfred"]);
+    const alfred = result.current.items.find((item) => item.kind === "alfred")!;
+    expect(alfred.id).toMatch(/^alfred:\d+$/);
+  });
+
+  it("matches by what was said, not by kind alone", () => {
+    const { result, rerender } = renderRoom({ history: [], online: true });
+    act(() => result.current.sendText("Lock the back door"));
+
+    // A satellite's request, read back in the same window: not ours.
+    rerender({ history: [readBack("you", "1788814800000-0", "Lights off in the study")] });
+
+    expect(kinds(result.current.items)).toEqual(["you", "you", "thinking"]);
+  });
+
+  it("does not take the same words from the other side of the thread", () => {
+    const { result, rerender } = renderRoom({ history: [], online: true });
+    act(() => result.current.sendText("Good night"));
+
+    rerender({ history: [readBack("alfred", "1788814804000-0", "Good night")] });
+
+    // History is dated before the live rows (see `readBack`), so it leads.
+    expect(kinds(result.current.items)).toEqual(["alfred", "you", "thinking"]);
+  });
+
+  it("does not let an older turn swallow a new one that says the same", () => {
+    // "yes" was already in the thread when the Room opened.
+    const { result, rerender } = renderRoom({
+      history: [readBack("you", "1788814000000-0", "yes")],
+      online: true,
+    });
+
+    act(() => result.current.sendText("yes"));
+    expect(kinds(result.current.items)).toEqual(["you", "you", "thinking"]);
+
+    // Read back: the old one and the new one.
+    rerender({
+      history: [
+        readBack("you", "1788814000000-0", "yes"),
+        readBack("you", "1788814800000-0", "yes"),
+      ],
+    });
+    expect(kinds(result.current.items)).toEqual(["you", "you", "thinking"]);
+  });
+
+  it("waits for the first history before deciding what predates the session", () => {
+    // Undefined, not empty: the read has not answered yet.
+    const { result, rerender } = renderRoom({ online: true });
+    rerender({ history: [readBack("you", "1788814000000-0", "yes")] });
+
+    act(() => result.current.sendText("yes"));
+
+    expect(kinds(result.current.items)).toEqual(["you", "you", "thinking"]);
+  });
+
+  it("answers one live row with one history row", () => {
+    const { result, rerender } = renderRoom({ history: [], online: true });
+    act(() => result.current.sendText("yes"));
+    act(() => result.current.sendText("yes"));
+
+    rerender({ history: [readBack("you", "1788814800000-0", "yes")] });
+
+    expect(kinds(result.current.items)).toEqual(["you", "you", "thinking"]);
+  });
+
+  it("leaves the unsent queue alone", () => {
+    const { result, rerender } = renderRoom({ history: [], online: false });
+    act(() => result.current.sendText("yes"));
+
+    // Someone else's "yes" was read back; ours never left.
+    rerender({ history: [readBack("you", "1788814800000-0", "yes")] });
+
+    const rows = result.current.items.filter((item) => item.kind !== "divider");
+    expect(rows.map((item) => item.kind === "you" && item.state)).toEqual(["sent", "unsent"]);
+  });
+
+  it("lets the history's copy of a notification replace the live one", () => {
+    const { result, chat, rerender } = renderRoom({ history: [], online: true });
+    act(() =>
+      chat.deliver({
+        type: "notification",
+        title: "Bins go out tonight",
+        body: "Collection moved to Friday.",
+        urgency: "important",
+        notification_id: "ntf-9",
+        metadata: {},
+      }),
+    );
+    expect(kinds(result.current.items)).toEqual(["act"]);
+
+    // The stream copy knows its source; the frame only knew it was live.
+    rerender({
+      history: [
+        {
+          kind: "act",
+          id: "nt:1788814800000-0",
+          at: "2026-09-07T21:00:00",
+          hue: 255,
+          text: "Bins go out tonight",
+          meta: "21:00 · domain-router · important",
+        },
+      ],
+    });
+    const acts = result.current.items.filter((item) => item.kind === "act");
+    expect(acts).toHaveLength(1);
+    expect(acts[0]!.kind === "act" && acts[0]!.meta).toBe("21:00 · domain-router · important");
+  });
+
+  it("does not let a reflex answer for a notification that says the same", () => {
+    const { result, chat, rerender } = renderRoom({ history: [], online: true });
+    act(() =>
+      chat.deliver({
+        type: "notification",
+        title: "Bins go out tonight",
+        body: "Collection moved to Friday.",
+        urgency: "important",
+        notification_id: "ntf-9",
+        metadata: {},
+      }),
+    );
+
+    rerender({
+      history: [
+        {
+          kind: "act",
+          id: "rx:1788814800000-0",
+          at: "2026-09-07T21:00:00",
+          hue: 210,
+          text: "Bins go out tonight",
+          meta: "21:00 · reflex · calendar.remind",
+        },
+      ],
+    });
+    expect(result.current.items.filter((item) => item.kind === "act")).toHaveLength(2);
+  });
+
+  it("leaves a client-made error row alone", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-07T21:00:00"));
+    const { result, rerender } = renderRoom({ history: [], online: true });
+    act(() => result.current.sendText("yes"));
+    act(() => vi.advanceTimersByTime(NO_REPLY_MS));
+
+    rerender({
+      history: [
+        readBack("you", "1788814800000-0", "yes"),
+        readBack("alfred", "1788814860000-0", "No reply in 60 s."),
+      ],
+    });
+
+    expect(kinds(result.current.items)).toEqual(["you", "alfred", "alfred"]);
   });
 });

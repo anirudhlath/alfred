@@ -43,6 +43,51 @@ function isPersistedUnsent(item: unknown): item is YouItem {
   );
 }
 
+/**
+ * What a row would have been read back as — its kind and text, and for an act
+ * row its hue too, because a reflex and a notification are both acts and must
+ * not answer for each other. Null for a row the house never writes to its
+ * streams: an unsent message, a client-made error row, and the transients.
+ */
+function readBackKey(item: TimelineItem): string | null {
+  switch (item.kind) {
+    case "you":
+      return item.state === "sent" ? `you:${item.text}` : null;
+    case "alfred":
+      return item.error ? null : `alfred:${item.text}`;
+    case "act":
+      return `act:${item.hue}:${item.text}`;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Drop the live rows the house has since read back to us.
+ *
+ * The history is re-read whenever the app returns to the foreground, and the
+ * server writes every turn to the streams it is read from, so a re-read
+ * carries the rows that arrived live since the last one — without this, each
+ * trip to the background doubled the recent thread. `unread` is only what the
+ * history has gained since the Room opened, because a live row can only be a
+ * copy of a turn from this session; an older "yes" must not swallow a new one.
+ * Within that, the read-back key decides, one history row answering for one
+ * live row in order, so "yes" twice stays twice. The clocks are never
+ * compared: the live row carries the phone's stamp and the history row the
+ * server's.
+ */
+function withoutReadBack(live: TimelineItem[], unread: TimelineItem[]): TimelineItem[] {
+  const taken = new Set<string>();
+  return live.filter((item) => {
+    const key = readBackKey(item);
+    if (key === null) return true;
+    const copy = unread.find((row) => readBackKey(row) === key && !taken.has(row.id));
+    if (!copy) return true;
+    taken.add(copy.id);
+    return false;
+  });
+}
+
 function readUnsent(): TimelineItem[] {
   try {
     const raw = localStorage.getItem(UNSENT_KEY);
@@ -64,8 +109,13 @@ function writeUnsent(items: TimelineItem[]): void {
 }
 
 export interface UseRoomOptions {
-  /** `toTimelineItems(useRoomHistory().data)` — the thread as it stood on open. */
-  history: TimelineItem[];
+  /**
+   * `toTimelineItems(useRoomHistory().data)` — the thread as it stood on open,
+   * and undefined until the first read has answered. The distinction matters:
+   * that first answer is the line between the turns that predate this session
+   * and the ones the house reads back to us (see `withoutReadBack`).
+   */
+  history?: TimelineItem[];
   /** Expired and already-answered approvals, from `tombstoneItems` (Task 25). */
   tombstones?: TimelineItem[];
 }
@@ -81,6 +131,13 @@ export interface RoomValue {
 export function useRoom({ history, tombstones }: UseRoomOptions): RoomValue {
   const { chat, online, subscribeOnline } = useConnection();
   const [live, setLive] = useState<TimelineItem[]>(readUnsent);
+
+  // The first history to arrive is the thread as it stood before this session.
+  // Kept as ids: stream ids are the server's and survive every re-read. Set
+  // during render on the first loaded snapshot rather than in an effect, so
+  // the frame that shows the history already knows what predates it.
+  const [baseline, setBaseline] = useState<ReadonlySet<string> | null>(null);
+  if (baseline === null && history) setBaseline(new Set(history.map((item) => item.id)));
 
   // Read once at mount and again whenever the app comes back to the foreground.
   // Day dividers are relative to it, and a PWA left open across midnight would
@@ -220,8 +277,9 @@ export function useRoom({ history, tombstones }: UseRoomOptions): RoomValue {
             hue: 255,
             text: msg.title,
             // `live`, not a source: the /ws notification frame carries none
-            // (core/notifications/adapters/websocket.py). The same notification
-            // re-read from the stream later shows its real one.
+            // (core/notifications/adapters/websocket.py). When the history is
+            // next re-read, its copy of this notification takes this row's place
+            // (`withoutReadBack`) and shows the real one.
             meta: `${hhmm(at)} · live · ${msg.urgency}`,
           },
         ]);
@@ -253,11 +311,13 @@ export function useRoom({ history, tombstones }: UseRoomOptions): RoomValue {
   }, [thinkingAt]);
 
   const items = useMemo(() => {
-    const merged = [...history, ...(tombstones ?? []), ...live].sort(
+    const rows = history ?? [];
+    const unread = baseline ? rows.filter((row) => !baseline.has(row.id)) : [];
+    const merged = [...rows, ...(tombstones ?? []), ...withoutReadBack(live, unread)].sort(
       (a, b) => Date.parse(a.at) - Date.parse(b.at),
     );
     return withDividers(merged, now);
-  }, [history, tombstones, live, now]);
+  }, [history, baseline, tombstones, live, now]);
 
   return { items, thinking: thinkingAt !== null, sendText, sendAudio };
 }
