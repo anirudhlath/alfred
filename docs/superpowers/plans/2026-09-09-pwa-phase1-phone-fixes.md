@@ -739,7 +739,7 @@ export function sessionIdleMs(overview: Overview | undefined): number {
 }
 ```
 
-Add tests to `web/src/room/useOverview.test.ts` (create it if it does not exist; check with `ls web/src/room/useOverview*`):
+Add a describe block to the existing `web/src/room/useOverview.test.tsx` (extend its imports as needed):
 
 ```ts
 import { describe, expect, it } from "vitest";
@@ -761,7 +761,7 @@ describe("sessionIdleMs", () => {
   });
 });
 ```
-If a `useOverview.test.ts(x)` already exists, add the describe block to it instead.
+
 
 In `web/src/room/Room.tsx`:
 - import: `import { isFirstRun, sessionIdleMs, useOverview } from "@/room/useOverview";`
@@ -807,7 +807,7 @@ Expected: all pass.
 - [ ] **Step 10: Commit**
 
 ```bash
-git add web/src/lib/history.ts web/src/lib/history.test.ts web/src/room/useRoom.ts web/src/room/useRoom.test.tsx web/src/room/useOverview.ts web/src/room/useOverview.test.ts web/src/room/Room.tsx web/src/App.test.tsx
+git add web/src/lib/history.ts web/src/lib/history.test.ts web/src/room/useRoom.ts web/src/room/useRoom.test.tsx web/src/room/useOverview.ts web/src/room/useOverview.test.tsx web/src/room/Room.tsx web/src/App.test.tsx
 git commit -m "feat(web): the Room shows the current session only
 
 The history read is fifty rows per stream with no age bound, so the Room
