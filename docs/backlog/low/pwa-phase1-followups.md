@@ -62,3 +62,20 @@ the old settings card. When the Workshop reinstates enrollment, the three gaps t
 original ticket found are worth building in from the start rather than fixing after:
 the mic control disabled while a submit is in flight, the error state cleared as soon as
 a new sample is recorded, and the status region announced via `aria-live="polite"`.
+
+## 6. Three QA scripts to rewrite when the Workshop lands
+
+Deleted with the surfaces they drove; the flows behind them still exist server-side and want
+a script again once there is a screen to run it on.
+
+- `web-live-telemetry.md` — the telemetry rail and Activity page live feed. Phase 1
+  subscribes to one stream (`home_action_results`, for the Door), so there is nothing to
+  watch; the reconnect-after-SIGKILL half of it is still worth keeping when Activity returns.
+- `web-admin-controls.md` — the Triggers page and ⌘K palette controls (DND, drain, trigger
+  fire, run Librarian). DND and drain **do** have a phase 1 surface — the Room's DND row and
+  the Held-back sheet — but trigger fire and Librarian have none, and the script was written
+  against the page, not the endpoints.
+- `service-credentials-settings-ui-flow.md` — the Settings page `IntegrationCard` for
+  `kind=service` entries: badges, TEST CONNECTION, CLEAR, and the 502-on-unreachable-service
+  path. Phase 1's only credential surface is the setup gate's second step, which writes
+  home-service and nothing else. Rewrite alongside item 1 above.

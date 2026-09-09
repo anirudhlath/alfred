@@ -1,13 +1,15 @@
-# Passkey Auth Flows: Register, Conditional UI Login, Logout, WS 4001
+# Passkey Auth Flows: Register, Sign In, Expired Gate, WS 4001
 
-**Feature:** WebAuthn passkey authentication  
-**Priority:** critical  
+**Feature:** WebAuthn passkey authentication through the PWA client's identity gates
+(`web/src/gates/`, `web/src/lib/webauthn.ts`)
+**Priority:** critical
 **Type:** functional
 
 ## Prerequisites
 
 - Alfred runner started, channels process on port 8081
-- Fresh browser profile OR cleared `alfred_auth` cookie and `alfred_session_id` localStorage
+- Fresh browser profile OR cleared `alfred_auth` cookie and cleared `localStorage`
+  (`alfred_session_id`, `alfred.device`, `alfred.theme`, `alfred.unsent`)
 - Accessing via `localhost` (trusted network — the path this case registers on; the
   pairing-code alternative has its own case,
   [`webauthn-registration-pairing-code.md`](webauthn-registration-pairing-code.md))
@@ -15,54 +17,74 @@
 
 ## Test Steps
 
-### Part A — Initial registration (Onboarding)
+### Part A — First run (Setup gate, three steps)
 
 1. Clear the `alfred_auth` cookie and navigate to `http://localhost:8081`.
-2. Observe redirect to `/onboarding` (not registered).
-3. On Step 1/6 ("Register your device"), enter a device name (e.g. "Test Mac").
-4. Click **Register passkey** — observe the browser biometric prompt (Touch ID / Windows Hello).
-5. Complete biometric authentication.
-6. Observe: the wizard advances to Step 2/6 ("A few particulars") automatically.
-7. Complete the remaining steps (can use defaults) and click **Begin** on the final step.
-8. Observe: redirected to Chat page (`/`).
+2. Observe the **Setup gate**, not a redirect: the URL stays `/`. Kicker reads
+   `first run · localhost`, title "Good evening. I am Alfred."
+3. Click **Create passkey with Face ID** — observe the browser biometric prompt (Touch ID /
+   Windows Hello). There is no device-name field: the name is derived from the user agent
+   (`defaultDeviceName()`) and stored under `alfred.device`.
+4. Complete biometric authentication.
+5. Observe: the gate advances to step 2 — kicker `first run · 1 of 3 done`, title
+   "Registered.", asking for a long-lived Home Assistant token.
+6. Enter a token and click **Continue** (or **Do this later** to skip; both reach step 3).
+7. Observe step 3 — kicker `first run · 2 of 3 done`, title "What may the reflex touch?",
+   one toggle row per attention domain. Click **Finish**.
+8. Observe: the gate falls away and the Room is behind it — headline, status line, composer.
 
-### Part B — Conditional UI login (subsequent visit)
+### Part B — Sign-in gate (subsequent visit, no session)
 
-1. Close the browser tab and re-open `http://localhost:8081` (cookie should be set from Part A, so this may go directly to `/`).
-2. To test login: delete the `alfred_auth` cookie in DevTools → Network → Cookies, or use a fresh browser context.
-3. Navigate to `http://localhost:8081` — should redirect to `/login`.
-4. On the Login page, observe that the passkey prompt appears automatically (Conditional UI — no button press required on supported browsers) OR click the sign-in button.
-5. Complete biometric authentication.
-6. Observe: redirected to Chat page (`/`).
+1. Delete the `alfred_auth` cookie in DevTools → Application → Cookies.
+2. Reload `http://localhost:8081`.
+3. Observe the **Sign-in gate**: kicker `localhost · signed out`, title "Welcome back, sir.",
+   a **Sign in with Face ID** button, and a foot line naming the remembered device.
+4. Click it and complete biometric authentication.
+5. Observe: the gate falls away and the Room is behind it.
 
-### Part C — Sign-out
+### Part C — Expired gate rises over the Room (401)
 
-1. From any authenticated page, navigate to Settings (`/settings`).
-2. Locate the **SESSION** card at the top.
-3. Click **SIGN OUT**.
-4. Observe: redirected to `/login`.
-5. Confirm the `alfred_auth` cookie is deleted (DevTools → Application → Cookies).
+1. From the Room, delete the `alfred_auth` cookie in DevTools without reloading.
+2. Wait for the next `["overview"]` poll (≤30 s) or force one by backgrounding and returning.
+3. Observe: the **Expired gate** rises *over* the Room — kicker `401 · session lapsed`, title
+   "Your session lapsed.", body naming the eight-hour cap. The Room stays rendered behind it;
+   the URL does not change and nothing blanks.
+4. Sign in with Face ID; the gate falls away and the same Room is still there.
 
-### Part D — WS 4001 unauthorized redirect
+### Part D — WS 4001 while the page is open
 
-1. Delete the `alfred_auth` cookie in DevTools while the Chat page is open.
-2. Wait for the WebSocket to reconnect (or refresh the page partially).
-3. Observe: `ReconnectingSocket` receives close code 4001 from the server.
-4. Observe: socket status transitions to `"unauthorized"` — no retry loop.
-5. The `api()` fetch helper, on the next REST call, receives HTTP 401 and redirects to `/login`.
+1. From the Room, delete the `alfred_auth` cookie and force the chat socket to reconnect
+   (kill the channels process, or wait for the next reconnect).
+2. Observe: `ReconnectingSocket` receives close code 4001 and stops — status `"unauthorized"`,
+   no retry loop in the Network panel.
+3. Observe the Room tells the truth about it: the headline reads `Unreachable.` and the
+   offline note carries a real `last true HH:MM`.
+4. Sign in again through the gate; `ConnectionProvider` reopens both sockets (a 4001 is never
+   retried by backoff, so this is the only path back).
 
 ## Expected Result
 
-- Part A: Passkey registered without error; wizard advances; memory files written by `POST /api/onboarding`.
-- Part B: Conditional UI presents the stored credential; no password or username required; successful authentication sets `alfred_auth` cookie.
-- Part C: Cookie cleared; redirect to login; Settings page no longer accessible without re-auth.
-- Part D: Unauthorized WS closes with 4001 (not a connection error); no infinite reconnect loop; user lands on login page.
+- Part A: passkey registered without error; the three setup steps complete; credentials land
+  in the keyring (`GET /api/integrations` shows home-service configured) and the attention
+  choices in `GET /api/admin/attention`.
+- Part B: the stored credential authenticates; `alfred_auth` cookie set.
+- Part C: **401 never redirects.** The gate is an overlay; the last-known Room is visible
+  behind it throughout.
+- Part D: unauthorized WS closes with 4001 (not a connection error); no infinite reconnect
+  loop; both sockets recover after sign-in without a page reload.
 
 ## Notes
 
 - Registration is gated to trusted network (localhost / Tailscale CGNAT) **or** a valid
-  `X-Pairing-Code` header on both `register/begin` and `register/complete`. Attempting
-  from an untrusted IP with no code — or with a wrong/expired one — returns HTTP 403.
-- If the user is already registered when reaching `/onboarding`, the passkey step shows a "Skip — already registered" button to avoid `InvalidStateError`.
-- The "already set up" path (`alreadySetUp` flag in `OnboardingPage`) auto-advances step 0 → step 1 if the user is both registered and authenticated.
-- The chat WebSocket (`/ws`) also enforces auth with the same 4001 mechanism.
+  `X-Pairing-Code` header on both `register/begin` and `register/complete`. Attempting from an
+  untrusted IP with no code — or with a wrong/expired one — returns HTTP 403, which raises the
+  **Denied gate** ("Not from here."); `SetupGate` deliberately does not repeat that message in
+  its own foot line.
+- A rejected passkey assertion is a 401 too. `api()` excludes `/api/auth/login/*` and
+  `/api/auth/register/*` from the expired signal, so a failed attempt shows in the gate that
+  asked instead of raising a second one over it.
+- **Phase 1 has no sign-out affordance.** `logout()` exists in `lib/webauthn.ts` but nothing
+  in the client calls it; the settings screen that carried SIGN OUT is phase 2's Workshop. To
+  end a session for testing, clear the cookie or flush `alfred:auth:*` in Redis.
+- The chat WebSocket (`/ws`) and the telemetry socket enforce auth with the same 4001
+  mechanism.

@@ -7,7 +7,7 @@
 ## Prerequisites
 - Full Alfred stack running (`uv run python -m runner`), Redis Stack running locally (Homebrew service, so it can be stopped/started without tearing down the whole dev environment)
 - Terminal tailing `[triggers]` and `[conscious]` log output
-- Web SPA authenticated, on Chat page
+- PWA client authenticated, standing in the Room
 
 ## Test Steps
 1. Confirm both `triggers` and `conscious` processes are up and their `TriggerStore.start_sync()` subscribers are connected (no errors in logs yet).
