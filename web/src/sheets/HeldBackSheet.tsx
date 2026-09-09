@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { api, ApiError, post } from "@/lib/api";
+import { api, post } from "@/lib/api";
+import { failureText } from "@/lib/auth";
 import { hhmm } from "@/lib/format";
 import type { NotificationEvent } from "@/lib/types";
 import { Sheet } from "@/shell/Sheet";
@@ -19,6 +20,21 @@ export function HeldBackSheet({ open, onClose }: HeldBackSheetProps) {
   const [queuedAt, setQueuedAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // One visit, one drain. The sheet stays mounted while closed (only the read
+  // is gated on `open`), so a `Queued` latch from the last visit would still be
+  // there on the next — over a note about a refresh that has long since
+  // happened, and with no way to try again. Adjusted during render, as
+  // `usePresence` does, and on the opening edge rather than the closing one so
+  // the leave animation does not flash the idle button back.
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) {
+      setQueuedAt(null);
+      setError(null);
+    }
+  }
+
   const deferred = useQuery<{ notifications: NotificationEvent[] }>({
     queryKey: ["deferred"],
     queryFn: () => api<{ notifications: NotificationEvent[] }>("/api/admin/notifications/deferred"),
@@ -34,7 +50,7 @@ export function HeldBackSheet({ open, onClose }: HeldBackSheetProps) {
       await post("/api/admin/notifications/drain");
       setQueuedAt(hhmm(new Date()));
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.detail : (caught as Error).message);
+      setError(failureText(caught));
     }
   }
 
@@ -70,6 +86,14 @@ export function HeldBackSheet({ open, onClose }: HeldBackSheetProps) {
         </div>
       ) : null}
 
+      {/* A queue that could not be read must not look like an empty one, or a
+          loading one, in the one sheet that exists to make it visible. */}
+      {deferred.isError ? (
+        <div role="status" className="t-meta text-center">
+          {failureText(deferred.error)}
+        </div>
+      ) : null}
+
       {notifications.length > 0 ? (
         <>
           <button
@@ -81,7 +105,7 @@ export function HeldBackSheet({ open, onClose }: HeldBackSheetProps) {
           >
             {queuedAt ? "Queued" : "Drain queue now"}
           </button>
-          <div className="t-meta text-center">
+          <div role="status" className="t-meta text-center">
             {error ??
               (queuedAt
                 ? `Accepted at ${queuedAt}. Queue will empty on the next refresh if delivery succeeded.`
