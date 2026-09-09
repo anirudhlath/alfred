@@ -1,4 +1,5 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { DoorProvider } from "@/door/DoorProvider";
 import { AuthGate } from "@/gates/AuthGate";
 import { Room } from "@/room/Room";
 import { ConnectionProvider } from "@/shell/ConnectionProvider";
@@ -7,10 +8,13 @@ import { ThemeProvider } from "@/shell/ThemeProvider";
 
 /**
  * Provider order is load-bearing: ConnectionProvider and AuthGate both read the
- * query client, and AuthGate reads the connection for the Denied gate's stamp.
+ * query client, AuthGate reads the connection for the Denied gate's stamp, and
+ * DoorProvider sits inside AuthGate so nothing reads `/api/actions/pending`
+ * before there is a session to read it with.
  *
  * There is one screen. `/actions/:id` is the Room as well — a notification tap
- * must land on the approval it names (spec §6.3), which plan 1b opens over it.
+ * must land on the approval it names (spec §6.3), and `useActionRoute` opens the
+ * Door over it.
  */
 export default function App() {
   return (
@@ -19,11 +23,13 @@ export default function App() {
         <ConnectionProvider>
           <BrowserRouter>
             <AuthGate>
-              <Routes>
-                <Route path="/" element={<Room />} />
-                <Route path="/actions/:id" element={<Room />} />
-                <Route path="*" element={<Navigate to="/" replace />} />
-              </Routes>
+              <DoorProvider>
+                <Routes>
+                  <Route path="/" element={<Room />} />
+                  <Route path="/actions/:id" element={<Room />} />
+                  <Route path="*" element={<Navigate to="/" replace />} />
+                </Routes>
+              </DoorProvider>
             </AuthGate>
           </BrowserRouter>
         </ConnectionProvider>

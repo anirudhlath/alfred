@@ -17,7 +17,7 @@ describe("Headline", () => {
 
 describe("OfflineNote", () => {
   it("stamps when the house was last reachable, and announces it", () => {
-    render(<OfflineNote reconnecting={false} lastTrueAt={at2114} />);
+    render(<OfflineNote online={false} reconnecting={false} lastTrueAt={at2114} />);
     // A status message: the socket dropping is news, not decoration.
     expect(screen.getByRole("status")).toHaveTextContent(
       /^No connection to the house since 21:14\. Everything below is last-known\. Sending is paused\.$/,
@@ -25,15 +25,24 @@ describe("OfflineNote", () => {
   });
 
   it("says it is still trying while reconnecting", () => {
-    render(<OfflineNote reconnecting lastTrueAt={at2114} />);
+    render(<OfflineNote online={false} reconnecting lastTrueAt={at2114} />);
     expect(
       screen.getByText("Trying again. Everything below was last true at 21:14."),
     ).toBeInTheDocument();
   });
 
   it("prints an unknown clock rather than a made-up one", () => {
-    render(<OfflineNote reconnecting={false} lastTrueAt={null} />);
+    render(<OfflineNote online={false} reconnecting={false} lastTrueAt={null} />);
     expect(screen.getByText(/since --:--\./)).toBeInTheDocument();
+  });
+
+  it("keeps its live region mounted, and empty, while online", () => {
+    // Mounted before there is anything to say: VoiceOver can miss a live
+    // region that arrives with its text already in it.
+    render(<OfflineNote online reconnecting={false} lastTrueAt={at2114} />);
+    const region = screen.getByRole("status");
+    expect(region).toBeEmptyDOMElement();
+    expect(region).not.toHaveClass("mt-2");
   });
 });
 
