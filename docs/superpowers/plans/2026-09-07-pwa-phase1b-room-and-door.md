@@ -10110,9 +10110,12 @@ export interface UseRoomOptions {
 }
 ```
 
-After `const [live, setLive] = useState<TimelineItem[]>(readUnsent);`, add:
+Replace the line `const [live, setLive] = useState<TimelineItem[]>(readUnsent);`
+with it, a blank line, and the baseline:
 
 ```ts
+  const [live, setLive] = useState<TimelineItem[]>(readUnsent);
+
   // The first history to arrive is the thread as it stood before this session.
   // Kept as ids: stream ids are the server's and survive every re-read. Set
   // during render on the first loaded snapshot rather than in an effect, so
