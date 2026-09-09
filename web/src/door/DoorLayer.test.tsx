@@ -277,6 +277,22 @@ describe("DoorLayer — the slider without a finger", () => {
     expect(slider()).toHaveAttribute("aria-valuenow", "100");
   });
 
+  it("walks back and tries again when the house has said no", () => {
+    // The harness never answers, so the action stays pending, as it does when
+    // the server refused the confirm for a reason other than "gone".
+    const { onConfirm } = renderDoor(at("pending"));
+
+    press("End");
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+
+    press("ArrowLeft");
+    expect(slider()).toHaveAttribute("aria-valuenow", "90");
+    expect(screen.getByTestId("slide-knob")).toHaveAttribute("data-motion", "snap");
+
+    press("ArrowRight");
+    expect(onConfirm).toHaveBeenCalledTimes(2);
+  });
+
   it("is out of reach while offline", () => {
     const { onConfirm } = renderDoor(at("pending"), { online: false });
 

@@ -85,9 +85,11 @@ export function SlideToConfirm({ hint, disabled, onConfirm }: SlideToConfirmProp
   // The non-pointer road. The knob walks in tenths and confirms only on the
   // last one: no single key, and no single VoiceOver flick, is ever a yes. The
   // step is counted from where the knob is, so ten presses land exactly on
-  // the end instead of a float short of it.
+  // the end instead of a float short of it. A settled knob still answers the
+  // keys: a confirm the house refused is left pending to be tried again, and
+  // a finger can simply slide again, so the keys must have a road back too.
   function key(event: ReactKeyboardEvent<HTMLDivElement>): void {
-    if (disabled || dragging || settling) return;
+    if (disabled || dragging) return;
     const travel = measure();
     if (travel <= 0) return;
     const step = Math.round((knob / travel) * KEY_STEPS);
@@ -114,8 +116,11 @@ export function SlideToConfirm({ hint, disabled, onConfirm }: SlideToConfirmProp
     setKnob((next / KEY_STEPS) * travel);
     if (next === KEY_STEPS) {
       setSettling(true);
-      onConfirm();
+      // Only the arrival is a yes: End on a knob already at the end repeats nothing.
+      if (step < KEY_STEPS) onConfirm();
+      return;
     }
+    setSettling(false);
   }
 
   return (
