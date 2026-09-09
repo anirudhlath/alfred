@@ -4,6 +4,8 @@ import {
   confirmAction,
   fetchAction,
   fetchPending,
+  fuseLength,
+  fusePercent,
   fuseRemaining,
   tombstoneItems,
   type TrackedAction,
@@ -45,6 +47,43 @@ describe("fuseRemaining", () => {
 
   it("treats an unreadable expiry as lapsed rather than infinite", () => {
     expect(fuseRemaining({ ...pendingActionFixture, expires_at: "soon" }, T0742)).toBe(0);
+  });
+});
+
+describe("fuseLength", () => {
+  it("is the span between asked and expiry, not ttl_seconds", () => {
+    expect(fuseLength(pendingActionFixture)).toBe(300);
+    // The server reports what is *left* at read time; the fuse is still 300 s long.
+    expect(fuseLength({ ...pendingActionFixture, ttl_seconds: 120 })).toBe(300);
+  });
+
+  it("falls back to ttl_seconds when a clock will not parse or runs backwards", () => {
+    expect(fuseLength({ ...pendingActionFixture, timestamp: "earlier" })).toBe(300);
+    expect(fuseLength({ ...pendingActionFixture, expires_at: "soon" })).toBe(300);
+    expect(
+      fuseLength({ ...pendingActionFixture, expires_at: pendingActionFixture.timestamp, ttl_seconds: 7 }),
+    ).toBe(7);
+  });
+});
+
+describe("fusePercent", () => {
+  it("is the remaining share of the whole fuse, whatever the read said was left", () => {
+    expect(fusePercent(pendingActionFixture, T0742)).toBe(80);
+    expect(fusePercent({ ...pendingActionFixture, ttl_seconds: 120 }, T0742)).toBe(80);
+    expect(fusePercent(pendingActionFixture, T0747)).toBe(0);
+  });
+
+  it("never draws more than a full ring when the phone's clock is behind", () => {
+    expect(fusePercent(pendingActionFixture, T0741 - 60_000)).toBe(100);
+  });
+
+  it("survives a fuse with no length at all", () => {
+    expect(
+      fusePercent(
+        { ...pendingActionFixture, expires_at: pendingActionFixture.timestamp, ttl_seconds: 0 },
+        T0742,
+      ),
+    ).toBe(0);
   });
 });
 

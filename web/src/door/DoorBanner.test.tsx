@@ -110,14 +110,29 @@ describe("DoorBanner", () => {
     expect(onOpen).toHaveBeenCalledTimes(1);
   });
 
-  it("survives a zero TTL without dividing by it", () => {
+  it("survives a fuse with no length without dividing by it", () => {
     render(
       <DoorBanner
-        tracked={{ action: { ...pendingActionFixture, ttl_seconds: 0 }, phase: "pending" }}
+        tracked={{
+          action: { ...pendingActionFixture, expires_at: pendingActionFixture.timestamp, ttl_seconds: 0 },
+          phase: "pending",
+        }}
         now={T0742}
         onOpen={() => {}}
       />,
     );
     expect(screen.getByTestId("fuse-arc")).toHaveAttribute("data-percent", "0.0");
+  });
+
+  it("measures the ring against the whole fuse, not what was left when it was read", () => {
+    // Re-read three minutes in: the server says 120 s left. Still 240 of 300.
+    render(
+      <DoorBanner
+        tracked={{ action: { ...pendingActionFixture, ttl_seconds: 120 }, phase: "pending" }}
+        now={T0742}
+        onOpen={() => {}}
+      />,
+    );
+    expect(screen.getByTestId("fuse-arc")).toHaveAttribute("data-percent", "80.0");
   });
 });
