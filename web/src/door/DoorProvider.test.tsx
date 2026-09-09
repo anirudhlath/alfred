@@ -121,6 +121,9 @@ function Probe() {
       <button type="button" onClick={() => door.confirm("a91f3c2e")}>
         confirm
       </button>
+      <button type="button" onClick={() => door.answered("a91f3c2e")}>
+        answered
+      </button>
     </div>
   );
 }
@@ -323,6 +326,18 @@ describe("DoorProvider", () => {
     await user.click(screen.getByRole("button", { name: "confirm" }));
 
     await waitFor(() => expect(phases()).toBe("a91f3c2e:answered"));
+  });
+
+  it("marks an approval the deep link found gone as already answered", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    pendingBody = { actions: [pendingActionFixture] };
+    renderDoor();
+    await waitFor(() => expect(phases()).toBe("a91f3c2e:pending"));
+
+    await user.click(screen.getByRole("button", { name: "answered" }));
+
+    await waitFor(() => expect(phases()).toBe("a91f3c2e:answered"));
+    expect(screen.getByTestId("pending")).toHaveTextContent("0");
   });
 
   it("leaves a confirm the server refused for any other reason pending", async () => {

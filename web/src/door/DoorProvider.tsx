@@ -37,6 +37,11 @@ export interface DoorValue {
   confirm: (id: string) => void;
   /** Push an action in from outside — the `/actions/:id` deep link uses this. */
   arrived: (action: PendingAction) => void;
+  /**
+   * The house has no such approval any more (a 404 on read): a live one it
+   * still tracks was answered elsewhere. Same tombstone as a 404 on confirm.
+   */
+  answered: (id: string) => void;
   /** Epoch ms, stepped once a second while anything is counting. */
   now: number;
 }
@@ -63,6 +68,10 @@ export function DoorProvider({ children }: { children: ReactNode }) {
 
   const arrived = useCallback((action: PendingAction) => {
     dispatch({ type: "arrived", action });
+  }, []);
+
+  const answered = useCallback((id: string) => {
+    dispatch({ type: "confirm-404", id });
   }, []);
 
   // The app was open when the conscious engine asked. The notification carries
@@ -134,9 +143,10 @@ export function DoorProvider({ children }: { children: ReactNode }) {
       close: () => setOpenId(null),
       confirm,
       arrived,
+      answered,
       now,
     };
-  }, [actions, openId, now, confirm, arrived]);
+  }, [actions, openId, now, confirm, arrived, answered]);
 
   return <DoorContext.Provider value={value}>{children}</DoorContext.Provider>;
 }
