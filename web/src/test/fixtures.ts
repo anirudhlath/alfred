@@ -1,8 +1,10 @@
 import type {
+  ActionResultEvent,
   AttentionDomain,
   IntegrationInfo,
   NotificationEvent,
   Overview,
+  PendingAction,
   StreamPage,
 } from "@/lib/types";
 
@@ -336,4 +338,42 @@ export const deferredFixture: { notifications: NotificationEvent[] } = {
       metadata: {},
     },
   ],
+};
+
+/**
+ * `GET /api/actions/pending`, as `pending_action_payload` builds it. The clock in
+ * these is 2026-09-07: asked at 07:41, lapses at 07:46.
+ */
+export const pendingActionFixture: PendingAction = {
+  request_id: "a91f3c2e",
+  tool_name: "home.lock_unlock",
+  target_service: "home-service",
+  parameters: { entity_id: "lock.front_door", action: "unlock" },
+  reason: "You asked me to let the cleaner in when she rings. She rang at 07:41.",
+  source: "conscious-engine",
+  timestamp: "2026-09-07T07:41:00Z",
+  ttl_seconds: 300,
+  expires_at: "2026-09-07T07:46:00Z",
+};
+
+/** A second one, three minutes younger, with no reason supplied. */
+export const secondPendingActionFixture: PendingAction = {
+  request_id: "7c2e0b1d",
+  tool_name: "home.alarm_disarm",
+  target_service: "home-service",
+  parameters: { entity_id: "alarm_control_panel.house" },
+  reason: null,
+  source: "conscious-engine",
+  timestamp: "2026-09-07T07:44:00Z",
+  ttl_seconds: 300,
+  expires_at: "2026-09-07T07:49:00Z",
+};
+
+/** One entry of the `home_action_results` stream — the only proof of "applied". */
+export const actionResultFixture: ActionResultEvent = {
+  request_id: "a91f3c2e",
+  tool_name: "home.lock_unlock",
+  status: "success",
+  result: { state: "unlocked" },
+  timestamp: "2026-09-07T07:42:10Z",
 };
