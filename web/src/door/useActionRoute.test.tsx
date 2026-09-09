@@ -190,7 +190,7 @@ describe("useActionRoute", () => {
     );
 
     await waitFor(() => expect(screen.getByTestId("tomb")).toHaveTextContent("Lock unlock"));
-    // Still one read: the id was handled the first time.
+    // Still one read: the URL was replaced, so the location no longer names an id.
     expect(calls).toHaveLength(1);
   });
 
