@@ -73,7 +73,7 @@ Expected: eslint prints nothing, `Test Files  22 passed (22)`, `Tests  219 passe
 | `npm run build` | `tsc -b` then `vite build` — the type check lives here, not in lint |
 | `cd .. && uv run pytest tests/core/channels/test_spa_ci.py -q` | The CI gate that serves the built `web/dist` |
 
-4. **Test-file and test counts as you go.** 1a ends at 22 files / 219 tests. Each task below states the counts it should reach, so a missing or duplicated file is caught the moment it happens: 15 → 24 / 249 · 16 → 26 / 269 · 17 → 28 / 302 · 18 → 29 / 327 · 19 → 30 / 359 · 20 → 31 / 370 · 21 → 33 / 405 · 22 → 34 / 423 · 23 → 35 / 436 · 24 → 37 / 483 · 25 → 38 / 500 · 26 → 40 / 551 · 27 → 41 / 562 · 28 → 42 / 584.
+4. **Test-file and test counts as you go.** 1a ends at 22 files / 219 tests. Each task below states the counts it should reach, so a missing or duplicated file is caught the moment it happens: 15 → 24 / 249 · 16 → 26 / 269 · 17 → 28 / 302 · 18 → 29 / 327 · 19 → 30 / 359 · 20 → 31 / 370 · 21 → 33 / 405 · 22 → 34 / 423 · 23 → 35 / 436 · 24 → 37 / 483 · 25 → 38 / 500 · 26 → 40 / 551 · 27 → 41 / 562 · 28 → 42 / 588.
 
 5. **The backend this plan calls** — all of it is on `origin/master`; check if anything 404s at runtime:
 
@@ -9460,7 +9460,7 @@ Everything exists; this assembles it, deletes 1a's placeholder Room, unlocks the
 
 1a's version asserted a placeholder that said `Listening, sir.` unconditionally. The real Room reads its headline from the socket, so the fake must be able to say any of the socket's words, and the fetch stub must answer everything the Room asks for — and be told, per test, to answer differently: a pending approval, a quiet house, a first morning, a deep link the house has forgotten.
 
-These are the tests that pin the composition itself — that the banner, the do-not-disturb row, the held-back sheet, the offline note, the presence field and the headline are all wired to what they read. Each of them fails if its line in `Room.tsx` is dropped.
+These are the tests that pin the composition itself — that the banner, the do-not-disturb row, the held-back sheet, the offline note, the presence field and the headline are all wired to what they read. Each of them fails if its line in `Room.tsx` is dropped. Two pin a hand-off rather than a wire: the Room gives `useRoom` no history at all until the first page has answered — an empty list would make the read-back baseline empty, and an older "yes" would swallow a new one — and the Door's lapsed approvals reach the thread as tombstones with no banner.
 
 Complete file:
 
@@ -9677,6 +9677,59 @@ describe("App", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  it("keeps a new message the thread already has the words of", async () => {
+    // The history is the line between what predates this session and what the
+    // house reads back: a "yes" from this morning must not swallow one typed
+    // now. It would, if the Room handed useRoom an empty thread before the
+    // first read had answered.
+    routes["/api/admin/streams/user_requests?count=50"] = {
+      entries: [
+        {
+          id: "1788811923000-0",
+          event: {
+            event_id: "ur-1",
+            event_type: "user_request",
+            timestamp: "2026-09-07T20:52:03",
+            source: "web-pwa",
+            channel: "web_pwa",
+            session_id: "s_9f3",
+            content_type: "text",
+            content: "yes",
+          },
+        },
+      ],
+      next_before: null,
+    };
+    render(<App />);
+    expect(await screen.findAllByText("yes")).toHaveLength(1);
+
+    fireEvent.change(screen.getByPlaceholderText("Ask or tell Alfred"), {
+      target: { value: "yes" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(await screen.findAllByText("yes")).toHaveLength(2);
+  });
+
+  it("leaves a lapsed approval in the thread as a tombstone, with no banner", async () => {
+    // Asked and gone before the pinned clock (see beforeEach).
+    routes["/api/actions/pending"] = {
+      actions: [
+        {
+          ...pendingActionFixture,
+          timestamp: "2026-09-07T07:30:00Z",
+          expires_at: "2026-09-07T07:35:00Z",
+        },
+      ],
+    };
+    render(<App />);
+
+    expect(
+      await screen.findByText(/^expired \d{2}:\d{2} · not done · asked \d{2}:\d{2}$/),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Lock unlock")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Lock unlock/ })).toBeNull();
+  });
+
   it("raises the banner for a pending approval and opens the Door from it", async () => {
     routes["/api/actions/pending"] = { actions: [pendingActionFixture] };
     render(<App />);
@@ -9716,7 +9769,7 @@ describe("App", () => {
 
     // Left open until the afternoon, then brought back to the foreground.
     vi.setSystemTime(new Date(2026, 8, 7, 14, 0));
-    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
     act(() => {
       document.dispatchEvent(new Event("visibilitychange"));
     });
@@ -9884,8 +9937,9 @@ and the server writes every turn to the streams it is read from
 `core/conscious/runner.py` each response to `user_responses`). So a re-read
 carries the rows that arrived live since the Room opened, and `useRoom` must
 drop its own copies of them — or every trip to the background doubles the
-recent thread. The WebSocket frames carry no stream id, so kind and text are
-what there is to match on; the clocks are never compared, because the live row
+recent thread. The WebSocket frames carry no stream id, so kind and text — and for an
+act row its hue, since a reflex and a notification are both acts — are what
+there is to match on; the clocks are never compared, because the live row
 carries the phone's stamp and the history row the server's.
 
 In `web/src/room/useRoom.test.tsx`, change the import from `./useRoom`:
@@ -10014,6 +10068,66 @@ describe("useRoom — what the house reads back", () => {
     expect(rows.map((item) => item.kind === "you" && item.state)).toEqual(["sent", "unsent"]);
   });
 
+  it("lets the history's copy of a notification replace the live one", () => {
+    const { result, chat, rerender } = renderRoom({ history: [], online: true });
+    act(() =>
+      chat.deliver({
+        type: "notification",
+        title: "Bins go out tonight",
+        body: "Collection moved to Friday.",
+        urgency: "important",
+        notification_id: "ntf-9",
+        metadata: {},
+      }),
+    );
+    expect(kinds(result.current.items)).toEqual(["act"]);
+
+    // The stream copy knows its source; the frame only knew it was live.
+    rerender({
+      history: [
+        {
+          kind: "act",
+          id: "nt:1788814800000-0",
+          at: "2026-09-07T21:00:00",
+          hue: 255,
+          text: "Bins go out tonight",
+          meta: "21:00 · domain-router · important",
+        },
+      ],
+    });
+    const acts = result.current.items.filter((item) => item.kind === "act");
+    expect(acts).toHaveLength(1);
+    expect(acts[0]!.kind === "act" && acts[0]!.meta).toBe("21:00 · domain-router · important");
+  });
+
+  it("does not let a reflex answer for a notification that says the same", () => {
+    const { result, chat, rerender } = renderRoom({ history: [], online: true });
+    act(() =>
+      chat.deliver({
+        type: "notification",
+        title: "Bins go out tonight",
+        body: "Collection moved to Friday.",
+        urgency: "important",
+        notification_id: "ntf-9",
+        metadata: {},
+      }),
+    );
+
+    rerender({
+      history: [
+        {
+          kind: "act",
+          id: "rx:1788814800000-0",
+          at: "2026-09-07T21:00:00",
+          hue: 210,
+          text: "Bins go out tonight",
+          meta: "21:00 · reflex · calendar.remind",
+        },
+      ],
+    });
+    expect(result.current.items.filter((item) => item.kind === "act")).toHaveLength(2);
+  });
+
   it("leaves a client-made error row alone", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-07T21:00:00"));
@@ -10036,9 +10150,9 @@ describe("useRoom — what the house reads back", () => {
 - [ ] **Step 6: Run it to verify it fails**
 
 Run: `npm test -- src/room/useRoom.test.tsx`
-Expected: FAIL — `Tests  6 failed | 35 passed (41)`. Nothing is ever dropped, so
+Expected: FAIL — `Tests  7 failed | 36 passed (43)`. Nothing is ever dropped, so
 every test whose second read carries a copy of a live turn sees it twice, and the
-one that renders before any history throws on spreading `undefined`. The three
+one that renders before any history throws on spreading `undefined`. The four
 that pass do so because "keep it" is what no supersession does anyway.
 
 - [ ] **Step 7: Teach `useRoom` what the house reads back**
@@ -10048,18 +10162,19 @@ add:
 
 ```ts
 /**
- * The text a row would have been read back under, or null for a row the house
- * never writes to its streams: an unsent message, a client-made error row, and
- * the transients.
+ * What a row would have been read back as — its kind and text, and for an act
+ * row its hue too, because a reflex and a notification are both acts and must
+ * not answer for each other. Null for a row the house never writes to its
+ * streams: an unsent message, a client-made error row, and the transients.
  */
-function readBackText(item: TimelineItem): string | null {
+function readBackKey(item: TimelineItem): string | null {
   switch (item.kind) {
     case "you":
-      return item.state === "sent" ? item.text : null;
+      return item.state === "sent" ? `you:${item.text}` : null;
     case "alfred":
-      return item.error ? null : item.text;
+      return item.error ? null : `alfred:${item.text}`;
     case "act":
-      return item.text;
+      return `act:${item.hue}:${item.text}`;
     default:
       return null;
   }
@@ -10074,18 +10189,17 @@ function readBackText(item: TimelineItem): string | null {
  * trip to the background doubled the recent thread. `unread` is only what the
  * history has gained since the Room opened, because a live row can only be a
  * copy of a turn from this session; an older "yes" must not swallow a new one.
- * Within that, kind and text decide, one history row answering for one live
- * row in order, so "yes" twice stays twice. The clocks are never compared: the
- * live row carries the phone's stamp and the history row the server's.
+ * Within that, the read-back key decides, one history row answering for one
+ * live row in order, so "yes" twice stays twice. The clocks are never
+ * compared: the live row carries the phone's stamp and the history row the
+ * server's.
  */
 function withoutReadBack(live: TimelineItem[], unread: TimelineItem[]): TimelineItem[] {
   const taken = new Set<string>();
   return live.filter((item) => {
-    const text = readBackText(item);
-    if (text === null) return true;
-    const copy = unread.find(
-      (row) => row.kind === item.kind && readBackText(row) === text && !taken.has(row.id),
-    );
+    const key = readBackKey(item);
+    if (key === null) return true;
+    const copy = unread.find((row) => readBackKey(row) === key && !taken.has(row.id));
     if (!copy) return true;
     taken.add(copy.id);
     return false;
@@ -10155,7 +10269,7 @@ accepts and an effect would get one frame late.
 - [ ] **Step 8: Run it to verify it passes**
 
 Run: `npm test -- src/room/useRoom.test.tsx`
-Expected: `Tests  41 passed (41)`.
+Expected: `Tests  43 passed (43)`.
 
 - [ ] **Step 9: Rewrite `web/src/room/Room.tsx`**
 
@@ -10434,10 +10548,10 @@ Expected: `Tests  1 passed (1)`.
 - [ ] **Step 13: Run the composition test and the whole suite**
 
 Run: `npm test -- src/App.test.tsx`
-Expected: `Test Files  1 passed (1)`, 15 tests.
+Expected: `Test Files  1 passed (1)`, 17 tests.
 
 Run: `npm test`
-Expected: `Test Files  42 passed (42)`, `Tests  584 passed (584)`, zero failures. jsdom prints
+Expected: `Test Files  42 passed (42)`, `Tests  588 passed (588)`, zero failures. jsdom prints
 `Not implemented: HTMLCanvasElement.prototype.getContext` wherever the Room is
 rendered without a stubbed canvas — `PresenceField` catches it and draws nothing.
 That line is noise, not a failure.
@@ -10672,7 +10786,7 @@ cd ~/code/.worktrees/alfred/pwa-phase1-client/web
 npm run lint && npm test && npm run build
 ```
 
-Expected: no eslint output, `Test Files  42 passed (42)`, `Tests  584 passed (584)`, `✓ built in …`.
+Expected: no eslint output, `Test Files  42 passed (42)`, `Tests  588 passed (588)`, `✓ built in …`.
 
 ```bash
 cd ~/code/.worktrees/alfred/pwa-phase1-client
@@ -10715,7 +10829,7 @@ cd ~/code/.worktrees/alfred/pwa-phase1-client/web
 npm run lint && npm test && npm run build
 ```
 
-Expected: eslint prints nothing, `Test Files  42 passed (42)`, `Tests  584 passed (584)`, `✓ built in …`.
+Expected: eslint prints nothing, `Test Files  42 passed (42)`, `Tests  588 passed (588)`, `✓ built in …`.
 
 ```bash
 cd ~/code/.worktrees/alfred/pwa-phase1-client
