@@ -20,7 +20,9 @@ export interface DoorBannerProps {
 export function DoorBanner({ tracked, now, onOpen }: DoorBannerProps) {
   const remaining = fuseRemaining(tracked.action, now);
   const ttl = tracked.action.ttl_seconds;
-  const percent = ttl > 0 ? Math.max(0, Math.min(100, (remaining / ttl) * 100)) : 0;
+  // `remaining` is never negative; the top clamp is for a device clock behind
+  // the server's, where `expires_at` is further off than the TTL.
+  const percent = ttl > 0 ? Math.min(100, (remaining / ttl) * 100) : 0;
 
   return (
     <button

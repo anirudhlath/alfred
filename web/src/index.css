@@ -3,6 +3,15 @@
 @import "@fontsource/geist-mono/400.css";
 @import "@fontsource/geist-mono/500.css";
 
+/* Registered so the fuse ring's `transition: --fuse-pct` has a type to
+   interpolate (see `.fuse-arc`). Tailwind v4 already leans on @property, so this
+   asks nothing more of the browser than the rest of the stylesheet does. */
+@property --fuse-pct {
+  syntax: "<percentage>";
+  inherits: false;
+  initial-value: 0%;
+}
+
 /* ------------------------------------------------------------------ palette
    Handoff, "Design tokens". Both blocks carry every token, so one selector is
    the whole theme and nothing leaks between them. Dark is also what :root gets
@@ -266,13 +275,16 @@
 
   /* ------------------------------------------------------------------- fuse
      The arc is a conic gradient driven by two custom properties the component
-     sets, so the gradient itself never has to be built in JS. 900 ms linear
-     turns each one-second step into a sweep; nothing pulses. The two masks are
-     the prototype's own radii per size — not a formula: applying either one's
-     proportions to the other size gives a solid disc instead of a hairline. */
+     sets, so the gradient itself never has to be built in JS. The 900 ms linear
+     sweep between one-second steps is on `--fuse-pct`, registered as a
+     <percentage> at the top of this file: a gradient image cannot be
+     interpolated, so `transition: background` — the prototype's own line —
+     would step, not sweep. Nothing pulses. The two masks are the prototype's
+     own radii per size — not a formula: applying either one's proportions to
+     the other size gives a solid disc instead of a hairline. */
   .fuse-arc {
     background: conic-gradient(var(--fuse-color) var(--fuse-pct), var(--ring) 0);
-    transition: background 0.9s linear;
+    transition: --fuse-pct 0.9s linear;
   }
   .fuse-168 {
     -webkit-mask-image: radial-gradient(circle, transparent 79px, #000 80px);
