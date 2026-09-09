@@ -289,6 +289,21 @@ describe("HoldToTalk", () => {
     expect(onHoldingChange).toHaveBeenLastCalledWith(true);
   });
 
+  it("clears the counter's interval when unmounted mid-take", async () => {
+    vi.useFakeTimers();
+    const { button, unmount } = renderHold();
+    await press(button);
+    expect(vi.getTimerCount()).toBe(1);
+
+    await act(async () => {
+      unmount();
+    });
+
+    // An interval left running holds the component's setter for the life of the
+    // page, and every unmounted take leaks another one.
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("captures the pointer so a finger sliding off still ends the take", async () => {
     const capture = vi.spyOn(Element.prototype, "setPointerCapture");
     const { button } = renderHold();
