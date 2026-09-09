@@ -34,6 +34,10 @@ never signed in. Record the device, iOS version and date at the bottom.
 ## §4.4 — 100vh is wrong
 
 - [ ] Scroll the timeline down and back: the composer never leaves the screen
+- [ ] Scroll a long thread: the headline and status line stay put at the top and the
+      composer at the bottom; only the timeline moves
+- [ ] Send a message with the thread scrolled to the bottom: the reply scrolls into view
+      on its own
 - [ ] With Safari's toolbar collapsed, the Room still fills the viewport exactly
 - [ ] Rotate twice quickly: no strip of background appears at the bottom
 
@@ -72,9 +76,12 @@ never signed in. Record the device, iOS version and date at the bottom.
 ## §4.10 — iOS kills suspended PWAs
 
 - [ ] Send a message, background the app for five minutes, return: the thread is
-      intact and the status line's clock has moved
+      intact and the status line's clock has moved. Five minutes is inside the session
+      idle timeout (30 min by default); past it the thread is *meant* to be gone — see
+      "The Room's window" below
 - [ ] While backgrounded, have the house produce an act (a reflex action): it is
-      present after returning, without a manual refresh
+      present after returning, without a manual refresh. Only an act from **today**
+      survives the return — the Room keeps the house's rows for the day, not for ever
 - [ ] Turn off Wi-Fi and mobile data: the headline reads `Reconnecting…` first and
       `Unreachable.` within ~4 s (three failed tries), or at once when iOS reports
       the device offline; the offline note carries a real `last true HH:MM`, and a
@@ -115,6 +122,25 @@ never signed in. Record the device, iOS version and date at the bottom.
 
 - [ ] The toggle switches instantly and survives a relaunch
 - [ ] Safari's chrome colour matches the theme in both
+
+## The Room's window
+
+- [ ] Open the app after more than the session idle timeout away (30 min unless the
+      house's `session.idle_minutes` says otherwise): the conversation is gone, and the
+      first message starts a new session — Alfred does not refer back to it
+- [ ] Today's notifications and reflex acts are still there, under `earlier today`
+- [ ] **A completely blank Timeline is correct** on an established house that has
+      produced no notification and no reflex act today: there is no conversation left to
+      show and no house rows to keep, and the first-day greeting is deliberately gated on
+      a first run (`isFirstRun`), so nothing fills the space. Empty is the intended Room
+      after a break, not a failed history read
+- [ ] Reopen within the timeout: the conversation is still there and continues
+- [ ] Leave the app open and idle past the timeout, then send: a `new conversation ·
+      HH:MM` divider separates the two and the older turns stay on screen — the window
+      moves when the app is backgrounded and returned to, not at minute thirty. The
+      session id follows the socket, so it turns over on the next reconnect rather than
+      here
+- [ ] A routine suggestion reads as the suggestion itself, not "Routine Suggestion"
 
 ---
 

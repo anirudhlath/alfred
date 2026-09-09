@@ -59,7 +59,7 @@ web/
       telemetry-socket.ts# TelemetrySocket over /ws/telemetry (carried over unchanged)
       types.ts           # The shared type contract (hand-mirrors the bus/admin schemas)
       format.ts          # hhmm, dayMonth, dayLabel, mmss, usd, evs, shortId,
-                         # humaniseTool, rawCall
+                         # humaniseTool, rawCall, notificationText
       theme.ts           # Theme, THEME_KEY, resolveInitialTheme, applyTheme, storedTheme
       viewport.ts        # installViewportVars, keyboardInset, useKeyboardOpen
       lifecycle.ts       # onVisible(fn) — the one visibilitychange subscription
@@ -67,7 +67,8 @@ web/
       recorder.ts        # pickMimeType (mp4→aac→default), Recorder, blobToDataUrl
       presence-signal.ts # PresenceSignal — the ported signal() envelopes
       headline.ts        # greetingFor, pickHeadline — the whole priority table, pure
-      history.ts         # TimelineItem, fetchRoomHistory, toTimelineItems, withDividers
+      history.ts         # TimelineItem, fetchRoomHistory, toTimelineItems,
+                         # sessionWindow, withDividers, SESSION_IDLE_MS
       actions.ts         # actionReducer, fuseRemaining, tombstoneItems, the three fetches
       slide.ts           # CONFIRM_RATIO, slideKnob, hintOpacity
     shell/         # Providers, and the two surfaces everything rises on
@@ -99,9 +100,10 @@ web/
                          # TranscribingBubble, ThinkingRow, FirstDay
       Composer.tsx       # 50px field, send / hold slot, keyboard padding
       HoldToTalk.tsx     # Pointer hold, mic, caption, bars
-      useOverview.ts     # ["overview"], 30s poll, isFirstRun()
+      useOverview.ts     # ["overview"], 30s poll, isFirstRun(), sessionIdleMs()
       useRoomHistory.ts  # ["room-history"], read once, re-read on return
-      useRoom.ts         # Live timeline state, send, unsent queue, no-reply timeout
+      useRoom.ts         # Live timeline state, the session window, send,
+                         # unsent queue, no-reply timeout
     door/          # The approval interrupt
       DoorProvider.tsx  # useDoor(); the reducer's three feeds and the 1s tick
       DoorBanner.tsx    # The ink banner above the composer
@@ -218,8 +220,15 @@ Everything on screen is one timeline.
 - **Timeline** — `useRoomHistory` reads four stream pages once
   (`user_requests`, `user_responses`, `reflex_observations` with an `action`, and
   `notifications` without a `pending_action_id`), `toTimelineItems` merges them by
-  timestamp, and `useRoom` merges that with the live rows (what you sent, what Alfred
-  said, what he did while you watched) plus the Door's tombstones.
+  timestamp, `sessionWindow` keeps **the current session** — the turns since the last
+  silence of the server's idle timeout (`Overview.session.idle_minutes`, default 30 min;
+  satellite turns included; they land on the same two streams), which is what Alfred
+  still has in context — plus the house's own rows for the day, or from the session's
+  start if that came earlier, and `useRoom` merges that with the live rows (what you
+  sent, what Alfred said, what he did while you watched) plus the Door's tombstones,
+  neither of which is ever windowed. After a break the Room opens empty; older turns are
+  the Activity view's (phase 2). A notification row's text is its body (the title is a
+  label — "Routine Suggestion").
 - **Composer and hold-to-talk** — text queues under `alfred.unsent` while the house is
   unreachable and retries in order on the next socket open; holding records through
   `MediaRecorder` with a one-second floor.
@@ -275,7 +284,7 @@ DoorProvider → Routes`. `DoorProvider` sits inside `AuthGate` so nothing reads
 | Kind | Keys |
 |---|---|
 | TanStack Query | `["auth-status"]`, `["overview"]`, `["integrations"]`, `["attention"]`, `["room-history"]`, `["deferred"]`, `["pending-actions"]` |
-| `localStorage` | `alfred.theme`, `alfred.device`, `alfred.unsent`, `alfred.session` — every key is `alfred.<noun>` |
+| `localStorage` | `alfred.theme`, `alfred.device`, `alfred.unsent`, `alfred.session`, `alfred.session-at` — every key is `alfred.<noun>`, `session-at` the one compound |
 
 ---
 
@@ -293,8 +302,10 @@ Used by `ChatSocket` (`lib/chat-socket.ts`).
 {"type": "ping"}
 ```
 
-`session_id` rides whichever frame is a connection's first, text or audio (`payload()` in
-`chat-socket.ts` is shared by both).
+`session_id` rides the connection's first text or audio frame — `payload()` in
+`chat-socket.ts` is shared by both — but only when there is a stored id worth sending and
+only if the frame actually left. Both conditions are set out in the session paragraph
+below.
 
 `ping` is a keepalive (Cloudflare drops proxied sockets idle ~100s); the server answers
 `{"type": "pong"}` and does nothing else — in particular a ping does not count as the
@@ -313,9 +324,40 @@ binary rather than text, is refused with
 `{"type": "error", "text": "Expected a JSON object", "session_id": "<id>"}` and the
 connection stays open.
 
-`session_id` is sent only on the first message of a new connection and is read from
-`localStorage` under key `alfred.session`. After the first send, `firstMessageSent`
-is set and session_id is omitted from subsequent payloads.
+The server assigns an id per connection and pushes it in a `session` frame before the
+client has said anything (`core/channels/web_server.py`); a client holding no id of its
+own adopts that one. `alfred.session` holds the id and `alfred.session-at` an ISO stamp
+of the last send. `adopt` and `forget` are the id's only writers; `forget` takes the
+stamp with it, and an id adopted but never sent on carries no stamp — which the next
+connection reads as idle, and lets go.
+
+On the **first message of a connection**, `payload()` decides which session the turn
+belongs to:
+
+- A stored id whose stamp is idle for the server's timeout or longer is dropped, both
+  keys with it, and this connection's assigned id is adopted in its place. A missing or
+  unreadable stamp reads as idle — one fresh session for a phone from before the stamp
+  existed.
+- `session_id` is then carried only if what remains is a stored id the server does not
+  already have (`_sessionId !== assigned`). When the two agree the frame carries nothing:
+  the server named that id and would only be told it again.
+
+Only a frame the socket took commits anything. `send()` sets `firstMessageSent` and
+writes `alfred.session-at` after `socket.send()` returns true, so a send refused because
+the socket was not `OPEN` — the unsent queue calls `sendText` ungated — neither spends
+the connection's one chance to carry `session_id` nor records activity the server never
+saw. After that first frame, `session_id` is omitted from every payload until the next
+open.
+
+The timeout is the server's own rather than a client constant:
+`Overview.session.idle_minutes` → `sessionIdleMs()` (`room/useOverview.ts`) →
+`chat.setIdleMs()` in a `Room` effect, with `SESSION_IDLE_MS` (30 min, `lib/history.ts`)
+standing in until the overview answers. It is the same boundary the Room windows its
+timeline on, so the thread and the id turn over together.
+
+The server locks the id after the first message (`session_locked`), so a session that
+idles out mid-connection cannot rotate until the socket next reopens — which on iOS it
+does, every time the app is backgrounded long enough.
 
 #### Server → Client (`ChatServerMessage`)
 
@@ -359,7 +401,11 @@ is set and session_id is omitted from subsequent payloads.
   the third (`OFFLINE_AFTER_ATTEMPTS`), or at once while `navigator.onLine` is false —
   and keeps retrying either way; the next open makes it `"online"` again. The Room
   says `Reconnecting…` for the one and `Unreachable.` for the other.
-- `ChatSocket.onopen` resets `firstMessageSent` so session_id is re-sent on reconnect.
+- `ChatSocket.onopen` clears `firstMessageSent` and the previous connection's assigned
+  id, so a live stored id is offered again on the next connection. `ws.ts` calls
+  `onopen()` **before** `onstatus("online")`: the app's online listeners send on that
+  status (`useRoom` flushes the unsent queue), and a flush that ran first would be the
+  new connection's first message with the old connection's state still behind it.
 
 ### Telemetry (`/ws/telemetry`)
 

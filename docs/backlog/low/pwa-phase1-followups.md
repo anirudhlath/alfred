@@ -95,3 +95,68 @@ shows them.
 
 `summarize` and `timeOf` in `format.ts` were deleted rather than held for phase 2; the
 Activity view will write its own summariser against the bus schema it actually renders.
+
+## 8. Routine suggestions cannot be accepted or declined
+
+The Room now shows the suggestion's body (phone fixes, 2026-09-09) but there is nothing
+to tap, and that is a backend gap, not a client one:
+
+- **Nothing changes a routine's state on purpose.** `core/memory/routines/store.py` is a
+  YAML store — `save`, `get`, `list_all`, `list_by_state`, `delete` — with no endpoint, no
+  LLM tool and no channel behind it. The lifecycle states are `candidate`, `active`,
+  `dormant`, `archived` (`RoutineSpec`, `core/memory/schemas.py`); there is no `rejected`,
+  and **nothing in the tree ever writes `active`**. The only transitions that happen are
+  the Librarian's, in `_update_routine_lifecycle` (`core/librarian/consolidator.py`):
+  three consecutive misses → `dormant`, thirty days dormant → `archived`, and confidence
+  decayed below `routine_archive_threshold` (0.3) → `archived`. A routine is born a
+  candidate and can only fade.
+- **The suggestion carries no identity.** `check_routine_suggestions`
+  (`core/conscious/engine.py`) publishes `title="Routine Suggestion"`, the body and
+  `source="librarian"` — no `metadata`, which `NotificationPublisher.publish` then
+  defaults to `{}`. The client cannot tell which routine the row is about. It needs
+  `metadata.routine_name`: the store keys by `name`, one YAML file per routine, and there
+  is no id.
+- **Nothing executes an `active` routine.** `list_by_state` is called from exactly one
+  place — `engine.py`'s `_eligible_candidates` — and only ever with `"candidate"`. The
+  consolidator's lifecycle pass and `GET /api/admin/memory/routines` read `list_all()`.
+  Accepting a suggestion today would change a label and nothing else.
+- **It re-fires daily while it stays a candidate.**
+  `_ROUTINE_SUGGESTION_COOLDOWN_HOURS` is 24, checked by a 15-minute loop in
+  `core/conscious/__main__.py`; `_build_routine_hint` spends the same budget, so a chat
+  turn can be the day's suggestion instead. Observed on a live house: 47 of the last 50
+  notifications were the same coffee routine. It is bounded rather than endless — each
+  ignored cooldown window costs the candidate 0.05 confidence and the Librarian archives
+  it below 0.3 — but that is decay, not consent.
+
+Do them in that order: a state endpoint (`POST /api/routines/{name}/state` behind the
+admin gate, plus a conscious-engine tool so "yes, do that" in the thread works too),
+`metadata.routine_name` on the notification, an executor for `active` routines, then the
+client's accept/decline on the row. Until the executor exists a button would be a lie —
+spec §5.2.3 names routine lifecycle as one of the two places where "Alfred knows this"
+has degrees.
+
+## 9. Notifications missed between sessions surface nowhere
+
+The Room keeps the house's rows for the day and the conversation for the session, so a
+notification from yesterday that you never saw is gone from the phone until the Activity
+view (phase 2) or push (phase 5). Phase 1's honesty rule applies: nothing pretends to be
+a badge. Recall noise is already filed under `docs/backlog/high/`
+(`passive-observations-are-75-percent-duplicates.md`,
+`involuntary-recall-threshold-too-high.md`).
+
+## 10. `tests/core/channels/test_admin_api.py` types its fixture `monkeypatch: Any`
+
+Seventeen times, in the one file. The repo's convention is `monkeypatch: pytest.MonkeyPatch`
+— 196 uses across `tests/` — and `Any` throws away the only type information the fixture
+has. Nothing behind it: a single mechanical pass, worth doing in one commit rather than a
+line at a time as the file is touched.
+
+## 11. Two web tests time out under heavy suite parallelism
+
+Under eight concurrent vitest suites (load average ~118 on the dev box) two tests hit
+`waitFor` timeouts, twice each: `"installs the viewport and audio hooks, then renders the
+App under StrictMode"` (`web/src/main.test.ts`, the 5 s default) and `"says queued, not
+delivered"` (`web/src/sheets/HeldBackSheet.test.tsx`). Both are clean at four-way and
+single-suite, so nothing is broken today. Same shape as the `useActionRoute` race fixed in
+`5d827f1` — an assertion racing an effect rather than a slow machine — and the same fix
+would apply. File it against the CI change if the frontend suites are ever parallelised.
