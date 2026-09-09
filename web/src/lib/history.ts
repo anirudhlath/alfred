@@ -1,5 +1,5 @@
 import { api } from "./api";
-import { dayLabel, hhmm, humaniseTool, shortId } from "./format";
+import { dayLabel, hhmm, humaniseTool, notificationText, shortId } from "./format";
 import type { Mood, StreamEntry, StreamPage } from "./types";
 
 /** One row of the Room. Every kind carries an ISO `at`; the list is sorted by it. */
@@ -34,8 +34,12 @@ export type RoomStream = (typeof ROOM_STREAMS)[number];
 export type RoomHistory = Record<RoomStream, StreamEntry[]>;
 
 const HISTORY_COUNT = 50;
-/** A silence this long between two turns starts a new conversation (handoff). */
-const CONVERSATION_GAP_MS = 30 * 60 * 1000;
+/**
+ * The client's fallback for the server's chat session idle timeout
+ * (`SESSION_TIMEOUT_MINUTES`, `shared/config.py`, default 30), until the overview
+ * reports the real one (`Overview.session.idle_minutes` → `sessionIdleMs`).
+ */
+export const SESSION_IDLE_MS = 30 * 60 * 1000;
 
 function emptyHistory(): RoomHistory {
   return {
@@ -56,9 +60,10 @@ function emptyHistory(): RoomHistory {
  *
  * That holds when all four are down too: the result is four empty lists, never a
  * rejection, so `useRoomHistory().isError` is never true and an empty thread is
- * indistinguishable here from a dark house. Deliberate — the Room does not
- * announce outages; the status line and the offline note do, from the overview
- * read (which does reject) and the socket.
+ * indistinguishable here from a dark house — or from a session that idled out
+ * (`sessionWindow`). Deliberate — the Room does not announce outages; the status
+ * line and the offline note do, from the overview read (which does reject) and
+ * the socket.
  */
 export async function fetchRoomHistory(): Promise<RoomHistory> {
   const settled = await Promise.allSettled(
@@ -130,8 +135,8 @@ function reflexItem(entry: StreamEntry): TimelineItem | null {
 
 function notificationItem(entry: StreamEntry): TimelineItem | null {
   const at = str(entry.event.timestamp);
-  const title = str(entry.event.title);
-  if (!at || !title) return null;
+  const text = notificationText(entry.event.body, entry.event.title);
+  if (!at || !text) return null;
   // A confirmation request is the Door's, and rendering it here as well would
   // show the same decision twice, one of them without a fuse.
   if (str(record(entry.event.metadata)?.pending_action_id)) return null;
@@ -142,7 +147,7 @@ function notificationItem(entry: StreamEntry): TimelineItem | null {
     id: `nt:${entry.id}`,
     at,
     hue: 255,
-    text: title,
+    text,
     meta: `${hhmm(at)} · ${source} · ${urgency}`,
   };
 }
@@ -167,13 +172,62 @@ function startOfDay(date: Date): number {
 }
 
 /**
+ * The current session: the turns since the last silence of `idleMs` or more,
+ * walked back from the newest turn. This is conversational continuity across
+ * every channel — a satellite turn breaks the silence exactly as a phone turn
+ * does — not a claim about what Alfred still has in context: which server
+ * session a turn belongs to is `chat-socket.ts`'s business, and that id can
+ * turn over inside one window.
+ * A newest turn that is itself `idleMs` old means no session, and no turns.
+ * `items` must be sorted by `at`, as `toTimelineItems` returns them: the walk
+ * relies on it.
+ *
+ * The house's own rows (notifications, reflex acts) are not conversation; they
+ * stay for the day, or from the session's start if that came earlier. Everything
+ * else (tombstones, live rows, the unsent queue) is the caller's, never windowed
+ * here.
+ *
+ * `now` is only the reference for "idle" and "today": a turn stamped after it
+ * (the server's clock, a phone a few seconds behind) is current.
+ */
+export function sessionWindow(items: TimelineItem[], now: Date, idleMs: number): TimelineItem[] {
+  const stamps = items.map((item) => Date.parse(item.at));
+  let start: number | null = null;
+  let next = now.getTime();
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
+    if (item.kind !== "you" && item.kind !== "alfred") continue;
+    const at = stamps[i];
+    // An unreadable stamp is not a turn: standing in for one would swallow
+    // the silence on both sides of it.
+    if (Number.isNaN(at)) continue;
+    if (next - at >= idleMs) break;
+    start = at;
+    next = at;
+  }
+
+  const today = startOfDay(now);
+  const houseSince = start === null ? today : Math.min(today, start);
+  // Both comparisons are false for a NaN stamp, which is what drops the
+  // unreadable row itself — and with it the `divider:day:NaN` the thread would
+  // otherwise open on.
+  return items.filter((item, i) => {
+    const at = stamps[i];
+    if (item.kind === "you" || item.kind === "alfred") return start !== null && at >= start;
+    return at >= houseSince;
+  });
+}
+
+/**
  * Insert the two kinds of divider the handoff draws: one per day, and one after
- * a half-hour silence between conversational turns.
+ * a silence of the session's idle timeout between conversational turns — the
+ * same silence `sessionWindow` cuts at, so the Room never draws a new
+ * conversation inside the one session it is showing.
  *
  * Only `you` and `alfred` rows open a conversation. An autonomous act at 03:00
  * is Alfred talking to the house, not to you, and must not split the thread.
  */
-export function withDividers(items: TimelineItem[], now: Date): TimelineItem[] {
+export function withDividers(items: TimelineItem[], now: Date, idleMs: number): TimelineItem[] {
   const out: TimelineItem[] = [];
   let lastDay: number | null = null;
   let lastTurnAt: number | null = null;
@@ -195,7 +249,7 @@ export function withDividers(items: TimelineItem[], now: Date): TimelineItem[] {
 
     if (item.kind === "you" || item.kind === "alfred") {
       const stamp = at.getTime();
-      if (lastTurnAt !== null && stamp - lastTurnAt >= CONVERSATION_GAP_MS) {
+      if (lastTurnAt !== null && stamp - lastTurnAt >= idleMs) {
         out.push({
           kind: "divider",
           id: `divider:gap:${item.id}`,

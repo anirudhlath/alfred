@@ -142,7 +142,7 @@ describe("useActionRoute", () => {
     );
     expect(openActionMock).not.toHaveBeenCalled();
     expect(answeredMock).toHaveBeenCalledWith("a91f3c2e");
-    expect(screen.getByTestId("path")).toHaveTextContent(ROOT);
+    await waitFor(() => expect(screen.getByTestId("path")).toHaveTextContent(ROOT));
   });
 
   it("leaves the tombstone to the Door when the Door already tracks the id", async () => {

@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { SESSION_IDLE_MS } from "@/lib/history";
 import type { Overview } from "@/lib/types";
 import { markTrue } from "@/shell/ConnectionProvider";
 
@@ -32,4 +33,18 @@ export function isFirstRun(overview: Overview | undefined): boolean {
   return (
     Object.keys(streams).length > 0 && Object.values(streams).every((stream) => stream.length === 0)
   );
+}
+
+/**
+ * The server's session idle timeout in ms, or the client's default until the
+ * overview has answered (or if it reports nonsense — a zero would window
+ * everything away, an `Infinity` would never let the window break or the socket
+ * rotate). The house always sends `session`; the guard is for a cached shell
+ * meeting a server from before it did, not for the current contract.
+ */
+export function sessionIdleMs(overview: Overview | undefined): number {
+  // `Number.isFinite` narrows nothing, so the read defaults rather than the
+  // guard testing for `undefined` — absent and nonsense take the same fallback.
+  const minutes = overview?.session?.idle_minutes ?? Number.NaN;
+  return Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : SESSION_IDLE_MS;
 }

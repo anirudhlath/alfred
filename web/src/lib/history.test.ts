@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   fetchRoomHistory,
   pendingActionTitles,
+  SESSION_IDLE_MS,
+  sessionWindow,
   toTimelineItems,
   withDividers,
   type RoomHistory,
@@ -168,16 +170,26 @@ describe("toTimelineItems", () => {
     );
   });
 
-  it("renders a notification as its title, in the NT hue", () => {
+  it("renders a notification as its body, in the NT hue", () => {
     const nt = items.find((item) => item.kind === "act" && item.hue === 255);
     expect(nt).toEqual({
       kind: "act",
       id: "nt:1788801600000-0",
       at: "2026-09-07T18:20:00",
       hue: 255,
-      text: "Your parcel arrived",
+      text: "The door sensor saw it at 18:20.",
       meta: "18:20 · trigger:trg_parcel · important",
     });
+  });
+
+  it("renders a notification that carries a body and no title", () => {
+    const [nt] = toTimelineItems({
+      ...EMPTY,
+      notifications: [
+        { id: "1-0", event: { timestamp: "2026-09-07T18:20:00", body: "The kettle has boiled." } },
+      ],
+    });
+    expect(nt.kind === "act" && nt.text).toBe("The kettle has boiled.");
   });
 
   it("files an unlabelled notification under the house, informational", () => {
@@ -254,6 +266,8 @@ describe("toTimelineItems", () => {
 
 describe("withDividers", () => {
   const now = new Date(2026, 8, 7, 21, 30);
+  const divided = (items: TimelineItem[], idleMs = SESSION_IDLE_MS) =>
+    withDividers(items, now, idleMs);
 
   it("opens each day with its own label", () => {
     const twoDays = toTimelineItems({
@@ -263,7 +277,7 @@ describe("withDividers", () => {
       notifications: [],
     });
 
-    const labels = withDividers(twoDays, now)
+    const labels = divided(twoDays)
       .filter((item) => item.kind === "divider")
       .map((item) => (item.kind === "divider" ? item.label : ""));
 
@@ -271,7 +285,7 @@ describe("withDividers", () => {
   });
 
   it("starts a new conversation after a thirty-minute silence", () => {
-    const labels = withDividers(toTimelineItems(HISTORY), now)
+    const labels = divided(toTimelineItems(HISTORY))
       .filter((item) => item.kind === "divider")
       .map((item) => (item.kind === "divider" ? item.label : ""));
 
@@ -284,7 +298,7 @@ describe("withDividers", () => {
     const first = toTimelineItems({ ...EMPTY, user_requests: userRequestsPage.entries })[0];
     const later = turnAt("2026-09-07T21:44:00");
 
-    const out = withDividers([first, later], now);
+    const out = divided([first, later]);
 
     expect(out.map((item) => (item.kind === "divider" ? item.label : item.kind))).toEqual([
       "earlier today",
@@ -299,14 +313,25 @@ describe("withDividers", () => {
   it("draws the line at exactly thirty minutes", () => {
     const first = turnAt("2026-09-07T20:52:03");
     const dividers = (items: TimelineItem[]) =>
-      withDividers(items, now).filter((item) => item.kind === "divider").length;
+      divided(items).filter((item) => item.kind === "divider").length;
 
     expect(dividers([first, turnAt("2026-09-07T21:22:02")])).toBe(1);
     expect(dividers([first, turnAt("2026-09-07T21:22:03")])).toBe(2);
   });
 
+  it("draws the gap at the timeout it is given, not at the default", () => {
+    // Twenty minutes: one conversation at the default, two when the house
+    // idles out at ten — the Room must not split the session it is showing.
+    const turns = [turnAt("2026-09-07T21:00:00"), turnAt("2026-09-07T21:20:00")];
+    const dividers = (items: TimelineItem[], idleMs?: number) =>
+      divided(items, idleMs).filter((item) => item.kind === "divider").length;
+
+    expect(dividers(turns)).toBe(1);
+    expect(dividers(turns, 10 * 60 * 1000)).toBe(2);
+  });
+
   it("leaves an empty thread empty", () => {
-    expect(withDividers([], now)).toEqual([]);
+    expect(divided([])).toEqual([]);
   });
 
   it("gives every divider a unique id", () => {
@@ -314,14 +339,114 @@ describe("withDividers", () => {
       ...EMPTY,
       user_requests: [...userRequestsPage.entries, ...yesterdayRequestPage.entries],
     });
-    const out = withDividers(
-      [...twoDays, turnAt("2026-09-07T21:44:00"), turnAt("2026-09-07T22:20:00")],
-      now,
-    );
+    const out = divided([
+      ...twoDays,
+      turnAt("2026-09-07T21:44:00"),
+      turnAt("2026-09-07T22:20:00"),
+    ]);
 
     expect(out.filter((item) => item.kind === "divider")).toHaveLength(4);
     const ids = out.map((item) => item.id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+describe("sessionWindow", () => {
+  const now = new Date(2026, 8, 7, 21, 30);
+  // Every assertion below reads the ids, so each row carries its own.
+  const you = (id: string, at: string): TimelineItem => ({
+    kind: "you",
+    id: `you:${id}`,
+    at,
+    text: id,
+    state: "sent",
+  });
+  const alfred = (id: string, at: string): TimelineItem => ({
+    kind: "alfred",
+    id: `alfred:${id}`,
+    at,
+    text: id,
+    actions: [],
+  });
+  const act = (id: string, at: string): TimelineItem => ({
+    kind: "act",
+    id: `nt:${id}`,
+    at,
+    hue: 255,
+    text: id,
+    meta: "",
+  });
+  const ids = (items: TimelineItem[]) => items.map((item) => item.id);
+  const kept = (items: TimelineItem[], at = now) => ids(sessionWindow(items, at, SESSION_IDLE_MS));
+
+  it("keeps the turns since the last long silence and drops the rest", () => {
+    const items = [
+      you("a", "2026-09-07T19:00:00"),
+      alfred("b", "2026-09-07T19:00:04"),
+      // 31 minutes of silence: a new session starts here.
+      you("c", "2026-09-07T19:31:04"),
+      alfred("d", "2026-09-07T19:31:10"),
+      you("e", "2026-09-07T21:10:00"), // 99 min later — the newest session
+      alfred("f", "2026-09-07T21:10:05"),
+    ];
+    expect(kept(items)).toEqual(["you:e", "alfred:f"]);
+  });
+
+  it("shows no conversation when the newest turn is already idle", () => {
+    const items = [you("a", "2026-09-07T20:59:00"), alfred("b", "2026-09-07T21:00:00")];
+    expect(sessionWindow(items, now, SESSION_IDLE_MS)).toEqual([]);
+  });
+
+  it("measures the silence from the newest turn, not from now", () => {
+    // 29 minutes ago: still live, and everything chained to it within 30 min stays.
+    const items = [you("a", "2026-09-07T20:32:00"), alfred("b", "2026-09-07T21:01:00")];
+    expect(kept(items)).toEqual(["you:a", "alfred:b"]);
+  });
+
+  it("keeps the house's rows for the day even with no conversation", () => {
+    const items = [act("dawn", "2026-09-07T06:10:00"), act("old", "2026-09-06T23:59:00")];
+    expect(kept(items)).toEqual(["nt:dawn"]);
+  });
+
+  it("keeps the house's rows back to a session that began yesterday", () => {
+    const items = [
+      you("a", "2026-09-06T23:50:00"),
+      alfred("b", "2026-09-06T23:50:04"),
+      act("late", "2026-09-06T23:55:00"),
+    ];
+    const justAfterMidnight = new Date(2026, 8, 7, 0, 5);
+    // The act is yesterday's, so only the session's start can keep it.
+    expect(kept(items, justAfterMidnight)).toEqual(["you:a", "alfred:b", "nt:late"]);
+  });
+
+  it("honours a different idle timeout", () => {
+    const items = [you("a", "2026-09-07T21:15:00"), you("b", "2026-09-07T21:27:00")];
+    expect(ids(sessionWindow(items, now, 10 * 60 * 1000))).toEqual(["you:b"]);
+    expect(ids(sessionWindow(items, now, 20 * 60 * 1000))).toEqual(["you:a", "you:b"]);
+  });
+
+  it("treats a turn stamped after now as current", () => {
+    // The server stamps history; a phone a few seconds behind must not lose it.
+    const items = [you("a", "2026-09-07T21:30:03")];
+    expect(kept(items)).toEqual(["you:a"]);
+  });
+
+  it("does not let a turn with an unreadable stamp stand in for one", () => {
+    // NaN compares false against everything, so an unreadable row must be
+    // stepped over — not treated as a turn that bridges the silence.
+    const items = [you("a", "2026-09-07T10:00:00"), you("nope", "not a date")];
+    expect(sessionWindow(items, now, SESSION_IDLE_MS)).toEqual([]);
+  });
+
+  it("cuts at the same silence the gap divider draws on", () => {
+    const turns = [you("a", "2026-09-07T21:00:00"), you("b", "2026-09-07T21:30:00")];
+
+    // Exactly SESSION_IDLE_MS apart: the window keeps only the newer turn, and
+    // the divider that would separate the two is drawn at the same instant.
+    expect(kept(turns)).toEqual(["you:b"]);
+    expect(
+      withDividers(turns, now, SESSION_IDLE_MS).filter((item) => item.kind === "divider"),
+    ).toHaveLength(2);
   });
 });
 

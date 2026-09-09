@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { playWavBase64 } from "@/lib/audio";
-import { hhmm } from "@/lib/format";
-import { withDividers, type TimelineItem } from "@/lib/history";
+import { hhmm, notificationText } from "@/lib/format";
+import { SESSION_IDLE_MS, sessionWindow, withDividers, type TimelineItem } from "@/lib/history";
 import { onVisible } from "@/lib/lifecycle";
 import type { ChatServerMessage } from "@/lib/types";
 import { useConnection } from "@/shell/ConnectionProvider";
@@ -38,6 +38,9 @@ function isPersistedUnsent(item: unknown): item is YouItem {
     row.kind === "you" &&
     typeof row.id === "string" &&
     typeof row.at === "string" &&
+    // The queue merges in after `sessionWindow`, so its NaN guard never sees
+    // these rows — an unreadable stamp has to be refused here.
+    !Number.isNaN(Date.parse(row.at)) &&
     typeof row.text === "string" &&
     row.state === "unsent"
   );
@@ -131,6 +134,12 @@ export interface UseRoomOptions {
   history?: TimelineItem[];
   /** Expired and already-answered approvals, from `tombstoneItems` (Task 25). */
   tombstones?: TimelineItem[];
+  /**
+   * The server's session idle timeout, from `Overview.session.idle_minutes`
+   * (`sessionIdleMs`). The history is windowed to the current session
+   * (`sessionWindow`); live rows and tombstones never are.
+   */
+  idleMs?: number;
 }
 
 export interface RoomValue {
@@ -141,7 +150,11 @@ export interface RoomValue {
   sendAudio: (dataUrl: string, seconds: number) => void;
 }
 
-export function useRoom({ history, tombstones }: UseRoomOptions): RoomValue {
+export function useRoom({
+  history,
+  tombstones,
+  idleMs = SESSION_IDLE_MS,
+}: UseRoomOptions): RoomValue {
   const { chat, online, subscribeOnline } = useConnection();
   const [live, setLive] = useState<TimelineItem[]>(readUnsent);
 
@@ -301,21 +314,26 @@ export function useRoom({ history, tombstones }: UseRoomOptions): RoomValue {
       if (msg.type === "notification") {
         // A confirmation request has a fuse and a Door; it is not a thread row.
         if (typeof msg.metadata?.pending_action_id === "string") return;
-        setLive((current) => [
-          ...current,
-          {
-            kind: "act",
-            id: uid("nt"),
-            at: iso,
-            hue: 255,
-            text: msg.title,
-            // `live`, not a source: the /ws notification frame carries none
-            // (core/notifications/adapters/websocket.py). When the history is
-            // next re-read, its copy of this notification takes this row's place
-            // (`readBackPairs`) and shows the real one.
-            meta: `${hhmm(at)} · live · ${msg.urgency}`,
-          },
-        ]);
+        const text = notificationText(msg.body, msg.title);
+        // Nothing to print is no row — the history guard drops that entry too,
+        // and the two must agree. An urgent one still speaks.
+        if (text) {
+          setLive((current) => [
+            ...current,
+            {
+              kind: "act",
+              id: uid("nt"),
+              at: iso,
+              hue: 255,
+              text,
+              // `live`, not a source: the /ws notification frame carries none
+              // (core/notifications/adapters/websocket.py). When the history is
+              // next re-read, its copy of this notification takes this row's place
+              // (`readBackPairs`) and shows the real one.
+              meta: `${hhmm(at)} · live · ${msg.urgency}`,
+            },
+          ]);
+        }
         if (msg.audio && msg.urgency === "urgent") playWavBase64(msg.audio);
       }
     });
@@ -344,11 +362,17 @@ export function useRoom({ history, tombstones }: UseRoomOptions): RoomValue {
   }, [thinkingAt]);
 
   const items = useMemo(() => {
-    const merged = [...(history ?? []), ...(tombstones ?? []), ...live].sort(
-      (a, b) => Date.parse(a.at) - Date.parse(b.at),
-    );
-    return withDividers(merged, now);
-  }, [history, tombstones, live, now]);
+    // Windowed here, after the read-back has been settled against the full
+    // history: a turn the house read back and then let go idle is simply gone,
+    // which is the point. `now` moves on visibilitychange, so an open thread
+    // does not vanish at minute thirty — it is gone when you come back.
+    const merged = [
+      ...sessionWindow(history ?? [], now, idleMs),
+      ...(tombstones ?? []),
+      ...live,
+    ].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+    return withDividers(merged, now, idleMs);
+  }, [history, tombstones, live, now, idleMs]);
 
   return { items, thinking: thinkingAt !== null, sendText, sendAudio };
 }

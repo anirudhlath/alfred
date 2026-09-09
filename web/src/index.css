@@ -123,11 +123,20 @@
   /* Constraint §4.4: 100vh is wrong in Safari. --app-height is the innerHeight
      mirror; the fallback keeps the shell full-height before the JS has run. One
      declaration, not two — an undefined var() is invalid at computed-value time
-     and would fall all the way back to `auto`, not to a previous declaration. */
+     and would fall all the way back to `auto`, not to a previous declaration.
+
+     `height`, not `min-height`, and `overflow: hidden`: a min-height root grows
+     with the thread, so the document becomes the scroller, the header and the
+     composer scroll away with it, and the Timeline never overflows — its
+     follow-the-bottom anchor has nothing to scroll. Measured at 390x844 with a
+     6600px thread: root 6773px and the Timeline's scrollHeight equal to its
+     clientHeight. A fixed height makes the shell the viewport, and nothing
+     scrolls but the regions that opt in. */
   #root {
     display: flex;
     flex-direction: column;
-    min-height: var(--app-height, 100dvh);
+    height: var(--app-height, 100dvh);
+    overflow: hidden;
   }
 
   button {

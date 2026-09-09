@@ -2,8 +2,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SESSION_IDLE_MS } from "@/lib/history";
+import type { Overview } from "@/lib/types";
 import { overviewFixture } from "@/test/fixtures";
-import { useOverview } from "./useOverview";
+import { sessionIdleMs, useOverview } from "./useOverview";
 
 const { markTrueMock } = vi.hoisted(() => ({ markTrueMock: vi.fn() }));
 vi.mock("@/shell/ConnectionProvider", () => ({ markTrue: markTrueMock }));
@@ -46,4 +48,31 @@ describe("useOverview", () => {
     await waitFor(() => expect(result.current.isError).toBe(true));
     expect(markTrueMock).not.toHaveBeenCalled();
   });
+});
+
+describe("sessionIdleMs", () => {
+  it("reads the server's idle timeout in minutes", () => {
+    expect(sessionIdleMs({ ...overviewFixture, session: { idle_minutes: 10 } })).toBe(600_000);
+  });
+
+  it("falls back to the default before the overview has answered", () => {
+    expect(sessionIdleMs(undefined)).toBe(SESSION_IDLE_MS);
+  });
+
+  // The house always sends `session`; a cached shell can still meet a server
+  // from before it did.
+  it("falls back to the default when the overview has no session at all", () => {
+    const overview = { ...overviewFixture, session: undefined as unknown as Overview["session"] };
+    expect(sessionIdleMs(overview)).toBe(SESSION_IDLE_MS);
+  });
+
+  // `Infinity` last: a window that never breaks is a socket that never rotates.
+  it.each([0, -5, Number.NaN, Number.POSITIVE_INFINITY])(
+    "falls back to the default for %s minutes",
+    (minutes) => {
+      expect(sessionIdleMs({ ...overviewFixture, session: { idle_minutes: minutes } })).toBe(
+        SESSION_IDLE_MS,
+      );
+    },
+  );
 });

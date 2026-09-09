@@ -16,7 +16,7 @@ import { OfflineNote } from "@/room/OfflineNote";
 import { PresenceField } from "@/room/PresenceField";
 import { StatusLine } from "@/room/StatusLine";
 import { Timeline } from "@/room/Timeline";
-import { isFirstRun, useOverview } from "@/room/useOverview";
+import { isFirstRun, sessionIdleMs, useOverview } from "@/room/useOverview";
 import { useRoom } from "@/room/useRoom";
 import { useRoomHistory } from "@/room/useRoomHistory";
 import { HeldBackSheet } from "@/sheets/HeldBackSheet";
@@ -24,8 +24,9 @@ import { useConnection } from "@/shell/ConnectionProvider";
 import { ThemeToggle } from "@/shell/ThemeToggle";
 
 export function Room() {
-  const { online, chatStatus, lastTrueAt } = useConnection();
+  const { online, chatStatus, lastTrueAt, chat } = useConnection();
   const { data: overview } = useOverview();
+  const idleMs = sessionIdleMs(overview);
   const { data: history } = useRoomHistory();
   const door = useDoor();
 
@@ -49,11 +50,16 @@ export function Room() {
     return tombstone ? [...items, tombstone] : items;
   }, [door.actions, tombstone]);
 
-  const room = useRoom({ history: historyItems, tombstones });
+  const room = useRoom({ history: historyItems, tombstones, idleMs });
 
   useEffect(() => {
     signal.setThinking(room.thinking);
   }, [signal, room.thinking]);
+
+  // The socket lets a stored session id go at the same boundary the Room windows on.
+  useEffect(() => {
+    chat.setIdleMs(idleMs);
+  }, [chat, idleMs]);
 
   const firstRun = isFirstRun(overview);
   // "connecting" is the first-ever attempt and "reconnecting" a later one; both

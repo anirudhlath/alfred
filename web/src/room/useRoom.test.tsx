@@ -83,12 +83,17 @@ function renderRoom({ online, ...props }: UseRoomOptions & { online: boolean }) 
   return { ...view, chat };
 }
 
-// Dated well in the past: useRoom sorts by timestamp, and the live rows are
-// stamped with the real clock, so history must not be "later than now".
+// Every history fixture below is dated against this: `historyRow` inside the
+// session window (`sessionWindow`), `idleTurn` before it — the tests that need
+// the clock to move set it themselves.
+const NOW = new Date("2026-09-07T21:05:00");
+
+// Thirteen minutes before NOW: inside the session window, and before the live
+// rows, which are stamped with the (mocked) clock — useRoom sorts by timestamp.
 const historyRow: TimelineItem = {
   kind: "alfred",
   id: "alfred:history",
-  at: "2026-09-01T20:52:06",
+  at: "2026-09-07T20:52:06",
   text: "The dentist at nine, sir.",
   mood: "pleased",
   actions: ["calendar.today"],
@@ -99,6 +104,7 @@ function kinds(items: TimelineItem[]): string[] {
 }
 
 beforeEach(() => {
+  vi.setSystemTime(NOW);
   sendSucceeds = true;
   playWavBase64Mock.mockClear();
   localStorage.clear();
@@ -141,11 +147,12 @@ describe("useRoom — the merged thread", () => {
 
   it("relabels the day when the app returns after midnight", () => {
     vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-09-01T23:59:00"));
-    const { result } = renderRoom({ history: [historyRow], online: true });
+    vi.setSystemTime(new Date("2026-09-07T23:59:00"));
+    const lateRow = { ...historyRow, at: "2026-09-07T23:50:00" };
+    const { result } = renderRoom({ history: [lateRow], online: true });
     expect(result.current.items[0]).toMatchObject({ kind: "divider", label: "earlier today" });
 
-    vi.setSystemTime(new Date("2026-09-02T00:01:00"));
+    vi.setSystemTime(new Date("2026-09-08T00:01:00"));
     act(() => void document.dispatchEvent(new Event("visibilitychange")));
 
     expect(result.current.items[0]).toMatchObject({ kind: "divider", label: "yesterday" });
@@ -312,6 +319,26 @@ describe("useRoom — sending", () => {
     expect(result.current.items).toHaveLength(0);
   });
 
+  // Two rows, because `withDividers` keys the day divider on the parsed stamp
+  // and NaN !== NaN: each unreadable row opens its own `divider:day:NaN`, so
+  // React is handed the same key twice.
+  it("ignores persisted rows whose timestamp cannot be read", () => {
+    localStorage.setItem(
+      UNSENT_KEY,
+      JSON.stringify([
+        { kind: "you", id: "you:cold-1", at: "whenever", text: "held over", state: "unsent" },
+        { kind: "you", id: "you:cold-2", at: "", text: "held over too", state: "unsent" },
+      ]),
+    );
+
+    const { result } = renderRoom({ history: [], online: false });
+
+    const ids = result.current.items.map((item) => item.id);
+    expect(result.current.items).toHaveLength(0);
+    expect(ids).not.toContain("divider:day:NaN");
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
   it("drops only the unreadable row, not the whole queue", () => {
     // A `null` element must be refused by the shape check, not thrown on and
     // caught — the catch loses everything that was queued behind it.
@@ -432,8 +459,48 @@ describe("useRoom — what comes back", () => {
 
     const act_ = result.current.items.find((item) => item.kind === "act")!;
     expect(act_.kind === "act" && act_.hue).toBe(255);
-    expect(act_.kind === "act" && act_.text).toBe("Bins go out tonight");
+    expect(act_.kind === "act" && act_.text).toBe("Collection moved to Friday.");
     expect(act_.kind === "act" && act_.meta).toMatch(/^\d{2}:\d{2} · live · important$/);
+  });
+
+  it("reads a bodiless notification by its title", () => {
+    const { result, chat } = renderRoom({ history: [], online: true });
+
+    act(() =>
+      chat.deliver({
+        type: "notification",
+        title: "Routine Suggestion",
+        body: "",
+        urgency: "informational",
+        notification_id: "ntf-10",
+        metadata: {},
+      }),
+    );
+
+    const act_ = result.current.items.find((item) => item.kind === "act")!;
+    expect(act_.kind === "act" && act_.text).toBe("Routine Suggestion");
+  });
+
+  it("prints no row for a notification that says nothing, but still speaks", () => {
+    const { result, chat } = renderRoom({ history: [], online: true });
+
+    act(() =>
+      chat.deliver({
+        type: "notification",
+        title: "  ",
+        body: "",
+        urgency: "urgent",
+        notification_id: "ntf-11",
+        audio: "UklGRg==",
+        metadata: {},
+      }),
+    );
+
+    // An empty act row would still draw its hairlines and its mark, and the
+    // history guard drops the same entry — one path must not print what the
+    // other does not.
+    expect(result.current.items).toHaveLength(0);
+    expect(playWavBase64Mock).toHaveBeenCalledWith("UklGRg==");
   });
 
   it("leaves a confirmation request to the Door", () => {
@@ -707,7 +774,7 @@ describe("useRoom — what the house reads back", () => {
           id: "nt:1788814800000-0",
           at: "2026-09-07T21:00:00",
           hue: 255,
-          text: "Bins go out tonight",
+          text: "Collection moved to Friday.",
           meta: "21:00 · domain-router · important",
         },
       ],
@@ -737,7 +804,7 @@ describe("useRoom — what the house reads back", () => {
           id: "rx:1788814800000-0",
           at: "2026-09-07T21:00:00",
           hue: 210,
-          text: "Bins go out tonight",
+          text: "Collection moved to Friday.",
           meta: "21:00 · reflex · calendar.remind",
         },
       ],
@@ -760,5 +827,63 @@ describe("useRoom — what the house reads back", () => {
     });
 
     expect(kinds(result.current.items)).toEqual(["you", "alfred", "alfred"]);
+  });
+});
+
+describe("useRoom — the session window", () => {
+  const idleTurn: TimelineItem = {
+    kind: "you",
+    id: "you:idle",
+    at: "2026-09-07T20:15:00", // 50 min before NOW, and 37 before `historyRow`
+    text: "Lock up for the night.",
+    state: "sent",
+  };
+  const dawnAct: TimelineItem = {
+    kind: "act",
+    id: "nt:dawn",
+    at: "2026-09-07T06:10:00",
+    hue: 255,
+    text: "The coffee machine is on.",
+    meta: "06:10 · routine · informational",
+  };
+
+  it("opens empty after a break, keeping only the house's rows for the day", () => {
+    const { result } = renderRoom({ history: [idleTurn, dawnAct], online: true });
+    expect(kinds(result.current.items)).toEqual(["act"]);
+  });
+
+  it("keeps the current session", () => {
+    const { result } = renderRoom({ history: [idleTurn, historyRow], online: true });
+    expect(kinds(result.current.items)).toEqual(["alfred"]);
+  });
+
+  it("follows the server's idle timeout", () => {
+    const { result } = renderRoom({ history: [idleTurn], idleMs: 60 * 60 * 1000, online: true });
+    expect(kinds(result.current.items)).toEqual(["you"]);
+  });
+
+  it("never windows what was sent from this phone", () => {
+    localStorage.setItem(
+      UNSENT_KEY,
+      JSON.stringify([
+        { kind: "you", id: "you:cold", at: "2026-09-07T19:00:00", text: "held over", state: "unsent" },
+      ]),
+    );
+    const { result } = renderRoom({ history: [idleTurn], online: false });
+    expect(kinds(result.current.items)).toEqual(["you"]);
+    expect(result.current.items.find((item) => item.kind === "you")).toMatchObject({ text: "held over" });
+  });
+
+  it("does not drop the thread under you before the app has been away", () => {
+    // Open at 21:05 with a live session; the clock passes 30 min with no
+    // visibilitychange: the rows stay until the app returns.
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const { result } = renderRoom({ history: [historyRow], online: true });
+    act(() => void vi.advanceTimersByTime(40 * 60 * 1000));
+    expect(kinds(result.current.items)).toEqual(["alfred"]);
+
+    act(() => void document.dispatchEvent(new Event("visibilitychange")));
+    expect(result.current.items).toEqual([]);
   });
 });

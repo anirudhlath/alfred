@@ -65,3 +65,17 @@ export function dayLabel(date: Date, now: Date): string {
   return dayMonth(date);
 }
 
+/**
+ * A notification's one line of text: the body, else the title. The body is the
+ * message; the title is often only a label ("Routine Suggestion"), and a value
+ * of nothing but spaces is no value. `undefined` when it says neither, which
+ * the history guard drops the row on.
+ *
+ * One function, not one rule written down twice, because the Room's live rows
+ * and its history rows must land on the same string: `readBackKey` pairs them
+ * on it, and derivations that drifted apart would print the notification twice.
+ */
+export function notificationText(body: unknown, title: unknown): string | undefined {
+  const text = (value: unknown) => (typeof value === "string" ? value.trim() : "");
+  return text(body) || text(title) || undefined;
+}

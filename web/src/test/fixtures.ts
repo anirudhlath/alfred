@@ -119,6 +119,7 @@ export const overviewFixture: Overview = {
     reviewed: 42,
     next_run_at: "2026-09-08T03:00:00Z",
   },
+  session: { idle_minutes: 30 },
 };
 
 /**
@@ -143,8 +144,9 @@ export const firstRunOverviewFixture: Overview = {
  * newest first, each entry `{id, event}` with the event decoded from JSON.
  *
  * The clock in these is 2026-09-07: 17:58 a reflex act, 18:20 a notification,
- * 20:52 one conversational turn, and — an hour and a half later, so the
- * thirty-minute rule has something to fire on — 21:14 another.
+ * 20:52 one conversational turn and 21:14 another. Those two are 22 minutes
+ * apart on purpose: inside the half hour, so they are one conversation with no
+ * gap divider between them, and one session for the Room's window.
  */
 export const userRequestsPage: StreamPage = {
   entries: [
