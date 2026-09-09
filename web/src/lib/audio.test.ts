@@ -100,8 +100,41 @@ describe("installAudioUnlock", () => {
     expect(started.starts).toBe(1);
     expect(getAudioContext()!.state).toBe("running");
 
+    // The context is running now, so `resumed` cannot move either way; the
+    // priming source is unconditional, so `starts` is what proves the removal.
     document.dispatchEvent(new Event("pointerdown"));
     expect(started.resumed).toBe(1);
+    expect(started.starts).toBe(1);
+  });
+
+  it("resumes a context WebKit marked interrupted, not just a suspended one", async () => {
+    const { installAudioUnlock, getAudioContext } = await loadAudio();
+    (getAudioContext() as unknown as { state: string }).state = "interrupted";
+    installAudioUnlock();
+
+    document.dispatchEvent(new Event("pointerdown"));
+
+    expect(started.resumed).toBe(1);
+  });
+
+  it("does not throw on a gesture where there is no Web Audio", async () => {
+    vi.stubGlobal("AudioContext", undefined);
+    vi.stubGlobal("webkitAudioContext", undefined);
+    const { installAudioUnlock } = await loadAudio();
+    installAudioUnlock();
+
+    // jsdom reports a throwing listener as an `error` event on window rather
+    // than out of `dispatchEvent`, so that is where a throw would show.
+    const errors: unknown[] = [];
+    const onError = (event: ErrorEvent) => {
+      event.preventDefault();
+      errors.push(event.error);
+    };
+    window.addEventListener("error", onError);
+    document.dispatchEvent(new Event("pointerdown"));
+    window.removeEventListener("error", onError);
+
+    expect(errors).toEqual([]);
   });
 
   it("takes a keypress as the gesture too", async () => {
@@ -147,6 +180,13 @@ describe("playWavBase64", () => {
 
   it("resumes a context iOS suspended while the app was in the background", async () => {
     const { playWavBase64 } = await loadAudio();
+    playWavBase64(btoa("RIFF"));
+    expect(started.resumed).toBe(1);
+  });
+
+  it("resumes a context WebKit marked interrupted by a phone call", async () => {
+    const { playWavBase64, getAudioContext } = await loadAudio();
+    (getAudioContext() as unknown as { state: string }).state = "interrupted";
     playWavBase64(btoa("RIFF"));
     expect(started.resumed).toBe(1);
   });

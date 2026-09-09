@@ -19,7 +19,7 @@ interface AudioWindow {
 let context: AudioContext | null = null;
 let installed = false;
 
-function constructor(): AudioContextCtor | null {
+function audioContextCtor(): AudioContextCtor | null {
   const w = window as unknown as AudioWindow;
   return w.AudioContext ?? w.webkitAudioContext ?? null;
 }
@@ -27,7 +27,7 @@ function constructor(): AudioContextCtor | null {
 /** The shared context, built on first use. Null where Web Audio does not exist. */
 export function getAudioContext(): AudioContext | null {
   if (context) return context;
-  const Ctor = constructor();
+  const Ctor = audioContextCtor();
   if (!Ctor) return null;
   try {
     context = new Ctor();
@@ -59,7 +59,7 @@ export function installAudioUnlock(): () => void {
   function unlock(): void {
     const ctx = getAudioContext();
     if (ctx) {
-      if (ctx.state === "suspended") void ctx.resume().catch(() => {});
+      if (ctx.state !== "running") void ctx.resume().catch(() => {});
       try {
         const source = ctx.createBufferSource();
         source.buffer = ctx.createBuffer(1, 1, 22050);
@@ -98,8 +98,10 @@ export function playWavBase64(base64: string): void {
   }
 
   // iOS suspends the context whenever the app is backgrounded; a reply arriving
-  // on the way back would otherwise decode fine and play into nothing.
-  if (ctx.state === "suspended") void ctx.resume().catch(() => {});
+  // on the way back would otherwise decode fine and play into nothing. Not
+  // `=== "suspended"`: WebKit also has "interrupted" — a phone call or Siri
+  // took the audio session — which the AudioContextState union does not name.
+  if (ctx.state !== "running") void ctx.resume().catch(() => {});
 
   void ctx
     .decodeAudioData(bytes.buffer as ArrayBuffer)
