@@ -319,6 +319,26 @@ describe("useRoom — sending", () => {
     expect(result.current.items).toHaveLength(0);
   });
 
+  // Two rows, because `withDividers` keys the day divider on the parsed stamp
+  // and NaN !== NaN: each unreadable row opens its own `divider:day:NaN`, so
+  // React is handed the same key twice.
+  it("ignores persisted rows whose timestamp cannot be read", () => {
+    localStorage.setItem(
+      UNSENT_KEY,
+      JSON.stringify([
+        { kind: "you", id: "you:cold-1", at: "whenever", text: "held over", state: "unsent" },
+        { kind: "you", id: "you:cold-2", at: "", text: "held over too", state: "unsent" },
+      ]),
+    );
+
+    const { result } = renderRoom({ history: [], online: false });
+
+    const ids = result.current.items.map((item) => item.id);
+    expect(result.current.items).toHaveLength(0);
+    expect(ids).not.toContain("divider:day:NaN");
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
   it("drops only the unreadable row, not the whole queue", () => {
     // A `null` element must be refused by the shape check, not thrown on and
     // caught — the catch loses everything that was queued behind it.

@@ -38,6 +38,9 @@ function isPersistedUnsent(item: unknown): item is YouItem {
     row.kind === "you" &&
     typeof row.id === "string" &&
     typeof row.at === "string" &&
+    // The queue merges in after `sessionWindow`, so its NaN guard never sees
+    // these rows — an unreadable stamp has to be refused here.
+    !Number.isNaN(Date.parse(row.at)) &&
     typeof row.text === "string" &&
     row.state === "unsent"
   );
