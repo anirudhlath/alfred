@@ -1,5 +1,5 @@
 import { api } from "./api";
-import { dayLabel, hhmm, humaniseTool, shortId } from "./format";
+import { dayLabel, hhmm, humaniseTool, notificationText, shortId } from "./format";
 import type { Mood, StreamEntry, StreamPage } from "./types";
 
 /** One row of the Room. Every kind carries an ISO `at`; the list is sorted by it. */
@@ -78,11 +78,6 @@ function str(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-/** As `str`, but a value that is only whitespace is no value. */
-function trimmed(value: unknown): string | null {
-  return str(str(value)?.trim());
-}
-
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -135,10 +130,7 @@ function reflexItem(entry: StreamEntry): TimelineItem | null {
 
 function notificationItem(entry: StreamEntry): TimelineItem | null {
   const at = str(entry.event.timestamp);
-  // The body is the message; the title is only a label ("Routine Suggestion"),
-  // so a body of nothing but spaces is no body. useRoom's live row derives its
-  // text the same way, and `readBackKey` pairs the two rows on it.
-  const text = trimmed(entry.event.body) ?? trimmed(entry.event.title);
+  const text = notificationText(entry.event.body, entry.event.title);
   if (!at || !text) return null;
   // A confirmation request is the Door's, and rendering it here as well would
   // show the same decision twice, one of them without a fuse.

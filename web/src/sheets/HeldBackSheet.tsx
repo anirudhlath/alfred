@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, post } from "@/lib/api";
 import { failureText } from "@/lib/auth";
-import { hhmm } from "@/lib/format";
+import { hhmm, notificationText } from "@/lib/format";
 import type { NotificationEvent } from "@/lib/types";
 import { Sheet } from "@/shell/Sheet";
 
@@ -72,8 +72,7 @@ export function HeldBackSheet({ open, onClose }: HeldBackSheetProps) {
             style={{ background: "oklch(0.62 0.11 255)" }}
           />
           <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-            {/* Body, else title, as the thread's rows read it. */}
-            <div className="t-row">{notification.body.trim() || notification.title.trim()}</div>
+            <div className="t-row">{notificationText(notification.body, notification.title)}</div>
             <div className="t-meta">
               {notification.urgency} · {hhmm(notification.timestamp)} · deferred by DND
             </div>

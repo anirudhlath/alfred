@@ -340,8 +340,10 @@ is set and session_id is omitted from subsequent payloads.
   instead of the thread. The frame carries no `source`, so a live act row reads
   `HH:MM · live · {urgency}`; the same notification re-read from the stream later shows
   its real source. The row's text is the body, else the title — a title can be a bare
-  label such as "Routine Suggestion" — and the live and history derivations must agree,
-  or the read-back pairs nothing and the notification prints twice.
+  label such as "Routine Suggestion" — from `notificationText` (`lib/format.ts`), the one
+  derivation the live row, the history row and the held-back sheet all read. It is one
+  function on purpose: the read-back pairs a live row with its history copy on that text,
+  so two derivations that drifted apart would print the notification twice.
 - `pong` is swallowed in `ChatSocket` and never reaches listeners.
 
 #### Reconnect / backoff / 4001

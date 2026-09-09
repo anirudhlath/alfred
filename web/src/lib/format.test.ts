@@ -6,6 +6,7 @@ import {
   hhmm,
   humaniseTool,
   mmss,
+  notificationText,
   rawCall,
   shortId,
   usd,
@@ -122,5 +123,26 @@ describe("dayLabel", () => {
   });
   it("calls a timestamp from a skewed clock today, not a day in the future", () => {
     expect(dayLabel(new Date(2026, 8, 8, 9, 0), now)).toBe("earlier today");
+  });
+});
+
+describe("notificationText", () => {
+  it("reads the body, which is the message", () => {
+    expect(notificationText("The council moved collection to Friday.", "Bins go out tonight")).toBe(
+      "The council moved collection to Friday.",
+    );
+  });
+  it("falls back to the title, which is sometimes all there is", () => {
+    expect(notificationText("", "Routine Suggestion")).toBe("Routine Suggestion");
+  });
+  it("counts a value of nothing but spaces as no value", () => {
+    expect(notificationText("   ", "Routine Suggestion")).toBe("Routine Suggestion");
+  });
+  it("trims what it returns, so two rows of the same notification cannot differ", () => {
+    expect(notificationText("  The kettle has boiled.  ", "")).toBe("The kettle has boiled.");
+  });
+  it("has nothing to say for a notification carrying neither", () => {
+    expect(notificationText("  ", "  ")).toBeUndefined();
+    expect(notificationText(undefined, null)).toBeUndefined();
   });
 });

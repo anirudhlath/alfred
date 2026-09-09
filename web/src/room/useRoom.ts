@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { playWavBase64 } from "@/lib/audio";
-import { hhmm } from "@/lib/format";
+import { hhmm, notificationText } from "@/lib/format";
 import { withDividers, type TimelineItem } from "@/lib/history";
 import { onVisible } from "@/lib/lifecycle";
 import type { ChatServerMessage } from "@/lib/types";
@@ -308,9 +308,7 @@ export function useRoom({ history, tombstones }: UseRoomOptions): RoomValue {
             id: uid("nt"),
             at: iso,
             hue: 255,
-            // Body, else title — history.ts::notificationItem derives it the
-            // same way, which readBackKey pairs on.
-            text: msg.body.trim() || msg.title.trim(),
+            text: notificationText(msg.body, msg.title) ?? "",
             // `live`, not a source: the /ws notification frame carries none
             // (core/notifications/adapters/websocket.py). When the history is
             // next re-read, its copy of this notification takes this row's place
