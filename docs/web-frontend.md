@@ -222,8 +222,11 @@ Everything on screen is one timeline.
   `notifications` without a `pending_action_id`) and `toTimelineItems` merges them by
   timestamp. `sessionWindow` then keeps **the current session** — the turns since the
   last silence of the session idle timeout (satellite turns included; they land on the
-  same two streams), which is what Alfred still has in context — plus the house's own
-  rows for the day, or from the session's start if that came earlier. `useRoom` merges
+  same two streams) — plus the house's own rows for the day, or from the session's start
+  if that came earlier. That window is conversational continuity across every channel,
+  not a claim about what Alfred still has in context: which server session a turn belongs
+  to is `chat-socket.ts`'s business ("Sessions" below), and that id can turn over inside
+  one window. `useRoom` merges
   the result with the live rows (what you sent, what Alfred said, what he did while you
   watched) and the Door's tombstones, neither of which is ever windowed. After a break
   the Room opens on the day's house rows alone — on nothing at all when there are none;

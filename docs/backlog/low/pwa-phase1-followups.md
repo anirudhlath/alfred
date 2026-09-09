@@ -181,3 +181,29 @@ time out, twice each. They are not the same failure:
 
 Both are clean at four-way and single-suite, so nothing is broken today. If the frontend
 suites are ever run in parallel in CI, attach this entry to that change.
+
+## 12. A satellite turn holds the thread open but not the session
+
+The Room's window and the chat socket's session id are read off two different clocks, and
+a satellite turn moves only one of them. `sessionWindow` (`web/src/lib/history.ts`) walks
+the merged streams, and satellites write `user_requests` and `user_responses` exactly as
+the phone does, so a satellite turn breaks the silence — even though the satellite
+pipeline is running a server session of its own
+(`core/channels/satellite/pipeline.py`, `session_id = f"sat-{entry.name}"`).
+`alfred.session-at`, which `ChatSocket.sessionIdle()` reads to decide whether to rotate,
+is stamped only by a PWA send.
+
+On a house with the default thirty-minute timeout: you send from the phone at 20:00 and
+the stamp reads 20:00; you say something to a satellite at 20:20; the app foregrounds at
+20:40 and the window keeps both turns, because no gap in it reaches thirty minutes; you
+send again at 20:41 and `sessionIdle()` reads a stamp forty-one minutes old, so `forget()`
+rotates the id and Alfred answers with an empty context. The thread says nothing about it:
+`withDividers` sees a twenty-one-minute gap between 20:20 and 20:41 and draws no
+`new conversation` divider. The mismatch only runs this way — the stamp is never newer
+than the newest PWA turn, so the divider is never drawn without a rotation behind it.
+
+The fix is to stop inferring the rotation and read it: `ChatSocket.forget()` surfaces the
+turnover (an `onsession` callback, or a `sessionStartedAt` the Room can read alongside
+`sessionId`), and `useRoom` draws the `new conversation` divider on that signal rather
+than on the stamp gap `withDividers` computes. Low priority — nothing is lost from the
+thread and every turn is still yours; what is wrong is only the label above them.

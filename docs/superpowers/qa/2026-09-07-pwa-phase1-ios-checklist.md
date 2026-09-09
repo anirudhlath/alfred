@@ -139,6 +139,12 @@ never signed in. Record the device, iOS version and date at the bottom.
 - [ ] Leave the app open and idle past the timeout, then send: a
       `new conversation · HH:MM` divider separates the two and the older turns stay on
       screen — the window moves on a background-and-return, not at minute thirty
+- [ ] Speak to a satellite in the middle of a quiet stretch, then send from the phone
+      more than the timeout after your *last phone message*: the satellite turn is on
+      screen, no `new conversation` divider appears above the new message, and Alfred
+      answers with no memory of what came before. **Known behaviour, not a bug**
+      (backlog §12) — the thread's divider is drawn from the gap between turns, the
+      session id from `alfred.session-at`, which only a phone send writes
 
 ---
 

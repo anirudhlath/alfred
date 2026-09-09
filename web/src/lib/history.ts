@@ -173,7 +173,11 @@ function startOfDay(date: Date): number {
 
 /**
  * The current session: the turns since the last silence of `idleMs` or more,
- * walked back from the newest turn — which is what Alfred still has in context.
+ * walked back from the newest turn. This is conversational continuity across
+ * every channel — a satellite turn breaks the silence exactly as a phone turn
+ * does — not a claim about what Alfred still has in context: which server
+ * session a turn belongs to is `chat-socket.ts`'s business, and that id can
+ * turn over inside one window.
  * A newest turn that is itself `idleMs` old means no session, and no turns.
  * `items` must be sorted by `at`, as `toTimelineItems` returns them: the walk
  * relies on it.

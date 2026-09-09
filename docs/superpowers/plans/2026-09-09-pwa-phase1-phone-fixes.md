@@ -583,7 +583,11 @@ Add after `startOfDay`:
 ```ts
 /**
  * The current session: the turns since the last silence of `idleMs` or more,
- * walked back from the newest turn — which is what Alfred still has in context.
+ * walked back from the newest turn. This is conversational continuity across
+ * every channel — a satellite turn breaks the silence exactly as a phone turn
+ * does — not a claim about what Alfred still has in context: which server
+ * session a turn belongs to is `chat-socket.ts`'s business, and that id can
+ * turn over inside one window.
  * A newest turn that is itself `idleMs` old means no session, and no turns.
  * `items` must be sorted by `at`, as `toTimelineItems` returns them: the walk
  * relies on it.
@@ -1234,7 +1238,9 @@ them. Where the two disagree, the code wins.
 the turns since the last silence of the session idle timeout (satellite turns included;
 they land on the same two streams) — plus the house's own rows for the day, or from the
 session's start if that came earlier; the live rows and the Door's tombstones `useRoom`
-merges in are never windowed. After a break the Room opens on the day's house rows alone
+merges in are never windowed. Say what the window is *not*: it is conversational
+continuity across every channel, not a claim about the server's context, which
+`chat-socket.ts` owns and can turn over inside one window. After a break the Room opens on the day's house rows alone
 — on nothing at all when there are none; older turns are the Activity view's (phase 2).
 Point row text at `notificationText` under "WebSocket
 Protocols" rather than restating the rule here — that bullet is where the
@@ -1326,6 +1332,12 @@ file it as a bug:
 - [ ] Leave the app open and idle past the timeout, then send: a
       `new conversation · HH:MM` divider separates the two and the older turns stay on
       screen — the window moves on a background-and-return, not at minute thirty
+- [ ] Speak to a satellite in the middle of a quiet stretch, then send from the phone
+      more than the timeout after your *last phone message*: the satellite turn is on
+      screen, no `new conversation` divider appears above the new message, and Alfred
+      answers with no memory of what came before. **Known behaviour, not a bug**
+      (backlog §12) — the thread's divider is drawn from the gap between turns, the
+      session id from `alfred.session-at`, which only a phone send writes
 ```
 
 - [ ] **Step 4: Backlog §8–§11**
