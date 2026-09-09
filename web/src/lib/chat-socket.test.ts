@@ -2,7 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { sent, sockets } = vi.hoisted(() => ({
   sent: [] as Record<string, unknown>[],
-  sockets: [] as { onmessage: (data: unknown) => void; onstatus: (s: string) => void }[],
+  sockets: [] as {
+    onmessage: (data: unknown) => void;
+    onstatus: (s: string) => void;
+    onopen: () => void;
+  }[],
 }));
 
 vi.mock("./ws", () => {
@@ -44,8 +48,9 @@ describe("ChatSocket payloads", () => {
     expect(body.content).toBe("hello");
   });
 
-  it("carry a stored session id on the first message only", () => {
+  it("carry a stored, still-live session id on the first message only", () => {
     localStorage.setItem("alfred.session", "s_9f2");
+    localStorage.setItem("alfred.session-at", new Date(Date.now() - 60_000).toISOString());
     const socket = new ChatSocket();
 
     socket.sendText("first");
@@ -53,6 +58,84 @@ describe("ChatSocket payloads", () => {
 
     expect(sent[0].session_id).toBe("s_9f2");
     expect(sent[1].session_id).toBeUndefined();
+  });
+
+  it("drop a session id that has been idle for the timeout and take the server's", () => {
+    localStorage.setItem("alfred.session", "s_old");
+    localStorage.setItem("alfred.session-at", new Date(Date.now() - 31 * 60_000).toISOString());
+    const socket = new ChatSocket();
+    sockets[0].onmessage({ type: "session", session_id: "s_new" });
+
+    socket.sendText("hello again");
+
+    expect(sent[0].session_id).toBeUndefined();
+    expect(socket.sessionId).toBe("s_new");
+    expect(localStorage.getItem("alfred.session")).toBe("s_new");
+  });
+
+  it("treat a session id with no last-sent stamp as idle", () => {
+    localStorage.setItem("alfred.session", "s_before_the_stamp");
+    const socket = new ChatSocket();
+    sockets[0].onmessage({ type: "session", session_id: "s_new" });
+
+    socket.sendText("hello");
+
+    expect(sent[0].session_id).toBeUndefined();
+    expect(socket.sessionId).toBe("s_new");
+  });
+
+  it("treat an unreadable last-sent stamp as idle", () => {
+    localStorage.setItem("alfred.session", "s_old");
+    localStorage.setItem("alfred.session-at", "the other day");
+    const socket = new ChatSocket();
+    sockets[0].onmessage({ type: "session", session_id: "s_new" });
+
+    socket.sendText("hello");
+
+    expect(sent[0].session_id).toBeUndefined();
+    expect(socket.sessionId).toBe("s_new");
+  });
+
+  it("follow the server's idle timeout", () => {
+    localStorage.setItem("alfred.session", "s_9f2");
+    localStorage.setItem("alfred.session-at", new Date(Date.now() - 15 * 60_000).toISOString());
+    const socket = new ChatSocket();
+    socket.setIdleMs(10 * 60_000);
+
+    socket.sendText("hello");
+
+    expect(sent[0].session_id).toBeUndefined();
+  });
+
+  it("stamp every send as the session's last activity", () => {
+    const socket = new ChatSocket();
+    socket.sendText("hello");
+    const stamp = localStorage.getItem("alfred.session-at")!;
+    expect(Math.abs(Date.now() - Date.parse(stamp))).toBeLessThan(5_000);
+  });
+
+  it("forget a stale id even before the server has spoken, then adopt what it says", () => {
+    localStorage.setItem("alfred.session", "s_old");
+    const socket = new ChatSocket();
+
+    socket.sendText("hello");
+    expect(sent[0].session_id).toBeUndefined();
+    expect(localStorage.getItem("alfred.session")).toBeNull();
+
+    sockets[0].onmessage({ type: "session", session_id: "s_new" });
+    expect(socket.sessionId).toBe("s_new");
+    expect(localStorage.getItem("alfred.session")).toBe("s_new");
+  });
+
+  it("offer the stored id again on the next connection, before the server names one", () => {
+    const socket = new ChatSocket();
+    sockets[0].onmessage({ type: "session", session_id: "s_a" });
+    socket.sendText("first");
+
+    sockets[0].onopen();
+    socket.sendText("after a reconnect");
+
+    expect(sent[1].session_id).toBe("s_a");
   });
 
   it("send audio as a data URL", () => {
@@ -68,6 +151,17 @@ describe("ChatSocket frames", () => {
     sockets[0].onmessage({ type: "session", session_id: "s_new" });
     expect(socket.sessionId).toBe("s_new");
     expect(localStorage.getItem("alfred.session")).toBe("s_new");
+  });
+
+  it("keeps a live stored id over the server's, but remembers the server's", () => {
+    localStorage.setItem("alfred.session", "s_9f2");
+    localStorage.setItem("alfred.session-at", new Date().toISOString());
+    const socket = new ChatSocket();
+    sockets[0].onmessage({ type: "session", session_id: "s_new" });
+    expect(socket.sessionId).toBe("s_9f2");
+
+    socket.sendText("hello");
+    expect(sent[0].session_id).toBe("s_9f2");
   });
 
   it("keeps a pong to itself", () => {

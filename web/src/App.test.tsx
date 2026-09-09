@@ -32,6 +32,7 @@ vi.mock("@/lib/chat-socket", () => ({
       this.onstatus(socket.status);
     }
     close() {}
+    setIdleMs() {}
     sendText() {
       return true;
     }
