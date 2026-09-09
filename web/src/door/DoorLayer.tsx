@@ -1,16 +1,19 @@
 import { useState } from "react";
-import { fuseRemaining, type TrackedAction } from "@/lib/actions";
+import {
+  fuseLength,
+  fusePercent,
+  fuseRemaining,
+  type ActionPhase,
+  type TrackedAction,
+} from "@/lib/actions";
 import { hhmm, humaniseTool, mmss, rawCall, shortId } from "@/lib/format";
-import { FuseRing } from "@/door/FuseRing";
+import { DANGER_SECONDS, FuseRing } from "@/door/FuseRing";
 import { SlideToConfirm } from "@/door/SlideToConfirm";
 import { Layer } from "@/shell/Layer";
 
-/** Under this the arc turns to paper. */
-const DANGER_SECONDS = 30;
-
 /**
  * "The five minutes ran out" reads better than "The 5 minutes ran out", and the
- * TTL is a server setting that may not be 300 s. Spelled out to ten, numeric above.
+ * fuse is a server setting that may not be 300 s. Spelled out to ten, numeric above.
  */
 const MINUTE_WORDS: Record<number, string> = {
   1: "one",
@@ -25,12 +28,17 @@ const MINUTE_WORDS: Record<number, string> = {
   10: "ten",
 };
 
-function minutesWord(ttlSeconds: number): string {
-  const minutes = Math.round(ttlSeconds / 60);
-  return MINUTE_WORDS[minutes] ?? String(minutes);
+/** "five minutes", "one minute" — or just "time" for a fuse under half a minute. */
+function fuseWords(seconds: number): string {
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 1) return "time";
+  if (minutes === 1) return "one minute";
+  return `${MINUTE_WORDS[minutes] ?? String(minutes)} minutes`;
 }
 
-const PILL: Record<string, { word: string; dot: string }> = {
+// No `pending` entry: that phase draws the slider, not a pill, and the type
+// keeps the lookup inside the branch that knows it.
+const PILL: Record<Exclude<ActionPhase, "pending">, { word: string; dot: string }> = {
   queued: { word: "Confirmed · queued", dot: "var(--accent)" },
   applied: { word: "Applied", dot: "var(--green)" },
   expired: { word: "Expired", dot: "var(--paper-muted)" },
@@ -53,12 +61,15 @@ function footLine(tracked: TrackedAction, online: boolean): string {
         : "Cannot confirm while offline; the fuse is still running on the server.";
     case "queued":
       return `Sent to Home Assistant. Waiting for it to report (request ${shortId(action.request_id)}).`;
-    case "applied":
-      return `${action.tool_name} reported ${tracked.result?.status ?? "success"} at ${hhmm(
-        tracked.appliedAt ?? action.expires_at,
-      )}.`;
+    case "applied": {
+      // The result event is the only road to `applied` and it sets both; if
+      // either were ever missing, say less rather than make a status up.
+      const what = tracked.result ? `reported ${tracked.result.status}` : "reported back";
+      const when = tracked.appliedAt ? ` at ${hhmm(tracked.appliedAt)}` : "";
+      return `${action.tool_name} ${what}${when}.`;
+    }
     case "expired":
-      return `The ${minutesWord(action.ttl_seconds)} minutes ran out at ${hhmm(
+      return `The ${fuseWords(fuseLength(action))} ran out at ${hhmm(
         action.expires_at,
       )}. Nothing was done. Ask again to get a fresh one.`;
     default:
@@ -90,12 +101,9 @@ export function DoorLayer({ tracked, open, online, now, onClose, onConfirm }: Do
 
   const { action, phase } = item;
   const remaining = fuseRemaining(action, now);
-  // `remaining` is never negative; the top clamp is for a device clock behind
-  // the server's, where `expires_at` is further off than the TTL.
-  const percent = action.ttl_seconds > 0 ? Math.min(100, (remaining / action.ttl_seconds) * 100) : 0;
+  const percent = fusePercent(action, now);
   const reason =
     action.reason ?? `Alfred wants to run '${action.tool_name}' on ${action.target_service}.`;
-  const pill = PILL[phase];
 
   return (
     <Layer open={open} label="Critical approval" durationMs={420}>
@@ -149,7 +157,11 @@ export function DoorLayer({ tracked, open, online, now, onClose, onConfirm }: Do
           </div>
         </div>
 
-        <div className="flex flex-col gap-3 px-5 pb-10">
+        <div
+          className="flex flex-col gap-3 px-5"
+          // The screen's own edge: the slider must clear the home indicator (§4).
+          style={{ paddingBottom: "calc(40px + env(safe-area-inset-bottom, 0px))" }}
+        >
           {phase === "pending" ? (
             <SlideToConfirm
               hint="Slide to confirm"
@@ -164,9 +176,9 @@ export function DoorLayer({ tracked, open, online, now, onClose, onConfirm }: Do
               <span
                 aria-hidden="true"
                 className="h-2 w-2 rounded-full"
-                style={{ background: pill.dot }}
+                style={{ background: PILL[phase].dot }}
               />
-              {pill.word}
+              {PILL[phase].word}
             </div>
           )}
 

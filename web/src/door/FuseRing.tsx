@@ -1,5 +1,8 @@
 import type { CSSProperties, ReactNode } from "react";
 
+/** At or under this many seconds left, the arc goes from accent to paper (handoff). */
+export const DANGER_SECONDS = 30;
+
 export interface FuseRingProps {
   /** 0–100, the fraction of the TTL still to run. */
   percent: number;

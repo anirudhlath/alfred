@@ -1,9 +1,6 @@
-import { fuseRemaining, type TrackedAction } from "@/lib/actions";
+import { fusePercent, fuseRemaining, type TrackedAction } from "@/lib/actions";
 import { humaniseTool, mmss } from "@/lib/format";
-import { FuseRing } from "@/door/FuseRing";
-
-/** Under this the ring changes colour — the handoff's only "hurry" signal. */
-const DANGER_SECONDS = 30;
+import { DANGER_SECONDS, FuseRing } from "@/door/FuseRing";
 
 export interface DoorBannerProps {
   tracked: TrackedAction;
@@ -19,10 +16,7 @@ export interface DoorBannerProps {
  */
 export function DoorBanner({ tracked, now, onOpen }: DoorBannerProps) {
   const remaining = fuseRemaining(tracked.action, now);
-  const ttl = tracked.action.ttl_seconds;
-  // `remaining` is never negative; the top clamp is for a device clock behind
-  // the server's, where `expires_at` is further off than the TTL.
-  const percent = ttl > 0 ? Math.min(100, (remaining / ttl) * 100) : 0;
+  const percent = fusePercent(tracked.action, now);
 
   return (
     <button

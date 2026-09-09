@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { CONFIRM_RATIO, hintOpacity, slideKnob } from "@/lib/slide";
 
 /** Knob 56 px at a 4 px inset — the travel is the track minus both. */
@@ -6,6 +12,8 @@ const KNOB_INSET = 64;
 /** The one place the handoff's `settle` curve is used: when the knob lands. */
 const SETTLE_MS = 600;
 const SNAP_MS = 380;
+/** Arrow keys (and VoiceOver's adjust gesture) move a tenth of the travel. */
+const KEY_STEPS = 10;
 
 export interface SlideToConfirmProps {
   hint: string;
@@ -21,6 +29,8 @@ export function SlideToConfirm({ hint, disabled, onConfirm }: SlideToConfirmProp
   const [dragging, setDragging] = useState(false);
   const [settling, setSettling] = useState(false);
 
+  // Returns the travel as well as storing it: the keyboard path needs it in
+  // the same event, before the state has come round.
   function measure(): number {
     const width = trackRef.current?.clientWidth ?? 0;
     const travel = Math.max(0, width - KNOB_INSET);
@@ -72,14 +82,58 @@ export function SlideToConfirm({ hint, disabled, onConfirm }: SlideToConfirmProp
     setKnob(0);
   }
 
+  // The non-pointer road. The knob walks in tenths and confirms only on the
+  // last one: no single key, and no single VoiceOver flick, is ever a yes. The
+  // step is counted from where the knob is, so ten presses land exactly on
+  // the end instead of a float short of it.
+  function key(event: ReactKeyboardEvent<HTMLDivElement>): void {
+    if (disabled || dragging || settling) return;
+    const travel = measure();
+    if (travel <= 0) return;
+    const step = Math.round((knob / travel) * KEY_STEPS);
+    let next: number;
+    switch (event.key) {
+      case "ArrowRight":
+      case "ArrowUp":
+        next = Math.min(KEY_STEPS, step + 1);
+        break;
+      case "ArrowLeft":
+      case "ArrowDown":
+        next = Math.max(0, step - 1);
+        break;
+      case "Home":
+        next = 0;
+        break;
+      case "End":
+        next = KEY_STEPS;
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+    setKnob((next / KEY_STEPS) * travel);
+    if (next === KEY_STEPS) {
+      setSettling(true);
+      onConfirm();
+    }
+  }
+
   return (
     <div
       ref={trackRef}
       data-testid="slide-track"
+      role="slider"
+      aria-label={hint}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={max > 0 ? Math.round((knob / max) * 100) : 0}
+      aria-disabled={disabled}
+      tabIndex={disabled ? -1 : 0}
       onPointerDown={down}
       onPointerMove={move}
       onPointerUp={up}
       onPointerCancel={cancel}
+      onKeyDown={key}
       className="relative h-16 overflow-hidden rounded-[32px]"
       style={{
         background: "var(--ring)",
@@ -91,6 +145,7 @@ export function SlideToConfirm({ hint, disabled, onConfirm }: SlideToConfirmProp
       }}
     >
       <div
+        aria-hidden="true"
         className="absolute inset-0 flex items-center justify-center pl-14 text-[15px]"
         style={{
           color: "var(--paper-muted)",

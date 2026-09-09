@@ -38,6 +38,29 @@ export function fuseRemaining(action: PendingAction, now: number): number {
   return Math.max(0, (expires - now) / 1000);
 }
 
+/**
+ * The whole fuse, in seconds. `ttl_seconds` is not it: the payload is built
+ * from Redis's live TTL, so it is what was *left* when the house was asked,
+ * and a re-read on the way back from the background would shrink the ring's
+ * denominator to whatever remained. The payload's own two clocks give the
+ * length — asked at `timestamp`, gone at `expires_at` — and both are the
+ * server's, so no device skew gets in. `ttl_seconds` only when they will not parse.
+ */
+export function fuseLength(action: PendingAction): number {
+  const span = (Date.parse(action.expires_at) - Date.parse(action.timestamp)) / 1000;
+  return Number.isNaN(span) || span <= 0 ? action.ttl_seconds : span;
+}
+
+/**
+ * 0–100 of the fuse still to run. `fuseRemaining` is never negative; the one
+ * clamp is at the top, for a device clock behind the server's, where
+ * `expires_at` is further off than the whole length.
+ */
+export function fusePercent(action: PendingAction, now: number): number {
+  const length = fuseLength(action);
+  return length > 0 ? Math.min(100, (fuseRemaining(action, now) / length) * 100) : 0;
+}
+
 function byAge(a: TrackedAction, b: TrackedAction): number {
   return Date.parse(a.action.timestamp) - Date.parse(b.action.timestamp);
 }
