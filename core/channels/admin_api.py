@@ -185,11 +185,14 @@ async def aclose_episodic() -> None:
         await embedder.aclose()
 
 
-def _base_overview() -> dict[str, Any]:
+def _base_overview(cfg: AlfredConfig) -> dict[str, Any]:
     """Full Overview shape with placeholders — the single source of truth for the
     field set. The frontend `Overview` type requires every key, so both the degraded
     path (returned as-is) and the happy path (which overwrites what it can compute)
-    build from this, and neither can drift into a partial payload."""
+    build from this, and neither can drift into a partial payload.
+
+    ``session`` is config, not Redis, so it is real on both paths: the SPA windows
+    the Room to the chat session's idle timeout and must not guess it."""
     return {
         "redis": {"connected": False},
         "cost": None,
@@ -199,6 +202,7 @@ def _base_overview() -> dict[str, Any]:
         "inference": {"ollama": False, "lmstudio": False},
         "reflex": {"model": None, "last_ms": None, "p50_ms": None},
         "librarian": {"last_run_at": None, "reviewed": None, "next_run_at": None},
+        "session": {"idle_minutes": cfg.session_timeout_minutes},
     }
 
 
@@ -333,7 +337,8 @@ def create_admin_router() -> APIRouter:
     @router.get("/overview")
     async def overview(request: Request) -> dict[str, Any]:
         r = _redis(request)
-        out = _base_overview()
+        cfg = AlfredConfig.from_env()
+        out = _base_overview(cfg)
         try:
             await r.ping()
         except Exception:
@@ -355,7 +360,6 @@ def create_admin_router() -> APIRouter:
             "triggers": int(await r.hlen(TRIGGERS_KEY)),
         }
         out["streams"] = await stream_summaries(r)
-        cfg = AlfredConfig.from_env()
         out["inference"] = {
             "ollama": await _check_http(request, cfg.ollama_host.rstrip("/") + "/api/tags"),
             "lmstudio": await _check_http(request, cfg.lmstudio_host.rstrip("/") + "/v1/models"),

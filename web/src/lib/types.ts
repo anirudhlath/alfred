@@ -28,6 +28,8 @@ export interface Overview {
   inference: { ollama: boolean; lmstudio: boolean };
   reflex?: { model: string | null; last_ms: number | null; p50_ms: number | null };
   librarian?: { last_run_at: string | null; reviewed: number | null; next_run_at: string | null };
+  /** The chat session's idle timeout (`SESSION_TIMEOUT_MINUTES`); the Room's window and the session-id rotation follow it. */
+  session: { idle_minutes: number };
 }
 
 export interface StreamEntry {

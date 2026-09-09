@@ -98,6 +98,7 @@ def test_overview_shape() -> None:
     assert data["counts"] == {"sessions": 0, "devices": 0, "deferred": 0, "triggers": 0}
     assert data["streams"]["events"]["length"] == 0
     assert data["inference"] == {"ollama": False, "lmstudio": False}
+    assert data["session"] == {"idle_minutes": 30}
 
 
 def test_overview_reports_redis_down() -> None:
@@ -117,6 +118,14 @@ def test_overview_reports_redis_down() -> None:
     assert data["inference"] == {"ollama": False, "lmstudio": False}
     assert data["reflex"] == {"model": None, "last_ms": None, "p50_ms": None}
     assert data["librarian"] == {"last_run_at": None, "reviewed": None, "next_run_at": None}
+    assert data["session"] == {"idle_minutes": 30}
+
+
+def test_overview_session_idle_follows_config(monkeypatch: Any) -> None:
+    """The SPA windows the Room to the server's session; it must read the real value."""
+    monkeypatch.setenv("SESSION_TIMEOUT_MINUTES", "10")
+    client = make_admin_client(_overview_redis())
+    assert client.get("/api/admin/overview").json()["session"] == {"idle_minutes": 10}
 
 
 def test_overview_survives_corrupt_cost_and_dnd() -> None:

@@ -119,6 +119,7 @@ export const overviewFixture: Overview = {
     reviewed: 42,
     next_run_at: "2026-09-08T03:00:00Z",
   },
+  session: { idle_minutes: 30 },
 };
 
 /**
