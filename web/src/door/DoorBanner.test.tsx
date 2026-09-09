@@ -6,8 +6,10 @@ import { pendingActionFixture } from "@/test/fixtures";
 import { DoorBanner } from "./DoorBanner";
 import { FuseRing } from "./FuseRing";
 
+const T0740 = Date.parse("2026-09-07T07:40:00Z");
 const T0742 = Date.parse("2026-09-07T07:42:00Z");
-const T0745_40 = Date.parse("2026-09-07T07:45:40Z");
+const T0745_29 = Date.parse("2026-09-07T07:45:29Z");
+const T0745_30 = Date.parse("2026-09-07T07:45:30Z");
 const T0747 = Date.parse("2026-09-07T07:47:00Z");
 
 const tracked: TrackedAction = { action: pendingActionFixture, phase: "pending" };
@@ -53,6 +55,7 @@ describe("FuseRing", () => {
       </FuseRing>,
     );
     expect(screen.getByText("4:12")).toBeInTheDocument();
+    expect(screen.getByTestId("fuse-ring")).toHaveClass("items-center", "justify-center");
   });
 });
 
@@ -63,6 +66,11 @@ describe("DoorBanner", () => {
     expect(screen.getByText("Lock unlock")).toBeInTheDocument();
     expect(screen.getByText("expires in 4:00 · asked by Alfred, for you")).toBeInTheDocument();
     expect(screen.getByText("Open")).toBeInTheDocument();
+    // The banner's ring, at the banner's size, in the unhurried colour.
+    expect(screen.getByTestId("fuse-ring").style.width).toBe("34px");
+    expect(screen.getByTestId("fuse-arc").style.getPropertyValue("--fuse-color")).toBe(
+      "var(--accent)",
+    );
   });
 
   it("draws the arc as the fraction of the server's own TTL", () => {
@@ -71,11 +79,19 @@ describe("DoorBanner", () => {
     expect(screen.getByTestId("fuse-arc")).toHaveAttribute("data-percent", "80.0");
   });
 
-  it("goes to paper under thirty seconds", () => {
-    render(<DoorBanner tracked={tracked} now={T0745_40} onOpen={() => {}} />);
-    expect(screen.getByTestId("fuse-arc").style.getPropertyValue("--fuse-color")).toBe(
-      "var(--paper)",
-    );
+  it("goes to paper at thirty seconds, and not a second before", () => {
+    const { rerender } = render(<DoorBanner tracked={tracked} now={T0745_29} onOpen={() => {}} />);
+    const colour = () => screen.getByTestId("fuse-arc").style.getPropertyValue("--fuse-color");
+    expect(colour()).toBe("var(--accent)");
+
+    rerender(<DoorBanner tracked={tracked} now={T0745_30} onOpen={() => {}} />);
+    expect(colour()).toBe("var(--paper)");
+  });
+
+  it("never draws more than a full ring when the phone's clock is behind", () => {
+    // 360 s to a 300 s TTL's expiry: the server's clock is ahead of ours.
+    render(<DoorBanner tracked={tracked} now={T0740} onOpen={() => {}} />);
+    expect(screen.getByTestId("fuse-arc")).toHaveAttribute("data-percent", "100.0");
   });
 
   it("reads 0:00 rather than a negative fuse", () => {
