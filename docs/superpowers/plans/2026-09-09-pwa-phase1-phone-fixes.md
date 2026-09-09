@@ -15,7 +15,7 @@
 - jsdom does no layout: a CSS change is verified with the headless-Chrome fixture in Task 1, not with Vitest.
 
 **Evidence the plan rests on (measured 2026-09-09):**
-- `#root { min-height: … }` at 390×844 with a 5000 px thread: root 5305 px tall, the document scrolls, `Timeline.scrollHeight === clientHeight` (so `el.scrollTop = el.scrollHeight` is a no-op). With `height: …; overflow: hidden`: root 844 px, document not scrollable, timeline 613/5074 — overflows and scrolls. That is issues 1 and 2 with one cause.
+- `#root { min-height: … }` at 390×844 with a 6600 px thread: root 6773 px tall, the document scrolls, `Timeline.scrollHeight === clientHeight` (so `el.scrollTop = el.scrollHeight` is a no-op). With `height: …; overflow: hidden`: root 844 px, document not scrollable, timeline 687/6616 — overflows and scrolls. That is issues 1 and 2 with one cause.
 - Routine suggestions arrive as `title: "Routine Suggestion"`, `body: "I've noticed a pattern: 'morning_coffee' — … Want me to start doing this automatically?"`. Both `history.ts::notificationItem` and the live path in `useRoom.ts` render `title` only. There is no backend endpoint or tool that accepts a routine, so the interaction is a follow-up (backlog, Task 6), not a button.
 - The server's chat session (`core/conscious/session.py`, `SESSION_TIMEOUT_MINUTES`, `shared/config.py:238,343`, default 30) expires 30 minutes after the last turn. The Room reads the last 50 rows per stream with no age bound, so it showed 2026-08-14 → 09-09. The client (`chat-socket.ts`) keeps `alfred.session` forever and re-sends it on every reconnect, so the server keeps resurrecting the same id (with a fresh, empty context once expired). Satellite turns (`channel: "satellite"`, ~36 of 50 requests) stay in the Room by decision.
 
@@ -84,14 +84,14 @@ Run:
 ```bash
 ~/.cache/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-linux64/chrome-headless-shell --no-sandbox --disable-gpu --window-size=390,844 --dump-dom file:///tmp/pwa1/layout/repro.html | grep -o 'RESULT[^<]*'
 ```
-Expected (the bug): `RESULT root=5xxx docScrollable=true timeline=NNNN/NNNN` with the two timeline numbers equal.
+Expected (the bug): `RESULT root=6xxx docScrollable=true timeline=NNNN/NNNN` with the two timeline numbers equal.
 
 (If the `chromium_headless_shell-*` directory has a different number, use whatever `ls ~/.cache/ms-playwright/` shows.)
 
 - [ ] **Step 2: Apply the fix in the fixture and re-measure**
 
 Change the fixture's `#root` line to `height: var(--app-height, 100dvh); overflow: hidden;` and re-run the command.
-Expected: `RESULT root=844 docScrollable=false timeline=613/5xxx` — the timeline overflows.
+Expected: `RESULT root=844 docScrollable=false timeline=687/6xxx` — the timeline overflows.
 
 - [ ] **Step 3: Apply the fix in `web/src/index.css`**
 
@@ -107,9 +107,9 @@ Replace lines 123–131 with:
      with the thread, so the document becomes the scroller, the header and the
      composer scroll away with it, and the Timeline never overflows — its
      follow-the-bottom anchor has nothing to scroll. Measured at 390x844 with a
-     5000px thread: root 5305px and the Timeline's scrollHeight equal to its
-     clientHeight. A fixed height makes the shell the viewport and the Timeline
-     the only scroller. */
+     6600px thread: root 6773px and the Timeline's scrollHeight equal to its
+     clientHeight. A fixed height makes the shell the viewport, and nothing
+     scrolls but the regions that opt in. */
   #root {
     display: flex;
     flex-direction: column;
@@ -153,7 +153,7 @@ git commit -m "fix(web): pin the shell to the viewport so the timeline is the on
 header and composer went with it, and the Timeline never overflowed, which left
 the follow-the-bottom anchor with nothing to scroll. height + overflow hidden
 makes the shell the viewport. Measured at 390x844 in headless Chrome: root
-5305px -> 844px, timeline 613/5074 overflows."
+6773px -> 844px, timeline 687/6616 overflows."
 ```
 
 ---
@@ -1374,11 +1374,9 @@ second is the `5d827f1` race shape.
 
 - [ ] **Step 5: Check for real hostnames and commit**
 
-The repo is public; the QA checklist already uses `alfred.example.com`.
-
-```bash
-git grep -n -E '192\.168\.50\.|66\.60\.90\.|anirudhlath\.com'
-```
+The repo is public; the QA checklist already uses `alfred.example.com`. Grep the tree for
+the house's LAN subnet, public IP and domain — the three literals are in the private
+exposure runbook (`~/code/alfred-deploy/PWA-EXPOSURE-RUNBOOK.md`), not here.
 Expected: no output.
 
 ```bash

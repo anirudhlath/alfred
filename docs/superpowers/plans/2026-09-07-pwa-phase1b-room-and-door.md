@@ -10796,9 +10796,9 @@ uv run pytest tests/core/channels/test_spa_ci.py -q
 
 Expected: `2 passed`. `2 skipped` means `web/dist/index.html` is missing — build first.
 
-```bash
-git grep -n -E '192\.168\.50\.|66\.60\.90\.|anirudhlath\.com'
-```
+Grep the tree for the house's LAN subnet, public IP and domain — the three literals
+are in the private exposure runbook (`~/code/alfred-deploy/PWA-EXPOSURE-RUNBOOK.md`),
+not here.
 
 Expected: **no output.** The repository is public; every host in this branch is
 `alfred.example.com` and every LAN address is `192.168.1.x`.
@@ -10838,10 +10838,9 @@ uv run pytest tests/core/channels/test_spa_ci.py
 
 Expected: `2 passed`. `2 skipped` means `web/dist/` was not built — run `npm run build` in `web/` first; CI builds it in the `web` job and hands it to the `spa` job.
 
-```bash
-cd ~/code/.worktrees/alfred/pwa-phase1-client
-git grep -n -E '192\.168\.50\.|66\.60\.90\.|anirudhlath\.com'
-```
+Grep the tree for the house's LAN subnet, public IP and domain — the three literals
+are in the private exposure runbook (`~/code/alfred-deploy/PWA-EXPOSURE-RUNBOOK.md`),
+not here.
 
 Expected: **no output.** The repository is public. Every hostname on this branch is `alfred.example.com`, every LAN address `192.168.1.x`, and the setup and sign-in gates read the real hostname from `location.hostname` at runtime.
 
