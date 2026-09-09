@@ -88,9 +88,12 @@ beforeEach(() => {
   registerPasskeyMock.mockReset().mockResolvedValue(undefined);
   vi.stubGlobal("location", { hostname: "alfred.example.com", pathname: "/" });
   stubFetch();
+  // The setup gate greets by the hour; pin it so "Good evening" holds on CI's clock too.
+  vi.spyOn(Date.prototype, "getHours").mockReturnValue(21);
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   localStorage.clear();
 });
