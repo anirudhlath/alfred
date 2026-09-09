@@ -22,7 +22,7 @@ export class ChatSocket {
   private firstMessageSent = false;
   /** The id the server assigned this connection; adopted when ours is gone or idle. */
   private assigned: string | null = null;
-  sessionId: string | null = localStorage.getItem(SESSION_KEY);
+  private _sessionId: string | null = localStorage.getItem(SESSION_KEY);
   private idleMs = SESSION_IDLE_MS;
 
   onstatus: (s: SocketStatus) => void = () => {};
@@ -44,7 +44,7 @@ export class ChatSocket {
         // The server assigns one per connection. Ours wins on the first send if
         // it is still live (web_server.py restores it); otherwise this is the id.
         this.assigned = msg.session_id;
-        if (!this.sessionId) this.adopt(msg.session_id);
+        if (!this._sessionId) this.adopt(msg.session_id);
       }
       for (const fn of this.listeners) fn(msg);
     };
@@ -53,18 +53,34 @@ export class ChatSocket {
   connect(): void { this.socket.connect(); }
   close(): void { this.socket.close(); }
 
-  /** Follow the server's own idle timeout (`Overview.session.idle_minutes`); the Room sets it. */
-  setIdleMs(ms: number): void {
-    this.idleMs = ms;
-  }
+  /** Read-only: the id and its two keys move together, in `adopt` and `forget` alone. */
+  get sessionId(): string | null { return this._sessionId; }
+
+  /**
+   * Follow the server's own idle timeout (`Overview.session.idle_minutes`); the
+   * Room sets it. A method rather than a field because `react-hooks/immutability`
+   * refuses an assignment to an object a hook returned.
+   */
+  setIdleMs(ms: number): void { this.idleMs = ms; }
 
   private adopt(id: string): void {
-    this.sessionId = id;
+    this._sessionId = id;
     localStorage.setItem(SESSION_KEY, id);
   }
 
-  /** No stamp and an unreadable one both read as idle — `NaN` fails the comparison. */
-  private idle(): boolean {
+  /** Let an idled-out id go, and take this connection's own if the server has named one. */
+  private forget(): void {
+    this._sessionId = null;
+    localStorage.removeItem(SESSION_KEY);
+    localStorage.removeItem(SESSION_AT_KEY);
+    if (this.assigned) this.adopt(this.assigned);
+  }
+
+  /**
+   * `!(… < …)` rather than `>= idleMs`: both are false for the NaN an unreadable
+   * stamp parses to, and only this direction reads that as idle.
+   */
+  private sessionIdle(): boolean {
     const at = localStorage.getItem(SESSION_AT_KEY);
     return at === null || !(Date.now() - Date.parse(at) < this.idleMs);
   }
@@ -77,23 +93,27 @@ export class ChatSocket {
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     };
     if (!this.firstMessageSent) {
-      // The server reads session_id from the first message only, then locks it
-      // for the connection — so this is the one place a session can turn over.
-      if (this.sessionId && this.idle()) {
-        this.sessionId = null;
-        localStorage.removeItem(SESSION_KEY);
-        if (this.assigned) this.adopt(this.assigned);
-      }
+      // Not only a builder: the server reads session_id from the first message
+      // and locks it for the connection, so this branch is where a session turns
+      // over. Idempotent, for the send below that does not leave.
+      if (this._sessionId && this.sessionIdle()) this.forget();
       // Only ever carry an id the server does not already have.
-      if (this.sessionId && this.sessionId !== this.assigned) body.session_id = this.sessionId;
+      if (this._sessionId && this._sessionId !== this.assigned) body.session_id = this._sessionId;
     }
-    this.firstMessageSent = true;
-    localStorage.setItem(SESSION_AT_KEY, new Date().toISOString());
     return body;
   }
 
-  sendText(content: string): boolean { return this.socket.send(this.payload("text", content)); }
-  sendAudio(dataUrl: string): boolean { return this.socket.send(this.payload("audio", dataUrl)); }
+  private send(type: "text" | "audio", content: string): boolean {
+    if (!this.socket.send(this.payload(type, content))) return false;
+    // Only a frame that left is a first message, and only it is activity the
+    // server can have recorded against the session.
+    this.firstMessageSent = true;
+    localStorage.setItem(SESSION_AT_KEY, new Date().toISOString());
+    return true;
+  }
+
+  sendText(content: string): boolean { return this.send("text", content); }
+  sendAudio(dataUrl: string): boolean { return this.send("audio", dataUrl); }
 
   listen(fn: (msg: ChatServerMessage) => void): () => void {
     this.listeners.add(fn);

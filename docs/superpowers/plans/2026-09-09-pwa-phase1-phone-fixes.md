@@ -916,8 +916,10 @@ unsent queue are never windowed. The timeout comes from the overview."
 
 **Files:**
 - Modify: `web/src/lib/chat-socket.ts`
+- Modify: `web/src/lib/ws.ts` (hand the app the open before saying "online" — its own commit)
 - Modify: `web/src/room/Room.tsx` (hand `idleMs` to the socket)
-- Test: `web/src/lib/chat-socket.test.ts`
+- Test: `web/src/lib/chat-socket.test.ts`, `web/src/lib/ws.test.ts`
+- Modify: `web/src/App.test.tsx` (its `ChatSocket` mock gains `setIdleMs`)
 
 Why: the client keeps `alfred.session` forever and sends it on the first message of every connection; the server (`core/channels/web_server.py:464-510`) restores whatever id it is given, so an expired session is resurrected under the old id with an empty context — harmless server-side, but the id no longer means "this conversation", and the Room's window (Task 4) says a new session began. The client now remembers when it last sent (`alfred.session-at`) and, on the first message of a connection, drops a stored id that has been idle for `idleMs` or longer in favour of the id the server assigned for this connection. A phone from before this change has no `session-at` and is treated as stale — one fresh session, the same cost as the `alfred_session_id` rename.
 
@@ -925,89 +927,65 @@ Limits: the server locks the id after the first message of a connection, so a se
 
 - [ ] **Step 1: Write the failing tests**
 
-In `web/src/lib/chat-socket.test.ts`, replace `describe("ChatSocket payloads", …)`'s second test and add to `describe("ChatSocket frames", …)`:
+`web/src/lib/chat-socket.test.ts` grows a third subject — `describe("ChatSocket sessions", …)` — and "payloads" keeps only the timezone/channel and audio tests, "frames" only the pong and status plumbing. The harness needs two additions: `onopen: () => void` on the hoisted `sockets` type (a reconnect is now observable behaviour), and a switch for a socket that will not take a frame:
 
-In `"ChatSocket payloads"`:
 ```ts
-  it("carry a stored, still-live session id on the first message only", () => {
-    localStorage.setItem("alfred.session", "s_9f2");
-    localStorage.setItem("alfred.session-at", new Date(Date.now() - 60_000).toISOString());
-    const socket = new ChatSocket();
+const { sent, sockets, delivers } = vi.hoisted(() => ({
+  sent: [] as Record<string, unknown>[],
+  sockets: [] as {
+    onmessage: (data: unknown) => void;
+    onstatus: (s: string) => void;
+    onopen: () => void;
+  }[],
+  /** Whether the fake socket is open enough to take a frame. See the failed-send test. */
+  delivers: { value: true },
+}));
+```
+— with `send(payload)` returning `false` without recording when `delivers.value` is false, and `delivers.value = true` in `beforeEach`. The two-`setItem` setup every session test wants goes in one helper, which keeps the literal keys:
 
-    socket.sendText("first");
-    socket.sendText("second");
-
-    expect(sent[0].session_id).toBe("s_9f2");
-    expect(sent[1].session_id).toBeUndefined();
-  });
-
-  it("drop a session id that has been idle for the timeout and take the server's", () => {
-    localStorage.setItem("alfred.session", "s_old");
-    localStorage.setItem("alfred.session-at", new Date(Date.now() - 31 * 60_000).toISOString());
-    const socket = new ChatSocket();
-    sockets[0].onmessage({ type: "session", session_id: "s_new" });
-
-    socket.sendText("hello again");
-
-    expect(sent[0].session_id).toBeUndefined();
-    expect(socket.sessionId).toBe("s_new");
-    expect(localStorage.getItem("alfred.session")).toBe("s_new");
-  });
-
-  it("treat a session id with no last-sent stamp as idle", () => {
-    localStorage.setItem("alfred.session", "s_before_the_stamp");
-    const socket = new ChatSocket();
-    sockets[0].onmessage({ type: "session", session_id: "s_new" });
-
-    socket.sendText("hello");
-
-    expect(sent[0].session_id).toBeUndefined();
-    expect(socket.sessionId).toBe("s_new");
-  });
-
-  it("follow the server's idle timeout", () => {
-    localStorage.setItem("alfred.session", "s_9f2");
-    localStorage.setItem("alfred.session-at", new Date(Date.now() - 15 * 60_000).toISOString());
-    const socket = new ChatSocket();
-    socket.idleMs = 10 * 60_000;
-
-    socket.sendText("hello");
-
-    expect(sent[0].session_id).toBeUndefined();
-  });
-
-  it("stamp every send as the session's last activity", () => {
-    const socket = new ChatSocket();
-    socket.sendText("hello");
-    const stamp = localStorage.getItem("alfred.session-at")!;
-    expect(Math.abs(Date.now() - Date.parse(stamp))).toBeLessThan(5_000);
-  });
-
-  it("forget a stale id even before the server has spoken, then adopt what it says", () => {
-    localStorage.setItem("alfred.session", "s_old");
-    const socket = new ChatSocket();
-
-    socket.sendText("hello");
-    expect(sent[0].session_id).toBeUndefined();
-    expect(localStorage.getItem("alfred.session")).toBeNull();
-
-    sockets[0].onmessage({ type: "session", session_id: "s_new" });
-    expect(socket.sessionId).toBe("s_new");
-    expect(localStorage.getItem("alfred.session")).toBe("s_new");
-  });
+```ts
+/** A stored session last used `ageMs` ago; omit the age for one that predates the stamp. */
+function storedSession(id: string, ageMs?: number): void {
+  localStorage.setItem("alfred.session", id);
+  if (ageMs !== undefined) {
+    localStorage.setItem("alfred.session-at", new Date(Date.now() - ageMs).toISOString());
+  }
+}
 ```
 
-In `"ChatSocket frames"`, add:
-```ts
-  it("keeps a live stored id over the server's, but remembers the server's", () => {
-    localStorage.setItem("alfred.session", "s_9f2");
-    localStorage.setItem("alfred.session-at", new Date().toISOString());
-    const socket = new ChatSocket();
-    sockets[0].onmessage({ type: "session", session_id: "s_new" });
-    expect(socket.sessionId).toBe("s_9f2");
+The block covers: adopting the server's id when there is none (moved from "frames"); carrying a still-live stored id on the first message only; keeping a live stored id over the server's while remembering the server's; dropping an id idle for the timeout and taking the server's; treating a missing and an unreadable stamp as idle; following a `setIdleMs` timeout; stamping the send; forgetting a stale id before the server has spoken and adopting what it then says. Three carry the decisions worth reading:
 
+```ts
+  it("stamp every send as the session's last activity", () => {
+    const socket = new ChatSocket();
+    const before = Date.now();
     socket.sendText("hello");
+    expect(Date.parse(localStorage.getItem("alfred.session-at")!)).toBeGreaterThanOrEqual(before);
+  });
+
+  it("do not spend the first message on a send that never left", () => {
+    storedSession("s_9f2", 60_000);
+    const stamp = localStorage.getItem("alfred.session-at");
+    const socket = new ChatSocket();
+
+    delivers.value = false;
+    expect(socket.sendText("into the void")).toBe(false);
+    expect(localStorage.getItem("alfred.session-at")).toBe(stamp);
+
+    delivers.value = true;
+    socket.sendText("the real first message");
     expect(sent[0].session_id).toBe("s_9f2");
+  });
+
+  it("offer the stored id again on the next connection, before the server names one", () => {
+    const socket = new ChatSocket();
+    sockets[0].onmessage({ type: "session", session_id: "s_a" });
+    socket.sendText("first");
+
+    sockets[0].onopen();
+    socket.sendText("after a reconnect");
+
+    expect(sent[1].session_id).toBe("s_a");
   });
 ```
 
@@ -1016,11 +994,9 @@ In `"ChatSocket frames"`, add:
 ```bash
 cd web && npx vitest run src/lib/chat-socket.test.ts
 ```
-Expected: the first (live id) test passes; the stale/stamp tests fail (`session_id` still sent, no `alfred.session-at`, `idleMs` not a property).
+Expected: the live-id test passes; the stale/stamp tests fail (`session_id` still sent, no `alfred.session-at`, no `setIdleMs`).
 
 - [ ] **Step 3: Implement**
-
-Rewrite `web/src/lib/chat-socket.ts`:
 
 ```ts
 import { SESSION_IDLE_MS } from "./history";
@@ -1034,10 +1010,10 @@ import { ReconnectingSocket, type SocketStatus } from "./ws";
  */
 const SESSION_KEY = "alfred.session";
 /**
- * ISO stamp of the last send. The server forgets a session after
- * `SESSION_TIMEOUT_MINUTES` of silence, and would otherwise resurrect the old id
- * with an empty context; this is how the client knows to let it go instead.
- * A phone from before the stamp existed reads as idle — one fresh session.
+ * ISO stamp of the last send. The server forgets a session after its idle
+ * timeout and would otherwise restore the old id with an empty context; this is
+ * how the client knows to let the id go too. A phone from before the stamp
+ * existed reads as idle — one fresh session.
  */
 const SESSION_AT_KEY = "alfred.session-at";
 
@@ -1047,15 +1023,19 @@ export class ChatSocket {
   private firstMessageSent = false;
   /** The id the server assigned this connection; adopted when ours is gone or idle. */
   private assigned: string | null = null;
-  sessionId: string | null = localStorage.getItem(SESSION_KEY);
-  /** The server's idle timeout (`Overview.session.idle_minutes`); the Room sets it. */
-  idleMs = SESSION_IDLE_MS;
+  private _sessionId: string | null = localStorage.getItem(SESSION_KEY);
+  private idleMs = SESSION_IDLE_MS;
 
   onstatus: (s: SocketStatus) => void = () => {};
 
   constructor() {
     this.socket.onstatus = (s) => this.onstatus(s);
-    this.socket.onopen = () => { this.firstMessageSent = false; };
+    this.socket.onopen = () => {
+      this.firstMessageSent = false;
+      // The previous connection's assigned id means nothing to this one, which
+      // will announce its own — and ours must be offered again until it does.
+      this.assigned = null;
+    };
     this.socket.onmessage = (data) => {
       const msg = data as ChatServerMessage;
       // Keepalive plumbing. `lastMessageAt` on the socket already recorded it;
@@ -1065,7 +1045,7 @@ export class ChatSocket {
         // The server assigns one per connection. Ours wins on the first send if
         // it is still live (web_server.py restores it); otherwise this is the id.
         this.assigned = msg.session_id;
-        if (!this.sessionId) this.adopt(msg.session_id);
+        if (!this._sessionId) this.adopt(msg.session_id);
       }
       for (const fn of this.listeners) fn(msg);
     };
@@ -1074,14 +1054,36 @@ export class ChatSocket {
   connect(): void { this.socket.connect(); }
   close(): void { this.socket.close(); }
 
+  /** Read-only: the id and its two keys move together, in `adopt` and `forget` alone. */
+  get sessionId(): string | null { return this._sessionId; }
+
+  /**
+   * Follow the server's own idle timeout (`Overview.session.idle_minutes`); the
+   * Room sets it. A method rather than a field because `react-hooks/immutability`
+   * refuses an assignment to an object a hook returned.
+   */
+  setIdleMs(ms: number): void { this.idleMs = ms; }
+
   private adopt(id: string): void {
-    this.sessionId = id;
+    this._sessionId = id;
     localStorage.setItem(SESSION_KEY, id);
   }
 
-  private idle(): boolean {
+  /** Let an idled-out id go, and take this connection's own if the server has named one. */
+  private forget(): void {
+    this._sessionId = null;
+    localStorage.removeItem(SESSION_KEY);
+    localStorage.removeItem(SESSION_AT_KEY);
+    if (this.assigned) this.adopt(this.assigned);
+  }
+
+  /**
+   * `!(… < …)` rather than `>= idleMs`: both are false for the NaN an unreadable
+   * stamp parses to, and only this direction reads that as idle.
+   */
+  private sessionIdle(): boolean {
     const at = localStorage.getItem(SESSION_AT_KEY);
-    return at === null || Date.now() - Date.parse(at) >= this.idleMs;
+    return at === null || !(Date.now() - Date.parse(at) < this.idleMs);
   }
 
   private payload(type: "text" | "audio", content: string): Record<string, unknown> {
@@ -1092,22 +1094,27 @@ export class ChatSocket {
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     };
     if (!this.firstMessageSent) {
-      // The server reads session_id from the first message only, then locks it
-      // for the connection — so this is the one place a session can turn over.
-      if (this.sessionId && this.idle()) {
-        this.sessionId = null;
-        localStorage.removeItem(SESSION_KEY);
-        if (this.assigned) this.adopt(this.assigned);
-      }
-      if (this.sessionId) body.session_id = this.sessionId;
+      // Not only a builder: the server reads session_id from the first message
+      // and locks it for the connection, so this branch is where a session turns
+      // over. Idempotent, for the send below that does not leave.
+      if (this._sessionId && this.sessionIdle()) this.forget();
+      // Only ever carry an id the server does not already have.
+      if (this._sessionId && this._sessionId !== this.assigned) body.session_id = this._sessionId;
     }
-    this.firstMessageSent = true;
-    localStorage.setItem(SESSION_AT_KEY, new Date().toISOString());
     return body;
   }
 
-  sendText(content: string): boolean { return this.socket.send(this.payload("text", content)); }
-  sendAudio(dataUrl: string): boolean { return this.socket.send(this.payload("audio", dataUrl)); }
+  private send(type: "text" | "audio", content: string): boolean {
+    if (!this.socket.send(this.payload(type, content))) return false;
+    // Only a frame that left is a first message, and only it is activity the
+    // server can have recorded against the session.
+    this.firstMessageSent = true;
+    localStorage.setItem(SESSION_AT_KEY, new Date().toISOString());
+    return true;
+  }
+
+  sendText(content: string): boolean { return this.send("text", content); }
+  sendAudio(dataUrl: string): boolean { return this.send("audio", dataUrl); }
 
   listen(fn: (msg: ChatServerMessage) => void): () => void {
     this.listeners.add(fn);
@@ -1116,36 +1123,63 @@ export class ChatSocket {
 }
 ```
 
-Note on the adopt-after-drop branch: when the stored id was idle and the server's `session` frame has arrived, `sessionId` becomes the server's own id for this connection, so the payload carries it — harmless (the server already holds it) and it keeps `sendText` → `session_id` symmetric with the "live id" path. The `"drop a session id …"` test expects `session_id` **undefined** in that case; make the test and the code agree by **not** attaching an id that the server assigned itself: change the `if (this.sessionId) body.session_id = …` line to
+Four points the sketch this replaced got wrong or left out:
+
+- **`sessionId` is a getter over `_sessionId`.** The id, `SESSION_KEY` and `SESSION_AT_KEY` are one invariant, maintained only by `adopt` and `forget`; a public mutable field invited a fifth writer. Readers (the tests) are unchanged.
+- **`assigned` is cleared in `onopen`.** The server assigns a fresh uuid per connection (`web_server.py`, before its receive loop), so the previous connection's id must not still be standing there — otherwise a stored id equal to it is suppressed by the `!== this.assigned` guard on the reconnect's first message, and the server silently starts a session the client never hears about.
+- **`send` commits only on a frame that left.** `payload()` no longer sets `firstMessageSent` or stamps; `send()` does, after `socket.send()` returns true. A frame refused because the socket was not OPEN (`useRoom`'s unsent flush calls `sendText` ungated) must not burn the connection's one chance to carry `session_id`, nor record activity the server never saw. The drop-and-adopt stays in `payload()`, where it is idempotent on the retry.
+- **`forget()` clears the stamp with the id.** They are one fact; leaving `alfred.session-at` behind was masked only by the unconditional re-stamp that `send()` now owns.
+
+`payload()` only ever carries an id the server does not already have, so after a drop-and-adopt the first message carries no `session_id` — the wire is unchanged for the common case.
+
+Import direction: `history.ts` imports `./api`, `./format`, `./types` — no cycle with `chat-socket.ts`.
+
+- [ ] **Step 4: Fix the order of `onopen` and "online" in `web/src/lib/ws.ts`**
+
+A pre-existing bug that this task's per-connection state made load-bearing, so it lands as its own commit, before the feature. `ws.onopen` announced `"online"` before calling `this.onopen()` — and `"online"` synchronously runs `ConnectionProvider`'s listeners, one of which (`useRoom.ts:245-252`) flushes the unsent queue through `chat.sendText`. The flush therefore ran before `ChatSocket.onopen` had reset `firstMessageSent`/`assigned`: the flushed frame was the connection's first message with no `session_id`, the server locked an id of its own, and the stamp was refreshed anyway, so the stored id could never idle out. Swap the two calls:
 
 ```ts
-      if (this.sessionId && this.sessionId !== this.assigned) body.session_id = this.sessionId;
+      this.startPing(ws);
+      // Open first, "online" second: the app's online listeners send on it
+      // (useRoom flushes the unsent queue), and ChatSocket clears its
+      // per-connection session state in onopen — that has to happen before a
+      // send, or the flushed frame is the connection's first message with no
+      // session_id and the server locks an id of its own.
+      this.onopen();
+      this.onstatus("online");
 ```
+`telemetry-socket.ts` only re-subscribes in its `onopen`, so it does not care which runs first. `web/src/lib/ws.test.ts` had no ordering coverage; add to `describe("ReconnectingSocket", …)`:
 
-so the payload only ever carries an id the server does not already have. (Keeps the wire the same as before for the common case and makes the tests' `toBeUndefined()` literal.)
-
-Check the import direction: `history.ts` imports `./api`, `./format`, `./types` — no cycle with `chat-socket.ts`.
-
-- [ ] **Step 4: Run the socket tests**
-
-```bash
-cd web && npx vitest run src/lib/chat-socket.test.ts
+```ts
+  it("hands the app the open before it says online", () => {
+    // ChatSocket clears its per-connection session state in onopen, and the
+    // "online" status is what makes useRoom flush the unsent queue — a flush
+    // that ran first would be the new connection's first message with no
+    // session_id, and the server locks a fresh id on that.
+    const sock = new ReconnectingSocket("/ws/test");
+    const order: string[] = [];
+    sock.onopen = () => order.push("open");
+    sock.onstatus = (s) => {
+      if (s === "online") order.push("online");
+    };
+    sock.connect();
+    FakeWebSocket.instances[0].open();
+    expect(order).toEqual(["open", "online"]);
+  });
 ```
-Expected: all pass.
 
 - [ ] **Step 5: Hand the timeout to the socket**
 
-In `web/src/room/Room.tsx`, `useConnection()` already returns `chat`; destructure it (`const { online, chatStatus, lastTrueAt, chat } = useConnection();`) and add after `const idleMs = sessionIdleMs(overview);`:
+In `web/src/room/Room.tsx`, destructure `chat` (`const { online, chatStatus, lastTrueAt, chat } = useConnection();`) and put the effect beside its twin, the `signal.setThinking(room.thinking)` effect — the two pokes at a long-lived singleton read as one pattern:
 
 ```ts
-  // The socket rotates the stored session id at the same boundary the Room
-  // windows on; both follow the server's timeout once the overview has it.
+  // The socket lets a stored session id go at the same boundary the Room windows on.
   useEffect(() => {
-    chat.idleMs = idleMs;
+    chat.setIdleMs(idleMs);
   }, [chat, idleMs]);
 ```
 
-If `useRoom.test.tsx`'s `ChatSocket` mock now needs an `idleMs` field for the type-check (`Room.test.tsx` renders Room — check `ls web/src/room/*.test.tsx`), add `idleMs = SESSION_IDLE_MS;` to the mock class. Add a Room test only if `Room.test.tsx` exists and already asserts against the chat mock; otherwise the App test below covers it.
+Not `chat.idleMs = idleMs`: `react-hooks/immutability`, in the recommended set this repo lints with (`web/eslint.config.js`), refuses an assignment to a value a hook returned. `PresenceSignal.setThinking` is the same shape for the same reason. `web/src/App.test.tsx` renders the Room behind a `ChatSocket` mock, so that mock needs `setIdleMs() {}` — a runtime need, not a type one. `useRoom.test.tsx` mounts the hook rather than the Room and needs nothing.
 
 - [ ] **Step 6: Run the suite, lint, build**
 
@@ -1154,10 +1188,20 @@ cd web && npx vitest run && npm run lint && npm run build
 ```
 Expected: all pass.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Commit — the ws.ts ordering fix first, then the feature**
 
 ```bash
-git add web/src/lib/chat-socket.ts web/src/lib/chat-socket.test.ts web/src/room/Room.tsx
+git add web/src/lib/ws.ts web/src/lib/ws.test.ts
+git commit -m "fix(web): hand the app the socket's open before saying it is online
+
+\"online\" is what makes useRoom flush the unsent queue, and it ran before
+the onopen callback — so on a reconnect with a queued message the flushed
+frame was the new connection's first message, sent before ChatSocket had
+cleared its per-connection session state. It carried no session_id, the
+server locked an id of its own, and the stamp was refreshed anyway, so the
+stored id could never idle out."
+
+git add web/src/lib/chat-socket.ts web/src/lib/chat-socket.test.ts web/src/room/Room.tsx web/src/App.test.tsx
 git commit -m "feat(web): let the stored session id go when the session has idled out
 
 The client kept alfred.session forever and re-sent it on every connection,

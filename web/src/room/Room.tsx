@@ -27,10 +27,6 @@ export function Room() {
   const { online, chatStatus, lastTrueAt, chat } = useConnection();
   const { data: overview } = useOverview();
   const idleMs = sessionIdleMs(overview);
-  // The socket lets a stored session id go at the same boundary the Room windows on.
-  useEffect(() => {
-    chat.setIdleMs(idleMs);
-  }, [chat, idleMs]);
   const { data: history } = useRoomHistory();
   const door = useDoor();
 
@@ -59,6 +55,11 @@ export function Room() {
   useEffect(() => {
     signal.setThinking(room.thinking);
   }, [signal, room.thinking]);
+
+  // The socket lets a stored session id go at the same boundary the Room windows on.
+  useEffect(() => {
+    chat.setIdleMs(idleMs);
+  }, [chat, idleMs]);
 
   const firstRun = isFirstRun(overview);
   // "connecting" is the first-ever attempt and "reconnecting" a later one; both
