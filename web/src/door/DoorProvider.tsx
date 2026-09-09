@@ -92,16 +92,21 @@ export function DoorProvider({ children }: { children: ReactNode }) {
   }, [telemetry]);
 
   // Only run a clock while something is actually counting: a Room with no
-  // pending approval must not re-render once a second for ever.
-  const counting = actions.some((item) => item.phase === "pending" || item.phase === "queued");
+  // pending approval must not re-render once a second for ever. `queued` does
+  // not count — the handoff freezes the fuse where the confirmation left it.
+  const counting = actions.some((item) => item.phase === "pending");
 
   useEffect(() => {
     if (!counting) return;
-    const timer = setInterval(() => {
+    // Step at once as well as every second: `now` was read at mount, and an
+    // approval arriving minutes later would draw its first frame from that.
+    const step = () => {
       const at = Date.now();
       setNow(at);
       dispatch({ type: "tick", now: at });
-    }, TICK_MS);
+    };
+    step();
+    const timer = setInterval(step, TICK_MS);
     return () => clearInterval(timer);
   }, [counting]);
 

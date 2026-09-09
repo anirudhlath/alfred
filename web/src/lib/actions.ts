@@ -75,15 +75,24 @@ export function actionReducer(state: TrackedAction[], ev: ActionEvent): TrackedA
     }
 
     case "confirm-sent":
+      // A result that landed first is the stronger fact: a slow 200 must not
+      // demote `applied` back to a promise. From `expired` it is welcome — the
+      // phone's clock ran ahead of the server's, and the server took the answer.
       return state.map((item) =>
-        item.action.request_id === ev.id
+        item.action.request_id === ev.id && item.phase !== "applied"
           ? { ...item, phase: "queued", confirmedAt: ev.at }
           : item,
       );
 
     case "confirm-404":
+      // Only a live approval can turn out to have been answered elsewhere.
+      // `queued` and `applied` know better — a second confirm of our own 404s
+      // too — and `expired` already has the honest tombstone: a 404 after the
+      // fuse ran out almost always means the server's ran out as well.
       return state.map((item) =>
-        item.action.request_id === ev.id ? { ...item, phase: "answered" } : item,
+        item.action.request_id === ev.id && item.phase === "pending"
+          ? { ...item, phase: "answered" }
+          : item,
       );
 
     case "result":
@@ -109,8 +118,6 @@ export function actionReducer(state: TrackedAction[], ev: ActionEvent): TrackedA
       );
     }
   }
-
-  return state;
 }
 
 /** `GET /api/actions/pending` — oldest first, per the route's own contract. */
