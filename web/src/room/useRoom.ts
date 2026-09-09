@@ -368,7 +368,7 @@ export function useRoom({
       ...(tombstones ?? []),
       ...live,
     ].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
-    return withDividers(merged, now);
+    return withDividers(merged, now, idleMs);
   }, [history, tombstones, live, now, idleMs]);
 
   return { items, thinking: thinkingAt !== null, sendText, sendAudio };

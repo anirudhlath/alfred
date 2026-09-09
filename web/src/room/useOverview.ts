@@ -38,7 +38,8 @@ export function isFirstRun(overview: Overview | undefined): boolean {
 /**
  * The server's session idle timeout in ms, or the client's default until the
  * overview has answered (or if it reports nonsense — a zero would window
- * everything away).
+ * everything away). The house always sends `session`; the guard is for a cached
+ * shell meeting a server from before it did, not for the current contract.
  */
 export function sessionIdleMs(overview: Overview | undefined): number {
   const minutes = overview?.session?.idle_minutes;

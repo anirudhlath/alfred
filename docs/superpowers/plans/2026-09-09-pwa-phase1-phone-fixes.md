@@ -443,11 +443,12 @@ window the Room to the current session without guessing the value."
 ### Task 4: The Room shows the current session
 
 **Files:**
-- Modify: `web/src/lib/history.ts` (`CONVERSATION_GAP_MS` → exported `SESSION_IDLE_MS`; new `sessionWindow`)
-- Modify: `web/src/room/useRoom.ts` (`idleMs` option; apply `sessionWindow` in the items memo)
+- Modify: `web/src/lib/history.ts` (`CONVERSATION_GAP_MS` → exported `SESSION_IDLE_MS`; new `sessionWindow`; `withDividers` takes `idleMs`)
+- Modify: `web/src/room/useRoom.ts` (`idleMs` option; apply `sessionWindow` in the items memo, and pass `idleMs` to `withDividers`)
 - Modify: `web/src/room/useOverview.ts` (`sessionIdleMs`)
 - Modify: `web/src/room/Room.tsx:52` (pass `idleMs`)
-- Test: `web/src/lib/history.test.ts`, `web/src/room/useRoom.test.tsx`, `web/src/App.test.tsx`
+- Modify: `web/src/test/fixtures.ts` (comment only: the 20:52/21:14 turns are 22 min apart — one session, no gap divider)
+- Test: `web/src/lib/history.test.ts`, `web/src/room/useRoom.test.tsx`, `web/src/room/useOverview.test.tsx`, `web/src/App.test.tsx`
 
 Decision (user, 2026-09-09): the Room shows **the current session only** — the turns since the last silence of `idle_minutes` or more, which is exactly what Alfred has in context — and nothing older. After a break the Room opens empty; older turns come back in the Activity view (phase 2). Satellite turns are included. The house's own rows (notifications, reflex acts) are not conversation and stay for the day (`earlier today`), or from the session start if that is earlier. Tombstones, live rows and the unsent queue are never windowed.
 
@@ -460,16 +461,31 @@ In `web/src/lib/history.test.ts`, add `sessionWindow, SESSION_IDLE_MS` to the im
 ```ts
 describe("sessionWindow", () => {
   const now = new Date(2026, 8, 7, 21, 30);
+  // Every assertion below reads the ids, so each row carries its own.
   const you = (id: string, at: string): TimelineItem => ({
-    kind: "you", id: `you:${id}`, at, text: id, state: "sent",
+    kind: "you",
+    id: `you:${id}`,
+    at,
+    text: id,
+    state: "sent",
   });
   const alfred = (id: string, at: string): TimelineItem => ({
-    kind: "alfred", id: `alfred:${id}`, at, text: id, actions: [],
+    kind: "alfred",
+    id: `alfred:${id}`,
+    at,
+    text: id,
+    actions: [],
   });
   const act = (id: string, at: string): TimelineItem => ({
-    kind: "act", id: `nt:${id}`, at, hue: 255, text: id, meta: "",
+    kind: "act",
+    id: `nt:${id}`,
+    at,
+    hue: 255,
+    text: id,
+    meta: "",
   });
   const ids = (items: TimelineItem[]) => items.map((item) => item.id);
+  const window = (items: TimelineItem[], at = now) => ids(sessionWindow(items, at, SESSION_IDLE_MS));
 
   it("keeps the turns since the last long silence and drops the rest", () => {
     const items = [
@@ -481,37 +497,38 @@ describe("sessionWindow", () => {
       you("e", "2026-09-07T21:10:00"), // 99 min later — the newest session
       alfred("f", "2026-09-07T21:10:05"),
     ];
-    expect(ids(sessionWindow(items, now))).toEqual(["you:e", "alfred:f"]);
+    expect(window(items)).toEqual(["you:e", "alfred:f"]);
   });
 
   it("shows no conversation when the newest turn is already idle", () => {
     const items = [you("a", "2026-09-07T20:59:00"), alfred("b", "2026-09-07T21:00:00")];
-    expect(sessionWindow(items, now)).toEqual([]);
+    expect(sessionWindow(items, now, SESSION_IDLE_MS)).toEqual([]);
   });
 
   it("measures the silence from the newest turn, not from now", () => {
     // 29 minutes ago: still live, and everything chained to it within 30 min stays.
     const items = [you("a", "2026-09-07T20:32:00"), alfred("b", "2026-09-07T21:01:00")];
-    expect(ids(sessionWindow(items, now))).toEqual(["you:a", "alfred:b"]);
+    expect(window(items)).toEqual(["you:a", "alfred:b"]);
   });
 
   it("keeps the house's rows for the day even with no conversation", () => {
     const items = [act("dawn", "2026-09-07T06:10:00"), act("old", "2026-09-06T23:59:00")];
-    expect(ids(sessionWindow(items, now))).toEqual(["nt:dawn"]);
+    expect(window(items)).toEqual(["nt:dawn"]);
   });
 
   it("keeps the house's rows back to a session that began yesterday", () => {
     const items = [
-      act("late", "2026-09-06T23:40:00"),
       you("a", "2026-09-06T23:50:00"),
       alfred("b", "2026-09-06T23:50:04"),
+      act("late", "2026-09-06T23:55:00"),
     ];
     const justAfterMidnight = new Date(2026, 8, 7, 0, 5);
-    expect(ids(sessionWindow(items, justAfterMidnight))).toEqual(["nt:late", "you:a", "alfred:b"]);
+    // The act is yesterday's, so only the session's start can keep it.
+    expect(window(items, justAfterMidnight)).toEqual(["you:a", "alfred:b", "nt:late"]);
   });
 
   it("honours a different idle timeout", () => {
-    const items = [you("a", "2026-09-07T21:00:00"), you("b", "2026-09-07T21:12:00")];
+    const items = [you("a", "2026-09-07T21:15:00"), you("b", "2026-09-07T21:27:00")];
     expect(ids(sessionWindow(items, now, 10 * 60 * 1000))).toEqual(["you:b"]);
     expect(ids(sessionWindow(items, now, 20 * 60 * 1000))).toEqual(["you:a", "you:b"]);
   });
@@ -519,11 +536,23 @@ describe("sessionWindow", () => {
   it("treats a turn stamped after now as current", () => {
     // The server stamps history; a phone a few seconds behind must not lose it.
     const items = [you("a", "2026-09-07T21:30:03")];
-    expect(ids(sessionWindow(items, now))).toEqual(["you:a"]);
+    expect(window(items)).toEqual(["you:a"]);
   });
 
-  it("is the same half hour the gap divider uses", () => {
-    expect(SESSION_IDLE_MS).toBe(30 * 60 * 1000);
+  it("does not let a turn with an unreadable stamp stand in for one", () => {
+    // NaN compares false against everything, so an unreadable row must be
+    // stepped over — not treated as a turn that bridges the silence.
+    const items = [you("a", "2026-09-07T10:00:00"), you("nope", "not a date")];
+    expect(sessionWindow(items, now, SESSION_IDLE_MS)).toEqual([]);
+  });
+
+  it("cuts at the same silence the gap divider draws on", () => {
+    const turns = [you("a", "2026-09-07T21:00:00"), you("b", "2026-09-07T21:30:00")];
+
+    // Exactly SESSION_IDLE_MS apart: the window keeps only the newer turn, and
+    // the divider that would separate the two is drawn at the same instant.
+    expect(window(turns)).toEqual(["you:b"]);
+    expect(withDividers(turns, now).filter((item) => item.kind === "divider")).toHaveLength(2);
   });
 });
 ```
@@ -540,14 +569,12 @@ Expected: fails to compile — `sessionWindow` / `SESSION_IDLE_MS` are not expor
 Replace the constant:
 ```ts
 /**
- * The server's chat session idles out after `SESSION_TIMEOUT_MINUTES`
- * (`shared/config.py`, default 30). This is the fallback until the overview has
- * reported the real value (`Overview.session.idle_minutes`); the gap divider, the
- * Room's window and the session-id rotation all use the same number.
+ * The client's fallback for the server's chat session idle timeout
+ * (`SESSION_TIMEOUT_MINUTES`, `shared/config.py`, default 30), until the overview
+ * reports the real one (`Overview.session.idle_minutes` → `sessionIdleMs`).
  */
 export const SESSION_IDLE_MS = 30 * 60 * 1000;
 ```
-and in `withDividers` change `>= CONVERSATION_GAP_MS` to `>= SESSION_IDLE_MS`.
 
 Add after `startOfDay`:
 
@@ -556,25 +583,28 @@ Add after `startOfDay`:
  * The current session: the turns since the last silence of `idleMs` or more,
  * walked back from the newest turn — which is what Alfred still has in context.
  * A newest turn that is itself `idleMs` old means no session, and no turns.
+ * `items` must be sorted by `at`, as `toTimelineItems` returns them: the walk
+ * relies on it.
  *
  * The house's own rows (notifications, reflex acts) are not conversation; they
- * stay for the day, or from the session's start if that came earlier, so a
- * session that crossed midnight keeps what happened around it. Everything else
- * (tombstones, live rows, the unsent queue) is the caller's, never windowed here.
+ * stay for the day, or from the session's start if that came earlier. Everything
+ * else (tombstones, live rows, the unsent queue) is the caller's, never windowed
+ * here.
  *
  * `now` is only the reference for "idle" and "today": a turn stamped after it
  * (the server's clock, a phone a few seconds behind) is current.
  */
-export function sessionWindow(
-  items: TimelineItem[],
-  now: Date,
-  idleMs: number = SESSION_IDLE_MS,
-): TimelineItem[] {
+export function sessionWindow(items: TimelineItem[], now: Date, idleMs: number): TimelineItem[] {
+  const stamps = items.map((item) => Date.parse(item.at));
   let start: number | null = null;
   let next = now.getTime();
-  for (const item of items.slice().reverse()) {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
     if (item.kind !== "you" && item.kind !== "alfred") continue;
-    const at = Date.parse(item.at);
+    const at = stamps[i];
+    // An unreadable stamp is not a turn: standing in for one would swallow
+    // the silence on both sides of it.
+    if (Number.isNaN(at)) continue;
     if (next - at >= idleMs) break;
     start = at;
     next = at;
@@ -582,15 +612,42 @@ export function sessionWindow(
 
   const today = startOfDay(now);
   const houseSince = start === null ? today : Math.min(today, start);
-  return items.filter((item) => {
-    const at = Date.parse(item.at);
+  return items.filter((item, i) => {
+    const at = stamps[i];
     if (item.kind === "you" || item.kind === "alfred") return start !== null && at >= start;
     return at >= houseSince;
   });
 }
 ```
 
-`items` must be sorted by `at` (as `toTimelineItems` returns them); the walk relies on it.
+`idleMs` is required here — the caller always knows it, and a default would let a
+call site silently disagree with the Room. Then give `withDividers` the same
+timeout, so the Room cannot draw `new conversation ·` inside the one session it
+is showing (at `idle_minutes: 60` the hard-coded half hour would):
+
+```ts
+export function withDividers(
+  items: TimelineItem[],
+  now: Date,
+  idleMs: number = SESSION_IDLE_MS,
+): TimelineItem[] {
+```
+— comparing `stamp - lastTurnAt >= idleMs`, with its JSDoc's "a half-hour silence"
+reworded to "a silence of the session's idle timeout". Add to the `withDividers`
+describe:
+
+```ts
+  it("draws the gap at the timeout it is given, not at the default", () => {
+    // Twenty minutes: one conversation at the default, two when the house
+    // idles out at ten — the Room must not split the session it is showing.
+    const turns = [turnAt("2026-09-07T21:00:00"), turnAt("2026-09-07T21:20:00")];
+    const dividers = (items: TimelineItem[], idleMs?: number) =>
+      withDividers(items, now, idleMs).filter((item) => item.kind === "divider").length;
+
+    expect(dividers(turns)).toBe(1);
+    expect(dividers(turns, 10 * 60 * 1000)).toBe(2);
+  });
+```
 
 - [ ] **Step 4: Run the history tests**
 
@@ -629,7 +686,7 @@ In `useRoom.ts`:
       ...(tombstones ?? []),
       ...live,
     ].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
-    return withDividers(merged, now);
+    return withDividers(merged, now, idleMs);
   }, [history, tombstones, live, now, idleMs]);
 ```
 
@@ -637,8 +694,8 @@ In `useRoom.test.tsx`:
 
 (e) The fixtures are dated 2026-09-01/07 and the real clock is later, so every history row would now be idle. Pin the clock: add a module constant and set it in the top-level `beforeEach`:
 ```ts
-// Every history fixture below is dated within the half hour before this, so it
-// sits inside the Room's session window (`sessionWindow`) — the tests that need
+// Every history fixture below is dated against this: `historyRow` inside the
+// session window (`sessionWindow`), `idleTurn` before it — the tests that need
 // the clock to move set it themselves.
 const NOW = new Date("2026-09-07T21:05:00");
 ```
@@ -672,7 +729,7 @@ describe("useRoom — the session window", () => {
   const idleTurn: TimelineItem = {
     kind: "you",
     id: "you:idle",
-    at: "2026-09-07T20:30:00", // 35 min before NOW
+    at: "2026-09-07T20:15:00", // 50 min before NOW, and 37 before `historyRow`
     text: "Lock up for the night.",
     state: "sent",
   };
@@ -716,6 +773,7 @@ describe("useRoom — the session window", () => {
     // Open at 21:05 with a live session; the clock passes 30 min with no
     // visibilitychange: the rows stay until the app returns.
     vi.useFakeTimers();
+    vi.setSystemTime(NOW);
     const { result } = renderRoom({ history: [historyRow], online: true });
     act(() => void vi.advanceTimersByTime(40 * 60 * 1000));
     expect(kinds(result.current.items)).toEqual(["alfred"]);
@@ -745,7 +803,8 @@ import { SESSION_IDLE_MS } from "@/lib/history";
 /**
  * The server's session idle timeout in ms, or the client's default until the
  * overview has answered (or if it reports nonsense — a zero would window
- * everything away).
+ * everything away). The house always sends `session`; the guard is for a cached
+ * shell meeting a server from before it did, not for the current contract.
  */
 export function sessionIdleMs(overview: Overview | undefined): number {
   const minutes = overview?.session?.idle_minutes;
@@ -758,6 +817,7 @@ Add a describe block to the existing `web/src/room/useOverview.test.tsx` (extend
 ```ts
 import { describe, expect, it } from "vitest";
 import { SESSION_IDLE_MS } from "@/lib/history";
+import type { Overview } from "@/lib/types";
 import { overviewFixture } from "@/test/fixtures";
 import { sessionIdleMs } from "./useOverview";
 
@@ -766,12 +826,21 @@ describe("sessionIdleMs", () => {
     expect(sessionIdleMs({ ...overviewFixture, session: { idle_minutes: 10 } })).toBe(600_000);
   });
 
-  it.each([undefined, 0, -5, Number.NaN])("falls back to the default for %s", (minutes) => {
-    const overview =
-      minutes === undefined
-        ? undefined
-        : { ...overviewFixture, session: { idle_minutes: minutes } };
+  it("falls back to the default before the overview has answered", () => {
+    expect(sessionIdleMs(undefined)).toBe(SESSION_IDLE_MS);
+  });
+
+  // The house always sends `session`; a cached shell can still meet a server
+  // from before it did.
+  it("falls back to the default when the overview has no session at all", () => {
+    const overview = { ...overviewFixture, session: undefined as unknown as Overview["session"] };
     expect(sessionIdleMs(overview)).toBe(SESSION_IDLE_MS);
+  });
+
+  it.each([0, -5, Number.NaN])("falls back to the default for %s minutes", (minutes) => {
+    expect(sessionIdleMs({ ...overviewFixture, session: { idle_minutes: minutes } })).toBe(
+      SESSION_IDLE_MS,
+    );
   });
 });
 ```
@@ -821,7 +890,7 @@ Expected: all pass.
 - [ ] **Step 10: Commit**
 
 ```bash
-git add web/src/lib/history.ts web/src/lib/history.test.ts web/src/room/useRoom.ts web/src/room/useRoom.test.tsx web/src/room/useOverview.ts web/src/room/useOverview.test.tsx web/src/room/Room.tsx web/src/App.test.tsx
+git add web/src/lib/history.ts web/src/lib/history.test.ts web/src/room/useRoom.ts web/src/room/useRoom.test.tsx web/src/room/useOverview.ts web/src/room/useOverview.test.tsx web/src/room/Room.tsx web/src/App.test.tsx web/src/test/fixtures.ts
 git commit -m "feat(web): the Room shows the current session only
 
 The history read is fifty rows per stream with no age bound, so the Room

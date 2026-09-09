@@ -83,8 +83,8 @@ function renderRoom({ online, ...props }: UseRoomOptions & { online: boolean }) 
   return { ...view, chat };
 }
 
-// Every history fixture below is dated within the half hour before this, so it
-// sits inside the Room's session window (`sessionWindow`) — the tests that need
+// Every history fixture below is dated against this: `historyRow` inside the
+// session window (`sessionWindow`), `idleTurn` before it — the tests that need
 // the clock to move set it themselves.
 const NOW = new Date("2026-09-07T21:05:00");
 
@@ -858,6 +858,7 @@ describe("useRoom — the session window", () => {
     // Open at 21:05 with a live session; the clock passes 30 min with no
     // visibilitychange: the rows stay until the app returns.
     vi.useFakeTimers();
+    vi.setSystemTime(NOW);
     const { result } = renderRoom({ history: [historyRow], online: true });
     act(() => void vi.advanceTimersByTime(40 * 60 * 1000));
     expect(kinds(result.current.items)).toEqual(["alfred"]);
