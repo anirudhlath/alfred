@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   fetchRoomHistory,
   pendingActionTitles,
+  SESSION_IDLE_MS,
+  sessionWindow,
   toTimelineItems,
   withDividers,
   type RoomHistory,
@@ -332,6 +334,76 @@ describe("withDividers", () => {
     expect(out.filter((item) => item.kind === "divider")).toHaveLength(4);
     const ids = out.map((item) => item.id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+describe("sessionWindow", () => {
+  const now = new Date(2026, 8, 7, 21, 30);
+  const you = (id: string, at: string): TimelineItem => ({
+    kind: "you", id: `you:${id}`, at, text: id, state: "sent",
+  });
+  const alfred = (id: string, at: string): TimelineItem => ({
+    kind: "alfred", id: `alfred:${id}`, at, text: id, actions: [],
+  });
+  const act = (id: string, at: string): TimelineItem => ({
+    kind: "act", id: `nt:${id}`, at, hue: 255, text: id, meta: "",
+  });
+  const ids = (items: TimelineItem[]) => items.map((item) => item.id);
+
+  it("keeps the turns since the last long silence and drops the rest", () => {
+    const items = [
+      you("a", "2026-09-07T19:00:00"),
+      alfred("b", "2026-09-07T19:00:04"),
+      // 31 minutes of silence: a new session starts here.
+      you("c", "2026-09-07T19:31:04"),
+      alfred("d", "2026-09-07T19:31:10"),
+      you("e", "2026-09-07T21:10:00"), // 99 min later — the newest session
+      alfred("f", "2026-09-07T21:10:05"),
+    ];
+    expect(ids(sessionWindow(items, now))).toEqual(["you:e", "alfred:f"]);
+  });
+
+  it("shows no conversation when the newest turn is already idle", () => {
+    const items = [you("a", "2026-09-07T20:59:00"), alfred("b", "2026-09-07T21:00:00")];
+    expect(sessionWindow(items, now)).toEqual([]);
+  });
+
+  it("measures the silence from the newest turn, not from now", () => {
+    // 29 minutes ago: still live, and everything chained to it within 30 min stays.
+    const items = [you("a", "2026-09-07T20:32:00"), alfred("b", "2026-09-07T21:01:00")];
+    expect(ids(sessionWindow(items, now))).toEqual(["you:a", "alfred:b"]);
+  });
+
+  it("keeps the house's rows for the day even with no conversation", () => {
+    const items = [act("dawn", "2026-09-07T06:10:00"), act("old", "2026-09-06T23:59:00")];
+    expect(ids(sessionWindow(items, now))).toEqual(["nt:dawn"]);
+  });
+
+  it("keeps the house's rows back to a session that began yesterday", () => {
+    const items = [
+      you("a", "2026-09-06T23:50:00"),
+      alfred("b", "2026-09-06T23:50:04"),
+      act("late", "2026-09-06T23:55:00"),
+    ];
+    const justAfterMidnight = new Date(2026, 8, 7, 0, 5);
+    // The act is yesterday's, so only the session's start can keep it.
+    expect(ids(sessionWindow(items, justAfterMidnight))).toEqual(["you:a", "alfred:b", "nt:late"]);
+  });
+
+  it("honours a different idle timeout", () => {
+    const items = [you("a", "2026-09-07T21:15:00"), you("b", "2026-09-07T21:27:00")];
+    expect(ids(sessionWindow(items, now, 10 * 60 * 1000))).toEqual(["you:b"]);
+    expect(ids(sessionWindow(items, now, 20 * 60 * 1000))).toEqual(["you:a", "you:b"]);
+  });
+
+  it("treats a turn stamped after now as current", () => {
+    // The server stamps history; a phone a few seconds behind must not lose it.
+    const items = [you("a", "2026-09-07T21:30:03")];
+    expect(ids(sessionWindow(items, now))).toEqual(["you:a"]);
+  });
+
+  it("is the same half hour the gap divider uses", () => {
+    expect(SESSION_IDLE_MS).toBe(30 * 60 * 1000);
   });
 });
 

@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { SESSION_IDLE_MS } from "@/lib/history";
 import type { Overview } from "@/lib/types";
 import { markTrue } from "@/shell/ConnectionProvider";
 
@@ -32,4 +33,14 @@ export function isFirstRun(overview: Overview | undefined): boolean {
   return (
     Object.keys(streams).length > 0 && Object.values(streams).every((stream) => stream.length === 0)
   );
+}
+
+/**
+ * The server's session idle timeout in ms, or the client's default until the
+ * overview has answered (or if it reports nonsense — a zero would window
+ * everything away).
+ */
+export function sessionIdleMs(overview: Overview | undefined): number {
+  const minutes = overview?.session?.idle_minutes;
+  return typeof minutes === "number" && minutes > 0 ? minutes * 60_000 : SESSION_IDLE_MS;
 }

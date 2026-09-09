@@ -83,12 +83,17 @@ function renderRoom({ online, ...props }: UseRoomOptions & { online: boolean }) 
   return { ...view, chat };
 }
 
-// Dated well in the past: useRoom sorts by timestamp, and the live rows are
-// stamped with the real clock, so history must not be "later than now".
+// Every history fixture below is dated within the half hour before this, so it
+// sits inside the Room's session window (`sessionWindow`) — the tests that need
+// the clock to move set it themselves.
+const NOW = new Date("2026-09-07T21:05:00");
+
+// Thirteen minutes before NOW: inside the session window, and before the live
+// rows, which are stamped with the (mocked) clock — useRoom sorts by timestamp.
 const historyRow: TimelineItem = {
   kind: "alfred",
   id: "alfred:history",
-  at: "2026-09-01T20:52:06",
+  at: "2026-09-07T20:52:06",
   text: "The dentist at nine, sir.",
   mood: "pleased",
   actions: ["calendar.today"],
@@ -99,6 +104,7 @@ function kinds(items: TimelineItem[]): string[] {
 }
 
 beforeEach(() => {
+  vi.setSystemTime(NOW);
   sendSucceeds = true;
   playWavBase64Mock.mockClear();
   localStorage.clear();
@@ -141,11 +147,12 @@ describe("useRoom — the merged thread", () => {
 
   it("relabels the day when the app returns after midnight", () => {
     vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-09-01T23:59:00"));
-    const { result } = renderRoom({ history: [historyRow], online: true });
+    vi.setSystemTime(new Date("2026-09-07T23:59:00"));
+    const lateRow = { ...historyRow, at: "2026-09-07T23:50:00" };
+    const { result } = renderRoom({ history: [lateRow], online: true });
     expect(result.current.items[0]).toMatchObject({ kind: "divider", label: "earlier today" });
 
-    vi.setSystemTime(new Date("2026-09-02T00:01:00"));
+    vi.setSystemTime(new Date("2026-09-08T00:01:00"));
     act(() => void document.dispatchEvent(new Event("visibilitychange")));
 
     expect(result.current.items[0]).toMatchObject({ kind: "divider", label: "yesterday" });
@@ -800,5 +807,62 @@ describe("useRoom — what the house reads back", () => {
     });
 
     expect(kinds(result.current.items)).toEqual(["you", "alfred", "alfred"]);
+  });
+});
+
+describe("useRoom — the session window", () => {
+  const idleTurn: TimelineItem = {
+    kind: "you",
+    id: "you:idle",
+    at: "2026-09-07T20:15:00", // 50 min before NOW, and 37 before `historyRow`
+    text: "Lock up for the night.",
+    state: "sent",
+  };
+  const dawnAct: TimelineItem = {
+    kind: "act",
+    id: "nt:dawn",
+    at: "2026-09-07T06:10:00",
+    hue: 255,
+    text: "The coffee machine is on.",
+    meta: "06:10 · routine · informational",
+  };
+
+  it("opens empty after a break, keeping only the house's rows for the day", () => {
+    const { result } = renderRoom({ history: [idleTurn, dawnAct], online: true });
+    expect(kinds(result.current.items)).toEqual(["act"]);
+  });
+
+  it("keeps the current session", () => {
+    const { result } = renderRoom({ history: [idleTurn, historyRow], online: true });
+    expect(kinds(result.current.items)).toEqual(["alfred"]);
+  });
+
+  it("follows the server's idle timeout", () => {
+    const { result } = renderRoom({ history: [idleTurn], idleMs: 60 * 60 * 1000, online: true });
+    expect(kinds(result.current.items)).toEqual(["you"]);
+  });
+
+  it("never windows what was sent from this phone", () => {
+    localStorage.setItem(
+      UNSENT_KEY,
+      JSON.stringify([
+        { kind: "you", id: "you:cold", at: "2026-09-07T19:00:00", text: "held over", state: "unsent" },
+      ]),
+    );
+    const { result } = renderRoom({ history: [idleTurn], online: false });
+    expect(kinds(result.current.items)).toEqual(["you"]);
+    expect(result.current.items.find((item) => item.kind === "you")).toMatchObject({ text: "held over" });
+  });
+
+  it("does not drop the thread under you before the app has been away", () => {
+    // Open at 21:05 with a live session; the clock passes 30 min with no
+    // visibilitychange: the rows stay until the app returns.
+    vi.useFakeTimers();
+    const { result } = renderRoom({ history: [historyRow], online: true });
+    act(() => void vi.advanceTimersByTime(40 * 60 * 1000));
+    expect(kinds(result.current.items)).toEqual(["alfred"]);
+
+    act(() => void document.dispatchEvent(new Event("visibilitychange")));
+    expect(result.current.items).toEqual([]);
   });
 });

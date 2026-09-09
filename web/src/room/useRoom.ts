@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { playWavBase64 } from "@/lib/audio";
 import { hhmm, notificationText } from "@/lib/format";
-import { withDividers, type TimelineItem } from "@/lib/history";
+import { SESSION_IDLE_MS, sessionWindow, withDividers, type TimelineItem } from "@/lib/history";
 import { onVisible } from "@/lib/lifecycle";
 import type { ChatServerMessage } from "@/lib/types";
 import { useConnection } from "@/shell/ConnectionProvider";
@@ -131,6 +131,12 @@ export interface UseRoomOptions {
   history?: TimelineItem[];
   /** Expired and already-answered approvals, from `tombstoneItems` (Task 25). */
   tombstones?: TimelineItem[];
+  /**
+   * The server's session idle timeout, from `Overview.session.idle_minutes`
+   * (`sessionIdleMs`). The history is windowed to the current session
+   * (`sessionWindow`); live rows and tombstones never are.
+   */
+  idleMs?: number;
 }
 
 export interface RoomValue {
@@ -141,7 +147,11 @@ export interface RoomValue {
   sendAudio: (dataUrl: string, seconds: number) => void;
 }
 
-export function useRoom({ history, tombstones }: UseRoomOptions): RoomValue {
+export function useRoom({
+  history,
+  tombstones,
+  idleMs = SESSION_IDLE_MS,
+}: UseRoomOptions): RoomValue {
   const { chat, online, subscribeOnline } = useConnection();
   const [live, setLive] = useState<TimelineItem[]>(readUnsent);
 
@@ -349,11 +359,17 @@ export function useRoom({ history, tombstones }: UseRoomOptions): RoomValue {
   }, [thinkingAt]);
 
   const items = useMemo(() => {
-    const merged = [...(history ?? []), ...(tombstones ?? []), ...live].sort(
-      (a, b) => Date.parse(a.at) - Date.parse(b.at),
-    );
+    // Windowed here, after the read-back has been settled against the full
+    // history: a turn the house read back and then let go idle is simply gone,
+    // which is the point. `now` moves on visibilitychange, so an open thread
+    // does not vanish at minute thirty — it is gone when you come back.
+    const merged = [
+      ...sessionWindow(history ?? [], now, idleMs),
+      ...(tombstones ?? []),
+      ...live,
+    ].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
     return withDividers(merged, now);
-  }, [history, tombstones, live, now]);
+  }, [history, tombstones, live, now, idleMs]);
 
   return { items, thinking: thinkingAt !== null, sendText, sendAudio };
 }

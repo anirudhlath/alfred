@@ -9,6 +9,7 @@ import {
   reflexObservationsPage,
   userRequestsPage,
   userResponsesPage,
+  yesterdayRequestPage,
 } from "@/test/fixtures";
 import { PresenceSignal } from "@/lib/presence-signal";
 import { THEME_KEY } from "@/lib/theme";
@@ -150,6 +151,21 @@ describe("App", () => {
     expect(screen.getByText("The door sensor saw it at 18:20.")).toBeInTheDocument();
     // The confirmation notification belongs to the Door, not the thread.
     expect(screen.queryByText("Confirmation required")).toBeNull();
+  });
+
+  it("shows only the current session, and the house's rows for the day", async () => {
+    // 21:20 local: the fixture's 20:52–21:14 turns are one live session, the
+    // 18:20 parcel notification is today's, and yesterday's request is not.
+    vi.setSystemTime(new Date(2026, 8, 7, 21, 20));
+    routes["/api/admin/streams/user_requests?count=50"] = {
+      entries: [...userRequestsPage.entries, ...yesterdayRequestPage.entries],
+      next_before: null,
+    };
+    render(<App />);
+
+    expect(await screen.findByText("What have I got tomorrow morning?")).toBeInTheDocument();
+    expect(screen.getByText("The door sensor saw it at 18:20.")).toBeInTheDocument();
+    expect(screen.queryByText("Lock up for the night.")).toBeNull();
   });
 
   it("offers the composer and the microphone", async () => {
