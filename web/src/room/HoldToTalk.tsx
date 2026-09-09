@@ -60,7 +60,6 @@ export function HoldToTalk({ signal, online, onHoldingChange, onAudio }: HoldToT
     const recorder = new Recorder();
     recorderRef.current = recorder;
     setHolding(true);
-    setSeconds(0);
     onHoldingChange(true);
     signal.setHolding(true);
     tickRef.current = setInterval(() => setSeconds((current) => current + 1), 1000);
@@ -69,18 +68,44 @@ export function HoldToTalk({ signal, online, onHoldingChange, onAudio }: HoldToT
       await recorder.start();
     } catch {
       // Permission refused, or no microphone. Unwind quietly — the composer is
-      // still there and the user can type.
-      await finish(false);
+      // still there and the user can type. Only if this take is still the live
+      // one: a rejection that lands after the hold ended must not tear down
+      // whatever replaced it.
+      if (recorderRef.current === recorder) await finish(false);
+      return;
+    }
+    // The hold can end — or this button unmount — while getUserMedia is still
+    // prompting. `finish()` ran when there was nothing to stop yet, so release
+    // what `start()` has only now opened instead of attaching an analyser to a
+    // take nobody is holding: otherwise the microphone runs until the tab closes
+    // and iOS leaves its indicator on.
+    if (recorderRef.current !== recorder) {
+      void recorder.stop();
       return;
     }
     signal.attach(recorder.analyser);
   }
 
+  // The Room outlives this button — Composer swaps the slot for Send the moment a
+  // draft appears — so unmounting mid-hold must hand the presence field and the
+  // headline back, not only close the microphone. Read through a ref so the
+  // cleanup stays an unmount-only `[]` effect: a dependency on `onHoldingChange`
+  // would re-run it, and kill the take, on every parent render.
+  const latest = useRef({ signal, onHoldingChange });
+  useEffect(() => {
+    latest.current = { signal, onHoldingChange };
+  });
+
   useEffect(() => {
     return () => {
       stopTicking();
-      void recorderRef.current?.stop();
+      const recorder = recorderRef.current;
       recorderRef.current = null;
+      if (!recorder) return;
+      void recorder.stop();
+      latest.current.signal.setHolding(false);
+      latest.current.signal.attach(null);
+      latest.current.onHoldingChange(false);
     };
   }, []);
 
