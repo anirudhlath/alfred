@@ -1231,42 +1231,45 @@ them. Where the two disagree, the code wins.
 - [ ] **Step 1: `docs/web-frontend.md`**
 
 (a) The **Timeline** bullet gains the window: `sessionWindow` keeps the current session —
-the turns since the last silence of `Overview.session.idle_minutes` (default 30 min,
-satellite turns included, they land on the same two streams) — plus the house's own rows
-for the day, or from the session's start if that came earlier; the live rows and the
-Door's tombstones `useRoom` merges in are never windowed. After a break the Room opens on
-the day's house rows alone — on nothing at all when there are none; older turns are the
-Activity view's (phase 2). A notification row's text is its body, else the title
-(`notificationText` is `trim(body) || trim(title) || undefined` — the title is the
-fallback, and whitespace-only counts as absent).
+the turns since the last silence of the session idle timeout (satellite turns included;
+they land on the same two streams) — plus the house's own rows for the day, or from the
+session's start if that came earlier; the live rows and the Door's tombstones `useRoom`
+merges in are never windowed. After a break the Room opens on the day's house rows alone
+— on nothing at all when there are none; older turns are the Activity view's (phase 2).
+Keep it to three sentences, and point row text at `notificationText` under "WebSocket
+Protocols" rather than restating the rule here — that bullet is where the
+"Routine Suggestion" example lives, and it is `trim(body) || trim(title) || undefined`,
+so the title is the fallback and whitespace-only counts as absent.
 
 (b) The `localStorage` row gains `alfred.session-at`. The trailing "every key is
 `alfred.<noun>`" claim is kept but qualified — `session-at` is the one compound, and the
 JSDoc at `chat-socket.ts:6` makes the same unqualified claim.
 
 (c) The session paragraph is replaced outright; the version drafted here described a
-client that keeps its id for ever, which Task 5 ended. What it says now, from
+client that keeps its id for ever, which Task 5 ended. It becomes a `#### Sessions`
+subsection under "Chat (`/ws`)" — four paragraphs, ~210 words, prose rather than a bullet
+list, and no restatement of `chat-socket.ts` control flow. What it says, from
 `chat-socket.ts`, `ws.ts`, `Room.tsx` and `useOverview.ts`:
 
 - The server assigns an id per connection and pushes a `session` frame before the client
-  speaks; a client holding no id adopts it. `alfred.session` is the id, `alfred.session-at`
-  an ISO stamp of the last send; `adopt` and `forget` are the id's only writers, `forget`
-  takes the stamp with it, and an id adopted but never sent on carries no stamp — which
-  the next connection reads as idle.
-- On the first message of a connection, a stored id whose stamp is idle for the timeout
-  or longer is dropped (both keys) and the assigned id adopted — but `forget()` adopts
-  only `if (this.assigned)`, so a first send that races ahead of the server's `session`
-  frame drops the id and adopts nothing. A missing or unreadable stamp reads as idle.
-- `session_id` is carried only when the surviving stored id differs from the assigned one
-  — when they agree the frame says nothing, because the server named that id itself.
-- `firstMessageSent` and the stamp are committed in `send()`, after `socket.send()`
-  returns true, so a refused send (the unsent queue calls `sendText` ungated) spends
-  neither the connection's first message nor a record of activity the server never saw.
+  speaks; a client holding no id adopts it. `alfred.session` is the id,
+  `alfred.session-at` an ISO stamp of the last send. `adopt` and `forget` are the id's
+  only writers and `forget` takes the stamp with it, so an id adopted but never sent on
+  carries no stamp at all. (The stamp itself is written by `send()`, not by `adopt` —
+  don't over-tidy that into "`adopt`/`forget` are the only writers of either".)
+- On the first message of a connection, a stored id idle for the timeout or longer is let
+  go, stamp and all, and the assigned id takes its place; a missing or unreadable stamp
+  counts as idle. What survives is sent as `session_id` only if the server does not
+  already have it.
+- Only a send the socket took commits anything: one it refused spends neither the
+  connection's first message nor a record of activity the server never saw.
 - The timeout is `Overview.session.idle_minutes` → `sessionIdleMs()` → `chat.setIdleMs()`
   in a `Room` effect, with `SESSION_IDLE_MS` (30 min) standing in until the overview
   answers — the same boundary the Room windows on.
 - The server locks the id after the first message, so a session that idles out
   mid-connection turns over on the next open (iOS closes the socket in the background).
+
+The forward pointer above the protocol block shortens to match and names **Sessions**.
 
 (d) Two neighbours the same work made false: the `session_id` rides-the-first-frame line
 above the protocol block (now conditional both ways), and the reconnect bullet
@@ -1281,9 +1284,10 @@ gains `sessionWindow` and `SESSION_IDLE_MS`, `useOverview.ts` gains `sessionIdle
 - [ ] **Step 2: `docs/admin-api.md`**
 
 The `session.idle_minutes` bullet was purpose-phrased ("Served so the web client can
-window the Room…"). Restate it as behaviour now that the client does both halves: windows
-the Room's timeline to the current session, and at the same boundary lets go of a stored
-`alfred.session` idle that long.
+window the Room…"). Restate it as behaviour now that the client does both halves — the
+Room's session window and the lifetime of a stored `alfred.session` — while keeping the
+bullet server-side in voice like its neighbours, with the detail behind a pointer to
+`docs/web-frontend.md`.
 
 - [ ] **Step 3: QA checklist**
 
@@ -1296,13 +1300,15 @@ Under `## §4.4 — 100vh is wrong`, after the existing first row:
       on its own
 ```
 
-`## §4.10` needs two qualifiers rather than new rows: "background the app for five
+`## §4.10` needs two qualifiers rather than new rows — "background the app for five
 minutes, return: the thread is intact" holds only inside the idle timeout, and "have the
-house produce an act … present after returning" only for an act **today**.
+house produce an act … present after returning" only for an act **today** — folded into
+the check itself rather than trailing it, one imperative and one observable per row. The
+routine-suggestion row goes here too: it is Task 2's change, not the window's.
 
 A new section before the sign-off block. The third row is the one worth having — the
 product consequence of Task 4, written down as expected behaviour so a tester does not
-file it:
+file it as a bug:
 
 ```markdown
 ## The Room's window
@@ -1350,6 +1356,14 @@ every fire, so a daily re-firer never satisfies both. Three consecutive Libraria
 → `dormant` is the only real stop, and `match_trigger_pattern` returning `True` for an
 unparseable pattern means such a routine never misses at all. Nothing anywhere records
 that a suggestion was ignored — `RoutineSpec` has no field for it.
+
+The fix list that follows the diagnosis has to follow *from* it: nothing in the original
+ordering stops the re-fire, and `POST /api/routines/{name}/state` has no state to write,
+because `RoutineSpec` has no `declined` and nothing writes `active`. So the schema comes
+first, then the endpoint, then `metadata.routine_name`, then the executor, then the
+client's row — and the write-up says why the first piece is also the only brake on the
+daily re-fire: a routine that stops being a candidate drops out of
+`list_by_state("candidate")`.
 
 §9 is the missed-notification gap, naming the two recall-noise tickets already under
 `docs/backlog/high/`. §10 and §11 come from the Task 3 and Task 4 reviews: `monkeypatch: Any`
