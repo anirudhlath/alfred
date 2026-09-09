@@ -124,8 +124,13 @@ export class ReconnectingSocket {
       this.attempts = 0;
       this.openedAt = Date.now();
       this.startPing(ws);
-      this.onstatus("online");
+      // Open first, "online" second: the app's online listeners send on it
+      // (useRoom flushes the unsent queue), and ChatSocket clears its
+      // per-connection session state in onopen — that has to happen before a
+      // send, or the flushed frame is the connection's first message with no
+      // session_id and the server locks an id of its own.
       this.onopen();
+      this.onstatus("online");
     };
     ws.onmessage = (e) => {
       if (this.ws !== ws) return;

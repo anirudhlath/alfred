@@ -107,6 +107,22 @@ describe("ReconnectingSocket", () => {
     expect(statuses.at(-1)).toBe("unauthorized");
   });
 
+  it("hands the app the open before it says online", () => {
+    // ChatSocket clears its per-connection session state in onopen, and the
+    // "online" status is what makes useRoom flush the unsent queue — a flush
+    // that ran first would be the new connection's first message with no
+    // session_id, and the server locks a fresh id on that.
+    const sock = new ReconnectingSocket("/ws/test");
+    const order: string[] = [];
+    sock.onopen = () => order.push("open");
+    sock.onstatus = (s) => {
+      if (s === "online") order.push("online");
+    };
+    sock.connect();
+    FakeWebSocket.instances[0].open();
+    expect(order).toEqual(["open", "online"]);
+  });
+
   it("a superseded socket's late close does not spawn a duplicate connection", () => {
     // Reproduces the StrictMode setup→cleanup→setup leak: after close()+connect(),
     // the first socket's delayed onclose must not schedule its own reconnect.
