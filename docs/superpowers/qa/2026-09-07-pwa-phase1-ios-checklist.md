@@ -75,9 +75,10 @@ never signed in. Record the device, iOS version and date at the bottom.
       intact and the status line's clock has moved
 - [ ] While backgrounded, have the house produce an act (a reflex action): it is
       present after returning, without a manual refresh
-- [ ] Turn off Wi-Fi and mobile data: the headline reads `Unreachable.`, the
-      offline note carries a real `last true HH:MM`, and a sent message shows
-      `not sent · will retry when connected`
+- [ ] Turn off Wi-Fi and mobile data: the headline reads `Reconnecting…` first and
+      `Unreachable.` within ~4 s (three failed tries), or at once when iOS reports
+      the device offline; the offline note carries a real `last true HH:MM`, and a
+      sent message shows `not sent · will retry when connected`
 - [ ] Turn the network back on: the queued message sends itself, in order
 
 ## §4.11 — no haptics

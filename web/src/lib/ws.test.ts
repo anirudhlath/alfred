@@ -26,7 +26,19 @@ beforeEach(() => {
   vi.stubGlobal("WebSocket", FakeWebSocket);
   vi.useFakeTimers();
 });
-afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers(); });
+
+/** Fail `count` tries in a row, waiting out each backoff. Returns the statuses heard. */
+function failTries(sock: ReconnectingSocket, count: number): string[] {
+  const statuses: string[] = [];
+  sock.onstatus = (s) => statuses.push(s);
+  sock.connect();
+  for (let i = 0; i < count; i += 1) {
+    FakeWebSocket.instances.at(-1)!.emitClose(1006);
+    vi.advanceTimersByTime(8000);
+  }
+  return statuses;
+}
 
 describe("ReconnectingSocket", () => {
   it("reconnects with backoff after close", () => {
@@ -47,6 +59,41 @@ describe("ReconnectingSocket", () => {
     sock.close();
     vi.advanceTimersByTime(60_000);
     expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+
+  it("says reconnecting for the first failures and offline from the third", () => {
+    const sock = new ReconnectingSocket("/ws/test");
+    const statuses = failTries(sock, 3);
+    // Each failed try is heard twice: at the close and again as the next opens.
+    expect(statuses).toEqual([
+      "connecting",
+      "reconnecting", "reconnecting",
+      "reconnecting", "reconnecting",
+      "offline", "offline",
+    ]);
+  });
+
+  it("keeps trying while offline, and says offline throughout", () => {
+    const sock = new ReconnectingSocket("/ws/test");
+    const statuses = failTries(sock, 6);
+    expect(FakeWebSocket.instances).toHaveLength(7);
+    expect(statuses.slice(statuses.indexOf("offline"))).toEqual(Array<string>(8).fill("offline"));
+  });
+
+  it("is online the moment a try succeeds, and starts the count over", () => {
+    const sock = new ReconnectingSocket("/ws/test");
+    const statuses = failTries(sock, 4);
+    FakeWebSocket.instances.at(-1)!.open();
+    expect(statuses.at(-1)).toBe("online");
+    FakeWebSocket.instances.at(-1)!.emitClose(1006);
+    expect(statuses.at(-1)).toBe("reconnecting");
+  });
+
+  it("says offline at the first close when the browser knows it is", () => {
+    vi.spyOn(navigator, "onLine", "get").mockReturnValue(false);
+    const sock = new ReconnectingSocket("/ws/test");
+    const statuses = failTries(sock, 1);
+    expect(statuses).toEqual(["connecting", "offline", "offline"]);
   });
 
   it("does not reconnect after 4001 and reports unauthorized", () => {

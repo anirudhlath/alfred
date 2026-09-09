@@ -2,6 +2,15 @@ export type SocketStatus = "connecting" | "online" | "reconnecting" | "offline" 
 
 const BASE_DELAY_MS = 500;
 const MAX_DELAY_MS = 8000;
+/**
+ * How many tries in a row may fail before the socket says the house is
+ * unreachable rather than that it is reconnecting. Three is about 3.5 s of
+ * backoff — long enough to ride out a proxy restart or a Wi-Fi hand-off
+ * without the Room changing its mind, short enough that a phone that has
+ * really lost the house is told so before it stops looking. The browser's
+ * own word, when it has one, cuts the wait to nothing.
+ */
+const OFFLINE_AFTER_ATTEMPTS = 3;
 /** Cloudflare closes an idle proxied socket at ~100 s; 30 s keeps it comfortably alive. */
 const DEFAULT_PING_MS = 30_000;
 /**
@@ -74,6 +83,18 @@ export class ReconnectingSocket {
     return Date.now() - lastSeen > QUIET_AFTER_PINGS * this.pingIntervalMs;
   }
 
+  /**
+   * What the app is told between tries. "offline" is an admission, not a
+   * resting state: the socket keeps trying either way, and the next open
+   * makes it "online" again. Used at both ends of the wait — when a socket
+   * closes and when the next one is opened — so the word does not flap
+   * between them.
+   */
+  private retryStatus(): SocketStatus {
+    const browserOffline = typeof navigator !== "undefined" && !navigator.onLine;
+    return browserOffline || this.attempts >= OFFLINE_AFTER_ATTEMPTS ? "offline" : "reconnecting";
+  }
+
   connect(): void {
     // A quiet socket is replaced, not kept: `this.ws` moves on first, so the
     // close event the old one produces is ignored below as a superseded socket's.
@@ -95,7 +116,7 @@ export class ReconnectingSocket {
       return;
     }
     this.stopped = false;
-    this.onstatus(this.attempts === 0 ? "connecting" : "reconnecting");
+    this.onstatus(this.attempts === 0 ? "connecting" : this.retryStatus());
     const ws = new WebSocket(this.url());
     this.ws = ws;
     ws.onopen = () => {
@@ -126,9 +147,9 @@ export class ReconnectingSocket {
         this.onstatus("offline");
         return;
       }
-      this.onstatus("reconnecting");
       const delay = Math.min(BASE_DELAY_MS * 2 ** this.attempts, MAX_DELAY_MS);
       this.attempts += 1;
+      this.onstatus(this.retryStatus());
       this.reconnectTimer = setTimeout(() => {
         this.reconnectTimer = null;
         if (!this.stopped) this.connect();
