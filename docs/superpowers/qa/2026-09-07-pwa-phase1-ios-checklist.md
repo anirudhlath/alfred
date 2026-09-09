@@ -75,9 +75,10 @@ never signed in. Record the device, iOS version and date at the bottom.
 
 ## §4.10 — iOS kills suspended PWAs
 
-- [ ] Send a message, background the app for five minutes (inside the 30 min session
-      idle timeout), return: the thread is intact and the status line's clock has moved —
-      past the timeout the thread is *meant* to be gone, see "The Room's window"
+- [ ] Send a message, background the app for five minutes (inside the session idle
+      timeout, 30 min by default), return: the thread is intact and the status line's
+      clock has moved — past the timeout the thread is *meant* to be gone, see "The
+      Room's window"
 - [ ] While backgrounded, have the house produce an act (a reflex action): it is
       present after returning, without a manual refresh — an act from **today** only;
       the Room keeps the house's rows for the day, not for ever

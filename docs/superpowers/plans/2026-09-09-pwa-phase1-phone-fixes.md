@@ -1236,18 +1236,19 @@ they land on the same two streams) — plus the house's own rows for the day, or
 session's start if that came earlier; the live rows and the Door's tombstones `useRoom`
 merges in are never windowed. After a break the Room opens on the day's house rows alone
 — on nothing at all when there are none; older turns are the Activity view's (phase 2).
-Keep it to three sentences, and point row text at `notificationText` under "WebSocket
+Point row text at `notificationText` under "WebSocket
 Protocols" rather than restating the rule here — that bullet is where the
 "Routine Suggestion" example lives, and it is `trim(body) || trim(title) || undefined`,
 so the title is the fallback and whitespace-only counts as absent.
 
 (b) The `localStorage` row gains `alfred.session-at`. The trailing "every key is
-`alfred.<noun>`" claim is kept but qualified — `session-at` is the one compound, and the
-JSDoc at `chat-socket.ts:6` makes the same unqualified claim.
+`alfred.<noun>`" claim is kept but qualified — `alfred.session-at` is the one compound
+noun, named in full — and the JSDoc at `chat-socket.ts:6` makes the same unqualified
+claim.
 
 (c) The session paragraph is replaced outright; the version drafted here described a
 client that keeps its id for ever, which Task 5 ended. It becomes a `#### Sessions`
-subsection under "Chat (`/ws`)" — four paragraphs, ~210 words, prose rather than a bullet
+subsection under "Chat (`/ws`)" — four paragraphs, ~290 words, prose rather than a bullet
 list, and no restatement of `chat-socket.ts` control flow. What it says, from
 `chat-socket.ts`, `ws.ts`, `Room.tsx` and `useOverview.ts`:
 
@@ -1317,18 +1318,14 @@ file it as a bug:
       house's `session.idle_minutes` says otherwise): the conversation is gone, and the
       first message starts a new session — Alfred does not refer back to it
 - [ ] Today's notifications and reflex acts are still there, under `earlier today`
-- [ ] **A completely blank Timeline is correct** on an established house that has
-      produced no notification and no reflex act today: there is no conversation left to
-      show and no house rows to keep, and the first-day greeting is deliberately gated on
-      a first run (`isFirstRun`), so nothing fills the space. Empty is the intended Room
-      after a break, not a failed history read
+- [ ] On a house with no notification and no reflex act today, after a break: the
+      Timeline is **completely blank, and that is correct** — no conversation left, no
+      house rows, and no first-day greeting on an established house. Not a failed
+      history read
 - [ ] Reopen within the timeout: the conversation is still there and continues
-- [ ] Leave the app open and idle past the timeout, then send: a `new conversation ·
-      HH:MM` divider separates the two and the older turns stay on screen — the window
-      moves when the app is backgrounded and returned to, not at minute thirty. The
-      session id follows the socket, so it turns over on the next reconnect rather than
-      here
-- [ ] A routine suggestion reads as the suggestion itself, not "Routine Suggestion"
+- [ ] Leave the app open and idle past the timeout, then send: a
+      `new conversation · HH:MM` divider separates the two and the older turns stay on
+      screen — the window moves on a background-and-return, not at minute thirty
 ```
 
 - [ ] **Step 4: Backlog §8–§11**

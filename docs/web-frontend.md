@@ -327,9 +327,9 @@ connection stays open.
 
 The server assigns an id per connection and pushes it in a `session` frame before the
 client has said anything (`core/channels/web_server.py`); a client holding no id of its
-own adopts that one. `alfred.session` holds the id, `alfred.session-at` an ISO stamp of
-the last send; `adopt` and `forget` are the id's only writers, and `forget` takes the
-stamp with it, so an id adopted but never sent on carries no stamp at all.
+own adopts that one. `alfred.session` holds the id, and `alfred.session-at` an ISO stamp
+that only a send writes; `adopt` and `forget` are the id's only writers, and `forget`
+takes the stamp with it, so an id adopted but never sent on carries no stamp at all.
 
 The first message of a connection decides which session the turn belongs to. A stored id
 whose stamp has been idle for the timeout or longer is let go, stamp and all, and this
