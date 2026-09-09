@@ -204,6 +204,9 @@ export function sessionWindow(items: TimelineItem[], now: Date, idleMs: number):
 
   const today = startOfDay(now);
   const houseSince = start === null ? today : Math.min(today, start);
+  // Both comparisons are false for a NaN stamp, which is what drops the
+  // unreadable row itself — and with it the `divider:day:NaN` the thread would
+  // otherwise open on.
   return items.filter((item, i) => {
     const at = stamps[i];
     if (item.kind === "you" || item.kind === "alfred") return start !== null && at >= start;
@@ -220,11 +223,7 @@ export function sessionWindow(items: TimelineItem[], now: Date, idleMs: number):
  * Only `you` and `alfred` rows open a conversation. An autonomous act at 03:00
  * is Alfred talking to the house, not to you, and must not split the thread.
  */
-export function withDividers(
-  items: TimelineItem[],
-  now: Date,
-  idleMs: number = SESSION_IDLE_MS,
-): TimelineItem[] {
+export function withDividers(items: TimelineItem[], now: Date, idleMs: number): TimelineItem[] {
   const out: TimelineItem[] = [];
   let lastDay: number | null = null;
   let lastTurnAt: number | null = null;

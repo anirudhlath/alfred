@@ -266,6 +266,8 @@ describe("toTimelineItems", () => {
 
 describe("withDividers", () => {
   const now = new Date(2026, 8, 7, 21, 30);
+  const divided = (items: TimelineItem[], idleMs = SESSION_IDLE_MS) =>
+    withDividers(items, now, idleMs);
 
   it("opens each day with its own label", () => {
     const twoDays = toTimelineItems({
@@ -275,7 +277,7 @@ describe("withDividers", () => {
       notifications: [],
     });
 
-    const labels = withDividers(twoDays, now)
+    const labels = divided(twoDays)
       .filter((item) => item.kind === "divider")
       .map((item) => (item.kind === "divider" ? item.label : ""));
 
@@ -283,7 +285,7 @@ describe("withDividers", () => {
   });
 
   it("starts a new conversation after a thirty-minute silence", () => {
-    const labels = withDividers(toTimelineItems(HISTORY), now)
+    const labels = divided(toTimelineItems(HISTORY))
       .filter((item) => item.kind === "divider")
       .map((item) => (item.kind === "divider" ? item.label : ""));
 
@@ -296,7 +298,7 @@ describe("withDividers", () => {
     const first = toTimelineItems({ ...EMPTY, user_requests: userRequestsPage.entries })[0];
     const later = turnAt("2026-09-07T21:44:00");
 
-    const out = withDividers([first, later], now);
+    const out = divided([first, later]);
 
     expect(out.map((item) => (item.kind === "divider" ? item.label : item.kind))).toEqual([
       "earlier today",
@@ -311,7 +313,7 @@ describe("withDividers", () => {
   it("draws the line at exactly thirty minutes", () => {
     const first = turnAt("2026-09-07T20:52:03");
     const dividers = (items: TimelineItem[]) =>
-      withDividers(items, now).filter((item) => item.kind === "divider").length;
+      divided(items).filter((item) => item.kind === "divider").length;
 
     expect(dividers([first, turnAt("2026-09-07T21:22:02")])).toBe(1);
     expect(dividers([first, turnAt("2026-09-07T21:22:03")])).toBe(2);
@@ -322,14 +324,14 @@ describe("withDividers", () => {
     // idles out at ten — the Room must not split the session it is showing.
     const turns = [turnAt("2026-09-07T21:00:00"), turnAt("2026-09-07T21:20:00")];
     const dividers = (items: TimelineItem[], idleMs?: number) =>
-      withDividers(items, now, idleMs).filter((item) => item.kind === "divider").length;
+      divided(items, idleMs).filter((item) => item.kind === "divider").length;
 
     expect(dividers(turns)).toBe(1);
     expect(dividers(turns, 10 * 60 * 1000)).toBe(2);
   });
 
   it("leaves an empty thread empty", () => {
-    expect(withDividers([], now)).toEqual([]);
+    expect(divided([])).toEqual([]);
   });
 
   it("gives every divider a unique id", () => {
@@ -337,10 +339,11 @@ describe("withDividers", () => {
       ...EMPTY,
       user_requests: [...userRequestsPage.entries, ...yesterdayRequestPage.entries],
     });
-    const out = withDividers(
-      [...twoDays, turnAt("2026-09-07T21:44:00"), turnAt("2026-09-07T22:20:00")],
-      now,
-    );
+    const out = divided([
+      ...twoDays,
+      turnAt("2026-09-07T21:44:00"),
+      turnAt("2026-09-07T22:20:00"),
+    ]);
 
     expect(out.filter((item) => item.kind === "divider")).toHaveLength(4);
     const ids = out.map((item) => item.id);
@@ -374,7 +377,7 @@ describe("sessionWindow", () => {
     meta: "",
   });
   const ids = (items: TimelineItem[]) => items.map((item) => item.id);
-  const window = (items: TimelineItem[], at = now) => ids(sessionWindow(items, at, SESSION_IDLE_MS));
+  const kept = (items: TimelineItem[], at = now) => ids(sessionWindow(items, at, SESSION_IDLE_MS));
 
   it("keeps the turns since the last long silence and drops the rest", () => {
     const items = [
@@ -386,7 +389,7 @@ describe("sessionWindow", () => {
       you("e", "2026-09-07T21:10:00"), // 99 min later — the newest session
       alfred("f", "2026-09-07T21:10:05"),
     ];
-    expect(window(items)).toEqual(["you:e", "alfred:f"]);
+    expect(kept(items)).toEqual(["you:e", "alfred:f"]);
   });
 
   it("shows no conversation when the newest turn is already idle", () => {
@@ -397,12 +400,12 @@ describe("sessionWindow", () => {
   it("measures the silence from the newest turn, not from now", () => {
     // 29 minutes ago: still live, and everything chained to it within 30 min stays.
     const items = [you("a", "2026-09-07T20:32:00"), alfred("b", "2026-09-07T21:01:00")];
-    expect(window(items)).toEqual(["you:a", "alfred:b"]);
+    expect(kept(items)).toEqual(["you:a", "alfred:b"]);
   });
 
   it("keeps the house's rows for the day even with no conversation", () => {
     const items = [act("dawn", "2026-09-07T06:10:00"), act("old", "2026-09-06T23:59:00")];
-    expect(window(items)).toEqual(["nt:dawn"]);
+    expect(kept(items)).toEqual(["nt:dawn"]);
   });
 
   it("keeps the house's rows back to a session that began yesterday", () => {
@@ -413,7 +416,7 @@ describe("sessionWindow", () => {
     ];
     const justAfterMidnight = new Date(2026, 8, 7, 0, 5);
     // The act is yesterday's, so only the session's start can keep it.
-    expect(window(items, justAfterMidnight)).toEqual(["you:a", "alfred:b", "nt:late"]);
+    expect(kept(items, justAfterMidnight)).toEqual(["you:a", "alfred:b", "nt:late"]);
   });
 
   it("honours a different idle timeout", () => {
@@ -425,7 +428,7 @@ describe("sessionWindow", () => {
   it("treats a turn stamped after now as current", () => {
     // The server stamps history; a phone a few seconds behind must not lose it.
     const items = [you("a", "2026-09-07T21:30:03")];
-    expect(window(items)).toEqual(["you:a"]);
+    expect(kept(items)).toEqual(["you:a"]);
   });
 
   it("does not let a turn with an unreadable stamp stand in for one", () => {
@@ -440,8 +443,10 @@ describe("sessionWindow", () => {
 
     // Exactly SESSION_IDLE_MS apart: the window keeps only the newer turn, and
     // the divider that would separate the two is drawn at the same instant.
-    expect(window(turns)).toEqual(["you:b"]);
-    expect(withDividers(turns, now).filter((item) => item.kind === "divider")).toHaveLength(2);
+    expect(kept(turns)).toEqual(["you:b"]);
+    expect(
+      withDividers(turns, now, SESSION_IDLE_MS).filter((item) => item.kind === "divider"),
+    ).toHaveLength(2);
   });
 });
 
