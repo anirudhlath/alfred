@@ -1237,8 +1237,8 @@ for the day, or from the session's start if that came earlier; the live rows and
 Door's tombstones `useRoom` merges in are never windowed. After a break the Room opens on
 the day's house rows alone — on nothing at all when there are none; older turns are the
 Activity view's (phase 2). A notification row's text is its body, else the title
-(`notificationText` is `body || title || undefined` — the title is the fallback, not
-discarded).
+(`notificationText` is `trim(body) || trim(title) || undefined` — the title is the
+fallback, and whitespace-only counts as absent).
 
 (b) The `localStorage` row gains `alfred.session-at`. The trailing "every key is
 `alfred.<noun>`" claim is kept but qualified — `session-at` is the one compound, and the
