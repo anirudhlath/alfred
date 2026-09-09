@@ -16,11 +16,18 @@ import {
 const T0741 = Date.parse("2026-09-07T07:41:00Z");
 const T0742 = Date.parse("2026-09-07T07:42:00Z");
 const T0747 = Date.parse("2026-09-07T07:47:00Z");
+const T0750 = Date.parse("2026-09-07T07:50:00Z");
 
 const tracked = (phase: TrackedAction["phase"] = "pending"): TrackedAction => ({
   action: pendingActionFixture,
   phase,
 });
+
+/** Two live approvals, oldest first — for pinning that an event names one id. */
+const pair = (secondPhase: TrackedAction["phase"] = "pending"): TrackedAction[] => [
+  tracked(),
+  { action: secondPendingActionFixture, phase: secondPhase },
+];
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -112,12 +119,57 @@ describe("actionReducer — answering", () => {
     expect(state[0].confirmedAt).toBe("2026-09-07T07:42:00Z");
   });
 
+  it("queues only the id the confirm named", () => {
+    const state = actionReducer(pair(), {
+      type: "confirm-sent",
+      id: "7c2e0b1d",
+      at: "2026-09-07T07:45:00Z",
+    });
+    expect(state.map((item) => item.phase)).toEqual(["pending", "queued"]);
+  });
+
+  it("still takes a confirm the phone had already given up on", () => {
+    // The phone's clock ran ahead of the server's; the server took the answer.
+    const state = actionReducer([tracked("expired")], {
+      type: "confirm-sent",
+      id: "a91f3c2e",
+      at: "2026-09-07T07:46:00Z",
+    });
+    expect(state[0].phase).toBe("queued");
+  });
+
+  it("does not let a slow confirm walk an applied result back to queued", () => {
+    const before = [{ ...tracked("applied"), appliedAt: "2026-09-07T07:42:10Z" }];
+    const state = actionReducer(before, {
+      type: "confirm-sent",
+      id: "a91f3c2e",
+      at: "2026-09-07T07:42:11Z",
+    });
+    expect(state[0].phase).toBe("applied");
+    expect(state[0].confirmedAt).toBeUndefined();
+  });
+
   it("marks a 404 confirm as already answered", () => {
     const state = actionReducer([tracked()], { type: "confirm-404", id: "a91f3c2e" });
     expect(state[0].phase).toBe("answered");
   });
 
-  it("only applies on the matching request id", () => {
+  it("answers only the id the 404 named", () => {
+    const state = actionReducer(pair(), { type: "confirm-404", id: "7c2e0b1d" });
+    expect(state.map((item) => item.phase)).toEqual(["pending", "answered"]);
+  });
+
+  it.each(["queued", "applied", "expired"] as const)(
+    "does not let a 404 unsay a %s approval",
+    (phase) => {
+      // Our own second confirm 404s too; and a fuse the phone already called
+      // lapsed has run out on the server as well, which is the tombstone it has.
+      const state = actionReducer([tracked(phase)], { type: "confirm-404", id: "a91f3c2e" });
+      expect(state[0].phase).toBe(phase);
+    },
+  );
+
+  it("applies the result and stamps when", () => {
     const state = actionReducer([tracked("queued")], {
       type: "result",
       result: actionResultFixture,
@@ -162,6 +214,11 @@ describe("actionReducer — tick", () => {
   it("does nothing at all while the fuse is running", () => {
     const before = [tracked()];
     expect(actionReducer(before, { type: "tick", now: T0742 })).toBe(before);
+  });
+
+  it("expires the lapsed pending one and leaves the lapsed queued one", () => {
+    const state = actionReducer(pair("queued"), { type: "tick", now: T0750 });
+    expect(state.map((item) => item.phase)).toEqual(["expired", "queued"]);
   });
 });
 

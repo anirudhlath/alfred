@@ -108,6 +108,10 @@ function Probe() {
       </span>
       <span data-testid="pending">{door.pending.length}</span>
       <span data-testid="open">{door.open ? door.current?.action.request_id : "closed"}</span>
+      <span data-testid="now">{door.now}</span>
+      <button type="button" onClick={() => door.arrived(pendingActionFixture)}>
+        arrive
+      </button>
       <button type="button" onClick={() => door.openAction("a91f3c2e")}>
         open
       </button>
@@ -139,8 +143,31 @@ function renderDoor() {
 }
 
 const phases = () => screen.getByTestId("phases").textContent;
+const now = () => Number(screen.getByTestId("now").textContent);
+
+/** The app comes back to the foreground. */
+function comeBack(): void {
+  act(() => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+}
+
+function deliverResult(telemetry: FakeTelemetry, msg: Partial<TelemetryMessage>): void {
+  act(() =>
+    telemetry.deliver({
+      type: "entry",
+      stream: "home_action_results",
+      id: "1757000000000-0",
+      event: actionResultFixture as unknown as Record<string, unknown>,
+      ...msg,
+    } as TelemetryMessage),
+  );
+}
 
 beforeEach(() => {
+  // The sockets are module singletons, so their spies outlive a test.
+  (telemetries.at(-1) as FakeTelemetry | undefined)?.subscribe.mockClear();
   calls.length = 0;
   pendingBody = { actions: [] };
   getStatus = 200;
@@ -167,6 +194,18 @@ describe("DoorProvider", () => {
   it("subscribes to home_action_results and nothing else", () => {
     const { telemetry } = renderDoor();
     expect(telemetry.subscribe).toHaveBeenCalledWith(["home_action_results"]);
+    expect(telemetry.subscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads the list again when the app comes back", async () => {
+    renderDoor();
+    await waitFor(() => expect(calls).toContain("GET /api/actions/pending"));
+    expect(phases()).toBe("");
+
+    pendingBody = { actions: [pendingActionFixture] };
+    comeBack();
+
+    await waitFor(() => expect(phases()).toBe("a91f3c2e:pending"));
   });
 
   it("fetches the action a confirmation notification names", async () => {
@@ -250,6 +289,18 @@ describe("DoorProvider", () => {
     expect(phases()).toBe("a91f3c2e:applied");
   });
 
+  it("hears nothing from other streams, or from a result with no request id", async () => {
+    pendingBody = { actions: [pendingActionFixture] };
+    const { telemetry } = renderDoor();
+    await waitFor(() => expect(phases()).toBe("a91f3c2e:pending"));
+
+    deliverResult(telemetry, { stream: "events" });
+    expect(phases()).toBe("a91f3c2e:pending");
+
+    deliverResult(telemetry, { event: { status: "success" } });
+    expect(phases()).toBe("a91f3c2e:pending");
+  });
+
   it("confirms, and calls it queued rather than applied", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     pendingBody = { actions: [pendingActionFixture] };
@@ -274,6 +325,19 @@ describe("DoorProvider", () => {
     await waitFor(() => expect(phases()).toBe("a91f3c2e:answered"));
   });
 
+  it("leaves a confirm the server refused for any other reason pending", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    confirmStatus = 500;
+    pendingBody = { actions: [pendingActionFixture] };
+    renderDoor();
+    await waitFor(() => expect(phases()).toBe("a91f3c2e:pending"));
+
+    await user.click(screen.getByRole("button", { name: "confirm" }));
+
+    await waitFor(() => expect(calls).toContain("POST /api/actions/a91f3c2e/confirm"));
+    expect(phases()).toBe("a91f3c2e:pending");
+  });
+
   it("expires a pending action when its fuse runs out", async () => {
     pendingBody = { actions: [pendingActionFixture] };
     renderDoor();
@@ -285,6 +349,40 @@ describe("DoorProvider", () => {
     });
 
     expect(phases()).toBe("a91f3c2e:expired");
+  });
+
+  it("steps the clock the moment something starts counting", () => {
+    renderDoor();
+    const mounted = now();
+
+    // A minute of nothing pending: no clock runs, so `now` is still the mount read.
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+    expect(now()).toBeLessThan(mounted + 1000);
+
+    // The first frame of an approval must not be drawn from that stale read. A
+    // bare DOM click keeps the arrival synchronous, so this reads the very frame.
+    act(() => screen.getByRole("button", { name: "arrive" }).click());
+    expect(phases()).toBe("a91f3c2e:pending");
+    expect(now()).toBeGreaterThanOrEqual(mounted + 60_000);
+  });
+
+  it("stops the clock once the approval is queued", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    pendingBody = { actions: [pendingActionFixture] };
+    renderDoor();
+    await waitFor(() => expect(phases()).toBe("a91f3c2e:pending"));
+
+    await user.click(screen.getByRole("button", { name: "confirm" }));
+    await waitFor(() => expect(phases()).toBe("a91f3c2e:queued"));
+
+    // The handoff freezes the fuse where the confirmation left it.
+    const frozen = now();
+    act(() => {
+      vi.advanceTimersByTime(5_000);
+    });
+    expect(now()).toBe(frozen);
   });
 
   it("opens and closes one action at a time", async () => {
