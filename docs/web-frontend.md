@@ -348,7 +348,10 @@ The timeout is the server's own rather than a client constant:
 `Overview.session.idle_minutes` → `sessionIdleMs()` (`room/useOverview.ts`) →
 `chat.setIdleMs()` in a `Room` effect, with `SESSION_IDLE_MS` (30 min, `lib/history.ts`)
 standing in until the overview answers. It is the same boundary the Room windows its
-timeline on, so the thread and the id turn over together.
+timeline on, so the thread and the id turn over together — and the stand-in is a real
+state, not a formality: on a cold launch nothing has asked `/api/admin/overview` yet, so
+both the window and the socket sit at thirty minutes, and a house configured below that
+renders the thread once and shrinks it one round trip later.
 
 The server locks the id after the first message (`session_locked`), so a session that
 idles out mid-connection cannot rotate until the socket next reopens — which on iOS it

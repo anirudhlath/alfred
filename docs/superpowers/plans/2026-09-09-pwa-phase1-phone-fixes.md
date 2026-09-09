@@ -817,12 +817,15 @@ import { SESSION_IDLE_MS } from "@/lib/history";
 /**
  * The server's session idle timeout in ms, or the client's default until the
  * overview has answered (or if it reports nonsense — a zero would window
- * everything away). The house always sends `session`; the guard is for a cached
- * shell meeting a server from before it did, not for the current contract.
+ * everything away, an `Infinity` would never let the window break or the socket
+ * rotate). The house always sends `session`; the guard is for a cached shell
+ * meeting a server from before it did, not for the current contract.
  */
 export function sessionIdleMs(overview: Overview | undefined): number {
-  const minutes = overview?.session?.idle_minutes;
-  return typeof minutes === "number" && minutes > 0 ? minutes * 60_000 : SESSION_IDLE_MS;
+  // `Number.isFinite` narrows nothing, so the read defaults rather than the
+  // guard testing for `undefined` — absent and nonsense take the same fallback.
+  const minutes = overview?.session?.idle_minutes ?? Number.NaN;
+  return Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : SESSION_IDLE_MS;
 }
 ```
 
@@ -851,11 +854,15 @@ describe("sessionIdleMs", () => {
     expect(sessionIdleMs(overview)).toBe(SESSION_IDLE_MS);
   });
 
-  it.each([0, -5, Number.NaN])("falls back to the default for %s minutes", (minutes) => {
-    expect(sessionIdleMs({ ...overviewFixture, session: { idle_minutes: minutes } })).toBe(
-      SESSION_IDLE_MS,
-    );
-  });
+  // `Infinity` last: a window that never breaks is a socket that never rotates.
+  it.each([0, -5, Number.NaN, Number.POSITIVE_INFINITY])(
+    "falls back to the default for %s minutes",
+    (minutes) => {
+      expect(sessionIdleMs({ ...overviewFixture, session: { idle_minutes: minutes } })).toBe(
+        SESSION_IDLE_MS,
+      );
+    },
+  );
 });
 ```
 

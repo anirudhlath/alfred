@@ -66,9 +66,13 @@ describe("sessionIdleMs", () => {
     expect(sessionIdleMs(overview)).toBe(SESSION_IDLE_MS);
   });
 
-  it.each([0, -5, Number.NaN])("falls back to the default for %s minutes", (minutes) => {
-    expect(sessionIdleMs({ ...overviewFixture, session: { idle_minutes: minutes } })).toBe(
-      SESSION_IDLE_MS,
-    );
-  });
+  // `Infinity` last: a window that never breaks is a socket that never rotates.
+  it.each([0, -5, Number.NaN, Number.POSITIVE_INFINITY])(
+    "falls back to the default for %s minutes",
+    (minutes) => {
+      expect(sessionIdleMs({ ...overviewFixture, session: { idle_minutes: minutes } })).toBe(
+        SESSION_IDLE_MS,
+      );
+    },
+  );
 });
