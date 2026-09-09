@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { riseClass, riseStyle, useModalFocus, usePresence } from "./presence";
+import { riseClass, riseStyle, useModalFocus, usePresence } from "@/shell/presence";
 
 const SHEET_MS = 380;
 

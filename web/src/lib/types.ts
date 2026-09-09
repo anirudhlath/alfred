@@ -133,5 +133,8 @@ export type ChatServerMessage =
 export type TelemetryMessage =
   | { type: "subscribed"; streams: string[] }
   | { type: "entry"; stream: string; id: string; event: Record<string, unknown> }
+  /** The pump lost Redis (`detail: "redis_error"`); it retries on its own. */
   | { type: "status"; detail: string }
+  /** A frame the server could not read. The field is `message` here, `text` on `/ws`. */
+  | { type: "error"; message: string }
   | { type: "pong" };

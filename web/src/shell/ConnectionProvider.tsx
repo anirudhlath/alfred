@@ -60,6 +60,13 @@ function subscribeOnline(fn: () => void): () => void {
 /** What a suspended PWA has to re-read on return; the telemetry socket replays nothing. */
 const REHYDRATE_KEYS = [["overview"], ["room-history"], ["pending-actions"], ["deferred"]];
 
+/**
+ * How often the same complaint from the telemetry pump may reach the console.
+ * The pump repeats `redis_error` once a second for the whole of an outage
+ * (`core/channels/telemetry_ws.py`), and a Home Screen app stays open for days.
+ */
+const WARN_EVERY_MS = 60_000;
+
 export interface ConnectionValue {
   chat: ChatSocket;
   telemetry: TelemetrySocket;
@@ -93,6 +100,19 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     telemetry.onstatus = setTelemetryStatus;
 
     const stopListening = chat.listen(() => markTrue());
+    // The pump's own trouble — Redis gone, a frame it could not read — has no
+    // surface until the Workshop's health page (spec §8, phase 3). Until then
+    // it goes to the console, where Safari's inspector can see it, not nowhere.
+    const lastWarned = new Map<string, number>();
+    const stopWarning = telemetry.listen((msg) => {
+      const trouble = msg.type === "status" ? msg.detail : msg.type === "error" ? msg.message : null;
+      if (trouble === null) return;
+      const now = Date.now();
+      const before = lastWarned.get(trouble);
+      if (before !== undefined && now - before < WARN_EVERY_MS) return;
+      lastWarned.set(trouble, now);
+      console.warn(`telemetry: ${trouble}`);
+    });
     const stopTrue = subscribeTrue(setLastTrueAt);
 
     reconnect();
@@ -110,6 +130,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       chat.onstatus = () => {};
       telemetry.onstatus = () => {};
       stopListening();
+      stopWarning();
       stopTrue();
       stopVisible();
       chat.close();

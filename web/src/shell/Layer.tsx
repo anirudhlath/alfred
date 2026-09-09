@@ -1,6 +1,6 @@
 import { useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { riseClass, riseStyle, useModalFocus, usePresence } from "./presence";
+import { riseClass, riseStyle, useModalFocus, usePresence } from "@/shell/presence";
 
 export interface LayerProps {
   open: boolean;

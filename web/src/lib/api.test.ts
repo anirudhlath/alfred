@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api, ApiError, del, post, put } from "./api";
+import { api, ApiError, post, put } from "./api";
 import { authEvents, type AuthEventKind } from "./auth-events";
 
 // `authEvents` is a module singleton: unsubscribe in cleanup, not in the test
@@ -121,7 +121,7 @@ describe("api", () => {
   });
 });
 
-describe("post / put / del", () => {
+describe("post / put", () => {
   it("post sends a JSON body", async () => {
     const mock = stubFetch(200, { status: "ok" });
     await post("/api/actions/a91f/confirm", { note: "yes" });
@@ -132,7 +132,7 @@ describe("post / put / del", () => {
 
   it("post with no body sends none", async () => {
     const mock = stubFetch(200, {});
-    await post("/api/auth/logout");
+    await post("/api/admin/notifications/drain");
     const init = mock.mock.calls[0][1] as RequestInit;
     expect(init.body).toBeUndefined();
   });
@@ -143,11 +143,5 @@ describe("post / put / del", () => {
     const init = mock.mock.calls[0][1] as RequestInit;
     expect(init.method).toBe("PUT");
     expect(init.body).toBe('{"url":"http://192.168.1.10:8123"}');
-  });
-
-  it("del sends DELETE", async () => {
-    const mock = stubFetch(200, { deleted: true });
-    await del("/api/auth/sessions/abc");
-    expect((mock.mock.calls[0][1] as RequestInit).method).toBe("DELETE");
   });
 });

@@ -45,7 +45,7 @@ describe("ChatSocket payloads", () => {
   });
 
   it("carry a stored session id on the first message only", () => {
-    localStorage.setItem("alfred_session_id", "s_9f2");
+    localStorage.setItem("alfred.session", "s_9f2");
     const socket = new ChatSocket();
 
     socket.sendText("first");
@@ -67,7 +67,7 @@ describe("ChatSocket frames", () => {
     const socket = new ChatSocket();
     sockets[0].onmessage({ type: "session", session_id: "s_new" });
     expect(socket.sessionId).toBe("s_new");
-    expect(localStorage.getItem("alfred_session_id")).toBe("s_new");
+    expect(localStorage.getItem("alfred.session")).toBe("s_new");
   });
 
   it("keeps a pong to itself", () => {

@@ -1,5 +1,5 @@
 import { api } from "./api";
-import { dayLabel, hhmm, humaniseTool } from "./format";
+import { dayLabel, hhmm, humaniseTool, shortId } from "./format";
 import type { Mood, StreamEntry, StreamPage } from "./types";
 
 /** One row of the Room. Every kind carries an ISO `at`; the list is sorted by it. */
@@ -226,7 +226,7 @@ export function pendingActionTitles(history: RoomHistory | undefined): Record<st
     const id = str(metadata?.pending_action_id);
     if (!id) continue;
     const tool = str(metadata?.tool_name);
-    titles[id] = tool ? humaniseTool(tool) : (str(entry.event.title) ?? `Action ${id.slice(0, 4)}`);
+    titles[id] = tool ? humaniseTool(tool) : (str(entry.event.title) ?? `Action ${shortId(id)}`);
   }
   return titles;
 }

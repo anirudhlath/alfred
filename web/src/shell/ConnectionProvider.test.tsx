@@ -41,14 +41,19 @@ vi.mock("@/lib/chat-socket", () => {
 vi.mock("@/lib/telemetry-socket", () => {
   class TelemetrySocket {
     onstatus: (status: string) => void = () => {};
+    listeners = new Set<(msg: unknown) => void>();
     connect = vi.fn();
     close = vi.fn();
     subscribe = vi.fn();
     constructor() {
       telemetries.push(this);
     }
-    listen(): () => void {
-      return () => {};
+    listen(fn: (msg: unknown) => void): () => void {
+      this.listeners.add(fn);
+      return () => void this.listeners.delete(fn);
+    }
+    deliver(msg: unknown): void {
+      for (const fn of this.listeners) fn(msg);
     }
   }
   return { TelemetrySocket };
@@ -109,6 +114,9 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  // A test that fails before its own `mockRestore()` must not hand its console
+  // spy, calls and all, to the next one.
+  vi.restoreAllMocks();
 });
 
 describe("ConnectionProvider", () => {
@@ -144,6 +152,38 @@ describe("ConnectionProvider", () => {
     act(() => chat.deliver({ type: "response", text: "Quite so, sir.", session_id: "s_1" }));
 
     expect(screen.getByTestId("last-true")).toHaveTextContent(at.toISOString());
+  });
+
+  it("puts the telemetry pump's trouble on the console, and nothing else", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { telemetry } = renderProvider();
+
+    act(() => telemetry.deliver({ type: "entry", stream: "events", id: "1-0", event: {} }));
+    expect(warn).not.toHaveBeenCalled();
+
+    act(() => telemetry.deliver({ type: "status", detail: "redis_error" }));
+    act(() => telemetry.deliver({ type: "error", message: "invalid JSON" }));
+    expect(warn.mock.calls).toEqual([["telemetry: redis_error"], ["telemetry: invalid JSON"]]);
+    warn.mockRestore();
+  });
+
+  it("says the same trouble once a minute, not once a second", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2031-05-04T09:43:00Z"));
+    const { telemetry } = renderProvider();
+
+    // The pump's whole outage, as it arrives: a frame a second.
+    for (let second = 0; second < 90; second += 1) {
+      act(() => telemetry.deliver({ type: "status", detail: "redis_error" }));
+      vi.advanceTimersByTime(1000);
+    }
+    expect(warn.mock.calls).toEqual([["telemetry: redis_error"], ["telemetry: redis_error"]]);
+
+    // A different complaint is not held back by the first.
+    act(() => telemetry.deliver({ type: "error", message: "invalid JSON" }));
+    expect(warn).toHaveBeenCalledTimes(3);
+    warn.mockRestore();
   });
 
   it("turns a 4001 close on either socket into the expired gate", () => {
@@ -233,6 +273,10 @@ describe("ConnectionProvider", () => {
 
     expect(chat.close).toHaveBeenCalledTimes(1);
     expect(telemetry.close).toHaveBeenCalledTimes(1);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    act(() => telemetry.deliver({ type: "status", detail: "redis_error" }));
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
 
     // A foreground return after the unmount is nobody's business now.
     chat.connect.mockClear();
