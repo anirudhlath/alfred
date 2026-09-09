@@ -648,6 +648,32 @@ describe("useRoom — what the house reads back", () => {
     expect(kinds(result.current.items)).toEqual(["you", "you", "thinking"]);
   });
 
+  it("reads a turn back once, even after its copy has left the window", () => {
+    const { result, rerender } = renderRoom({ history: [], online: true });
+    act(() => result.current.sendText("yes"));
+    rerender({ history: [readBack("you", "1788814800000-0", "yes")] });
+
+    // The same words again — and by the time they come back, the window has
+    // rolled past the first copy.
+    act(() => result.current.sendText("yes"));
+    rerender({ history: [readBack("you", "1788814900000-0", "yes")] });
+
+    expect(kinds(result.current.items)).toEqual(["you", "thinking"]);
+  });
+
+  it("does not let a copy that has answered once answer again", () => {
+    const { result, rerender } = renderRoom({ history: [], online: true });
+    act(() => result.current.sendText("yes"));
+    const first = [readBack("you", "1788814800000-0", "yes")];
+    rerender({ history: first });
+
+    // The same words again, and a re-read before the house has written them.
+    act(() => result.current.sendText("yes"));
+    rerender({ history: [...first] });
+
+    expect(kinds(result.current.items)).toEqual(["you", "you", "thinking"]);
+  });
+
   it("leaves the unsent queue alone", () => {
     const { result, rerender } = renderRoom({ history: [], online: false });
     act(() => result.current.sendText("yes"));

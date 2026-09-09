@@ -63,29 +63,42 @@ function readBackKey(item: TimelineItem): string | null {
 }
 
 /**
- * Drop the live rows the house has since read back to us.
+ * Pair the live rows the house has since read back to us with their copies:
+ * live id → history id.
  *
  * The history is re-read whenever the app returns to the foreground, and the
  * server writes every turn to the streams it is read from, so a re-read
  * carries the rows that arrived live since the last one — without this, each
  * trip to the background doubled the recent thread. `unread` is only what the
- * history has gained since the Room opened, because a live row can only be a
- * copy of a turn from this session; an older "yes" must not swallow a new one.
- * Within that, the read-back key decides, one history row answering for one
- * live row in order, so "yes" twice stays twice. The clocks are never
- * compared: the live row carries the phone's stamp and the history row the
- * server's.
+ * history has gained since the Room opened and has not answered for a live
+ * row already, because a live row can only be a copy of a turn from this
+ * session; an older "yes" must not swallow a new one. Within that, the
+ * read-back key decides, one history row answering for one live row in
+ * order, so "yes" twice stays twice. The clocks are never compared: the live
+ * row carries the phone's stamp and the history row the server's.
  */
-function withoutReadBack(live: TimelineItem[], unread: TimelineItem[]): TimelineItem[] {
+function readBackPairs(live: TimelineItem[], unread: TimelineItem[]): Map<string, string> {
+  const pairs = new Map<string, string>();
   const taken = new Set<string>();
-  return live.filter((item) => {
+  for (const item of live) {
     const key = readBackKey(item);
-    if (key === null) return true;
+    if (key === null) continue;
     const copy = unread.find((row) => readBackKey(row) === key && !taken.has(row.id));
-    if (!copy) return true;
+    if (!copy) continue;
     taken.add(copy.id);
-    return false;
-  });
+    pairs.set(item.id, copy.id);
+  }
+  return pairs;
+}
+
+/** What the read-back has settled so far. */
+interface ReadBack {
+  /** The history it was last settled against, by identity. */
+  history: TimelineItem[] | undefined;
+  /** The ids of the turns that predate this session; null until the first history. */
+  baseline: ReadonlySet<string> | null;
+  /** The history rows that have already answered for a live row. */
+  answered: ReadonlySet<string>;
 }
 
 function readUnsent(): TimelineItem[] {
@@ -113,7 +126,7 @@ export interface UseRoomOptions {
    * `toTimelineItems(useRoomHistory().data)` — the thread as it stood on open,
    * and undefined until the first read has answered. The distinction matters:
    * that first answer is the line between the turns that predate this session
-   * and the ones the house reads back to us (see `withoutReadBack`).
+   * and the ones the house reads back to us (see `readBackPairs`).
    */
   history?: TimelineItem[];
   /** Expired and already-answered approvals, from `tombstoneItems` (Task 25). */
@@ -132,12 +145,32 @@ export function useRoom({ history, tombstones }: UseRoomOptions): RoomValue {
   const { chat, online, subscribeOnline } = useConnection();
   const [live, setLive] = useState<TimelineItem[]>(readUnsent);
 
-  // The first history to arrive is the thread as it stood before this session.
-  // Kept as ids: stream ids are the server's and survive every re-read. Set
-  // during render on the first loaded snapshot rather than in an effect, so
-  // the frame that shows the history already knows what predates it.
-  const [baseline, setBaseline] = useState<ReadonlySet<string> | null>(null);
-  if (baseline === null && history) setBaseline(new Set(history.map((item) => item.id)));
+  // The read-back is settled the moment a new history arrives — during render
+  // rather than in an effect, so the frame that shows the history never shows
+  // a turn twice — and settled once per history, not on every render: a live
+  // row goes the moment its copy arrives, and the copy is remembered so that
+  // it cannot answer for a later turn once the window has rolled past it
+  // (the history is only ever the last fifty rows of each stream). The first
+  // history to arrive is the thread as it stood before this session, kept as
+  // ids: stream ids are the server's and survive every re-read.
+  const [readBack, setReadBack] = useState<ReadBack>({
+    history: undefined,
+    baseline: null,
+    answered: new Set(),
+  });
+  if (history !== readBack.history) {
+    const baseline = readBack.baseline ?? (history ? new Set(history.map((item) => item.id)) : null);
+    let { answered } = readBack;
+    if (history && baseline) {
+      const unread = history.filter((row) => !baseline.has(row.id) && !answered.has(row.id));
+      const pairs = readBackPairs(live, unread);
+      if (pairs.size > 0) {
+        answered = new Set([...answered, ...pairs.values()]);
+        setLive((current) => current.filter((item) => !pairs.has(item.id)));
+      }
+    }
+    setReadBack({ history, baseline, answered });
+  }
 
   // Read once at mount and again whenever the app comes back to the foreground.
   // Day dividers are relative to it, and a PWA left open across midnight would
@@ -279,7 +312,7 @@ export function useRoom({ history, tombstones }: UseRoomOptions): RoomValue {
             // `live`, not a source: the /ws notification frame carries none
             // (core/notifications/adapters/websocket.py). When the history is
             // next re-read, its copy of this notification takes this row's place
-            // (`withoutReadBack`) and shows the real one.
+            // (`readBackPairs`) and shows the real one.
             meta: `${hhmm(at)} · live · ${msg.urgency}`,
           },
         ]);
@@ -311,13 +344,11 @@ export function useRoom({ history, tombstones }: UseRoomOptions): RoomValue {
   }, [thinkingAt]);
 
   const items = useMemo(() => {
-    const rows = history ?? [];
-    const unread = baseline ? rows.filter((row) => !baseline.has(row.id)) : [];
-    const merged = [...rows, ...(tombstones ?? []), ...withoutReadBack(live, unread)].sort(
+    const merged = [...(history ?? []), ...(tombstones ?? []), ...live].sort(
       (a, b) => Date.parse(a.at) - Date.parse(b.at),
     );
     return withDividers(merged, now);
-  }, [history, baseline, tombstones, live, now]);
+  }, [history, tombstones, live, now]);
 
   return { items, thinking: thinkingAt !== null, sendText, sendAudio };
 }
