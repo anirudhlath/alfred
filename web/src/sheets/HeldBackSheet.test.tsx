@@ -11,6 +11,7 @@ interface Call {
 }
 
 let calls: Call[] = [];
+let deferredStatus = 200;
 let drainStatus = 200;
 
 function stubFetch(): void {
@@ -20,7 +21,10 @@ function stubFetch(): void {
       const url = String(input);
       calls.push({ url, method: init?.method ?? "GET" });
       if (url === "/api/admin/notifications/deferred")
-        return new Response(JSON.stringify(deferredFixture), { status: 200 });
+        return new Response(
+          deferredStatus === 200 ? JSON.stringify(deferredFixture) : '{"detail":"store unavailable"}',
+          { status: deferredStatus },
+        );
       if (url === "/api/admin/notifications/drain")
         return new Response(
           drainStatus === 200 ? '{"status":"queued"}' : '{"detail":"redis is down"}',
@@ -34,16 +38,18 @@ function stubFetch(): void {
 function renderSheet(open = true) {
   const onClose = vi.fn();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(
+  const tree = (isOpen: boolean) => (
     <QueryClientProvider client={client}>
-      <HeldBackSheet open={open} onClose={onClose} />
-    </QueryClientProvider>,
+      <HeldBackSheet open={isOpen} onClose={onClose} />
+    </QueryClientProvider>
   );
-  return { onClose };
+  const view = render(tree(open));
+  return { onClose, setOpen: (isOpen: boolean) => view.rerender(tree(isOpen)) };
 }
 
 beforeEach(() => {
   calls = [];
+  deferredStatus = 200;
   drainStatus = 200;
   stubFetch();
 });
@@ -82,13 +88,40 @@ describe("HeldBackSheet", () => {
 
     await user.click(drain);
 
-    expect(await screen.findByRole("button", { name: "Queued" })).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        /^Accepted at \d{2}:\d{2}\. Queue will empty on the next refresh if delivery succeeded\.$/,
-      ),
-    ).toBeInTheDocument();
+    // Disabled, so it cannot be double-queued; announced, so a screen reader
+    // hears the outcome — the label alone does not change on a failure.
+    expect(await screen.findByRole("button", { name: "Queued" })).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      /^Accepted at \d{2}:\d{2}\. Queue will empty on the next refresh if delivery succeeded\.$/,
+    );
     expect(calls.some((call) => call.method === "POST" && call.url.endsWith("/drain"))).toBe(true);
+  });
+
+  it("offers the drain again on the next visit", async () => {
+    const user = userEvent.setup();
+    const { setOpen } = renderSheet();
+    await user.click(await screen.findByRole("button", { name: "Drain queue now" }));
+    await screen.findByRole("button", { name: "Queued" });
+
+    setOpen(false);
+    setOpen(true);
+
+    expect(await screen.findByRole("button", { name: "Drain queue now" })).toBeEnabled();
+    expect(screen.queryByText(/^Accepted at/)).toBeNull();
+  });
+
+  it("forgets a refused drain on the next visit too", async () => {
+    const user = userEvent.setup();
+    drainStatus = 503;
+    const { setOpen } = renderSheet();
+    await user.click(await screen.findByRole("button", { name: "Drain queue now" }));
+    await screen.findByText("redis is down");
+
+    setOpen(false);
+    setOpen(true);
+
+    expect(await screen.findByText(/^Queued only;/)).toBeInTheDocument();
+    expect(screen.queryByText("redis is down")).toBeNull();
   });
 
   it("keeps the rows on screen after draining, because nothing is confirmed", async () => {
@@ -109,6 +142,25 @@ describe("HeldBackSheet", () => {
 
     expect(await screen.findByText("redis is down")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Drain queue now" })).toBeEnabled();
+
+    // And the retry does not keep the old failure under its own success.
+    drainStatus = 200;
+    await user.click(screen.getByRole("button", { name: "Drain queue now" }));
+
+    expect(await screen.findByRole("button", { name: "Queued" })).toBeInTheDocument();
+    expect(screen.queryByText("redis is down")).toBeNull();
+  });
+
+  it("has words for a drain that fails without any", async () => {
+    const user = userEvent.setup();
+    renderSheet();
+    const drain = await screen.findByRole("button", { name: "Drain queue now" });
+    // A rejection that is not an Error has no `.message` to read.
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject("no words")));
+
+    await user.click(drain);
+
+    expect(await screen.findByText("Something went wrong.")).toBeInTheDocument();
   });
 
   it("says so when nothing is waiting", async () => {
@@ -119,6 +171,23 @@ describe("HeldBackSheet", () => {
     renderSheet();
 
     expect(await screen.findByText("Nothing is being held back.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Drain queue now" })).toBeNull();
+  });
+
+  it("does not call the queue empty before it has read it", () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
+    renderSheet();
+
+    expect(screen.getByText(/^Non-urgent notifications wait here/)).toBeInTheDocument();
+    expect(screen.queryByText("Nothing is being held back.")).toBeNull();
+  });
+
+  it("says so when the queue cannot be read", async () => {
+    deferredStatus = 503;
+    renderSheet();
+
+    expect(await screen.findByRole("status")).toHaveTextContent("store unavailable");
+    expect(screen.queryByText("Nothing is being held back.")).toBeNull();
     expect(screen.queryByRole("button", { name: "Drain queue now" })).toBeNull();
   });
 
