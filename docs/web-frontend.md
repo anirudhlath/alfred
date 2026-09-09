@@ -480,7 +480,11 @@ Two of them bite hardest:
 
 - **`100vh` is wrong in Safari.** `installViewportVars()` writes `--app-height` from
   `innerHeight` and `--keyboard-inset` from `visualViewport`; `#root` is sized from the
-  former and the composer pays for the keyboard once, via `.pb-keyboard`.
+  former — `height`, not `min-height`, with `overflow: hidden`, so the shell is the
+  viewport and the Timeline is the only scroller (a growing root scrolls the document
+  instead, taking the header and composer with it and leaving nothing for the
+  Timeline's follow-the-bottom anchor to scroll) — and the composer pays for the
+  keyboard once, via `.pb-keyboard`.
 - **Audio needs a gesture.** `installAudioUnlock()` runs in `main.tsx`, before the first
   tap. iOS will not retroactively allow a sound requested before a gesture resumed a
   context, so a fresh `new Audio()` is silently dropped.
