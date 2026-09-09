@@ -180,6 +180,29 @@ describe("toTimelineItems", () => {
     });
   });
 
+  it("renders a notification that carries a body and no title", () => {
+    const [nt] = toTimelineItems({
+      ...EMPTY,
+      notifications: [
+        { id: "1-0", event: { timestamp: "2026-09-07T18:20:00", body: "The kettle has boiled." } },
+      ],
+    });
+    expect(nt.kind === "act" && nt.text).toBe("The kettle has boiled.");
+  });
+
+  it("treats a body of nothing but spaces as no body", () => {
+    const [nt] = toTimelineItems({
+      ...EMPTY,
+      notifications: [
+        {
+          id: "1-0",
+          event: { timestamp: "2026-09-07T18:20:00", title: "Routine Suggestion", body: "   " },
+        },
+      ],
+    });
+    expect(nt.kind === "act" && nt.text).toBe("Routine Suggestion");
+  });
+
   it("falls back to the title when a notification has no body", () => {
     const [nt] = toTimelineItems({
       ...EMPTY,

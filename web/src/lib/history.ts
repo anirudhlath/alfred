@@ -78,6 +78,11 @@ function str(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+/** As `str`, but a value that is only whitespace is no value. */
+function trimmed(value: unknown): string | null {
+  return str(str(value)?.trim());
+}
+
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -130,23 +135,22 @@ function reflexItem(entry: StreamEntry): TimelineItem | null {
 
 function notificationItem(entry: StreamEntry): TimelineItem | null {
   const at = str(entry.event.timestamp);
-  const title = str(entry.event.title);
-  if (!at || !title) return null;
+  // The body is the message; the title is only a label ("Routine Suggestion"),
+  // so a body of nothing but spaces is no body. useRoom's live row derives its
+  // text the same way, and `readBackKey` pairs the two rows on it.
+  const text = trimmed(entry.event.body) ?? trimmed(entry.event.title);
+  if (!at || !text) return null;
   // A confirmation request is the Door's, and rendering it here as well would
   // show the same decision twice, one of them without a fuse.
   if (str(record(entry.event.metadata)?.pending_action_id)) return null;
   const source = str(entry.event.source) ?? "house";
   const urgency = str(entry.event.urgency) ?? "informational";
-  // The body is the message; the title is a label ("Routine Suggestion"). The
-  // live row in useRoom derives its text the same way — the read-back pairing
-  // key is `act:hue:text`, so the two must agree.
-  const body = str(entry.event.body);
   return {
     kind: "act",
     id: `nt:${entry.id}`,
     at,
     hue: 255,
-    text: body ?? title,
+    text,
     meta: `${hhmm(at)} · ${source} · ${urgency}`,
   };
 }

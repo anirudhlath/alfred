@@ -72,7 +72,8 @@ export function HeldBackSheet({ open, onClose }: HeldBackSheetProps) {
             style={{ background: "oklch(0.62 0.11 255)" }}
           />
           <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <div className="t-row">{notification.title}</div>
+            {/* Body, else title, as the thread's rows read it. */}
+            <div className="t-row">{notification.body.trim() || notification.title.trim()}</div>
             <div className="t-meta">
               {notification.urgency} · {hhmm(notification.timestamp)} · deferred by DND
             </div>

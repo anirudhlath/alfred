@@ -308,10 +308,9 @@ export function useRoom({ history, tombstones }: UseRoomOptions): RoomValue {
             id: uid("nt"),
             at: iso,
             hue: 255,
-            // The body is the message, the title a label; empty body → title.
-            // Same rule as history.ts::notificationItem, which the read-back
-            // pairing (`act:hue:text`) depends on.
-            text: msg.body || msg.title,
+            // Body, else title — history.ts::notificationItem derives it the
+            // same way, which readBackKey pairs on.
+            text: msg.body.trim() || msg.title.trim(),
             // `live`, not a source: the /ws notification frame carries none
             // (core/notifications/adapters/websocket.py). When the history is
             // next re-read, its copy of this notification takes this row's place

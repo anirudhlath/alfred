@@ -69,9 +69,9 @@ describe("HeldBackSheet", () => {
   it("lists what is waiting, with its urgency and its hour", async () => {
     renderSheet();
 
-    expect(await screen.findByText("Bins go out tonight")).toBeInTheDocument();
+    expect(await screen.findByText("The council moved collection to Friday.")).toBeInTheDocument();
     expect(screen.getByText("important · 07:02 · deferred by DND")).toBeInTheDocument();
-    expect(screen.getByText("Bathroom humidity stayed high")).toBeInTheDocument();
+    expect(screen.getByText("Above 70% for an hour.")).toBeInTheDocument();
     expect(screen.getByText("informational · 07:19 · deferred by DND")).toBeInTheDocument();
   });
 
@@ -132,7 +132,7 @@ describe("HeldBackSheet", () => {
     await user.click(await screen.findByRole("button", { name: "Drain queue now" }));
 
     await screen.findByRole("button", { name: "Queued" });
-    expect(screen.getByText("Bins go out tonight")).toBeInTheDocument();
+    expect(screen.getByText("The council moved collection to Friday.")).toBeInTheDocument();
   });
 
   it("reports a refused drain and stays offerable", async () => {

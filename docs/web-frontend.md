@@ -339,7 +339,9 @@ is set and session_id is omitted from subsequent payloads.
 - `notification.metadata.pending_action_id`, when present, routes the frame to the Door
   instead of the thread. The frame carries no `source`, so a live act row reads
   `HH:MM · live · {urgency}`; the same notification re-read from the stream later shows
-  its real source.
+  its real source. The row's text is the body, else the title — a title can be a bare
+  label such as "Routine Suggestion" — and the live and history derivations must agree,
+  or the read-back pairs nothing and the notification prints twice.
 - `pong` is swallowed in `ChatSocket` and never reaches listeners.
 
 #### Reconnect / backoff / 4001

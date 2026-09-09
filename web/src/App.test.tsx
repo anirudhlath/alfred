@@ -288,7 +288,9 @@ describe("App", () => {
     expect(row).toHaveTextContent("2 held ›");
     fireEvent.click(row);
     const sheet = await screen.findByRole("dialog", { name: "Held back" });
-    expect(await within(sheet).findByText("Bins go out tonight")).toBeInTheDocument();
+    expect(
+      await within(sheet).findByText("The council moved collection to Friday."),
+    ).toBeInTheDocument();
   });
 
   it("greets a house on its first day, and keeps up with the clock", async () => {
