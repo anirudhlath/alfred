@@ -26,7 +26,19 @@ beforeEach(() => {
   vi.stubGlobal("WebSocket", FakeWebSocket);
   vi.useFakeTimers();
 });
-afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers(); });
+
+/** Fail `count` tries in a row, waiting out each backoff. Returns the statuses heard. */
+function failTries(sock: ReconnectingSocket, count: number): string[] {
+  const statuses: string[] = [];
+  sock.onstatus = (s) => statuses.push(s);
+  sock.connect();
+  for (let i = 0; i < count; i += 1) {
+    FakeWebSocket.instances.at(-1)!.emitClose(1006);
+    vi.advanceTimersByTime(8000);
+  }
+  return statuses;
+}
 
 describe("ReconnectingSocket", () => {
   it("reconnects with backoff after close", () => {
@@ -47,6 +59,41 @@ describe("ReconnectingSocket", () => {
     sock.close();
     vi.advanceTimersByTime(60_000);
     expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+
+  it("says reconnecting for the first failures and offline from the third", () => {
+    const sock = new ReconnectingSocket("/ws/test");
+    const statuses = failTries(sock, 3);
+    // Each failed try is heard twice: at the close and again as the next opens.
+    expect(statuses).toEqual([
+      "connecting",
+      "reconnecting", "reconnecting",
+      "reconnecting", "reconnecting",
+      "offline", "offline",
+    ]);
+  });
+
+  it("keeps trying while offline, and says offline throughout", () => {
+    const sock = new ReconnectingSocket("/ws/test");
+    const statuses = failTries(sock, 6);
+    expect(FakeWebSocket.instances).toHaveLength(7);
+    expect(statuses.slice(statuses.indexOf("offline"))).toEqual(Array<string>(8).fill("offline"));
+  });
+
+  it("is online the moment a try succeeds, and starts the count over", () => {
+    const sock = new ReconnectingSocket("/ws/test");
+    const statuses = failTries(sock, 4);
+    FakeWebSocket.instances.at(-1)!.open();
+    expect(statuses.at(-1)).toBe("online");
+    FakeWebSocket.instances.at(-1)!.emitClose(1006);
+    expect(statuses.at(-1)).toBe("reconnecting");
+  });
+
+  it("says offline at the first close when the browser knows it is", () => {
+    vi.spyOn(navigator, "onLine", "get").mockReturnValue(false);
+    const sock = new ReconnectingSocket("/ws/test");
+    const statuses = failTries(sock, 1);
+    expect(statuses).toEqual(["connecting", "offline", "offline"]);
   });
 
   it("does not reconnect after 4001 and reports unauthorized", () => {
@@ -73,6 +120,153 @@ describe("ReconnectingSocket", () => {
     wsA.emitClose(1006);          // stale close from the superseded socket
     vi.advanceTimersByTime(60_000);
     expect(FakeWebSocket.instances).toHaveLength(2);  // no orphaned wsC
+  });
+
+  it("pings every 30 s while open and stops once closed", () => {
+    const sock = new ReconnectingSocket("/ws/test");
+    sock.connect();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+
+    vi.advanceTimersByTime(30_000);
+    expect(ws.sent.map((s) => JSON.parse(s))).toEqual([{ type: "ping" }]);
+
+    vi.advanceTimersByTime(30_000);
+    expect(ws.sent).toHaveLength(2);
+
+    sock.close();
+    // The interval is gone, not merely quiet: a closed fake socket refuses
+    // sends, so `sent` staying flat would not prove the timer was cleared.
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(120_000);
+    expect(ws.sent).toHaveLength(2);
+  });
+
+  it("does not ping before the socket is open", () => {
+    const sock = new ReconnectingSocket("/ws/test");
+    sock.connect();
+    vi.advanceTimersByTime(120_000);
+    expect(FakeWebSocket.instances[0].sent).toHaveLength(0);
+  });
+
+  it("takes a custom interval", () => {
+    const sock = new ReconnectingSocket("/ws/test", { pingIntervalMs: 1000 });
+    sock.connect();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+
+    vi.advanceTimersByTime(3000);
+
+    expect(ws.sent).toHaveLength(3);
+    sock.close();
+  });
+
+  it("stops pinging a socket the server dropped", () => {
+    const sock = new ReconnectingSocket("/ws/test");
+    sock.connect();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+    ws.emitClose(1006);
+
+    vi.advanceTimersByTime(30_000);
+
+    expect(ws.sent).toHaveLength(0);
+    // The 500 ms reconnect has fired by now; the only timer left would be a
+    // leaked ping interval.
+    expect(vi.getTimerCount()).toBe(0);
+    sock.close();
+  });
+
+  it("stamps when the last frame arrived", () => {
+    const sock = new ReconnectingSocket("/ws/test");
+    expect(sock.lastMessageAt).toBeNull();
+    sock.connect();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+    expect(sock.lastMessageAt).toBeNull(); // opening is not a frame
+
+    ws.onmessage?.({ data: '{"type":"pong"}' });
+
+    expect(sock.lastMessageAt).toBeGreaterThan(0);
+    sock.close();
+  });
+
+  it("replaces an open socket that has gone quiet", () => {
+    const statuses: string[] = [];
+    const sock = new ReconnectingSocket("/ws/test");
+    sock.onstatus = (s) => statuses.push(s);
+    sock.connect();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+
+    // Four keepalive rounds, no pong: the connection died under a suspended app.
+    vi.advanceTimersByTime(121_000);
+    sock.connect();
+
+    expect(ws.readyState).toBe(3);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(statuses).toEqual(["connecting", "online", "connecting"]);
+    sock.close();
+  });
+
+  it("keeps an open socket that answered recently", () => {
+    const sock = new ReconnectingSocket("/ws/test");
+    sock.connect();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+
+    vi.advanceTimersByTime(50_000);
+    ws.onmessage?.({ data: '{"type":"pong"}' });
+    vi.advanceTimersByTime(20_000);
+    sock.connect();
+
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(ws.readyState).toBe(1);
+    sock.close();
+  });
+
+  it("keeps a socket that opened recently and has not spoken yet", () => {
+    const sock = new ReconnectingSocket("/ws/test");
+    sock.connect();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+
+    // No frame at all yet — the first pong is still on its way. Opening counts.
+    vi.advanceTimersByTime(50_000);
+    sock.connect();
+
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(ws.readyState).toBe(1);
+    sock.close();
+  });
+
+  it("keeps a live socket through a long turn: pong latency is not liveness", () => {
+    const sock = new ReconnectingSocket("/ws/test");
+    sock.connect();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+
+    // One pong, then silence for a full conscious-engine turn (60 s), plus the
+    // ping interval the last pong can predate it by, plus slack for the round trip.
+    vi.advanceTimersByTime(30_000);
+    ws.onmessage?.({ data: '{"type":"pong"}' });
+    vi.advanceTimersByTime(100_000);
+    sock.connect();
+
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(ws.readyState).toBe(1);
+    sock.close();
+  });
+
+  it("reopens a socket the server refused, once asked", () => {
+    const sock = new ReconnectingSocket("/ws/test");
+    sock.connect();
+    FakeWebSocket.instances[0].emitClose(4001);
+
+    sock.connect();
+
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    sock.close();
   });
 });
 

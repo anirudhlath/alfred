@@ -2,11 +2,23 @@
 
 ## Overview
 
-The web frontend is a single-page application (SPA) that replaces the legacy vanilla
-`index.html` / `settings.html` / `app.js` / `settings.js` files. It provides a Mission
-Control-style interface for chat, live telemetry, memory inspection, trigger management,
-health monitoring, and integration settings. The SPA is built and served by the Alfred
+The web frontend is the phone-first PWA client that replaced the Mission Control SPA
+(icon rail, telemetry rail, data tables, shadcn component library — all removed in the
+phase 1 rewrite). It is a single-page application built and served by the Alfred
 channels process on port 8081.
+
+It has **one screen** (the Room), **one interrupt** (the Door), and **four identity
+gates** that rise over both. There is no navigation: a notification tap deep-links to
+the approval it names, and everything else is one merged timeline.
+
+Design source: `docs/design/2026-09-04-pwa-client-handoff/` (tokens, copy, and the
+`Alfred.dc.html` prototype the presence field and the slide maths were ported from).
+Spec: `docs/superpowers/specs/2026-09-04-mobile-first-pwa-client-design.md`.
+Client-side working notes: `web/README.md`.
+
+Phase 1 of six. The Workshop (Activity, Memory, Triggers, System), the service worker,
+icons, Web Push and the desktop composition are later phases — see
+"What phase 1 does not cover" at the end.
 
 ---
 
@@ -18,15 +30,15 @@ channels process on port 8081.
 | Runtime | React | 19.x |
 | Language | TypeScript | ~6.x |
 | Styling | Tailwind CSS | v4.x (Vite plugin, `@theme inline`) |
-| Components | shadcn/ui (Radix UI primitives) | radix-ui 1.x |
 | Data fetching | TanStack Query | 5.x |
-| Routing | react-router-dom | v7.x |
-| Icons | lucide-react | latest |
-| Toast | sonner | 2.x |
-| Command palette | cmdk | 1.x |
-| Markdown | react-markdown | 10.x |
-| Testing | Vitest + Testing Library | 4.x |
-| Fonts | Inter Variable (sans), JetBrains Mono (mono), Geist Variable |
+| Routing | react-router-dom | 7.x |
+| Testing | Vitest + Testing Library (jsdom) | Vitest 4.x, `@testing-library/react` 16.x, `jest-dom` 6.x |
+| Lint | ESLint | 10.x |
+| Fonts | DM Sans Variable (sans), Geist Mono (mono) |
+
+No component library, no icon package, no markdown renderer, no toast library, no
+command palette. The presence field is a `<canvas>`, the Door's fuse is a
+`conic-gradient`, and slide-to-confirm is four pointer handlers and a keyboard path.
 
 ---
 
@@ -34,121 +46,232 @@ channels process on port 8081.
 
 ```
 web/
+  index.html       # viewport-fit=cover, interactive-widget=resizes-content,
+                   # one theme-color meta (applyTheme rewrites it), Apple standalone metas
   src/
-    lib/           # Pure utilities and socket clients
-      api.ts           # fetch wrapper with ApiError + 401→/login redirect
-      chat-socket.ts   # ChatSocket wrapping ReconnectingSocket("/ws")
-      telemetry-socket.ts  # TelemetrySocket wrapping ReconnectingSocket("/ws/telemetry")
-      types.ts         # Shared TypeScript interfaces (ChatServerMessage, TelemetryMessage,
-                       # Overview, Trigger, EpisodicEntry, SemanticFile, Routine, …)
-      format.ts        # categorize(), summarize(), timeOf(), CATEGORY_CLASS, SourceCategory
-      utils.ts         # cn() Tailwind class merger
-      webauthn.ts      # registerPasskey(), login(), logout() WebAuthn browser API wrappers
-      ws.ts            # ReconnectingSocket (reconnect + exponential backoff + code-4001 gate)
-    shell/         # App-level chrome and socket context
-      AlfredProvider.tsx   # Split contexts (AlfredStatusContext + AlfredFeedContext), sockets,
-                           # module-level singleton instances, FEED_MAX=500 ring buffer
-      AppShell.tsx         # Layout: IconRail | [TopBar / <Outlet>] | Toaster | CommandPalette
-      CommandPalette.tsx   # ⌘K palette — navigation + curated controls
-      IconRail.tsx         # Left nav: Chat, Activity, Memory, Triggers, Health, Settings
-      TelemetryRail.tsx    # Right sidebar on Chat: live feed preview + vitals (collapsible)
-      TopBar.tsx           # Page header
-    chat/          # Chat feature
-      ChatPage.tsx         # Message list + Composer + TelemetryRail
-      Composer.tsx         # Text input + VoiceButton
-      MessageItem.tsx      # Renders a chat message (user / alfred / notification)
-      VoiceButton.tsx      # MediaRecorder + AudioContext level meter, emits base64 WebM
-      use-chat.ts          # useChat() hook — subscribes to ChatSocket, queues messages
-    pages/         # Full-page views
-      ActivityPage.tsx     # Live event feed with pause/filter/inspect; merges live + backfill
-      EventInspector.tsx   # Side panel: pretty-prints a selected FeedEntry as JSON
-      HealthPage.tsx       # Connectivity, cost, integrations, streams, sessions, devices
-      LoginPage.tsx        # WebAuthn conditional UI login
-      MemoryPage.tsx       # Tabs: episodic (search) / semantic / routines / scratchpad
-      OnboardingPage.tsx   # 6-step wizard: passkey → personal → proactivity → guest → integrations → done
-      SettingsPage.tsx     # Session (sign-out) + IntegrationCards
-      TriggersPage.tsx     # Trigger list + DND toggle + deferred queue + notification history
-      IntegrationCard.tsx  # Reusable integration credential form card
-    components/
-      ui/                  # shadcn/ui component primitives (alert, badge, button, card,
-                           # command, dialog, input, progress, scroll-area, select,
-                           # separator, sheet, skeleton, sonner, switch, table, tabs,
-                           # textarea, tooltip)
+    lib/           # No React: transport, formatters, physics, pure reducers
+      api.ts             # api/post/put, ApiError{status,detail}; 401→expired, 403→denied
+      auth-events.ts     # authEvents.on/emit — the emitter api() announces gates on
+      auth.ts            # fetchAuthStatus, DEVICE_KEY, rememberDevice, deviceFootLine
+      webauthn.ts        # registerPasskey(), loginPasskey(), sessionChannel()
+      ws.ts              # ReconnectingSocket — backoff, code-4001 gate, ping keepalive
+      chat-socket.ts     # ChatSocket over /ws (channel "web_pwa", timezone, session_id)
+      telemetry-socket.ts# TelemetrySocket over /ws/telemetry (carried over unchanged)
+      types.ts           # The shared type contract (hand-mirrors the bus/admin schemas)
+      format.ts          # hhmm, dayMonth, dayLabel, mmss, usd, evs, shortId,
+                         # humaniseTool, rawCall
+      theme.ts           # Theme, THEME_KEY, resolveInitialTheme, applyTheme, storedTheme
+      viewport.ts        # installViewportVars, keyboardInset, useKeyboardOpen
+      lifecycle.ts       # onVisible(fn) — the one visibilitychange subscription
+      audio.ts           # One unlocked AudioContext: installAudioUnlock, playWavBase64
+      recorder.ts        # pickMimeType (mp4→aac→default), Recorder, blobToDataUrl
+      presence-signal.ts # PresenceSignal — the ported signal() envelopes
+      headline.ts        # greetingFor, pickHeadline — the whole priority table, pure
+      history.ts         # TimelineItem, fetchRoomHistory, toTimelineItems, withDividers
+      actions.ts         # actionReducer, fuseRemaining, tombstoneItems, the three fetches
+      slide.ts           # CONFIRM_RATIO, slideKnob, hintOpacity
+    shell/         # Providers, and the two surfaces everything rises on
+      QueryProvider.tsx      # QueryClient defaults
+      ThemeProvider.tsx      # useTheme(); writes data-theme and the theme-color meta
+      ThemeToggle.tsx        # 44x44 half-filled circle
+      ConnectionProvider.tsx # Socket singletons, useConnection(), markTrue()
+      presence.ts            # usePresence, useModalFocus, riseStyle, prefersReducedMotion
+      Layer.tsx              # Portal + rise in/out + focus trap + inert + level
+      Sheet.tsx              # Bottom sheet + scrim + explicit Done + Escape
+    gates/         # Identity, over whatever is on screen
+      AuthGate.tsx     # Which gate, over what
+      Gate.tsx         # kicker / title / body / children / footer
+      GateField.tsx    # 220px dot field, drifting slowly
+      StepList.tsx     # 48px rows, 22px ring; progress and toggle variants
+      SetupGate.tsx    # First run: passkey → home-service credentials → attention set
+      SignInGate.tsx   # Passkey sign-in
+      ExpiredGate.tsx  # 401
+      DeniedGate.tsx   # 403
+    room/          # The one screen
+      Room.tsx           # Composes all of it
+      PresenceField.tsx  # 393x190 canvas; the ported presence()
+      Headline.tsx       # The page's one h1
+      OfflineNote.tsx    # role="status", mounted always, filled only when not online
+      DndRow.tsx         # Do-not-disturb + "{n} held ›"
+      StatusLine.tsx     # The mono-12 status line: clock or last-true, cloud, reflex, rate
+      Timeline.tsx       # The list and its scroll anchoring
+      rows/              # Divider, YouBubble, AlfredRow, ActRow, Tombstone,
+                         # TranscribingBubble, ThinkingRow, FirstDay
+      Composer.tsx       # 50px field, send / hold slot, keyboard padding
+      HoldToTalk.tsx     # Pointer hold, mic, caption, bars
+      useOverview.ts     # ["overview"], 30s poll, isFirstRun()
+      useRoomHistory.ts  # ["room-history"], read once, re-read on return
+      useRoom.ts         # Live timeline state, send, unsent queue, no-reply timeout
+    door/          # The approval interrupt
+      DoorProvider.tsx  # useDoor(); the reducer's three feeds and the 1s tick
+      DoorBanner.tsx    # The ink banner above the composer
+      DoorLayer.tsx     # The full inverted layer
+      FuseRing.tsx      # 34px and 168px conic ring
+      SlideToConfirm.tsx# Slide with travel
+      useActionRoute.ts # /actions/:id
+    sheets/
+      HeldBackSheet.tsx # ["deferred"] + drain
     test/
-      setup.ts             # Vitest / Testing Library setup
-    index.css      # Tailwind v4 @import + CSS custom properties + @theme registration
-    main.tsx       # React entrypoint
-    App.tsx        # Router, QueryClient, auth gate (Guarded), route tree
+      setup.ts      # jsdom stubs: matchMedia, ResizeObserver, visualViewport, PointerEvent
+      fixtures.ts   # Shared fixtures: overview, streams, deferred, pending actions
+    index.css     # Tailwind import, fonts, tokens per [data-theme], @theme inline,
+                  # the type scale, keyframes, safe areas, the fuse arc and its masks
+    main.tsx      # installViewportVars() → installAudioUnlock() → createRoot
+    App.tsx       # Providers and the three routes
 ```
+
+Tests live beside their source (`lib/history.ts` → `lib/history.test.ts`). One test file
+may cover a small family that ships together (`Layer.test.tsx` covers `Sheet`,
+`Headline.test.tsx` covers `OfflineNote` and `DndRow`).
 
 ---
 
-## Design Tokens — Mission Control Color Language
+## Design Tokens
 
-A single dark theme. No light mode by design. All colors are defined as CSS custom
-properties in `web/src/index.css` and registered into Tailwind via `@theme inline`.
+Two themes — dark and light — defined as CSS custom properties under
+`:root[data-theme="dark"]` and `:root[data-theme="light"]` in `web/src/index.css`, and
+registered into Tailwind via `@theme inline`. Nothing in the client uses a Tailwind
+palette colour.
 
-### Source Colors
+| Token | Meaning |
+|---|---|
+| `--bg` | The room itself |
+| `--surface` | Raised paper: notes, bubbles, sheets |
+| `--field` | Input fill |
+| `--line` | Hairlines |
+| `--keyboard` | The composer's own ground — a design-system token; no phase-1 component paints it |
+| `--muted`, `--fg2`, `--fg` | The three text weights, quietest first |
+| `--accent` | Alfred's warm signal — presence, focus, the fuse |
+| `--green` | Applied / healthy |
+| `--ink`, `--paper`, `--paper-muted` | The Door's inverted surface and its text |
+| `--ring`, `--scrim` | Focus ring, and the dim behind a layer |
+| `--ease-rise`, `--ease-settle`, `--ease-sink` | The three easing curves: rise in, settle, leave |
+| `--app-height`, `--keyboard-inset` | Written by `installViewportVars()` (below) |
 
-These are the semantic paint language used throughout the UI. Each color encodes which
-part of the Alfred system an element relates to:
+`ThemeProvider` writes `data-theme` on `<html>` and rewrites the single
+`<meta name="theme-color">` so Safari's chrome matches. The choice is stored under
+`alfred.theme`; with nothing stored, the clock picks (dark at night).
 
-| Token | CSS var | Hex | Meaning |
-|---|---|---|---|
-| `reflex` | `--reflex` | `#7dd3fc` | System 1 — Reflex Engine, fast-path events |
-| `conscious` | `--conscious` | `#4ade80` | System 2 — Conscious Engine, LLM responses |
-| `memory` | `--memory` | `#facc15` | Memory layer — significance, routines |
-| `trigger` | `--trigger` | `#f472b6` | Trigger Engine, notifications |
-| `home` | `--home` | `#38bdf8` | Home Assistant / IoT events |
-| `user` | `--user` | `#94a3b8` | User requests |
-| `ok` | `--ok` | `#4ade80` | Health: good |
-| `warn` | `--warn` | `#facc15` | Health: approaching threshold |
-| `bad` | `--bad` | `#f87171` | Health: degraded / error |
+### Type scale
 
-### @theme Registration Pattern
+Type comes from the `.t-*` classes in `index.css`, never an ad-hoc size:
+`.t-gate`, `.t-headline`, `.t-title`, `.t-alfred`, `.t-you`, `.t-body`, `.t-row`,
+`.t-label`, `.t-meta`, `.t-fuse`, `.t-status` — and `.t-monogram`, defined for the
+Workshop and used by nothing in phase 1. The sizes outside the scale are written as
+explicit arbitrary values: 15px (body copy in the gates, sheets, composer and Door),
+16px (the gates' buttons, the Door's title and pill), 13px (the offline, DND and banner
+notes), 13.5px (the held-back sheet's note), 11px (the Door's mono labels), 11.5px (the
+raw call) and 10.5px (the bubbles' stamps).
 
-Tailwind v4 requires every CSS custom property to be explicitly mapped into the
-`@theme inline` block so that utility classes like `text-reflex`, `bg-memory`, `border-ok`
-are generated:
+### The closed status vocabulary
 
-```css
-@theme inline {
-  --color-reflex:   var(--reflex);
-  --color-conscious: var(--conscious);
-  --color-memory:   var(--memory);
-  --color-trigger:  var(--trigger);
-  --color-home:     var(--home);
-  --color-user:     var(--user);
-  --color-ok:       var(--ok);
-  --color-warn:     var(--warn);
-  --color-bad:      var(--bad);
-  --color-panel:    var(--panel);
-  /* … shadcn tokens … */
-}
-```
+System state is said in mono, lower case, and only in the words spec §10 closes:
+`queued`, `applied`, `last true HH:MM`, `unknown since HH:MM`, `hot / cold`,
+`candidate · active · dormant · archived`, `expired · not done`,
+`takes effect within 60 s`. Phase 1 uses the first three and `expired · not done`; the
+rest are the Workshop's and arrive with it. The one exception to mono-and-lower-case is
+the Door's phase pill (`Confirmed · queued`, `Applied`, `Expired`, `Answered`), set in
+the inverted layer's own type. Do not invent new words — the vocabulary is the contract
+the spec's honesty rules (§5.2) are written against.
 
-Once registered, source colors are usable as standard Tailwind utilities anywhere:
-`text-reflex`, `bg-trigger/20`, `border-memory`, etc.
+---
 
-### `SourceCategory` → Tailwind class mapping
+## The gates
 
-`CATEGORY_CLASS` in `lib/format.ts` maps feed entries to their source color:
+`AuthGate` reads `GET /api/auth/status` (`["auth-status"]`) and decides what rises:
 
-```ts
-export const CATEGORY_CLASS: Record<SourceCategory, string> = {
-  reflex:   "text-reflex",
-  conscious: "text-conscious",
-  memory:   "text-memory",
-  trigger:  "text-trigger",
-  user:     "text-user",
-  home:     "text-home",
-  system:   "text-muted-foreground",
-};
-```
+| Condition | Gate | Over |
+|---|---|---|
+| `registered: false` | `SetupGate` — passkey → home-service credentials → attention set | Nothing yet |
+| `registered: true, authenticated: false` | `SignInGate` — passkey | Nothing yet |
+| `authEvents` emitted `expired` (any HTTP 401) | `ExpiredGate` | The last-known Room |
+| `authEvents` emitted `denied` (any HTTP 403) | `DeniedGate` | The last-known Room |
 
-`SourceCategory` is the union `"reflex" | "conscious" | "memory" | "trigger" | "user" | "home" | "system"`.
-Note: `"memory"` is a reserved category — no stream produces it automatically; pages
-assign it manually (e.g. the Memory page).
+**401 and 403 never redirect.** `api()` emits on `authEvents` (`lib/auth-events.ts`) and
+the gate rises *over* whatever is on screen, so a lapsed session never blanks the state
+the user was looking at (spec §5.2). A rejected passkey assertion is a 401 too, and is
+excluded: `/api/auth/login/*` and `/api/auth/register/*` show the failure in the gate
+that asked rather than raising a second one.
+
+The session TTL is 8 hours, a hard cap from login with no sliding renewal, and the
+Expired gate says so.
+
+---
+
+## The Room
+
+Everything on screen is one timeline.
+
+- **Presence field** — a 393x190 `<canvas>` driven by `PresenceSignal`: the microphone
+  while you hold the button, a thinking envelope while Alfred is working, and a still
+  frame under `prefers-reduced-motion`.
+- **Headline** — the page's one `<h1>`. `pickHeadline()` is a pure priority table:
+  offline and reconnecting outrank everything (an unreachable house must not say
+  "Good morning, sir."), then holding, then busy, then DND, then the first-day greeting.
+- **Status line and offline note** — the vitals, and `last true HH:MM` whenever the
+  socket is not online. The note's `role="status"` region stays mounted and empty while
+  online: VoiceOver can miss a live region inserted with its text already in it.
+- **Timeline** — `useRoomHistory` reads four stream pages once
+  (`user_requests`, `user_responses`, `reflex_observations` with an `action`, and
+  `notifications` without a `pending_action_id`), `toTimelineItems` merges them by
+  timestamp, and `useRoom` merges that with the live rows (what you sent, what Alfred
+  said, what he did while you watched) plus the Door's tombstones.
+- **Composer and hold-to-talk** — text queues under `alfred.unsent` while the house is
+  unreachable and retries in order on the next socket open; holding records through
+  `MediaRecorder` with a one-second floor.
+- **Held-back sheet** — the DND row's `{n} held ›` opens `["deferred"]` and can drain it.
+
+Nothing in the Room polls except the overview (30 s). The telemetry socket starts at `$`
+and replays nothing, so `ConnectionProvider` invalidates `["overview"]`,
+`["room-history"]`, `["pending-actions"]` and `["deferred"]` on `visibilitychange` —
+that is what makes a suspended PWA correct on return (constraint §4.10).
+
+---
+
+## The Door
+
+A critical action needing approval. It is tracked by `actionReducer` over
+`TrackedAction[]`, fed from three independent places so it survives a cold launch, a
+notification tap and a suspended app:
+
+1. `GET /api/actions/pending` (`["pending-actions"]`) — the cold-launch read.
+2. A `/ws` `notification` frame carrying `metadata.pending_action_id`.
+3. The `home_action_results` telemetry stream.
+
+Phases: `pending` → `queued` → `applied`, plus `expired` and `answered`.
+
+**A 200 from `POST /api/actions/{request_id}/confirm` means queued, never applied** —
+the endpoint republishes the action and returns before anything runs. `applied` comes
+only from `home_action_results`. A 404 on confirm means the approval was already
+consumed: the phase becomes `answered`.
+
+Confirmation is a slide with travel (`CONFIRM_RATIO = 0.85`), never a tap; iOS gives the
+client no haptics, so the resistance is the confirmation. An approval that lapses leaves
+a struck-through tombstone in the thread. `/actions/:id` renders the same Room with the
+Door open over it — `useActionRoute` reads the action once and tells the Door when the
+deep link finds one already gone.
+
+---
+
+## Routes
+
+| Path | Element | Notes |
+|---|---|---|
+| `/` | `Room` | The one screen |
+| `/actions/:id` | `Room` | Same screen; `useActionRoute` opens the Door over it (spec §6.3) |
+| `*` | `<Navigate to="/" replace>` | There is nowhere else |
+
+Provider order in `App.tsx` is load-bearing:
+`QueryProvider → ThemeProvider → ConnectionProvider → BrowserRouter → AuthGate →
+DoorProvider → Routes`. `DoorProvider` sits inside `AuthGate` so nothing reads
+`/api/actions/pending` before there is a session to read it with.
+
+### Client state keys
+
+| Kind | Keys |
+|---|---|
+| TanStack Query | `["auth-status"]`, `["overview"]`, `["integrations"]`, `["attention"]`, `["room-history"]`, `["deferred"]`, `["pending-actions"]` |
+| `localStorage` | `alfred.theme`, `alfred.device`, `alfred.unsent`, `alfred.session` — every key is `alfred.<noun>` |
 
 ---
 
@@ -161,20 +284,25 @@ Used by `ChatSocket` (`lib/chat-socket.ts`).
 #### Client → Server
 
 ```json
-{"type": "text",  "content": "<message>", "channel": "web_pwa", "session_id": "<id>"}
-{"type": "audio", "content": "<base64-webm-data-url>", "channel": "web_pwa"}
+{"type": "text",  "content": "<message>", "channel": "web_pwa", "timezone": "<IANA>", "session_id": "<id>"}
+{"type": "audio", "content": "<base64-audio-data-url>", "channel": "web_pwa", "timezone": "<IANA>", "session_id": "<id>"}
 {"type": "ping"}
 ```
+
+`session_id` rides whichever frame is a connection's first, text or audio (`payload()` in
+`chat-socket.ts` is shared by both).
 
 `ping` is a keepalive (Cloudflare drops proxied sockets idle ~100s); the server answers
 `{"type": "pong"}` and does nothing else — in particular a ping does not count as the
 first message, so `session_id` restore still works after any number of them. The pong is
 answered on the same serial receive loop as chat turns, so it can lag a full
 conscious-engine turn (`publish_and_wait` timeout 60s) — pong latency is not a liveness
-signal. Note that **nothing in this repo sends keepalives today** — not this admin SPA
-(`ChatSocket`/`TelemetrySocket`) and not any other client here. The server answers pings
-so the replacement PWA client (Phase 4) can send them; until it exists, expect idle
-sockets to drop at the proxy's timeout.
+signal. `ReconnectingSocket` sends these on a 30s interval and tracks `lastMessageAt`, so
+unlike the outgoing SPA this client does keep an idle socket open through a proxy.
+
+The audio data URL is whatever `pickMimeType()` negotiated — `audio/mp4`, then
+`audio/aac`, then the browser default. Safari has no WebM and throws from the
+`MediaRecorder` constructor if you ask for it.
 
 A frame that is malformed JSON, valid JSON but not an object (`[]`, `"str"`, `1`), or
 binary rather than text, is refused with
@@ -182,7 +310,7 @@ binary rather than text, is refused with
 connection stays open.
 
 `session_id` is sent only on the first message of a new connection and is read from
-`localStorage` under key `alfred_session_id`. After the first send, `firstMessageSent`
+`localStorage` under key `alfred.session`. After the first send, `firstMessageSent`
 is set and session_id is omitted from subsequent payloads.
 
 #### Server → Client (`ChatServerMessage`)
@@ -191,18 +319,24 @@ is set and session_id is omitted from subsequent payloads.
 | { type: "session";       session_id: string }
 | { type: "transcription"; text: string; session_id: string }
 | { type: "response";      text: string; audio?: string; session_id: string;
-                            actions_taken?: string[]; mood?: string }
-| { type: "notification";  title: string; body: string; urgency: string;
-                            notification_id: string; audio?: string }
+                            actions_taken?: string[]; mood?: Mood }
+| { type: "notification";  title: string; body: string; urgency: Urgency;
+                            notification_id: string; audio?: string;
+                            metadata?: Record<string, unknown> }
 | { type: "error";         text: string; session_id?: string }
 | { type: "pong" }
 ```
 
-- `response.actions_taken` — optional list of tool names the Conscious Engine executed.
-- `response.mood` — optional affective tone label from the Conscious Engine.
-- `response.audio` — base64 WAV data URL for TTS playback (URGENT notifications only).
-- `notification` messages are injected by the channels WebSocket deliver worker when a
-  notification arrives for the active web session.
+- `response.actions_taken` — tool names the Conscious Engine executed; the Alfred row's
+  meta reads them.
+- `response.mood` — affective tone label. An `error` frame has neither, and says
+  `error · HH:MM` rather than inventing a mood.
+- `response.audio` — base64 WAV data URL, played through the one unlocked `AudioContext`.
+- `notification.metadata.pending_action_id`, when present, routes the frame to the Door
+  instead of the thread. The frame carries no `source`, so a live act row reads
+  `HH:MM · live · {urgency}`; the same notification re-read from the stream later shows
+  its real source.
+- `pong` is swallowed in `ChatSocket` and never reaches listeners.
 
 #### Reconnect / backoff / 4001
 
@@ -210,31 +344,39 @@ is set and session_id is omitted from subsequent payloads.
 
 - Initial connect: emits `"connecting"` status.
 - On successful open: resets attempt counter, emits `"online"`.
-- On close with code **4001**: emits `"unauthorized"` and stops — no retry. The `api()`
-  helper redirects to `/login` on HTTP 401; the WS gate handles WS 4001 separately.
+- On close with code **4001**: emits `"unauthorized"` and stops — no retry. The socket is
+  reopened by `ConnectionProvider` after a successful sign-in, not by a backoff timer.
 - On other close: exponential backoff starting at 500ms, doubling per attempt, capped
-  at 8 seconds. Emits `"reconnecting"` while retrying.
+  at 8 seconds. Emits `"reconnecting"` for the first two failures and `"offline"` from
+  the third (`OFFLINE_AFTER_ATTEMPTS`), or at once while `navigator.onLine` is false —
+  and keeps retrying either way; the next open makes it `"online"` again. The Room
+  says `Reconnecting…` for the one and `Unreachable.` for the other.
 - `ChatSocket.onopen` resets `firstMessageSent` so session_id is re-sent on reconnect.
 
 ### Telemetry (`/ws/telemetry`)
 
 Used by `TelemetrySocket` (`lib/telemetry-socket.ts`). Provides a live push of Redis
-stream entries.
+stream entries. Phase 1 subscribes to exactly one stream, `home_action_results` — it is
+what turns a queued approval into an applied one.
 
 #### Client → Server
 
 ```json
-{"type": "subscribe",   "streams": ["events", "actions", "user_requests"]}
-{"type": "unsubscribe", "streams": ["home_state"]}
+{"type": "subscribe", "streams": ["home_action_results"]}
 {"type": "ping"}
 ```
+
+The server also takes `{"type": "unsubscribe", "streams": [...]}`; `TelemetrySocket` has
+no method for it, because phase 1 never lets a subscription go.
 
 `ping` is the same keepalive as on `/ws`: answered with `{"type": "pong"}`, and it emits
 no `subscribed` ack and leaves the subscription set untouched.
 
 On reconnect, all current subscriptions are re-sent automatically (`onopen` replays
 `this.subscriptions`). `TelemetrySocket.subscribe()` persists the set so reconnects
-restore state without consumer involvement.
+restore state without consumer involvement. Subscriptions start at `$`: nothing that
+happened while the app was suspended is replayed, which is why the query keys above are
+invalidated on return instead.
 
 #### Server → Client (`TelemetryMessage`)
 
@@ -242,58 +384,106 @@ restore state without consumer involvement.
 | { type: "subscribed"; streams: string[] }
 | { type: "entry"; stream: string; id: string; event: Record<string, unknown> }
 | { type: "status"; detail: string }
+| { type: "error"; message: string }
 | { type: "pong" }
 ```
 
 - `subscribed` — full current subscription set, sent after every subscribe/unsubscribe.
 - `entry` — one per new Redis stream entry; `event` is the deserialized payload
   (not a raw JSON string).
-- `status` — transient pump error; connection stays alive, pump retries after 1s backoff.
+- `status` — transient pump error (`detail: "redis_error"`); connection stays alive, pump
+  retries after 1s backoff.
+- `error` — a frame the server could not read (`message: "invalid JSON"`). Note the field
+  is `message` here and `text` on `/ws`.
 
-#### Context split: status feed vs. activity feed
-
-`AlfredProvider` splits its state into two React contexts to avoid unnecessary re-renders:
-
-- **`AlfredStatusContext`** — holds `chat`, `telemetry`, `chatStatus`, `telemetryStatus`.
-  Re-creates only when socket statuses change (rare). Components subscribe via
-  `useAlfredStatus()`.
-- **`AlfredFeedContext`** — holds the `feed` ring buffer (capped at `FEED_MAX = 500`
-  entries). Re-creates on every incoming telemetry entry (frequent). Components subscribe
-  via `useAlfredFeed()`.
-- `useAlfred()` merges both for backward compatibility.
-
-`TelemetryRail` subscribes to both (uses `useAlfred()`). `ActivityPage` uses
-`useAlfredFeed()` only. `IconRail` uses `useAlfredStatus()` only.
-
-#### TelemetryRail — event-driven overview refetch
-
-`TelemetryRail` watches the feed head and refetches `GET /api/admin/overview` only when:
-1. The newest entry belongs to a `VITAL_CATEGORIES` stream (`"conscious"`, `"trigger"`,
-   `"user"`).
-2. At least 5 seconds have elapsed since the last refetch (`performance.now()` throttle
-   stored in a `useRef`).
-
-Home and reflex stream churn (high volume) does not trigger refetches.
+`ConnectionProvider` puts `status` and `error` on the console (`console.warn`), the same
+complaint at most once a minute (`WARN_EVERY_MS` — the pump repeats `redis_error` every
+second for the whole of an outage); nothing on screen shows them until the Workshop's
+health page (phase 3).
 
 ---
 
-## Routes
+## Data Flow
 
-| Path | Component | Notes |
-|---|---|---|
-| `/login` | `LoginPage` | WebAuthn conditional UI login |
-| `/onboarding` | `OnboardingPage` | 6-step setup wizard. Step 0 (passkey registration) is reachable unauthenticated — it is how the first session is created — but the wizard re-reads `/api/auth/status` after the ceremony and redirects to `/login` unless a session actually took, so every step past 0 requires one |
-| `/` | `ChatPage` | Default after auth; chat + TelemetryRail |
-| `/activity` | `ActivityPage` | Live event feed; pause/filter/inspect |
-| `/memory` | `MemoryPage` | Episodic / semantic / routines / scratchpad tabs |
-| `/triggers` | `TriggersPage` | Trigger list + DND + deferred queue |
-| `/system` | `HealthPage` | Connectivity, cost, streams, sessions, devices (note: backend `GET /health` is the service healthcheck consumed by iOS AlfredKit; SPA system page lives at `/system` to avoid the catch-all being shadowed) |
-| `/settings` | `SettingsPage` | Sign-out + integration credential cards |
+```mermaid
+graph TD
+    subgraph Browser
+        QC[QueryClient<br/>TanStack Query]
+        Router[BrowserRouter<br/>react-router v7]
 
-All routes except `/login` and `/onboarding` are guarded by `Guarded`, which checks
-`GET /api/auth/status` and redirects to `/onboarding` (not registered) or `/login`
-(not authenticated). The `api()` helper also redirects to `/login` on any HTTP 401
-response.
+        subgraph ConnectionProvider
+            ChatSock[ChatSocket<br/>/ws]
+            TelSock[TelemetrySocket<br/>/ws/telemetry]
+            Conn[useConnection<br/>online · chatStatus · lastTrueAt]
+        end
+
+        AuthGate[AuthGate<br/>setup · sign-in · expired · denied]
+
+        subgraph Room
+            Presence[PresenceField<br/>PresenceSignal]
+            Head[Headline · StatusLine · OfflineNote · DndRow]
+            TL[Timeline<br/>useRoom + useRoomHistory]
+            Comp[Composer · HoldToTalk]
+            Sheet[HeldBackSheet]
+        end
+
+        subgraph DoorProvider
+            Reducer[actionReducer<br/>TrackedAction phases]
+            Banner[DoorBanner]
+            Layer[DoorLayer<br/>FuseRing · SlideToConfirm]
+        end
+    end
+
+    subgraph "Alfred :8081"
+        WS_CHAT["/ws chat"]
+        WS_TEL["/ws/telemetry<br/>home_action_results"]
+        REST["/api/admin/* · /api/actions/* · /api/auth/*"]
+    end
+
+    ChatSock -->|WebSocket| WS_CHAT
+    TelSock  -->|WebSocket| WS_TEL
+    QC       -->|REST fetch| REST
+
+    ChatSock --> Conn
+    TelSock  --> Conn
+    Conn --> Head
+    Conn --> AuthGate
+
+    ChatSock -->|response · transcription · error| TL
+    ChatSock -->|notification without pending_action_id| TL
+    ChatSock -->|notification with pending_action_id| Reducer
+    TelSock  -->|result: applied| Reducer
+    QC       -->|pending-actions| Reducer
+
+    QC --> Head
+    QC --> TL
+    QC --> Sheet
+    Reducer --> Banner
+    Reducer --> Layer
+    Reducer -->|tombstones| TL
+    Comp -->|sendText · sendAudio| ChatSock
+```
+
+---
+
+## iOS constraints
+
+Spec §4 lists twelve. The automated half lives in `web/src`
+(`index-html.test.ts` for the metas, `viewport.test.ts` and `Composer.test.tsx` for
+`--app-height` / `--keyboard-inset`, `audio.test.ts` for the single unlocked context,
+`recorder.test.ts` for codec negotiation, `lifecycle.test.ts` and
+`ConnectionProvider.test.tsx` for rehydration, `Layer.test.tsx` and `DoorLayer.test.tsx`
+for explicit dismissal, `PresenceField.test.tsx` for reduce-motion). The half that needs
+a real phone is `docs/superpowers/qa/2026-09-07-pwa-phase1-ios-checklist.md`.
+
+Two of them bite hardest:
+
+- **`100vh` is wrong in Safari.** `installViewportVars()` writes `--app-height` from
+  `innerHeight` and `--keyboard-inset` from `visualViewport`; `#root` is sized from the
+  former and the composer pays for the keyboard once, via `.pb-keyboard`.
+- **Audio needs a gesture.** `installAudioUnlock()` runs in `main.tsx`, before the first
+  tap. iOS will not retroactively allow a sound requested before a gesture resumed a
+  context, so a fresh `new Audio()` is silently dropped.
 
 ---
 
@@ -302,16 +492,21 @@ response.
 ```bash
 cd web
 npm install           # first time
-npm run dev           # Vite dev server, HMR, proxies /api + /ws → localhost:8081
+npm run dev           # Vite dev server, HMR, proxies /api + /health + /ws* → localhost:8081
 npm run lint          # ESLint
 npm test              # Vitest (jsdom)
 npm run build         # tsc -b && vite build → web/dist/
 npm run preview       # serve web/dist/ locally
 ```
 
-The Vite proxy configuration routes all `/api/*`, `/health` (backend healthcheck), and `/ws*` requests to
-`http://localhost:8081` (or `ws://localhost:8081` for WebSocket upgrades) during development.
-No CORS configuration is required — all traffic appears to come from the same origin.
+The type check lives in `build` (`tsc -b`), not in `lint`. CI runs `lint`, `test` and
+`build`, in that order, then serves the built `dist/` to
+`tests/core/channels/test_spa_ci.py`.
+
+The Vite proxy routes all `/api/*`, `/health` (backend healthcheck), and `/ws*` requests
+to `http://localhost:8081` (or `ws://localhost:8081` for WebSocket upgrades) during
+development. No CORS configuration is required — all traffic appears to come from the
+same origin.
 
 Alfred must be running (`uv run python -m runner`) before `npm run dev` is useful.
 
@@ -327,14 +522,18 @@ cd web && npm run build   # outputs to web/dist/
 
 ### Serving (Python side)
 
-`core/channels/web_server.py` calls `mount_spa(app, web_dist_path)` at startup if
+`core/channels/web_server.py` calls `mount_spa(app, _SPA_DIST)` at startup if
 `web/dist/` exists. The `mount_spa` function (`core/channels/spa.py`):
 
 1. Mounts `web/dist/assets/` at `/assets` via FastAPI `StaticFiles`.
 2. Adds a catch-all `GET /{full_path:path}` handler that:
    - Returns the file at `web/dist/{full_path}` if it exists and is within `dist/`
      (path containment check: `candidate.is_relative_to(dist.resolve())`).
-   - Falls back to `web/dist/index.html` for all other paths (client-side routing support).
+   - Falls back to `web/dist/index.html` for all other paths — which is what makes
+     `/actions/{id}` load from a cold notification tap.
+   - **Except** `api/*`, `ws*` and `health` (`_NON_SPA_PREFIXES` / `_NON_SPA_PATHS`),
+     which raise a real 404. A REST or WebSocket client hitting a renamed endpoint —
+     the iOS AlfredKit client, say — must get a 404, not 200 and a page of HTML.
 
 If `web/dist/` is absent (dev mode), `mount_spa` is a no-op — the dev Vite server handles
 the SPA.
@@ -345,13 +544,17 @@ The `Containerfile` has a dedicated build stage:
 
 ```dockerfile
 FROM node:22-slim AS webbuild
-COPY web/package.json web/package-lock.json ./
-COPY web/ ./
+WORKDIR /web
+COPY alfred/web/package.json alfred/web/package-lock.json ./
+RUN npm ci
+COPY alfred/web/ ./
 RUN npm run build
 
 # In the main stage:
 COPY --from=webbuild /web/dist /app/web/dist
 ```
+
+(The build context is the directory *above* the checkout — hence `alfred/web/`.)
 
 The `webbuild` stage produces `web/dist/`; the main stage copies only the compiled
 output. Node.js is not present in the production image.
@@ -365,7 +568,7 @@ untouched:
 | --- | --- | --- |
 | `/assets/*`, status < 400 | `public, max-age=31536000, immutable` | Content-hashed, so the bytes behind a URL never change. Errors are excluded — a pinned 404 has no URL to bust it. |
 | `text/html` | `no-cache, no-store, must-revalidate` | `index.html` and every SPA-fallback route: never stored, so a deploy is picked up on the next load. |
-| everything else | `no-cache, must-revalidate` | Unhashed `web/public/` files (`/favicon.svg`, `/manifest.json`): revalidated on every load. |
+| everything else | `no-cache, must-revalidate` | Unhashed `web/public/` files (`/icon.svg`, `/manifest.json`): revalidated on every load. |
 
 Tier 3 does not save bandwidth today. `mount_spa`'s fallback serves those files through a
 bare `FileResponse`, which ignores `If-None-Match`/`If-Modified-Since` — only
@@ -376,100 +579,15 @@ fallback ever grows conditional handling.
 
 ---
 
-## Component Data Flow
+## What phase 1 does not cover
 
-```mermaid
-graph TD
-    subgraph Browser
-        QC[QueryClient<br/>TanStack Query]
-        Router[BrowserRouter<br/>react-router v7]
+- **The Workshop** (Activity, Memory, Triggers, System) — phases 2 and 3. There is no
+  handle, no `why?` button and no causal thread yet.
+- **Install, standalone and Reach gates, the service worker, icons and Web Push** —
+  phases 4 and 5. `web/public/manifest.json` ships SVG only and carries the phase-1
+  palette's dark ground; it cannot follow the theme the way `applyTheme` rewrites the
+  `theme-color` meta, so a light-hour install gets a dark splash until phase 4 says
+  otherwise.
+- **Desktop** — phase 6. The client is phone-first and there is no wide composition.
 
-        subgraph AlfredProvider
-            ChatSock[ChatSocket<br/>/ws]
-            TelSock[TelemetrySocket<br/>/ws/telemetry]
-            StatusCtx[AlfredStatusContext<br/>chatStatus · telemetryStatus]
-            FeedCtx[AlfredFeedContext<br/>feed ring buffer 500]
-        end
-
-        subgraph AppShell
-            IconRail[IconRail<br/>useAlfredStatus]
-            TopBar[TopBar]
-            Outlet[Page Outlet]
-            CmdPalette[CommandPalette ⌘K]
-        end
-
-        subgraph Pages
-            ChatPage[ChatPage<br/>useChat + TelemetryRail]
-            ActivityPage[ActivityPage<br/>useAlfredFeed]
-            MemoryPage[MemoryPage]
-            TriggersPage[TriggersPage]
-            HealthPage[HealthPage]
-            SettingsPage[SettingsPage]
-        end
-
-        subgraph TelemetryRail
-            Vitals[Vitals<br/>COST · SESSIONS · DND · EVENTS/MIN]
-            FeedPreview[Feed preview<br/>14 latest entries]
-        end
-    end
-
-    subgraph "Alfred :8081"
-        WS_CHAT["/ws chat"]
-        WS_TEL["/ws/telemetry"]
-        REST["/api/admin/* /api/*"]
-    end
-
-    ChatSock -->|WebSocket| WS_CHAT
-    TelSock  -->|WebSocket| WS_TEL
-    QC       -->|REST fetch| REST
-
-    ChatSock --> StatusCtx
-    TelSock  --> StatusCtx
-    TelSock  --> FeedCtx
-
-    StatusCtx --> IconRail
-    FeedCtx   --> ActivityPage
-    StatusCtx & FeedCtx --> ChatPage
-    StatusCtx & FeedCtx --> TelemetryRail
-
-    QC --> MemoryPage
-    QC --> TriggersPage
-    QC --> HealthPage
-    QC --> SettingsPage
-    QC --> TelemetryRail
-```
-
----
-
-## Memory Page — Episodic Search Behavior
-
-The Memory page's episodic tab calls `GET /api/admin/memory/episodic?q=<query>` on Enter.
-The server uses `EpisodicMemory.recall(update_stats=False)` — retrieval counters are NOT
-incremented. This is intentional: admin browsing must not perturb the
-`retrieval_count`/`last_retrieved` fields that the Librarian uses for decay decisions.
-
----
-
-## Activity Page — Live + Backfill Merge
-
-`ActivityPage` merges two data sources when a stream filter is active:
-
-1. **Live feed** — real-time entries from `AlfredFeedContext` (capped to `FEED_MAX = 500`).
-2. **Historical backfill** — `GET /api/admin/streams/{name}?count=100` (TanStack Query,
-   fetched when a stream is selected).
-
-Entries are deduplicated by `id` and sorted newest-first by Redis stream ID.
-When no stream filter is active, only the live feed is shown.
-
----
-
-## ⌘K Command Palette
-
-`CommandPalette` (`shell/CommandPalette.tsx`) opens on `⌘K` / `Ctrl+K`.
-
-**Navigation group:** Chat, Activity, Memory, Triggers, Health, Settings.
-
-**Controls group:** DND on, DND off, Drain deferred notifications, Run Librarian now.
-
-Controls call the admin REST API via `post()`. On success, TanStack Query keys
-`["overview"]`, `["deferred"]`, and `["triggers"]` are invalidated.
+Open follow-ups: `docs/backlog/low/pwa-phase1-followups.md`.

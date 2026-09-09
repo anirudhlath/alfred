@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#f6f3ee;color:#221f1b;font-family:'DM Sans',-apple-system,Helvetica,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:oklch(0.55 0.13 45);text-decoration:none}a:hover{text-decoration:underline}
+@keyframes drift{0%{background-position:0 0}50%{background-position:2px 1px}100%{background-position:0 0}}
+@keyframes slideDemo{0%,8%{transform:translateX(0)}20%{transform:translateX(30px)}55%{transform:translateX(200px)}62%{transform:translateX(224px)}70%{transform:translateX(218px)}78%,100%{transform:translateX(220px)}}
+@keyframes snapDemo{0%,10%{transform:translateX(0)}40%{transform:translateX(150px)}50%{transform:translateX(0)}100%{transform:translateX(0)}}
+</style>
+</helmet>
+<div style="max-width:880px;margin:0 auto;padding:64px 28px 120px;display:flex;flex-direction:column;gap:64px;text-wrap:pretty">
+
+<header style="display:flex;flex-direction:column;gap:12px">
+  <div style="font:500 11px 'Geist Mono',monospace;letter-spacing:.1em;text-transform:uppercase;color:oklch(0.55 0.13 45)">Alfred · design system · Study</div>
+  <h1 style="margin:0;font-size:44px;line-height:1.05;font-weight:500;letter-spacing:-.03em">A warm room with one instrument in it.</h1>
+  <p style="margin:0;font-size:16px;line-height:1.55;color:#4d4740;max-width:620px">Everything below is what the prototype uses. Two type families, one accent, a fixed set of status words, and a motion spec for the only interaction that has to feel heavy. <a href="Alfred.dc.html">Phone</a> · <a href="Alfred Desktop.dc.html">Desktop</a> · <a href="00 Architecture and Reasoning.dc.html">Architecture</a></p>
+</header>
+
+<section style="display:flex;flex-direction:column;gap:18px">
+  <h2 style="margin:0;font-size:26px;font-weight:500;letter-spacing:-.02em">Colour</h2>
+  <p style="margin:0;font-size:15px;line-height:1.55;color:#4d4740;max-width:640px">Warm neutrals because the thing lives in a home and speaks; cool greys read as a server room. Both themes are near-monochrome so that the single accent, amber, always means the same two things: Alfred's presence, and a decision waiting on you. Amber is never decorative and never used for success or for data. Eight stream hues share one lightness and chroma so no source shouts.</p>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+    <div style="border-radius:14px;background:#25221f;color:#f1ece4;padding:18px;display:flex;flex-direction:column;gap:10px">
+      <div style="font:500 11px 'Geist Mono',monospace;letter-spacing:.08em;color:#9a9186">DARK · DEFAULT AFTER SUNSET</div>
+      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px">
+        <div style="display:flex;flex-direction:column;gap:6px"><div style="height:44px;border-radius:8px;background:#25221f;border:1px solid #35312c"></div><div style="font:10px 'Geist Mono',monospace;line-height:1.5">bg<br>#25221F</div></div>
+        <div style="display:flex;flex-direction:column;gap:6px"><div style="height:44px;border-radius:8px;background:#2f2b27"></div><div style="font:10px 'Geist Mono',monospace;line-height:1.5">surface<br>#2F2B27</div></div>
+        <div style="display:flex;flex-direction:column;gap:6px"><div style="height:44px;border-radius:8px;background:#35312c"></div><div style="font:10px 'Geist Mono',monospace;line-height:1.5">line<br>#35312C</div></div>
+        <div style="display:flex;flex-direction:column;gap:6px"><div style="height:44px;border-radius:8px;background:#9a9186"></div><div style="font:10px 'Geist Mono',monospace;line-height:1.5">muted<br>#9A9186</div></div>
+        <div style="display:flex;flex-direction:column;gap:6px"><div style="height:44px;border-radius:8px;background:#f1ece4"></div><div style="font:10px 'Geist Mono',monospace;line-height:1.5">fg<br>#F1ECE4</div></div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center"><div style="width:44px;height:28px;border-radius:8px;background:oklch(0.78 0.12 45)"></div><div style="font:10px 'Geist Mono',monospace;line-height:1.5">accent · oklch(0.78 0.12 45) · lighter on dark so it sits at the same perceived weight as the text</div></div>
+    </div>
+    <div style="border-radius:14px;background:#f6f3ee;border:1px solid #e6e1d9;padding:18px;display:flex;flex-direction:column;gap:10px">
+      <div style="font:500 11px 'Geist Mono',monospace;letter-spacing:.08em;color:#8a8177">LIGHT · DAYTIME</div>
+      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px">
+        <div style="display:flex;flex-direction:column;gap:6px"><div style="height:44px;border-radius:8px;background:#f6f3ee;border:1px solid #e6e1d9"></div><div style="font:10px 'Geist Mono',monospace;line-height:1.5">bg<br>#F6F3EE</div></div>
+        <div style="display:flex;flex-direction:column;gap:6px"><div style="height:44px;border-radius:8px;background:#efeae2"></div><div style="font:10px 'Geist Mono',monospace;line-height:1.5">surface<br>#EFEAE2</div></div>
+        <div style="display:flex;flex-direction:column;gap:6px"><div style="height:44px;border-radius:8px;background:#e6e1d9"></div><div style="font:10px 'Geist Mono',monospace;line-height:1.5">line<br>#E6E1D9</div></div>
+        <div style="display:flex;flex-direction:column;gap:6px"><div style="height:44px;border-radius:8px;background:#8a8177"></div><div style="font:10px 'Geist Mono',monospace;line-height:1.5">muted<br>#8A8177</div></div>
+        <div style="display:flex;flex-direction:column;gap:6px"><div style="height:44px;border-radius:8px;background:#221f1b"></div><div style="font:10px 'Geist Mono',monospace;line-height:1.5">fg<br>#221F1B</div></div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center"><div style="width:44px;height:28px;border-radius:8px;background:oklch(0.72 0.13 45)"></div><div style="font:10px 'Geist Mono',monospace;line-height:1.5">accent · oklch(0.72 0.13 45) · 3.1:1 on bg, used for marks and 15px+ text only</div></div>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(8,1fr);gap:8px">
+    <div style="display:flex;flex-direction:column;gap:6px;align-items:center"><div style="width:44px;height:44px;border-radius:10px;background:oklch(0.62 0.11 30);color:#fff;font:500 11px/44px 'Geist Mono',monospace;text-align:center">UR</div><div style="font:10px 'Geist Mono',monospace;color:#8a8177;text-align:center;line-height:1.4">user_requests<br>h30</div></div>
+    <div style="display:flex;flex-direction:column;gap:6px;align-items:center"><div style="width:44px;height:44px;border-radius:10px;background:oklch(0.62 0.11 75);color:#fff;font:500 11px/44px 'Geist Mono',monospace;text-align:center">AL</div><div style="font:10px 'Geist Mono',monospace;color:#8a8177;text-align:center;line-height:1.4">user_responses<br>h75</div></div>
+    <div style="display:flex;flex-direction:column;gap:6px;align-items:center"><div style="width:44px;height:44px;border-radius:10px;background:oklch(0.62 0.11 120);color:#fff;font:500 11px/44px 'Geist Mono',monospace;text-align:center">EV</div><div style="font:10px 'Geist Mono',monospace;color:#8a8177;text-align:center;line-height:1.4">events<br>h120</div></div>
+    <div style="display:flex;flex-direction:column;gap:6px;align-items:center"><div style="width:44px;height:44px;border-radius:10px;background:oklch(0.62 0.11 165);color:#fff;font:500 11px/44px 'Geist Mono',monospace;text-align:center">AC</div><div style="font:10px 'Geist Mono',monospace;color:#8a8177;text-align:center;line-height:1.4">actions<br>h165</div></div>
+    <div style="display:flex;flex-direction:column;gap:6px;align-items:center"><div style="width:44px;height:44px;border-radius:10px;background:oklch(0.62 0.11 210);color:#fff;font:500 11px/44px 'Geist Mono',monospace;text-align:center">RX</div><div style="font:10px 'Geist Mono',monospace;color:#8a8177;text-align:center;line-height:1.4">reflex<br>h210</div></div>
+    <div style="display:flex;flex-direction:column;gap:6px;align-items:center"><div style="width:44px;height:44px;border-radius:10px;background:oklch(0.62 0.11 255);color:#fff;font:500 11px/44px 'Geist Mono',monospace;text-align:center">NT</div><div style="font:10px 'Geist Mono',monospace;color:#8a8177;text-align:center;line-height:1.4">notifications<br>h255</div></div>
+    <div style="display:flex;flex-direction:column;gap:6px;align-items:center"><div style="width:44px;height:44px;border-radius:10px;background:oklch(0.62 0.11 300);color:#fff;font:500 11px/44px 'Geist Mono',monospace;text-align:center">HS</div><div style="font:10px 'Geist Mono',monospace;color:#8a8177;text-align:center;line-height:1.4">home_state<br>h300</div></div>
+    <div style="display:flex;flex-direction:column;gap:6px;align-items:center"><div style="width:44px;height:44px;border-radius:10px;background:oklch(0.62 0.11 345);color:#fff;font:500 11px/44px 'Geist Mono',monospace;text-align:center">HR</div><div style="font:10px 'Geist Mono',monospace;color:#8a8177;text-align:center;line-height:1.4">home_results<br>h345</div></div>
+  </div>
+  <p style="margin:0;font:11.5px/1.6 'Geist Mono',monospace;color:#8a8177">Stream ring: oklch(0.62 0.11 h), h = 30 + 45·i. Same in both themes. One semantic green, oklch(0.70 0.13 150), for "alive" and "applied" only. Errors have no red: they are amber (it needs you) or muted (it stopped). Red is reserved for nothing, so that if it ever appears the user knows it is not from Alfred.</p>
+</section>
+
+<section style="display:flex;flex-direction:column;gap:18px">
+  <h2 style="margin:0;font-size:26px;font-weight:500;letter-spacing:-.02em">Type</h2>
+  <p style="margin:0;font-size:15px;line-height:1.55;color:#4d4740;max-width:640px">DM Sans for everything a person says or reads; Geist Mono for everything the machine says about itself (times, ids, tool names, status). The rule is the meaning: if the string came from the system and is meant to be exact, it is mono. Alfred's voice is one size larger than yours, always.</p>
+  <div style="display:flex;flex-direction:column;border-top:1px solid #e6e1d9">
+    <div style="display:grid;grid-template-columns:180px 1fr;gap:16px;padding:14px 0;border-bottom:1px solid #e6e1d9;align-items:baseline"><div style="font:11px 'Geist Mono',monospace;color:#8a8177">gate · 30/1.15 · 500 · −.02em</div><div style="font-size:30px;font-weight:500;letter-spacing:-.02em;line-height:1.15">Unlock the front door</div></div>
+    <div style="display:grid;grid-template-columns:180px 1fr;gap:16px;padding:14px 0;border-bottom:1px solid #e6e1d9;align-items:baseline"><div style="font:11px 'Geist Mono',monospace;color:#8a8177">headline · 26/1.15 · 500 · −.02em</div><div style="font-size:26px;font-weight:500;letter-spacing:-.02em;line-height:1.15">Listening, sir.</div></div>
+    <div style="display:grid;grid-template-columns:180px 1fr;gap:16px;padding:14px 0;border-bottom:1px solid #e6e1d9;align-items:baseline"><div style="font:11px 'Geist Mono',monospace;color:#8a8177">title · 20/1.2 · 500 · −.02em</div><div style="font-size:20px;font-weight:500;letter-spacing:-.02em">Why Alfred did that</div></div>
+    <div style="display:grid;grid-template-columns:180px 1fr;gap:16px;padding:14px 0;border-bottom:1px solid #e6e1d9;align-items:baseline"><div style="font:11px 'Geist Mono',monospace;color:#8a8177">alfred · 19/1.4 · 400 · −.01em</div><div style="font-size:19px;line-height:1.4;letter-spacing:-.01em">The dentist at nine, sir. I'd leave by twenty to.</div></div>
+    <div style="display:grid;grid-template-columns:180px 1fr;gap:16px;padding:14px 0;border-bottom:1px solid #e6e1d9;align-items:baseline"><div style="font:11px 'Geist Mono',monospace;color:#8a8177">you · 15/1.4 · 400</div><div style="font-size:15px;line-height:1.4">What have I got tomorrow morning?</div></div>
+    <div style="display:grid;grid-template-columns:180px 1fr;gap:16px;padding:14px 0;border-bottom:1px solid #e6e1d9;align-items:baseline"><div style="font:11px 'Geist Mono',monospace;color:#8a8177">row · 14.5/1.35 · 400</div><div style="font-size:14.5px;line-height:1.35">Dimmed the living room for the film</div></div>
+    <div style="display:grid;grid-template-columns:180px 1fr;gap:16px;padding:14px 0;border-bottom:1px solid #e6e1d9;align-items:baseline"><div style="font:11px 'Geist Mono',monospace;color:#8a8177">label · 11/1 · 500 · .08em · caps</div><div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;font-weight:500;color:#8a8177">Connected services</div></div>
+    <div style="display:grid;grid-template-columns:180px 1fr;gap:16px;padding:14px 0;border-bottom:1px solid #e6e1d9;align-items:baseline"><div style="font:11px 'Geist Mono',monospace;color:#8a8177">meta · mono 11/1.5 · 400</div><div style="font:11px/1.5 'Geist Mono',monospace;color:#8a8177">18:21 · reflex · spoken aloud · request 7c2e</div></div>
+    <div style="display:grid;grid-template-columns:180px 1fr;gap:16px;padding:14px 0;border-bottom:1px solid #e6e1d9;align-items:baseline"><div style="font:11px 'Geist Mono',monospace;color:#8a8177">payload · mono 11/1.55</div><div style="font:11px/1.55 'Geist Mono',monospace;color:#4d4740;white-space:pre-wrap">{ "entity_id": "lock.front_door", "action": "unlock" }</div></div>
+    <div style="display:grid;grid-template-columns:180px 1fr;gap:16px;padding:14px 0;border-bottom:1px solid #e6e1d9;align-items:baseline"><div style="font:11px 'Geist Mono',monospace;color:#8a8177">fuse · mono 40/1 · 500 · −.02em</div><div style="font:500 40px 'Geist Mono',monospace;letter-spacing:-.02em">4:12</div></div>
+  </div>
+</section>
+
+<section style="display:grid;grid-template-columns:1fr 1fr;gap:40px">
+  <div style="display:flex;flex-direction:column;gap:14px">
+    <h2 style="margin:0;font-size:26px;font-weight:500;letter-spacing:-.02em">Spacing &amp; shape</h2>
+    <p style="margin:0;font-size:15px;line-height:1.55;color:#4d4740">A 4pt grid with a short ladder: 4 · 8 · 12 · 16 · 24 · 40. Page gutter 24 (Room) and 16 (Workshop, where density matters). Every tappable thing is at least 44pt tall; if it is visually smaller, the hit area still is not.</p>
+    <div style="display:flex;flex-direction:column;gap:8px;font:11.5px/1.6 'Geist Mono',monospace;color:#4d4740">
+      <div>radius 2 · actor mark</div><div>radius 6 · stream monogram</div><div>radius 8 · payload, chips</div><div>radius 10–12 · rows, cards, banners</div><div>radius 16 · door banner, your bubble (4 on the tail corner)</div><div>radius 22–28 · buttons, composer, sheets (pill = height/2)</div>
+    </div>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:14px">
+    <h2 style="margin:0;font-size:26px;font-weight:500;letter-spacing:-.02em">Elevation</h2>
+    <p style="margin:0;font-size:15px;line-height:1.55;color:#4d4740">No drop shadows anywhere inside the app. Depth is one step of surface tone and a 1px line; layers are told apart by motion and by inverting ink and paper.</p>
+    <div style="display:flex;flex-direction:column;gap:6px;font:11.5px/1.6 'Geist Mono',monospace;color:#4d4740">
+      <div>0 · bg — the Room, benches</div><div>1 · surface — banners, payloads, cards (+1 tone)</div><div>2 · sheet — rises from bottom, 28 radius, scrim 45%</div><div>3 · workshop — full layer, same bg as Room, rises</div><div>4 · door — full layer, ink and paper swapped</div><div>5 · gate — identity, full layer, presence field shown</div>
+    </div>
+  </div>
+</section>
+
+<section style="display:flex;flex-direction:column;gap:18px">
+  <h2 style="margin:0;font-size:26px;font-weight:500;letter-spacing:-.02em">Component families</h2>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+    <div style="padding:16px;border-radius:14px;border:1px solid #e6e1d9;display:flex;flex-direction:column;gap:10px">
+      <div style="font:500 11px 'Geist Mono',monospace;letter-spacing:.08em;color:#8a8177">PRESENCE</div>
+      <div style="height:70px;border-radius:10px;background:#25221f;position:relative;overflow:hidden"><div style="position:absolute;inset:0;background-image:radial-gradient(circle, oklch(0.72 0.13 45 / .55) 1px, transparent 1.6px);background-size:12px 12px;-webkit-mask-image:linear-gradient(to bottom, rgba(0,0,0,.9) 25%, transparent 100%);mask-image:linear-gradient(to bottom, rgba(0,0,0,.9) 25%, transparent 100%);animation:drift 6s ease-in-out infinite"></div></div>
+      <div style="font-size:13.5px;line-height:1.5;color:#4d4740">Dot field, 12pt grid. Drifts ±2pt over 6 s idle, 2 s while listening or thinking, frozen and desaturated offline. The only animated thing on the Room.</div>
+    </div>
+    <div style="padding:16px;border-radius:14px;border:1px solid #e6e1d9;display:flex;flex-direction:column;gap:10px">
+      <div style="font:500 11px 'Geist Mono',monospace;letter-spacing:.08em;color:#8a8177">LINE · ACT</div>
+      <div style="display:flex;gap:12px;padding:10px 0;border-top:1px solid #e6e1d9;border-bottom:1px solid #e6e1d9;align-items:flex-start"><div style="width:8px;height:8px;border-radius:2px;background:oklch(0.62 0.11 210);margin-top:6px;flex-shrink:0"></div><div style="flex:1;display:flex;flex-direction:column;gap:2px"><div style="font-size:14.5px;line-height:1.35;color:#4d4740">Dimmed the living room for the film</div><div style="font:11px 'Geist Mono',monospace;color:#8a8177">17:58 · reflex · 380 ms</div></div><div style="font-size:13px;font-weight:500;color:oklch(0.55 0.13 45)">why?</div></div>
+      <div style="font-size:13.5px;line-height:1.5;color:#4d4740">Two lines, actor mark left. Same shape in Room and Activity; Activity swaps the mark for the 22pt monogram and exposes the payload.</div>
+    </div>
+    <div style="padding:16px;border-radius:14px;border:1px solid #e6e1d9;display:flex;flex-direction:column;gap:10px">
+      <div style="font:500 11px 'Geist Mono',monospace;letter-spacing:.08em;color:#8a8177">STATUS WORDS</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        <span style="font:11px 'Geist Mono',monospace;padding:6px 10px;border-radius:8px;border:1px solid #e6e1d9">queued</span><span style="font:11px 'Geist Mono',monospace;padding:6px 10px;border-radius:8px;border:1px solid #e6e1d9">applied</span><span style="font:11px 'Geist Mono',monospace;padding:6px 10px;border-radius:8px;border:1px solid #e6e1d9">last true 21:14</span><span style="font:11px 'Geist Mono',monospace;padding:6px 10px;border-radius:8px;border:1px solid #e6e1d9">unknown since</span><span style="font:11px 'Geist Mono',monospace;padding:6px 10px;border-radius:8px;border:1px solid #e6e1d9">hot / cold</span><span style="font:11px 'Geist Mono',monospace;padding:6px 10px;border-radius:8px;border:1px solid #e6e1d9">candidate · active · dormant · archived</span><span style="font:11px 'Geist Mono',monospace;padding:6px 10px;border-radius:8px;border:1px solid #e6e1d9">expired · not done</span><span style="font:11px 'Geist Mono',monospace;padding:6px 10px;border-radius:8px;border:1px solid #e6e1d9">takes effect within 60 s</span>
+      </div>
+      <div style="font-size:13.5px;line-height:1.5;color:#4d4740">A closed vocabulary. Nothing else is allowed to describe system state. Always mono, always lower case.</div>
+    </div>
+    <div style="padding:16px;border-radius:14px;border:1px solid #e6e1d9;display:flex;flex-direction:column;gap:10px">
+      <div style="font:500 11px 'Geist Mono',monospace;letter-spacing:.08em;color:#8a8177">CONTROLS</div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <div style="height:44px;padding:0 16px;border-radius:22px;background:#221f1b;color:#f6f3ee;font-size:14px;font-weight:500;display:flex;align-items:center">Primary</div>
+        <div style="height:44px;padding:0 16px;border-radius:22px;border:1px solid #e6e1d9;font-size:14px;font-weight:500;display:flex;align-items:center">Queued action</div>
+        <div style="height:44px;padding:0 14px;border-radius:22px;border:1px solid #e6e1d9;font-size:13px;font-weight:500;display:flex;align-items:center">Chip</div>
+        <div style="width:52px;height:32px;border-radius:16px;background:oklch(0.72 0.13 45);position:relative"><span style="position:absolute;top:3px;left:23px;width:26px;height:26px;border-radius:13px;background:#f6f3ee;display:block"></span></div>
+      </div>
+      <div style="font-size:13.5px;line-height:1.5;color:#4d4740">Filled = the server confirms. Outlined = fire-and-forget, and the label changes to the status word on tap. Switches are outlined-class: the row keeps its old state with a note until a fresh read.</div>
+    </div>
+  </div>
+</section>
+
+<section style="display:flex;flex-direction:column;gap:18px">
+  <h2 style="margin:0;font-size:26px;font-weight:500;letter-spacing:-.02em">Motion</h2>
+  <p style="margin:0;font-size:15px;line-height:1.55;color:#4d4740;max-width:640px">Two curves only. <span style="font:12.5px 'Geist Mono',monospace">rise</span> = cubic-bezier(.2,.8,.2,1), 380–420 ms, for anything entering from the bottom. <span style="font:12.5px 'Geist Mono',monospace">settle</span> = cubic-bezier(.2,1.4,.3,1), 600 ms, a slow overshoot used once: when the Door's handle lands. Nothing fades in; things arrive or they were already there. Reduce-motion turns the presence field static and makes rise a 200 ms opacity step.</p>
+
+  <div style="border-radius:14px;background:#221f1b;color:#f1ece4;padding:22px;display:flex;flex-direction:column;gap:18px">
+    <div style="font:500 11px 'Geist Mono',monospace;letter-spacing:.08em;color:#9a9186">THE DOOR · APPROVAL, NO HAPTICS</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px">
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div style="height:64px;border-radius:32px;background:#3d3832;position:relative;overflow:hidden;width:288px"><div style="position:absolute;top:4px;left:4px;width:56px;height:56px;border-radius:28px;background:oklch(0.78 0.12 45);animation:slideDemo 4s cubic-bezier(.2,1.4,.3,1) infinite"></div></div>
+        <div style="font:11px/1.6 'Geist Mono',monospace;color:#9a9186">complete: slow start → travel → 85% → snap on, overshoot 4pt, settle 600 ms</div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div style="height:64px;border-radius:32px;background:#3d3832;position:relative;overflow:hidden;width:288px"><div style="position:absolute;top:4px;left:4px;width:56px;height:56px;border-radius:28px;background:oklch(0.78 0.12 45);animation:snapDemo 3s cubic-bezier(.2,.8,.2,1) infinite"></div></div>
+        <div style="font:11px/1.6 'Geist Mono',monospace;color:#9a9186">released early: snaps home in 260 ms, no state change, hint text returns</div>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:150px 1fr;gap:10px 18px;font-size:14px;line-height:1.5;border-top:1px solid #3d3832;padding-top:16px">
+      <div style="font:500 12px/1.6 'Geist Mono',monospace;color:#9a9186">arrival</div><div>Sheet rises over whatever is showing, 420 ms rise. Ink and paper invert so the layer is unmistakably different. The fuse ring is already drawn from the real TTL; no count-in animation.</div>
+      <div style="font:500 12px/1.6 'Geist Mono',monospace;color:#9a9186">weight</div><div>Handle travel is track width − 64 (≈ 289pt at 393). The first 25% of finger travel moves the handle at 0.6×, the rest at 1.13×: it feels like it has to be pushed loose. Hint text fades over the first half.</div>
+      <div style="font:500 12px/1.6 'Geist Mono',monospace;color:#9a9186">commit</div><div>≥ 85% on release commits. Handle snaps to the end with settle (600 ms, overshoot ~4pt). Title reads "Confirmed · queued"; foot names the request id it now waits on.</div>
+      <div style="font:500 12px/1.6 'Geist Mono',monospace;color:#9a9186">applied</div><div>Only when home_action_results carries the same request_id. Dot turns the one green; word becomes "Applied" with the reported time. No animation, just the word changing; the weight was spent on the slide.</div>
+      <div style="font:500 12px/1.6 'Geist Mono',monospace;color:#9a9186">fuse</div><div>Ring is a conic arc over 300 s, stepped once per second (linear 900 ms between steps). Under 30 s the arc changes from accent to paper; nothing turns red, nothing pulses. The number is mono 40pt so the last digits are legible from arm's length.</div>
+      <div style="font:500 12px/1.6 'Geist Mono',monospace;color:#9a9186">expiry</div><div>Ring empties, track is replaced by the word "Expired" with a hollow dot, and a struck-through tombstone is appended to the Room: "Unlock the front door · expired 07:46 · not done". Consumed-elsewhere (404 on confirm) uses the same tombstone with "already answered".</div>
+      <div style="font:500 12px/1.6 'Geist Mono',monospace;color:#9a9186">offline</div><div>Track is disabled and greyed; foot reads "Cannot confirm while offline; the fuse is still running on the server." The ring keeps ticking from the last-known TTL, labelled as such.</div>
+    </div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:14px;line-height:1.5">
+    <div style="padding:16px;border-radius:14px;border:1px solid #e6e1d9;display:flex;flex-direction:column;gap:6px"><div style="font:500 11px 'Geist Mono',monospace;letter-spacing:.08em;color:#8a8177">HOLD TO TALK</div><div>Button scales 1.12 on press, fills amber, shows a 4-bar level meter; a mono counter above reads "recording 0:04 · release to send". On release: dashed bubble "Transcribing…" until the server's text replaces it in place.</div></div>
+    <div style="padding:16px;border-radius:14px;border:1px solid #e6e1d9;display:flex;flex-direction:column;gap:6px"><div style="font:500 11px 'Geist Mono',monospace;letter-spacing:.08em;color:#8a8177">WORKSHOP</div><div>Rises 400 ms over the Room, same bg. Sheets (why, held back) rise 380 ms with a 45% scrim. Pause: new events are counted on the button, not inserted; Resume inserts them at the top in one step, no per-row animation.</div></div>
+  </div>
+</section>
+</div>
+</x-dc>
+</body>
+</html>

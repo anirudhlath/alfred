@@ -16,6 +16,17 @@ export function b64urlToBuf(value: string): ArrayBuffer {
   return bytes.buffer;
 }
 
+/**
+ * Which client is completing the ceremony, for the session's own record —
+ * `_channel` on the completion body, read by `_session_channel` in
+ * `core/identity/auth_routes.py`. "pwa" from the Home Screen, "web" in a tab.
+ */
+export function sessionChannel(): "web" | "pwa" {
+  const standalone =
+    typeof window.matchMedia === "function" && window.matchMedia("(display-mode: standalone)").matches;
+  return standalone ? "pwa" : "web";
+}
+
 export async function registerPasskey(deviceName: string): Promise<void> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const options = await post<Record<string, any>>("/api/auth/register/begin", {
@@ -64,6 +75,7 @@ export async function registerPasskey(deviceName: string): Promise<void> {
     },
     _challenge_id: challengeId,
     _device_name: savedDeviceName,
+    _channel: sessionChannel(),
   });
 }
 
@@ -106,9 +118,6 @@ export async function loginPasskey(conditional = false, signal?: AbortSignal): P
       userHandle: response.userHandle ? bufToB64url(response.userHandle) : null,
     },
     _challenge_id: challengeId,
+    _channel: sessionChannel(),
   });
-}
-
-export async function logout(): Promise<void> {
-  await post("/api/auth/logout");
 }

@@ -1,97 +1,387 @@
 @import "tailwindcss";
-@import "tw-animate-css";
+@import "@fontsource-variable/dm-sans/standard.css";
+@import "@fontsource/geist-mono/400.css";
+@import "@fontsource/geist-mono/500.css";
 
-/* Radix sets data-orientation; the shadcn Tabs primitive keys its layout off these
-   custom variants (data-horizontal:flex-col, group-data-horizontal/tabs:h-8, …).
-   Without them the tab list renders beside the content instead of above it. */
-@custom-variant data-horizontal (&[data-orientation="horizontal"]);
-@custom-variant data-vertical (&[data-orientation="vertical"]);
+/* Registered so the fuse ring's `transition: --fuse-pct` has a type to
+   interpolate (see `.fuse-arc`). Tailwind v4 already leans on @property, so this
+   asks nothing more of the browser than the rest of the stylesheet does. */
+@property --fuse-pct {
+  syntax: "<percentage>";
+  inherits: false;
+  initial-value: 0%;
+}
 
+/* ------------------------------------------------------------------ palette
+   Handoff, "Design tokens". Both blocks carry every token, so one selector is
+   the whole theme and nothing leaks between them. Dark is also what :root gets
+   before ThemeProvider has written data-theme — the first paint of a cold start
+   is dark, which is the design's default. */
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #25221F;
+  --surface: #2F2B27;
+  --field: #2F2B27;
+  --line: #35312C;
+  --keyboard: #1C1A17;
+  --muted: #9A9186;
+  --fg2: #D9D2C8;
+  --fg: #F1ECE4;
+  --accent: oklch(0.78 0.12 45);
+  --green: oklch(0.70 0.13 150);
+  --ink: #F1ECE4;
+  --paper: #25221F;
+  --paper-muted: #7D756B;
+  --ring: #D6D0C7;
+  --scrim: rgba(20, 17, 14, 0.45);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #F6F3EE;
+  --surface: #EFEAE2;
+  --field: #FFFFFF;
+  --line: #E6E1D9;
+  --keyboard: #E6E1D9;
+  --muted: #8A8177;
+  --fg2: #4D4740;
+  --fg: #221F1B;
+  --accent: oklch(0.72 0.13 45);
+  --green: oklch(0.70 0.13 150);
+  --ink: #221F1B;
+  --paper: #F1ECE4;
+  --paper-muted: #9A9186;
+  --ring: #3D3832;
+  --scrim: rgba(20, 17, 14, 0.45);
+}
+
+/* ---------------------------------------------------- theme-independent bits
+   The easing curves, the font stacks, and the two viewport variables
+   installViewportVars() overwrites on the same element. The stream hues
+   (h = 30 + 45·i in the handoff) are not tokens yet: phase 1 paints three of
+   them, as literal `oklch(0.62 0.11 <h>)` values in ActRow and HeldBackSheet,
+   and the Workshop's rings will want all eight. */
 :root {
-  /* Mission Control — single dark theme by design (no light mode, no switching) */
-  --background: #090c12;
-  --foreground: #e2e8f0;
-  --card: #0b101a;
-  --card-foreground: #e2e8f0;
-  --popover: #0b101a;
-  --popover-foreground: #e2e8f0;
-  --primary: #7dd3fc;
-  --primary-foreground: #06080c;
-  --secondary: #13203a;
-  --secondary-foreground: #e2e8f0;
-  --muted: #141c29;
-  --muted-foreground: #64748b;
-  --accent: #13203a;
-  --accent-foreground: #e2e8f0;
-  --destructive: #f87171;
-  --border: #1a2230;
-  --input: #1a2230;
-  --ring: #7dd3fc;
-  --radius: 0.5rem;
+  --ease-rise: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-settle: cubic-bezier(0.2, 1.4, 0.3, 1);
+  /* `rise` mirrored in time, for the leave — what `animation-direction:
+     reverse` used to play. Not a third curve. */
+  --ease-sink: cubic-bezier(0.8, 0, 0.8, 0.2);
 
-  /* Panels darker than content background */
-  --panel: #070a0f;
+  --font-sans: "DM Sans Variable", -apple-system, Helvetica, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, monospace;
 
-  /* Source colors — the one color language, used everywhere */
-  --reflex: #7dd3fc;
-  --conscious: #4ade80;
-  --memory: #facc15;
-  --trigger: #f472b6;
-  --home: #38bdf8;
-  --user: #94a3b8;
-
-  /* Status */
-  --ok: #4ade80;
-  --warn: #facc15;
-  --bad: #f87171;
+  --app-height: 100dvh;
+  --keyboard-inset: 0px;
 }
 
+/* Tailwind utilities that point at the tokens rather than copying them, so a
+   theme switch moves every utility with it. */
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
-  --color-popover: var(--popover);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-primary: var(--primary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-secondary: var(--secondary);
-  --color-secondary-foreground: var(--secondary-foreground);
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-field: var(--field);
+  --color-line: var(--line);
+  --color-keyboard: var(--keyboard);
   --color-muted: var(--muted);
-  --color-muted-foreground: var(--muted-foreground);
+  --color-fg2: var(--fg2);
+  --color-fg: var(--fg);
   --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-destructive: var(--destructive);
-  --color-border: var(--border);
-  --color-input: var(--input);
+  --color-green: var(--green);
+  --color-ink: var(--ink);
+  --color-paper: var(--paper);
+  --color-paper-muted: var(--paper-muted);
   --color-ring: var(--ring);
-  --color-panel: var(--panel);
-  --color-reflex: var(--reflex);
-  --color-conscious: var(--conscious);
-  --color-memory: var(--memory);
-  --color-trigger: var(--trigger);
-  --color-home: var(--home);
-  --color-user: var(--user);
-  --color-ok: var(--ok);
-  --color-warn: var(--warn);
-  --color-bad: var(--bad);
-  --font-sans: "Inter Variable", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, monospace;
-  --radius-lg: var(--radius);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-sm: calc(var(--radius) - 4px);
+  --color-scrim: var(--scrim);
+
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+
+  --ease-rise: var(--ease-rise);
+  --ease-settle: var(--ease-settle);
 }
 
-body {
-  @apply bg-background text-foreground font-sans antialiased;
+@layer base {
+  html,
+  body {
+    height: 100%;
+    /* Constraint §4.6: a standalone app must not rubber-band like a web page.
+       The scroll containers inside the shell keep their own overscroll, so a
+       timeline can still bounce at its ends without moving the page. */
+    overscroll-behavior: none;
+  }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Constraint §4.4: 100vh is wrong in Safari. --app-height is the innerHeight
+     mirror; the fallback keeps the shell full-height before the JS has run. One
+     declaration, not two — an undefined var() is invalid at computed-value time
+     and would fall all the way back to `auto`, not to a previous declaration. */
+  #root {
+    display: flex;
+    flex-direction: column;
+    min-height: var(--app-height, 100dvh);
+  }
+
+  button {
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+  }
+
+  /* No scrollbars anywhere: iOS hides them anyway, and the app looks like iOS. */
+  ::-webkit-scrollbar {
+    display: none;
+  }
 }
 
-/* Live pulse dot — aliveness is data motion, not decoration */
-@keyframes pulse-glow {
-  0%, 100% { opacity: 1; box-shadow: 0 0 6px currentColor; }
-  50% { opacity: 0.5; box-shadow: 0 0 2px currentColor; }
+@layer components {
+  /* ---------------------------------------------------------- the type scale
+     DM Sans for anything a person says or reads, Geist Mono for anything the
+     machine says about itself. Alfred's voice is one size above yours. */
+  .t-gate {
+    font-size: 30px;
+    line-height: 1.15;
+    font-weight: 500;
+    letter-spacing: -0.02em;
+  }
+  .t-headline {
+    font-size: 26px;
+    line-height: 1.15;
+    font-weight: 500;
+    letter-spacing: -0.02em;
+  }
+  .t-title {
+    font-size: 20px;
+    line-height: 1.2;
+    font-weight: 500;
+    letter-spacing: -0.02em;
+  }
+  .t-alfred {
+    font-size: 19px;
+    line-height: 1.4;
+    font-weight: 400;
+    letter-spacing: -0.01em;
+  }
+  .t-you {
+    font-size: 15px;
+    line-height: 1.4;
+    font-weight: 400;
+  }
+  .t-body {
+    font-size: 15px;
+    line-height: 1.5;
+    font-weight: 400;
+  }
+  .t-row {
+    font-size: 14.5px;
+    line-height: 1.35;
+    font-weight: 400;
+  }
+  .t-label {
+    font-size: 11px;
+    line-height: 1;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .t-meta {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.5;
+    font-weight: 400;
+    color: var(--muted);
+  }
+  .t-monogram {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    line-height: 22px;
+    font-weight: 500;
+  }
+  .t-fuse {
+    font-family: var(--font-mono);
+    font-size: 40px;
+    line-height: 1;
+    font-weight: 500;
+    letter-spacing: -0.02em;
+  }
+  .t-status {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--muted);
+  }
+
+  /* --------------------------------------------------------------- motion
+     Everything that enters does so from the bottom. --layer-duration is set by
+     the component (sheets 380, workshop 400, door 420). Nothing fades in, except
+     under reduce-motion, below. */
+  .rise-in {
+    animation: rise var(--layer-duration, 400ms) var(--ease-rise) both;
+  }
+  /* `sink` is its own keyframes, not `rise` reversed: two classes on the same
+     animation-name would not restart it, so a layer re-opened mid-leave would
+     finish sinking. Reversing the direction also reversed the easing, which
+     `--ease-sink` keeps: the leave still accelerates away. */
+  .rise-out {
+    animation: sink var(--layer-duration, 400ms) var(--ease-sink) both;
+  }
+
+  /* The gates' presence field: a dot grid that only drifts a pixel and back. */
+  .gate-field {
+    background-image: radial-gradient(
+      circle,
+      color-mix(in oklab, var(--accent) 55%, transparent) 1px,
+      transparent 1.6px
+    );
+    background-size: 12px 12px;
+    -webkit-mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.9) 25%, transparent 100%);
+    mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.9) 25%, transparent 100%);
+    animation: drift 6s ease-in-out infinite;
+  }
+  :root[data-theme="light"] .gate-field {
+    background-image: radial-gradient(
+      circle,
+      color-mix(in oklab, var(--accent) 70%, transparent) 1px,
+      transparent 1.6px
+    );
+  }
+
+  /* ---------------------------------------------------- keyboard + home indicator
+     Constraint §4.3 (home indicator) and §4.5 (the keyboard covers fixed
+     elements). --keyboard-inset is written by installViewportVars() and is 0px
+     whenever the keyboard is down, so .pb-keyboard is safe to apply always.
+     A Tailwind padding utility on the same element would out-rank this rule
+     outright — `utilities` is a later layer than `components` — and silently drop
+     the inset, so the element that carries .pb-keyboard carries no other padding. */
+  .pb-keyboard {
+    padding-bottom: calc(var(--keyboard-inset, 0px) + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* With the keyboard up, iOS has already covered the home-indicator strip.
+     Adding `env(safe-area-inset-bottom)` on top of `--keyboard-inset` then leaves
+     a visible band of background between the field and the keys. */
+  .pb-keyboard.keyboard-up {
+    padding-bottom: var(--keyboard-inset, 0px);
+  }
+
+  /* ------------------------------------------------------------------- fuse
+     The arc is a conic gradient driven by two custom properties the component
+     sets, so the gradient itself never has to be built in JS. The 900 ms linear
+     sweep between one-second steps is on `--fuse-pct`, registered as a
+     <percentage> at the top of this file: a gradient image cannot be
+     interpolated, so `transition: background` — the prototype's own line —
+     would step, not sweep. Nothing pulses. The two masks are the prototype's
+     own radii per size — not a formula: applying either one's proportions to
+     the other size gives a solid disc instead of a hairline. */
+  .fuse-arc {
+    background: conic-gradient(var(--fuse-color) var(--fuse-pct), var(--ring) 0);
+    transition: --fuse-pct 0.9s linear;
+  }
+  .fuse-168 {
+    -webkit-mask-image: radial-gradient(circle, transparent 79px, #000 80px);
+    mask-image: radial-gradient(circle, transparent 79px, #000 80px);
+  }
+  .fuse-34 {
+    -webkit-mask-image: radial-gradient(circle, transparent 14px, #000 15px);
+    mask-image: radial-gradient(circle, transparent 14px, #000 15px);
+  }
 }
-.pulse-dot {
-  @apply inline-block size-1.5 rounded-full;
-  animation: pulse-glow 2s ease-in-out infinite;
+
+@keyframes rise {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+@keyframes sink {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(100%);
+  }
+}
+
+/* Only used as the reduce-motion substitutes for `rise` and `sink`. */
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes wave {
+  0%,
+  100% {
+    transform: scaleY(0.4);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes drift {
+  0% {
+    background-position: 0 0;
+  }
+  50% {
+    background-position: 2px 1px;
+  }
+  100% {
+    background-position: 0 0;
+  }
+}
+
+/* Handoff: "reduce-motion: presence field static, rise becomes a 200 ms opacity
+   step". The blanket rule stops every other animation and transition; the two
+   class rules that follow it win on specificity and give `rise` and `sink` their
+   opacity step. The canvas presence field checks the same query in JS (plan 1b). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .rise-in {
+    animation: fade 200ms linear both !important;
+  }
+  .rise-out {
+    animation: fade-out 200ms linear both !important;
+  }
 }

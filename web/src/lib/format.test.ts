@@ -1,88 +1,126 @@
 import { describe, expect, it } from "vitest";
-import { categorize, summarize, timeOf } from "./format";
+import {
+  dayLabel,
+  dayMonth,
+  evs,
+  hhmm,
+  humaniseTool,
+  mmss,
+  rawCall,
+  shortId,
+  usd,
+} from "./format";
+import type { StreamSummary } from "./types";
 
-describe("categorize", () => {
-  it("maps streams to categories", () => {
-    expect(categorize("reflex_observations", {})).toBe("reflex");
-    expect(categorize("user_responses", {})).toBe("conscious");
-    expect(categorize("notifications", {})).toBe("trigger");
+describe("hhmm", () => {
+  it("formats a Date as a zero-padded local clock time", () => {
+    expect(hhmm(new Date(2026, 8, 7, 21, 14))).toBe("21:14");
+    expect(hhmm(new Date(2026, 8, 7, 7, 2))).toBe("07:02");
+    expect(hhmm(new Date(2026, 8, 7, 0, 0))).toBe("00:00");
   });
-  it("maps events stream by event_type", () => {
-    expect(categorize("events", { event_type: "trigger_fired" })).toBe("trigger");
-    expect(categorize("events", { event_type: "state_changed" })).toBe("home");
+
+  it("accepts an ISO string and an epoch", () => {
+    expect(hhmm("2026-09-07T21:14:00")).toBe("21:14");
+    expect(hhmm(new Date(2026, 8, 7, 18, 5).getTime())).toBe("18:05");
   });
-  it("maps actions by source", () => {
-    expect(categorize("actions", { event_type: "action_request", source: "reflex-engine" })).toBe("reflex");
-    expect(categorize("actions", { event_type: "action_request", source: "conscious" })).toBe("conscious");
+
+  it("says so rather than printing NaN", () => {
+    expect(hhmm("not a time")).toBe("--:--");
   });
 });
 
-describe("summarize", () => {
-  it("summarizes state changes", () => {
+describe("dayMonth", () => {
+  it("formats as the design writes it", () => {
+    expect(dayMonth(new Date(2026, 7, 12))).toBe("12 Aug");
+    expect(dayMonth(new Date(2026, 8, 4))).toBe("4 Sep");
+    expect(dayMonth(new Date(2026, 0, 1))).toBe("1 Jan");
+  });
+});
+
+describe("mmss", () => {
+  it("formats a fuse", () => {
+    expect(mmss(252)).toBe("4:12");
+    expect(mmss(300)).toBe("5:00");
+    expect(mmss(9)).toBe("0:09");
+    expect(mmss(0)).toBe("0:00");
+  });
+  it("never counts below zero", () => {
+    expect(mmss(-5)).toBe("0:00");
+  });
+});
+
+describe("usd", () => {
+  it("is always two decimals", () => {
+    expect(usd(1.42)).toBe("1.42");
+    expect(usd(5)).toBe("5.00");
+    expect(usd(0)).toBe("0.00");
+  });
+});
+
+describe("evs", () => {
+  it("sums the five-minute rates to one decimal", () => {
     expect(
-      summarize("events", { event_type: "state_changed", entity_id: "light.study", new_state: "off" }),
-    ).toBe("light.study → off");
-  });
-  it("summarizes action requests", () => {
-    expect(summarize("actions", { event_type: "action_request", tool_name: "dim_lights" })).toBe("dim_lights");
-  });
-  it("falls back to event_type", () => {
-    expect(summarize("events", { event_type: "mystery" })).toBe("mystery");
-  });
-  it("summarizes an acted-on reflex observation as its tool", () => {
-    expect(
-      summarize("reflex_observations", {
-        event_type: "reflex_observation",
-        trigger_event: { entity_id: "light.study", old_state: "on", new_state: "off" },
-        action: { tool_name: "dim_lights" },
-        result: { status: "success" },
+      evs({
+        events: { length: 1, last_id: null, last_ts: null, rate_5m: 1.4 },
+        user_requests: { length: 1, last_id: null, last_ts: null, rate_5m: 0.2 },
+        reflex_observations: { length: 1, last_id: null, last_ts: null, rate_5m: 0.5 },
       }),
-    ).toBe("dim_lights");
+    ).toBe("2.1");
   });
-  it("summarizes a passive observation as its state transition", () => {
-    expect(
-      summarize("reflex_observations", {
-        event_type: "reflex_observation",
-        trigger_event: { entity_id: "light.study", old_state: "on", new_state: "off" },
-        action: null,
-        result: null,
-      }),
-    ).toBe("light.study: on → off");
+  it("counts a summary with no rate as 0, not NaN", () => {
+    const unrated = { length: 3, last_id: null, last_ts: null } as StreamSummary;
+    expect(evs({ events: unrated })).toBe("0");
+    const rated = { length: 1, last_id: null, last_ts: null, rate_5m: 0.2 };
+    expect(evs({ events: unrated, user_requests: rated })).toBe("0.2");
   });
-  it("renders a first sighting's missing old_state as unknown", () => {
-    expect(
-      summarize("reflex_observations", {
-        event_type: "reflex_observation",
-        trigger_event: { entity_id: "sensor.hallway", new_state: "23.5" },
-        action: null,
-      }),
-    ).toBe("sensor.hallway: unknown → 23.5");
-    expect(
-      summarize("reflex_observations", {
-        event_type: "reflex_observation",
-        trigger_event: { entity_id: "sensor.hallway", old_state: "", new_state: "23.5" },
-        action: null,
-      }),
-    ).toBe("sensor.hallway: unknown → 23.5");
+  it("says a bare 0 when nothing is flowing", () => {
+    expect(evs({})).toBe("0");
+    expect(evs({ events: { length: 0, last_id: null, last_ts: null, rate_5m: 0 } })).toBe("0");
   });
-  it("falls back for a passive observation whose trigger_event has no entity", () => {
-    expect(
-      summarize("reflex_observations", {
-        event_type: "reflex_observation",
-        trigger_event: { event_type: "action_request", tool_name: "unlock_door" },
-        action: null,
-      }),
-    ).toBe("observation");
+});
+
+describe("shortId", () => {
+  it("is the first four characters", () => {
+    expect(shortId("a91f3c2e-0b1d-4f8a")).toBe("a91f");
+    expect(shortId("ab")).toBe("ab");
   });
-  it("falls back when trigger_event is missing entirely", () => {
-    expect(summarize("reflex_observations", { event_type: "reflex_observation" })).toBe(
-      "observation",
+});
+
+describe("humaniseTool", () => {
+  it("reads the last segment as a sentence", () => {
+    expect(humaniseTool("home.lock_unlock")).toBe("Lock unlock");
+    expect(humaniseTool("home.light_set")).toBe("Light set");
+    expect(humaniseTool("speak")).toBe("Speak");
+  });
+  it("has something to say about nothing", () => {
+    expect(humaniseTool("")).toBe("Action");
+  });
+});
+
+describe("rawCall", () => {
+  it("renders the call exactly as the Door shows it", () => {
+    expect(
+      rawCall("home.lock_unlock", { entity_id: "lock.front_door", action: "unlock" }),
+    ).toBe('home.lock_unlock { entity_id: "lock.front_door", action: "unlock" }');
+  });
+  it("keeps non-string values as JSON", () => {
+    expect(rawCall("home.light_set", { brightness_pct: 30, on: true })).toBe(
+      "home.light_set { brightness_pct: 30, on: true }",
     );
   });
+  it("renders an empty call", () => {
+    expect(rawCall("home.ping", {})).toBe("home.ping {}");
+  });
 });
 
-describe("timeOf", () => {
-  it("formats a stream id as HH:MM:SS", () => {
-    expect(timeOf("1718000000000-0")).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+describe("dayLabel", () => {
+  const now = new Date(2026, 8, 7, 21, 14);
+  it("names today, yesterday and everything before", () => {
+    expect(dayLabel(new Date(2026, 8, 7, 7, 2), now)).toBe("earlier today");
+    expect(dayLabel(new Date(2026, 8, 6, 23, 59), now)).toBe("yesterday");
+    expect(dayLabel(new Date(2026, 8, 4, 12, 0), now)).toBe("4 Sep");
+  });
+  it("calls a timestamp from a skewed clock today, not a day in the future", () => {
+    expect(dayLabel(new Date(2026, 8, 8, 9, 0), now)).toBe("earlier today");
   });
 });

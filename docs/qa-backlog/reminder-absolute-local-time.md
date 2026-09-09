@@ -8,7 +8,7 @@
 - Full Alfred stack running (`uv run python -m runner`)
 - Redis Stack running, `redis-cli` available
 - Dev/test machine's system timezone is **not** UTC (e.g. `America/Denver`) — run `date +%Z` to confirm. If the machine is UTC, this test cannot distinguish "localized correctly" from "silently still UTC"; use a device/simulator set to a non-UTC zone.
-- Web SPA authenticated, on Chat page
+- PWA client authenticated, standing in the Room
 - An iOS device or simulator running the Alfred app, connected to the same server, with a non-UTC system timezone
 
 ## Test Steps

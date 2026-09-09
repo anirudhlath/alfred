@@ -51,7 +51,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `sdk/` — publishable alfred-sdk package (BaseFeature, @tool, AlfredClient)
 - `domains/home/home_agent.py` — routes actions to home-service
 - `evals/` — eval runner, scenarios, inference backends (`python -m evals`)
-- `web/` — Vite + React 19 SPA frontend (src/lib, src/shell, src/chat, src/pages; npm run dev|build|test|lint) — built `web/dist/` is served by the web channel
+- `web/` — Vite + React 19 phone-first PWA client: one screen (the Room), one interrupt (the Door), four identity gates (src/lib, src/shell, src/gates, src/room, src/door, src/sheets; npm run dev|build|test|lint) — built `web/dist/` is served by the web channel. See `docs/web-frontend.md`
 - `docs/superpowers/specs/` — approved design specs
 - `docs/superpowers/plans/` — implementation plans
 - `docs/backlog/` — priority subdirs (highest/high/medium/low/lowest) with individual ticket files
@@ -96,7 +96,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - REST endpoints: `GET /api/integrations`, `PUT/DELETE /api/integrations/{name}/credentials`, `GET .../status`
 - APNs credentials configured via env (`APNS_TEAM_ID`, `APNS_KEY_ID`, `APNS_BUNDLE_ID`, optional `APNS_KEY_PATH`); the `.p8` signing key lives in `secrets/` (gitignored)
 - Device registration: `POST/DELETE /api/devices/register` — stores APNs tokens in Redis hash `alfred:push:devices`
-- Settings page: `web/src/pages/SettingsPage.tsx` — React SPA route at `/settings` (integration credential cards via `IntegrationCard`)
+- Credential entry: `web/src/gates/SetupGate.tsx` — the first-run gate's second step `PUT`s `/api/integrations/{name}/credentials`. Phase 1 of the PWA client has no settings screen; the Workshop that reinstates one is phase 2
 - WebAuthn credentials: SQLite at `data/credentials.db` — credential ID, public key, sign count, device name
 - Auth sessions: Redis at `alfred:auth:{session_id}` — 8h TTL (hard cap from login, no sliding renewal), HttpOnly cookie `alfred_auth` (Secure when the request arrived over HTTPS, including via a trusted proxy)
 - WebAuthn challenges: Redis at `alfred:webauthn:challenge:{id}` — 5min TTL, one-time use
@@ -274,7 +274,7 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - Reflex Runner no longer writes to scratchpad — publishes structured `ReflexObservation` to `REFLEX_OBSERVATIONS_STREAM` instead; Memory Ingestor consumes and writes to episodic memory
 - Import `publish_observation` from `core.reflex.runner` to publish observations from new code paths
 - SPA catch-all (`mount_spa`) MUST register in the FastAPI lifespan AFTER the auth router — routes added during lifespan register after `create_app` routes, so an early mount would shadow `/api/auth/*`. Tests don't catch this because `web/dist/` doesn't exist in CI (mount is a no-op).
-- Backend `GET /health` is the service healthcheck consumed by the iOS AlfredKit client — the SPA's system page lives at `/system` so the catch-all never shadows `/health`.
+- Backend `GET /health` is the service healthcheck consumed by the iOS AlfredKit client — `core/channels/spa.py` keeps it out of the SPA catch-all (`_NON_SPA_PATHS`, alongside the `api/` and `ws` prefixes), so the client must never claim a route at `/health` or under those prefixes.
 - `web/dist/` must be built (`npm run build`) for the runner to serve the SPA; `npm run dev` (Vite) proxies `/api/*`, `/health`, `/ws*` to :8081 instead.
 - Admin trigger mutations (fire/enable) go through `ACTIONS_STREAM` → triggers process (consumer group `triggers-internal`) — NEVER write `alfred:triggers` directly from other processes; `TriggerStore` keeps Redis + YAML in sync. Internal action handlers live in `core/triggers/__main__.py` and `core/conscious/__main__.py` (`run_librarian`).
 - `TriggerFired.fired_by` records provenance (admin vs engine fires) — set it when publishing a fire.

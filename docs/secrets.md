@@ -104,8 +104,11 @@ registration time via the SDK:
 Core stays the single credential authority (`core/channels/service_credentials.py`):
 
 - `GET /api/integrations` merges adapters (`"kind": "adapter"`) with
-  registry-declared services (`"kind": "service"`, `category` = `"service"`);
-  the schema-driven `IntegrationCard` renders both with no special-casing.
+  registry-declared services (`"kind": "service"`, `category` = `"service"`), and any
+  client is expected to render both from the declared schema with no special-casing.
+  PWA phase 1 has no integrations screen: the only credential surface is the setup
+  gate's second step (`web/src/gates/SetupGate.tsx`), which writes home-service and
+  nothing else. The Workshop that browses the full list is phase 2.
 - `PUT /api/integrations/{name}/credentials` (service, session + trusted network):
   validate against the registry schema → store non-transient fields in the OS
   keyring (namespace = service name) → POST the flat field dict to the

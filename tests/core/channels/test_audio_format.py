@@ -68,3 +68,12 @@ def test_decode_audio_codec_suffix_stripped() -> None:
     audio_bytes, fmt = _decode_audio(data_url)
     assert audio_bytes == raw
     assert fmt == "webm"
+
+
+def test_decode_audio_mp4_returns_format() -> None:
+    """iOS Safari records audio/mp4; the hint must survive to the temp-file suffix."""
+    raw = b"fake-mp4-data"
+    data_url = f"data:audio/mp4;base64,{base64.b64encode(raw).decode()}"
+    audio_bytes, fmt = _decode_audio(data_url)
+    assert audio_bytes == raw
+    assert fmt == "mp4"

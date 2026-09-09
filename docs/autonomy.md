@@ -98,8 +98,14 @@ sequenceDiagram
   gets the ActionRequest back; every other confirm (concurrent or after) gets `None`.
   This is what prevents a critical action (e.g. a door unlock) from executing twice.
 - Web confirm: `POST /api/actions/{request_id}/confirm` (auth cookie
-  required; 404 when expired). The SPA renders a Confirm button on the
-  notification toast (`web/src/lib/notifications.ts`).
+  required; 404 when expired). The PWA client raises the action as the Door
+  (`web/src/door/DoorProvider.tsx` + `web/src/lib/actions.ts`), which tracks it from
+  three independent feeds — the `/api/actions/pending` read, a `/ws` notification frame
+  carrying `metadata.pending_action_id`, and the `home_action_results` telemetry stream
+  — and confirms it with a slide, never a tap. A 200 here reads `Confirmed · queued`:
+  **applied** comes only from `home_action_results`, and a 404 reads `already answered`.
+  Notifications that carry no `pending_action_id` are not confirmable and render as act
+  rows in the Room's timeline instead (`web/src/room/rows/ActRow.tsx`).
 - Web reads: `GET /api/actions/pending` → `{"actions": [...]}`, oldest request first,
   and `GET /api/actions/{request_id}` → one action (404 `Pending action not found or
   expired` when it is missing, the TTL has run out, or the stored value no longer parses
