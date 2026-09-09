@@ -301,21 +301,26 @@ export function useRoom({ history, tombstones }: UseRoomOptions): RoomValue {
       if (msg.type === "notification") {
         // A confirmation request has a fuse and a Door; it is not a thread row.
         if (typeof msg.metadata?.pending_action_id === "string") return;
-        setLive((current) => [
-          ...current,
-          {
-            kind: "act",
-            id: uid("nt"),
-            at: iso,
-            hue: 255,
-            text: notificationText(msg.body, msg.title) ?? "",
-            // `live`, not a source: the /ws notification frame carries none
-            // (core/notifications/adapters/websocket.py). When the history is
-            // next re-read, its copy of this notification takes this row's place
-            // (`readBackPairs`) and shows the real one.
-            meta: `${hhmm(at)} · live · ${msg.urgency}`,
-          },
-        ]);
+        const text = notificationText(msg.body, msg.title);
+        // Nothing to print is no row — the history guard drops that entry too,
+        // and the two must agree. An urgent one still speaks.
+        if (text) {
+          setLive((current) => [
+            ...current,
+            {
+              kind: "act",
+              id: uid("nt"),
+              at: iso,
+              hue: 255,
+              text,
+              // `live`, not a source: the /ws notification frame carries none
+              // (core/notifications/adapters/websocket.py). When the history is
+              // next re-read, its copy of this notification takes this row's place
+              // (`readBackPairs`) and shows the real one.
+              meta: `${hhmm(at)} · live · ${msg.urgency}`,
+            },
+          ]);
+        }
         if (msg.audio && msg.urgency === "urgent") playWavBase64(msg.audio);
       }
     });

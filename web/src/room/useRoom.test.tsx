@@ -454,6 +454,28 @@ describe("useRoom — what comes back", () => {
     expect(act_.kind === "act" && act_.text).toBe("Routine Suggestion");
   });
 
+  it("prints no row for a notification that says nothing, but still speaks", () => {
+    const { result, chat } = renderRoom({ history: [], online: true });
+
+    act(() =>
+      chat.deliver({
+        type: "notification",
+        title: "  ",
+        body: "",
+        urgency: "urgent",
+        notification_id: "ntf-11",
+        audio: "UklGRg==",
+        metadata: {},
+      }),
+    );
+
+    // An empty act row would still draw its hairlines and its mark, and the
+    // history guard drops the same entry — one path must not print what the
+    // other does not.
+    expect(result.current.items).toHaveLength(0);
+    expect(playWavBase64Mock).toHaveBeenCalledWith("UklGRg==");
+  });
+
   it("leaves a confirmation request to the Door", () => {
     const { result, chat } = renderRoom({ history: [], online: true });
 
