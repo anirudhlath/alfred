@@ -51,7 +51,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `sdk/` — publishable alfred-sdk package (BaseFeature, @tool, AlfredClient)
 - `domains/home/home_agent.py` — routes actions to home-service
 - `evals/` — eval runner, scenarios, inference backends (`python -m evals`)
-- `web/` — Vite + React 19 SPA frontend (src/lib, src/shell, src/chat, src/pages; npm run dev|build|test|lint) — built `web/dist/` is served by the web channel
+- `web/` — Vite + React 19 phone-first PWA client: one screen (the Room), one interrupt (the Door), four identity gates (src/lib, src/shell, src/gates, src/room, src/door, src/sheets; npm run dev|build|test|lint) — built `web/dist/` is served by the web channel. See `docs/web-frontend.md`
 - `docs/superpowers/specs/` — approved design specs
 - `docs/superpowers/plans/` — implementation plans
 - `docs/backlog/` — priority subdirs (highest/high/medium/low/lowest) with individual ticket files
@@ -96,7 +96,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - REST endpoints: `GET /api/integrations`, `PUT/DELETE /api/integrations/{name}/credentials`, `GET .../status`
 - APNs credentials configured via env (`APNS_TEAM_ID`, `APNS_KEY_ID`, `APNS_BUNDLE_ID`, optional `APNS_KEY_PATH`); the `.p8` signing key lives in `secrets/` (gitignored)
 - Device registration: `POST/DELETE /api/devices/register` — stores APNs tokens in Redis hash `alfred:push:devices`
-- Settings page: `web/src/pages/SettingsPage.tsx` — React SPA route at `/settings` (integration credential cards via `IntegrationCard`)
+- Credential entry: `web/src/gates/SetupGate.tsx` — the first-run gate's second step `PUT`s `/api/integrations/{name}/credentials`. Phase 1 of the PWA client has no settings screen; the Workshop that reinstates one is phase 2
 - WebAuthn credentials: SQLite at `data/credentials.db` — credential ID, public key, sign count, device name
 - Auth sessions: Redis at `alfred:auth:{session_id}` — 8h TTL (hard cap from login, no sliding renewal), HttpOnly cookie `alfred_auth` (Secure when the request arrived over HTTPS, including via a trusted proxy)
 - WebAuthn challenges: Redis at `alfred:webauthn:challenge:{id}` — 5min TTL, one-time use
