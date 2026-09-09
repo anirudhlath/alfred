@@ -121,11 +121,19 @@ def test_overview_reports_redis_down() -> None:
     assert data["session"] == {"idle_minutes": 30}
 
 
-def test_overview_session_idle_follows_config(monkeypatch: Any) -> None:
-    """The SPA windows the Room to the server's session; it must read the real value."""
+@pytest.mark.parametrize("redis_up", [True, False], ids=["healthy", "degraded"])
+def test_overview_session_idle_follows_config(monkeypatch: Any, redis_up: bool) -> None:
+    """The SPA windows the Room to the server's session; it must read the real value —
+    including when Redis is down, since this is config, not Redis."""
     monkeypatch.setenv("SESSION_TIMEOUT_MINUTES", "10")
-    client = make_admin_client(_overview_redis())
-    assert client.get("/api/admin/overview").json()["session"] == {"idle_minutes": 10}
+    r = _overview_redis()
+    if not redis_up:
+        r.ping = AsyncMock(side_effect=ConnectionError("down"))
+    client = make_admin_client(r)
+
+    resp = client.get("/api/admin/overview")
+    assert resp.status_code == 200
+    assert resp.json()["session"] == {"idle_minutes": 10}
 
 
 def test_overview_survives_corrupt_cost_and_dnd() -> None:

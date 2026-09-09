@@ -331,33 +331,44 @@ In `tests/core/channels/test_admin_api.py`:
 
 (c) After `test_overview_reports_redis_down`, add:
 ```python
-def test_overview_session_idle_follows_config(monkeypatch: Any) -> None:
-    """The SPA windows the Room to the server's session; it must read the real value."""
+@pytest.mark.parametrize("redis_up", [True, False], ids=["healthy", "degraded"])
+def test_overview_session_idle_follows_config(monkeypatch: Any, redis_up: bool) -> None:
+    """The SPA windows the Room to the server's session; it must read the real value —
+    including when Redis is down, since this is config, not Redis."""
     monkeypatch.setenv("SESSION_TIMEOUT_MINUTES", "10")
-    client = make_admin_client(_overview_redis())
-    assert client.get("/api/admin/overview").json()["session"] == {"idle_minutes": 10}
+    r = _overview_redis()
+    if not redis_up:
+        r.ping = AsyncMock(side_effect=ConnectionError("down"))
+    client = make_admin_client(r)
+
+    resp = client.get("/api/admin/overview")
+    assert resp.status_code == 200
+    assert resp.json()["session"] == {"idle_minutes": 10}
 ```
+The degraded case is the one the feature exists for: an implementation that hard-codes
+30 in `_base_overview` and overwrites `session` after the ping passes `[healthy]` and
+fails `[degraded]`.
 
 - [ ] **Step 2: Run to verify they fail**
 
 ```bash
 uv run pytest tests/core/channels/test_admin_api.py -q -k "overview"
 ```
-Expected: three failures with `KeyError: 'session'`.
+Expected: four failures with `KeyError: 'session'` (the new test is two cases).
 
 - [ ] **Step 3: Implement**
 
-In `core/channels/admin_api.py`, change `_base_overview` to take the config, and add the field:
+In `core/channels/admin_api.py`, give `_base_overview` the one scalar it needs, and add the field:
 
 ```python
-def _base_overview(cfg: AlfredConfig) -> dict[str, Any]:
+def _base_overview(*, idle_minutes: int) -> dict[str, Any]:
     """Full Overview shape with placeholders — the single source of truth for the
     field set. The frontend `Overview` type requires every key, so both the degraded
     path (returned as-is) and the happy path (which overwrites what it can compute)
     build from this, and neither can drift into a partial payload.
 
-    ``session`` is config, not Redis, so it is real on both paths: the SPA windows
-    the Room to the chat session's idle timeout and must not guess it."""
+    ``session`` comes from config, not Redis, so it is real on both paths — the client
+    needs the idle timeout most when the house is degraded, and must not guess it."""
     return {
         "redis": {"connected": False},
         "cost": None,
@@ -367,7 +378,7 @@ def _base_overview(cfg: AlfredConfig) -> dict[str, Any]:
         "inference": {"ollama": False, "lmstudio": False},
         "reflex": {"model": None, "last_ms": None, "p50_ms": None},
         "librarian": {"last_run_at": None, "reviewed": None, "next_run_at": None},
-        "session": {"idle_minutes": cfg.session_timeout_minutes},
+        "session": {"idle_minutes": idle_minutes},
     }
 ```
 
@@ -379,8 +390,11 @@ In `overview()`, move the config read to the top and pass it in — replace:
 with:
 ```python
         r = _redis(request)
+        # Read up front so the degraded path carries it too. A malformed value can't
+        # 500 us here: core/channels/__main__.py loads the same config before
+        # create_app, so the process would never have started.
         cfg = AlfredConfig.from_env()
-        out = _base_overview(cfg)
+        out = _base_overview(idle_minutes=cfg.session_timeout_minutes)
 ```
 and delete the later `cfg = AlfredConfig.from_env()` line (before `out["inference"] = …`).
 
@@ -395,7 +409,8 @@ Expected: all pass.
 
 In `web/src/lib/types.ts`, add to `Overview` after `librarian?`:
 ```ts
-  /** The chat session's idle timeout (`SESSION_TIMEOUT_MINUTES`); the Room's window and the session-id rotation follow it. */
+  /** The chat session's idle timeout as the server reads it (`SESSION_TIMEOUT_MINUTES`),
+   *  so the client never hard-codes 30. */
   session: { idle_minutes: number };
 ```
 (Required, not optional: `_base_overview` always carries it.)
@@ -409,9 +424,9 @@ Run `cd web && npx tsc -b && npx vitest run` — expected clean (any other `Over
 
 - [ ] **Step 6: Document**
 
-In `docs/admin-api.md`, after the `librarian.last_run_at` bullet add:
+In `docs/admin-api.md`, after the last `librarian.*` bullet add:
 ```markdown
-- `session.idle_minutes` — `SESSION_TIMEOUT_MINUTES`: how long a chat session survives without a turn. Config, not Redis, so it is present on the degraded path too. The web client windows the Room to the current session and rotates its stored session id at this boundary
+- `session.idle_minutes` — `SESSION_TIMEOUT_MINUTES`: how long a chat session survives without a turn. Config, not Redis, so it is present on the degraded path too. Served so the web client can window the Room to the current session without hard-coding 30
 ```
 
 - [ ] **Step 7: Commit**
