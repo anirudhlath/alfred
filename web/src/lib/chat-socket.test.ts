@@ -129,6 +129,19 @@ describe("ChatSocket sessions", () => {
     expect(localStorage.getItem("alfred.session")).toBe("s_new");
   });
 
+  it("let the stamp go with the id it belonged to", () => {
+    // A send that does not leave is the only view of the drop on its own: a
+    // send that lands re-stamps immediately and hides a stamp left behind.
+    storedSession("s_old", 31 * 60_000);
+    const socket = new ChatSocket();
+
+    delivers.value = false;
+    socket.sendText("hello");
+
+    expect(localStorage.getItem("alfred.session")).toBeNull();
+    expect(localStorage.getItem("alfred.session-at")).toBeNull();
+  });
+
   it("treat a session id with no last-sent stamp as idle", () => {
     storedSession("s_before_the_stamp");
     const socket = new ChatSocket();
@@ -162,7 +175,7 @@ describe("ChatSocket sessions", () => {
     expect(sent[0].session_id).toBeUndefined();
   });
 
-  it("stamp every send as the session's last activity", () => {
+  it("stamp a send that left as the session's last activity", () => {
     const socket = new ChatSocket();
     const before = Date.now();
     socket.sendText("hello");
