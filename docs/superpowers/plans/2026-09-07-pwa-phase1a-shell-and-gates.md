@@ -4,7 +4,7 @@
 
 **Goal:** Replace `web/` with the shell the approved design needs — tokens, type scale, motion, viewport/keyboard handling, the API and socket layer, and all four identity gates (setup, sign-in, expired, denied) — ending with an app that boots into a themed, safe-area-correct Room frame carrying the live status line. Tasks 15–28 (`docs/superpowers/plans/2026-09-07-pwa-phase1b-room-and-door.md`) fill that frame with the Room and the Door before the PR opens.
 
-**Architecture:** A hard cut, not a retrofit. Task 1 deletes the outgoing Mission Control SPA (pages, shadcn component library, icon rail, telemetry rail) and its dependencies, leaving only the four library modules that are still correct: `ws.ts`, `chat-socket.ts`, `telemetry-socket.ts`, `webauthn.ts`. Everything else is built from the handoff. The shell is one column: `#root` is a flex column sized by `--app-height` (a `visualViewport` mirror), the Room is the only route, and gates are full-screen layers over it rather than separate URLs. Authentication stops being a redirect and becomes a layer: `api()` emits `expired` on 401 and `denied` on 403 through a tiny emitter, and `AuthGate` renders the matching gate over whatever is already on screen, so a lapsed session never blanks the last-known state.
+**Architecture:** A hard cut, not a retrofit. Task 1 deletes the outgoing Mission Control SPA (pages, shadcn component library, icon rail, telemetry rail) and its dependencies, leaving only the four library modules that are still correct: `ws.ts`, `chat-socket.ts`, `telemetry-socket.ts`, `webauthn.ts`. Everything else is built from the handoff. The shell is one column: `#root` is a flex column sized by `--app-height` (an `innerHeight` mirror that never shrinks for the keyboard; `--keyboard-inset`, from `visualViewport`, is what does), the Room is the only route, and gates are full-screen layers over it rather than separate URLs. Authentication stops being a redirect and becomes a layer: `api()` emits `expired` on 401 and `denied` on 403 through a tiny emitter, and `AuthGate` renders the matching gate over whatever is already on screen, so a lapsed session never blanks the last-known state.
 
 **Tech Stack:** Vite 8 · React 19 · TypeScript 6 (`tsc -b`, `noUnusedLocals`, `verbatimModuleSyntax`) · Tailwind v4 (`@theme inline`, tokens as CSS custom properties on `:root[data-theme]`) · TanStack Query 5 · react-router 7 · Vitest 4 + Testing Library + jsdom · ESLint 10 (flat config, `react-hooks`, `react-refresh`). Fonts are self-hosted through `@fontsource-variable/dm-sans` and `@fontsource/geist-mono`.
 
@@ -116,7 +116,7 @@ Everything below is under `web/` unless noted. "1b" marks files plan 1b creates 
 | `src/index.css` | Rewrite (Tasks 1, 3, 4) | Tailwind import, fonts, tokens per `[data-theme]`, `@theme inline`, type scale, keyframes, safe areas |
 | `src/lib/types.ts` | Rewrite | The shared type contract (below) |
 | `src/lib/format.ts` | Modify (Tasks 1, 9, 10, 13) | `hhmm`, `dayMonth`, `mmss`, `usd`, `evs`, `shortId`, `humaniseTool`, `rawCall`, `dayLabel` (+ the carried-over `summarize`/`timeOf`) |
-| `src/lib/theme.ts` | Create | `Theme`, `THEME_KEY`, `resolveInitialTheme`, `applyTheme`, `storedTheme` |
+| `src/lib/theme.ts` | Create | `Theme`, `THEME_KEY`, `resolveInitialTheme`, `applyTheme`, `rememberTheme`, `storedTheme` |
 | `src/lib/viewport.ts` | Create | `installViewportVars`, `keyboardInset`, `useKeyboardOpen`, `KEYBOARD_OPEN_PX` |
 | `src/lib/auth-events.ts` | Create | `authEvents.on(kind, fn)` / `.emit(kind)`, kind `expired` \| `denied` |
 | `src/lib/api.ts` | Modify | `api`/`post`/`put`/`del`, `ApiError{status, detail}`, 401→expired, 403→denied |
@@ -129,8 +129,9 @@ Everything below is under `web/` unless noted. "1b" marks files plan 1b creates 
 | `src/lib/audio.ts` | Keep (1b rewrites) | `playWavBase64` until Task 21 |
 | `src/shell/ThemeProvider.tsx` | Create | `ThemeProvider`, `useTheme()` |
 | `src/shell/ThemeToggle.tsx` | Create | 44×44 half-filled circle |
-| `src/shell/Layer.tsx` | Create | `usePresence`, `Layer` (rise in/out, reduced motion) |
-| `src/shell/Sheet.tsx` | Create | Bottom sheet + scrim + explicit `Done` |
+| `src/shell/presence.ts` | Create | `usePresence`, `useModalFocus`, `riseStyle`, `riseClass` |
+| `src/shell/Layer.tsx` | Create | `Layer` (portal, rise in/out, reduced motion, focus + inert, `level`) |
+| `src/shell/Sheet.tsx` | Create | Bottom sheet + scrim + explicit `Done` + Escape |
 | `src/shell/ConnectionProvider.tsx` | Create | Socket singletons, `useConnection()`, `markTrue()` |
 | `src/shell/QueryProvider.tsx` | Create | `QueryClient` defaults |
 | `src/gates/Gate.tsx` | Create | kicker / title / body / children / footer layout |
@@ -176,14 +177,14 @@ export type ChatServerMessage = …; export type TelemetryMessage = …;
 | Kind | Names 1b may rely on |
 |---|---|
 | Modules | `@/lib/{types,format,theme,viewport,auth-events,api,auth,webauthn,ws,chat-socket,telemetry-socket,lifecycle}` |
-| Shell | `ThemeProvider`/`useTheme`, `ThemeToggle`, `Layer`/`usePresence`, `Sheet`, `ConnectionProvider`/`useConnection`/`markTrue`, `QueryProvider` |
+| Shell | `ThemeProvider`/`useTheme`, `ThemeToggle`, `Layer`, `Sheet`, `presence.ts` (`usePresence`, `useModalFocus`, `riseStyle`, `riseClass`), `ConnectionProvider`/`useConnection`/`markTrue`, `QueryProvider` |
 | `useConnection()` | `{ chat, telemetry, online, chatStatus, telemetryStatus, lastTrueAt, subscribeOnline }` — `subscribeOnline(fn)` runs `fn` on every chat-socket open, at once if it is open already, and returns the unsubscribe |
 | Gates | `Gate`, `GateField`, `StepList`, `SetupGate`, `SignInGate`, `ExpiredGate`, `DeniedGate`, `AuthGate` |
 | Room | `useOverview`, `StatusLine`, `Room` |
 | Format | `hhmm(value)`, `dayMonth(date)`, `mmss(seconds)`, `usd(n)`, `evs(streams)`, `shortId(id)`, `humaniseTool(tool)`, `rawCall(tool, params)`, `dayLabel(date, now)` |
 | CSS variables | `--bg --surface --field --line --keyboard --muted --fg2 --fg --accent --green --ink --paper --paper-muted --ring --scrim`, `--ease-rise --ease-settle`, `--app-height --keyboard-inset` |
-| CSS classes | `.t-gate .t-headline .t-title .t-alfred .t-you .t-body .t-row .t-label .t-meta .t-monogram .t-fuse .t-status`, `.rise-in .rise-out .gate-field .safe-t .safe-b .safe-x .pb-keyboard` |
-| Keyframes | `rise`, `fade`, `breathe`, `wave`, `drift` |
+| CSS classes | `.t-gate .t-headline .t-title .t-alfred .t-you .t-body .t-row .t-label .t-meta .t-monogram .t-fuse .t-status`, `.rise-in .rise-out .gate-field .pb-keyboard` |
+| Keyframes | `rise`, `sink`, `fade`, `fade-out`, `breathe`, `wave`, `drift` |
 | `localStorage` | `alfred.theme`, `alfred.device`, `alfred_session_id` (1b adds `alfred.unsent`) |
 | Query keys | `["auth-status"] ["overview"] ["integrations"] ["attention"]` (1b adds `["room-history"] ["deferred"] ["pending-actions"]`) |
 
@@ -635,7 +636,7 @@ git commit -m "chore(web): clear the old client for the PWA rewrite"
 
 ### Task 2: `index.html` and the test environment
 
-Four of the twelve iOS constraints (spec §4.3, §4.4, §4.5, §4.12) are decided in the document head, before any React renders: `viewport-fit=cover` for the island and the home indicator, `interactive-widget=resizes-content` so the software keyboard shrinks the layout instead of covering it, the two `theme-color` metas so Safari's chrome matches the theme, and the Apple standalone metas. They are easy to lose in a later edit, so a test greps the file.
+Four of the twelve iOS constraints (spec §4.3, §4.4, §4.5, §4.12) are decided in the document head, before any React renders: `viewport-fit=cover` for the island and the home indicator, `interactive-widget=resizes-content` so the software keyboard shrinks the layout instead of covering it, one `theme-color` meta that `applyTheme()` (Task 3) rewrites so Safari's chrome follows the app's theme — the app's theme is stored-choice-else-hour, not the OS scheme, so per-scheme `media` variants would disagree with it, and the Apple standalone metas. They are easy to lose in a later edit, so a test greps the file.
 
 The same task teaches jsdom the three APIs the client relies on and jsdom does not implement.
 
@@ -675,13 +676,16 @@ describe("index.html", () => {
     expect(html).not.toContain("maximum-scale=1");
   });
 
-  it("ships one theme-color per scheme, matching the tokens", () => {
-    expect(html).toContain(
-      '<meta name="theme-color" content="#25221F" media="(prefers-color-scheme: dark)" />',
-    );
-    expect(html).toContain(
-      '<meta name="theme-color" content="#F6F3EE" media="(prefers-color-scheme: light)" />',
-    );
+  it("ships one theme-color, the dark first-paint token, for applyTheme() to rewrite", () => {
+    // The theme is the app's (stored choice, else the hour), never the OS scheme, so
+    // a per-scheme `media` pair would disagree with it for anyone whose phone is set
+    // the other way. applyTheme() keeps this one meta in step with data-theme.
+    expect(html).toContain('<meta name="theme-color" content="#25221F" />');
+    expect(html).not.toContain("prefers-color-scheme");
+  });
+
+  it("stops iOS turning ids and times into phone links", () => {
+    expect(html).toContain('<meta name="format-detection" content="telephone=no" />');
   });
 
   it("asks iOS for a standalone app with a translucent status bar", () => {
@@ -701,7 +705,7 @@ describe("index.html", () => {
 - [ ] **Step 2: Run it to verify it fails**
 
 Run: `npm test -- src/test/index-html.test.ts`
-Expected: FAIL — four of the six assertions fail: the outgoing head has `content="width=device-width, initial-scale=1.0"` (no `viewport-fit`, no `interactive-widget`), no `theme-color` metas and no Apple metas, and `<html lang="en" style="background:#090c12">` fails the language assertion because of the inline style. The pinch-zoom and manifest assertions already pass.
+Expected: FAIL — five of the seven assertions fail: the outgoing head has `content="width=device-width, initial-scale=1.0"` (no `viewport-fit`, no `interactive-widget`), no `theme-color` meta, no Apple metas, no `format-detection`, and `<html lang="en" style="background:#090c12">` fails the language assertion because of the inline style. The pinch-zoom and manifest assertions already pass.
 
 - [ ] **Step 3: Rewrite `web/index.html`**
 
@@ -713,8 +717,7 @@ Complete file:
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
-    <meta name="theme-color" content="#25221F" media="(prefers-color-scheme: dark)" />
-    <meta name="theme-color" content="#F6F3EE" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#25221F" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Alfred" />
@@ -735,7 +738,7 @@ Notes: the `style="background:#090c12"` on `<html>` is gone — the background i
 - [ ] **Step 4: Run the head test**
 
 Run: `npm test -- src/test/index-html.test.ts`
-Expected: `Test Files  1 passed (1)`, 6 tests.
+Expected: `Test Files  1 passed (1)`, 7 tests.
 
 - [ ] **Step 5: Write the failing environment test**
 
@@ -825,10 +828,12 @@ if (typeof globalThis.localStorage === "undefined") {
   });
 }
 
-// jsdom implements none of matchMedia, ResizeObserver or visualViewport, and all
-// three are load-bearing: the reduced-motion branch in Layer, the timeline's scroll
-// anchoring (plan 1b), and installViewportVars. Stub them here so no test has to;
-// a test that needs a different answer overrides its own with vi.stubGlobal.
+// jsdom implements none of matchMedia, ResizeObserver or visualViewport. The first
+// and last are load-bearing — the reduced-motion branch in Layer, and
+// installViewportVars — and ResizeObserver is stubbed as a precaution: nothing in
+// phase 1 constructs one, and a component that starts to should not begin by
+// crashing every test. A test that needs a different answer overrides its own
+// with vi.stubGlobal.
 if (typeof window.matchMedia !== "function") {
   Object.defineProperty(window, "matchMedia", {
     configurable: true,
@@ -904,7 +909,7 @@ git commit -m "feat(web): iOS-correct document head and a jsdom environment that
 
 ### Task 3: Tokens, fonts, type scale, motion — and the theme that switches them
 
-The whole design system is fifteen custom properties per theme, twelve type-scale classes, two easing curves and six keyframes. Putting all of it in `index.css` behind `:root[data-theme]` means the theme switch is one attribute write, with no React re-render of anything that only needs a colour.
+The whole design system is fifteen custom properties per theme, twelve type-scale classes, two easing curves and five keyframes (Task 5 adds the leave's two keyframes and its mirrored curve). Putting all of it in `index.css` behind `:root[data-theme]` means the theme switch is one attribute write, with no React re-render of anything that only needs a colour.
 
 Theme resolution: a stored choice always wins; with nothing stored, 07:00–18:59 is light and everything else is dark ("default dark after sunset, light in daytime").
 
@@ -918,10 +923,11 @@ Theme resolution: a stored choice always wins; with nothing stored, 07:00–18:5
 Create `web/src/lib/theme.test.ts`:
 
 ```ts
-import { afterEach, describe, expect, it } from "vitest";
-import { applyTheme, resolveInitialTheme, storedTheme, THEME_KEY } from "./theme";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { applyTheme, rememberTheme, resolveInitialTheme, storedTheme, THEME_KEY } from "./theme";
 
 afterEach(() => {
+  vi.restoreAllMocks();
   localStorage.clear();
   document.documentElement.removeAttribute("data-theme");
 });
@@ -950,18 +956,50 @@ describe("resolveInitialTheme", () => {
 });
 
 describe("applyTheme", () => {
+  it("writes data-theme on the document element, and nothing to storage", () => {
+    applyTheme("light");
+    expect(document.documentElement.dataset.theme).toBe("light");
+    applyTheme("dark");
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(localStorage.getItem(THEME_KEY)).toBeNull();
+  });
+
+  it("tints Safari's chrome to match", () => {
+    // index.html ships the meta; the test page does not, so make one.
+    const meta = document.createElement("meta");
+    meta.name = "theme-color";
+    meta.content = "#25221F";
+    document.head.append(meta);
+    try {
+      applyTheme("light");
+      expect(meta.content).toBe("#F6F3EE");
+      applyTheme("dark");
+      expect(meta.content).toBe("#25221F");
+    } finally {
+      meta.remove();
+    }
+  });
+
+  it("does not need the meta to exist", () => {
+    expect(() => applyTheme("light")).not.toThrow();
+  });
+});
+
+describe("rememberTheme", () => {
   it("uses the alfred.theme key", () => {
     expect(THEME_KEY).toBe("alfred.theme");
   });
 
-  it("writes data-theme on the document element and persists the choice", () => {
-    applyTheme("light");
-    expect(document.documentElement.dataset.theme).toBe("light");
+  it("persists the choice", () => {
+    rememberTheme("light");
     expect(localStorage.getItem(THEME_KEY)).toBe("light");
+  });
 
-    applyTheme("dark");
-    expect(document.documentElement.dataset.theme).toBe("dark");
-    expect(localStorage.getItem(THEME_KEY)).toBe("dark");
+  it("survives a storage that refuses to write", () => {
+    vi.spyOn(localStorage, "setItem").mockImplementation(() => {
+      throw new Error("QuotaExceededError");
+    });
+    expect(() => rememberTheme("light")).not.toThrow();
   });
 });
 
@@ -970,9 +1008,16 @@ describe("storedTheme", () => {
     expect(storedTheme()).toBeNull();
   });
 
-  it("reads back what applyTheme wrote", () => {
-    applyTheme("light");
+  it("reads back what rememberTheme wrote", () => {
+    rememberTheme("light");
     expect(storedTheme()).toBe("light");
+  });
+
+  it("is null when storage cannot be read", () => {
+    vi.spyOn(localStorage, "getItem").mockImplementation(() => {
+      throw new Error("SecurityError");
+    });
+    expect(storedTheme()).toBeNull();
   });
 });
 ```
@@ -998,9 +1043,22 @@ export function resolveInitialTheme(now: Date, stored: string | null): Theme {
   return hour >= 7 && hour < 19 ? "light" : "dark";
 }
 
-/** The one place the theme becomes visible: an attribute write plus persistence. */
+/** `--bg` per theme, as index.css declares it. Safari's chrome reads it from the meta. */
+const THEME_COLOR: Record<Theme, string> = { dark: "#25221F", light: "#F6F3EE" };
+
+/** The one place the theme becomes visible: the attribute the palette hangs off. */
 export function applyTheme(theme: Theme): void {
   document.documentElement.dataset.theme = theme;
+  // The theme is ours, not the OS's — a phone in system light mode runs dark here
+  // at 21:00 — so the meta cannot carry a `prefers-color-scheme` pair; it follows.
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", THEME_COLOR[theme]);
+}
+
+/**
+ * Persist a choice. Only a choice: the time-of-day fallback is applied but never
+ * remembered, or the first launch would freeze the theme for every launch after.
+ */
+export function rememberTheme(theme: Theme): void {
   try {
     localStorage.setItem(THEME_KEY, theme);
   } catch {
@@ -1021,7 +1079,7 @@ export function storedTheme(): string | null {
 - [ ] **Step 4: Run the theme test**
 
 Run: `npm test -- src/lib/theme.test.ts`
-Expected: `Test Files  1 passed (1)`, 7 tests.
+Expected: `Test Files  1 passed (1)`, 12 tests.
 
 - [ ] **Step 5: Write the whole design system into `web/src/index.css`**
 
@@ -1029,7 +1087,7 @@ Complete file:
 
 ```css
 @import "tailwindcss";
-@import "@fontsource-variable/dm-sans/index.css";
+@import "@fontsource-variable/dm-sans/standard.css";
 @import "@fontsource/geist-mono/400.css";
 @import "@fontsource/geist-mono/500.css";
 
@@ -1124,7 +1182,9 @@ Complete file:
   html,
   body {
     height: 100%;
-    /* Constraint §4.6: a standalone app must not rubber-band like a web page. */
+    /* Constraint §4.6: a standalone app must not rubber-band like a web page.
+       The scroll containers inside the shell keep their own overscroll, so a
+       timeline can still bounce at its ends without moving the page. */
     overscroll-behavior: none;
   }
 
@@ -1136,7 +1196,7 @@ Complete file:
     -webkit-font-smoothing: antialiased;
   }
 
-  /* Constraint §4.4: 100vh is wrong in Safari. --app-height is the visualViewport
+  /* Constraint §4.4: 100vh is wrong in Safari. --app-height is the innerHeight
      mirror; the fallback keeps the shell full-height before the JS has run. One
      declaration, not two — an undefined var() is invalid at computed-value time
      and would fall all the way back to `auto`, not to a previous declaration. */
@@ -1152,8 +1212,7 @@ Complete file:
     cursor: pointer;
   }
 
-  /* The scroll containers inside the shell keep their own overscroll, so a
-     timeline can still bounce at its ends without moving the page. */
+  /* No scrollbars anywhere: iOS hides them anyway, and the app looks like iOS. */
   ::-webkit-scrollbar {
     display: none;
   }
@@ -1349,7 +1408,7 @@ Create `web/src/shell/ThemeProvider.test.tsx`:
 ```tsx
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { THEME_KEY } from "@/lib/theme";
 import { ThemeProvider, useTheme } from "./ThemeProvider";
 import { ThemeToggle } from "./ThemeToggle";
@@ -1360,6 +1419,7 @@ function Probe() {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   localStorage.clear();
   document.documentElement.removeAttribute("data-theme");
 });
@@ -1376,14 +1436,30 @@ describe("ThemeProvider", () => {
     expect(document.documentElement.dataset.theme).toBe("light");
   });
 
-  it("falls back to the time of day when nothing is stored", () => {
+  it("falls back to the time of day when nothing is stored, and does not remember it", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 8, 7, 23, 0));
     render(
       <ThemeProvider>
         <Probe />
       </ThemeProvider>,
     );
-    const expected = new Date().getHours() >= 7 && new Date().getHours() < 19 ? "light" : "dark";
-    expect(screen.getByTestId("theme")).toHaveTextContent(expected);
+    expect(screen.getByTestId("theme")).toHaveTextContent("dark");
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    // Remembering the fallback would make tonight's dark tomorrow's noon.
+    expect(localStorage.getItem(THEME_KEY)).toBeNull();
+  });
+
+  it("is light by day", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 8, 7, 12, 0));
+    render(
+      <ThemeProvider>
+        <Probe />
+      </ThemeProvider>,
+    );
+    expect(screen.getByTestId("theme")).toHaveTextContent("light");
+    expect(document.documentElement.dataset.theme).toBe("light");
   });
 
   it("toggles, re-applies and persists", async () => {
@@ -1431,8 +1507,8 @@ Expected: FAIL — `Failed to resolve import "./ThemeProvider"`.
 Complete `web/src/shell/ThemeProvider.tsx`:
 
 ```tsx
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { applyTheme, resolveInitialTheme, storedTheme, type Theme } from "@/lib/theme";
+import { createContext, useContext, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
+import { applyTheme, rememberTheme, resolveInitialTheme, storedTheme, type Theme } from "@/lib/theme";
 
 export interface ThemeValue {
   theme: Theme;
@@ -1446,14 +1522,22 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // user while the app is open.
   const [theme, setTheme] = useState<Theme>(() => resolveInitialTheme(new Date(), storedTheme()));
 
-  useEffect(() => {
+  // A layout effect, so the attribute lands before the first paint: :root is dark
+  // until it is written, and a stored light theme must not flash dark on launch.
+  useLayoutEffect(() => {
     applyTheme(theme);
   }, [theme]);
 
   const value = useMemo<ThemeValue>(
     () => ({
       theme,
-      toggle: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
+      toggle: () => {
+        // Persisted here and not in the effect: only a choice is remembered, never
+        // the time-of-day fallback, or the first launch would fix the theme for good.
+        const next = theme === "dark" ? "light" : "dark";
+        rememberTheme(next);
+        setTheme(next);
+      },
     }),
     [theme],
   );
@@ -1500,7 +1584,7 @@ export function ThemeToggle() {
 - [ ] **Step 9: Run the provider test and the suite**
 
 Run: `npm test -- src/shell/ThemeProvider.test.tsx`
-Expected: `Test Files  1 passed (1)`, 5 tests.
+Expected: `Test Files  1 passed (1)`, 6 tests.
 
 Run: `npm test`
 Expected: `Test Files  9 passed (9)`.
@@ -1529,7 +1613,7 @@ git commit -m "feat(web): design tokens, type scale, motion and the theme switch
 
 ### Task 4: The viewport and the software keyboard
 
-Constraints §4.4 and §4.5. Safari's `100vh` includes chrome that is not there, and the software keyboard covers fixed elements instead of resizing the page. `visualViewport` is the only honest source for both: its `height` is the actually-visible area, and `innerHeight − height − offsetTop` is how much of the window the keyboard has eaten. `installViewportVars()` mirrors both into custom properties so CSS can use them without a re-render, and `useKeyboardOpen()` gives the composer (plan 1b) a boolean.
+Constraints §4.4 and §4.5. Safari's `100vh` includes chrome that is not there, and the software keyboard covers fixed elements instead of resizing the page. `window.innerHeight` is the honest layout height — it follows Safari's toolbars — and `visualViewport` is the only source for the keyboard: `innerHeight − height − offsetTop` is how much of the window it has eaten. `installViewportVars()` mirrors both into custom properties so CSS can use them without a re-render, and `useKeyboardOpen()` gives the composer (plan 1b) a boolean. `--app-height` deliberately never shrinks for the keyboard: `.pb-keyboard` pays for it, once. (WebKit does not implement `interactive-widget`, so on iOS the layout viewport never resizes for the keyboard; on browsers that do, the inset is 0 and the layout viewport has already paid.)
 
 **Files:**
 - Create: `web/src/lib/viewport.ts`, `web/src/lib/viewport.test.ts`
@@ -1580,6 +1664,11 @@ function setInnerHeight(value: number): void {
   Object.defineProperty(window, "innerHeight", { configurable: true, writable: true, value });
 }
 
+function resizeWindowTo(value: number): void {
+  setInnerHeight(value);
+  window.dispatchEvent(new Event("resize"));
+}
+
 const appHeight = () => document.documentElement.style.getPropertyValue("--app-height");
 const keyboard = () => document.documentElement.style.getPropertyValue("--keyboard-inset");
 
@@ -1592,7 +1681,7 @@ afterEach(() => {
 });
 
 describe("installViewportVars", () => {
-  it("mirrors the visual viewport onto the document element", () => {
+  it("mirrors the window onto the document element", () => {
     install(new FakeVisualViewport(852));
     const uninstall = installViewportVars();
 
@@ -1602,15 +1691,16 @@ describe("installViewportVars", () => {
     uninstall();
   });
 
-  it("reports the keyboard inset when the viewport shrinks", () => {
+  it("reports the keyboard inset when the viewport shrinks, and keeps the column", () => {
     const viewport = new FakeVisualViewport(852);
     install(viewport);
     const uninstall = installViewportVars();
 
     viewport.resizeTo(500);
 
-    expect(appHeight()).toBe("500px");
+    // .pb-keyboard pays for the keyboard; a shorter column would pay for it twice.
     expect(keyboard()).toBe("352px");
+    expect(appHeight()).toBe("852px");
 
     uninstall();
   });
@@ -1624,16 +1714,39 @@ describe("installViewportVars", () => {
 
     // 852 - 500 - 60: the offset is part of what is hidden.
     expect(keyboard()).toBe("292px");
+    expect(appHeight()).toBe("852px");
 
     uninstall();
   });
 
-  it("rounds fractional heights to whole pixels", () => {
+  it("rounds the inset to whole pixels", () => {
     const viewport = new FakeVisualViewport(500.4);
     install(viewport);
     const uninstall = installViewportVars();
 
-    expect(appHeight()).toBe("500px");
+    // 852 - 500.4 = 351.6
+    expect(keyboard()).toBe("352px");
+
+    uninstall();
+  });
+
+  it("follows window resizes, with or without a visual viewport", () => {
+    install(null);
+    let uninstall = installViewportVars();
+
+    resizeWindowTo(400);
+
+    expect(appHeight()).toBe("400px");
+    expect(keyboard()).toBe("0px");
+
+    uninstall();
+    install(new FakeVisualViewport(300));
+    uninstall = installViewportVars();
+
+    resizeWindowTo(300);
+
+    expect(appHeight()).toBe("300px");
+    expect(keyboard()).toBe("0px");
 
     uninstall();
   });
@@ -1644,12 +1757,17 @@ describe("installViewportVars", () => {
     const uninstall = installViewportVars();
     uninstall();
 
-    viewport.resizeTo(400);
+    viewport.resizeTo(500);
+    expect(keyboard()).toBe("0px");
 
+    viewport.scrollTo(60);
+    expect(keyboard()).toBe("0px");
+
+    resizeWindowTo(400);
     expect(appHeight()).toBe("852px");
   });
 
-  it("falls back to innerHeight where there is no visual viewport", () => {
+  it("reports no keyboard where there is no visual viewport", () => {
     install(null);
     const uninstall = installViewportVars();
 
@@ -1666,28 +1784,28 @@ describe("installViewportVars", () => {
     const uninstall = installViewportVars();
 
     expect(keyboard()).toBe("0px");
+    expect(appHeight()).toBe("852px");
 
     uninstall();
   });
 });
 
 describe("useKeyboardOpen", () => {
-  it("is the 80 px threshold, not any inset at all", () => {
-    expect(KEYBOARD_OPEN_PX).toBe(80);
-  });
-
-  it("flips as the viewport crosses the threshold", () => {
+  it("flips as the inset crosses the threshold, not at any inset at all", () => {
     const viewport = new FakeVisualViewport(852);
     install(viewport);
 
     const { result } = renderHook(() => useKeyboardOpen());
     expect(result.current).toBe(false);
 
-    act(() => viewport.resizeTo(772)); // inset exactly 80 — not open
+    act(() => viewport.resizeTo(852 - KEYBOARD_OPEN_PX)); // inset exactly at the line — not open
     expect(result.current).toBe(false);
 
-    act(() => viewport.resizeTo(771)); // inset 81 — open
+    act(() => viewport.resizeTo(852 - KEYBOARD_OPEN_PX - 1)); // one past it — open
     expect(result.current).toBe(true);
+
+    act(() => viewport.scrollTo(1)); // the scroll takes it back to the line
+    expect(result.current).toBe(false);
 
     act(() => viewport.resizeTo(852));
     expect(result.current).toBe(false);
@@ -1705,7 +1823,7 @@ Expected: FAIL — `Failed to resolve import "./viewport"`.
 Complete file:
 
 ```ts
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 
 /** Below this, the inset is Safari's toolbar or a rotation artefact, not a keyboard. */
 export const KEYBOARD_OPEN_PX = 80;
@@ -1722,53 +1840,49 @@ export function keyboardInset(): number {
 }
 
 /**
- * Mirror the visual viewport into `--app-height` and `--keyboard-inset` on the
- * document element. Returns the uninstaller; `main.tsx` calls this once and never
- * uninstalls, tests always do.
+ * Call `fn` whenever the geometry may have changed. `scroll` matters as much as
+ * `resize`: iOS scrolls the visual viewport under a focused field rather than
+ * resizing it again, and offsetTop is part of the inset. Returns the unsubscriber.
+ */
+function subscribe(fn: () => void): () => void {
+  const viewport = window.visualViewport;
+  viewport?.addEventListener("resize", fn);
+  viewport?.addEventListener("scroll", fn);
+  window.addEventListener("resize", fn);
+  return () => {
+    viewport?.removeEventListener("resize", fn);
+    viewport?.removeEventListener("scroll", fn);
+    window.removeEventListener("resize", fn);
+  };
+}
+
+/**
+ * Mirror the window into `--app-height` and the keyboard into `--keyboard-inset`
+ * on the document element. Returns the uninstaller; `main.tsx` calls this once
+ * and never uninstalls, tests always do.
  */
 export function installViewportVars(): () => void {
   const root = document.documentElement;
 
   const apply = () => {
-    const viewport = window.visualViewport;
-    const height = viewport?.height ?? window.innerHeight;
-    root.style.setProperty("--app-height", `${Math.round(height)}px`);
+    // innerHeight, not visualViewport.height: the column must not shrink for the
+    // keyboard, because .pb-keyboard already pays for it and the composer would
+    // rise twice. innerHeight follows Safari's toolbars (100vh does not), and on
+    // browsers that honour `interactive-widget` it follows the keyboard too — in
+    // which case the inset below is 0, and nothing is paid twice either.
+    root.style.setProperty("--app-height", `${Math.round(window.innerHeight)}px`);
     root.style.setProperty("--keyboard-inset", `${Math.round(keyboardInset())}px`);
   };
 
   apply();
-
-  const viewport = window.visualViewport;
-  // `scroll` matters as much as `resize`: iOS scrolls the visual viewport under a
-  // focused field rather than resizing it again, and offsetTop is part of the inset.
-  viewport?.addEventListener("resize", apply);
-  viewport?.addEventListener("scroll", apply);
-  window.addEventListener("resize", apply);
-
-  return () => {
-    viewport?.removeEventListener("resize", apply);
-    viewport?.removeEventListener("scroll", apply);
-    window.removeEventListener("resize", apply);
-  };
+  return subscribe(apply);
 }
+
+const isKeyboardOpen = () => keyboardInset() > KEYBOARD_OPEN_PX;
 
 /** True while the software keyboard is up. Drives the composer's padding. */
 export function useKeyboardOpen(): boolean {
-  const [open, setOpen] = useState(() => keyboardInset() > KEYBOARD_OPEN_PX);
-
-  useEffect(() => {
-    const check = () => setOpen(keyboardInset() > KEYBOARD_OPEN_PX);
-    check();
-    const viewport = window.visualViewport;
-    viewport?.addEventListener("resize", check);
-    viewport?.addEventListener("scroll", check);
-    return () => {
-      viewport?.removeEventListener("resize", check);
-      viewport?.removeEventListener("scroll", check);
-    };
-  }, []);
-
-  return open;
+  return useSyncExternalStore(subscribe, isKeyboardOpen);
 }
 ```
 
@@ -1777,29 +1891,24 @@ export function useKeyboardOpen(): boolean {
 Run: `npm test -- src/lib/viewport.test.ts`
 Expected: `Test Files  1 passed (1)`, 9 tests.
 
-- [ ] **Step 5: Add the safe-area and keyboard classes to `index.css`**
+- [ ] **Step 5: Add the keyboard padding class to `index.css`**
 
 In `web/src/index.css`, inside the `@layer components` block, insert this after the `:root[data-theme="light"] .gate-field { … }` rule and before the block's closing brace:
 
 ```css
-  /* ---------------------------------------------------- safe areas + keyboard
-     Constraint §4.3 (island, home indicator) and §4.5 (the keyboard covers fixed
+  /* ---------------------------------------------------- keyboard + home indicator
+     Constraint §4.3 (home indicator) and §4.5 (the keyboard covers fixed
      elements). --keyboard-inset is written by installViewportVars() and is 0px
-     whenever the keyboard is down, so .pb-keyboard is safe to apply always. */
-  .safe-t {
-    padding-top: env(safe-area-inset-top, 0px);
-  }
-  .safe-b {
-    padding-bottom: env(safe-area-inset-bottom, 0px);
-  }
-  .safe-x {
-    padding-left: env(safe-area-inset-left, 0px);
-    padding-right: env(safe-area-inset-right, 0px);
-  }
+     whenever the keyboard is down, so .pb-keyboard is safe to apply always.
+     A Tailwind padding utility on the same element would out-rank this rule
+     outright — `utilities` is a later layer than `components` — and silently drop
+     the inset, so the element that carries .pb-keyboard carries no other padding. */
   .pb-keyboard {
     padding-bottom: calc(var(--keyboard-inset, 0px) + env(safe-area-inset-bottom, 0px));
   }
 ```
+
+Also correct the `#root` comment Task 3 wrote, a few rules above: `--app-height is the visualViewport` → `--app-height is the innerHeight` (the line break after it stays where it is).
 
 - [ ] **Step 6: Full suite and build**
 
@@ -1813,7 +1922,7 @@ Expected: no eslint output, `tsc -b` silent, `✓ built in …`.
 grep -o "safe-area-inset" dist/assets/*.css | wc -l
 ```
 
-Expected: `4` or more — the classes survived Tailwind's build (they are plain CSS in a layer, not utilities, so they are never purged). (`grep -o … | wc -l` counts occurrences; `grep -c` would count lines, and the minified bundle is one line.)
+Expected: `1` or more — the class survived Tailwind's build (it is plain CSS in a layer, not a utility, so it is never purged). (`grep -o … | wc -l` counts occurrences; `grep -c` would count lines, and the minified bundle is one line.)
 
 - [ ] **Step 7: Commit**
 
@@ -1828,10 +1937,13 @@ git commit -m "feat(web): mirror the visual viewport into --app-height and --key
 
 Two primitives carry every full-screen and bottom-anchored surface in the design: gates and the Door use `Layer` (380/400/420 ms rise, ink/paper left to the caller), the Held-back sheet uses `Sheet` (scrim, grab bar, explicit `Done`). Both must stay mounted for the length of their leave animation and then disappear, and both must collapse to a 200 ms opacity step under reduce-motion.
 
-Standalone mode has no browser chrome (constraint §4.12), so every one of these has its own dismiss: the sheet's scrim and `Done`, the gates' own buttons.
+Both are modal, so both behave like it: rendered into `<body>` through a portal, they take focus while they are up, make everything behind them `inert` — the app in `#root` and any surface already up — and give focus back to where it was once they have left. The shared pieces — `usePresence`, `useModalFocus`, `riseStyle`/`riseClass` — live in `presence.ts`, a plain module, so the component files export only components. `Layer` takes a `level`: the handoff stacks sheet (`z-20`) < Door and workshop (`z-30`) < gate (`z-40`), so a lapsed session paints over an open Door whatever order they were mounted in.
+
+Standalone mode has no browser chrome (constraint §4.12), so every one of these has its own dismiss: the sheet's scrim, `Done` and the Escape key, the gates' own buttons.
 
 **Files:**
-- Create: `web/src/shell/Layer.tsx`, `web/src/shell/Sheet.tsx`, `web/src/shell/Layer.test.tsx`
+- Create: `web/src/shell/presence.ts`, `web/src/shell/Layer.tsx`, `web/src/shell/Sheet.tsx`, `web/src/shell/Layer.test.tsx`
+- Modify: `web/src/index.css` (an `--ease-sink` token, the `.rise-out` rule, a `sink` and a `fade-out` keyframes)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1843,158 +1955,289 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Layer } from "./Layer";
 import { Sheet } from "./Sheet";
 
-function stubReducedMotion(matches: boolean): void {
+/** Only the reduce-motion query answers `matches`; everything else stays false. */
+function stubReducedMotion(matches: boolean) {
   vi.stubGlobal("matchMedia", (query: string) => ({
-    matches,
+    matches: matches && query === "(prefers-reduced-motion: reduce)",
     media: query,
-    onchange: null,
-    addListener: () => {},
-    removeListener: () => {},
     addEventListener: () => {},
     removeEventListener: () => {},
-    dispatchEvent: () => false,
   }));
+}
+
+/** The app column a real page has, so the surfaces have something to make inert. */
+function mountApp(): HTMLButtonElement {
+  const root = document.createElement("div");
+  root.id = "root";
+  const button = document.createElement("button");
+  button.textContent = "Talk";
+  root.append(button);
+  document.body.append(root);
+  return button;
 }
 
 beforeEach(() => {
   vi.useFakeTimers();
+  stubReducedMotion(false);
 });
 
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  document.getElementById("root")?.remove();
 });
 
 describe("Layer", () => {
   it("renders nothing while closed", () => {
     render(
-      <Layer open={false} label="The Door">
-        <p>inside</p>
+      <Layer open={false} label="Door">
+        <p>hidden</p>
       </Layer>,
     );
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("renders a labelled modal that rises for its own duration", () => {
+  it("rises as a labelled modal with the caller's duration", () => {
     render(
-      <Layer open label="The Door" durationMs={420}>
-        <p>inside</p>
+      <Layer open label="Door" durationMs={420}>
+        <p>visible</p>
       </Layer>,
     );
-    const dialog = screen.getByRole("dialog", { name: "The Door" });
+    const dialog = screen.getByRole("dialog", { name: "Door" });
     expect(dialog).toHaveAttribute("aria-modal", "true");
-    expect(dialog).toHaveClass("rise-in");
+    expect(dialog.className).toContain("rise-in");
+    expect(dialog.className).toContain("z-30");
     expect(dialog.style.getPropertyValue("--layer-duration")).toBe("420ms");
-    expect(screen.getByText("inside")).toBeInTheDocument();
+    expect(screen.getByText("visible")).toBeInTheDocument();
   });
 
-  it("stays mounted for the whole leave animation, then unmounts", () => {
+  it("stacks gates above layers", () => {
+    render(
+      <Layer open label="Session lapsed" level="gate">
+        <p>gate</p>
+      </Layer>,
+    );
+    expect(screen.getByRole("dialog").className).toContain("z-40");
+  });
+
+  it("stays mounted for the leave animation, then unmounts", () => {
     const { rerender } = render(
-      <Layer open label="The Door" durationMs={420}>
-        <p>inside</p>
+      <Layer open label="Door" durationMs={420}>
+        <p>visible</p>
       </Layer>,
     );
-
     rerender(
-      <Layer open={false} label="The Door" durationMs={420}>
-        <p>inside</p>
+      <Layer open={false} label="Door" durationMs={420}>
+        <p>visible</p>
       </Layer>,
     );
-    expect(screen.getByRole("dialog")).toHaveClass("rise-out");
-
-    act(() => void vi.advanceTimersByTime(419));
+    expect(screen.getByRole("dialog").className).toContain("rise-out");
+    act(() => vi.advanceTimersByTime(419));
     expect(screen.queryByRole("dialog")).not.toBeNull();
-
-    act(() => void vi.advanceTimersByTime(1));
+    act(() => vi.advanceTimersByTime(1));
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("leaves in 200 ms under reduce-motion, whatever the duration says", () => {
+  it("leaves in 200 ms under reduce-motion", () => {
     stubReducedMotion(true);
     const { rerender } = render(
-      <Layer open label="The Door" durationMs={420}>
-        <p>inside</p>
+      <Layer open label="Door" durationMs={420}>
+        <p>visible</p>
       </Layer>,
     );
-
     rerender(
-      <Layer open={false} label="The Door" durationMs={420}>
-        <p>inside</p>
+      <Layer open={false} label="Door" durationMs={420}>
+        <p>visible</p>
       </Layer>,
     );
-    act(() => void vi.advanceTimersByTime(200));
-
+    act(() => vi.advanceTimersByTime(200));
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("cancels the unmount when it is re-opened mid-leave", () => {
+  it("re-opening mid-leave cancels the unmount", () => {
     const { rerender } = render(
-      <Layer open label="The Door">
-        <p>inside</p>
+      <Layer open label="Door" durationMs={420}>
+        <p>visible</p>
       </Layer>,
     );
-
     rerender(
-      <Layer open={false} label="The Door">
-        <p>inside</p>
+      <Layer open={false} label="Door" durationMs={420}>
+        <p>visible</p>
       </Layer>,
     );
-    act(() => void vi.advanceTimersByTime(100));
+    act(() => vi.advanceTimersByTime(200));
     rerender(
-      <Layer open label="The Door">
-        <p>inside</p>
+      <Layer open label="Door" durationMs={420}>
+        <p>visible</p>
       </Layer>,
     );
-    act(() => void vi.advanceTimersByTime(1000));
-
+    act(() => vi.advanceTimersByTime(1000));
     const dialog = screen.getByRole("dialog");
-    expect(dialog).toHaveClass("rise-in");
+    expect(dialog.className).toContain("rise-in");
+    expect(dialog.className).not.toContain("rise-out");
+  });
+
+  it("clears the leave timer when unmounted mid-leave", () => {
+    const { rerender, unmount } = render(
+      <Layer open label="Door" durationMs={420}>
+        <p>visible</p>
+      </Layer>,
+    );
+    // React keeps a scheduler timer of its own; count the leave timer on top of it.
+    const idle = vi.getTimerCount();
+    rerender(
+      <Layer open={false} label="Door" durationMs={420}>
+        <p>visible</p>
+      </Layer>,
+    );
+    expect(vi.getTimerCount()).toBe(idle + 1);
+    unmount();
+    expect(vi.getTimerCount()).toBe(idle);
+  });
+
+  it("takes focus, makes the app inert, and gives both back when it has left", () => {
+    const talk = mountApp();
+    talk.focus();
+    const { rerender } = render(
+      <Layer open label="Door" durationMs={420}>
+        <p>visible</p>
+      </Layer>,
+    );
+    expect(document.activeElement).toBe(screen.getByRole("dialog"));
+    expect(document.getElementById("root")).toHaveAttribute("inert");
+
+    rerender(
+      <Layer open={false} label="Door" durationMs={420}>
+        <p>visible</p>
+      </Layer>,
+    );
+    // Still inert while it sinks: nothing behind it is reachable mid-leave.
+    expect(document.getElementById("root")).toHaveAttribute("inert");
+    act(() => vi.advanceTimersByTime(420));
+    expect(document.getElementById("root")).not.toHaveAttribute("inert");
+    expect(document.activeElement).toBe(talk);
+  });
+
+  it("keeps the app inert until the last surface has left", () => {
+    mountApp();
+    const { rerender } = render(
+      <>
+        <Sheet open title="Held back" onClose={() => {}}>
+          <p>sheet</p>
+        </Sheet>
+        <Layer open label="Door" durationMs={420}>
+          <p>door</p>
+        </Layer>
+      </>,
+    );
+    rerender(
+      <>
+        <Sheet open title="Held back" onClose={() => {}}>
+          <p>sheet</p>
+        </Sheet>
+        <Layer open={false} label="Door" durationMs={420}>
+          <p>door</p>
+        </Layer>
+      </>,
+    );
+    act(() => vi.advanceTimersByTime(420));
+    expect(screen.queryByRole("dialog", { name: "Door" })).toBeNull();
+    expect(document.getElementById("root")).toHaveAttribute("inert");
+  });
+
+  it("a gate over a sheet makes the sheet inert, swallows Escape, and keeps focus", () => {
+    mountApp().focus();
+    const onClose = vi.fn();
+    const stacked = (sheetOpen: boolean) => (
+      <>
+        <Sheet open={sheetOpen} title="Held back" onClose={onClose}>
+          <p>sheet</p>
+        </Sheet>
+        <Layer open label="Session lapsed" level="gate">
+          <button type="button">Sign in</button>
+        </Layer>
+      </>
+    );
+    const { rerender } = render(stacked(true));
+    const gate = screen.getByRole("dialog", { name: "Session lapsed" });
+    expect(document.activeElement).toBe(gate);
+    expect(screen.getByRole("dialog", { name: "Held back" })).toHaveAttribute("inert");
+
+    fireEvent.keyDown(gate, { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+
+    // The sheet leaves underneath: focus stays in the gate, the app stays inert.
+    rerender(stacked(false));
+    act(() => vi.advanceTimersByTime(380));
+    expect(screen.queryByRole("dialog", { name: "Held back" })).toBeNull();
+    expect(document.activeElement).toBe(gate);
+    expect(document.getElementById("root")).toHaveAttribute("inert");
+  });
+
+  it("gives the sheet back when the gate over it leaves", () => {
+    mountApp();
+    const stacked = (gateOpen: boolean) => (
+      <>
+        <Sheet open title="Held back" onClose={() => {}}>
+          <p>sheet</p>
+        </Sheet>
+        <Layer open={gateOpen} label="Session lapsed" level="gate">
+          <button type="button">Sign in</button>
+        </Layer>
+      </>
+    );
+    const { rerender } = render(stacked(true));
+    const sheet = screen.getByRole("dialog", { name: "Held back" });
+    rerender(stacked(false));
+    // Still inert while the gate sinks.
+    expect(sheet).toHaveAttribute("inert");
+    act(() => vi.advanceTimersByTime(400));
+    expect(sheet).not.toHaveAttribute("inert");
+    expect(document.activeElement).toBe(sheet);
+    expect(document.getElementById("root")).toHaveAttribute("inert");
   });
 });
 
 describe("Sheet", () => {
-  it("renders its title, its children and an explicit Done", () => {
+  it("shows the title, the children and a Done button", () => {
     render(
       <Sheet open title="Held back" onClose={() => {}}>
-        <p>two waiting</p>
+        <p>three things</p>
       </Sheet>,
     );
-    expect(screen.getByRole("dialog", { name: "Held back" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Held back" })).toBeInTheDocument();
-    expect(screen.getByText("two waiting")).toBeInTheDocument();
+    const dialog = screen.getByRole("dialog", { name: "Held back" });
+    expect(dialog.className).toContain("z-20");
+    expect(screen.getByText("three things")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
   });
 
-  it("closes on Done and on the scrim", () => {
+  it("closes on Done, on the scrim and on Escape from inside it", () => {
     const onClose = vi.fn();
     render(
       <Sheet open title="Held back" onClose={onClose}>
-        <p>two waiting</p>
+        <p>three things</p>
       </Sheet>,
     );
-
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
-
-    expect(onClose).toHaveBeenCalledTimes(2);
+    fireEvent.keyDown(screen.getByRole("button", { name: "Done" }), { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(3);
   });
 
-  it("unmounts 380 ms after it is closed", () => {
+  it("unmounts 380 ms after closing", () => {
     const { rerender } = render(
       <Sheet open title="Held back" onClose={() => {}}>
-        <p>two waiting</p>
+        <p>three things</p>
       </Sheet>,
     );
-
     rerender(
       <Sheet open={false} title="Held back" onClose={() => {}}>
-        <p>two waiting</p>
+        <p>three things</p>
       </Sheet>,
     );
-    act(() => void vi.advanceTimersByTime(379));
+    act(() => vi.advanceTimersByTime(379));
     expect(screen.queryByRole("dialog")).not.toBeNull();
-
-    act(() => void vi.advanceTimersByTime(1));
+    act(() => vi.advanceTimersByTime(1));
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 });
@@ -2005,12 +2248,12 @@ describe("Sheet", () => {
 Run: `npm test -- src/shell/Layer.test.tsx`
 Expected: FAIL — `Failed to resolve import "./Layer"`.
 
-- [ ] **Step 3: Write `web/src/shell/Layer.tsx`**
+- [ ] **Step 3: Write `web/src/shell/presence.ts`**
 
 Complete file:
 
-```tsx
-import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
+```ts
+import { useEffect, useState, type CSSProperties, type RefObject } from "react";
 
 /** The handoff's reduce-motion substitute for every rise. */
 const REDUCED_MOTION_MS = 200;
@@ -2034,7 +2277,6 @@ export interface Presence {
  * event would strand a full-screen layer over the app forever. The duration is
  * the caller's, except under reduce-motion where every leave is 200 ms.
  */
-// eslint-disable-next-line react-refresh/only-export-components
 export function usePresence(open: boolean, durationMs: number): Presence {
   const [mounted, setMounted] = useState(open);
   const [leaving, setLeaving] = useState(false);
@@ -2067,47 +2309,126 @@ export function usePresence(open: boolean, durationMs: number): Presence {
   return { mounted, leaving };
 }
 
+/** The modal surfaces that are up, bottom to top. Everything under the top one is inert. */
+const surfaces: HTMLElement[] = [];
+
+/**
+ * While a modal surface is up, everything behind it is inert and focus lives
+ * in the surface — Full Keyboard Access and VoiceOver must not wander into a
+ * room they cannot see. That includes a surface under another one: a gate over
+ * an open sheet makes the sheet inert too, and gives it back when it leaves.
+ * Focus goes back where it was once the surface has left, unless that place
+ * is now behind another surface.
+ *
+ * `active` is the presence's `mounted`, so the surface stays inert-backed for
+ * its leave animation too, and the panel ref is set by the time this runs.
+ */
+export function useModalFocus(active: boolean, panel: RefObject<HTMLElement | null>): void {
+  useEffect(() => {
+    const node = panel.current;
+    if (!active || !node) return;
+    const app = document.getElementById("root");
+    const previous = document.activeElement;
+    app?.setAttribute("inert", "");
+    surfaces.at(-1)?.setAttribute("inert", "");
+    surfaces.push(node);
+    node.focus({ preventScroll: true });
+    return () => {
+      const index = surfaces.indexOf(node);
+      if (index >= 0) surfaces.splice(index, 1);
+      const top = surfaces.at(-1);
+      if (top) top.removeAttribute("inert");
+      else app?.removeAttribute("inert");
+      if (
+        previous instanceof HTMLElement &&
+        previous.isConnected &&
+        previous.closest("[inert]") === null
+      ) {
+        previous.focus({ preventScroll: true });
+      }
+    };
+  }, [active, panel]);
+}
+
+type RiseStyle = CSSProperties & { "--layer-duration": string };
+
+/** The theme's surface colours and the duration `.rise-in`/`.rise-out` read. */
+export function riseStyle(durationMs: number): RiseStyle {
+  return { background: "var(--bg)", color: "var(--fg)", "--layer-duration": `${durationMs}ms` };
+}
+
+export function riseClass(leaving: boolean): string {
+  return leaving ? "rise-out" : "rise-in";
+}
+```
+
+- [ ] **Step 4: Write `web/src/shell/Layer.tsx`**
+
+Complete file:
+
+```tsx
+import { useRef, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+import { riseClass, riseStyle, useModalFocus, usePresence } from "./presence";
+
 export interface LayerProps {
   open: boolean;
   /** The dialog's accessible name — standalone mode has no window title to fall back on. */
   label: string;
   /** Sheets 380, workshop 400, door 420. */
   durationMs?: number;
+  /**
+   * The handoff's stack, sheet < door < gate: a lapsed session paints over an
+   * open Door, whatever order they were mounted in.
+   */
+  level?: "layer" | "gate";
   className?: string;
   children: ReactNode;
 }
 
-export function Layer({ open, label, durationMs = 400, className = "", children }: LayerProps) {
+/**
+ * A full-screen surface that rises from the bottom, stays for its leave
+ * animation, and holds focus while it is up. Rendered into `<body>` so the
+ * app in `#root` can be made inert behind it.
+ */
+export function Layer({
+  open,
+  label,
+  durationMs = 400,
+  level = "layer",
+  className = "",
+  children,
+}: LayerProps) {
   const { mounted, leaving } = usePresence(open, durationMs);
+  const panel = useRef<HTMLDivElement>(null);
+  useModalFocus(mounted, panel);
   if (!mounted) return null;
 
-  const style = {
-    background: "var(--bg)",
-    color: "var(--fg)",
-    "--layer-duration": `${durationMs}ms`,
-  } as CSSProperties;
-
-  return (
+  return createPortal(
     <div
+      ref={panel}
+      tabIndex={-1}
       role="dialog"
       aria-modal="true"
       aria-label={label}
-      className={`fixed inset-0 z-30 flex flex-col overflow-hidden ${leaving ? "rise-out" : "rise-in"} ${className}`}
-      style={style}
+      className={`fixed inset-0 ${level === "gate" ? "z-40" : "z-30"} flex flex-col overflow-hidden outline-none ${riseClass(leaving)} ${className}`}
+      style={riseStyle(durationMs)}
     >
       {children}
-    </div>
+    </div>,
+    document.body,
   );
 }
 ```
 
-- [ ] **Step 4: Write `web/src/shell/Sheet.tsx`**
+- [ ] **Step 5: Write `web/src/shell/Sheet.tsx`**
 
 Complete file:
 
 ```tsx
-import type { CSSProperties, ReactNode } from "react";
-import { usePresence } from "@/shell/Layer";
+import { useEffect, useId, useRef, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+import { riseClass, riseStyle, useModalFocus, usePresence } from "./presence";
 
 const SHEET_MS = 380;
 
@@ -2119,22 +2440,43 @@ export interface SheetProps {
 }
 
 /**
- * Bottom-anchored sheet over a 45% scrim: grab bar, title, `Done`. Both the
- * scrim and `Done` dismiss it — constraint §4.12, a standalone app has no
- * browser chrome to escape with.
+ * Bottom-anchored sheet over a 45% scrim: grab bar, title, `Done`. The scrim,
+ * `Done` and the Escape key all dismiss it — constraint §4.12, a standalone
+ * app has no browser chrome to escape with.
  */
 export function Sheet({ open, title, onClose, children }: SheetProps) {
   const { mounted, leaving } = usePresence(open, SHEET_MS);
+  const panel = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  useModalFocus(mounted, panel);
+
+  // On the panel, not `document`: the sheet holds focus while it is on top, so
+  // the key reaches it, and a gate over it swallows Escape instead.
+  useEffect(() => {
+    const node = panel.current;
+    if (!mounted || !node) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    node.addEventListener("keydown", onKeyDown);
+    return () => node.removeEventListener("keydown", onKeyDown);
+  }, [mounted, onClose]);
+
   if (!mounted) return null;
 
-  const panelStyle = {
-    background: "var(--bg)",
-    color: "var(--fg)",
-    "--layer-duration": `${SHEET_MS}ms`,
-  } as CSSProperties;
-
-  return (
-    <div className="fixed inset-0 z-40 flex flex-col justify-end">
+  return createPortal(
+    // The dialog is the whole thing, scrim included, so the scrim's `Close` is
+    // inside the modal subtree and assistive tech can reach it. z-20, under
+    // Layer's z-30: the handoff stacks sheet < Door < gate, so a critical action
+    // or a lapsed session paints over an open sheet, not under it.
+    <div
+      ref={panel}
+      tabIndex={-1}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={titleId}
+      className="fixed inset-0 z-20 flex flex-col justify-end outline-none"
+    >
       <button
         type="button"
         aria-label="Close"
@@ -2143,11 +2485,8 @@ export function Sheet({ open, title, onClose, children }: SheetProps) {
         style={{ background: "var(--scrim)" }}
       />
       <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        className={`relative flex max-h-[78%] flex-col overflow-hidden rounded-t-[28px] ${leaving ? "rise-out" : "rise-in"}`}
-        style={panelStyle}
+        className={`relative flex max-h-[78%] flex-col overflow-hidden rounded-t-[28px] ${riseClass(leaving)}`}
+        style={riseStyle(SHEET_MS)}
       >
         <div
           aria-hidden="true"
@@ -2155,7 +2494,9 @@ export function Sheet({ open, title, onClose, children }: SheetProps) {
           style={{ background: "var(--line)" }}
         />
         <div className="flex items-center justify-between gap-3 px-5 pt-2 pb-3">
-          <h2 className="t-title">{title}</h2>
+          <h2 id={titleId} className="t-title">
+            {title}
+          </h2>
           <button
             type="button"
             onClick={onClose}
@@ -2172,23 +2513,94 @@ export function Sheet({ open, title, onClose, children }: SheetProps) {
           {children}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 ```
 
-- [ ] **Step 5: Run the test**
+- [ ] **Step 6: Give the leave its own keyframes in `web/src/index.css`**
+
+`.rise-out` was `rise` played in reverse. Two classes on the same `animation-name` do not restart the animation, so a layer re-opened mid-leave would finish sinking. Reversing the direction also reversed the easing, so the leave keeps a mirrored curve of its own. Four edits.
+
+In the theme-independent `:root` block, the comment's "The two easing curves" becomes "The easing curves", and after `--ease-settle` add:
+
+```css
+  /* `rise` mirrored in time, for the leave — what `animation-direction:
+     reverse` used to play. Not a third curve. */
+  --ease-sink: cubic-bezier(0.8, 0, 0.8, 0.2);
+```
+
+In `@layer components`, replace the two motion rules:
+
+```css
+  .rise-in {
+    animation: rise var(--layer-duration, 400ms) var(--ease-rise) both;
+  }
+  /* `sink` is its own keyframes, not `rise` reversed: two classes on the same
+     animation-name would not restart it, so a layer re-opened mid-leave would
+     finish sinking. Reversing the direction also reversed the easing, which
+     `--ease-sink` keeps: the leave still accelerates away. */
+  .rise-out {
+    animation: sink var(--layer-duration, 400ms) var(--ease-sink) both;
+  }
+```
+
+After `@keyframes rise`, replace the `fade` keyframes and its comment with:
+
+```css
+@keyframes sink {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(100%);
+  }
+}
+
+/* Only used as the reduce-motion substitutes for `rise` and `sink`. */
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+```
+
+In the `prefers-reduced-motion` block, the comment now reads "give `rise` and `sink` their opacity step", and the two class rules become:
+
+```css
+  .rise-in {
+    animation: fade 200ms linear both !important;
+  }
+  .rise-out {
+    animation: fade-out 200ms linear both !important;
+  }
+```
+
+- [ ] **Step 7: Run the test**
 
 Run: `npm test -- src/shell/Layer.test.tsx`
-Expected: `Test Files  1 passed (1)`, 8 tests.
+Expected: `Test Files  1 passed (1)`, 14 tests.
 
 Run: `npm test && npm run lint && npm run build`
 Expected: `Test Files  11 passed (11)`, no eslint output, `✓ built in …`.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add web/src/shell/Layer.tsx web/src/shell/Sheet.tsx web/src/shell/Layer.test.tsx
+git add web/src/shell/presence.ts web/src/shell/Layer.tsx web/src/shell/Sheet.tsx web/src/shell/Layer.test.tsx web/src/index.css
 git commit -m "feat(web): Layer and Sheet, the two surfaces everything rises on"
 ```
 
@@ -2196,7 +2608,7 @@ git commit -m "feat(web): Layer and Sheet, the two surfaces everything rises on"
 
 ### Task 6: The API client stops redirecting and starts announcing
 
-Decision 5. The outgoing `api()` did `location.assign("/login")` on a 401, which throws away the whole app — including the last-known state the design insists on keeping visible — and has no answer at all for a 403. Both become events instead: a two-method emitter that `AuthGate` (Task 10) listens to. `api()` still throws, so every caller's error path is unchanged.
+Decision 5. The outgoing `api()` did `location.assign("/login")` on a 401, which throws away the whole app — including the last-known state the design insists on keeping visible — and has no answer at all for a 403. Both become events instead: a two-method emitter that `AuthGate` (Task 10) listens to. `api()` still throws, so every caller's error path is unchanged. One 401 is not a lapse: the backend answers a rejected passkey assertion (`/api/auth/{login,register}/complete`) with 401 `Authentication failed`, and that is the attempt failing on the gate the user is already standing on, so `api()` does not announce it.
 
 **Files:**
 - Create: `web/src/lib/auth-events.ts`, `web/src/lib/auth-events.test.ts`
@@ -2207,41 +2619,51 @@ Decision 5. The outgoing `api()` did `location.assign("/login")` on a 401, which
 Create `web/src/lib/auth-events.test.ts`:
 
 ```ts
-import { describe, expect, it, vi } from "vitest";
-import { authEvents } from "./auth-events";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { authEvents, type AuthEventKind } from "./auth-events";
+
+// The emitter is a module singleton: unsubscribe in cleanup, not in the test
+// body, or one failed assertion leaks its handler into every later test.
+const subscriptions: Array<() => void> = [];
+function listen(kind: AuthEventKind, fn: () => void): () => void {
+  const off = authEvents.on(kind, fn);
+  subscriptions.push(off);
+  return off;
+}
+
+afterEach(() => {
+  for (const off of subscriptions.splice(0)) off();
+  vi.restoreAllMocks();
+});
 
 describe("authEvents", () => {
   it("calls every handler registered for a kind", () => {
     const first = vi.fn();
     const second = vi.fn();
-    const offFirst = authEvents.on("expired", first);
-    const offSecond = authEvents.on("expired", second);
+    listen("expired", first);
+    listen("expired", second);
 
     authEvents.emit("expired");
 
     expect(first).toHaveBeenCalledTimes(1);
     expect(second).toHaveBeenCalledTimes(1);
-    offFirst();
-    offSecond();
   });
 
   it("keeps the kinds apart", () => {
     const expired = vi.fn();
     const denied = vi.fn();
-    const offExpired = authEvents.on("expired", expired);
-    const offDenied = authEvents.on("denied", denied);
+    listen("expired", expired);
+    listen("denied", denied);
 
     authEvents.emit("denied");
 
     expect(expired).not.toHaveBeenCalled();
     expect(denied).toHaveBeenCalledTimes(1);
-    offExpired();
-    offDenied();
   });
 
   it("stops calling a handler once it unsubscribes", () => {
     const handler = vi.fn();
-    const off = authEvents.on("expired", handler);
+    const off = listen("expired", handler);
     off();
 
     authEvents.emit("expired");
@@ -2251,15 +2673,27 @@ describe("authEvents", () => {
 
   it("survives a handler that unsubscribes itself mid-emit", () => {
     const seen: string[] = [];
-    const off1 = authEvents.on("expired", () => {
+    const off1 = listen("expired", () => {
       seen.push("first");
       off1();
     });
-    const off2 = authEvents.on("expired", () => seen.push("second"));
+    listen("expired", () => seen.push("second"));
 
     expect(() => authEvents.emit("expired")).not.toThrow();
     expect(seen).toEqual(["first", "second"]);
-    off2();
+  });
+
+  it("keeps going past a handler that throws, and does not rethrow", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const second = vi.fn();
+    listen("expired", () => {
+      throw new Error("handler broke");
+    });
+    listen("expired", second);
+
+    expect(() => authEvents.emit("expired")).not.toThrow();
+    expect(second).toHaveBeenCalledTimes(1);
+    expect(error).toHaveBeenCalledWith("auth-events handler failed", expect.any(Error));
   });
 
   it("is a no-op with nothing listening", () => {
@@ -2302,7 +2736,15 @@ class AuthEvents {
 
   emit(kind: AuthEventKind): void {
     // Copy first: a handler is allowed to unsubscribe itself while we iterate.
-    for (const fn of [...(this.handlers.get(kind) ?? [])]) fn();
+    for (const fn of [...(this.handlers.get(kind) ?? [])]) {
+      // `api()` emits on its way to throwing an ApiError; a handler that throws
+      // must not skip the others or replace the error the caller is catching.
+      try {
+        fn();
+      } catch (err) {
+        console.error("auth-events handler failed", err);
+      }
+    }
   }
 }
 
@@ -2312,7 +2754,7 @@ export const authEvents = new AuthEvents();
 - [ ] **Step 4: Run the emitter test**
 
 Run: `npm test -- src/lib/auth-events.test.ts`
-Expected: `Test Files  1 passed (1)`, 5 tests.
+Expected: `Test Files  1 passed (1)`, 6 tests.
 
 - [ ] **Step 5: Replace `web/src/lib/api.test.ts`**
 
@@ -2321,9 +2763,19 @@ Complete file:
 ```ts
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError, del, post, put } from "./api";
-import { authEvents } from "./auth-events";
+import { authEvents, type AuthEventKind } from "./auth-events";
 
-afterEach(() => vi.unstubAllGlobals());
+// `authEvents` is a module singleton: unsubscribe in cleanup, not in the test
+// body, or one failed assertion leaks its handler into every later test.
+const subscriptions: Array<() => void> = [];
+function listen(kind: AuthEventKind, fn: () => void): void {
+  subscriptions.push(authEvents.on(kind, fn));
+}
+
+afterEach(() => {
+  for (const off of subscriptions.splice(0)) off();
+  vi.unstubAllGlobals();
+});
 
 function stubFetch(status: number, body: unknown) {
   const mock = vi.fn<typeof fetch>(
@@ -2368,9 +2820,21 @@ describe("api", () => {
     await expect(api("/x")).rejects.toMatchObject({ status: 502, detail: "upstream is down" });
   });
 
+  it("falls back to the status text when the error body is empty", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("", { status: 500, statusText: "Internal Server Error" })),
+    );
+    await expect(api("/x")).rejects.toMatchObject({
+      status: 500,
+      detail: "Internal Server Error",
+      message: "Internal Server Error",
+    });
+  });
+
   it("announces a lapsed session on 401 and still throws", async () => {
     const expired = vi.fn();
-    const off = authEvents.on("expired", expired);
+    listen("expired", expired);
     const assign = vi.fn();
     vi.stubGlobal("location", { assign, pathname: "/", hostname: "alfred.example.com" });
     stubFetch(401, { detail: "Authentication required" });
@@ -2380,33 +2844,43 @@ describe("api", () => {
     expect(expired).toHaveBeenCalledTimes(1);
     // The old client hard-redirected here; the Expired gate now rises over the room.
     expect(assign).not.toHaveBeenCalled();
-    off();
+  });
+
+  it("does not call a rejected passkey attempt a lapsed session", async () => {
+    const expired = vi.fn();
+    listen("expired", expired);
+    stubFetch(401, { detail: "Authentication failed" });
+
+    await expect(post("/api/auth/login/complete", {})).rejects.toMatchObject({
+      status: 401,
+      detail: "Authentication failed",
+    });
+    await expect(post("/api/auth/register/complete", {})).rejects.toMatchObject({ status: 401 });
+
+    expect(expired).not.toHaveBeenCalled();
   });
 
   it("announces a refused network on 403 and still throws", async () => {
     const denied = vi.fn();
-    const off = authEvents.on("denied", denied);
+    listen("denied", denied);
     stubFetch(403, { detail: "Request from untrusted network 192.168.1.24" });
 
     await expect(api("/x")).rejects.toMatchObject({ status: 403 });
 
     expect(denied).toHaveBeenCalledTimes(1);
-    off();
   });
 
   it("does not announce anything for other failures", async () => {
     const expired = vi.fn();
     const denied = vi.fn();
-    const offExpired = authEvents.on("expired", expired);
-    const offDenied = authEvents.on("denied", denied);
+    listen("expired", expired);
+    listen("denied", denied);
     stubFetch(500, { detail: "boom" });
 
     await expect(api("/x")).rejects.toMatchObject({ status: 500 });
 
     expect(expired).not.toHaveBeenCalled();
     expect(denied).not.toHaveBeenCalled();
-    offExpired();
-    offDenied();
   });
 });
 
@@ -2445,7 +2919,7 @@ describe("post / put / del", () => {
 - [ ] **Step 6: Run it to verify it fails**
 
 Run: `npm test -- src/lib/api.test.ts`
-Expected: FAIL — `put` is not exported (`SyntaxError: The requested module './api' does not provide an export named 'put'`). Once that is fixed the 401/403 announcement tests and the `detail` assertions still fail against the old implementation.
+Expected: FAIL — `put` is not exported (`TypeError: put is not a function`, since Vite transpiles the import rather than failing to link it). Once that is fixed the 401/403 announcement tests and the `detail` assertions still fail against the old implementation.
 
 - [ ] **Step 7: Rewrite `web/src/lib/api.ts`**
 
@@ -2485,6 +2959,13 @@ async function readDetail(resp: Response): Promise<string> {
   return text;
 }
 
+/**
+ * A rejected passkey assertion is a 401 too — that attempt failing, not a
+ * session lapsing. The gate that asked shows it; no Expired gate over it.
+ */
+const isPasskeyAttempt = (path: string): boolean =>
+  path.startsWith("/api/auth/login/") || path.startsWith("/api/auth/register/");
+
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(path, {
     ...init,
@@ -2495,7 +2976,7 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     const detail = await readDetail(resp);
     // Announce, never navigate: the gate rises over whatever is on screen, so the
     // last-known state stays visible behind it (spec §5.2, "live is not last-known").
-    if (resp.status === 401) authEvents.emit("expired");
+    if (resp.status === 401 && !isPasskeyAttempt(path)) authEvents.emit("expired");
     if (resp.status === 403) authEvents.emit("denied");
     throw new ApiError(resp.status, detail || resp.statusText);
   }
@@ -2517,7 +2998,7 @@ export const del = <T>(path: string): Promise<T> => api<T>(path, { method: "DELE
 - [ ] **Step 8: Run the API test and the suite**
 
 Run: `npm test -- src/lib/api.test.ts`
-Expected: `Test Files  1 passed (1)`, 12 tests.
+Expected: `Test Files  1 passed (1)`, 14 tests.
 
 Run: `npm test && npm run lint && npm run build`
 Expected: `Test Files  12 passed (12)`, no eslint output, `✓ built in …`.
@@ -2536,6 +3017,7 @@ git commit -m "feat(web): 401 and 403 raise gates instead of redirecting"
 ```
 
 ---
+
 
 ### Task 7: Auth helpers, and the WebAuthn module carried over untouched
 
@@ -2564,6 +3046,7 @@ import { DEVICE_KEY, defaultDeviceName, fetchAuthStatus, rememberDevice, remembe
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   localStorage.clear();
 });
 
@@ -2576,6 +3059,7 @@ describe("fetchAuthStatus", () => {
 
     await expect(fetchAuthStatus()).resolves.toEqual({ registered: true, authenticated: false });
     expect(mock.mock.calls[0][0]).toBe("/api/auth/status");
+    expect((mock.mock.calls[0][1] as RequestInit | undefined)?.method ?? "GET").toBe("GET");
   });
 });
 
@@ -2620,6 +3104,25 @@ describe("rememberDevice / rememberedDevice", () => {
     localStorage.setItem(DEVICE_KEY, JSON.stringify({ name: 17 }));
     expect(rememberedDevice()).toBeNull();
   });
+
+  it("is null when registeredAt is missing", () => {
+    localStorage.setItem(DEVICE_KEY, JSON.stringify({ name: "iPhone" }));
+    expect(rememberedDevice()).toBeNull();
+  });
+
+  it("survives a storage that refuses to write", () => {
+    vi.spyOn(localStorage, "setItem").mockImplementation(() => {
+      throw new Error("QuotaExceededError");
+    });
+    expect(() => rememberDevice({ name: "iPhone", registeredAt: "2026-09-07T07:02:00.000Z" })).not.toThrow();
+  });
+
+  it("is null when storage cannot be read", () => {
+    vi.spyOn(localStorage, "getItem").mockImplementation(() => {
+      throw new Error("SecurityError");
+    });
+    expect(rememberedDevice()).toBeNull();
+  });
 });
 ```
 
@@ -2652,9 +3155,10 @@ export function fetchAuthStatus(): Promise<AuthStatus> {
  * A first guess at what to call this passkey. The user never sees a prompt for
  * it in Phase 1, so it has to be right often and harmless when wrong.
  *
- * iPhone before iPad before Mac, because an iPad in desktop mode reports
- * "Macintosh" and there is nothing to tell them apart — an iPad that calls
- * itself a Mac is a better failure than a Mac that calls itself an iPad.
+ * iOS before Mac, because every iOS user agent carries "like Mac OS X" — a real
+ * iPad would be named "Mac" otherwise. An iPad in desktop mode reports plain
+ * "Macintosh" and no ordering can catch it; that is accepted, since an iPad that
+ * calls itself a Mac is a better failure than a Mac that calls itself an iPad.
  */
 export function defaultDeviceName(ua: string = navigator.userAgent): string {
   if (/iPhone/i.test(ua)) return "iPhone";
@@ -2696,7 +3200,7 @@ export function rememberedDevice(): RememberedDevice | null {
 - [ ] **Step 5: Run the auth test and the suite**
 
 Run: `npm test -- src/lib/auth.test.ts`
-Expected: `Test Files  1 passed (1)`, 8 tests.
+Expected: `Test Files  1 passed (1)`, 11 tests.
 
 Run: `npm test && npm run lint && npm run build`
 Expected: `Test Files  13 passed (13)`, no eslint output, `✓ built in …`.
@@ -2719,6 +3223,7 @@ The step list has two shapes in the design: the setup progress rail (done / curr
 **Files:**
 - Create: `web/src/gates/Gate.tsx`, `web/src/gates/GateField.tsx`, `web/src/gates/StepList.tsx`
 - Create: `web/src/gates/Gate.test.tsx`, `web/src/gates/StepList.test.tsx`
+- Modify: `web/src/index.css` (one comment line)
 
 - [ ] **Step 1: Write the failing Gate test**
 
@@ -2824,9 +3329,9 @@ Complete file:
 
 ```tsx
 /**
- * The gates' presence: a 220 px dot grid that drifts a pixel and back over six
- * seconds. Static by design — the canvas field (plan 1b) belongs to the Room,
- * and a gate is not a place where Alfred is listening.
+ * The gates' presence: a 220 px dot grid whose only movement is `drift`, a
+ * pixel out and back over six seconds. Not the Room's canvas field (plan 1b) —
+ * a gate is not a place where Alfred is listening.
  */
 export function GateField() {
   return (
@@ -2961,6 +3466,30 @@ describe("StepList — progress", () => {
     expect(screen.getByText("07:02")).toBeInTheDocument();
   });
 
+  it("tells a screen reader what the ring colours say", () => {
+    render(
+      <StepList
+        variant="progress"
+        steps={[
+          { label: "Register this iPhone", state: "done" },
+          { label: "Connect Home Assistant", state: "current" },
+          { label: "Choose what the reflex may touch", state: "todo" },
+        ]}
+      />,
+    );
+
+    const rows = screen.getAllByRole("listitem");
+    expect(rows).toHaveLength(3);
+    expect(screen.getByRole("list")).toHaveAttribute("role", "list");
+    expect(rows[0]).toHaveTextContent("done");
+    expect(rows[0]).not.toHaveTextContent("not done");
+    expect(rows[0]).not.toHaveAttribute("aria-current");
+    expect(rows[1]).toHaveAttribute("aria-current", "step");
+    expect(rows[1]).not.toHaveTextContent(/done/);
+    expect(rows[2]).toHaveTextContent("not done");
+    expect(rows[2]).not.toHaveAttribute("aria-current");
+  });
+
   it("renders no buttons — a progress rail is not tappable", () => {
     render(
       <StepList variant="progress" steps={[{ label: "Register this iPhone", state: "current" }]} />,
@@ -2982,6 +3511,7 @@ describe("StepList — toggle", () => {
       />,
     );
 
+    expect(screen.getByRole("list")).toHaveAttribute("role", "list");
     const light = screen.getByRole("button", { name: /Light · 6 found/ });
     const fan = screen.getByRole("button", { name: /Fan · 4 found/ });
     expect(light).toHaveTextContent("allowed");
@@ -3047,6 +3577,13 @@ function ring(filled: boolean, border: string): CSSProperties {
   };
 }
 
+/** What a screen reader hears where a sighted user sees the ring's colour. */
+const STATE_WORD: Record<StepState, string | null> = {
+  done: "done",
+  current: null, // aria-current="step" says it
+  todo: "not done",
+};
+
 /** 22 px ring: accent filled = done/allowed, fg ring = current, line = ahead/ask me. */
 function Ring({ style }: { style: CSSProperties }) {
   return (
@@ -3058,14 +3595,20 @@ function Ring({ style }: { style: CSSProperties }) {
   );
 }
 
+/**
+ * Both variants carry an explicit `role="list"`: preflight strips list-style,
+ * and WebKit strips the list semantics with it — VoiceOver would not say
+ * "3 items" without the attribute.
+ */
 export function StepList(props: StepListProps) {
   if (props.variant === "progress") {
     return (
-      <div className="flex flex-col pt-2">
+      <ol role="list" className="flex flex-col pt-2">
         {props.steps.map((step) => (
-          <div
+          <li
             key={step.label}
             data-step-state={step.state}
+            aria-current={step.state === "current" ? "step" : undefined}
             className="flex min-h-12 items-center gap-3"
             style={ROW}
           >
@@ -3084,33 +3627,34 @@ export function StepList(props: StepListProps) {
             >
               {step.label}
             </span>
+            {STATE_WORD[step.state] ? <span className="sr-only">{STATE_WORD[step.state]}</span> : null}
             {step.meta ? <span className="t-meta">{step.meta}</span> : null}
-          </div>
+          </li>
         ))}
-      </div>
+      </ol>
     );
   }
 
   return (
-    <div className="flex flex-col pt-2">
+    <ul role="list" className="flex flex-col pt-2">
       {props.steps.map((step) => (
-        <button
-          key={step.id}
-          type="button"
-          aria-pressed={step.allowed}
-          data-allowed={step.allowed}
-          onClick={() => props.onToggle(step.id)}
-          className="flex min-h-12 w-full items-center gap-3 border-0 bg-transparent text-left"
-          style={ROW}
-        >
-          <Ring style={step.allowed ? ring(true, "var(--accent)") : ring(false, "var(--line)")} />
-          <span className="t-row flex-1" style={{ color: "var(--fg)" }}>
-            {step.label}
-          </span>
-          <span className="t-meta">{step.allowed ? "allowed" : "ask me"}</span>
-        </button>
+        <li key={step.id}>
+          <button
+            type="button"
+            aria-pressed={step.allowed}
+            onClick={() => props.onToggle(step.id)}
+            className="flex min-h-12 w-full items-center gap-3 border-0 bg-transparent text-left"
+            style={ROW}
+          >
+            <Ring style={step.allowed ? ring(true, "var(--accent)") : ring(false, "var(--line)")} />
+            <span className="t-row flex-1" style={{ color: "var(--fg)" }}>
+              {step.label}
+            </span>
+            <span className="t-meta">{step.allowed ? "allowed" : "ask me"}</span>
+          </button>
+        </li>
       ))}
-    </div>
+    </ul>
   );
 }
 ```
@@ -3118,15 +3662,23 @@ export function StepList(props: StepListProps) {
 - [ ] **Step 9: Run the StepList test and the suite**
 
 Run: `npm test -- src/gates/StepList.test.tsx`
-Expected: `Test Files  1 passed (1)`, 4 tests.
+Expected: `Test Files  1 passed (1)`, 5 tests.
+
+- [ ] **Step 10: Align the `.gate-field` comment in `web/src/index.css`**
+
+The field is not static — `drift` runs on it — so the comment should say what it does, not deny it. Replace the one comment line above `.gate-field`:
+
+```css
+  /* The gates' presence field: a dot grid that only drifts a pixel and back. */
+```
 
 Run: `npm test && npm run lint && npm run build`
-Expected: `Test Files  15 passed (15)`, no eslint output, `✓ built in …`.
+Expected: `Test Files  15 passed (15)`, 112 tests, no eslint output, `✓ built in …`.
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
-git add web/src/gates
+git add web/src/gates web/src/index.css
 git commit -m "feat(web): gate layout, dot field and the two-variant step list"
 ```
 
@@ -3140,10 +3692,14 @@ Decision 4. Three steps, each of which is a real write to a real endpoint:
 1. `GET /api/integrations` → the entry with `name === "home-service"` → render `schema.fields` (`url`, then `token`) → `PUT /api/integrations/home-service/credentials`. A **502 means the credentials were stored but could not be pushed** to the service (`web_server.py::_save_service_credentials`) — that is a success with a caveat, so it advances and reports the caveat in the foot line.
 2. `GET /api/admin/attention` → one row per domain. `lock`, `alarm_control_panel` and `cover` are filtered out and never shown: *"Locks, alarms and the garage are never on this list; those always come to you."* The step is skipped entirely when there are no rows to show or the store is down (503).
 
-This task also lands `hhmm` in `format.ts` (the step rail stamps the registration time) and starts `test/fixtures.ts`.
+This task also lands `hhmm` in `format.ts` (the step rail, which steps 0 and 1 both show, stamps the registration time on step 1 — as in the handoff prototype) and starts `test/fixtures.ts`.
+
+Three things the gate needs that earlier tasks did not: `failureText` in `auth.ts` — one sentence for a foot line, the server's own words or a written line for the `NotAllowedError`/`AbortError` a cancelled or timed-out Face ID raises (WebKit's message for those is a paragraph about privacy considerations; `SignInGate` reuses it in Task 10) — a `Gate` whose secondary can be disabled and whose foot is a `role="status"` region, and paged attention writes: `AttentionUpdate` caps `allow` and `ask` at 200 entities (`core/channels/admin_api.py`), and a domain's `:seen` set holds every entity that ever changed state, so the sensors alone can pass that. Adding is additive, so a long list goes in pages of 200. Only rows that end up different from how they started are written — a row tapped twice looks untouched, and is — so the attention query is pinned (`staleTime: Infinity`): a refetch on refocus would move that baseline under a choice already made. And the toggle list scrolls under the pinned footer rather than growing the page: a real HA has dozens of domains, not the fixture's six.
 
 **Files:**
 - Modify: `web/src/lib/format.ts`, `web/src/lib/format.test.ts`
+- Modify: `web/src/lib/auth.ts`, `web/src/lib/auth.test.ts` (add `failureText`)
+- Modify: `web/src/gates/Gate.tsx`, `web/src/gates/Gate.test.tsx` (disabled secondary, status foot)
 - Create: `web/src/test/fixtures.ts`
 - Create: `web/src/gates/SetupGate.tsx`, `web/src/gates/SetupGate.test.tsx`
 
@@ -3173,7 +3729,7 @@ describe("hhmm", () => {
 - [ ] **Step 2: Run it to verify it fails**
 
 Run: `npm test -- src/lib/format.test.ts`
-Expected: FAIL — `The requested module './format' does not provide an export named 'hhmm'`.
+Expected: FAIL — `TypeError: hhmm is not a function` (3 failed, 9 passed): Vitest surfaces a missing named export as `undefined` at call time, not as a module error.
 
 - [ ] **Step 3: Add `hhmm` to `web/src/lib/format.ts`**
 
@@ -3191,9 +3747,195 @@ export function hhmm(value: string | number | Date): string {
 ```
 
 Run: `npm test -- src/lib/format.test.ts`
-Expected: `Test Files  1 passed (1)`, 11 tests.
+Expected: `Test Files  1 passed (1)`, 12 tests (Task 1's review added one `summarize()` case to this file).
 
-- [ ] **Step 4: Create `web/src/test/fixtures.ts`**
+- [ ] **Step 4: Write the failing `failureText` test**
+
+Append to `web/src/lib/auth.test.ts` (add `failureText` to the `./auth` import, and `import { ApiError } from "./api";` above it):
+
+```ts
+describe("failureText", () => {
+  it("repeats the server's own words", () => {
+    expect(failureText(new ApiError(503, "Attention store unavailable"))).toBe(
+      "Attention store unavailable",
+    );
+  });
+
+  it("writes its own line for a cancelled or timed-out Face ID", () => {
+    const webkit =
+      "The operation either timed out or was not allowed. See: https://www.w3.org/TR/webauthn-2/#sctn-privacy-considerations-client.";
+    expect(failureText(new DOMException(webkit, "NotAllowedError"))).toBe("Face ID was cancelled.");
+    expect(failureText(new DOMException("Aborted", "AbortError"))).toBe("Face ID was cancelled.");
+  });
+
+  it("keeps any other DOMException's message", () => {
+    expect(failureText(new DOMException("Already registered", "InvalidStateError"))).toBe(
+      "Already registered",
+    );
+  });
+
+  it("falls back for anything that is not an Error", () => {
+    expect(failureText(new Error("Credential creation cancelled"))).toBe(
+      "Credential creation cancelled",
+    );
+    expect(failureText("nope")).toBe("Something went wrong.");
+  });
+});
+```
+
+- [ ] **Step 5: Run it to verify it fails**
+
+Run: `npm test -- src/lib/auth.test.ts`
+Expected: FAIL — `TypeError: failureText is not a function` (4 failed, 11 passed).
+
+- [ ] **Step 6: Add `failureText` to `web/src/lib/auth.ts`**
+
+Append to the end of the file:
+
+```ts
+/**
+ * One sentence for a gate's foot line. The server's own words when it has them
+ * (an `ApiError` carries `detail` as its message); a written line for the two
+ * DOMExceptions a cancelled or timed-out Face ID raises, whose messages are
+ * WebKit's paragraph about privacy considerations, not something Alfred says.
+ */
+export function failureText(error: unknown): string {
+  if (error instanceof DOMException) {
+    return error.name === "NotAllowedError" || error.name === "AbortError"
+      ? "Face ID was cancelled."
+      : error.message;
+  }
+  return error instanceof Error ? error.message : "Something went wrong.";
+}
+```
+
+Run: `npm test -- src/lib/auth.test.ts`
+Expected: `Test Files  1 passed (1)`, 15 tests.
+
+- [ ] **Step 7: Write the failing Gate tests**
+
+A gate's secondary must be holdable while a write is in flight, and its foot line — where the gates put their errors — must be spoken when it changes. Insert into `web/src/gates/Gate.test.tsx`, directly above the `renders children between the body and the footer` case:
+
+```tsx
+  it("disables the secondary when asked", () => {
+    render(
+      <Gate
+        kicker="k"
+        title="t"
+        secondary={{ label: "Do this later", onClick: () => {}, disabled: true }}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Do this later" })).toBeDisabled();
+  });
+
+  it("speaks the foot line: it is a status region", () => {
+    const { rerender } = render(<Gate kicker="k" title="t" foot="Stored encrypted at rest." />);
+    expect(screen.getByRole("status")).toHaveTextContent("Stored encrypted at rest.");
+
+    rerender(<Gate kicker="k" title="t" foot="Face ID was cancelled." />);
+    expect(screen.getByRole("status")).toHaveTextContent("Face ID was cancelled.");
+  });
+```
+
+- [ ] **Step 8: Run them to verify they fail**
+
+Run: `npm test -- src/gates/Gate.test.tsx`
+Expected: FAIL — `Received element is not disabled`; `Unable to find an accessible element with the role "status"` (2 failed, 7 passed).
+
+- [ ] **Step 9: Update `web/src/gates/Gate.tsx`**
+
+`secondary` becomes an `Omit<GateAction, "busy">` (it can be disabled, never busy), and the foot is a `role="status"` region:
+
+```tsx
+import type { ReactNode } from "react";
+import { GateField } from "@/gates/GateField";
+
+export interface GateAction {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  busy?: boolean;
+}
+
+export interface GateProps {
+  kicker: string;
+  title: string;
+  body?: string;
+  /** A step list, a credential form — anything between the body and the footer. */
+  children?: ReactNode;
+  primary?: GateAction;
+  secondary?: Omit<GateAction, "busy">;
+  /**
+   * Rendered as a status region: the gates put their errors and caveats here,
+   * and a change to it must be spoken, not just painted.
+   */
+  foot?: string;
+}
+
+export function Gate({ kicker, title, body, children, primary, secondary, foot }: GateProps) {
+  return (
+    <div
+      className="relative flex flex-1 flex-col overflow-hidden"
+      style={{ background: "var(--bg)", color: "var(--fg)" }}
+    >
+      <GateField />
+
+      {/* Copy sits at the bottom of the field, not the middle: padding 0 28 12. */}
+      <div className="relative flex flex-1 flex-col justify-end gap-3 px-7 pb-3">
+        <div className="t-meta">{kicker}</div>
+        <h1 className="t-gate">{title}</h1>
+        {body ? (
+          <p className="t-body" style={{ color: "var(--fg2)" }}>
+            {body}
+          </p>
+        ) : null}
+        {children}
+      </div>
+
+      <div
+        className="relative flex flex-col gap-2.5 px-5 pt-2"
+        style={{ paddingBottom: "calc(40px + env(safe-area-inset-bottom, 0px))" }}
+      >
+        {primary ? (
+          <button
+            type="button"
+            onClick={primary.onClick}
+            disabled={primary.disabled === true || primary.busy === true}
+            aria-busy={primary.busy === true}
+            className="h-14 rounded-[28px] border-0 text-[16px] font-medium disabled:opacity-60"
+            style={{ background: "var(--ink)", color: "var(--paper)" }}
+          >
+            {primary.label}
+          </button>
+        ) : null}
+
+        {secondary ? (
+          <button
+            type="button"
+            onClick={secondary.onClick}
+            disabled={secondary.disabled === true}
+            className="h-[50px] rounded-[25px] border-0 bg-transparent text-[15px] font-medium disabled:opacity-60"
+            style={{ color: "var(--fg)" }}
+          >
+            {secondary.label}
+          </button>
+        ) : null}
+
+        {foot ? (
+          <div role="status" className="t-meta text-center">
+            {foot}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+```
+
+Run: `npm test -- src/gates/Gate.test.tsx`
+Expected: `Test Files  1 passed (1)`, 9 tests.
+
+- [ ] **Step 10: Create `web/src/test/fixtures.ts`**
 
 Complete file (Task 13 adds the overview; plan 1b adds stream pages, pending actions and notification frames):
 
@@ -3289,18 +4031,20 @@ export const attentionFixture: { domains: AttentionDomain[] } = {
 };
 ```
 
-- [ ] **Step 5: Write the failing SetupGate test**
+- [ ] **Step 11: Write the failing SetupGate test**
 
 Create `web/src/gates/SetupGate.test.tsx`:
 
 ```tsx
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { useState } from "react";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { UserEvent } from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/api";
 import { defaultDeviceName, DEVICE_KEY } from "@/lib/auth";
+import { hhmm } from "@/lib/format";
 import { attentionFixture, integrationsFixture } from "@/test/fixtures";
 import { SetupGate } from "./SetupGate";
 
@@ -3316,6 +4060,8 @@ interface Call {
 interface Route {
   status?: number;
   body?: unknown;
+  /** Never answers — for what the gate does while a write is in flight. */
+  pending?: boolean;
 }
 
 let calls: Call[] = [];
@@ -3329,6 +4075,7 @@ function stubApi(routes: Record<string, Route>): void {
       calls.push({ url, method, body: init?.body ? JSON.parse(String(init.body)) : undefined });
       const route = routes[`${method} ${url}`] ?? routes[url];
       if (!route) return new Response(JSON.stringify({ detail: `unrouted ${method} ${url}` }), { status: 404 });
+      if (route.pending) return new Promise<Response>(() => {});
       return new Response(JSON.stringify(route.body ?? {}), { status: route.status ?? 200 });
     }),
   );
@@ -3420,19 +4167,42 @@ describe("SetupGate — step 0, the passkey", () => {
     expect(screen.queryByText("Request from untrusted network")).toBeNull();
   });
 
-  it("reports a cancelled Face ID in the foot line", async () => {
+  it("reports a cancelled Face ID in its own words, not WebKit's", async () => {
     const user = userEvent.setup();
     stubApi(HAPPY);
-    registerPasskeyMock.mockRejectedValue(new Error("Credential creation cancelled"));
+    registerPasskeyMock.mockRejectedValue(
+      new DOMException(
+        "The operation either timed out or was not allowed. See: https://www.w3.org/TR/webauthn-2/#sctn-privacy-considerations-client.",
+        "NotAllowedError",
+      ),
+    );
     renderSetup();
 
     await user.click(screen.getByRole("button", { name: "Create passkey with Face ID" }));
 
-    expect(await screen.findByText("Credential creation cancelled")).toBeInTheDocument();
+    expect(await screen.findByText("Face ID was cancelled.")).toBeInTheDocument();
+    expect(screen.queryByText(/webauthn-2/)).toBeNull();
   });
 });
 
 describe("SetupGate — step 1, Home Assistant", () => {
+  it("stamps the registration on the rail and moves the current ring on", async () => {
+    const user = userEvent.setup();
+    stubApi(HAPPY);
+    renderSetup();
+    await register(user);
+
+    const { registeredAt } = JSON.parse(localStorage.getItem(DEVICE_KEY) ?? "null") as {
+      registeredAt: string;
+    };
+    const registered = screen.getByText(`Register this ${defaultDeviceName()}`).closest("[data-step-state]");
+    expect(registered).toHaveAttribute("data-step-state", "done");
+    expect(registered).toHaveTextContent(hhmm(registeredAt));
+    const connect = screen.getByText("Connect Home Assistant").closest("[data-step-state]");
+    expect(connect).toHaveAttribute("data-step-state", "current");
+    expect(connect).toHaveAttribute("aria-current", "step");
+  });
+
   it("renders the home-service schema, not the weather adapter's", async () => {
     const user = userEvent.setup();
     stubApi(HAPPY);
@@ -3487,6 +4257,29 @@ describe("SetupGate — step 1, Home Assistant", () => {
         "Credentials stored, but push to home-service failed: connection refused. They will be re-pushed when the service re-registers.",
       ),
     ).toBeInTheDocument();
+  });
+
+  it("says why the form is empty when the integrations read fails", async () => {
+    const user = userEvent.setup();
+    stubApi({ ...HAPPY, "/api/integrations": { status: 503, body: { detail: "Keyring locked" } } });
+    renderSetup();
+    await register(user);
+
+    expect(await screen.findByText("Keyring locked")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+  });
+
+  it("holds Do this later while the credentials are being written", async () => {
+    const user = userEvent.setup();
+    stubApi({ ...HAPPY, "PUT /api/integrations/home-service/credentials": { pending: true } });
+    renderSetup();
+    await register(user);
+    await screen.findByLabelText("Access Token");
+
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+
+    expect(screen.getByRole("button", { name: "Do this later" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
   });
 
   it("skips the write entirely on Do this later", async () => {
@@ -3549,6 +4342,88 @@ describe("SetupGate — step 2, the attention set", () => {
     });
   });
 
+  it("writes nothing for a row tapped back to where it started", async () => {
+    const user = userEvent.setup();
+    stubApi(HAPPY);
+    const { onDone } = renderSetup();
+    await reachAttention(user);
+
+    await user.click(screen.getByRole("button", { name: /Light · 6 found/ }));
+    await user.click(screen.getByRole("button", { name: /Light · 6 found/ }));
+    expect(screen.getByRole("button", { name: /Light · 6 found/ })).toHaveTextContent("allowed");
+    await user.click(screen.getByRole("button", { name: "Finish" }));
+
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(calls.filter((call) => call.url.startsWith("/api/admin/attention/"))).toHaveLength(0);
+  });
+
+  it("pages a long list through the endpoint's 200-entity cap", async () => {
+    const user = userEvent.setup();
+    const seen = Array.from({ length: 250 }, (_, index) => `sensor.s${index}`);
+    stubApi({
+      ...HAPPY,
+      "/api/admin/attention": {
+        body: { domains: [...attentionFixture.domains, { domain: "sensor", members: [], seen }] },
+      },
+      "PUT /api/admin/attention/sensor": { body: { domain: "sensor", members: [], seen: [] } },
+    });
+    const { onDone } = renderSetup();
+    await reachAttention(user);
+
+    await user.click(screen.getByRole("button", { name: /Sensor · 250 found/ }));
+    await user.click(screen.getByRole("button", { name: "Finish" }));
+
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    const puts = calls.filter((call) => call.url === "/api/admin/attention/sensor");
+    expect(puts.map((call) => (call.body as { allow: string[] }).allow.length)).toEqual([200, 50]);
+    expect(puts.flatMap((call) => (call.body as { allow: string[] }).allow)).toEqual(seen);
+  });
+
+  it("scrolls a long list under the pinned footer", async () => {
+    const user = userEvent.setup();
+    const domains = Array.from({ length: 30 }, (_, index) => ({
+      domain: `domain_${index}`,
+      members: [],
+      seen: [`domain_${index}.one`],
+    }));
+    stubApi({ ...HAPPY, "/api/admin/attention": { body: { domains } } });
+    renderSetup();
+    await reachAttention(user);
+
+    expect(screen.getAllByRole("button", { name: /· 1 found/ })).toHaveLength(30);
+    expect(screen.getByRole("list").parentElement).toHaveClass("overflow-y-auto");
+  });
+
+  it("keeps its baseline when the app is refocused before Finish", async () => {
+    const user = userEvent.setup();
+    const routes = { ...HAPPY };
+    stubApi(routes);
+    const { onDone } = renderSetup();
+    await reachAttention(user);
+    await user.click(screen.getByRole("button", { name: /Fan · 4 found/ }));
+
+    // The reflex seeds fan meanwhile; a refetch would now say the row started allowed.
+    routes["/api/admin/attention"] = {
+      body: {
+        domains: attentionFixture.domains.map((row) =>
+          row.domain === "fan" ? { ...row, members: ["fan.bathroom"] } : row,
+        ),
+      },
+    };
+    window.dispatchEvent(new Event("visibilitychange"));
+    await user.click(screen.getByRole("button", { name: "Finish" }));
+
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(calls.filter((call) => call.url === "/api/admin/attention")).toHaveLength(1);
+    expect(calls.filter((call) => call.url === "/api/admin/attention/fan")).toEqual([
+      {
+        url: "/api/admin/attention/fan",
+        method: "PUT",
+        body: { allow: ["fan.bathroom", "fan.study", "switch.desk", "switch.lamp"] },
+      },
+    ]);
+  });
+
   it("finishes with no writes when nothing was touched", async () => {
     const user = userEvent.setup();
     stubApi(HAPPY);
@@ -3571,6 +4446,37 @@ describe("SetupGate — step 2, the attention set", () => {
 
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
     expect(screen.queryByRole("button", { name: "Finish" })).toBeNull();
+  });
+
+  it("skips once, even when the parent hands it a new onDone every render", async () => {
+    const user = userEvent.setup();
+    stubApi({ ...HAPPY, "/api/admin/attention": { body: { domains: [] } } });
+    const spy = vi.fn();
+    // What AuthGate does: an inline closure, so `onDone` is new on every render.
+    function Parent() {
+      const [renders, setRenders] = useState(0);
+      return (
+        <SetupGate
+          onDone={() => {
+            spy();
+            if (renders < 3) setRenders(renders + 1);
+          }}
+        />
+      );
+    }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <Parent />
+      </QueryClientProvider>,
+    );
+    await register(user);
+    await screen.findByLabelText("Access Token");
+    await user.click(screen.getByRole("button", { name: "Do this later" }));
+
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(spy).toHaveBeenCalledTimes(1);
   });
 
   it("skips the step when the attention store is down", async () => {
@@ -3605,22 +4511,22 @@ describe("SetupGate — step 2, the attention set", () => {
 });
 ```
 
-- [ ] **Step 6: Run it to verify it fails**
+- [ ] **Step 12: Run it to verify it fails**
 
 Run: `npm test -- src/gates/SetupGate.test.tsx`
 Expected: FAIL — `Failed to resolve import "./SetupGate"`.
 
-- [ ] **Step 7: Write `web/src/gates/SetupGate.tsx`**
+- [ ] **Step 13: Write `web/src/gates/SetupGate.tsx`**
 
 Complete file:
 
 ```tsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Gate } from "@/gates/Gate";
 import { StepList, type ProgressStep } from "@/gates/StepList";
 import { api, ApiError, put } from "@/lib/api";
-import { defaultDeviceName, rememberDevice } from "@/lib/auth";
+import { defaultDeviceName, failureText, rememberDevice } from "@/lib/auth";
 import { hhmm } from "@/lib/format";
 import type { AttentionDomain, IntegrationInfo } from "@/lib/types";
 import { registerPasskey } from "@/lib/webauthn";
@@ -3634,8 +4540,19 @@ const HOME_SERVICE = "home-service";
  */
 const NEVER_AUTOMATIC = new Set(["lock", "alarm_control_panel", "cover"]);
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : "Something went wrong.";
+/**
+ * `AttentionUpdate` caps `allow` and `ask` at 200 entities (admin_api.py), and a
+ * domain's `:seen` set holds every entity that ever changed state — the sensors
+ * alone can pass that. Adding is additive, so a long list goes in pages.
+ */
+const MAX_ENTITIES_PER_PUT = 200;
+
+function pages<T>(list: T[]): T[][] {
+  const out: T[][] = [];
+  for (let start = 0; start < list.length; start += MAX_ENTITIES_PER_PUT) {
+    out.push(list.slice(start, start + MAX_ENTITIES_PER_PUT));
+  }
+  return out;
 }
 
 /** `media_player` → `Media player`. */
@@ -3674,7 +4591,6 @@ export function SetupGate({ onDone }: SetupGateProps) {
   const [registeredAt, setRegisteredAt] = useState<string | null>(null);
   const [credentials, setCredentials] = useState<Record<string, string>>({});
   const [allowed, setAllowed] = useState<Record<string, boolean>>({});
-  const [touched, setTouched] = useState<string[]>([]);
 
   // Both reads start as soon as the passkey exists, so step 2's skip decision is
   // already settled by the time the user presses Continue.
@@ -3682,6 +4598,8 @@ export function SetupGate({ onDone }: SetupGateProps) {
     queryKey: ["integrations"],
     queryFn: () => api<IntegrationInfo[]>("/api/integrations"),
     enabled: step >= 1,
+    // A failure here is shown in the foot line, not retried behind a dead button.
+    retry: false,
   });
 
   const attention = useQuery<{ domains: AttentionDomain[] }>({
@@ -3690,6 +4608,10 @@ export function SetupGate({ onDone }: SetupGateProps) {
     enabled: step >= 1,
     // 503 is "the store is down", which is a skip, not something to retry at.
     retry: false,
+    // `finish()` writes the difference between the toggles and this data. A
+    // refetch — the app backgrounded and refocused before Finish — would move
+    // the baseline under a choice already made, and a grant could go unwritten.
+    staleTime: Infinity,
   });
 
   const homeService = integrations.data?.find((entry) => entry.name === HOME_SERVICE) ?? null;
@@ -3705,14 +4627,17 @@ export function SetupGate({ onDone }: SetupGateProps) {
 
   // `allowed` holds only the rows the user has touched. Until then a domain the
   // reflex already acts in reads as allowed, and everything else asks.
-  const isAllowed = (row: AttentionDomain): boolean =>
-    allowed[row.domain] ?? row.members.length > 0;
+  const startsAllowed = (row: AttentionDomain): boolean => row.members.length > 0;
+  const isAllowed = (row: AttentionDomain): boolean => allowed[row.domain] ?? startsAllowed(row);
 
   // Nothing to choose between (or nothing to choose from): the step does not exist.
+  // Latched: the parent's `onDone` is an inline closure that changes identity
+  // when it re-renders, and this must not fire again on that account.
+  const skipped = useRef(false);
   useEffect(() => {
-    if (step !== 2) return;
-    if (attention.isPending) return;
-    if (rows.length === 0) onDone();
+    if (step !== 2 || attention.isPending || rows.length > 0 || skipped.current) return;
+    skipped.current = true;
+    onDone();
   }, [step, attention.isPending, rows.length, onDone]);
 
   async function register(): Promise<void> {
@@ -3728,7 +4653,7 @@ export function SetupGate({ onDone }: SetupGateProps) {
       // 403 = off the house network. api() has already raised the Denied gate over
       // this one; repeating it in the foot would be the same news, twice.
       if (error instanceof ApiError && error.status === 403) return;
-      setFootOverride(errorText(error));
+      setFootOverride(failureText(error));
     } finally {
       setBusy(false);
     }
@@ -3752,7 +4677,7 @@ export function SetupGate({ onDone }: SetupGateProps) {
         setStep(2);
         return;
       }
-      setFootOverride(errorText(error));
+      setFootOverride(failureText(error));
     } finally {
       setBusy(false);
     }
@@ -3762,20 +4687,21 @@ export function SetupGate({ onDone }: SetupGateProps) {
     setBusy(true);
     setFootOverride(null);
     try {
-      for (const domain of touched) {
-        const row = rows.find((candidate) => candidate.domain === domain);
-        if (!row) continue;
+      // Only the rows that end up different from how they started are written:
+      // a row tapped twice looks untouched, and is.
+      for (const row of rows) {
+        const allow = isAllowed(row);
+        if (allow === startsAllowed(row)) continue;
         // `allow` adds what has been seen; `ask` removes what is a member today —
         // and the removal is sticky, so the YAML seed will not re-add it.
-        await put(
-          `/api/admin/attention/${domain}`,
-          isAllowed(row) ? { allow: row.seen } : { ask: row.members },
-        );
+        for (const page of pages(allow ? row.seen : row.members)) {
+          await put(`/api/admin/attention/${row.domain}`, allow ? { allow: page } : { ask: page });
+        }
       }
       onDone();
     } catch (error) {
       if (error instanceof ApiError && error.status === 403) return;
-      setFootOverride(errorText(error));
+      setFootOverride(failureText(error));
     } finally {
       setBusy(false);
     }
@@ -3784,8 +4710,7 @@ export function SetupGate({ onDone }: SetupGateProps) {
   function toggleDomain(domain: string): void {
     const row = rows.find((candidate) => candidate.domain === domain);
     if (!row) return;
-    setAllowed((current) => ({ ...current, [domain]: !(current[domain] ?? row.members.length > 0) }));
-    setTouched((current) => (current.includes(domain) ? current : [...current, domain]));
+    setAllowed((current) => ({ ...current, [domain]: !(current[domain] ?? startsAllowed(row)) }));
   }
 
   if (step === 0) {
@@ -3820,9 +4745,17 @@ export function SetupGate({ onDone }: SetupGateProps) {
             setFootOverride(null);
             setStep(2);
           },
+          // Walking away mid-write would leave the write to land on step 2's foot.
+          disabled: busy,
         }}
-        foot={footOverride ?? "Stored encrypted at rest on your hardware."}
+        foot={
+          footOverride ??
+          (integrations.isError
+            ? failureText(integrations.error)
+            : "Stored encrypted at rest on your hardware.")
+        }
       >
+        <StepList variant="progress" steps={progressSteps(1, deviceName, registeredAt)} />
         <div className="flex flex-col gap-3 pt-2">
           {fields.map(([key, field]) => (
             // The help text sits beside the label, not inside it, so the field's
@@ -3885,15 +4818,20 @@ export function SetupGate({ onDone }: SetupGateProps) {
       }}
       foot={footOverride ?? "Change this any time under Workshop › System."}
     >
-      <StepList
-        variant="toggle"
-        onToggle={toggleDomain}
-        steps={rows.map((row) => ({
-          id: row.domain,
-          label: `${domainLabel(row.domain)} · ${row.seen.length} found`,
-          allowed: isAllowed(row),
-        }))}
-      />
+      {/* One row per domain the house has emitted — dozens on a real HA, not the
+          handful in the fixture — so the list scrolls under the pinned footer
+          rather than growing the page (the gate does not rubber-band, §4.6). */}
+      <div className="max-h-[40dvh] overflow-y-auto overscroll-contain">
+        <StepList
+          variant="toggle"
+          onToggle={toggleDomain}
+          steps={rows.map((row) => ({
+            id: row.domain,
+            label: `${domainLabel(row.domain)} · ${row.seen.length} found`,
+            allowed: isAllowed(row),
+          }))}
+        />
+      </div>
     </Gate>
   );
 }
@@ -3901,18 +4839,18 @@ export function SetupGate({ onDone }: SetupGateProps) {
 
 Two notes on the copy. The rail's first row reads `Register this ${deviceName}`, which is the handoff's `Register this iPhone` verbatim on the device the design was drawn for, and honest on anything else. The step-2 foot still points at `Workshop › System`, which ships in Phase 2 — deliberate, per the deviations table.
 
-- [ ] **Step 8: Run the SetupGate test**
+- [ ] **Step 14: Run the SetupGate test**
 
 Run: `npm test -- src/gates/SetupGate.test.tsx`
-Expected: `Test Files  1 passed (1)`, 14 tests.
+Expected: `Test Files  1 passed (1)`, 22 tests.
 
 Run: `npm test && npm run lint && npm run build`
-Expected: `Test Files  16 passed (16)`, no eslint output, `✓ built in …`.
+Expected: `Test Files  16 passed (16)`, 143 tests, no eslint output, `✓ built in …`.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 15: Commit**
 
 ```bash
-git add web/src/gates/SetupGate.tsx web/src/gates/SetupGate.test.tsx web/src/test/fixtures.ts web/src/lib/format.ts web/src/lib/format.test.ts
+git add web/src/gates web/src/test/fixtures.ts web/src/lib
 git commit -m "feat(web): first-run setup gate — passkey, Home Assistant, attention"
 ```
 
@@ -3926,11 +4864,11 @@ git commit -m "feat(web): first-run setup gate — passkey, Home Assistant, atte
 |---|---|
 | pending | the bare dot field, no copy — there is nothing true to say yet |
 | `registered: false` | `SetupGate`, and it stays until `onDone` whatever a later refetch says |
-| error, or no data | `SignInGate` — fail closed |
+| no data (a first read that errored) | `SignInGate` — fail closed; a failed *refetch* keeps the last good status, and the room |
 | `registered, !authenticated` | `SignInGate` |
 | `registered, authenticated` | the children (the Room) |
 
-On top of that, two events. `expired` raises `ExpiredGate` **over** the children, so the last-known Room is still behind it; signing in dismisses it and refetches everything. `denied` raises `DeniedGate`, which only offers `Back to the room`.
+On top of that, two events. `expired` raises `ExpiredGate` **over** the children, so the last-known Room is still behind it; signing in dismisses it and refetches everything. `denied` raises `DeniedGate`, which only offers `Back to the room`. Both event gates render outside the routing table, over whichever branch is up: a 403 is as true on the setup gate as in the room, and `SetupGate` swallows its 403s on the promise that this gate has said it. Three details the tests pin: when setup finishes, the gate publishes `{ registered: true, authenticated: true }` into the cache before refetching, or the render-time latch would re-arm on the stale `registered: false` and setup would never end; the `expired` latch is cleared in render whenever the status says signed-out, so a gate raised over the room cannot outlive the room and reappear after the next sign-in; and only a *first* read that errors fails closed — a failed background refetch keeps the last good status, and the room with it.
 
 **Files:**
 - Modify: `web/src/lib/format.ts`, `web/src/lib/format.test.ts` (add `dayMonth`)
@@ -3974,7 +4912,7 @@ describe("deviceFootLine", () => {
 - [ ] **Step 2: Run them to verify they fail**
 
 Run: `npm test -- src/lib/format.test.ts src/lib/auth.test.ts`
-Expected: FAIL — no export named `dayMonth`, no export named `deviceFootLine`.
+Expected: FAIL — `TypeError: dayMonth is not a function` and `TypeError: deviceFootLine is not a function` (4 failed): Vitest surfaces a missing named export as `undefined` at call time, not as a module error.
 
 - [ ] **Step 3: Add the two helpers**
 
@@ -4011,7 +4949,7 @@ export function deviceFootLine(device: RememberedDevice | null): string {
 with `import { dayMonth } from "./format";` added at the top of `auth.ts`.
 
 Run: `npm test -- src/lib/format.test.ts src/lib/auth.test.ts`
-Expected: both pass — 12 and 11 tests.
+Expected: both pass — 13 and 18 tests (the Task 1 review added one `summarize()` case to `format.test.ts`; Tasks 7 and 9 grew `auth.test.ts`).
 
 - [ ] **Step 4: Write the failing AuthGate test**
 
@@ -4022,6 +4960,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/lib/api";
 import { authEvents } from "@/lib/auth-events";
 import { DEVICE_KEY } from "@/lib/auth";
 import type { AuthStatus } from "@/lib/types";
@@ -4037,13 +4976,18 @@ vi.mock("@/lib/webauthn", () => ({
 }));
 
 let status: AuthStatus = { registered: true, authenticated: true };
+/** When set, the status read 500s — the store behind it is down. */
+let statusDown = false;
 
 function stubFetch(): void {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url === "/api/auth/status") return new Response(JSON.stringify(status), { status: 200 });
+      if (url === "/api/auth/status") {
+        if (statusDown) return new Response('{"detail":"redis is down"}', { status: 500 });
+        return new Response(JSON.stringify(status), { status: 200 });
+      }
       if (url === "/api/integrations") return new Response("[]", { status: 200 });
       if (url === "/api/admin/attention") return new Response('{"domains":[]}', { status: 200 });
       return new Response("{}", { status: 200 });
@@ -4065,7 +5009,9 @@ function renderGate() {
 
 beforeEach(() => {
   status = { registered: true, authenticated: true };
+  statusDown = false;
   loginPasskeyMock.mockReset().mockResolvedValue(undefined);
+  registerPasskeyMock.mockReset().mockResolvedValue(undefined);
   vi.stubGlobal("location", { hostname: "alfred.example.com", pathname: "/" });
   stubFetch();
 });
@@ -4089,6 +5035,48 @@ describe("AuthGate routing", () => {
     expect(
       await screen.findByRole("heading", { name: "Good evening. I am Alfred." }),
     ).toBeInTheDocument();
+  });
+
+  it("lets a finished setup through to the room", async () => {
+    const user = userEvent.setup();
+    status = { registered: false, authenticated: false };
+    renderGate();
+    await screen.findByRole("heading", { name: "Good evening. I am Alfred." });
+
+    // Registering is what makes the server say so; the cached status still says
+    // unregistered until the gate publishes the new truth.
+    status = { registered: true, authenticated: true };
+    await user.click(screen.getByRole("button", { name: "Create passkey with Face ID" }));
+    await screen.findByRole("heading", { name: "Registered." });
+    // No integrations to fill in and no attention rows: setup skips straight out.
+    await user.click(screen.getByRole("button", { name: "Do this later" }));
+
+    expect(await screen.findByText("the room")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Good evening. I am Alfred." })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Welcome back, sir." })).toBeNull();
+  });
+
+  it("raises the denied gate over setup when registration is off-network", async () => {
+    const user = userEvent.setup();
+    status = { registered: false, authenticated: false };
+    // What `api()` does with a 403: says so on the bus, then throws.
+    registerPasskeyMock.mockImplementation(async () => {
+      authEvents.emit("denied");
+      throw new ApiError(403, "Not from here");
+    });
+    renderGate();
+    await screen.findByRole("heading", { name: "Good evening. I am Alfred." });
+
+    await user.click(screen.getByRole("button", { name: "Create passkey with Face ID" }));
+
+    expect(await screen.findByRole("heading", { name: "Not from here." })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Back to the room" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: "Not from here." })).toBeNull(),
+    );
+    // Setup is still where it was, and did not repeat the news in its foot line.
+    expect(screen.getByRole("heading", { name: "Good evening. I am Alfred." })).toBeInTheDocument();
+    expect(screen.queryByText("Not from here")).toBeNull();
   });
 
   it("sends a registered but signed-out device to sign-in", async () => {
@@ -4126,6 +5114,20 @@ describe("AuthGate routing", () => {
     expect(await screen.findByRole("heading", { name: "Welcome back, sir." })).toBeInTheDocument();
   });
 
+  it("keeps the room when a background read of the status fails", async () => {
+    const { client } = renderGate();
+    await screen.findByText("the room");
+
+    statusDown = true;
+    await act(() => client.invalidateQueries({ queryKey: ["auth-status"] }));
+    await waitFor(() => expect(client.getQueryState(["auth-status"])?.status).toBe("error"));
+
+    // Nothing should change on screen, so give the observer its tick and look.
+    await act(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+    expect(screen.getByText("the room")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Welcome back, sir." })).toBeNull();
+  });
+
   it("signs in with the passkey and reveals the room", async () => {
     const user = userEvent.setup();
     status = { registered: true, authenticated: false };
@@ -4139,16 +5141,18 @@ describe("AuthGate routing", () => {
     expect(await screen.findByText("the room")).toBeInTheDocument();
   });
 
-  it("reports a failed sign-in in the foot line", async () => {
+  it("reports a failed sign-in in the foot line, in its own words", async () => {
     const user = userEvent.setup();
     status = { registered: true, authenticated: false };
-    loginPasskeyMock.mockRejectedValue(new Error("Login cancelled"));
+    loginPasskeyMock.mockRejectedValue(
+      new DOMException("The operation either timed out or was not allowed.", "NotAllowedError"),
+    );
     renderGate();
     await screen.findByRole("heading", { name: "Welcome back, sir." });
 
     await user.click(screen.getByRole("button", { name: "Sign in with Face ID" }));
 
-    expect(await screen.findByText("Login cancelled")).toBeInTheDocument();
+    expect(await screen.findByText("Face ID was cancelled.")).toBeInTheDocument();
   });
 });
 
@@ -4177,6 +5181,31 @@ describe("AuthGate events", () => {
 
     await user.click(screen.getByRole("button", { name: "Sign in with Face ID" }));
 
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: "Your session lapsed." })).toBeNull(),
+    );
+  });
+
+  it("drops the expired gate when the status says signed out, for good", async () => {
+    const user = userEvent.setup();
+    const { client } = renderGate();
+    await screen.findByText("the room");
+    act(() => authEvents.emit("expired"));
+    expect(screen.getByRole("heading", { name: "Your session lapsed." })).toBeInTheDocument();
+
+    // A refetch (the app refocused) confirms it: the sign-in gate takes over.
+    status = { registered: true, authenticated: false };
+    await act(() => client.invalidateQueries({ queryKey: ["auth-status"] }));
+    expect(await screen.findByRole("heading", { name: "Welcome back, sir." })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: "Your session lapsed." })).toBeNull(),
+    );
+
+    status = { registered: true, authenticated: true };
+    await user.click(screen.getByRole("button", { name: "Sign in with Face ID" }));
+
+    expect(await screen.findByText("the room")).toBeInTheDocument();
+    // The gate stays down: the latch went with the room it was raised over.
     await waitFor(() =>
       expect(screen.queryByRole("heading", { name: "Your session lapsed." })).toBeNull(),
     );
@@ -4215,8 +5244,7 @@ Complete `web/src/gates/SignInGate.tsx`:
 ```tsx
 import { useState } from "react";
 import { Gate } from "@/gates/Gate";
-import { ApiError } from "@/lib/api";
-import { deviceFootLine, rememberedDevice } from "@/lib/auth";
+import { deviceFootLine, failureText, rememberedDevice } from "@/lib/auth";
 import { loginPasskey } from "@/lib/webauthn";
 
 export interface SignInGateProps {
@@ -4239,7 +5267,7 @@ export function SignInGate({ onSignedIn }: SignInGateProps) {
       // Login is deliberately *not* network-gated (spec §3.1): enrol at home, sign
       // in from anywhere. So a failure here is a cancelled Face ID or a real 4xx,
       // and the server's own words are the most useful thing to show.
-      setError(caught instanceof ApiError ? caught.detail : (caught as Error).message);
+      setError(failureText(caught));
     } finally {
       setBusy(false);
     }
@@ -4262,7 +5290,7 @@ Complete `web/src/gates/ExpiredGate.tsx`:
 ```tsx
 import { useState } from "react";
 import { Gate } from "@/gates/Gate";
-import { ApiError } from "@/lib/api";
+import { failureText } from "@/lib/auth";
 import { loginPasskey } from "@/lib/webauthn";
 
 export interface ExpiredGateProps {
@@ -4287,7 +5315,7 @@ export function ExpiredGate({ onSignedIn }: ExpiredGateProps) {
       await loginPasskey();
       onSignedIn();
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.detail : (caught as Error).message);
+      setError(failureText(caught));
     } finally {
       setBusy(false);
     }
@@ -4353,11 +5381,12 @@ import { SetupGate } from "@/gates/SetupGate";
 import { SignInGate } from "@/gates/SignInGate";
 import { fetchAuthStatus } from "@/lib/auth";
 import { authEvents } from "@/lib/auth-events";
+import type { AuthStatus } from "@/lib/types";
 import { Layer } from "@/shell/Layer";
 
 export function AuthGate({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
-  const { data, isPending, isError } = useQuery({
+  const { data, isPending } = useQuery({
     queryKey: ["auth-status"],
     queryFn: fetchAuthStatus,
   });
@@ -4377,13 +5406,20 @@ export function AuthGate({ children }: { children: ReactNode }) {
   // way react.dev documents for state that remembers a previous render.
   if (needsSetup && !setupActive) setSetupActive(true);
 
+  // A gate raised over the room must not outlive the room: if the status comes
+  // back signed-out while the expired gate is up, the sign-in gate takes over,
+  // and a latch left set here would cover the room again the moment it returned.
+  const authenticated = data?.authenticated === true;
+  if (expired && !authenticated) setExpired(false);
+
   const refetchEverything = useCallback(() => {
     void queryClient.invalidateQueries();
   }, [queryClient]);
 
+  let body: ReactNode;
   if (isPending) {
     // Nothing true to say yet. The field, and no copy.
-    return (
+    body = (
       <div
         className="relative flex flex-1 flex-col"
         style={{ background: "var(--bg)", color: "var(--fg)" }}
@@ -4391,29 +5427,39 @@ export function AuthGate({ children }: { children: ReactNode }) {
         <GateField />
       </div>
     );
-  }
-
-  if (needsSetup || setupActive) {
-    return (
+  } else if (needsSetup || setupActive) {
+    body = (
       <SetupGate
         onDone={() => {
           setSetupActive(false);
+          // Registration authenticated this session. Say so now: the cached
+          // status still reads `registered: false`, and the latch above would
+          // re-arm on it before the refetch landed — setup for ever.
+          queryClient.setQueryData<AuthStatus>(["auth-status"], {
+            registered: true,
+            authenticated: true,
+          });
           refetchEverything();
         }}
       />
     );
+  } else if (!authenticated) {
+    // Fail closed: a first read that errors leaves `data` undefined, and mounting
+    // the room with unknown auth state would show an empty house as if it were
+    // the truth. A failed *refetch* keeps the last good data, and the room with
+    // it — a session that has really lapsed arrives as the `expired` event.
+    body = <SignInGate onSignedIn={refetchEverything} />;
+  } else {
+    body = children;
   }
 
-  // Fail closed: a 5xx or a network blip leaves `data` undefined, and mounting the
-  // room with unknown auth state would show an empty house as if it were the truth.
-  if (isError || !data || !data.authenticated) {
-    return <SignInGate onSignedIn={refetchEverything} />;
-  }
-
+  // The two event gates sit outside the routing: `denied` means "not from this
+  // network", which is as true on the setup and sign-in gates as in the room —
+  // and setup swallows its 403s on the promise that this gate has already said it.
   return (
     <>
-      {children}
-      <Layer open={expired} label="Session lapsed" durationMs={400}>
+      {body}
+      <Layer open={expired} label="Session lapsed" level="gate" durationMs={400}>
         <ExpiredGate
           onSignedIn={() => {
             setExpired(false);
@@ -4421,7 +5467,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
           }}
         />
       </Layer>
-      <Layer open={denied} label="Not from here" durationMs={400}>
+      <Layer open={denied} label="Not from here" level="gate" durationMs={400}>
         <DeniedGate onDismiss={() => setDenied(false)} />
       </Layer>
     </>
@@ -4432,10 +5478,10 @@ export function AuthGate({ children }: { children: ReactNode }) {
 - [ ] **Step 8: Run the AuthGate test and the suite**
 
 Run: `npm test -- src/gates/AuthGate.test.tsx`
-Expected: `Test Files  1 passed (1)`, 11 tests.
+Expected: `Test Files  1 passed (1)`, 15 tests.
 
 Run: `npm test && npm run lint && npm run build`
-Expected: `Test Files  17 passed (17)`, no eslint output, `✓ built in …`.
+Expected: `Test Files  17 passed (17)`, 162 tests, no eslint output, `✓ built in …`.
 
 - [ ] **Step 9: Commit**
 
@@ -4473,6 +5519,9 @@ Append to the `describe("ReconnectingSocket", …)` block in `web/src/lib/ws.tes
     expect(ws.sent).toHaveLength(2);
 
     sock.close();
+    // The interval is gone, not merely quiet: a closed fake socket refuses
+    // sends, so `sent` staying flat would not prove the timer was cleared.
+    expect(vi.getTimerCount()).toBe(0);
     vi.advanceTimersByTime(120_000);
     expect(ws.sent).toHaveLength(2);
   });
@@ -4506,6 +5555,9 @@ Append to the `describe("ReconnectingSocket", …)` block in `web/src/lib/ws.tes
     vi.advanceTimersByTime(30_000);
 
     expect(ws.sent).toHaveLength(0);
+    // The 500 ms reconnect has fired by now; the only timer left would be a
+    // leaked ping interval.
+    expect(vi.getTimerCount()).toBe(0);
     sock.close();
   });
 
@@ -4515,6 +5567,7 @@ Append to the `describe("ReconnectingSocket", …)` block in `web/src/lib/ws.tes
     sock.connect();
     const ws = FakeWebSocket.instances[0];
     ws.open();
+    expect(sock.lastMessageAt).toBeNull(); // opening is not a frame
 
     ws.onmessage?.({ data: '{"type":"pong"}' });
 
@@ -4526,7 +5579,7 @@ Append to the `describe("ReconnectingSocket", …)` block in `web/src/lib/ws.tes
 - [ ] **Step 2: Run them to verify they fail**
 
 Run: `npm test -- src/lib/ws.test.ts`
-Expected: FAIL — the ping tests find `sent` empty (nothing pings yet), and `lastMessageAt` is `undefined`, not `null`.
+Expected: FAIL — the ping tests find `sent` empty (nothing pings yet), and `lastMessageAt` is `undefined`, not `null`. The two "stops pinging" tests pass vacuously until Step 3 (nothing is scheduled yet, so `vi.getTimerCount()` is already 0).
 
 - [ ] **Step 3: Rewrite `web/src/lib/ws.ts`**
 
@@ -4553,7 +5606,7 @@ export class ReconnectingSocket {
   private pingIntervalMs: number;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
 
-  /** `Date.now()` of the last frame from the server, pings included. */
+  /** `Date.now()` of the last frame from the server, keepalive pongs included. */
   lastMessageAt: number | null = null;
 
   onmessage: (data: unknown) => void = () => {};
@@ -4802,7 +5855,7 @@ git diff --stat origin/master -- web/src/lib/telemetry-socket.ts
 Expected: no output.
 
 Run: `npm test && npm run lint && npm run build`
-Expected: `Test Files  17 passed (17)`, no eslint output, `✓ built in …`.
+Expected: `Test Files  17 passed (17)`, 172 tests, no eslint output, `✓ built in …`.
 
 - [ ] **Step 9: Commit**
 
@@ -4815,11 +5868,13 @@ git commit -m "feat(web): 30 s socket keepalive so proxied sockets stop churning
 
 ### Task 12: The connection, and coming back from the dead
 
-Constraint §4.10: iOS suspends and kills standalone PWAs aggressively, and the telemetry socket starts at `$` and replays nothing. So returning to the foreground must reconnect both sockets *and* re-read what the feed missed. `ConnectionProvider` owns the two socket singletons, the `online` flag the whole design branches on, and the `lastTrueAt` stamp behind every "last true HH:MM" in the UI.
+Constraint §4.10: iOS suspends and kills standalone PWAs aggressively, and the telemetry socket starts at `$` and replays nothing. So returning to the foreground must reconnect both sockets *and* re-read what the feed missed. `ConnectionProvider` owns the two socket singletons, the `online` flag the whole design branches on, and the `lastTrueAt` stamp behind every "last true HH:MM" in the UI. It also owns `reconnect()`, which the auth gate calls after every sign-in: while there is no session the server closes both sockets with 4001, and a 4001 is never retried on its own, so without that call a signed-out cold start would leave the Room offline for ever. And because a socket that died under a suspended app can still read OPEN, `connect()` learns to replace one that has not answered a keepalive in two rounds.
 
 **Files:**
 - Create: `web/src/lib/lifecycle.ts`, `web/src/lib/lifecycle.test.ts`
 - Create: `web/src/shell/ConnectionProvider.tsx`, `web/src/shell/ConnectionProvider.test.tsx`
+- Modify: `web/src/gates/AuthGate.tsx`, `web/src/gates/AuthGate.test.tsx`
+- Modify: `web/src/lib/ws.ts`, `web/src/lib/ws.test.ts`
 
 - [ ] **Step 1: Write the failing lifecycle test**
 
@@ -4923,9 +5978,9 @@ Create `web/src/shell/ConnectionProvider.test.tsx`:
 
 ```tsx
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { useEffect } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { authEvents } from "@/lib/auth-events";
 import type { SocketStatus } from "@/lib/ws";
 import { ConnectionProvider, useConnection } from "./ConnectionProvider";
@@ -4979,12 +6034,13 @@ vi.mock("@/lib/telemetry-socket", () => {
 });
 
 function Probe() {
-  const { online, lastTrueAt, chatStatus } = useConnection();
+  const { online, lastTrueAt, chatStatus, reconnect } = useConnection();
   return (
     <div>
       <span data-testid="online">{String(online)}</span>
       <span data-testid="status">{chatStatus}</span>
-      <span data-testid="last-true">{lastTrueAt ? "stamped" : "none"}</span>
+      <span data-testid="last-true">{lastTrueAt ? lastTrueAt.toISOString() : "none"}</span>
+      <button onClick={reconnect}>reconnect</button>
     </div>
   );
 }
@@ -4998,21 +6054,40 @@ function Subscriber({ onOnline }: { onOnline: () => void }) {
 function renderProvider() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const invalidate = vi.spyOn(client, "invalidateQueries");
-  render(
+  const utils = render(
     <QueryClientProvider client={client}>
       <ConnectionProvider>
         <Probe />
       </ConnectionProvider>
     </QueryClientProvider>,
   );
-  return { invalidate, chat: chats[0] as FakeSocket, telemetry: telemetries[0] as FakeSocket };
+  return {
+    ...utils,
+    invalidate,
+    chat: chats[0] as FakeSocket,
+    telemetry: telemetries[0] as FakeSocket,
+  };
+}
+
+/** The app comes back to the foreground. */
+function comeBack(): void {
+  act(() => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
 }
 
 beforeEach(() => {
   // One module load means one pair of singletons for the whole file — which is the
   // behaviour under test, so reset their spies rather than expecting new instances.
-  (chats[0] as FakeSocket | undefined)?.connect.mockClear();
-  (telemetries[0] as FakeSocket | undefined)?.connect.mockClear();
+  for (const socket of [chats[0], telemetries[0]] as (FakeSocket | undefined)[]) {
+    socket?.connect.mockClear();
+    socket?.close.mockClear();
+  }
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("ConnectionProvider", () => {
@@ -5026,11 +6101,15 @@ describe("ConnectionProvider", () => {
     const { chat } = renderProvider();
     expect(screen.getByTestId("online")).toHaveTextContent("false");
 
+    // `lastTrue` is module state and an earlier test may have stamped it, so
+    // prove the stamp moved rather than that it exists.
+    const at = new Date("2031-05-04T09:41:00Z");
+    vi.setSystemTime(at);
     act(() => chat.onstatus("online"));
 
     expect(screen.getByTestId("online")).toHaveTextContent("true");
     expect(screen.getByTestId("status")).toHaveTextContent("online");
-    expect(screen.getByTestId("last-true")).toHaveTextContent("stamped");
+    expect(screen.getByTestId("last-true")).toHaveTextContent(at.toISOString());
 
     act(() => chat.onstatus("reconnecting"));
     expect(screen.getByTestId("online")).toHaveTextContent("false");
@@ -5038,32 +6117,39 @@ describe("ConnectionProvider", () => {
 
   it("stamps last-true on every frame from the house", () => {
     const { chat } = renderProvider();
+    const at = new Date("2031-05-04T09:42:00Z");
+    vi.setSystemTime(at);
+
     act(() => chat.deliver({ type: "response", text: "Quite so, sir.", session_id: "s_1" }));
-    expect(screen.getByTestId("last-true")).toHaveTextContent("stamped");
+
+    expect(screen.getByTestId("last-true")).toHaveTextContent(at.toISOString());
   });
 
-  it("turns a 4001 close into the expired gate", () => {
+  it("turns a 4001 close on either socket into the expired gate", () => {
     const expired = vi.fn();
     const off = authEvents.on("expired", expired);
-    const { chat } = renderProvider();
+    const { chat, telemetry } = renderProvider();
 
     act(() => chat.onstatus("unauthorized"));
+    expect(expired).toHaveBeenCalledTimes(1);
 
-    expect(expired).toHaveBeenCalled();
+    // The chat socket has since been reopened; the telemetry socket says so on its own.
+    act(() => chat.onstatus("connecting"));
+    act(() => telemetry.onstatus("unauthorized"));
+    expect(expired).toHaveBeenCalledTimes(2);
     off();
   });
 
-  it("reconnects and re-reads everything on the way back from the background", () => {
-    const { invalidate, chat } = renderProvider();
+  it("reconnects both sockets and re-reads everything on the way back from the background", () => {
+    const { invalidate, chat, telemetry } = renderProvider();
     chat.connect.mockClear();
+    telemetry.connect.mockClear();
     invalidate.mockClear();
 
-    act(() => {
-      Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
-      document.dispatchEvent(new Event("visibilitychange"));
-    });
+    comeBack();
 
-    expect(chat.connect).toHaveBeenCalled();
+    expect(chat.connect).toHaveBeenCalledTimes(1);
+    expect(telemetry.connect).toHaveBeenCalledTimes(1);
     const keys = invalidate.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
     expect(keys).toEqual([
       '["overview"]',
@@ -5071,6 +6157,17 @@ describe("ConnectionProvider", () => {
       '["pending-actions"]',
       '["deferred"]',
     ]);
+  });
+
+  it("reopens both sockets on reconnect()", () => {
+    const { chat, telemetry } = renderProvider();
+    chat.connect.mockClear();
+    telemetry.connect.mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: "reconnect" }));
+
+    expect(chat.connect).toHaveBeenCalledTimes(1);
+    expect(telemetry.connect).toHaveBeenCalledTimes(1);
   });
 
   it("tells a subscriber about every open, including one before it subscribed", () => {
@@ -5107,6 +6204,38 @@ describe("ConnectionProvider", () => {
     expect(late).toHaveBeenCalledTimes(2);
   });
 
+  it("leaves nothing of itself on the singletons when it unmounts", () => {
+    const { invalidate, chat, telemetry, unmount } = renderProvider();
+    act(() => chat.onstatus("online"));
+
+    unmount();
+
+    expect(chat.close).toHaveBeenCalledTimes(1);
+    expect(telemetry.close).toHaveBeenCalledTimes(1);
+
+    // A foreground return after the unmount is nobody's business now.
+    chat.connect.mockClear();
+    invalidate.mockClear();
+    comeBack();
+    expect(chat.connect).not.toHaveBeenCalled();
+    expect(invalidate).not.toHaveBeenCalled();
+
+    // The close event `close()` produces lands after the cleanup. It must not
+    // reach the old callbacks — the next mount starts offline, whatever a stale
+    // status says.
+    act(() => chat.onstatus("online"));
+    const late = vi.fn();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <ConnectionProvider>
+          <Subscriber onOnline={late} />
+        </ConnectionProvider>
+      </QueryClientProvider>,
+    );
+    expect(late).not.toHaveBeenCalled();
+  });
+
   it("refuses to be used outside the provider", () => {
     expect(() => render(<Probe />)).toThrow("useConnection outside ConnectionProvider");
   });
@@ -5136,6 +6265,18 @@ import type { SocketStatus } from "@/lib/ws";
 // of the react-hooks immutability rule.
 const chat = new ChatSocket();
 const telemetry = new TelemetrySocket();
+
+/**
+ * Make sure both sockets are live. `connect()` reopens a closed socket, replaces
+ * one that has gone quiet and leaves a healthy one alone, so this is safe on
+ * every return to the foreground — and necessary after every sign-in: the server
+ * closes both sockets with 4001 while there is no session, and a 4001 is never
+ * retried.
+ */
+function reconnect(): void {
+  chat.connect();
+  telemetry.connect();
+}
 
 let lastTrue: Date | null = null;
 const lastTrueListeners = new Set<(at: Date) => void>();
@@ -5182,6 +6323,8 @@ export interface ConnectionValue {
   lastTrueAt: Date | null;
   /** The moment a queued send can succeed. See `subscribeOnline` above. */
   subscribeOnline: (fn: () => void) => () => void;
+  /** Reopen whatever is closed. The gates call it after a sign-in. See `reconnect` above. */
+  reconnect: () => void;
 }
 
 const ConnectionContext = createContext<ConnectionValue | null>(null);
@@ -5206,16 +6349,20 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     const stopListening = chat.listen(() => markTrue());
     const stopTrue = subscribeTrue(setLastTrueAt);
 
-    chat.connect();
-    telemetry.connect();
+    reconnect();
 
     const stopVisible = onVisible(() => {
-      chat.connect();
-      telemetry.connect();
+      reconnect();
       for (const queryKey of REHYDRATE_KEYS) void queryClient.invalidateQueries({ queryKey });
     });
 
     return () => {
+      // The singletons outlive this mount; leave nothing of it on them. The
+      // `close()` calls below still produce a close event each, and it must not
+      // reach a setState on an unmounted tree or flip `chatOnline` under the next
+      // mount.
+      chat.onstatus = () => {};
+      telemetry.onstatus = () => {};
       stopListening();
       stopTrue();
       stopVisible();
@@ -5244,6 +6391,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       online: chatStatus === "online",
       lastTrueAt,
       subscribeOnline,
+      reconnect,
     }),
     [chatStatus, telemetryStatus, lastTrueAt],
   );
@@ -5259,9 +6407,9 @@ export function useConnection(): ConnectionValue {
 }
 ```
 
-- [ ] **Step 7: Wire the live stamp into the Denied gate**
+- [ ] **Step 7: Wire the connection into the auth gate**
 
-`AuthGate` now has a `ConnectionProvider` above it (Task 14 composes them in that order), so the 403 gate can say when the house was last reachable. In `web/src/gates/AuthGate.tsx`, add the import and use it:
+`AuthGate` now has a `ConnectionProvider` above it (Task 14 composes them in that order), so the 403 gate can say when the house was last reachable — and the gate can do the one thing the sockets cannot do for themselves. In `web/src/gates/AuthGate.tsx`, add the import and use it:
 
 ```tsx
 import { useConnection } from "@/shell/ConnectionProvider";
@@ -5270,11 +6418,20 @@ import { useConnection } from "@/shell/ConnectionProvider";
 ```tsx
 export function AuthGate({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
-  const { lastTrueAt } = useConnection();
+  const { lastTrueAt, reconnect } = useConnection();
 ```
 
 ```tsx
-      <Layer open={denied} label="Not from here" durationMs={400}>
+  // A sign-in is the one moment the sockets need a push: the server closed them
+  // with 4001 while there was no session, and a 4001 is never retried.
+  const refetchEverything = useCallback(() => {
+    reconnect();
+    void queryClient.invalidateQueries();
+  }, [queryClient, reconnect]);
+```
+
+```tsx
+      <Layer open={denied} label="Not from here" level="gate" durationMs={400}>
         <DeniedGate lastTrue={lastTrueAt} onDismiss={() => setDenied(false)} />
       </Layer>
 ```
@@ -5293,13 +6450,18 @@ export function AuthGate({ children }: { children: ReactNode }) {
   );
 ```
 
-with `import { ConnectionProvider } from "@/shell/ConnectionProvider";` at the top. The real sockets are constructed but never opened in jsdom beyond `connect()`; add the same two `vi.mock` blocks for `@/lib/chat-socket` and `@/lib/telemetry-socket` used in `ConnectionProvider.test.tsx`, minus the instance arrays:
+The real sockets are constructed but must never open in jsdom, so the file starts with mocks of both — the same shape as `ConnectionProvider.test.tsx`'s, minus the instance arrays, plus a record of every `connect()` for the reopen test below. Put this above every other import, with `markTrue` joining the provider import:
 
 ```tsx
+import { ConnectionProvider, markTrue } from "@/shell/ConnectionProvider";
+/** Which sockets `connect()` was asked of, in order. */
+const { socketConnects } = vi.hoisted(() => ({ socketConnects: [] as string[] }));
 vi.mock("@/lib/chat-socket", () => ({
   ChatSocket: class {
     onstatus = () => {};
-    connect() {}
+    connect() {
+      socketConnects.push("chat");
+    }
     close() {}
     listen() {
       return () => {};
@@ -5309,7 +6471,9 @@ vi.mock("@/lib/chat-socket", () => ({
 vi.mock("@/lib/telemetry-socket", () => ({
   TelemetrySocket: class {
     onstatus = () => {};
-    connect() {}
+    connect() {
+      socketConnects.push("telemetry");
+    }
     close() {}
     subscribe() {}
     listen() {
@@ -5319,18 +6483,215 @@ vi.mock("@/lib/telemetry-socket", () => ({
 }));
 ```
 
-- [ ] **Step 8: Run everything**
+Add `import { hhmm } from "@/lib/format";` under the `DEVICE_KEY` import, and `socketConnects.length = 0;` to `beforeEach` after `statusDown = false;`. Then two tests. After "signs in with the passkey and reveals the room":
+
+```tsx
+  it("reopens both sockets once signed in: a 4001 is never retried on its own", async () => {
+    const user = userEvent.setup();
+    status = { registered: true, authenticated: false };
+    renderGate();
+    await screen.findByRole("heading", { name: "Welcome back, sir." });
+    expect(socketConnects).toEqual(["chat", "telemetry"]); // the mount, and nothing since
+    socketConnects.length = 0;
+
+    status = { registered: true, authenticated: true };
+    await user.click(screen.getByRole("button", { name: "Sign in with Face ID" }));
+
+    await screen.findByText("the room");
+    expect(socketConnects).toEqual(["chat", "telemetry"]);
+  });
+```
+
+And the denied-gate test grows the foot line, which is the whole point of the wiring:
+
+```tsx
+  it("raises the denied gate, which only offers a way back", async () => {
+    const user = userEvent.setup();
+    renderGate();
+    await screen.findByText("the room");
+
+    // The house answered at 21:15; the gate says so, since what is behind it dates from then.
+    const at = new Date(2026, 8, 8, 21, 15);
+    act(() => markTrue(at));
+    act(() => authEvents.emit("denied"));
+
+    expect(screen.getByRole("heading", { name: "Not from here." })).toBeInTheDocument();
+    expect(screen.getByText("403 · off-network")).toBeInTheDocument();
+    expect(
+      screen.getByText(`Last true ${hhmm(at)} · everything shown behind this is last-known`),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign in with Face ID" })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Back to the room" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: "Not from here." })).toBeNull(),
+    );
+    expect(screen.getByText("the room")).toBeInTheDocument();
+  });
+```
+
+- [ ] **Step 8: Replace a socket that has gone quiet**
+
+`reconnect()` calls `connect()`, and `connect()` leaves an OPEN socket alone — which is wrong for exactly the socket §4.10 is about. A connection the OS dropped while the PWA was suspended still reads OPEN: no close event ever arrives for it, and `send()` on it does not throw, so the keepalive keeps "working". The pongs that stopped coming are the only evidence, and Task 11's `lastMessageAt` is where they are counted. How long a silence counts is the delicate part: on this server the pong rides the same serial receive loop as chat turns (`core/channels/web_server.py`, the ping handler), so it can lag a whole 60 s conscious-engine turn, and the last pong can predate that turn by up to a ping interval — pong latency is not a liveness signal. Two keepalive rounds would supersede a live socket mid-answer, so the window is four. In `web/src/lib/ws.ts`, name it under the ping interval:
+
+```ts
+/** Cloudflare closes an idle proxied socket at ~100 s; 30 s keeps it comfortably alive. */
+const DEFAULT_PING_MS = 30_000;
+/**
+ * How many keepalive rounds of silence make an open socket "quiet". Pong latency
+ * is not a liveness signal on this server: the pong rides the same serial receive
+ * loop as chat turns, so it can lag a whole conscious-engine turn (60 s, see
+ * `core/channels/web_server.py`, the ping handler) — and the last pong can predate
+ * that turn by up to a ping interval. Four rounds (120 s at the default) clears a
+ * full turn with room to spare; a socket the OS dropped is still caught on the
+ * next foreground return, which is the only time this is checked.
+ */
+const QUIET_AFTER_PINGS = 4;
+```
+
+add a private stamp next to `lastMessageAt`:
+
+```ts
+  /** `Date.now()` of the last frame from the server, keepalive pongs included. */
+  lastMessageAt: number | null = null;
+  private openedAt = 0;
+```
+
+set it in `onopen`:
+
+```ts
+    ws.onopen = () => {
+      if (this.ws !== ws) return;
+      this.attempts = 0;
+      this.openedAt = Date.now();
+      this.startPing(ws);
+```
+
+and open `connect()` with the check:
+
+```ts
+  /**
+   * Whether the open socket has gone silent for QUIET_AFTER_PINGS keepalive
+   * rounds. A socket that died while the PWA was suspended can still read OPEN —
+   * no close event arrives for a connection the OS dropped, and `send()` on it
+   * does not throw — so the pongs that stopped coming are the only evidence.
+   */
+  private quiet(ws: WebSocket): boolean {
+    if (this.pingIntervalMs <= 0 || ws.readyState !== WebSocket.OPEN) return false;
+    const lastSeen = Math.max(this.openedAt, this.lastMessageAt ?? 0);
+    return Date.now() - lastSeen > QUIET_AFTER_PINGS * this.pingIntervalMs;
+  }
+
+  connect(): void {
+    // A quiet socket is replaced, not kept: `this.ws` moves on first, so the
+    // close event the old one produces is ignored below as a superseded socket's.
+    if (this.ws && this.quiet(this.ws)) {
+      const dead = this.ws;
+      this.ws = null;
+      this.stopPing();
+      dead.close();
+    }
+    // Bail if a socket is already live. Without this, a second connect() (React
+```
+
+Then five tests, appended after "stamps when the last frame arrived" in `web/src/lib/ws.test.ts`. The two "keeps" cases in the middle pin both edges of the window: opening counts as being heard from (a fresh socket must survive the sign-in `reconnect()` that lands before its first pong), and a turn's worth of silence after a pong is not quiet.
+
+```ts
+  it("replaces an open socket that has gone quiet", () => {
+    const statuses: string[] = [];
+    const sock = new ReconnectingSocket("/ws/test");
+    sock.onstatus = (s) => statuses.push(s);
+    sock.connect();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+
+    // Four keepalive rounds, no pong: the connection died under a suspended app.
+    vi.advanceTimersByTime(121_000);
+    sock.connect();
+
+    expect(ws.readyState).toBe(3);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(statuses).toEqual(["connecting", "online", "connecting"]);
+    sock.close();
+  });
+
+  it("keeps an open socket that answered recently", () => {
+    const sock = new ReconnectingSocket("/ws/test");
+    sock.connect();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+
+    vi.advanceTimersByTime(50_000);
+    ws.onmessage?.({ data: '{"type":"pong"}' });
+    vi.advanceTimersByTime(20_000);
+    sock.connect();
+
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(ws.readyState).toBe(1);
+    sock.close();
+  });
+
+  it("keeps a socket that opened recently and has not spoken yet", () => {
+    const sock = new ReconnectingSocket("/ws/test");
+    sock.connect();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+
+    // No frame at all yet — the first pong is still on its way. Opening counts.
+    vi.advanceTimersByTime(50_000);
+    sock.connect();
+
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(ws.readyState).toBe(1);
+    sock.close();
+  });
+
+  it("keeps a live socket through a long turn: pong latency is not liveness", () => {
+    const sock = new ReconnectingSocket("/ws/test");
+    sock.connect();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+
+    // One pong, then silence for a full conscious-engine turn (60 s), plus the
+    // ping interval the last pong can predate it by, plus slack for the round trip.
+    vi.advanceTimersByTime(30_000);
+    ws.onmessage?.({ data: '{"type":"pong"}' });
+    vi.advanceTimersByTime(100_000);
+    sock.connect();
+
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(ws.readyState).toBe(1);
+    sock.close();
+  });
+
+  it("reopens a socket the server refused, once asked", () => {
+    const sock = new ReconnectingSocket("/ws/test");
+    sock.connect();
+    FakeWebSocket.instances[0].emitClose(4001);
+
+    sock.connect();
+
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    sock.close();
+  });
+```
+
+Run: `npm test -- src/lib/ws.test.ts`
+Expected: `Test Files  1 passed (1)`, 15 tests.
+
+- [ ] **Step 9: Run everything**
 
 Run: `npm test -- src/shell/ConnectionProvider.test.tsx src/gates/AuthGate.test.tsx`
-Expected: `Test Files  2 passed (2)` — 7 and 11 tests.
+Expected: `Test Files  2 passed (2)` — 9 and 16 tests.
 
 Run: `npm test && npm run lint && npm run build`
-Expected: `Test Files  19 passed (19)`, no eslint output, `✓ built in …`.
+Expected: `Test Files  19 passed (19)`, 190 tests, no eslint output, `✓ built in …`.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git add web/src/lib/lifecycle.ts web/src/lib/lifecycle.test.ts web/src/shell/ConnectionProvider.tsx web/src/shell/ConnectionProvider.test.tsx web/src/gates/AuthGate.tsx web/src/gates/AuthGate.test.tsx
+git add web/src/lib/lifecycle.ts web/src/lib/lifecycle.test.ts web/src/shell/ConnectionProvider.tsx web/src/shell/ConnectionProvider.test.tsx web/src/gates/AuthGate.tsx web/src/gates/AuthGate.test.tsx web/src/lib/ws.ts web/src/lib/ws.test.ts
 git commit -m "feat(web): socket singletons, online state and rehydration on return"
 ```
 
@@ -5352,11 +6713,11 @@ One mono line under the headline, in four states, and it is the design's main in
 **Files:**
 - Modify: `web/src/lib/format.ts`, `web/src/lib/format.test.ts`
 - Modify: `web/src/test/fixtures.ts`
-- Create: `web/src/room/useOverview.ts`, `web/src/room/StatusLine.tsx`, `web/src/room/StatusLine.test.tsx`
+- Create: `web/src/room/useOverview.ts`, `web/src/room/useOverview.test.tsx`, `web/src/room/StatusLine.tsx`, `web/src/room/StatusLine.test.tsx`
 
 - [ ] **Step 1: Write the failing formatter tests**
 
-Append to `web/src/lib/format.test.ts` (extend the import with `dayLabel, evs, humaniseTool, mmss, rawCall, shortId, usd`):
+Append to `web/src/lib/format.test.ts` (extend the import with `dayLabel, evs, humaniseTool, mmss, rawCall, shortId, usd`, and add `import type { StreamSummary } from "./types";` below it — the `evs` guard test hands it a summary with no `rate_5m`, which the type does not admit without a cast):
 
 ```ts
 describe("mmss", () => {
@@ -5388,6 +6749,12 @@ describe("evs", () => {
         reflex_observations: { length: 1, last_id: null, last_ts: null, rate_5m: 0.5 },
       }),
     ).toBe("2.1");
+  });
+  it("counts a summary with no rate as 0, not NaN", () => {
+    const unrated = { length: 3, last_id: null, last_ts: null } as StreamSummary;
+    expect(evs({ events: unrated })).toBe("0");
+    const rated = { length: 1, last_id: null, last_ts: null, rate_5m: 0.2 };
+    expect(evs({ events: unrated, user_requests: rated })).toBe("0.2");
   });
   it("says a bare 0 when nothing is flowing", () => {
     expect(evs({})).toBe("0");
@@ -5435,6 +6802,9 @@ describe("dayLabel", () => {
     expect(dayLabel(new Date(2026, 8, 7, 7, 2), now)).toBe("earlier today");
     expect(dayLabel(new Date(2026, 8, 6, 23, 59), now)).toBe("yesterday");
     expect(dayLabel(new Date(2026, 8, 4, 12, 0), now)).toBe("4 Sep");
+  });
+  it("calls a timestamp from a skewed clock today, not a day in the future", () => {
+    expect(dayLabel(new Date(2026, 8, 8, 9, 0), now)).toBe("earlier today");
   });
 });
 ```
@@ -5497,26 +6867,26 @@ export function dayLabel(date: Date, now: Date): string {
 ```
 
 Run: `npm test -- src/lib/format.test.ts`
-Expected: `Test Files  1 passed (1)`, 24 tests.
+Expected: `Test Files  1 passed (1)`, 27 tests (the Task 1 review added one `summarize()` case to this file).
 
 - [ ] **Step 4: Add the overview fixtures**
 
-Append to `web/src/test/fixtures.ts` (extend the type import with `Overview`):
+Append to `web/src/test/fixtures.ts` (extend the type import with `Overview`). The stream stamps are 2026-09-07 UTC, the same day as the cost record and the test clocks; the first-morning house overrides everything that "running a while" implies, not just the streams:
 
 ```ts
-/** A house that has been running a while: 2.1 ev/s, £1.42 of the £5 cap, reflex at 380 ms. */
+/** A house that has been running a while: 2.1 ev/s, $1.42 of the $5 cap, reflex at 380 ms. */
 export const overviewFixture: Overview = {
   redis: { connected: true },
   cost: { date: "2026-09-07", spend_usd: 1.42, cap_usd: 5, request_count: 38, avg_usd: 0.037 },
   dnd: { active: false },
   counts: { sessions: 1, devices: 1, deferred: 0, triggers: 6 },
   streams: {
-    events: { length: 412, last_id: "1757278440000-0", last_ts: 1757278440000, rate_5m: 1.4 },
-    user_requests: { length: 18, last_id: "1757278380000-0", last_ts: 1757278380000, rate_5m: 0.2 },
+    events: { length: 412, last_id: "1788814440000-0", last_ts: 1788814440000, rate_5m: 1.4 },
+    user_requests: { length: 18, last_id: "1788814380000-0", last_ts: 1788814380000, rate_5m: 0.2 },
     reflex_observations: {
       length: 96,
-      last_id: "1757278420000-0",
-      last_ts: 1757278420000,
+      last_id: "1788814420000-0",
+      last_ts: 1788814420000,
       rate_5m: 0.5,
     },
   },
@@ -5529,16 +6899,21 @@ export const overviewFixture: Overview = {
   },
 };
 
-/** The same house on its first morning: every stream empty, nothing spent, nothing measured. */
+/**
+ * The same house on its first morning: every stream empty, nothing spent, nothing
+ * measured, no triggers written, the Librarian yet to run for the first time.
+ */
 export const firstRunOverviewFixture: Overview = {
   ...overviewFixture,
   cost: { date: "2026-09-07", spend_usd: 0, cap_usd: 5, request_count: 0 },
+  counts: { sessions: 1, devices: 1, deferred: 0, triggers: 0 },
   streams: {
     events: { length: 0, last_id: null, last_ts: null, rate_5m: 0 },
     user_requests: { length: 0, last_id: null, last_ts: null, rate_5m: 0 },
     reflex_observations: { length: 0, last_id: null, last_ts: null, rate_5m: 0 },
   },
   reflex: { model: "reflex-3b", last_ms: null, p50_ms: null },
+  librarian: { last_run_at: null, reviewed: null, next_run_at: "2026-09-08T03:00:00Z" },
 };
 ```
 
@@ -5569,6 +6944,27 @@ describe("StatusLine", () => {
 
   it("says first run while every stream is empty", () => {
     render(<StatusLine overview={firstRunOverviewFixture} online lastTrueAt={at2114} />);
+    expect(
+      screen.getByText("first run · cloud 0.00 / 5.00 · reflex ok · 0 ev/s"),
+    ).toBeInTheDocument();
+  });
+
+  it("stamps last true on a first run that is offline", () => {
+    render(<StatusLine overview={firstRunOverviewFixture} online={false} lastTrueAt={at2114} />);
+    expect(screen.getByText("last true 21:14 · cloud 0.00 / 5.00 · reflex ok")).toBeInTheDocument();
+  });
+
+  it("says reflex ok on a first run whatever the reflex reports", () => {
+    render(
+      <StatusLine
+        overview={{
+          ...firstRunOverviewFixture,
+          reflex: { model: "reflex-3b", last_ms: 380, p50_ms: 372 },
+        }}
+        online
+        lastTrueAt={at2114}
+      />,
+    );
     expect(
       screen.getByText("first run · cloud 0.00 / 5.00 · reflex ok · 0 ev/s"),
     ).toBeInTheDocument();
@@ -5610,10 +7006,64 @@ describe("StatusLine", () => {
 });
 ```
 
-- [ ] **Step 6: Run it to verify it fails**
+Create `web/src/room/useOverview.test.tsx`. The hook is one of the two independent proofs that anything on screen is current (the other is a socket frame), so the stamp is what its test is about:
 
-Run: `npm test -- src/room/StatusLine.test.tsx`
-Expected: FAIL — `Failed to resolve import "./StatusLine"`.
+```tsx
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderHook, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { overviewFixture } from "@/test/fixtures";
+import { useOverview } from "./useOverview";
+
+const { markTrueMock } = vi.hoisted(() => ({ markTrueMock: vi.fn() }));
+vi.mock("@/shell/ConnectionProvider", () => ({ markTrue: markTrueMock }));
+
+/** When set, the overview read 500s — Redis is down behind it. */
+let overviewDown = false;
+
+function renderOverview() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  return renderHook(() => useOverview(), { wrapper });
+}
+
+describe("useOverview", () => {
+  beforeEach(() => {
+    overviewDown = false;
+    markTrueMock.mockClear();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        expect(String(input)).toBe("/api/admin/overview");
+        if (overviewDown) return new Response('{"detail":"redis is down"}', { status: 500 });
+        return new Response(JSON.stringify(overviewFixture), { status: 200 });
+      }),
+    );
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("stamps last-true on every successful read: the house answered", async () => {
+    const { result } = renderOverview();
+    await waitFor(() => expect(result.current.data).toEqual(overviewFixture));
+    expect(markTrueMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves last-true alone when the read fails", async () => {
+    overviewDown = true;
+    const { result } = renderOverview();
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(markTrueMock).not.toHaveBeenCalled();
+  });
+});
+```
+
+- [ ] **Step 6: Run them to verify they fail**
+
+Run: `npm test -- src/room`
+Expected: FAIL — `Failed to resolve import "./StatusLine"` and `Failed to resolve import "./useOverview"`.
 
 - [ ] **Step 7: Write the hook and the component**
 
@@ -5673,11 +7123,11 @@ export function StatusLine({ overview, online, lastTrueAt }: StatusLineProps) {
   // and every successful poll, and an unknown clock says so.
   const stamp = lastTrueAt ? hhmm(lastTrueAt) : "--:--";
 
-  const parts = firstRun
-    ? ["first run", cloud, reflex, `${evs(streams)} ev/s`]
-    : online
-      ? [stamp, cloud, reflex, `${evs(streams)} ev/s`]
-      : [`last true ${stamp}`, cloud, reflex];
+  // Offline outranks first run: §5.2's "live is not last-known" has no exception
+  // for a house where nothing has happened yet.
+  const parts = online
+    ? [firstRun ? "first run" : stamp, cloud, reflex, `${evs(streams)} ev/s`]
+    : [`last true ${stamp}`, cloud, reflex];
 
   return <div className="t-status">{parts.join(" · ")}</div>;
 }
@@ -5685,11 +7135,11 @@ export function StatusLine({ overview, online, lastTrueAt }: StatusLineProps) {
 
 - [ ] **Step 8: Run the tests**
 
-Run: `npm test -- src/room/StatusLine.test.tsx`
-Expected: `Test Files  1 passed (1)`, 7 tests.
+Run: `npm test -- src/room`
+Expected: `Test Files  2 passed (2)` — 9 StatusLine tests and 2 for the hook.
 
 Run: `npm test && npm run lint && npm run build`
-Expected: `Test Files  20 passed (20)`, no eslint output, `✓ built in …`.
+Expected: `Test Files  21 passed (21)`, `Tests  215 passed (215)`, no eslint output, `✓ built in …`.
 
 - [ ] **Step 9: Commit**
 
@@ -5712,11 +7162,12 @@ The Room in this plan is a frame, not the Room: header, theme toggle, the greeti
 
 - [ ] **Step 1: Write the failing composition test**
 
-Create `web/src/App.test.tsx`:
+Create `web/src/App.test.tsx`. Four tests, each proving something only the composition can: the gate wraps the routes (a signed-out device stops at *Welcome back*), the stored theme reaches the document through the whole tree (the clock is pinned to 23:00, so nothing but the stored choice can make it light), and the deep link keeps its address (the catch-all route lands in the room too, so the heading alone would prove nothing):
 
 ```tsx
 import { render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { THEME_KEY } from "@/lib/theme";
 import { overviewFixture } from "@/test/fixtures";
 import App from "./App";
 
@@ -5760,6 +7211,8 @@ afterEach(() => {
   vi.unstubAllGlobals();
   localStorage.clear();
   document.documentElement.removeAttribute("data-theme");
+  window.history.pushState({}, "", "/");
+  vi.useRealTimers();
 });
 
 describe("App", () => {
@@ -5771,17 +7224,33 @@ describe("App", () => {
     expect(await screen.findByText(/cloud 1.42 \/ 5.00/)).toBeInTheDocument();
   });
 
-  it("applies a theme to the document as it mounts", async () => {
+  it("holds a signed-out device at the gate, short of the room", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response('{"registered":true,"authenticated":false}', { status: 200 })),
+    );
     render(<App />);
-    await screen.findByRole("heading", { name: "Listening, sir." });
-    expect(["dark", "light"]).toContain(document.documentElement.dataset.theme);
+
+    expect(await screen.findByRole("heading", { name: "Welcome back, sir." })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Listening, sir." })).not.toBeInTheDocument();
   });
 
-  it("renders the room on the action deep link too", async () => {
+  it("applies the stored theme to the document as it mounts", async () => {
+    // Late at night, when the clock alone would say dark: only the stored choice
+    // can make this light.
+    vi.setSystemTime(new Date(2026, 8, 7, 23, 0));
+    localStorage.setItem(THEME_KEY, "light");
+    render(<App />);
+    await screen.findByRole("heading", { name: "Listening, sir." });
+    expect(document.documentElement.dataset.theme).toBe("light");
+  });
+
+  it("renders the room on the action deep link, and keeps the address", async () => {
     window.history.pushState({}, "", "/actions/a91f");
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Listening, sir." })).toBeInTheDocument();
-    window.history.pushState({}, "", "/");
+    // The catch-all route also lands in the room; only the path tells them apart.
+    expect(window.location.pathname).toBe("/actions/a91f");
   });
 });
 ```
@@ -5789,7 +7258,7 @@ describe("App", () => {
 - [ ] **Step 2: Run it to verify it fails**
 
 Run: `npm test -- src/App.test.tsx`
-Expected: FAIL — `App` renders `<main>Alfred</main>` (the Task 1 placeholder), so no heading, no toggle and no status line are found.
+Expected: FAIL — `App` renders `<main>Alfred</main>` (the Task 1 placeholder), so nothing the four tests look for is rendered.
 
 - [ ] **Step 3: Write `web/src/shell/QueryProvider.tsx`**
 
@@ -5921,10 +7390,10 @@ createRoot(document.getElementById("root")!).render(
 - [ ] **Step 7: Run the composition test and the whole suite**
 
 Run: `npm test -- src/App.test.tsx`
-Expected: `Test Files  1 passed (1)`, 3 tests.
+Expected: `Test Files  1 passed (1)`, 4 tests.
 
 Run: `npm test`
-Expected: `Test Files  21 passed (21)`, zero failures.
+Expected: `Test Files  22 passed (22)`, `Tests  219 passed (219)`.
 
 Run: `npm run lint`
 Expected: no output.
@@ -5955,7 +7424,7 @@ Expected: no output (`placeholder=` on the credential inputs and `placeholder:` 
 git log --oneline origin/master..HEAD
 ```
 
-Expected: fourteen commits, one per task, each a conventional-commit line.
+Expected: one `feat(web):` commit per task (Task 9 spans four), each followed by any `fix(web):` commits its reviews produced — every line a conventional-commit line, nothing merged from elsewhere.
 
 - [ ] **Step 10: Commit**
 
@@ -5987,10 +7456,10 @@ Handover to 1b — what exists now and must not be renamed:
 |---|---|
 | Types | everything in `src/lib/types.ts`, including `PendingAction`, `ActionResultEvent`, `NotificationEvent`, `Mood`, `Urgency` |
 | Formatters | `hhmm`, `dayMonth`, `mmss`, `usd`, `evs`, `shortId`, `humaniseTool`, `rawCall`, `dayLabel` (plus the carried-over `summarize`, `timeOf`) |
-| Shell | `QueryProvider`, `ThemeProvider`/`useTheme`, `ThemeToggle`, `ConnectionProvider`/`useConnection`/`markTrue`, `Layer`/`usePresence`, `Sheet` |
+| Shell | `QueryProvider`, `ThemeProvider`/`useTheme`, `ThemeToggle`, `ConnectionProvider`/`useConnection`/`markTrue`, `Layer`, `Sheet`, `presence.ts` (`usePresence`, `useModalFocus`, `riseStyle`, `riseClass`) |
 | Gates | `Gate`, `GateField`, `StepList`, `SetupGate`, `SignInGate`, `ExpiredGate`, `DeniedGate`, `AuthGate` |
 | Room | `Room` (to be replaced), `StatusLine`, `useOverview` |
 | Lib | `api`/`post`/`put`/`del`/`ApiError`, `authEvents`, `auth.ts`, `webauthn.ts`, `ws.ts` (+ `pingIntervalMs`, `lastMessageAt`), `chat-socket.ts`, `telemetry-socket.ts`, `lifecycle.ts`, `viewport.ts` (+ `useKeyboardOpen`), `theme.ts` |
-| CSS | the tokens, `.t-*` scale, `.rise-in`/`.rise-out`, `.gate-field`, `.safe-t`/`.safe-b`/`.safe-x`/`.pb-keyboard`, the six keyframes |
+| CSS | the tokens, `.t-*` scale, `.rise-in`/`.rise-out`, `.gate-field`, `.pb-keyboard`, the seven keyframes |
 | Fixtures | `integrationsFixture`, `attentionFixture`, `overviewFixture`, `firstRunOverviewFixture` |
 | Still to build in 1b | `lib/{presence-signal,headline,history,actions,slide,recorder}.ts`, `lib/audio.ts` (rewrite), `room/*`, `sheets/HeldBackSheet.tsx`, `door/*`, `web/README.md`, `docs/superpowers/qa/2026-09-07-pwa-phase1-ios-checklist.md` |

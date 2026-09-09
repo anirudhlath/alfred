@@ -47,11 +47,11 @@
 
 ```bash
 cd ~/code/.worktrees/alfred/pwa-phase1-client
-git log --oneline origin/master..HEAD | wc -l
-git log --oneline -1
+git log --oneline origin/master..HEAD | grep -c 'feat(web)'
+git log --oneline origin/master..HEAD | grep 'feat(web): compose the shell'
 ```
 
-Expected: `14`, and `feat(web): compose the shell — providers, routes and the room's frame`. Anything else means 1a is incomplete — finish it first; every task below imports something 1a defines.
+Expected: `13` (Task 1 is a `chore(web):`; every other 1a task has one `feat(web):` commit, with the `fix(web):` and `test(web):` commits their reviews produced between them) and the shell's commit on its own line. Anything else means 1a is incomplete — finish it first; every task below imports something 1a defines.
 
 2. **Confirm the shell is green before adding to it.**
 
@@ -60,7 +60,7 @@ cd ~/code/.worktrees/alfred/pwa-phase1-client/web
 npm run lint && npm test && npm run build
 ```
 
-Expected: eslint prints nothing, `Test Files  21 passed (21)`, vite prints `✓ built in …`. A red baseline is 1a's problem, not yours.
+Expected: eslint prints nothing, `Test Files  22 passed (22)`, `Tests  219 passed (219)`, vite prints `✓ built in …`. A red baseline is 1a's problem, not yours.
 
 3. **How to run things** (all from `web/`, except the SPA gate):
 
@@ -73,7 +73,7 @@ Expected: eslint prints nothing, `Test Files  21 passed (21)`, vite prints `✓ 
 | `npm run build` | `tsc -b` then `vite build` — the type check lives here, not in lint |
 | `cd .. && uv run pytest tests/core/channels/test_spa_ci.py -q` | The CI gate that serves the built `web/dist` |
 
-4. **Test-file count as you go.** 1a ends at 21 files. Each task below states the count it should reach, so a missing or duplicated file is caught the moment it happens: 15 → 23 · 16 → 25 · 17 → 26 · 18 → 27 · 19 → 28 · 20 → 29 · 21 → 31 · 22 → 32 · 23 → 33 · 24 → 35 · 25 → 36 · 26 → 38 · 27 → 39 · 28 → 39.
+4. **Test-file and test counts as you go.** 1a ends at 22 files / 219 tests. Each task below states the counts it should reach, so a missing or duplicated file is caught the moment it happens: 15 → 24 / 249 · 16 → 26 / 269 · 17 → 28 / 302 · 18 → 29 / 327 · 19 → 30 / 359 · 20 → 31 / 370 · 21 → 33 / 405 · 22 → 34 / 423 · 23 → 35 / 436 · 24 → 37 / 483 · 25 → 38 / 500 · 26 → 40 / 551 · 27 → 41 / 562 · 28 → 42 / 584.
 
 5. **The backend this plan calls** — all of it is on `origin/master`; check if anything 404s at runtime:
 
@@ -142,7 +142,7 @@ Everything under `web/` unless noted. Files 1a created and 1b only reads are not
 | `src/index.css` | Modify (20, 25) | `.keyboard-up` padding rule; the fuse arc and its two masks |
 | `src/App.tsx`, `src/main.tsx` | Modify (28) | `DoorProvider`, `installAudioUnlock()` |
 | `src/App.test.tsx` | Modify (28) | The room it boots into is now the real one |
-| `src/test/setup.ts` | Modify (22) | `PointerEvent`, pointer capture |
+| `src/test/setup.ts` | Modify (18, 22) | the `ResizeObserver` note · `PointerEvent`, pointer capture |
 | `src/test/fixtures.ts` | Modify (17, 23, 24) | Stream pages, deferred queue, pending actions, result frames |
 | `web/README.md` | Rewrite (28) | What this client is and how to work on it |
 | `docs/superpowers/qa/2026-09-07-pwa-phase1-ios-checklist.md` | Create (28) | Every spec §4 constraint → a step on a real phone |
@@ -209,6 +209,10 @@ export class PresenceSignal {
   tick(nowSeconds: number): SignalFrame;
 }
 
+// src/shell/presence.ts (Task 15) — 1a's module grows two exports for the canvas
+export function prefersReducedMotion(): boolean;
+export function useReducedMotion(): boolean;
+
 // src/lib/audio.ts (Task 21) · src/lib/recorder.ts (Task 21)
 export function installAudioUnlock(): () => void;
 export function getAudioContext(): AudioContext | null;
@@ -257,6 +261,7 @@ The split is deliberate. `PresenceSignal` is the physics — envelopes, attack a
 **Files:**
 - Create: `web/src/lib/presence-signal.ts`, `web/src/lib/presence-signal.test.ts`
 - Create: `web/src/room/PresenceField.tsx`, `web/src/room/PresenceField.test.tsx`
+- Modify: `web/src/shell/presence.ts` (Task 5) — export the reduce-motion query as a hook
 
 - [ ] **Step 1: Write the failing signal test**
 
@@ -315,16 +320,16 @@ describe("PresenceSignal while holding", () => {
   });
 
   it("rises faster than it falls", () => {
-    const rise = new PresenceSignal();
-    rise.setHolding(true);
-    const afterRise = run(rise, 30).level;
+    const signal = new PresenceSignal();
+    signal.setHolding(true);
+    // Attack 0.35 per tick: the first frame of speech already carries a third
+    // of the way to the target...
+    const afterOneRise = signal.tick(0).level;
+    expect(afterOneRise).toBeGreaterThan(0.3);
 
-    rise.setHolding(false);
-    const afterOneFall = rise.tick(31 / 60).level;
-
-    // Attack 0.35 per tick, decay 0.06: one tick of silence must not undo
-    // half a second of speech.
-    expect(afterOneFall).toBeGreaterThan(afterRise * 0.9);
+    signal.setHolding(false);
+    // ...and decay 0.06: one frame of silence must not undo it.
+    expect(signal.tick(1 / 60).level).toBeGreaterThan(afterOneRise * 0.9);
   });
 
   it("decays to a hard zero once released", () => {
@@ -402,6 +407,14 @@ describe("PresenceSignal while thinking", () => {
 
     // In 0.08, out 0.035 — the field settles rather than snaps.
     expect(afterTen).toBeGreaterThan(peak * 0.6);
+  });
+
+  it("settles to a hard zero once the thought is done", () => {
+    const signal = new PresenceSignal();
+    signal.setThinking(true);
+    run(signal, 90);
+    signal.setThinking(false);
+    expect(run(signal, 400, 2).think).toBe(0);
   });
 
   it("is independent of the audio level", () => {
@@ -558,7 +571,9 @@ export class PresenceSignal {
 
     // Offline is a display decision, not a physics one. The envelopes keep
     // running — coming back should not snap — but nothing is handed out to draw.
-    // The prototype does the same thing one layer up: `e = offline ? 0 : signal(now)`.
+    // The prototype instead skips the tick entirely (`e = offline ? 0 : signal(now)`),
+    // which freezes its envelopes; ticking through means a reconnection mid-hold
+    // resumes at the level it would have had, rather than snapping up from stale state.
     if (this.offline) {
       this.out.fill(0);
       return { level: 0, bands: this.out, think: 0 };
@@ -573,22 +588,27 @@ export class PresenceSignal {
 - [ ] **Step 4: Run the signal test**
 
 Run: `npm test -- src/lib/presence-signal.test.ts`
-Expected: `Test Files  1 passed (1)`, 14 tests.
+Expected: `Test Files  1 passed (1)`, 15 tests.
 
 - [ ] **Step 5: Write the failing field test**
 
 Create `web/src/room/PresenceField.test.tsx`:
 
 ```tsx
-import { render } from "@testing-library/react";
+import { act, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PresenceSignal } from "@/lib/presence-signal";
 import { THEME_KEY } from "@/lib/theme";
 import { ThemeProvider } from "@/shell/ThemeProvider";
 import { PresenceField } from "./PresenceField";
 
+/** 12 pt dot grid, W 393 / H 190: 34 columns x 17 rows. */
+const STEP = 12;
+const DOTS = 34 * 17;
+
 interface Recorded {
-  arcs: number;
+  /** Every dot drawn, as `[x, y, radius]`. */
+  arcs: Array<[number, number, number]>;
   ellipses: number;
   fillStyles: string[];
   cleared: number;
@@ -601,7 +621,7 @@ function fakeContext(): CanvasRenderingContext2D {
     setTransform: () => {},
     clearRect: () => void recorded.cleared++,
     beginPath: () => {},
-    arc: () => void recorded.arcs++,
+    arc: (x: number, y: number, r: number) => void recorded.arcs.push([x, y, r]),
     ellipse: () => void recorded.ellipses++,
     fill: () => {},
     set fillStyle(value: string) {
@@ -614,17 +634,27 @@ function fakeContext(): CanvasRenderingContext2D {
   return ctx as unknown as CanvasRenderingContext2D;
 }
 
-function stubReducedMotion(matches: boolean): void {
-  vi.stubGlobal("matchMedia", (query: string) => ({
+/** Stub the media query; the returned switch flips it while the field is mounted. */
+function stubReducedMotion(matches: boolean) {
+  const listeners = new Set<() => void>();
+  const query = {
     matches,
-    media: query,
+    media: "(prefers-reduced-motion: reduce)",
     onchange: null,
     addListener: () => {},
     removeListener: () => {},
-    addEventListener: () => {},
-    removeEventListener: () => {},
+    addEventListener: (_type: string, listener: () => void) => void listeners.add(listener),
+    removeEventListener: (_type: string, listener: () => void) => void listeners.delete(listener),
     dispatchEvent: () => false,
-  }));
+  };
+  vi.stubGlobal("matchMedia", () => query);
+  return {
+    flip(next: boolean) {
+      query.matches = next;
+      act(() => listeners.forEach((listener) => listener()));
+    },
+    listening: () => listeners.size,
+  };
 }
 
 function setHidden(hidden: boolean): void {
@@ -644,7 +674,7 @@ function renderField(signal: PresenceSignal, offline = false) {
 }
 
 beforeEach(() => {
-  recorded = { arcs: 0, ellipses: 0, fillStyles: [], cleared: 0 };
+  recorded = { arcs: [], ellipses: 0, fillStyles: [], cleared: 0 };
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
     fakeContext() as unknown as never,
   );
@@ -682,16 +712,65 @@ describe("PresenceField", () => {
 
   it("draws the whole grid on its first frame", () => {
     renderField(new PresenceSignal());
-    // 34 columns x 17 rows, one arc each.
     expect(recorded.cleared).toBeGreaterThanOrEqual(1);
-    expect(recorded.arcs).toBeGreaterThanOrEqual(34 * 17);
+    expect(recorded.arcs.length).toBeGreaterThanOrEqual(DOTS);
+  });
+
+  it("paints a resting field once, and leaves it alone until something moves", () => {
+    const pending: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => pending.push(cb));
+    const signal = new PresenceSignal();
+    renderField(signal);
+    expect(recorded.cleared).toBe(1);
+
+    // Two more frames at rest: the loop keeps running, the canvas is not touched.
+    pending.shift()!(16);
+    pending.shift()!(32);
+    expect(recorded.cleared).toBe(1);
+
+    // Speech arrives: the next frame paints again.
+    signal.setHolding(true);
+    pending.shift()!(48);
+    expect(recorded.cleared).toBe(2);
+  });
+
+  it("keeps repainting while he is thinking, with no audio at all", () => {
+    const pending: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => pending.push(cb));
+    const signal = new PresenceSignal();
+    renderField(signal);
+    expect(recorded.cleared).toBe(1);
+
+    signal.setThinking(true);
+    pending.shift()!(16);
+    pending.shift()!(32);
+    // The pulse sweeps down the field: `level` never leaves zero, and every
+    // frame is still a different frame.
+    expect(recorded.cleared).toBe(3);
+  });
+
+  it("repaints a resting field when the pixel ratio changes under it", () => {
+    const pending: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => pending.push(cb));
+    renderField(new PresenceSignal());
+    expect(recorded.cleared).toBe(1);
+
+    pending.shift()!(16);
+    expect(recorded.cleared).toBe(1);
+
+    // A new backing store is a blank one, so the resting frame has to be painted
+    // again or the field disappears until something moves.
+    vi.stubGlobal("devicePixelRatio", 2);
+    pending.shift()!(32);
+    expect(recorded.cleared).toBe(2);
+    expect(recorded.arcs).toHaveLength(DOTS * 2);
   });
 
   it("draws in amber when connected and in grey when not (dark theme)", () => {
     renderField(new PresenceSignal(), false);
     expect(recorded.fillStyles.some((s) => s.startsWith("rgba(232,178,132"))).toBe(true);
 
-    recorded = { arcs: 0, ellipses: 0, fillStyles: [], cleared: 0 };
+    recorded = { arcs: [], ellipses: 0, fillStyles: [], cleared: 0 };
     renderField(new PresenceSignal(), true);
     expect(recorded.fillStyles.some((s) => s.startsWith("rgba(154,145,134"))).toBe(true);
   });
@@ -709,19 +788,78 @@ describe("PresenceField", () => {
 
     renderField(new PresenceSignal());
 
-    expect(recorded.arcs).toBe(34 * 17);
+    expect(recorded.arcs).toHaveLength(DOTS);
     expect(raf).not.toHaveBeenCalled();
   });
 
-  it("does not animate a hidden tab", () => {
+  it("freezes a talking, thinking field flat under reduce-motion", () => {
+    stubReducedMotion(true);
+    const signal = new PresenceSignal();
+    signal.setHolding(true);
+    signal.setThinking(true);
+    // Warm the envelopes: a frame ticked from here would be anything but flat.
+    for (let i = 0; i < 60; i++) signal.tick(i / 60);
+
+    renderField(signal);
+
+    // Every dot on its grid point at its resting radius, and no shadows.
+    expect(recorded.arcs).toHaveLength(DOTS);
+    for (const [x, y, r] of recorded.arcs) {
+      expect(x % STEP).toBe(0);
+      expect(y % STEP).toBe(0);
+      expect(r).toBe(1);
+    }
+    expect(recorded.ellipses).toBe(0);
+  });
+
+  it("freezes when reduce-motion is switched on mid-session", () => {
+    const media = stubReducedMotion(false);
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
+    const cancel = vi.spyOn(window, "cancelAnimationFrame");
+    const { unmount } = renderField(new PresenceSignal());
+    expect(raf).toHaveBeenCalledTimes(1);
+
+    media.flip(true);
+
+    expect(cancel).toHaveBeenCalled();
+    expect(raf).toHaveBeenCalledTimes(1);
+    expect(recorded.cleared).toBe(2);
+
+    unmount();
+    expect(media.listening()).toBe(0);
+  });
+
+  it("does not animate a hidden tab, and paints it at rest", () => {
     setHidden(true);
     const raf = vi.spyOn(window, "requestAnimationFrame");
+    const signal = new PresenceSignal();
+    signal.setHolding(true);
+    for (let i = 0; i < 60; i++) signal.tick(i / 60);
 
-    renderField(new PresenceSignal());
+    renderField(signal);
 
     expect(raf).not.toHaveBeenCalled();
-    // Still painted once, so returning to the app never shows an empty canvas.
-    expect(recorded.arcs).toBe(34 * 17);
+    // Still painted once, so returning to the app never shows an empty canvas —
+    // and flat, so what it shows is not a wave caught mid-swell.
+    expect(recorded.arcs).toHaveLength(DOTS);
+    expect(recorded.arcs.every(([x, y, r]) => x % STEP === 0 && y % STEP === 0 && r === 1)).toBe(true);
+  });
+
+  it("stops the loop while the tab is hidden and resumes it once, not twice", () => {
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
+    const cancel = vi.spyOn(window, "cancelAnimationFrame");
+    renderField(new PresenceSignal());
+    expect(raf).toHaveBeenCalledTimes(1);
+
+    setHidden(true);
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(cancel).toHaveBeenCalledTimes(1);
+
+    setHidden(false);
+    document.dispatchEvent(new Event("visibilitychange"));
+    document.dispatchEvent(new Event("visibilitychange"));
+    // One new handle for the resume; the second event finds the loop running.
+    expect(raf).toHaveBeenCalledTimes(2);
   });
 
   it("stops the loop when it unmounts", () => {
@@ -745,13 +883,53 @@ describe("PresenceField", () => {
 Run: `npm test -- src/room/PresenceField.test.tsx`
 Expected: FAIL — `Failed to resolve import "./PresenceField"`.
 
-- [ ] **Step 7: Write `web/src/room/PresenceField.tsx`**
+- [ ] **Step 7: Make the reduce-motion query a hook in `web/src/shell/presence.ts`**
+
+The field must not read `prefers-reduced-motion` once at mount: the setting can change while the app is open, and a canvas loop that read it once would keep animating. `usePresence` keeps its one-shot read (a leave picks its duration when it starts). Replace the import line and the `prefersReducedMotion` helper at the top of the file — everything from `export interface Presence` down is untouched — with:
+
+```ts
+import {
+  useEffect,
+  useState,
+  useSyncExternalStore,
+  type CSSProperties,
+  type RefObject,
+} from "react";
+
+/** The handoff's reduce-motion substitute for every rise. */
+const REDUCED_MOTION_MS = 200;
+
+const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
+
+export function prefersReducedMotion(): boolean {
+  return typeof window.matchMedia === "function" && window.matchMedia(REDUCED_MOTION_QUERY).matches;
+}
+
+function subscribeReducedMotion(onChange: () => void): () => void {
+  if (typeof window.matchMedia !== "function") return () => {};
+  const query = window.matchMedia(REDUCED_MOTION_QUERY);
+  query.addEventListener("change", onChange);
+  return () => query.removeEventListener("change", onChange);
+}
+
+/**
+ * `prefersReducedMotion()`, kept current. The setting can change while the app
+ * is open (Settings → Accessibility → Motion), and anything that read it once
+ * at mount — a canvas loop, say — would keep animating.
+ */
+export function useReducedMotion(): boolean {
+  return useSyncExternalStore(subscribeReducedMotion, prefersReducedMotion);
+}
+```
+
+- [ ] **Step 8: Write `web/src/room/PresenceField.tsx`**
 
 Complete file:
 
 ```tsx
 import { useEffect, useRef } from "react";
 import type { PresenceSignal } from "@/lib/presence-signal";
+import { useReducedMotion } from "@/shell/presence";
 import { useTheme } from "@/shell/ThemeProvider";
 
 const W = 393;
@@ -760,13 +938,8 @@ const H = 190;
 const STEP = 12;
 /** The prototype's `dotResponse` prop. Fixed at its default; there is no control for it. */
 const GAIN = 1;
-
-function prefersReducedMotion(): boolean {
-  return (
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches
-  );
-}
+/** What a frozen frame is drawn from: a signal at rest, without asking the signal. */
+const ZERO_BANDS: number[] = [0, 0, 0, 0, 0, 0, 0, 0];
 
 export interface PresenceFieldProps {
   signal: PresenceSignal;
@@ -780,10 +953,13 @@ export interface PresenceFieldProps {
  */
 export function PresenceField({ signal, offline }: PresenceFieldProps) {
   const { theme } = useTheme();
+  const reduced = useReducedMotion();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const phaseRef = useRef(0);
   const thinkPhaseRef = useRef(0);
   const lastRef = useRef<number | null>(null);
+  /** Whether the frame on the canvas is the resting one, which never changes. */
+  const stillRef = useRef(false);
 
   useEffect(() => {
     signal.setOffline(offline);
@@ -794,13 +970,19 @@ export function PresenceField({ signal, offline }: PresenceFieldProps) {
     if (!canvas) return;
 
     const dark = theme === "dark";
-    const reduced = prefersReducedMotion();
+    // New colours, or a new signal: whatever is on the canvas is stale.
+    stillRef.current = false;
 
-    const draw = (now: number) => {
+    // One frame. `frozen` paints the grid at rest without ticking the signal —
+    // the reduce-motion and hidden-tab frame — so the envelopes keep running
+    // for whoever ticks next, and no mid-swell frame is ever left standing.
+    const draw = (now: number, frozen = false) => {
       const dpr = Math.min(2, window.devicePixelRatio || 1);
       if (canvas.width !== W * dpr) {
         canvas.width = W * dpr;
         canvas.height = H * dpr;
+        // Resizing wipes the bitmap, resting frame included.
+        stillRef.current = false;
       }
 
       // jsdom has no 2D context without the optional `canvas` package, and a
@@ -813,21 +995,29 @@ export function PresenceField({ signal, offline }: PresenceFieldProps) {
       }
       if (!g) return;
 
+      const frame = frozen ? null : signal.tick(now);
+      const e = frame?.level ?? 0;
+      const b = frame?.bands ?? ZERO_BANDS;
+      const th = frame?.think ?? 0;
+
+      // At rest every frame is the same frame. Paint it once and then leave the
+      // canvas alone; the loop keeps running so it notices when that changes.
+      const still = e === 0 && th === 0;
+      if (still && stillRef.current) return;
+      stillRef.current = still;
+
       g.setTransform(dpr, 0, 0, dpr, 0, 0);
       g.clearRect(0, 0, W, H);
 
-      const frame = signal.tick(now);
-      const e = frame.level;
-      const b = frame.bands;
-      const th = frame.think;
-
       // The wave phase only advances while something is flowing, so the field is
       // genuinely motionless at rest rather than slowly creeping.
-      if (lastRef.current === null) lastRef.current = now;
-      const dt = now - lastRef.current;
-      phaseRef.current += dt * (0.4 + e * 2.2);
-      thinkPhaseRef.current += dt * th;
-      lastRef.current = now;
+      if (!frozen) {
+        if (lastRef.current === null) lastRef.current = now;
+        const dt = now - lastRef.current;
+        phaseRef.current += dt * (0.4 + e * 2.2);
+        thinkPhaseRef.current += dt * th;
+        lastRef.current = now;
+      }
       const ph = phaseRef.current;
       const tph = thinkPhaseRef.current;
 
@@ -911,11 +1101,11 @@ export function PresenceField({ signal, offline }: PresenceFieldProps) {
       raf = requestAnimationFrame(loop);
     };
 
-    // Reduce-motion: one frame at t=0, and never again. Constraint from the
+    // Reduce-motion: one frame at rest, and never again. Constraint from the
     // handoff's motion section, and the JS half of the CSS `prefers-reduced-motion`
     // block in index.css.
     if (reduced) {
-      draw(0);
+      draw(0, true);
       return;
     }
 
@@ -935,14 +1125,14 @@ export function PresenceField({ signal, offline }: PresenceFieldProps) {
     const onVisibility = () => (document.hidden ? stop() : start());
     document.addEventListener("visibilitychange", onVisibility);
 
-    if (document.hidden) draw(0);
+    if (document.hidden) draw(0, true);
     else start();
 
     return () => {
       document.removeEventListener("visibilitychange", onVisibility);
       cancelAnimationFrame(raf);
     };
-  }, [signal, offline, theme]);
+  }, [signal, offline, theme, reduced]);
 
   return (
     <canvas
@@ -961,19 +1151,19 @@ export function PresenceField({ signal, offline }: PresenceFieldProps) {
 }
 ```
 
-- [ ] **Step 8: Run the field test and the suite**
+- [ ] **Step 9: Run the field test and the suite**
 
 Run: `npm test -- src/room/PresenceField.test.tsx`
-Expected: `Test Files  1 passed (1)`, 9 tests.
+Expected: `Test Files  1 passed (1)`, 15 tests.
 
 Run: `npm test && npm run lint && npm run build`
-Expected: `Test Files  23 passed (23)`, no eslint output, `✓ built in …`.
+Expected: `Test Files  24 passed (24)`, `Tests  249 passed (249)`, no eslint output, `✓ built in …`.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
 cd ~/code/.worktrees/alfred/pwa-phase1-client
-git add web/src/lib/presence-signal.ts web/src/lib/presence-signal.test.ts web/src/room/PresenceField.tsx web/src/room/PresenceField.test.tsx
+git add web/src/lib/presence-signal.ts web/src/lib/presence-signal.test.ts web/src/room/PresenceField.tsx web/src/room/PresenceField.test.tsx web/src/shell/presence.ts
 git commit -m "feat(web): Alfred's presence field — the ported signal and canvas"
 ```
 
@@ -1001,7 +1191,7 @@ This task also lifts `isFirstRun` out of `StatusLine` so the headline and the st
 **Files:**
 - Create: `web/src/lib/headline.ts`, `web/src/lib/headline.test.ts`
 - Create: `web/src/room/Headline.tsx`, `web/src/room/OfflineNote.tsx`, `web/src/room/DndRow.tsx`, `web/src/room/Headline.test.tsx`
-- Modify: `web/src/room/useOverview.ts`, `web/src/room/StatusLine.tsx`
+- Modify: `web/src/room/useOverview.ts`, `web/src/room/StatusLine.tsx`, `web/src/room/StatusLine.test.tsx`
 
 - [ ] **Step 1: Write the failing headline test**
 
@@ -1177,19 +1367,18 @@ const at2114 = new Date(2026, 8, 7, 21, 14);
 describe("Headline", () => {
   it("is the page's one heading", () => {
     render(<Headline text="Listening, sir." />);
-    const heading = screen.getByRole("heading", { name: "Listening, sir." });
+    const heading = screen.getByRole("heading", { level: 1, name: "Listening, sir." });
     expect(heading).toHaveClass("t-headline");
   });
 });
 
 describe("OfflineNote", () => {
-  it("stamps when the house was last reachable", () => {
+  it("stamps when the house was last reachable, and announces it", () => {
     render(<OfflineNote reconnecting={false} lastTrueAt={at2114} />);
-    expect(
-      screen.getByText(
-        "No connection to the house since 21:14. Everything below is last-known. Sending is paused.",
-      ),
-    ).toBeInTheDocument();
+    // A status message: the socket dropping is news, not decoration.
+    expect(screen.getByRole("status")).toHaveTextContent(
+      /^No connection to the house since 21:14\. Everything below is last-known\. Sending is paused\.$/,
+    );
   });
 
   it("says it is still trying while reconnecting", () => {
@@ -1277,6 +1466,7 @@ export function OfflineNote({ reconnecting, lastTrueAt }: OfflineNoteProps) {
 
   return (
     <div
+      role="status"
       className="mt-2 flex items-center gap-2 rounded-[10px] px-3 py-2 text-[13px] leading-[1.4]"
       style={{ background: "var(--surface)" }}
     >
@@ -1369,20 +1559,40 @@ and add the import beside the existing ones:
 import { isFirstRun } from "@/room/useOverview";
 ```
 
-`StatusLine.test.tsx` is unchanged and must stay green — that is the point of doing it here rather than duplicating the rule.
+`StatusLine.test.tsx` stays green as it is — that is the point of doing it here rather than duplicating the rule — and gains one case, because the rule is now shared and its quantifier was never pinned: the fixtures are all-empty or all-populated, so `every` could become `some` unnoticed. Append inside the `describe`, after "does not call a degraded overview a first run":
+
+```tsx
+  it("is not a first run while any stream has ever had an entry", () => {
+    render(
+      <StatusLine
+        overview={{
+          ...overviewFixture,
+          cost: null,
+          streams: {
+            events: { length: 412, last_id: "1-0", last_ts: 1, rate_5m: 0 },
+            notifications: { length: 0, last_id: null, last_ts: null, rate_5m: 0 },
+          },
+        }}
+        online
+        lastTrueAt={at2114}
+      />,
+    );
+    expect(screen.getByText("21:14 · cloud — · reflex 380 ms · 0 ev/s")).toBeInTheDocument();
+  });
+```
 
 - [ ] **Step 9: Run the tests and the suite**
 
 Run: `npm test -- src/room/Headline.test.tsx src/room/StatusLine.test.tsx`
-Expected: `Test Files  2 passed (2)` — 8 and 7 tests.
+Expected: `Test Files  2 passed (2)` — 8 and 10 tests.
 
 Run: `npm test && npm run lint && npm run build`
-Expected: `Test Files  25 passed (25)`, no eslint output, `✓ built in …`.
+Expected: `Test Files  26 passed (26)`, `Tests  269 passed (269)`, no eslint output, `✓ built in …`.
 
 - [ ] **Step 10: Commit**
 
 ```bash
-git add web/src/lib/headline.ts web/src/lib/headline.test.ts web/src/room/Headline.tsx web/src/room/Headline.test.tsx web/src/room/OfflineNote.tsx web/src/room/DndRow.tsx web/src/room/useOverview.ts web/src/room/StatusLine.tsx
+git add web/src/lib/headline.ts web/src/lib/headline.test.ts web/src/room/Headline.tsx web/src/room/Headline.test.tsx web/src/room/OfflineNote.tsx web/src/room/DndRow.tsx web/src/room/useOverview.ts web/src/room/StatusLine.tsx web/src/room/StatusLine.test.tsx
 git commit -m "feat(web): the headline, the offline note and the do-not-disturb row"
 ```
 
@@ -1407,7 +1617,7 @@ Dividers come last, over the merged list: a day divider whenever the date change
 
 **Files:**
 - Create: `web/src/lib/history.ts`, `web/src/lib/history.test.ts`
-- Create: `web/src/room/useRoomHistory.ts`
+- Create: `web/src/room/useRoomHistory.ts`, `web/src/room/useRoomHistory.test.tsx`
 - Modify: `web/src/test/fixtures.ts`
 
 - [ ] **Step 1: Add the stream fixtures**
@@ -1426,7 +1636,7 @@ Append to `web/src/test/fixtures.ts` (extend the type import with `StreamPage`):
 export const userRequestsPage: StreamPage = {
   entries: [
     {
-      id: "1757279640000-0",
+      id: "1788815640000-0",
       event: {
         event_id: "ur-2",
         event_type: "user_request",
@@ -1439,7 +1649,7 @@ export const userRequestsPage: StreamPage = {
       },
     },
     {
-      id: "1757275923000-0",
+      id: "1788811923000-0",
       event: {
         event_id: "ur-1",
         event_type: "user_request",
@@ -1458,7 +1668,7 @@ export const userRequestsPage: StreamPage = {
 export const userResponsesPage: StreamPage = {
   entries: [
     {
-      id: "1757279646000-0",
+      id: "1788815646000-0",
       event: {
         event_id: "al-2",
         event_type: "alfred_response",
@@ -1471,7 +1681,7 @@ export const userResponsesPage: StreamPage = {
       },
     },
     {
-      id: "1757275926000-0",
+      id: "1788811926000-0",
       event: {
         event_id: "al-1",
         event_type: "alfred_response",
@@ -1491,7 +1701,7 @@ export const reflexObservationsPage: StreamPage = {
   entries: [
     {
       // Passive: seen, considered, nothing done. Never a Room row.
-      id: "1757275000000-0",
+      id: "1788811000000-0",
       event: {
         observation_id: "obs-3",
         event_type: "reflex_observation",
@@ -1506,7 +1716,7 @@ export const reflexObservationsPage: StreamPage = {
     },
     {
       // Acted, and it failed. The meta says so.
-      id: "1757271660000-0",
+      id: "1788807660000-0",
       event: {
         observation_id: "obs-2",
         event_type: "reflex_observation",
@@ -1520,7 +1730,7 @@ export const reflexObservationsPage: StreamPage = {
       },
     },
     {
-      id: "1757264280000-0",
+      id: "1788800280000-0",
       event: {
         observation_id: "obs-1",
         event_type: "reflex_observation",
@@ -1541,7 +1751,7 @@ export const notificationsPage: StreamPage = {
   entries: [
     {
       // A confirmation request: the Door's business, never a thread row.
-      id: "1757265700000-0",
+      id: "1788801700000-0",
       event: {
         notification_id: "ntf-2",
         title: "Confirmation required",
@@ -1558,7 +1768,7 @@ export const notificationsPage: StreamPage = {
       },
     },
     {
-      id: "1757265600000-0",
+      id: "1788801600000-0",
       event: {
         notification_id: "ntf-1",
         title: "Your parcel arrived",
@@ -1577,7 +1787,7 @@ export const notificationsPage: StreamPage = {
 export const yesterdayRequestPage: StreamPage = {
   entries: [
     {
-      id: "1757185923000-0",
+      id: "1788721923000-0",
       event: {
         event_id: "ur-0",
         event_type: "user_request",
@@ -1606,6 +1816,7 @@ import {
   toTimelineItems,
   withDividers,
   type RoomHistory,
+  type RoomStream,
   type TimelineItem,
 } from "./history";
 import {
@@ -1622,6 +1833,18 @@ const HISTORY: RoomHistory = {
   reflex_observations: reflexObservationsPage.entries,
   notifications: notificationsPage.entries,
 };
+
+const EMPTY: RoomHistory = {
+  user_requests: [],
+  user_responses: [],
+  reflex_observations: [],
+  notifications: [],
+};
+
+/** A conversational turn at `at`, for the divider rules. */
+function turnAt(at: string): TimelineItem {
+  return { kind: "you", id: `you:${at}`, at, text: "And the windows?", state: "sent" };
+}
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -1652,6 +1875,9 @@ describe("fetchRoomHistory", () => {
       vi.fn(async (input: RequestInfo | URL) => {
         if (String(input).includes("notifications"))
           return new Response('{"detail":"redis is down"}', { status: 503 });
+        // A 200 with no entries at all: still a list, or the merge would throw.
+        if (String(input).includes("reflex_observations"))
+          return new Response('{"next_before":null}', { status: 200 });
         return new Response(JSON.stringify(userRequestsPage), { status: 200 });
       }),
     );
@@ -1659,7 +1885,17 @@ describe("fetchRoomHistory", () => {
     const history = await fetchRoomHistory();
 
     expect(history.notifications).toEqual([]);
+    expect(history.reflex_observations).toEqual([]);
     expect(history.user_requests).toHaveLength(2);
+  });
+
+  it("answers an empty thread, not an error, when every stream is down", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response('{"detail":"redis is down"}', { status: 503 })),
+    );
+
+    await expect(fetchRoomHistory()).resolves.toEqual(EMPTY);
   });
 });
 
@@ -1681,27 +1917,46 @@ describe("toTimelineItems", () => {
   });
 
   it("renders what you said as a sent bubble", () => {
-    const you = items.find((item) => item.kind === "you")!;
-    expect(you).toMatchObject({
+    const you = items.find((item) => item.kind === "you");
+    expect(you).toEqual({
       kind: "you",
+      id: "you:1788811923000-0",
+      at: "2026-09-07T20:52:03",
       text: "What have I got tomorrow morning?",
       state: "sent",
     });
   });
 
   it("carries mood and tools onto Alfred's row", () => {
-    const alfred = items.find((item) => item.kind === "alfred")!;
-    expect(alfred).toMatchObject({
+    const alfred = items.find((item) => item.kind === "alfred");
+    expect(alfred).toEqual({
       kind: "alfred",
+      id: "alfred:1788811926000-0",
+      at: "2026-09-07T20:52:06",
+      text: "The dentist at nine, sir. I'd leave by twenty to; there's rain forecast from eight.",
       mood: "pleased",
       actions: ["calendar.today", "weather.forecast"],
     });
   });
 
+  it("keeps only the tool names Alfred's row can print", () => {
+    const [alfred] = toTimelineItems({
+      ...EMPTY,
+      user_responses: [
+        {
+          id: "1-0",
+          event: { timestamp: "2026-09-07T21:14:06", text: "Done.", actions_taken: ["home.lock", 42, null] },
+        },
+      ],
+    });
+    expect(alfred.kind === "alfred" && alfred.actions).toEqual(["home.lock"]);
+  });
+
   it("reads a reflex act as its decision, in the RX hue", () => {
-    const act = items[0];
-    expect(act).toMatchObject({
+    expect(items[0]).toEqual({
       kind: "act",
+      id: "rx:1788800280000-0",
+      at: "2026-09-07T17:58:00",
       hue: 210,
       text: "movie started, evening, user home",
       meta: "17:58 · reflex · home.light_set",
@@ -1725,11 +1980,29 @@ describe("toTimelineItems", () => {
   });
 
   it("renders a notification as its title, in the NT hue", () => {
-    const nt = items.find((item) => item.kind === "act" && item.hue === 255)!;
-    expect(nt).toMatchObject({
+    const nt = items.find((item) => item.kind === "act" && item.hue === 255);
+    expect(nt).toEqual({
+      kind: "act",
+      id: "nt:1788801600000-0",
+      at: "2026-09-07T18:20:00",
+      hue: 255,
       text: "Your parcel arrived",
       meta: "18:20 · trigger:trg_parcel · important",
     });
+  });
+
+  it("files an unlabelled notification under the house, informational", () => {
+    // An empty source is no source; the fallbacks cover both.
+    const [nt] = toTimelineItems({
+      ...EMPTY,
+      notifications: [
+        {
+          id: "1-0",
+          event: { timestamp: "2026-09-07T18:20:00", title: "Bins go out tonight", source: "" },
+        },
+      ],
+    });
+    expect(nt.kind === "act" && nt.meta).toBe("18:20 · house · informational");
   });
 
   it("leaves confirmation requests to the Door", () => {
@@ -1744,6 +2017,18 @@ describe("toTimelineItems", () => {
     expect(toTimelineItems(HISTORY).map((item) => item.id)).toEqual(ids);
   });
 
+  it("keeps rows apart when Redis gave two streams the same id", () => {
+    // Stream ids are `<ms>-<seq>` per stream, so an observation and the
+    // notification it raised can share one. The row id carries the stream.
+    const shared = toTimelineItems({
+      user_requests: [{ id: "1-0", event: userRequestsPage.entries[0].event }],
+      user_responses: [{ id: "1-0", event: userResponsesPage.entries[0].event }],
+      reflex_observations: [{ id: "1-0", event: reflexObservationsPage.entries[2].event }],
+      notifications: [{ id: "1-0", event: notificationsPage.entries[1].event }],
+    });
+    expect(shared.map((item) => item.id).sort()).toEqual(["alfred:1-0", "nt:1-0", "rx:1-0", "you:1-0"]);
+  });
+
   it("skips an entry whose event is unreadable rather than dying", () => {
     const parsed = toTimelineItems({
       user_requests: [{ id: "1-0", event: {} }, ...userRequestsPage.entries],
@@ -1752,6 +2037,29 @@ describe("toTimelineItems", () => {
       notifications: [],
     });
     expect(parsed).toHaveLength(2);
+  });
+
+  // One guard at a time: a row without its text would print nothing, and a row
+  // without its stamp would sort on NaN and read "--:--". A response's text is
+  // `text`, never `content`; a request's is `content`, and an empty one is none.
+  const halfEntries: Array<[RoomStream, Record<string, unknown>, Record<string, unknown>]> = [
+    ["user_requests", { timestamp: "2026-09-07T21:14:00", content: "" }, { content: "Hello?" }],
+    [
+      "user_responses",
+      { timestamp: "2026-09-07T21:14:06", content: "Yes, sir." },
+      { text: "Yes, sir." },
+    ],
+    [
+      "reflex_observations",
+      { timestamp: "2026-09-07T17:58:00" },
+      { action: { tool_name: "home.light_set" } },
+    ],
+    ["notifications", { timestamp: "2026-09-07T18:20:00" }, { title: "Your parcel arrived" }],
+  ];
+
+  it.each(halfEntries)("drops a %s entry missing its text or its stamp", (stream, noText, noStamp) => {
+    const history = { ...EMPTY, [stream]: [{ id: "1-0", event: noText }, { id: "2-0", event: noStamp }] };
+    expect(toTimelineItems(history)).toEqual([]);
   });
 });
 
@@ -1784,25 +2092,28 @@ describe("withDividers", () => {
   });
 
   it("splits two turns more than thirty minutes apart", () => {
-    const first = toTimelineItems({
-      user_requests: userRequestsPage.entries,
-      user_responses: [],
-      reflex_observations: [],
-      notifications: [],
-    })[0];
-    const later: TimelineItem = {
-      kind: "you",
-      id: "you:later",
-      at: "2026-09-07T21:44:00",
-      text: "And the windows?",
-      state: "sent",
-    };
+    const first = toTimelineItems({ ...EMPTY, user_requests: userRequestsPage.entries })[0];
+    const later = turnAt("2026-09-07T21:44:00");
 
-    const labels = withDividers([first, later], now)
-      .filter((item) => item.kind === "divider")
-      .map((item) => (item.kind === "divider" ? item.label : ""));
+    const out = withDividers([first, later], now);
 
-    expect(labels).toEqual(["earlier today", "new conversation · 21:44"]);
+    expect(out.map((item) => (item.kind === "divider" ? item.label : item.kind))).toEqual([
+      "earlier today",
+      "you",
+      "new conversation · 21:44",
+      "you",
+    ]);
+    // A divider is stamped with the row it opens, so a live merge keeps it in place.
+    expect(out.map((item) => item.at)).toEqual([first.at, first.at, later.at, later.at]);
+  });
+
+  it("draws the line at exactly thirty minutes", () => {
+    const first = turnAt("2026-09-07T20:52:03");
+    const dividers = (items: TimelineItem[]) =>
+      withDividers(items, now).filter((item) => item.kind === "divider").length;
+
+    expect(dividers([first, turnAt("2026-09-07T21:22:02")])).toBe(1);
+    expect(dividers([first, turnAt("2026-09-07T21:22:03")])).toBe(2);
   });
 
   it("leaves an empty thread empty", () => {
@@ -1810,7 +2121,17 @@ describe("withDividers", () => {
   });
 
   it("gives every divider a unique id", () => {
-    const ids = withDividers(toTimelineItems(HISTORY), now).map((item) => item.id);
+    const twoDays = toTimelineItems({
+      ...EMPTY,
+      user_requests: [...userRequestsPage.entries, ...yesterdayRequestPage.entries],
+    });
+    const out = withDividers(
+      [...twoDays, turnAt("2026-09-07T21:44:00"), turnAt("2026-09-07T22:20:00")],
+      now,
+    );
+
+    expect(out.filter((item) => item.kind === "divider")).toHaveLength(4);
+    const ids = out.map((item) => item.id);
     expect(new Set(ids).size).toBe(ids.length);
   });
 });
@@ -1818,6 +2139,19 @@ describe("withDividers", () => {
 describe("pendingActionTitles", () => {
   it("names an approval by its tool, for the tombstone a deep link may need", () => {
     expect(pendingActionTitles(HISTORY)).toEqual({ a91f3c2e: "Lock unlock" });
+  });
+
+  it("falls back to the notification's title, then to the id", () => {
+    const titled = {
+      id: "1-0",
+      event: { title: "Unlock the front door?", metadata: { pending_action_id: "b7e21c40" } },
+    };
+    const bare = { id: "2-0", event: { metadata: { pending_action_id: "c3d9a0f1" } } };
+
+    expect(pendingActionTitles({ ...EMPTY, notifications: [titled, bare] })).toEqual({
+      b7e21c40: "Unlock the front door?",
+      c3d9a0f1: "Action c3d9",
+    });
   });
 
   it("is empty for an absent history", () => {
@@ -1891,6 +2225,12 @@ function emptyHistory(): RoomHistory {
  * should cost the user that stream, not the whole conversation. A missing stream
  * is an empty list, which renders as a thread with a hole in it rather than a
  * blank screen with an error.
+ *
+ * That holds when all four are down too: the result is four empty lists, never a
+ * rejection, so `useRoomHistory().isError` is never true and an empty thread is
+ * indistinguishable here from a dark house. Deliberate — the Room does not
+ * announce outages; the status line and the offline note do, from the overview
+ * read (which does reject) and the socket.
  */
 export async function fetchRoomHistory(): Promise<RoomHistory> {
   const settled = await Promise.allSettled(
@@ -2067,7 +2407,7 @@ export function pendingActionTitles(history: RoomHistory | undefined): Record<st
 - [ ] **Step 5: Run the history test**
 
 Run: `npm test -- src/lib/history.test.ts`
-Expected: `Test Files  1 passed (1)`, 20 tests.
+Expected: `Test Files  1 passed (1)`, 30 tests.
 
 - [ ] **Step 6: Write `web/src/room/useRoomHistory.ts`**
 
@@ -2092,15 +2432,117 @@ export function useRoomHistory() {
 }
 ```
 
-- [ ] **Step 7: Whole suite**
+- [ ] **Step 7: Write the hook test**
+
+The query key is a contract with `ConnectionProvider` (`REHYDRATE_KEYS`, Task 8): the provider side is asserted in `ConnectionProvider.test.tsx`, and this pins the consumer side, plus the thirty-second window. `vi.setSystemTime` without fake timers moves only `Date`, which is what `staleTime` reads, so `waitFor` keeps its real timers.
+
+`web/src/room/useRoomHistory.test.tsx`:
+
+```tsx
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, renderHook, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { RoomHistory } from "@/lib/history";
+import {
+  notificationsPage,
+  reflexObservationsPage,
+  userRequestsPage,
+  userResponsesPage,
+} from "@/test/fixtures";
+import { useRoomHistory } from "./useRoomHistory";
+
+const PAGES = {
+  user_requests: userRequestsPage,
+  user_responses: userResponsesPage,
+  reflex_observations: reflexObservationsPage,
+  notifications: notificationsPage,
+};
+
+const HISTORY: RoomHistory = {
+  user_requests: userRequestsPage.entries,
+  user_responses: userResponsesPage.entries,
+  reflex_observations: reflexObservationsPage.entries,
+  notifications: notificationsPage.entries,
+};
+
+function newClient() {
+  return new QueryClient({ defaultOptions: { queries: { retry: false } } });
+}
+
+function renderHistory(client: QueryClient) {
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  return renderHook(() => useRoomHistory(), { wrapper });
+}
+
+describe("useRoomHistory", () => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const name = /streams\/(\w+)\?/.exec(String(input))?.[1] as keyof typeof PAGES;
+    return new Response(JSON.stringify(PAGES[name]), { status: 200 });
+  });
+
+  beforeEach(() => {
+    fetchMock.mockClear();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it("reads the four pages and caches them under the key the provider invalidates", async () => {
+    const client = newClient();
+    const { result } = renderHistory(client);
+
+    await waitFor(() => expect(result.current.data).toEqual(HISTORY));
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    // The foreground refresh (constraint §4.10) is `invalidateQueries` on this
+    // exact key; a typo here would leave the thread stale until the next launch.
+    expect(client.getQueryData(["room-history"])).toEqual(HISTORY);
+  });
+
+  it("reads again when the provider invalidates it", async () => {
+    const client = newClient();
+    const { result } = renderHistory(client);
+    await waitFor(() => expect(result.current.data).toEqual(HISTORY));
+
+    await act(() => client.invalidateQueries({ queryKey: ["room-history"] }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(8));
+  });
+
+  it("serves a second reader from cache for thirty seconds, then reads again", async () => {
+    const client = newClient();
+    const first = renderHistory(client);
+    await waitFor(() => expect(first.result.current.data).toEqual(HISTORY));
+    const read = client.getQueryState(["room-history"])?.dataUpdatedAt ?? 0;
+
+    vi.setSystemTime(read + 29_999);
+    const second = renderHistory(client);
+    await waitFor(() => expect(second.result.current.data).toEqual(HISTORY));
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+
+    vi.setSystemTime(read + 30_001);
+    renderHistory(client);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(8));
+  });
+});
+```
+
+Run: `npm test -- src/room/useRoomHistory.test.tsx`
+Expected: `Test Files  1 passed (1)`, 3 tests.
+
+- [ ] **Step 8: Whole suite**
 
 Run: `npm test && npm run lint && npm run build`
-Expected: `Test Files  26 passed (26)`, no eslint output, `✓ built in …`.
+Expected: `Test Files  28 passed (28)`, `Tests  302 passed (302)`, no eslint output, `✓ built in …`.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add web/src/lib/history.ts web/src/lib/history.test.ts web/src/room/useRoomHistory.ts web/src/test/fixtures.ts
+git add web/src/lib/history.ts web/src/lib/history.test.ts web/src/room/useRoomHistory.ts web/src/room/useRoomHistory.test.tsx web/src/test/fixtures.ts
 git commit -m "feat(web): merge four streams into one Room thread"
 ```
 
@@ -2108,33 +2550,40 @@ git commit -m "feat(web): merge four streams into one Room thread"
 
 ### Task 18: The eight rows, and the list that anchors them
 
-Every row type in the handoff, at the handoff's measurements, plus the scroll behaviour that makes a live thread bearable: stick to the bottom while you are at the bottom, and stop the moment you scroll up to read something. 120 px of slack, so a rubber-band bounce does not count as scrolling away.
+Every row type in the handoff, at the handoff's measurements, plus the scroll behaviour that makes a live thread bearable: stick to the bottom while you are at the bottom, and stop the moment you scroll up to read something. 120 px of slack, so a rubber-band bounce does not count as scrolling away; 121 does not. The anchor runs in a layout effect (an appended row must never paint at the old offset and then jump) and again from a `ResizeObserver` on the box and on its content, because rows are not the only thing that moves the bottom: the webfonts swap in after first paint and grow the thread, and the keyboard shrinks the box (§4.5). That observer is why `test/setup.ts` stubs `ResizeObserver`.
+
+A screen reader gets what eyes get from the layout: the list is `role="log"` named `Conversation`; your bubble and Alfred's line each start with a visually hidden speaker (`You:` / `Alfred:`, the `sr-only` pattern `StepList` uses); the transcribing bubble and the thinking row are `role="status"`; the act mark and the dots are `aria-hidden`.
 
 Nothing here fetches, subscribes or decides. Each component takes exactly the fields its `TimelineItem` variant carries, which is what makes the whole set testable in one file.
 
 **Files:**
 - Create: `web/src/room/rows/Divider.tsx`, `YouBubble.tsx`, `AlfredRow.tsx`, `ActRow.tsx`, `Tombstone.tsx`, `TranscribingBubble.tsx`, `ThinkingRow.tsx`, `FirstDay.tsx`
 - Create: `web/src/room/Timeline.tsx`, `web/src/room/Timeline.test.tsx`
+- Modify: `web/src/test/setup.ts` (one comment)
 
 - [ ] **Step 1: Write the failing timeline test**
 
-Create `web/src/room/Timeline.test.tsx` (it covers the eight row components as well — the same arrangement 1a uses for `Layer` and `Sheet`):
+Create `web/src/room/Timeline.test.tsx` (it covers the eight row components as well — the same arrangement 1a uses for `Layer` and `Sheet`). The `scrollTop` fake clamps to `scrollHeight - clientHeight` the way a browser does, or the anchoring tests could not tell anchoring from an over-scroll no browser reports; the `ResizeObserver` stub keeps the latest callback so a test can play a resize at it, and records what was observed and disconnected, since a no-op stub cannot tell the box from the content or see a leaked observer. The duplicate-key test pins `key={item.id}` through React's own `console.error` — two rows of one kind under `key={item.kind}` still render, they only warn:
 
 ```tsx
-import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { fireEvent, render, screen, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TimelineItem } from "@/lib/history";
 import { Timeline } from "./Timeline";
 
 let scrollHeight = 1000;
 let clientHeight = 400;
+let resize: ResizeObserverCallback | null = null;
+let observed: Element[] = [];
+let disconnects = 0;
 
 beforeEach(() => {
   scrollHeight = 1000;
   clientHeight = 400;
   // jsdom does no layout: scrollHeight/clientHeight are 0 and scrollTop is a
   // no-op. Give the three of them real behaviour so the anchoring rule can be
-  // tested at all.
+  // tested at all — including the clamp, or the tests could not tell anchoring
+  // from an over-scroll no browser reports.
   Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
     configurable: true,
     get: () => scrollHeight,
@@ -2149,9 +2598,33 @@ beforeEach(() => {
       return this._top ?? 0;
     },
     set(this: HTMLElement & { _top?: number }, value: number) {
-      this._top = value;
+      this._top = Math.max(0, Math.min(value, scrollHeight - clientHeight));
     },
   });
+  // The setup stub observes nothing. Keep the latest observer's callback so a
+  // test can play a resize at it, and record what it watched and let go of.
+  resize = null;
+  observed = [];
+  disconnects = 0;
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      constructor(callback: ResizeObserverCallback) {
+        resize = callback;
+      }
+      observe(target: Element) {
+        observed.push(target);
+      }
+      unobserve() {}
+      disconnect() {
+        disconnects += 1;
+      }
+    },
+  );
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 const you: TimelineItem = {
@@ -2171,7 +2644,16 @@ const alfred: TimelineItem = {
   actions: ["calendar.today", "weather.forecast"],
 };
 
+function list(): HTMLElement {
+  return screen.getByRole("log", { name: "Conversation" });
+}
+
 describe("Timeline rows", () => {
+  it("is a scrolling log, named for what it holds", () => {
+    render(<Timeline items={[you]} firstDayGreeting={null} />);
+    expect(list()).toHaveClass("overflow-y-auto");
+  });
+
   it("draws a divider with its label", () => {
     render(
       <Timeline
@@ -2182,24 +2664,29 @@ describe("Timeline rows", () => {
     expect(screen.getByText("earlier today")).toBeInTheDocument();
   });
 
-  it("renders your bubble without a stamp when it was sent", () => {
+  it("renders your bubble without a stamp when it was sent, and names you to a screen reader", () => {
     render(<Timeline items={[you]} firstDayGreeting={null} />);
-    expect(screen.getByText("What have I got tomorrow morning?")).toBeInTheDocument();
+    const bubble = screen.getByText("What have I got tomorrow morning?");
+    expect(bubble).toHaveStyle({ opacity: "1" });
+    expect(within(bubble).getByText("You:")).toHaveClass("sr-only");
     expect(screen.queryByText("not sent · will retry when connected")).toBeNull();
   });
 
-  it("says an unsent bubble will be retried", () => {
+  it("fades an unsent bubble and says it will be retried", () => {
     render(<Timeline items={[{ ...you, state: "unsent" }]} firstDayGreeting={null} />);
+    expect(screen.getByText("What have I got tomorrow morning?")).toHaveStyle({ opacity: "0.6" });
     expect(screen.getByText("not sent · will retry when connected")).toBeInTheDocument();
   });
 
-  it("gives Alfred mood, tools and a time, and keeps his line breaks", () => {
+  it("gives Alfred mood, tools and a time, keeps his line breaks, and names him", () => {
     render(<Timeline items={[alfred]} firstDayGreeting={null} />);
     expect(
       screen.getByText("pleased · calendar.today, weather.forecast · 20:52"),
     ).toBeInTheDocument();
     const text = screen.getByText(/The dentist at nine, sir\./);
     expect(text).toHaveClass("whitespace-pre-line");
+    expect(text).toHaveStyle({ color: "var(--fg)" });
+    expect(within(text).getByText("Alfred:")).toHaveClass("sr-only");
   });
 
   it("says no tools rather than an empty gap", () => {
@@ -2209,7 +2696,7 @@ describe("Timeline rows", () => {
     expect(screen.getByText("neutral · no tools · 20:52")).toBeInTheDocument();
   });
 
-  it("marks an error reply as one instead of inventing a mood", () => {
+  it("marks an error reply as one instead of inventing a mood, and dims it", () => {
     render(
       <Timeline
         items={[{ ...alfred, text: "No reply in 60 s.", actions: [], error: true }]}
@@ -2217,9 +2704,10 @@ describe("Timeline rows", () => {
       />,
     );
     expect(screen.getByText("error · 20:52")).toBeInTheDocument();
+    expect(screen.getByText("No reply in 60 s.")).toHaveStyle({ color: "var(--fg2)" });
   });
 
-  it("colours an act row by its stream hue", () => {
+  it.each([120, 210, 255] as const)("colours an act row by its stream hue, %i", (hue) => {
     render(
       <Timeline
         items={[
@@ -2227,7 +2715,7 @@ describe("Timeline rows", () => {
             kind: "act",
             id: "rx:1",
             at: you.at,
-            hue: 210,
+            hue,
             text: "movie started, evening",
             meta: "17:58 · reflex · home.light_set",
           },
@@ -2236,10 +2724,14 @@ describe("Timeline rows", () => {
       />,
     );
     expect(screen.getByText("movie started, evening")).toBeInTheDocument();
-    expect(screen.getByTestId("act-mark")).toHaveAttribute("data-hue", "210");
+    const mark = screen.getByTestId("act-mark");
+    expect(mark).toHaveAttribute("data-hue", String(hue));
+    expect(mark).toHaveStyle({ background: `oklch(0.62 0.11 ${hue})` });
+    // Decoration: the meta line already says which mind acted.
+    expect(mark).toHaveAttribute("aria-hidden", "true");
   });
 
-  it("strikes a tombstone through", () => {
+  it("strikes a tombstone through, on a faded row", () => {
     render(
       <Timeline
         items={[
@@ -2254,29 +2746,58 @@ describe("Timeline rows", () => {
         firstDayGreeting={null}
       />,
     );
-    expect(screen.getByText("Lock unlock")).toHaveClass("line-through");
+    const title = screen.getByText("Lock unlock");
+    expect(title).toHaveClass("line-through");
+    expect(title.closest("div.opacity-80")).not.toBeNull();
     expect(screen.getByText("expired 07:46 · not done · asked 07:41")).toBeInTheDocument();
   });
 
-  it("says how much audio is with the server while transcribing", () => {
+  it("says how much audio is with the server while transcribing, as a status", () => {
     render(
       <Timeline
         items={[{ kind: "transcribing", id: "tr:1", at: you.at, seconds: 2.4 }]}
         firstDayGreeting={null}
       />,
     );
-    expect(screen.getByText("Transcribing…")).toBeInTheDocument();
-    expect(screen.getByText("audio sent · 2.4 s · waiting on server")).toBeInTheDocument();
+    const status = screen.getByRole("status");
+    expect(within(status).getByText("Transcribing…")).toBeInTheDocument();
+    expect(
+      within(status).getByText("audio sent · 2.4 s · waiting on server"),
+    ).toBeInTheDocument();
   });
 
-  it("names which mind is working", () => {
+  it("names which mind is working, as a status, behind three staggered dots", () => {
     render(
       <Timeline
         items={[{ kind: "thinking", id: "think", at: you.at, detail: "working" }]}
         firstDayGreeting={null}
       />,
     );
-    expect(screen.getByText("conscious mind · working")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("conscious mind · working");
+    const dots = screen.getByTestId("thinking-dots");
+    expect(dots).toHaveAttribute("aria-hidden", "true");
+    expect(Array.from(dots.children, (dot) => (dot as HTMLElement).style.animation)).toEqual([
+      "breathe 1.2s 0s ease-in-out infinite",
+      "breathe 1.2s 0.2s ease-in-out infinite",
+      "breathe 1.2s 0.4s ease-in-out infinite",
+    ]);
+  });
+
+  it("keys rows by id, so two of yours in a row do not collide", () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      render(
+        <Timeline
+          items={[you, { ...you, id: "you:2", text: "And the windows?" }]}
+          firstDayGreeting={null}
+        />,
+      );
+      expect(screen.getByText("What have I got tomorrow morning?")).toBeInTheDocument();
+      expect(screen.getByText("And the windows?")).toBeInTheDocument();
+      expect(errors).not.toHaveBeenCalled();
+    } finally {
+      errors.mockRestore();
+    }
   });
 
   it("greets an empty house and says why it is empty", () => {
@@ -2291,62 +2812,114 @@ describe("Timeline rows", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows nothing at all when there is history but no first-day greeting", () => {
+  it("keeps the greeting out once there is history", () => {
+    render(<Timeline items={[you]} firstDayGreeting="Good evening, sir." />);
+    expect(screen.getByText("What have I got tomorrow morning?")).toBeInTheDocument();
+    expect(screen.queryByText(/Nothing has happened yet/)).toBeNull();
+  });
+
+  it("shows nothing at all when the thread is empty and there is no greeting", () => {
     render(<Timeline items={[]} firstDayGreeting={null} />);
+    expect(list().firstElementChild).toBeEmptyDOMElement();
     expect(screen.queryByText(/Nothing has happened yet/)).toBeNull();
   });
 });
 
 describe("Timeline anchoring", () => {
+  // A 1000 px thread in a 400 px box scrolls at most 600; 1400 px scrolls 1000.
   it("sits at the bottom as rows arrive", () => {
     const { rerender } = render(<Timeline items={[you]} firstDayGreeting={null} />);
-    const list = screen.getByTestId("timeline");
-    expect(list.scrollTop).toBe(1000);
+    expect(list().scrollTop).toBe(600);
 
     scrollHeight = 1400;
     rerender(<Timeline items={[you, alfred]} firstDayGreeting={null} />);
-    expect(list.scrollTop).toBe(1400);
+    expect(list().scrollTop).toBe(1000);
   });
 
   it("stops following once the user scrolls up to read", () => {
     const { rerender } = render(<Timeline items={[you]} firstDayGreeting={null} />);
-    const list = screen.getByTestId("timeline");
 
-    list.scrollTop = 200; // 1000 - 200 - 400 = 400 px from the bottom
-    fireEvent.scroll(list);
+    list().scrollTop = 200; // 1000 - 200 - 400 = 400 px from the bottom
+    fireEvent.scroll(list());
 
     scrollHeight = 1400;
     rerender(<Timeline items={[you, alfred]} firstDayGreeting={null} />);
 
-    expect(list.scrollTop).toBe(200);
+    expect(list().scrollTop).toBe(200);
   });
 
   it("treats a 120 px bounce as still being at the bottom", () => {
     const { rerender } = render(<Timeline items={[you]} firstDayGreeting={null} />);
-    const list = screen.getByTestId("timeline");
 
-    list.scrollTop = 480; // 1000 - 480 - 400 = 120, exactly the slack
-    fireEvent.scroll(list);
+    list().scrollTop = 480; // 1000 - 480 - 400 = 120, exactly the slack
+    fireEvent.scroll(list());
 
     scrollHeight = 1400;
     rerender(<Timeline items={[you, alfred]} firstDayGreeting={null} />);
 
-    expect(list.scrollTop).toBe(1400);
+    expect(list().scrollTop).toBe(1000);
+  });
+
+  it("holds at 121 px, one past the slack", () => {
+    const { rerender } = render(<Timeline items={[you]} firstDayGreeting={null} />);
+
+    list().scrollTop = 479;
+    fireEvent.scroll(list());
+
+    scrollHeight = 1400;
+    rerender(<Timeline items={[you, alfred]} firstDayGreeting={null} />);
+
+    expect(list().scrollTop).toBe(479);
   });
 
   it("follows again once the user returns to the bottom", () => {
     const { rerender } = render(<Timeline items={[you]} firstDayGreeting={null} />);
-    const list = screen.getByTestId("timeline");
 
-    list.scrollTop = 100;
-    fireEvent.scroll(list);
-    list.scrollTop = 600; // back within the slack
-    fireEvent.scroll(list);
+    list().scrollTop = 100;
+    fireEvent.scroll(list());
+    list().scrollTop = 600; // back within the slack
+    fireEvent.scroll(list());
 
     scrollHeight = 1400;
     rerender(<Timeline items={[you, alfred]} firstDayGreeting={null} />);
 
-    expect(list.scrollTop).toBe(1400);
+    expect(list().scrollTop).toBe(1000);
+  });
+
+  it("re-anchors when the box or its content resizes, while following", () => {
+    render(<Timeline items={[you]} firstDayGreeting={null} />);
+    expect(resize).not.toBeNull();
+
+    clientHeight = 200; // the keyboard came up
+    resize?.([], {} as ResizeObserver);
+    expect(list().scrollTop).toBe(800);
+
+    scrollHeight = 1100; // the webfonts swapped in
+    resize?.([], {} as ResizeObserver);
+    expect(list().scrollTop).toBe(900);
+  });
+
+  it("watches both the box and its content, and lets them go", () => {
+    const { rerender, unmount } = render(<Timeline items={[you]} firstDayGreeting={null} />);
+    const box = list();
+    expect(observed).toEqual([box, box.firstElementChild]);
+
+    // One observer per thread: a row arriving replaces it, never adds one.
+    rerender(<Timeline items={[you, alfred]} firstDayGreeting={null} />);
+    expect(disconnects).toBe(1);
+    unmount();
+    expect(disconnects).toBe(2);
+  });
+
+  it("leaves a reader alone when the box resizes", () => {
+    render(<Timeline items={[you]} firstDayGreeting={null} />);
+
+    list().scrollTop = 100;
+    fireEvent.scroll(list());
+
+    clientHeight = 200;
+    resize?.([], {} as ResizeObserver);
+    expect(list().scrollTop).toBe(100);
   });
 });
 ```
@@ -2381,7 +2954,10 @@ export interface YouBubbleProps {
   state: "sent" | "unsent";
 }
 
-/** Right-aligned, max 280, radius `16 16 4 16`. Unsent fades and says so. */
+/**
+ * Right-aligned, max 280, radius `16 16 4 16`. Unsent fades and says so. The
+ * speaker is visible only to a screen reader: the bubble's side says it to eyes.
+ */
 export function YouBubble({ text, state }: YouBubbleProps) {
   const unsent = state === "unsent";
   return (
@@ -2389,6 +2965,7 @@ export function YouBubble({ text, state }: YouBubbleProps) {
       className="t-you max-w-[280px] self-end rounded-[16px_16px_4px_16px] border px-3.5 py-2.5"
       style={{ borderColor: "var(--line)", opacity: unsent ? 0.6 : 1 }}
     >
+      <span className="sr-only">You: </span>
       {text}
       {unsent ? (
         <div className="mt-1 font-mono text-[10.5px]" style={{ color: "var(--muted)" }}>
@@ -2417,7 +2994,8 @@ export interface AlfredRowProps {
 /**
  * No bubble — Alfred's voice is the page, one size above yours. Plain text with
  * `pre-line`, never markdown (decision 3), and a meta line naming the mood, the
- * tools he ran and when.
+ * tools he ran and when. The speaker is visible only to a screen reader — the
+ * missing bubble says it to eyes.
  */
 export function AlfredRow({ text, at, mood, actions, error }: AlfredRowProps) {
   // An error frame has no mood and ran no tools; `neutral · no tools` would be
@@ -2434,6 +3012,7 @@ export function AlfredRow({ text, at, mood, actions, error }: AlfredRowProps) {
         className="t-alfred whitespace-pre-line"
         style={{ color: error ? "var(--fg2)" : "var(--fg)" }}
       >
+        <span className="sr-only">Alfred: </span>
         {text}
       </div>
       <div className="t-meta">{meta}</div>
@@ -2521,11 +3100,13 @@ Complete `web/src/room/rows/TranscribingBubble.tsx`:
 /**
  * The gap between releasing the button and the server telling you what it heard.
  * Dashed, because it is not yet a message: nothing has been transcribed, and the
- * count of seconds is the only true thing the client knows about it.
+ * count of seconds is the only true thing the client knows about it. A status,
+ * so a screen reader hears that the recording went, not just that it stopped.
  */
 export function TranscribingBubble({ seconds }: { seconds: number }) {
   return (
     <div
+      role="status"
       className="t-you max-w-[280px] self-end rounded-[16px_16px_4px_16px] border border-dashed px-3.5 py-2.5 italic"
       style={{ borderColor: "var(--line)", color: "var(--muted)" }}
     >
@@ -2543,11 +3124,18 @@ Complete `web/src/room/rows/ThinkingRow.tsx`:
 ```tsx
 const DELAYS = [0, 0.2, 0.4];
 
-/** Three breathing dots, staggered, and the name of the mind that is busy. */
+/**
+ * Three breathing dots, staggered, and the name of the mind that is busy. A
+ * status, so a screen reader hears that Alfred is working, not silence.
+ */
 export function ThinkingRow({ detail }: { detail: string }) {
   return (
-    <div className="flex flex-col gap-[7px]">
-      <div aria-hidden="true" className="flex h-[22px] items-center gap-1">
+    <div role="status" className="flex flex-col gap-[7px]">
+      <div
+        aria-hidden="true"
+        data-testid="thinking-dots"
+        className="flex h-[22px] items-center gap-1"
+      >
         {DELAYS.map((delay) => (
           <span
             key={delay}
@@ -2586,10 +3174,10 @@ export function FirstDay({ greeting }: { greeting: string }) {
 
 - [ ] **Step 4: Write `web/src/room/Timeline.tsx`**
 
-Complete file:
+Complete file. `Row`'s `default` branch is the exhaustiveness guard — `noImplicitReturns` is off, so without it a ninth `TimelineItem` kind would compile and render nothing:
 
 ```tsx
-import { useEffect, useRef } from "react";
+import { useLayoutEffect, useRef } from "react";
 import type { TimelineItem } from "@/lib/history";
 import { ActRow } from "@/room/rows/ActRow";
 import { AlfredRow } from "@/room/rows/AlfredRow";
@@ -2637,19 +3225,39 @@ function Row({ item }: { item: TimelineItem }) {
       return <TranscribingBubble seconds={item.seconds} />;
     case "thinking":
       return <ThinkingRow detail={item.detail} />;
+    default: {
+      // A ninth kind added to TimelineItem fails here at compile time instead
+      // of rendering nothing.
+      const exhaustive: never = item;
+      return exhaustive;
+    }
   }
 }
 
 export function Timeline({ items, firstDayGreeting }: TimelineProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   // Ref, not state: whether we are following the bottom must not re-render the
   // list, and the scroll handler fires on every frame of a flick.
   const followRef = useRef(true);
 
-  useEffect(() => {
+  // A layout effect, so an appended row is anchored before it is painted — a
+  // plain effect paints it at the old offset and then jumps. Rows are not the
+  // only thing that moves the bottom: the webfonts swap in after first paint
+  // and grow the content, and the keyboard shrinks the box (§4.5). Both are
+  // resizes, so the same anchor re-runs for them while we are following.
+  useLayoutEffect(() => {
     const el = scrollRef.current;
-    if (!el || !followRef.current) return;
-    el.scrollTop = el.scrollHeight;
+    const content = contentRef.current;
+    if (!el || !content) return;
+    const anchor = () => {
+      if (followRef.current) el.scrollTop = el.scrollHeight;
+    };
+    anchor();
+    const observer = new ResizeObserver(anchor);
+    observer.observe(el);
+    observer.observe(content);
+    return () => observer.disconnect();
   }, [items]);
 
   const onScroll = () => {
@@ -2661,31 +3269,57 @@ export function Timeline({ items, firstDayGreeting }: TimelineProps) {
   return (
     <div
       ref={scrollRef}
-      data-testid="timeline"
+      role="log"
+      aria-label="Conversation"
       onScroll={onScroll}
-      className="relative z-[1] flex flex-1 flex-col gap-4 overflow-y-auto px-6 pt-[22px] pb-3"
+      className="relative z-[1] flex flex-1 flex-col overflow-y-auto px-6 pt-[22px] pb-3"
     >
-      {items.length === 0 && firstDayGreeting ? <FirstDay greeting={firstDayGreeting} /> : null}
-      {items.map((item) => (
-        <Row key={item.id} item={item} />
-      ))}
+      {/* The observed content: `flex-1` so FirstDay can centre in an empty box. */}
+      <div ref={contentRef} className="flex flex-1 flex-col gap-4">
+        {items.length === 0 && firstDayGreeting ? <FirstDay greeting={firstDayGreeting} /> : null}
+        {items.map((item) => (
+          <Row key={item.id} item={item} />
+        ))}
+      </div>
     </div>
   );
 }
 ```
 
-- [ ] **Step 5: Run the timeline test and the suite**
+- [ ] **Step 5: Correct the `ResizeObserver` note in `web/src/test/setup.ts`**
+
+Task 2 stubbed `ResizeObserver` "as a precaution: nothing in phase 1 constructs one". The Timeline now does. Replace that comment:
+
+```ts
+// jsdom implements none of matchMedia, ResizeObserver or visualViewport. The first
+// and last are load-bearing — the reduced-motion branch in Layer, and
+// installViewportVars — and ResizeObserver is stubbed as a precaution: nothing in
+// phase 1 constructs one, and a component that starts to should not begin by
+// crashing every test. A test that needs a different answer overrides its own
+// with vi.stubGlobal.
+```
+
+with:
+
+```ts
+// jsdom implements none of matchMedia, ResizeObserver or visualViewport, and all
+// three are load-bearing: the reduced-motion branch in Layer, the Timeline's
+// resize anchor, and installViewportVars. Stub them here so no test has to; a
+// test that needs a different answer overrides its own with vi.stubGlobal.
+```
+
+- [ ] **Step 6: Run the timeline test and the suite**
 
 Run: `npm test -- src/room/Timeline.test.tsx`
-Expected: `Test Files  1 passed (1)`, 16 tests.
+Expected: `Test Files  1 passed (1)`, 25 tests.
 
 Run: `npm test && npm run lint && npm run build`
-Expected: `Test Files  27 passed (27)`, no eslint output, `✓ built in …`.
+Expected: `Test Files  29 passed (29)`, `Tests  327 passed (327)`, no eslint output, `✓ built in …`.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add web/src/room/rows web/src/room/Timeline.tsx web/src/room/Timeline.test.tsx
+git add web/src/room/rows web/src/room/Timeline.tsx web/src/room/Timeline.test.tsx web/src/test/setup.ts
 git commit -m "feat(web): the eight timeline rows and the list that anchors them"
 ```
 
@@ -2697,9 +3331,9 @@ History is a read; this is everything that happens after it. `useRoom` owns the 
 
 Four rules it exists to enforce:
 
-1. **An unsent message says so and comes back.** Offline, a send appends an `unsent` bubble, persists it to `alfred.unsent`, and retries in order the moment the socket reports online. If the socket refuses mid-queue, the retry stops there rather than reordering the conversation.
-2. **A turn in flight is visible.** Sending adds a thinking row; the reply, the error, or sixty seconds of silence removes it. Sixty seconds is a client-side truth — the server's own `publish_and_wait` timeout is 60 s (`core/channels/web_server.py`), so past that there is nothing still coming.
-3. **A transcription lands in place.** The dashed bubble is replaced by what the server heard, not appended below it. An STT failure arrives as a `response`, not a `transcription`, so the response path clears the dashed bubble too — otherwise it hangs there for ever.
+1. **An unsent message says so and comes back.** Offline, a send appends an `unsent` bubble, persists it to `alfred.unsent`, and retries in order the moment the socket reports online. If the socket refuses mid-queue, the retry stops there rather than reordering the conversation. The `online` flag alone stops a send — the socket is not asked. What is read back from `alfred.unsent` is checked field by field, not just by `kind`: a row without its timestamp would open the thread with a `NaN undefined` day divider, and one without its state would never be retried and never be cleared.
+2. **A turn in flight is visible.** Sending adds a thinking row; the reply, the error, or sixty seconds of silence removes it. Sixty seconds is a client-side truth — the server's own `publish_and_wait` timeout is 60 s (`core/channels/web_server.py`), so past that there is nothing still coming. A retried queue is a turn in flight like any other and gets the same row and the same countdown. A send that did *not* leave starts no turn and leaves the one already in flight — and its countdown — exactly as it was. The countdown is keyed on the thinking row's own timestamp, so an unrelated notification arriving at 59 s does not restart it.
+3. **A transcription lands in place.** The dashed bubble is replaced by what the server heard, not appended below it. An STT failure arrives as a `response`, not a `transcription`, so the response path clears the dashed bubble too — otherwise it hangs there for ever. So does the error path, for the same reason.
 4. **A confirmation notification is not a message.** Frames carrying `metadata.pending_action_id` belong to the Door and are dropped here.
 
 **Files:**
@@ -2830,6 +3464,37 @@ describe("useRoom — the merged thread", () => {
 
     expect(kinds(result.current.items)).toEqual(["alfred", "you", "thinking"]);
     expect(chat.sendText).toHaveBeenCalledWith("Is the back door locked?");
+    const thinking = result.current.items.find((item) => item.kind === "thinking")!;
+    expect(thinking.kind === "thinking" && thinking.detail).toBe("working");
+  });
+
+  it("merges history, tombstones and live rows by timestamp", () => {
+    // Older than the history row, and passed after it: only a real sort puts
+    // it first.
+    const tombstone: TimelineItem = {
+      kind: "tombstone",
+      id: "tomb:1",
+      at: "2026-09-01T09:00:00",
+      title: "Lock unlock",
+      meta: "expired · not done",
+    };
+    const { result } = renderRoom({ history: [historyRow], tombstones: [tombstone], online: true });
+
+    act(() => result.current.sendText("Is the back door locked?"));
+
+    expect(kinds(result.current.items)).toEqual(["tombstone", "alfred", "you", "thinking"]);
+  });
+
+  it("relabels the day when the app returns after midnight", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-01T23:59:00"));
+    const { result } = renderRoom({ history: [historyRow], online: true });
+    expect(result.current.items[0]).toMatchObject({ kind: "divider", label: "earlier today" });
+
+    vi.setSystemTime(new Date("2026-09-02T00:01:00"));
+    act(() => void document.dispatchEvent(new Event("visibilitychange")));
+
+    expect(result.current.items[0]).toMatchObject({ kind: "divider", label: "yesterday" });
   });
 
   it("puts a day divider in front of the thread", () => {
@@ -2861,6 +3526,43 @@ describe("useRoom — sending", () => {
     expect(JSON.parse(localStorage.getItem(UNSENT_KEY) ?? "[]")).toHaveLength(1);
   });
 
+  it("does not touch the socket while the house is unreachable", () => {
+    // The socket would accept it; the `online` flag alone must stop the send.
+    const { result, chat } = renderRoom({ history: [], online: false });
+
+    act(() => result.current.sendText("Turn the hall light off"));
+
+    expect(chat.sendText).not.toHaveBeenCalled();
+    const you = result.current.items.find((item) => item.kind === "you")!;
+    expect(you.kind === "you" && you.state).toBe("unsent");
+  });
+
+  it("keeps the turn in flight when a later message cannot leave", () => {
+    const { result, chat } = renderRoom({ history: [], online: true });
+    act(() => result.current.sendText("Anything tomorrow?"));
+
+    act(() => chat.onstatus("offline"));
+    sendSucceeds = false;
+    act(() => result.current.sendText("And the windows?"));
+
+    expect(kinds(result.current.items)).toEqual(["you", "thinking", "you"]);
+    expect(result.current.thinking).toBe(true);
+  });
+
+  it("shows one thinking row when the queue goes out behind a turn in flight", () => {
+    const { result, chat } = renderRoom({ history: [], online: true });
+    act(() => result.current.sendText("Anything tomorrow?"));
+
+    act(() => chat.onstatus("offline"));
+    sendSucceeds = false;
+    act(() => result.current.sendText("And the windows?"));
+
+    sendSucceeds = true;
+    act(() => chat.onstatus("online"));
+
+    expect(result.current.items.filter((item) => item.kind === "thinking")).toHaveLength(1);
+  });
+
   it("retries the queue in order when the connection returns", () => {
     sendSucceeds = false;
     const { result, chat } = renderRoom({ history: [], online: false });
@@ -2877,6 +3579,26 @@ describe("useRoom — sending", () => {
       result.current.items.every((item) => item.kind !== "you" || item.state === "sent"),
     ).toBe(true);
     expect(JSON.parse(localStorage.getItem(UNSENT_KEY) ?? "[]")).toHaveLength(0);
+    // What went out is a turn in flight.
+    expect(kinds(result.current.items)).toEqual(["you", "you", "thinking"]);
+    expect(result.current.thinking).toBe(true);
+    const thinking = result.current.items.find((item) => item.kind === "thinking")!;
+    expect(thinking.kind === "thinking" && thinking.detail).toBe("working");
+  });
+
+  it("gives up on a retried turn the server never answers", () => {
+    vi.useFakeTimers();
+    sendSucceeds = false;
+    const { result, chat } = renderRoom({ history: [], online: false });
+    act(() => result.current.sendText("first"));
+
+    sendSucceeds = true;
+    act(() => chat.onstatus("online"));
+    act(() => void vi.advanceTimersByTime(60_000));
+
+    expect(result.current.thinking).toBe(false);
+    const alfred = result.current.items.find((item) => item.kind === "alfred")!;
+    expect(alfred.kind === "alfred" && alfred.text).toBe("No reply in 60 s.");
   });
 
   it("stops the retry at the first refusal rather than reordering", () => {
@@ -2885,15 +3607,19 @@ describe("useRoom — sending", () => {
 
     act(() => result.current.sendText("first"));
     act(() => result.current.sendText("second"));
+    act(() => result.current.sendText("third"));
     chat.sendText.mockClear();
+    // The third would go if it were tried; the refusal of the second must stop it.
+    sendSucceeds = true;
     chat.sendText.mockImplementationOnce(() => true).mockImplementationOnce(() => false);
 
     act(() => chat.onstatus("online"));
 
+    expect(chat.sendText.mock.calls.map((call) => call[0])).toEqual(["first", "second"]);
     const states = result.current.items
       .filter((item) => item.kind === "you")
       .map((item) => (item.kind === "you" ? item.state : ""));
-    expect(states).toEqual(["sent", "unsent"]);
+    expect(states).toEqual(["sent", "unsent", "unsent"]);
   });
 
   it("restores the queue after a cold launch", () => {
@@ -2915,6 +3641,37 @@ describe("useRoom — sending", () => {
     localStorage.setItem(UNSENT_KEY, "{not json");
     const { result } = renderRoom({ history: [], online: false });
     expect(result.current.items).toHaveLength(0);
+  });
+
+  // Valid JSON, wrong shape — one field short each. Without its timestamp a
+  // row would open the thread with a `NaN undefined` day divider; without its
+  // state it would never be retried and never be cleared.
+  it.each([
+    ["kind", { id: "you:cold", at: "2026-09-07T21:00:00", text: "held over", state: "unsent" }],
+    ["id", { kind: "you", at: "2026-09-07T21:00:00", text: "held over", state: "unsent" }],
+    ["timestamp", { kind: "you", id: "you:cold", text: "held over", state: "unsent" }],
+    ["text", { kind: "you", id: "you:cold", at: "2026-09-07T21:00:00", state: "unsent" }],
+    ["unsent state", { kind: "you", id: "you:cold", at: "2026-09-07T21:00:00", text: "held over" }],
+  ])("ignores a persisted row without its %s", (_field, row) => {
+    localStorage.setItem(UNSENT_KEY, JSON.stringify([row]));
+    const { result } = renderRoom({ history: [], online: false });
+    expect(result.current.items).toHaveLength(0);
+  });
+
+  it("drops only the unreadable row, not the whole queue", () => {
+    // A `null` element must be refused by the shape check, not thrown on and
+    // caught — the catch loses everything that was queued behind it.
+    localStorage.setItem(
+      UNSENT_KEY,
+      JSON.stringify([
+        null,
+        { kind: "you", id: "you:cold", at: "2026-09-07T21:00:00", text: "held over", state: "unsent" },
+      ]),
+    );
+    const { result } = renderRoom({ history: [], online: false });
+    expect(result.current.items.some((item) => item.kind === "you" && item.text === "held over")).toBe(
+      true,
+    );
   });
 });
 
@@ -2956,6 +3713,9 @@ describe("useRoom — what comes back", () => {
     const { result, chat } = renderRoom({ history: [], online: true });
     act(() => result.current.sendAudio("data:audio/mp4;base64,AAAA", 2.4));
     expect(kinds(result.current.items)).toEqual(["transcribing"]);
+    // The bubble shows how much audio is with the server; it must be what was sent.
+    const bubble = result.current.items.find((item) => item.kind === "transcribing")!;
+    expect(bubble.kind === "transcribing" && bubble.seconds).toBe(2.4);
 
     act(() =>
       chat.deliver({ type: "transcription", text: "Is the back door locked?", session_id: "s_9f2" }),
@@ -2964,6 +3724,17 @@ describe("useRoom — what comes back", () => {
     expect(kinds(result.current.items)).toEqual(["you", "thinking"]);
     const you = result.current.items.find((item) => item.kind === "you")!;
     expect(you.kind === "you" && you.text).toBe("Is the back door locked?");
+    const thinking = result.current.items.find((item) => item.kind === "thinking")!;
+    expect(thinking.kind === "thinking" && thinking.detail).toBe("working");
+  });
+
+  it("clears the dashed bubble when the turn errors", () => {
+    const { result, chat } = renderRoom({ history: [], online: true });
+    act(() => result.current.sendAudio("data:audio/mp4;base64,AAAA", 1.2));
+
+    act(() => chat.deliver({ type: "error", text: "Expected a JSON object" }));
+
+    expect(kinds(result.current.items)).toEqual(["alfred"]);
   });
 
   it("clears the dashed bubble when transcription failed outright", () => {
@@ -3080,6 +3851,27 @@ describe("useRoom — silence", () => {
     expect(alfred.kind === "alfred" && alfred.error).toBe(true);
   });
 
+  it("does not restart the countdown when an unrelated frame arrives", () => {
+    vi.useFakeTimers();
+    const { result, chat } = renderRoom({ history: [], online: true });
+
+    act(() => result.current.sendText("Anything tomorrow?"));
+    act(() => void vi.advanceTimersByTime(59_000));
+    act(() =>
+      chat.deliver({
+        type: "notification",
+        title: "Bins go out tonight",
+        body: "Collection moved to Friday.",
+        urgency: "important",
+        notification_id: "ntf-5",
+        metadata: {},
+      }),
+    );
+    act(() => void vi.advanceTimersByTime(2_000));
+
+    expect(result.current.thinking).toBe(false);
+  });
+
   it("cancels the timeout when the reply arrives in time", () => {
     vi.useFakeTimers();
     const { result, chat } = renderRoom({ history: [], online: true });
@@ -3137,19 +3929,27 @@ function isUnsent(item: TimelineItem): item is YouItem {
   return item.kind === "you" && item.state === "unsent";
 }
 
+// Every field, not just the kind: a row without its timestamp would put a
+// `NaN undefined` day divider at the top of the thread, and one without its
+// state would never be retried and never be cleared.
+function isPersistedUnsent(item: unknown): item is YouItem {
+  if (!item || typeof item !== "object") return false;
+  const row = item as Partial<YouItem>;
+  return (
+    row.kind === "you" &&
+    typeof row.id === "string" &&
+    typeof row.at === "string" &&
+    typeof row.text === "string" &&
+    row.state === "unsent"
+  );
+}
+
 function readUnsent(): TimelineItem[] {
   try {
     const raw = localStorage.getItem(UNSENT_KEY);
     if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (item): item is YouItem =>
-        !!item &&
-        typeof item === "object" &&
-        (item as YouItem).kind === "you" &&
-        typeof (item as YouItem).text === "string",
-    );
+    return Array.isArray(parsed) ? parsed.filter(isPersistedUnsent) : [];
   } catch {
     // Corrupt or unavailable storage loses the queue, never the app.
     return [];
@@ -3200,9 +4000,13 @@ export function useRoom({ history, tombstones }: UseRoomOptions): RoomValue {
       const at = new Date().toISOString();
       const sent = online && chat.sendText(text);
       setLive((current) => {
+        // Only a send that left starts a new turn. One that did not leaves the
+        // turn already in flight — and its countdown — exactly as it was.
         // Annotated: TS infers a type predicate from the filter and would
         // otherwise refuse to push a thinking row back in.
-        const next: TimelineItem[] = current.filter((item) => item.kind !== "thinking");
+        const next: TimelineItem[] = sent
+          ? current.filter((item) => item.kind !== "thinking")
+          : [...current];
         next.push({ kind: "you", id: uid("you"), at, text, state: sent ? "sent" : "unsent" });
         if (sent) next.push({ kind: "thinking", id: THINKING_ID, at, detail: "working" });
         return next;
@@ -3227,6 +4031,9 @@ export function useRoom({ history, tombstones }: UseRoomOptions): RoomValue {
 
   // Retry the queue, in order, the moment the socket says it is online. Stopping
   // at the first refusal keeps the conversation in the order it was written.
+  // What went out is a turn in flight like any other, so it gets the thinking
+  // row and, through it, the 60 s countdown; a reconnect the server never
+  // answers would otherwise show nothing at all.
   // Driven by the socket's own notification rather than the `online` flag: the
   // sends are an external side effect and the rows they settle are recorded in
   // the same callback, so the effect itself only subscribes. The queue is read
@@ -3246,13 +4053,18 @@ export function useRoom({ history, tombstones }: UseRoomOptions): RoomValue {
         }
         if (delivered.size === 0) return;
 
-        setLive((current) =>
-          current.map((item) =>
+        const at = new Date().toISOString();
+        setLive((current) => {
+          const settled: TimelineItem[] = current.map((item) =>
             item.kind === "you" && delivered.has(item.id)
               ? { kind: "you", id: item.id, at: item.at, text: item.text, state: "sent" }
               : item,
-          ),
-        );
+          );
+          return [
+            ...settled.filter((item) => item.kind !== "thinking"),
+            { kind: "thinking", id: THINKING_ID, at, detail: "working" },
+          ];
+        });
       }),
     [subscribeOnline, chat],
   );
@@ -3355,10 +4167,10 @@ export function useRoom({ history, tombstones }: UseRoomOptions): RoomValue {
 - [ ] **Step 4: Run the test and the suite**
 
 Run: `npm test -- src/room/useRoom.test.tsx`
-Expected: `Test Files  1 passed (1)`, 18 tests.
+Expected: `Test Files  1 passed (1)`, 32 tests.
 
 Run: `npm test && npm run lint && npm run build`
-Expected: `Test Files  28 passed (28)`, no eslint output, `✓ built in …`.
+Expected: `Test Files  30 passed (30)`, `Tests  359 passed (359)`, no eslint output, `✓ built in …`.
 
 - [ ] **Step 5: Commit**
 
@@ -3375,6 +4187,8 @@ git commit -m "feat(web): live Room state — sending, the unsent queue and the 
 
 The hold-to-talk button itself is Task 22; this task takes it as a slot so the composer can be tested on its own.
 
+Four rules the tests pin beyond the slot swap: the draft is trimmed before it goes out, and whitespace alone is not a draft (no send button); a click on send hands focus back to the field — the send button and the hold slot are the same DOM node, patched in place, so focus would otherwise land on "hold to talk" and the keyboard would drop; Enter during an IME composition (`nativeEvent.isComposing`) confirms the candidate and is not a send; and the field keeps the browser's focus outline, like the SetupGate fields do — it is the one keyboard-reachable control in the Room.
+
 **Files:**
 - Create: `web/src/room/Composer.tsx`, `web/src/room/Composer.test.tsx`
 - Modify: `web/src/index.css`
@@ -3384,7 +4198,7 @@ The hold-to-talk button itself is Task 22; this task takes it as a slot so the c
 Create `web/src/room/Composer.test.tsx`:
 
 ```tsx
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Composer } from "./Composer";
@@ -3398,11 +4212,18 @@ function setViewport(height: number, innerHeight = 852): void {
 }
 
 const originalViewport = window.visualViewport;
+const originalInnerHeight = window.innerHeight;
 
+// Both, or the 852 px `innerHeight` outlives the test that set it and every
+// later test sees 84 px of phantom keyboard against setup.ts's 768 px viewport.
 afterEach(() => {
   Object.defineProperty(window, "visualViewport", {
     configurable: true,
     value: originalViewport,
+  });
+  Object.defineProperty(window, "innerHeight", {
+    configurable: true,
+    value: originalInnerHeight,
   });
 });
 
@@ -3442,6 +4263,22 @@ describe("Composer", () => {
     expect(field).toHaveValue("");
   });
 
+  it("hands focus back to the field after a click on send", async () => {
+    const user = userEvent.setup();
+    render(
+      <Composer online onSend={() => {}} hold={<button type="button">hold to talk</button>} />,
+    );
+    const field = screen.getByPlaceholderText("Ask or tell Alfred");
+
+    await user.type(field, "Turn the hall light off");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+
+    // The button node is patched into the hold slot, not replaced; without the
+    // hand-back that is where focus would land.
+    expect(field).toHaveFocus();
+    expect(screen.getByRole("button", { name: "hold to talk" })).not.toHaveFocus();
+  });
+
   it("sends on Enter", async () => {
     const user = userEvent.setup();
     const onSend = vi.fn();
@@ -3452,6 +4289,29 @@ describe("Composer", () => {
     expect(onSend).toHaveBeenCalledWith("Anything tomorrow?");
   });
 
+  it("trims the draft before it goes out", async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    render(<Composer online onSend={onSend} hold={null} />);
+
+    await user.type(screen.getByPlaceholderText("Ask or tell Alfred"), "  hello  {Enter}");
+
+    expect(onSend).toHaveBeenCalledWith("hello");
+  });
+
+  it("lets Enter confirm a composition instead of sending it", async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    render(<Composer online onSend={onSend} hold={null} />);
+    const field = screen.getByPlaceholderText("Ask or tell Alfred");
+
+    await user.type(field, "にほんg");
+    fireEvent.keyDown(field, { key: "Enter", isComposing: true });
+
+    expect(onSend).not.toHaveBeenCalled();
+    expect(field).toHaveValue("にほんg");
+  });
+
   it("refuses to send an empty draft", async () => {
     const user = userEvent.setup();
     const onSend = vi.fn();
@@ -3460,6 +4320,8 @@ describe("Composer", () => {
     await user.type(screen.getByPlaceholderText("Ask or tell Alfred"), "   {Enter}");
 
     expect(onSend).not.toHaveBeenCalled();
+    // Whitespace is not a draft: the hold slot stays, send never appears.
+    expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
   });
 
   it("says what will happen to a message typed offline, and still takes it", async () => {
@@ -3501,7 +4363,7 @@ Expected: FAIL — `Failed to resolve import "./Composer"`.
 Complete file:
 
 ```tsx
-import { useState, type KeyboardEvent, type ReactNode } from "react";
+import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useKeyboardOpen } from "@/lib/viewport";
 
 export interface ComposerProps {
@@ -3517,6 +4379,7 @@ export interface ComposerProps {
  */
 export function Composer({ online, onSend, hold }: ComposerProps) {
   const [draft, setDraft] = useState("");
+  const field = useRef<HTMLInputElement>(null);
   const keyboardOpen = useKeyboardOpen();
   const hasDraft = draft.trim().length > 0;
 
@@ -3525,9 +4388,16 @@ export function Composer({ online, onSend, hold }: ComposerProps) {
     if (!text) return;
     onSend(text);
     setDraft("");
+    // The send button and the hold slot share one DOM node, so a click on
+    // "Send" would otherwise leave focus on "hold to talk" — and drop the
+    // keyboard. The next message starts in the field, like the last one did.
+    field.current?.focus();
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
+    // Enter while composing confirms the candidate on a CJK or predictive
+    // keyboard; it is not a send, and the half-composed draft must not go out.
+    if (event.nativeEvent.isComposing) return;
     if (event.key === "Enter") {
       event.preventDefault();
       send();
@@ -3542,6 +4412,7 @@ export function Composer({ online, onSend, hold }: ComposerProps) {
     <div className={`pb-keyboard relative z-[1] ${keyboardOpen ? "keyboard-up" : ""}`}>
       <div className="flex items-center gap-2.5 px-5 pb-2">
         <input
+          ref={field}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={onKeyDown}
@@ -3551,7 +4422,7 @@ export function Composer({ online, onSend, hold }: ComposerProps) {
           autoCapitalize="sentences"
           autoCorrect="on"
           enterKeyHint="send"
-          className="h-[50px] min-w-0 flex-1 rounded-[25px] border px-[18px] text-[15px] outline-none"
+          className="h-[50px] min-w-0 flex-1 rounded-[25px] border px-[18px] text-[15px]"
           style={{ background: "var(--field)", borderColor: "var(--line)", color: "var(--fg)" }}
         />
 
@@ -3594,10 +4465,10 @@ Inside the `@layer components` block, directly after the existing `.pb-keyboard`
 - [ ] **Step 5: Run the tests and the suite**
 
 Run: `npm test -- src/room/Composer.test.tsx`
-Expected: `Test Files  1 passed (1)`, 8 tests.
+Expected: `Test Files  1 passed (1)`, 11 tests.
 
 Run: `npm test && npm run lint && npm run build`
-Expected: `Test Files  29 passed (29)`, no eslint output, `✓ built in …`.
+Expected: `Test Files  31 passed (31)`, `Tests  370 passed (370)`, no eslint output, `✓ built in …`.
 
 ```bash
 grep -o "keyboard-up" dist/assets/*.css | wc -l
@@ -3623,6 +4494,8 @@ Two iOS constraints, both of which break the app rather than degrade it.
 **§4.8 — Safari has no WebM.** The outgoing `VoiceButton` hard-coded `audio/webm;codecs=opus`, which throws in the `MediaRecorder` constructor on iOS. Feature-detect `audio/mp4`, then `audio/aac`, then let the browser choose; the backend's `_decode_audio` already accepts aac/m4a/wav.
 
 The recorder also owns the `AnalyserNode` (fftSize 256, smoothing 0.6) that Task 22 hands to `PresenceSignal`, because it is the same microphone stream and must be torn down with it.
+
+Rules the tests pin beyond the happy path. Both resume guards are `state !== "running"`, not `=== "suspended"`: WebKit has a fourth, non-standard state, `"interrupted"` (a phone call or Siri took the audio session), and a context left there plays into nothing until the tab is reloaded. `Recorder.start()` resumes the context itself — `installAudioUnlock` fires once, iOS re-suspends on every background, and an analyser on a suspended context reads silence. The recording is labelled with the type `MediaRecorder` actually chose (`recorder.mimeType`, read after `start()`): with no hint Firefox and older Chrome record webm, and calling that `audio/mp4` sends ffmpeg a lie. A `MediaRecorder` constructor that throws (none at all on iOS before 14.3, or `NotSupportedError`) stops the tracks it already opened before rethrowing — the mic indicator must not stay on. `pickMimeType()` answers `""` rather than throwing where `MediaRecorder` is undefined.
 
 **Files:**
 - Rewrite: `web/src/lib/audio.ts`
@@ -3735,8 +4608,41 @@ describe("installAudioUnlock", () => {
     expect(started.starts).toBe(1);
     expect(getAudioContext()!.state).toBe("running");
 
+    // The context is running now, so `resumed` cannot move either way; the
+    // priming source is unconditional, so `starts` is what proves the removal.
     document.dispatchEvent(new Event("pointerdown"));
     expect(started.resumed).toBe(1);
+    expect(started.starts).toBe(1);
+  });
+
+  it("resumes a context WebKit marked interrupted, not just a suspended one", async () => {
+    const { installAudioUnlock, getAudioContext } = await loadAudio();
+    (getAudioContext() as unknown as { state: string }).state = "interrupted";
+    installAudioUnlock();
+
+    document.dispatchEvent(new Event("pointerdown"));
+
+    expect(started.resumed).toBe(1);
+  });
+
+  it("does not throw on a gesture where there is no Web Audio", async () => {
+    vi.stubGlobal("AudioContext", undefined);
+    vi.stubGlobal("webkitAudioContext", undefined);
+    const { installAudioUnlock } = await loadAudio();
+    installAudioUnlock();
+
+    // jsdom reports a throwing listener as an `error` event on window rather
+    // than out of `dispatchEvent`, so that is where a throw would show.
+    const errors: unknown[] = [];
+    const onError = (event: ErrorEvent) => {
+      event.preventDefault();
+      errors.push(event.error);
+    };
+    window.addEventListener("error", onError);
+    document.dispatchEvent(new Event("pointerdown"));
+    window.removeEventListener("error", onError);
+
+    expect(errors).toEqual([]);
   });
 
   it("takes a keypress as the gesture too", async () => {
@@ -3786,6 +4692,13 @@ describe("playWavBase64", () => {
     expect(started.resumed).toBe(1);
   });
 
+  it("resumes a context WebKit marked interrupted by a phone call", async () => {
+    const { playWavBase64, getAudioContext } = await loadAudio();
+    (getAudioContext() as unknown as { state: string }).state = "interrupted";
+    playWavBase64(btoa("RIFF"));
+    expect(started.resumed).toBe(1);
+  });
+
   it("stays silent rather than throwing when there is no Web Audio", async () => {
     vi.stubGlobal("AudioContext", undefined);
     vi.stubGlobal("webkitAudioContext", undefined);
@@ -3813,7 +4726,7 @@ describe("playWavBase64", () => {
 - [ ] **Step 2: Run it to verify it fails**
 
 Run: `npm test -- src/lib/audio.test.ts`
-Expected: FAIL — `The requested module './audio' does not provide an export named 'getAudioContext'`. The carried-over module has only `playWavBase64`, built on `new Audio()`.
+Expected: FAIL — all 16 tests, each at its call site (`getAudioContext is not a function` and the like): the carried-over module has only `playWavBase64`, built on `new Audio()`, and vitest surfaces the missing exports per test rather than as one import error.
 
 - [ ] **Step 3: Rewrite `web/src/lib/audio.ts`**
 
@@ -3841,7 +4754,7 @@ interface AudioWindow {
 let context: AudioContext | null = null;
 let installed = false;
 
-function constructor(): AudioContextCtor | null {
+function audioContextCtor(): AudioContextCtor | null {
   const w = window as unknown as AudioWindow;
   return w.AudioContext ?? w.webkitAudioContext ?? null;
 }
@@ -3849,7 +4762,7 @@ function constructor(): AudioContextCtor | null {
 /** The shared context, built on first use. Null where Web Audio does not exist. */
 export function getAudioContext(): AudioContext | null {
   if (context) return context;
-  const Ctor = constructor();
+  const Ctor = audioContextCtor();
   if (!Ctor) return null;
   try {
     context = new Ctor();
@@ -3881,7 +4794,7 @@ export function installAudioUnlock(): () => void {
   function unlock(): void {
     const ctx = getAudioContext();
     if (ctx) {
-      if (ctx.state === "suspended") void ctx.resume().catch(() => {});
+      if (ctx.state !== "running") void ctx.resume().catch(() => {});
       try {
         const source = ctx.createBufferSource();
         source.buffer = ctx.createBuffer(1, 1, 22050);
@@ -3920,8 +4833,10 @@ export function playWavBase64(base64: string): void {
   }
 
   // iOS suspends the context whenever the app is backgrounded; a reply arriving
-  // on the way back would otherwise decode fine and play into nothing.
-  if (ctx.state === "suspended") void ctx.resume().catch(() => {});
+  // on the way back would otherwise decode fine and play into nothing. Not
+  // `=== "suspended"`: WebKit also has "interrupted" — a phone call or Siri
+  // took the audio session — which the AudioContextState union does not name.
+  if (ctx.state !== "running") void ctx.resume().catch(() => {});
 
   void ctx
     .decodeAudioData(bytes.buffer as ArrayBuffer)
@@ -3941,7 +4856,7 @@ export function playWavBase64(base64: string): void {
 - [ ] **Step 4: Run the audio test**
 
 Run: `npm test -- src/lib/audio.test.ts`
-Expected: `Test Files  1 passed (1)`, 13 tests.
+Expected: `Test Files  1 passed (1)`, 16 tests.
 
 - [ ] **Step 5: Write the failing recorder test**
 
@@ -3949,10 +4864,13 @@ Create `web/src/lib/recorder.test.ts`:
 
 ```ts
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getAudioContext } from "./audio";
 import { blobToDataUrl, pickMimeType, Recorder } from "./recorder";
 
 class FakeMediaRecorder {
   static supported: string[] = ["audio/mp4"];
+  /** What the browser settles on when it is given no hint. */
+  static chosen = "audio/webm";
   static instances: FakeMediaRecorder[] = [];
 
   static isTypeSupported(type: string): boolean {
@@ -3962,15 +4880,19 @@ class FakeMediaRecorder {
   ondataavailable: ((event: { data: Blob }) => void) | null = null;
   onstop: (() => void) | null = null;
   options: { mimeType?: string } | undefined;
+  mimeType: string;
   started = false;
 
   constructor(_stream: MediaStream, options?: { mimeType?: string }) {
     this.options = options;
+    this.mimeType = options?.mimeType ?? "";
     FakeMediaRecorder.instances.push(this);
   }
 
+  // Like the real one: the type it actually records is known once it starts.
   start(): void {
     this.started = true;
+    this.mimeType ||= FakeMediaRecorder.chosen;
   }
 
   stop(): void {
@@ -3991,9 +4913,10 @@ class FakeAudioContext {
   createMediaStreamSource() {
     return source;
   }
-  resume() {
+  resume = vi.fn(() => {
+    this.state = "running";
     return Promise.resolve();
-  }
+  });
 }
 
 let tracks: { stop: ReturnType<typeof vi.fn> }[] = [];
@@ -4047,6 +4970,11 @@ describe("pickMimeType", () => {
   it("uses MediaRecorder.isTypeSupported by default", () => {
     expect(pickMimeType()).toBe("audio/mp4");
   });
+
+  it("answers empty, not a throw, where there is no MediaRecorder at all", () => {
+    vi.stubGlobal("MediaRecorder", undefined);
+    expect(pickMimeType()).toBe("");
+  });
 });
 
 describe("Recorder", () => {
@@ -4068,6 +4996,49 @@ describe("Recorder", () => {
     const recorder = new Recorder();
     await recorder.start();
     expect(FakeMediaRecorder.instances[0].options).toBeUndefined();
+  });
+
+  it("labels the recording with the type the browser chose, not mp4", async () => {
+    FakeMediaRecorder.supported = [];
+    const recorder = new Recorder();
+    await recorder.start();
+
+    const recording = await recorder.stop();
+
+    // Firefox records webm here; calling it mp4 would send ffmpeg a lie.
+    expect(recording!.mimeType).toBe("audio/webm");
+    expect(recording!.blob.type).toBe("audio/webm");
+  });
+
+  it("resumes a context iOS suspended while the app was in the background", async () => {
+    const ctx = getAudioContext() as unknown as FakeAudioContext;
+    ctx.state = "suspended";
+    await new Recorder().start();
+
+    expect(ctx.resume).toHaveBeenCalled();
+    expect(ctx.state).toBe("running");
+  });
+
+  it("resumes a context WebKit marked interrupted by a call mid-conversation", async () => {
+    const ctx = getAudioContext() as unknown as FakeAudioContext;
+    // The context outlives the test above, and so does its mock's history.
+    ctx.resume.mockClear();
+    ctx.state = "interrupted";
+    await new Recorder().start();
+
+    expect(ctx.resume).toHaveBeenCalledTimes(1);
+    expect(ctx.state).toBe("running");
+  });
+
+  it("closes the microphone again when there is no MediaRecorder to open", async () => {
+    vi.stubGlobal("MediaRecorder", undefined);
+    const recorder = new Recorder();
+
+    await expect(recorder.start()).rejects.toThrow();
+
+    expect(tracks[0].stop).toHaveBeenCalled();
+    expect(tracks[1].stop).toHaveBeenCalled();
+    expect(await recorder.stop()).toBeNull();
   });
 
   it("ignores a second start while already recording", async () => {
@@ -4157,7 +5128,8 @@ import { getAudioContext } from "./audio";
 /**
  * In preference order. Constraint §4.8: Safari's MediaRecorder has no WebM at
  * all and *throws* from the constructor when asked for it, which is how the
- * outgoing VoiceButton died on every iPhone. The backend accepts aac/m4a/wav.
+ * outgoing VoiceButton died on every iPhone. The backend's allowed formats take
+ * mp4 as of this task.
  */
 export const RECORDER_MIME_TYPES = ["audio/mp4", "audio/aac"] as const;
 
@@ -4205,15 +5177,28 @@ export class Recorder {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     this.stream = stream;
     this.chunks = [];
-    this.mimeType = pickMimeType();
 
-    const recorder = this.mimeType
-      ? new MediaRecorder(stream, { mimeType: this.mimeType })
-      : new MediaRecorder(stream);
-    recorder.ondataavailable = (event: BlobEvent) => {
-      if (event.data && event.data.size > 0) this.chunks.push(event.data);
-    };
-    recorder.start();
+    let recorder: MediaRecorder;
+    try {
+      this.mimeType = pickMimeType();
+      recorder = this.mimeType
+        ? new MediaRecorder(stream, { mimeType: this.mimeType })
+        : new MediaRecorder(stream);
+      recorder.ondataavailable = (event: BlobEvent) => {
+        if (event.data && event.data.size > 0) this.chunks.push(event.data);
+      };
+      recorder.start();
+    } catch (error) {
+      // No MediaRecorder at all (iOS before 14.3), or one that refuses the
+      // stream. The microphone is already open by now, and an iOS mic indicator
+      // left on is worse than the failed recording.
+      for (const track of stream.getTracks()) track.stop();
+      this.stream = null;
+      throw error;
+    }
+    // With no hint the browser chose for itself — webm or ogg, never mp4 — and
+    // the blob, and through it the data URL's container hint, must say so.
+    this.mimeType = recorder.mimeType || this.mimeType;
     this.recorder = recorder;
     this.startedAt = Date.now();
 
@@ -4221,6 +5206,12 @@ export class Recorder {
     // the recording itself must still work.
     const ctx = getAudioContext();
     if (!ctx) return;
+    // `installAudioUnlock` only fires once; iOS re-suspends the context every
+    // time the app is backgrounded (and WebKit marks it "interrupted" after a
+    // call or Siri), and an analyser on a context that is not running reads
+    // silence for the whole utterance. `start()` runs inside the pointerdown,
+    // so the resume is honoured.
+    if (ctx.state !== "running") void ctx.resume().catch(() => {});
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 256;
     analyser.smoothingTimeConstant = 0.6;
@@ -4234,7 +5225,7 @@ export class Recorder {
     const recorder = this.recorder;
     const stream = this.stream;
     const mimeType = this.mimeType;
-    const durationMs = this.startedAt === 0 ? 0 : Date.now() - this.startedAt;
+    const durationMs = Date.now() - this.startedAt;
 
     this.recorder = null;
     this.stream = null;
@@ -4253,7 +5244,7 @@ export class Recorder {
     }
 
     const blob = await new Promise<Blob>((resolve) => {
-      const finish = () => resolve(new Blob(this.chunks, { type: mimeType || "audio/mp4" }));
+      const finish = () => resolve(new Blob(this.chunks, { type: mimeType }));
       recorder.onstop = finish;
       try {
         recorder.stop();
@@ -4282,16 +5273,16 @@ export function blobToDataUrl(blob: Blob): Promise<string> {
 - [ ] **Step 8: Run the recorder test and the suite**
 
 Run: `npm test -- src/lib/recorder.test.ts`
-Expected: `Test Files  1 passed (1)`, 14 tests.
+Expected: `Test Files  1 passed (1)`, 19 tests.
 
 Run: `npm test && npm run lint && npm run build`
-Expected: `Test Files  31 passed (31)`, no eslint output, `✓ built in …`.
+Expected: `Test Files  33 passed (33)`, `Tests  405 passed (405)`, no eslint output, `✓ built in …`.
 
 ```bash
-grep -rn "audio/webm" src/
+grep -rn "audio/webm" src/ | grep -v '\.test\.'
 ```
 
-Expected: no output — the codec that killed voice on iOS is gone from the client.
+Expected: no output — the codec that killed voice on iOS is gone from the client. (The recorder test names it on purpose: it is what a browser with no mp4 falls back to, and the test pins that the label is honest.)
 
 - [ ] **Step 9: Teach the server the `mp4` format hint (failing test first)**
 
@@ -4342,6 +5333,8 @@ Press and hold; the button fills, four bars wave, the presence field starts movi
 Pointer capture is what makes it feel physical. Without it, a finger that drifts off the 56 px button while speaking never delivers `pointerup` to the button, and the recording runs until the tab is closed.
 
 jsdom implements neither `PointerEvent` nor pointer capture, so the test environment gains both here — Task 26's slider needs the same two.
+
+Rules the tests pin beyond the happy path. `begin()` is async around `getUserMedia`, and the hold can end — or the button unmount, because the Composer swaps the slot for Send the moment a draft appears — while the permission prompt is still up: after `await recorder.start()` the take checks it is still the one in `recorderRef` and, if not, stops the recorder it has only just opened (else the microphone runs until the tab closes and iOS leaves its indicator on); a late rejection only calls `finish(false)` if the take is still the live one, so it cannot tear down whatever replaced it. `finish()` stops the recorder before it looks at `send`, so `pointercancel` releases the microphone too. The unmount cleanup hands the field back — `signal.setHolding(false)`, `signal.attach(null)`, `onHoldingChange(false)` — through a `latest` ref refreshed by a no-dependency effect, so the cleanup stays a `[]` unmount effect and still calls the callback the Room passed last. `finish()` and the unmount cleanup both clear the tick interval — a second take starts from `0:00`, and an unmounted take does not leave an interval holding a dead component's setter; the `online` prop is checked in `begin()` and not only through `disabled` (React runs `onPointerDown` on a disabled button); a take of exactly `1000` ms is kept; and the button draws four bars. The recorder mock's `startGate` promise stands in for the prompt and `live` for an open microphone.
 
 **Files:**
 - Create: `web/src/room/HoldToTalk.tsx`, `web/src/room/HoldToTalk.test.tsx`
@@ -4414,8 +5407,12 @@ import { PresenceSignal } from "@/lib/presence-signal";
 import { HoldToTalk } from "./HoldToTalk";
 
 const { recorders, state } = vi.hoisted(() => ({
-  recorders: [] as { start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> }[],
-  state: { durationMs: 2400, startRejects: false },
+  recorders: [] as {
+    start: ReturnType<typeof vi.fn>;
+    stop: ReturnType<typeof vi.fn>;
+    live: boolean;
+  }[],
+  state: { durationMs: 2400, startRejects: false, startGate: null as Promise<void> | null },
 }));
 
 const FAKE_ANALYSER = { fftSize: 256 } as unknown as AnalyserNode;
@@ -4423,14 +5420,28 @@ const FAKE_ANALYSER = { fftSize: 256 } as unknown as AnalyserNode;
 vi.mock("@/lib/recorder", () => {
   class Recorder {
     analyser: AnalyserNode | null = FAKE_ANALYSER;
+    /** True between a resolved `start()` and `stop()` — the microphone is open. */
+    live = false;
     start = vi.fn(async () => {
-      if (state.startRejects) throw new Error("NotAllowedError");
+      // `startGate` stands in for the permission prompt: until it resolves,
+      // getUserMedia has not returned and there is nothing to stop. Both knobs
+      // are read at call time, so a later take can be configured differently
+      // while an earlier prompt is still open.
+      const gate = state.startGate;
+      const rejects = state.startRejects;
+      if (gate) await gate;
+      if (rejects) throw new Error("NotAllowedError");
+      this.live = true;
     });
-    stop = vi.fn(async () => ({
-      blob: new Blob(["audio"], { type: "audio/mp4" }),
-      mimeType: "audio/mp4",
-      durationMs: state.durationMs,
-    }));
+    stop = vi.fn(async () => {
+      if (!this.live) return null;
+      this.live = false;
+      return {
+        blob: new Blob(["audio"], { type: "audio/mp4" }),
+        mimeType: "audio/mp4",
+        durationMs: state.durationMs,
+      };
+    });
     constructor() {
       recorders.push(this);
     }
@@ -4448,7 +5459,7 @@ function renderHold(online = true) {
   const attach = vi.spyOn(signal, "attach");
   const onAudio = vi.fn();
   const onHoldingChange = vi.fn();
-  render(
+  const view = render(
     <div style={{ position: "relative" }}>
       <HoldToTalk
         signal={signal}
@@ -4460,6 +5471,9 @@ function renderHold(online = true) {
   );
   return {
     button: screen.getByRole("button", { name: "Hold to talk" }),
+    unmount: view.unmount,
+    rerender: view.rerender,
+    signal,
     setHolding,
     attach,
     onAudio,
@@ -4483,6 +5497,7 @@ beforeEach(() => {
   recorders.length = 0;
   state.durationMs = 2400;
   state.startRejects = false;
+  state.startGate = null;
 });
 
 afterEach(() => {
@@ -4491,10 +5506,15 @@ afterEach(() => {
 });
 
 describe("HoldToTalk", () => {
-  it("is a 56 px button, and refuses to record while offline", () => {
+  it("is a 56 px button, and refuses to record while offline", async () => {
     const { button } = renderHold(false);
     expect(button).toHaveClass("h-14", "w-14");
     expect(button).toBeDisabled();
+
+    // `disabled` is not the whole guard: React still runs onPointerDown for a
+    // disabled button, and WebKit dispatches pointer events over one too.
+    await press(button);
+    expect(recorders).toHaveLength(0);
   });
 
   it("starts recording, drives the presence field and shows the caption", async () => {
@@ -4508,6 +5528,8 @@ describe("HoldToTalk", () => {
     expect(attach).toHaveBeenCalledWith(FAKE_ANALYSER);
     expect(onHoldingChange).toHaveBeenCalledWith(true);
     expect(screen.getByText("recording 0:00 · release to send")).toBeInTheDocument();
+    // Four bars, as the handoff draws them.
+    expect(button.querySelectorAll('span[style*="wave"]')).toHaveLength(4);
   });
 
   it("counts the seconds while it is held", async () => {
@@ -4548,7 +5570,7 @@ describe("HoldToTalk", () => {
     expect(recorders[0].stop).toHaveBeenCalled();
   });
 
-  it("discards on pointercancel", async () => {
+  it("discards on pointercancel, and still releases the microphone", async () => {
     const { button, onAudio, setHolding } = renderHold();
     await press(button);
 
@@ -4558,6 +5580,131 @@ describe("HoldToTalk", () => {
 
     expect(onAudio).not.toHaveBeenCalled();
     expect(setHolding).toHaveBeenLastCalledWith(false);
+    // A call or a system sheet steals the pointer mid-sentence; the microphone
+    // indicator must go out even though nothing is sent.
+    expect(recorders[0].stop).toHaveBeenCalled();
+    expect(recorders[0].live).toBe(false);
+  });
+
+  it("keeps a take that is exactly a second", async () => {
+    state.durationMs = 1000;
+    const { button, onAudio } = renderHold();
+
+    await press(button);
+    await release(button);
+
+    await waitFor(() => expect(onAudio).toHaveBeenCalledWith("data:audio/mp4;base64,AAAA", 1));
+  });
+
+  it("stops counting once a take is released", async () => {
+    vi.useFakeTimers();
+    const { button } = renderHold();
+    await press(button);
+    act(() => void vi.advanceTimersByTime(3000));
+
+    await release(button);
+    act(() => void vi.advanceTimersByTime(3000));
+    await press(button);
+
+    expect(screen.getByText("recording 0:00 · release to send")).toBeInTheDocument();
+  });
+
+  it("releases the microphone when the hold ends before the prompt is answered", async () => {
+    let answer = (): void => {};
+    state.startGate = new Promise<void>((resolve) => {
+      answer = resolve;
+    });
+    const { button, attach, onAudio } = renderHold();
+
+    await press(button);
+    await release(button);
+
+    // Only now does the user tap Allow and getUserMedia resolve.
+    await act(async () => {
+      answer();
+      await state.startGate;
+    });
+
+    expect(recorders[0].live).toBe(false);
+    expect(attach).toHaveBeenLastCalledWith(null);
+    expect(onAudio).not.toHaveBeenCalled();
+  });
+
+  it("leaves the next take alone when an earlier refusal finally lands", async () => {
+    let refuse = (): void => {};
+    state.startGate = new Promise<void>((resolve) => {
+      refuse = resolve;
+    });
+    state.startRejects = true;
+    const { button, setHolding, onHoldingChange } = renderHold();
+
+    await press(button);
+    await release(button);
+
+    // A second take is already running by the time the first prompt is answered.
+    state.startGate = null;
+    state.startRejects = false;
+    await press(button);
+
+    await act(async () => {
+      refuse();
+      await Promise.resolve();
+    });
+
+    expect(recorders).toHaveLength(2);
+    expect(recorders[1].live).toBe(true);
+    expect(setHolding).toHaveBeenLastCalledWith(true);
+    expect(onHoldingChange).toHaveBeenLastCalledWith(true);
+    expect(screen.getByText(/release to send/)).toBeInTheDocument();
+  });
+
+  it("closes the microphone and hands the field back when unmounted mid-take", async () => {
+    const { button, unmount, setHolding, attach, onHoldingChange } = renderHold();
+    await press(button);
+
+    await act(async () => {
+      unmount();
+    });
+
+    expect(recorders[0].live).toBe(false);
+    expect(setHolding).toHaveBeenLastCalledWith(false);
+    expect(attach).toHaveBeenLastCalledWith(null);
+    expect(onHoldingChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it("hands the field back through the callback it was last given", async () => {
+    const { button, unmount, rerender, signal, onAudio, onHoldingChange } = renderHold();
+    await press(button);
+
+    // The Room re-renders while the finger is down; a cleanup that captured the
+    // mount-time callback would report to a prop nobody reads any more.
+    const replacement = vi.fn();
+    rerender(
+      <div style={{ position: "relative" }}>
+        <HoldToTalk signal={signal} online onAudio={onAudio} onHoldingChange={replacement} />
+      </div>,
+    );
+    await act(async () => {
+      unmount();
+    });
+
+    expect(replacement).toHaveBeenLastCalledWith(false);
+    expect(onHoldingChange).toHaveBeenLastCalledWith(true);
+  });
+
+  it("clears the counter's interval when unmounted mid-take", async () => {
+    vi.useFakeTimers();
+    const { button, unmount } = renderHold();
+    await press(button);
+    expect(vi.getTimerCount()).toBe(1);
+
+    await act(async () => {
+      unmount();
+    });
+
+    // An interval left running holds the component's setter for the life of the
+    // page, and every unmounted take leaks another one.
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("captures the pointer so a finger sliding off still ends the take", async () => {
@@ -4662,7 +5809,6 @@ export function HoldToTalk({ signal, online, onHoldingChange, onAudio }: HoldToT
     const recorder = new Recorder();
     recorderRef.current = recorder;
     setHolding(true);
-    setSeconds(0);
     onHoldingChange(true);
     signal.setHolding(true);
     tickRef.current = setInterval(() => setSeconds((current) => current + 1), 1000);
@@ -4671,18 +5817,44 @@ export function HoldToTalk({ signal, online, onHoldingChange, onAudio }: HoldToT
       await recorder.start();
     } catch {
       // Permission refused, or no microphone. Unwind quietly — the composer is
-      // still there and the user can type.
-      await finish(false);
+      // still there and the user can type. Only if this take is still the live
+      // one: a rejection that lands after the hold ended must not tear down
+      // whatever replaced it.
+      if (recorderRef.current === recorder) await finish(false);
+      return;
+    }
+    // The hold can end — or this button unmount — while getUserMedia is still
+    // prompting. `finish()` ran when there was nothing to stop yet, so release
+    // what `start()` has only now opened instead of attaching an analyser to a
+    // take nobody is holding: otherwise the microphone runs until the tab closes
+    // and iOS leaves its indicator on.
+    if (recorderRef.current !== recorder) {
+      void recorder.stop();
       return;
     }
     signal.attach(recorder.analyser);
   }
 
+  // The Room outlives this button — Composer swaps the slot for Send the moment a
+  // draft appears — so unmounting mid-hold must hand the presence field and the
+  // headline back, not only close the microphone. Read through a ref so the
+  // cleanup stays an unmount-only `[]` effect: a dependency on `onHoldingChange`
+  // would re-run it, and kill the take, on every parent render.
+  const latest = useRef({ signal, onHoldingChange });
+  useEffect(() => {
+    latest.current = { signal, onHoldingChange };
+  });
+
   useEffect(() => {
     return () => {
       stopTicking();
-      void recorderRef.current?.stop();
+      const recorder = recorderRef.current;
       recorderRef.current = null;
+      if (!recorder) return;
+      void recorder.stop();
+      latest.current.signal.setHolding(false);
+      latest.current.signal.attach(null);
+      latest.current.onHoldingChange(false);
     };
   }, []);
 
@@ -4740,10 +5912,10 @@ export function HoldToTalk({ signal, online, onHoldingChange, onAudio }: HoldToT
 - [ ] **Step 5: Run the hold test and the suite**
 
 Run: `npm test -- src/room/HoldToTalk.test.tsx`
-Expected: `Test Files  1 passed (1)`, 9 tests.
+Expected: `Test Files  1 passed (1)`, 16 tests.
 
 Run: `npm test && npm run lint && npm run build`
-Expected: `Test Files  32 passed (32)`, no eslint output, `✓ built in …`.
+Expected: `Test Files  34 passed (34)`, `Tests  423 passed (423)`, no eslint output, `✓ built in …`.
 
 - [ ] **Step 6: Commit**
 
@@ -4759,6 +5931,8 @@ git commit -m "feat(web): hold-to-talk, with pointer capture and a one-second fl
 The one place a do-not-disturb queue becomes visible. Spec §5.2.6: with no expiry it never drains on its own, and a queue nobody can see is the failure. Spec §5.2.1 governs the button: `POST /api/admin/notifications/drain` writes an internal action to `alfred:actions` and returns `{"status": "queued"}` — the API cannot know whether anything was delivered, so the button says `Queued` and the note says exactly what that does and does not mean.
 
 All copy here is the handoff's, verbatim.
+
+Rules the tests pin beyond the copy. The sheet stays mounted while closed (only the read is gated on `open`), so `queuedAt` and `error` are reset per visit — adjusted during render on the opening edge, the way `usePresence` does it, never in an effect — or the `Queued` latch from the last visit would sit over a note about a refresh that has long since happened, with no way to try again. A read that fails is said (`failureText(deferred.error)`, `role="status"`), not rendered as an empty or a still-loading sheet; the empty line waits for `deferred.isSuccess`. The drain note is `role="status"` so a refusal is announced (the button's label does not change on one); a refused drain leaves the button enabled and a retry clears the old failure; a drain that rejects with something that is not an `Error` reads "Something went wrong." through `failureText`, not the idle note; and `Queued` is disabled, so the queue cannot be double-POSTed.
 
 **Files:**
 - Create: `web/src/sheets/HeldBackSheet.tsx`, `web/src/sheets/HeldBackSheet.test.tsx`
@@ -4812,6 +5986,7 @@ interface Call {
 }
 
 let calls: Call[] = [];
+let deferredStatus = 200;
 let drainStatus = 200;
 
 function stubFetch(): void {
@@ -4821,7 +5996,10 @@ function stubFetch(): void {
       const url = String(input);
       calls.push({ url, method: init?.method ?? "GET" });
       if (url === "/api/admin/notifications/deferred")
-        return new Response(JSON.stringify(deferredFixture), { status: 200 });
+        return new Response(
+          deferredStatus === 200 ? JSON.stringify(deferredFixture) : '{"detail":"store unavailable"}',
+          { status: deferredStatus },
+        );
       if (url === "/api/admin/notifications/drain")
         return new Response(
           drainStatus === 200 ? '{"status":"queued"}' : '{"detail":"redis is down"}',
@@ -4835,16 +6013,18 @@ function stubFetch(): void {
 function renderSheet(open = true) {
   const onClose = vi.fn();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(
+  const tree = (isOpen: boolean) => (
     <QueryClientProvider client={client}>
-      <HeldBackSheet open={open} onClose={onClose} />
-    </QueryClientProvider>,
+      <HeldBackSheet open={isOpen} onClose={onClose} />
+    </QueryClientProvider>
   );
-  return { onClose };
+  const view = render(tree(open));
+  return { onClose, setOpen: (isOpen: boolean) => view.rerender(tree(isOpen)) };
 }
 
 beforeEach(() => {
   calls = [];
+  deferredStatus = 200;
   drainStatus = 200;
   stubFetch();
 });
@@ -4883,13 +6063,42 @@ describe("HeldBackSheet", () => {
 
     await user.click(drain);
 
-    expect(await screen.findByRole("button", { name: "Queued" })).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        /^Accepted at \d{2}:\d{2}\. Queue will empty on the next refresh if delivery succeeded\.$/,
-      ),
-    ).toBeInTheDocument();
+    // Disabled, so it cannot be double-queued; announced, so a screen reader
+    // hears the outcome — the label alone does not change on a failure.
+    expect(await screen.findByRole("button", { name: "Queued" })).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      /^Accepted at \d{2}:\d{2}\. Queue will empty on the next refresh if delivery succeeded\.$/,
+    );
     expect(calls.some((call) => call.method === "POST" && call.url.endsWith("/drain"))).toBe(true);
+  });
+
+  it("offers the drain again on the next visit", async () => {
+    const user = userEvent.setup();
+    const { setOpen } = renderSheet();
+    await user.click(await screen.findByRole("button", { name: "Drain queue now" }));
+    await screen.findByRole("button", { name: "Queued" });
+
+    setOpen(false);
+    // The reset is on the opening edge: the 380 ms leave must not flash the idle button back.
+    expect(screen.getByRole("button", { name: "Queued" })).toBeDisabled();
+    setOpen(true);
+
+    expect(await screen.findByRole("button", { name: "Drain queue now" })).toBeEnabled();
+    expect(screen.queryByText(/^Accepted at/)).toBeNull();
+  });
+
+  it("forgets a refused drain on the next visit too", async () => {
+    const user = userEvent.setup();
+    drainStatus = 503;
+    const { setOpen } = renderSheet();
+    await user.click(await screen.findByRole("button", { name: "Drain queue now" }));
+    await screen.findByText("redis is down");
+
+    setOpen(false);
+    setOpen(true);
+
+    expect(await screen.findByText(/^Queued only;/)).toBeInTheDocument();
+    expect(screen.queryByText("redis is down")).toBeNull();
   });
 
   it("keeps the rows on screen after draining, because nothing is confirmed", async () => {
@@ -4910,6 +6119,25 @@ describe("HeldBackSheet", () => {
 
     expect(await screen.findByText("redis is down")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Drain queue now" })).toBeEnabled();
+
+    // And the retry does not keep the old failure under its own success.
+    drainStatus = 200;
+    await user.click(screen.getByRole("button", { name: "Drain queue now" }));
+
+    expect(await screen.findByRole("button", { name: "Queued" })).toBeInTheDocument();
+    expect(screen.queryByText("redis is down")).toBeNull();
+  });
+
+  it("has words for a drain that fails without any", async () => {
+    const user = userEvent.setup();
+    renderSheet();
+    const drain = await screen.findByRole("button", { name: "Drain queue now" });
+    // A rejection that is not an Error has no `.message` to read.
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject("no words")));
+
+    await user.click(drain);
+
+    expect(await screen.findByText("Something went wrong.")).toBeInTheDocument();
   });
 
   it("says so when nothing is waiting", async () => {
@@ -4920,6 +6148,23 @@ describe("HeldBackSheet", () => {
     renderSheet();
 
     expect(await screen.findByText("Nothing is being held back.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Drain queue now" })).toBeNull();
+  });
+
+  it("does not call the queue empty before it has read it", () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
+    renderSheet();
+
+    expect(screen.getByText(/^Non-urgent notifications wait here/)).toBeInTheDocument();
+    expect(screen.queryByText("Nothing is being held back.")).toBeNull();
+  });
+
+  it("says so when the queue cannot be read", async () => {
+    deferredStatus = 503;
+    renderSheet();
+
+    expect(await screen.findByRole("status")).toHaveTextContent("store unavailable");
+    expect(screen.queryByText("Nothing is being held back.")).toBeNull();
     expect(screen.queryByRole("button", { name: "Drain queue now" })).toBeNull();
   });
 
@@ -4951,7 +6196,8 @@ Complete file:
 ```tsx
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { api, ApiError, post } from "@/lib/api";
+import { api, post } from "@/lib/api";
+import { failureText } from "@/lib/auth";
 import { hhmm } from "@/lib/format";
 import type { NotificationEvent } from "@/lib/types";
 import { Sheet } from "@/shell/Sheet";
@@ -4970,6 +6216,21 @@ export function HeldBackSheet({ open, onClose }: HeldBackSheetProps) {
   const [queuedAt, setQueuedAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // One visit, one drain. The sheet stays mounted while closed (only the read
+  // is gated on `open`), so a `Queued` latch from the last visit would still be
+  // there on the next — over a note about a refresh that has long since
+  // happened, and with no way to try again. Adjusted during render, as
+  // `usePresence` does, and on the opening edge rather than the closing one so
+  // the leave animation does not flash the idle button back.
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) {
+      setQueuedAt(null);
+      setError(null);
+    }
+  }
+
   const deferred = useQuery<{ notifications: NotificationEvent[] }>({
     queryKey: ["deferred"],
     queryFn: () => api<{ notifications: NotificationEvent[] }>("/api/admin/notifications/deferred"),
@@ -4985,7 +6246,7 @@ export function HeldBackSheet({ open, onClose }: HeldBackSheetProps) {
       await post("/api/admin/notifications/drain");
       setQueuedAt(hhmm(new Date()));
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.detail : (caught as Error).message);
+      setError(failureText(caught));
     }
   }
 
@@ -5021,6 +6282,14 @@ export function HeldBackSheet({ open, onClose }: HeldBackSheetProps) {
         </div>
       ) : null}
 
+      {/* A queue that could not be read must not look like an empty one, or a
+          loading one, in the one sheet that exists to make it visible. */}
+      {deferred.isError ? (
+        <div role="status" className="t-meta text-center">
+          {failureText(deferred.error)}
+        </div>
+      ) : null}
+
       {notifications.length > 0 ? (
         <>
           <button
@@ -5032,7 +6301,7 @@ export function HeldBackSheet({ open, onClose }: HeldBackSheetProps) {
           >
             {queuedAt ? "Queued" : "Drain queue now"}
           </button>
-          <div className="t-meta text-center">
+          <div role="status" className="t-meta text-center">
             {error ??
               (queuedAt
                 ? `Accepted at ${queuedAt}. Queue will empty on the next refresh if delivery succeeded.`
@@ -5048,10 +6317,10 @@ export function HeldBackSheet({ open, onClose }: HeldBackSheetProps) {
 - [ ] **Step 5: Run the test and the suite**
 
 Run: `npm test -- src/sheets/HeldBackSheet.test.tsx`
-Expected: `Test Files  1 passed (1)`, 8 tests.
+Expected: `Test Files  1 passed (1)`, 13 tests.
 
 Run: `npm test && npm run lint && npm run build`
-Expected: `Test Files  33 passed (33)`, no eslint output, `✓ built in …`.
+Expected: `Test Files  35 passed (35)`, `Tests  436 passed (436)`, no eslint output, `✓ built in …`.
 
 - [ ] **Step 6: Commit**
 
@@ -5078,6 +6347,8 @@ Two rules the reducer exists to hold:
 
 - **Only a `pending` action expires.** A `queued` one has been confirmed and the result may still be on its way; turning it into a tombstone because the fuse ran out would say "not done" about something that very likely was.
 - **A list read never demotes what it does not mention.** On a cold launch from a notification tap, `GET /api/actions/pending` and `GET /api/actions/{id}` race, and an empty list landing second would turn a live approval into a tombstone. An action consumed elsewhere resolves the honest way instead: `tick` expires it, a 404 on confirm answers it, or a `home_action_results` frame applies it.
+
+Rules the tests pin beyond those two. An event only ever moves the id it names, and never walks a stronger phase back to a weaker one: a slow confirm 200 leaves `applied` alone (the result that landed first is the fact), but is taken from `expired` (the phone's clock ran ahead; the server took the answer); a confirm 404 answers only a `pending` approval — `queued` and `applied` know better, and `expired` already has the honest tombstone. The `tick` map touches only the lapsed `pending` ones, even with a lapsed `queued` one beside them. In the provider, the clock runs only while something is `pending` — `queued` does not count; the handoff freezes the fuse where the confirmation left it — and steps at once when it starts, so an approval arriving minutes after mount does not draw its first frame from the mount-time `now`. A confirm the server refuses with anything but 404 leaves the action `pending`; entries on other streams and results with no `request_id` move nothing; the provider subscribes exactly once; and the `["pending-actions"]` key is the one `ConnectionProvider` invalidates on `visibilitychange`, so a return from the background reads the list again.
 
 **Files:**
 - Create: `web/src/lib/actions.ts`, `web/src/lib/actions.test.ts`
@@ -5151,11 +6422,18 @@ import {
 const T0741 = Date.parse("2026-09-07T07:41:00Z");
 const T0742 = Date.parse("2026-09-07T07:42:00Z");
 const T0747 = Date.parse("2026-09-07T07:47:00Z");
+const T0750 = Date.parse("2026-09-07T07:50:00Z");
 
 const tracked = (phase: TrackedAction["phase"] = "pending"): TrackedAction => ({
   action: pendingActionFixture,
   phase,
 });
+
+/** Two live approvals, oldest first — for pinning that an event names one id. */
+const pair = (secondPhase: TrackedAction["phase"] = "pending"): TrackedAction[] => [
+  tracked(),
+  { action: secondPendingActionFixture, phase: secondPhase },
+];
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -5247,12 +6525,57 @@ describe("actionReducer — answering", () => {
     expect(state[0].confirmedAt).toBe("2026-09-07T07:42:00Z");
   });
 
+  it("queues only the id the confirm named", () => {
+    const state = actionReducer(pair(), {
+      type: "confirm-sent",
+      id: "7c2e0b1d",
+      at: "2026-09-07T07:45:00Z",
+    });
+    expect(state.map((item) => item.phase)).toEqual(["pending", "queued"]);
+  });
+
+  it("still takes a confirm the phone had already given up on", () => {
+    // The phone's clock ran ahead of the server's; the server took the answer.
+    const state = actionReducer([tracked("expired")], {
+      type: "confirm-sent",
+      id: "a91f3c2e",
+      at: "2026-09-07T07:46:00Z",
+    });
+    expect(state[0].phase).toBe("queued");
+  });
+
+  it("does not let a slow confirm walk an applied result back to queued", () => {
+    const before = [{ ...tracked("applied"), appliedAt: "2026-09-07T07:42:10Z" }];
+    const state = actionReducer(before, {
+      type: "confirm-sent",
+      id: "a91f3c2e",
+      at: "2026-09-07T07:42:11Z",
+    });
+    expect(state[0].phase).toBe("applied");
+    expect(state[0].confirmedAt).toBeUndefined();
+  });
+
   it("marks a 404 confirm as already answered", () => {
     const state = actionReducer([tracked()], { type: "confirm-404", id: "a91f3c2e" });
     expect(state[0].phase).toBe("answered");
   });
 
-  it("only applies on the matching request id", () => {
+  it("answers only the id the 404 named", () => {
+    const state = actionReducer(pair(), { type: "confirm-404", id: "7c2e0b1d" });
+    expect(state.map((item) => item.phase)).toEqual(["pending", "answered"]);
+  });
+
+  it.each(["queued", "applied", "expired"] as const)(
+    "does not let a 404 unsay a %s approval",
+    (phase) => {
+      // Our own second confirm 404s too; and a fuse the phone already called
+      // lapsed has run out on the server as well, which is the tombstone it has.
+      const state = actionReducer([tracked(phase)], { type: "confirm-404", id: "a91f3c2e" });
+      expect(state[0].phase).toBe(phase);
+    },
+  );
+
+  it("applies the result and stamps when", () => {
     const state = actionReducer([tracked("queued")], {
       type: "result",
       result: actionResultFixture,
@@ -5297,6 +6620,11 @@ describe("actionReducer — tick", () => {
   it("does nothing at all while the fuse is running", () => {
     const before = [tracked()];
     expect(actionReducer(before, { type: "tick", now: T0742 })).toBe(before);
+  });
+
+  it("expires the lapsed pending one and leaves the lapsed queued one", () => {
+    const state = actionReducer(pair("queued"), { type: "tick", now: T0750 });
+    expect(state.map((item) => item.phase)).toEqual(["expired", "queued"]);
   });
 });
 
@@ -5437,15 +6765,24 @@ export function actionReducer(state: TrackedAction[], ev: ActionEvent): TrackedA
     }
 
     case "confirm-sent":
+      // A result that landed first is the stronger fact: a slow 200 must not
+      // demote `applied` back to a promise. From `expired` it is welcome — the
+      // phone's clock ran ahead of the server's, and the server took the answer.
       return state.map((item) =>
-        item.action.request_id === ev.id
+        item.action.request_id === ev.id && item.phase !== "applied"
           ? { ...item, phase: "queued", confirmedAt: ev.at }
           : item,
       );
 
     case "confirm-404":
+      // Only a live approval can turn out to have been answered elsewhere.
+      // `queued` and `applied` know better — a second confirm of our own 404s
+      // too — and `expired` already has the honest tombstone: a 404 after the
+      // fuse ran out almost always means the server's ran out as well.
       return state.map((item) =>
-        item.action.request_id === ev.id ? { ...item, phase: "answered" } : item,
+        item.action.request_id === ev.id && item.phase === "pending"
+          ? { ...item, phase: "answered" }
+          : item,
       );
 
     case "result":
@@ -5471,8 +6808,6 @@ export function actionReducer(state: TrackedAction[], ev: ActionEvent): TrackedA
       );
     }
   }
-
-  return state;
 }
 
 /** `GET /api/actions/pending` — oldest first, per the route's own contract. */
@@ -5495,7 +6830,7 @@ export async function confirmAction(id: string): Promise<void> {
 - [ ] **Step 5: Run the reducer test**
 
 Run: `npm test -- src/lib/actions.test.ts`
-Expected: `Test Files  1 passed (1)`, 23 tests.
+Expected: `Test Files  1 passed (1)`, 31 tests.
 
 - [ ] **Step 6: Write the failing provider test**
 
@@ -5612,6 +6947,10 @@ function Probe() {
       </span>
       <span data-testid="pending">{door.pending.length}</span>
       <span data-testid="open">{door.open ? door.current?.action.request_id : "closed"}</span>
+      <span data-testid="now">{door.now}</span>
+      <button type="button" onClick={() => door.arrived(pendingActionFixture)}>
+        arrive
+      </button>
       <button type="button" onClick={() => door.openAction("a91f3c2e")}>
         open
       </button>
@@ -5643,8 +6982,31 @@ function renderDoor() {
 }
 
 const phases = () => screen.getByTestId("phases").textContent;
+const now = () => Number(screen.getByTestId("now").textContent);
+
+/** The app comes back to the foreground. */
+function comeBack(): void {
+  act(() => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+}
+
+function deliverResult(telemetry: FakeTelemetry, msg: Partial<TelemetryMessage>): void {
+  act(() =>
+    telemetry.deliver({
+      type: "entry",
+      stream: "home_action_results",
+      id: "1757000000000-0",
+      event: actionResultFixture as unknown as Record<string, unknown>,
+      ...msg,
+    } as TelemetryMessage),
+  );
+}
 
 beforeEach(() => {
+  // The sockets are module singletons, so their spies outlive a test.
+  (telemetries.at(-1) as FakeTelemetry | undefined)?.subscribe.mockClear();
   calls.length = 0;
   pendingBody = { actions: [] };
   getStatus = 200;
@@ -5671,6 +7033,18 @@ describe("DoorProvider", () => {
   it("subscribes to home_action_results and nothing else", () => {
     const { telemetry } = renderDoor();
     expect(telemetry.subscribe).toHaveBeenCalledWith(["home_action_results"]);
+    expect(telemetry.subscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads the list again when the app comes back", async () => {
+    renderDoor();
+    await waitFor(() => expect(calls).toContain("GET /api/actions/pending"));
+    expect(phases()).toBe("");
+
+    pendingBody = { actions: [pendingActionFixture] };
+    comeBack();
+
+    await waitFor(() => expect(phases()).toBe("a91f3c2e:pending"));
   });
 
   it("fetches the action a confirmation notification names", async () => {
@@ -5754,6 +7128,18 @@ describe("DoorProvider", () => {
     expect(phases()).toBe("a91f3c2e:applied");
   });
 
+  it("hears nothing from other streams, or from a result with no request id", async () => {
+    pendingBody = { actions: [pendingActionFixture] };
+    const { telemetry } = renderDoor();
+    await waitFor(() => expect(phases()).toBe("a91f3c2e:pending"));
+
+    deliverResult(telemetry, { stream: "events" });
+    expect(phases()).toBe("a91f3c2e:pending");
+
+    deliverResult(telemetry, { event: { status: "success" } });
+    expect(phases()).toBe("a91f3c2e:pending");
+  });
+
   it("confirms, and calls it queued rather than applied", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     pendingBody = { actions: [pendingActionFixture] };
@@ -5778,6 +7164,19 @@ describe("DoorProvider", () => {
     await waitFor(() => expect(phases()).toBe("a91f3c2e:answered"));
   });
 
+  it("leaves a confirm the server refused for any other reason pending", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    confirmStatus = 500;
+    pendingBody = { actions: [pendingActionFixture] };
+    renderDoor();
+    await waitFor(() => expect(phases()).toBe("a91f3c2e:pending"));
+
+    await user.click(screen.getByRole("button", { name: "confirm" }));
+
+    await waitFor(() => expect(calls).toContain("POST /api/actions/a91f3c2e/confirm"));
+    expect(phases()).toBe("a91f3c2e:pending");
+  });
+
   it("expires a pending action when its fuse runs out", async () => {
     pendingBody = { actions: [pendingActionFixture] };
     renderDoor();
@@ -5789,6 +7188,40 @@ describe("DoorProvider", () => {
     });
 
     expect(phases()).toBe("a91f3c2e:expired");
+  });
+
+  it("steps the clock the moment something starts counting", () => {
+    renderDoor();
+    const mounted = now();
+
+    // A minute of nothing pending: no clock runs, so `now` is still the mount read.
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+    expect(now()).toBeLessThan(mounted + 1000);
+
+    // The first frame of an approval must not be drawn from that stale read. A
+    // bare DOM click keeps the arrival synchronous, so this reads the very frame.
+    act(() => screen.getByRole("button", { name: "arrive" }).click());
+    expect(phases()).toBe("a91f3c2e:pending");
+    expect(now()).toBeGreaterThanOrEqual(mounted + 60_000);
+  });
+
+  it("stops the clock once the approval is queued", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    pendingBody = { actions: [pendingActionFixture] };
+    renderDoor();
+    await waitFor(() => expect(phases()).toBe("a91f3c2e:pending"));
+
+    await user.click(screen.getByRole("button", { name: "confirm" }));
+    await waitFor(() => expect(phases()).toBe("a91f3c2e:queued"));
+
+    // The handoff freezes the fuse where the confirmation left it.
+    const frozen = now();
+    act(() => {
+      vi.advanceTimersByTime(5_000);
+    });
+    expect(now()).toBe(frozen);
   });
 
   it("opens and closes one action at a time", async () => {
@@ -5916,16 +7349,21 @@ export function DoorProvider({ children }: { children: ReactNode }) {
   }, [telemetry]);
 
   // Only run a clock while something is actually counting: a Room with no
-  // pending approval must not re-render once a second for ever.
-  const counting = actions.some((item) => item.phase === "pending" || item.phase === "queued");
+  // pending approval must not re-render once a second for ever. `queued` does
+  // not count — the handoff freezes the fuse where the confirmation left it.
+  const counting = actions.some((item) => item.phase === "pending");
 
   useEffect(() => {
     if (!counting) return;
-    const timer = setInterval(() => {
+    // Step at once as well as every second: `now` was read at mount, and an
+    // approval arriving minutes later would draw its first frame from that.
+    const step = () => {
       const at = Date.now();
       setNow(at);
       dispatch({ type: "tick", now: at });
-    }, TICK_MS);
+    };
+    step();
+    const timer = setInterval(step, TICK_MS);
     return () => clearInterval(timer);
   }, [counting]);
 
@@ -5971,10 +7409,10 @@ export function useDoor(): DoorValue {
 - [ ] **Step 9: Run the provider test and the suite**
 
 Run: `npm test -- src/door/DoorProvider.test.tsx`
-Expected: `Test Files  1 passed (1)`, 11 tests.
+Expected: `Test Files  1 passed (1)`, 16 tests.
 
 Run: `npm test && npm run lint && npm run build`
-Expected: `Test Files  35 passed (35)`, no eslint output, `✓ built in …`.
+Expected: `Test Files  37 passed (37)`, `Tests  483 passed (483)`, no eslint output, `✓ built in …`.
 
 - [ ] **Step 10: Commit**
 
@@ -5994,6 +7432,8 @@ Two visible consequences of the store built in Task 24.
 **The tombstone.** An approval that lapsed or was answered elsewhere does not vanish — it becomes a struck-through row in the thread saying what it was and that nothing was done. `expired · not done` is in the closed status vocabulary, and it is the one thing the design insists a fuse must leave behind.
 
 `FuseRing` is built here because the banner needs it; Task 26 uses the same component at 168 px. The two mask radii are the prototype's own numbers, not a formula — a 34 px ring masked with the 168 px proportions is a solid disc.
+
+Rules the tests pin beyond the copy. The sweep is on `--fuse-pct`, registered with `@property` as a `<percentage>` — the handoff's own `transition: background .9s linear` cannot interpolate a gradient image, so it steps once a second and never sweeps; the registered property does what that line meant. The banner's ring is the 34 px one in the accent colour, and it goes to paper at thirty seconds exactly, not a second before. The percent has only a top clamp: `fuseRemaining` is never negative, and the clamp that can fire is the one for a device clock behind the server's, where `expires_at` is further off than the TTL — pinned at 100.0 with 360 s to a 300 s expiry. `FuseRing` centres its children with `items-center justify-center`, and the test says so.
 
 **Files:**
 - Create: `web/src/door/FuseRing.tsx`, `web/src/door/DoorBanner.tsx`, `web/src/door/DoorBanner.test.tsx`
@@ -6048,7 +7488,7 @@ Add `import { hhmm } from "./format";` at the top of the test file — the meta 
 - [ ] **Step 2: Run it to verify it fails**
 
 Run: `npm test -- src/lib/actions.test.ts`
-Expected: FAIL — `The requested module './actions' does not provide an export named 'tombstoneItems'`.
+Expected: FAIL — `TypeError: tombstoneItems is not a function` (Vite's ESM interop reports a missing named export this way rather than as an import error).
 
 - [ ] **Step 3: Add `tombstoneItems` to `web/src/lib/actions.ts`**
 
@@ -6091,7 +7531,7 @@ export function tombstoneItems(actions: TrackedAction[]): TimelineItem[] {
 ```
 
 Run: `npm test -- src/lib/actions.test.ts`
-Expected: `Test Files  1 passed (1)`, 28 tests.
+Expected: `Test Files  1 passed (1)`, 36 tests.
 
 - [ ] **Step 4: Write the failing banner test**
 
@@ -6106,8 +7546,10 @@ import { pendingActionFixture } from "@/test/fixtures";
 import { DoorBanner } from "./DoorBanner";
 import { FuseRing } from "./FuseRing";
 
+const T0740 = Date.parse("2026-09-07T07:40:00Z");
 const T0742 = Date.parse("2026-09-07T07:42:00Z");
-const T0745_40 = Date.parse("2026-09-07T07:45:40Z");
+const T0745_29 = Date.parse("2026-09-07T07:45:29Z");
+const T0745_30 = Date.parse("2026-09-07T07:45:30Z");
 const T0747 = Date.parse("2026-09-07T07:47:00Z");
 
 const tracked: TrackedAction = { action: pendingActionFixture, phase: "pending" };
@@ -6153,6 +7595,7 @@ describe("FuseRing", () => {
       </FuseRing>,
     );
     expect(screen.getByText("4:12")).toBeInTheDocument();
+    expect(screen.getByTestId("fuse-ring")).toHaveClass("items-center", "justify-center");
   });
 });
 
@@ -6163,6 +7606,11 @@ describe("DoorBanner", () => {
     expect(screen.getByText("Lock unlock")).toBeInTheDocument();
     expect(screen.getByText("expires in 4:00 · asked by Alfred, for you")).toBeInTheDocument();
     expect(screen.getByText("Open")).toBeInTheDocument();
+    // The banner's ring, at the banner's size, in the unhurried colour.
+    expect(screen.getByTestId("fuse-ring").style.width).toBe("34px");
+    expect(screen.getByTestId("fuse-arc").style.getPropertyValue("--fuse-color")).toBe(
+      "var(--accent)",
+    );
   });
 
   it("draws the arc as the fraction of the server's own TTL", () => {
@@ -6171,11 +7619,19 @@ describe("DoorBanner", () => {
     expect(screen.getByTestId("fuse-arc")).toHaveAttribute("data-percent", "80.0");
   });
 
-  it("goes to paper under thirty seconds", () => {
-    render(<DoorBanner tracked={tracked} now={T0745_40} onOpen={() => {}} />);
-    expect(screen.getByTestId("fuse-arc").style.getPropertyValue("--fuse-color")).toBe(
-      "var(--paper)",
-    );
+  it("goes to paper at thirty seconds, and not a second before", () => {
+    const { rerender } = render(<DoorBanner tracked={tracked} now={T0745_29} onOpen={() => {}} />);
+    const colour = () => screen.getByTestId("fuse-arc").style.getPropertyValue("--fuse-color");
+    expect(colour()).toBe("var(--accent)");
+
+    rerender(<DoorBanner tracked={tracked} now={T0745_30} onOpen={() => {}} />);
+    expect(colour()).toBe("var(--paper)");
+  });
+
+  it("never draws more than a full ring when the phone's clock is behind", () => {
+    // 360 s to a 300 s TTL's expiry: the server's clock is ahead of ours.
+    render(<DoorBanner tracked={tracked} now={T0740} onOpen={() => {}} />);
+    expect(screen.getByTestId("fuse-arc")).toHaveAttribute("data-percent", "100.0");
   });
 
   it("reads 0:00 rather than a negative fuse", () => {
@@ -6214,18 +7670,34 @@ Expected: FAIL — `Failed to resolve import "./DoorBanner"`.
 
 - [ ] **Step 6: Add the ring's CSS to `web/src/index.css`**
 
-Inside the `@layer components` block, after the `.pb-keyboard.keyboard-up` rule, insert:
+At the top level of the file, between the `@import` lines and the palette comment, register the sweep's property (a `@property` rule is not allowed inside `@layer`):
+
+```css
+/* Registered so the fuse ring's `transition: --fuse-pct` has a type to
+   interpolate (see `.fuse-arc`). Tailwind v4 already leans on @property, so this
+   asks nothing more of the browser than the rest of the stylesheet does. */
+@property --fuse-pct {
+  syntax: "<percentage>";
+  inherits: false;
+  initial-value: 0%;
+}
+```
+
+Then inside the `@layer components` block, after the `.pb-keyboard.keyboard-up` rule, insert:
 
 ```css
   /* ------------------------------------------------------------------- fuse
      The arc is a conic gradient driven by two custom properties the component
-     sets, so the gradient itself never has to be built in JS. 900 ms linear
-     turns each one-second step into a sweep; nothing pulses. The two masks are
-     the prototype's own radii per size — not a formula: applying either one's
-     proportions to the other size gives a solid disc instead of a hairline. */
+     sets, so the gradient itself never has to be built in JS. The 900 ms linear
+     sweep between one-second steps is on `--fuse-pct`, registered as a
+     <percentage> at the top of this file: a gradient image cannot be
+     interpolated, so `transition: background` — the prototype's own line —
+     would step, not sweep. Nothing pulses. The two masks are the prototype's
+     own radii per size — not a formula: applying either one's proportions to
+     the other size gives a solid disc instead of a hairline. */
   .fuse-arc {
     background: conic-gradient(var(--fuse-color) var(--fuse-pct), var(--ring) 0);
-    transition: background 0.9s linear;
+    transition: --fuse-pct 0.9s linear;
   }
   .fuse-168 {
     -webkit-mask-image: radial-gradient(circle, transparent 79px, #000 80px);
@@ -6311,7 +7783,9 @@ export interface DoorBannerProps {
 export function DoorBanner({ tracked, now, onOpen }: DoorBannerProps) {
   const remaining = fuseRemaining(tracked.action, now);
   const ttl = tracked.action.ttl_seconds;
-  const percent = ttl > 0 ? Math.max(0, Math.min(100, (remaining / ttl) * 100)) : 0;
+  // `remaining` is never negative; the top clamp is for a device clock behind
+  // the server's, where `expires_at` is further off than the TTL.
+  const percent = ttl > 0 ? Math.min(100, (remaining / ttl) * 100) : 0;
 
   return (
     <button
@@ -6342,10 +7816,10 @@ export function DoorBanner({ tracked, now, onOpen }: DoorBannerProps) {
 - [ ] **Step 9: Run the banner test and the suite**
 
 Run: `npm test -- src/door/DoorBanner.test.tsx`
-Expected: `Test Files  1 passed (1)`, 11 tests.
+Expected: `Test Files  1 passed (1)`, 12 tests.
 
 Run: `npm test && npm run lint && npm run build`
-Expected: `Test Files  36 passed (36)`, no eslint output, `✓ built in …`.
+Expected: `Test Files  38 passed (38)`, `Tests  500 passed (500)`, no eslint output, `✓ built in …`.
 
 - [ ] **Step 10: Commit**
 
@@ -6364,9 +7838,13 @@ The easing in `slideKnob` is the interesting part. `r < 0.25 ? r * 0.6 : 0.15 + 
 
 Five phases, five sentences. `queued` is not `applied`; `expired` says what did not happen and how to ask again; `answered` is the 404 the handoff calls "already consumed".
 
+Rules the tests pin beyond the copy. `ttl_seconds` is not the fuse: the server builds the payload from Redis's *live* TTL, so it is what was left when the house was asked, and a re-read on the way back from the background would shrink the ring's denominator to whatever remained — and the tombstone would say "The four minutes ran out". The length is the span between the payload's own two clocks, `timestamp` and `expires_at` (`fuseLength`, falling back to `ttl_seconds` only when they will not parse), shared with the banner as `fusePercent`; that span is 299.x s in practice, so it rounds. The slider is a slider: `role="slider"`, named by its hint, in the tab order, and walkable from the keyboard — and from VoiceOver's adjust gesture, which arrives as arrow keys — a tenth at a time, confirming only on the last step, so no single tap, key or flick is ever a yes — and a settled knob still answers the keys, because a confirm the house refused is left pending to be tried again and a finger can simply slide again (End on a knob already at the end repeats nothing). The foot clears the home indicator the way the Gate and the Sheet do. `applied` never invents a status or a time it was not given. The last action stays on the panel while it slides away. The knob is drawn where the bookkeeping says, and the hint fades with it. The Door's ring goes to paper at thirty seconds exactly, like the banner's.
+
 **Files:**
 - Create: `web/src/lib/slide.ts`, `web/src/lib/slide.test.ts`
 - Create: `web/src/door/SlideToConfirm.tsx`, `web/src/door/DoorLayer.tsx`, `web/src/door/DoorLayer.test.tsx`
+- Modify: `web/src/lib/actions.ts`, `web/src/lib/actions.test.ts` (fuse length + percent)
+- Modify: `web/src/door/FuseRing.tsx`, `web/src/door/DoorBanner.tsx`, `web/src/door/DoorBanner.test.tsx` (share `DANGER_SECONDS` and `fusePercent`)
 
 - [ ] **Step 1: Write the failing slide-maths test**
 
@@ -6477,7 +7955,185 @@ export function hintOpacity(knob: number, max: number): number {
 Run: `npm test -- src/lib/slide.test.ts`
 Expected: `Test Files  1 passed (1)`, 11 tests.
 
-- [ ] **Step 4: Write the failing Door test**
+- [ ] **Step 4: Write the failing fuse-length tests**
+
+In `web/src/lib/actions.test.ts`, extend the import from `./actions` so it reads:
+
+```ts
+  fuseLength,
+  fusePercent,
+  fuseRemaining,
+  tombstoneItems,
+```
+
+and after the `fuseRemaining` describe block (before `describe("actionReducer — loaded"`), add:
+
+```ts
+describe("fuseLength", () => {
+  it("is the span between asked and expiry, not ttl_seconds", () => {
+    expect(fuseLength(pendingActionFixture)).toBe(300);
+    // The server reports what is *left* at read time; the fuse is still 300 s long.
+    expect(fuseLength({ ...pendingActionFixture, ttl_seconds: 120 })).toBe(300);
+  });
+
+  it("falls back to ttl_seconds when a clock will not parse or runs backwards", () => {
+    expect(fuseLength({ ...pendingActionFixture, timestamp: "earlier" })).toBe(300);
+    expect(fuseLength({ ...pendingActionFixture, expires_at: "soon" })).toBe(300);
+    expect(
+      fuseLength({ ...pendingActionFixture, expires_at: pendingActionFixture.timestamp, ttl_seconds: 7 }),
+    ).toBe(7);
+  });
+});
+
+describe("fusePercent", () => {
+  it("is the remaining share of the whole fuse, whatever the read said was left", () => {
+    expect(fusePercent(pendingActionFixture, T0742)).toBe(80);
+    expect(fusePercent({ ...pendingActionFixture, ttl_seconds: 120 }, T0742)).toBe(80);
+    expect(fusePercent(pendingActionFixture, T0747)).toBe(0);
+  });
+
+  it("never draws more than a full ring when the phone's clock is behind", () => {
+    expect(fusePercent(pendingActionFixture, T0741 - 60_000)).toBe(100);
+  });
+
+  it("survives a fuse with no length at all", () => {
+    expect(
+      fusePercent(
+        { ...pendingActionFixture, expires_at: pendingActionFixture.timestamp, ttl_seconds: 0 },
+        T0742,
+      ),
+    ).toBe(0);
+  });
+});
+```
+
+Run: `npm test -- src/lib/actions.test.ts`
+Expected: FAIL — `TypeError: fuseLength is not a function` (Vite's ESM interop turns a missing named export into an undefined binding, not an import error).
+
+- [ ] **Step 5: Add `fuseLength` and `fusePercent` to `web/src/lib/actions.ts`**
+
+Directly after `fuseRemaining`, add:
+
+```ts
+/**
+ * The whole fuse, in seconds. `ttl_seconds` is not it: the payload is built
+ * from Redis's live TTL, so it is what was *left* when the house was asked,
+ * and a re-read on the way back from the background would shrink the ring's
+ * denominator to whatever remained. The payload's own two clocks give the
+ * length — asked at `timestamp`, gone at `expires_at` — and both are the
+ * server's, so no device skew gets in. `ttl_seconds` only when they will not parse.
+ */
+export function fuseLength(action: PendingAction): number {
+  const span = (Date.parse(action.expires_at) - Date.parse(action.timestamp)) / 1000;
+  return Number.isNaN(span) || span <= 0 ? action.ttl_seconds : span;
+}
+
+/**
+ * 0–100 of the fuse still to run. `fuseRemaining` is never negative; the one
+ * clamp is at the top, for a device clock behind the server's, where
+ * `expires_at` is further off than the whole length.
+ */
+export function fusePercent(action: PendingAction, now: number): number {
+  const length = fuseLength(action);
+  return length > 0 ? Math.min(100, (fuseRemaining(action, now) / length) * 100) : 0;
+}
+```
+
+Run: `npm test -- src/lib/actions.test.ts`
+Expected: `Test Files  1 passed (1)`, 41 tests.
+
+- [ ] **Step 6: Share the threshold and the percent with the banner**
+
+The banner and the Door draw the same ring from the same numbers; neither keeps a private copy. In `web/src/door/FuseRing.tsx`, before `export interface FuseRingProps`, add:
+
+```tsx
+/** At or under this many seconds left, the arc goes from accent to paper (handoff). */
+export const DANGER_SECONDS = 30;
+```
+
+Replace `web/src/door/DoorBanner.tsx` in full:
+
+```tsx
+import { fusePercent, fuseRemaining, type TrackedAction } from "@/lib/actions";
+import { humaniseTool, mmss } from "@/lib/format";
+import { DANGER_SECONDS, FuseRing } from "@/door/FuseRing";
+
+export interface DoorBannerProps {
+  tracked: TrackedAction;
+  /** Epoch ms from `useDoor().now`, so every fuse on screen agrees. */
+  now: number;
+  onOpen: () => void;
+}
+
+/**
+ * Above the composer while an approval waits. Ink on paper, so it reads as the
+ * Door's own colour arriving early — and the whole bar is the tap target, which
+ * is how a 34 px ring and a 13 px word can sit in a 44 pt control.
+ */
+export function DoorBanner({ tracked, now, onOpen }: DoorBannerProps) {
+  const remaining = fuseRemaining(tracked.action, now);
+  const percent = fusePercent(tracked.action, now);
+
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="relative z-[1] mx-4 mb-2.5 flex items-center gap-3.5 rounded-2xl border-0 px-4 py-3.5 text-left"
+      style={{ background: "var(--ink)", color: "var(--paper)" }}
+    >
+      <FuseRing percent={percent} size={34} danger={remaining <= DANGER_SECONDS} />
+
+      <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
+        <div className="text-[16px] font-medium">{humaniseTool(tracked.action.tool_name)}</div>
+        {/* Not `.t-meta`: that class pins the colour to --muted, which is a Room
+            token and disappears against ink. */}
+        <div className="font-mono text-[11px] leading-[1.5]" style={{ color: "var(--paper-muted)" }}>
+          expires in {mmss(remaining)} · asked by Alfred, for you
+        </div>
+      </div>
+
+      <div className="text-[13px] font-medium" style={{ color: "var(--accent)" }}>
+        Open
+      </div>
+    </button>
+  );
+}
+```
+
+In `web/src/door/DoorBanner.test.tsx`, replace the `survives a zero TTL without dividing by it` test with these two:
+
+```tsx
+  it("survives a fuse with no length without dividing by it", () => {
+    render(
+      <DoorBanner
+        tracked={{
+          action: { ...pendingActionFixture, expires_at: pendingActionFixture.timestamp, ttl_seconds: 0 },
+          phase: "pending",
+        }}
+        now={T0742}
+        onOpen={() => {}}
+      />,
+    );
+    expect(screen.getByTestId("fuse-arc")).toHaveAttribute("data-percent", "0.0");
+  });
+
+  it("measures the ring against the whole fuse, not what was left when it was read", () => {
+    // Re-read three minutes in: the server says 120 s left. Still 240 of 300.
+    render(
+      <DoorBanner
+        tracked={{ action: { ...pendingActionFixture, ttl_seconds: 120 }, phase: "pending" }}
+        now={T0742}
+        onOpen={() => {}}
+      />,
+    );
+    expect(screen.getByTestId("fuse-arc")).toHaveAttribute("data-percent", "80.0");
+  });
+```
+
+Run: `npm test -- src/door/DoorBanner.test.tsx`
+Expected: `Test Files  1 passed (1)`, 13 tests.
+
+- [ ] **Step 7: Write the failing Door test**
 
 Create `web/src/door/DoorLayer.test.tsx`:
 
@@ -6487,10 +8143,13 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrackedAction } from "@/lib/actions";
 import { hhmm } from "@/lib/format";
+import { hintOpacity, slideKnob } from "@/lib/slide";
 import { pendingActionFixture } from "@/test/fixtures";
-import { DoorLayer } from "./DoorLayer";
+import { DoorLayer, type DoorLayerProps } from "./DoorLayer";
 
 const T0742 = Date.parse("2026-09-07T07:42:00Z");
+const T0745_29 = Date.parse("2026-09-07T07:45:29Z");
+const T0745_30 = Date.parse("2026-09-07T07:45:30Z");
 /** 353 px track − 64 = 289 px of travel, the 393 pt phone's real geometry. */
 const TRACK_WIDTH = 353;
 const MAX = TRACK_WIDTH - 64;
@@ -6499,20 +8158,23 @@ function at(phase: TrackedAction["phase"], extra: Partial<TrackedAction> = {}): 
   return { action: pendingActionFixture, phase, ...extra };
 }
 
-function renderDoor(tracked: TrackedAction, options: { online?: boolean } = {}) {
+function renderDoor(tracked: TrackedAction, options: { online?: boolean; now?: number } = {}) {
   const onClose = vi.fn();
   const onConfirm = vi.fn();
-  render(
-    <DoorLayer
-      tracked={tracked}
-      open
-      online={options.online ?? true}
-      now={T0742}
-      onClose={onClose}
-      onConfirm={onConfirm}
-    />,
-  );
-  return { onClose, onConfirm };
+  const props: DoorLayerProps = {
+    tracked,
+    open: true,
+    online: options.online ?? true,
+    now: options.now ?? T0742,
+    onClose,
+    onConfirm,
+  };
+  const view = render(<DoorLayer {...props} />);
+  return {
+    onClose,
+    onConfirm,
+    rerender: (next: Partial<DoorLayerProps>) => view.rerender(<DoorLayer {...props} {...next} />),
+  };
 }
 
 function drag(toX: number): void {
@@ -6520,6 +8182,18 @@ function drag(toX: number): void {
   fireEvent.pointerDown(track, { clientX: 0, pointerId: 1 });
   fireEvent.pointerMove(track, { clientX: toX, pointerId: 1 });
   fireEvent.pointerUp(track, { clientX: toX, pointerId: 1 });
+}
+
+function slider(): HTMLElement {
+  return screen.getByRole("slider", { name: "Slide to confirm" });
+}
+
+function press(key: string, times = 1): void {
+  for (let i = 0; i < times; i += 1) fireEvent.keyDown(slider(), { key });
+}
+
+function fuseColor(): string {
+  return screen.getByTestId("fuse-arc").style.getPropertyValue("--fuse-color");
 }
 
 beforeEach(() => {
@@ -6545,6 +8219,38 @@ describe("DoorLayer — what it says", () => {
     renderDoor(at("pending"));
     expect(screen.getByText("4:00")).toBeInTheDocument();
     expect(screen.getByText("until it lapses")).toBeInTheDocument();
+    // 240 s of 300, on the Door's own ring.
+    expect(screen.getByTestId("fuse-arc")).toHaveAttribute("data-percent", "80.0");
+    expect(screen.getByTestId("fuse-ring").style.width).toBe("168px");
+  });
+
+  it("never draws more than a full ring when the phone's clock is behind", () => {
+    // 360 s to a 300 s fuse's expiry: the server's clock is ahead of ours.
+    renderDoor(at("pending"), { now: Date.parse("2026-09-07T07:40:00Z") });
+    expect(screen.getByTestId("fuse-arc")).toHaveAttribute("data-percent", "100.0");
+  });
+
+  it("measures the ring against the whole fuse, not what was left when it was read", () => {
+    // Read again three minutes in — the server says 120 s left. Still 240 of 300:
+    // the ring must not snap back to full every time the app comes to the front.
+    renderDoor({ action: { ...pendingActionFixture, ttl_seconds: 120 }, phase: "pending" });
+    expect(screen.getByTestId("fuse-arc")).toHaveAttribute("data-percent", "80.0");
+  });
+
+  it("turns the ring to paper at thirty seconds, and not a second before", () => {
+    const { rerender } = renderDoor(at("pending"), { now: T0745_29 });
+    expect(fuseColor()).toBe("var(--accent)");
+    rerender({ now: T0745_30 });
+    expect(fuseColor()).toBe("var(--paper)");
+  });
+
+  it("keeps the slider clear of the home indicator", () => {
+    renderDoor(at("pending"));
+    // jsdom rewrites the calc(); what matters is that the inset is in it.
+    const foot = slider().parentElement as HTMLElement;
+    expect(foot.style.paddingBottom).toContain("40px");
+    expect(foot.style.paddingBottom).toContain("safe-area-inset-bottom");
+    expect(foot).not.toHaveClass("pb-10");
   });
 
   it("names the action, gives Alfred's reason, and shows the exact call", () => {
@@ -6591,6 +8297,8 @@ describe("DoorLayer — pending", () => {
     expect(onConfirm).toHaveBeenCalledWith("a91f3c2e");
     const knob = screen.getByTestId("slide-knob");
     expect(knob).toHaveAttribute("data-knob", String(MAX));
+    // Drawn where the bookkeeping says: landed on the end, not just recorded there.
+    expect(knob.style.transform).toBe(`translateX(${MAX}px)`);
     // `settle` is the 600 ms overshoot curve, used exactly here and nowhere else.
     expect(knob).toHaveAttribute("data-motion", "settle");
   });
@@ -6615,7 +8323,12 @@ describe("DoorLayer — pending", () => {
 
     const knob = screen.getByTestId("slide-knob");
     expect(knob).toHaveAttribute("data-motion", "none");
-    expect(knob).not.toHaveAttribute("data-knob", "0");
+    // The eased position (pinned in slide.test.ts) is what is drawn, and the
+    // hint fades with it rather than sitting under the knob.
+    const eased = slideKnob(100, MAX);
+    expect(knob).toHaveAttribute("data-knob", String(Math.round(eased)));
+    expect(knob.style.transform).toBe(`translateX(${eased}px)`);
+    expect(screen.getByText("Slide to confirm").style.opacity).toBe(String(hintOpacity(eased, MAX)));
   });
 
   it("abandons the drag on pointercancel", () => {
@@ -6642,6 +8355,96 @@ describe("DoorLayer — pending", () => {
   });
 });
 
+describe("DoorLayer — the slider without a finger", () => {
+  it("is a slider by name, at nought, and in the tab order", () => {
+    renderDoor(at("pending"));
+    const track = slider();
+    expect(track).toHaveAttribute("aria-valuemin", "0");
+    expect(track).toHaveAttribute("aria-valuemax", "100");
+    expect(track).toHaveAttribute("aria-valuenow", "0");
+    expect(track).toHaveAttribute("aria-disabled", "false");
+    expect(track).toHaveAttribute("tabindex", "0");
+    // The hint is the slider's name already; read once, not twice.
+    expect(screen.getByText("Slide to confirm")).toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("walks a tenth at a time, and confirms on the tenth step and no earlier", () => {
+    const { onConfirm } = renderDoor(at("pending"));
+
+    press("ArrowRight", 9);
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(slider()).toHaveAttribute("aria-valuenow", "90");
+    expect(screen.getByTestId("slide-knob")).toHaveAttribute(
+      "data-knob",
+      String(Math.round(MAX * 0.9)),
+    );
+
+    press("ArrowRight");
+    expect(onConfirm).toHaveBeenCalledWith("a91f3c2e");
+    const knob = screen.getByTestId("slide-knob");
+    expect(slider()).toHaveAttribute("aria-valuenow", "100");
+    expect(knob.style.transform).toBe(`translateX(${MAX}px)`);
+    expect(knob).toHaveAttribute("data-motion", "settle");
+  });
+
+  it("steps back, and home, without confirming", () => {
+    const { onConfirm } = renderDoor(at("pending"));
+
+    press("ArrowUp", 3);
+    expect(slider()).toHaveAttribute("aria-valuenow", "30");
+    press("ArrowLeft");
+    expect(slider()).toHaveAttribute("aria-valuenow", "20");
+    press("ArrowDown", 5);
+    expect(slider()).toHaveAttribute("aria-valuenow", "0");
+    press("ArrowRight", 4);
+    press("Home");
+    expect(slider()).toHaveAttribute("aria-valuenow", "0");
+
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it("confirms once on End, and not on Enter or Space", () => {
+    const { onConfirm } = renderDoor(at("pending"));
+
+    expect(fireEvent.keyDown(slider(), { key: "Enter" })).toBe(true);
+    expect(fireEvent.keyDown(slider(), { key: " " })).toBe(true);
+    expect(onConfirm).not.toHaveBeenCalled();
+
+    // A key it takes is a key the page must not also scroll on.
+    expect(fireEvent.keyDown(slider(), { key: "End" })).toBe(false);
+    press("End");
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+    expect(slider()).toHaveAttribute("aria-valuenow", "100");
+  });
+
+  it("walks back and tries again when the house has said no", () => {
+    // The harness never answers, so the action stays pending, as it does when
+    // the server refused the confirm for a reason other than "gone".
+    const { onConfirm } = renderDoor(at("pending"));
+
+    press("End");
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+
+    press("ArrowLeft");
+    expect(slider()).toHaveAttribute("aria-valuenow", "90");
+    expect(screen.getByTestId("slide-knob")).toHaveAttribute("data-motion", "snap");
+
+    press("ArrowRight");
+    expect(onConfirm).toHaveBeenCalledTimes(2);
+  });
+
+  it("is out of reach while offline", () => {
+    const { onConfirm } = renderDoor(at("pending"), { online: false });
+
+    const track = slider();
+    expect(track).toHaveAttribute("aria-disabled", "true");
+    expect(track).toHaveAttribute("tabindex", "-1");
+    press("End");
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(track).toHaveAttribute("aria-valuenow", "0");
+  });
+});
+
 describe("DoorLayer — after the answer", () => {
   it("says confirmed and queued, never applied", () => {
     renderDoor(at("queued", { confirmedAt: "2026-09-07T07:42:00Z" }));
@@ -6652,6 +8455,11 @@ describe("DoorLayer — after the answer", () => {
     ).toBeInTheDocument();
     expect(screen.queryByTestId("slide-track")).toBeNull();
     expect(screen.getByRole("button", { name: "Back to the room" })).toBeInTheDocument();
+  });
+
+  it("says less, not more, when applied arrives without its facts", () => {
+    renderDoor(at("applied", { confirmedAt: "2026-09-07T07:42:00Z" }));
+    expect(screen.getByText("home.lock_unlock reported back.")).toBeInTheDocument();
   });
 
   it("says applied only once the stream reported it, with what it reported", () => {
@@ -6689,14 +8497,48 @@ describe("DoorLayer — after the answer", () => {
     ).toBeInTheDocument();
   });
 
-  it("spells a different TTL out too", () => {
-    renderDoor({ action: { ...pendingActionFixture, ttl_seconds: 600 }, phase: "expired" });
+  it("names the fuse's whole length, not what was left when it was read", () => {
+    // Read twenty seconds before it lapsed: the server said 20, the fuse was 300.
+    renderDoor({ action: { ...pendingActionFixture, ttl_seconds: 20 }, phase: "expired" });
+    expect(screen.getByText(/^The five minutes ran out/)).toBeInTheDocument();
+  });
+
+  it("rounds to the minute the server meant, since a read shaves a fraction off", () => {
+    // Redis reports whole seconds and the payload adds them to "now": the two
+    // clocks are 299.4 s apart, not 300, and that is still five minutes.
+    renderDoor({
+      action: { ...pendingActionFixture, expires_at: "2026-09-07T07:45:59.400Z" },
+      phase: "expired",
+    });
+    expect(screen.getByText(/^The five minutes ran out/)).toBeInTheDocument();
+  });
+
+  it("spells a different fuse out too", () => {
+    renderDoor({
+      action: { ...pendingActionFixture, expires_at: "2026-09-07T07:51:00Z" },
+      phase: "expired",
+    });
     expect(screen.getByText(/^The ten minutes ran out/)).toBeInTheDocument();
   });
 
-  it("falls back to the number for an unusual TTL", () => {
-    renderDoor({ action: { ...pendingActionFixture, ttl_seconds: 45 * 60 }, phase: "expired" });
+  it("falls back to the number for an unusual fuse", () => {
+    renderDoor({
+      action: { ...pendingActionFixture, expires_at: "2026-09-07T08:26:00Z" },
+      phase: "expired",
+    });
     expect(screen.getByText(/^The 45 minutes ran out/)).toBeInTheDocument();
+  });
+
+  it("has a singular for one minute, and no number at all under half of one", () => {
+    const { rerender } = renderDoor({
+      action: { ...pendingActionFixture, expires_at: "2026-09-07T07:42:00Z" },
+      phase: "expired",
+    });
+    expect(screen.getByText(/^The one minute ran out/)).toBeInTheDocument();
+    rerender({
+      tracked: { action: { ...pendingActionFixture, expires_at: "2026-09-07T07:41:20Z" }, phase: "expired" },
+    });
+    expect(screen.getByText(/^The time ran out/)).toBeInTheDocument();
   });
 
   it("says when something else got there first", () => {
@@ -6730,6 +8572,14 @@ describe("DoorLayer — leaving", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the last action on the panel while it slides away", () => {
+    const { rerender } = renderDoor(at("queued", { confirmedAt: "2026-09-07T07:42:00Z" }));
+    // `close()` clears the action at once; the copy must outlive it by the leave.
+    rerender({ tracked: null, open: false });
+    expect(screen.getByRole("heading", { name: "Lock unlock" })).toBeInTheDocument();
+    expect(screen.getByText("Confirmed · queued")).toBeInTheDocument();
+  });
+
   it("renders nothing at all when there is no action", () => {
     render(
       <DoorLayer
@@ -6746,17 +8596,23 @@ describe("DoorLayer — leaving", () => {
 });
 ```
 
-- [ ] **Step 5: Run it to verify it fails**
+- [ ] **Step 8: Run it to verify it fails**
 
 Run: `npm test -- src/door/DoorLayer.test.tsx`
 Expected: FAIL — `Failed to resolve import "./DoorLayer"`.
 
-- [ ] **Step 6: Write `web/src/door/SlideToConfirm.tsx`**
+- [ ] **Step 9: Write `web/src/door/SlideToConfirm.tsx`**
 
 Complete file:
 
 ```tsx
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { CONFIRM_RATIO, hintOpacity, slideKnob } from "@/lib/slide";
 
 /** Knob 56 px at a 4 px inset — the travel is the track minus both. */
@@ -6764,6 +8620,8 @@ const KNOB_INSET = 64;
 /** The one place the handoff's `settle` curve is used: when the knob lands. */
 const SETTLE_MS = 600;
 const SNAP_MS = 380;
+/** Arrow keys (and VoiceOver's adjust gesture) move a tenth of the travel. */
+const KEY_STEPS = 10;
 
 export interface SlideToConfirmProps {
   hint: string;
@@ -6779,6 +8637,8 @@ export function SlideToConfirm({ hint, disabled, onConfirm }: SlideToConfirmProp
   const [dragging, setDragging] = useState(false);
   const [settling, setSettling] = useState(false);
 
+  // Returns the travel as well as storing it: the keyboard path needs it in
+  // the same event, before the state has come round.
   function measure(): number {
     const width = trackRef.current?.clientWidth ?? 0;
     const travel = Math.max(0, width - KNOB_INSET);
@@ -6830,14 +8690,63 @@ export function SlideToConfirm({ hint, disabled, onConfirm }: SlideToConfirmProp
     setKnob(0);
   }
 
+  // The non-pointer road. The knob walks in tenths and confirms only on the
+  // last one: no single key, and no single VoiceOver flick, is ever a yes. The
+  // step is counted from where the knob is, so ten presses land exactly on
+  // the end instead of a float short of it. A settled knob still answers the
+  // keys: a confirm the house refused is left pending to be tried again, and
+  // a finger can simply slide again, so the keys must have a road back too.
+  function key(event: ReactKeyboardEvent<HTMLDivElement>): void {
+    if (disabled || dragging) return;
+    const travel = measure();
+    if (travel <= 0) return;
+    const step = Math.round((knob / travel) * KEY_STEPS);
+    let next: number;
+    switch (event.key) {
+      case "ArrowRight":
+      case "ArrowUp":
+        next = Math.min(KEY_STEPS, step + 1);
+        break;
+      case "ArrowLeft":
+      case "ArrowDown":
+        next = Math.max(0, step - 1);
+        break;
+      case "Home":
+        next = 0;
+        break;
+      case "End":
+        next = KEY_STEPS;
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+    setKnob((next / KEY_STEPS) * travel);
+    if (next === KEY_STEPS) {
+      setSettling(true);
+      // Only the arrival is a yes: End on a knob already at the end repeats nothing.
+      if (step < KEY_STEPS) onConfirm();
+      return;
+    }
+    setSettling(false);
+  }
+
   return (
     <div
       ref={trackRef}
       data-testid="slide-track"
+      role="slider"
+      aria-label={hint}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={max > 0 ? Math.round((knob / max) * 100) : 0}
+      aria-disabled={disabled}
+      tabIndex={disabled ? -1 : 0}
       onPointerDown={down}
       onPointerMove={move}
       onPointerUp={up}
       onPointerCancel={cancel}
+      onKeyDown={key}
       className="relative h-16 overflow-hidden rounded-[32px]"
       style={{
         background: "var(--ring)",
@@ -6849,6 +8758,7 @@ export function SlideToConfirm({ hint, disabled, onConfirm }: SlideToConfirmProp
       }}
     >
       <div
+        aria-hidden="true"
         className="absolute inset-0 flex items-center justify-center pl-14 text-[15px]"
         style={{
           color: "var(--paper-muted)",
@@ -6885,24 +8795,27 @@ export function SlideToConfirm({ hint, disabled, onConfirm }: SlideToConfirmProp
 }
 ```
 
-- [ ] **Step 7: Write `web/src/door/DoorLayer.tsx`**
+- [ ] **Step 10: Write `web/src/door/DoorLayer.tsx`**
 
 Complete file:
 
 ```tsx
 import { useState } from "react";
-import { fuseRemaining, type TrackedAction } from "@/lib/actions";
+import {
+  fuseLength,
+  fusePercent,
+  fuseRemaining,
+  type ActionPhase,
+  type TrackedAction,
+} from "@/lib/actions";
 import { hhmm, humaniseTool, mmss, rawCall, shortId } from "@/lib/format";
-import { FuseRing } from "@/door/FuseRing";
+import { DANGER_SECONDS, FuseRing } from "@/door/FuseRing";
 import { SlideToConfirm } from "@/door/SlideToConfirm";
 import { Layer } from "@/shell/Layer";
 
-/** Under this the arc turns to paper. */
-const DANGER_SECONDS = 30;
-
 /**
  * "The five minutes ran out" reads better than "The 5 minutes ran out", and the
- * TTL is a server setting that may not be 300 s. Spelled out to ten, numeric above.
+ * fuse is a server setting that may not be 300 s. Spelled out to ten, numeric above.
  */
 const MINUTE_WORDS: Record<number, string> = {
   1: "one",
@@ -6917,12 +8830,17 @@ const MINUTE_WORDS: Record<number, string> = {
   10: "ten",
 };
 
-function minutesWord(ttlSeconds: number): string {
-  const minutes = Math.round(ttlSeconds / 60);
-  return MINUTE_WORDS[minutes] ?? String(minutes);
+/** "five minutes", "one minute" — or just "time" for a fuse under half a minute. */
+function fuseWords(seconds: number): string {
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 1) return "time";
+  if (minutes === 1) return "one minute";
+  return `${MINUTE_WORDS[minutes] ?? String(minutes)} minutes`;
 }
 
-const PILL: Record<string, { word: string; dot: string }> = {
+// No `pending` entry: that phase draws the slider, not a pill, and the type
+// keeps the lookup inside the branch that knows it.
+const PILL: Record<Exclude<ActionPhase, "pending">, { word: string; dot: string }> = {
   queued: { word: "Confirmed · queued", dot: "var(--accent)" },
   applied: { word: "Applied", dot: "var(--green)" },
   expired: { word: "Expired", dot: "var(--paper-muted)" },
@@ -6945,12 +8863,15 @@ function footLine(tracked: TrackedAction, online: boolean): string {
         : "Cannot confirm while offline; the fuse is still running on the server.";
     case "queued":
       return `Sent to Home Assistant. Waiting for it to report (request ${shortId(action.request_id)}).`;
-    case "applied":
-      return `${action.tool_name} reported ${tracked.result?.status ?? "success"} at ${hhmm(
-        tracked.appliedAt ?? action.expires_at,
-      )}.`;
+    case "applied": {
+      // The result event is the only road to `applied` and it sets both; if
+      // either were ever missing, say less rather than make a status up.
+      const what = tracked.result ? `reported ${tracked.result.status}` : "reported back";
+      const when = tracked.appliedAt ? ` at ${hhmm(tracked.appliedAt)}` : "";
+      return `${action.tool_name} ${what}${when}.`;
+    }
     case "expired":
-      return `The ${minutesWord(action.ttl_seconds)} minutes ran out at ${hhmm(
+      return `The ${fuseWords(fuseLength(action))} ran out at ${hhmm(
         action.expires_at,
       )}. Nothing was done. Ask again to get a fresh one.`;
     default:
@@ -6982,10 +8903,9 @@ export function DoorLayer({ tracked, open, online, now, onClose, onConfirm }: Do
 
   const { action, phase } = item;
   const remaining = fuseRemaining(action, now);
-  const percent = action.ttl_seconds > 0 ? Math.max(0, Math.min(100, (remaining / action.ttl_seconds) * 100)) : 0;
+  const percent = fusePercent(action, now);
   const reason =
     action.reason ?? `Alfred wants to run '${action.tool_name}' on ${action.target_service}.`;
-  const pill = PILL[phase];
 
   return (
     <Layer open={open} label="Critical approval" durationMs={420}>
@@ -7039,7 +8959,11 @@ export function DoorLayer({ tracked, open, online, now, onClose, onConfirm }: Do
           </div>
         </div>
 
-        <div className="flex flex-col gap-3 px-5 pb-10">
+        <div
+          className="flex flex-col gap-3 px-5"
+          // The screen's own edge: the slider must clear the home indicator (§4).
+          style={{ paddingBottom: "calc(40px + env(safe-area-inset-bottom, 0px))" }}
+        >
           {phase === "pending" ? (
             <SlideToConfirm
               hint="Slide to confirm"
@@ -7054,9 +8978,9 @@ export function DoorLayer({ tracked, open, online, now, onClose, onConfirm }: Do
               <span
                 aria-hidden="true"
                 className="h-2 w-2 rounded-full"
-                style={{ background: pill.dot }}
+                style={{ background: PILL[phase].dot }}
               />
-              {pill.word}
+              {PILL[phase].word}
             </div>
           )}
 
@@ -7084,18 +9008,18 @@ export function DoorLayer({ tracked, open, online, now, onClose, onConfirm }: Do
 }
 ```
 
-- [ ] **Step 8: Run the Door test and the suite**
+- [ ] **Step 11: Run the Door test and the suite**
 
 Run: `npm test -- src/door/DoorLayer.test.tsx`
-Expected: `Test Files  1 passed (1)`, 19 tests.
+Expected: `Test Files  1 passed (1)`, 34 tests.
 
 Run: `npm test && npm run lint && npm run build`
-Expected: `Test Files  38 passed (38)`, no eslint output, `✓ built in …`.
+Expected: `Test Files  40 passed (40)`, `Tests  551 passed (551)`, no eslint output, `✓ built in …`.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 12: Commit**
 
 ```bash
-git add web/src/lib/slide.ts web/src/lib/slide.test.ts web/src/door/SlideToConfirm.tsx web/src/door/DoorLayer.tsx web/src/door/DoorLayer.test.tsx
+git add web/src/lib/slide.ts web/src/lib/slide.test.ts web/src/lib/actions.ts web/src/lib/actions.test.ts web/src/door/FuseRing.tsx web/src/door/DoorBanner.tsx web/src/door/DoorBanner.test.tsx web/src/door/SlideToConfirm.tsx web/src/door/DoorLayer.tsx web/src/door/DoorLayer.test.tsx
 git commit -m "feat(web): the Door — fuse, reason, raw call and slide to confirm"
 ```
 
@@ -7111,33 +9035,117 @@ Three outcomes, one route:
 |---|---|
 | 200 | Track it, open the Door over the Room |
 | 404 | A tombstone in the thread — `already answered`, with the tool's name if the notifications history remembers it |
-| anything else | Nothing; the Room is still the Room |
+| anything else | Nothing; the Room is still the Room. A house that could not be asked has answered nothing, and the thread must not say it has (§5.2) — the offline note is the honest word there |
 
 In every case the URL is replaced with `/` so a pull-to-refresh does not reopen a decision the user has already answered.
+
+The 404 is told to the Door as well as drawn in the thread. The Door may already track the approval — from the `["pending-actions"]` read, or a chat notification — and if it was answered elsewhere (Signal, another device) it would otherwise sit `pending`: the banner would go on offering it, and when its fuse lapsed `tombstoneItems` would lay a second, contradicting `expired · not done` beside this hook's `already answered`. So `DoorProvider` gains `answered(id)`, the reducer's existing `confirm-404` event exposed, and the hook's own tombstone is only for an id the Door never met — a tracked one gets the Door's tombstone, which knows when it was asked.
+
+The `handledRef` that makes StrictMode's second effect pass a no-op is cleared once the read settles, so the same notification tapped again later in the session reads again instead of leaving the URL sitting at `/actions/:id`.
 
 The hook reads the id from `useLocation()` rather than `useParams()`, so it can be called from the Room itself — which both routes render — and therefore keeps its tombstone across the `navigate` instead of unmounting with the route.
 
 **Files:**
 - Create: `web/src/door/useActionRoute.ts`, `web/src/door/useActionRoute.test.tsx`
+- Modify: `web/src/door/DoorProvider.tsx`, `web/src/door/DoorProvider.test.tsx` (the `answered` seam)
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing Door test**
+
+In `web/src/door/DoorProvider.test.tsx`, give the `Probe` a fourth button, after `confirm`:
+
+```tsx
+      <button type="button" onClick={() => door.confirm("a91f3c2e")}>
+        confirm
+      </button>
+      <button type="button" onClick={() => door.answered("a91f3c2e")}>
+        answered
+      </button>
+    </div>
+```
+
+and add this test after "marks a 404 confirm as already answered":
+
+```tsx
+  it("marks an approval the deep link found gone as already answered", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    pendingBody = { actions: [pendingActionFixture] };
+    renderDoor();
+    await waitFor(() => expect(phases()).toBe("a91f3c2e:pending"));
+
+    await user.click(screen.getByRole("button", { name: "answered" }));
+
+    await waitFor(() => expect(phases()).toBe("a91f3c2e:answered"));
+    expect(screen.getByTestId("pending")).toHaveTextContent("0");
+  });
+```
+
+Run: `npm test -- src/door/DoorProvider.test.tsx`
+Expected: `Tests  1 failed | 16 passed (17)` — the new test times out on `expected 'a91f3c2e:pending' to be 'a91f3c2e:answered'`, with `TypeError: door.answered is not a function` from the click above it; `npx tsc -b` reports `Property 'answered' does not exist on type 'DoorValue'`.
+
+- [ ] **Step 2: Expose the reducer's `confirm-404` as `answered`**
+
+In `web/src/door/DoorProvider.tsx`, the interface:
+
+```tsx
+  /** Push an action in from outside — the `/actions/:id` deep link uses this. */
+  arrived: (action: PendingAction) => void;
+  /**
+   * The house has no such approval any more (a 404 on read): a live one it
+   * still tracks was answered elsewhere. Same tombstone as a 404 on confirm.
+   */
+  answered: (id: string) => void;
+```
+
+the callback, after `arrived`:
+
+```tsx
+  const answered = useCallback((id: string) => {
+    dispatch({ type: "confirm-404", id });
+  }, []);
+```
+
+and the value:
+
+```tsx
+      confirm,
+      arrived,
+      answered,
+      now,
+    };
+  }, [actions, openId, now, confirm, arrived, answered]);
+```
+
+Run: `npm test -- src/door/DoorProvider.test.tsx`
+Expected: `Test Files  1 passed (1)`, 17 tests.
+
+- [ ] **Step 3: Write the failing route test**
 
 Create `web/src/door/useActionRoute.test.tsx`:
 
 ```tsx
-import { render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter, useLocation } from "react-router-dom";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { StrictMode } from "react";
+import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { TrackedAction } from "@/lib/actions";
 import { pendingActionFixture } from "@/test/fixtures";
 import { useActionRoute } from "./useActionRoute";
 
-const { arrivedMock, openActionMock } = vi.hoisted(() => ({
+const { door, arrivedMock, answeredMock, openActionMock } = vi.hoisted(() => ({
+  // What the Door already tracks; a test that needs the Door to know the id sets it.
+  door: { actions: [] as TrackedAction[] },
   arrivedMock: vi.fn(),
+  answeredMock: vi.fn(),
   openActionMock: vi.fn(),
 }));
 
 vi.mock("@/door/DoorProvider", () => ({
-  useDoor: () => ({ arrived: arrivedMock, openAction: openActionMock }),
+  useDoor: () => ({
+    actions: door.actions,
+    arrived: arrivedMock,
+    answered: answeredMock,
+    openAction: openActionMock,
+  }),
 }));
 
 let status = 200;
@@ -7146,6 +9154,7 @@ const calls: string[] = [];
 function Probe({ titles = {} }: { titles?: Record<string, string> }) {
   const { tombstone } = useActionRoute(titles);
   const location = useLocation();
+  const navigate = useNavigate();
   return (
     <div>
       <span data-testid="path">{location.pathname}</span>
@@ -7154,9 +9163,19 @@ function Probe({ titles = {} }: { titles?: Record<string, string> }) {
           ? `${tombstone.title}|${tombstone.meta}`
           : "none"}
       </span>
+      <button type="button" onClick={() => void navigate(-1)}>
+        back
+      </button>
+      <button type="button" onClick={() => void navigate("/actions/a91f3c2e")}>
+        again
+      </button>
     </div>
   );
 }
+
+// The path is asserted whole: `/actions/…` contains `/`, so a substring match
+// would pass before the hook had done anything.
+const ROOT = /^\/$/;
 
 function renderAt(path: string, titles?: Record<string, string>) {
   return render(
@@ -7169,11 +9188,10 @@ function renderAt(path: string, titles?: Record<string, string>) {
 beforeEach(() => {
   status = 200;
   calls.length = 0;
+  door.actions = [];
   arrivedMock.mockClear();
+  answeredMock.mockClear();
   openActionMock.mockClear();
-  // Inside the fixture's fuse, as DoorProvider.test pins it.
-  vi.useFakeTimers({ shouldAdvanceTime: true });
-  vi.setSystemTime(new Date("2026-09-07T07:42:00Z"));
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
@@ -7189,7 +9207,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -7203,9 +9220,40 @@ describe("useActionRoute", () => {
   });
 
   it("replaces the URL so a refresh does not reopen it", async () => {
-    renderAt("/actions/a91f3c2e");
-    await waitFor(() => expect(screen.getByTestId("path")).toHaveTextContent("/"));
+    // A Room already in the history: if the hook pushed instead of replacing,
+    // going back would land on the decision again.
+    render(
+      <MemoryRouter initialEntries={["/", "/actions/a91f3c2e"]} initialIndex={1}>
+        <Probe />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByTestId("path")).toHaveTextContent(ROOT));
     expect(screen.getByTestId("tomb")).toHaveTextContent("none");
+
+    // Synchronous on purpose: a push would put the decision back for one
+    // render before the hook read it again, and a waitFor would forgive that.
+    fireEvent.click(screen.getByText("back"));
+    expect(screen.getByTestId("path")).toHaveTextContent(ROOT);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("reads once under StrictMode, and again on a later tap of the same id", async () => {
+    render(
+      <StrictMode>
+        <MemoryRouter initialEntries={["/actions/a91f3c2e"]}>
+          <Probe />
+        </MemoryRouter>
+      </StrictMode>,
+    );
+    await waitFor(() => expect(screen.getByTestId("path")).toHaveTextContent(ROOT));
+    expect(arrivedMock).toHaveBeenCalledTimes(1);
+    expect(calls).toHaveLength(1);
+
+    // The same notification, tapped again while the app is still up.
+    fireEvent.click(screen.getByText("again"));
+    await waitFor(() => expect(arrivedMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByTestId("path")).toHaveTextContent(ROOT));
+    expect(calls).toHaveLength(2);
   });
 
   it("lands on a tombstone when the house has already forgotten it", async () => {
@@ -7218,7 +9266,28 @@ describe("useActionRoute", () => {
       ),
     );
     expect(openActionMock).not.toHaveBeenCalled();
-    expect(screen.getByTestId("path")).toHaveTextContent("/");
+    expect(answeredMock).toHaveBeenCalledWith("a91f3c2e");
+    expect(screen.getByTestId("path")).toHaveTextContent(ROOT);
+  });
+
+  it("leaves the tombstone to the Door when the Door already tracks the id", async () => {
+    status = 404;
+    door.actions = [{ action: pendingActionFixture, phase: "pending" }];
+    renderAt("/actions/a91f3c2e", { a91f3c2e: "Lock unlock" });
+
+    await waitFor(() => expect(answeredMock).toHaveBeenCalledWith("a91f3c2e"));
+    await waitFor(() => expect(screen.getByTestId("path")).toHaveTextContent(ROOT));
+    expect(screen.getByTestId("tomb")).toHaveTextContent("none");
+  });
+
+  it("claims nothing when the house could not be asked", async () => {
+    status = 503;
+    renderAt("/actions/a91f3c2e", { a91f3c2e: "Lock unlock" });
+
+    await waitFor(() => expect(screen.getByTestId("path")).toHaveTextContent(ROOT));
+    expect(screen.getByTestId("tomb")).toHaveTextContent("none");
+    expect(openActionMock).not.toHaveBeenCalled();
+    expect(answeredMock).not.toHaveBeenCalled();
   });
 
   it("names an unremembered approval by its short id", async () => {
@@ -7246,13 +9315,13 @@ describe("useActionRoute", () => {
     );
 
     await waitFor(() => expect(screen.getByTestId("tomb")).toHaveTextContent("Lock unlock"));
-    // Still one read: the id was handled the first time.
+    // Still one read: the URL was replaced, so the location no longer names an id.
     expect(calls).toHaveLength(1);
   });
 
   it("does nothing at all in the Room", async () => {
     renderAt("/");
-    await waitFor(() => expect(screen.getByTestId("path")).toHaveTextContent("/"));
+    await waitFor(() => expect(screen.getByTestId("path")).toHaveTextContent(ROOT));
     expect(calls).toHaveLength(0);
     expect(arrivedMock).not.toHaveBeenCalled();
   });
@@ -7265,12 +9334,12 @@ describe("useActionRoute", () => {
 });
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [ ] **Step 4: Run it to verify it fails**
 
 Run: `npm test -- src/door/useActionRoute.test.tsx`
 Expected: FAIL — `Failed to resolve import "./useActionRoute"`.
 
-- [ ] **Step 3: Write `web/src/door/useActionRoute.ts`**
+- [ ] **Step 5: Write `web/src/door/useActionRoute.ts`**
 
 Complete file:
 
@@ -7279,6 +9348,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useDoor } from "@/door/DoorProvider";
 import { fetchAction } from "@/lib/actions";
+import { ApiError } from "@/lib/api";
 import { shortId } from "@/lib/format";
 import type { TimelineItem } from "@/lib/history";
 
@@ -7302,7 +9372,7 @@ export interface ActionRouteValue {
 export function useActionRoute(titles: Record<string, string>): ActionRouteValue {
   const { pathname } = useLocation();
   const navigate = useNavigate();
-  const { arrived, openAction } = useDoor();
+  const { actions, arrived, answered, openAction } = useDoor();
   const [missing, setMissing] = useState<{ id: string; at: string } | null>(null);
   const handledRef = useRef<string | null>(null);
 
@@ -7311,7 +9381,8 @@ export function useActionRoute(titles: Record<string, string>): ActionRouteValue
   useEffect(() => {
     // No cleanup, and no cancellation flag: StrictMode's setup→cleanup→setup
     // would otherwise abort the only read this route ever makes. The ref makes
-    // the second pass a no-op instead.
+    // the second pass a no-op instead, and is cleared once the read settles so
+    // the same id can be tapped again later in the session.
     if (!id || handledRef.current === id) return;
     handledRef.current = id;
 
@@ -7320,20 +9391,32 @@ export function useActionRoute(titles: Record<string, string>): ActionRouteValue
         arrived(action);
         openAction(id);
       })
-      .catch(() => {
-        // 404, or the house is unreachable. Either way there is nothing to
-        // approve; the thread says so rather than opening an empty Door.
-        setMissing({ id, at: new Date().toISOString() });
+      .catch((error: unknown) => {
+        // Only a 404 is "already answered": the house looked and has nothing
+        // to approve, so the thread says so rather than opening an empty Door.
+        // A house that could not be asked has answered nothing, and the Room
+        // must not claim it has — the offline note is the honest word there.
+        if (error instanceof ApiError && error.status === 404) {
+          // The Door hears it too: if it still tracks the approval as pending,
+          // its banner would go on offering it, and its fuse would later lay a
+          // second, contradicting tombstone beside this one.
+          answered(id);
+          setMissing({ id, at: new Date().toISOString() });
+        }
       })
       .finally(() => {
+        handledRef.current = null;
         // Replace, never push: a pull-to-refresh must not reopen a decision that
         // has already been answered.
         navigate("/", { replace: true });
       });
-  }, [id, arrived, openAction, navigate]);
+  }, [id, arrived, answered, openAction, navigate]);
 
   const tombstone = useMemo<TimelineItem | null>(() => {
     if (!missing) return null;
+    // An approval the Door tracks gets the Door's own tombstone, which knows
+    // when it was asked; this one is only for an id the Door never met.
+    if (actions.some((item) => item.action.request_id === missing.id)) return null;
     return {
       kind: "tombstone",
       id: `tomb:missing:${missing.id}`,
@@ -7341,24 +9424,24 @@ export function useActionRoute(titles: Record<string, string>): ActionRouteValue
       title: titles[missing.id] ?? `Action ${shortId(missing.id)}`,
       meta: "already answered · nothing was done",
     };
-  }, [missing, titles]);
+  }, [missing, titles, actions]);
 
   return { tombstone };
 }
 ```
 
-- [ ] **Step 4: Run the test and the suite**
+- [ ] **Step 6: Run the test and the suite**
 
 Run: `npm test -- src/door/useActionRoute.test.tsx`
-Expected: `Test Files  1 passed (1)`, 7 tests.
+Expected: `Test Files  1 passed (1)`, 10 tests.
 
 Run: `npm test && npm run lint && npm run build`
-Expected: `Test Files  39 passed (39)`, no eslint output, `✓ built in …`.
+Expected: `Test Files  41 passed (41)`, `Tests  562 passed (562)`, no eslint output, `✓ built in …`.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add web/src/door/useActionRoute.ts web/src/door/useActionRoute.test.tsx
+git add web/src/door/DoorProvider.tsx web/src/door/DoorProvider.test.tsx web/src/door/useActionRoute.ts web/src/door/useActionRoute.test.tsx
 git commit -m "feat(web): land a notification tap on the approval it names"
 ```
 
@@ -7370,18 +9453,23 @@ Everything exists; this assembles it, deletes 1a's placeholder Room, unlocks the
 
 **Files:**
 - Rewrite: `web/src/room/Room.tsx`, `web/src/App.tsx`, `web/src/main.tsx`, `web/src/App.test.tsx`, `web/README.md`
-- Create: `docs/superpowers/qa/2026-09-07-pwa-phase1-ios-checklist.md`
+- Modify: `web/src/room/OfflineNote.tsx`, `web/src/room/Headline.test.tsx`, `web/src/room/useRoom.ts`, `web/src/room/useRoom.test.tsx`
+- Create: `web/src/main.test.ts`, `docs/superpowers/qa/2026-09-07-pwa-phase1-ios-checklist.md`
 
 - [ ] **Step 1: Rewrite `web/src/App.test.tsx` for the Room that now exists**
 
-1a's version asserted a placeholder that said `Listening, sir.` unconditionally. The real Room reads its headline from the socket, so the fake must be able to come online, and the fetch stub must answer everything the Room asks for.
+1a's version asserted a placeholder that said `Listening, sir.` unconditionally. The real Room reads its headline from the socket, so the fake must be able to say any of the socket's words, and the fetch stub must answer everything the Room asks for — and be told, per test, to answer differently: a pending approval, a quiet house, a first morning, a deep link the house has forgotten.
+
+These are the tests that pin the composition itself — that the banner, the do-not-disturb row, the held-back sheet, the offline note, the presence field and the headline are all wired to what they read. Each of them fails if its line in `Room.tsx` is dropped.
 
 Complete file:
 
 ```tsx
-import { render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  deferredFixture,
+  firstRunOverviewFixture,
   notificationsPage,
   overviewFixture,
   pendingActionFixture,
@@ -7389,15 +9477,25 @@ import {
   userRequestsPage,
   userResponsesPage,
 } from "@/test/fixtures";
+import { PresenceSignal } from "@/lib/presence-signal";
+import { THEME_KEY } from "@/lib/theme";
+import type { SocketStatus } from "@/lib/ws";
 import App from "./App";
+
+const socket = vi.hoisted(() => ({
+  // What the fake ChatSocket reports the moment it is asked to connect. Online
+  // unless a test says otherwise: the headline, the note under it, the
+  // composer's placeholder and the field's colour all turn on this one word.
+  status: "online" as SocketStatus,
+}));
 
 vi.mock("@/lib/chat-socket", () => ({
   ChatSocket: class {
-    onstatus: (status: string) => void = () => {};
+    onstatus: (status: SocketStatus) => void = () => {};
     connect() {
-      // Report online from connect(), which ConnectionProvider calls after it has
+      // Report from connect(), which ConnectionProvider calls after it has
       // assigned onstatus — the Room's headline depends on it.
-      this.onstatus("online");
+      this.onstatus(socket.status);
     }
     close() {}
     sendText() {
@@ -7424,6 +9522,25 @@ vi.mock("@/lib/telemetry-socket", () => ({
   },
 }));
 
+// A microphone that opens at once and has nothing to say: enough for a hold to
+// begin and end without getUserMedia, which jsdom does not have.
+vi.mock("@/lib/recorder", () => ({
+  Recorder: class {
+    analyser = null;
+    async start() {}
+    async stop() {
+      return null;
+    }
+  },
+  blobToDataUrl: async () => "",
+  pickMimeType: () => "audio/mp4",
+}));
+
+/**
+ * What the house answers, by path. A test that needs a different house copies
+ * these into `routes` and overrides; a `Response` is served as it is, so a test
+ * can make the house say 404.
+ */
 const ROUTES: Record<string, unknown> = {
   "/api/auth/status": { registered: true, authenticated: true },
   "/api/admin/overview": overviewFixture,
@@ -7434,7 +9551,18 @@ const ROUTES: Record<string, unknown> = {
   "/api/actions/pending": { actions: [] },
 };
 
+const EMPTY_PAGE = { entries: [], next_before: null };
+
+let routes: Record<string, unknown>;
+
+/** The paths fetch was asked for, in order. */
+function fetched(): string[] {
+  return vi.mocked(fetch).mock.calls.map(([input]) => String(input));
+}
+
 beforeEach(() => {
+  socket.status = "online";
+  routes = { ...ROUTES };
   // Four minutes before the fixture's fuse lapses, so the deep link opens a
   // live Door and not the one that expired the morning the fixture was written.
   vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -7443,7 +9571,12 @@ beforeEach(() => {
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url in ROUTES) return new Response(JSON.stringify(ROUTES[url]), { status: 200 });
+      if (url in routes) {
+        const reply = routes[url];
+        return reply instanceof Response
+          ? reply.clone()
+          : new Response(JSON.stringify(reply), { status: 200 });
+      }
       if (url.startsWith("/api/actions/"))
         return new Response(JSON.stringify(pendingActionFixture), { status: 200 });
       return new Response("{}", { status: 200 });
@@ -7454,6 +9587,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   localStorage.clear();
   document.documentElement.removeAttribute("data-theme");
   window.history.pushState({}, "", "/");
@@ -7490,10 +9624,36 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "Hold to talk" })).toBeInTheDocument();
   });
 
-  it("applies a theme to the document as it mounts", async () => {
+  it("holds a signed-out device at the gate, short of the room", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response('{"registered":true,"authenticated":false}', { status: 200 })),
+    );
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Welcome back, sir." })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Listening, sir." })).not.toBeInTheDocument();
+    // Nothing behind the gate has asked the house for anything — the Door in
+    // particular, whose 401 would raise the Expired gate over the sign-in.
+    expect(fetched().every((url) => url.startsWith("/api/auth/"))).toBe(true);
+  });
+
+  it("lands an unknown path in the Room", async () => {
+    window.history.pushState({}, "", "/nowhere");
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Listening, sir." })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/");
+  });
+
+  it("applies the stored theme to the document as it mounts", async () => {
+    // Late at night, when the clock alone would say dark: only the stored choice
+    // can make this light.
+    vi.setSystemTime(new Date(2026, 8, 7, 23, 0));
+    localStorage.setItem(THEME_KEY, "light");
     render(<App />);
     await screen.findByRole("heading", { name: "Listening, sir." });
-    expect(["dark", "light"]).toContain(document.documentElement.dataset.theme);
+    expect(document.documentElement.dataset.theme).toBe("light");
   });
 
   it("opens the Door on the action deep link", async () => {
@@ -7505,15 +9665,496 @@ describe("App", () => {
     // The fuse is still running: the clock is pinned inside it (see beforeEach).
     expect(screen.getByText("until it lapses")).toBeInTheDocument();
   });
+
+  it("leaves a tombstone in the thread when the deep link's action is gone", async () => {
+    window.history.pushState({}, "", "/actions/a91f3c2e");
+    routes["/api/actions/a91f3c2e"] = new Response('{"detail":"not found"}', { status: 404 });
+    render(<App />);
+
+    // Named from the notification that asked, not from the id.
+    expect(await screen.findByText("Lock unlock")).toBeInTheDocument();
+    expect(screen.getByText("already answered · nothing was done")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("raises the banner for a pending approval and opens the Door from it", async () => {
+    routes["/api/actions/pending"] = { actions: [pendingActionFixture] };
+    render(<App />);
+
+    const banner = await screen.findByRole("button", { name: /^Lock unlock/ });
+    expect(banner).toHaveTextContent("asked by Alfred, for you");
+    fireEvent.click(banner);
+    expect(await screen.findByRole("dialog", { name: "Critical approval" })).toBeInTheDocument();
+  });
+
+  it("says the house is quiet, counts what it held back, and shows it on a tap", async () => {
+    routes["/api/admin/overview"] = {
+      ...overviewFixture,
+      dnd: { active: true, until: "2026-09-07T09:30:00" },
+      counts: { ...overviewFixture.counts, deferred: 2 },
+    };
+    routes["/api/admin/notifications/deferred"] = deferredFixture;
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: /^Quiet until / })).toBeInTheDocument();
+    const row = screen.getByRole("button", { name: /^Do-not-disturb until / });
+    expect(row).toHaveTextContent("2 held ›");
+    fireEvent.click(row);
+    const sheet = await screen.findByRole("dialog", { name: "Held back" });
+    expect(await within(sheet).findByText("Bins go out tonight")).toBeInTheDocument();
+  });
+
+  it("greets a house on its first day, and keeps up with the clock", async () => {
+    vi.setSystemTime(new Date(2026, 8, 7, 9, 0));
+    routes["/api/admin/overview"] = firstRunOverviewFixture;
+    for (const name of ["user_requests", "user_responses", "reflex_observations", "notifications"])
+      routes[`/api/admin/streams/${name}?count=50`] = EMPTY_PAGE;
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Good morning, sir." })).toBeInTheDocument();
+    expect(screen.getByText(/Nothing has happened yet/)).toBeInTheDocument();
+
+    // Left open until the afternoon, then brought back to the foreground.
+    vi.setSystemTime(new Date(2026, 8, 7, 14, 0));
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(await screen.findByRole("heading", { name: "Good afternoon, sir." })).toBeInTheDocument();
+  });
+});
+
+describe("App — the socket's word", () => {
+  it("shows the last-known Room, and says so, while the house is unreachable", async () => {
+    socket.status = "offline";
+    const setOffline = vi.spyOn(PresenceSignal.prototype, "setOffline");
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Unreachable." })).toBeInTheDocument();
+    expect(screen.getByText(/^No connection to the house since /)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Offline · will send when connected")).toBeInTheDocument();
+    // The field goes grey too (spec §5.2.2): the signal is how it hears.
+    expect(setOffline).toHaveBeenLastCalledWith(true);
+  });
+
+  it("says it is still trying while the socket reconnects", async () => {
+    socket.status = "reconnecting";
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Reconnecting…" })).toBeInTheDocument();
+    expect(screen.getByText(/^Trying again\. /)).toBeInTheDocument();
+  });
+
+  it("turns the headline and the field to a turn in flight", async () => {
+    const setThinking = vi.spyOn(PresenceSignal.prototype, "setThinking");
+    render(<App />);
+    const field = await screen.findByPlaceholderText("Ask or tell Alfred");
+
+    fireEvent.change(field, { target: { value: "Lights off in the study" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(await screen.findByRole("heading", { name: "One moment, sir." })).toBeInTheDocument();
+    expect(setThinking).toHaveBeenLastCalledWith(true);
+  });
+
+  it("changes the headline the moment a hold begins", async () => {
+    render(<App />);
+    await screen.findByRole("heading", { name: "Listening, sir." });
+    const button = screen.getByRole("button", { name: "Hold to talk" });
+
+    fireEvent.pointerDown(button, { pointerId: 1 });
+    // Synchronously: the microphone has not opened yet, and the word must not
+    // wait for it.
+    expect(screen.getByRole("heading", { name: "Go on, sir." })).toBeInTheDocument();
+
+    fireEvent.pointerUp(button, { pointerId: 1 });
+    expect(await screen.findByRole("heading", { name: "Listening, sir." })).toBeInTheDocument();
+  });
 });
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
 
 Run: `npm test -- src/App.test.tsx`
-Expected: FAIL — the placeholder Room renders no timeline, no composer and no Door, so four of the five tests fail. The theme test still passes.
+Expected: FAIL — the placeholder Room renders no timeline, no composer and no Door, and says `Listening, sir.` whatever the socket reports, so everything past the boot, gate and theme tests fails; those three pass against 1a's Room too.
 
-- [ ] **Step 3: Rewrite `web/src/room/Room.tsx`**
+- [ ] **Step 3: Write the failing test — the offline note's live region stays mounted**
+
+`OfflineNote` has only ever been rendered while the socket is down, so its
+`role="status"` region arrives with its text already in it — and VoiceOver can
+miss a live region that is inserted rather than changed. The region must be
+there from the start, empty — and out of flow while it is, or the header's
+`gap-1` opens around a box with nothing in it — and whether the house is
+reachable becomes an `online` prop on the note. Append to the `describe("OfflineNote")` block in
+`web/src/room/Headline.test.tsx`, after "prints an unknown clock rather than a
+made-up one":
+
+```tsx
+  it("keeps its live region mounted, and empty, while online", () => {
+    // Mounted before there is anything to say: VoiceOver can miss a live
+    // region that arrives with its text already in it.
+    render(<OfflineNote online reconnecting={false} lastTrueAt={at2114} />);
+    const region = screen.getByRole("status");
+    expect(region).toBeEmptyDOMElement();
+    // Out of flow, or the header's gap would open around an empty box.
+    expect(region).toHaveClass("sr-only");
+    expect(region).not.toHaveClass("mt-2");
+  });
+```
+
+Run: `npm test -- src/room/Headline.test.tsx`
+Expected: FAIL — `Tests  1 failed | 8 passed (9)`. `online` is not a prop yet, so the
+note renders its text regardless and `expect(element).toBeEmptyDOMElement()` fails.
+
+- [ ] **Step 4: Give `OfflineNote` its `online` prop**
+
+In `web/src/room/OfflineNote.tsx`, replace everything from
+`export interface OfflineNoteProps` to the end of the file:
+
+```tsx
+export interface OfflineNoteProps {
+  online: boolean;
+  reconnecting: boolean;
+  lastTrueAt: Date | null;
+}
+
+/**
+ * Spec §5.2.2, "live is not last-known". Shown whenever the chat socket is not
+ * online, and always carrying the time it last was. The live region itself
+ * stays mounted, empty, while online: VoiceOver can miss a region that is
+ * inserted with its text already in it, and the socket dropping is news. Empty,
+ * it is `sr-only` — positioned out of flow, so the header's gap does not open
+ * around a box with nothing in it.
+ */
+export function OfflineNote({ online, reconnecting, lastTrueAt }: OfflineNoteProps) {
+  const stamp = lastTrueAt ? hhmm(lastTrueAt) : "--:--";
+  const text = reconnecting
+    ? `Trying again. Everything below was last true at ${stamp}.`
+    : `No connection to the house since ${stamp}. Everything below is last-known. Sending is paused.`;
+
+  return (
+    <div
+      role="status"
+      className={
+        online
+          ? "sr-only"
+          : "mt-2 flex items-center gap-2 rounded-[10px] px-3 py-2 text-[13px] leading-[1.4]"
+      }
+      style={online ? undefined : { background: "var(--surface)" }}
+    >
+      {online ? null : (
+        <>
+          <span
+            aria-hidden="true"
+            className="h-2 w-2 shrink-0 rounded-full"
+            style={{ background: "var(--muted)" }}
+          />
+          <span>{text}</span>
+        </>
+      )}
+    </div>
+  );
+}
+```
+
+Then give the three existing renders in `describe("OfflineNote")` the prop, so
+they go on testing the offline face:
+
+```tsx
+    render(<OfflineNote online={false} reconnecting={false} lastTrueAt={at2114} />);
+```
+
+```tsx
+    render(<OfflineNote online={false} reconnecting lastTrueAt={at2114} />);
+```
+
+```tsx
+    render(<OfflineNote online={false} reconnecting={false} lastTrueAt={null} />);
+```
+
+Run: `npm test -- src/room/Headline.test.tsx`
+Expected: `Tests  9 passed (9)`.
+
+- [ ] **Step 5: Write the failing tests — what the house reads back**
+
+The history is re-read whenever the app returns to the foreground
+(`ConnectionProvider` invalidates `["room-history"]` on `visibilitychange`),
+and the server writes every turn to the streams it is read from
+(`core/channels/request_bus.py` xadds each web request to `user_requests`,
+`core/conscious/runner.py` each response to `user_responses`). So a re-read
+carries the rows that arrived live since the Room opened, and `useRoom` must
+drop its own copies of them — or every trip to the background doubles the
+recent thread. The WebSocket frames carry no stream id, so kind and text are
+what there is to match on; the clocks are never compared, because the live row
+carries the phone's stamp and the history row the server's.
+
+In `web/src/room/useRoom.test.tsx`, change the import from `./useRoom`:
+
+```tsx
+import { NO_REPLY_MS, UNSENT_KEY, useRoom, type UseRoomOptions } from "./useRoom";
+```
+
+and append to the end of the file:
+
+```tsx
+describe("useRoom — what the house reads back", () => {
+  // Stamped by the server, as history rows are; the live rows carry the
+  // phone's clock, and nothing below compares the two.
+  const readBack = (kind: "you" | "alfred", id: string, text: string): TimelineItem =>
+    kind === "you"
+      ? { kind, id: `you:${id}`, at: "2026-09-07T21:00:00", text, state: "sent" }
+      : { kind, id: `alfred:${id}`, at: "2026-09-07T21:00:04", text, actions: [] };
+
+  it("shows a turn once when the history has read it back", () => {
+    const { result, chat, rerender } = renderRoom({ history: [], online: true });
+    act(() => result.current.sendText("Anything tomorrow?"));
+    act(() =>
+      chat.deliver({ type: "response", text: "The dentist at nine, sir.", session_id: "s_9f2" }),
+    );
+    expect(kinds(result.current.items)).toEqual(["you", "alfred"]);
+
+    // The app went to the background and came back: the streams now carry both.
+    rerender({
+      history: [
+        readBack("you", "1788814800000-0", "Anything tomorrow?"),
+        readBack("alfred", "1788814804000-0", "The dentist at nine, sir."),
+      ],
+    });
+
+    expect(kinds(result.current.items)).toEqual(["you", "alfred"]);
+    expect(result.current.items.map((item) => item.id)).toEqual([
+      expect.stringMatching(/^divider:/),
+      "you:1788814800000-0",
+      "alfred:1788814804000-0",
+    ]);
+  });
+
+  it("keeps a live turn the history has not caught up with", () => {
+    const { result, chat, rerender } = renderRoom({ history: [], online: true });
+    act(() => result.current.sendText("Anything tomorrow?"));
+    act(() =>
+      chat.deliver({ type: "response", text: "The dentist at nine, sir.", session_id: "s_9f2" }),
+    );
+
+    rerender({ history: [readBack("you", "1788814800000-0", "Anything tomorrow?")] });
+
+    expect(kinds(result.current.items)).toEqual(["you", "alfred"]);
+    const alfred = result.current.items.find((item) => item.kind === "alfred")!;
+    expect(alfred.id).toMatch(/^alfred:\d+$/);
+  });
+
+  it("matches by what was said, not by kind alone", () => {
+    const { result, rerender } = renderRoom({ history: [], online: true });
+    act(() => result.current.sendText("Lock the back door"));
+
+    // A satellite's request, read back in the same window: not ours.
+    rerender({ history: [readBack("you", "1788814800000-0", "Lights off in the study")] });
+
+    expect(kinds(result.current.items)).toEqual(["you", "you", "thinking"]);
+  });
+
+  it("does not take the same words from the other side of the thread", () => {
+    const { result, rerender } = renderRoom({ history: [], online: true });
+    act(() => result.current.sendText("Good night"));
+
+    rerender({ history: [readBack("alfred", "1788814804000-0", "Good night")] });
+
+    // History is dated before the live rows (see `readBack`), so it leads.
+    expect(kinds(result.current.items)).toEqual(["alfred", "you", "thinking"]);
+  });
+
+  it("does not let an older turn swallow a new one that says the same", () => {
+    // "yes" was already in the thread when the Room opened.
+    const { result, rerender } = renderRoom({
+      history: [readBack("you", "1788814000000-0", "yes")],
+      online: true,
+    });
+
+    act(() => result.current.sendText("yes"));
+    expect(kinds(result.current.items)).toEqual(["you", "you", "thinking"]);
+
+    // Read back: the old one and the new one.
+    rerender({
+      history: [
+        readBack("you", "1788814000000-0", "yes"),
+        readBack("you", "1788814800000-0", "yes"),
+      ],
+    });
+    expect(kinds(result.current.items)).toEqual(["you", "you", "thinking"]);
+  });
+
+  it("waits for the first history before deciding what predates the session", () => {
+    // Undefined, not empty: the read has not answered yet.
+    const { result, rerender } = renderRoom({ online: true });
+    rerender({ history: [readBack("you", "1788814000000-0", "yes")] });
+
+    act(() => result.current.sendText("yes"));
+
+    expect(kinds(result.current.items)).toEqual(["you", "you", "thinking"]);
+  });
+
+  it("answers one live row with one history row", () => {
+    const { result, rerender } = renderRoom({ history: [], online: true });
+    act(() => result.current.sendText("yes"));
+    act(() => result.current.sendText("yes"));
+
+    rerender({ history: [readBack("you", "1788814800000-0", "yes")] });
+
+    expect(kinds(result.current.items)).toEqual(["you", "you", "thinking"]);
+  });
+
+  it("leaves the unsent queue alone", () => {
+    const { result, rerender } = renderRoom({ history: [], online: false });
+    act(() => result.current.sendText("yes"));
+
+    // Someone else's "yes" was read back; ours never left.
+    rerender({ history: [readBack("you", "1788814800000-0", "yes")] });
+
+    const rows = result.current.items.filter((item) => item.kind !== "divider");
+    expect(rows.map((item) => item.kind === "you" && item.state)).toEqual(["sent", "unsent"]);
+  });
+
+  it("leaves a client-made error row alone", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-07T21:00:00"));
+    const { result, rerender } = renderRoom({ history: [], online: true });
+    act(() => result.current.sendText("yes"));
+    act(() => vi.advanceTimersByTime(NO_REPLY_MS));
+
+    rerender({
+      history: [
+        readBack("you", "1788814800000-0", "yes"),
+        readBack("alfred", "1788814860000-0", "No reply in 60 s."),
+      ],
+    });
+
+    expect(kinds(result.current.items)).toEqual(["you", "alfred", "alfred"]);
+  });
+});
+```
+
+- [ ] **Step 6: Run it to verify it fails**
+
+Run: `npm test -- src/room/useRoom.test.tsx`
+Expected: FAIL — `Tests  6 failed | 35 passed (41)`. Nothing is ever dropped, so
+every test whose second read carries a copy of a live turn sees it twice, and the
+one that renders before any history throws on spreading `undefined`. The three
+that pass do so because "keep it" is what no supersession does anyway.
+
+- [ ] **Step 7: Teach `useRoom` what the house reads back**
+
+Five edits to `web/src/room/useRoom.ts`. First, before `function readUnsent()`,
+add:
+
+```ts
+/**
+ * The text a row would have been read back under, or null for a row the house
+ * never writes to its streams: an unsent message, a client-made error row, and
+ * the transients.
+ */
+function readBackText(item: TimelineItem): string | null {
+  switch (item.kind) {
+    case "you":
+      return item.state === "sent" ? item.text : null;
+    case "alfred":
+      return item.error ? null : item.text;
+    case "act":
+      return item.text;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Drop the live rows the house has since read back to us.
+ *
+ * The history is re-read whenever the app returns to the foreground, and the
+ * server writes every turn to the streams it is read from, so a re-read
+ * carries the rows that arrived live since the last one — without this, each
+ * trip to the background doubled the recent thread. `unread` is only what the
+ * history has gained since the Room opened, because a live row can only be a
+ * copy of a turn from this session; an older "yes" must not swallow a new one.
+ * Within that, kind and text decide, one history row answering for one live
+ * row in order, so "yes" twice stays twice. The clocks are never compared: the
+ * live row carries the phone's stamp and the history row the server's.
+ */
+function withoutReadBack(live: TimelineItem[], unread: TimelineItem[]): TimelineItem[] {
+  const taken = new Set<string>();
+  return live.filter((item) => {
+    const text = readBackText(item);
+    if (text === null) return true;
+    const copy = unread.find(
+      (row) => row.kind === item.kind && readBackText(row) === text && !taken.has(row.id),
+    );
+    if (!copy) return true;
+    taken.add(copy.id);
+    return false;
+  });
+}
+```
+
+Replace the `UseRoomOptions` interface — `history` becomes optional, and
+undefined means "not loaded yet", which is not the same as empty:
+
+```ts
+export interface UseRoomOptions {
+  /**
+   * `toTimelineItems(useRoomHistory().data)` — the thread as it stood on open,
+   * and undefined until the first read has answered. The distinction matters:
+   * that first answer is the line between the turns that predate this session
+   * and the ones the house reads back to us (see `withoutReadBack`).
+   */
+  history?: TimelineItem[];
+  /** Expired and already-answered approvals, from `tombstoneItems` (Task 25). */
+  tombstones?: TimelineItem[];
+}
+```
+
+After `const [live, setLive] = useState<TimelineItem[]>(readUnsent);`, add:
+
+```ts
+  // The first history to arrive is the thread as it stood before this session.
+  // Kept as ids: stream ids are the server's and survive every re-read. Set
+  // during render on the first loaded snapshot rather than in an effect, so
+  // the frame that shows the history already knows what predates it.
+  const [baseline, setBaseline] = useState<ReadonlySet<string> | null>(null);
+  if (baseline === null && history) setBaseline(new Set(history.map((item) => item.id)));
+```
+
+In the `notification` case of the message listener, the comment on `meta`
+becomes:
+
+```ts
+            // `live`, not a source: the /ws notification frame carries none
+            // (core/notifications/adapters/websocket.py). When the history is
+            // next re-read, its copy of this notification takes this row's place
+            // (`withoutReadBack`) and shows the real one.
+```
+
+And replace the `items` memo:
+
+```ts
+  const items = useMemo(() => {
+    const rows = history ?? [];
+    const unread = baseline ? rows.filter((row) => !baseline.has(row.id)) : [];
+    const merged = [...rows, ...(tombstones ?? []), ...withoutReadBack(live, unread)].sort(
+      (a, b) => Date.parse(a.at) - Date.parse(b.at),
+    );
+    return withDividers(merged, now);
+  }, [history, baseline, tombstones, live, now]);
+```
+
+`ReadonlySet` and the render-time `setBaseline` are both deliberate: the set is
+never mutated, and setting state during render on a first loaded snapshot is
+React's "adjust state when a prop changes" idiom, which the react-hooks lint
+accepts and an effect would get one frame late.
+
+- [ ] **Step 8: Run it to verify it passes**
+
+Run: `npm test -- src/room/useRoom.test.tsx`
+Expected: `Tests  41 passed (41)`.
+
+- [ ] **Step 9: Rewrite `web/src/room/Room.tsx`**
 
 Complete file (this replaces 1a's frame entirely):
 
@@ -7560,7 +10201,7 @@ export function Room() {
   const [hour, setHour] = useState(() => new Date().getHours());
   useEffect(() => onVisible(() => setHour(new Date().getHours())), []);
 
-  const historyItems = useMemo(() => (history ? toTimelineItems(history) : []), [history]);
+  const historyItems = useMemo(() => (history ? toTimelineItems(history) : undefined), [history]);
   const titles = useMemo(() => pendingActionTitles(history), [history]);
   const { tombstone } = useActionRoute(titles);
 
@@ -7607,7 +10248,7 @@ export function Room() {
           <ThemeToggle />
         </div>
         <StatusLine overview={overview} online={online} lastTrueAt={lastTrueAt} />
-        {online ? null : <OfflineNote reconnecting={reconnecting} lastTrueAt={lastTrueAt} />}
+        <OfflineNote online={online} reconnecting={reconnecting} lastTrueAt={lastTrueAt} />
         {dnd.active ? (
           <DndRow
             until={dnd.until}
@@ -7658,7 +10299,7 @@ export function Room() {
 }
 ```
 
-- [ ] **Step 4: Put `DoorProvider` in `web/src/App.tsx`**
+- [ ] **Step 10: Put `DoorProvider` in `web/src/App.tsx`**
 
 The Door only exists for a signed-in device, so its provider goes inside `AuthGate`, above the routes. Complete file:
 
@@ -7704,7 +10345,7 @@ export default function App() {
 }
 ```
 
-- [ ] **Step 5: Unlock the audio context in `web/src/main.tsx`**
+- [ ] **Step 11: Unlock the audio context in `web/src/main.tsx`**
 
 Complete file:
 
@@ -7732,13 +10373,68 @@ createRoot(document.getElementById("root")!).render(
 );
 ```
 
-- [ ] **Step 6: Run the composition test and the whole suite**
+- [ ] **Step 12: Pin the order in `web/src/main.tsx` — create `web/src/main.test.ts`**
+
+Nothing else exercises `main.tsx`, and its two installers are only right if they
+run before the first render: the root is sized from the viewport vars, and a tap
+that lands before the unlock listener is installed unlocks nothing. Complete
+file:
+
+```ts
+import { StrictMode } from "react";
+import { describe, expect, it, vi } from "vitest";
+
+const { createRoot, installAudioUnlock, installViewportVars, render } = vi.hoisted(() => {
+  const render = vi.fn();
+  return {
+    createRoot: vi.fn(() => ({ render })),
+    installAudioUnlock: vi.fn(),
+    installViewportVars: vi.fn(),
+    render,
+  };
+});
+
+vi.mock("@/lib/audio", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/audio")>()),
+  installAudioUnlock,
+}));
+vi.mock("@/lib/viewport", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/viewport")>()),
+  installViewportVars,
+}));
+vi.mock("react-dom/client", () => ({ createRoot }));
+
+describe("main", () => {
+  it("installs the viewport and audio hooks, then renders the App under StrictMode", async () => {
+    document.body.innerHTML = '<div id="root"></div>';
+    await import("./main");
+
+    expect(installViewportVars).toHaveBeenCalledOnce();
+    expect(installAudioUnlock).toHaveBeenCalledOnce();
+    expect(createRoot).toHaveBeenCalledWith(document.getElementById("root"));
+    expect(render).toHaveBeenCalledOnce();
+    expect(render.mock.calls[0]?.[0]).toMatchObject({ type: StrictMode });
+
+    // Both before the first paint: the root is sized from the viewport vars, and
+    // a tap that lands before the unlock listener is installed unlocks nothing.
+    const order = [installViewportVars, installAudioUnlock, render].map(
+      (fn) => fn.mock.invocationCallOrder[0],
+    );
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+  });
+});
+```
+
+Run: `npm test -- src/main.test.ts`
+Expected: `Tests  1 passed (1)`.
+
+- [ ] **Step 13: Run the composition test and the whole suite**
 
 Run: `npm test -- src/App.test.tsx`
-Expected: `Test Files  1 passed (1)`, 5 tests.
+Expected: `Test Files  1 passed (1)`, 15 tests.
 
 Run: `npm test`
-Expected: `Test Files  39 passed (39)`, zero failures. jsdom prints
+Expected: `Test Files  42 passed (42)`, `Tests  584 passed (584)`, zero failures. jsdom prints
 `Not implemented: HTMLCanvasElement.prototype.getContext` wherever the Room is
 rendered without a stubbed canvas — `PresenceField` catches it and draws nothing.
 That line is noise, not a failure.
@@ -7749,14 +10445,14 @@ Expected: no output.
 Run: `npm run build`
 Expected: `tsc -b` silent, `✓ built in …`.
 
-- [ ] **Step 7: Commit the client**
+- [ ] **Step 14: Commit the client**
 
 ```bash
-git add web/src/room/Room.tsx web/src/App.tsx web/src/App.test.tsx web/src/main.tsx
+git add web/src/room/Room.tsx web/src/room/OfflineNote.tsx web/src/room/Headline.test.tsx web/src/room/useRoom.ts web/src/room/useRoom.test.tsx web/src/App.tsx web/src/App.test.tsx web/src/main.tsx web/src/main.test.ts
 git commit -m "feat(web): compose the Room — presence, thread, composer and Door"
 ```
 
-- [ ] **Step 8: Rewrite `web/README.md`**
+- [ ] **Step 15: Rewrite `web/README.md`**
 
 Complete file:
 
@@ -7779,8 +10475,8 @@ Spec: `docs/superpowers/specs/2026-09-04-mobile-first-pwa-client-design.md`.
 | `npm test` | Vitest, once |
 | `npm run lint` | ESLint over `web/` |
 
-The type check lives in `build`, not `lint`. CI runs all four, then serves the
-built `dist/` to `tests/core/channels/test_spa_ci.py`.
+The type check lives in `build`, not `lint`. CI runs `lint`, `test` and `build`, in
+that order, then serves the built `dist/` to `tests/core/channels/test_spa_ci.py`.
 
 ## Layout
 
@@ -7825,7 +10521,9 @@ slide-to-confirm, the five phases, tombstones, and the `/actions/:id` deep link)
 ## Things worth knowing before you change something
 
 - `--app-height` and `--keyboard-inset` are written by `installViewportVars()`
-  from `visualViewport`. `100vh` is wrong in Safari; do not reach for it.
+  from `innerHeight` and `visualViewport`. `100vh` is wrong in Safari; do not reach
+  for it, and do not size the column from the visual viewport: the keyboard is paid
+  for once, by `.pb-keyboard`.
 - All audio plays through one `AudioContext` unlocked by the first tap
   (`lib/audio.ts`). A fresh `new Audio()` is silently dropped on iOS until then.
 - `MediaRecorder` must negotiate `audio/mp4` → `audio/aac` → default. Safari has
@@ -7836,7 +10534,7 @@ slide-to-confirm, the five phases, tombstones, and the `/actions/:id` deep link)
   last-known Room stays visible behind them.
 ```
 
-- [ ] **Step 9: Write the iOS QA checklist**
+- [ ] **Step 16: Write the iOS QA checklist**
 
 Create `docs/superpowers/qa/2026-09-07-pwa-phase1-ios-checklist.md`:
 
@@ -7886,6 +10584,7 @@ never signed in. Record the device, iOS version and date at the bottom.
 - [ ] The timeline is still scrollable with the keyboard up
 - [ ] Dismiss the keyboard: the composer returns without a jump
 - [ ] The home-indicator gap does **not** double up while the keyboard is open
+- [ ] Tap the composer field, then a setup-gate input, in a Safari **tab** and again from the installed icon: the page must not zoom. Both use the handoff's 15px type, and Safari zooms into a focused field under 16px. If it does, put the inputs at 16px — not a `maximum-scale` viewport, which takes pinch zoom from everyone
 
 ## §4.6 — rubber-band scroll
 
@@ -7963,14 +10662,14 @@ Device: ______________  iOS: ______  Build: ______________  Date: ____________
 Tester: ______________
 ```
 
-- [ ] **Step 10: Full verification**
+- [ ] **Step 17: Full verification**
 
 ```bash
 cd ~/code/.worktrees/alfred/pwa-phase1-client/web
 npm run lint && npm test && npm run build
 ```
 
-Expected: no eslint output, `Test Files  39 passed (39)`, `✓ built in …`.
+Expected: no eslint output, `Test Files  42 passed (42)`, `Tests  584 passed (584)`, `✓ built in …`.
 
 ```bash
 cd ~/code/.worktrees/alfred/pwa-phase1-client
@@ -7993,7 +10692,7 @@ grep -rn "TODO\|FIXME" web/src --include='*.ts' --include='*.tsx'
 
 Expected: no output.
 
-- [ ] **Step 11: Commit the documentation**
+- [ ] **Step 18: Commit the documentation**
 
 ```bash
 git add web/README.md docs/superpowers/qa/2026-09-07-pwa-phase1-ios-checklist.md
@@ -8013,7 +10712,7 @@ cd ~/code/.worktrees/alfred/pwa-phase1-client/web
 npm run lint && npm test && npm run build
 ```
 
-Expected: eslint prints nothing, `Test Files  39 passed (39)`, `✓ built in …`.
+Expected: eslint prints nothing, `Test Files  42 passed (42)`, `Tests  584 passed (584)`, `✓ built in …`.
 
 ```bash
 cd ~/code/.worktrees/alfred/pwa-phase1-client
@@ -8032,12 +10731,12 @@ Expected: **no output.** The repository is public. Every hostname on this branch
 ```bash
 cd ~/code/.worktrees/alfred/pwa-phase1-client
 grep -rn "TODO\|FIXME\|placeholder" web/src --include='*.ts' --include='*.tsx' | grep -v "placeholder=" | grep -v "placeholder:"
-git grep -n "audio/webm" -- web/
+git grep -n "audio/webm" -- web/ | grep -v '\.test\.'
 git grep -n "location.assign" -- web/src
 git log --oneline origin/master..HEAD | wc -l
 ```
 
-Expected: nothing from the first three (`placeholder=` on the credential inputs and `placeholder:` in the fixtures are the schema's own field), and `28` commits — one per task.
+Expected: nothing from the first three (`placeholder=` on the credential inputs and `placeholder:` in the fixtures are the schema's own field; `recorder.test.ts` names webm on purpose, as the honest label for a browser with no mp4), and at least `28` commits — one `feat` per task, plus the `fix`/`test` commits the review rounds added.
 
 ```bash
 cd ~/code/.worktrees/alfred/pwa-phase1-client
@@ -8079,8 +10778,8 @@ survives is `ws.ts`, `chat-socket.ts`, `telemetry-socket.ts` and `webauthn.ts`.
 Everything else is built from the handoff.
 
 **The shell.** Tokens for both themes as CSS custom properties, a twelve-step type
-scale, two easing curves, `visualViewport` mirrored into `--app-height` and
-`--keyboard-inset`, safe-area classes, and `Layer`/`Sheet` — the two surfaces
+scale, two easing curves, the window and the keyboard mirrored into `--app-height`
+and `--keyboard-inset`, and `Layer`/`Sheet` — the two surfaces
 everything rises on.
 
 **The gates.** Setup (passkey → Home Assistant credentials → the attention set),
@@ -8157,3 +10856,14 @@ desktop composition (phase 6). `public/manifest.json` is untouched.
 - [ ] No component reads a colour outside `var(--…)`, and no ad-hoc font size that the `.t-*` scale already covers
 - [ ] The three copy blocks that must be verbatim — the setup gate, the held-back sheet and the Door's five foot lines — read identically to the handoff, except where the deviations table says otherwise
 - [ ] The QA checklist has been run once on a real phone, and its footer is filled in
+
+### Task 28 addendum (from the Task 1 quality review): sweep the docs the hard cut invalidated
+
+Task 1 deleted the modules these files describe. Before the final commit of this task:
+
+- `docs/web-frontend.md` — rewrite for the phase 1 client (shell, gates, Room, Door; the file/route layout from this plan's File Structure; how to run/test), replacing the `AlfredProvider`/`AppShell`/`IconRail`/`TelemetryRail`/`CommandPalette`/`ChatPage` material and the six-route table. Drop the "superseded" banner Task 1 added at the top.
+- `CLAUDE.md` — fix the `web/` line (~54) that lists `src/shell, src/chat, src/pages`, and the `web/src/pages/SettingsPage.tsx … IntegrationCard` reference (~99), to match the new layout.
+- `docs/autonomy.md` (~102) — it points at the deleted `web/src/lib/notifications.ts`; point it at what now handles notification events in the client (the Door via `DoorProvider`/`actions.ts`, and the timeline's act rows).
+- Backlog tickets made moot by the hard cut: `docs/backlog/low/web-frontend-followups.md`, `docs/backlog/low/voice-enrollment-card-polish.md`, `docs/backlog/low/lan-only-writes-affordance.md`, `docs/backlog/medium/web-activity-virtualized-list.md` — delete each one whose subject no longer exists; if any item in them still applies to the new client, move that item into a short note in `docs/backlog/low/pwa-phase1-followups.md` instead.
+
+Commit as `docs: retire the Mission Control frontend docs for the PWA client`.
