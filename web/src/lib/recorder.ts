@@ -3,7 +3,8 @@ import { getAudioContext } from "./audio";
 /**
  * In preference order. Constraint §4.8: Safari's MediaRecorder has no WebM at
  * all and *throws* from the constructor when asked for it, which is how the
- * outgoing VoiceButton died on every iPhone. The backend accepts aac/m4a/wav.
+ * outgoing VoiceButton died on every iPhone. The backend's allowed formats take
+ * mp4 as of this task.
  */
 export const RECORDER_MIME_TYPES = ["audio/mp4", "audio/aac"] as const;
 
@@ -51,15 +52,28 @@ export class Recorder {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     this.stream = stream;
     this.chunks = [];
-    this.mimeType = pickMimeType();
 
-    const recorder = this.mimeType
-      ? new MediaRecorder(stream, { mimeType: this.mimeType })
-      : new MediaRecorder(stream);
-    recorder.ondataavailable = (event: BlobEvent) => {
-      if (event.data && event.data.size > 0) this.chunks.push(event.data);
-    };
-    recorder.start();
+    let recorder: MediaRecorder;
+    try {
+      this.mimeType = pickMimeType();
+      recorder = this.mimeType
+        ? new MediaRecorder(stream, { mimeType: this.mimeType })
+        : new MediaRecorder(stream);
+      recorder.ondataavailable = (event: BlobEvent) => {
+        if (event.data && event.data.size > 0) this.chunks.push(event.data);
+      };
+      recorder.start();
+    } catch (error) {
+      // No MediaRecorder at all (iOS before 14.3), or one that refuses the
+      // stream. The microphone is already open by now, and an iOS mic indicator
+      // left on is worse than the failed recording.
+      for (const track of stream.getTracks()) track.stop();
+      this.stream = null;
+      throw error;
+    }
+    // With no hint the browser chose for itself — webm or ogg, never mp4 — and
+    // the blob, and through it the data URL's container hint, must say so.
+    this.mimeType = recorder.mimeType || this.mimeType;
     this.recorder = recorder;
     this.startedAt = Date.now();
 
@@ -67,6 +81,11 @@ export class Recorder {
     // the recording itself must still work.
     const ctx = getAudioContext();
     if (!ctx) return;
+    // `installAudioUnlock` only fires once; iOS re-suspends the context every
+    // time the app is backgrounded, and an analyser on a suspended context reads
+    // silence for the whole utterance. `start()` runs inside the pointerdown,
+    // so the resume is honoured.
+    if (ctx.state !== "running") void ctx.resume().catch(() => {});
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 256;
     analyser.smoothingTimeConstant = 0.6;
@@ -80,7 +99,7 @@ export class Recorder {
     const recorder = this.recorder;
     const stream = this.stream;
     const mimeType = this.mimeType;
-    const durationMs = this.startedAt === 0 ? 0 : Date.now() - this.startedAt;
+    const durationMs = Date.now() - this.startedAt;
 
     this.recorder = null;
     this.stream = null;
@@ -99,7 +118,7 @@ export class Recorder {
     }
 
     const blob = await new Promise<Blob>((resolve) => {
-      const finish = () => resolve(new Blob(this.chunks, { type: mimeType || "audio/mp4" }));
+      const finish = () => resolve(new Blob(this.chunks, { type: mimeType }));
       recorder.onstop = finish;
       try {
         recorder.stop();

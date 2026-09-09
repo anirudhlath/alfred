@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getAudioContext } from "./audio";
 import { blobToDataUrl, pickMimeType, Recorder } from "./recorder";
 
 class FakeMediaRecorder {
   static supported: string[] = ["audio/mp4"];
+  /** What the browser settles on when it is given no hint. */
+  static chosen = "audio/webm";
   static instances: FakeMediaRecorder[] = [];
 
   static isTypeSupported(type: string): boolean {
@@ -12,15 +15,19 @@ class FakeMediaRecorder {
   ondataavailable: ((event: { data: Blob }) => void) | null = null;
   onstop: (() => void) | null = null;
   options: { mimeType?: string } | undefined;
+  mimeType: string;
   started = false;
 
   constructor(_stream: MediaStream, options?: { mimeType?: string }) {
     this.options = options;
+    this.mimeType = options?.mimeType ?? "";
     FakeMediaRecorder.instances.push(this);
   }
 
+  // Like the real one: the type it actually records is known once it starts.
   start(): void {
     this.started = true;
+    this.mimeType ||= FakeMediaRecorder.chosen;
   }
 
   stop(): void {
@@ -41,9 +48,10 @@ class FakeAudioContext {
   createMediaStreamSource() {
     return source;
   }
-  resume() {
+  resume = vi.fn(() => {
+    this.state = "running";
     return Promise.resolve();
-  }
+  });
 }
 
 let tracks: { stop: ReturnType<typeof vi.fn> }[] = [];
@@ -97,6 +105,11 @@ describe("pickMimeType", () => {
   it("uses MediaRecorder.isTypeSupported by default", () => {
     expect(pickMimeType()).toBe("audio/mp4");
   });
+
+  it("answers empty, not a throw, where there is no MediaRecorder at all", () => {
+    vi.stubGlobal("MediaRecorder", undefined);
+    expect(pickMimeType()).toBe("");
+  });
 });
 
 describe("Recorder", () => {
@@ -118,6 +131,38 @@ describe("Recorder", () => {
     const recorder = new Recorder();
     await recorder.start();
     expect(FakeMediaRecorder.instances[0].options).toBeUndefined();
+  });
+
+  it("labels the recording with the type the browser chose, not mp4", async () => {
+    FakeMediaRecorder.supported = [];
+    const recorder = new Recorder();
+    await recorder.start();
+
+    const recording = await recorder.stop();
+
+    // Firefox records webm here; calling it mp4 would send ffmpeg a lie.
+    expect(recording!.mimeType).toBe("audio/webm");
+    expect(recording!.blob.type).toBe("audio/webm");
+  });
+
+  it("resumes a context iOS suspended while the app was in the background", async () => {
+    const ctx = getAudioContext() as unknown as FakeAudioContext;
+    ctx.state = "suspended";
+    await new Recorder().start();
+
+    expect(ctx.resume).toHaveBeenCalled();
+    expect(ctx.state).toBe("running");
+  });
+
+  it("closes the microphone again when there is no MediaRecorder to open", async () => {
+    vi.stubGlobal("MediaRecorder", undefined);
+    const recorder = new Recorder();
+
+    await expect(recorder.start()).rejects.toThrow();
+
+    expect(tracks[0].stop).toHaveBeenCalled();
+    expect(tracks[1].stop).toHaveBeenCalled();
+    expect(await recorder.stop()).toBeNull();
   });
 
   it("ignores a second start while already recording", async () => {
