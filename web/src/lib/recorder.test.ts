@@ -154,6 +154,17 @@ describe("Recorder", () => {
     expect(ctx.state).toBe("running");
   });
 
+  it("resumes a context WebKit marked interrupted by a call mid-conversation", async () => {
+    const ctx = getAudioContext() as unknown as FakeAudioContext;
+    // The context outlives the test above, and so does its mock's history.
+    ctx.resume.mockClear();
+    ctx.state = "interrupted";
+    await new Recorder().start();
+
+    expect(ctx.resume).toHaveBeenCalledTimes(1);
+    expect(ctx.state).toBe("running");
+  });
+
   it("closes the microphone again when there is no MediaRecorder to open", async () => {
     vi.stubGlobal("MediaRecorder", undefined);
     const recorder = new Recorder();

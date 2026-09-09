@@ -82,7 +82,8 @@ export class Recorder {
     const ctx = getAudioContext();
     if (!ctx) return;
     // `installAudioUnlock` only fires once; iOS re-suspends the context every
-    // time the app is backgrounded, and an analyser on a suspended context reads
+    // time the app is backgrounded (and WebKit marks it "interrupted" after a
+    // call or Siri), and an analyser on a context that is not running reads
     // silence for the whole utterance. `start()` runs inside the pointerdown,
     // so the resume is honoured.
     if (ctx.state !== "running") void ctx.resume().catch(() => {});
