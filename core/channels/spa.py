@@ -64,7 +64,7 @@ class SpaCacheMiddleware(BaseHTTPMiddleware):
       bytes behind a URL never change and they are immutable for a year. A 304 keeps
       that; a 4xx/5xx does not, because pinning a 404 for a year leaves no URL to bust.
     * ``text/html`` — the entry point and every SPA-fallback route (``/``,
-      ``/index.html``, ``/activity``). Not stored at all, so a deploy is picked up on
+      ``/index.html``, ``/actions/{id}``). Not stored at all, so a deploy is picked up on
       the next load.
     * everything else — unhashed ``web/public/`` files such as ``/favicon.svg`` and
       ``/manifest.json``. Revalidated on every load, which today costs the full body:

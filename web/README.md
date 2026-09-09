@@ -39,10 +39,13 @@ Tests live beside their source (`lib/history.ts` → `lib/history.test.ts`).
 - Colours are CSS custom properties (`var(--accent)`), never Tailwind palette
   colours. Both themes are defined in `src/index.css` under `:root[data-theme]`.
 - Type comes from the `.t-*` classes, not ad-hoc sizes.
-- Imports use the `@/` alias, except inside `src/lib/`, where siblings are relative.
-- The status vocabulary is closed: `queued`, `applied`, `last true HH:MM`,
-  `unknown since HH:MM`, `expired · not done`, `takes effect within 60 s`. Always
-  mono, always lower case. Do not invent new words for system state.
+- Imports use the `@/` alias; siblings are relative inside `src/lib/` and in tests.
+- The status vocabulary is closed (spec §10). Phase 1 says `queued`, `applied`,
+  `last true HH:MM` and `expired · not done`; `unknown since HH:MM`,
+  `takes effect within 60 s`, `hot / cold` and `candidate · active · dormant · archived`
+  are the Workshop's words and arrive with it. Mono, lower case — the one exception is
+  the Door's phase pill (`Confirmed · queued`, `Applied`, `Expired`, `Answered`), set in
+  the layer's own type, ink on paper. Do not invent new words for system state.
 
 ## What phase 1 covers
 
@@ -55,8 +58,11 @@ slide-to-confirm, the five phases, tombstones, and the `/actions/:id` deep link)
 
 - **The Workshop** (Activity, Memory, Triggers, System) — phase 2 and 3. There is
   no handle, no `why?` button and no causal thread yet.
-- **Install, standalone and Reach gates, the service worker, icons and Web Push**
-  — phases 4 and 5. `public/manifest.json` is untouched.
+- **Install and Reach gates, the service worker, icons and Web Push** — phases 4
+  and 5. The standalone metas are already in `index.html`, and `public/manifest.json`
+  carries the phase-1 palette's dark ground — a manifest cannot follow the theme the way
+  `applyTheme` rewrites the `theme-color` meta, so a light-hour install still gets a dark
+  splash until phase 4 decides otherwise. Nothing else in `public/` has been touched.
 - **Desktop** — phase 6.
 
 ## Things worth knowing before you change something

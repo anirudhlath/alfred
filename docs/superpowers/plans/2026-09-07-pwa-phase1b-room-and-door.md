@@ -10984,3 +10984,56 @@ Task 1 deleted the modules these files describe. Before the final commit of this
 - Backlog tickets made moot by the hard cut: `docs/backlog/low/web-frontend-followups.md`, `docs/backlog/low/voice-enrollment-card-polish.md`, `docs/backlog/low/lan-only-writes-affordance.md`, `docs/backlog/medium/web-activity-virtualized-list.md` — delete each one whose subject no longer exists; if any item in them still applies to the new client, move that item into a short note in `docs/backlog/low/pwa-phase1-followups.md` instead.
 
 Commit as `docs: retire the Mission Control frontend docs for the PWA client`.
+
+### Final review corrections (after Task 28, from the whole-branch review)
+
+The final reviewer read the branch against the spec, the handoff and the backend and
+returned thirty-one findings. Every one is fixed; none was triaged down. They land as
+five themed commits on top of Task 28:
+
+- `fix(web): admit the house is unreachable` — `ws.ts` said `"reconnecting"` forever,
+  so the Room could never reach `Unreachable.` (spec §5.2). `OFFLINE_AFTER_ATTEMPTS = 3`:
+  the third failed try, or `navigator.onLine === false` at any close, announces
+  `"offline"`; retries continue regardless, and the next open makes it `"online"`. The
+  iOS checklist's Wi-Fi-off step now expects `Reconnecting…` first.
+- `fix(web): say only what the client knows` — the status line said `reflex ok` with no
+  overview loaded (now `reflex —`); the setup gate greeted "Good evening" at nine in the
+  morning (now `partOfDay()`, shared with the Room's headline) and promised a settings
+  page that does not exist (now "Not final… that comes with the Workshop"); the Denied
+  gate's body implied the whole client was LAN-gated when only registration and
+  credential/device writes are (spec §3.1–3.2); the manifest's colours were the old
+  palette's; `_channel` is now sent with both WebAuthn completions so the server's
+  `_session_channel` can tell `pwa` from `web`.
+- `fix(web): read back a turn once` — the read-back paired a live row with *any*
+  history row of the same key, so the second "yes" was read back by the first's copy,
+  and a copy that had left the fifty-row window could not answer at all. The pairing
+  is now settled once per history, consumes each copy exactly once (`answered`), and
+  prunes the matched live rows instead of filtering them on every render. One consequence
+  is deliberate: a live row, once answered, is gone for good, so when its copy later ages
+  out of the fifty-row window the turn leaves the thread — as it would on a fresh launch.
+  The old code resurrected the live row instead, and the thread and a relaunch disagreed.
+- `chore(web): drop the helpers the rewrite orphaned` — `del`, `logout`, `summarize`,
+  `timeOf` and their tests; `Action ${id.slice(0, 4)}` now uses `shortId`; the session
+  key becomes `alfred.session` like every other key (costs one fresh conversation
+  session on deploy — deliberate, no migration); `TelemetryMessage` gains the pump's
+  `error` frame and `ConnectionProvider` logs `status`/`error` to the console, the same
+  complaint at most once a minute (`WARN_EVERY_MS`), since the pump repeats
+  `redis_error` every second for as long as Redis is down;
+  `strict: true` in both tsconfigs; `@/` imports in `main.tsx`, `Layer.tsx`, `Sheet.tsx`.
+- `docs: match the docs to the client as shipped` — `web/README.md`, `docs/web-frontend.md`
+  (versions, module lists, the real `Containerfile`, the telemetry protocol, the offline
+  rule, the vocabulary), `docs/deployment.md` (the client pings, idle drops are not
+  expected), `docs/backlog/low/pwa-phase1-followups.md` (§5 corrected, §7 added: no
+  sign-out and no System page in phase 1), `core/channels/spa.py` docstring, `CLAUDE.md`
+  `/health` line, the QA checklist and `web-passkey-flows.md`.
+
+Both behavioural fixes were proven with mutants against the new tests before the
+implementer applied them: eight for the read-back, seven for the offline rule, all killed.
+
+The re-review found all thirty-one fixed and four small things the fixes had brought in,
+folded into the commits above: a comment in `useRoom.ts` still naming `withoutReadBack`;
+`sessionChannel()` calling `matchMedia` unguarded on the sign-in path where `presence.ts`
+guards it; the console warning unthrottled against a once-a-second pump; and the pruning
+consequence described above going unrecorded. The manifest's single `theme_color` being
+the dark token while the theme defaults to light by day is noted in `web/README.md` and
+left for phase 4, which owns the manifest.

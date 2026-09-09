@@ -57,8 +57,8 @@ Log it against that plan rather than the current client.
 ## 5. Voice enrollment has no home in the client
 
 From `voice-enrollment-card-polish.md`. `web/src/pages/VoiceEnrollmentCard.tsx` is
-deleted and phase 1 has no enrollment surface; `docs/voice-satellites.md` still describes
-the old settings card. When the Workshop reinstates enrollment, the three gaps the
+deleted and phase 1 has no enrollment surface (`docs/voice-satellites.md` already says
+so). When the Workshop reinstates enrollment, the three gaps the
 original ticket found are worth building in from the start rather than fixing after:
 the mic control disabled while a submit is in flight, the error state cleared as soon as
 a new sample is recorded, and the status region announced via `aria-live="polite"`.
@@ -79,3 +79,19 @@ a script again once there is a screen to run it on.
   `kind=service` entries: badges, TEST CONNECTION, CLEAR, and the 502-on-unreachable-service
   path. Phase 1's only credential surface is the setup gate's second step, which writes
   home-service and nothing else. Rewrite alongside item 1 above.
+
+## 7. No sign-out and no Workshop › System in phase 1
+
+`POST /api/auth/logout` exists server-side, but the client's `logout()` went with the
+rest of the orphaned helpers: phase 1 has no screen that would call it, and a sign-out
+button in the Room is not in the design. The attention set chosen in setup step 3 is the
+same story — once written, it cannot be changed from the phone. Both belong to the
+Workshop's System page (spec §8, phase 3).
+
+Until the Workshop's health page, the telemetry pump's `status` (`redis_error`) and
+`error` (`invalid JSON`) frames reach only the console: `ConnectionProvider` logs them
+with `console.warn`, the same complaint at most once a minute, and nothing on screen
+shows them.
+
+`summarize` and `timeOf` in `format.ts` were deleted rather than held for phase 2; the
+Activity view will write its own summariser against the bus schema it actually renders.

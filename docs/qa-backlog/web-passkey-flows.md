@@ -9,7 +9,7 @@
 
 - Alfred runner started, channels process on port 8081
 - Fresh browser profile OR cleared `alfred_auth` cookie and cleared `localStorage`
-  (`alfred_session_id`, `alfred.device`, `alfred.theme`, `alfred.unsent`)
+  (`alfred.session`, `alfred.device`, `alfred.theme`, `alfred.unsent`)
 - Accessing via `localhost` (trusted network — the path this case registers on; the
   pairing-code alternative has its own case,
   [`webauthn-registration-pairing-code.md`](webauthn-registration-pairing-code.md))

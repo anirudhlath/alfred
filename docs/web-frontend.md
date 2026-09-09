@@ -32,13 +32,13 @@ icons, Web Push and the desktop composition are later phases — see
 | Styling | Tailwind CSS | v4.x (Vite plugin, `@theme inline`) |
 | Data fetching | TanStack Query | 5.x |
 | Routing | react-router-dom | 7.x |
-| Testing | Vitest + Testing Library (jsdom) | 4.x |
+| Testing | Vitest + Testing Library (jsdom) | Vitest 4.x, `@testing-library/react` 16.x, `jest-dom` 6.x |
 | Lint | ESLint | 10.x |
 | Fonts | DM Sans Variable (sans), Geist Mono (mono) |
 
 No component library, no icon package, no markdown renderer, no toast library, no
 command palette. The presence field is a `<canvas>`, the Door's fuse is a
-`conic-gradient`, and slide-to-confirm is two pointer handlers.
+`conic-gradient`, and slide-to-confirm is four pointer handlers and a keyboard path.
 
 ---
 
@@ -50,16 +50,16 @@ web/
                    # one theme-color meta (applyTheme rewrites it), Apple standalone metas
   src/
     lib/           # No React: transport, formatters, physics, pure reducers
-      api.ts             # api/post/put/del, ApiError{status,detail}; 401→expired, 403→denied
+      api.ts             # api/post/put, ApiError{status,detail}; 401→expired, 403→denied
       auth-events.ts     # authEvents.on/emit — the emitter api() announces gates on
       auth.ts            # fetchAuthStatus, DEVICE_KEY, rememberDevice, deviceFootLine
-      webauthn.ts        # registerPasskey(), login(), logout() (carried over unchanged)
+      webauthn.ts        # registerPasskey(), loginPasskey(), sessionChannel()
       ws.ts              # ReconnectingSocket — backoff, code-4001 gate, ping keepalive
       chat-socket.ts     # ChatSocket over /ws (channel "web_pwa", timezone, session_id)
       telemetry-socket.ts# TelemetrySocket over /ws/telemetry (carried over unchanged)
       types.ts           # The shared type contract (hand-mirrors the bus/admin schemas)
       format.ts          # hhmm, dayMonth, dayLabel, mmss, usd, evs, shortId,
-                         # humaniseTool, rawCall, summarize, timeOf
+                         # humaniseTool, rawCall
       theme.ts           # Theme, THEME_KEY, resolveInitialTheme, applyTheme, storedTheme
       viewport.ts        # installViewportVars, keyboardInset, useKeyboardOpen
       lifecycle.ts       # onVisible(fn) — the one visibilitychange subscription
@@ -93,7 +93,7 @@ web/
       Headline.tsx       # The page's one h1
       OfflineNote.tsx    # role="status", mounted always, filled only when not online
       DndRow.tsx         # Do-not-disturb + "{n} held ›"
-      StatusLine.tsx     # The mono-12 status line, four variants
+      StatusLine.tsx     # The mono-12 status line: clock or last-true, cloud, reflex, rate
       Timeline.tsx       # The list and its scroll anchoring
       rows/              # Divider, YouBubble, AlfredRow, ActRow, Tombstone,
                          # TranscribingBubble, ThinkingRow, FirstDay
@@ -139,13 +139,13 @@ palette colour.
 | `--surface` | Raised paper: notes, bubbles, sheets |
 | `--field` | Input fill |
 | `--line` | Hairlines |
-| `--keyboard` | The composer's own ground |
+| `--keyboard` | The composer's own ground — a design-system token; no phase-1 component paints it |
 | `--muted`, `--fg2`, `--fg` | The three text weights, quietest first |
 | `--accent` | Alfred's warm signal — presence, focus, the fuse |
 | `--green` | Applied / healthy |
 | `--ink`, `--paper`, `--paper-muted` | The Door's inverted surface and its text |
 | `--ring`, `--scrim` | Focus ring, and the dim behind a layer |
-| `--ease-rise`, `--ease-settle` | The two easing curves |
+| `--ease-rise`, `--ease-settle`, `--ease-sink` | The three easing curves: rise in, settle, leave |
 | `--app-height`, `--keyboard-inset` | Written by `installViewportVars()` (below) |
 
 `ThemeProvider` writes `data-theme` on `<html>` and rewrites the single
@@ -156,17 +156,23 @@ palette colour.
 
 Type comes from the `.t-*` classes in `index.css`, never an ad-hoc size:
 `.t-gate`, `.t-headline`, `.t-title`, `.t-alfred`, `.t-you`, `.t-body`, `.t-row`,
-`.t-label`, `.t-meta`, `.t-monogram`, `.t-fuse`, `.t-status`. The handful of sizes
-outside the scale (13px note, 10.5px unsent stamp, 11.5px raw call) are written as
-explicit arbitrary values.
+`.t-label`, `.t-meta`, `.t-fuse`, `.t-status` — and `.t-monogram`, defined for the
+Workshop and used by nothing in phase 1. The sizes outside the scale are written as
+explicit arbitrary values: 15px (body copy in the gates, sheets, composer and Door),
+16px (the gates' buttons, the Door's title and pill), 13px (the offline, DND and banner
+notes), 13.5px (the held-back sheet's note), 11px (the Door's mono labels), 11.5px (the
+raw call) and 10.5px (the bubbles' stamps).
 
 ### The closed status vocabulary
 
-System state is said in mono, lower case, and only in these words: `queued`, `applied`,
-`last true HH:MM`, `unknown since HH:MM`, `hot / cold`,
+System state is said in mono, lower case, and only in the words spec §10 closes:
+`queued`, `applied`, `last true HH:MM`, `unknown since HH:MM`, `hot / cold`,
 `candidate · active · dormant · archived`, `expired · not done`,
-`takes effect within 60 s`. Do not invent new ones — the vocabulary is the contract the
-spec's honesty rules (§5.2) are written against.
+`takes effect within 60 s`. Phase 1 uses the first three and `expired · not done`; the
+rest are the Workshop's and arrive with it. The one exception to mono-and-lower-case is
+the Door's phase pill (`Confirmed · queued`, `Applied`, `Expired`, `Answered`), set in
+the inverted layer's own type. Do not invent new words — the vocabulary is the contract
+the spec's honesty rules (§5.2) are written against.
 
 ---
 
@@ -265,7 +271,7 @@ DoorProvider → Routes`. `DoorProvider` sits inside `AuthGate` so nothing reads
 | Kind | Keys |
 |---|---|
 | TanStack Query | `["auth-status"]`, `["overview"]`, `["integrations"]`, `["attention"]`, `["room-history"]`, `["deferred"]`, `["pending-actions"]` |
-| `localStorage` | `alfred.theme`, `alfred.device`, `alfred.unsent`, `alfred_session_id` |
+| `localStorage` | `alfred.theme`, `alfred.device`, `alfred.unsent`, `alfred.session` — every key is `alfred.<noun>` |
 
 ---
 
@@ -279,9 +285,12 @@ Used by `ChatSocket` (`lib/chat-socket.ts`).
 
 ```json
 {"type": "text",  "content": "<message>", "channel": "web_pwa", "timezone": "<IANA>", "session_id": "<id>"}
-{"type": "audio", "content": "<base64-audio-data-url>", "channel": "web_pwa", "timezone": "<IANA>"}
+{"type": "audio", "content": "<base64-audio-data-url>", "channel": "web_pwa", "timezone": "<IANA>", "session_id": "<id>"}
 {"type": "ping"}
 ```
+
+`session_id` rides whichever frame is a connection's first, text or audio (`payload()` in
+`chat-socket.ts` is shared by both).
 
 `ping` is a keepalive (Cloudflare drops proxied sockets idle ~100s); the server answers
 `{"type": "pong"}` and does nothing else — in particular a ping does not count as the
@@ -301,7 +310,7 @@ binary rather than text, is refused with
 connection stays open.
 
 `session_id` is sent only on the first message of a new connection and is read from
-`localStorage` under key `alfred_session_id`. After the first send, `firstMessageSent`
+`localStorage` under key `alfred.session`. After the first send, `firstMessageSent`
 is set and session_id is omitted from subsequent payloads.
 
 #### Server → Client (`ChatServerMessage`)
@@ -338,7 +347,10 @@ is set and session_id is omitted from subsequent payloads.
 - On close with code **4001**: emits `"unauthorized"` and stops — no retry. The socket is
   reopened by `ConnectionProvider` after a successful sign-in, not by a backoff timer.
 - On other close: exponential backoff starting at 500ms, doubling per attempt, capped
-  at 8 seconds. Emits `"reconnecting"` while retrying.
+  at 8 seconds. Emits `"reconnecting"` for the first two failures and `"offline"` from
+  the third (`OFFLINE_AFTER_ATTEMPTS`), or at once while `navigator.onLine` is false —
+  and keeps retrying either way; the next open makes it `"online"` again. The Room
+  says `Reconnecting…` for the one and `Unreachable.` for the other.
 - `ChatSocket.onopen` resets `firstMessageSent` so session_id is re-sent on reconnect.
 
 ### Telemetry (`/ws/telemetry`)
@@ -350,10 +362,12 @@ what turns a queued approval into an applied one.
 #### Client → Server
 
 ```json
-{"type": "subscribe",   "streams": ["home_action_results"]}
-{"type": "unsubscribe", "streams": ["home_action_results"]}
+{"type": "subscribe", "streams": ["home_action_results"]}
 {"type": "ping"}
 ```
+
+The server also takes `{"type": "unsubscribe", "streams": [...]}`; `TelemetrySocket` has
+no method for it, because phase 1 never lets a subscription go.
 
 `ping` is the same keepalive as on `/ws`: answered with `{"type": "pong"}`, and it emits
 no `subscribed` ack and leaves the subscription set untouched.
@@ -370,13 +384,22 @@ invalidated on return instead.
 | { type: "subscribed"; streams: string[] }
 | { type: "entry"; stream: string; id: string; event: Record<string, unknown> }
 | { type: "status"; detail: string }
+| { type: "error"; message: string }
 | { type: "pong" }
 ```
 
 - `subscribed` — full current subscription set, sent after every subscribe/unsubscribe.
 - `entry` — one per new Redis stream entry; `event` is the deserialized payload
   (not a raw JSON string).
-- `status` — transient pump error; connection stays alive, pump retries after 1s backoff.
+- `status` — transient pump error (`detail: "redis_error"`); connection stays alive, pump
+  retries after 1s backoff.
+- `error` — a frame the server could not read (`message: "invalid JSON"`). Note the field
+  is `message` here and `text` on `/ws`.
+
+`ConnectionProvider` puts `status` and `error` on the console (`console.warn`), the same
+complaint at most once a minute (`WARN_EVERY_MS` — the pump repeats `redis_error` every
+second for the whole of an outage); nothing on screen shows them until the Workshop's
+health page (phase 3).
 
 ---
 
@@ -499,7 +522,7 @@ cd web && npm run build   # outputs to web/dist/
 
 ### Serving (Python side)
 
-`core/channels/web_server.py` calls `mount_spa(app, web_dist_path)` at startup if
+`core/channels/web_server.py` calls `mount_spa(app, _SPA_DIST)` at startup if
 `web/dist/` exists. The `mount_spa` function (`core/channels/spa.py`):
 
 1. Mounts `web/dist/assets/` at `/assets` via FastAPI `StaticFiles`.
@@ -521,13 +544,17 @@ The `Containerfile` has a dedicated build stage:
 
 ```dockerfile
 FROM node:22-slim AS webbuild
-COPY web/package.json web/package-lock.json ./
-COPY web/ ./
+WORKDIR /web
+COPY alfred/web/package.json alfred/web/package-lock.json ./
+RUN npm ci
+COPY alfred/web/ ./
 RUN npm run build
 
 # In the main stage:
 COPY --from=webbuild /web/dist /app/web/dist
 ```
+
+(The build context is the directory *above* the checkout — hence `alfred/web/`.)
 
 The `webbuild` stage produces `web/dist/`; the main stage copies only the compiled
 output. Node.js is not present in the production image.
@@ -557,7 +584,10 @@ fallback ever grows conditional handling.
 - **The Workshop** (Activity, Memory, Triggers, System) — phases 2 and 3. There is no
   handle, no `why?` button and no causal thread yet.
 - **Install, standalone and Reach gates, the service worker, icons and Web Push** —
-  phases 4 and 5. `web/public/manifest.json` is untouched and ships SVG only.
+  phases 4 and 5. `web/public/manifest.json` ships SVG only and carries the phase-1
+  palette's dark ground; it cannot follow the theme the way `applyTheme` rewrites the
+  `theme-color` meta, so a light-hour install gets a dark splash until phase 4 says
+  otherwise.
 - **Desktop** — phase 6. The client is phone-first and there is no wide composition.
 
 Open follow-ups: `docs/backlog/low/pwa-phase1-followups.md`.

@@ -274,7 +274,7 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - Reflex Runner no longer writes to scratchpad — publishes structured `ReflexObservation` to `REFLEX_OBSERVATIONS_STREAM` instead; Memory Ingestor consumes and writes to episodic memory
 - Import `publish_observation` from `core.reflex.runner` to publish observations from new code paths
 - SPA catch-all (`mount_spa`) MUST register in the FastAPI lifespan AFTER the auth router — routes added during lifespan register after `create_app` routes, so an early mount would shadow `/api/auth/*`. Tests don't catch this because `web/dist/` doesn't exist in CI (mount is a no-op).
-- Backend `GET /health` is the service healthcheck consumed by the iOS AlfredKit client — the SPA's system page lives at `/system` so the catch-all never shadows `/health`.
+- Backend `GET /health` is the service healthcheck consumed by the iOS AlfredKit client — `core/channels/spa.py` keeps it out of the SPA catch-all (`_NON_SPA_PATHS`, alongside the `api/` and `ws` prefixes), so the client must never claim a route at `/health` or under those prefixes.
 - `web/dist/` must be built (`npm run build`) for the runner to serve the SPA; `npm run dev` (Vite) proxies `/api/*`, `/health`, `/ws*` to :8081 instead.
 - Admin trigger mutations (fire/enable) go through `ACTIONS_STREAM` → triggers process (consumer group `triggers-internal`) — NEVER write `alfred:triggers` directly from other processes; `TriggerStore` keeps Redis + YAML in sync. Internal action handlers live in `core/triggers/__main__.py` and `core/conscious/__main__.py` (`run_librarian`).
 - `TriggerFired.fired_by` records provenance (admin vs engine fires) — set it when publishing a fire.

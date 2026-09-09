@@ -237,9 +237,10 @@ alfred.example.com {
 - **A 403 from outside the trusted list names the browser's real IP**, not the proxy's.
   If it still names the proxy, step 4 did not take.
 
-Also expect idle WebSocket drops for now: the server answers `{"type":"ping"}` with
-`{"type":"pong"}` on `/ws` and `/ws/telemetry`, but no client in this repo sends them yet,
-so sockets will drop at the proxy's idle timeout (~100 s on Cloudflare) until one does.
+Idle WebSocket drops should not happen: the client pings both `/ws` and `/ws/telemetry`
+every 30 s (`DEFAULT_PING_MS` in `web/src/lib/ws.ts`) and the server answers each with
+`{"type":"pong"}`, well inside the proxy's idle timeout (~100 s on Cloudflare). A socket
+that still drops while idle is a proxy or tunnel problem, not an expected one.
 
 ### 7. Optionally close the direct path
 
