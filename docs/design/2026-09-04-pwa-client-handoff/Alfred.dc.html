@@ -1,0 +1,859 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#cfc9c0;color:#221f1b;font-family:'DM Sans',-apple-system,Helvetica,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:oklch(0.55 0.13 45);text-decoration:none}a:hover{text-decoration:underline}
+@keyframes drift{0%{background-position:0 0}50%{background-position:2px 1px}100%{background-position:0 0}}
+@keyframes breathe{0%,100%{opacity:.55}50%{opacity:1}}
+@keyframes rise{from{transform:translateY(100%)}to{transform:translateY(0)}}
+@keyframes wave{0%,100%{transform:scaleY(.4)}50%{transform:scaleY(1)}}
+@keyframes nudge{0%,100%{transform:translateY(0)}50%{transform:translateY(6px)}}
+::-webkit-scrollbar{display:none}
+</style>
+</helmet>
+<div style="min-height:100vh;display:flex;flex-direction:column;align-items:center;gap:20px;padding:36px 24px 60px;box-sizing:border-box">
+
+<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center;max-width:820px">
+  <sc-for list="{{ scenes }}" as="s" hint-placeholder-count="8">
+    <button onClick="{{ s.go }}" style="height:32px;padding:0 12px;border-radius:16px;border:1px solid {{ s.border }};background:{{ s.bg }};color:{{ s.fg }};font:500 12px 'DM Sans',sans-serif;cursor:pointer">{{ s.label }}</button>
+  </sc-for>
+</div>
+
+<div data-screen-label="Alfred phone" style="width:393px;height:852px;border-radius:55px;background:{{ t.bg }};color:{{ t.fg }};position:relative;overflow:hidden;box-shadow:0 0 0 1px rgba(0,0,0,.25),0 40px 80px -30px rgba(0,0,0,.5);display:flex;flex-direction:column;transition:background .3s">
+
+  <canvas ref="{{ presenceRef }}" width="393" height="190" style="position:absolute;inset:0 0 auto 0;width:393px;height:190px;pointer-events:none;-webkit-mask-image:linear-gradient(to bottom, rgba(0,0,0,.95) 30%, transparent 100%);mask-image:linear-gradient(to bottom, rgba(0,0,0,.95) 30%, transparent 100%)"></canvas>
+  <div style="position:absolute;top:11px;left:50%;transform:translateX(-50%);width:126px;height:37px;border-radius:20px;background:#000;z-index:5"></div>
+
+  <div style="position:relative;padding:72px 24px 0;display:flex;flex-direction:column;gap:4px;z-index:1">
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px">
+      <div style="font-size:26px;font-weight:500;letter-spacing:-.02em;line-height:1.15">{{ headline }}</div>
+      <button onClick="{{ toggleTheme }}" style="width:44px;height:44px;margin:-8px -10px 0 0;border:0;background:transparent;color:{{ t.muted }};display:flex;align-items:center;justify-content:center;cursor:pointer"><span style="width:14px;height:14px;border-radius:50%;border:1.5px solid currentColor;background:linear-gradient(90deg,currentColor 50%,transparent 50%);display:block"></span></button>
+    </div>
+    <div style="font:12px 'Geist Mono',monospace;color:{{ t.muted }};line-height:1.5">{{ statusLine }}</div>
+    <sc-if value="{{ offline }}" hint-placeholder-val="{{ false }}">
+      <div style="margin-top:8px;display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:10px;background:{{ t.surface }};font-size:13px;line-height:1.4"><span style="width:8px;height:8px;border-radius:50%;background:{{ t.muted }};flex-shrink:0"></span><span>{{ offlineNote }}</span></div>
+    </sc-if>
+    <sc-if value="{{ dnd }}" hint-placeholder-val="{{ false }}">
+      <button onClick="{{ openDeferred }}" style="margin-top:8px;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;border-radius:10px;border:1px solid {{ t.line }};background:transparent;color:{{ t.fg }};font:400 13px 'DM Sans',sans-serif;text-align:left;cursor:pointer;min-height:44px"><span>{{ dndLine }}</span><span style="font:12px 'Geist Mono',monospace;color:{{ t.muted }}">{{ deferredCountLabel }} ›</span></button>
+    </sc-if>
+  </div>
+
+  <div style="flex:1;overflow-y:auto;padding:22px 24px 12px;display:flex;flex-direction:column;gap:16px;position:relative;z-index:1">
+    <sc-if value="{{ empty }}" hint-placeholder-val="{{ false }}">
+      <div style="flex:1;display:flex;flex-direction:column;justify-content:center;gap:10px;padding-bottom:60px">
+        <div style="font-size:19px;line-height:1.4;letter-spacing:-.01em">Good evening, sir. Nothing has happened yet; I'm watching the house and listening for you.</div>
+        <div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }}">first run · no memories · 0 routines · hold the button to speak</div>
+      </div>
+    </sc-if>
+    <sc-for list="{{ items }}" as="m" hint-placeholder-count="4">
+      <sc-if value="{{ m.isDivider }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;align-items:center;gap:10px;padding:6px 0"><div style="flex:1;height:1px;background:{{ t.line }}"></div><div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }}">{{ m.text }}</div><div style="flex:1;height:1px;background:{{ t.line }}"></div></div>
+      </sc-if>
+      <sc-if value="{{ m.isUser }}" hint-placeholder-val="{{ false }}">
+        <div style="align-self:flex-end;max-width:280px;padding:10px 14px;border:1px solid {{ t.line }};border-radius:16px 16px 4px 16px;font-size:15px;line-height:1.4;opacity:{{ m.opacity }}">{{ m.text }}<sc-if value="{{ m.pending }}" hint-placeholder-val="{{ false }}"><div style="font:10.5px 'Geist Mono',monospace;color:{{ t.muted }};margin-top:4px">{{ m.pendingLabel }}</div></sc-if></div>
+      </sc-if>
+      <sc-if value="{{ m.isAlfred }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;flex-direction:column;gap:7px;max-width:330px">
+          <div style="font-size:19px;line-height:1.4;letter-spacing:-.01em">{{ m.text }}</div>
+          <div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }};line-height:1.5">{{ m.meta }}</div>
+        </div>
+      </sc-if>
+      <sc-if value="{{ m.isPrompt }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;flex-direction:column;gap:12px;max-width:330px">
+          <div style="font-size:19px;line-height:1.4;letter-spacing:-.01em">{{ m.text }}</div>
+          <div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }};line-height:1.5">{{ m.meta }}</div>
+          <div style="display:flex;gap:8px">
+            <button onClick="{{ reachShow }}" style="height:44px;padding:0 18px;border-radius:22px;border:0;background:{{ t.ink }};color:{{ t.paper }};font:500 14px 'DM Sans',sans-serif;cursor:pointer">Show me how</button>
+            <button onClick="{{ reachDismiss }}" style="height:44px;padding:0 14px;border-radius:22px;border:1px solid {{ t.line }};background:transparent;color:{{ t.fg }};font:500 14px 'DM Sans',sans-serif;cursor:pointer">Not now</button>
+          </div>
+        </div>
+      </sc-if>
+      <sc-if value="{{ m.isAct }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;gap:12px;padding:10px 0;border-top:1px solid {{ t.line }};border-bottom:1px solid {{ t.line }};align-items:flex-start">
+          <div style="width:8px;height:8px;border-radius:2px;background:{{ m.color }};margin-top:6px;flex-shrink:0"></div>
+          <div style="flex:1;display:flex;flex-direction:column;gap:2px"><div style="font-size:14.5px;line-height:1.35;color:{{ t.fg2 }}">{{ m.text }}</div><div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }}">{{ m.meta }}</div></div>
+          <sc-if value="{{ m.why }}" hint-placeholder-val="{{ false }}"><button onClick="{{ m.why }}" style="height:44px;padding:0 10px;margin:-10px -6px 0 0;border:0;background:transparent;color:{{ t.accent }};font:500 13px 'DM Sans',sans-serif;cursor:pointer">why?</button></sc-if>
+        </div>
+      </sc-if>
+      <sc-if value="{{ m.isTomb }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;gap:12px;padding:10px 12px;border-radius:12px;background:{{ t.surface }};align-items:flex-start;opacity:.8">
+          <div style="width:8px;height:8px;border-radius:50%;border:1.5px solid {{ t.muted }};margin-top:5px;flex-shrink:0;box-sizing:border-box"></div>
+          <div style="flex:1;display:flex;flex-direction:column;gap:2px"><div style="font-size:14.5px;line-height:1.35;text-decoration:line-through;color:{{ t.fg2 }}">{{ m.text }}</div><div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }}">{{ m.meta }}</div></div>
+        </div>
+      </sc-if>
+    </sc-for>
+    <sc-if value="{{ transcribing }}" hint-placeholder-val="{{ false }}">
+      <div style="align-self:flex-end;max-width:280px;padding:10px 14px;border:1px dashed {{ t.line }};border-radius:16px 16px 4px 16px;font-size:15px;line-height:1.4;color:{{ t.muted }};font-style:italic">Transcribing…<div style="font:10.5px 'Geist Mono',monospace;margin-top:4px;font-style:normal">audio sent · 2.4 s · waiting on server</div></div>
+    </sc-if>
+    <sc-if value="{{ thinking }}" hint-placeholder-val="{{ false }}">
+      <div style="display:flex;flex-direction:column;gap:7px"><div style="display:flex;gap:4px;align-items:center;height:22px"><span style="width:6px;height:6px;border-radius:50%;background:{{ t.accent }};animation:breathe 1.2s ease-in-out infinite"></span><span style="width:6px;height:6px;border-radius:50%;background:{{ t.accent }};animation:breathe 1.2s .2s ease-in-out infinite"></span><span style="width:6px;height:6px;border-radius:50%;background:{{ t.accent }};animation:breathe 1.2s .4s ease-in-out infinite"></span></div><div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }}">conscious mind · calendar.today running</div></div>
+    </sc-if>
+    <div ref="{{ endRef }}"></div>
+  </div>
+
+  <sc-if value="{{ pendingDoor }}" hint-placeholder-val="{{ false }}">
+    <button onClick="{{ openDoor }}" style="margin:0 16px 10px;padding:14px 16px;border-radius:16px;border:0;background:{{ t.ink }};color:{{ t.paper }};display:flex;align-items:center;gap:14px;text-align:left;cursor:pointer;position:relative;z-index:1;font-family:inherit">
+      <div style="width:34px;height:34px;border-radius:50%;flex-shrink:0;background:conic-gradient({{ t.accent }} {{ fusePct }}, {{ t.ring }} 0);-webkit-mask:radial-gradient(circle, transparent 14px, #000 15px);mask:radial-gradient(circle, transparent 14px, #000 15px)"></div>
+      <div style="flex:1;display:flex;flex-direction:column;gap:3px"><div style="font-size:16px;font-weight:500">{{ door.title }}</div><div style="font:11px 'Geist Mono',monospace;color:{{ t.paperMuted }}">expires in {{ fuseLabel }} · asked by Alfred, for you</div></div>
+      <div style="font-size:13px;font-weight:500;color:{{ t.accent }}">Open</div>
+    </button>
+  </sc-if>
+
+  <div style="padding:0 20px 8px;display:flex;gap:10px;align-items:center;position:relative;z-index:1">
+    <input value="{{ draft }}" onChange="{{ onDraft }}" onKeyDown="{{ onKey }}" onFocus="{{ onFocus }}" onBlur="{{ onBlur }}" placeholder="{{ composerPlaceholder }}" disabled="{{ offline }}" style="flex:1;height:50px;border-radius:25px;border:1px solid {{ t.line }};background:{{ t.field }};color:{{ t.fg }};padding:0 18px;font:15px 'DM Sans',sans-serif;outline:none;min-width:0"/>
+    <sc-if value="{{ hasDraft }}" hint-placeholder-val="{{ false }}">
+      <button onClick="{{ send }}" style="width:56px;height:56px;border-radius:28px;border:0;background:{{ t.ink }};color:{{ t.paper }};display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0"><span style="width:10px;height:10px;border-top:2px solid currentColor;border-right:2px solid currentColor;transform:rotate(-45deg) translate(-1px,1px);display:block"></span></button>
+    </sc-if>
+    <sc-if value="{{ noDraft }}" hint-placeholder-val="{{ true }}">
+      <button onPointerDown="{{ holdStart }}" onPointerUp="{{ holdEnd }}" onPointerLeave="{{ holdEnd }}" disabled="{{ offline }}" style="width:56px;height:56px;border-radius:28px;border:1.5px solid {{ holdBorder }};background:{{ holdBg }};display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;transition:transform .15s,background .15s;transform:scale({{ holdScale }});touch-action:none;user-select:none;-webkit-user-select:none">
+        <sc-if value="{{ holding }}" hint-placeholder-val="{{ false }}"><div style="display:flex;gap:3px;align-items:center;height:22px"><span style="width:3px;height:22px;border-radius:2px;background:{{ t.ink }};animation:wave .7s ease-in-out infinite"></span><span style="width:3px;height:22px;border-radius:2px;background:{{ t.ink }};animation:wave .7s .15s ease-in-out infinite"></span><span style="width:3px;height:22px;border-radius:2px;background:{{ t.ink }};animation:wave .7s .3s ease-in-out infinite"></span><span style="width:3px;height:22px;border-radius:2px;background:{{ t.ink }};animation:wave .7s .1s ease-in-out infinite"></span></div></sc-if>
+        <sc-if value="{{ notHolding }}" hint-placeholder-val="{{ true }}"><div style="width:14px;height:22px;border-radius:7px;background:{{ holdIcon }}"></div></sc-if>
+      </button>
+    </sc-if>
+  </div>
+  <sc-if value="{{ holding }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;left:0;right:0;bottom:84px;text-align:center;font:11px 'Geist Mono',monospace;color:{{ t.muted }};z-index:1">recording {{ holdSecs }} · release to send</div>
+  </sc-if>
+
+  <sc-if value="{{ keyboardUp }}" hint-placeholder-val="{{ false }}">
+    <div style="height:290px;background:{{ t.keyboard }};border-top:1px solid {{ t.line }};display:flex;align-items:center;justify-content:center;font:11px 'Geist Mono',monospace;color:{{ t.muted }};position:relative;z-index:1">software keyboard · composer stays above it</div>
+  </sc-if>
+  <sc-if value="{{ keyboardDown }}" hint-placeholder-val="{{ true }}">
+    <button onClick="{{ openWorkshop }}" style="display:flex;flex-direction:column;align-items:center;gap:10px;padding:2px 0 8px;border:0;background:transparent;color:{{ t.muted }};cursor:pointer;position:relative;z-index:1;font-family:inherit;min-height:44px">
+      <div style="font:11px 'Geist Mono',monospace;display:flex;flex-direction:column;align-items:center;gap:2px"><span style="width:8px;height:8px;border-top:1.5px solid currentColor;border-left:1.5px solid currentColor;transform:rotate(45deg);display:block"></span>workshop</div>
+      <div style="width:139px;height:5px;border-radius:3px;background:{{ handleBar }}"></div>
+    </button>
+  </sc-if>
+  <sc-if value="{{ ctxSafari }}" hint-placeholder-val="{{ false }}">
+    <div style="background:{{ t.keyboard }};border-top:1px solid {{ t.line }};padding:8px 14px 8px;display:flex;flex-direction:column;gap:10px;position:relative;z-index:1;flex-shrink:0">
+      <div style="height:40px;border-radius:12px;background:{{ t.surface }};display:flex;align-items:center;justify-content:center;gap:7px;font-size:14px;color:{{ t.fg2 }}"><span style="width:8px;height:8px;border:1.5px solid currentColor;border-radius:2px;display:block;opacity:.6"></span>alfred.local</div>
+      <div style="display:grid;grid-template-columns:repeat(5,1fr);height:34px;align-items:center;justify-items:center;color:{{ t.muted }}">
+        <span style="width:10px;height:10px;border-left:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(45deg);display:block"></span>
+        <span style="width:10px;height:10px;border-right:1.5px solid currentColor;border-top:1.5px solid currentColor;transform:rotate(45deg);display:block;opacity:.4"></span>
+        <span style="position:relative;width:20px;height:24px;display:block;color:{{ t.fg }}"><span style="position:absolute;left:1px;right:1px;bottom:0;height:14px;border:1.5px solid currentColor;border-top:0;border-radius:0 0 4px 4px;display:block"></span><span style="position:absolute;left:9px;top:2px;width:1.5px;height:14px;background:currentColor;display:block"></span><span style="position:absolute;left:5.5px;top:2px;width:7px;height:7px;border-left:1.5px solid currentColor;border-top:1.5px solid currentColor;transform:rotate(45deg);display:block"></span></span>
+        <span style="width:14px;height:16px;border:1.5px solid currentColor;border-radius:2px;display:block;box-shadow:inset 6px 0 0 -4.5px currentColor"></span>
+        <span style="position:relative;width:18px;height:18px;display:block"><span style="position:absolute;left:0;bottom:0;width:12px;height:12px;border:1.5px solid currentColor;border-radius:2px;display:block"></span><span style="position:absolute;right:0;top:0;width:12px;height:12px;border:1.5px solid currentColor;border-radius:2px;display:block;background:{{ t.keyboard }}"></span></span>
+      </div>
+      <div style="width:139px;height:5px;border-radius:3px;background:{{ t.fg }};margin:0 auto"></div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ sheet }}" hint-placeholder-val="{{ false }}">
+    <div onClick="{{ closeSheet }}" style="position:absolute;inset:0;background:rgba(20,17,14,.45);z-index:16"></div>
+    <div style="position:absolute;left:0;right:0;bottom:0;max-height:78%;background:{{ t.bg }};color:{{ t.fg }};border-radius:28px 28px 0 0;z-index:17;display:flex;flex-direction:column;animation:rise .38s cubic-bezier(.2,.8,.2,1)">
+      <div style="display:flex;justify-content:center;padding:10px 0 2px"><div style="width:40px;height:5px;border-radius:3px;background:{{ t.line }}"></div></div>
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 20px 12px">
+        <div style="font-size:20px;font-weight:500;letter-spacing:-.02em">{{ sheetTitle }}</div>
+        <button onClick="{{ closeSheet }}" style="height:44px;padding:0 4px;border:0;background:transparent;color:{{ t.accent }};font:500 15px 'DM Sans',sans-serif;cursor:pointer">Done</button>
+      </div>
+      <div style="overflow-y:auto;padding:0 20px 40px;display:flex;flex-direction:column;gap:12px">
+        <sc-if value="{{ sheetIsDeferred }}" hint-placeholder-val="{{ false }}">
+          <div style="font-size:13.5px;line-height:1.5;color:{{ t.fg2 }}">{{ deferredNote }}</div>
+          <sc-for list="{{ deferred }}" as="d" hint-placeholder-count="2">
+            <div style="display:flex;gap:12px;padding:12px 0;border-top:1px solid {{ t.line }}">
+              <div style="width:8px;height:8px;border-radius:2px;background:oklch(0.62 0.11 255);margin-top:6px;flex-shrink:0"></div>
+              <div style="flex:1;display:flex;flex-direction:column;gap:2px"><div style="font-size:14.5px;line-height:1.35">{{ d.text }}</div><div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }}">{{ d.meta }}</div></div>
+            </div>
+          </sc-for>
+          <button onClick="{{ drain }}" style="height:50px;border-radius:25px;border:1px solid {{ t.line }};background:transparent;color:{{ t.fg }};font:500 15px 'DM Sans',sans-serif;cursor:pointer;margin-top:6px">{{ drainLabel }}</button>
+          <div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }};text-align:center;line-height:1.5">{{ drainNote }}</div>
+        </sc-if>
+        <sc-if value="{{ sheetIsWhy }}" hint-placeholder-val="{{ false }}">
+          <div style="font-size:13.5px;line-height:1.5;color:{{ t.fg2 }}">Every link drawn solid is joined by an id the server holds. Dashed means adjacent in time only.</div>
+          <div style="display:flex;flex-direction:column;padding-top:6px">
+            <sc-for list="{{ why }}" as="w" hint-placeholder-count="4">
+              <div style="display:grid;grid-template-columns:22px 1fr;gap:12px">
+                <div style="display:flex;flex-direction:column;align-items:center"><div style="width:22px;height:22px;border-radius:6px;background:{{ w.color }};color:#fff;font:500 9px/22px 'Geist Mono',monospace;text-align:center">{{ w.mono }}</div><div style="flex:1;width:0;min-height:22px;border-left:1.5px {{ w.linkStyle }} {{ t.line }};margin:4px 0"></div></div>
+                <div style="padding-bottom:14px;display:flex;flex-direction:column;gap:3px"><div style="font-size:14.5px;line-height:1.35">{{ w.text }}</div><div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }};line-height:1.5;word-break:break-all">{{ w.meta }}</div></div>
+              </div>
+            </sc-for>
+          </div>
+        </sc-if>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ workshopOpen }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;inset:0;background:{{ t.bg }};color:{{ t.fg }};z-index:15;display:flex;flex-direction:column;animation:rise .4s cubic-bezier(.2,.8,.2,1)">
+      <div style="position:absolute;top:11px;left:50%;transform:translateX(-50%);width:126px;height:37px;border-radius:20px;background:#000"></div>
+      <div style="padding:62px 16px 0;display:flex;flex-direction:column;gap:10px">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <button onClick="{{ closeWorkshop }}" style="height:44px;padding:0 8px;margin-left:-8px;border:0;background:transparent;color:{{ t.accent }};font:500 15px 'DM Sans',sans-serif;cursor:pointer;display:flex;align-items:center;gap:6px"><span style="width:9px;height:9px;border-left:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(45deg);display:block"></span>Room</button>
+          <div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }}">{{ wsStatus }}</div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);height:44px;border-radius:12px;background:{{ t.surface }};padding:3px;gap:3px">
+          <sc-for list="{{ benches }}" as="b" hint-placeholder-count="4">
+            <button onClick="{{ b.go }}" style="border:0;border-radius:9px;background:{{ b.bg }};color:{{ b.fg }};font:500 13px 'DM Sans',sans-serif;cursor:pointer">{{ b.label }}</button>
+          </sc-for>
+        </div>
+      </div>
+
+      <sc-if value="{{ benchActivity }}" hint-placeholder-val="{{ true }}">
+        <sc-if value="{{ stale }}" hint-placeholder-val="{{ false }}">
+          <div style="margin:10px 16px 0;padding:8px 12px;border-radius:10px;background:{{ t.surface }};font-size:13px;line-height:1.4;display:flex;gap:8px;align-items:center"><span style="width:8px;height:8px;border-radius:50%;background:{{ t.muted }};flex-shrink:0"></span>Feed stopped at 21:14. Nothing below is live.</div>
+        </sc-if>
+        <div style="flex:1;overflow-y:auto;padding:8px 16px 0;display:flex;flex-direction:column">
+          <button onClick="{{ pageBack }}" style="height:44px;flex-shrink:0;border:0;background:transparent;color:{{ t.muted }};font:11px 'Geist Mono',monospace;cursor:pointer">{{ pageBackLabel }}</button>
+          <sc-for list="{{ events }}" as="e" hint-placeholder-count="9">
+            <div style="border-top:1px solid {{ t.line }};flex-shrink:0;opacity:{{ e.opacity }}">
+              <button onClick="{{ e.toggle }}" style="width:100%;display:grid;grid-template-columns:22px 1fr;gap:10px;padding:9px 0;border:0;background:transparent;color:{{ t.fg }};text-align:left;cursor:pointer;font-family:inherit;min-height:44px">
+                <div style="width:22px;height:22px;border-radius:6px;background:{{ e.color }};color:#fff;font:500 9px/22px 'Geist Mono',monospace;text-align:center;margin-top:1px">{{ e.mono }}</div>
+                <div style="display:flex;flex-direction:column;gap:2px;min-width:0"><div style="font-size:14px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ e.text }}</div><div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ e.meta }}</div></div>
+              </button>
+              <sc-if value="{{ e.open }}" hint-placeholder-val="{{ false }}">
+                <div style="margin:0 0 12px 32px;display:flex;flex-direction:column;gap:8px">
+                  <pre style="margin:0;padding:10px 12px;border-radius:8px;background:{{ t.surface }};font:11px/1.55 'Geist Mono',monospace;color:{{ t.fg2 }};white-space:pre-wrap;word-break:break-all">{{ e.payload }}</pre>
+                  <div style="display:flex;gap:8px">
+                    <sc-if value="{{ e.hasWhy }}" hint-placeholder-val="{{ false }}"><button onClick="{{ e.why }}" style="height:36px;padding:0 14px;border-radius:18px;border:1px solid {{ t.line }};background:transparent;color:{{ t.accent }};font:500 13px 'DM Sans',sans-serif;cursor:pointer">Why · causal thread</button></sc-if>
+                    <button onClick="{{ e.solo }}" style="height:36px;padding:0 14px;border-radius:18px;border:1px solid {{ t.line }};background:transparent;color:{{ t.fg }};font:500 13px 'DM Sans',sans-serif;cursor:pointer">Only {{ e.mono }}</button>
+                  </div>
+                </div>
+              </sc-if>
+            </div>
+          </sc-for>
+          <sc-if value="{{ noEvents }}" hint-placeholder-val="{{ false }}">
+            <div style="padding:40px 0;text-align:center;display:flex;flex-direction:column;gap:6px"><div style="font-size:15px">Nothing on this stream yet.</div><div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }}">{{ emptyStreamNote }}</div></div>
+          </sc-if>
+          <div style="height:12px"></div>
+        </div>
+        <div style="padding:10px 16px 0;border-top:1px solid {{ t.line }};display:flex;flex-direction:column;gap:10px">
+          <div style="display:flex;gap:6px;justify-content:space-between">
+            <sc-for list="{{ streams }}" as="s" hint-placeholder-count="8">
+              <button onClick="{{ s.toggle }}" style="flex:1;height:44px;border-radius:8px;border:1.5px solid {{ s.color }};background:{{ s.bg }};color:{{ s.fg }};font:500 10px 'Geist Mono',monospace;cursor:pointer;opacity:{{ s.opacity }};padding:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px"><span>{{ s.mono }}</span><span style="font-weight:400;opacity:.8">{{ s.count }}</span></button>
+            </sc-for>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center;padding-bottom:30px">
+            <button onClick="{{ togglePause }}" style="flex:1;height:50px;border-radius:25px;border:0;background:{{ pauseBg }};color:{{ pauseFg }};font:500 15px 'DM Sans',sans-serif;cursor:pointer">{{ pauseLabel }}</button>
+            <button onClick="{{ clearFilter }}" style="height:50px;padding:0 18px;border-radius:25px;border:1px solid {{ t.line }};background:transparent;color:{{ t.fg }};font:500 14px 'DM Sans',sans-serif;cursor:pointer;opacity:{{ clearOpacity }}">All streams</button>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ benchMemory }}" hint-placeholder-val="{{ false }}">
+        <div style="padding:10px 16px 0;display:flex;gap:6px">
+          <sc-for list="{{ memTabs }}" as="m" hint-placeholder-count="4">
+            <button onClick="{{ m.go }}" style="height:44px;padding:0 14px;border-radius:22px;border:1px solid {{ m.border }};background:{{ m.bg }};color:{{ m.fg }};font:500 13px 'DM Sans',sans-serif;cursor:pointer">{{ m.label }}</button>
+          </sc-for>
+        </div>
+        <div style="flex:1;overflow-y:auto;padding:12px 16px 40px;display:flex;flex-direction:column;gap:12px">
+
+          <sc-if value="{{ memEpisodic }}" hint-placeholder-val="{{ true }}">
+            <div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }};line-height:1.5;flex-shrink:0">Browsing here does not count as recall. Nothing you open is kept warmer or colder for it.</div>
+            <sc-if value="{{ memLoading }}" hint-placeholder-val="{{ false }}">
+              <div style="padding:14px;border-radius:12px;background:{{ t.surface }};display:flex;flex-direction:column;gap:6px;flex-shrink:0"><div style="font-size:14px">Embedding model is still loading.</div><div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }}">503 · search by meaning unavailable · the list below is by recency</div></div>
+            </sc-if>
+            <sc-if value="{{ memNoResults }}" hint-placeholder-val="{{ false }}">
+              <div style="padding:30px 0;text-align:center;display:flex;flex-direction:column;gap:6px;flex-shrink:0"><div style="font-size:15px">Nothing close enough to "{{ memQuery }}".</div><div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }}">best score 0.31 · threshold 0.55 · 128 hot, 1 204 cold searched</div></div>
+            </sc-if>
+            <sc-for list="{{ memories }}" as="m" hint-placeholder-count="5">
+              <div style="display:flex;gap:12px;padding:11px 0;border-top:1px solid {{ t.line }};flex-shrink:0;align-items:flex-start">
+                <div style="width:8px;height:8px;border-radius:50%;margin-top:6px;flex-shrink:0;background:{{ m.dotBg }};border:1.5px solid {{ t.accent }};box-sizing:border-box"></div>
+                <div style="flex:1;display:flex;flex-direction:column;gap:3px;min-width:0"><div style="font-size:14.5px;line-height:1.4;font-weight:{{ m.weight }};color:{{ m.color }}">{{ m.text }}</div><div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }};line-height:1.5">{{ m.meta }}</div></div>
+              </div>
+            </sc-for>
+          </sc-if>
+
+          <sc-if value="{{ memSemantic }}" hint-placeholder-val="{{ false }}">
+            <div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }};line-height:1.5;flex-shrink:0">Human-readable documents the conscious mind reads before every reply. Rewritten by the nightly consolidation.</div>
+            <sc-for list="{{ docs }}" as="d" hint-placeholder-count="3">
+              <div style="padding:14px;border-radius:12px;background:{{ t.surface }};display:flex;flex-direction:column;gap:8px;flex-shrink:0">
+                <div style="display:flex;justify-content:space-between;align-items:baseline"><div style="font-size:15px;font-weight:500">{{ d.title }}</div><div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }}">{{ d.meta }}</div></div>
+                <div style="font-size:14px;line-height:1.55;color:{{ t.fg2 }};white-space:pre-line">{{ d.body }}</div>
+              </div>
+            </sc-for>
+          </sc-if>
+
+          <sc-if value="{{ memRoutines }}" hint-placeholder-val="{{ false }}">
+            <div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }};line-height:1.5;flex-shrink:0">Patterns Alfred noticed on its own. Ignored suggestions lose confidence and slide right until archived.</div>
+            <sc-for list="{{ routines }}" as="r" hint-placeholder-count="4">
+              <button onClick="{{ r.toggle }}" style="display:flex;flex-direction:column;gap:10px;padding:12px 0;border:0;border-top:1px solid {{ t.line }};background:transparent;color:{{ t.fg }};text-align:left;cursor:pointer;font-family:inherit;flex-shrink:0;width:100%">
+                <div style="display:flex;justify-content:space-between;gap:12px;align-items:baseline"><div style="font-size:14.5px;line-height:1.4;color:{{ r.color }}">{{ r.text }}</div><div style="font:11px 'Geist Mono',monospace;color:{{ r.trendColor }};white-space:nowrap">{{ r.trend }}</div></div>
+                <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px;align-items:center;width:100%">
+                  <sc-for list="{{ r.stops }}" as="s" hint-placeholder-count="4">
+                    <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-start"><div style="height:3px;width:100%;border-radius:2px;background:{{ s.bar }}"></div><div style="font:10px 'Geist Mono',monospace;color:{{ s.fg }}">{{ s.label }}</div></div>
+                  </sc-for>
+                </div>
+                <sc-if value="{{ r.open }}" hint-placeholder-val="{{ false }}">
+                  <div style="display:flex;flex-direction:column;gap:6px;width:100%">
+                    <div style="font:11px/1.6 'Geist Mono',monospace;color:{{ t.muted }};white-space:pre-line">{{ r.detail }}</div>
+                    <div style="display:flex;gap:4px;align-items:flex-end;height:28px">
+                      <sc-for list="{{ r.history }}" as="h" hint-placeholder-count="8"><div style="flex:1;height:{{ h }}%;background:{{ t.accent }};border-radius:2px;opacity:.7"></div></sc-for>
+                    </div>
+                    <div style="font:10px 'Geist Mono',monospace;color:{{ t.muted }}">confidence, last 8 consolidations</div>
+                  </div>
+                </sc-if>
+              </button>
+            </sc-for>
+          </sc-if>
+
+          <sc-if value="{{ memScratch }}" hint-placeholder-val="{{ false }}">
+            <div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }};line-height:1.5;flex-shrink:0">What Alfred is holding in mind right now, and what is waiting for the nightly consolidation.</div>
+            <div style="padding:14px;border-radius:12px;background:{{ t.surface }};font:12px/1.65 'Geist Mono',monospace;color:{{ t.fg2 }};white-space:pre-wrap;flex-shrink:0">{{ scratch }}</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;flex-shrink:0">
+              <div style="padding:12px 14px;border-radius:12px;border:1px solid {{ t.line }};display:flex;flex-direction:column;gap:2px"><div style="font-size:22px;font-weight:500;letter-spacing:-.02em">14</div><div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }}">episodes queued, unscored</div></div>
+              <div style="padding:12px 14px;border-radius:12px;border:1px solid {{ t.line }};display:flex;flex-direction:column;gap:2px"><div style="font-size:22px;font-weight:500;letter-spacing:-.02em">03:00</div><div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }}">next consolidation · last 03:00 today</div></div>
+            </div>
+          </sc-if>
+        </div>
+        <sc-if value="{{ memEpisodic }}" hint-placeholder-val="{{ true }}">
+          <div style="padding:10px 16px 30px;border-top:1px solid {{ t.line }};display:flex;gap:10px">
+            <input value="{{ memQuery }}" onChange="{{ onMemQuery }}" placeholder="Search by meaning" style="flex:1;height:50px;border-radius:25px;border:1px solid {{ t.line }};background:{{ t.field }};color:{{ t.fg }};padding:0 18px;font:15px 'DM Sans',sans-serif;outline:none;min-width:0"/>
+            <button onClick="{{ toggleMemLoading }}" style="height:50px;padding:0 14px;border-radius:25px;border:1px solid {{ t.line }};background:transparent;color:{{ t.muted }};font:11px 'Geist Mono',monospace;cursor:pointer">{{ memLoadingLabel }}</button>
+          </div>
+        </sc-if>
+      </sc-if>
+
+      <sc-if value="{{ benchTriggers }}" hint-placeholder-val="{{ false }}">
+        <div style="flex:1;overflow-y:auto;padding:12px 16px 40px;display:flex;flex-direction:column;gap:4px">
+          <div style="display:flex;gap:6px;padding-bottom:8px;flex-shrink:0">
+            <sc-for list="{{ trigKinds }}" as="k" hint-placeholder-count="5">
+              <button onClick="{{ k.go }}" style="height:44px;padding:0 14px;border-radius:22px;border:1px solid {{ k.border }};background:{{ k.bg }};color:{{ k.fg }};font:500 13px 'DM Sans',sans-serif;cursor:pointer">{{ k.label }}</button>
+            </sc-for>
+          </div>
+          <sc-for list="{{ triggers }}" as="g" hint-placeholder-count="6">
+            <div style="border-top:1px solid {{ t.line }};flex-shrink:0;opacity:{{ g.opacity }}">
+              <div style="display:flex;gap:12px;align-items:flex-start;padding:11px 0">
+                <button onClick="{{ g.open }}" style="flex:1;display:flex;flex-direction:column;gap:3px;border:0;background:transparent;color:{{ t.fg }};text-align:left;cursor:pointer;font-family:inherit;padding:0;min-height:44px;min-width:0">
+                  <div style="display:flex;gap:8px;align-items:baseline"><span style="font:500 10px 'Geist Mono',monospace;color:{{ t.accent }};letter-spacing:.04em">{{ g.kind }}</span><span style="font-size:14.5px;line-height:1.35">{{ g.name }}</span></div>
+                  <div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }};line-height:1.5">{{ g.meta }}</div>
+                  <sc-if value="{{ g.pendingNote }}" hint-placeholder-val="{{ false }}"><div style="font:11px 'Geist Mono',monospace;color:{{ t.accent }}">{{ g.pendingNote }}</div></sc-if>
+                </button>
+                <button onClick="{{ g.toggle }}" style="width:52px;height:44px;margin-top:-2px;border-radius:22px;border:0;background:transparent;position:relative;cursor:pointer;flex-shrink:0;padding:0"><span style="position:absolute;top:6px;left:0;width:52px;height:32px;border-radius:16px;background:{{ g.switchBg }};transition:background .2s;display:block"></span><span style="position:absolute;top:9px;left:{{ g.knob }}px;width:26px;height:26px;border-radius:13px;background:{{ t.bg }};transition:left .2s;display:block"></span></button>
+              </div>
+              <sc-if value="{{ g.isOpen }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;flex-direction:column;gap:10px;padding:0 0 14px">
+                  <sc-if value="{{ g.corrupt }}" hint-placeholder-val="{{ false }}">
+                    <div style="padding:12px 14px;border-radius:10px;background:{{ t.surface }};display:flex;flex-direction:column;gap:4px"><div style="font-size:14px">This record can't be read.</div><div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }};line-height:1.5">500 · condition JSON fails to parse at byte 118 · the scheduler skips it · fix in the store or delete</div></div>
+                  </sc-if>
+                  <pre style="margin:0;padding:10px 12px;border-radius:8px;background:{{ t.surface }};font:11px/1.55 'Geist Mono',monospace;color:{{ t.fg2 }};white-space:pre-wrap;word-break:break-all">{{ g.payload }}</pre>
+                  <div style="display:flex;gap:8px;align-items:center">
+                    <button onClick="{{ g.fire }}" style="height:44px;padding:0 16px;border-radius:22px;border:1px solid {{ t.line }};background:transparent;color:{{ t.fg }};font:500 14px 'DM Sans',sans-serif;cursor:pointer">{{ g.fireLabel }}</button>
+                    <div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }};line-height:1.5;flex:1">{{ g.fireNote }}</div>
+                  </div>
+                </div>
+              </sc-if>
+            </div>
+          </sc-for>
+          <div style="padding-top:12px;font:11px 'Geist Mono',monospace;color:{{ t.muted }};line-height:1.6;flex-shrink:0">Switches are fire-and-forget: the server queues the change and the scheduler picks it up within 60 s. A row keeps its old state, with a note, until a fresh read confirms.</div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ benchSystem }}" hint-placeholder-val="{{ false }}">
+        <div style="flex:1;overflow-y:auto;padding:12px 16px 40px;display:flex;flex-direction:column;gap:22px">
+
+          <div style="display:flex;flex-direction:column;gap:8px;flex-shrink:0">
+            <div style="display:flex;justify-content:space-between;align-items:baseline"><div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:{{ t.muted }};font-weight:500">Health</div><div style="font:11px 'Geist Mono',monospace;color:{{ healthStampColor }}">{{ healthStamp }}</div></div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+              <sc-for list="{{ health }}" as="h" hint-placeholder-count="4">
+                <div style="padding:12px 14px;border-radius:12px;border:1px solid {{ t.line }};display:flex;flex-direction:column;gap:4px;opacity:{{ h.opacity }}">
+                  <div style="display:flex;align-items:center;gap:8px"><span style="width:8px;height:8px;border-radius:50%;background:{{ h.dot }};flex-shrink:0"></span><div style="font-size:20px;font-weight:500;letter-spacing:-.02em;line-height:1">{{ h.value }}</div></div>
+                  <div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }};line-height:1.4">{{ h.label }}</div>
+                </div>
+              </sc-for>
+            </div>
+            <div style="padding:12px 14px;border-radius:12px;border:1px solid {{ t.line }};display:flex;flex-direction:column;gap:8px;opacity:{{ spendOpacity }}">
+              <div style="display:flex;justify-content:space-between;align-items:baseline"><div style="font-size:14.5px">Cloud spend today</div><div style="font:12px 'Geist Mono',monospace">£1.42 of £5.00</div></div>
+              <div style="height:4px;border-radius:2px;background:{{ t.line }};overflow:hidden"><div style="width:28.4%;height:100%;background:{{ t.accent }}"></div></div>
+              <div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }}">38 requests · avg £0.037 · resets 00:00 · at the cap, the conscious mind declines and says so</div>
+            </div>
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:8px;flex-shrink:0">
+            <div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:{{ t.muted }};font-weight:500">Quiet</div>
+            <div style="padding:4px 14px;border-radius:12px;border:1px solid {{ t.line }};display:flex;flex-direction:column">
+              <div style="display:flex;align-items:center;justify-content:space-between;min-height:52px"><div style="display:flex;flex-direction:column;gap:2px"><div style="font-size:14.5px">Do-not-disturb</div><div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }}">{{ dndSub }}</div></div>
+                <button onClick="{{ toggleDnd }}" style="width:52px;height:44px;border-radius:22px;border:0;background:transparent;position:relative;cursor:pointer;flex-shrink:0;padding:0"><span style="position:absolute;top:6px;left:0;width:52px;height:32px;border-radius:16px;background:{{ dndSwitchBg }};transition:background .2s;display:block"></span><span style="position:absolute;top:9px;left:{{ dndKnob }}px;width:26px;height:26px;border-radius:13px;background:{{ t.bg }};transition:left .2s;display:block"></span></button></div>
+              <sc-if value="{{ dnd }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;gap:6px;padding:4px 0 10px;border-top:1px solid {{ t.line }}">
+                  <sc-for list="{{ dndExpiries }}" as="x" hint-placeholder-count="4"><button onClick="{{ x.go }}" style="flex:1;height:44px;border-radius:10px;border:1px solid {{ x.border }};background:{{ x.bg }};color:{{ x.fg }};font:500 12px 'DM Sans',sans-serif;cursor:pointer;padding:0">{{ x.label }}</button></sc-for>
+                </div>
+                <button onClick="{{ openDeferred }}" style="display:flex;justify-content:space-between;align-items:center;min-height:48px;border:0;border-top:1px solid {{ t.line }};background:transparent;color:{{ t.fg }};font:400 14px 'DM Sans',sans-serif;cursor:pointer;padding:0;text-align:left"><span>Held back</span><span style="font:11px 'Geist Mono',monospace;color:{{ deferredWarnColor }}">{{ deferredWarn }} ›</span></button>
+              </sc-if>
+            </div>
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:8px;flex-shrink:0">
+            <div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:{{ t.muted }};font-weight:500">Reach</div>
+            <div style="padding:4px 14px;border-radius:12px;border:1px solid {{ t.line }};display:flex;flex-direction:column">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:56px">
+                <div style="display:flex;flex-direction:column;gap:2px;min-width:0"><div style="font-size:14.5px">Push notifications</div><div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }};line-height:1.5">{{ reachSub }}</div></div>
+                <sc-if value="{{ reachHasAction }}" hint-placeholder-val="{{ false }}"><button onClick="{{ reachGo }}" style="height:44px;padding:0 12px;margin-right:-8px;border:0;background:transparent;color:{{ t.accent }};font:500 13px 'DM Sans',sans-serif;cursor:pointer;flex-shrink:0">{{ reachAction }}</button></sc-if>
+                <sc-if value="{{ reachNoAction }}" hint-placeholder-val="{{ true }}"><div style="display:flex;align-items:center;gap:8px;flex-shrink:0"><span style="font:11px 'Geist Mono',monospace;color:{{ reachColor }}">{{ reachState }}</span><span style="width:8px;height:8px;border-radius:50%;background:{{ reachColor }}"></span></div></sc-if>
+              </div>
+              <sc-if value="{{ reachDenied }}" hint-placeholder-val="{{ false }}">
+                <div style="padding:10px 0 12px;border-top:1px solid {{ t.line }};font:11px/1.6 'Geist Mono',monospace;color:{{ t.muted }}">Settings › Alfred › Notifications › Allow. iOS holds this switch now; nothing in here can flip it, and Alfred will not raise it again.</div>
+              </sc-if>
+            </div>
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:8px;flex-shrink:0">
+            <div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:{{ t.muted }};font-weight:500">Sessions</div>
+            <div style="border-radius:12px;border:1px solid {{ t.line }};padding:0 14px;display:flex;flex-direction:column">
+              <sc-for list="{{ sessions }}" as="s" hint-placeholder-count="3">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:56px;border-top:1px solid {{ s.border }};opacity:{{ s.opacity }}">
+                  <div style="display:flex;flex-direction:column;gap:2px;min-width:0"><div style="font-size:14.5px">{{ s.name }}</div><div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ s.meta }}</div></div>
+                  <button onClick="{{ s.end }}" disabled="{{ s.isThis }}" style="height:44px;padding:0 12px;border:0;background:transparent;color:{{ s.actionColor }};font:500 13px 'DM Sans',sans-serif;cursor:pointer;flex-shrink:0">{{ s.action }}</button>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:8px;flex-shrink:0">
+            <div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:{{ t.muted }};font-weight:500">Connected services</div>
+            <div style="border-radius:12px;border:1px solid {{ t.line }};padding:0 14px;display:flex;flex-direction:column">
+              <sc-for list="{{ services }}" as="c" hint-placeholder-count="5">
+                <div style="border-top:1px solid {{ c.border }}">
+                  <button onClick="{{ c.open }}" style="width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:56px;border:0;background:transparent;color:{{ t.fg }};padding:0;text-align:left;cursor:pointer;font-family:inherit">
+                    <div style="display:flex;flex-direction:column;gap:2px"><div style="font-size:14.5px">{{ c.name }}</div><div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }}">{{ c.meta }}</div></div>
+                    <div style="display:flex;align-items:center;gap:8px;flex-shrink:0"><span style="font:11px 'Geist Mono',monospace;color:{{ c.stateColor }}">{{ c.state }}</span><span style="width:8px;height:8px;border-radius:50%;background:{{ c.stateColor }}"></span></div>
+                  </button>
+                  <sc-if value="{{ c.isOpen }}" hint-placeholder-val="{{ false }}">
+                    <div style="display:flex;flex-direction:column;gap:8px;padding:0 0 14px">
+                      <input value="{{ c.draft }}" onChange="{{ c.onDraft }}" placeholder="{{ c.placeholder }}" type="password" style="height:48px;border-radius:10px;border:1px solid {{ t.line }};background:{{ t.field }};color:{{ t.fg }};padding:0 14px;font:14px 'Geist Mono',monospace;outline:none;min-width:0"/>
+                      <div style="display:flex;gap:8px;align-items:center">
+                        <button onClick="{{ c.test }}" style="height:44px;padding:0 16px;border-radius:22px;border:0;background:{{ t.ink }};color:{{ t.paper }};font:500 14px 'DM Sans',sans-serif;cursor:pointer">{{ c.testLabel }}</button>
+                        <div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }};line-height:1.5;flex:1">{{ c.note }}</div>
+                      </div>
+                    </div>
+                  </sc-if>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:8px;flex-shrink:0">
+            <div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:{{ t.muted }};font-weight:500">Devices &amp; identity</div>
+            <div style="border-radius:12px;border:1px solid {{ t.line }};padding:0 14px;display:flex;flex-direction:column">
+              <sc-for list="{{ devices }}" as="d" hint-placeholder-count="2">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:56px;border-top:1px solid {{ d.border }}">
+                  <div style="display:flex;flex-direction:column;gap:2px"><div style="font-size:14.5px">{{ d.name }}</div><div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }}">{{ d.meta }}</div></div>
+                  <div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }}">{{ d.kind }}</div>
+                </div>
+              </sc-for>
+              <button onClick="{{ addPasskey }}" style="display:flex;align-items:center;justify-content:space-between;min-height:52px;border:0;border-top:1px solid {{ t.line }};background:transparent;color:{{ t.accent }};font:500 14px 'DM Sans',sans-serif;cursor:pointer;padding:0;text-align:left"><span>{{ passkeyLabel }}</span><span style="font:11px 'Geist Mono',monospace;color:{{ t.muted }}">{{ passkeyNote }}</span></button>
+              <button onClick="{{ signOut }}" style="display:flex;align-items:center;min-height:52px;border:0;border-top:1px solid {{ t.line }};background:transparent;color:{{ t.fg }};font:400 14px 'DM Sans',sans-serif;cursor:pointer;padding:0;text-align:left">Sign out on this device</button>
+            </div>
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:8px;flex-shrink:0">
+            <div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:{{ t.muted }};font-weight:500">Maintenance</div>
+            <div style="padding:14px;border-radius:12px;border:1px solid {{ t.line }};display:flex;flex-direction:column;gap:10px">
+              <div style="display:flex;justify-content:space-between;align-items:baseline"><div style="font-size:14.5px">Nightly consolidation</div><div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }}">last 03:00 · 42 reviewed</div></div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <button onClick="{{ consolidate }}" style="height:44px;padding:0 16px;border-radius:22px;border:1px solid {{ t.line }};background:transparent;color:{{ t.fg }};font:500 14px 'DM Sans',sans-serif;cursor:pointer">{{ consolidateLabel }}</button>
+                <div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }};line-height:1.5;flex:1">{{ consolidateNote }}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ gateOpen }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;top:0;left:0;right:0;bottom:{{ gateBottom }}px;background:{{ t.bg }};color:{{ t.fg }};z-index:30;display:flex;flex-direction:column">
+      <div style="position:absolute;inset:0 0 auto 0;height:220px;pointer-events:none;background-image:radial-gradient(circle, {{ presenceDot }} 1px, transparent 1.6px);background-size:12px 12px;-webkit-mask-image:linear-gradient(to bottom, rgba(0,0,0,.9) 25%, transparent 100%);mask-image:linear-gradient(to bottom, rgba(0,0,0,.9) 25%, transparent 100%);animation:{{ presenceAnim }}"></div>
+      <div style="position:absolute;top:11px;left:50%;transform:translateX(-50%);width:126px;height:37px;border-radius:20px;background:#000"></div>
+      <div style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;padding:0 28px 12px;gap:12px;position:relative">
+        <div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }}">{{ gate.kicker }}</div>
+        <div style="font-size:30px;font-weight:500;letter-spacing:-.02em;line-height:1.15">{{ gate.title }}</div>
+        <div style="font-size:15px;line-height:1.5;color:{{ t.fg2 }}">{{ gate.body }}</div>
+        <sc-if value="{{ gate.steps }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;flex-direction:column;gap:0;padding-top:8px">
+            <sc-for list="{{ gate.steps }}" as="s" hint-placeholder-count="3">
+              <div style="display:flex;gap:12px;align-items:center;min-height:48px;border-top:1px solid {{ t.line }}"><span style="width:22px;height:22px;border-radius:50%;border:1.5px solid {{ s.ring }};background:{{ s.fill }};flex-shrink:0;box-sizing:border-box"></span><div style="flex:1;font-size:14.5px;color:{{ s.color }}">{{ s.label }}</div><div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }}">{{ s.meta }}</div></div>
+            </sc-for>
+          </div>
+        </sc-if>
+      </div>
+      <div style="padding:8px 20px 40px;display:flex;flex-direction:column;gap:10px;position:relative">
+        <sc-if value="{{ gate.primary }}" hint-placeholder-val="{{ true }}"><button onClick="{{ gateAdvance }}" style="height:56px;border-radius:28px;border:0;background:{{ t.ink }};color:{{ t.paper }};font:500 16px 'DM Sans',sans-serif;cursor:pointer">{{ gate.primary }}</button></sc-if>
+        <sc-if value="{{ gate.secondary }}" hint-placeholder-val="{{ false }}"><button onClick="{{ gateDismiss }}" style="height:50px;border-radius:25px;border:0;background:transparent;color:{{ t.fg }};font:500 15px 'DM Sans',sans-serif;cursor:pointer">{{ gate.secondary }}</button></sc-if>
+        <div style="font:11px 'Geist Mono',monospace;color:{{ t.muted }};text-align:center;line-height:1.5">{{ gate.foot }}</div>
+      </div>
+      <sc-if value="{{ gate.pointer }}" hint-placeholder-val="{{ false }}">
+        <div style="position:absolute;left:0;right:0;bottom:4px;display:flex;flex-direction:column;align-items:center;gap:2px;color:{{ t.accent }};animation:nudge 1.4s ease-in-out infinite"><div style="font:500 11px 'Geist Mono',monospace">Share</div><span style="width:11px;height:11px;border-right:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(45deg);display:block"></span></div>
+      </sc-if>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ iosDialog }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;inset:0;background:rgba(0,0,0,.4);z-index:35;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:24px">
+      <div style="width:270px;border-radius:14px;background:rgba(242,242,247,.97);color:#000;display:flex;flex-direction:column;text-align:center;font-family:-apple-system,'DM Sans',sans-serif;overflow:hidden">
+        <div style="padding:20px 16px 6px;font-size:17px;font-weight:600;line-height:1.3">“Alfred” Would Like to Send You Notifications</div>
+        <div style="padding:0 16px 18px;font-size:13px;line-height:1.35;color:#3c3c43">Alerts, sounds and icon badges. These can be changed later in Settings.</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;border-top:1px solid rgba(60,60,67,.25)">
+          <button onClick="{{ iosDeny }}" style="height:44px;border:0;border-right:1px solid rgba(60,60,67,.25);background:transparent;color:#0a84ff;font:400 17px -apple-system,'DM Sans',sans-serif;cursor:pointer">Don’t Allow</button>
+          <button onClick="{{ iosAllow }}" style="height:44px;border:0;background:transparent;color:#0a84ff;font:600 17px -apple-system,'DM Sans',sans-serif;cursor:pointer">Allow</button>
+        </div>
+      </div>
+      <div style="font:11px 'Geist Mono',monospace;color:rgba(255,255,255,.7);text-align:center;line-height:1.6">iOS owns this dialog · shown once, ever · step 6 of 6</div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ ctxLock }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;inset:0;z-index:40;background:linear-gradient(180deg,#2c2f3a,#131418);color:#fff;display:flex;flex-direction:column;align-items:center;padding:74px 16px 0">
+      <div style="position:absolute;top:11px;left:50%;transform:translateX(-50%);width:126px;height:37px;border-radius:20px;background:#000"></div>
+      <div style="font-size:17px;font-weight:500;opacity:.85">Friday 5 September</div>
+      <div style="font-size:84px;font-weight:500;letter-spacing:-.03em;line-height:1;margin-top:2px">{{ lockTime }}</div>
+      <button onClick="{{ tapNotification }}" style="margin-top:40px;width:100%;padding:12px 14px;border-radius:22px;border:0;background:rgba(255,255,255,.16);color:#fff;display:flex;gap:12px;text-align:left;cursor:pointer;font-family:inherit;align-items:flex-start;box-sizing:border-box">
+        <div style="width:38px;height:38px;border-radius:9px;background:#25221f;color:oklch(0.78 0.12 45);font:500 20px 'DM Sans',sans-serif;display:flex;align-items:center;justify-content:center;flex-shrink:0">A</div>
+        <div style="flex:1;display:flex;flex-direction:column;gap:2px;min-width:0">
+          <div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-size:15px;font-weight:600">Alfred</span><span style="font-size:13px;opacity:.6">{{ notifWhen }}</span></div>
+          <div style="font-size:15px;font-weight:500;line-height:1.3">{{ notifTitle }}</div>
+          <div style="font-size:15px;line-height:1.3;opacity:.85">{{ notifBody }}</div>
+        </div>
+      </button>
+      <div style="margin-top:16px;font:11px 'Geist Mono',monospace;color:rgba(255,255,255,.5);text-align:center;line-height:1.6;white-space:pre-line">{{ notifCaption }}</div>
+      <div style="position:absolute;bottom:8px;left:50%;transform:translateX(-50%);width:139px;height:5px;border-radius:3px;background:#fff"></div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ ctxHome }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;inset:0;z-index:40;background:linear-gradient(180deg,#2c2f3a,#131418);color:#fff;display:flex;flex-direction:column;padding:78px 22px 0">
+      <div style="position:absolute;top:11px;left:50%;transform:translateX(-50%);width:126px;height:37px;border-radius:20px;background:#000"></div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:18px 0;justify-items:center">
+        <sc-for list="{{ homeTiles }}" as="h" hint-placeholder-count="16">
+          <div style="display:flex;flex-direction:column;align-items:center;gap:6px;width:76px">
+            <sc-if value="{{ h.plain }}" hint-placeholder-val="{{ true }}"><div style="width:62px;height:62px;border-radius:15px;background:rgba(255,255,255,.13)"></div></sc-if>
+            <sc-if value="{{ h.alfred }}" hint-placeholder-val="{{ false }}">
+              <button onClick="{{ openFromHome }}" style="position:relative;width:62px;height:62px;border-radius:15px;border:0;background:#25221f;color:oklch(0.78 0.12 45);font:500 30px 'DM Sans',sans-serif;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0">A
+                <sc-if value="{{ hasBadge }}" hint-placeholder-val="{{ true }}"><span style="position:absolute;top:-7px;right:-7px;min-width:22px;height:22px;padding:0 6px;border-radius:11px;background:#ff3b30;color:#fff;font:500 13px/22px 'DM Sans',sans-serif;box-sizing:border-box">{{ badge }}</span></sc-if>
+              </button>
+            </sc-if>
+            <div style="font-size:11px;height:13px;opacity:.9">{{ h.label }}</div>
+          </div>
+        </sc-for>
+      </div>
+      <div style="margin-top:28px;font:11px 'Geist Mono',monospace;color:rgba(255,255,255,.5);text-align:center;line-height:1.6;white-space:pre-line">{{ badgeCaption }}</div>
+      <div style="position:absolute;bottom:8px;left:50%;transform:translateX(-50%);width:139px;height:5px;border-radius:3px;background:#fff"></div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ doorOpen }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;inset:0;background:{{ t.ink }};color:{{ t.paper }};z-index:20;display:flex;flex-direction:column;animation:rise .42s cubic-bezier(.2,.8,.2,1)">
+      <div style="position:absolute;top:11px;left:50%;transform:translateX(-50%);width:126px;height:37px;border-radius:20px;background:#000"></div>
+      <div style="padding:64px 24px 0;display:flex;justify-content:space-between;align-items:center">
+        <button onClick="{{ closeDoor }}" style="height:44px;padding:0 4px;margin-left:-4px;border:0;background:transparent;color:{{ t.paperMuted }};font:400 15px 'DM Sans',sans-serif;cursor:pointer;display:flex;align-items:center;gap:6px"><span style="width:9px;height:9px;border-left:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(45deg);display:block"></span>Leave it</button>
+        <div style="font:11px 'Geist Mono',monospace;color:{{ t.paperMuted }}">CRITICAL · {{ door.id }}</div>
+      </div>
+      <div style="flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:28px;padding:0 24px">
+        <div style="width:168px;height:168px;border-radius:50%;position:relative;display:flex;align-items:center;justify-content:center;background:conic-gradient({{ fuseColor }} {{ fusePct }}, {{ t.ring }} 0);-webkit-mask:radial-gradient(circle, transparent 79px, #000 80px);mask:radial-gradient(circle, transparent 79px, #000 80px);transition:background .9s linear"></div>
+        <div style="margin-top:-196px;height:168px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px"><div style="font:500 40px 'Geist Mono',monospace;letter-spacing:-.02em">{{ fuseLabel }}</div><div style="font:11px 'Geist Mono',monospace;color:{{ t.paperMuted }}">{{ doorSub }}</div></div>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center">
+          <div style="font-size:30px;font-weight:500;letter-spacing:-.02em;line-height:1.15">{{ door.title }}</div>
+          <div style="font-size:15px;line-height:1.45;color:{{ t.paperMuted }};max-width:300px">{{ door.reason }}</div>
+          <div style="font:11.5px 'Geist Mono',monospace;color:{{ t.paperMuted }};padding:8px 12px;border:1px solid {{ t.ring }};border-radius:8px;word-break:break-all;line-height:1.5">{{ door.call }}</div>
+        </div>
+      </div>
+      <div style="padding:0 20px 40px;display:flex;flex-direction:column;gap:12px">
+        <sc-if value="{{ doorLive }}" hint-placeholder-val="{{ true }}">
+          <div ref="{{ trackRef }}" onPointerDown="{{ slideStart }}" onPointerMove="{{ slideMove }}" onPointerUp="{{ slideEnd }}" onPointerCancel="{{ slideEnd }}" style="height:64px;border-radius:32px;background:{{ t.ring }};position:relative;touch-action:none;user-select:none;-webkit-user-select:none;overflow:hidden">
+            <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:15px;color:{{ t.paperMuted }};opacity:{{ slideHintOpacity }};transition:opacity .15s;padding-left:56px">Slide to unlock the door</div>
+            <div style="position:absolute;top:4px;left:4px;width:56px;height:56px;border-radius:28px;background:{{ t.accent }};transform:translateX({{ knobX }}px);transition:{{ knobTransition }};display:flex;align-items:center;justify-content:center"><span style="width:10px;height:10px;border-top:2px solid {{ t.ink }};border-right:2px solid {{ t.ink }};transform:rotate(45deg);display:block"></span></div>
+          </div>
+          <div style="font:11px 'Geist Mono',monospace;color:{{ t.paperMuted }};text-align:center;line-height:1.5">{{ doorFoot }}</div>
+        </sc-if>
+        <sc-if value="{{ doorDone }}" hint-placeholder-val="{{ false }}">
+          <div style="height:64px;border-radius:32px;border:1.5px solid {{ t.ring }};display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:500"><span style="width:8px;height:8px;border-radius:50%;background:{{ doorDotColor }}"></span>{{ doorState }}</div>
+          <div style="font:11px 'Geist Mono',monospace;color:{{ t.paperMuted }};text-align:center;line-height:1.5">{{ doorFoot }}</div>
+          <button onClick="{{ closeDoor }}" style="height:50px;border-radius:25px;border:0;background:transparent;color:{{ t.paper }};font:500 15px 'DM Sans',sans-serif;cursor:pointer">Back to the room</button>
+        </sc-if>
+      </div>
+    </div>
+  </sc-if>
+</div>
+
+<div style="max-width:560px;font-size:12.5px;line-height:1.55;color:#5c564e;text-align:center">The phone prototype: the Room, the Door, the Workshop's four benches (pull the handle at the bottom), and the identity gates. Type, hold the microphone, open the pending action and slide; in Activity, tap an event for its payload, tap a stream chip to solo it, pause and page back. Scenes above set states the prototype can't reach by itself. The Reach scenes walk the six-step path to iOS notifications (Safari prompt → install gesture → reopened from the home screen → iOS asks → declined); the Closed scenes show a notification and a badge arriving while the app is shut, and where a tap lands. <a href="00 Architecture and Reasoning.dc.html">Architecture</a></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;reduceMotion&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Behaviour&quot;},&quot;useMicrophone&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Presence field&quot;},&quot;dotResponse&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:1,&quot;min&quot;:0.3,&quot;max&quot;:2.5,&quot;step&quot;:0.1,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Presence field&quot;}}">
+class Component extends DCLogic {
+  constructor(p){super(p);
+    let saved={};try{saved=JSON.parse(localStorage.getItem('alfred.proto')||'{}')}catch(e){}
+    this.state=Object.assign({theme:'dark',scene:'evening',sceneKey:'evening',ctx:'standalone',notifPerm:'unknown',iosDialog:false,badge:0,draft:'',focused:false,holding:false,holdT:0,thinking:false,transcribing:false,
+      sheet:null,doorOpen:false,doorState:'pending',fuse:252,fuseTotal:300,knob:0,dragging:false,drainState:'idle',
+      items:this.seed('evening'),deferred:this.seedDeferred(),dndOn:false,dndExpiry:'08:30',
+      workshop:false,bench:'activity',events:this.seedEvents(),solo:null,paused:false,heldCount:0,openEvent:null,pagedBack:0,
+      gate:null,gateStep:0,sessionsEnded:{},openService:null,svcDraft:{},svcState:{},consolidateAt:null,passkeyAt:null,
+      memTab:'episodic',memQuery:'',memLoading:false,openRoutine:null,trigKind:'all',openTrigger:null,trigPending:{},trigFired:{},trigState:{trg_bins:true,trg_leave:true,trg_door:true,trg_parcel:false,trg_bath:true,trg_bad:false}},saved);
+    this.endRef=React.createRef();this.trackRef=React.createRef();this.presenceRef=React.createRef();this.bands=new Float32Array(8);this.level=0;}
+  // --- presence field: a dot height-field driven by the audio stream (mic while held; synthesized otherwise) ---
+  micStart(){if(this.props.useMicrophone===false||!navigator.mediaDevices||this.analyser)return;
+    navigator.mediaDevices.getUserMedia({audio:true}).then(stream=>{if(!this.state.holding){stream.getTracks().forEach(t=>t.stop());return}
+      const ac=this.ac||(this.ac=new (window.AudioContext||window.webkitAudioContext)());const an=ac.createAnalyser();an.fftSize=256;an.smoothingTimeConstant=.6;
+      ac.createMediaStreamSource(stream).connect(an);this.analyser=an;this.stream=stream;this.freq=new Uint8Array(an.frequencyBinCount)}).catch(()=>{})}
+  micStop(){if(this.stream)this.stream.getTracks().forEach(t=>t.stop());this.stream=null;this.analyser=null}
+  signal(now){const st=this.state,b=this.bands;let target=0,live=false;
+    if(this.analyser&&st.holding){this.analyser.getByteFrequencyData(this.freq);let sum=0;
+      for(let k=0;k<8;k++){const lo=1<<k,hi=Math.min(this.freq.length,2<<k);let s=0;for(let i=lo;i<hi;i++)s+=this.freq[i];const v=Math.min(1,(s/(hi-lo)/255)*1.6);b[k]+=(v-b[k])*(v>b[k]?.55:.14);sum+=v}
+      target=Math.min(1,sum/5);live=true}
+    if(!live){const n=(f,p)=>.5+.5*Math.sin(now*f+p);
+      if(st.holding){const talk=n(5.1,0)*n(7.7,1.3)*.6+n(1.9,2)*.5;const pause=n(.45,0)>.28?1:.15;target=Math.min(1,.15+talk*pause)}
+      else target=0;
+      for(let k=0;k<8;k++){const v=target*(.5+.5*Math.sin(now*(1.3+k*.7)+k*1.9))*(1-k*.08);b[k]+=(v-b[k])*.2}}
+    this.level+=(target-this.level)*(target>this.level?.35:.06);if(this.level<.004)this.level=0;
+    // thinking has its own envelope: eases in over ~.6s, and on reply eases out over ~1.2s so the field settles rather than snaps
+    const tt=st.thinking?1:0;this.think=(this.think||0)+(tt-(this.think||0))*(tt>(this.think||0)?.08:.035);if(this.think<.004)this.think=0;
+    return this.level}
+  presence(){const c=this.presenceRef.current;if(!c)return;const W=393,H=190,dpr=Math.min(2,window.devicePixelRatio||1);
+    if(c.width!==W*dpr){c.width=W*dpr;c.height=H*dpr}const g=c.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,W,H);
+    const st=this.state,dark=st.theme==='dark',offline=st.scene==='offline'||st.scene==='reconnecting',rm=!!this.props.reduceMotion;
+    const now=rm?0:performance.now()/1000,e=(offline||rm)?0:this.signal(now),b=this.bands,gain=this.props.dotResponse??1;
+    // the wave phase only advances while audio is flowing, so the field is perfectly still at rest
+    const th=(offline||rm)?0:(this.think||0);
+    if(!this.last)this.last=now;const dt=now-this.last;this.phase=(this.phase||0)+dt*(0.4+e*2.2);this.tph=(this.tph||0)+dt*th;this.last=now;const ph=this.phase,tph=this.tph;
+    const rgb=offline?(dark?'154,145,134':'138,129,119'):(dark?'232,178,132':'205,132,80'),base=offline?.42:(dark?.55:.7);
+    const step=12,cols=Math.ceil(W/step)+1,rows=Math.ceil(H/step)+1;
+    // tides: low bands are long swells travelling across, high bands are short chop riding on the crests
+    const low=(b[0]+b[1]+b[2])/3,mid=(b[3]+b[4])/2,high=(b[5]+b[6]+b[7])/3;
+    for(let j=0;j<rows;j++){const y=j*step;for(let i=0;i<cols;i++){const x=i*step;
+      let z=0;
+      if(e>0){const swell=Math.sin(x*.022+y*.012-ph*1.1)*.65+Math.sin(x*.013-y*.02+ph*.7+1.7)*.5;
+        const crest=Math.pow(Math.max(0,swell),1.6)*(.4+low*1.4);
+        const trough=Math.min(0,swell)*.35*(.3+low);
+        const chop=Math.sin(x*.09+ph*3.1+y*.04)*Math.sin(y*.07-ph*2.3)*high*.5*Math.max(0,swell+.3);
+        const roll=Math.sin(x*.045-ph*1.8+y*.03)*mid*.35;
+        z=(crest+trough+chop+roll)*e*gain*1.5;z=Math.max(-.5,Math.min(1.9,z))}
+      if(th>0){// thinking: a linear pulse sweeping down the field every ~2.4s, with a fainter slow counter-sweep up
+        const p1=(y/H+tph*.42)%1,p2=(y/H-tph*.17+.5+1e4)%1;
+        const g1=Math.abs(p1-.5),g2=Math.abs(p2-.5);
+        const band=Math.exp(-Math.pow(g1/.11,2)),back=Math.exp(-Math.pow(g2/.18,2))*.35;
+        const lean=1-Math.abs(x-W/2)/(W*.9);
+        z+=(band*1.15+back)*lean*th*gain}
+      const px=x+z*Math.sin(x*.022-ph)*2.5,py=y-z*12;
+      const r=Math.max(.6,1+.7*z),a=Math.max(.05,Math.min(1,base*(.65+.45*z)));
+      if(z>.3){g.fillStyle='rgba(0,0,0,'+(dark?.24:.11)*Math.min(1,z-.3)+')';g.beginPath();g.ellipse(px,y+2,r*1.3,r*.5,0,0,Math.PI*2);g.fill()}
+      g.fillStyle='rgba('+rgb+','+a+')';g.beginPath();g.arc(px,py,r,0,Math.PI*2);g.fill()}}}
+  loop(){this.presence();this.raf=requestAnimationFrame(()=>this.loop())}
+  persist(){const {theme,scene,items,doorState,fuse,dndOn}=this.state;try{localStorage.setItem('alfred.proto',JSON.stringify({theme,scene,items,doorState,fuse,dndOn}))}catch(e){}}
+  streams(){return[['UR','user_requests',30],['AL','user_responses',75],['EV','events',120],['AC','actions',165],['RX','reflex_observations',210],['NT','notifications',255],['HS','home_state',300],['HR','home_action_results',345]].map(([mono,name,h])=>({mono,name,color:'oklch(0.62 0.11 '+h+')'}))}
+  seedEvents(){const S=Object.fromEntries(this.streams().map(s=>[s.mono,s]));const mk=(mono,ts,text,meta,payload,extra)=>Object.assign({id:Math.random().toString(16).slice(2,6),mono,ts,text,meta,payload:JSON.stringify(payload,null,1),color:S[mono].color,stream:S[mono].name},extra||{});
+    return[
+      mk('HS','21:13:58','light.hall → off','entity light.hall · via HA websocket',{entity_id:'light.hall',state:'off',previous:'on',attributes:{brightness:0},source:'home_assistant',timestamp:'2026-09-04T21:13:58Z'}),
+      mk('EV','21:13:40','trigger fired: bins_reminder','fired_by scheduler · recurring · next 2026-09-11',{type:'trigger.fired',trigger_id:'trg_bins',trigger_type:'schedule',fired_by:'scheduler',one_shot:false,next_fire:'2026-09-11T19:00:00Z'}),
+      mk('NT','21:13:40','Bins go out tonight (important)','spoken: no · dnd: off · delivered push',{priority:'important',title:'Bins go out tonight',body:'Collection moved to Friday.',spoken:false,deferred:false,source:'trigger:trg_bins'}),
+      mk('RX','21:02:11','observed light.living_room dim · acted','380 ms · decision "movie started, evening" · watch-listed',{trigger_event:'media_player.tv → playing',action:'light.turn_on {brightness:30%}',result:'ok',decision_context:'movie started, evening, user home',latency_ms:380,model:'reflex-3b'},{hasWhy:true}),
+      mk('AC','21:02:11','home.light_set living_room 30%','request 4b1d · risk low · reflex*',{tool:'home.light_set',params:{entity_id:'light.living_room',brightness_pct:30},request_id:'4b1d',risk:'low',source:'reflex:watchlist'}),
+      mk('HR','21:02:12','light.living_room ok','request 4b1d · 210 ms round-trip',{request_id:'4b1d',status:'ok',entity_id:'light.living_room',latency_ms:210}),
+      mk('UR','20:52:03','"What have I got tomorrow morning?"','session s_9f2 · text · 30-min window',{session_id:'s_9f2',channel:'pwa',modality:'text',text:'What have I got tomorrow morning?'}),
+      mk('AL','20:52:06','"The dentist at nine, sir…"','mood pleased · calendar.today, weather.forecast · 2.9 s · £0.04',{session_id:'s_9f2',mood:'pleased',actions_taken:['calendar.today','weather.forecast'],tokens:{in:1840,out:96},cost_gbp:0.04,latency_ms:2900}),
+      mk('EV','20:52:06','trigger created: leave_by_0840','one-shot · fixed time 08:40 · from conversation',{type:'trigger.created',trigger_id:'trg_leave',trigger_type:'time',one_shot:true,fire_at:'2026-09-05T08:40:00Z',source:'conscious:trigger_engine'}),
+      mk('HS','20:40:12','lock.back_door → locked','entity lock.back_door',{entity_id:'lock.back_door',state:'locked',previous:'unlocked'}),
+      mk('EV','20:00:00','consolidation scheduled 03:00','nightly · last run 03:00 today · 42 episodic reviewed',{type:'consolidation.scheduled',at:'2026-09-05T03:00:00Z',last_run:{at:'2026-09-04T03:00:00Z',reviewed:42,demoted_cold:6,routines_updated:2}}),
+      mk('HS','18:21:40','binary_sensor.front_door → off','entity binary_sensor.front_door',{entity_id:'binary_sensor.front_door',state:'off',previous:'on'})]}
+  componentDidMount(){this.loop();this.tick=setInterval(()=>{if(this.state.doorState==='pending'&&this.state.fuse>0){this.setState(s=>({fuse:s.fuse-1}),()=>{if(this.state.fuse===0)this.expire()})}
+    if(this.state.holding)this.setState(s=>({holdT:s.holdT+1}))},1000);
+    this.feed=setInterval(()=>{const st=this.state;if(!st.workshop||st.bench!=='activity'||st.scene==='offline'||st.scene==='reconnecting')return;
+      if(st.paused){this.setState(s=>({heldCount:s.heldCount+1}));return}
+      this.setState(s=>({events:[this.liveEvent()].concat(s.events).slice(0,60)}))},3500)}
+  liveEvent(){const S=Object.fromEntries(this.streams().map(s=>[s.mono,s]));const d=new Date(),ts=[d.getHours(),d.getMinutes(),d.getSeconds()].map(n=>String(n).padStart(2,'0')).join(':');
+    const pool=[['HS','sensor.living_room_temp → 21.4','entity sensor.living_room_temp',{entity_id:'sensor.living_room_temp',state:21.4,unit:'°C'}],['EV','heartbeat: reflex ok','reflex-3b · 372 ms p50 · gpu 41%',{type:'health.reflex',p50_ms:372,gpu_util:0.41}],['HS','binary_sensor.motion_hall → on','entity binary_sensor.motion_hall',{entity_id:'binary_sensor.motion_hall',state:'on'}],['RX','observed motion_hall · no action','88 ms · decision "user moving about, lights already on"',{trigger_event:'binary_sensor.motion_hall → on',action:null,result:'no_action',decision_context:'user moving about, lights already on',latency_ms:88}]];
+    const [mono,text,meta,payload]=pool[Math.floor(Math.random()*pool.length)];return{id:Math.random().toString(16).slice(2,6),mono,ts,text,meta,payload:JSON.stringify(payload,null,1),color:S[mono].color,stream:S[mono].name,fresh:true}}
+  componentWillUnmount(){clearInterval(this.tick);clearInterval(this.feed);cancelAnimationFrame(this.raf);this.micStop()}
+  gate(st,t){const g=st.gate,k=st.gateStep;const step=(label,i,meta)=>({label,meta:meta||'',ring:i<k?t.accent:i===k?t.fg:t.line,fill:i<k?t.accent:'transparent',color:i<=k?t.fg:t.muted});
+    if(g==='setup')return[
+      {kicker:'first run · alfred.local',title:'Good evening. I am Alfred.',body:'This device will hold the only key to the house. There is no password anywhere; a passkey on this phone, unlocked by Face ID, is how you get in.',steps:[step('Register this iPhone',0),step('Connect Home Assistant',1),step('Choose what the reflex may touch',2)],primary:'Create passkey with Face ID',foot:'The passkey never leaves the phone. Nothing here phones home.'},
+      {kicker:'first run · 1 of 3 done',title:'Registered.',body:'Now the house. Paste a long-lived Home Assistant token; I will read state and, later, act on the devices you allow.',steps:[step('Register this iPhone',0,'07:02'),step('Connect Home Assistant',1),step('Choose what the reflex may touch',2)],primary:'Continue',secondary:'Do this later',foot:'Stored encrypted at rest on your hardware.'},
+      {kicker:'first run · 2 of 3 done',title:'What may the reflex touch?',body:'The small local model reacts in under half a second. It is only allowed low-risk devices you list here. Locks, alarms and the garage are never on this list; those always come to you.',steps:[step('Lights · 6 found',0,'allowed'),step('Media players · 2 found',1,'allowed'),step('Fans & plugs · 4 found',2,'ask me')],primary:'Finish',foot:'Change this any time under Workshop › System.'}][Math.min(k,2)];
+    if(g==='install')return{kicker:'reaching you · 3 of 6 · in Safari',title:'Add me to the home screen.',body:'Safari will not let me ask to notify you until I have been added there, and there is no button I can show for it. It is one gesture, at the bottom of the screen.',steps:[step('Tap Share, below',0),step('Scroll to "Add to Home Screen"',1),step('Tap Add, then open Alfred from there',2)],primary:null,secondary:'Not now',foot:'This tab can be closed once you have. Nothing is lost; I pick up where we left off.',pointer:true};
+    if(g==='standalone')return{kicker:'reaching you · 5 of 6 · opened from the home screen',title:'You came in the front way.',body:'From here I may ask iOS to let me reach you when the app is closed. Only for what cannot wait: an approval with a fuse, the house needing you. Never routine chatter.',steps:[step('Open in Safari',0,'alfred.local'),step('Sign in with Face ID',1,'07:02'),step('Add to Home Screen',2),step('Open from the home screen',3,'now'),step('Let Alfred reach you',4),step('Allow in iOS',5)],primary:'Let me reach you',secondary:'Not yet',foot:'iOS asks once. Decline, and the switch moves to Settings; I shall not raise it again.'};
+    if(g==='signin')return{kicker:'alfred.local · signed out',title:'Welcome back, sir.',body:'Face ID unlocks the passkey on this phone. Nothing is sent but the signed challenge.',primary:'Sign in with Face ID',foot:'Passkey · iPhone 15 Pro · registered 12 Aug'};
+    if(g==='denied')return{kicker:'403 · off-network',title:'Not from here.',body:'Alfred only answers requests from inside the house network or over its own tunnel. This connection is neither, so the house declined it. Nothing was sent.',primary:null,secondary:'Back to the room',foot:'Last true 21:14 · everything shown behind this is last-known'};
+    if(g==='expired')return{kicker:'401 · session lapsed',title:'Your session lapsed.',body:'The passkey session on this phone ran out after 30 days. Anything below is last-known until you sign in again.',primary:'Sign in with Face ID',foot:'Conversations and settings are on the server; nothing is lost.'};
+    if(g==='passkey')return{kicker:'system · identity',title:'Add a passkey.',body:'Open alfred.local/pair on the other device within two minutes. It will be asked to create its own passkey; this phone confirms it.',steps:[step('Code shown on the other device',0),step('Confirm here with Face ID',1)],primary:'I see the code · confirm',secondary:'Cancel',foot:'Pairing window closes 21:16'};
+    return null}
+  gateAdvance(){const {gate:g,gateStep:k}=this.state;
+    if(g==='setup'){if(k<2)this.setState({gateStep:k+1});else this.setState({gate:null,scene:'empty',items:[]});return}
+    if(g==='signin'||g==='expired'){this.setState({gate:null});return}
+    if(g==='standalone'){this.setState({iosDialog:true});return}
+    if(g==='passkey'){if(k<1)this.setState({gateStep:1});else this.setState({gate:null,passkeyAt:this.now()});return}}
+  memories(st,t){const all=[
+      {text:'Sir asked what tomorrow morning holds; dentist at nine, leave by 08:40 for rain.',hot:true,meta:'20:52 today · significance 0.62 · recalled 1× · hot',q:'dentist tomorrow morning appointment rain'},
+      {text:'Front door left open two minutes after the parcel; Alfred spoke up, door closed within 40 s.',hot:true,meta:'18:21 today · significance 0.71 · recalled 3× · hot',q:'front door open parcel delivery'},
+      {text:'Film started; living room dimmed to 30% by reflex, no objection.',hot:true,meta:'17:58 today · significance 0.34 · recalled 0× · hot · decaying',q:'movie film lights dim evening'},
+      {text:'Cleaner rang last Friday at 07:38; sir approved the door in 40 s.',hot:false,meta:'Fri 07:38 · significance 0.58 · recalled 2× · cold since Tue',q:'cleaner door friday unlock'},
+      {text:'Bathroom humidity over 70% for an hour, fan suggestion ignored a fourth time.',hot:false,meta:'Mon 07:19 · significance 0.22 · recalled 0× · cold',q:'bathroom humidity fan shower'},
+      {text:'Back door found unlocked at 23:10; sir locked it after being told.',hot:false,meta:'28 Aug · significance 0.66 · recalled 1× · cold',q:'back door unlocked night lock'}];
+    const q=st.memQuery.trim().toLowerCase();const list=q?all.filter(m=>(m.q+' '+m.text).toLowerCase().split(/\W+/).some(w=>w&&q.split(/\W+/).some(x=>x&&(w.startsWith(x)||x.startsWith(w))&&x.length>2))):all;
+    return list.map(m=>({text:m.text,meta:m.meta,dotBg:m.hot?t.accent:'transparent',weight:m.hot?400:400,color:m.hot?t.fg:t.muted}))}
+  routines(st,t){const stops=['candidate','active','dormant','archived'];const rows=[
+      {id:'movie_lights',text:'Dim the living room to 30% when a film starts in the evening',stage:1,conf:0.86,trend:'+0.04',history:[40,52,60,66,72,78,82,86],detail:'seen 11× · confirmed 9× · last 17:58 today\naction: light.living_room → 30%\ncondition: media_player.tv playing ∧ sun below horizon\nfirst detected 12 Aug · confirmed 19 Aug'},
+      {id:'leave_reminder',text:'Say when to leave for a morning appointment, allowing for weather',stage:1,conf:0.64,trend:'+0.10',history:[0,0,20,31,40,48,54,64],detail:'seen 5× · confirmed 4× · last 20:52 today\naction: speak leave-by time\ncondition: calendar event before 10:00 next day'},
+      {id:'hall_light_night',text:'Turn the hall light on low when motion is seen after midnight',stage:0,conf:0.41,trend:'+0.07',history:[0,0,0,0,12,24,34,41],detail:'seen 3× · not yet confirmed · last 01:12 Tue\ncandidate; needs 2 more confirmations or one explicit yes\nwill be suggested next time it applies'},
+      {id:'bath_fan',text:'Run the bathroom fan when humidity stays above 70%',stage:2,conf:0.18,trend:'−0.08',history:[55,50,44,38,32,26,22,18],detail:'seen 7× · ignored 4× in a row · last suggested Mon 07:19\ndormant since Wed; archived at confidence < 0.10\nsay "yes, do that" to revive'},
+      {id:'radio_morning',text:'Play the radio at 07:00 on weekdays',stage:3,conf:0.04,trend:'—',history:[60,48,36,28,20,12,8,4],detail:'archived 20 Aug · never confirmed · kept 30 days for the record'}];
+    return rows.map(r=>({text:r.text,color:r.stage>=2?t.muted:t.fg,trend:(r.conf.toFixed(2))+' '+r.trend,trendColor:r.trend.startsWith('+')?t.accent:t.muted,open:st.openRoutine===r.id,toggle:()=>this.setState(s=>({openRoutine:s.openRoutine===r.id?null:r.id})),detail:r.detail,history:r.history.map(h=>Math.max(6,h)),
+      stops:stops.map((l,i)=>({label:l,bar:i===r.stage?t.accent:(i<r.stage?t.muted:t.line),fg:i===r.stage?t.fg:t.muted}))}))}
+  triggers(st,t){const rows=[
+      {id:'trg_leave',kind:'time',name:'Leave for the dentist',meta:'one-shot · fires 08:40 tomorrow · created from conversation 20:52',payload:{trigger_type:'time',fire_at:'2026-09-05T08:40:00Z',one_shot:true,action:{speak:'Time to leave for the dentist, sir. Take a coat.'},source:'conscious:trigger_engine',last_fired:null}},
+      {id:'trg_bins',kind:'schedule',name:'Bins reminder',meta:'recurring · Thu 19:00 · last fired 21:13 today (manual)',payload:{trigger_type:'schedule',cron:'0 19 * * 4',one_shot:false,action:{notify:{priority:'important',title:'Bins go out tonight'}},last_fired:'2026-09-04T21:13:40Z',next_fire:'2026-09-11T19:00:00Z'}},
+      {id:'trg_door',kind:'sensor',name:'Front door open too long',meta:'recurring · binary_sensor.front_door on > 120 s · last fired 18:21 today',payload:{trigger_type:'sensor',entity_id:'binary_sensor.front_door',condition:{state:'on',for_seconds:120},one_shot:false,action:{speak:'The front door has been open two minutes, sir.'},last_fired:'2026-09-04T18:21:02Z'}},
+      {id:'trg_parcel',kind:'composite',name:'Parcel expected',meta:'one-shot · fired 18:20 today · archived',payload:{trigger_type:'composite',all:[{type:'time',after:'2026-09-04T08:00:00Z'},{type:'sensor',entity_id:'binary_sensor.front_door',state:'on'}],one_shot:true,action:{speak:'That will be your parcel, sir.'},last_fired:'2026-09-04T18:20:14Z',archived:true},done:true},
+      {id:'trg_bath',kind:'sensor',name:'Bathroom humidity',meta:'recurring · sensor.bath_humidity > 70 for 3600 s · last fired Mon 07:19',payload:{trigger_type:'sensor',entity_id:'sensor.bath_humidity',condition:{above:70,for_seconds:3600},one_shot:false,action:{notify:{priority:'informational',title:'Bathroom humidity high'}},last_fired:'2026-09-01T07:19:00Z'}},
+      {id:'trg_bad',kind:'sensor',name:'trg_7f31 (unreadable)',meta:'recurring · condition unreadable · never fired',payload:{trigger_type:'sensor',entity_id:'sensor.?',condition:'{"above": 7, "for_sec',error:'JSONDecodeError at byte 118'},corrupt:true}];
+    return rows.filter(r=>st.trigKind==='all'||r.kind===st.trigKind).map(r=>{const on=!!st.trigState[r.id],pend=st.trigPending[r.id],fired=st.trigFired[r.id];return{
+      kind:r.kind,name:r.name,meta:r.meta,opacity:r.done?.55:1,isOpen:st.openTrigger===r.id,open:()=>this.setState(s=>({openTrigger:s.openTrigger===r.id?null:r.id})),
+      pendingNote:pend?('queued '+pend+' · '+(on?'disabling':'enabling')+' · takes effect within 60 s'):null,
+      switchBg:on?t.accent:t.line,knob:on?23:3,corrupt:!!r.corrupt,payload:JSON.stringify(r.payload,null,1),
+      toggle:()=>{if(pend||r.corrupt)return;const at=this.now();this.setState(s=>({trigPending:Object.assign({},s.trigPending,{[r.id]:at})}));setTimeout(()=>this.setState(s=>{const tp=Object.assign({},s.trigPending);delete tp[r.id];return{trigPending:tp,trigState:Object.assign({},s.trigState,{[r.id]:!s.trigState[r.id]})}}),6000)},
+      fire:()=>{if(r.corrupt)return;this.setState(s=>({trigFired:Object.assign({},s.trigFired,{[r.id]:this.now()})}))},fireLabel:fired?'Fire again':'Fire now',
+      fireNote:r.corrupt?'cannot fire an unreadable record':fired?('queued '+fired+' · the fire itself will show up on the events stream as trigger.fired'):'queued only; look for trigger.fired on the events stream to know it ran'}})}
+  componentDidUpdate(){const s=this.state,p=this.prev||{};
+    if(p.items!==s.items||p.thinking!==s.thinking||p.scene!==s.scene){const el=this.endRef.current;if(el&&el.parentNode)el.parentNode.scrollTop=el.parentNode.scrollHeight}
+    if(p.theme!==s.theme||p.items!==s.items||p.doorState!==s.doorState||p.scene!==s.scene||p.dndOn!==s.dndOn)this.persist();
+    this.prev={items:s.items,thinking:s.thinking,theme:s.theme,doorState:s.doorState,scene:s.scene,dndOn:s.dndOn}}
+  seedDeferred(){return[{text:'Bins go out tonight; the council moved collection to Friday.',meta:'important · 07:02 · deferred by DND'},{text:'Humidity in the bathroom stayed above 70% for an hour.',meta:'informational · 07:19 · deferred by DND'}]}
+  seed(scene){
+    const RX='oklch(0.62 0.11 210)',EV='oklch(0.62 0.11 120)',NT='oklch(0.62 0.11 255)';
+    const base=[{isDivider:true,text:'earlier today'},
+      {isAct:true,text:'Dimmed the living room for the film',meta:'17:58 · reflex · 380 ms',color:RX},
+      {isAct:true,text:'Your parcel arrived, the door sensor saw it',meta:'18:20 · trigger · one-shot, now archived',color:EV},
+      {isAct:true,text:'Mentioned the front door had been open two minutes',meta:'18:21 · reflex · spoken aloud',color:RX,whyId:'door'},
+      {isDivider:true,text:'new conversation · 20:52'},
+      {isUser:true,text:'What have I got tomorrow morning?'},
+      {isAlfred:true,text:"The dentist at nine, sir. I'd leave by twenty to; there's rain forecast from eight.",meta:'pleased · calendar.today, weather.forecast · 20:52'}];
+    if(scene==='door')return base.concat([{isUser:true,text:'Let the cleaner in when she rings'},{isAlfred:true,text:"I can't unlock the door on my own account, sir. It's waiting on you below.",meta:'serious · home.lock_unlock → confirmation required · 07:41'}]);
+    if(scene==='expired')return base.concat([{isTomb:true,text:'Unlock the front door',meta:'expired 07:46 · not done · asked 07:41'}]);
+    if(scene==='offline')return base.concat([{isUser:true,text:'Turn the hall light off',pending:true,pendingLabel:'not sent · will retry when connected',opacity:.6}]);
+    if(scene==='dnd')return base.concat([{isAct:true,text:'2 notifications held back while do-not-disturb is on',meta:'07:19 · notifications · deferred queue',color:NT}]);
+    return base;}
+  go(scene){const s={scene,items:scene==='empty'?[]:this.seed(scene),sheet:null,doorOpen:false,thinking:false,transcribing:false,holding:false,focused:false,draft:'',workshop:scene==='workshop'||scene==='emptystream',bench:'activity',solo:scene==='emptystream'?'UR':null,openEvent:null,paused:false,heldCount:0,pagedBack:0};
+    if(scene==='emptystream')s.events=this.seedEvents().filter(e=>e.mono!=='UR');else if(scene==='workshop')s.events=this.seedEvents();
+    if(scene==='memory'||scene==='memload'){s.workshop=true;s.bench='memory';s.memTab='episodic';s.memQuery='';s.memLoading=scene==='memload'}
+    if(scene==='triggers'){s.workshop=true;s.bench='triggers';s.trigKind='all';s.openTrigger='trg_leave'}
+    s.gate=null;s.gateStep=0;
+    if(scene==='system'||scene==='systemoff'){s.workshop=true;s.bench='system';s.openService=null;if(scene==='systemoff'){s.scene='offline';s.items=this.seed('offline')}}
+    if(scene==='setup'){s.gate='setup'}if(scene==='signin'){s.gate='signin'}if(scene==='denied'){s.gate='denied';s.scene='offline';s.items=this.seed('offline')}if(scene==='expired401'){s.gate='expired'}
+    if(scene==='door'){s.doorState='pending';s.fuse=252}
+    if(scene==='expired')s.doorState='expired';
+    if(scene==='dnd'){s.dndOn=true;s.deferred=this.seedDeferred();s.drainState='idle'}else s.dndOn=false;
+    if(scene==='thinking')s.thinking=true;if(scene==='transcribing')s.transcribing=true;if(scene==='keyboard')s.focused=true;
+    s.sceneKey=scene;s.ctx='standalone';s.iosDialog=false;s.badge=0;s.notifPerm='unknown';
+    const doorish=()=>{s.scene='door';s.items=this.seed('door');s.doorState='pending';s.fuse=252};
+    if(scene==='reach1'||scene==='reach2'){s.ctx='safari';doorish();s.items=s.items.concat([this.promptItem()]);if(scene==='reach2')s.gate='install'}
+    if(scene==='reach3'||scene==='reach4'){doorish();s.gate='standalone';s.gateStep=4;if(scene==='reach4')s.iosDialog=true}
+    if(scene==='reach5'){s.notifPerm='denied';s.items=this.seed('evening').concat([this.notifItem('denied','07:44')])}
+    if(scene==='lock'){s.ctx='lock';doorish();s.notifPerm='granted'}
+    if(scene==='locklate'){s.ctx='lock';s.scene='expired';s.items=this.seed('expired');s.doorState='expired';s.fuse=0;s.notifPerm='granted'}
+    if(scene==='home'){s.ctx='home';doorish();s.badge=1;s.notifPerm='granted'}
+    this.setState(s)}
+  promptItem(){return{isPrompt:true,text:'That door is waiting on you below. Had this tab been closed, I would have had no way to tell you. Add me to the home screen and I can knock when something cannot wait.',meta:'notifications · unavailable in Safari · 07:41'}}
+  notifItem(p,at){const NT='oklch(0.62 0.11 255)';return p==='granted'?{isAct:true,text:'Notifications on for this iPhone',meta:at+' · notifications · iOS allowed · important and urgent only',color:NT}:{isAct:true,text:'Notifications stay off on this iPhone',meta:at+' · iOS declined · Settings › Alfred › Notifications to change · not asked again',color:NT}}
+  perm(p){this.setState(s=>({iosDialog:false,gate:null,notifPerm:p,items:s.items.concat([this.notifItem(p,this.now())])}))}
+  expire(){this.setState(s=>({doorState:'expired',items:s.items.concat([{isTomb:true,text:'Unlock the front door',meta:'expired · not done · asked 07:41'}])}))}
+  send(){const text=this.state.draft.trim();if(!text)return;
+    if(this.state.scene==='offline'){this.setState(s=>({draft:'',items:s.items.concat([{isUser:true,text,pending:true,pendingLabel:'not sent · will retry when connected',opacity:.6}])}));return}
+    this.setState(s=>({draft:'',thinking:true,items:s.items.concat([{isUser:true,text}])}));
+    setTimeout(()=>this.setState(s=>({thinking:false,items:s.items.concat([{isAlfred:true,text:"Noted, sir. I'll see to it.",meta:'neutral · no tools · '+this.now()}])})),1600)}
+  now(){const d=new Date();return d.getHours().toString().padStart(2,'0')+':'+d.getMinutes().toString().padStart(2,'0')}
+  holdEnd(){if(!this.state.holding)return;this.micStop();const t=this.state.holdT;this.setState({holding:false,holdT:0,transcribing:t>0});
+    if(t>0)setTimeout(()=>this.setState(s=>({transcribing:false,thinking:true,items:s.items.concat([{isUser:true,text:'Is the back door locked?'}])})),1400),setTimeout(()=>this.setState(s=>({thinking:false,items:s.items.concat([{isAlfred:true,text:'It is, sir. Locked since 19:40.',meta:'neutral · home.get_state · '+this.now()}])})),3200)}
+  slideStart(e){if(this.state.doorState!=='pending')return;this.setState({dragging:true,knob:0});this.startX=e.clientX;this.trackRef.current&&this.trackRef.current.setPointerCapture(e.pointerId)}
+  slideMove(e){if(!this.state.dragging)return;const track=this.trackRef.current;const max=track?track.clientWidth-64:280;let dx=e.clientX-this.startX;
+    const r=Math.max(0,Math.min(1,dx/max));const eased=r<0.25?r*0.6:0.15+(r-0.25)*1.1333;this.setState({knob:Math.min(max,eased*max),max})}
+  slideEnd(){if(!this.state.dragging)return;const max=this.state.max||280;if(this.state.knob>=max*0.85){this.setState({dragging:false,knob:max,doorState:'queued'});
+      setTimeout(()=>this.setState({doorState:'applied'}),2600)}else this.setState({dragging:false,knob:0})}
+  renderVals(){
+    const st=this.state,dark=st.theme==='dark';
+    const t=dark?{bg:'#25221f',fg:'#f1ece4',fg2:'#d9d2c8',muted:'#9a9186',line:'#35312c',surface:'#2f2b27',field:'#2f2b27',keyboard:'#1c1a17',accent:'oklch(0.78 0.12 45)',ink:'#f1ece4',paper:'#25221f',paperMuted:'#7d756b',ring:'#d6d0c7'}
+      :{bg:'#f6f3ee',fg:'#221f1b',fg2:'#4d4740',muted:'#8a8177',line:'#e6e1d9',surface:'#efeae2',field:'#ffffff',keyboard:'#e6e1d9',accent:'oklch(0.72 0.13 45)',ink:'#221f1b',paper:'#f1ece4',paperMuted:'#9a9186',ring:'#3d3832'};
+    const offline=st.scene==='offline'||st.scene==='reconnecting';
+    const fuse=st.fuse,fusePct=(fuse/st.fuseTotal*100).toFixed(1)+'%',fuseLabel=Math.floor(fuse/60)+':'+String(fuse%60).padStart(2,'0');
+    const pendingDoor=st.scene==='door'&&st.doorState==='pending'&&!st.doorOpen;
+    const scenes=[['evening','Idle'],['thinking','Replying'],['transcribing','Transcribing'],['keyboard','Keyboard up'],['dnd','DND + deferred'],['door','Door pending'],['expired','Door expired'],['offline','Offline'],['reconnecting','Reconnecting'],['empty','First day'],['workshop','Workshop · Activity'],['emptystream','Empty stream'],['memory','Workshop · Memory'],['memload','Memory · model 503'],['triggers','Workshop · Triggers'],['system','Workshop · System'],['systemoff','System · offline'],['setup','First-run setup'],['signin','Sign in'],['denied','403 off-network'],['expired401','401 lapsed'],['reach1','Reach · Safari prompt'],['reach2','Reach · install gesture'],['reach3','Reach · from home screen'],['reach4','Reach · iOS asks'],['reach5','Reach · declined'],['lock','Closed · notification'],['locklate','Closed · tapped late'],['home','Closed · badge']].map(([k,l])=>{const on=(st.sceneKey||st.scene)===k;return{label:l,go:()=>this.go(k),bg:on?'#221f1b':'transparent',fg:on?'#f6f3ee':'#4d4740',border:on?'#221f1b':'#a39b90'}});
+    const reach=st.ctx==='safari'?{sub:'unavailable in Safari · add to home screen first',action:'Show me how',go:()=>this.setState({gate:'install',gateStep:0}),state:'—',color:t.muted}:st.notifPerm==='granted'?{sub:'on · this iPhone · important and urgent only · badge = waiting approvals + unread urgent',action:null,state:'on',color:'oklch(0.7 0.13 150)'}:st.notifPerm==='denied'?{sub:'off · declined in iOS · this app cannot flip it',action:null,state:'off',color:t.accent}:{sub:'off · not yet asked · iOS asks once',action:'Enable',go:()=>this.setState({gate:'standalone',gateStep:4}),state:'—',color:t.muted};
+    const pend=st.doorState==='pending';
+    const items=st.items.map(m=>Object.assign({},m,{why:m.whyId?()=>this.setState({sheet:'why'}):null}));
+    const headline=st.scene==='empty'?'Good evening, sir.':offline?(st.scene==='reconnecting'?'Reconnecting…':'Unreachable.'):st.dndOn?'Quiet until '+st.dndExpiry+'.':st.thinking?'One moment, sir.':st.holding?'Go on, sir.':'Listening, sir.';
+    const statusLine=offline?'last true 21:14 · cloud 1.42 / 5.00 · reflex ok':st.scene==='empty'?'first run · cloud 0.00 / 5.00 · reflex ok · 0 ev/s':'21:14 · cloud 1.42 / 5.00 · reflex 380 ms · 2.1 ev/s';
+    const drainStates={idle:['Drain queue now','Queued only; the server does not report delivery. Items stay listed until a fresh read confirms.'],queued:['Queued','Accepted at '+this.now()+'. Queue will empty on the next refresh if delivery succeeded.']};
+    const doorStates={pending:'Pending',queued:'Confirmed · queued',applied:'Applied',expired:'Expired'};
+    const doorFoot={pending:'Approval only; the lock itself reports back separately. Releasing before the end snaps back.',queued:'Sent to Home Assistant. Waiting for the lock to report (request '+'a91f'+').',applied:'lock.front_door reported unlocked at '+this.now()+'.',expired:'The five minutes ran out at 07:46. Nothing was done. Ask again to get a fresh one.'}[st.doorState];
+    const max=st.max||280;
+    return {t,scenes,items,headline,statusLine,offline,empty:st.scene==='empty'&&st.items.length===0,
+      offlineNote:st.scene==='reconnecting'?'Trying again. Everything below was last true at 21:14.':'No connection to the house since 21:14. Everything below is last-known. Sending is paused.',
+      presenceDot:offline?(dark?'rgba(154,145,134,.45)':'rgba(138,129,119,.45)'):(dark?'oklch(0.72 0.13 45 / .55)':'oklch(0.72 0.13 45 / .7)'),
+      presenceRef:this.presenceRef,
+      toggleTheme:()=>this.setState({theme:dark?'light':'dark'}),
+      dnd:st.dndOn,dndLine:'Do-not-disturb until '+st.dndExpiry,deferredCountLabel:st.deferred.length+' held',openDeferred:()=>this.setState({sheet:'deferred'}),
+      thinking:st.thinking,transcribing:st.transcribing,
+      pendingDoor,door:{title:'Unlock the front door',id:'a91f',reason:'You asked me to let the cleaner in when she rings. She rang at 07:41.',call:'home.lock_unlock { entity_id: "lock.front_door", action: "unlock" }'},
+      fusePct,fuseLabel,fuseColor:fuse<=30?t.paper:t.accent,openDoor:()=>this.setState({doorOpen:true}),closeDoor:()=>this.setState({doorOpen:false}),doorOpen:st.doorOpen,
+      doorLive:st.doorState==='pending',doorDone:st.doorState!=='pending',doorState:doorStates[st.doorState],doorFoot,doorDotColor:st.doorState==='applied'?'oklch(0.7 0.13 150)':st.doorState==='expired'?t.paperMuted:t.accent,
+      doorSub:st.doorState==='pending'?'until it lapses':st.doorState==='expired'?'lapsed':'confirmed '+this.now(),
+      trackRef:this.trackRef,slideStart:e=>this.slideStart(e),slideMove:e=>this.slideMove(e),slideEnd:()=>this.slideEnd(),knobX:st.knob,knobTransition:st.dragging?'none':'transform .6s cubic-bezier(.2,1.4,.3,1)',slideHintOpacity:Math.max(0,1-st.knob/(max*0.5)),
+      draft:st.draft,onDraft:e=>this.setState({draft:e.target.value}),onKey:e=>{if(e.key==='Enter')this.send()},onFocus:()=>this.setState({focused:true}),onBlur:()=>this.setState({focused:false}),
+      hasDraft:st.draft.trim().length>0,noDraft:st.draft.trim().length===0,send:()=>this.send(),
+      composerPlaceholder:offline?'Offline · will send when connected':'Ask or tell Alfred',
+      holding:st.holding,notHolding:!st.holding,holdStart:()=>{if(!offline){this.setState({holding:true,holdT:0});this.micStart()}},holdEnd:()=>this.holdEnd(),
+      holdSecs:'0:'+String(st.holdT).padStart(2,'0'),holdScale:st.holding?1.12:1,holdBorder:t.accent,holdBg:st.holding?t.accent:'transparent',holdIcon:offline?t.muted:t.accent,
+      keyboardUp:st.focused,keyboardDown:!st.focused,endRef:this.endRef,
+      openWorkshop:()=>this.setState({workshop:true}),sheet:!!st.sheet,closeSheet:()=>this.setState({sheet:null}),
+      sheetTitle:{deferred:'Held back',why:'Why Alfred did that'}[st.sheet]||'',sheetIsDeferred:st.sheet==='deferred',sheetIsWhy:st.sheet==='why',
+      workshopOpen:st.workshop,closeWorkshop:()=>this.setState({workshop:false}),wsStatus:offline?'last true 21:14 · not live':(st.paused?'paused · '+st.heldCount+' new':'live · 2.1 ev/s'),
+      benches:[['activity','Activity'],['memory','Memory'],['triggers','Triggers'],['system','System']].map(([k,l])=>({label:l,go:()=>this.setState({bench:k}),bg:st.bench===k?t.field:'transparent',fg:st.bench===k?t.fg:t.muted})),
+      benchActivity:st.bench==='activity',benchMemory:st.bench==='memory',benchTriggers:st.bench==='triggers',benchSystem:st.bench==='system',
+      memTabs:[['episodic','Episodic'],['semantic','Semantic'],['routines','Routines'],['scratch','Scratchpad']].map(([k,l])=>({label:l,go:()=>this.setState({memTab:k}),bg:st.memTab===k?t.ink:'transparent',fg:st.memTab===k?t.paper:t.fg,border:st.memTab===k?t.ink:t.line})),
+      memEpisodic:st.memTab==='episodic',memSemantic:st.memTab==='semantic',memRoutines:st.memTab==='routines',memScratch:st.memTab==='scratch',
+      memQuery:st.memQuery,onMemQuery:e=>this.setState({memQuery:e.target.value}),memLoading:st.memLoading,toggleMemLoading:()=>this.setState(s=>({memLoading:!s.memLoading})),memLoadingLabel:st.memLoading?'model: 503':'model: ok',
+      memories:this.memories(st,t),memNoResults:st.memQuery.trim().length>0&&this.memories(st,t).length===0,
+      docs:[{title:'Preferences',meta:'rewritten 03:00',body:'Prefers dim lighting in the evening; 30% in the living room once a film starts.\nWants to be told when the front door is left open more than two minutes, spoken aloud.\nDislikes being interrupted before 08:30 unless it is urgent.'},{title:'Household',meta:'rewritten Tue',body:'Cleaner comes Fridays, usually rings around 07:40.\nBins: collection moved to Friday from September.\nBack door is normally locked by 20:00.'},{title:'Profile',meta:'stable · 31 days',body:'Addressed as "sir". Dentist: Dr Okafor, Elm Street. Commute by bicycle unless raining.'}],
+      routines:this.routines(st,t),
+      scratch:'# working notes · 21:14\n- film running since 17:58; keep living room at 30% until media stops\n- parcel arrived 18:20 → reminder trg_parcel fired, archived\n- leave-by 08:40 set for dentist; check rain at 07:30\n- cleaner expected ~07:40 Fri; door approval will be needed\n\n# pending consolidation\n- 14 episodes unscored (3 flagged significant)\n- routine "movie_lights" +1 confirmation\n- routine "bath_fan" ignored again → −0.08',
+      trigKinds:[['all','All'],['time','Time'],['schedule','Schedule'],['sensor','Sensor'],['composite','Composite']].map(([k,l])=>({label:l,go:()=>this.setState({trigKind:k}),bg:st.trigKind===k?t.ink:'transparent',fg:st.trigKind===k?t.paper:t.fg,border:st.trigKind===k?t.ink:t.line})),
+      triggers:this.triggers(st,t),
+      healthStamp:offline?'unknown since 21:14':'live · 21:14:'+String(new Date().getSeconds()).padStart(2,'0'),healthStampColor:offline?t.accent:t.muted,spendOpacity:offline?.5:1,
+      health:[{value:offline?'?':'alive',label:offline?'bus · unknown since 21:14':'bus · redis 6 services, 8 streams',dot:offline?t.muted:'oklch(0.7 0.13 150)'},{value:offline?'?':'380 ms',label:offline?'reflex · unknown':'reflex · reflex-3b · gpu 41%',dot:offline?t.muted:'oklch(0.7 0.13 150)'},{value:offline?'?':'2.1/s',label:offline?'event rate · unknown':'event rate · 5-min mean',dot:offline?t.muted:'oklch(0.7 0.13 150)'},{value:offline?'—':'ok',label:offline?'home assistant · unknown':'home assistant · 210 ms',dot:offline?t.muted:'oklch(0.7 0.13 150)'}].map(h=>Object.assign(h,{opacity:offline?.55:1})),
+      dndSub:st.dndOn?(st.dndExpiry==='none'?'on · no expiry · queue will not drain on its own':'on · until '+st.dndExpiry+' · queue drains then'):'off · urgent still speaks regardless',
+      toggleDnd:()=>this.setState(s=>({dndOn:!s.dndOn,dndExpiry:s.dndOn?s.dndExpiry:'08:30'})),dndSwitchBg:st.dndOn?t.accent:t.line,dndKnob:st.dndOn?23:3,
+      dndExpiries:[['08:30','1 h'],['12:00','until noon'],['22:00','until 22:00'],['none','no expiry']].map(([v,l])=>({label:l,go:()=>this.setState({dndExpiry:v}),bg:st.dndExpiry===v?t.ink:'transparent',fg:st.dndExpiry===v?t.paper:t.fg,border:st.dndExpiry===v?t.ink:t.line})),
+      deferredWarn:st.deferred.length+(st.dndExpiry==='none'?' · growing':' held'),deferredWarnColor:st.dndExpiry==='none'?t.accent:t.muted,
+      sessions:[{id:'this',name:'This iPhone',meta:'passkey · pwa · signed in 07:02 · 192.168.1.24',isThis:true},{id:'s2',name:'MacBook · Safari',meta:'passkey · web · last seen 19:40 · 192.168.1.31'},{id:'s3',name:'Telegram bridge',meta:'bot token · last seen 18:20 · service'}].map((s,i)=>{const ended=st.sessionsEnded[s.id];return{name:s.name,meta:ended?'ended '+ended+' · applied':s.meta,isThis:!!s.isThis,border:i===0?'transparent':t.line,opacity:ended?.5:1,action:s.isThis?'current':ended?'ended':'End',actionColor:s.isThis||ended?t.muted:t.accent,end:()=>{if(s.isThis||ended)return;this.setState(x=>({sessionsEnded:Object.assign({},x.sessionsEnded,{[s.id]:this.now()})}))}}}),
+      services:[{id:'ha',name:'Home Assistant',meta:'long-lived token · 192.168.1.10:8123',state:'set',placeholder:'Long-lived access token'},{id:'weather',name:'Weather',meta:'Met Office DataHub',state:'set',placeholder:'API key'},{id:'calendar',name:'Calendar',meta:'CalDAV · app password',state:'failed',placeholder:'App password'},{id:'health',name:'Health',meta:'Apple Health export · not connected',state:'unset',placeholder:'Export endpoint token'},{id:'finance',name:'Finance',meta:'Monzo · read-only',state:'set',placeholder:'Access token'}].map((c,i)=>{const s=st.svcState[c.id]||c.state;const col={set:'oklch(0.7 0.13 150)',failed:t.accent,unset:t.muted,testing:t.muted,queued:t.muted}[s];return{name:c.name,meta:c.meta,state:s==='set'?'ok':s,stateColor:col,border:i===0?'transparent':t.line,isOpen:st.openService===c.id,open:()=>this.setState(x=>({openService:x.openService===c.id?null:c.id})),draft:st.svcDraft[c.id]||'',onDraft:e=>{const v=e.target.value;this.setState(x=>({svcDraft:Object.assign({},x.svcDraft,{[c.id]:v})}))},placeholder:c.placeholder,
+        testLabel:s==='testing'?'Testing…':'Save & test',note:{set:'stored encrypted at rest · last check ok',failed:'401 from the service on the last check · stored value kept until you replace it',unset:'nothing stored · Alfred answers without this source',testing:'round-trip in progress · up to 10 s',queued:'stored · check result arrives on the events stream'}[s],
+        test:()=>{this.setState(x=>({svcState:Object.assign({},x.svcState,{[c.id]:'testing'})}));setTimeout(()=>this.setState(x=>({svcState:Object.assign({},x.svcState,{[c.id]:c.id==='calendar'&&!(st.svcDraft[c.id]||'').length?'failed':'set'})})),1800)}}}),
+      devices:[{name:'iPhone 15 Pro',meta:'passkey · registered 12 Aug · Face ID',kind:'this device'},{name:'MacBook Pro',meta:'passkey · registered 12 Aug · Touch ID',kind:'passkey'}].map((d,i)=>Object.assign(d,{border:i===0?'transparent':t.line})),
+      addPasskey:()=>this.setState({gate:'passkey',gateStep:0}),passkeyLabel:st.passkeyAt?'Passkey added '+st.passkeyAt:'Add a passkey on another device',passkeyNote:'2 registered',signOut:()=>this.setState({gate:'signin',gateStep:0,workshop:false}),
+      consolidate:()=>this.setState({consolidateAt:this.now()}),consolidateLabel:st.consolidateAt?'Run again':'Run consolidation now',consolidateNote:st.consolidateAt?'queued '+st.consolidateAt+' · progress shows on the events stream as consolidation.*':'queued only; the run reports on the events stream, not here',
+      gateOpen:!!st.gate,gate:this.gate(st,t),gateAdvance:()=>this.gateAdvance(),gateDismiss:()=>this.setState({gate:null}),
+      stale:offline,
+      ctxSafari:st.ctx==='safari',ctxLock:st.ctx==='lock',ctxHome:st.ctx==='home',gateBottom:st.ctx==='safari'?115:0,handleBar:st.ctx==='safari'?'transparent':t.fg,
+      iosDialog:st.iosDialog,iosAllow:()=>this.perm('granted'),iosDeny:()=>this.perm('denied'),
+      tapNotification:()=>this.setState({ctx:'standalone',doorOpen:true}),openFromHome:()=>this.setState({ctx:'standalone',badge:0}),
+      reachShow:()=>this.setState({gate:'install',gateStep:0}),
+      reachDismiss:()=>this.setState(s=>({items:s.items.filter(m=>!m.isPrompt).concat([{isAlfred:true,text:"Very good, sir. I shan't raise it again; the switch stays under Workshop › System should you change your mind.",meta:'neutral · no tools · '+this.now()}])})),
+      lockTime:pend?'07:43':'07:52',notifWhen:pend?'2 min ago':'11 min ago',notifTitle:'Unlock the front door?',notifBody:'The cleaner rang at 07:41. This waits on you and lapses at 07:46.',
+      notifCaption:pend?'time-sensitive · delivered while the app was closed\ntap: lands on this approval, not the home screen':'delivered 07:41, tapped late\nlands on the same approval, now lapsed · nothing was done',
+      homeTiles:Array.from({length:16},(_,i)=>({alfred:i===15,plain:i!==15,label:i===15?'Alfred':''})),hasBadge:st.badge>0,badge:st.badge,
+      badgeCaption:'badge 1 = one approval waiting on you\nunread urgent would add to it · routine never counts\nclears when the app opens',
+      reachSub:reach.sub,reachAction:reach.action,reachGo:reach.go,reachHasAction:!!reach.action,reachNoAction:!reach.action,reachState:reach.state,reachColor:reach.color,reachDenied:st.notifPerm==='denied',
+      events:st.events.filter(e=>!st.solo||e.mono===st.solo).map(e=>Object.assign({},e,{open:st.openEvent===e.id,opacity:st.paused&&!e.fresh?1:1,toggle:()=>this.setState(s=>({openEvent:s.openEvent===e.id?null:e.id})),solo:()=>this.setState({solo:e.mono,openEvent:null}),why:()=>this.setState({sheet:'why'}),meta:e.ts+' · '+e.meta})),
+      noEvents:st.events.filter(e=>!st.solo||e.mono===st.solo).length===0,emptyStreamNote:(st.solo||'')+' · 0 in the last 24 h · stream exists, no producers have written',
+      streams:this.streams().map(s=>{const n=st.events.filter(e=>e.mono===s.mono).length;const on=!st.solo||st.solo===s.mono;return{mono:s.mono,count:n,color:s.color,bg:st.solo===s.mono?s.color:'transparent',fg:st.solo===s.mono?'#fff':s.color,opacity:on?1:.35,toggle:()=>this.setState(x=>({solo:x.solo===s.mono?null:s.mono,openEvent:null}))}}),
+      togglePause:()=>this.setState(s=>({paused:!s.paused,heldCount:0,events:s.events.map(e=>Object.assign({},e,{fresh:false}))})),pauseLabel:st.paused?(st.heldCount?'Resume · '+st.heldCount+' new':'Resume'):'Pause feed',pauseBg:st.paused?t.accent:t.ink,pauseFg:st.paused?t.ink:t.paper,
+      clearFilter:()=>this.setState({solo:null}),clearOpacity:st.solo?1:.4,
+      pageBack:()=>this.setState(s=>({pagedBack:s.pagedBack+1,events:s.events.concat([{id:'p'+s.pagedBack,mono:'EV',ts:'0'+(3-s.pagedBack%3)+':00:00',text:'consolidation ran',meta:'nightly · '+(38+s.pagedBack)+' reviewed',payload:JSON.stringify({type:'consolidation.done',reviewed:38+s.pagedBack},null,1),color:'oklch(0.62 0.11 120)',stream:'events'}])})),
+      pageBackLabel:st.pagedBack?'↑ older · fetched before cursor '+st.events[st.events.length-1].id:'↑ older · before cursor '+st.events[st.events.length-1].id,
+      deferred:st.deferred,deferredNote:'Non-urgent notifications wait here while do-not-disturb is on. Urgent ones still speak. With no expiry set this queue never drains on its own.',
+      drain:()=>this.setState({drainState:'queued'}),drainLabel:drainStates[st.drainState][0],drainNote:drainStates[st.drainState][1],
+      why:[{mono:'HS',color:'oklch(0.62 0.11 300)',text:'binary_sensor.front_door → on',meta:'18:19:02 · home_state · entity_id joins ↓',linkStyle:'solid'},
+        {mono:'RX',color:'oklch(0.62 0.11 210)',text:'Reflex watched it for 120 s, then chose to speak',meta:'18:21:02 · reflex_observations · decision_context: "door open, evening, user home" · 380 ms · joined by trigger_event',linkStyle:'solid'},
+        {mono:'AC',color:'oklch(0.62 0.11 165)',text:'speak("The front door has been open two minutes, sir.")',meta:'18:21:02 · actions · request_id 7c2e · joined by request_id',linkStyle:'solid'},
+        {mono:'NT',color:'oklch(0.62 0.11 255)',text:'Spoken aloud, priority important',meta:'18:21:03 · notifications · adjacent in time only',linkStyle:'dashed'},
+        {mono:'HS',color:'oklch(0.62 0.11 300)',text:'binary_sensor.front_door → off',meta:'18:21:40 · home_state · not caused by the above',linkStyle:'solid'}]};
+  }
+}
+</script>
+</body>
+</html>
