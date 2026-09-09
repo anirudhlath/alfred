@@ -26,7 +26,7 @@ export interface ActionRouteValue {
 export function useActionRoute(titles: Record<string, string>): ActionRouteValue {
   const { pathname } = useLocation();
   const navigate = useNavigate();
-  const { arrived, openAction } = useDoor();
+  const { actions, arrived, answered, openAction } = useDoor();
   const [missing, setMissing] = useState<{ id: string; at: string } | null>(null);
   const handledRef = useRef<string | null>(null);
 
@@ -35,7 +35,8 @@ export function useActionRoute(titles: Record<string, string>): ActionRouteValue
   useEffect(() => {
     // No cleanup, and no cancellation flag: StrictMode's setup→cleanup→setup
     // would otherwise abort the only read this route ever makes. The ref makes
-    // the second pass a no-op instead.
+    // the second pass a no-op instead, and is cleared once the read settles so
+    // the same id can be tapped again later in the session.
     if (!id || handledRef.current === id) return;
     handledRef.current = id;
 
@@ -50,18 +51,26 @@ export function useActionRoute(titles: Record<string, string>): ActionRouteValue
         // A house that could not be asked has answered nothing, and the Room
         // must not claim it has — the offline note is the honest word there.
         if (error instanceof ApiError && error.status === 404) {
+          // The Door hears it too: if it still tracks the approval as pending,
+          // its banner would go on offering it, and its fuse would later lay a
+          // second, contradicting tombstone beside this one.
+          answered(id);
           setMissing({ id, at: new Date().toISOString() });
         }
       })
       .finally(() => {
+        handledRef.current = null;
         // Replace, never push: a pull-to-refresh must not reopen a decision that
         // has already been answered.
         navigate("/", { replace: true });
       });
-  }, [id, arrived, openAction, navigate]);
+  }, [id, arrived, answered, openAction, navigate]);
 
   const tombstone = useMemo<TimelineItem | null>(() => {
     if (!missing) return null;
+    // An approval the Door tracks gets the Door's own tombstone, which knows
+    // when it was asked; this one is only for an id the Door never met.
+    if (actions.some((item) => item.action.request_id === missing.id)) return null;
     return {
       kind: "tombstone",
       id: `tomb:missing:${missing.id}`,
@@ -69,7 +78,7 @@ export function useActionRoute(titles: Record<string, string>): ActionRouteValue
       title: titles[missing.id] ?? `Action ${shortId(missing.id)}`,
       meta: "already answered · nothing was done",
     };
-  }, [missing, titles]);
+  }, [missing, titles, actions]);
 
   return { tombstone };
 }
