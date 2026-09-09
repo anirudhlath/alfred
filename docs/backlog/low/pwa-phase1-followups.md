@@ -4,8 +4,9 @@
 **Source:** the four Mission Control backlog tickets the phase 1 hard cut made moot
 (`web-frontend-followups.md`, `voice-enrollment-card-polish.md`,
 `lan-only-writes-affordance.md`, `web-activity-virtualized-list.md`), rewritten for the
-client that replaced them. Those files are deleted; everything below is what survived
-the cut.
+client that replaced them. Those files are deleted. §1–§7 are what survived that cut.
+§8 onward are new, from the phone-fixes work of 2026-09-09
+(`docs/superpowers/plans/2026-09-09-pwa-phase1-phone-fixes.md`).
 
 ## 1. Credential writes are LAN-only, and the client still cannot tell
 
@@ -98,8 +99,8 @@ Activity view will write its own summariser against the bus schema it actually r
 
 ## 8. Routine suggestions cannot be accepted or declined
 
-The Room now shows the suggestion's body (phone fixes, 2026-09-09) but there is nothing
-to tap, and that is a backend gap, not a client one:
+The Room now shows the suggestion's body, but there is nothing to tap, and that is a
+backend gap, not a client one:
 
 - **Nothing changes a routine's state on purpose.** `core/memory/routines/store.py` is a
   YAML store — `save`, `get`, `list_all`, `list_by_state`, `delete` — with no endpoint, no
@@ -109,7 +110,8 @@ to tap, and that is a backend gap, not a client one:
   the Librarian's, in `_update_routine_lifecycle` (`core/librarian/consolidator.py`):
   three consecutive misses → `dormant`, thirty days dormant → `archived`, and confidence
   decayed below `routine_archive_threshold` (0.3) → `archived`. A routine is born a
-  candidate and can only fade.
+  candidate and can only fade, and nothing records a refusal: `RoutineSpec` has no field
+  for a suggestion the user declined to answer.
 - **The suggestion carries no identity.** `check_routine_suggestions`
   (`core/conscious/engine.py`) publishes `title="Routine Suggestion"`, the body and
   `source="librarian"` — no `metadata`, which `NotificationPublisher.publish` then
@@ -124,25 +126,25 @@ to tap, and that is a backend gap, not a client one:
   `_ROUTINE_SUGGESTION_COOLDOWN_HOURS` is 24, checked by a 15-minute loop in
   `core/conscious/__main__.py`; `_build_routine_hint` spends the same budget, so a chat
   turn can be the day's suggestion instead. Observed on a live house: 47 of the last 50
-  notifications were the same coffee routine. The obvious brake does not engage:
-  the Librarian's 0.05 confidence decay (`_update_routine_lifecycle`,
-  `core/librarian/consolidator.py`) sits in the `else` of `if pattern_fired:` **and**
-  needs `now - last_suggested >= 24 h`, but both suggestion paths re-stamp
-  `last_suggested = now` every time they fire — so for a candidate firing daily the two
-  conditions are never true together and the branch is effectively unreachable. What
-  does stop a suggestion is three consecutive Librarian misses → `dormant`, which takes
-  it out of `list_by_state("candidate")`. A routine whose `trigger_pattern` does not
-  parse escapes even that: `match_trigger_pattern`
-  (`core/memory/routines/patterns.py`) returns `True` for an unrecognised pattern, on
-  purpose — so it never misses, never goes dormant, never decays, and suggests itself
-  for ever. And "ignored" is never actually observed: `RoutineSpec`
-  (`core/memory/schemas.py`) has no field for a suggestion the user declined to answer.
+  notifications were the same coffee routine. Only one thing stops it — three consecutive
+  Librarian misses → `dormant`, which takes the routine out of
+  `list_by_state("candidate")` — and a routine whose `trigger_pattern` does not parse
+  escapes even that: `match_trigger_pattern` (`core/memory/routines/patterns.py`) returns
+  `True` for an unrecognised pattern on purpose, so it never misses, never goes dormant,
+  never decays, and suggests itself for ever. The confidence decay looks like the brake
+  and is not one — it sits in the `else` of `if pattern_fired:` **and** needs
+  `now - last_suggested >= 24 h`, while both suggestion paths re-stamp
+  `last_suggested = now` on every fire, so a daily re-firer never satisfies both.
 
-Do them in that order: a state endpoint (`POST /api/routines/{name}/state` behind the
-admin gate, plus a conscious-engine tool so "yes, do that" in the thread works too),
-`metadata.routine_name` on the notification, an executor for `active` routines, then the
-client's accept/decline on the row. Until the executor exists a button would be a lie —
-spec §5.2, item 3 names routine lifecycle as one of the two places where "Alfred knows
+The fix is four pieces, and the order matters. First a state a user can put a routine
+in: `RoutineSpec` has no `declined` and nothing writes `active`, so the schema comes
+before the `POST /api/routines/{name}/state` endpoint that writes it (behind the admin
+gate, with a conscious-engine tool so "yes, do that" in the thread works too). That is
+also the only thing above that stops the daily re-fire — a routine that stops being a
+candidate drops out of `list_by_state("candidate")`. Then `metadata.routine_name` on the
+notification, so a row can name its routine; then an executor for `active` routines; then
+the client's accept/decline on the row. Until the executor exists a button would be a lie
+— spec §5.2, item 3 names routine lifecycle as one of the two places where "Alfred knows
 this" has degrees.
 
 ## 9. Notifications missed between sessions surface nowhere
@@ -163,8 +165,8 @@ line at a time as the file is touched.
 
 ## 11. Two web tests time out under heavy suite parallelism
 
-Under eight concurrent vitest suites (load average ~118 on the dev box) two tests time
-out, twice each. They are not the same failure:
+Under eight concurrent vitest suites (load average ~118 on a 16-thread box) two tests
+time out, twice each. They are not the same failure:
 
 - `"installs the viewport and audio hooks, then renders the App under StrictMode"`
   (`web/src/main.test.ts`) has no `waitFor` or `findBy*` at all — it is
@@ -177,5 +179,5 @@ out, twice each. They are not the same failure:
   race fixed in `5d827f1` — an assertion racing an effect rather than a slow machine —
   and the same fix would apply.
 
-Both are clean at four-way and single-suite, so nothing is broken today. File it against
-the CI change if the frontend suites are ever parallelised.
+Both are clean at four-way and single-suite, so nothing is broken today. If the frontend
+suites are ever run in parallel in CI, attach this entry to that change.

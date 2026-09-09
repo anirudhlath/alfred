@@ -198,9 +198,9 @@ that asked rather than raising a second one.
 The session TTL is 8 hours, a hard cap from login with no sliding renewal, and the
 Expired gate says so.
 
-The copy region inside `Gate` scrolls, because the shell is a fixed height (§4.4) and
-cannot lean on the document the way it used to: an inner `mt-auto` column keeps short
-copy bottom-aligned while setup's tall credential step scrolls instead of clipping.
+The copy region inside `Gate` scrolls: the shell is a fixed height (constraint §4.4), so
+an inner `mt-auto` column keeps short copy bottom-aligned while setup's tall credential
+step scrolls instead of clipping.
 
 ---
 
@@ -219,17 +219,16 @@ Everything on screen is one timeline.
   online: VoiceOver can miss a live region inserted with its text already in it.
 - **Timeline** — `useRoomHistory` reads four stream pages once
   (`user_requests`, `user_responses`, `reflex_observations` with an `action`, and
-  `notifications` without a `pending_action_id`), `toTimelineItems` merges them by
-  timestamp, `sessionWindow` keeps **the current session** — the turns since the last
-  silence of the server's idle timeout (`Overview.session.idle_minutes`, default 30 min;
-  satellite turns included; they land on the same two streams), which is what Alfred
-  still has in context — plus the house's own rows for the day, or from the session's
-  start if that came earlier, and `useRoom` merges that with the live rows (what you
-  sent, what Alfred said, what he did while you watched) plus the Door's tombstones,
-  neither of which is ever windowed. After a break the Room opens on the day's house
-  rows alone — on nothing at all when there are none; older turns are the Activity
-  view's (phase 2). A notification row's text is its body, else the title (a title is
-  often a bare label — "Routine Suggestion").
+  `notifications` without a `pending_action_id`) and `toTimelineItems` merges them by
+  timestamp. `sessionWindow` then keeps **the current session** — the turns since the
+  last silence of the session idle timeout (satellite turns included; they land on the
+  same two streams), which is what Alfred still has in context — plus the house's own
+  rows for the day, or from the session's start if that came earlier. `useRoom` merges
+  the result with the live rows (what you sent, what Alfred said, what he did while you
+  watched) and the Door's tombstones, neither of which is ever windowed. After a break
+  the Room opens on the day's house rows alone — on nothing at all when there are none;
+  older turns are the Activity view's (phase 2). Row text comes from `notificationText`
+  ("WebSocket Protocols" below).
 - **Composer and hold-to-talk** — text queues under `alfred.unsent` while the house is
   unreachable and retries in order on the next socket open; holding records through
   `MediaRecorder` with a one-second floor.
@@ -285,7 +284,7 @@ DoorProvider → Routes`. `DoorProvider` sits inside `AuthGate` so nothing reads
 | Kind | Keys |
 |---|---|
 | TanStack Query | `["auth-status"]`, `["overview"]`, `["integrations"]`, `["attention"]`, `["room-history"]`, `["deferred"]`, `["pending-actions"]` |
-| `localStorage` | `alfred.theme`, `alfred.device`, `alfred.unsent`, `alfred.session`, `alfred.session-at` — every key is `alfred.<noun>`, `session-at` the one compound |
+| `localStorage` | `alfred.theme`, `alfred.device`, `alfred.unsent`, `alfred.session`, `alfred.session-at` — every key is `alfred.<noun>`, `alfred.session-at` the one compound noun |
 
 ---
 
@@ -304,9 +303,8 @@ Used by `ChatSocket` (`lib/chat-socket.ts`).
 ```
 
 `session_id` rides the connection's first text or audio frame — `payload()` in
-`chat-socket.ts` is shared by both — but only when there is a stored id worth sending and
-only if the frame actually left. Both conditions are set out in the session paragraph
-below.
+`chat-socket.ts` is shared by both — and only when the client holds an id the server does
+not already have. **Sessions** below has the rules.
 
 `ping` is a keepalive (Cloudflare drops proxied sockets idle ~100s); the server answers
 `{"type": "pong"}` and does nothing else — in particular a ping does not count as the
@@ -325,32 +323,23 @@ binary rather than text, is refused with
 `{"type": "error", "text": "Expected a JSON object", "session_id": "<id>"}` and the
 connection stays open.
 
+#### Sessions
+
 The server assigns an id per connection and pushes it in a `session` frame before the
 client has said anything (`core/channels/web_server.py`); a client holding no id of its
-own adopts that one. `alfred.session` holds the id and `alfred.session-at` an ISO stamp
-of the last send. `adopt` and `forget` are the id's only writers; `forget` takes the
-stamp with it, and an id adopted but never sent on carries no stamp — which the next
-connection reads as idle, and lets go.
+own adopts that one. `alfred.session` holds the id, `alfred.session-at` an ISO stamp of
+the last send; `adopt` and `forget` are the id's only writers, and `forget` takes the
+stamp with it, so an id adopted but never sent on carries no stamp at all.
 
-On the **first message of a connection**, `payload()` decides which session the turn
-belongs to:
-
-- A stored id whose stamp is idle for the server's timeout or longer is dropped, both
-  keys with it, and this connection's assigned id is adopted in its place once the
-  server has named one — `forget()` adopts only `if (this.assigned)`, so a first send
-  that races ahead of the `session` frame drops the id and adopts nothing, and the frame
-  after it carries none. A missing or unreadable stamp reads as idle — one fresh session
-  for a phone from before the stamp existed.
-- `session_id` is then carried only if what remains is a stored id the server does not
-  already have (`_sessionId !== assigned`). When the two agree the frame carries nothing:
-  the server named that id and would only be told it again.
-
-Only a frame the socket took commits anything. `send()` sets `firstMessageSent` and
-writes `alfred.session-at` after `socket.send()` returns true, so a send refused because
-the socket was not `OPEN` — the unsent queue calls `sendText` ungated — neither spends
-the connection's one chance to carry `session_id` nor records activity the server never
-saw. After that first frame, `session_id` is omitted from every payload until the next
-open.
+The first message of a connection decides which session the turn belongs to. A stored id
+whose stamp has been idle for the timeout or longer is let go, stamp and all, and this
+connection's assigned id takes its place; a missing or unreadable stamp counts as idle,
+so a phone from before the stamp existed gets one fresh session. What survives is sent as
+`session_id` only if the server does not already have it — when the two agree the frame
+says nothing, because the server named that id itself. Only a send the socket actually
+took commits anything: one it refused spends neither the connection's one chance to carry
+`session_id` nor a record of activity the server never saw. After that first frame,
+`session_id` is omitted until the next open.
 
 The timeout is the server's own rather than a client constant:
 `Overview.session.idle_minutes` → `sessionIdleMs()` (`room/useOverview.ts`) →
@@ -384,11 +373,10 @@ does, every time the app is backgrounded long enough.
 - `notification.metadata.pending_action_id`, when present, routes the frame to the Door
   instead of the thread. The frame carries no `source`, so a live act row reads
   `HH:MM · live · {urgency}`; the same notification re-read from the stream later shows
-  its real source. The row's text is the body, else the title — a title can be a bare
-  label such as "Routine Suggestion" — from `notificationText` (`lib/format.ts`), the one
-  derivation the live row, the history row and the held-back sheet all read. It is one
-  function on purpose: the read-back pairs a live row with its history copy on that text,
-  so two derivations that drifted apart would print the notification twice.
+  its real source. The row's text is the body, else the title — a title is often a bare
+  label such as "Routine Suggestion" — from `notificationText` (`lib/format.ts`), which
+  the live row, the history row and the held-back sheet all share so a live row and its
+  history copy still pair on the read-back.
 - `pong` is swallowed in `ChatSocket` and never reaches listeners.
 
 #### Reconnect / backoff / 4001
@@ -406,9 +394,9 @@ does, every time the app is backgrounded long enough.
   says `Reconnecting…` for the one and `Unreachable.` for the other.
 - `ChatSocket.onopen` clears `firstMessageSent` and the previous connection's assigned
   id, so a live stored id is offered again on the next connection. `ws.ts` calls
-  `onopen()` **before** `onstatus("online")`: the app's online listeners send on that
-  status (`useRoom` flushes the unsent queue), and a flush that ran first would be the
-  new connection's first message with the old connection's state still behind it.
+  `onopen()` **before** `onstatus("online")` on purpose: `useRoom` flushes the unsent
+  queue on that status, and a flush that ran first would send the new connection's first
+  message with the old connection's state behind it.
 
 ### Telemetry (`/ws/telemetry`)
 
@@ -536,13 +524,12 @@ a real phone is `docs/superpowers/qa/2026-09-07-pwa-phase1-ios-checklist.md`.
 Two of them bite hardest:
 
 - **`100vh` is wrong in Safari.** `installViewportVars()` writes `--app-height` from
-  `innerHeight` and `--keyboard-inset` from `visualViewport`; `#root` is sized from the
-  former — `height`, not `min-height`, with `overflow: hidden`, so the shell is the
-  viewport and nothing scrolls but the regions that opt in — the Timeline, the Sheet
-  body, the gate's copy region. A growing root scrolls the document instead, taking
-  the header and composer with it and leaving nothing for the Timeline's
-  follow-the-bottom anchor to scroll, and the composer pays for the keyboard once,
-  via `.pb-keyboard`.
+  `innerHeight` and `--keyboard-inset` from `visualViewport`. `#root` takes `--app-height`
+  as `height` — not `min-height` — with `overflow: hidden`, so the shell *is* the viewport
+  and nothing scrolls but the regions that opt in: the Timeline, the Sheet body, the
+  gate's copy region. A root that can grow scrolls the document instead, carrying the
+  header and composer off-screen and leaving the Timeline's follow-the-bottom anchor
+  nothing to scroll. The composer pays for the keyboard once, via `.pb-keyboard`.
 - **Audio needs a gesture.** `installAudioUnlock()` runs in `main.tsx`, before the first
   tap. iOS will not retroactively allow a sound requested before a gesture resumed a
   context, so a fresh `new Audio()` is silently dropped.

@@ -112,7 +112,7 @@ Returns a single JSON object with:
 - `librarian.last_run_at` — ISO timestamp of the Librarian's last pass, or `null` before its first run
 - `librarian.reviewed` — int: scratchpad lines drained on that pass (`len(lines)` in `consolidator.py`, not a count of memories written), or `null` when unset or non-numeric
 - `librarian.next_run_at` — ISO timestamp of the next scheduled pass, or `null` when none is scheduled
-- `session.idle_minutes` — `SESSION_TIMEOUT_MINUTES`: how long a chat session survives without a turn. Config, not Redis, so it is present on the degraded path too. The web client reads it rather than hard-coding 30: it windows the Room's timeline to the current session and, at the same boundary, lets go of a stored `alfred.session` that has been idle this long (`docs/web-frontend.md`)
+- `session.idle_minutes` — `SESSION_TIMEOUT_MINUTES`: how long a chat session survives without a turn. Config rather than Redis, so it is present on the degraded path too. The web client reads it rather than hard-coding 30, for both the Room's session window and the lifetime of a stored `alfred.session` — see `docs/web-frontend.md`
 
 Inference probes use the lifespan-owned `httpx.AsyncClient` (`request.app.state.http`).
 In tests (no lifespan) the client is absent and both bools are deterministically `false`.

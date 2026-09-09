@@ -75,13 +75,14 @@ never signed in. Record the device, iOS version and date at the bottom.
 
 ## §4.10 — iOS kills suspended PWAs
 
-- [ ] Send a message, background the app for five minutes, return: the thread is
-      intact and the status line's clock has moved. Five minutes is inside the session
-      idle timeout (30 min by default); past it the thread is *meant* to be gone — see
-      "The Room's window" below
+- [ ] Send a message, background the app for five minutes (inside the 30 min session
+      idle timeout), return: the thread is intact and the status line's clock has moved —
+      past the timeout the thread is *meant* to be gone, see "The Room's window"
 - [ ] While backgrounded, have the house produce an act (a reflex action): it is
-      present after returning, without a manual refresh. Only an act from **today**
-      survives the return — the Room keeps the house's rows for the day, not for ever
+      present after returning, without a manual refresh — an act from **today** only;
+      the Room keeps the house's rows for the day, not for ever
+- [ ] When a routine suggestion arrives, the row reads as the suggestion itself, not the
+      bare label "Routine Suggestion"
 - [ ] Turn off Wi-Fi and mobile data: the headline reads `Reconnecting…` first and
       `Unreachable.` within ~4 s (three failed tries), or at once when iOS reports
       the device offline; the offline note carries a real `last true HH:MM`, and a
@@ -129,18 +130,14 @@ never signed in. Record the device, iOS version and date at the bottom.
       house's `session.idle_minutes` says otherwise): the conversation is gone, and the
       first message starts a new session — Alfred does not refer back to it
 - [ ] Today's notifications and reflex acts are still there, under `earlier today`
-- [ ] **A completely blank Timeline is correct** on an established house that has
-      produced no notification and no reflex act today: there is no conversation left to
-      show and no house rows to keep, and the first-day greeting is deliberately gated on
-      a first run (`isFirstRun`), so nothing fills the space. Empty is the intended Room
-      after a break, not a failed history read
+- [ ] On a house with no notification and no reflex act today, after a break: the
+      Timeline is **completely blank, and that is correct** — no conversation left, no
+      house rows, and no first-day greeting on an established house. Not a failed
+      history read
 - [ ] Reopen within the timeout: the conversation is still there and continues
-- [ ] Leave the app open and idle past the timeout, then send: a `new conversation ·
-      HH:MM` divider separates the two and the older turns stay on screen — the window
-      moves when the app is backgrounded and returned to, not at minute thirty. The
-      session id follows the socket, so it turns over on the next reconnect rather than
-      here
-- [ ] A routine suggestion reads as the suggestion itself, not "Routine Suggestion"
+- [ ] Leave the app open and idle past the timeout, then send: a
+      `new conversation · HH:MM` divider separates the two and the older turns stay on
+      screen — the window moves on a background-and-return, not at minute thirty
 
 ---
 
