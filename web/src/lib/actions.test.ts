@@ -5,8 +5,10 @@ import {
   fetchAction,
   fetchPending,
   fuseRemaining,
+  tombstoneItems,
   type TrackedAction,
 } from "./actions";
+import { hhmm } from "./format";
 import {
   actionResultFixture,
   pendingActionFixture,
@@ -268,5 +270,43 @@ describe("the three reads", () => {
       vi.fn(async () => new Response('{"detail":"Pending action not found or expired"}', { status: 404 })),
     );
     await expect(confirmAction("a91f3c2e")).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe("tombstoneItems", () => {
+  it("says an expired approval was not done, and when it was asked", () => {
+    const [item] = tombstoneItems([tracked("expired")]);
+    expect(item).toMatchObject({
+      kind: "tombstone",
+      id: "tomb:a91f3c2e",
+      at: "2026-09-07T07:46:00Z",
+      title: "Lock unlock",
+    });
+    expect(item.kind === "tombstone" && item.meta).toBe(
+      `expired ${hhmm("2026-09-07T07:46:00Z")} · not done · asked ${hhmm("2026-09-07T07:41:00Z")}`,
+    );
+  });
+
+  it("says an already-answered one differently", () => {
+    const [item] = tombstoneItems([tracked("answered")]);
+    expect(item.kind === "tombstone" && item.meta).toBe(
+      `already answered · asked ${hhmm("2026-09-07T07:41:00Z")}`,
+    );
+  });
+
+  it("leaves live, queued and applied approvals out of the thread", () => {
+    expect(tombstoneItems([tracked("pending"), tracked("queued"), tracked("applied")])).toEqual([]);
+  });
+
+  it("returns one row per action", () => {
+    const items = tombstoneItems([
+      tracked("expired"),
+      { action: secondPendingActionFixture, phase: "answered" },
+    ]);
+    expect(items.map((item) => item.id)).toEqual(["tomb:a91f3c2e", "tomb:7c2e0b1d"]);
+  });
+
+  it("is empty for an empty store", () => {
+    expect(tombstoneItems([])).toEqual([]);
   });
 });

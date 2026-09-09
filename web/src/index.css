@@ -263,6 +263,25 @@
   .pb-keyboard.keyboard-up {
     padding-bottom: var(--keyboard-inset, 0px);
   }
+
+  /* ------------------------------------------------------------------- fuse
+     The arc is a conic gradient driven by two custom properties the component
+     sets, so the gradient itself never has to be built in JS. 900 ms linear
+     turns each one-second step into a sweep; nothing pulses. The two masks are
+     the prototype's own radii per size — not a formula: applying either one's
+     proportions to the other size gives a solid disc instead of a hairline. */
+  .fuse-arc {
+    background: conic-gradient(var(--fuse-color) var(--fuse-pct), var(--ring) 0);
+    transition: background 0.9s linear;
+  }
+  .fuse-168 {
+    -webkit-mask-image: radial-gradient(circle, transparent 79px, #000 80px);
+    mask-image: radial-gradient(circle, transparent 79px, #000 80px);
+  }
+  .fuse-34 {
+    -webkit-mask-image: radial-gradient(circle, transparent 14px, #000 15px);
+    mask-image: radial-gradient(circle, transparent 14px, #000 15px);
+  }
 }
 
 @keyframes rise {

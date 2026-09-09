@@ -1,4 +1,6 @@
 import { api, post } from "./api";
+import { hhmm, humaniseTool } from "./format";
+import type { TimelineItem } from "./history";
 import type { ActionResultEvent, PendingAction } from "./types";
 
 /**
@@ -134,4 +136,31 @@ export function fetchAction(id: string): Promise<PendingAction> {
 /** `POST /api/actions/{id}/confirm` — 200 is `queued`, 404 is already answered. */
 export async function confirmAction(id: string): Promise<void> {
   await post<{ status: string }>(`/api/actions/${encodeURIComponent(id)}/confirm`);
+}
+
+/**
+ * What an unanswered approval leaves in the thread.
+ *
+ * `expired · not done` is the closed status vocabulary's own phrase, and the
+ * design's whole argument for the fuse: a decision that lapsed must leave a mark,
+ * not disappear. `already answered` is the 404 case — someone, or something else,
+ * got there first.
+ */
+export function tombstoneItems(actions: TrackedAction[]): TimelineItem[] {
+  const items: TimelineItem[] = [];
+  for (const item of actions) {
+    if (item.phase !== "expired" && item.phase !== "answered") continue;
+    const asked = hhmm(item.action.timestamp);
+    items.push({
+      kind: "tombstone",
+      id: `tomb:${item.action.request_id}`,
+      at: item.action.expires_at,
+      title: humaniseTool(item.action.tool_name),
+      meta:
+        item.phase === "expired"
+          ? `expired ${hhmm(item.action.expires_at)} · not done · asked ${asked}`
+          : `already answered · asked ${asked}`,
+    });
+  }
+  return items;
 }
