@@ -16,8 +16,8 @@ Spec: `docs/superpowers/specs/2026-09-04-mobile-first-pwa-client-design.md`.
 | `npm test` | Vitest, once |
 | `npm run lint` | ESLint over `web/` |
 
-The type check lives in `build`, not `lint`. CI runs all four, then serves the
-built `dist/` to `tests/core/channels/test_spa_ci.py`.
+The type check lives in `build`, not `lint`. CI runs `lint`, `test` and `build`, in
+that order, then serves the built `dist/` to `tests/core/channels/test_spa_ci.py`.
 
 ## Layout
 

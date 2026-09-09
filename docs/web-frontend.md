@@ -81,7 +81,7 @@ web/
     gates/         # Identity, over whatever is on screen
       AuthGate.tsx     # Which gate, over what
       Gate.tsx         # kicker / title / body / children / footer
-      GateField.tsx    # Static 220px dot field
+      GateField.tsx    # 220px dot field, drifting slowly
       StepList.tsx     # 48px rows, 22px ring; progress and toggle variants
       SetupGate.tsx    # First run: passkey → home-service credentials → attention set
       SignInGate.tsx   # Passkey sign-in
@@ -476,8 +476,9 @@ npm run build         # tsc -b && vite build → web/dist/
 npm run preview       # serve web/dist/ locally
 ```
 
-The type check lives in `build` (`tsc -b`), not in `lint`. CI runs all four, then serves
-the built `dist/` to `tests/core/channels/test_spa_ci.py`.
+The type check lives in `build` (`tsc -b`), not in `lint`. CI runs `lint`, `test` and
+`build`, in that order, then serves the built `dist/` to
+`tests/core/channels/test_spa_ci.py`.
 
 The Vite proxy routes all `/api/*`, `/health` (backend healthcheck), and `/ws*` requests
 to `http://localhost:8081` (or `ws://localhost:8081` for WebSocket upgrades) during
@@ -507,6 +508,9 @@ cd web && npm run build   # outputs to web/dist/
      (path containment check: `candidate.is_relative_to(dist.resolve())`).
    - Falls back to `web/dist/index.html` for all other paths — which is what makes
      `/actions/{id}` load from a cold notification tap.
+   - **Except** `api/*`, `ws*` and `health` (`_NON_SPA_PREFIXES` / `_NON_SPA_PATHS`),
+     which raise a real 404. A REST or WebSocket client hitting a renamed endpoint —
+     the iOS AlfredKit client, say — must get a 404, not 200 and a page of HTML.
 
 If `web/dist/` is absent (dev mode), `mount_spa` is a no-op — the dev Vite server handles
 the SPA.

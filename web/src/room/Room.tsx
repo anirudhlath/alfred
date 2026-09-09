@@ -34,6 +34,7 @@ export function Room() {
   const [signal] = useState(() => new PresenceSignal());
   const [holding, setHolding] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
+
   // Read once, refreshed when the app returns — a PWA left open overnight must
   // not still be saying "Good evening".
   const [hour, setHour] = useState(() => new Date().getHours());
