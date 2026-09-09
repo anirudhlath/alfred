@@ -409,8 +409,7 @@ Expected: all pass.
 
 In `web/src/lib/types.ts`, add to `Overview` after `librarian?`:
 ```ts
-  /** The chat session's idle timeout as the server reads it (`SESSION_TIMEOUT_MINUTES`),
-   *  so the client never hard-codes 30. */
+  /** The chat session's idle timeout (`SESSION_TIMEOUT_MINUTES`), so the client never guesses. */
   session: { idle_minutes: number };
 ```
 (Required, not optional: `_base_overview` always carries it.)
