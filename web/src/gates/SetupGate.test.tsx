@@ -72,10 +72,13 @@ beforeEach(() => {
   calls = [];
   registerPasskeyMock.mockReset().mockResolvedValue(undefined);
   vi.stubGlobal("location", { hostname: "alfred.example.com", pathname: "/" });
+  // The greeting follows the clock; the tests run in the evening.
+  vi.spyOn(Date.prototype, "getHours").mockReturnValue(21);
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   localStorage.clear();
 });
 
@@ -86,6 +89,14 @@ describe("SetupGate — step 0, the passkey", () => {
 
     expect(screen.getByText("first run · alfred.example.com")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Good evening. I am Alfred." })).toBeInTheDocument();
+  });
+
+  it("greets by the hour, like the Room", () => {
+    stubApi(HAPPY);
+    vi.spyOn(Date.prototype, "getHours").mockReturnValue(9);
+    renderSetup();
+
+    expect(screen.getByRole("heading", { name: "Good morning. I am Alfred." })).toBeInTheDocument();
     expect(
       screen.getByText(
         "This device will hold the only key to the house. There is no password anywhere; a passkey on this phone, unlocked by Face ID, is how you get in.",

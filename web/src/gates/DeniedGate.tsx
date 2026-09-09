@@ -21,7 +21,7 @@ export function DeniedGate({ lastTrue, onDismiss }: DeniedGateProps) {
     <Gate
       kicker="403 · off-network"
       title="Not from here."
-      body="Alfred only answers requests from inside the house network or over its own tunnel. This connection is neither, so the house declined it. Nothing was sent."
+      body="New passkeys, credentials and devices may only be added from inside the house network. This connection is not, so the house declined it. Nothing was changed."
       secondary={{ label: "Back to the room", onClick: onDismiss }}
       foot={foot}
     />

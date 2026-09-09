@@ -5,6 +5,7 @@ import { StepList, type ProgressStep } from "@/gates/StepList";
 import { api, ApiError, put } from "@/lib/api";
 import { defaultDeviceName, failureText, rememberDevice } from "@/lib/auth";
 import { hhmm } from "@/lib/format";
+import { partOfDay } from "@/lib/headline";
 import type { AttentionDomain, IntegrationInfo } from "@/lib/types";
 import { registerPasskey } from "@/lib/webauthn";
 
@@ -61,6 +62,8 @@ export function SetupGate({ onDone }: SetupGateProps) {
   // the gate is open, and reading them in render is impure.
   const [deviceName] = useState(() => defaultDeviceName());
   const [hostname] = useState(() => location.hostname);
+  // Read once: the first run is a few minutes on one evening, or morning.
+  const [hour] = useState(() => new Date().getHours());
 
   const [step, setStep] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -194,7 +197,7 @@ export function SetupGate({ onDone }: SetupGateProps) {
     return (
       <Gate
         kicker={`first run · ${hostname}`}
-        title="Good evening. I am Alfred."
+        title={`Good ${partOfDay(hour)}. I am Alfred.`}
         body="This device will hold the only key to the house. There is no password anywhere; a passkey on this phone, unlocked by Face ID, is how you get in."
         primary={{ label: "Create passkey with Face ID", onClick: () => void register(), busy }}
         foot={footOverride ?? "The passkey never leaves the phone. Nothing here phones home."}
@@ -293,7 +296,10 @@ export function SetupGate({ onDone }: SetupGateProps) {
         busy,
         disabled: attention.isPending,
       }}
-      foot={footOverride ?? "Change this any time under Workshop › System."}
+      foot={
+        footOverride ??
+        "Not final. There is no page for changing this yet; that comes with the Workshop."
+      }
     >
       {/* One row per domain the house has emitted — dozens on a real HA, not the
           handful in the fixture — so the list scrolls under the pinned footer

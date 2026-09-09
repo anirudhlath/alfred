@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { greetingFor, pickHeadline, type HeadlineInput } from "./headline";
+import { greetingFor, partOfDay, pickHeadline, type HeadlineInput } from "./headline";
 
 const idle: HeadlineInput = {
   online: true,
@@ -83,5 +83,13 @@ describe("greetingFor", () => {
     expect(greetingFor(9)).toBe("Good morning, sir.");
     expect(greetingFor(14)).toBe("Good afternoon, sir.");
     expect(greetingFor(21)).toBe("Good evening, sir.");
+  });
+});
+
+describe("partOfDay", () => {
+  it("turns over at five, noon and six", () => {
+    expect([4, 5, 11, 12, 17, 18, 23].map(partOfDay)).toEqual([
+      "evening", "morning", "morning", "afternoon", "afternoon", "evening", "evening",
+    ]);
   });
 });

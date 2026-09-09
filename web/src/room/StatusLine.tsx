@@ -15,9 +15,15 @@ export function StatusLine({ overview, online, lastTrueAt }: StatusLineProps) {
   const cost = overview?.cost;
   const cloud = cost ? `cloud ${usd(cost.spend_usd)} / ${usd(cost.cap_usd)}` : "cloud —";
 
+  // A house never reached has no reflex to vouch for: `—`, as `cloud —` says
+  // when there is no cost record. With an overview in hand, `ok` is the
+  // handoff's word for a reflex that reports nothing to measure.
   const lastMs = overview?.reflex?.last_ms;
-  const reflex =
-    online && !firstRun && lastMs != null ? `reflex ${Math.round(lastMs)} ms` : "reflex ok";
+  const reflex = !overview
+    ? "reflex —"
+    : online && !firstRun && lastMs != null
+      ? `reflex ${Math.round(lastMs)} ms`
+      : "reflex ok";
 
   // Never a clock read during render: `lastTrueAt` is stamped on every socket open
   // and every successful poll, and an unknown clock says so.

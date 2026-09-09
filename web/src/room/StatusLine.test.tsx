@@ -64,7 +64,12 @@ describe("StatusLine", () => {
 
   it("shows an unknown clock rather than a made-up one", () => {
     render(<StatusLine overview={undefined} online={false} lastTrueAt={null} />);
-    expect(screen.getByText("last true --:-- · cloud — · reflex ok")).toBeInTheDocument();
+    expect(screen.getByText("last true --:-- · cloud — · reflex —")).toBeInTheDocument();
+  });
+
+  it("does not vouch for the reflex of a house it has never reached", () => {
+    render(<StatusLine overview={undefined} online lastTrueAt={at2114} />);
+    expect(screen.getByText("21:14 · cloud — · reflex — · 0 ev/s")).toBeInTheDocument();
   });
 
   it("does not call a degraded overview a first run", () => {

@@ -13,11 +13,16 @@ export interface HeadlineInput {
   hour: number;
 }
 
+/** The one table every greeting reads from — the Room's and the first run's alike. */
+export function partOfDay(hour: number): "morning" | "afternoon" | "evening" {
+  if (hour >= 5 && hour <= 11) return "morning";
+  if (hour >= 12 && hour <= 17) return "afternoon";
+  return "evening";
+}
+
 /** Exported because the empty Room's first-day row must greet the same way. */
 export function greetingFor(hour: number): string {
-  if (hour >= 5 && hour <= 11) return "Good morning, sir.";
-  if (hour >= 12 && hour <= 17) return "Good afternoon, sir.";
-  return "Good evening, sir.";
+  return `Good ${partOfDay(hour)}, sir.`;
 }
 
 /**
