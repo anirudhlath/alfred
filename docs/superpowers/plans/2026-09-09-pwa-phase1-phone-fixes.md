@@ -33,7 +33,7 @@
 | `core/channels/admin_api.py` | `session.idle_minutes` in the overview (Task 3) |
 | `tests/core/channels/test_admin_api.py` | tests (Task 3) |
 | `web/src/lib/types.ts`, `web/src/test/fixtures.ts` | `Overview.session` (Task 3) |
-| `docs/admin-api.md` | overview field (Task 3) |
+| `docs/admin-api.md` | overview field (Task 3); restated as behaviour (Task 6) |
 | `web/src/room/useOverview.ts` | `sessionIdleMs()` (Task 4) |
 | `web/src/room/Room.tsx` | pass `idleMs` to `useRoom` and to the chat socket (Tasks 4, 5) |
 | `web/src/App.test.tsx` | session-window integration test (Task 4) |
@@ -1213,105 +1213,146 @@ the server assigned — the same boundary the Room windows on."
 
 ---
 
-### Task 6: Docs, QA rows and the two backlog entries
+### Task 6: Docs, QA rows and the backlog entries
 
 **Files:**
-- Modify: `docs/web-frontend.md` (Room timeline bullet ~213-217; client-state table line 274; session paragraph ~313)
-- Modify: `docs/superpowers/qa/2026-09-07-pwa-phase1-ios-checklist.md` (§4.4 and a new section)
-- Modify: `docs/backlog/low/pwa-phase1-followups.md` (append §8, §9)
+- Modify: `docs/web-frontend.md` (the file map's four stale one-liners, the Room's
+  Timeline bullet, the client-state table, the `session_id` line and the session
+  paragraph, the reconnect bullet)
+- Modify: `docs/admin-api.md` (the `session.idle_minutes` bullet, now behaviour)
+- Modify: `docs/superpowers/qa/2026-09-07-pwa-phase1-ios-checklist.md` (§4.4, §4.10 and a
+  new section)
+- Modify: `docs/backlog/low/pwa-phase1-followups.md` (append §8–§11)
+
+Everything here is written from the source at the end of Task 5, not from this plan: the
+prose below was drafted before Tasks 3–5 landed and several of its claims did not survive
+them. Where the two disagree, the code wins.
 
 - [ ] **Step 1: `docs/web-frontend.md`**
 
-(a) Replace the **Timeline** bullet (the one beginning `- **Timeline** — \`useRoomHistory\` reads four stream pages once`) with:
+(a) The **Timeline** bullet gains the window: `sessionWindow` keeps the current session —
+the turns since the last silence of `Overview.session.idle_minutes` (default 30 min,
+satellite turns included, they land on the same two streams) — plus the house's own rows
+for the day, or from the session's start if that came earlier; the live rows and the
+Door's tombstones `useRoom` merges in are never windowed. After a break the Room opens
+empty; older turns are the Activity view's (phase 2). A notification row's text is its
+body.
+
+(b) The `localStorage` row gains `alfred.session-at`. The trailing "every key is
+`alfred.<noun>`" claim is kept but qualified — `session-at` is the one compound, and the
+JSDoc at `chat-socket.ts:6` makes the same unqualified claim.
+
+(c) The session paragraph is replaced outright; the version drafted here described a
+client that keeps its id for ever, which Task 5 ended. What it says now, from
+`chat-socket.ts`, `ws.ts`, `Room.tsx` and `useOverview.ts`:
+
+- The server assigns an id per connection and pushes a `session` frame before the client
+  speaks; a client holding no id adopts it. `alfred.session` is the id, `alfred.session-at`
+  an ISO stamp of the last send; `adopt` and `forget` are the id's only writers, `forget`
+  takes the stamp with it, and an id adopted but never sent on carries no stamp — which
+  the next connection reads as idle.
+- On the first message of a connection, a stored id whose stamp is idle for the timeout
+  or longer is dropped (both keys) and the assigned id adopted. A missing or unreadable
+  stamp reads as idle.
+- `session_id` is carried only when the surviving stored id differs from the assigned one
+  — when they agree the frame says nothing, because the server named that id itself.
+- `firstMessageSent` and the stamp are committed in `send()`, after `socket.send()`
+  returns true, so a refused send (the unsent queue calls `sendText` ungated) spends
+  neither the connection's first message nor a record of activity the server never saw.
+- The timeout is `Overview.session.idle_minutes` → `sessionIdleMs()` → `chat.setIdleMs()`
+  in a `Room` effect, with `SESSION_IDLE_MS` (30 min) standing in until the overview
+  answers — the same boundary the Room windows on.
+- The server locks the id after the first message, so a session that idles out
+  mid-connection turns over on the next open (iOS closes the socket in the background).
+
+(d) Two neighbours the same work made false: the `session_id` rides-the-first-frame line
+above the protocol block (now conditional both ways), and the reconnect bullet
+`ChatSocket.onopen resets firstMessageSent…` (it also clears the assigned id, and `ws.ts`
+calls `onopen()` before `onstatus("online")` so the unsent flush sees fresh per-connection
+state).
+
+(e) The file map's one-liners: `format.ts` gains `notificationText` (Task 2), `history.ts`
+gains `sessionWindow` and `SESSION_IDLE_MS`, `useOverview.ts` gains `sessionIdleMs()`, and
+`useRoom.ts` names the session window (Tasks 3–5).
+
+- [ ] **Step 2: `docs/admin-api.md`**
+
+The `session.idle_minutes` bullet was purpose-phrased ("Served so the web client can
+window the Room…"). Restate it as behaviour now that the client does both halves: windows
+the Room's timeline to the current session, and at the same boundary lets go of a stored
+`alfred.session` idle that long.
+
+- [ ] **Step 3: QA checklist**
+
+Under `## §4.4 — 100vh is wrong`, after the existing first row:
 
 ```markdown
-- **Timeline** — `useRoomHistory` reads four stream pages once
-  (`user_requests`, `user_responses`, `reflex_observations` with an `action`, and
-  `notifications` without a `pending_action_id`), `toTimelineItems` merges them by
-  timestamp, `sessionWindow` keeps **the current session** — the turns since the last
-  silence of the server's idle timeout (`Overview.session.idle_minutes`, default 30 min;
-  satellite turns included), which is what Alfred still has in context — plus the
-  house's own rows for the day, and `useRoom` merges that with the live rows (what you
-  sent, what Alfred said, what he did while you watched) plus the Door's tombstones.
-  After a break the Room opens empty; older turns are the Activity view's (phase 2).
-  A notification row's text is its body (the title is a label — "Routine Suggestion").
+- [ ] Scroll a long thread: the headline and status line stay put at the top and the
+      composer at the bottom; only the timeline moves
+- [ ] Send a message with the thread scrolled to the bottom: the reply scrolls into view
+      on its own
 ```
 
-(b) In the client-state table, change the `localStorage` row to:
-```markdown
-| `localStorage` | `alfred.theme`, `alfred.device`, `alfred.unsent`, `alfred.session`, `alfred.session-at` — every key is `alfred.<noun>` |
-```
+`## §4.10` needs two qualifiers rather than new rows: "background the app for five
+minutes, return: the thread is intact" holds only inside the idle timeout, and "have the
+house produce an act … present after returning" only for an act **today**.
 
-(c) Replace the session paragraph (`\`session_id\` is sent only on the first message …` through `… omitted from subsequent payloads.`) with:
+A new section before the sign-off block. The third row is the one worth having — the
+product consequence of Task 4, written down as expected behaviour so a tester does not
+file it:
 
-```markdown
-`session_id` is sent only on the first message of a new connection and is read from
-`localStorage` under key `alfred.session`. After the first send, `firstMessageSent`
-is set and session_id is omitted from subsequent payloads.
-
-The client stamps every send under `alfred.session-at`. On the first message of a
-connection, a stored id that has been idle for the server's timeout
-(`Overview.session.idle_minutes`, `SESSION_TIMEOUT_MINUTES` server-side) is dropped in
-favour of the id the server assigned in its `session` frame, and nothing is sent — the
-server already holds that one. The server locks the id after the first message, so a
-session that idles out mid-connection turns over when the socket next reopens (iOS
-closes it in the background). A stored id with no stamp is treated as idle: one fresh
-session for a phone from before the stamp existed.
-```
-
-- [ ] **Step 2: QA checklist**
-
-In `docs/superpowers/qa/2026-09-07-pwa-phase1-ios-checklist.md`, under `## §4.4 — 100vh is wrong`, add after the existing first row:
-```markdown
-- [ ] Scroll a long thread: the headline and status line stay put at the top and the composer at the bottom; only the timeline moves
-- [ ] Send a message with the thread scrolled to the bottom: the reply scrolls into view on its own
-```
-
-Add a new section at the end of the file:
 ```markdown
 ## The Room's window
 
-- [ ] Open the app after more than 30 minutes away: the thread is empty (today's notifications and reflex acts remain under `earlier today`), and the first message starts a new session — Alfred does not refer to the earlier conversation
-- [ ] Reopen within 30 minutes: the conversation is still there and continues
+- [ ] Open the app after more than the session idle timeout away (30 min unless the
+      house's `session.idle_minutes` says otherwise): the conversation is gone, and the
+      first message starts a new session — Alfred does not refer back to it
+- [ ] Today's notifications and reflex acts are still there, under `earlier today`
+- [ ] **A completely blank Timeline is correct** on an established house that has
+      produced no notification and no reflex act today: there is no conversation left to
+      show and no house rows to keep, and the first-day greeting is deliberately gated on
+      a first run (`isFirstRun`), so nothing fills the space. Empty is the intended Room
+      after a break, not a failed history read
+- [ ] Reopen within the timeout: the conversation is still there and continues
+- [ ] Leave the app open and idle past the timeout, then send: a `new conversation ·
+      HH:MM` divider separates the two and the older turns stay on screen — the window
+      moves when the app is backgrounded and returned to, not at minute thirty. The
+      session id follows the socket, so it turns over on the next reconnect rather than
+      here
 - [ ] A routine suggestion reads as the suggestion itself, not "Routine Suggestion"
 ```
 
-- [ ] **Step 3: Backlog**
+- [ ] **Step 4: Backlog §8–§11**
 
-Append to `docs/backlog/low/pwa-phase1-followups.md`:
+§8 (routine suggestions cannot be accepted or declined) is the backend gap behind Task 2.
+Grep before writing it — the draft of this plan got four things wrong:
 
-```markdown
-## 8. Routine suggestions cannot be accepted or declined
+| drafted | true |
+|---|---|
+| `core/routines/` | `core/memory/routines/` |
+| state machine `candidate` → `active`/`rejected` | states are `candidate`, `active`, `dormant`, `archived`; no `rejected` |
+| "nothing calls it from a channel" | true, and stronger: **nothing in the tree ever writes `active`** |
+| "the consolidator's decay reads the table" | the consolidator runs the whole lifecycle (`_update_routine_lifecycle`): 3 misses → `dormant`, 30 days → `archived`, confidence < 0.3 → `archived`; `GET /api/admin/memory/routines` reads it too |
 
-The Room now shows the suggestion's body (phone fixes, 2026-09-09) but there is nothing
-to tap, and that is a backend gap, not a client one:
+The rest holds: `check_routine_suggestions` publishes with no `metadata`, which
+`NotificationPublisher.publish` defaults to `{}`; `list_by_state` is called from one place
+only (`_eligible_candidates`) and only with `"candidate"`; `_ROUTINE_SUGGESTION_COOLDOWN_HOURS`
+is 24, checked by a 15-minute loop, and `_build_routine_hint` spends the same budget. Two
+corrections to the ask itself: routines are keyed by `name` (one YAML file each) and have
+no id, so the endpoint is `POST /api/routines/{name}/state`; and the re-firing is bounded
+— an ignored candidate loses 0.05 confidence per cycle and is archived below 0.3, which is
+decay rather than consent, and worth saying so.
 
-- No endpoint or LLM tool changes a routine's state. `core/routines/` has the state
-  machine (`candidate` → `active`/`rejected`) but nothing calls it from a channel.
-- The suggestion notification's `metadata` is `{}` — the client cannot even tell which
-  routine it is about. It needs `metadata.routine_name` (and the routine's `id`).
-- Nothing executes an `active` routine: only `engine.py`'s `list_by_state("candidate")`
-  and the consolidator's decay read the table, so accepting would change a label and
-  nothing else.
-- The suggestion re-fires daily (24 h cooldown) while it stays a candidate — 47 of the
-  last 50 notifications on the live box were the same coffee routine.
+§9 is the missed-notification gap, naming the two recall-noise tickets already under
+`docs/backlog/high/`. §10 and §11 come from the Task 3 and Task 4 reviews: `monkeypatch: Any`
+in `tests/core/channels/test_admin_api.py` (17 uses against 196 `pytest.MonkeyPatch` in
+`tests/`), and the two `waitFor` timeouts seen only under 8-way vitest over-subscription
+(`web/src/main.test.ts`, `web/src/sheets/HeldBackSheet.test.tsx`) — same shape as the
+`useActionRoute` race fixed in `5d827f1`.
 
-Do them in that order: state endpoint (`POST /api/routines/{id}/state` behind the admin
-gate, plus a conscious-engine tool so "yes, do that" in the thread works too),
-`metadata.routine_name` on the notification, an executor for `active` routines, then the
-client's accept/decline on the row. Until the executor exists, a button would be a lie
-(spec §5.2).
+- [ ] **Step 5: Check for real hostnames and commit**
 
-## 9. Notifications missed between sessions surface nowhere
-
-The Room keeps the house's rows for the day and the conversation for the session, so a
-notification from yesterday that you never saw is gone from the phone until the Activity
-view (phase 2) or push (phase 5). Phase 1's honesty rule applies: nothing pretends to be
-a badge. Recall noise (passive-observation duplicates, the recall threshold) is already
-filed under `docs/backlog/high/`.
-```
-
-- [ ] **Step 4: Check for real hostnames and commit**
+The repo is public; the QA checklist already uses `alfred.example.com`.
 
 ```bash
 git grep -n -E '192\.168\.50\.|66\.60\.90\.|anirudhlath\.com'
@@ -1319,7 +1360,9 @@ git grep -n -E '192\.168\.50\.|66\.60\.90\.|anirudhlath\.com'
 Expected: no output.
 
 ```bash
-git add docs/web-frontend.md docs/superpowers/qa/2026-09-07-pwa-phase1-ios-checklist.md docs/backlog/low/pwa-phase1-followups.md
+git add docs/web-frontend.md docs/admin-api.md \
+  docs/superpowers/qa/2026-09-07-pwa-phase1-ios-checklist.md \
+  docs/backlog/low/pwa-phase1-followups.md
 git commit -m "docs(web): the Room's session window, session-id rotation, and the routine follow-ups"
 ```
 
