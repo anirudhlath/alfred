@@ -104,6 +104,8 @@ describe("HeldBackSheet", () => {
     await screen.findByRole("button", { name: "Queued" });
 
     setOpen(false);
+    // The reset is on the opening edge: the 380 ms leave must not flash the idle button back.
+    expect(screen.getByRole("button", { name: "Queued" })).toBeDisabled();
     setOpen(true);
 
     expect(await screen.findByRole("button", { name: "Drain queue now" })).toBeEnabled();
