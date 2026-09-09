@@ -137,12 +137,16 @@ function notificationItem(entry: StreamEntry): TimelineItem | null {
   if (str(record(entry.event.metadata)?.pending_action_id)) return null;
   const source = str(entry.event.source) ?? "house";
   const urgency = str(entry.event.urgency) ?? "informational";
+  // The body is the message; the title is a label ("Routine Suggestion"). The
+  // live row in useRoom derives its text the same way — the read-back pairing
+  // key is `act:hue:text`, so the two must agree.
+  const body = str(entry.event.body);
   return {
     kind: "act",
     id: `nt:${entry.id}`,
     at,
     hue: 255,
-    text: title,
+    text: body ?? title,
     meta: `${hhmm(at)} · ${source} · ${urgency}`,
   };
 }

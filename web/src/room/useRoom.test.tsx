@@ -432,8 +432,26 @@ describe("useRoom — what comes back", () => {
 
     const act_ = result.current.items.find((item) => item.kind === "act")!;
     expect(act_.kind === "act" && act_.hue).toBe(255);
-    expect(act_.kind === "act" && act_.text).toBe("Bins go out tonight");
+    expect(act_.kind === "act" && act_.text).toBe("Collection moved to Friday.");
     expect(act_.kind === "act" && act_.meta).toMatch(/^\d{2}:\d{2} · live · important$/);
+  });
+
+  it("reads a bodiless notification by its title", () => {
+    const { result, chat } = renderRoom({ history: [], online: true });
+
+    act(() =>
+      chat.deliver({
+        type: "notification",
+        title: "Routine Suggestion",
+        body: "",
+        urgency: "informational",
+        notification_id: "ntf-10",
+        metadata: {},
+      }),
+    );
+
+    const act_ = result.current.items.find((item) => item.kind === "act")!;
+    expect(act_.kind === "act" && act_.text).toBe("Routine Suggestion");
   });
 
   it("leaves a confirmation request to the Door", () => {
@@ -707,7 +725,7 @@ describe("useRoom — what the house reads back", () => {
           id: "nt:1788814800000-0",
           at: "2026-09-07T21:00:00",
           hue: 255,
-          text: "Bins go out tonight",
+          text: "Collection moved to Friday.",
           meta: "21:00 · domain-router · important",
         },
       ],
@@ -737,7 +755,7 @@ describe("useRoom — what the house reads back", () => {
           id: "rx:1788814800000-0",
           at: "2026-09-07T21:00:00",
           hue: 210,
-          text: "Bins go out tonight",
+          text: "Collection moved to Friday.",
           meta: "21:00 · reflex · calendar.remind",
         },
       ],

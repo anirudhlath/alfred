@@ -146,7 +146,8 @@ describe("App", () => {
         "The dentist at nine, sir. I'd leave by twenty to; there's rain forecast from eight.",
       ),
     ).toBeInTheDocument();
-    expect(screen.getByText("Your parcel arrived")).toBeInTheDocument();
+    // The row reads the notification's body, not its title.
+    expect(screen.getByText("The door sensor saw it at 18:20.")).toBeInTheDocument();
     // The confirmation notification belongs to the Door, not the thread.
     expect(screen.queryByText("Confirmation required")).toBeNull();
   });

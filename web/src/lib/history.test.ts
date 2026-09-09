@@ -168,16 +168,29 @@ describe("toTimelineItems", () => {
     );
   });
 
-  it("renders a notification as its title, in the NT hue", () => {
+  it("renders a notification as its body, in the NT hue", () => {
     const nt = items.find((item) => item.kind === "act" && item.hue === 255);
     expect(nt).toEqual({
       kind: "act",
       id: "nt:1788801600000-0",
       at: "2026-09-07T18:20:00",
       hue: 255,
-      text: "Your parcel arrived",
+      text: "The door sensor saw it at 18:20.",
       meta: "18:20 · trigger:trg_parcel · important",
     });
+  });
+
+  it("falls back to the title when a notification has no body", () => {
+    const [nt] = toTimelineItems({
+      ...EMPTY,
+      notifications: [
+        {
+          id: "1-0",
+          event: { timestamp: "2026-09-07T18:20:00", title: "Routine Suggestion", body: "" },
+        },
+      ],
+    });
+    expect(nt.kind === "act" && nt.text).toBe("Routine Suggestion");
   });
 
   it("files an unlabelled notification under the house, informational", () => {
