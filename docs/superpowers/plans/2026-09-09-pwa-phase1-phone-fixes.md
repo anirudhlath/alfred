@@ -135,12 +135,12 @@ Replace the bullet at lines 481–483:
 
 ```markdown
 - **`100vh` is wrong in Safari.** `installViewportVars()` writes `--app-height` from
-  `innerHeight` and `--keyboard-inset` from `visualViewport`; `#root` is sized from the
-  former — `height`, not `min-height`, with `overflow: hidden`, so the shell is the
-  viewport and the Timeline is the only scroller (a growing root scrolls the document
-  instead, taking the header and composer with it and leaving nothing for the
-  Timeline's follow-the-bottom anchor to scroll) — and the composer pays for the
-  keyboard once, via `.pb-keyboard`.
+  `innerHeight` and `--keyboard-inset` from `visualViewport`. `#root` takes `--app-height`
+  as `height` — not `min-height` — with `overflow: hidden`, so the shell *is* the viewport
+  and nothing scrolls but the regions that opt in: the Timeline, the Sheet body, the
+  gate's copy region. A root that can grow scrolls the document instead, carrying the
+  header and composer off-screen and leaving the Timeline's follow-the-bottom anchor
+  nothing to scroll. The composer pays for the keyboard once, via `.pb-keyboard`.
 ```
 
 - [ ] **Step 7: Commit**
