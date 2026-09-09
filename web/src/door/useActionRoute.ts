@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useDoor } from "@/door/DoorProvider";
 import { fetchAction } from "@/lib/actions";
+import { ApiError } from "@/lib/api";
 import { shortId } from "@/lib/format";
 import type { TimelineItem } from "@/lib/history";
 
@@ -43,10 +44,14 @@ export function useActionRoute(titles: Record<string, string>): ActionRouteValue
         arrived(action);
         openAction(id);
       })
-      .catch(() => {
-        // 404, or the house is unreachable. Either way there is nothing to
-        // approve; the thread says so rather than opening an empty Door.
-        setMissing({ id, at: new Date().toISOString() });
+      .catch((error: unknown) => {
+        // Only a 404 is "already answered": the house looked and has nothing
+        // to approve, so the thread says so rather than opening an empty Door.
+        // A house that could not be asked has answered nothing, and the Room
+        // must not claim it has — the offline note is the honest word there.
+        if (error instanceof ApiError && error.status === 404) {
+          setMissing({ id, at: new Date().toISOString() });
+        }
       })
       .finally(() => {
         // Replace, never push: a pull-to-refresh must not reopen a decision that

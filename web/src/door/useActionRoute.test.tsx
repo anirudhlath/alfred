@@ -94,6 +94,15 @@ describe("useActionRoute", () => {
     expect(screen.getByTestId("path")).toHaveTextContent("/");
   });
 
+  it("claims nothing when the house could not be asked", async () => {
+    status = 503;
+    renderAt("/actions/a91f3c2e", { a91f3c2e: "Lock unlock" });
+
+    await waitFor(() => expect(screen.getByTestId("path")).toHaveTextContent("/"));
+    expect(screen.getByTestId("tomb")).toHaveTextContent("none");
+    expect(openActionMock).not.toHaveBeenCalled();
+  });
+
   it("names an unremembered approval by its short id", async () => {
     status = 404;
     renderAt("/actions/a91f3c2e");
