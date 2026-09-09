@@ -1,4 +1,10 @@
-import type { AttentionDomain, IntegrationInfo, Overview, StreamPage } from "@/lib/types";
+import type {
+  AttentionDomain,
+  IntegrationInfo,
+  NotificationEvent,
+  Overview,
+  StreamPage,
+} from "@/lib/types";
 
 /**
  * `GET /api/integrations`. Two entries on purpose: the setup gate must find
@@ -306,4 +312,28 @@ export const yesterdayRequestPage: StreamPage = {
     },
   ],
   next_before: null,
+};
+
+/** `GET /api/admin/notifications/deferred` — full Notification JSON, oldest first. */
+export const deferredFixture: { notifications: NotificationEvent[] } = {
+  notifications: [
+    {
+      notification_id: "ntf-d1",
+      title: "Bins go out tonight",
+      body: "The council moved collection to Friday.",
+      urgency: "important",
+      source: "trigger:trg_bins",
+      timestamp: "2026-09-07T07:02:00",
+      metadata: {},
+    },
+    {
+      notification_id: "ntf-d2",
+      title: "Bathroom humidity stayed high",
+      body: "Above 70% for an hour.",
+      urgency: "informational",
+      source: "trigger:trg_bath",
+      timestamp: "2026-09-07T07:19:00",
+      metadata: {},
+    },
+  ],
 };
