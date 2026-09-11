@@ -300,7 +300,7 @@ describe("TelemetrySocket", () => {
     FakeWebSocket.instances[0].emitClose(1006);
     vi.advanceTimersByTime(600);
     FakeWebSocket.instances[1].open();
-    expect(sent()).toContainEqual({ type: "subscribe", streams: ["events", "actions"] });
+    expect(sent()).toEqual([{ type: "subscribe", streams: ["events", "actions"] }]);
   });
 
   it("only tells the server about a stream the first time it is wanted", () => {
@@ -315,6 +315,24 @@ describe("TelemetrySocket", () => {
     ]);
   });
 
+  it("subscribes on first open for a stream wanted before the socket was up", () => {
+    const sock = new TelemetrySocket();
+    sock.subscribe(["events"]); // the Door's real ordering: no socket yet
+    sock.connect();
+    expect(sent()).toEqual([]); // CONNECTING — send() dropped it
+    FakeWebSocket.instances[0].open();
+    expect(sent()).toEqual([{ type: "subscribe", streams: ["events"] }]);
+  });
+
+  it("counts a stream named twice in one call as one wanter", () => {
+    const sock = new TelemetrySocket();
+    sock.connect();
+    FakeWebSocket.instances[0].open();
+    sock.subscribe(["events", "events"]);
+    sock.unsubscribe(["events"]);
+    expect(sent().at(-1)).toEqual({ type: "unsubscribe", streams: ["events"] });
+  });
+
   it("only unsubscribes a stream once nobody wants it", () => {
     const sock = new TelemetrySocket();
     sock.connect();
@@ -322,13 +340,21 @@ describe("TelemetrySocket", () => {
     sock.subscribe(["events", "actions"]);
     sock.subscribe(["events"]);
     sock.unsubscribe(["events", "actions"]);
-    expect(sent().at(-1)).toEqual({ type: "unsubscribe", streams: ["actions"] });
+    // The whole array each time, not just the last frame: `events` still has a
+    // wanter, so no frame may mention it yet — in any position.
+    expect(sent()).toEqual([
+      { type: "subscribe", streams: ["events", "actions"] },
+      { type: "unsubscribe", streams: ["actions"] },
+    ]);
     sock.unsubscribe(["events"]);
-    expect(sent().at(-1)).toEqual({ type: "unsubscribe", streams: ["events"] });
-    // Unsubscribing what was never subscribed sends nothing.
-    const before = sent().length;
+    expect(sent()).toEqual([
+      { type: "subscribe", streams: ["events", "actions"] },
+      { type: "unsubscribe", streams: ["actions"] },
+      { type: "unsubscribe", streams: ["events"] },
+    ]);
+    // Unsubscribing a stream already released sends nothing.
     sock.unsubscribe(["events"]);
-    expect(sent()).toHaveLength(before);
+    expect(sent()).toHaveLength(3);
   });
 
   it("replays only what is still wanted", () => {

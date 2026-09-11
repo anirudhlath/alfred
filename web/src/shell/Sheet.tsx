@@ -38,9 +38,10 @@ export function Sheet({ open, title, onClose, children }: SheetProps) {
 
   return createPortal(
     // The dialog is the whole thing, scrim included, so the scrim's `Close` is
-    // inside the modal subtree and assistive tech can reach it. z-20, under
-    // Layer's z-30: the handoff stacks sheet < Door < gate, so a critical action
-    // or a lapsed session paints over an open sheet, not under it.
+    // inside the modal subtree and assistive tech can reach it. z-20, over the
+    // Workshop's z-10 and under Layer's z-30: the handoff stacks workshop <
+    // sheet < Door < gate, so a sheet opened from the Workshop paints over it,
+    // and a critical action or a lapsed session paints over the sheet in turn.
     <div
       ref={panel}
       tabIndex={-1}

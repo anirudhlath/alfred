@@ -18,6 +18,7 @@ export interface LayerProps {
   children: ReactNode;
 }
 
+/** Sheets sit at z-20 (Sheet.tsx), between workshop and layer. */
 const Z_INDEX: Record<NonNullable<LayerProps["level"]>, string> = {
   workshop: "z-10",
   layer: "z-30",
