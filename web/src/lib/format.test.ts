@@ -4,6 +4,7 @@ import {
   dayMonth,
   evs,
   hhmm,
+  hhmmss,
   humaniseTool,
   mmss,
   notificationText,
@@ -27,6 +28,17 @@ describe("hhmm", () => {
 
   it("says so rather than printing NaN", () => {
     expect(hhmm("not a time")).toBe("--:--");
+  });
+});
+
+describe("hhmmss", () => {
+  it("prints the device's clock to the second", () => {
+    expect(hhmmss(new Date(2026, 8, 7, 21, 2, 11))).toBe("21:02:11");
+    expect(hhmmss(new Date(2026, 8, 7, 0, 0, 0).getTime())).toBe("00:00:00");
+  });
+
+  it("says nothing it cannot read", () => {
+    expect(hhmmss("not a date")).toBe("--:--:--");
   });
 });
 

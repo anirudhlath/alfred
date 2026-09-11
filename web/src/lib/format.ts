@@ -9,6 +9,15 @@ export function hhmm(value: string | number | Date): string {
   return `${hours}:${minutes}`;
 }
 
+/** `21:02:11` — the Workshop's row stamp, to the second. Same clock as `hhmm`. */
+export function hhmmss(value: string | number | Date): string {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "--:--:--";
+  return [date.getHours(), date.getMinutes(), date.getSeconds()]
+    .map((part) => String(part).padStart(2, "0"))
+    .join(":");
+}
+
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 /**
