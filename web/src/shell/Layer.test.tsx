@@ -68,6 +68,15 @@ describe("Layer", () => {
     expect(screen.getByRole("dialog").className).toContain("z-40");
   });
 
+  it("stacks the workshop under layers", () => {
+    render(
+      <Layer open label="Workshop" level="workshop">
+        <p>workshop</p>
+      </Layer>,
+    );
+    expect(screen.getByRole("dialog").className).toContain("z-10");
+  });
+
   it("stays mounted for the leave animation, then unmounts", () => {
     const { rerender } = render(
       <Layer open label="Door" durationMs={420}>

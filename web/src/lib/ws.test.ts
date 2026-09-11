@@ -287,6 +287,11 @@ describe("ReconnectingSocket", () => {
 });
 
 describe("TelemetrySocket", () => {
+  /** Every frame the newest fake socket has been asked to send. */
+  function sent(): unknown[] {
+    return FakeWebSocket.instances.at(-1)!.sent.map((s) => JSON.parse(s));
+  }
+
   it("replays subscriptions on reconnect", () => {
     const sock = new TelemetrySocket();
     sock.connect();
@@ -295,7 +300,46 @@ describe("TelemetrySocket", () => {
     FakeWebSocket.instances[0].emitClose(1006);
     vi.advanceTimersByTime(600);
     FakeWebSocket.instances[1].open();
-    const replayed = FakeWebSocket.instances[1].sent.map((s) => JSON.parse(s));
-    expect(replayed).toContainEqual({ type: "subscribe", streams: ["events", "actions"] });
+    expect(sent()).toContainEqual({ type: "subscribe", streams: ["events", "actions"] });
+  });
+
+  it("only tells the server about a stream the first time it is wanted", () => {
+    const sock = new TelemetrySocket();
+    sock.connect();
+    FakeWebSocket.instances[0].open();
+    sock.subscribe(["events"]);
+    sock.subscribe(["events", "actions"]);
+    expect(sent()).toEqual([
+      { type: "subscribe", streams: ["events"] },
+      { type: "subscribe", streams: ["actions"] },
+    ]);
+  });
+
+  it("only unsubscribes a stream once nobody wants it", () => {
+    const sock = new TelemetrySocket();
+    sock.connect();
+    FakeWebSocket.instances[0].open();
+    sock.subscribe(["events", "actions"]);
+    sock.subscribe(["events"]);
+    sock.unsubscribe(["events", "actions"]);
+    expect(sent().at(-1)).toEqual({ type: "unsubscribe", streams: ["actions"] });
+    sock.unsubscribe(["events"]);
+    expect(sent().at(-1)).toEqual({ type: "unsubscribe", streams: ["events"] });
+    // Unsubscribing what was never subscribed sends nothing.
+    const before = sent().length;
+    sock.unsubscribe(["events"]);
+    expect(sent()).toHaveLength(before);
+  });
+
+  it("replays only what is still wanted", () => {
+    const sock = new TelemetrySocket();
+    sock.connect();
+    FakeWebSocket.instances[0].open();
+    sock.subscribe(["events", "actions"]);
+    sock.unsubscribe(["events"]);
+    FakeWebSocket.instances[0].emitClose(1006);
+    vi.advanceTimersByTime(600);
+    FakeWebSocket.instances[1].open();
+    expect(sent()).toEqual([{ type: "subscribe", streams: ["actions"] }]);
   });
 });

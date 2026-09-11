@@ -9,13 +9,20 @@ export interface LayerProps {
   /** Sheets 380, workshop 400, door 420. */
   durationMs?: number;
   /**
-   * The handoff's stack, sheet < door < gate: a lapsed session paints over an
-   * open Door, whatever order they were mounted in.
+   * The handoff's stack, workshop < sheet < door < gate: a sheet opened from
+   * the Workshop paints over it, and a lapsed session paints over everything,
+   * whatever order they were mounted in.
    */
-  level?: "layer" | "gate";
+  level?: "workshop" | "layer" | "gate";
   className?: string;
   children: ReactNode;
 }
+
+const Z_INDEX: Record<NonNullable<LayerProps["level"]>, string> = {
+  workshop: "z-10",
+  layer: "z-30",
+  gate: "z-40",
+};
 
 /**
  * A full-screen surface that rises from the bottom, stays for its leave
@@ -42,7 +49,7 @@ export function Layer({
       role="dialog"
       aria-modal="true"
       aria-label={label}
-      className={`fixed inset-0 ${level === "gate" ? "z-40" : "z-30"} flex flex-col overflow-hidden outline-none ${riseClass(leaving)} ${className}`}
+      className={`fixed inset-0 ${Z_INDEX[level]} flex flex-col overflow-hidden outline-none ${riseClass(leaving)} ${className}`}
       style={riseStyle(durationMs)}
     >
       {children}
