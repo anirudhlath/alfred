@@ -330,7 +330,10 @@ describe("TelemetrySocket", () => {
     FakeWebSocket.instances[0].open();
     sock.subscribe(["events", "events"]);
     sock.unsubscribe(["events"]);
-    expect(sent().at(-1)).toEqual({ type: "unsubscribe", streams: ["events"] });
+    expect(sent()).toEqual([
+      { type: "subscribe", streams: ["events"] },
+      { type: "unsubscribe", streams: ["events"] },
+    ]);
   });
 
   it("only unsubscribes a stream once nobody wants it", () => {
