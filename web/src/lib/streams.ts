@@ -39,10 +39,11 @@ export function isStreamName(value: string): value is StreamName {
  * The handoff's stream ring: one chroma, one lightness, eight hues. Colours are
  * CSS custom properties everywhere else on this branch; these are the exception
  * because the hue is *data* — `h = 30 + 45·i` over `STREAMS`, indexed by which
- * stream a row came from — not a palette choice. Phase 1 wrote three of them as
- * literals in `ActRow` and `HeldBackSheet`; the Workshop needs all eight, so it
- * computes them from `STREAM_INFO` rather than adding eight tokens (index.css,
- * "the stream hues are not tokens yet").
+ * stream a row came from — not a palette choice. Every caller computes its hue
+ * from `STREAM_INFO` rather than writing one down: the Room's 8 px marks
+ * (`ActRow`, `HeldBackSheet`) and, through `ringFill`/`ringText`, the
+ * Workshop's tiles and chips. Not eight tokens, because a token per hue would
+ * be a palette (index.css, "the stream hues are not tokens yet").
  */
 export function ring(hue: number): string {
   return `oklch(0.62 0.11 ${hue})`;

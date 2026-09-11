@@ -40,7 +40,7 @@ describe("StreamChips", () => {
     expect(chips[2].style.background).toBe("oklch(0.52 0.11 120)");
     expect(chips[2].style.color).toBe("rgb(255, 255, 255)");
     expect(chips[0]).toHaveAttribute("aria-pressed", "false");
-    expect(chips[0].style.borderColor).toBe("var(--line)");
+    expect(chips[0].style.borderColor).toBe("var(--muted)");
     expect(chips[0].style.color).toBe("var(--fg2)");
     expect(chips[0].style.background).toBe("transparent");
     // The colour recedes, the text does not: no chip is made translucent.

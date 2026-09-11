@@ -38,6 +38,8 @@ describe("EventRow", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText("Only RX")).toBeNull();
     expect(screen.queryByText(/"tool_name"/)).toBeNull();
+    // Nothing to control while shut: the id it would name is not in the document.
+    expect(screen.getByRole("button")).not.toHaveAttribute("aria-controls");
   });
 
   it("opens to the raw event and the pills, offering why only when it is given", () => {

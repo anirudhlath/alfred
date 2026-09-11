@@ -64,9 +64,9 @@
 /* ---------------------------------------------------- theme-independent bits
    The easing curves, the font stacks, and the two viewport variables
    installViewportVars() overwrites on the same element. The stream hues
-   (h = 30 + 45·i in the handoff) are not tokens yet: phase 1 paints three of
-   them, as literal `oklch(0.62 0.11 <h>)` values in ActRow and HeldBackSheet,
-   and the Workshop's rings will want all eight. */
+   (h = 30 + 45·i in the handoff) are not tokens: the hue is data, so it comes
+   from STREAM_INFO through ring()/ringFill()/ringText() in lib/streams.ts.
+   Only their lightness-on-the-page is a token, --ring-text-l above. */
 :root {
   --ease-rise: cubic-bezier(0.2, 0.8, 0.2, 1);
   --ease-settle: cubic-bezier(0.2, 1.4, 0.3, 1);

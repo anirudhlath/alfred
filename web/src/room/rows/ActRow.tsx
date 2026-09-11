@@ -1,3 +1,5 @@
+import { ring } from "@/lib/streams";
+
 export interface ActRowProps {
   /** 120 trigger (EV) · 210 reflex (RX) · 255 notification (NT). */
   hue: 120 | 210 | 255;
@@ -21,7 +23,7 @@ export function ActRow({ hue, text, meta }: ActRowProps) {
         data-testid="act-mark"
         data-hue={hue}
         className="mt-1.5 h-2 w-2 shrink-0 rounded-[2px]"
-        style={{ background: `oklch(0.62 0.11 ${hue})` }}
+        style={{ background: ring(hue) }}
       />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <div className="t-row" style={{ color: "var(--fg2)" }}>
