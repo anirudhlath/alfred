@@ -433,4 +433,50 @@ describe("useActivity", () => {
     expect(state().error).toBe("Could not read further back · redis gone");
     expect(rowKeys()).toHaveLength(2);
   });
+
+  it("retires an ↑ older failure once the heads read clean again", async () => {
+    routes[headUrl("events")] = { entries: [entry(5000), entry(4000)], next_before: entry(4000).id };
+    routes[olderUrl("events", entry(4000).id)] = 500;
+    mount();
+    await waitFor(() => expect(state().loaded).toBe(true));
+
+    fireEvent.click(screen.getByRole("button", { name: "older" }));
+    expect(state().fetchingOlder).toBe(true);
+    await waitFor(() => expect(state().fetchingOlder).toBe(false));
+    expect(state().error).toBe("Could not read further back · redis gone");
+
+    // A foreground return reads all eight cleanly. The endpoint is answering,
+    // so "could not read further back" is last week's news, not the banner.
+    const before = calls.length;
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await waitFor(() => expect(calls.length).toBe(before + STREAMS.length));
+    await waitFor(() => expect(state().error).toBeNull());
+    expect(rowKeys()).toHaveLength(2);
+  });
+
+  it("clears the older banner the moment a retry goes out", async () => {
+    routes[headUrl("events")] = { entries: [entry(5000), entry(4000)], next_before: entry(4000).id };
+    routes[olderUrl("events", entry(4000).id)] = 500;
+    mount();
+    await waitFor(() => expect(state().loaded).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "older" }));
+    await waitFor(() => expect(state().fetchingOlder).toBe(false));
+    expect(state().error).toBe("Could not read further back · redis gone");
+
+    // Tap it again and hold the request there: while the retry is in flight the
+    // banner from the attempt before it is already gone.
+    const held = defer();
+    gate = held;
+    fireEvent.click(screen.getByRole("button", { name: "older" }));
+    expect(state()).toMatchObject({ fetchingOlder: true, error: null });
+
+    gate = null;
+    routes[olderUrl("events", entry(4000).id)] = { entries: [entry(2000)], next_before: null };
+    held.release();
+    await waitFor(() => expect(state().fetchingOlder).toBe(false));
+    expect(state().error).toBeNull();
+    expect(rowKeys()).toHaveLength(3);
+  });
 });

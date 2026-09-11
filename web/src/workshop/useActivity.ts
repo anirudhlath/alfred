@@ -32,7 +32,12 @@ export interface Activity {
   cursor: string | null;
   fetchingOlder: boolean;
   loadOlder: () => void;
-  /** The first head read has finished (well or badly). */
+  /**
+   * The first head read has finished (well or badly). Pause retires a read that
+   * had not finished, so this can stay false with nothing in flight until
+   * Resume — which is why the bench's empty note should read "nothing loaded
+   * yet" rather than show progress on `!loaded`.
+   */
   loaded: boolean;
   /** A head read's failure if there is one, else the last `↑ older` failure. */
   error: string | null;
@@ -81,11 +86,16 @@ export function useActivity(): Activity {
         }
       });
       const bad = rejections(results);
-      setHeadError(
-        bad.length === 0
-          ? null
-          : `${bad.length} of ${STREAMS.length} streams could not be read · ${errorText(bad[0].reason)}`,
-      );
+      if (bad.length === 0) {
+        setHeadError(null);
+        // The endpoint answered for all eight — "could not read further back"
+        // is stale.
+        setOlderError(null);
+      } else {
+        setHeadError(
+          `${bad.length} of ${STREAMS.length} streams could not be read · ${errorText(bad[0].reason)}`,
+        );
+      }
       setLoaded(true);
     })();
   }, []);
@@ -176,6 +186,8 @@ export function useActivity(): Activity {
     const wanted = olderTargets(feed, targets);
     if (wanted.length === 0) return;
     setFetchingOlder(true);
+    // This attempt speaks for itself; the last one is done being news.
+    setOlderError(null);
     void (async () => {
       const results = await Promise.allSettled(
         wanted.map((name) => fetchStreamPage(name, feed.streams[name].nextBefore)),
