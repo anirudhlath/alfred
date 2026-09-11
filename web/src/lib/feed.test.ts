@@ -90,6 +90,22 @@ describe("head pages", () => {
     ]);
     expect(ids(state, "events")).toEqual([entry(2000).id, entry(1000).id]);
   });
+
+  it("an empty page leaves an empty, complete, loaded stream", () => {
+    // The server sets `next_before` only on a full page, so an empty page never
+    // carries a cursor and a stream is never left paging into nothing.
+    const state = reduce([head("events", [])]);
+    expect(state.streams.events).toEqual({ entries: [], nextBefore: null, loaded: true });
+  });
+
+  it("takes the page's cursor when a live frame arrived before the first page", () => {
+    const state = reduce([
+      live("events", entry(3000), 1),
+      head("events", [entry(3000), entry(2000)], entry(2000).id),
+    ]);
+    expect(ids(state, "events")).toEqual([entry(3000).id, entry(2000).id]);
+    expect(state.streams.events.nextBefore).toBe(entry(2000).id);
+  });
 });
 
 describe("older pages", () => {
@@ -155,6 +171,42 @@ describe("live entries", () => {
     const state = reduce([{ type: "pause" }, live("events", entry(2000), 1), live("events", entry(2000), 2)]);
     expect(state.held).toHaveLength(1);
   });
+
+  it("keeps the depth ↑ older fetched instead of trimming back to the cap", () => {
+    const deep = Array.from({ length: MAX_PER_STREAM }, (_, i) => entry((MAX_PER_STREAM + 50 - i) * 1000));
+    const below = Array.from({ length: 50 }, (_, i) => entry((50 - i) * 1000));
+    const paged = reduce([
+      head("events", deep, deep[deep.length - 1].id),
+      older("events", below, entry(500).id),
+    ]);
+    expect(paged.streams.events.entries).toHaveLength(MAX_PER_STREAM + 50);
+
+    const state = feedReducer(paged, live("events", entry(500000), 1));
+    // The mark is the paged depth, not the cap: the fetched page stays put.
+    expect(state.streams.events.entries).toHaveLength(MAX_PER_STREAM + 50);
+    expect(ids(state, "events")[0]).toBe(entry(500000).id);
+    // What the mark does evict, the cursor names, so it reads straight back.
+    expect(state.streams.events.nextBefore).toBe(entry(2000).id);
+
+    // A refresh honours the same mark rather than rolling back to the cap.
+    const refreshed = feedReducer(state, head("events", [entry(500000), entry(450000)], entry(450000).id));
+    expect(refreshed.streams.events.entries).toHaveLength(MAX_PER_STREAM + 50);
+    expect(refreshed.streams.events.nextBefore).toBe(entry(2000).id);
+  });
+
+  it("ignores an entry older than the cursor, which paging will bring back in order", () => {
+    const paged = reduce([head("events", [entry(5000), entry(4000)], entry(4000).id)]);
+    const state = feedReducer(paged, live("events", entry(2000), 42));
+    expect(ids(state, "events")).toEqual([entry(5000).id, entry(4000).id]);
+    expect(state.streams.events.nextBefore).toBe(entry(4000).id);
+    expect(mergeRows(state, STREAMS).cursor).toBe(entry(4000).id);
+  });
+
+  it("never holds an id the stream already shows", () => {
+    const state = reduce([head("events", [entry(2000)]), { type: "pause" }, live("events", entry(2000), 42)]);
+    expect(state.held).toEqual([]);
+    expect(state.liveAt).toBe(42);
+  });
 });
 
 describe("pause and resume", () => {
@@ -169,6 +221,31 @@ describe("pause and resume", () => {
     expect(state).toMatchObject({ paused: false, held: [] });
     expect(ids(state, "events")).toEqual([entry(3000).id, entry(1000).id]);
     expect(ids(state, "home_state")).toEqual([entry(2000).id]);
+  });
+
+  it("pausing twice is the same state", () => {
+    const paused = reduce([{ type: "pause" }]);
+    expect(feedReducer(paused, { type: "pause" })).toBe(paused);
+  });
+
+  it("resume with nothing paused and nothing held is the same state", () => {
+    const state = reduce([head("events", [entry(1000)])]);
+    expect(feedReducer(state, { type: "resume" })).toBe(state);
+  });
+
+  it("trims on release when the held rows push a stream past its limit", () => {
+    const full = Array.from({ length: MAX_PER_STREAM }, (_, i) => entry((MAX_PER_STREAM - i) * 1000));
+    const state = reduce([
+      head("events", full),
+      { type: "pause" },
+      live("events", entry((MAX_PER_STREAM + 1) * 1000), 1),
+      live("events", entry((MAX_PER_STREAM + 2) * 1000), 2),
+      { type: "resume" },
+    ]);
+    const kept = ids(state, "events");
+    expect(kept).toHaveLength(MAX_PER_STREAM);
+    expect(kept[0]).toBe(entry((MAX_PER_STREAM + 2) * 1000).id);
+    expect(state.streams.events.nextBefore).toBe(entry(3000).id);
   });
 });
 
@@ -211,6 +288,11 @@ describe("mergeRows", () => {
     const { rows, cursor } = mergeRows(state, STREAMS);
     expect(rows.map((row) => row.entry.id)).toEqual([6000, 5000, 4000, 3000, 1000].map((ms) => entry(ms).id));
     expect(cursor).toBe(entry(1000).id);
+  });
+
+  it("no targets is an empty view with nothing older to fetch", () => {
+    const state = reduce([head("events", [entry(2000)], entry(2000).id)]);
+    expect(mergeRows(state, [])).toEqual({ rows: [], cursor: null });
   });
 });
 

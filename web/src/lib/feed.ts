@@ -2,9 +2,11 @@ import { compareIds, STREAMS, type StreamName, type StreamRef } from "./streams"
 import type { StreamEntry, StreamPage } from "./types";
 
 /**
- * Entries kept per stream. Beyond this the oldest fall off and the cursor
- * points at the last one kept, so `↑ older` brings them straight back —
- * memory stays bounded without anything becoming unreachable.
+ * Entries kept per stream, and the floor of the high-water mark: a stream the
+ * user paged deeper than this keeps that depth, so a later frame or refresh
+ * never rolls back what `↑ older` fetched. Beyond the mark the oldest fall off
+ * and the cursor points at the last one kept, so `↑ older` brings them straight
+ * back — memory stays bounded without anything becoming unreachable.
  */
 export const MAX_PER_STREAM = 400;
 
@@ -16,7 +18,12 @@ export interface FeedRow extends StreamRef {
 export interface StreamFeed {
   /** Newest first, one entry per id. */
   entries: StreamEntry[];
-  /** Where `↑ older` reads from next; null once the stream is known in full. */
+  /**
+   * Where `↑ older` reads from next; null once the stream is known in full. A
+   * non-null cursor implies the page it came from was non-empty: the server
+   * sets `next_before` only on a full page (`core/channels/admin_api.py`), so
+   * an empty page carrying a cursor is not a case this reducer handles.
+   */
   nextBefore: string | null;
   /** A head page has been read, so an empty list means the stream is empty. */
   loaded: boolean;
@@ -56,10 +63,23 @@ function union(a: StreamEntry[], b: StreamEntry[]): StreamEntry[] {
   return [...byId.values()].sort((x, y) => compareIds(y.id, x.id));
 }
 
-function trim(entries: StreamEntry[], nextBefore: string | null): Pick<StreamFeed, "entries" | "nextBefore"> {
-  if (entries.length <= MAX_PER_STREAM) return { entries, nextBefore };
-  const kept = entries.slice(0, MAX_PER_STREAM);
-  return { entries: kept, nextBefore: kept[MAX_PER_STREAM - 1].id };
+/**
+ * The most entries an update may keep: the cap, or the depth already fetched,
+ * whichever is deeper. Older mode is exempt — it is the thing that raises the
+ * mark, and the rest of the reducer then honours it.
+ */
+function highWater(feed: StreamFeed): number {
+  return Math.max(MAX_PER_STREAM, feed.entries.length);
+}
+
+function trim(
+  entries: StreamEntry[],
+  nextBefore: string | null,
+  limit: number,
+): Pick<StreamFeed, "entries" | "nextBefore"> {
+  if (entries.length <= limit) return { entries, nextBefore };
+  const kept = entries.slice(0, limit);
+  return { entries: kept, nextBefore: kept[limit - 1].id };
 }
 
 function withPage(feed: StreamFeed, page: StreamPage, mode: "head" | "older"): StreamFeed {
@@ -68,9 +88,10 @@ function withPage(feed: StreamFeed, page: StreamPage, mode: "head" | "older"): S
     // Growing downward is what the user asked for: never trim it away.
     return { entries: union(feed.entries, incoming), nextBefore: page.next_before, loaded: true };
   }
+  const limit = highWater(feed);
   if (page.next_before === null) {
     // The whole stream fits in one page: there is nothing older to page to.
-    return { entries: union(feed.entries, incoming), nextBefore: null, loaded: true };
+    return { ...trim(union(feed.entries, incoming), null, limit), loaded: true };
   }
   const newest = feed.entries[0];
   const oldestIncoming = incoming[incoming.length - 1];
@@ -82,13 +103,15 @@ function withPage(feed: StreamFeed, page: StreamPage, mode: "head" | "older"): S
     // between: keep the page and let its cursor lead back to the rest.
     return { entries: incoming, nextBefore: page.next_before, loaded: true };
   }
-  const merged = trim(union(feed.entries, incoming), feed.loaded ? feed.nextBefore : page.next_before);
+  const merged = trim(union(feed.entries, incoming), feed.loaded ? feed.nextBefore : page.next_before, limit);
   return { ...merged, loaded: true };
 }
 
 function withLive(feed: StreamFeed, entry: StreamEntry): StreamFeed {
-  if (feed.entries.some((e) => e.id === entry.id)) return feed;
-  return { ...feed, ...trim(union(feed.entries, [entry]), feed.nextBefore) };
+  // Older than the cursor: `↑ older` will fetch it in its place. Taking it now
+  // would push the horizon back across a stretch the stream has not read.
+  if (feed.nextBefore !== null && compareIds(entry.id, feed.nextBefore) < 0) return feed;
+  return { ...feed, ...trim(union(feed.entries, [entry]), feed.nextBefore, highWater(feed)) };
 }
 
 export function feedReducer(state: FeedState, event: FeedEvent): FeedState {
@@ -99,6 +122,11 @@ export function feedReducer(state: FeedState, event: FeedEvent): FeedState {
         streams: { ...state.streams, [event.stream]: withPage(state.streams[event.stream], event.page, event.mode) },
       };
     case "live": {
+      // An id the stream already shows is not news. Queueing it while paused
+      // would make `Resume · N new` count a row the user can already see.
+      if (state.streams[event.stream].entries.some((e) => e.id === event.entry.id)) {
+        return { ...state, liveAt: event.at };
+      }
       const row: FeedRow = { stream: event.stream, entry: event.entry, key: rowKey(event.stream, event.entry.id) };
       if (state.paused) {
         const held = state.held.some((h) => h.key === row.key) ? state.held : [...state.held, row];
@@ -115,6 +143,7 @@ export function feedReducer(state: FeedState, event: FeedEvent): FeedState {
     case "pause":
       return state.paused ? state : { ...state, paused: true };
     case "resume": {
+      if (!state.paused && state.held.length === 0) return state;
       const streams = { ...state.streams };
       for (const row of state.held) streams[row.stream] = withLive(streams[row.stream], row.entry);
       return { ...state, streams, held: [], paused: false };
@@ -122,23 +151,27 @@ export function feedReducer(state: FeedState, event: FeedEvent): FeedState {
   }
 }
 
-function oldestId(feed: StreamFeed): string | null {
-  const last = feed.entries[feed.entries.length - 1];
-  return last === undefined ? null : last.id;
+/** How far back a stream that can still page is known: its oldest entry, else null. */
+function depthOf(feed: StreamFeed): string | null {
+  if (feed.nextBefore === null) return null;
+  const oldest = feed.entries[feed.entries.length - 1];
+  return oldest === undefined ? null : oldest.id;
 }
 
 /**
  * How far back every target is known. A stream with a cursor is only known
  * back to its oldest loaded entry; a stream without one is known in full and
- * never limits the view. Null when nothing limits it.
+ * never limits the view. A stream whose head read failed also keeps
+ * `nextBefore: null` and so does not constrain the view — the bench's "N of 8
+ * streams could not be read" banner is what covers that. Null when nothing
+ * limits it.
  */
 function horizonOf(state: FeedState, streams: readonly StreamName[]): string | null {
   let horizon: string | null = null;
   for (const name of streams) {
-    const feed = state.streams[name];
-    const oldest = oldestId(feed);
-    if (feed.nextBefore === null || oldest === null) continue;
-    if (horizon === null || compareIds(oldest, horizon) > 0) horizon = oldest;
+    const depth = depthOf(state.streams[name]);
+    if (depth === null) continue;
+    if (horizon === null || compareIds(depth, horizon) > 0) horizon = depth;
   }
   return horizon;
 }
@@ -172,8 +205,7 @@ export function olderTargets(state: FeedState, streams: readonly StreamName[]): 
   const horizon = horizonOf(state, streams);
   if (horizon === null) return [];
   return streams.filter((name) => {
-    const feed = state.streams[name];
-    const oldest = oldestId(feed);
-    return feed.nextBefore !== null && oldest !== null && compareIds(oldest, horizon) >= 0;
+    const depth = depthOf(state.streams[name]);
+    return depth !== null && compareIds(depth, horizon) >= 0;
   });
 }
