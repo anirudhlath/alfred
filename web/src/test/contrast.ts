@@ -13,13 +13,14 @@ export type Theme = "dark" | "light";
 
 /**
  * The tokens this helper knows, restated from `src/index.css` — which is the
- * source of truth, and carries a pointer back here. Not read off the file:
- * vitest stubs every `.css` import to an empty string, and reading the disk
- * needs node builtins, which `tsconfig.app.json` (`types: ["vite/client"]`)
- * does not typecheck under `src`. Add a pair here when a test needs one, and
- * keep the two files in step.
+ * source of truth, and carries a pointer back here. Restated rather than
+ * parsed so the API stays typed and a test reads as a claim about two colours;
+ * `contrast.test.ts` is what keeps the copy honest, comparing every value here
+ * against the stylesheet verbatim, so a palette edit that leaves this behind
+ * fails a test rather than passing quietly. Add a pair here when a test needs
+ * one — the guard picks it up on its own.
  */
-const TOKENS: Record<Theme, Record<string, string>> = {
+export const TOKENS: Record<Theme, Record<string, string>> = {
   dark: { accent: "oklch(0.78 0.12 45)", "on-accent": "#25221F" },
   light: { accent: "oklch(0.72 0.13 45)", "on-accent": "#221F1B" },
 };

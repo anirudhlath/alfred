@@ -18,5 +18,11 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     setupFiles: "./src/test/setup.ts",
+    // On, so `import css from "…/index.css?raw"` hands a test the real file
+    // rather than the empty string vitest stubs every `.css` import with:
+    // `src/test/contrast.test.ts` holds the restated design tokens to the
+    // stylesheet, and a guard that reads "" would pass on anything. The
+    // narrower `css: { include: [...] }` form does not reach `?raw`.
+    css: true,
   },
 });

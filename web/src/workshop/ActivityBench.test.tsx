@@ -223,4 +223,36 @@ describe("ActivityBench", () => {
     );
     expect(scroll.top).toBe(0);
   });
+
+  it("re-measures when a row opens, so the next live row is worth only its own height", () => {
+    const { rerender } = render(<ActivityBench activity={activity()} onWhy={() => {}} />);
+    const scroll = stubScroll(screen.getByRole("list"), 1000);
+    scroll.top = 400;
+
+    // jsdom lays nothing out, so the height at mount was 0 and the stub landed
+    // after it. One deps-changing render with nothing moving seeds the
+    // measurement — the `↑ older` append does it here — and without this step
+    // the rest of the test would pass off the wrong baseline.
+    rerender(<ActivityBench activity={activity({ rows: [reflex, request, older] })} onWhy={() => {}} />);
+    expect(scroll.top).toBe(400);
+
+    // Opening a row unfolds 300 px of JSON. The reader did that themselves;
+    // nothing moves.
+    scroll.grow(1300);
+    rerender(
+      <ActivityBench activity={activity({ rows: [reflex, request, older], expanded: reflex.key })} onWhy={() => {}} />,
+    );
+    expect(scroll.top).toBe(400);
+
+    // The live row that follows is worth its own 120 px and not the panel's
+    // 300: hand back 420 and the open panel leaves the screen.
+    scroll.grow(1420);
+    rerender(
+      <ActivityBench
+        activity={activity({ rows: [newest, reflex, request, older], expanded: reflex.key })}
+        onWhy={() => {}}
+      />,
+    );
+    expect(scroll.top).toBe(520);
+  });
 });

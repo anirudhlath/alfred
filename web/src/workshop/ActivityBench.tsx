@@ -59,10 +59,15 @@ export function ActivityBench({ activity, onWhy }: ActivityBenchProps) {
   // which row is newest rather than on the height, because opening a row grows
   // the list too and that growth is the reader's own doing. A layout effect,
   // like `Timeline.tsx:70-82` at the other end of the app, so the correction
-  // lands before paint instead of as a visible jump. `rows.length` is in the
-  // deps only to keep the measurement fresh when `↑ older` appends below:
-  // nothing moves then, but the taller list it leaves behind is what the next
-  // prepend must be measured against.
+  // lands before paint instead of as a visible jump.
+  //
+  // `rows.length` and `expanded` are in the deps for the measurement, not for
+  // the correction: an `↑ older` page appends below and an opening row unfolds
+  // its JSON panel, and neither moves anything — but the taller list each
+  // leaves behind is what the *next* prepend must be measured against. Miss
+  // one and the following live row hands back its own height plus that one's,
+  // which throws the reader past the panel they were reading. Those three are
+  // the whole set: nothing else changes this list's height.
   useLayoutEffect(() => {
     const el = listRef.current;
     if (!el) return;
@@ -74,7 +79,7 @@ export function ActivityBench({ activity, onWhy }: ActivityBenchProps) {
     if (prepended && grew > 0 && el.scrollTop > 0) el.scrollTop += grew;
     prevHeight.current = el.scrollHeight;
     prevTopKey.current = topKey;
-  }, [topKey, activity.rows.length]);
+  }, [topKey, activity.rows.length, activity.expanded]);
 
   // A different stream is a different list, and halfway down one is nowhere in
   // the other. Declared after the anchor so it has the last word on the render
