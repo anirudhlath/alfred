@@ -13,6 +13,14 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * One line for any failed request: the server's `detail` when it sent one (an
+ * ApiError's message), the error's own message otherwise.
+ */
+export function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : "Something went wrong.";
+}
+
 async function readDetail(resp: Response): Promise<string> {
   const text = await resp.text();
   try {

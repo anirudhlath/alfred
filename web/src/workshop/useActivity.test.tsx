@@ -45,10 +45,17 @@ interface FakeTelemetry {
   unsubscribe: ReturnType<typeof vi.fn>;
   deliver: (msg: TelemetryMessage) => void;
 }
+
 /**
  * The socket ConnectionProvider uses. It is a module-level singleton built when
  * that module is first imported — i.e. once for the whole file, before any
  * `beforeEach` — so this list is filled exactly once and must never be cleared.
+ *
+ * The consequence for assertions: the `vi.fn()`s on it are **cumulative across
+ * every test in the file**, never reset between mounts. Assert on deltas
+ * (`mock.calls.length` before and after) and on `toHaveBeenLastCalledWith` —
+ * never a bare `toHaveBeenCalledWith`, which an earlier test has already
+ * satisfied and which therefore proves nothing about this one.
  */
 const telemetry = (): FakeTelemetry => telemetries.at(-1) as FakeTelemetry;
 
@@ -59,6 +66,28 @@ const empty: StreamPage = { entries: [], next_before: null };
 /** URL → page (or status) for every stream read. Unknown URLs get an empty page. */
 let routes: Record<string, StreamPage | number> = {};
 const calls: string[] = [];
+/** Every request that has produced its answer — what `calls` becomes once released. */
+const settled: string[] = [];
+
+interface Gate {
+  promise: Promise<void>;
+  release: () => void;
+}
+
+function defer(): Gate {
+  let release = (): void => {};
+  const promise = new Promise<void>((resolve) => {
+    release = () => resolve();
+  });
+  return { promise, release };
+}
+
+/**
+ * While set, every request that starts is held until the test releases it. The
+ * route is looked up *after* the wait, so a test can change the answer under a
+ * request already in flight — which is how a stale read is staged.
+ */
+let gate: Gate | null = null;
 
 function stubFetch(): void {
   vi.stubGlobal(
@@ -66,13 +95,23 @@ function stubFetch(): void {
     vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       calls.push(url);
+      const held = gate;
+      if (held) await held.promise;
       const route = routes[url] ?? empty;
+      settled.push(url);
       if (typeof route === "number") {
         return new Response(JSON.stringify({ detail: "redis gone" }), { status: route });
       }
       return new Response(JSON.stringify(route), { status: 200 });
     }),
   );
+}
+
+/** Drain what is pending: the microtask queue, and the macrotask turn behind it. */
+async function flush(): Promise<void> {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
 }
 
 function Probe() {
@@ -132,10 +171,13 @@ function mount() {
 }
 
 const headUrl = (name: string) => `/api/admin/streams/${name}?count=50`;
+const olderUrl = (name: string, before: string) => `/api/admin/streams/${name}?count=50&before=${before}`;
 
 beforeEach(() => {
   routes = {};
   calls.length = 0;
+  settled.length = 0;
+  gate = null;
   stubFetch();
 });
 
@@ -181,11 +223,14 @@ describe("useActivity", () => {
   });
 
   it("subscribes to all eight streams while mounted and lets go on unmount", async () => {
+    const releases = telemetry().unsubscribe.mock.calls.length;
     const view = mount();
     await waitFor(() => expect(state().loaded).toBe(true));
-    expect(telemetry().subscribe).toHaveBeenCalledWith([...STREAMS]);
+    expect(telemetry().subscribe).toHaveBeenLastCalledWith([...STREAMS]);
+    expect(telemetry().unsubscribe.mock.calls.length).toBe(releases);
     view.unmount();
-    expect(telemetry().unsubscribe).toHaveBeenCalledWith([...STREAMS]);
+    expect(telemetry().unsubscribe.mock.calls.length).toBe(releases + 1);
+    expect(telemetry().unsubscribe).toHaveBeenLastCalledWith([...STREAMS]);
   });
 
   it("puts a live entry at the top, marks the feed live, and ignores streams it does not know", async () => {
@@ -211,9 +256,12 @@ describe("useActivity", () => {
     });
     expect(state()).toMatchObject({ paused: true, heldCount: 1 });
     expect(rowKeys()).toEqual([`events:${entry(1000).id}`]);
+    const before = calls.length;
     fireEvent.click(screen.getByRole("button", { name: "resume" }));
     expect(state()).toMatchObject({ paused: false, heldCount: 0 });
     expect(rowKeys()).toEqual([`events:${entry(2000).id}`, `events:${entry(1000).id}`]);
+    // Resume's own head read, awaited so it lands inside the test.
+    await waitFor(() => expect(calls.length).toBe(before + STREAMS.length));
   });
 
   it("does not re-read the heads while paused, and reads them once on resume", async () => {
@@ -229,6 +277,57 @@ describe("useActivity", () => {
     expect(calls.length).toBe(before);
     fireEvent.click(screen.getByRole("button", { name: "resume" }));
     await waitFor(() => expect(calls.length).toBe(before + STREAMS.length));
+  });
+
+  it("drops a head read that lands after Pause", async () => {
+    routes[headUrl("events")] = { entries: [entry(1000)], next_before: null };
+    mount();
+    await waitFor(() => expect(state().loaded).toBe(true));
+
+    // A foreground read goes out, and Pause is tapped before it can land.
+    const held = defer();
+    gate = held;
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    gate = null;
+    routes[headUrl("events")] = { entries: [entry(3000), entry(1000)], next_before: null };
+    fireEvent.click(screen.getByRole("button", { name: "pause" }));
+
+    held.release();
+    await waitFor(() => expect(settled).toHaveLength(2 * STREAMS.length));
+    await flush();
+    // The list the hold froze is the list still on screen: a page is not a
+    // live frame, so nothing would have counted it on the Resume button.
+    expect(rowKeys()).toEqual([`events:${entry(1000).id}`]);
+    expect(state()).toMatchObject({ paused: true, heldCount: 0 });
+  });
+
+  it("drops a head read that lands after a newer one", async () => {
+    const held = defer();
+    gate = held;
+    mount();
+    // The mount read is still out; nothing it has to say has landed.
+    expect(state().loaded).toBe(false);
+
+    // A read from the foreground return goes out unheld and finishes first.
+    gate = null;
+    routes[headUrl("events")] = { entries: [entry(1000)], next_before: null };
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await waitFor(() => expect(state().loaded).toBe(true));
+    expect(rowKeys()).toEqual([`events:${entry(1000).id}`]);
+    expect(state().error).toBeNull();
+
+    // Only now does the stalled read come back — and every stream 500s for it.
+    for (const name of STREAMS) routes[headUrl(name)] = 500;
+    held.release();
+    await waitFor(() => expect(settled).toHaveLength(2 * STREAMS.length));
+    await flush();
+    // Its answer is about a list two reads old; it says nothing.
+    expect(state().error).toBeNull();
+    expect(rowKeys()).toEqual([`events:${entry(1000).id}`]);
   });
 
   it("solo narrows the rows and closes whatever was expanded", async () => {
@@ -251,10 +350,7 @@ describe("useActivity", () => {
   it("loads older pages for the streams at the horizon", async () => {
     routes[headUrl("events")] = { entries: [entry(5000), entry(4000)], next_before: entry(4000).id };
     routes[headUrl("home_state")] = { entries: [entry(6000), entry(1000)], next_before: entry(1000).id };
-    routes[`/api/admin/streams/events?count=50&before=${entry(4000).id}`] = {
-      entries: [entry(2000)],
-      next_before: null,
-    };
+    routes[olderUrl("events", entry(4000).id)] = { entries: [entry(2000)], next_before: null };
     mount();
     await waitFor(() => expect(state().loaded).toBe(true));
     expect(state().cursor).toBe(entry(4000).id);
@@ -264,9 +360,7 @@ describe("useActivity", () => {
     expect(state().fetchingOlder).toBe(true);
     await waitFor(() => expect(state().fetchingOlder).toBe(false));
     // Only events sat at the horizon; home_state already reached further back.
-    expect(calls.filter((url) => url.includes("before="))).toEqual([
-      `/api/admin/streams/events?count=50&before=${entry(4000).id}`,
-    ]);
+    expect(calls.filter((url) => url.includes("before="))).toEqual([olderUrl("events", entry(4000).id)]);
     expect(rowKeys()).toEqual([
       `home_state:${entry(6000).id}`,
       `events:${entry(5000).id}`,
@@ -275,5 +369,68 @@ describe("useActivity", () => {
       `home_state:${entry(1000).id}`,
     ]);
     expect(state().cursor).toBe(entry(1000).id);
+  });
+
+  it("reads only the solo stream when ↑ older is tapped soloed", async () => {
+    routes[headUrl("events")] = { entries: [entry(5000), entry(4000)], next_before: entry(4000).id };
+    routes[headUrl("home_state")] = { entries: [entry(6000), entry(3000)], next_before: entry(3000).id };
+    routes[olderUrl("home_state", entry(3000).id)] = { entries: [entry(1000)], next_before: null };
+    mount();
+    await waitFor(() => expect(state().loaded).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "solo home_state" }));
+    expect(state().cursor).toBe(entry(3000).id);
+
+    fireEvent.click(screen.getByRole("button", { name: "older" }));
+    expect(state().fetchingOlder).toBe(true);
+    await waitFor(() => expect(state().fetchingOlder).toBe(false));
+    // events sits at a horizon of its own, and is not what the user asked for.
+    expect(calls.filter((url) => url.includes("before="))).toEqual([olderUrl("home_state", entry(3000).id)]);
+    expect(rowKeys()).toEqual([
+      `home_state:${entry(6000).id}`,
+      `home_state:${entry(3000).id}`,
+      `home_state:${entry(1000).id}`,
+    ]);
+  });
+
+  it("does nothing when ↑ older is tapped with nothing older to read", async () => {
+    routes[headUrl("events")] = { entries: [entry(1000)], next_before: null };
+    mount();
+    await waitFor(() => expect(state().loaded).toBe(true));
+    expect(state().cursor).toBeNull();
+    const before = calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "older" }));
+    expect(calls.length).toBe(before);
+    expect(state().fetchingOlder).toBe(false);
+  });
+
+  it("leaves a head-read failure standing when ↑ older succeeds", async () => {
+    routes[headUrl("events")] = { entries: [entry(5000), entry(4000)], next_before: entry(4000).id };
+    routes[headUrl("actions")] = 500;
+    routes[olderUrl("events", entry(4000).id)] = { entries: [entry(2000)], next_before: null };
+    mount();
+    await waitFor(() => expect(state().loaded).toBe(true));
+    expect(state().error).toBe("1 of 8 streams could not be read · redis gone");
+
+    fireEvent.click(screen.getByRole("button", { name: "older" }));
+    expect(state().fetchingOlder).toBe(true);
+    await waitFor(() => expect(state().fetchingOlder).toBe(false));
+    expect(rowKeys()).toHaveLength(3);
+    // Reading further back down one stream answers nothing about the chip that
+    // could not be read at all.
+    expect(state().error).toBe("1 of 8 streams could not be read · redis gone");
+  });
+
+  it("names an ↑ older failure without claiming the chips could not be read", async () => {
+    routes[headUrl("events")] = { entries: [entry(5000), entry(4000)], next_before: entry(4000).id };
+    routes[olderUrl("events", entry(4000).id)] = 500;
+    mount();
+    await waitFor(() => expect(state().loaded).toBe(true));
+    expect(state().error).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "older" }));
+    expect(state().fetchingOlder).toBe(true);
+    await waitFor(() => expect(state().fetchingOlder).toBe(false));
+    expect(state().error).toBe("Could not read further back · redis gone");
+    expect(rowKeys()).toHaveLength(2);
   });
 });

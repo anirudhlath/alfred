@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
-import { failureText } from "@/lib/auth";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { errorText } from "@/lib/api";
 import { feedReducer, initialFeed, mergeRows, olderTargets, type FeedRow } from "@/lib/feed";
 import { onVisible } from "@/lib/lifecycle";
 import { fetchStreamPage, isStreamName, STREAMS, type StreamName } from "@/lib/streams";
@@ -34,16 +34,17 @@ export interface Activity {
   loadOlder: () => void;
   /** The first head read has finished (well or badly). */
   loaded: boolean;
+  /** A head read's failure if there is one, else the last `↑ older` failure. */
   error: string | null;
 }
 
-type Settled = PromiseSettledResult<StreamPage>[];
-
-function readFailure(results: Settled, of: number): string | null {
-  const failed = results.filter((r) => r.status === "rejected");
-  if (failed.length === 0) return null;
-  const reason = (failed[0] as PromiseRejectedResult).reason as unknown;
-  return `${failed.length} of ${of} streams could not be read · ${failureText(reason)}`;
+/**
+ * The reads that failed. Only the first one's reason reaches the banner: when
+ * eight streams fail eight different ways there is one line to say it in, and
+ * the count carries the rest.
+ */
+function rejections(results: PromiseSettledResult<StreamPage>[]): PromiseRejectedResult[] {
+  return results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
 }
 
 export function useActivity(): Activity {
@@ -53,26 +54,49 @@ export function useActivity(): Activity {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [fetchingOlder, setFetchingOlder] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Two slots, because the two reads fail independently and neither may speak
+  // for the other: a head read that could not reach three streams is still true
+  // after `↑ older` succeeds, and an older page that 500s says nothing about
+  // the eight chips in the footer.
+  const [headError, setHeadError] = useState<string | null>(null);
+  const [olderError, setOlderError] = useState<string | null>(null);
+
+  // Which head read the list belongs to. Bumped by every new read, by Pause,
+  // and by unmount, so a slow one that lands late can tell it has been
+  // superseded and say nothing.
+  const readGeneration = useRef(0);
 
   // Start a read of all eight heads; the caller does not wait for it. Only
-  // `dispatch`, `setError` and `setLoaded` are touched, all stable, so this
-  // identity never changes and neither effect below re-runs because of it.
+  // `dispatch`, `setHeadError` and `setLoaded` are touched, all stable, so this
+  // identity never changes and no effect below re-runs because of it.
   const readHeads = useCallback(() => {
+    const mine = ++readGeneration.current;
     void (async () => {
       const results = await Promise.allSettled(STREAMS.map((name) => fetchStreamPage(name)));
+      // A newer read — or a pause — has spoken for the list since this one left.
+      if (mine !== readGeneration.current) return;
       results.forEach((result, i) => {
         if (result.status === "fulfilled") {
           dispatch({ type: "page", stream: STREAMS[i], page: result.value, mode: "head" });
         }
       });
-      setError(readFailure(results, STREAMS.length));
+      const bad = rejections(results);
+      setHeadError(
+        bad.length === 0
+          ? null
+          : `${bad.length} of ${STREAMS.length} streams could not be read · ${errorText(bad[0].reason)}`,
+      );
       setLoaded(true);
     })();
   }, []);
 
   useEffect(() => {
     readHeads();
+    // Nothing to cancel — a fetch already sent will arrive — but the bench it
+    // was for has gone, so retire its generation and let the answer fall away.
+    return () => {
+      readGeneration.current += 1;
+    };
   }, [readHeads]);
 
   // Head pages on every return to the foreground: the socket replays nothing,
@@ -107,7 +131,8 @@ export function useActivity(): Activity {
   }, [telemetry]);
 
   // The feed is live while the socket is up; stamp both ends of that, so the
-  // stale banner can say when it stopped.
+  // stale banner can say when it stopped. The cleanup also fires on unmount,
+  // where the stamp lands in state being thrown away and costs nothing.
   useEffect(() => {
     if (telemetryStatus !== "online") return;
     dispatch({ type: "seen", at: Date.now() });
@@ -132,7 +157,12 @@ export function useActivity(): Activity {
     setExpanded((current) => (current === key ? null : key));
   }, []);
 
-  const pause = useCallback(() => dispatch({ type: "pause" }), []);
+  const pause = useCallback(() => {
+    // Drop any head read in flight: its pages would land past the hold. Resume
+    // re-reads.
+    readGeneration.current += 1;
+    dispatch({ type: "pause" });
+  }, []);
 
   // Resume always re-reads the heads: nothing was read while the hold was on,
   // and a socket that dropped during it lost frames no replay will bring back.
@@ -155,7 +185,8 @@ export function useActivity(): Activity {
           dispatch({ type: "page", stream: wanted[i], page: result.value, mode: "older" });
         }
       });
-      setError(readFailure(results, wanted.length));
+      const bad = rejections(results);
+      setOlderError(bad.length === 0 ? null : `Could not read further back · ${errorText(bad[0].reason)}`);
       setFetchingOlder(false);
     })();
   }, [feed, targets, fetchingOlder]);
@@ -177,6 +208,6 @@ export function useActivity(): Activity {
     fetchingOlder,
     loadOlder,
     loaded,
-    error,
+    error: headError ?? olderError,
   };
 }
