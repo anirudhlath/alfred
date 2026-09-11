@@ -7,9 +7,12 @@ import {
   isStreamName,
   record,
   ring,
+  ringFill,
+  ringText,
   scalar,
   STREAM_INFO,
   STREAMS,
+  streamLabel,
   strings,
   summarise,
 } from "./streams";
@@ -46,6 +49,23 @@ describe("ring", () => {
   it("is the handoff's one chroma and lightness at the stream's hue", () => {
     expect(ring(210)).toBe("oklch(0.62 0.11 210)");
     expect(STREAMS.map((name) => ring(STREAM_INFO[name].hue))).toContain("oklch(0.62 0.11 30)");
+  });
+
+  it("darkens the hue under white text and tokenises it as text on the page", () => {
+    // White on L 0.62 is 3.45:1 at 9-10 px; 0.52 is 5.11:1 on the worst hue.
+    expect(ringFill(210)).toBe("oklch(0.52 0.11 210)");
+    // Per-theme lightness: 0.52 on paper (4.62:1), 0.75 on ink (6.76:1).
+    expect(ringText(210)).toBe("oklch(var(--ring-text-l) 0.11 210)");
+    // One hue, three uses — the three must never drift apart.
+    expect([ring(30), ringFill(30), ringText(30)].every((c) => c.includes("0.11 30"))).toBe(true);
+  });
+});
+
+describe("streamLabel", () => {
+  it("says the stream's name in words, for a screen reader", () => {
+    expect(streamLabel("home_state")).toBe("home state");
+    expect(STREAMS.map(streamLabel)).toContain("reflex observations");
+    expect(STREAMS.every((name) => !streamLabel(name).includes("_"))).toBe(true);
   });
 });
 

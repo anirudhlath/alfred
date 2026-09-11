@@ -34,6 +34,9 @@
   --paper: #25221F;
   --paper-muted: #7D756B;
   --ring: #D6D0C7;
+  /* Lightness for `ringText()` in lib/streams.ts — the stream hue used as text
+     on `--bg`. 0.75 on ink clears AA on all eight hues (worst 6.76:1). */
+  --ring-text-l: 0.75;
   --scrim: rgba(20, 17, 14, 0.45);
 }
 
@@ -53,6 +56,8 @@
   --paper: #F1ECE4;
   --paper-muted: #9A9186;
   --ring: #3D3832;
+  /* 0.52 on paper; the same hue must go darker here (worst 4.62:1). */
+  --ring-text-l: 0.52;
   --scrim: rgba(20, 17, 14, 0.45);
 }
 

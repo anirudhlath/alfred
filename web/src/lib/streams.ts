@@ -48,6 +48,29 @@ export function ring(hue: number): string {
   return `oklch(0.62 0.11 ${hue})`;
 }
 
+/**
+ * The same hue dark enough to carry white text: monogram tiles and the soloed
+ * chip. White on `ring()` is 3.45:1 at 9-10 px, under AA's 4.5; at L 0.52 the
+ * worst of the eight hues is 5.11:1. `ring()` itself stays at L 0.62 — the
+ * Room's 8 px marks carry no text and have nothing to fail.
+ */
+export function ringFill(hue: number): string {
+  return `oklch(0.52 0.11 ${hue})`;
+}
+
+/**
+ * The same hue light enough to *be* text on the page: the un-soloed chip's
+ * border and label. The lightness is a per-theme token because legible on
+ * paper and legible on ink are different numbers (`--ring-text-l`, index.css);
+ * the hue stays data. `ring()` stays at L 0.62 for the marks that carry no text.
+ */
+export function ringText(hue: number): string {
+  return `oklch(var(--ring-text-l) 0.11 ${hue})`;
+}
+
+/** The stream's name as a screen reader should hear it: `home_state` -> `home state`. */
+export const streamLabel = (name: StreamName): string => name.replace(/_/g, " ");
+
 /** `1788815640000-0` → `[1788815640000, 0]`. Anything unreadable is 0, never NaN, so sorts stay total. */
 function idParts(id: string): [number, number] {
   const [ms, seq] = id.split("-");
