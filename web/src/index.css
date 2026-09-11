@@ -29,6 +29,13 @@
   --fg2: #D9D2C8;
   --fg: #F1ECE4;
   --accent: oklch(0.78 0.12 45);
+  /* Text and icons *on* `--accent`. The accent is a light peach on ink and a
+     mid peach on paper, so what goes on it is the theme's own dark colour
+     either way — never `--ink`, which is near-white here and would read at
+     1.77:1 (7.61:1 as written; 6.33:1 in light). Both values are restated in
+     `src/test/contrast.ts`, which holds the pair to 4.5:1 — change one and
+     change the other. */
+  --on-accent: #25221F;
   --green: oklch(0.70 0.13 150);
   --ink: #F1ECE4;
   --paper: #25221F;
@@ -51,6 +58,8 @@
   --fg2: #4D4740;
   --fg: #221F1B;
   --accent: oklch(0.72 0.13 45);
+  /* The same dark colour on paper's accent: 6.33:1. See dark, above. */
+  --on-accent: #221F1B;
   --green: oklch(0.70 0.13 150);
   --ink: #221F1B;
   --paper: #F1ECE4;
@@ -93,6 +102,7 @@
   --color-fg2: var(--fg2);
   --color-fg: var(--fg);
   --color-accent: var(--accent);
+  --color-on-accent: var(--on-accent);
   --color-green: var(--green);
   --color-ink: var(--ink);
   --color-paper: var(--paper);
