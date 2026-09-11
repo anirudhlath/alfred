@@ -1,13 +1,19 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "./api";
 import {
   compareIds,
   fetchStreamPage,
   idMs,
   isStreamName,
+  record,
+  ring,
+  scalar,
   STREAM_INFO,
   STREAMS,
+  strings,
   summarise,
 } from "./streams";
+import type { StreamName } from "./streams";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -36,6 +42,13 @@ describe("STREAMS", () => {
   });
 });
 
+describe("ring", () => {
+  it("is the handoff's one chroma and lightness at the stream's hue", () => {
+    expect(ring(210)).toBe("oklch(0.62 0.11 210)");
+    expect(STREAMS.map((name) => ring(STREAM_INFO[name].hue))).toContain("oklch(0.62 0.11 30)");
+  });
+});
+
 describe("stream ids", () => {
   it("reads the millisecond half of an id, and 0 for garbage", () => {
     expect(idMs("1788815640000-0")).toBe(1788815640000);
@@ -46,6 +59,35 @@ describe("stream ids", () => {
     expect(compareIds("1788815640000-0", "1788815640000-1")).toBeLessThan(0);
     expect(compareIds("1788815640001-0", "1788815640000-9")).toBeGreaterThan(0);
     expect(compareIds("1788815640000-2", "1788815640000-2")).toBe(0);
+  });
+});
+
+describe("scalar, record, strings", () => {
+  it("scalar: prints a number or a boolean, and refuses everything wordless", () => {
+    expect(scalar("home.light_set")).toBe("home.light_set");
+    expect(scalar(0)).toBe("0");
+    expect(scalar(false)).toBe("false");
+    expect(scalar("")).toBeNull();
+    expect(scalar("   ")).toBeNull();
+    expect(scalar({})).toBeNull();
+    expect(scalar([])).toBeNull();
+    expect(scalar(null)).toBeNull();
+    expect(scalar(undefined)).toBeNull();
+  });
+
+  it("record: an object, never an array and never null", () => {
+    const event = { a: 1 };
+    expect(record(event)).toBe(event);
+    expect(record([])).toBeNull();
+    expect(record(null)).toBeNull();
+    expect(record("light.living_room")).toBeNull();
+  });
+
+  it("strings: the strings of an array, nothing of anything else", () => {
+    expect(strings(["a", 5, null])).toEqual(["a"]);
+    expect(strings([])).toEqual([]);
+    expect(strings("nope")).toEqual([]);
+    expect(strings(undefined)).toEqual([]);
   });
 });
 
@@ -67,9 +109,50 @@ describe("fetchStreamPage", () => {
     ]);
   });
 
+  it("treats a blank cursor as no cursor", async () => {
+    const fetchMock = vi.fn<typeof fetch>(
+      async () => new Response(JSON.stringify({ entries: [], next_before: null }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchStreamPage("events", "");
+
+    expect(String(fetchMock.mock.calls[0][0])).toBe("/api/admin/streams/events?count=50");
+  });
+
+  it("clamps the count to the server's 1..200 rather than asking for a 422", async () => {
+    const fetchMock = vi.fn<typeof fetch>(
+      async () => new Response(JSON.stringify({ entries: [], next_before: null }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchStreamPage("events", null, 0);
+    await fetchStreamPage("events", null, 999);
+    await fetchStreamPage("events", null, Number.NaN);
+
+    expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([
+      "/api/admin/streams/events?count=50",
+      "/api/admin/streams/events?count=200",
+      "/api/admin/streams/events?count=50",
+    ]);
+  });
+
   it("normalises a page with nothing in it", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
     expect(await fetchStreamPage("events")).toEqual({ entries: [], next_before: null });
+  });
+
+  it("normalises a body that is literally null", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("null", { status: 200 })));
+    expect(await fetchStreamPage("events")).toEqual({ entries: [], next_before: null });
+  });
+
+  it("lets the server's refusal through, for the bench to show", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ detail: "redis unavailable" }), { status: 500 })),
+    );
+    await expect(fetchStreamPage("events")).rejects.toBeInstanceOf(ApiError);
   });
 });
 
@@ -86,6 +169,10 @@ describe("summarise", () => {
     expect(
       summarise("user_requests", { content: "", session_id: "s_9f3", channel: "voice", content_type: "audio" }),
     ).toEqual({ text: "voice message", meta: "session s_9f3 · voice · audio" });
+    // Only an audio request is a voice message; a text one that arrived empty says so.
+    expect(
+      summarise("user_requests", { content: "", session_id: "s_9f3", channel: "web_pwa", content_type: "text" }),
+    ).toEqual({ text: "no content", meta: "session s_9f3 · web_pwa · text" });
   });
 
   it("user_responses: the reply, then session · mood · tools", () => {
@@ -104,6 +191,8 @@ describe("summarise", () => {
       text: "Certainly.",
       meta: "session s_9f3 · mood neutral · no tools",
     });
+    // Whitespace is not words: it falls back like an absent field does.
+    expect(summarise("user_responses", { text: "   " }).text).toBe("reply");
   });
 
   it("events: trigger fired, trigger created, service registered, anything else", () => {
@@ -246,11 +335,62 @@ describe("summarise", () => {
     ).toEqual({ text: "home.fan_set error", meta: "request 8d2a · service unavailable" });
   });
 
-  it("never throws on an event with none of the fields", () => {
-    for (const stream of STREAMS) {
-      const { text, meta } = summarise(stream, {});
-      expect(text.length).toBeGreaterThan(0);
-      expect(typeof meta).toBe("string");
+  it("degrades on a wrong-typed field rather than printing null or [object Object]", () => {
+    // A producer that sent a string where the schema says object, and so on. Each
+    // line loses the part it cannot read and keeps the rest.
+    expect(
+      summarise("actions", {
+        tool_name: "home.light_set",
+        parameters: "light.living_room",
+        request_id: "4b1d9e00",
+      }),
+    ).toEqual({ text: "home.light_set", meta: "request 4b1d" });
+    expect(
+      summarise("notifications", {
+        title: "Your parcel arrived",
+        body: "The door sensor saw it at 18:20.",
+        urgency: "urgent",
+        source: "domain-router",
+        metadata: [],
+      }),
+    ).toEqual({ text: "The door sensor saw it at 18:20.", meta: "urgent · domain-router" });
+    expect(
+      summarise("reflex_observations", {
+        origin: "state_change",
+        trigger_event: [],
+        action: null,
+        result: "error",
+        decision_context: null,
+      }),
+    ).toEqual({ text: "observed state_change · watched, took no action", meta: "" });
+    expect(
+      summarise("user_responses", { text: "Hi.", session_id: "s_1", actions_taken: ["a", null, 5] }),
+    ).toEqual({ text: "Hi.", meta: "session s_1 · mood neutral · a" });
+  });
+
+  it("says the name of a stream it has never heard of", () => {
+    // A ninth stream reaches the client as a string long before it reaches this file.
+    expect(summarise("ninth_stream" as StreamName, { source: "bus" })).toEqual({
+      text: "ninth stream",
+      meta: "source bus",
+    });
+  });
+
+  it("has a line for an event with none of the fields, on every stream", () => {
+    const empty = STREAMS.map((stream) => [stream, summarise(stream, {})] as const);
+    expect(Object.fromEntries(empty)).toEqual({
+      user_requests: { text: "no content", meta: "" },
+      user_responses: { text: "reply", meta: "mood neutral · no tools" },
+      events: { text: "event", meta: "" },
+      actions: { text: "action", meta: "" },
+      reflex_observations: { text: "observed event · watched, took no action", meta: "" },
+      notifications: { text: "notification", meta: "" },
+      home_state: { text: "entity → unknown", meta: "was unknown" },
+      home_action_results: { text: "action unknown", meta: "" },
+    });
+    for (const [, { text, meta }] of empty) {
+      expect(text).not.toMatch(/null|undefined|\[object Object\]/);
+      expect(meta).not.toMatch(/null|undefined|\[object Object\]/);
     }
   });
 });

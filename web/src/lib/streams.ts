@@ -2,7 +2,10 @@ import { api } from "./api";
 import { notificationText, shortId } from "./format";
 import type { StreamEntry, StreamPage } from "./types";
 
-/** The eight catalogued streams, in the handoff's chip order (README §Workshop). */
+/**
+ * The eight catalogued streams, in the chip order of the handoff README
+ * (`docs/design/2026-09-04-pwa-client-handoff/README.md`, §Workshop).
+ */
 export const STREAMS = [
   "user_requests",
   "user_responses",
@@ -32,7 +35,15 @@ export function isStreamName(value: string): value is StreamName {
   return (STREAMS as readonly string[]).includes(value);
 }
 
-/** The handoff's stream ring: one chroma, one lightness, eight hues. */
+/**
+ * The handoff's stream ring: one chroma, one lightness, eight hues. Colours are
+ * CSS custom properties everywhere else on this branch; these are the exception
+ * because the hue is *data* — `h = 30 + 45·i` over `STREAMS`, indexed by which
+ * stream a row came from — not a palette choice. Phase 1 wrote three of them as
+ * literals in `ActRow` and `HeldBackSheet`; the Workshop needs all eight, so it
+ * computes them from `STREAM_INFO` rather than adding eight tokens (index.css,
+ * "the stream hues are not tokens yet").
+ */
 export function ring(hue: number): string {
   return `oklch(0.62 0.11 ${hue})`;
 }
@@ -72,9 +83,12 @@ export async function fetchStreamPage(
   before?: string | null,
   count: number = PAGE_COUNT,
 ): Promise<StreamPage> {
-  const params = new URLSearchParams({ count: String(count) });
+  // The clamp is the server's own 1..200, applied here so a caller's stray 0 or
+  // NaN asks for a page rather than a 422.
+  const clamped = Math.max(1, Math.min(200, Math.trunc(count) || PAGE_COUNT));
+  const params = new URLSearchParams({ count: String(clamped) });
   if (before) params.set("before", before);
-  const page = await api<Partial<StreamPage>>(`/api/admin/streams/${name}?${params}`);
+  const page = (await api<Partial<StreamPage> | null>(`/api/admin/streams/${name}?${params}`)) ?? {};
   return { entries: page.entries ?? [], next_before: page.next_before ?? null };
 }
 
@@ -93,7 +107,12 @@ export interface Summary {
 
 /** A string, number or boolean as text; anything else (including "") is `null`. Shared with `trace.ts`. */
 export function scalar(value: unknown): string | null {
-  if (typeof value === "string") return value.length > 0 ? value : null;
+  if (typeof value === "string") {
+    // Trimmed, so a field holding only spaces falls back like an absent one —
+    // the same rule `notificationText` applies in format.ts.
+    const text = value.trim();
+    return text.length > 0 ? text : null;
+  }
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   return null;
 }
@@ -108,6 +127,9 @@ export function strings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
+/** `request a91f` — the id fragment a row is matched against, on the three streams that carry one. */
+const requestPart = (id: string | null): string | null => (id === null ? null : `request ${shortId(id)}`);
+
 /** ` · `-join, dropping anything empty, so a missing field leaves no ` ·  · `. */
 function join(parts: (string | null | false | undefined)[]): string {
   return parts.filter((part): part is string => typeof part === "string" && part.length > 0).join(" · ");
@@ -118,15 +140,21 @@ function join(parts: (string | null | false | undefined)[]): string {
  * the fields `bus/schemas/events.py` and `core/notifications/schema.py`
  * actually carry. Every field is optional here: a producer that omitted one
  * gets a shorter line, never a crash and never a made-up value (spec §5.2).
+ *
+ * The fallback words — `mood neutral`, `no tools`, `fired by engine`,
+ * `recurring` — are the pydantic defaults those models declare, so an event
+ * that omitted the field and one that sent the default print the same true
+ * thing rather than two different lines.
  */
 export function summarise(stream: StreamName, event: Record<string, unknown>): Summary {
   const source = scalar(event.source);
   switch (stream) {
     case "user_requests": {
       const session = scalar(event.session_id);
+      const contentType = scalar(event.content_type);
       return {
-        text: scalar(event.content) ?? "voice message",
-        meta: join([session && `session ${session}`, scalar(event.channel), scalar(event.content_type)]),
+        text: scalar(event.content) ?? (contentType === "audio" ? "voice message" : "no content"),
+        meta: join([session && `session ${session}`, scalar(event.channel), contentType]),
       };
     }
     case "user_responses": {
@@ -175,7 +203,7 @@ export function summarise(stream: StreamName, event: Record<string, unknown>): S
       return {
         text: entity ? `${tool} ${entity}` : tool,
         meta: join([
-          request && `request ${shortId(request)}`,
+          requestPart(request),
           scalar(event.target_service),
           source,
           event.confirmed === true && "confirmed",
@@ -195,7 +223,7 @@ export function summarise(stream: StreamName, event: Record<string, unknown>): S
         text: `observed ${subject} · ${action ? "acted" : "watched, took no action"}`,
         meta: join([
           action && (scalar(action.tool_name) ?? "action"),
-          request && `request ${shortId(request)}`,
+          requestPart(request),
           decision && `decision "${decision}"`,
           failed && "failed",
         ]),
@@ -223,8 +251,13 @@ export function summarise(stream: StreamName, event: Record<string, unknown>): S
       const request = scalar(event.request_id);
       return {
         text: `${scalar(event.tool_name) ?? "action"} ${scalar(event.status) ?? "unknown"}`,
-        meta: join([request && `request ${shortId(request)}`, scalar(event.error)]),
+        meta: join([requestPart(request), scalar(event.error)]),
       };
     }
+    // The union is exhaustive above; this is for the ninth stream a future
+    // server adds, which reaches the client as a string before it reaches this
+    // file. Its name, spaced out, is a truer line than a thrown TypeError.
+    default:
+      return { text: String(stream).replace(/_/g, " "), meta: join([source && `source ${source}`]) };
   }
 }
