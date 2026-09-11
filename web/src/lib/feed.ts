@@ -109,7 +109,8 @@ function withPage(feed: StreamFeed, page: StreamPage, mode: "head" | "older"): S
 
 function withLive(feed: StreamFeed, entry: StreamEntry): StreamFeed {
   // Older than the cursor: `↑ older` will fetch it in its place. Taking it now
-  // would push the horizon back across a stretch the stream has not read.
+  // would push the horizon back across a stretch the stream has not read. The
+  // reducer checks this before holding a frame; this covers the resume replay.
   if (feed.nextBefore !== null && compareIds(entry.id, feed.nextBefore) < 0) return feed;
   return { ...feed, ...trim(union(feed.entries, [entry]), feed.nextBefore, highWater(feed)) };
 }
@@ -122,9 +123,15 @@ export function feedReducer(state: FeedState, event: FeedEvent): FeedState {
         streams: { ...state.streams, [event.stream]: withPage(state.streams[event.stream], event.page, event.mode) },
       };
     case "live": {
-      // An id the stream already shows is not news. Queueing it while paused
-      // would make `Resume · N new` count a row the user can already see.
-      if (state.streams[event.stream].entries.some((e) => e.id === event.entry.id)) {
+      // Two frames the stream has no use for: an id it already shows, and one
+      // older than its cursor (see `withLive`). Both are answered before the
+      // paused branch, so `Resume · N new` never counts a row that resume would
+      // turn around and drop — the frame is still proof the feed is live.
+      const feed = state.streams[event.stream];
+      if (
+        feed.entries.some((e) => e.id === event.entry.id) ||
+        (feed.nextBefore !== null && compareIds(event.entry.id, feed.nextBefore) < 0)
+      ) {
         return { ...state, liveAt: event.at };
       }
       const row: FeedRow = { stream: event.stream, entry: event.entry, key: rowKey(event.stream, event.entry.id) };
@@ -135,7 +142,7 @@ export function feedReducer(state: FeedState, event: FeedEvent): FeedState {
       return {
         ...state,
         liveAt: event.at,
-        streams: { ...state.streams, [event.stream]: withLive(state.streams[event.stream], event.entry) },
+        streams: { ...state.streams, [event.stream]: withLive(feed, event.entry) },
       };
     }
     case "seen":

@@ -98,6 +98,24 @@ describe("head pages", () => {
     expect(state.streams.events).toEqual({ entries: [], nextBefore: null, loaded: true });
   });
 
+  it("a page with no cursor still honours the mark, and re-arms the cursor when it trims", () => {
+    const deep = Array.from({ length: MAX_PER_STREAM }, (_, i) => entry((MAX_PER_STREAM + 50 - i) * 1000));
+    const below = Array.from({ length: 50 }, (_, i) => entry((50 - i) * 1000));
+    const paged = reduce([
+      head("events", deep, deep[deep.length - 1].id),
+      older("events", below, entry(500).id),
+    ]);
+
+    // The server has since trimmed the stream: a head read now says it is
+    // complete. What we already hold plus that page is one past the mark.
+    const state = feedReducer(paged, head("events", [entry(500000), entry(450000)]));
+    expect(state.streams.events.entries).toHaveLength(MAX_PER_STREAM + 50);
+    expect(ids(state, "events")[0]).toBe(entry(500000).id);
+    // "Complete" stops being true the moment the mark drops an entry, so the
+    // cursor names the last one kept rather than staying null.
+    expect(state.streams.events.nextBefore).toBe(entry(2000).id);
+  });
+
   it("takes the page's cursor when a live frame arrived before the first page", () => {
     const state = reduce([
       live("events", entry(3000), 1),
@@ -200,6 +218,19 @@ describe("live entries", () => {
     expect(ids(state, "events")).toEqual([entry(5000).id, entry(4000).id]);
     expect(state.streams.events.nextBefore).toBe(entry(4000).id);
     expect(mergeRows(state, STREAMS).cursor).toBe(entry(4000).id);
+  });
+
+  it("never holds an entry older than the cursor", () => {
+    const state = reduce([
+      head("events", [entry(5000), entry(4000)], entry(4000).id),
+      { type: "pause" },
+      live("events", entry(2000), 42),
+    ]);
+    // Resume would only drop it again, so it must never reach `held` — where
+    // it would have inflated `Resume · N new`.
+    expect(state.held).toEqual([]);
+    expect(state.liveAt).toBe(42);
+    expect(ids(state, "events")).toEqual([entry(5000).id, entry(4000).id]);
   });
 
   it("never holds an id the stream already shows", () => {
