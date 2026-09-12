@@ -44,6 +44,8 @@ interface FakeTelemetry {
   subscribe: ReturnType<typeof vi.fn>;
   unsubscribe: ReturnType<typeof vi.fn>;
   deliver: (msg: TelemetryMessage) => void;
+  /** The provider's own `setTelemetryStatus`, so a test can take the pump down. */
+  onstatus: (status: string) => void;
 }
 
 /**
@@ -63,8 +65,19 @@ const BASE = 1788815640000;
 const entry = (offsetMs: number): StreamEntry => ({ id: `${BASE + offsetMs}-0`, event: { n: offsetMs } });
 const empty: StreamPage = { entries: [], next_before: null };
 
-/** URL → page (or status) for every stream read. Unknown URLs get an empty page. */
-let routes: Record<string, StreamPage | number> = {};
+/** A read that fails with a reason of its own, so two failures can be told apart. */
+interface Failure {
+  status: number;
+  detail: string;
+}
+
+/** `fail("redis gone")` — a 500 whose detail is what `errorText` will quote. */
+function fail(detail: string, status = 500): Failure {
+  return { status, detail };
+}
+
+/** URL → page, a bare status, or a `fail()`. Unknown URLs get an empty page. */
+let routes: Record<string, StreamPage | number | Failure> = {};
 const calls: string[] = [];
 /** Every request that has produced its answer — what `calls` becomes once released. */
 const settled: string[] = [];
@@ -101,6 +114,9 @@ function stubFetch(): void {
       settled.push(url);
       if (typeof route === "number") {
         return new Response(JSON.stringify({ detail: "redis gone" }), { status: route });
+      }
+      if ("detail" in route) {
+        return new Response(JSON.stringify({ detail: route.detail }), { status: route.status });
       }
       return new Response(JSON.stringify(route), { status: 200 });
     }),
@@ -459,6 +475,137 @@ describe("useActivity", () => {
     await waitFor(() => expect(calls.length).toBe(before + STREAMS.length));
     await waitFor(() => expect(state().error).toBeNull());
     expect(rowKeys()).toHaveLength(2);
+  });
+
+  it("counts the streams that failed and quotes only the first one's reason", async () => {
+    // Every other failure test fails exactly one stream, so neither the count
+    // nor the choice of reason was ever pinned: `1 of 8 … redis gone` reads the
+    // same whether the code counts or hardcodes, and whether it takes the first
+    // rejection or the last.
+    routes[headUrl("user_responses")] = fail("redis gone");
+    routes[headUrl("events")] = fail("stream trimmed", 502);
+    routes[headUrl("home_state")] = fail("timed out", 504);
+    mount();
+    await waitFor(() => expect(state().loaded).toBe(true));
+
+    // Three ways to fail, one line to say it in: the count carries the rest.
+    // `user_responses` is the first of the three in catalogue order.
+    expect(state().error).toBe("3 of 8 streams could not be read · redis gone");
+    expect(state().error).not.toMatch(/trimmed|timed out/);
+    expect(state().streamLoaded).toMatchObject({
+      user_responses: false,
+      events: false,
+      home_state: false,
+      actions: true,
+    });
+  });
+
+  it("says the head failure ahead of the older one when both stand", async () => {
+    routes[headUrl("events")] = { entries: [entry(5000), entry(4000)], next_before: entry(4000).id };
+    routes[headUrl("actions")] = fail("redis gone");
+    routes[olderUrl("events", entry(4000).id)] = fail("stream trimmed", 502);
+    mount();
+    await waitFor(() => expect(state().loaded).toBe(true));
+    expect(state().error).toBe("1 of 8 streams could not be read · redis gone");
+
+    fireEvent.click(screen.getByRole("button", { name: "older" }));
+    await waitFor(() => expect(state().fetchingOlder).toBe(false));
+    // Both slots are full now, and the banner has one line. A chip that could
+    // not be read at all outranks a stream that could not be read *further
+    // back*: the first is about what the footer is showing, the second about a
+    // page nobody has yet. Flipping the two used to be a silent edit.
+    expect(state().error).toBe("1 of 8 streams could not be read · redis gone");
+  });
+
+  it("refuses a second ↑ older while the first is in flight", async () => {
+    routes[headUrl("events")] = { entries: [entry(5000), entry(4000)], next_before: entry(4000).id };
+    mount();
+    await waitFor(() => expect(state().loaded).toBe(true));
+
+    const held = defer();
+    gate = held;
+    fireEvent.click(screen.getByRole("button", { name: "older" }));
+    expect(state().fetchingOlder).toBe(true);
+    const older = () => calls.filter((url) => url.includes("before=")).length;
+    expect(older()).toBe(1);
+
+    // The button stays pressable on purpose — `aria-disabled`, not `disabled`,
+    // so it does not throw focus to `<body>` under the finger that pressed it
+    // (`ActivityBench.tsx`). This is the only thing refusing the second read,
+    // and a second read would page the horizon past a stretch nothing has.
+    fireEvent.click(screen.getByRole("button", { name: "older" }));
+    expect(older()).toBe(1);
+
+    gate = null;
+    routes[olderUrl("events", entry(4000).id)] = { entries: [entry(2000)], next_before: null };
+    held.release();
+    await waitFor(() => expect(state().fetchingOlder).toBe(false));
+    expect(older()).toBe(1);
+    expect(rowKeys()).toHaveLength(3);
+  });
+
+  it("stays unloaded when Pause retires the first head read", async () => {
+    // Nothing failed and nothing landed: the read was retired mid-flight. The
+    // bench needs `loaded` false to say "nothing loaded yet" rather than show
+    // progress on a read that will not finish until Resume.
+    const held = defer();
+    gate = held;
+    mount();
+    expect(state().loaded).toBe(false);
+
+    gate = null;
+    routes[headUrl("events")] = { entries: [entry(1000)], next_before: null };
+    fireEvent.click(screen.getByRole("button", { name: "pause" }));
+
+    held.release();
+    await waitFor(() => expect(settled).toHaveLength(STREAMS.length));
+    await flush();
+    expect(state()).toMatchObject({ loaded: false, paused: true, heldCount: 0, error: null });
+    expect(rowKeys()).toEqual([]);
+  });
+
+  it("stamps when the pump went quiet, so the banner can say when", async () => {
+    // No test took the socket down, so the stamp at the *end* of being live was
+    // never read: deleting the cleanup left the stale banner quoting the moment
+    // the feed started rather than the moment it stopped.
+    mount();
+    await waitFor(() => expect(state().loaded).toBe(true));
+    const wentLive = state().liveAt as number;
+    expect(state()).toMatchObject({ live: true });
+    expect(typeof wentLive).toBe("number");
+
+    const dropped = wentLive + 60_000;
+    const now = vi.spyOn(Date, "now").mockReturnValue(dropped);
+    act(() => telemetry().onstatus("offline"));
+    now.mockRestore();
+
+    expect(state()).toMatchObject({ live: false, liveAt: dropped });
+  });
+
+  it("takes no row from a frame that is not an entry", async () => {
+    routes[headUrl("events")] = { entries: [entry(1000)], next_before: null };
+    mount();
+    await waitFor(() => expect(state().loaded).toBe(true));
+    const before = state().liveAt;
+
+    act(() => {
+      telemetry().deliver({ type: "subscribed", streams: ["events"] });
+      telemetry().deliver({ type: "status", detail: "redis_error" });
+      telemetry().deliver({ type: "pong" });
+      // The frame that tells the two halves of the guard apart: a type this
+      // bench has no use for, carrying a stream name it does watch. The pump's
+      // own trouble is not an event on the bus and must not become a row.
+      telemetry().deliver({
+        type: "status",
+        detail: "redis_error",
+        stream: "events",
+        id: entry(9000).id,
+        event: {},
+      } as unknown as TelemetryMessage);
+    });
+
+    expect(rowKeys()).toEqual([`events:${entry(1000).id}`]);
+    expect(state().liveAt).toBe(before);
   });
 
   it("clears the older banner the moment a retry goes out", async () => {

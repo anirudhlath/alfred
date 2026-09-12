@@ -136,6 +136,12 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       chat.close();
       telemetry.close();
       chatOnline = false;
+      // The other piece of module state this mount wrote. "Last true" is a
+      // claim about a house this mount was talking to; with the sockets closed
+      // behind it, the next mount has no business inheriting it and must earn
+      // its own stamp. Leaving it set also carried one test file's stamp into
+      // the next, which is a whole class of order-dependent failure.
+      lastTrue = null;
     };
   }, [queryClient]);
 

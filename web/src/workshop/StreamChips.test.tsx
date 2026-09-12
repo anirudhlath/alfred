@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { STREAMS, type StreamName } from "@/lib/streams";
+import { ringFill, ringText, STREAMS, type StreamName } from "@/lib/streams";
 import { StreamChips } from "./StreamChips";
 
 const counts = Object.fromEntries(STREAMS.map((name, i) => [name, i * 3])) as Record<StreamName, number>;
@@ -14,8 +14,11 @@ describe("StreamChips", () => {
     ]);
     for (const chip of chips) expect(chip).toHaveAttribute("aria-pressed", "false");
     // Nothing is soloed, so every chip wears its own hue at full strength.
-    expect(chips[2].style.borderColor).toBe("oklch(var(--ring-text-l) 0.11 120)");
-    expect(chips[2].style.color).toBe("oklch(var(--ring-text-l) 0.11 120)");
+    // `ringText(120)` rather than the string it returns: `lib/streams.test.ts`
+    // owns that spelling, and a second copy of it here would have to be found
+    // and edited by whoever changes the ring.
+    expect(chips[2].style.borderColor).toBe(ringText(120));
+    expect(chips[2].style.color).toBe(ringText(120));
     expect(chips[2].style.background).toBe("transparent");
   });
 
@@ -37,13 +40,18 @@ describe("StreamChips", () => {
     render(<StreamChips counts={counts} solo="events" onSolo={() => {}} />);
     const chips = screen.getAllByRole("button");
     expect(chips[2]).toHaveAttribute("aria-pressed", "true");
-    expect(chips[2].style.background).toBe("oklch(0.52 0.11 120)");
+    expect(chips[2].style.background).toBe(ringFill(120));
     expect(chips[2].style.color).toBe("rgb(255, 255, 255)");
     expect(chips[0]).toHaveAttribute("aria-pressed", "false");
     expect(chips[0].style.borderColor).toBe("var(--muted)");
     expect(chips[0].style.color).toBe("var(--fg2)");
     expect(chips[0].style.background).toBe("transparent");
-    // The colour recedes, the text does not: no chip is made translucent.
+    // A tripwire, not a measurement: the component writes no `opacity` at all,
+    // so this asserts the *absence* of a property and cannot fail on any
+    // present-day edit. It is here because the dimming it forbids is the thing
+    // that was tried first — 35 % opacity, which took the count to 1.31:1 in
+    // the light theme — and anyone reaching for it again will reach for this
+    // property. Delete it the day the chips stop being the only data they carry.
     for (const chip of chips) expect(chip.style.opacity).toBe("");
   });
 

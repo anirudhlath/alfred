@@ -104,6 +104,16 @@ describe("contrast ratios", () => {
     it(`${theme}: a field's placeholder reads in the field it sits in`, () => {
       expect(contrast(token(theme, "fg2"), token(theme, "field"))).toBeGreaterThanOrEqual(4.5);
     });
+
+    it(`${theme}: the label on a filled accent button reads`, () => {
+      // The Activity bench's Resume button is the one of these on this branch:
+      // `--on-accent` on `--accent` while the feed is held
+      // (`workshop/ActivityBench.tsx`). The pair exists because `--ink` is
+      // near-white in the dark theme, which is the first paint, and near-white
+      // on the accent is 1.77:1. That the button asks for the right token is
+      // `ActivityBench.test.tsx`'s to check; this is the ratio behind it.
+      expect(contrast(token(theme, "on-accent"), token(theme, "accent"))).toBeGreaterThanOrEqual(4.5);
+    });
   }
 
   it("styles ::placeholder rather than leaving it to preflight", () => {

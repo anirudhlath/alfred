@@ -71,7 +71,16 @@ describe("BenchSwitcher", () => {
 
   it("leaves every other key to the bench underneath", () => {
     const { onChange, tabs } = renderSwitcher();
-    fireEvent.keyDown(tabs[0], { key: "ArrowDown" });
+    // `fireEvent` returns false only when a handler called `preventDefault`.
+    // An unclaimed key must keep its default, or the bench below stops
+    // scrolling on Page Down and the tab order stops working on Tab.
+    expect(fireEvent.keyDown(tabs[0], { key: "ArrowDown" })).toBe(true);
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("claims the arrows, so they do not also scroll the bench", () => {
+    const { tabs } = renderSwitcher("memory");
+    expect(fireEvent.keyDown(tabs[1], { key: "ArrowRight" })).toBe(false);
+    expect(fireEvent.keyDown(tabs[1], { key: "ArrowLeft" })).toBe(false);
   });
 });

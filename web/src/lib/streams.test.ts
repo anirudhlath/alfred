@@ -234,6 +234,21 @@ describe("summarise", () => {
         one_shot: true,
       }),
     ).toEqual({ text: "trigger created: bins out", meta: "one-shot · time · by conscious" });
+    // The other arm, which nothing reached: `one_shot` is pydantic-defaulted to
+    // false, so a trigger that repeats is the ordinary case and omits the field
+    // entirely. Both spellings of it must read "recurring" rather than
+    // inheriting the last trigger's word.
+    expect(
+      summarise("events", { event_type: "trigger_created", name: "bins out", trigger_type: "time" }),
+    ).toEqual({ text: "trigger created: bins out", meta: "recurring · time" });
+    expect(
+      summarise("events", {
+        event_type: "trigger_created",
+        name: "morning brief",
+        one_shot: false,
+        created_by: "user",
+      }),
+    ).toEqual({ text: "trigger created: morning brief", meta: "recurring · by user" });
     expect(
       summarise("events", { event_type: "service_registered", service_name: "home-service", source: "home-service" }),
     ).toEqual({ text: "service registered: home-service", meta: "source home-service" });

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { idMs, STREAMS, type StreamRef } from "@/lib/streams";
 import { CANDIDATE_COUNT } from "@/lib/trace";
@@ -33,6 +33,23 @@ const RESULT: StreamEntry = {
 // A second later, joined to nothing: the front door sensor.
 const DOOR: StreamEntry = {
   id: `${ANCHOR_MS + 1000}-0`,
+  event: {
+    event_id: "7d80aa31",
+    entity_id: "binary_sensor.front_door",
+    old_state: "off",
+    new_state: "on",
+    domain: "home",
+    source: "home-service",
+  },
+};
+/**
+ * The same unjoined sensor, two seconds *before* the action — so the one
+ * adjacent node in the thread is no longer the last one. Every dashed
+ * connector the fixtures above produce comes from the node *below* the
+ * segment; this is the only one that comes from the node above it.
+ */
+const EARLY_DOOR: StreamEntry = {
+  id: `${ANCHOR_MS - 3000}-0`,
   event: {
     event_id: "7d80aa31",
     entity_id: "binary_sensor.front_door",
@@ -95,7 +112,7 @@ function mount(anchor: StreamRef | null) {
     </QueryClientProvider>
   );
   const view = render(tree(anchor));
-  return { onClose, setAnchor: (ref: StreamRef | null) => view.rerender(tree(ref)) };
+  return { onClose, client, setAnchor: (ref: StreamRef | null) => view.rerender(tree(ref)) };
 }
 
 const FOOTNOTE = "searched 8 streams · 100 entries each · ±10 min";
@@ -145,19 +162,72 @@ describe("WhySheet", () => {
       "observed media_player.tv · acted",
       "binary_sensor.front_door → on",
     ]);
+    // One line, to show the meta is `nodeMeta(node)` and lands under the row it
+    // belongs to. The component renders a bare `{nodeMeta(node)}`, and the
+    // composed string itself — every stream, every kind of link, the unreadable
+    // id — is `lib/trace.test.ts`'s to pin. Three more copies of it stood here
+    // and would have failed in two files at once for one wording change.
     const metas = items.map((item) => item.querySelector(".t-meta-strong")?.textContent ?? "");
     expect(metas[0]).toContain("AC · request 4b1d · home-service · reflex-engine · joined by request_id 4b1d");
-    expect(metas[1]).toContain("HR · request 4b1d · joined by request_id 4b1d");
-    expect(metas[2]).toContain(
-      'RX · home.light_set · request 4b1d · decision "movie started, evening, user home" · this row',
-    );
-    expect(metas[3]).toContain("HS · home · was off · via home-service · adjacent in time only");
     expect(screen.getAllByTestId("connector").map((node) => node.dataset.dashed)).toEqual([
       "false",
       "false",
       "true",
     ]);
     expect(screen.queryByText(ALONE)).toBeNull();
+  });
+
+  it("dashes the segment under an adjacent node, not only the one over it", async () => {
+    // `dashed` is `node.link === "adjacent" || next?.link === "adjacent"`, and
+    // only the second half had ever been read: the one adjacent node in the
+    // fixture above is last, so it draws no connector of its own and the dashed
+    // one over it comes from `next`. Here the neighbour sits two seconds before
+    // the action, so the segment *below* it is the one that has to be dashed.
+    pages = { actions: [ACTION], home_action_results: [RESULT], home_state: [EARLY_DOOR] };
+    mount(ANCHOR);
+    await screen.findByText(FOOTNOTE);
+
+    const items = screen.getAllByRole("listitem");
+    expect(items.map((item) => item.querySelector(".t-row")?.textContent)).toEqual([
+      "binary_sensor.front_door → on",
+      "home.light_set light.living_room",
+      "home.light_set success",
+      "observed media_player.tv · acted",
+    ]);
+    expect(screen.getAllByTestId("connector").map((node) => node.dataset.dashed)).toEqual([
+      "true",
+      "false",
+      "false",
+    ]);
+  });
+
+  it("counts more than one shallow stream in the plural", async () => {
+    // The singular is asserted below; nothing reached the other spelling, so
+    // `stream${partial === 1 ? "" : "s"}` could have been a bare `stream`.
+    const shallow = { entries: BUSY, next_before: `${ANCHOR_MS - 300_000}-0` };
+    pages = { home_state: shallow, events: shallow };
+    mount(ANCHOR);
+    await screen.findByText(`${FOOTNOTE} · 2 streams could not be read back far enough`);
+  });
+
+  it("stops reading once the sheet has been dismissed", async () => {
+    pages = { actions: [ACTION] };
+    const { setAnchor, client } = mount(ANCHOR);
+    await screen.findByText(FOOTNOTE);
+    const reads = vi.mocked(fetch).mock.calls.length;
+    expect(reads).toBe(STREAMS.length);
+
+    // `useLatched` still holds the row the thread was drawn for, so the query
+    // key is unchanged and `shown !== null` is still true: the `anchor !== null`
+    // half of the gate is the only thing that can disable the read. Without it
+    // a background refresh re-reads eight streams for a sheet nobody is
+    // looking at — and a thread is a picture of one closed ±10 min window,
+    // which is why it is not live in the first place.
+    setAnchor(null);
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ["trace"] });
+    });
+    expect(vi.mocked(fetch).mock.calls).toHaveLength(reads);
   });
 
   it("says when nothing else joined, rather than leaving a column of one unexplained", async () => {

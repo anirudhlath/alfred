@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ReconnectingSocket } from "./ws";
 import { TelemetrySocket } from "./telemetry-socket";
+import type { TelemetryMessage } from "./types";
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
@@ -358,6 +359,53 @@ describe("TelemetrySocket", () => {
     // Unsubscribing a stream already released sends nothing.
     sock.unsubscribe(["events"]);
     expect(sent()).toHaveLength(3);
+  });
+
+  /** The frame a subscribed stream produces, as the pump writes it. */
+  function frame(stream: string, id: string): TelemetryMessage {
+    return { type: "entry", stream, id, event: { n: 1 } };
+  }
+
+  it("hands every frame to every listener, and to no one who has let go", () => {
+    // The path every live row travels, and it had no test of its own: each
+    // consumer mocks this class away, so emptying the fan-out loop below — or
+    // making the unsubscribe it returns a no-op — used to leave the whole
+    // suite green while the Workshop and the Door went blind.
+    const sock = new TelemetrySocket();
+    const door: TelemetryMessage[] = [];
+    const bench: TelemetryMessage[] = [];
+    const stopDoor = sock.listen((msg) => door.push(msg));
+    sock.listen((msg) => bench.push(msg));
+    sock.connect();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+
+    ws.onmessage!({ data: JSON.stringify(frame("home_action_results", "1-0")) });
+    expect(door).toEqual([frame("home_action_results", "1-0")]);
+    expect(bench).toEqual(door);
+
+    // The Door goes; the bench is still watching, and still hears everything.
+    stopDoor();
+    ws.onmessage!({ data: JSON.stringify(frame("events", "2-0")) });
+    expect(door).toHaveLength(1);
+    expect(bench).toEqual([frame("home_action_results", "1-0"), frame("events", "2-0")]);
+  });
+
+  it("keeps its listeners across a reconnect", () => {
+    // The listener is attached to this object, not to the socket under it: a
+    // reader who stayed on the bench through a dropped connection must not have
+    // to re-subscribe to hear the frames that follow.
+    const sock = new TelemetrySocket();
+    const heard: TelemetryMessage[] = [];
+    sock.listen((msg) => heard.push(msg));
+    sock.connect();
+    FakeWebSocket.instances[0].open();
+    FakeWebSocket.instances[0].emitClose(1006);
+    vi.advanceTimersByTime(600);
+    FakeWebSocket.instances[1].open();
+
+    FakeWebSocket.instances[1].onmessage!({ data: JSON.stringify(frame("events", "3-0")) });
+    expect(heard).toEqual([frame("events", "3-0")]);
   });
 
   it("replays only what is still wanted", () => {

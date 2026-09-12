@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { FeedRow } from "@/lib/feed";
 import { hhmmss } from "@/lib/format";
+import { ringFill } from "@/lib/streams";
 import { reflexObservationsPage } from "@/test/fixtures";
 import { EventRow } from "./EventRow";
 
@@ -21,7 +22,9 @@ describe("EventRow", () => {
     );
     const monogram = screen.getByTestId("monogram");
     expect(monogram).toHaveTextContent("RX");
-    expect(monogram.style.background).toBe("oklch(0.52 0.11 210)");
+    // `ringFill(210)`, the way the stamp beside it calls `hhmmss`: the spelling
+    // of the ring is `lib/streams.test.ts`'s to pin, not a second copy's.
+    expect(monogram.style.background).toBe(ringFill(210));
     // The tile is a picture of the stream; the words beside it are what is read.
     // `\s*` because jsdom loads no stylesheet, so it cannot see that the
     // sr-only span is out of flow and does not separate it from what follows.

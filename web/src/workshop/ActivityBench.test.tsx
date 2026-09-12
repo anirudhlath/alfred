@@ -2,7 +2,6 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { FeedRow } from "@/lib/feed";
 import { STREAMS, type StreamName } from "@/lib/streams";
-import { contrast, token } from "@/test/contrast";
 import { reflexObservationsPage, userRequestsPage, userResponsesPage } from "@/test/fixtures";
 import { ActivityBench } from "./ActivityBench";
 import type { Activity } from "./useActivity";
@@ -116,14 +115,24 @@ describe("ActivityBench", () => {
     expect(screen.queryByRole("button", { name: /older/ })).toBeNull();
   });
 
-  it("says fetching, and waits, while an older page is on its way", () => {
+  it("says fetching while an older page is on its way, and stays under the finger", () => {
     const a = activity({ cursor: "1788800280000-0", fetchingOlder: true });
     render(<ActivityBench activity={a} onWhy={() => {}} />);
     const older = screen.getByRole("button", { name: "Fetching older entries" });
     expect(older).toHaveAttribute("aria-disabled", "true");
     expect(older).toHaveTextContent("↑ older · fetching before cursor 1788800280000-0");
-    // Still focusable, and `loadOlder` is what refuses the second read.
-    expect(older).not.toBeDisabled();
+    // The whole reason for `aria-disabled` over `disabled`: the button that was
+    // just pressed keeps its focus rather than throwing it to `<body>`.
+    // `expect(older).not.toBeDisabled()` used to stand here and could not fail
+    // — jest-dom reads only the `disabled` attribute, which this button never
+    // sets — so this focuses it instead, which jsdom refuses for a disabled
+    // control exactly as a browser does.
+    older.focus();
+    expect(document.activeElement).toBe(older);
+    // And the refusing is `loadOlder`'s, not the button's: the press still goes
+    // through (`useActivity.test.tsx`, "refuses a second ↑ older").
+    fireEvent.click(older);
+    expect(a.loadOlder).toHaveBeenCalledTimes(1);
   });
 
   it("says the feed stopped, and when, while the socket is down", () => {
@@ -240,10 +249,26 @@ describe("ActivityBench", () => {
     expect(screen.getByRole("button", { name: "Resume · 3 new" })).toBeInTheDocument();
   });
 
-  it("keeps the Resume button's label legible on the accent in both themes", () => {
-    for (const theme of ["dark", "light"] as const) {
-      expect(contrast(token(theme, "on-accent"), token(theme, "accent"))).toBeGreaterThanOrEqual(4.5);
-    }
+  it("asks for the token the accent was given a label colour for", () => {
+    // This used to be the ratio itself, measured in both themes and rendering
+    // nothing — a true fact about the palette with no link to the button, which
+    // left the source free to change under it. Swapping the line below for
+    // `var(--ink)` (near-white on the accent, 1.77:1, the exact bug the comment
+    // beside it warns about) kept every test in this file green.
+    //
+    // So: the button is rendered and the string it asks for is pinned here,
+    // while `test/contrast.test.ts` holds the pair behind the string to 4.5:1.
+    // jsdom resolves no `var()`, so neither half is the whole check alone.
+    const { rerender } = render(<ActivityBench activity={activity({ paused: true })} onWhy={() => {}} />);
+    const resume = screen.getByRole("button", { name: "Resume" });
+    expect(resume.style.background).toBe("var(--accent)");
+    expect(resume.style.color).toBe("var(--on-accent)");
+
+    // Running, it is the other pair: paper on ink, which is the page's own.
+    rerender(<ActivityBench activity={activity()} onWhy={() => {}} />);
+    const pause = screen.getByRole("button", { name: "Pause feed" });
+    expect(pause.style.background).toBe("var(--ink)");
+    expect(pause.style.color).toBe("var(--paper)");
   });
 
   it("All streams clears the solo and is dimmed when there is none", () => {
@@ -279,6 +304,57 @@ describe("ActivityBench", () => {
       />,
     );
     expect(scroll.top).toBe(0);
+  });
+
+  it("holds no place for a reader who has none: at the top, and in a list that shrank", () => {
+    const { rerender } = render(<ActivityBench activity={activity()} onWhy={() => {}} />);
+    const scroll = stubScroll(screen.getByRole("list"), 1000);
+
+    // Seed the measurement off a render that moves nothing, as above.
+    rerender(<ActivityBench activity={activity({ rows: [reflex, request, older] })} onWhy={() => {}} />);
+    expect(scroll.top).toBe(0);
+
+    // The reader is at the newest row, watching rows arrive. One lands, the
+    // list grows by 120 — and they stay at the top, which is the other thing
+    // this list is for. Handing back the growth here would push the row they
+    // were waiting for off the screen.
+    scroll.grow(1120);
+    rerender(<ActivityBench activity={activity({ rows: [newest, reflex, request, older] })} onWhy={() => {}} />);
+    expect(scroll.top).toBe(0);
+
+    // Now they scroll down, and the next prepend leaves the list *shorter*
+    // than it was — the high-water mark evicted more from the bottom than the
+    // new row added on top (`feed.ts`, `trim`). `grew` is negative, and
+    // "giving it back" would drag them towards the top they had left.
+    scroll.top = 400;
+    scroll.grow(1000);
+    rerender(<ActivityBench activity={activity({ rows: [reply, newest, reflex] })} onWhy={() => {}} />);
+    expect(scroll.top).toBe(400);
+  });
+
+  it("does not hold a place in a list that has never held a row", () => {
+    // The bench mounts empty and the first head page fills it: there was no
+    // previous top row, so nothing was *prepended* and there is no place to
+    // hold. The offset below is fabricated — jsdom lays nothing out, and a real
+    // empty list could not be scrolled — which is exactly what isolates this
+    // guard from the `scrollTop > 0` one that normally covers for it.
+    const { rerender } = render(<ActivityBench activity={activity({ rows: [] })} onWhy={() => {}} />);
+    const scroll = stubScroll(screen.getByRole("list"), 1000);
+    scroll.top = 400;
+
+    rerender(<ActivityBench activity={activity({ rows: [reflex, request] })} onWhy={() => {}} />);
+    expect(scroll.top).toBe(400);
+  });
+
+  it("hands the footer's chips the counts and the solo, and reports a tap", () => {
+    // The footer is the other way into one stream, and nothing above this
+    // rendered it: replacing the wiring with a no-op left the suite green.
+    const counts = Object.fromEntries(STREAMS.map((name, i) => [name, i])) as Record<StreamName, number>;
+    const a = activity({ counts, solo: "events" });
+    render(<ActivityBench activity={a} onWhy={() => {}} />);
+    expect(screen.getByRole("button", { name: "EV events, 2" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: "HS home state, 6" }));
+    expect(a.setSolo).toHaveBeenCalledWith("home_state");
   });
 
   it("re-measures when a row opens, so the next live row is worth only its own height", () => {

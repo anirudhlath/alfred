@@ -42,6 +42,18 @@ function ids(state: FeedState, stream: StreamName): string[] {
   return state.streams[stream].entries.map((e) => e.id);
 }
 
+/**
+ * A stream read to the cap and then paged 50 deeper: `MAX_PER_STREAM + 50`
+ * entries held, a high-water mark above the cap, and a cursor at `entry(500)`.
+ * The state the mark's two rules are both written against, so it is built once
+ * rather than spelled out at each of them.
+ */
+function pagedDeep(): FeedState {
+  const deep = Array.from({ length: MAX_PER_STREAM }, (_, i) => entry((MAX_PER_STREAM + 50 - i) * 1000));
+  const below = Array.from({ length: 50 }, (_, i) => entry((50 - i) * 1000));
+  return reduce([head("events", deep, deep[deep.length - 1].id), older("events", below, entry(500).id)]);
+}
+
 describe("initialFeed", () => {
   it("starts with eight empty streams, not paused, nothing held, never live", () => {
     const state = initialFeed();
@@ -99,12 +111,7 @@ describe("head pages", () => {
   });
 
   it("a page with no cursor still honours the mark, and re-arms the cursor when it trims", () => {
-    const deep = Array.from({ length: MAX_PER_STREAM }, (_, i) => entry((MAX_PER_STREAM + 50 - i) * 1000));
-    const below = Array.from({ length: 50 }, (_, i) => entry((50 - i) * 1000));
-    const paged = reduce([
-      head("events", deep, deep[deep.length - 1].id),
-      older("events", below, entry(500).id),
-    ]);
+    const paged = pagedDeep();
 
     // The server has since trimmed the stream: a head read now says it is
     // complete. What we already hold plus that page is one past the mark.
@@ -114,6 +121,21 @@ describe("head pages", () => {
     // "Complete" stops being true the moment the mark drops an entry, so the
     // cursor names the last one kept rather than staying null.
     expect(state.streams.events.nextBefore).toBe(entry(2000).id);
+  });
+
+  it("a cursorless head page completes a stream that was still paging", () => {
+    // The only other test that reaches this branch also trips the trim, which
+    // re-arms the cursor from the entries kept — so deleting the branch changed
+    // nothing there and the whole suite stayed green. Here the stream is well
+    // under the cap and nothing is evicted: the *page* is what says there is
+    // nothing older, and dropping the branch leaves the old cursor standing and
+    // an `↑ older` button pointing at a stretch the server no longer has.
+    const paging = reduce([head("events", [entry(3000), entry(2000)], entry(2000).id)]);
+    expect(paging.streams.events.nextBefore).toBe(entry(2000).id);
+
+    const state = feedReducer(paging, head("events", [entry(4000), entry(3000), entry(2000)]));
+    expect(ids(state, "events")).toEqual([4000, 3000, 2000].map((ms) => entry(ms).id));
+    expect(state.streams.events).toMatchObject({ nextBefore: null, loaded: true });
   });
 
   it("takes the page's cursor when a live frame arrived before the first page", () => {
@@ -191,12 +213,7 @@ describe("live entries", () => {
   });
 
   it("keeps the depth ↑ older fetched instead of trimming back to the cap", () => {
-    const deep = Array.from({ length: MAX_PER_STREAM }, (_, i) => entry((MAX_PER_STREAM + 50 - i) * 1000));
-    const below = Array.from({ length: 50 }, (_, i) => entry((50 - i) * 1000));
-    const paged = reduce([
-      head("events", deep, deep[deep.length - 1].id),
-      older("events", below, entry(500).id),
-    ]);
+    const paged = pagedDeep();
     expect(paged.streams.events.entries).toHaveLength(MAX_PER_STREAM + 50);
 
     const state = feedReducer(paged, live("events", entry(500000), 1));
