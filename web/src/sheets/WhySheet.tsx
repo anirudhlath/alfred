@@ -1,12 +1,27 @@
 import { useState } from "react";
 import { skipToken, useQuery } from "@tanstack/react-query";
 import { errorText } from "@/lib/api";
-import { ringFill, STREAM_INFO, STREAMS, streamLabel, summarise, type StreamRef } from "@/lib/streams";
+import {
+  ringFill,
+  rowKey,
+  STREAM_INFO,
+  STREAMS,
+  streamLabel,
+  summarise,
+  type StreamRef,
+} from "@/lib/streams";
 import { CANDIDATE_COUNT, fetchThread, JOIN_WINDOW_MS, nodeMeta, type Thread } from "@/lib/trace";
 import { Sheet } from "@/shell/Sheet";
 
 const INTRO =
   "Every link drawn solid is joined by an id the server holds. Dashed means adjacent in time only.";
+/**
+ * A thread of one is common and means something: a passive reflex observation
+ * carries no `event_id` and no action, so `tokens()` yields nothing for it and
+ * only adjacency could admit anything. Without this line the sheet promises
+ * solid and dashed links, then shows neither, and says nothing about why.
+ */
+const ALONE = "Nothing else in the eight streams is joined to this row.";
 
 export interface WhySheetProps {
   /** The row asked about; `null` closes the sheet. */
@@ -22,13 +37,16 @@ export interface WhySheetProps {
  * window (`trace.ts`, `isPartial`) — busy enough that causes older than the
  * page's end are simply not here. Said out loud, because "searched 8 streams"
  * on its own reads as "I looked everywhere", which is the exact misreading the
- * data layer went to the trouble of detecting.
+ * data layer went to the trouble of detecting. The word `stream` is repeated
+ * in the suffix rather than left implied: a bare `1` beside `100 entries each`
+ * reads as a count of entries.
  */
 function footnote({ searched, partial }: Thread): string {
   const streams =
     searched === STREAMS.length ? `${STREAMS.length} streams` : `${searched} of ${STREAMS.length} streams`;
   const line = `searched ${streams} · ${CANDIDATE_COUNT} entries each · ±${JOIN_WINDOW_MS / 60_000} min`;
-  return partial > 0 ? `${line} · ${partial} could not be read back far enough` : line;
+  if (partial === 0) return line;
+  return `${line} · ${partial} stream${partial === 1 ? "" : "s"} could not be read back far enough`;
 }
 
 /**
@@ -50,9 +68,27 @@ export function WhySheet({ anchor, onClose }: WhySheetProps) {
     // `shown` and is then thrown away. `anchor` only gates it — the read
     // happens while open, and the cached thread survives the leave.
     queryFn: anchor !== null && shown !== null ? () => fetchThread(shown) : skipToken,
+    // The app's default is 10 s with a refetch on focus (`QueryProvider.tsx`),
+    // tuned for the Room's live vitals. A thread is not live: it is a picture
+    // of one fixed ±10 min window, and by the time that much has passed the
+    // window has closed behind it and nothing can join it any more. Without
+    // this, backgrounding the phone re-reads eight streams for the same
+    // unchanged answer. A constant, not a deadline off `Date.now()`, which
+    // would make the render impure.
+    staleTime: JOIN_WINDOW_MS,
   });
 
   const nodes = thread.data?.nodes ?? [];
+  // One region for the sheet's life, contents changing: VoiceOver can miss a
+  // region inserted with its text already in it, and a thread that would not
+  // read must not fail silently (`room/OfflineNote.tsx` documents the same
+  // pattern for the same reason). Being one region, it also needs no name to
+  // be told from a second. `status`, not `alert`: news, not an interrupt.
+  const note = thread.isLoading
+    ? `reading ${STREAMS.length} streams…`
+    : thread.isError
+      ? errorText(thread.error)
+      : "";
 
   return (
     <Sheet open={anchor !== null} title="Why Alfred did that" onClose={onClose}>
@@ -60,32 +96,26 @@ export function WhySheet({ anchor, onClose }: WhySheetProps) {
         {INTRO}
       </p>
 
-      {/* At most one of these is ever mounted — a query is pending or errored,
-          never both — so neither needs a name to be told from the other, the
-          way `ActivityBench`'s two permanent regions do. `status` and not
-          `alert`: a thread that would not read is news, not an interrupt. */}
-      {thread.isLoading ? (
-        <p role="status" className="t-meta-strong">
-          reading {STREAMS.length} streams…
-        </p>
-      ) : null}
-
-      {thread.isError ? (
-        <p role="status" className="t-meta-strong">
-          {errorText(thread.error)}
-        </p>
-      ) : null}
+      {/* Empty, it is `sr-only` — out of flow, so the sheet's `gap-3` does not
+          open around a box with nothing in it. */}
+      <p role="status" className={note ? "t-meta-strong" : "sr-only"}>
+        {note}
+      </p>
 
       {thread.data ? (
         <>
-          <ol className="m-0 list-none p-0 pt-1.5">
+          {/* An explicit `role="list"`: preflight and `list-none` strip
+              list-style, and WebKit strips the list semantics with it, so
+              VoiceOver would read the chain as loose text with no item
+              positions (`gates/StepList.tsx`). */}
+          <ol role="list" className="m-0 list-none p-0 pt-1.5">
             {nodes.map((node, index) => {
               const next = nodes[index + 1];
               const { mono, hue } = STREAM_INFO[node.stream];
               // A segment touching an adjacent node is dashed; every other is a join.
               const dashed = node.link === "adjacent" || next?.link === "adjacent";
               return (
-                <li key={`${node.stream}:${node.entry.id}`} className="grid grid-cols-[22px_1fr] gap-3">
+                <li key={rowKey(node)} className="grid grid-cols-[22px_1fr] gap-3">
                   <div className="flex flex-col items-center">
                     {/* `ringFill`, not `ring`: white on L 0.62 is 3.45:1
                         (streams.ts, ringFill). The tile is a picture of the
@@ -122,6 +152,13 @@ export function WhySheet({ anchor, onClose }: WhySheetProps) {
               );
             })}
           </ol>
+          {/* `--fg2`, not the `--muted` its sibling line in `HeldBackSheet`
+              uses: 3.46:1 is under AA at this size too. */}
+          {nodes.length === 1 ? (
+            <div className="t-row" style={{ color: "var(--fg2)" }}>
+              {ALONE}
+            </div>
+          ) : null}
           <p className="t-meta-strong">{footnote(thread.data)}</p>
         </>
       ) : null}

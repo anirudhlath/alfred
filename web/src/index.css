@@ -248,8 +248,15 @@
      beside the line it stamps, a count beside the thing counted — stays on
      `.t-meta`, and anything a reader must take on its own to trust the screen
      takes this one. The Workshop's status line, its unbuilt-bench note, and
-     the Activity bench's read-error and empty-list lines are the four, because
-     each is the only words in its region.
+     the Activity bench's read-error and empty-list lines are four, because
+     each is the only words in its region. The Why sheet adds three: its one
+     live region (reading, or the read that failed), the footnote saying how
+     much of the past was searched, and every thread node's meta line. That
+     last is the first site here that is *not* the only words in its region —
+     it sits under the node's `.t-row` — and it still qualifies under the rule
+     above: it is the whole evidence for the link drawn beside it, and a reader
+     who cannot make out `joined by request_id 4b1d` cannot tell a join from a
+     coincidence.
      The ~17 other `.t-meta` sites are phase-1 scope and unaudited: some sit on
      --ink, where --muted is the wrong family of token entirely and
      --paper-muted is the answer, so they need measuring before they move. */

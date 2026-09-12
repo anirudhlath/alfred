@@ -1,19 +1,19 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { STREAMS, type StreamRef } from "@/lib/streams";
+import { idMs, STREAMS, type StreamRef } from "@/lib/streams";
 import { CANDIDATE_COUNT } from "@/lib/trace";
-import type { StreamEntry } from "@/lib/types";
+import type { StreamEntry, StreamPage } from "@/lib/types";
 import { reflexObservationsPage } from "@/test/fixtures";
 import { WhySheet } from "./WhySheet";
 
 // obs-1: the observation that dimmed the lights when the TV started (request 4b1d).
 const ANCHOR: StreamRef = { stream: "reflex_observations", entry: reflexObservationsPage.entries[2] };
-const ANCHOR_MS = 1788800280000;
+const ANCHOR_MS = idMs(ANCHOR.entry.id);
 
 // obs-2: a different row, so re-asking has something else to find.
 const OTHER: StreamRef = { stream: "reflex_observations", entry: reflexObservationsPage.entries[1] };
-const OTHER_MS = 1788807660000;
+const OTHER_MS = idMs(OTHER.entry.id);
 
 const ACTION: StreamEntry = {
   id: `${ANCHOR_MS - 1000}-0`,
@@ -68,13 +68,8 @@ const BUSY: StreamEntry[] = Array.from({ length: CANDIDATE_COUNT }, (_, index) =
   },
 }));
 
-interface Page {
-  entries: StreamEntry[];
-  next_before: string | null;
-}
-
 /** Entries per stream, an HTTP status to fail that stream with, or a whole page. Unlisted streams are empty. */
-let pages: Record<string, StreamEntry[] | number | Page> = {};
+let pages: Record<string, StreamEntry[] | number | StreamPage> = {};
 
 function stubFetch(): void {
   vi.stubGlobal(
@@ -104,6 +99,7 @@ function mount(anchor: StreamRef | null) {
 }
 
 const FOOTNOTE = "searched 8 streams · 100 entries each · ±10 min";
+const ALONE = "Nothing else in the eight streams is joined to this row.";
 
 beforeEach(() => {
   pages = {};
@@ -129,7 +125,9 @@ describe("WhySheet", () => {
     expect(screen.getByRole("status")).toHaveTextContent("reading 8 streams…");
 
     await screen.findByText(FOOTNOTE);
-    expect(screen.queryByRole("status")).toBeNull();
+    // The region stays mounted and empties, rather than unmounting: a region
+    // inserted with its text already in it can go unannounced.
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
   });
 
   it("draws the thread oldest first: solid into joined nodes, dashed into neighbours", async () => {
@@ -137,6 +135,9 @@ describe("WhySheet", () => {
     mount(ANCHOR);
     await screen.findByText(FOOTNOTE);
 
+    // Explicit, because WebKit drops the list role with the list-style
+    // preflight strips (`gates/StepList.tsx`); jsdom would not notice.
+    expect(screen.getByRole("list")).toHaveAttribute("role", "list");
     const items = screen.getAllByRole("listitem");
     expect(items.map((item) => item.querySelector(".t-row")?.textContent)).toEqual([
       "home.light_set light.living_room",
@@ -156,6 +157,15 @@ describe("WhySheet", () => {
       "false",
       "true",
     ]);
+    expect(screen.queryByText(ALONE)).toBeNull();
+  });
+
+  it("says when nothing else joined, rather than leaving a column of one unexplained", async () => {
+    mount(ANCHOR);
+    await screen.findByText(FOOTNOTE);
+
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+    expect(screen.getByText(ALONE)).toBeInTheDocument();
   });
 
   it("names each node's stream for a screen reader, since the monogram is a picture", async () => {
@@ -168,7 +178,7 @@ describe("WhySheet", () => {
       "reflex observations, ",
     ]);
     // The tile itself is a picture and says nothing.
-    expect(screen.getAllByText("AC")[0]).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByText("AC")).toHaveAttribute("aria-hidden", "true");
   });
 
   it("says how many streams it could search", async () => {
@@ -181,7 +191,7 @@ describe("WhySheet", () => {
   it("says when a stream could not be read back far enough", async () => {
     pages = { home_state: { entries: BUSY, next_before: `${ANCHOR_MS - 300_000}-0` } };
     mount(ANCHOR);
-    await screen.findByText(`${FOOTNOTE} · 1 could not be read back far enough`);
+    await screen.findByText(`${FOOTNOTE} · 1 stream could not be read back far enough`);
     expect(screen.getAllByRole("listitem")).toHaveLength(1);
   });
 
@@ -201,6 +211,19 @@ describe("WhySheet", () => {
     setAnchor(OTHER);
     await screen.findByText("home.fan_set fan.bathroom");
     expect(screen.queryByText("home.light_set light.living_room")).toBeNull();
+  });
+
+  it("does not re-read eight streams when the same row asks again", async () => {
+    pages = { actions: [ACTION] };
+    const { setAnchor } = mount(ANCHOR);
+    await screen.findByText(FOOTNOTE);
+    const reads = vi.mocked(fetch).mock.calls.length;
+    expect(reads).toBe(STREAMS.length);
+
+    setAnchor(null);
+    setAnchor(ANCHOR);
+    await screen.findByText(FOOTNOTE);
+    expect(vi.mocked(fetch).mock.calls).toHaveLength(reads);
   });
 
   it("keeps the thread on screen while it leaves", async () => {
