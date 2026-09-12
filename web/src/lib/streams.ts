@@ -122,6 +122,16 @@ export interface StreamRef {
   entry: StreamEntry;
 }
 
+/**
+ * `${stream}:${id}` — one entry's identity across all eight streams: the
+ * feed's React key, and the set member the thread dedupes on. Here beside the
+ * `StreamRef` it keys rather than in either caller, because two derivations
+ * that drifted apart would let one entry count as two.
+ */
+export function rowKey({ stream, entry }: StreamRef): string {
+  return `${stream}:${entry.id}`;
+}
+
 export interface Summary {
   /** The row's line: 14 px, ellipsised. */
   text: string;

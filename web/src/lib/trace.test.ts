@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { StreamPage } from "./types";
 import type { StreamName, StreamRef } from "./streams";
 import {
+  ADJACENT_MS,
   buildThread,
+  ENTITY_MS,
   fetchThread,
   fetchThreadCandidates,
   JOIN_WINDOW_MS,
@@ -13,6 +15,8 @@ import {
 
 // 21:13:20 on the device's clock, so hhmmss reads the same under CI's UTC and on the phone.
 const T0 = new Date(2026, 8, 7, 21, 13, 20).getTime();
+// Every window is measured from the anchor, not from T0; the edge cases say so.
+const ANCHOR_MS = T0 + 2000;
 
 function ref(stream: StreamName, ms: number, event: Record<string, unknown>): StreamRef {
   return { stream, entry: { id: `${ms}-0`, event } };
@@ -49,7 +53,7 @@ const RESULT = ref("home_action_results", T0 + 1500, {
   tool_name: "home.light_set",
   status: "success",
 });
-const ANCHOR = ref("reflex_observations", T0 + 2000, {
+const ANCHOR = ref("reflex_observations", ANCHOR_MS, {
   event_id: "e8f9a0b1",
   origin: "state_change",
   trigger_event: TV.entry.event,
@@ -113,6 +117,46 @@ describe("buildThread", () => {
     });
   });
 
+  it("reaches a fired trigger by event_id, and not a second firing of the same trigger", () => {
+    // A trigger id names the rule, not the firing. Joining on it would admit
+    // every firing in the window — and then walk from the second firing into
+    // its own action and observation, a whole unrelated episode drawn solid.
+    const firing = ref("events", T0, {
+      event_id: "a1b2c3d4",
+      event_type: "trigger_fired",
+      trigger_id: "trg_dusk",
+      trigger_name: "lamp at dusk",
+    });
+    const anchor = ref("reflex_observations", ANCHOR_MS, {
+      event_id: "e8f9a0b1",
+      origin: "trigger",
+      trigger_event: firing.entry.event,
+      action: ACTION.entry.event,
+    });
+    const again = ref("events", T0 + 120_000, {
+      event_id: "b2c3d4e5",
+      event_type: "trigger_fired",
+      trigger_id: "trg_dusk",
+      trigger_name: "lamp at dusk",
+    });
+    const laterAction = ref("actions", T0 + 120_500, {
+      event_id: "c3d4e5f6",
+      request_id: "9e00aaaa",
+      tool_name: "home.light_set",
+      parameters: { entity_id: "light.hall" },
+    });
+    const laterObservation = ref("reflex_observations", T0 + 121_000, {
+      event_id: "d4e5f6a7",
+      origin: "trigger",
+      trigger_event: again.entry.event,
+      action: laterAction.entry.event,
+    });
+
+    const nodes = buildThread(anchor, [firing, again, laterAction, laterObservation]);
+    expect(linkOf(nodes, firing)).toEqual({ key: "event_id", value: "a1b2c3d4" });
+    expect(ids(nodes)).toEqual([firing.entry.id, anchor.entry.id]);
+  });
+
   it("follows joins through nodes it has admitted: the reply naming the tool, then the request in its session", () => {
     const reply = ref("user_responses", T0 + 2500, {
       event_id: "r1",
@@ -142,20 +186,33 @@ describe("buildThread", () => {
     expect(linkOf(buildThread(ANCHOR, [ACTION, earlier]), earlier)).toBe("adjacent");
   });
 
-  it("attributes a state change to an action only within a minute of it", () => {
+  it("attributes a state change to an action within a minute of it, and no longer", () => {
     // 61 s after the observation, longer after the action it carries.
-    const late = ref("home_state", T0 + 2000 + 61_000, LIGHT.entry.event);
+    const late = ref("home_state", ANCHOR_MS + 61_000, LIGHT.entry.event);
     expect(linkOf(buildThread(ANCHOR, [ACTION, late]), late)).toBeUndefined();
+
+    // A second action, on an entity nothing else in the thread names, so this
+    // state change has exactly one candidate join — and it is exactly a minute.
+    const hall = ref("actions", T0 + 600, {
+      event_id: "aa11bb22",
+      request_id: "4b1d9e00",
+      tool_name: "home.light_set",
+      parameters: { entity_id: "light.hall" },
+    });
+    const edge = ref("home_state", T0 + 600 + ENTITY_MS, { event_id: "s1", entity_id: "light.hall", new_state: "on" });
+    expect(linkOf(buildThread(ANCHOR, [hall, edge]), edge)).toEqual({ key: "entity_id", value: "light.hall" });
   });
 
-  it("ignores an id join outside the ten-minute window", () => {
-    const stale = ref("home_action_results", T0 - JOIN_WINDOW_MS - 1, RESULT.entry.event);
+  it("takes an id join exactly on the ten-minute window and ignores one a millisecond past it", () => {
+    const edge = ref("home_action_results", ANCHOR_MS - JOIN_WINDOW_MS, RESULT.entry.event);
+    const stale = ref("home_action_results", ANCHOR_MS - JOIN_WINDOW_MS - 1, RESULT.entry.event);
+    expect(linkOf(buildThread(ANCHOR, [edge]), edge)).toEqual({ key: "request_id", value: "4b1d9e00" });
     expect(ids(buildThread(ANCHOR, [stale]))).toEqual([ANCHOR.entry.id]);
   });
 
   it("shows what is merely near in time as adjacent, nearest the anchor first, at most six", () => {
     const near = Array.from({ length: 8 }, (_, i) =>
-      ref("home_state", T0 + 2000 + (i + 1) * 100, { event_id: `n${i}`, entity_id: `sensor.${i}`, new_state: String(i) }),
+      ref("home_state", ANCHOR_MS + (i + 1) * 100, { event_id: `n${i}`, entity_id: `sensor.${i}`, new_state: String(i) }),
     );
     const nodes = buildThread(ANCHOR, [...near, PARCEL]);
     const adjacent = nodes.filter((n) => n.link === "adjacent");
@@ -174,6 +231,11 @@ describe("buildThread", () => {
     });
     expect(linkOf(buildThread(ANCHOR, [nearTv]), nearTv)).toBeUndefined();
     expect(linkOf(buildThread(ANCHOR, [TV, nearTv]), nearTv)).toBe("adjacent");
+
+    // Exactly ADJACENT_MS from TV, and further than that from the anchor.
+    const edge = ref("events", T0 - ADJACENT_MS, { event_id: "ev-2", event_type: "state_changed" });
+    expect(linkOf(buildThread(ANCHOR, [edge]), edge)).toBeUndefined();
+    expect(linkOf(buildThread(ANCHOR, [TV, edge]), edge)).toBe("adjacent");
   });
 
   it("orders oldest first, catalogue order on a tie", () => {
@@ -186,7 +248,7 @@ describe("buildThread", () => {
       `actions@${T0 + 500}-0`,
       `home_state@${T0 + 1200}-0`,
       `home_action_results@${T0 + 1500}-0`,
-      `reflex_observations@${T0 + 2000}-0`,
+      `reflex_observations@${ANCHOR_MS}-0`,
     ]);
   });
 });
@@ -209,6 +271,48 @@ describe("nodeMeta", () => {
     const nodes = buildThread(ANCHOR, [ACTION, LIGHT, TV]);
     expect(nodeMeta(node(nodes, LIGHT))).toContain("joined by entity_id light.living_room");
     expect(nodeMeta(node(nodes, TV))).toContain("joined by event_id 9c41");
+  });
+
+  it("prints a session id whole, because the summary beside it does", () => {
+    const reply = ref("user_responses", T0 + 2500, {
+      event_id: "r1",
+      session_id: "sess_9f3a7c21",
+      text: "Dimmed.",
+      actions_taken: ["home.light_set"],
+    });
+    const request = ref("user_requests", T0 + 2400, {
+      event_id: "q1",
+      session_id: "sess_9f3a7c21",
+      content: "Movie time",
+      channel: "voice",
+      content_type: "text",
+    });
+    const nodes = buildThread(ANCHOR, [ACTION, reply, request]);
+    // One id, one spelling: `session sess_9f3a7c21 · … · joined by session_id sess` would be two.
+    expect(nodeMeta(node(nodes, request))).toBe(
+      "21:13:22 · UR · session sess_9f3a7c21 · voice · text · joined by session_id sess_9f3a7c21",
+    );
+  });
+
+  it("leaves no empty part when the event's summary has no meta at all", () => {
+    const bare = ref("home_action_results", ANCHOR_MS + 100, {
+      event_id: "z1",
+      tool_name: "home.light_set",
+      status: "success",
+    });
+    expect(nodeMeta(node(buildThread(ANCHOR, [bare]), bare))).toBe("21:13:22 · HR · adjacent in time only");
+  });
+
+  // An id the client cannot read is 0 ms, and 0 ms is a real instant: rendered
+  // straight it reads as a 1970 clock, a made-up value on a line whose whole
+  // job is to be trustworthy. `EventRow` says `--:--:--`; so does this.
+  it("stamps an id it cannot read as --:--:--, not a 1970 clock", () => {
+    const broken: ThreadNode = {
+      stream: "events",
+      entry: { id: "not-an-id", event: { source: "mqtt-bridge" } },
+      link: "adjacent",
+    };
+    expect(nodeMeta(broken)).toBe("--:--:-- · EV · source mqtt-bridge · adjacent in time only");
   });
 });
 
@@ -239,14 +343,41 @@ describe("fetchThreadCandidates", () => {
       }),
     );
 
-    const { candidates, searched } = await fetchThreadCandidates(ANCHOR);
+    const { candidates, searched, partial } = await fetchThreadCandidates(ANCHOR);
 
-    const before = `${T0 + 2000 + JOIN_WINDOW_MS + 1}-0`;
+    const before = `${ANCHOR_MS + JOIN_WINDOW_MS + 1}-0`;
     expect(calls).toHaveLength(8);
     expect(calls[0]).toBe(`/api/admin/streams/user_requests?count=100&before=${before}`);
     expect(new Set(calls.map((url) => url.split("?")[1]))).toEqual(new Set([`count=100&before=${before}`]));
     expect(candidates).toEqual([TV]);
     expect(searched).toBe(7);
+    // Every page that answered was the whole of its stream in the window.
+    expect(partial).toBe(0);
+  });
+
+  it("counts a stream too busy to be read back to the window's start", async () => {
+    // A full page (`next_before` is set only on one) that stops after the
+    // window's start: everything before the anchor is behind it, unseen.
+    const busy = Array.from({ length: 3 }, (_, i) => ref("home_state", T0 + 1000 + i, { event_id: `b${i}` }).entry);
+    // Also a full page, but it reaches exactly the window's start: complete.
+    const deep = [ref("home_action_results", ANCHOR_MS - JOIN_WINDOW_MS, { event_id: "d0" }).entry];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        const body = url.startsWith("/api/admin/streams/home_state?")
+          ? { entries: busy, next_before: `${T0 + 1000}-0` }
+          : url.startsWith("/api/admin/streams/home_action_results?")
+            ? { entries: deep, next_before: `${ANCHOR_MS - JOIN_WINDOW_MS}-0` }
+            : empty;
+        return new Response(JSON.stringify(body), { status: 200 });
+      }),
+    );
+
+    const { searched, partial } = await fetchThreadCandidates(ANCHOR);
+
+    expect(searched).toBe(8);
+    expect(partial).toBe(1);
   });
 
   it("fails when no stream could be read, with the reason", async () => {
@@ -276,5 +407,6 @@ describe("fetchThreadCandidates", () => {
 
     expect(ids(thread.nodes)).toEqual([TV.entry.id, ACTION.entry.id, ANCHOR.entry.id]);
     expect(thread.searched).toBe(8);
+    expect(thread.partial).toBe(0);
   });
 });

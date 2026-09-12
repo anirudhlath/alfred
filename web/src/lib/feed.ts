@@ -1,4 +1,4 @@
-import { compareIds, STREAMS, type StreamName, type StreamRef } from "./streams";
+import { compareIds, rowKey, STREAMS, type StreamName, type StreamRef } from "./streams";
 import type { StreamEntry, StreamPage } from "./types";
 
 /**
@@ -45,9 +45,8 @@ export type FeedEvent =
   | { type: "pause" }
   | { type: "resume" };
 
-export function rowKey(stream: StreamName, id: string): string {
-  return `${stream}:${id}`;
-}
+/** Re-exported from `streams.ts`, where it now sits beside the `StreamRef` it keys. */
+export { rowKey };
 
 export function initialFeed(): FeedState {
   const streams = {} as Record<StreamName, StreamFeed>;
@@ -134,7 +133,8 @@ export function feedReducer(state: FeedState, event: FeedEvent): FeedState {
       ) {
         return { ...state, liveAt: event.at };
       }
-      const row: FeedRow = { stream: event.stream, entry: event.entry, key: rowKey(event.stream, event.entry.id) };
+      const ref: StreamRef = { stream: event.stream, entry: event.entry };
+      const row: FeedRow = { ...ref, key: rowKey(ref) };
       if (state.paused) {
         const held = state.held.some((h) => h.key === row.key) ? state.held : [...state.held, row];
         return { ...state, held, liveAt: event.at };
@@ -197,7 +197,7 @@ export function mergeRows(
   for (const stream of streams) {
     for (const entry of state.streams[stream].entries) {
       if (horizon === null || compareIds(entry.id, horizon) >= 0) {
-        rows.push({ stream, entry, key: rowKey(stream, entry.id) });
+        rows.push({ stream, entry, key: rowKey({ stream, entry }) });
       }
     }
   }
