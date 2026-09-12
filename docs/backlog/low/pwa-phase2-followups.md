@@ -107,8 +107,9 @@ so the Door's palette is settled in one pass rather than two.
 `Room.tsx`'s `closeWorkshop` `useCallback` and `memo(Workshop)` are load-bearing
 together: without both, every Room render — a chat frame, the 30 s overview poll, the
 Door's once-a-second `now` while a fuse counts — walks `WorkshopPanel` →
-`ActivityBench` → up to ~400 deliberately unmemoised `EventRow`s, each re-running
-`summarise`. Removing either leaves all 798 tests passing. The only thing protecting the
+`ActivityBench` → every mounted `EventRow`, all of them deliberately unmemoised, each
+re-running `summarise`. That is up to 3 200 of them with nothing solo'd, not 400: the cap
+is per stream and `mergeRows` merges eight (§1). Removing either leaves all 798 tests passing. The only thing protecting the
 pair is the comments in `Workshop.tsx` and `Room.tsx` pointing at each other.
 **Acceptance:** a render-count assertion on `EventRow` under an unrelated Room re-render,
 or a lint rule — worth writing the first time this regresses, not before.

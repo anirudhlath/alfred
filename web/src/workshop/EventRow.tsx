@@ -34,8 +34,9 @@ function stamp(id: string): string {
  * hidden or renamed (spec §5.2).
  *
  * The tile is a picture of the stream, so it is `aria-hidden` and the name is
- * said in words beside it. Unmemoised, and the bench renders up to ~400 of
- * these: its handlers are per-row closures, so a shallow compare would miss on
+ * said in words beside it. Unmemoised, and the bench renders up to 3 200 of
+ * these — `MAX_PER_STREAM` is 400 per stream and the merged list is eight —
+ * because its handlers are per-row closures, so a shallow compare would miss on
  * every render and cost more than it saved. What keeps that affordable is that
  * the bench only renders when something it owns changes — `Workshop` is
  * `memo`ised precisely so the Room's unrelated re-renders stop above it.

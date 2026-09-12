@@ -60,7 +60,7 @@ web/
       chat-socket.ts     # ChatSocket over /ws (channel "web_pwa", timezone, session_id)
       telemetry-socket.ts# TelemetrySocket over /ws/telemetry; subscriptions refcounted
       types.ts           # The shared type contract (hand-mirrors the bus/admin schemas)
-      format.ts          # hhmm, dayMonth, dayLabel, mmss, usd, evs, shortId,
+      format.ts          # hhmm, hhmmss, dayMonth, dayLabel, mmss, usd, evs, shortId,
                          # humaniseTool, rawCall, notificationText
       theme.ts           # Theme, THEME_KEY, resolveInitialTheme, applyTheme, storedTheme
       viewport.ts        # installViewportVars, keyboardInset, useKeyboardOpen
@@ -73,9 +73,10 @@ web/
                          # sessionWindow, withDividers, SESSION_IDLE_MS
       actions.ts         # actionReducer, fuseRemaining, tombstoneItems, the three fetches
       slide.ts           # CONFIRM_RATIO, slideKnob, hintOpacity
-      streams.ts         # STREAMS, STREAM_INFO, ring/ringFill/ringText, idMs/compareIds,
-                         # fetchStreamPage, rowKey, summarise — the eight streams and
-                         # one line for any event on any of them
+      streams.ts         # STREAMS, STREAM_INFO, isStreamName, streamLabel,
+                         # ring/ringFill/ringText, idMs/compareIds, fetchStreamPage,
+                         # rowKey, summarise, and the shared scalar/record/strings —
+                         # the eight streams and one line for any event on any of them
       feed.ts            # feedReducer, mergeRows, olderTargets — eight paged lists,
                          # pause/hold, the horizon; MAX_PER_STREAM
       trace.ts           # fetchThread, buildThread, nodeMeta — the causal thread
@@ -110,7 +111,7 @@ web/
       Composer.tsx       # 50px field, send / hold slot, keyboard padding
       HoldToTalk.tsx     # Pointer hold, mic, caption, bars
       WorkshopHandle.tsx # The 44px handle under the composer; hidden with the keyboard up
-      useOverview.ts     # ["overview"], 30s poll, isFirstRun(), sessionIdleMs()
+      useOverview.ts     # ["overview"], 30s poll, isFirstRun(), sessionIdleMs(), rateText()
       useRoomHistory.ts  # ["room-history"], read once, re-read on return
       useRoom.ts         # Live timeline state, the session window, send,
                          # unsent queue, no-reply timeout
@@ -136,6 +137,7 @@ web/
     test/
       setup.ts      # jsdom stubs: matchMedia, ResizeObserver, visualViewport, PointerEvent
       fixtures.ts   # Shared fixtures: overview, streams, deferred, pending actions
+      contrast.ts   # WCAG ratios over the palette, restated from index.css
     index.css     # Tailwind import, fonts, tokens per [data-theme], @theme inline,
                   # the type scale, keyframes, safe areas, the fuse arc and its masks
     main.tsx      # installViewportVars() → installAudioUnlock() → createRoot
@@ -198,16 +200,20 @@ decorative — a stamp beside the line it stamps, a count beside the thing count
 on `.t-meta`, and anything a reader must take on its own to trust the screen takes
 `.t-meta-strong`. The sizes outside the scale are written as
 explicit arbitrary values: 15px (body copy in the gates, sheets, composer and Door),
-16px (the gates' buttons, the Door's title and pill), 13px (the offline, DND and banner
-notes), 13.5px (the held-back sheet's note), 11px (the Door's mono labels), 11.5px (the
-raw call) and 10.5px (the bubbles' stamps).
+16px (the gates' buttons, the Door's title and pill), 14px (an event row's line and the
+bench's `All streams`), 13.5px (the held-back sheet's note and the Why sheet's intro),
+13px (the offline, DND and banner notes, the Room's `why?`, the bench's stale banner, its
+row pills and its four tabs), 11.5px (the raw call), 11px (the Door's mono labels),
+10.5px (the bubbles' stamps) and 10px (the stream chips).
 
 ### The closed status vocabulary
 
 System state is said in mono, lower case, and only in the words spec §10 closes:
 `queued`, `applied`, `last true HH:MM`, `unknown since HH:MM`, `hot / cold`,
 `candidate · active · dormant · archived`, `expired · not done`,
-`takes effect within 60 s`. The Room uses the first three and `expired · not done`; the
+`takes effect within 60 s`. The Room and the Door use the first three and
+`expired · not done` — `queued` and `applied` are the Door's phase pill and foot line,
+not the Room's; the
 Workshop's status line adds the handoff's `live · N ev/s`, `paused · N new` and
 `last true HH:MM · not live`; the rest are the phase-3 benches' and arrive with them. The
 one exception to mono-and-lower-case is
@@ -370,10 +376,14 @@ action and result, drawing solid connectors across two unrelated episodes. Up to
 unjoined entries within five seconds of a joined one are added as `adjacent in time
 only`, drawn with a dashed connector.
 
-A thread of one is common and means something — a passive observation carries no
-`event_id` and no action, so nothing can join to it — and the sheet says so rather than
-promising links and showing none: `Nothing else in the eight streams is joined to this
-row.` The footnote states what was searched (`searched 8 streams · 100 entries each ·
+A thread of one means one thing only: nothing the anchor's ids reach was inside the
+read. It is not the ordinary case for a passive observation — every bus event carries an
+`event_id` (`bus/schemas/events.py`) and `trigger_event` is the originating event's full
+dump (`core/reflex/runner.py`), so an observation with no action still normally joins the
+`home_state` row that caused it. A lone anchor is that row having aged past its stream's
+hundred entries, or an anchor whose schema carries no id anything else in the window
+shares. The sheet says so rather than promising solid and dashed links and then showing
+neither: `Nothing else in the eight streams is joined to this row.` The footnote states what was searched (`searched 8 streams · 100 entries each ·
 ±10 min`, or `N of 8` when some read failed) and appends
 ` · N stream(s) could not be read back far enough` for every stream whose page both
 filled and stopped inside the window — a stream busy enough to fill its hundred entries
@@ -404,7 +414,7 @@ DoorProvider → Routes`. `DoorProvider` sits inside `AuthGate` so nothing reads
 
 | Kind | Keys |
 |---|---|
-| TanStack Query | `["auth-status"]`, `["overview"]`, `["integrations"]`, `["attention"]`, `["room-history"]`, `["deferred"]`, `["pending-actions"]` |
+| TanStack Query | `["auth-status"]`, `["overview"]`, `["integrations"]`, `["attention"]`, `["room-history"]`, `["deferred"]`, `["pending-actions"]`, `["trace", stream, id]` (the Why sheet — `staleTime` of the join window, not the app's 10 s) |
 | `localStorage` | `alfred.theme`, `alfred.device`, `alfred.unsent`, `alfred.session`, `alfred.session-at` — every key is `alfred.<noun>`, `alfred.session-at` the one compound noun |
 
 ---
@@ -537,10 +547,9 @@ subscribes to all eight while it is up and lets them go when it leaves.
 {"type": "ping"}
 ```
 
-The server also takes `{"type": "unsubscribe", "streams": [...]}`. `TelemetrySocket`
-counts wanters per stream: the frame goes out when a stream's count reaches zero, and
-`subscribe` goes out only when it leaves zero — so the Workshop closing never takes the
-Door's stream with it. Both methods walk `new Set(streams)`, so a name repeated in one
+`TelemetrySocket` counts wanters per stream: `subscribe` goes out only when a count
+leaves zero, `unsubscribe` only when one reaches it — so the Workshop closing never takes
+the Door's stream with it. Both methods walk `new Set(streams)`, so a name repeated in one
 call is one wanter and `subscribe(["events", "events"])` is released by a single
 `unsubscribe`. Every `subscribe` owes exactly one `unsubscribe`; the Door never pays,
 deliberately, and an over-counted stream costs frames nobody reads while one released

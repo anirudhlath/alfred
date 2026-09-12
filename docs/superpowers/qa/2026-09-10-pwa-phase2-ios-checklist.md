@@ -27,12 +27,20 @@ that is running and writing events. Record the device, iOS version and date at t
 - [ ] `‹ Room` closes it, the Room is exactly as it was left (scroll position, draft
       in the field)
 - [ ] Reduce Motion on: the Workshop cross-fades in about 200 ms instead of rising
-- [ ] With the Workshop up, produce a pending critical action: the Door rises **over**
-      the Workshop; leaving it returns to the Workshop, not the Room
+- [ ] With the Workshop up, produce a pending critical action: **nothing interrupts.**
+      Nothing in the build opens the Door unprompted — the banner waits in the Room
+      underneath, and `‹ Room` reveals it there. Tapping the banner opens the Door over
+      the Room, as always
+- [ ] The one thing that raises the Door from outside the Room is the `/actions/:id`
+      deep link: tap the notification for that action and the Door is open on arrival.
+      Note that the deep link is a route change, so the Room remounts and the Workshop
+      is closed behind it — that is the build, not a defect
 
 ## The status line
 
-- [ ] Reads `live · N ev/s` with the socket up (`N` may be `0.0` on a quiet house)
+- [ ] Reads `live · N ev/s` with the socket up. A quiet house reads a bare
+      `live · 0 ev/s`, not `0.0`; `live · — ev/s` means the overview has not answered
+      yet or came back with no streams at all, which is Redis down rather than quiet
 - [ ] Pause: reads `paused · 0 new`, then counts as events arrive
 - [ ] Turn off Wi-Fi and mobile data: within a few seconds it reads
       `last true HH:MM · not live` with a real time, and the bench shows the stale
@@ -44,8 +52,8 @@ that is running and writing events. Record the device, iOS version and date at t
 ## The bench
 
 - [ ] Eight chips in the handoff's order (`UR AL EV AC RX NT HS HR`), each with a count
-- [ ] Flip a light: an `HS` row appears at the top within a second, monogram in the
-      stream's hue, line and meta in mono
+- [ ] Flip a light: an `HS` row appears at the top within a second — monogram in the
+      stream's hue, the line in sans, the stamp and meta in mono
 - [ ] Tap a chip: only that stream's rows remain and the chip reads as selected; tap it
       again: all eight are back. The list returns to the top each time — a different
       stream is a different list
@@ -83,10 +91,18 @@ that is running and writing events. Record the device, iOS version and date at t
       `this row` / `adjacent in time only`); solid connectors between joined rows,
       dashed to and from adjacent ones
 - [ ] The footnote reads `searched 8 streams · 100 entries each · ±10 min`. On a busy
-      house it may end `· N stream(s) could not be read back far enough` — that is the
-      sheet being honest about its own reach, not a failure
-- [ ] Open a passive observation's thread (one with no action, from the bench): the
-      column is the single row and the sheet says
+      house it may end `· 1 stream could not be read back far enough` (or
+      `· 3 streams …`) — that is the sheet being honest about its own reach, not a
+      failure
+- [ ] From the bench, open the thread of a passive observation — an
+      `observed … · watched, took no action` row. On a quiet house the column is **two**
+      rows, not one: the `HS` state change that caused it, `joined by event_id …`, then
+      the `RX` anchor reading `this row`. A passive observation still carries the
+      originating event's id, so it joins
+- [ ] To see the lone-anchor line you need an anchor with nothing left to reach: open
+      an old observation whose `HS` row has already aged past that stream's hundred
+      entries (page well back with `↑ older` on a busy house first). The column is the
+      single row and the sheet says
       `Nothing else in the eight streams is joined to this row.`
 - [ ] Close the sheet and re-open the same row straight away: the column is there at
       once, with no `reading 8 streams…` pass
@@ -95,12 +111,17 @@ that is running and writing events. Record the device, iOS version and date at t
       opens **over the Workshop**; `Done` returns to the Workshop with the row still
       expanded
 - [ ] Turn the network off, tap `why?`: the sheet shows the intro and a one-line
-      failure (`Unreachable.` or the fetch error), no column, and still closes
+      failure — the browser's own message, which on Safari is `Load failed` — then no
+      column, and it still closes. `Unreachable.` is the Room's headline and never
+      appears here
 
 ## Nothing lies
 
-- [ ] Nowhere does the Workshop show a word outside spec §10 and the handoff's status
-      line (`live`, `paused`, `last true … · not live`)
+- [ ] Nowhere does the Workshop say a word of **system state** outside spec §10 and the
+      handoff's status line (`live`, `paused`, `last true … · not live`). Plain English
+      about the screen itself is not system state and is expected —
+      `not built yet · phase 3`, `nothing has been written`,
+      `N of 8 streams could not be read`
 - [ ] Nothing pretends to be a badge, a count of unread, or a throughput meter beyond
       `ev/s`
 - [ ] No screen is reachable that has no way out

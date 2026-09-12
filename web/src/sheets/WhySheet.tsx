@@ -16,10 +16,14 @@ import { Sheet } from "@/shell/Sheet";
 const INTRO =
   "Every link drawn solid is joined by an id the server holds. Dashed means adjacent in time only.";
 /**
- * A thread of one is common and means something: a passive reflex observation
- * carries no `event_id` and no action, so `tokens()` yields nothing for it and
- * only adjacency could admit anything. Without this line the sheet promises
- * solid and dashed links, then shows neither, and says nothing about why.
+ * A thread of one means nothing the anchor's ids reached was inside the read.
+ * Not the ordinary case for a passive reflex observation: every bus event
+ * carries an `event_id` and `trigger_event` is the originating event's full
+ * dump, so `tokens()` yields that event's id and the `home_state` row it came
+ * from normally joins (`trace.ts`, `tokens`). A lone anchor is that row having
+ * aged past its stream's hundred entries, or a schema carrying no id anything
+ * else in the window shares. Without this line the sheet promises solid and
+ * dashed links, then shows neither, and says nothing about why.
  */
 const ALONE = "Nothing else in the eight streams is joined to this row.";
 

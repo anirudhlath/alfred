@@ -46,8 +46,9 @@ Tests live beside their source (`lib/history.ts` → `lib/history.test.ts`).
   colours. Both themes are defined in `src/index.css` under `:root[data-theme]`.
 - Type comes from the `.t-*` classes, not ad-hoc sizes.
 - Imports use the `@/` alias; siblings are relative inside `src/lib/` and in tests.
-- The status vocabulary is closed (spec §10). The Room says `queued`, `applied`,
-  `last true HH:MM` and `expired · not done`; the Workshop's status line adds the
+- The status vocabulary is closed (spec §10). The Room and the Door say `queued`,
+  `applied`, `last true HH:MM` and `expired · not done` — the first two are the Door's
+  phase pill and foot line, not the Room's; the Workshop's status line adds the
   handoff's `live · N ev/s`, `paused · N new` and `last true HH:MM · not live`.
   `unknown since HH:MM`, `takes effect within 60 s`, `hot / cold` and
   `candidate · active · dormant · archived` are the phase-3 benches' words and arrive
