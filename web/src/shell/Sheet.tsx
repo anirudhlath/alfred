@@ -74,7 +74,9 @@ export function Sheet({ open, title, onClose, children }: SheetProps) {
             type="button"
             onClick={onClose}
             className="-mr-2 flex h-11 min-w-11 items-center justify-end border-0 bg-transparent text-[15px] font-medium"
-            style={{ color: "var(--accent)" }}
+            // `--accent-text`, not `--accent`: the raw accent is 2.34:1 on
+            // paper's `--bg` (index.css, --accent-text).
+            style={{ color: "var(--accent-text)" }}
           >
             Done
           </button>

@@ -78,7 +78,14 @@ export function EventRow({ row, expanded, onToggle, onSolo, onWhy }: EventRowPro
           </pre>
           <div className="flex gap-2">
             {onWhy && (
-              <button type="button" onClick={onWhy} className={PILL} style={{ color: "var(--accent)" }}>
+              // `--accent-text` rather than the raw accent, which is 2.34:1 on
+              // paper (index.css, --accent-text).
+              <button
+                type="button"
+                onClick={onWhy}
+                className={PILL}
+                style={{ color: "var(--accent-text)" }}
+              >
                 Why · causal thread
               </button>
             )}

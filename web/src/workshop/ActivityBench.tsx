@@ -177,7 +177,12 @@ export function ActivityBench({ activity, onWhy }: ActivityBenchProps) {
             <span className="text-[15px]">
               {activity.solo ? "Nothing on this stream yet." : "Nothing on any stream yet."}
             </span>
-            <span className="t-meta">{emptyNote(activity)}</span>
+            {/* `t-meta` is `--muted`, 3.46:1 on `--bg` in light — the same
+                trap as the error line above. This is the only thing on screen
+                when the list is empty, so it is not read at 3.46:1 either. */}
+            <span className="t-meta" style={{ color: "var(--fg2)" }}>
+              {emptyNote(activity)}
+            </span>
           </li>
         )}
       </ul>

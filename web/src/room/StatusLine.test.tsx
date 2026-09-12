@@ -69,7 +69,8 @@ describe("StatusLine", () => {
 
   it("does not vouch for the reflex of a house it has never reached", () => {
     render(<StatusLine overview={undefined} online lastTrueAt={at2114} />);
-    expect(screen.getByText("21:14 · cloud — · reflex — · 0 ev/s")).toBeInTheDocument();
+    // And does not report its rate as zero, either: `—`, like the two beside it.
+    expect(screen.getByText("21:14 · cloud — · reflex — · — ev/s")).toBeInTheDocument();
   });
 
   it("does not call a degraded overview a first run", () => {

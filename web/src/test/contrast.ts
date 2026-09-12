@@ -21,8 +21,24 @@ export type Theme = "dark" | "light";
  * one — the guard picks it up on its own.
  */
 export const TOKENS: Record<Theme, Record<string, string>> = {
-  dark: { accent: "oklch(0.78 0.12 45)", "on-accent": "#25221F" },
-  light: { accent: "oklch(0.72 0.13 45)", "on-accent": "#221F1B" },
+  dark: {
+    bg: "#25221F",
+    surface: "#2F2B27",
+    field: "#3A3631",
+    fg: "#F1ECE4",
+    accent: "oklch(0.78 0.12 45)",
+    "accent-text": "oklch(0.78 0.12 45)",
+    "on-accent": "#25221F",
+  },
+  light: {
+    bg: "#F6F3EE",
+    surface: "#EFEAE2",
+    field: "#FFFFFF",
+    fg: "#221F1B",
+    accent: "oklch(0.72 0.13 45)",
+    "accent-text": "oklch(0.52 0.13 45)",
+    "on-accent": "#221F1B",
+  },
 };
 
 /** What a token holds in one theme: `token("dark", "accent")` → `oklch(0.78 0.12 45)`. */

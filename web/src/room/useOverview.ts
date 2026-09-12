@@ -18,6 +18,13 @@ export function useOverview() {
       return overview;
     },
     refetchInterval: 30_000,
+    // The Workshop's header watches this query too, and a second observer with
+    // no staleTime starts its own interval offset from the Room's — roughly
+    // double the polls for as long as the layer is up. 25 s is under the
+    // interval, so the shared 30 s cadence is unchanged, and foreground
+    // rehydration still works: `invalidateQueries` refetches an *active* query
+    // whatever its staleness (ConnectionProvider, REHYDRATE_KEYS).
+    staleTime: 25_000,
   });
 }
 

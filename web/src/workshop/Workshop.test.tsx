@@ -34,6 +34,11 @@ vi.mock("@/lib/telemetry-socket", () => {
 
 const empty: StreamPage = { entries: [], next_before: null };
 
+/** The acted observation on `media_player.tv`, found by what it is rather than where it sits. */
+const observation = reflexObservationsPage.entries.find(
+  (entry) => (entry.event as { observation_id?: string }).observation_id === "obs-1",
+);
+
 function stubFetch(): void {
   vi.stubGlobal(
     "fetch",
@@ -75,11 +80,6 @@ afterEach(() => {
 });
 
 describe("Workshop", () => {
-  it("renders nothing while closed", () => {
-    mount(false);
-    expect(screen.queryByRole("dialog")).toBeNull();
-  });
-
   it("rises under the sheets as the Workshop, and Room closes it", () => {
     const { onClose } = mount(true);
     const dialog = screen.getByRole("dialog", { name: "Workshop" });
@@ -112,13 +112,23 @@ describe("Workshop", () => {
 
     sockets.telemetryUp = false;
     mount(true);
-    expect(screen.getByTestId("workshop-status")).toHaveTextContent("last true 21:14 · not live");
+    // The *feed's* stamp, not the connection's: the chat socket is up and has
+    // set `lastTrueAt` to 21:14, but the pump has never been live, and the
+    // header may not say a thing the banner below it contradicts.
+    expect(screen.getByTestId("workshop-status")).toHaveTextContent("last true --:-- · not live");
     expect(screen.getByRole("status", { name: "Feed status" })).toHaveTextContent(
       "Feed has not been live yet. Nothing below is live.",
     );
     // Pause is honoured underneath, but the status line still says not live.
     fireEvent.click(screen.getByRole("button", { name: "Pause feed" }));
-    expect(screen.getByTestId("workshop-status")).toHaveTextContent("last true 21:14 · not live");
+    expect(screen.getByTestId("workshop-status")).toHaveTextContent("last true --:-- · not live");
+  });
+
+  it("does not report a rate it has never read", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("nope", { status: 500 })));
+    mount(true);
+    // `evs({})` is a bare `0`, which would call a house it cannot reach silent.
+    await waitFor(() => expect(screen.getByTestId("workshop-status")).toHaveTextContent("live · — ev/s"));
   });
 
   it("reads the streams once open and hands a reflex row's why up", async () => {
@@ -126,10 +136,39 @@ describe("Workshop", () => {
     await screen.findByText("observed media_player.tv · acted");
     fireEvent.click(screen.getByText("observed media_player.tv · acted"));
     fireEvent.click(screen.getByRole("button", { name: "Why · causal thread" }));
-    expect(onWhy).toHaveBeenCalledWith({
-      stream: "reflex_observations",
-      entry: reflexObservationsPage.entries[2],
-    });
+    expect(onWhy).toHaveBeenCalledWith({ stream: "reflex_observations", entry: observation });
+  });
+
+  it("hangs the bench off its own tab", () => {
+    mount(true);
+    const panel = screen.getByRole("tabpanel");
+    const activity = screen.getByRole("tab", { name: "Activity" });
+    expect(activity).toHaveAttribute("aria-controls", panel.id);
+    expect(panel).toHaveAttribute("aria-labelledby", activity.id);
+    expect(panel).toContainElement(screen.getByRole("button", { name: "Pause feed" }));
+
+    fireEvent.click(screen.getByRole("tab", { name: "Memory" }));
+    expect(screen.getByRole("tabpanel")).toHaveAttribute(
+      "aria-labelledby",
+      screen.getByRole("tab", { name: "Memory" }).id,
+    );
+  });
+
+  it("keeps the Activity bench's state through a trip to another bench", () => {
+    mount(true);
+    fireEvent.click(screen.getByRole("button", { name: "Pause feed" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Memory" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Activity" }));
+    // Every hook lives in `WorkshopPanel`, above the bench that is swapped out,
+    // which is the whole reason it is shaped that way: the hold survives, and
+    // so do the rows behind it.
+    expect(screen.getByRole("button", { name: "Resume" })).toBeInTheDocument();
+  });
+
+  it("closes on Escape, which is all a standalone app has", () => {
+    const { onClose } = mount(true);
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it("stays for its leave, then unmounts", () => {

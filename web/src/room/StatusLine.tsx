@@ -29,10 +29,15 @@ export function StatusLine({ overview, online, lastTrueAt }: StatusLineProps) {
   // and every successful poll, and an unknown clock says so.
   const stamp = lastTrueAt ? hhmm(lastTrueAt) : "--:--";
 
+  // An overview never read is not a silent house: `evs({})` is a bare `0`
+  // (format.ts), which would report a quiet stream on every cold open. `—`, as
+  // `cloud —` and `reflex —` already say beside it.
+  const rate = overview ? `${evs(streams)} ev/s` : "— ev/s";
+
   // Offline outranks first run: §5.2's "live is not last-known" has no exception
   // for a house where nothing has happened yet.
   const parts = online
-    ? [firstRun ? "first run" : stamp, cloud, reflex, `${evs(streams)} ev/s`]
+    ? [firstRun ? "first run" : stamp, cloud, reflex, rate]
     : [`last true ${stamp}`, cloud, reflex];
 
   return <div className="t-status">{parts.join(" · ")}</div>;

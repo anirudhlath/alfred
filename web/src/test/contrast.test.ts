@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import css from "../index.css?raw";
-import { TOKENS, type Theme } from "./contrast";
+import { contrast, TOKENS, token, type Theme } from "./contrast";
 
 /**
  * One theme's declarations, `:root[data-theme="…"] { … }`. The dark block is
@@ -29,4 +29,31 @@ describe("contrast tokens", () => {
       }
     }
   });
+});
+
+/**
+ * The ratios themselves, for the pairs no rendered test can check: jsdom
+ * resolves no `var()`, so a component asserting on `var(--accent-text)` proves
+ * only that the string was written down. These assert the colours behind the
+ * strings, in both themes, and a palette edit that breaks one fails here.
+ */
+describe("contrast ratios", () => {
+  for (const theme of ["dark", "light"] as const) {
+    it(`${theme}: the accent reads as text on the page`, () => {
+      // The three accent-as-text call sites — the Workshop's `Room`, EventRow's
+      // `Why · causal thread`, a sheet's `Done` — all sit on --bg at 15 px or
+      // 13 px, so AA's 4.5:1 is the bar. --accent itself is 2.34:1 on paper,
+      // which is what --accent-text exists to fix.
+      expect(contrast(token(theme, "accent-text"), token(theme, "bg"))).toBeGreaterThanOrEqual(4.5);
+    });
+
+    it(`${theme}: the chosen bench is visible on the switcher's track`, () => {
+      // A fill, not text, so WCAG has no ratio to hold it to; 1.1:1 is the
+      // floor that the old dark palette failed at exactly 1.00:1, --field and
+      // --surface having been the same colour.
+      expect(contrast(token(theme, "field"), token(theme, "surface"))).toBeGreaterThan(1.1);
+      // And the bench's own label on that fill is text again.
+      expect(contrast(token(theme, "fg"), token(theme, "field"))).toBeGreaterThanOrEqual(4.5);
+    });
+  }
 });
