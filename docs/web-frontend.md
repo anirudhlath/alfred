@@ -8,17 +8,19 @@ phase 1 rewrite). It is a single-page application built and served by the Alfred
 channels process on port 8081.
 
 It has **one screen** (the Room), **one interrupt** (the Door), and **four identity
-gates** that rise over both. There is no navigation: a notification tap deep-links to
-the approval it names, and everything else is one merged timeline.
+gates** that rise over both — and, under the Room, the **Workshop**, where the house's
+eight Redis streams are read as they happen. There is no navigation: a notification tap
+deep-links to the approval it names, the Workshop is a layer rather than a route, and
+everything else is one merged timeline.
 
 Design source: `docs/design/2026-09-04-pwa-client-handoff/` (tokens, copy, and the
 `Alfred.dc.html` prototype the presence field and the slide maths were ported from).
 Spec: `docs/superpowers/specs/2026-09-04-mobile-first-pwa-client-design.md`.
 Client-side working notes: `web/README.md`.
 
-Phase 1 of six. The Workshop (Activity, Memory, Triggers, System), the service worker,
+Phases 1 and 2 of six. The Memory, Triggers and System benches, the service worker,
 icons, Web Push and the desktop composition are later phases — see
-"What phase 1 does not cover" at the end.
+"What phases 1 and 2 do not cover" at the end.
 
 ---
 
@@ -56,7 +58,7 @@ web/
       webauthn.ts        # registerPasskey(), loginPasskey(), sessionChannel()
       ws.ts              # ReconnectingSocket — backoff, code-4001 gate, ping keepalive
       chat-socket.ts     # ChatSocket over /ws (channel "web_pwa", timezone, session_id)
-      telemetry-socket.ts# TelemetrySocket over /ws/telemetry (carried over unchanged)
+      telemetry-socket.ts# TelemetrySocket over /ws/telemetry; subscriptions refcounted
       types.ts           # The shared type contract (hand-mirrors the bus/admin schemas)
       format.ts          # hhmm, dayMonth, dayLabel, mmss, usd, evs, shortId,
                          # humaniseTool, rawCall, notificationText
@@ -71,6 +73,12 @@ web/
                          # sessionWindow, withDividers, SESSION_IDLE_MS
       actions.ts         # actionReducer, fuseRemaining, tombstoneItems, the three fetches
       slide.ts           # CONFIRM_RATIO, slideKnob, hintOpacity
+      streams.ts         # STREAMS, STREAM_INFO, ring/ringFill/ringText, idMs/compareIds,
+                         # fetchStreamPage, rowKey, summarise — the eight streams and
+                         # one line for any event on any of them
+      feed.ts            # feedReducer, mergeRows, olderTargets — eight paged lists,
+                         # pause/hold, the horizon; MAX_PER_STREAM
+      trace.ts           # fetchThread, buildThread, nodeMeta — the causal thread
     shell/         # Providers, and the two surfaces everything rises on
       QueryProvider.tsx      # QueryClient defaults
       ThemeProvider.tsx      # useTheme(); writes data-theme and the theme-color meta
@@ -78,6 +86,7 @@ web/
       ConnectionProvider.tsx # Socket singletons, useConnection(), markTrue()
       presence.ts            # usePresence, useModalFocus, riseStyle, prefersReducedMotion
       Layer.tsx              # Portal + rise in/out + focus trap + inert + level
+                             # (workshop z-10 · layer z-30 · gate z-40)
       Sheet.tsx              # Bottom sheet + scrim + explicit Done + Escape
     gates/         # Identity, over whatever is on screen
       AuthGate.tsx     # Which gate, over what
@@ -100,6 +109,7 @@ web/
                          # TranscribingBubble, ThinkingRow, FirstDay
       Composer.tsx       # 50px field, send / hold slot, keyboard padding
       HoldToTalk.tsx     # Pointer hold, mic, caption, bars
+      WorkshopHandle.tsx # The 44px handle under the composer; hidden with the keyboard up
       useOverview.ts     # ["overview"], 30s poll, isFirstRun(), sessionIdleMs()
       useRoomHistory.ts  # ["room-history"], read once, re-read on return
       useRoom.ts         # Live timeline state, the session window, send,
@@ -111,8 +121,18 @@ web/
       FuseRing.tsx      # 34px and 168px conic ring
       SlideToConfirm.tsx# Slide with travel
       useActionRoute.ts # /actions/:id
+    workshop/      # The layer under the Room
+      Workshop.tsx      # Layer level "workshop": ‹ Room, status line, switcher,
+                        # and the role="tabpanel" the switcher controls
+      BenchSwitcher.tsx # The four-tab segmented control: a full ARIA tab set
+      ActivityBench.tsx # Stale banner, chips, ↑ older, the list and its scroll
+                        # anchoring, the footer
+      EventRow.tsx      # Monogram, line, meta; expanded payload and pills
+      StreamChips.tsx   # Eight chips with counts; tap to solo
+      useActivity.ts    # Head reads, the subscription, rehydrate on return, paging
     sheets/
       HeldBackSheet.tsx # ["deferred"] + drain
+      WhySheet.tsx      # ["trace", stream, id] — the causal thread as a column
     test/
       setup.ts      # jsdom stubs: matchMedia, ResizeObserver, visualViewport, PointerEvent
       fixtures.ts   # Shared fixtures: overview, streams, deferred, pending actions
@@ -139,14 +159,17 @@ palette colour.
 |---|---|
 | `--bg` | The room itself |
 | `--surface` | Raised paper: notes, bubbles, sheets |
-| `--field` | Input fill |
+| `--field` | Input fill — a step *above* `--surface` in both themes. In dark it was the same colour as `--surface` (1.00:1) until phase 2, which made the chosen bench and a sheet's input invisible |
 | `--line` | Hairlines |
-| `--keyboard` | The composer's own ground — a design-system token; no phase-1 component paints it |
-| `--muted`, `--fg2`, `--fg` | The three text weights, quietest first |
-| `--accent` | Alfred's warm signal — presence, focus, the fuse |
+| `--keyboard` | The composer's own ground — a design-system token; no component paints it yet |
+| `--muted`, `--fg2`, `--fg` | The three text weights, quietest first. `--muted` is 3.46:1 on `--bg` in light theme — under AA, so it is for decoration, not for anything a reader must take on its own |
+| `--accent` | Alfred's warm signal — presence, focus, the fuse. A **fill**: what sits on it takes `--on-accent` |
+| `--on-accent` | Text and icons on an accent fill — the theme's own dark colour either way (7.61:1 dark, 6.33:1 light). Never `--ink`, which is near-white in dark and reads 1.77:1 |
+| `--accent-text` | The accent *as* text: `‹ Room`, `Why · causal thread`, a sheet's `Done`. Dark's accent is already 7.61:1 on `--bg`, so it is the same colour there; light's is 2.34:1, which is why the token exists |
 | `--green` | Applied / healthy |
 | `--ink`, `--paper`, `--paper-muted` | The Door's inverted surface and its text |
 | `--ring`, `--scrim` | Focus ring, and the dim behind a layer |
+| `--ring-text-l` | The lightness `ringText()` uses for a stream hue set as text — 0.75 on ink, 0.52 on paper |
 | `--ease-rise`, `--ease-settle`, `--ease-sink` | The three easing curves: rise in, settle, leave |
 | `--app-height`, `--keyboard-inset` | Written by `installViewportVars()` (below) |
 
@@ -154,12 +177,26 @@ palette colour.
 `<meta name="theme-color">` so Safari's chrome matches. The choice is stored under
 `alfred.theme`; with nothing stored, the clock picks (dark at night).
 
+The eight stream hues are **not** tokens: the hue is data (`h = 30 + 45·i` over `STREAMS`),
+so it comes from `STREAM_INFO` through three functions in `lib/streams.ts` —
+`ring(hue)` at L 0.62 for the Room's 8 px marks, which carry no text; `ringFill(hue)` at
+L 0.52 for the fills under white text (monogram tiles, the soloed chip), because white on
+`ring()` is 3.45:1; and `ringText(hue)`, the hue *as* text, whose lightness is the one
+per-theme token above. `src/test/contrast.ts` restates the palette and holds the pairs a
+test can check to 4.5:1; `contrast.test.ts` compares that restatement against `index.css`
+verbatim, so a palette edit that leaves it behind fails rather than passing quietly.
+
 ### Type scale
 
 Type comes from the `.t-*` classes in `index.css`, never an ad-hoc size:
 `.t-gate`, `.t-headline`, `.t-title`, `.t-alfred`, `.t-you`, `.t-body`, `.t-row`,
-`.t-label`, `.t-meta`, `.t-fuse`, `.t-status` — and `.t-monogram`, defined for the
-Workshop and used by nothing in phase 1. The sizes outside the scale are written as
+`.t-label`, `.t-meta`, `.t-fuse`, `.t-status` — and `.t-monogram`, the Workshop's 9 px
+stream monogram (`EventRow`, the Why sheet). `.t-meta-strong` is `.t-meta`'s type in a
+colour that can be read (`--fg2` rather than `--muted`): the rule, decided once in
+`index.css` rather than re-argued per call site, is that meta which is genuinely
+decorative — a stamp beside the line it stamps, a count beside the thing counted — stays
+on `.t-meta`, and anything a reader must take on its own to trust the screen takes
+`.t-meta-strong`. The sizes outside the scale are written as
 explicit arbitrary values: 15px (body copy in the gates, sheets, composer and Door),
 16px (the gates' buttons, the Door's title and pill), 13px (the offline, DND and banner
 notes), 13.5px (the held-back sheet's note), 11px (the Door's mono labels), 11.5px (the
@@ -170,8 +207,10 @@ raw call) and 10.5px (the bubbles' stamps).
 System state is said in mono, lower case, and only in the words spec §10 closes:
 `queued`, `applied`, `last true HH:MM`, `unknown since HH:MM`, `hot / cold`,
 `candidate · active · dormant · archived`, `expired · not done`,
-`takes effect within 60 s`. Phase 1 uses the first three and `expired · not done`; the
-rest are the Workshop's and arrive with it. The one exception to mono-and-lower-case is
+`takes effect within 60 s`. The Room uses the first three and `expired · not done`; the
+Workshop's status line adds the handoff's `live · N ev/s`, `paused · N new` and
+`last true HH:MM · not live`; the rest are the phase-3 benches' and arrive with them. The
+one exception to mono-and-lower-case is
 the Door's phase pill (`Confirmed · queued`, `Applied`, `Expired`, `Answered`), set in
 the inverted layer's own type. Do not invent new words — the vocabulary is the contract
 the spec's honesty rules (§5.2) are written against.
@@ -230,7 +269,7 @@ Everything on screen is one timeline.
   the result with the live rows (what you sent, what Alfred said, what he did while you
   watched) and the Door's tombstones, neither of which is ever windowed. After a break
   the Room opens on the day's house rows alone — on nothing at all when there are none;
-  older turns are the Activity view's (phase 2). Row text comes from `notificationText`
+  older turns are the Activity bench's — open the Workshop. Row text comes from `notificationText`
   ("WebSocket Protocols" below).
 - **Composer and hold-to-talk** — text queues under `alfred.unsent` while the house is
   unreachable and retries in order on the next socket open; holding records through
@@ -266,6 +305,85 @@ client no haptics, so the resistance is the confirmation. An approval that lapse
 a struck-through tombstone in the thread. `/actions/:id` renders the same Room with the
 Door open over it — `useActionRoute` reads the action once and tells the Door when the
 deep link finds one already gone.
+
+---
+
+## The Workshop
+
+A `Layer` at level `workshop` (z-10): under the sheets (z-20), the Door (z-30) and the
+gates (z-40), over the Room. It is mounted in `Room.tsx` next to `DoorLayer`, opened by
+the handle under the composer, and closed by `‹ Room` or Escape. Its status line is the
+socket's word first (`last true HH:MM · not live` while the telemetry socket is down),
+then the feed's (`paused · N new`), then the overview's rate (`live · N ev/s`). Memory,
+Triggers and System are tabs that say `not built yet · phase 3`.
+
+`BenchSwitcher` is a full ARIA tab set rather than four buttons wearing `role="tab"`:
+every tab carries an id and `aria-controls` for the one `role="tabpanel"` the Workshop
+renders, only the chosen tab is in the tab order (roving `tabIndex`), and ←/→ move the
+selection with the focus and wrap around the four.
+
+**Activity** is `useActivity` over `feedReducer` (`lib/feed.ts`). Opening the bench
+reads each stream's head page (`GET /api/admin/streams/{name}?count=50`) and subscribes
+to all eight; `entry` frames are inserted at the top, or held while paused (`paused · N
+new`, released on resume). Everything is keyed and ordered by the Redis id — `idMs`
+is the millisecond half — never by `event.timestamp`. Each stream keeps its newest
+`MAX_PER_STREAM` (400) entries, or as many as `↑ older` has already fetched, whichever is
+deeper: the depth the user paged to is a floor the cap never rolls back. Past it the
+oldest fall off the bottom and the cursor moves up to match, so nothing becomes
+unreachable.
+
+**The horizon.** The list is a merge of up to eight independently paged streams. A
+stream that can still page (`next_before` set) is only known back to its oldest loaded
+entry, so rows from any stream older than the *shallowest* such stream are withheld —
+otherwise one stream's past would sit next to another's silence and read as a quiet
+spell. `↑ older` fetches the streams sitting at the horizon, and the button's label is
+that cursor. Solo-ing a chip narrows the merge (and the horizon) to one stream.
+
+**Rehydrate on return** (§4.10): the telemetry socket starts at `$` and replays nothing,
+so `useActivity` re-reads every head page on `visibilitychange`. The reducer merges an
+overlapping page in place and starts a stream over when the page does not reach the
+entries it already had — a gap it cannot see across is not papered over. Not while
+paused, though: a page is not a live frame and the reducer would merge it straight in,
+sliding rows into a list the handoff promises will not move until Resume. Resume does
+that re-read instead.
+
+**Holding the reader's place.** Live rows land on top of the list, which would push
+whatever is being read down the screen; WebKit has never shipped `overflow-anchor`, so
+`ActivityBench` measures the growth in a `useLayoutEffect` and gives it back to
+`scrollTop` — keyed on which row is newest, so an `↑ older` page or an opening payload
+(the reader's own doing) moves nothing, and skipped at `scrollTop === 0`, where watching
+rows arrive is the point. A second layout effect resets the scroll to the top when the
+solo changes: a different stream is a different list.
+
+**Causality.** A reflex act row in the Room (`why?`) or an RX row in Activity
+(`Why · causal thread`) opens `WhySheet` with a `StreamRef`. `lib/trace.ts` reads one
+page of 100 from every stream up to ten minutes after the observation
+(`fetchThreadCandidates`), then `buildThread` joins from the observation outward on the
+ids events actually carry — `event_id` (an observation's `trigger_event` is the
+originating event's full dump, which is how a fired trigger reaches the observation it
+caused), `request_id`, `session_id`, a reply's `actions_taken` naming an action's tool,
+and an action's `entity_id` against a state change within a minute — transitively
+through anything admitted. `trigger_id` is deliberately **not** a join: it names the
+rule rather than the firing, so two firings of one recurring trigger inside the window
+would join, and the walk would carry on from the second firing to its own observation,
+action and result, drawing solid connectors across two unrelated episodes. Up to six
+unjoined entries within five seconds of a joined one are added as `adjacent in time
+only`, drawn with a dashed connector.
+
+A thread of one is common and means something — a passive observation carries no
+`event_id` and no action, so nothing can join to it — and the sheet says so rather than
+promising links and showing none: `Nothing else in the eight streams is joined to this
+row.` The footnote states what was searched (`searched 8 streams · 100 entries each ·
+±10 min`, or `N of 8` when some read failed) and appends
+` · N stream(s) could not be read back far enough` for every stream whose page both
+filled and stopped inside the window — a stream busy enough to fill its hundred entries
+inside the window hides the anchor's whole past behind them (`home_state` need only
+produce 0.17 entries a second), and a one-node thread must not read as "nothing else was
+involved". The query's `staleTime` is the join window itself: the
+window has closed behind a thread by the time that much has passed, so re-asking the
+same row does not re-read eight streams. The sheet never says "not caused by" — the
+client cannot prove that. A server-side correlation id is the follow-up (spec §7,
+`docs/backlog/low/pwa-phase2-followups.md`).
 
 ---
 
@@ -407,27 +525,35 @@ does, every time the app is backgrounded long enough.
 ### Telemetry (`/ws/telemetry`)
 
 Used by `TelemetrySocket` (`lib/telemetry-socket.ts`). Provides a live push of Redis
-stream entries. Phase 1 subscribes to exactly one stream, `home_action_results` — it is
-what turns a queued approval into an applied one.
+stream entries. The Door subscribes to one stream, `home_action_results`, for the app's
+lifetime — it is what turns a queued approval into an applied one; the Workshop
+subscribes to all eight while it is up and lets them go when it leaves.
 
 #### Client → Server
 
 ```json
 {"type": "subscribe", "streams": ["home_action_results"]}
+{"type": "unsubscribe", "streams": ["home_action_results"]}
 {"type": "ping"}
 ```
 
-The server also takes `{"type": "unsubscribe", "streams": [...]}`; `TelemetrySocket` has
-no method for it, because phase 1 never lets a subscription go.
+The server also takes `{"type": "unsubscribe", "streams": [...]}`. `TelemetrySocket`
+counts wanters per stream: the frame goes out when a stream's count reaches zero, and
+`subscribe` goes out only when it leaves zero — so the Workshop closing never takes the
+Door's stream with it. Both methods walk `new Set(streams)`, so a name repeated in one
+call is one wanter and `subscribe(["events", "events"])` is released by a single
+`unsubscribe`. Every `subscribe` owes exactly one `unsubscribe`; the Door never pays,
+deliberately, and an over-counted stream costs frames nobody reads while one released
+early goes quiet on a surface still watching it.
 
 `ping` is the same keepalive as on `/ws`: answered with `{"type": "pong"}`, and it emits
 no `subscribed` ack and leaves the subscription set untouched.
 
-On reconnect, all current subscriptions are re-sent automatically (`onopen` replays
-`this.subscriptions`). `TelemetrySocket.subscribe()` persists the set so reconnects
-restore state without consumer involvement. Subscriptions start at `$`: nothing that
-happened while the app was suspended is replayed, which is why the query keys above are
-invalidated on return instead.
+On reconnect, everything still wanted is re-sent automatically (`onopen` replays the
+keys of the wanter map), with no consumer involvement. Subscriptions start at `$`:
+nothing that happened while the app was suspended is replayed, which is why the query
+keys above are invalidated on return — and why `useActivity` re-reads all eight head
+pages on `visibilitychange`.
 
 #### Server → Client (`TelemetryMessage`)
 
@@ -450,7 +576,7 @@ invalidated on return instead.
 `ConnectionProvider` puts `status` and `error` on the console (`console.warn`), the same
 complaint at most once a minute (`WARN_EVERY_MS` — the pump repeats `redis_error` every
 second for the whole of an outage); nothing on screen shows them until the Workshop's
-health page (phase 3).
+System bench (phase 3).
 
 ---
 
@@ -476,6 +602,12 @@ graph TD
             TL[Timeline<br/>useRoom + useRoomHistory]
             Comp[Composer · HoldToTalk]
             Sheet[HeldBackSheet]
+            Why[WhySheet<br/>lib/trace.ts]
+        end
+
+        subgraph Workshop
+            Bench[BenchSwitcher<br/>Activity · Memory · Triggers · System]
+            Feed[useActivity<br/>feedReducer · mergeRows]
         end
 
         subgraph DoorProvider
@@ -487,7 +619,7 @@ graph TD
 
     subgraph "Alfred :8081"
         WS_CHAT["/ws chat"]
-        WS_TEL["/ws/telemetry<br/>home_action_results"]
+        WS_TEL["/ws/telemetry<br/>Door: home_action_results<br/>Workshop: all eight"]
         REST["/api/admin/* · /api/actions/* · /api/auth/*"]
     end
 
@@ -504,7 +636,13 @@ graph TD
     ChatSock -->|notification without pending_action_id| TL
     ChatSock -->|notification with pending_action_id| Reducer
     TelSock  -->|result: applied| Reducer
+    TelSock  -->|entry x8| Feed
     QC       -->|pending-actions| Reducer
+    Feed --> Bench
+    Feed -->|head + older pages| REST
+    TL   -->|why? on a reflex row| Why
+    Feed -->|Why · causal thread| Why
+    Why  -->|8 stream pages| REST
 
     QC --> Head
     QC --> TL
@@ -525,7 +663,8 @@ Spec §4 lists twelve. The automated half lives in `web/src`
 `recorder.test.ts` for codec negotiation, `lifecycle.test.ts` and
 `ConnectionProvider.test.tsx` for rehydration, `Layer.test.tsx` and `DoorLayer.test.tsx`
 for explicit dismissal, `PresenceField.test.tsx` for reduce-motion). The half that needs
-a real phone is `docs/superpowers/qa/2026-09-07-pwa-phase1-ios-checklist.md`.
+a real phone is `docs/superpowers/qa/2026-09-07-pwa-phase1-ios-checklist.md`, and
+`2026-09-10-pwa-phase2-ios-checklist.md` beside it for the Workshop and the bench.
 
 Two of them bite hardest:
 
@@ -634,10 +773,11 @@ fallback ever grows conditional handling.
 
 ---
 
-## What phase 1 does not cover
+## What phases 1 and 2 do not cover
 
-- **The Workshop** (Activity, Memory, Triggers, System) — phases 2 and 3. There is no
-  handle, no `why?` button and no causal thread yet.
+- **Memory, Triggers and System** — phase 3. The Workshop's switcher has their tabs;
+  each says `not built yet · phase 3`. Telemetry `status`/`error` frames still reach
+  only the console until System exists.
 - **Install, standalone and Reach gates, the service worker, icons and Web Push** —
   phases 4 and 5. `web/public/manifest.json` ships SVG only and carries the phase-1
   palette's dark ground; it cannot follow the theme the way `applyTheme` rewrites the
@@ -645,4 +785,5 @@ fallback ever grows conditional handling.
   otherwise.
 - **Desktop** — phase 6. The client is phone-first and there is no wide composition.
 
-Open follow-ups: `docs/backlog/low/pwa-phase1-followups.md`.
+Open follow-ups: `docs/backlog/low/pwa-phase1-followups.md` and
+`docs/backlog/low/pwa-phase2-followups.md`.
