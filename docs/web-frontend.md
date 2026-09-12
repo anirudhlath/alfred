@@ -212,8 +212,8 @@ System state is said in mono, lower case, and only in the words spec §10 closes
 `queued`, `applied`, `last true HH:MM`, `unknown since HH:MM`, `hot / cold`,
 `candidate · active · dormant · archived`, `expired · not done`,
 `takes effect within 60 s`. The Room and the Door use the first three and
-`expired · not done` — `queued` and `applied` are the Door's phase pill and foot line,
-not the Room's; the
+`expired · not done` — `queued` and `applied` are the Door's phase pill, not the
+Room's; the
 Workshop's status line adds the handoff's `live · N ev/s`, `paused · N new` and
 `last true HH:MM · not live`; the rest are the phase-3 benches' and arrive with them. The
 one exception to mono-and-lower-case is

@@ -32,9 +32,11 @@ that is running and writing events. Record the device, iOS version and date at t
       underneath, and `‹ Room` reveals it there. Tapping the banner opens the Door over
       the Room, as always
 - [ ] The one thing that raises the Door from outside the Room is the `/actions/:id`
-      deep link: tap the notification for that action and the Door is open on arrival.
-      Note that the deep link is a route change, so the Room remounts and the Workshop
-      is closed behind it — that is the build, not a defect
+      deep link. There is no notification to tap yet — Web Push is phases 4 and 5 — so
+      open `https://alfred.example.com/actions/<request_id>` directly while the approval
+      is still pending: the Door is open over the Room on arrival. It arrives as a fresh
+      page load, so the app starts over and the Workshop is closed behind it; that is
+      the build, not a defect
 
 ## The status line
 
