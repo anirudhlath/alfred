@@ -51,7 +51,7 @@ catalog assertion in the SPA CI test, or expose the catalog
 ## 4. The Workshop's Activity view will need virtualization
 
 From `web-activity-virtualized-list.md`. Phase 2 built the Activity bench with plain DOM
-on purpose: `MAX_PER_STREAM = 400` per stream, 3 200 rows at the worst, and no
+on purpose: `MAX_PER_STREAM = 400` per stream until `↑ older`, unbounded after it, and no
 `@tanstack/react-virtual`. Carried to `pwa-phase2-followups.md` §1 with the numbers.
 
 ## 5. Voice enrollment has no home in the client

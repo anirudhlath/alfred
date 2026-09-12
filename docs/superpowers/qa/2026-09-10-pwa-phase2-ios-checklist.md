@@ -61,6 +61,9 @@ that is running and writing events. Record the device, iOS version and date at t
       stream is a different list
 - [ ] Tap a row: it expands to its payload, wrapped, never wider than the screen; the
       RX row carries `Why · causal thread`; tap again to collapse
+- [ ] An `AL` row — one of Alfred's replies — carries `Why · causal thread` too: a reply
+      names the tools it ran, which is a cause the server holds. A `UR`, `EV`, `AC`, `NT`,
+      `HS` or `HR` row carries only `Only XX`
 - [ ] Open a row and keep reading it while events arrive at the top: the payload stays
       put on the screen and does not walk down under the new rows
 - [ ] An observation the Reflex did not act on reads `observed … · watched, took no
@@ -73,6 +76,11 @@ that is running and writing events. Record the device, iOS version and date at t
 - [ ] Solo a stream with three entries: no `↑ older` button
 - [ ] A stream that has never been written reads `XX · 0 entries · nothing has been
       written` when solo'd
+- [ ] A stream whose own read **failed** reads `XX · could not be read` when solo'd, never
+      `nothing has been written` — the read-error line above the list says how many of the
+      eight failed. (Stop Redis, or block one stream at the proxy, then open the bench and
+      solo that stream.) Before the first read has settled at all, the note is
+      `XX · nothing loaded yet`
 - [ ] Scroll the list to the bottom: the footer sits above the home indicator with a
       clear gap; the list does not bounce the whole layer
 - [ ] Background the app for two minutes while the house is busy, return: the top of
@@ -96,6 +104,11 @@ that is running and writing events. Record the device, iOS version and date at t
       house it may end `· 1 stream could not be read back far enough` (or
       `· 3 streams …`) — that is the sheet being honest about its own reach, not a
       failure
+- [ ] With a stream unreadable, the footnote names the shortfall rather than leaving it to
+      be inferred from the count: `searched 7 of 8 streams (1 could not be read) · 100
+      entries each · ±10 min`. The two phrases mean different things and can appear
+      together — `(N could not be read)` is a read that failed, `· N stream(s) could not be
+      read back far enough` is one that answered and stopped short
 - [ ] From the bench, open the thread of a passive observation — an
       `observed … · watched, took no action` row. On a quiet house the column is **two**
       rows, not one: the `HS` state change that caused it, `joined by event_id …`, then
@@ -112,6 +125,11 @@ that is running and writing events. Record the device, iOS version and date at t
 - [ ] From the Workshop, expand an RX row and tap `Why · causal thread`: the same sheet
       opens **over the Workshop**; `Done` returns to the Workshop with the row still
       expanded
+- [ ] From the Workshop, expand an `AL` reply that ran a tool and tap `Why · causal
+      thread`: the column holds the `AC` action it named, `joined by actions_taken …`.
+      This is spec §5.1's conversation turn. Ask the same question in the **Room** and
+      there is nothing to tap — an Alfred bubble carries no `why?`; that is deferred, not
+      broken (`docs/backlog/low/pwa-phase2-followups.md` §11)
 - [ ] Turn the network off, tap `why?`: the sheet shows the intro and a one-line
       failure — the browser's own message, which on Safari is `Load failed` — then no
       column, and it still closes. `Unreachable.` is the Room's headline and never
@@ -122,7 +140,8 @@ that is running and writing events. Record the device, iOS version and date at t
 - [ ] Nowhere does the Workshop say a word of **system state** outside spec §10 and the
       handoff's status line (`live`, `paused`, `last true … · not live`). Plain English
       about the screen itself is not system state and is expected —
-      `not built yet · phase 3`, `nothing has been written`,
+      `not built yet · phase 3`, `nothing has been written` (said only of a stream the
+      bench actually read), `XX · could not be read`,
       `N of 8 streams could not be read`
 - [ ] Nothing pretends to be a badge, a count of unread, or a throughput meter beyond
       `ev/s`

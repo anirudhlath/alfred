@@ -164,7 +164,7 @@ palette colour.
 | `--field` | Input fill — a step *above* `--surface` in both themes. In dark it was the same colour as `--surface` (1.00:1) until phase 2, which made the chosen bench and a sheet's input invisible |
 | `--line` | Hairlines |
 | `--keyboard` | The composer's own ground — a design-system token; no component paints it yet |
-| `--muted`, `--fg2`, `--fg` | The three text weights, quietest first. `--muted` is 3.46:1 on `--bg` in light theme — under AA, so it is for decoration, not for anything a reader must take on its own |
+| `--muted`, `--fg2`, `--fg` | The three text weights, quietest first. `--muted` is 3.46:1 on `--bg` in light theme — under AA, so it is for decoration, not for anything a reader must take on its own. `--fg2` is also what `input::placeholder` is set to: Tailwind's preflight would otherwise half-dissolve `--fg` into `--field` (3.84:1 dark, 3.22:1 light), and the Composer's `Offline · will send when connected` is the only thing that says a typed message will be queued |
 | `--accent` | Alfred's warm signal — presence, focus, the fuse. A **fill**: what sits on it takes `--on-accent` |
 | `--on-accent` | Text and icons on an accent fill — the theme's own dark colour either way (7.61:1 dark, 6.33:1 light). Never `--ink`, which is near-white in dark and reads 1.77:1 |
 | `--accent-text` | The accent *as* text: `‹ Room`, `Why · causal thread`, a sheet's `Done`. Dark's accent is already 7.61:1 on `--bg`, so it is the same colour there; light's is 2.34:1, which is why the token exists |
@@ -336,7 +336,16 @@ is the millisecond half — never by `event.timestamp`. Each stream keeps its ne
 `MAX_PER_STREAM` (400) entries, or as many as `↑ older` has already fetched, whichever is
 deeper: the depth the user paged to is a floor the cap never rolls back. Past it the
 oldest fall off the bottom and the cursor moves up to match, so nothing becomes
-unreachable.
+unreachable. Older mode is exempt from the cap by design, so a paged stream grows without
+a ceiling — the virtualization ticket carries the cost
+(`docs/backlog/low/pwa-phase2-followups.md` §1).
+
+The hook's `loaded` says the head read *settled*, however it settled; `streamLoaded` says
+it per stream. Both are needed to say what an empty list means without inventing
+anything: nothing loaded yet, `0 entries · nothing has been written` for a stream that
+answered, and `could not be read` for one that did not. "Nothing has been written" about
+a stream the bench never read would be a claim about the server it has no evidence for
+(spec §5.2).
 
 **The horizon.** The list is a merge of up to eight independently paged streams. A
 stream that can still page (`next_before` set) is only known back to its oldest loaded
@@ -361,8 +370,15 @@ whatever is being read down the screen; WebKit has never shipped `overflow-ancho
 rows arrive is the point. A second layout effect resets the scroll to the top when the
 solo changes: a different stream is a different list.
 
-**Causality.** A reflex act row in the Room (`why?`) or an RX row in Activity
-(`Why · causal thread`) opens `WhySheet` with a `StreamRef`. `lib/trace.ts` reads one
+**Causality.** A reflex act row in the Room (`why?`), or an RX or AL row in Activity
+(`Why · causal thread`), opens `WhySheet` with a `StreamRef`. The two streams the bench
+offers it on are `WHY_STREAMS` in `ActivityBench.tsx`: both have a cause the server holds
+— an observation's `trigger_event`, and a reply's `actions_taken` naming the tool an
+action ran. The reply is spec §5.1's own conversation turn ("correlate one conversation
+turn with the system activity it caused"); the Room's Alfred bubbles do not offer it yet
+(`docs/backlog/low/pwa-phase2-followups.md` §11). Notifications and triggers are left out
+because they have no such id, and a pill that always produced a dashed-only column would
+be noise. `lib/trace.ts` reads one
 page of 100 from every stream up to ten minutes after the observation
 (`fetchThreadCandidates`), then `buildThread` joins from the observation outward on the
 ids events actually carry — `event_id` (an observation's `trigger_event` is the
@@ -384,7 +400,8 @@ dump (`core/reflex/runner.py`), so an observation with no action still normally 
 hundred entries, or an anchor whose schema carries no id anything else in the window
 shares. The sheet says so rather than promising solid and dashed links and then showing
 neither: `Nothing else in the eight streams is joined to this row.` The footnote states what was searched (`searched 8 streams · 100 entries each ·
-±10 min`, or `N of 8` when some read failed) and appends
+±10 min`, or `searched 7 of 8 streams (1 could not be read) · …` when a stream's read
+failed — the reason is said, not left to be inferred from the count) and appends
 ` · N stream(s) could not be read back far enough` for every stream whose page both
 filled and stopped inside the window — a stream busy enough to fill its hundred entries
 inside the window hides the anchor's whole past behind them (`home_state` need only

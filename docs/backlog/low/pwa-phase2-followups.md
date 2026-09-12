@@ -6,12 +6,20 @@ the decisions it took knowingly and the limits it shipped with.
 
 ## 1. The Activity bench is plain DOM
 
-Carried from `pwa-phase1-followups.md` §4. Each stream keeps its newest
-`MAX_PER_STREAM = 400` entries (`web/src/lib/feed.ts`); with nothing solo'd that is up to
-3 200 `EventRow`s mounted, each with its own expand state. Fine on an iPhone 15 with a
-house that writes a few events a second; measure on the oldest phone in use before raising
-the cap. **Acceptance:** scroll stays smooth with all eight streams full, or the list moves
-to `@tanstack/react-virtual` with the expand state lifted out of the rows.
+Carried from `pwa-phase1-followups.md` §4. The cap in `web/src/lib/feed.ts` is
+`MAX_PER_STREAM = 400` *per stream*, and it binds only until the reader presses `↑ older`:
+that mode returns the union untrimmed on purpose — "growing downward is what the user
+asked for" — and `highWater()` then raises the ceiling to whatever depth was fetched. So
+the bound on mounted `EventRow`s is **400 per stream until `↑ older`, unbounded after** —
+roughly another 400 rows per press with all eight streams at the horizon, each with its
+own expand state, none virtualised, and a `useLayoutEffect` measuring the list's
+`scrollHeight` on every render. Nothing gives them back but closing the Workshop.
+
+Fine on an iPhone 15 with a house that writes a few events a second; measure on the oldest
+phone in use before raising the cap. **Acceptance:** scroll stays smooth at the un-paged
+400-per-stream depth *and* after ten presses of `↑ older` on a busy house — or the list
+moves to `@tanstack/react-virtual` with the expand state lifted out of the rows and a
+depth bound of its own on what `↑ older` may accumulate.
 
 ## 2. Causality is a client-side heuristic
 
@@ -108,8 +116,9 @@ so the Door's palette is settled in one pass rather than two.
 together: without both, every Room render — a chat frame, the 30 s overview poll, the
 Door's once-a-second `now` while a fuse counts — walks `WorkshopPanel` →
 `ActivityBench` → every mounted `EventRow`, all of them deliberately unmemoised, each
-re-running `summarise`. That is up to 3 200 of them with nothing solo'd, not 400: the cap
-is per stream and `mergeRows` merges eight (§1). Removing either leaves all 798 tests passing. The only thing protecting the
+re-running `summarise`. That is 400 of them per stream with nothing solo'd — the cap is
+per stream and `mergeRows` merges eight — and no ceiling at all once `↑ older` has been
+pressed (§1). Removing either leaves all 812 tests passing. The only thing protecting the
 pair is the comments in `Workshop.tsx` and `Room.tsx` pointing at each other.
 **Acceptance:** a render-count assertion on `EventRow` under an unrelated Room re-render,
 or a lint rule — worth writing the first time this regresses, not before.
@@ -123,3 +132,23 @@ trims and accepts numbers and booleans, `str` does neither — so this is a merg
 behaviour decision in it, not a deletion. **Acceptance:** one set, either imported from
 `streams.ts` or lifted to a shared `lib/json.ts`, with the trim-and-coerce question
 answered once and the Room's rows re-tested against it.
+
+## 11. The Room has no conversation-turn `why?`
+
+Spec §5.1 defines Causality as "correlate one conversation turn with the system activity
+it caused", and §7 names `user_requests` / `user_responses` among the streams it is drawn
+from. Phase 2 answers that in the Workshop only: `WHY_STREAMS` in
+`web/src/workshop/ActivityBench.tsx` offers `Why · causal thread` on `user_responses` (AL)
+rows as well as reflex observations, because a reply's `actions_taken` names the tools it
+ran and `trace.ts` joins that to an action's `tool_name` — a server-held cause, which is
+the bar the plan's decision 4 set.
+
+The Room's own chat bubbles do not offer it. An Alfred bubble is the same turn seen from
+the other end, and it is where a user would look first — but putting a pill on it is a
+change to the handoff's visual for the Room's most-looked-at surface (bubble geometry, the
+`why?` affordance the act rows already own, and what a turn with no tools should do), not
+a wiring change. Deferred on purpose rather than improvised in a review.
+
+**Acceptance:** an Alfred bubble whose reply named at least one tool offers the same
+sheet, drawn as the handoff would draw it, with a turn that ran no tools offering nothing
+rather than an empty thread.
