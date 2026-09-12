@@ -1,5 +1,6 @@
 import { api } from "./api";
 import { dayLabel, hhmm, humaniseTool, notificationText, shortId } from "./format";
+import type { StreamName, StreamRef } from "./streams";
 import type { Mood, StreamEntry, StreamPage } from "./types";
 
 /** One row of the Room. Every kind carries an ISO `at`; the list is sorted by it. */
@@ -16,7 +17,16 @@ export type TimelineItem =
       error?: boolean;
     }
   /** hue 120 trigger (EV) · 210 reflex (RX) · 255 notification (NT) — the handoff's stream hues. */
-  | { kind: "act"; id: string; at: string; hue: 120 | 210 | 255; text: string; meta: string }
+  | {
+      kind: "act";
+      id: string;
+      at: string;
+      hue: 120 | 210 | 255;
+      text: string;
+      meta: string;
+      /** Set only on reflex acts: what `why?` opens the causal thread on. */
+      why?: StreamRef;
+    }
   | { kind: "tombstone"; id: string; at: string; title: string; meta: string }
   | { kind: "transcribing"; id: string; at: string; seconds: number }
   | { kind: "thinking"; id: string; at: string; detail: string };
@@ -27,7 +37,7 @@ export const ROOM_STREAMS = [
   "user_responses",
   "reflex_observations",
   "notifications",
-] as const;
+] as const satisfies readonly StreamName[];
 
 export type RoomStream = (typeof ROOM_STREAMS)[number];
 
@@ -130,6 +140,7 @@ function reflexItem(entry: StreamEntry): TimelineItem | null {
     hue: 210,
     text: str(entry.event.decision_context) ?? tool,
     meta: `${hhmm(at)} · reflex · ${tool}${failed ? " · failed" : ""}`,
+    why: { stream: "reflex_observations", entry },
   };
 }
 

@@ -163,6 +163,38 @@ describe("Timeline rows", () => {
     expect(mark).toHaveAttribute("aria-hidden", "true");
   });
 
+  const observation: TimelineItem = {
+    kind: "act",
+    id: "rx:1788800280000-0",
+    at: you.at,
+    hue: 210,
+    text: "movie started, evening, user home",
+    meta: "17:58 · reflex · home.light_set",
+    why: {
+      stream: "reflex_observations",
+      entry: { id: "1788800280000-0", event: { event_type: "reflex_observation" } },
+    },
+  };
+
+  it("offers why? on a reflex act row and hands back its observation", () => {
+    const onWhy = vi.fn();
+    render(<Timeline items={[observation]} firstDayGreeting={null} onWhy={onWhy} />);
+    const why = screen.getByRole("button", { name: "why?" });
+    expect(why).toHaveClass("h-11");
+    expect(why).toHaveStyle({ color: "var(--accent-text)" });
+    fireEvent.click(why);
+    expect(onWhy).toHaveBeenCalledWith(observation.why);
+  });
+
+  it("shows no why? on a row with nothing to trace, or when nobody is listening", () => {
+    const { rerender } = render(
+      <Timeline items={[{ ...observation, why: undefined }]} firstDayGreeting={null} onWhy={() => {}} />,
+    );
+    expect(screen.queryByRole("button", { name: "why?" })).toBeNull();
+    rerender(<Timeline items={[observation]} firstDayGreeting={null} />);
+    expect(screen.queryByRole("button", { name: "why?" })).toBeNull();
+  });
+
   it("strikes a tombstone through, on a faded row", () => {
     render(
       <Timeline

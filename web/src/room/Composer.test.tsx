@@ -150,4 +150,20 @@ describe("Composer", () => {
     const row = container.querySelector(".pb-keyboard")!;
     expect(row).not.toHaveClass("keyboard-up");
   });
+
+  it("shows the handle under the row while the keyboard is down", () => {
+    setViewport(852);
+    const { container } = render(
+      <Composer online onSend={() => {}} hold={null} handle={<button type="button">workshop</button>} />,
+    );
+    const handle = screen.getByRole("button", { name: "workshop" });
+    // Inside the padded element, so the safe-area inset falls below the handle.
+    expect(container.querySelector(".pb-keyboard")).toContainElement(handle);
+  });
+
+  it("hides the handle while the keyboard is up", () => {
+    setViewport(500);
+    render(<Composer online onSend={() => {}} hold={null} handle={<button type="button">workshop</button>} />);
+    expect(screen.queryByRole("button", { name: "workshop" })).toBeNull();
+  });
 });

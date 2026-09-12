@@ -6,13 +6,15 @@ export interface ComposerProps {
   onSend: (text: string) => void;
   /** The hold-to-talk button, shown whenever there is no draft. */
   hold: ReactNode;
+  /** The Workshop handle, under the row — and gone while the keyboard is up (handoff). */
+  handle?: ReactNode;
 }
 
 /**
  * 50 px field, 56 px action. Never disabled offline: a message typed while the
  * house is unreachable is queued and retried, and a dead input would hide that.
  */
-export function Composer({ online, onSend, hold }: ComposerProps) {
+export function Composer({ online, onSend, hold, handle }: ComposerProps) {
   const [draft, setDraft] = useState("");
   const field = useRef<HTMLInputElement>(null);
   const keyboardOpen = useKeyboardOpen();
@@ -43,7 +45,8 @@ export function Composer({ online, onSend, hold }: ComposerProps) {
     // Two elements on purpose: the outer one owns the keyboard and safe-area
     // padding (a Tailwind padding utility on the same element would out-rank the
     // `@layer components` rule and silently drop the inset), the inner one the
-    // handoff's own `0 20 8`.
+    // handoff's own `0 20 8`. The handle sits between them so the safe-area
+    // inset falls below it, not between it and the row.
     <div className={`pb-keyboard relative z-[1] ${keyboardOpen ? "keyboard-up" : ""}`}>
       <div className="flex items-center gap-2.5 px-5 pb-2">
         <input
@@ -79,6 +82,7 @@ export function Composer({ online, onSend, hold }: ComposerProps) {
           hold
         )}
       </div>
+      {keyboardOpen ? null : handle}
     </div>
   );
 }

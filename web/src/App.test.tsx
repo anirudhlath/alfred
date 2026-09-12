@@ -51,6 +51,7 @@ vi.mock("@/lib/telemetry-socket", () => ({
     connect() {}
     close() {}
     subscribe() {}
+    unsubscribe() {}
     listen() {
       return () => {};
     }
@@ -327,6 +328,51 @@ describe("App", () => {
       document.dispatchEvent(new Event("visibilitychange"));
     });
     expect(await screen.findByRole("heading", { name: "Good afternoon, sir." })).toBeInTheDocument();
+  });
+
+  it("opens the Workshop from the handle and returns to the Room", async () => {
+    render(<App />);
+    await screen.findByText("What have I got tomorrow morning?");
+
+    fireEvent.click(screen.getByRole("button", { name: "Open the Workshop" }));
+    const workshop = await screen.findByRole("dialog", { name: "Workshop" });
+    expect(within(workshop).getByRole("tab", { name: "Activity" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    // The bench reads the eight streams' heads; the four the Room also reads
+    // come from the same routes, so the reflex observation is a row here too.
+    expect(
+      await within(workshop).findByText("observed media_player.tv · acted"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(within(workshop).getByRole("button", { name: "Room" }));
+    act(() => vi.advanceTimersByTime(400));
+    expect(screen.queryByRole("dialog", { name: "Workshop" })).toBeNull();
+    expect(screen.getByRole("log", { name: "Conversation" })).toBeInTheDocument();
+  });
+
+  it("asks why on a reflex act row and sees the thread sheet", async () => {
+    vi.setSystemTime(new Date(2026, 8, 7, 21, 20));
+    render(<App />);
+    const decision = await screen.findByText("movie started, evening, user home");
+    // ActRow: outer row > [mark, text column > [line, meta], why?]
+    const row = decision.parentElement!.parentElement!;
+
+    fireEvent.click(within(row).getByRole("button", { name: "why?" }));
+    const sheet = await screen.findByRole("dialog", { name: "Why Alfred did that" });
+    // Nothing else the house answers shares an id with it, so the column is
+    // the observation alone — over eight fully searched streams.
+    expect(await within(sheet).findByText("observed media_player.tv · acted")).toBeInTheDocument();
+    expect(within(sheet).getAllByRole("listitem")).toHaveLength(1);
+    expect(
+      within(sheet).getByText("searched 8 streams · 100 entries each · ±10 min"),
+    ).toBeInTheDocument();
+    expect(fetched().filter((url) => url.includes("count=100&before=1788800880001-0"))).toHaveLength(8);
+
+    fireEvent.click(within(sheet).getByRole("button", { name: "Done" }));
+    act(() => vi.advanceTimersByTime(380));
+    expect(screen.queryByRole("dialog", { name: "Why Alfred did that" })).toBeNull();
   });
 });
 

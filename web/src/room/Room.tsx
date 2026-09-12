@@ -8,6 +8,7 @@ import { greetingFor, pickHeadline } from "@/lib/headline";
 import { pendingActionTitles, toTimelineItems } from "@/lib/history";
 import { onVisible } from "@/lib/lifecycle";
 import { PresenceSignal } from "@/lib/presence-signal";
+import type { StreamRef } from "@/lib/streams";
 import { Composer } from "@/room/Composer";
 import { DndRow } from "@/room/DndRow";
 import { Headline } from "@/room/Headline";
@@ -16,12 +17,15 @@ import { OfflineNote } from "@/room/OfflineNote";
 import { PresenceField } from "@/room/PresenceField";
 import { StatusLine } from "@/room/StatusLine";
 import { Timeline } from "@/room/Timeline";
+import { WorkshopHandle } from "@/room/WorkshopHandle";
 import { isFirstRun, sessionIdleMs, useOverview } from "@/room/useOverview";
 import { useRoom } from "@/room/useRoom";
 import { useRoomHistory } from "@/room/useRoomHistory";
 import { HeldBackSheet } from "@/sheets/HeldBackSheet";
+import { WhySheet } from "@/sheets/WhySheet";
 import { useConnection } from "@/shell/ConnectionProvider";
 import { ThemeToggle } from "@/shell/ThemeToggle";
+import { Workshop } from "@/workshop/Workshop";
 
 export function Room() {
   const { online, chatStatus, lastTrueAt, chat } = useConnection();
@@ -35,6 +39,9 @@ export function Room() {
   const [signal] = useState(() => new PresenceSignal());
   const [holding, setHolding] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [workshopOpen, setWorkshopOpen] = useState(false);
+  /** The row a `why?` was asked on — the Room's or the Workshop's. */
+  const [why, setWhy] = useState<StreamRef | null>(null);
 
   // Read once, refreshed when the app returns — a PWA left open overnight must
   // not still be saying "Good evening".
@@ -106,6 +113,7 @@ export function Room() {
       <Timeline
         items={room.items}
         firstDayGreeting={firstRun && room.items.length === 0 ? greetingFor(hour) : null}
+        onWhy={setWhy}
       />
 
       {banner ? (
@@ -127,9 +135,18 @@ export function Room() {
             onAudio={room.sendAudio}
           />
         }
+        handle={<WorkshopHandle onOpen={() => setWorkshopOpen(true)} />}
       />
 
       <HeldBackSheet open={sheetOpen} onClose={() => setSheetOpen(false)} />
+
+      <WhySheet anchor={why} onClose={() => setWhy(null)} />
+
+      <Workshop
+        open={workshopOpen}
+        onClose={() => setWorkshopOpen(false)}
+        onWhy={setWhy}
+      />
 
       <DoorLayer
         tracked={door.current}
