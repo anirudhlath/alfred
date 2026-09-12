@@ -9,7 +9,7 @@ export interface EventRowProps {
   onToggle: () => void;
   /** `Only {mono}` — narrow the list to this row's stream. */
   onSolo: () => void;
-  /** `Why · causal thread` — offered on reflex observations only. */
+  /** `Why · causal thread` — offered on the streams with a server-held cause (`WHY_STREAMS`). */
   onWhy?: () => void;
 }
 
@@ -34,10 +34,13 @@ function stamp(id: string): string {
  * hidden or renamed (spec §5.2).
  *
  * The tile is a picture of the stream, so it is `aria-hidden` and the name is
- * said in words beside it. Unmemoised, and the bench renders up to 3 200 of
- * these — `MAX_PER_STREAM` is 400 per stream and the merged list is eight —
- * because its handlers are per-row closures, so a shallow compare would miss on
- * every render and cost more than it saved. What keeps that affordable is that
+ * said in words beside it. One of these is mounted per row, with no
+ * virtualisation, and the number of rows is bounded only until the reader
+ * pages: 400 per stream until `↑ older`, unbounded after it, since older mode
+ * returns its union untrimmed on purpose (`feed.ts`, `withPage`) and each
+ * press adds roughly another 400 rows with all eight streams at the horizon.
+ * Unmemoised because its handlers are per-row closures, so a shallow compare
+ * would miss on every render and cost more than it saved. What keeps that affordable is that
  * the bench only renders when something it owns changes — `Workshop` is
  * `memo`ised precisely so the Room's unrelated re-renders stop above it.
  */

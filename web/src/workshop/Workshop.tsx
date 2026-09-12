@@ -28,9 +28,10 @@ export interface WorkshopProps {
  * the Workshop cannot see: a chat frame, the 30 s overview poll, the Door's
  * once-a-second `now` while a fuse counts. Without it each of those walks
  * `WorkshopPanel` -> `ActivityBench` -> every mounted `EventRow`, all of them
- * unmemoised, every one re-running `summarise` — up to 3 200 of them with
- * nothing solo'd, since `MAX_PER_STREAM` is 400 *per stream* and `mergeRows`
- * merges eight — and re-attaches the panel's Escape listener. Both props the Room passes are stable, or this would never hit:
+ * unmemoised, every one re-running `summarise` — 400 of them per stream with
+ * nothing solo'd, since `MAX_PER_STREAM` is *per stream* and `mergeRows`
+ * merges eight, and no ceiling at all once `↑ older` has been pressed, which
+ * is exempt from the cap (`feed.ts`) — and re-attaches the panel's Escape listener. Both props the Room passes are stable, or this would never hit:
  * `setWhy`, and a `useCallback`'d `onClose`.
  */
 export const Workshop = memo(function Workshop({ open, onClose, onWhy }: WorkshopProps) {

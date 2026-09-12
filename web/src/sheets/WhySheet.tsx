@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { skipToken, useQuery } from "@tanstack/react-query";
 import { errorText } from "@/lib/api";
 import {
@@ -11,6 +10,7 @@ import {
   type StreamRef,
 } from "@/lib/streams";
 import { CANDIDATE_COUNT, fetchThread, JOIN_WINDOW_MS, nodeMeta, type Thread } from "@/lib/trace";
+import { useLatched } from "@/shell/presence";
 import { Sheet } from "@/shell/Sheet";
 
 const INTRO =
@@ -37,17 +37,25 @@ export interface WhySheetProps {
  * How much of the past this thread is drawn from: `searched 8 streams · 100
  * entries each · ±10 min`, and what the read could not reach.
  *
- * `partial` counts the streams that answered but whose page stopped inside the
- * window (`trace.ts`, `isPartial`) — busy enough that causes older than the
- * page's end are simply not here. Said out loud, because "searched 8 streams"
- * on its own reads as "I looked everywhere", which is the exact misreading the
- * data layer went to the trouble of detecting. The word `stream` is repeated
- * in the suffix rather than left implied: a bare `1` beside `100 entries each`
+ * Two different shortfalls, and they must not be confused with each other.
+ * `searched` is short of eight when a stream's read *failed* — nothing of it
+ * is here at all. `partial` counts the streams that answered but whose page
+ * stopped inside the window (`trace.ts`, `isPartial`) — busy enough that
+ * causes older than the page's end are simply not here. Both are said out
+ * loud, because "searched 8 streams" on its own reads as "I looked
+ * everywhere", which is the exact misreading the data layer went to the
+ * trouble of detecting; and `7 of 8` on its own said that one stream was
+ * missing without ever saying why, while the only other "could not be read" on
+ * the screen meant the other thing entirely. The word `stream` is repeated in
+ * the suffix rather than left implied: a bare `1` beside `100 entries each`
  * reads as a count of entries.
  */
 function footnote({ searched, partial }: Thread): string {
+  const unread = STREAMS.length - searched;
   const streams =
-    searched === STREAMS.length ? `${STREAMS.length} streams` : `${searched} of ${STREAMS.length} streams`;
+    unread === 0
+      ? `${STREAMS.length} streams`
+      : `${searched} of ${STREAMS.length} streams (${unread} could not be read)`;
   const line = `searched ${streams} · ${CANDIDATE_COUNT} entries each · ±${JOIN_WINDOW_MS / 60_000} min`;
   if (partial === 0) return line;
   return `${line} · ${partial} stream${partial === 1 ? "" : "s"} could not be read back far enough`;
@@ -61,9 +69,7 @@ function footnote({ searched, partial }: Thread): string {
 export function WhySheet({ anchor, onClose }: WhySheetProps) {
   // The sheet is still on screen for its leave after `anchor` goes null; keep
   // drawing the last thread rather than emptying the column mid-animation.
-  // Adjusted during render, as `usePresence` does.
-  const [shown, setShown] = useState(anchor);
-  if (anchor !== null && anchor !== shown) setShown(anchor);
+  const shown = useLatched(anchor);
 
   const thread = useQuery<Thread>({
     queryKey: ["trace", shown?.stream, shown?.entry.id],

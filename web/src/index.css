@@ -270,6 +270,23 @@
     font-weight: 400;
     color: var(--fg2);
   }
+  /* A field's own placeholder. Left to Tailwind's preflight it is
+     `color-mix(in oklab, currentcolor 50%, transparent)` — `--fg` at half
+     strength over `--field`, which is 3.84:1 in the dark theme and 3.22:1 in
+     light, both under AA. The two fields that carry one say something a reader
+     has to be able to take: the Composer's `Offline · will send when
+     connected` is the only thing on screen promising a typed message will be
+     queued rather than lost, and the setup gate's placeholders are the shape
+     of the credential being asked for. `--fg2` is 7.99:1 dark / 9.17:1 light
+     on `--field`, the same colour `.t-meta-strong` above uses for the same
+     reason. `opacity: 1` because preflight resets it for Firefox and this rule
+     wins the cascade outright — the layer would otherwise take the reset with
+     it. Restated in `src/test/contrast.ts`, which holds the pair to 4.5:1. */
+  input::placeholder {
+    color: var(--fg2);
+    opacity: 1;
+  }
+
   .t-monogram {
     font-family: var(--font-mono);
     font-size: 9px;

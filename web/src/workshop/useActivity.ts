@@ -15,6 +15,15 @@ export interface Activity {
    * horizon holds more entries than the list shows (solo it to see them all).
    */
   counts: Record<StreamName, number>;
+  /**
+   * Per stream: a page of it has been read, so an empty list means the stream
+   * is empty (`feed.ts`, `StreamFeed.loaded`). False both before the first
+   * read settles *and* after one that failed — `loaded` below is what tells
+   * those two apart, and the bench needs both to choose between "nothing
+   * loaded yet", "nothing has been written" and "could not be read". Kept off
+   * `error`, which carries one reason for all eight and names no stream.
+   */
+  streamLoaded: Record<StreamName, boolean>;
   /** The telemetry socket is up. When false the stale banner shows. */
   live: boolean;
   paused: boolean;
@@ -158,6 +167,12 @@ export function useActivity(): Activity {
     return result;
   }, [feed]);
 
+  const streamLoaded = useMemo(() => {
+    const result = {} as Record<StreamName, boolean>;
+    for (const name of STREAMS) result[name] = feed.streams[name].loaded;
+    return result;
+  }, [feed]);
+
   const setSolo = useCallback((name: StreamName | null) => {
     setSoloState(name);
     setExpanded(null);
@@ -206,6 +221,7 @@ export function useActivity(): Activity {
   return {
     rows,
     counts,
+    streamLoaded,
     live: telemetryStatus === "online",
     paused: feed.paused,
     liveAt: feed.liveAt,

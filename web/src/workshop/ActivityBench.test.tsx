@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { FeedRow } from "@/lib/feed";
 import { STREAMS, type StreamName } from "@/lib/streams";
 import { contrast, token } from "@/test/contrast";
-import { reflexObservationsPage, userRequestsPage } from "@/test/fixtures";
+import { reflexObservationsPage, userRequestsPage, userResponsesPage } from "@/test/fixtures";
 import { ActivityBench } from "./ActivityBench";
 import type { Activity } from "./useActivity";
 
@@ -16,6 +16,12 @@ const request: FeedRow = {
   stream: "user_requests",
   entry: userRequestsPage.entries[0],
   key: `user_requests:${userRequestsPage.entries[0].id}`,
+};
+/** A reply that names the tools it ran — the conversation turn's own `why?`. */
+const reply: FeedRow = {
+  stream: "user_responses",
+  entry: userResponsesPage.entries[0],
+  key: `user_responses:${userResponsesPage.entries[0].id}`,
 };
 /** One row older than both, for the `↑ older` append. */
 const older: FeedRow = {
@@ -30,10 +36,16 @@ const newest: FeedRow = {
   key: `reflex_observations:${reflexObservationsPage.entries[0].id}`,
 };
 
+/** Every stream read, except the one named — whose head read failed. */
+function streamLoaded(failed?: StreamName): Record<StreamName, boolean> {
+  return Object.fromEntries(STREAMS.map((name) => [name, name !== failed])) as Record<StreamName, boolean>;
+}
+
 function activity(overrides: Partial<Activity> = {}): Activity {
   return {
     rows: [reflex, request],
     counts: Object.fromEntries(STREAMS.map((name) => [name, 0])) as Record<StreamName, number>,
+    streamLoaded: streamLoaded(),
     live: true,
     paused: false,
     liveAt: 1,
@@ -151,6 +163,38 @@ describe("ActivityBench", () => {
     expect(screen.getByText("UR · nothing loaded yet")).toBeInTheDocument();
   });
 
+  it("does not vouch for a stream it could not read", () => {
+    // `loaded` is the *global* flag and goes true once the head read settles,
+    // however it settled — all eight can have rejected. Solo one of them and
+    // the note used to read `HS · 0 entries · nothing has been written`, which
+    // is a claim about the server made from no evidence (spec §5.2).
+    render(
+      <ActivityBench
+        activity={activity({ rows: [], solo: "home_state", streamLoaded: streamLoaded("home_state") })}
+        onWhy={() => {}}
+      />,
+    );
+    expect(screen.getByText("HS · could not be read")).toBeInTheDocument();
+    expect(screen.queryByText(/nothing has been written/)).toBeNull();
+  });
+
+  it("still says nothing loaded yet when a stream's read never settled", () => {
+    // Pause before the first head read retires it: nothing failed, nothing
+    // landed, and the bench must not call that a read error either.
+    render(
+      <ActivityBench
+        activity={activity({
+          rows: [],
+          solo: "home_state",
+          loaded: false,
+          streamLoaded: streamLoaded("home_state"),
+        })}
+        onWhy={() => {}}
+      />,
+    );
+    expect(screen.getByText("HS · nothing loaded yet")).toBeInTheDocument();
+  });
+
   it("opens a row on tap, solos from its pill, and asks why only on a reflex row", () => {
     const onWhy = vi.fn();
     const a = activity({ expanded: reflex.key });
@@ -166,6 +210,19 @@ describe("ActivityBench", () => {
     rerender(<ActivityBench activity={activity({ expanded: request.key })} onWhy={onWhy} />);
     expect(screen.getByRole("button", { name: "Only UR" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Why · causal thread" })).toBeNull();
+  });
+
+  it("asks why on a reply too — spec §5.1's conversation turn", () => {
+    // §5.1 defines Causality as correlating one *conversation turn* with the
+    // activity it caused, and a reply's `actions_taken` names the actions it
+    // ran: `trace.ts` joins that to `actions.tool_name`, so the column is a
+    // real one and not the dashed-only noise the plan's decision 4 refused.
+    const onWhy = vi.fn();
+    render(
+      <ActivityBench activity={activity({ rows: [reply], expanded: reply.key })} onWhy={onWhy} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Why · causal thread" }));
+    expect(onWhy).toHaveBeenCalledWith({ stream: "user_responses", entry: reply.entry });
   });
 
   it("pauses and resumes the feed from one button that says how many wait", () => {

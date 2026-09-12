@@ -181,11 +181,21 @@ describe("WhySheet", () => {
     expect(screen.getByText("AC")).toHaveAttribute("aria-hidden", "true");
   });
 
-  it("says how many streams it could search", async () => {
+  it("says how many streams it could search, and why the rest are missing", async () => {
+    // `6 of 8` alone left the two failures with no reason anywhere on screen:
+    // the only other "could not be read" in the sheet is the *partial* suffix
+    // below, which is about a read that succeeded and stopped short. Two
+    // different things wearing one phrase across the seam.
     pages = { events: 503, notifications: 503 };
     mount(ANCHOR);
-    await screen.findByText("searched 6 of 8 streams · 100 entries each · ±10 min");
+    await screen.findByText("searched 6 of 8 streams (2 could not be read) · 100 entries each · ±10 min");
     expect(screen.getAllByRole("listitem")).toHaveLength(1);
+  });
+
+  it("counts a single unread stream in the singular", async () => {
+    pages = { events: 503 };
+    mount(ANCHOR);
+    await screen.findByText("searched 7 of 8 streams (1 could not be read) · 100 entries each · ±10 min");
   });
 
   it("says when a stream could not be read back far enough", async () => {

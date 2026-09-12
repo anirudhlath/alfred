@@ -176,10 +176,13 @@ export function SlideToConfirm({ hint, disabled, onConfirm }: SlideToConfirmProp
               : `transform ${SNAP_MS}ms var(--ease-rise)`,
         }}
       >
+        {/* `--on-accent`, not `--ink`: the knob is an accent fill and ink is
+            near-white in the dark theme, 1.77:1 on it (index.css,
+            --on-accent). */}
         <span
           aria-hidden="true"
           className="block h-2.5 w-2.5 border-t-2 border-r-2"
-          style={{ borderColor: "var(--ink)", transform: "rotate(45deg)" }}
+          style={{ borderColor: "var(--on-accent)", transform: "rotate(45deg)" }}
         />
       </div>
     </div>

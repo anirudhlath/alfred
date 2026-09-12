@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef } from "react";
 import { hhmm } from "@/lib/format";
-import { STREAM_INFO, STREAMS, type StreamRef } from "@/lib/streams";
+import { STREAM_INFO, STREAMS, type StreamName, type StreamRef } from "@/lib/streams";
 import { EventRow } from "./EventRow";
 import { StreamChips } from "./StreamChips";
 import type { Activity } from "./useActivity";
@@ -16,16 +16,45 @@ function staleText(liveAt: number | null): string {
     : `Feed stopped at ${hhmm(liveAt)}. Nothing below is live.`;
 }
 
+// Three things an empty list can mean, and only the first two used to be said.
+//
 // `loaded` can be false with nothing in flight — tapping Pause before the first
 // head read lands retires that read — so an unloaded list says "nothing loaded
 // yet" rather than showing progress it may never make.
-function emptyNote({ solo, loaded }: Pick<Activity, "solo" | "loaded">): string {
+//
+// And `loaded` goes true when the head read *settles*, however it settled:
+// `useActivity` sets it even when all eight streams rejected. So a soloed
+// stream is only told it has nothing written when that stream's own page came
+// back (`streamLoaded`). Saying "nothing has been written" about a stream this
+// bench never read would be a claim about the server made from no evidence,
+// which is exactly what spec §5.2 forbids.
+function emptyNote({ solo, loaded, streamLoaded }: Pick<Activity, "solo" | "loaded" | "streamLoaded">): string {
   if (solo) {
     const { mono } = STREAM_INFO[solo];
-    return loaded ? `${mono} · 0 entries · nothing has been written` : `${mono} · nothing loaded yet`;
+    if (!loaded) return `${mono} · nothing loaded yet`;
+    return streamLoaded[solo]
+      ? `${mono} · 0 entries · nothing has been written`
+      : `${mono} · could not be read`;
   }
   return loaded ? `${STREAMS.length} streams · 0 entries` : `${STREAMS.length} streams · nothing loaded yet`;
 }
+
+/**
+ * The two streams a row can be asked `why?` from. Both have a cause the server
+ * itself holds, which is the bar the plan's decision 4 set: a reflex
+ * observation carries the originating event's whole dump, so `trace.ts` joins
+ * it by `event_id`, and a reply names the tools it ran in `actions_taken`,
+ * which `trace.ts` joins to an action's `tool_name`. A reply is also spec
+ * §5.1's own wording for Causality — "correlate one conversation turn with the
+ * system activity it caused" — and this bench is where that turn is reachable;
+ * the Room's chat bubbles are a handoff visual and stay as they are
+ * (`docs/backlog/low/pwa-phase2-followups.md` §11).
+ *
+ * Everything else is left out for decision 4's reason: notifications and
+ * triggers have no server-held cause to join on, and a pill that always
+ * produced a dashed-only column would be noise.
+ */
+const WHY_STREAMS: readonly StreamName[] = ["user_responses", "reflex_observations"];
 
 /**
  * The Activity bench (handoff, Workshop → Activity; spec §8 phase 2). A
@@ -166,7 +195,7 @@ export function ActivityBench({ activity, onWhy }: ActivityBenchProps) {
             onToggle={() => activity.toggle(row.key)}
             onSolo={() => activity.setSolo(row.stream)}
             onWhy={
-              row.stream === "reflex_observations"
+              WHY_STREAMS.includes(row.stream)
                 ? () => onWhy({ stream: row.stream, entry: row.entry })
                 : undefined
             }

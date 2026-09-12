@@ -138,6 +138,7 @@ function Probe() {
           fetchingOlder: a.fetchingOlder,
           error: a.error,
           counts: a.counts,
+          streamLoaded: a.streamLoaded,
         })}
       </output>
       <button type="button" onClick={a.pause}>pause</button>
@@ -210,6 +211,10 @@ describe("useActivity", () => {
     await waitFor(() => expect(state().loaded).toBe(true));
     expect(state().error).toBe("1 of 8 streams could not be read · redis gone");
     expect(rowKeys()).toEqual([`events:${entry(1000).id}`]);
+    // Per stream, not just in the banner: the bench solos one stream at a
+    // time, and the global `loaded` cannot tell an empty stream from one whose
+    // read 500'd.
+    expect(state().streamLoaded).toMatchObject({ events: true, actions: false, home_state: true });
   });
 
   it("re-reads the heads when the app comes back to the foreground", async () => {

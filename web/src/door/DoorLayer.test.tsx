@@ -163,6 +163,15 @@ describe("DoorLayer — pending", () => {
     expect(knob).toHaveAttribute("data-motion", "settle");
   });
 
+  it("draws the knob's chevron in the accent's own dark colour", () => {
+    renderDoor(at("pending"));
+    // The knob is filled with `--accent`, so its chevron cannot be `--ink`:
+    // ink is near-white in the dark theme and 1.77:1 on the accent (index.css,
+    // --on-accent). `ActivityBench.test.tsx` holds the pair to AA.
+    const chevron = screen.getByTestId("slide-knob").firstElementChild as HTMLElement;
+    expect(chevron.style.borderColor).toBe("var(--on-accent)");
+  });
+
   it("snaps home without confirming when released early", () => {
     const { onConfirm } = renderDoor(at("pending"));
 
