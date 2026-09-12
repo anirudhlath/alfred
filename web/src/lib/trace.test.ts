@@ -129,7 +129,7 @@ describe("buildThread", () => {
     });
     const anchor = ref("reflex_observations", ANCHOR_MS, {
       event_id: "e8f9a0b1",
-      origin: "trigger",
+      origin: "trigger_fired",
       trigger_event: firing.entry.event,
       action: ACTION.entry.event,
     });
@@ -147,7 +147,7 @@ describe("buildThread", () => {
     });
     const laterObservation = ref("reflex_observations", T0 + 121_000, {
       event_id: "d4e5f6a7",
-      origin: "trigger",
+      origin: "trigger_fired",
       trigger_event: again.entry.event,
       action: laterAction.entry.event,
     });
@@ -369,7 +369,12 @@ describe("fetchThreadCandidates", () => {
           ? { entries: busy, next_before: `${T0 + 1000}-0` }
           : url.startsWith("/api/admin/streams/home_action_results?")
             ? { entries: deep, next_before: `${ANCHOR_MS - JOIN_WINDOW_MS}-0` }
-            : empty;
+            : // The server sets a cursor only on a full page, so an empty page
+              // carrying one should not happen — and must not read as a stream
+              // too busy to see through, which is the opposite of what it is.
+              url.startsWith("/api/admin/streams/notifications?")
+              ? { entries: [], next_before: `${T0}-0` }
+              : empty;
         return new Response(JSON.stringify(body), { status: 200 });
       }),
     );

@@ -45,9 +45,6 @@ export type FeedEvent =
   | { type: "pause" }
   | { type: "resume" };
 
-/** Re-exported from `streams.ts`, where it now sits beside the `StreamRef` it keys. */
-export { rowKey };
-
 export function initialFeed(): FeedState {
   const streams = {} as Record<StreamName, StreamFeed>;
   for (const name of STREAMS) streams[name] = { entries: [], nextBefore: null, loaded: false };
