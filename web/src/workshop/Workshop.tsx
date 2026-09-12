@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { evs, hhmm } from "@/lib/format";
+import { hhmm } from "@/lib/format";
 import type { StreamRef } from "@/lib/streams";
-import { useOverview } from "@/room/useOverview";
+import { rateText, useOverview } from "@/room/useOverview";
 import { Layer } from "@/shell/Layer";
 import { ActivityBench } from "./ActivityBench";
 import { BenchSwitcher, benchTabId, type Bench } from "./BenchSwitcher";
@@ -69,10 +69,10 @@ function WorkshopPanel({ onClose, onWhy }: WorkshopPanelProps) {
     return () => panel.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
 
-  // An overview never read is not a silent house: `evs({})` is a bare `0`
-  // (format.ts), which would claim a quiet feed on every cold open and on every
-  // failed poll. `StatusLine` says `—` for its own unknowns; so does this.
-  const rate = overview.data ? `${evs(overview.data.streams)} ev/s` : "— ev/s";
+  // `— ev/s` for an overview unread *or* answering with an empty map, which is
+  // Redis down rather than a quiet house. The Room's status line asks the same
+  // function, so the two headers cannot disagree about the same reading.
+  const rate = rateText(overview.data);
 
   // §5.2: live is not last-known. Not-live outranks paused; paused outranks the
   // rate. The stamp is the feed's own, `activity.liveAt` — not the connection's
@@ -119,14 +119,7 @@ function WorkshopPanel({ onClose, onWhy }: WorkshopPanelProps) {
               Phase 3: on Memory, Triggers and System that banner is unmounted
               with the bench, so nothing announces a socket drop. The live
               region should move up here when those three land. */}
-          <span
-            className="t-meta"
-            data-testid="workshop-status"
-            // `t-meta` is `--muted`, 3.46:1 on `--bg` in light — the trap
-            // BenchSwitcher's own comment names. These are the header's only
-            // words besides the back button.
-            style={{ color: "var(--fg2)" }}
-          >
+          <span className="t-meta-strong" data-testid="workshop-status">
             {status}
           </span>
         </div>
@@ -136,22 +129,19 @@ function WorkshopPanel({ onClose, onWhy }: WorkshopPanelProps) {
         role="tabpanel"
         id={panelId}
         aria-labelledby={benchTabId(tabsBase, bench)}
-        // The panel is the scroll container's parent, not itself focusable
-        // content, but the pattern asks for a tab stop so a keyboard reaches
-        // the bench without walking every row of it.
+        // The APG makes the panel's tab stop optional when the panel holds
+        // something focusable and required when it does not — and three of the
+        // four benches are a bare `<p>` with nothing to reach. Always on, so
+        // the rule does not change under the reader as they walk the switcher.
+        // It costs Activity nothing: the stop sits ahead of the content, so
+        // tabbing on continues into `↑ older` and the rows as before.
         tabIndex={0}
         className="flex flex-1 flex-col overflow-hidden"
       >
         {bench === "activity" ? (
           <ActivityBench activity={activity} onWhy={onWhy} />
         ) : (
-          <p
-            className="t-meta flex flex-1 items-center justify-center"
-            // `t-meta` again: see the status line above.
-            style={{ color: "var(--fg2)" }}
-          >
-            {UNBUILT}
-          </p>
+          <p className="t-meta-strong flex flex-1 items-center justify-center">{UNBUILT}</p>
         )}
       </div>
     </>

@@ -83,7 +83,10 @@ describe("StatusLine", () => {
         lastTrueAt={at2114}
       />,
     );
-    expect(screen.getByText("21:14 · cloud — · reflex 380 ms · 0 ev/s")).toBeInTheDocument();
+    // And does not report a rate for it either: an empty map is unknown, so the
+    // rate is `—`. The first-run case above keeps its keys and still reads
+    // `0 ev/s`, which is what makes the two distinguishable.
+    expect(screen.getByText("21:14 · cloud — · reflex 380 ms · — ev/s")).toBeInTheDocument();
   });
 
   it("is not a first run while any stream has ever had an entry", () => {

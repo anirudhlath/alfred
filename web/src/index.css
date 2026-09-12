@@ -242,6 +242,24 @@
     font-weight: 400;
     color: var(--muted);
   }
+  /* The same type, in a colour you can read: --muted is 3.46:1 on --bg in the
+     light theme, under AA at 11 px. The rule, decided once here rather than
+     re-argued at each call site: meta that is genuinely decorative — a stamp
+     beside the line it stamps, a count beside the thing counted — stays on
+     `.t-meta`, and anything a reader must take on its own to trust the screen
+     takes this one. The Workshop's status line, its unbuilt-bench note, and
+     the Activity bench's read-error and empty-list lines are the four, because
+     each is the only words in its region.
+     The ~17 other `.t-meta` sites are phase-1 scope and unaudited: some sit on
+     --ink, where --muted is the wrong family of token entirely and
+     --paper-muted is the answer, so they need measuring before they move. */
+  .t-meta-strong {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.5;
+    font-weight: 400;
+    color: var(--fg2);
+  }
   .t-monogram {
     font-family: var(--font-mono);
     font-size: 9px;

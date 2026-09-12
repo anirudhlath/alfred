@@ -36,7 +36,14 @@ export function DoorBanner({ tracked, now, onOpen }: DoorBannerProps) {
         </div>
       </div>
 
-      <div className="text-[13px] font-medium" style={{ color: "var(--accent)" }}>
+      {/* The banner's own `--paper`, not the accent. Accent on --ink is
+          1.77:1 in the dark theme — the very number index.css's --on-accent
+          comment names as the thing never to do — and `--accent-text` is no
+          help here (1.77 dark, 2.82 light): it is darkened *for paper*, and
+          --ink in the light theme is the dark colour. Paper on ink is 13.46:1
+          dark / 13.95:1 light, and `font-medium` already carries the
+          affordance without borrowing a colour it cannot afford. */}
+      <div className="text-[13px] font-medium" style={{ color: "var(--paper)" }}>
         Open
       </div>
     </button>

@@ -1,6 +1,6 @@
-import { evs, hhmm, usd } from "@/lib/format";
+import { hhmm, usd } from "@/lib/format";
 import type { Overview } from "@/lib/types";
-import { isFirstRun } from "@/room/useOverview";
+import { isFirstRun, rateText } from "@/room/useOverview";
 
 export interface StatusLineProps {
   overview: Overview | undefined;
@@ -9,7 +9,6 @@ export interface StatusLineProps {
 }
 
 export function StatusLine({ overview, online, lastTrueAt }: StatusLineProps) {
-  const streams = overview?.streams ?? {};
   const firstRun = isFirstRun(overview);
 
   const cost = overview?.cost;
@@ -29,10 +28,9 @@ export function StatusLine({ overview, online, lastTrueAt }: StatusLineProps) {
   // and every successful poll, and an unknown clock says so.
   const stamp = lastTrueAt ? hhmm(lastTrueAt) : "--:--";
 
-  // An overview never read is not a silent house: `evs({})` is a bare `0`
-  // (format.ts), which would report a quiet stream on every cold open. `—`, as
-  // `cloud —` and `reflex —` already say beside it.
-  const rate = overview ? `${evs(streams)} ev/s` : "— ev/s";
+  // `—` for a rate it has not read, as `cloud —` and `reflex —` say beside it;
+  // `rateText` owns the rule, and the Workshop's header asks the same function.
+  const rate = rateText(overview);
 
   // Offline outranks first run: §5.2's "live is not last-known" has no exception
   // for a house where nothing has happened yet.

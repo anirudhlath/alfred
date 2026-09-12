@@ -122,10 +122,10 @@ export function ActivityBench({ activity, onWhy }: ActivityBenchProps) {
       <p
         role="status"
         aria-label="Read errors"
-        // `--fg2`, not `t-meta`'s `--muted`: this is the line that says part of
-        // the list is missing, and 3.46:1 is not a thing to read it at.
-        className={activity.error ? "t-meta mx-4 mt-2.5" : "sr-only"}
-        style={activity.error ? { color: "var(--fg2)" } : undefined}
+        // `t-meta-strong`, not `t-meta`: this is the line that says part of the
+        // list is missing, and --muted's 3.46:1 is not a thing to read it at
+        // (index.css, .t-meta-strong).
+        className={activity.error ? "t-meta-strong mx-4 mt-2.5" : "sr-only"}
       >
         {activity.error}
       </p>
@@ -177,12 +177,9 @@ export function ActivityBench({ activity, onWhy }: ActivityBenchProps) {
             <span className="text-[15px]">
               {activity.solo ? "Nothing on this stream yet." : "Nothing on any stream yet."}
             </span>
-            {/* `t-meta` is `--muted`, 3.46:1 on `--bg` in light — the same
-                trap as the error line above. This is the only thing on screen
-                when the list is empty, so it is not read at 3.46:1 either. */}
-            <span className="t-meta" style={{ color: "var(--fg2)" }}>
-              {emptyNote(activity)}
-            </span>
+            {/* `t-meta-strong` like the error line: this is the only thing
+                on screen when the list is empty. */}
+            <span className="t-meta-strong">{emptyNote(activity)}</span>
           </li>
         )}
       </ul>
