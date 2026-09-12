@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { memo, useEffect, useId, useRef, useState } from "react";
 import { hhmm } from "@/lib/format";
 import type { StreamRef } from "@/lib/streams";
 import { rateText, useOverview } from "@/room/useOverview";
@@ -23,14 +23,22 @@ export interface WorkshopProps {
  * Door both paint over it. The panel inside carries every hook, so the feed
  * is subscribed and read only while the layer is mounted — including the
  * 400 ms it takes to leave.
+ *
+ * `memo`, because it is mounted in the Room and the Room re-renders for things
+ * the Workshop cannot see: a chat frame, the 30 s overview poll, the Door's
+ * once-a-second `now` while a fuse counts. Without it each of those walks
+ * `WorkshopPanel` -> `ActivityBench` -> up to ~400 unmemoised `EventRow`s,
+ * every one re-running `summarise`, and re-attaches the panel's Escape
+ * listener. Both props the Room passes are stable, or this would never hit:
+ * `setWhy`, and a `useCallback`'d `onClose`.
  */
-export function Workshop({ open, onClose, onWhy }: WorkshopProps) {
+export const Workshop = memo(function Workshop({ open, onClose, onWhy }: WorkshopProps) {
   return (
     <Layer open={open} label="Workshop" durationMs={400} level="workshop">
       <WorkshopPanel onClose={onClose} onWhy={onWhy} />
     </Layer>
   );
-}
+});
 
 interface WorkshopPanelProps {
   onClose: () => void;

@@ -179,7 +179,10 @@ describe("Timeline rows", () => {
   it("offers why? on a reflex act row and hands back its observation", () => {
     const onWhy = vi.fn();
     render(<Timeline items={[observation]} firstDayGreeting={null} onWhy={onWhy} />);
-    const why = screen.getByRole("button", { name: "why?" });
+    // Named for its row: every act row's button reads `why?`, so the visible
+    // words alone would be three identical names down a rotor.
+    const why = screen.getByRole("button", { name: /^why\?/ });
+    expect(why).toHaveAccessibleName("why? movie started, evening, user home");
     expect(why).toHaveClass("h-11");
     expect(why).toHaveStyle({ color: "var(--accent-text)" });
     fireEvent.click(why);
@@ -190,9 +193,9 @@ describe("Timeline rows", () => {
     const { rerender } = render(
       <Timeline items={[{ ...observation, why: undefined }]} firstDayGreeting={null} onWhy={() => {}} />,
     );
-    expect(screen.queryByRole("button", { name: "why?" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^why\?/ })).toBeNull();
     rerender(<Timeline items={[observation]} firstDayGreeting={null} />);
-    expect(screen.queryByRole("button", { name: "why?" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^why\?/ })).toBeNull();
   });
 
   it("strikes a tombstone through, on a faded row", () => {

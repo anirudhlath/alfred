@@ -42,7 +42,12 @@ export function ActRow({ hue, text, meta, onWhy }: ActRowProps) {
         <button
           type="button"
           onClick={onWhy}
-          className="-mt-2.5 -mr-1.5 h-11 shrink-0 border-0 bg-transparent px-2.5 text-[13px] font-medium"
+          // Every act row's button says the same two words, so the visible
+          // label alone would read `why?, why?, why?` down a rotor. The row's
+          // own line names which one this is, and the visible text stays a
+          // prefix of the name (WCAG 2.5.3, label in name).
+          aria-label={`why? ${text}`}
+          className="-mt-2.5 -mr-1.5 flex h-11 shrink-0 items-center border-0 bg-transparent px-2.5 text-[13px] font-medium"
           style={{ color: "var(--accent-text)" }}
         >
           why?

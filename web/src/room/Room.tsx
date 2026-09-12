@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { DoorBanner } from "@/door/DoorBanner";
 import { DoorLayer } from "@/door/DoorLayer";
 import { useDoor } from "@/door/DoorProvider";
@@ -40,8 +40,17 @@ export function Room() {
   const [holding, setHolding] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [workshopOpen, setWorkshopOpen] = useState(false);
-  /** The row a `why?` was asked on — the Room's or the Workshop's. */
+  /**
+   * The row a `why?` was asked on — the Room's or the Workshop's. Deliberately
+   * not cleared when the Workshop closes: the sheet renders over the Room as
+   * happily as over the Workshop, and while it is up the Workshop under it is
+   * inert, so a close arriving from there is unreachable anyway. The sheet
+   * outlives the surface that opened it.
+   */
   const [why, setWhy] = useState<StreamRef | null>(null);
+  // Stable, so the memoised Workshop does not re-render for every chat frame,
+  // overview poll and Door tick the Room re-renders on (Workshop.tsx).
+  const closeWorkshop = useCallback(() => setWorkshopOpen(false), []);
 
   // Read once, refreshed when the app returns — a PWA left open overnight must
   // not still be saying "Good evening".
@@ -142,11 +151,7 @@ export function Room() {
 
       <WhySheet anchor={why} onClose={() => setWhy(null)} />
 
-      <Workshop
-        open={workshopOpen}
-        onClose={() => setWorkshopOpen(false)}
-        onWhy={setWhy}
-      />
+      <Workshop open={workshopOpen} onClose={closeWorkshop} onWhy={setWhy} />
 
       <DoorLayer
         tracked={door.current}

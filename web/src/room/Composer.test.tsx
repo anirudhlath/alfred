@@ -157,8 +157,9 @@ describe("Composer", () => {
       <Composer online onSend={() => {}} hold={null} handle={<button type="button">workshop</button>} />,
     );
     const handle = screen.getByRole("button", { name: "workshop" });
-    // Inside the padded element, so the safe-area inset falls below the handle.
-    expect(container.querySelector(".pb-keyboard")).toContainElement(handle);
+    // Inside the padded element, so the safe-area inset falls below the handle
+    // — and *last* inside it, so the handle falls below the row.
+    expect(container.querySelector(".pb-keyboard")!.lastElementChild).toContainElement(handle);
   });
 
   it("hides the handle while the keyboard is up", () => {

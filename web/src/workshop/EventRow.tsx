@@ -36,7 +36,9 @@ function stamp(id: string): string {
  * The tile is a picture of the stream, so it is `aria-hidden` and the name is
  * said in words beside it. Unmemoised, and the bench renders up to ~400 of
  * these: its handlers are per-row closures, so a shallow compare would miss on
- * every render and cost more than it saved.
+ * every render and cost more than it saved. What keeps that affordable is that
+ * the bench only renders when something it owns changes — `Workshop` is
+ * `memo`ised precisely so the Room's unrelated re-renders stop above it.
  */
 export function EventRow({ row, expanded, onToggle, onSolo, onWhy }: EventRowProps) {
   const { mono, hue } = STREAM_INFO[row.stream];

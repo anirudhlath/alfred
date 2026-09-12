@@ -18,13 +18,14 @@ export function WorkshopHandle({ onOpen }: WorkshopHandleProps) {
       onClick={onOpen}
       aria-label="Open the Workshop"
       className="flex min-h-11 w-full flex-col items-center gap-2.5 border-0 bg-transparent pt-0.5 pb-2"
-      style={{ color: "var(--fg2)" }}
     >
+      {/* `.t-meta-strong` sets `--fg2` here, and the chevron's `border-current`
+          resolves against it — one source for the colour, not two. */}
       <span className="t-meta-strong flex flex-col items-center gap-0.5">
         <span
           aria-hidden="true"
-          className="block h-2 w-2 border-t-[1.5px] border-l-[1.5px] border-current"
-          style={{ transform: "rotate(45deg)" }}
+          data-testid="handle-chevron"
+          className="block h-2 w-2 rotate-45 border-t-[1.5px] border-l-[1.5px] border-current"
         />
         workshop
       </span>
