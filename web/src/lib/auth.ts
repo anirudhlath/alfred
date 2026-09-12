@@ -1,4 +1,4 @@
-import { api } from "./api";
+import { api, errorText } from "./api";
 import { dayMonth } from "./format";
 import type { AuthStatus } from "./types";
 
@@ -71,7 +71,7 @@ export function failureText(error: unknown): string {
       ? "Face ID was cancelled."
       : error.message;
   }
-  return error instanceof Error ? error.message : "Something went wrong.";
+  return errorText(error);
 }
 
 /**

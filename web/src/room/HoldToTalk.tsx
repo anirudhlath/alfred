@@ -135,7 +135,11 @@ export function HoldToTalk({ signal, online, onHoldingChange, onAudio }: HoldToT
                 key={delay}
                 className="h-[22px] w-[3px] rounded-[2px]"
                 style={{
-                  background: "var(--ink)",
+                  // `--on-accent`, not `--ink`: the button underneath is
+                  // filled with the accent while held, and ink is near-white
+                  // in the dark theme — the first paint — which is 1.77:1 on
+                  // it (index.css, --on-accent).
+                  background: "var(--on-accent)",
                   animation: `wave .7s ${delay}s ease-in-out infinite`,
                 }}
               />

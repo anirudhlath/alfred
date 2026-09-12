@@ -1,4 +1,3 @@
-import { useState } from "react";
 import {
   fuseLength,
   fusePercent,
@@ -10,6 +9,7 @@ import { hhmm, humaniseTool, mmss, rawCall, shortId } from "@/lib/format";
 import { DANGER_SECONDS, FuseRing } from "@/door/FuseRing";
 import { SlideToConfirm } from "@/door/SlideToConfirm";
 import { Layer } from "@/shell/Layer";
+import { useLatched } from "@/shell/presence";
 
 /**
  * "The five minutes ran out" reads better than "The 5 minutes ran out", and the
@@ -91,12 +91,7 @@ export function DoorLayer({ tracked, open, online, now, onClose, onConfirm }: Do
   // Hold the last action through the 420 ms leave animation: `close()` clears
   // the current one immediately, and an empty ink panel sliding away is worse
   // than the one you just dismissed sliding away.
-  // Adjusted during render rather than in an effect: the copy must never lag
-  // the prop by a frame.
-  const [shown, setShown] = useState<TrackedAction | null>(tracked);
-  if (tracked && tracked !== shown) setShown(tracked);
-
-  const item = tracked ?? shown;
+  const item = useLatched(tracked);
   if (!item) return null;
 
   const { action, phase } = item;

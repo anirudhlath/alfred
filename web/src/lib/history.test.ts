@@ -151,6 +151,7 @@ describe("toTimelineItems", () => {
       hue: 210,
       text: "movie started, evening, user home",
       meta: "17:58 · reflex · home.light_set",
+      why: { stream: "reflex_observations", entry: reflexObservationsPage.entries[2] },
     });
   });
 

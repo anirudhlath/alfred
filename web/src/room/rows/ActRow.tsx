@@ -1,16 +1,25 @@
+import { ring } from "@/lib/streams";
+
 export interface ActRowProps {
   /** 120 trigger (EV) · 210 reflex (RX) · 255 notification (NT). */
   hue: 120 | 210 | 255;
   text: string;
   meta: string;
+  /** Present only on rows with a cause to trace: renders the `why?` button. */
+  onWhy?: () => void;
 }
 
 /**
  * Something Alfred did while you were not asking. Same thread, quieter voice:
  * `fg2` at 14.5, hairlines above and below, and an 8 px mark in the stream's own
  * hue so which mind acted is legible at a glance (spec §5.2.4).
+ *
+ * The optional `why?` is the handoff's — accent 13/500 with a 44 px hit area,
+ * pulled up and out by its own padding so the row's rhythm does not change.
+ * `--accent-text`, not `--accent`: the raw accent is 2.34:1 on paper's `--bg`
+ * (index.css, --accent-text), and no `color: var(--accent)` is left in the app.
  */
-export function ActRow({ hue, text, meta }: ActRowProps) {
+export function ActRow({ hue, text, meta, onWhy }: ActRowProps) {
   return (
     <div
       className="flex items-start gap-3 py-2.5"
@@ -21,7 +30,7 @@ export function ActRow({ hue, text, meta }: ActRowProps) {
         data-testid="act-mark"
         data-hue={hue}
         className="mt-1.5 h-2 w-2 shrink-0 rounded-[2px]"
-        style={{ background: `oklch(0.62 0.11 ${hue})` }}
+        style={{ background: ring(hue) }}
       />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <div className="t-row" style={{ color: "var(--fg2)" }}>
@@ -29,6 +38,21 @@ export function ActRow({ hue, text, meta }: ActRowProps) {
         </div>
         <div className="t-meta">{meta}</div>
       </div>
+      {onWhy ? (
+        <button
+          type="button"
+          onClick={onWhy}
+          // Every act row's button says the same two words, so the visible
+          // label alone would read `why?, why?, why?` down a rotor. The row's
+          // own line names which one this is, and the visible text stays a
+          // prefix of the name (WCAG 2.5.3, label in name).
+          aria-label={`why? ${text}`}
+          className="-mt-2.5 -mr-1.5 flex h-11 shrink-0 items-center border-0 bg-transparent px-2.5 text-[13px] font-medium"
+          style={{ color: "var(--accent-text)" }}
+        >
+          why?
+        </button>
+      ) : null}
     </div>
   );
 }

@@ -1,12 +1,21 @@
 import type { StreamSummary } from "./types";
 
-/** `21:14` — the device's own clock, which is the only one the user reads. */
-export function hhmm(value: string | number | Date): string {
+/** `21:02:11` — the Workshop's row stamp, to the second, on the device's own clock. */
+export function hhmmss(value: string | number | Date): string {
   const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.getTime())) return "--:--";
-  const hours = String(date.getHours()).padStart(2, "0");
-  const minutes = String(date.getMinutes()).padStart(2, "0");
-  return `${hours}:${minutes}`;
+  if (Number.isNaN(date.getTime())) return "--:--:--";
+  return [date.getHours(), date.getMinutes(), date.getSeconds()]
+    .map((part) => String(part).padStart(2, "0"))
+    .join(":");
+}
+
+/**
+ * `21:14` — the device's own clock, which is the only one the user reads. The
+ * same string as `hhmmss` without its seconds, so the Room's stamp and the
+ * Workshop's can never disagree about the hour; `--:--:--` truncates to `--:--`.
+ */
+export function hhmm(value: string | number | Date): string {
+  return hhmmss(value).slice(0, 5);
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];

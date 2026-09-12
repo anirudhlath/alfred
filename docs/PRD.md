@@ -1,6 +1,6 @@
 # Alfred — Product Requirements Document
 
-**Status:** Living document. Capability statuses current as of **2026-09-03**.
+**Status:** Living document. Capability statuses current as of **2026-09-12**.
 **Maintenance rule:** any PR that adds or changes a user-facing capability updates the
 relevant row(s) in the [Capability Catalog](#4-capability-catalog) in the same branch.
 
@@ -70,7 +70,9 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 
 | Capability | Status | Reference |
 |---|---|---|
-| Web app (Mission Control SPA: chat, notifications, triggers, memory, system health, settings) | Shipped | `docs/web-frontend.md` |
+| Web app — a phone-first PWA, installable to the home screen: the Room (the conversation, hold-to-talk voice, notifications and what is held back), the Door (a critical action approved behind a slide, against its own fuse), and the passkey gates and first-run setup in front of both | Shipped | `docs/web-frontend.md`, spec `2026-09-04-mobile-first-pwa-client-design.md` |
+| Web app — the Workshop: the Activity bench over all eight live event streams (solo one, pause the feed, page back through history, read any event's whole payload), and *Why Alfred did that* — the causal thread joining one row to the activity around it by the ids the server holds | In review | `docs/web-frontend.md`, plan `2026-09-10-pwa-phase2-workshop-and-activity.md` |
+| Web app — the Workshop's Memory, Triggers and System benches (their tabs exist and say `not built yet · phase 3`) | Planned | spec `2026-09-04-mobile-first-pwa-client-design.md` §8 |
 | Native iOS app (chat, notifications, settings, Face ID, push) | Shipped | `alfred-ios` repo |
 | Signal messaging (inbound requests + outbound notifications) | Shipped | `docs/architecture.md` |
 | Voice in the browser/app (speech-to-text, neural spoken replies) | Shipped | `docs/voice.md` |
@@ -159,7 +161,8 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 | Capability | Status | Reference |
 |---|---|---|
 | Unified runner: one process supervises all services, restarts crashes, hot-reloads code | Shipped | `docs/architecture.md` |
-| Admin dashboard: live telemetry, stream inspection, trigger management | Shipped | `docs/admin-api.md` |
+| Admin API: live telemetry socket, stream pages, trigger management, overview | Shipped | `docs/admin-api.md` |
+| …surfaced on the phone: telemetry and stream inspection in the Workshop's Activity bench; trigger and memory management are phase 3 | In review | `docs/web-frontend.md` |
 | Eval harness: regression + live modes, custom judgment metrics, run comparison | Shipped | `docs/evals-runner.md` |
 | Model warmup at startup (no cold-start latency on first request) | Shipped | spec `2026-04-16-startup-warmup-design.md` |
 | Self-describing health for external services surfaced in Settings | In review | PR #28 |

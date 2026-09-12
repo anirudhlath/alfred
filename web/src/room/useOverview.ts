@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { evs } from "@/lib/format";
 import { SESSION_IDLE_MS } from "@/lib/history";
 import type { Overview } from "@/lib/types";
 import { markTrue } from "@/shell/ConnectionProvider";
@@ -18,6 +19,13 @@ export function useOverview() {
       return overview;
     },
     refetchInterval: 30_000,
+    // The Workshop's header watches this query too, and a second observer with
+    // no staleTime starts its own interval offset from the Room's — roughly
+    // double the polls for as long as the layer is up. 25 s is under the
+    // interval, so the shared 30 s cadence is unchanged, and foreground
+    // rehydration still works: `invalidateQueries` refetches an *active* query
+    // whatever its staleness (ConnectionProvider, REHYDRATE_KEYS).
+    staleTime: 25_000,
   });
 }
 
@@ -33,6 +41,20 @@ export function isFirstRun(overview: Overview | undefined): boolean {
   return (
     Object.keys(streams).length > 0 && Object.values(streams).every((stream) => stream.length === 0)
   );
+}
+
+/**
+ * `2.1 ev/s`, or `— ev/s` when the map is absent or empty. An empty `streams`
+ * is Redis down (see `isFirstRun`), and `evs({})` is a bare `0` — the string
+ * format.ts reserves for a house that really is silent. A first run keeps its
+ * keys, each at length 0, and still reads `0 ev/s`.
+ *
+ * Shared by the Room's status line and the Workshop's so the two cannot drift
+ * into telling different stories about the same map.
+ */
+export function rateText(overview: Overview | undefined): string {
+  const streams = overview?.streams;
+  return streams && Object.keys(streams).length > 0 ? `${evs(streams)} ev/s` : "— ev/s";
 }
 
 /**

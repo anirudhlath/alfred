@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api, post } from "@/lib/api";
 import { failureText } from "@/lib/auth";
 import { hhmm, notificationText } from "@/lib/format";
+import { ring, STREAM_INFO } from "@/lib/streams";
 import type { NotificationEvent } from "@/lib/types";
 import { Sheet } from "@/shell/Sheet";
 
@@ -69,7 +70,7 @@ export function HeldBackSheet({ open, onClose }: HeldBackSheetProps) {
           <span
             aria-hidden="true"
             className="mt-1.5 h-2 w-2 shrink-0 rounded-[2px]"
-            style={{ background: "oklch(0.62 0.11 255)" }}
+            style={{ background: ring(STREAM_INFO.notifications.hue) }}
           />
           <div className="flex min-w-0 flex-1 flex-col gap-0.5">
             <div className="t-row">{notificationText(notification.body, notification.title)}</div>

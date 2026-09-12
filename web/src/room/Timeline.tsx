@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef } from "react";
 import type { TimelineItem } from "@/lib/history";
+import type { StreamRef } from "@/lib/streams";
 import { ActRow } from "@/room/rows/ActRow";
 import { AlfredRow } from "@/room/rows/AlfredRow";
 import { Divider } from "@/room/rows/Divider";
@@ -20,9 +21,11 @@ export interface TimelineProps {
   items: TimelineItem[];
   /** Non-null only on a first run with nothing in the thread at all. */
   firstDayGreeting: string | null;
+  /** A reflex act row's `why?`. Without it no row offers one. */
+  onWhy?: (ref: StreamRef) => void;
 }
 
-function Row({ item }: { item: TimelineItem }) {
+function Row({ item, onWhy }: { item: TimelineItem; onWhy?: (ref: StreamRef) => void }) {
   switch (item.kind) {
     case "divider":
       return <Divider label={item.label} />;
@@ -38,8 +41,19 @@ function Row({ item }: { item: TimelineItem }) {
           error={item.error}
         />
       );
-    case "act":
-      return <ActRow hue={item.hue} text={item.text} meta={item.meta} />;
+    case "act": {
+      // Inside the arrow function TypeScript no longer narrows `item.why`, so
+      // the closure needs its own `const`.
+      const why = item.why;
+      return (
+        <ActRow
+          hue={item.hue}
+          text={item.text}
+          meta={item.meta}
+          onWhy={why && onWhy ? () => onWhy(why) : undefined}
+        />
+      );
+    }
     case "tombstone":
       return <Tombstone title={item.title} meta={item.meta} />;
     case "transcribing":
@@ -55,7 +69,7 @@ function Row({ item }: { item: TimelineItem }) {
   }
 }
 
-export function Timeline({ items, firstDayGreeting }: TimelineProps) {
+export function Timeline({ items, firstDayGreeting, onWhy }: TimelineProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   // Ref, not state: whether we are following the bottom must not re-render the
@@ -99,7 +113,7 @@ export function Timeline({ items, firstDayGreeting }: TimelineProps) {
       <div ref={contentRef} className="flex flex-1 flex-col gap-4">
         {items.length === 0 && firstDayGreeting ? <FirstDay greeting={firstDayGreeting} /> : null}
         {items.map((item) => (
-          <Row key={item.id} item={item} />
+          <Row key={item.id} item={item} onWhy={onWhy} />
         ))}
       </div>
     </div>

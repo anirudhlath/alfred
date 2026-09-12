@@ -295,10 +295,15 @@ describe("ConnectionProvider", () => {
       <QueryClientProvider client={client}>
         <ConnectionProvider>
           <Subscriber onOnline={late} />
+          <Probe />
         </ConnectionProvider>
       </QueryClientProvider>,
     );
     expect(late).not.toHaveBeenCalled();
+    // Nor the stamp. `chat.onstatus("online")` above ran while the first mount
+    // was up and set `lastTrue`; that was a claim about a house this mount is
+    // no longer talking to, and the fresh one has to earn its own.
+    expect(screen.getByTestId("last-true")).toHaveTextContent("none");
   });
 
   it("refuses to be used outside the provider", () => {

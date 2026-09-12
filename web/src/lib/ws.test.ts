@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ReconnectingSocket } from "./ws";
 import { TelemetrySocket } from "./telemetry-socket";
+import type { TelemetryMessage } from "./types";
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
@@ -287,6 +288,11 @@ describe("ReconnectingSocket", () => {
 });
 
 describe("TelemetrySocket", () => {
+  /** Every frame the newest fake socket has been asked to send. */
+  function sent(): unknown[] {
+    return FakeWebSocket.instances.at(-1)!.sent.map((s) => JSON.parse(s));
+  }
+
   it("replays subscriptions on reconnect", () => {
     const sock = new TelemetrySocket();
     sock.connect();
@@ -295,7 +301,122 @@ describe("TelemetrySocket", () => {
     FakeWebSocket.instances[0].emitClose(1006);
     vi.advanceTimersByTime(600);
     FakeWebSocket.instances[1].open();
-    const replayed = FakeWebSocket.instances[1].sent.map((s) => JSON.parse(s));
-    expect(replayed).toContainEqual({ type: "subscribe", streams: ["events", "actions"] });
+    expect(sent()).toEqual([{ type: "subscribe", streams: ["events", "actions"] }]);
+  });
+
+  it("only tells the server about a stream the first time it is wanted", () => {
+    const sock = new TelemetrySocket();
+    sock.connect();
+    FakeWebSocket.instances[0].open();
+    sock.subscribe(["events"]);
+    sock.subscribe(["events", "actions"]);
+    expect(sent()).toEqual([
+      { type: "subscribe", streams: ["events"] },
+      { type: "subscribe", streams: ["actions"] },
+    ]);
+  });
+
+  it("subscribes on first open for a stream wanted before the socket was up", () => {
+    const sock = new TelemetrySocket();
+    sock.subscribe(["events"]); // the Door's real ordering: no socket yet
+    sock.connect();
+    expect(sent()).toEqual([]); // CONNECTING — send() dropped it
+    FakeWebSocket.instances[0].open();
+    expect(sent()).toEqual([{ type: "subscribe", streams: ["events"] }]);
+  });
+
+  it("counts a stream named twice in one call as one wanter", () => {
+    const sock = new TelemetrySocket();
+    sock.connect();
+    FakeWebSocket.instances[0].open();
+    sock.subscribe(["events", "events"]);
+    sock.unsubscribe(["events"]);
+    expect(sent()).toEqual([
+      { type: "subscribe", streams: ["events"] },
+      { type: "unsubscribe", streams: ["events"] },
+    ]);
+  });
+
+  it("only unsubscribes a stream once nobody wants it", () => {
+    const sock = new TelemetrySocket();
+    sock.connect();
+    FakeWebSocket.instances[0].open();
+    sock.subscribe(["events", "actions"]);
+    sock.subscribe(["events"]);
+    sock.unsubscribe(["events", "actions"]);
+    // The whole array each time, not just the last frame: `events` still has a
+    // wanter, so no frame may mention it yet — in any position.
+    expect(sent()).toEqual([
+      { type: "subscribe", streams: ["events", "actions"] },
+      { type: "unsubscribe", streams: ["actions"] },
+    ]);
+    sock.unsubscribe(["events"]);
+    expect(sent()).toEqual([
+      { type: "subscribe", streams: ["events", "actions"] },
+      { type: "unsubscribe", streams: ["actions"] },
+      { type: "unsubscribe", streams: ["events"] },
+    ]);
+    // Unsubscribing a stream already released sends nothing.
+    sock.unsubscribe(["events"]);
+    expect(sent()).toHaveLength(3);
+  });
+
+  /** The frame a subscribed stream produces, as the pump writes it. */
+  function frame(stream: string, id: string): TelemetryMessage {
+    return { type: "entry", stream, id, event: { n: 1 } };
+  }
+
+  it("hands every frame to every listener, and to no one who has let go", () => {
+    // The path every live row travels, and it had no test of its own: each
+    // consumer mocks this class away, so emptying the fan-out loop below — or
+    // making the unsubscribe it returns a no-op — used to leave the whole
+    // suite green while the Workshop and the Door went blind.
+    const sock = new TelemetrySocket();
+    const door: TelemetryMessage[] = [];
+    const bench: TelemetryMessage[] = [];
+    const stopDoor = sock.listen((msg) => door.push(msg));
+    sock.listen((msg) => bench.push(msg));
+    sock.connect();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+
+    ws.onmessage!({ data: JSON.stringify(frame("home_action_results", "1-0")) });
+    expect(door).toEqual([frame("home_action_results", "1-0")]);
+    expect(bench).toEqual(door);
+
+    // The Door goes; the bench is still watching, and still hears everything.
+    stopDoor();
+    ws.onmessage!({ data: JSON.stringify(frame("events", "2-0")) });
+    expect(door).toHaveLength(1);
+    expect(bench).toEqual([frame("home_action_results", "1-0"), frame("events", "2-0")]);
+  });
+
+  it("keeps its listeners across a reconnect", () => {
+    // The listener is attached to this object, not to the socket under it: a
+    // reader who stayed on the bench through a dropped connection must not have
+    // to re-subscribe to hear the frames that follow.
+    const sock = new TelemetrySocket();
+    const heard: TelemetryMessage[] = [];
+    sock.listen((msg) => heard.push(msg));
+    sock.connect();
+    FakeWebSocket.instances[0].open();
+    FakeWebSocket.instances[0].emitClose(1006);
+    vi.advanceTimersByTime(600);
+    FakeWebSocket.instances[1].open();
+
+    FakeWebSocket.instances[1].onmessage!({ data: JSON.stringify(frame("events", "3-0")) });
+    expect(heard).toEqual([frame("events", "3-0")]);
+  });
+
+  it("replays only what is still wanted", () => {
+    const sock = new TelemetrySocket();
+    sock.connect();
+    FakeWebSocket.instances[0].open();
+    sock.subscribe(["events", "actions"]);
+    sock.unsubscribe(["events"]);
+    FakeWebSocket.instances[0].emitClose(1006);
+    vi.advanceTimersByTime(600);
+    FakeWebSocket.instances[1].open();
+    expect(sent()).toEqual([{ type: "subscribe", streams: ["actions"] }]);
   });
 });

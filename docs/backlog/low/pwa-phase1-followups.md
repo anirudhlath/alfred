@@ -43,17 +43,16 @@ From `web-frontend-followups.md` §1, much reduced. The three-way duplication is
 `ROOM_STREAMS` in `web/src/lib/history.ts` and `RESULT_STREAM` in
 `web/src/door/DoorProvider.tsx` — naming streams that `core/channels/stream_catalog.py`
 owns. Renaming a stream there leaves the client silently reading nothing; no test or type
-catches it. **Acceptance:** a catalog assertion in the SPA CI test, or expose the catalog
+catches it. Phase 2 added a third copy, `STREAMS` in `web/src/lib/streams.ts`, and the
+chip order, monograms and hues hang off it; the acceptance stands. **Acceptance:** a
+catalog assertion in the SPA CI test, or expose the catalog
 (`GET /api/admin/stream-catalog`) and derive the names.
 
 ## 4. The Workshop's Activity view will need virtualization
 
-From `web-activity-virtualized-list.md`. The page it was written about is deleted, and
-the Room's timeline is bounded — four stream pages of 50, plus live rows — so nothing
-needs virtualizing today. The finding still stands for phase 2: mounting every entry of a
-live feed degrades scroll on low-end hardware past ~500 nodes, and
-`@tanstack/react-virtual` or `react-window` is the answer when the Activity view returns.
-Log it against that plan rather than the current client.
+From `web-activity-virtualized-list.md`. Phase 2 built the Activity bench with plain DOM
+on purpose: `MAX_PER_STREAM = 400` per stream until `↑ older`, unbounded after it, and no
+`@tanstack/react-virtual`. Carried to `pwa-phase2-followups.md` §1 with the numbers.
 
 ## 5. Voice enrollment has no home in the client
 
@@ -80,6 +79,9 @@ a script again once there is a screen to run it on.
   `kind=service` entries: badges, TEST CONNECTION, CLEAR, and the 502-on-unreachable-service
   path. Phase 1's only credential surface is the setup gate's second step, which writes
   home-service and nothing else. Rewrite alongside item 1 above.
+
+Phase 2 gives the first of these a screen again; the reconnect half is in
+`docs/superpowers/qa/2026-09-10-pwa-phase2-ios-checklist.md`.
 
 ## 7. No sign-out and no Workshop › System in phase 1
 
@@ -155,6 +157,10 @@ view (phase 2) or push (phase 5). Phase 1's honesty rule applies: nothing preten
 a badge. Recall noise is already filed under `docs/backlog/high/`
 (`passive-observations-are-75-percent-duplicates.md`,
 `involuntary-recall-threshold-too-high.md`).
+
+**Phase 2:** the Activity bench shows them — `notifications` is one of the eight streams,
+paged as far back as `↑ older` goes. Push (phase 5) is still the only thing that would
+*tell* you.
 
 ## 10. `tests/core/channels/test_admin_api.py` types its fixture `monkeypatch: Any`
 

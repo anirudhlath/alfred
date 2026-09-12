@@ -1,7 +1,8 @@
 # Alfred — web client
 
 The phone-first PWA that replaced the Mission Control SPA. One screen (the Room),
-one interrupt (the Door), and four identity gates over the top of them.
+one interrupt (the Door), four identity gates over the top of them — and, under
+the Room, the Workshop, where the house's streams are read as they happen.
 
 Design: `docs/design/2026-09-04-pwa-client-handoff/` (tokens, copy and the
 `Alfred.dc.html` prototype the presence field and slide maths were ported from).
@@ -23,12 +24,17 @@ that order, then serves the built `dist/` to `tests/core/channels/test_spa_ci.py
 
 ```
 src/lib/        no React: api, sockets, formatters, the presence physics,
-                the action reducer, the slide maths, audio and recording
+                the action reducer, the slide maths, audio and recording,
+                the stream catalogue (streams.ts), the feed reducer (feed.ts)
+                and the causal thread (trace.ts)
 src/shell/      providers and the two surfaces everything rises on
 src/gates/      setup, sign-in, expired, denied — and the router between them
-src/room/       the one screen: presence field, headline, timeline, composer
+src/room/       the one screen: presence field, headline, timeline, composer,
+                and the handle into the Workshop (WorkshopHandle.tsx)
 src/door/       the approval interrupt: banner, fuse, slide, deep link
-src/sheets/     the held-back queue
+src/workshop/   the Workshop layer: the bench switcher, the Activity bench,
+                its rows and chips, and the hook behind them
+src/sheets/     the held-back queue and `Why Alfred did that`
 src/test/       jsdom setup and shared fixtures
 ```
 
@@ -40,24 +46,34 @@ Tests live beside their source (`lib/history.ts` → `lib/history.test.ts`).
   colours. Both themes are defined in `src/index.css` under `:root[data-theme]`.
 - Type comes from the `.t-*` classes, not ad-hoc sizes.
 - Imports use the `@/` alias; siblings are relative inside `src/lib/` and in tests.
-- The status vocabulary is closed (spec §10). Phase 1 says `queued`, `applied`,
-  `last true HH:MM` and `expired · not done`; `unknown since HH:MM`,
-  `takes effect within 60 s`, `hot / cold` and `candidate · active · dormant · archived`
-  are the Workshop's words and arrive with it. Mono, lower case — the one exception is
-  the Door's phase pill (`Confirmed · queued`, `Applied`, `Expired`, `Answered`), set in
-  the layer's own type, ink on paper. Do not invent new words for system state.
+- The status vocabulary is closed (spec §10). The Room and the Door say `queued`,
+  `applied`, `last true HH:MM` and `expired · not done` — the first two are the Door's
+  phase pill, not the Room's; the Workshop's status line adds the
+  handoff's `live · N ev/s`, `paused · N new` and `last true HH:MM · not live`.
+  `unknown since HH:MM`, `takes effect within 60 s`, `hot / cold` and
+  `candidate · active · dormant · archived` are the phase-3 benches' words and arrive
+  with them. Mono, lower case — the one exception is the Door's phase pill
+  (`Confirmed · queued`, `Applied`, `Expired`, `Answered`), set in the layer's own type,
+  ink on paper. Do not invent new words for system state.
 
-## What phase 1 covers
+## What phases 1 and 2 cover
 
-Shell, theme and viewport; the four identity gates; the Room (presence field,
-headline, status line, offline note, DND row and the held-back sheet, the merged
-timeline, composer, hold-to-talk, notifications); and the Door (banner, fuse,
+Phase 1: shell, theme and viewport; the four identity gates; the Room (presence
+field, headline, status line, offline note, DND row and the held-back sheet, the
+merged timeline, composer, hold-to-talk, notifications); and the Door (banner, fuse,
 slide-to-confirm, the five phases, tombstones, and the `/actions/:id` deep link).
+
+Phase 2: the handle under the composer and the Workshop it opens (`‹ Room`, the
+status line, the four-bench switcher); the Activity bench — all eight streams live,
+newest first, chips to solo one, pause and resume, `↑ older` paging by cursor, a row
+expanded to its payload; and causality — `why?` on the Room's reflex rows and
+`Why · causal thread` on the bench's RX rows open the `Why Alfred did that` sheet, a
+column of the entries that share an id with the observation, joined by name.
 
 ## What it does not
 
-- **The Workshop** (Activity, Memory, Triggers, System) — phase 2 and 3. There is
-  no handle, no `why?` button and no causal thread yet.
+- **Memory, Triggers and System** — phase 3. The switcher has their tabs; each says
+  `not built yet · phase 3`.
 - **Install and Reach gates, the service worker, icons and Web Push** — phases 4
   and 5. The standalone metas are already in `index.html`, and `public/manifest.json`
   carries the phase-1 palette's dark ground — a manifest cannot follow the theme the way
@@ -79,3 +95,13 @@ slide-to-confirm, the five phases, tombstones, and the `/actions/:id` deep link)
   only from the `home_action_results` telemetry stream.
 - 401 and 403 raise a gate over whatever is on screen; they never redirect. The
   last-known Room stays visible behind them.
+- The Workshop keeps time by the Redis entry id (`idMs` in `lib/streams.ts`), never
+  by `event.timestamp` — the id is the server's clock and has a zone; the ISO stamp
+  has neither. The Room still reads `timestamp`, as it always has.
+- Telemetry subscriptions are reference-counted (`TelemetrySocket.subscribe` /
+  `unsubscribe`): the Door holds `home_action_results` for the app's lifetime and the
+  Workshop holds all eight only while it is up. Always pair them.
+- The causal thread (`lib/trace.ts`) is a client-side heuristic over one page per
+  stream and a ±10-minute window; solid links are id joins, dashed links are
+  adjacency in time, and the footnote says exactly what was searched — including how
+  many streams could not be read back far enough. It never says "not caused by".

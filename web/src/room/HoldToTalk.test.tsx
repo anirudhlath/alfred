@@ -126,7 +126,14 @@ describe("HoldToTalk", () => {
     expect(onHoldingChange).toHaveBeenCalledWith(true);
     expect(screen.getByText("recording 0:00 · release to send")).toBeInTheDocument();
     // Four bars, as the handoff draws them.
-    expect(button.querySelectorAll('span[style*="wave"]')).toHaveLength(4);
+    const bars = button.querySelectorAll<HTMLElement>('span[style*="wave"]');
+    expect(bars).toHaveLength(4);
+    // Held, the button is filled with the accent, so the bars are the accent's
+    // own dark colour. `--ink` is near-white in the dark theme — which is the
+    // first paint of a cold start — and near-white on the accent is 1.77:1
+    // (index.css, --on-accent); this is the only thing on screen saying the
+    // microphone is open.
+    for (const bar of bars) expect(bar.style.background).toBe("var(--on-accent)");
   });
 
   it("counts the seconds while it is held", async () => {

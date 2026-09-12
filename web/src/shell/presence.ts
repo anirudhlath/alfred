@@ -75,6 +75,26 @@ export function usePresence(open: boolean, durationMs: number): Presence {
   return { mounted, leaving };
 }
 
+/**
+ * The last non-null value, held through the leave.
+ *
+ * A surface is still on screen for its leave animation after the thing it was
+ * showing has gone: `close()` clears the Door's tracked action and the Why
+ * sheet's anchor the moment they are dismissed, and an empty panel sliding
+ * away is worse than the one just dismissed sliding away. `usePresence` above
+ * keeps the surface mounted; this keeps its contents.
+ *
+ * Adjusted during render, the way `usePresence` is and for the same reason:
+ * the copy must never lag the prop by a frame, which an effect would.
+ * `null` never overwrites — that is the whole point — so the caller gets the
+ * last real value for as long as it has none of its own.
+ */
+export function useLatched<T>(value: T | null): T | null {
+  const [shown, setShown] = useState(value);
+  if (value !== null && value !== shown) setShown(value);
+  return shown;
+}
+
 /** The modal surfaces that are up, bottom to top. Everything under the top one is inert. */
 const surfaces: HTMLElement[] = [];
 

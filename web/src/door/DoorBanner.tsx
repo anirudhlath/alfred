@@ -36,9 +36,19 @@ export function DoorBanner({ tracked, now, onOpen }: DoorBannerProps) {
         </div>
       </div>
 
-      <div className="text-[13px] font-medium" style={{ color: "var(--accent)" }}>
-        Open
-      </div>
+      {/* Inherits the button's `--paper` — 13.46:1 dark / 13.95:1 light on ink
+          — and says so by carrying no colour of its own. It had a `color:
+          var(--paper)` of its own, which changed nothing and only read as a
+          decision.
+          Not the accent, and not `--accent-text`: accent on --ink is 1.77:1 in
+          the dark theme, the very number index.css's --on-accent comment names
+          as the thing never to do, and --accent-text is darkened *for paper*
+          (1.77 dark, 2.82 light on ink). What is left to separate `Open` from
+          the tool name above it is position, size and weight — no colour. An
+          `--accent-on-ink` token would settle it, and is tracked with
+          `FuseRing` in `docs/backlog/low/pwa-phase2-followups.md` §8 rather
+          than invented here. */}
+      <div className="text-[13px] font-medium">Open</div>
     </button>
   );
 }

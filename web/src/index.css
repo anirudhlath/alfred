@@ -22,18 +22,41 @@
   color-scheme: dark;
   --bg: #25221F;
   --surface: #2F2B27;
-  --field: #2F2B27;
+  /* A step *above* --surface, the way paper's white field is a step above its
+     own: a field is a filled box you can see the edges of. It was #2F2B27 —
+     the very same colour as --surface, 1.00:1 — which made the Workshop's
+     chosen bench invisible on the theme of the first paint, and an input
+     invisible against the sheet behind it. 1.17:1 on --surface now, close to
+     light's 1.20:1; --fg reads 10.19:1 on it. Consumers: the Composer's text
+     field, the setup gate's inputs, the bench switcher's selection. */
+  --field: #3A3631;
   --line: #35312C;
   --keyboard: #1C1A17;
   --muted: #9A9186;
   --fg2: #D9D2C8;
   --fg: #F1ECE4;
   --accent: oklch(0.78 0.12 45);
+  /* Text and icons *on* `--accent`. The accent is a light peach on ink and a
+     mid peach on paper, so what goes on it is the theme's own dark colour
+     either way — never `--ink`, which is near-white here and would read at
+     1.77:1 (7.61:1 as written; 6.33:1 in light). Both values are restated in
+     `src/test/contrast.ts`, which holds the pair to 4.5:1; edit these two
+     lines and its guard test fails until the restatement follows. */
+  --on-accent: #25221F;
+  /* The accent *as* text: `‹ Room`, `Why · causal thread`, a sheet's `Done`.
+     Ink's accent is already 7.61:1 on --bg, so this is the same colour; paper's
+     is 2.34:1, which is the whole reason the token exists. Never a fill —
+     fills stay on --accent with --on-accent over them. Restated in
+     `src/test/contrast.ts`, which holds this one to 4.5:1 on --bg. */
+  --accent-text: oklch(0.78 0.12 45);
   --green: oklch(0.70 0.13 150);
   --ink: #F1ECE4;
   --paper: #25221F;
   --paper-muted: #7D756B;
   --ring: #D6D0C7;
+  /* Lightness for `ringText()` in lib/streams.ts — the stream hue used as text
+     on `--bg`. 0.75 on ink clears AA on all eight hues (worst 6.76:1). */
+  --ring-text-l: 0.75;
   --scrim: rgba(20, 17, 14, 0.45);
 }
 
@@ -48,20 +71,28 @@
   --fg2: #4D4740;
   --fg: #221F1B;
   --accent: oklch(0.72 0.13 45);
+  /* The same dark colour on paper's accent: 6.33:1. See dark, above. */
+  --on-accent: #221F1B;
+  /* Paper's accent darkened until it is readable as text: 5.25:1 on --bg,
+     4.85:1 on --surface, 4.94:1 on --paper. The undarkened accent is 2.34:1 and
+     was the colour of every back button on this branch. See dark, above. */
+  --accent-text: oklch(0.52 0.13 45);
   --green: oklch(0.70 0.13 150);
   --ink: #221F1B;
   --paper: #F1ECE4;
   --paper-muted: #9A9186;
   --ring: #3D3832;
+  /* 0.52 on paper; the same hue must go darker here (worst 4.62:1). */
+  --ring-text-l: 0.52;
   --scrim: rgba(20, 17, 14, 0.45);
 }
 
 /* ---------------------------------------------------- theme-independent bits
    The easing curves, the font stacks, and the two viewport variables
    installViewportVars() overwrites on the same element. The stream hues
-   (h = 30 + 45·i in the handoff) are not tokens yet: phase 1 paints three of
-   them, as literal `oklch(0.62 0.11 <h>)` values in ActRow and HeldBackSheet,
-   and the Workshop's rings will want all eight. */
+   (h = 30 + 45·i in the handoff) are not tokens: the hue is data, so it comes
+   from STREAM_INFO through ring()/ringFill()/ringText() in lib/streams.ts.
+   Only their lightness-on-the-page is a token, --ring-text-l above. */
 :root {
   --ease-rise: cubic-bezier(0.2, 0.8, 0.2, 1);
   --ease-settle: cubic-bezier(0.2, 1.4, 0.3, 1);
@@ -88,6 +119,8 @@
   --color-fg2: var(--fg2);
   --color-fg: var(--fg);
   --color-accent: var(--accent);
+  --color-on-accent: var(--on-accent);
+  --color-accent-text: var(--accent-text);
   --color-green: var(--green);
   --color-ink: var(--ink);
   --color-paper: var(--paper);
@@ -209,6 +242,51 @@
     font-weight: 400;
     color: var(--muted);
   }
+  /* The same type, in a colour you can read: --muted is 3.46:1 on --bg in the
+     light theme, under AA at 11 px. The rule, decided once here rather than
+     re-argued at each call site: meta that is genuinely decorative — a stamp
+     beside the line it stamps, a count beside the thing counted — stays on
+     `.t-meta`, and anything a reader must take on its own to trust the screen
+     takes this one. The Workshop's status line, its unbuilt-bench note, and
+     the Activity bench's read-error and empty-list lines are four, because
+     each is the only words in its region. The Why sheet adds three: its one
+     live region (reading, or the read that failed), the footnote saying how
+     much of the past was searched, and every thread node's meta line. That
+     last is the first site here that is *not* the only words in its region —
+     it sits under the node's `.t-row` — and it still qualifies under the rule
+     above: it is the whole evidence for the link drawn beside it, and a reader
+     who cannot make out `joined by request_id 4b1d` cannot tell a join from a
+     coincidence.
+     The Room's Workshop handle is an eighth, and the plainest case of the rule:
+     `workshop` is the only word in the control, and the control is the only way
+     off the Room.
+     The ~17 other `.t-meta` sites are phase-1 scope and unaudited: some sit on
+     --ink, where --muted is the wrong family of token entirely and
+     --paper-muted is the answer, so they need measuring before they move. */
+  .t-meta-strong {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.5;
+    font-weight: 400;
+    color: var(--fg2);
+  }
+  /* A field's own placeholder. Left to Tailwind's preflight it is
+     `color-mix(in oklab, currentcolor 50%, transparent)` — `--fg` at half
+     strength over `--field`, which is 3.84:1 in the dark theme and 3.22:1 in
+     light, both under AA. The two fields that carry one say something a reader
+     has to be able to take: the Composer's `Offline · will send when
+     connected` is the only thing on screen promising a typed message will be
+     queued rather than lost, and the setup gate's placeholders are the shape
+     of the credential being asked for. `--fg2` is 7.99:1 dark / 9.17:1 light
+     on `--field`, the same colour `.t-meta-strong` above uses for the same
+     reason. `opacity: 1` because preflight resets it for Firefox and this rule
+     wins the cascade outright — the layer would otherwise take the reset with
+     it. Restated in `src/test/contrast.ts`, which holds the pair to 4.5:1. */
+  input::placeholder {
+    color: var(--fg2);
+    opacity: 1;
+  }
+
   .t-monogram {
     font-family: var(--font-mono);
     font-size: 9px;

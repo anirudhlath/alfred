@@ -51,6 +51,7 @@ vi.mock("@/lib/telemetry-socket", () => ({
     connect() {}
     close() {}
     subscribe() {}
+    unsubscribe() {}
     listen() {
       return () => {};
     }
@@ -327,6 +328,95 @@ describe("App", () => {
       document.dispatchEvent(new Event("visibilitychange"));
     });
     expect(await screen.findByRole("heading", { name: "Good afternoon, sir." })).toBeInTheDocument();
+  });
+
+  it("opens the Workshop from the handle and returns to the Room", async () => {
+    render(<App />);
+    await screen.findByText("What have I got tomorrow morning?");
+
+    fireEvent.click(screen.getByRole("button", { name: "Open the Workshop" }));
+    const workshop = await screen.findByRole("dialog", { name: "Workshop" });
+    expect(within(workshop).getByRole("tab", { name: "Activity" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    // The bench reads the eight streams' heads; the four the Room also reads
+    // come from the same routes, so the reflex observation is a row here too.
+    expect(
+      await within(workshop).findByText("observed media_player.tv · acted"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(within(workshop).getByRole("button", { name: "Room" }));
+    act(() => vi.advanceTimersByTime(400));
+    expect(screen.queryByRole("dialog", { name: "Workshop" })).toBeNull();
+    expect(screen.getByRole("log", { name: "Conversation" })).toBeInTheDocument();
+  });
+
+  it("asks why on a reflex act row and sees the thread sheet", async () => {
+    // The candidate reads are their own paths (`count=100`, `before` the
+    // anchor's id plus the join window), so the house must answer them
+    // separately from the Room's `count=50` pages. One real join: the
+    // observation's action carries `request_id: "4b1d"`, and so does this.
+    routes["/api/admin/streams/actions?count=100&before=1788800880001-0"] = {
+      entries: [
+        {
+          id: "1788800279000-0",
+          event: {
+            event_id: "1f22b7c0",
+            request_id: "4b1d",
+            tool_name: "home.light_set",
+            parameters: { entity_id: "light.living_room" },
+            target_service: "home-service",
+            source: "reflex-engine",
+          },
+        },
+      ],
+      next_before: null,
+    };
+    render(<App />);
+
+    // Named for its row, so this needs no knowledge of ActRow's DOM.
+    fireEvent.click(
+      await screen.findByRole("button", { name: /movie started, evening, user home/ }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Why Alfred did that" });
+    // The observation, and the action joined to it by `request_id` — drawn
+    // from eight fully searched streams.
+    expect(await within(sheet).findByText("observed media_player.tv · acted")).toBeInTheDocument();
+    expect(within(sheet).getByText("home.light_set light.living_room")).toBeInTheDocument();
+    expect(within(sheet).getAllByRole("listitem")).toHaveLength(2);
+    expect(within(sheet).getByText(/joined by request_id 4b1d/)).toBeInTheDocument();
+    expect(
+      within(sheet).getByText("searched 8 streams · 100 entries each · ±10 min"),
+    ).toBeInTheDocument();
+    expect(fetched().filter((url) => url.includes("count=100&before=1788800880001-0"))).toHaveLength(8);
+
+    fireEvent.click(within(sheet).getByRole("button", { name: "Done" }));
+    act(() => vi.advanceTimersByTime(380));
+    expect(screen.queryByRole("dialog", { name: "Why Alfred did that" })).toBeNull();
+  });
+
+  it("asks why from the Workshop, and the sheet paints over it", async () => {
+    render(<App />);
+    await screen.findByText("What have I got tomorrow morning?");
+
+    fireEvent.click(screen.getByRole("button", { name: "Open the Workshop" }));
+    const workshop = await screen.findByRole("dialog", { name: "Workshop" });
+    // `Why · causal thread` is offered on an open row only.
+    fireEvent.click(await within(workshop).findByText("observed media_player.tv · acted"));
+    fireEvent.click(within(workshop).getByRole("button", { name: "Why · causal thread" }));
+
+    const sheet = await screen.findByRole("dialog", { name: "Why Alfred did that" });
+    // The stack, from the outside: the sheet is over the Workshop, and the
+    // Workshop under it cannot be reached.
+    expect(workshop).toHaveAttribute("inert");
+    expect(sheet.closest("[inert]")).toBeNull();
+
+    fireEvent.click(within(sheet).getByRole("button", { name: "Done" }));
+    act(() => vi.advanceTimersByTime(380));
+    expect(screen.queryByRole("dialog", { name: "Why Alfred did that" })).toBeNull();
+    // The Workshop is still up, and live again.
+    expect(screen.getByRole("dialog", { name: "Workshop" })).not.toHaveAttribute("inert");
   });
 });
 
