@@ -98,13 +98,18 @@ function WorkshopPanel({ onClose, onWhy }: WorkshopPanelProps) {
 
   return (
     <>
-      {/* 62 px of top padding is the handoff's status-bar clearance (README §4,
-          "Header padding 62 16 0"). A literal rather than
-          `env(safe-area-inset-top)`: index.html asks for `viewport-fit=cover`,
-          but neither this header nor the Room's reads the inset, and one
-          surface guessing differently from the other would step the two apart.
-          Phase 3 moves both or neither. */}
-      <header ref={header} className="flex flex-col gap-2.5 px-4 pt-[62px]">
+      {/* The handoff's status-bar clearance is 62 px to the *ink* (README §4,
+          "Header padding 62 16 0"), and the `‹ Room` button underneath is a
+          44 px touch target around 18 px of text — 13 px of its own box above
+          the first pixel anyone sees. 62 px of padding on top of that reads as
+          ~75 and was the gap reported from the phone. 48 + 13 puts the word
+          back where the handoff drew it.
+
+          A literal rather than `env(safe-area-inset-top)`: index.html asks for
+          `viewport-fit=cover`, but neither this header nor the Room's reads the
+          inset, and one surface guessing differently from the other would step
+          the two apart. Phase 3 moves both or neither. */}
+      <header ref={header} className="flex flex-col gap-2.5 px-4 pt-12">
         <div className="flex items-center justify-between">
           <button
             type="button"
