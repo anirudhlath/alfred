@@ -7,11 +7,20 @@ export const KEYBOARD_OPEN_PX = 80;
  * How much of the window is hidden below the visual viewport — the software
  * keyboard, in practice. 0 where `visualViewport` is unavailable, because a
  * guess here would move the composer for no reason.
+ *
+ * `height` is reported in CSS pixels of the *page*, so a zoom shrinks it exactly
+ * the way a keyboard does: at 1.3x on an 852 px window it reads 655, and the
+ * unscaled subtraction below would call that a 197 px keyboard and pad the
+ * composer off the screen. That is the bug iOS used to trigger by focus-zooming
+ * any field under 16 px. Multiplying by `scale` puts the visible band back into
+ * window pixels, so only a real keyboard is left. `|| 1` for the jsdom stub and
+ * for any browser that omits the property.
  */
 export function keyboardInset(): number {
   const viewport = window.visualViewport;
   if (!viewport) return 0;
-  return Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop);
+  const visible = viewport.height * (viewport.scale || 1);
+  return Math.max(0, window.innerHeight - visible - viewport.offsetTop);
 }
 
 /**

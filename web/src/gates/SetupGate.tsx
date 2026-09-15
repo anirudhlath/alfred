@@ -261,7 +261,8 @@ export function SetupGate({ onDone }: SetupGateProps) {
                   onChange={(event) =>
                     setCredentials((current) => ({ ...current, [key]: event.target.value }))
                   }
-                  className="h-[50px] rounded-[25px] border px-[18px] text-[15px]"
+                  // 16 px for the same reason as the Composer's field: below it, iOS focus-zooms.
+                  className="h-[50px] rounded-[25px] border px-[18px] text-[16px]"
                   style={{
                     background: "var(--field)",
                     borderColor: "var(--line)",

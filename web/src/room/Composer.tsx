@@ -60,7 +60,12 @@ export function Composer({ online, onSend, hold, handle }: ComposerProps) {
           autoCapitalize="sentences"
           autoCorrect="on"
           enterKeyHint="send"
-          className="h-[50px] min-w-0 flex-1 rounded-[25px] border px-[18px] text-[15px]"
+          // 16 px, not the handoff's 15: iOS zooms the page in on any field it
+          // focuses below 16, and the zoomed visual viewport then reads as a
+          // 200 px keyboard to keyboardInset(), shoving this row up the screen.
+          // The one px is the cheapest of the three defences (index.html,
+          // lib/viewport.ts) and the only one that needs no browser to co-operate.
+          className="h-[50px] min-w-0 flex-1 rounded-[25px] border px-[18px] text-[16px]"
           style={{ background: "var(--field)", borderColor: "var(--line)", color: "var(--fg)" }}
         />
 

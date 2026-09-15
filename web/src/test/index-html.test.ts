@@ -11,16 +11,23 @@ describe("index.html", () => {
   });
 
   it("opts into the notch and the resizing keyboard", () => {
-    const viewport = /<meta name="viewport" content="([^"]+)"/.exec(html)?.[1] ?? "";
+    // `[\s\S]*?` and not `[^>]*`: the tag is wrapped over several lines, and the
+    // comment above it also mentions `content`, so the match has to start at the tag.
+    const viewport = /<meta\s+name="viewport"[\s\S]*?content="([^"]+)"/.exec(html)?.[1] ?? "";
     expect(viewport).toContain("width=device-width");
     expect(viewport).toContain("initial-scale=1");
     expect(viewport).toContain("viewport-fit=cover");
     expect(viewport).toContain("interactive-widget=resizes-content");
   });
 
-  it("does not disable pinch zoom", () => {
-    expect(html).not.toContain("user-scalable=no");
-    expect(html).not.toContain("maximum-scale=1");
+  it("locks the scale, because a standalone app is not a page that zooms", () => {
+    // iOS ignores both in Safari and honours both in standalone, which is where
+    // this runs. The focus-zoom they suppress is also defended against in the
+    // fields themselves (16 px, Composer.tsx) and in keyboardInset()'s scale
+    // normalisation, so no one of the three is load-bearing on its own.
+    const viewport = /<meta\s+name="viewport"[\s\S]*?content="([^"]+)"/.exec(html)?.[1] ?? "";
+    expect(viewport).toContain("maximum-scale=1");
+    expect(viewport).toContain("user-scalable=no");
   });
 
   it("ships one theme-color, the dark first-paint token, for applyTheme() to rewrite", () => {

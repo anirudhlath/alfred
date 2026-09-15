@@ -6,11 +6,20 @@ import { installViewportVars, KEYBOARD_OPEN_PX, keyboardInset, useKeyboardOpen }
 class FakeVisualViewport extends EventTarget {
   height: number;
   offsetTop: number;
+  scale: number;
 
-  constructor(height: number, offsetTop = 0) {
+  constructor(height: number, offsetTop = 0, scale = 1) {
     super();
     this.height = height;
     this.offsetTop = offsetTop;
+    this.scale = scale;
+  }
+
+  /** What a pinch or an iOS focus-zoom does: the same band, fewer page pixels. */
+  zoomTo(scale: number): void {
+    this.height = Math.round((window.innerHeight / scale) * 100) / 100;
+    this.scale = scale;
+    this.dispatchEvent(new Event("resize"));
   }
 
   resizeTo(height: number): void {
@@ -148,6 +157,37 @@ describe("installViewportVars", () => {
     expect(appHeight()).toBe("852px");
     expect(keyboard()).toBe("0px");
     expect(keyboardInset()).toBe(0);
+
+    uninstall();
+  });
+
+  it("reads a zoom as a zoom, not as a keyboard", () => {
+    const viewport = new FakeVisualViewport(852);
+    install(viewport);
+    const uninstall = installViewportVars();
+
+    // iOS focus-zoom on a sub-16px field. 852 / 1.3 = 655.38 page pixels of
+    // viewport, which the unscaled subtraction called a 197 px keyboard.
+    viewport.zoomTo(1.3);
+
+    expect(keyboard()).toBe("0px");
+
+    // A real keyboard while zoomed is still a keyboard: 352 px of it, hidden.
+    viewport.height = (852 - 352) / 1.3;
+    viewport.dispatchEvent(new Event("resize"));
+    expect(keyboard()).toBe("352px");
+
+    uninstall();
+  });
+
+  it("treats a missing scale as 1", () => {
+    const viewport = new FakeVisualViewport(500);
+    // Safari before 13 and any stub that predates the property.
+    (viewport as { scale?: number }).scale = undefined;
+    install(viewport);
+    const uninstall = installViewportVars();
+
+    expect(keyboard()).toBe("352px");
 
     uninstall();
   });
