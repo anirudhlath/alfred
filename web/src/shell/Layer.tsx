@@ -50,7 +50,7 @@ export function Layer({
       role="dialog"
       aria-modal="true"
       aria-label={label}
-      className={`fixed inset-0 ${Z_INDEX[level]} flex flex-col overflow-hidden outline-none ${riseClass(leaving)} ${className}`}
+      className={`viewport-fill ${Z_INDEX[level]} flex flex-col overflow-hidden outline-none ${riseClass(leaving)} ${className}`}
       style={riseStyle(durationMs)}
     >
       {children}

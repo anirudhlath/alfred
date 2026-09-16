@@ -1,5 +1,4 @@
 import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { useKeyboardOpen } from "@/lib/viewport";
 
 export interface ComposerProps {
   online: boolean;
@@ -17,7 +16,16 @@ export interface ComposerProps {
 export function Composer({ online, onSend, hold, handle }: ComposerProps) {
   const [draft, setDraft] = useState("");
   const field = useRef<HTMLInputElement>(null);
-  const keyboardOpen = useKeyboardOpen();
+  /**
+   * The field's own focus, not a measured keyboard. The shell is already the
+   * visible band (lib/viewport.ts), so nothing here has to *position* around
+   * the keys; this only decides whether the handle is in the way and whether
+   * the home-indicator strip still needs paying for. Focus answers both
+   * exactly, and answers them on the tap rather than a keyboard animation
+   * later. A hardware keyboard makes it a shade eager — the handle goes on
+   * focus with no keys coming up — which costs an affordance, not a layout.
+   */
+  const [focused, setFocused] = useState(false);
   const hasDraft = draft.trim().length > 0;
 
   function send(): void {
@@ -47,13 +55,15 @@ export function Composer({ online, onSend, hold, handle }: ComposerProps) {
     // `@layer components` rule and silently drop the inset), the inner one the
     // handoff's own `0 20 8`. The handle sits between them so the safe-area
     // inset falls below it, not between it and the row.
-    <div className={`pb-keyboard relative z-[1] ${keyboardOpen ? "keyboard-up" : ""}`}>
+    <div className={`pb-keyboard relative z-[1] ${focused ? "keyboard-up" : ""}`}>
       <div className="flex items-center gap-2.5 px-5 pb-2">
         <input
           ref={field}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={onKeyDown}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
           placeholder={online ? "Ask or tell Alfred" : "Offline · will send when connected"}
           aria-label="Message Alfred"
           autoComplete="off"
@@ -61,10 +71,11 @@ export function Composer({ online, onSend, hold, handle }: ComposerProps) {
           autoCorrect="on"
           enterKeyHint="send"
           // 16 px, not the handoff's 15: iOS zooms the page in on any field it
-          // focuses below 16, and the zoomed visual viewport then reads as a
-          // 200 px keyboard to keyboardInset(), shoving this row up the screen.
-          // The one px is the cheapest of the three defences (index.html,
-          // lib/viewport.ts) and the only one that needs no browser to co-operate.
+          // focuses below 16, and a zoom shrinks the visual viewport that the
+          // whole shell is now sized from (lib/viewport.ts) — the app would
+          // shrink to the zoomed band. The one px is the cheaper of the two
+          // defences (index.html locks the scale) and the only one that needs
+          // no browser to co-operate.
           className="h-[50px] min-w-0 flex-1 rounded-[25px] border px-[18px] text-[16px]"
           style={{ background: "var(--field)", borderColor: "var(--line)", color: "var(--fg)" }}
         />
@@ -87,7 +98,7 @@ export function Composer({ online, onSend, hold, handle }: ComposerProps) {
           hold
         )}
       </div>
-      {keyboardOpen ? null : handle}
+      {focused ? null : handle}
     </div>
   );
 }

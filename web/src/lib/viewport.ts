@@ -1,32 +1,36 @@
-import { useSyncExternalStore } from "react";
-
-/** Below this, the inset is Safari's toolbar or a rotation artefact, not a keyboard. */
-export const KEYBOARD_OPEN_PX = 80;
-
 /**
- * How much of the window is hidden below the visual viewport — the software
- * keyboard, in practice. 0 where `visualViewport` is unavailable, because a
- * guess here would move the composer for no reason.
+ * Pin the app to the *visual* viewport — the band of screen that is actually
+ * visible — rather than to the layout viewport.
  *
- * `height` is reported in CSS pixels of the *page*, so a zoom shrinks it exactly
- * the way a keyboard does: at 1.3x on an 852 px window it reads 655, and the
- * unscaled subtraction below would call that a 197 px keyboard and pad the
- * composer off the screen. That is the bug iOS used to trigger by focus-zooming
- * any field under 16 px. Multiplying by `scale` puts the visible band back into
- * window pixels, so only a real keyboard is left. `|| 1` for the jsdom stub and
- * for any browser that omits the property.
+ * iOS gives a standalone app no single honest answer to "how tall is the part
+ * of the screen I may draw in". `window.innerHeight` is the layout viewport,
+ * which a software keyboard may or may not shrink, depending on iOS version and
+ * on whether the app was launched from the home screen. `visualViewport.height`
+ * is the part on screen, and `visualViewport.offsetTop` is how far iOS has
+ * panned it to keep a focused field above the keys.
+ *
+ * Deriving a keyboard inset from the difference of the two was the phase-2 bug.
+ * The two readings settle at different moments, and a single frame in which the
+ * layout viewport had already shrunk while the visual one had not left
+ * `--keyboard-inset` holding most of a keyboard as padding on a column that was
+ * already keyboard-free. The composer paid for the keyboard twice, overflowed a
+ * shell shorter than itself, and was clipped off the top of the screen — which
+ * is what the phone reported, with the Workshop handle stranded under it.
+ *
+ * So: no inset and no arithmetic between the two viewports. `--app-height` is
+ * the visible band's height, `--viewport-top` is where that band starts, and
+ * every full-screen surface is a fixed box at exactly those coordinates
+ * (index.css, `#root` and `.viewport-fill`). Whatever iOS does — shrink, pan,
+ * or both — the shell *is* the visible part of the screen, the composer sits at
+ * the bottom of it, and nothing in the tree has to know a keyboard exists.
  */
-export function keyboardInset(): number {
-  const viewport = window.visualViewport;
-  if (!viewport) return 0;
-  const visible = viewport.height * (viewport.scale || 1);
-  return Math.max(0, window.innerHeight - visible - viewport.offsetTop);
-}
 
 /**
  * Call `fn` whenever the geometry may have changed. `scroll` matters as much as
- * `resize`: iOS scrolls the visual viewport under a focused field rather than
- * resizing it again, and offsetTop is part of the inset. Returns the unsubscriber.
+ * `resize`: iOS pans the visual viewport under a focused field rather than
+ * resizing it again, and the pan moves `offsetTop`. `window`'s own resize
+ * covers rotation and the browsers that have no `visualViewport` at all.
+ * Returns the unsubscriber.
  */
 function subscribe(fn: () => void): () => void {
   const viewport = window.visualViewport;
@@ -41,30 +45,22 @@ function subscribe(fn: () => void): () => void {
 }
 
 /**
- * Mirror the window into `--app-height` and the keyboard into `--keyboard-inset`
- * on the document element. Returns the uninstaller; `main.tsx` calls this once
- * and never uninstalls, tests always do.
+ * Mirror the visible band onto the document element as `--app-height` and
+ * `--viewport-top`. Returns the uninstaller; `main.tsx` calls this once and
+ * never uninstalls, tests always do.
  */
 export function installViewportVars(): () => void {
   const root = document.documentElement;
 
   const apply = () => {
-    // innerHeight, not visualViewport.height: the column must not shrink for the
-    // keyboard, because .pb-keyboard already pays for it and the composer would
-    // rise twice. innerHeight follows Safari's toolbars (100vh does not), and on
-    // browsers that honour `interactive-widget` it follows the keyboard too — in
-    // which case the inset below is 0, and nothing is paid twice either.
-    root.style.setProperty("--app-height", `${Math.round(window.innerHeight)}px`);
-    root.style.setProperty("--keyboard-inset", `${Math.round(keyboardInset())}px`);
+    const viewport = window.visualViewport;
+    // No visualViewport (jsdom, and browsers before Safari 13): innerHeight is
+    // the only reading there is, and on those the two viewports are the same.
+    const height = viewport ? viewport.height : window.innerHeight;
+    root.style.setProperty("--app-height", `${Math.round(height)}px`);
+    root.style.setProperty("--viewport-top", `${Math.round(viewport?.offsetTop ?? 0)}px`);
   };
 
   apply();
   return subscribe(apply);
-}
-
-const isKeyboardOpen = () => keyboardInset() > KEYBOARD_OPEN_PX;
-
-/** True while the software keyboard is up. Drives the composer's padding. */
-export function useKeyboardOpen(): boolean {
-  return useSyncExternalStore(subscribe, isKeyboardOpen);
 }

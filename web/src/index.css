@@ -104,7 +104,7 @@
   --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, monospace;
 
   --app-height: 100dvh;
-  --keyboard-inset: 0px;
+  --viewport-top: 0px;
 }
 
 /* Tailwind utilities that point at the tokens rather than copying them, so a
@@ -136,16 +136,24 @@
 }
 
 @layer base {
-  html,
-  body {
+  html {
     height: 100%;
-    /* Constraint §4.6: a standalone app must not rubber-band like a web page.
-       The scroll containers inside the shell keep their own overscroll, so a
-       timeline can still bounce at its ends without moving the page. */
-    overscroll-behavior: none;
   }
 
+  /* Constraint §4.6: a standalone app must not rubber-band like a web page.
+     The scroll containers inside the shell keep their own overscroll, so a
+     timeline can still bounce at its ends without moving the page.
+
+     `position: fixed` on the body as well as `overscroll-behavior`: iOS will
+     scroll the *document* to bring a focused field above the keyboard, and a
+     document that cannot scroll is the only way to refuse. Everything the app
+     draws is a fixed box on the visible band anyway (#root below), so the body
+     has no layout left to lose. */
   body {
+    position: fixed;
+    inset: 0;
+    overflow: hidden;
+    overscroll-behavior: none;
     margin: 0;
     background: var(--bg);
     color: var(--fg);
@@ -153,10 +161,13 @@
     -webkit-font-smoothing: antialiased;
   }
 
-  /* Constraint §4.4: 100vh is wrong in Safari. --app-height is the innerHeight
-     mirror; the fallback keeps the shell full-height before the JS has run. One
-     declaration, not two — an undefined var() is invalid at computed-value time
-     and would fall all the way back to `auto`, not to a previous declaration.
+  /* Constraint §4.4: 100vh is wrong in Safari. --app-height and --viewport-top
+     are the visual viewport's own height and offset (lib/viewport.ts), so the
+     shell is the band of screen that is on screen — under a keyboard, after an
+     iOS pan, or neither. The fallback keeps it full-height before the JS has
+     run. One declaration, not two — an undefined var() is invalid at
+     computed-value time and would fall all the way back to `auto`, not to a
+     previous declaration.
 
      `height`, not `min-height`, and `overflow: hidden`: a min-height root grows
      with the thread, so the document becomes the scroller, the header and the
@@ -168,6 +179,10 @@
   #root {
     display: flex;
     flex-direction: column;
+    position: fixed;
+    left: 0;
+    right: 0;
+    top: var(--viewport-top, 0px);
     height: var(--app-height, 100dvh);
     overflow: hidden;
   }
@@ -342,22 +357,35 @@
     );
   }
 
-  /* ---------------------------------------------------- keyboard + home indicator
-     Constraint §4.3 (home indicator) and §4.5 (the keyboard covers fixed
-     elements). --keyboard-inset is written by installViewportVars() and is 0px
-     whenever the keyboard is down, so .pb-keyboard is safe to apply always.
-     A Tailwind padding utility on the same element would out-rank this rule
-     outright — `utilities` is a later layer than `components` — and silently drop
-     the inset, so the element that carries .pb-keyboard carries no other padding. */
-  .pb-keyboard {
-    padding-bottom: calc(var(--keyboard-inset, 0px) + env(safe-area-inset-bottom, 0px));
+  /* --------------------------------------------------------- full-screen surfaces
+     Every layer sits on the visible band, exactly like #root. `inset-0` would
+     pin it to the *layout* viewport instead, and with a keyboard up on iOS that
+     is partly the piece of screen the keyboard is over. */
+  .viewport-fill {
+    position: fixed;
+    left: 0;
+    right: 0;
+    top: var(--viewport-top, 0px);
+    height: var(--app-height, 100dvh);
   }
 
-  /* With the keyboard up, iOS has already covered the home-indicator strip.
-     Adding `env(safe-area-inset-bottom)` on top of `--keyboard-inset` then leaves
-     a visible band of background between the field and the keys. */
+  /* ---------------------------------------------------- keyboard + home indicator
+     Constraint §4.3 (home indicator) and §4.5 (the keyboard covers fixed
+     elements). The shell is already the visible band, so the keyboard has been
+     subtracted from the height this row sits at the bottom of and there is no
+     inset left to pay — only the home indicator. A Tailwind padding utility on
+     the same element would out-rank this rule outright (`utilities` is a later
+     layer than `components`) and silently drop it, so the element that carries
+     .pb-keyboard carries no other padding. */
+  .pb-keyboard {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  /* With the keyboard up, iOS has already covered the home-indicator strip, and
+     paying for it again leaves a visible band of background between the field
+     and the keys. */
   .pb-keyboard.keyboard-up {
-    padding-bottom: var(--keyboard-inset, 0px);
+    padding-bottom: 0;
   }
 
   /* ------------------------------------------------------------------- fuse
