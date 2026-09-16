@@ -1,6 +1,7 @@
 import { hhmm, usd } from "@/lib/format";
 import type { Overview } from "@/lib/types";
-import { isFirstRun, rateText } from "@/room/useOverview";
+import { rateText } from "@/lib/format";
+import { isFirstRun } from "@/room/useOverview";
 
 export interface StatusLineProps {
   overview: Overview | undefined;

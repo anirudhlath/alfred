@@ -61,7 +61,9 @@ const WHY_STREAMS: readonly StreamName[] = ["user_responses", "reflex_observatio
  * merged column of the eight streams, newest first; the older button above
  * it names the cursor it will read before; the footer solos, pauses and
  * clears. The banner is the one place the bench speaks about itself: while
- * the socket is down every row is last-known, and it says so (spec §5.2).
+ * the socket is down every row is last-known, and it says so (spec §5.2) — on
+ * screen, not aloud, since the Workshop's header holds the live region that
+ * announces that drop on every bench.
  *
  * Rendered into a flex column (Task 7's `Layer`): the banner, the error line
  * and the footer take their own height and the list takes what is left between
@@ -120,34 +122,41 @@ export function ActivityBench({ activity, onWhy }: ActivityBenchProps) {
 
   return (
     <>
-      {/* Both live regions stay mounted and only change their contents:
-          VoiceOver can miss a region inserted with its text already in it
-          (`room/OfflineNote.tsx` documents the same pattern for the same
-          socket). Empty, each is `sr-only` — out of flow, so no box opens
-          around nothing. The labels keep two polite regions an inch apart
-          tellable from one another. `status` and not `alert` for the error:
-          a read that failed in the background is news, not an interrupt. */}
-      <div
-        role="status"
-        aria-label="Feed status"
-        className={
-          activity.live
-            ? "sr-only"
-            : "mx-4 mt-2.5 flex items-center gap-2 rounded-[10px] px-3 py-2 text-[13px] leading-[1.4]"
-        }
-        style={activity.live ? undefined : { background: "var(--surface)" }}
-      >
-        {activity.live ? null : (
-          <>
-            <span
-              aria-hidden="true"
-              className="h-2 w-2 shrink-0 rounded-full"
-              style={{ background: "var(--muted)" }}
-            />
-            <span>{staleText(activity.liveAt)}</span>
-          </>
-        )}
-      </div>
+      {/* The same news as the Workshop's header, in this bench's own words —
+          and deliberately not a live region any more. The header's is, and it
+          is the one that survives a change of bench: this banner is unmounted
+          with its bench on the other three, so a socket dropping while the
+          reader is in Memory would have been announced by nothing. Two polite
+          regions an inch apart would announce one drop twice, and the one that
+          goes is the one that cannot speak for the other benches.
+
+          Mounted only while it has something to say, unlike the region below
+          it: an empty non-region is markup for nothing. */}
+      {activity.live ? null : (
+        <div
+          data-testid="feed-banner"
+          className="mx-4 mt-2.5 flex items-center gap-2 rounded-[10px] px-3 py-2 text-[13px] leading-[1.4]"
+          style={{ background: "var(--surface)" }}
+        >
+          <span
+            aria-hidden="true"
+            className="h-2 w-2 shrink-0 rounded-full"
+            style={{ background: "var(--muted)" }}
+          />
+          <span>{staleText(activity.liveAt)}</span>
+        </div>
+      )}
+      {/* The read errors are a different fact from the connection, and nothing
+          else on the bench says them, so this region stays. Mounted whether or
+          not it has anything to say: VoiceOver can miss a region inserted with
+          its text already in it. What that buys is an error arriving while the
+          bench is up, which is the common case — it cannot carry across a
+          change of bench, because the bench and this region are unmounted
+          together and come back holding whatever the hook still holds. The
+          header's region (`Workshop.tsx`) is the only one on this surface that
+          outlives a bench swap. Empty, this one is `sr-only` — out of flow, so
+          no box opens around nothing. `status` and not `alert`: a read that
+          failed in the background is news, not an interrupt. */}
       <p
         role="status"
         aria-label="Read errors"

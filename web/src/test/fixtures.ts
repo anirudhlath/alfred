@@ -1,7 +1,8 @@
+import type { Routine, SemanticFile } from "@/lib/memory";
+import type { AttentionDomain, AuthSession, Credential, Integration } from "@/lib/system";
+import type { Trigger } from "@/lib/triggers";
 import type {
   ActionResultEvent,
-  AttentionDomain,
-  IntegrationInfo,
   NotificationEvent,
   Overview,
   PendingAction,
@@ -12,7 +13,7 @@ import type {
  * `GET /api/integrations`. Two entries on purpose: the setup gate must find
  * `home-service` by name rather than by position.
  */
-export const integrationsFixture: IntegrationInfo[] = [
+export const integrationsFixture: Integration[] = [
   {
     name: "weather",
     category: "weather",
@@ -379,3 +380,244 @@ export const actionResultFixture: ActionResultEvent = {
   result: { state: "unlocked" },
   timestamp: "2026-09-07T07:42:10Z",
 };
+
+// ---------------------------------------------------------------------------
+// Memory (`GET /api/admin/memory/*`)
+// ---------------------------------------------------------------------------
+
+/**
+ * 2026-09-16 07:02, on the device's own clock. Local rather than UTC on purpose:
+ * `hhmm` reads the device's clock, so a UTC instant would stamp one string in CI
+ * and another on a developer's machine.
+ */
+export const MEMORY_AT = new Date(2026, 8, 16, 7, 2, 0).getTime();
+
+/** An hour later — when the search fixture was last recalled. */
+export const MEMORY_RECALLED_AT = new Date(2026, 8, 16, 8, 0, 0).getTime();
+
+/**
+ * Browse · hot: a `CONTEXT_PREFIX` Redis hash, `HGETALL`'d with its key
+ * discarded — so it has no id, and every value is a string.
+ */
+export const hotRow = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+  type: "episodic",
+  store: "hot",
+  content: "Kitchen lamp turned off",
+  semantic_key: "kitchen lamp",
+  source: "system1_action",
+  entities: "lamp,kitchen",
+  timestamp: String(MEMORY_AT / 1000),
+  significance: "0.7",
+  retrieval_count: "3",
+  last_retrieved: "0",
+  compressed: "",
+  ...overrides,
+});
+
+/**
+ * Browse · cold: a SQLite row. `timestamp` is a REAL, `entities` a JSON string,
+ * `significance` the JSON text of a whole `SignificanceScore`, and the SELECT
+ * carries no retrieval stats at all.
+ */
+export const coldRow = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+  store: "cold",
+  id: "ep-91",
+  timestamp: MEMORY_AT / 1000,
+  source: "conversation",
+  summary: "Asked about the dentist",
+  entities: '["dentist"]',
+  valence: "neutral",
+  significance:
+    '{"overall": 0.4, "safety": 0.0, "novelty": 0.0,' +
+    ' "personal": 0.0, "emotional": 0.0, "source": "heuristic"}',
+  semantic_key: "dentist",
+  compressed_into: null,
+  ...overrides,
+});
+
+/**
+ * Search: `{store, score, **EpisodicEntry.model_dump(mode="json")}` — an ISO
+ * timestamp, a real array of entities, and `significance` as an object.
+ */
+export const searchRow = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+  store: "cold",
+  score: 0.62,
+  id: "ep-91",
+  timestamp: new Date(MEMORY_AT).toISOString(),
+  source: "conversation",
+  summary: "Asked about the dentist",
+  entities: ["dentist"],
+  significance: {
+    overall: 0.4,
+    safety: 0,
+    novelty: 0,
+    personal: 0,
+    emotional: 0,
+    source: "heuristic",
+  },
+  semantic_key: "dentist",
+  retrieval_count: 2,
+  last_retrieved: new Date(MEMORY_RECALLED_AT).toISOString(),
+  compressed_into: null,
+  valence: "neutral",
+  ...overrides,
+});
+
+/** One learned routine, mid-lifecycle and rising: 0.71 → 0.82 at the last pass. */
+export const routine = (overrides: Partial<Routine> = {}): Routine => ({
+  name: "evening-lights",
+  trigger_pattern: "sunset",
+  steps: [
+    {
+      description: "Dim the living room to 30%",
+      action: {
+        tool_name: "home.light_set",
+        target_service: "home-service",
+        parameters: { entity_id: "light.living_room", brightness: 30 },
+      },
+    },
+    { description: "Wait for the TV to start", action: null },
+  ],
+  confidence: 0.82,
+  learned_from: ["ep-1", "ep-2"],
+  state: "active",
+  last_hit: "2026-09-15T19:02:00Z",
+  consecutive_misses: 0,
+  last_suggested: null,
+  confidence_history: [0.6, 0.71, 0.82],
+  ...overrides,
+});
+
+/** One semantic file, as the server reads it off disk. */
+export const semanticFile = (overrides: Partial<SemanticFile> = {}): SemanticFile => ({
+  name: "food.md",
+  dir: "preferences",
+  content: "# Food\n\nNo coriander. Tea, not coffee, after six.",
+  modified: new Date(MEMORY_AT).toISOString(),
+  ...overrides,
+});
+
+// ---------------------------------------------------------------------------
+// Triggers (`GET /api/admin/triggers`)
+// ---------------------------------------------------------------------------
+
+/**
+ * 2026-09-16 20:52, on the device's own clock — when the fixture trigger was
+ * written. Local rather than UTC for the same reason `MEMORY_AT` is: `hhmm`
+ * reads the device's clock, so a UTC instant would stamp one string in CI and
+ * another on a developer's machine. Epoch ms like its neighbours, not a `Date`:
+ * a shared `Date` is mutable, and one `setHours` in a future test file would
+ * poison every file importing it.
+ */
+export const TRIGGER_CREATED_AT = new Date(2026, 8, 16, 20, 52, 0).getTime();
+
+/** 21:30 the same evening: the `now` every meta assertion is read against. */
+export const TRIGGER_NOW = new Date(2026, 8, 16, 21, 30, 0).getTime();
+
+/** 08:40 the next morning — the one-shot's due time, so `tomorrow` is testable. */
+export const TRIGGER_RUN_AT = new Date(2026, 8, 17, 8, 40, 0).getTime();
+
+/**
+ * One stored trigger, exactly as `BaseTrigger.model_dump_json()` leaves it in the
+ * Redis hash `GET /api/admin/triggers` reads. A time trigger with a `run_at` and
+ * no cron by default, so `triggerKind` calls it `time` until a test hands it one.
+ */
+export const trigger = (overrides: Partial<Trigger> = {}): Trigger => ({
+  trigger_id: "trg_bins",
+  trigger_type: "time",
+  name: "Bins out",
+  enabled: true,
+  one_shot: false,
+  created_by: "conversation",
+  created_at: new Date(TRIGGER_CREATED_AT).toISOString(),
+  last_fired: null,
+  action: {
+    tool_name: "notify.send",
+    target_service: "notifications",
+    parameters: { message: "Bins go out tonight" },
+  },
+  urgency: "important",
+  conditions: { cron: null, run_at: new Date(TRIGGER_RUN_AT).toISOString() },
+  ...overrides,
+});
+
+// ---------------------------------------------------------------------------
+// System (`/api/auth/*`, `/api/integrations`, `/api/admin/attention`)
+// ---------------------------------------------------------------------------
+
+/**
+ * 2026-09-16 07:02, on the device's own clock — when the fixture session signed
+ * in and when the fixture passkey was last used. Local rather than UTC for the
+ * reason its neighbours are: `hhmm` reads the device's clock, so a UTC instant
+ * would stamp one string in CI and another on a developer's machine.
+ */
+export const SYSTEM_SIGNED_IN_AT = new Date(2026, 8, 16, 7, 2, 0).getTime();
+
+/** 12 Aug — when the fixture passkey was registered, weeks before today. */
+export const SYSTEM_REGISTERED_AT = new Date(2026, 7, 12, 19, 10, 0).getTime();
+
+/** 21:30 the same evening: the `now` every System meta assertion is read against. */
+export const SYSTEM_NOW = new Date(2026, 8, 16, 21, 30, 0).getTime();
+
+/**
+ * One live session as `GET /api/auth/sessions` sends it. Not the caller's own:
+ * `current` is the interesting case and every test that wants it says so.
+ */
+export const authSession = (overrides: Partial<AuthSession> = {}): AuthSession => ({
+  session_id: "sess-phone",
+  credential_id: "cred-phone",
+  device_name: "Phone",
+  channel: "web",
+  ip: "192.168.1.24",
+  user_agent: "Mozilla/5.0",
+  created_at: new Date(SYSTEM_SIGNED_IN_AT).toISOString(),
+  expires_in: 7 * 3600,
+  current: false,
+  ...overrides,
+});
+
+/** One registered passkey as `GET /api/auth/credentials` sends it. */
+export const credential = (overrides: Partial<Credential> = {}): Credential => ({
+  credential_id: "cred-phone",
+  device_name: "Phone",
+  transports: ["internal"],
+  created_at: new Date(SYSTEM_REGISTERED_AT).toISOString(),
+  last_used_at: new Date(SYSTEM_SIGNED_IN_AT).toISOString(),
+  current: false,
+  ...overrides,
+});
+
+/**
+ * One entry of `GET /api/integrations` — the registry-declared home service,
+ * with both its fields stored. `integrationsFixture` above is the pair the
+ * setup gate reads; this is the single row the System bench's tests build on.
+ */
+export const integration = (overrides: Partial<Integration> = {}): Integration => ({
+  name: "home-service",
+  category: "service",
+  kind: "service",
+  schema: {
+    fields: {
+      url: {
+        label: "Home Assistant URL",
+        field_type: "url",
+        required: true,
+        placeholder: "",
+        default: "",
+        help_text: "",
+        transient: false,
+      },
+      token: {
+        label: "Access Token",
+        field_type: "password",
+        required: true,
+        placeholder: "",
+        default: "",
+        help_text: "",
+        transient: false,
+      },
+    },
+  },
+  configured: { url: true, token: true },
+  ...overrides,
+});

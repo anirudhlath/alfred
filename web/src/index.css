@@ -50,6 +50,14 @@
      `src/test/contrast.ts`, which holds this one to 4.5:1 on --bg. */
   --accent-text: oklch(0.78 0.12 45);
   --green: oklch(0.70 0.13 150);
+  /* Green *as* text: the Memory bench's rising routine and its `model: ok`
+     pill are the first places green is a word rather than a dot. The same
+     story as --accent-text one line up — ink's green is already 6.25:1 on
+     --bg, so this is the same colour; paper's is 2.29:1, which is the whole
+     reason the token exists. --green stays what fills a dot (the Door's
+     `applied`). Restated in `src/test/contrast.ts`, which holds this one to
+     4.5:1 on --bg. */
+  --green-text: oklch(0.70 0.13 150);
   --ink: #F1ECE4;
   --paper: #25221F;
   --paper-muted: #7D756B;
@@ -78,6 +86,9 @@
      was the colour of every back button on this branch. See dark, above. */
   --accent-text: oklch(0.52 0.13 45);
   --green: oklch(0.70 0.13 150);
+  /* Paper's green darkened until it is readable as text: 5.10:1 on --bg and
+     4.72:1 on --surface. The undarkened green is 2.29:1. See dark, above. */
+  --green-text: oklch(0.50 0.13 150);
   --ink: #221F1B;
   --paper: #F1ECE4;
   --paper-muted: #9A9186;
@@ -122,6 +133,7 @@
   --color-on-accent: var(--on-accent);
   --color-accent-text: var(--accent-text);
   --color-green: var(--green);
+  --color-green-text: var(--green-text);
   --color-ink: var(--ink);
   --color-paper: var(--paper);
   --color-paper-muted: var(--paper-muted);

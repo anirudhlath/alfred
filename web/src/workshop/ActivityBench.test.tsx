@@ -106,7 +106,7 @@ describe("ActivityBench", () => {
     fireEvent.click(older);
     expect(a.loadOlder).toHaveBeenCalledTimes(1);
     expect(within(items[1]).getByText("observed media_player.tv · acted")).toBeInTheDocument();
-    expect(screen.getByRole("status", { name: "Feed status" })).toHaveTextContent("");
+    expect(screen.queryByTestId("feed-banner")).toBeNull();
     expect(screen.getByRole("status", { name: "Read errors" })).toHaveTextContent("");
   });
 
@@ -138,13 +138,27 @@ describe("ActivityBench", () => {
   it("says the feed stopped, and when, while the socket is down", () => {
     const at = new Date(2026, 8, 7, 21, 14, 0).getTime();
     const { rerender } = render(<ActivityBench activity={activity({ live: false, liveAt: at })} onWhy={() => {}} />);
-    expect(screen.getByRole("status", { name: "Feed status" })).toHaveTextContent(
+    expect(screen.getByTestId("feed-banner")).toHaveTextContent(
       "Feed stopped at 21:14. Nothing below is live.",
     );
     rerender(<ActivityBench activity={activity({ live: false, liveAt: null })} onWhy={() => {}} />);
-    expect(screen.getByRole("status", { name: "Feed status" })).toHaveTextContent(
+    expect(screen.getByTestId("feed-banner")).toHaveTextContent(
       "Feed has not been live yet. Nothing below is live.",
     );
+  });
+
+  it("does not make a second live region of the banner", () => {
+    const at = new Date(2026, 8, 7, 21, 14, 0).getTime();
+    render(<ActivityBench activity={activity({ live: false, liveAt: at })} onWhy={() => {}} />);
+    const banner = screen.getByTestId("feed-banner");
+    // The Workshop's header says `last true 21:14 · not live` in the same
+    // breath, and it is the one that survives a change of bench. Two polite
+    // regions with one sentence between them is one announcement too many.
+    expect(banner).not.toHaveAttribute("role");
+    expect(banner).not.toHaveAttribute("aria-live");
+    // The read-error region beside it is a different fact and stays.
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(screen.getByRole("status", { name: "Read errors" })).toBeInTheDocument();
   });
 
   it("shows a read failure as a status line under the banner", () => {

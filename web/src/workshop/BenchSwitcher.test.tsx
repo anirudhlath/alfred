@@ -69,6 +69,17 @@ describe("BenchSwitcher", () => {
     expect(document.activeElement).toBe(tabs[0]);
   });
 
+  it("jumps to the ends on Home and End", () => {
+    const { onChange, tabs } = renderSwitcher("triggers");
+    fireEvent.keyDown(tabs[2], { key: "Home" });
+    expect(onChange).toHaveBeenLastCalledWith("activity");
+    expect(document.activeElement).toBe(tabs[0]);
+
+    fireEvent.keyDown(tabs[2], { key: "End" });
+    expect(onChange).toHaveBeenLastCalledWith("system");
+    expect(document.activeElement).toBe(tabs[3]);
+  });
+
   it("leaves every other key to the bench underneath", () => {
     const { onChange, tabs } = renderSwitcher();
     // `fireEvent` returns false only when a handler called `preventDefault`.

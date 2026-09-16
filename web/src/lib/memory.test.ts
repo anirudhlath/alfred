@@ -1,0 +1,485 @@
+import {
+  coldRow,
+  hotRow,
+  MEMORY_AT,
+  MEMORY_RECALLED_AT,
+  routine,
+  searchRow,
+  semanticFile,
+} from "@/test/fixtures";
+import { describe, expect, it, vi } from "vitest";
+import { ApiError } from "./api";
+import {
+  episodicMeta,
+  fetchEpisodic,
+  fetchRoutines,
+  fetchScratchpad,
+  fetchSemantic,
+  ROUTINE_STAGES,
+  routineDetail,
+  routineTrend,
+  toEpisodicRow,
+} from "./memory";
+
+const AT_ISO = new Date(MEMORY_AT).toISOString();
+const RECALLED_AT_ISO = new Date(MEMORY_RECALLED_AT).toISOString();
+
+/**
+ * The three shapes `GET /api/admin/memory/episodic` answers in, written out
+ * literally rather than built by a helper: that they differ this much for one
+ * drawn row is the reason `toEpisodicRow` exists. `the shared fixtures` below
+ * pins `hotRow`/`coldRow`/`searchRow` to them, so the copies Tasks 2 and 3
+ * import cannot drift away from the shapes asserted here.
+ */
+
+/** Browse · hot — a `CONTEXT_PREFIX` Redis hash, so every value is a string. */
+const HOT = {
+  type: "episodic",
+  store: "hot",
+  content: "Kitchen lamp turned off",
+  semantic_key: "kitchen lamp",
+  source: "system1_action",
+  entities: "lamp,kitchen",
+  timestamp: String(MEMORY_AT / 1000),
+  significance: "0.7",
+  retrieval_count: "3",
+  last_retrieved: "0",
+  compressed: "",
+};
+
+/** Browse · cold — a SQLite row, whose `significance` column holds JSON text. */
+const COLD = {
+  store: "cold",
+  id: "ep-91",
+  timestamp: MEMORY_AT / 1000,
+  source: "conversation",
+  summary: "Asked about the dentist",
+  entities: '["dentist"]',
+  valence: "neutral",
+  significance:
+    '{"overall": 0.4, "safety": 0.0, "novelty": 0.0,' +
+    ' "personal": 0.0, "emotional": 0.0, "source": "heuristic"}',
+  semantic_key: "dentist",
+  compressed_into: null,
+};
+
+/** Search — `EpisodicEntry.model_dump(mode="json")`, so `significance` is an object. */
+const FOUND = {
+  store: "cold",
+  score: 0.62,
+  id: "ep-91",
+  timestamp: AT_ISO,
+  source: "conversation",
+  summary: "Asked about the dentist",
+  entities: ["dentist"],
+  significance: {
+    overall: 0.4,
+    safety: 0,
+    novelty: 0,
+    personal: 0,
+    emotional: 0,
+    source: "heuristic",
+  },
+  semantic_key: "dentist",
+  retrieval_count: 2,
+  last_retrieved: RECALLED_AT_ISO,
+  compressed_into: null,
+  valence: "neutral",
+};
+
+const respond = (body: unknown, status = 200) =>
+  vi.fn<typeof fetch>(async () => new Response(JSON.stringify(body), { status }));
+
+describe("the shared fixtures", () => {
+  it("still mirror the three shapes this file spells out", () => {
+    expect(hotRow()).toEqual(HOT);
+    expect(coldRow()).toEqual(COLD);
+    expect(searchRow()).toEqual(FOUND);
+  });
+});
+
+describe("toEpisodicRow", () => {
+  it("reads a hot row's content, comma entities and string numbers", () => {
+    const row = toEpisodicRow(HOT, 0);
+    expect(row).toMatchObject({
+      store: "hot",
+      text: "Kitchen lamp turned off",
+      at: MEMORY_AT,
+      significance: 0.7,
+      recalled: 3,
+      entities: ["lamp", "kitchen"],
+      score: null,
+    });
+  });
+
+  it("gives a hot row an index key, because the server discards its id", () => {
+    expect(toEpisodicRow(HOT, 4)).toMatchObject({ key: "hot:4", id: null });
+  });
+
+  it("treats a blank id as no id rather than as an empty React key", () => {
+    expect(toEpisodicRow({ ...COLD, id: "" }, 3)).toMatchObject({ key: "cold:3", id: null });
+  });
+
+  it("reads a cold row's summary and JSON entities", () => {
+    const row = toEpisodicRow(COLD, 0);
+    expect(row).toMatchObject({
+      store: "cold",
+      id: "ep-91",
+      key: "ep-91",
+      text: "Asked about the dentist",
+      at: MEMORY_AT,
+      significance: 0.4,
+      // Not 0: the cold store reports no retrieval stats at all, and a field the
+      // server never sent is not a count of none.
+      recalled: null,
+      lastRecalled: null,
+      entities: ["dentist"],
+    });
+  });
+
+  it("reads a search row's ISO timestamp, array entities and score", () => {
+    const row = toEpisodicRow(FOUND, 0);
+    expect(row).toMatchObject({
+      at: MEMORY_AT,
+      entities: ["dentist"],
+      score: 0.62,
+    });
+  });
+
+  it("reads an ISO last_retrieved on a hot search row", () => {
+    // The ISO branch of `time()` for the recall stamp, asserted on a *hot* row:
+    // a cold one drops both recall fields whatever the payload says.
+    expect(toEpisodicRow({ ...FOUND, store: "hot" }, 0).lastRecalled).toBe(MEMORY_RECALLED_AT);
+  });
+
+  it("drops the recall count on a cold search row, which the server fabricates", () => {
+    // `sqlite_vec_store` hands `recall()` a hardcoded `retrieval_count=0` and
+    // `recall()` returns it +1, so every cold search row claims exactly one
+    // recall it has no record of. The row says nothing instead.
+    expect(toEpisodicRow({ ...FOUND, retrieval_count: 1 }, 0)).toMatchObject({
+      store: "cold",
+      recalled: null,
+      lastRecalled: null,
+    });
+  });
+
+  it("keeps a hot row's recall stats, which the Redis hash really holds", () => {
+    expect(toEpisodicRow(HOT, 0)).toMatchObject({ store: "hot", recalled: 3 });
+  });
+
+  it("reads the significance each store spells differently, and a bare number besides", () => {
+    // A string float (the hot hash), JSON text (the cold store's TEXT column), a
+    // dumped SignificanceScore (search) — and a bare number, defensively.
+    expect(toEpisodicRow({ ...COLD, significance: "0.4" }, 0).significance).toBe(0.4);
+    expect(toEpisodicRow({ ...COLD, significance: '{"overall": 0.4}' }, 0).significance).toBe(0.4);
+    expect(toEpisodicRow({ ...COLD, significance: { overall: 0.4 } }, 0).significance).toBe(0.4);
+    expect(toEpisodicRow({ ...COLD, significance: 0.4 }, 0).significance).toBe(0.4);
+    expect(toEpisodicRow({ ...COLD, significance: "not a score" }, 0).significance).toBeNull();
+  });
+
+  it("treats a zero epoch as never, not as 1970", () => {
+    // The hot hash writes `last_retrieved: 0.0` for a memory nothing has recalled.
+    expect(toEpisodicRow(HOT, 0).lastRecalled).toBeNull();
+    expect(toEpisodicRow({ ...HOT, timestamp: "0" }, 0).at).toBeNull();
+  });
+
+  it("reads an empty string as no value rather than as zero", () => {
+    const row = toEpisodicRow({ ...HOT, timestamp: "", significance: "", retrieval_count: "" }, 0);
+    expect(row).toMatchObject({ at: null, significance: null, recalled: 0 });
+  });
+
+  it("keeps the recall count a whole number that cannot go below none", () => {
+    expect(toEpisodicRow({ ...HOT, retrieval_count: "2.7" }, 0).recalled).toBe(2);
+    expect(toEpisodicRow({ ...HOT, retrieval_count: -1 }, 0).recalled).toBe(0);
+  });
+
+  it("survives every field being missing", () => {
+    const row = toEpisodicRow({ store: "hot" }, 2);
+    expect(row).toEqual({
+      key: "hot:2",
+      id: null,
+      store: "hot",
+      text: "",
+      at: null,
+      significance: null,
+      recalled: 0,
+      lastRecalled: null,
+      entities: [],
+      score: null,
+      decaying: false,
+    });
+  });
+
+  it("treats an unparseable entities string as no entities, not as one entity", () => {
+    expect(toEpisodicRow({ ...COLD, entities: "[oops" }, 0).entities).toEqual([]);
+  });
+
+  it("drops empty entity fragments", () => {
+    expect(toEpisodicRow({ ...HOT, entities: "lamp,,kitchen," }, 0).entities).toEqual([
+      "lamp",
+      "kitchen",
+    ]);
+  });
+
+  it("calls a lightly-weighted, never-recalled HOT row decaying — the handoff's own row", () => {
+    // `Alfred.dc.html:684`: significance 0.34, recalled 0×, hot · decaying.
+    const row = { ...HOT, significance: "0.34", retrieval_count: "0" };
+    expect(toEpisodicRow(row, 0).decaying).toBe(true);
+  });
+
+  it("does not call a hot row the house has reached for decaying", () => {
+    // The same row, retrieved once. Retrieval resists migration pressure in the
+    // Librarian's formula, and the count is real on a hot row.
+    expect(toEpisodicRow({ ...HOT, significance: "0.34", retrieval_count: "1" }, 0).decaying).toBe(
+      false,
+    );
+    expect(toEpisodicRow({ ...HOT, significance: "0.8", retrieval_count: "0" }, 0).decaying).toBe(
+      false,
+    );
+  });
+
+  it("never calls a COLD row decaying, whatever its significance", () => {
+    // The handoff does not either: its cold row at significance 0.22 with no
+    // recalls reads a plain `cold` (`Alfred.dc.html:687`). Decay migrates hot
+    // entries *into* cold storage; a cold row has already arrived, and nothing
+    // in the Librarian removes one.
+    //
+    // Two guards say so and only one of them is reachable: `recalled` is null
+    // on every cold row, and `null === 0` is false, so `recalled === 0` alone
+    // already answers false here. `!cold` is belt over those braces and cannot
+    // be killed from outside the module — which is why the null is asserted
+    // beside the word, rather than left as an invariant three other tests
+    // happen to hold.
+    const near = toEpisodicRow({ ...COLD, significance: 0.22 }, 0);
+    expect(near.recalled).toBeNull();
+    expect(near.decaying).toBe(false);
+    expect(toEpisodicRow({ ...COLD, significance: 0.8 }, 0).decaying).toBe(false);
+    // A cold *search* row, where the server does send a count — and the row
+    // drops it, which is the one input that could otherwise reach zero.
+    const found = toEpisodicRow({ ...FOUND, significance: 0.2, retrieval_count: 0 }, 0);
+    expect(found.recalled).toBeNull();
+    expect(found.decaying).toBe(false);
+    expect(toEpisodicRow({ ...FOUND, significance: 0.2, retrieval_count: 1 }, 0).decaying).toBe(
+      false,
+    );
+  });
+
+  it("never calls a row it cannot read the significance of decaying", () => {
+    // `null < DECAY_FLOOR` is true in JS, so dropping the guard would condemn
+    // every hot row whose significance field is unreadable.
+    expect(
+      toEpisodicRow({ ...HOT, significance: "not a score", retrieval_count: "0" }, 0).decaying,
+    ).toBe(false);
+    expect(toEpisodicRow({ ...HOT, significance: undefined, retrieval_count: "0" }, 0).decaying).toBe(
+      false,
+    );
+  });
+});
+
+describe("episodicMeta", () => {
+  /**
+   * Nine in the evening of the day the fixtures were written. Passed in rather
+   * than read off the clock: `dayLabel` answers "earlier today" or "12 Aug"
+   * depending on when the suite runs, and CI runs in UTC at an hour nobody
+   * chose.
+   */
+  const NOW = new Date(2026, 8, 16, 21, 0, 0).getTime();
+
+  it("stamps the day, weighs the row, counts recalls and names the store last", () => {
+    // The handoff's order (§6): `20:52 today · significance 0.62 · recalled 1× · hot`.
+    expect(episodicMeta(toEpisodicRow(HOT, 0), NOW)).toBe(
+      "07:02 earlier today · significance 0.70 · recalled 3× · hot",
+    );
+  });
+
+  it("says never recalled rather than 0× on a hot row, which really reports none", () => {
+    expect(episodicMeta(toEpisodicRow({ ...HOT, retrieval_count: "0" }, 0), NOW)).toBe(
+      "07:02 earlier today · significance 0.70 · never recalled · hot",
+    );
+  });
+
+  it("says nothing at all about a cold row's recalls", () => {
+    // Not `never recalled`, which would be a claim about the house drawn from a
+    // field the cold store does not have.
+    expect(episodicMeta(toEpisodicRow(COLD, 0), NOW)).toBe(
+      "07:02 earlier today · significance 0.40 · cold",
+    );
+  });
+
+  it("prints no recall clause for a cold search row carrying the fabricated count", () => {
+    const meta = episodicMeta(toEpisodicRow({ ...FOUND, retrieval_count: 1 }, 0), NOW);
+    expect(meta).toBe("07:02 earlier today · significance 0.40 · cold · match 0.62");
+    expect(meta).not.toContain("recalled");
+  });
+
+  it("adds the match score when one is in the row", () => {
+    expect(episodicMeta(toEpisodicRow(FOUND, 0), NOW)).toBe(
+      "07:02 earlier today · significance 0.40 · cold · match 0.62",
+    );
+  });
+
+  it("marks a decaying row after the store, keeping its recall count", () => {
+    // The handoff's line, verbatim in shape (`Alfred.dc.html:684`):
+    // `17:58 today · significance 0.34 · recalled 0× · hot · decaying`.
+    expect(
+      episodicMeta(toEpisodicRow({ ...HOT, significance: "0.34", retrieval_count: "0" }, 0), NOW),
+    ).toBe("07:02 earlier today · significance 0.34 · never recalled · hot · decaying");
+  });
+
+  // The whole reason the stamp takes a `now`: a memory browser goes back weeks,
+  // and a bare wall clock on a row from last Tuesday says nothing.
+  it("names the day a row older than today came from", () => {
+    const nextDay = new Date(2026, 8, 17, 9, 0, 0).getTime();
+    expect(episodicMeta(toEpisodicRow(HOT, 0), nextDay)).toContain("07:02 yesterday");
+    const nextWeek = new Date(2026, 8, 23, 9, 0, 0).getTime();
+    expect(episodicMeta(toEpisodicRow(HOT, 0), nextWeek)).toContain("07:02 16 Sep");
+  });
+
+  it("claims no day and no significance for a row that carried neither", () => {
+    expect(episodicMeta(toEpisodicRow({ store: "hot" }, 0), NOW)).toBe(
+      "--:-- · never recalled · hot",
+    );
+  });
+});
+
+describe("ROUTINE_STAGES", () => {
+  it("is the Librarian's lifecycle, in order", () => {
+    expect(ROUTINE_STAGES).toEqual(["candidate", "active", "dormant", "archived"]);
+  });
+});
+
+describe("routineTrend", () => {
+  it("reports a rise against the previous consolidation", () => {
+    // The fixture's history is 0.6 → 0.71 → 0.82, at a confidence of 0.82.
+    expect(routineTrend(routine())).toEqual({
+      text: "0.82 · +0.11 since last week",
+      rising: true,
+      confidence: "0.82",
+    });
+  });
+
+  it("reports a fall", () => {
+    expect(routineTrend(routine({ confidence_history: [0.9, 0.82] }))).toEqual({
+      text: "0.82 · -0.08 since last week",
+      rising: false,
+      confidence: "0.82",
+    });
+  });
+
+  it("says nothing about a trend it has only one reading for", () => {
+    expect(routineTrend(routine({ confidence_history: [0.82] }))).toEqual({
+      text: "0.82 · first reading",
+      rising: false,
+      confidence: "0.82",
+    });
+  });
+
+  it("treats an empty history as a first reading rather than reading confidence twice", () => {
+    expect(routineTrend(routine({ confidence_history: [] })).text).toBe("0.82 · first reading");
+  });
+
+  it("does not call a routine that held still rising", () => {
+    expect(routineTrend(routine({ confidence_history: [0.82, 0.82] }))).toEqual({
+      text: "0.82 · +0.00 since last week",
+      rising: false,
+      confidence: "0.82",
+    });
+  });
+});
+
+describe("routineDetail", () => {
+  it("counts the steps and the evidence", () => {
+    expect(routineDetail(routine({ learned_from: ["ep-1"] }))).toBe(
+      "2 steps · learned from 1 memory",
+    );
+  });
+
+  it("pluralises the evidence", () => {
+    expect(routineDetail(routine())).toBe("2 steps · learned from 2 memories");
+  });
+
+  it("says no evidence kept when the routine has none", () => {
+    expect(routineDetail(routine({ learned_from: [] }))).toBe("2 steps · no evidence kept");
+  });
+
+  it("says 1 step, not 1 steps", () => {
+    expect(routineDetail(routine({ steps: [{ description: "a", action: null }] }))).toBe(
+      "1 step · learned from 2 memories",
+    );
+  });
+});
+
+describe("fetchEpisodic", () => {
+  it("browses without a q parameter", async () => {
+    const fetchMock = respond({ entries: [] });
+    vi.stubGlobal("fetch", fetchMock);
+
+    expect(await fetchEpisodic("")).toEqual([]);
+    expect(String(fetchMock.mock.calls[0][0])).toBe("/api/admin/memory/episodic");
+  });
+
+  it("encodes the query it searches with", async () => {
+    const fetchMock = respond({ entries: [] });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchEpisodic("dentist & co");
+
+    const url = new URL(String(fetchMock.mock.calls[0][0]), "https://alfred.example.com");
+    expect(url.pathname).toBe("/api/admin/memory/episodic");
+    expect(url.searchParams.get("q")).toBe("dentist & co");
+  });
+
+  it("maps every entry through the adapter, index and all", async () => {
+    vi.stubGlobal("fetch", respond({ entries: [HOT, COLD] }));
+
+    const rows = await fetchEpisodic("");
+
+    expect(rows.map((row) => row.key)).toEqual(["hot:0", "ep-91"]);
+    expect(rows.map((row) => row.text)).toEqual([
+      "Kitchen lamp turned off",
+      "Asked about the dentist",
+    ]);
+  });
+
+  it("reads a body with no entries as no rows", async () => {
+    vi.stubGlobal("fetch", respond({}));
+    expect(await fetchEpisodic("")).toEqual([]);
+  });
+
+  it("lets the embedder's 503 through, for the model pill to read", async () => {
+    vi.stubGlobal("fetch", respond({ detail: "Vector search unavailable" }, 503));
+    await expect(fetchEpisodic("dentist")).rejects.toBeInstanceOf(ApiError);
+  });
+});
+
+describe("the other three reads", () => {
+  it("unwraps the semantic envelope", async () => {
+    const file = semanticFile();
+    const fetchMock = respond({ files: [file] });
+    vi.stubGlobal("fetch", fetchMock);
+
+    expect(await fetchSemantic()).toEqual([file]);
+    expect(String(fetchMock.mock.calls[0][0])).toBe("/api/admin/memory/semantic");
+  });
+
+  it("unwraps the routines envelope", async () => {
+    const fetchMock = respond({ routines: [routine()] });
+    vi.stubGlobal("fetch", fetchMock);
+
+    expect(await fetchRoutines()).toEqual([routine()]);
+    expect(String(fetchMock.mock.calls[0][0])).toBe("/api/admin/memory/routines");
+  });
+
+  it("reads the scratchpad and its queue", async () => {
+    const fetchMock = respond({ content: "- lamp", pending_queue: 2 });
+    vi.stubGlobal("fetch", fetchMock);
+
+    expect(await fetchScratchpad()).toEqual({ content: "- lamp", pending_queue: 2 });
+    expect(String(fetchMock.mock.calls[0][0])).toBe("/api/admin/memory/scratchpad");
+  });
+
+  it("reads a scratchpad with nothing in it as empty, not as absent", async () => {
+    vi.stubGlobal("fetch", respond({}));
+    expect(await fetchScratchpad()).toEqual({ content: "", pending_queue: 0 });
+  });
+});

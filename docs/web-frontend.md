@@ -18,9 +18,8 @@ Design source: `docs/design/2026-09-04-pwa-client-handoff/` (tokens, copy, and t
 Spec: `docs/superpowers/specs/2026-09-04-mobile-first-pwa-client-design.md`.
 Client-side working notes: `web/README.md`.
 
-Phases 1 and 2 of six. The Memory, Triggers and System benches, the service worker,
-icons, Web Push and the desktop composition are later phases — see
-"What phases 1 and 2 do not cover" at the end.
+Phases 1 to 3 of six. The service worker, icons, Web Push and the desktop composition
+are later phases — see "What phases 1 to 3 do not cover" at the end.
 
 ---
 
@@ -80,8 +79,15 @@ web/
       feed.ts            # feedReducer, mergeRows, olderTargets — eight paged lists,
                          # pause/hold, the horizon; MAX_PER_STREAM
       trace.ts           # fetchThread, buildThread, nodeMeta — the causal thread
+      memory.ts          # EpisodicRow, toEpisodicRow (the three-shape adapter),
+                         # episodicMeta, routineTrend/routineDetail, the four reads
+      triggers.ts        # Trigger, triggerKind, triggerMeta, list/toggle/fire
+      system.ts          # AuthSession, Credential, Integration, AttentionDomain,
+                         # sessionMeta/credentialMeta/serviceNote/spendNote, the
+                         # health cells, and every read and write the System bench makes
     shell/         # Providers, and the two surfaces everything rises on
       QueryProvider.tsx      # QueryClient defaults
+      ErrorBoundary.tsx      # The Workshop's; a bench that throws costs the layer
       ThemeProvider.tsx      # useTheme(); writes data-theme and the theme-color meta
       ThemeToggle.tsx        # 44x44 half-filled circle
       ConnectionProvider.tsx # Socket singletons, useConnection(), markTrue()
@@ -123,14 +129,29 @@ web/
       SlideToConfirm.tsx# Slide with travel
       useActionRoute.ts # /actions/:id
     workshop/      # The layer under the Room
-      Workshop.tsx      # Layer level "workshop": ‹ Room, status line, switcher,
-                        # and the role="tabpanel" the switcher controls
+      Workshop.tsx      # Layer level "workshop": ‹ Room, the header's live region,
+                        # the switcher, all four hooks, and the one mounted bench
       BenchSwitcher.tsx # The four-tab segmented control: a full ARIA tab set
+      tabs.ts           # tabId and tabKeyDown — the two tab sets' shared behaviour
+                        # (the switcher and Memory's sub-tabs; the chips are not tabs)
       ActivityBench.tsx # Stale banner, chips, ↑ older, the list and its scroll
                         # anchoring, the footer
       EventRow.tsx      # Monogram, line, meta; expanded payload and pills
       StreamChips.tsx   # Eight chips with counts; tap to solo
       useActivity.ts    # Head reads, the subscription, rehydrate on return, paging
+      MemoryBench.tsx   # Four sub-tabs: Episodic list + search footer, Semantic
+                        # cards, Routines, Scratchpad
+      RoutineRow.tsx    # One routine: trend, lifecycle rail, detail, sparkline
+      useMemory.ts      # Sub-tab, browse/search, the four reads, the model pill
+      TriggersBench.tsx # Kind chips, the list, both empty states, the footer note
+      TriggerRow.tsx    # Kind, name, meta, the switch, payload, Fire now
+      useTriggers.ts    # The list, the kind filter, the pending map, the 60 s re-read
+      SystemBench.tsx   # Health, Quiet (and Held back), Maintenance
+      SystemSections.tsx# Sessions, Connected services, Devices & identity, Reflex
+      IntegrationRow.tsx# One service: state, dot, and the credential form
+      SystemFrame.tsx   # SystemSection and SystemRow — the shared card idiom
+      Switch.tsx        # The Workshop's 52x32 switch, measured on both surrounds
+      useSystem.ts      # The overview plus five reads, and every write on the bench
     sheets/
       HeldBackSheet.tsx # ["deferred"] + drain
       WhySheet.tsx      # ["trace", stream, id] — the causal thread as a column
@@ -168,7 +189,8 @@ palette colour.
 | `--accent` | Alfred's warm signal — presence, focus, the fuse. A **fill**: what sits on it takes `--on-accent` |
 | `--on-accent` | Text and icons on an accent fill — the theme's own dark colour either way (7.61:1 dark, 6.33:1 light). Never `--ink`, which is near-white in dark and reads 1.77:1 |
 | `--accent-text` | The accent *as* text: `‹ Room`, `Why · causal thread`, a sheet's `Done`. Dark's accent is already 7.61:1 on `--bg`, so it is the same colour there; light's is 2.34:1, which is why the token exists |
-| `--green` | Applied / healthy |
+| `--green` | Applied / healthy, as a **fill**: the Door's `Applied` dot on `--ink`, which is the only thing still using it |
+| `--green-text` | Green *as* a word — Memory's `model: ok` pill (`MemoryBench.tsx`) and Connected services' `ok` verdict (`IntegrationRow.tsx`) — and also the dots: the health dot and the service dot, which are state indicators and owe 3:1 rather than a fill's nothing. System's `alive` is the dot and not the word; the word itself is `--fg`/`--fg2` with the rest of the cell. Raw `--green` is 2.29:1 on light `--bg` and 2.12:1 on a card; same reason `--accent-text` exists |
 | `--ink`, `--paper`, `--paper-muted` | The Door's inverted surface and its text |
 | `--ring`, `--scrim` | Focus ring, and the dim behind a layer |
 | `--ring-text-l` | The lightness `ringText()` uses for a stream hue set as text — 0.75 on ink, 0.52 on paper |
@@ -187,6 +209,9 @@ L 0.52 for the fills under white text (monogram tiles, the soloed chip), because
 per-theme token above. `src/test/contrast.ts` restates the palette and holds the pairs a
 test can check to 4.5:1; `contrast.test.ts` compares that restatement against `index.css`
 verbatim, so a palette edit that leaves it behind fails rather than passing quietly.
+Phase 3 added `line`, `muted`, `green`, `green-text`, `ink` and `paper` to it: a control
+that shows state owes 3:1 for its **boundary** as well as its indicator (WCAG 1.4.11),
+and a boundary painted in `--line` could not be measured at all until then.
 
 ### Type scale
 
@@ -215,11 +240,33 @@ System state is said in mono, lower case, and only in the words spec §10 closes
 `expired · not done` — `queued` and `applied` are the Door's phase pill, not the
 Room's; the
 Workshop's status line adds the handoff's `live · N ev/s`, `paused · N new` and
-`last true HH:MM · not live`; the rest are the phase-3 benches' and arrive with them. The
-one exception to mono-and-lower-case is
+`last true HH:MM · not live`; the rest arrived with the phase-3 benches —
+`hot / cold` and `candidate · active · dormant · archived` on Memory,
+`takes effect within 60 s` on Triggers, `unknown since HH:MM` on System's health stamp.
+The one exception to mono-and-lower-case is
 the Door's phase pill (`Confirmed · queued`, `Applied`, `Expired`, `Answered`), set in
 the inverted layer's own type. Do not invent new words — the vocabulary is the contract
 the spec's honesty rules (§5.2) are written against.
+
+**`decaying`** is the ninth word, and it is here because the spec's list above never
+enumerated it while the handoff's prototype uses it: `Alfred.dc.html:684` sets an episodic
+row's meta to `17:58 today · significance 0.34 · recalled 0× · hot · decaying`. Since the
+spec makes the handoff's copy final too, the word is the design's rather than an
+invention, and it is written down here so the omission is not mistaken for a licence to
+coin more.
+
+> **`decaying`** — a **hot** episodic memory the house weighed lightly (significance below
+> `DECAY_FLOOR`, 0.4) and has never reached for. It is the population the Librarian's decay
+> pass migrates into cold storage; it is never said of a cold row, because decay is what
+> puts a row there and nothing removes one afterwards. It marks a standing, not a schedule:
+> the client cannot compute the pass's own pressure formula, which also weighs age and
+> retrieval recency against a threshold no endpoint reports — and that threshold is
+> currently unreachable, so nothing migrates at all today
+> (`docs/backlog/high/librarian-decay-threshold-unreachable.md`,
+> `docs/backlog/low/pwa-phase3-followups.md` §20).
+
+It is drawn after the store rather than instead of the recall count, exactly as the
+prototype draws it: the count is the evidence for the mark.
 
 ---
 
@@ -318,10 +365,19 @@ deep link finds one already gone.
 
 A `Layer` at level `workshop` (z-10): under the sheets (z-20), the Door (z-30) and the
 gates (z-40), over the Room. It is mounted in `Room.tsx` next to `DoorLayer`, opened by
-the handle under the composer, and closed by `‹ Room` or Escape. Its status line is the
+the handle under the composer, and closed by `‹ Room` or Escape. Its header line is the
 socket's word first (`last true HH:MM · not live` while the telemetry socket is down),
-then the feed's (`paused · N new`), then the overview's rate (`live · N ev/s`). Memory,
-Triggers and System are tabs that say `not built yet · phase 3`.
+then the feed's (`paused · N new`), then the overview's rate (`live · N ev/s`) — and
+since phase 3 the state word is the app's one bench-independent live region
+("The Workshop's four benches", below). All four benches are built: Activity, Memory,
+Triggers and System.
+
+An `ErrorBoundary` sits inside the layer and around the panel, not around the app: a
+bench that throws costs the reader the Workshop and not the Room under it, and closing
+the layer unmounts the boundary so the next open starts clean. Its fallback is a
+`role="alert"` — the only one in the client, because this happened under the reader's
+hands rather than arriving behind them — saying `This bench stopped working.` and
+offering `Room`.
 
 `BenchSwitcher` is a full ARIA tab set rather than four buttons wearing `role="tab"`:
 every tab carries an id and `aria-controls` for the one `role="tabpanel"` the Workshop
@@ -414,6 +470,168 @@ client cannot prove that. A server-side correlation id is the follow-up (spec §
 
 ---
 
+## The Workshop's four benches
+
+Phase 3 put Memory, Triggers and System beside Activity. The four share one shape, and
+it is written down here because the shape — not the screens — is what a fifth bench
+would have to keep.
+
+**A bench is a pure view over one hook.** `ActivityBench({ activity, onWhy })`,
+`MemoryBench({ memory })`, `TriggersBench({ triggers })`, `SystemBench({ system })`. A
+bench fetches nothing, owns no query and imports no `api`; everything that talks to the
+server lives in `lib/memory.ts`, `lib/triggers.ts` and `lib/system.ts` — types, fetches,
+and the pure formatters that turn what the server sent into what a row can say — with
+one hook over each. That is what makes a bench testable by handing it an object: a bench
+test builds no `QueryClient` and no providers at all, and the hook's exported state
+interface (`Memory`, `Triggers`, `System`) is the whole contract between the two halves.
+
+**The hooks are called in `WorkshopPanel`, above the bench that gets swapped out.** All
+four, side by side, each gated on whether its own bench is showing. Only one bench is
+mounted at a time — a `switch` with a `never` arm, not four panels with three hidden —
+so the reads stop when the reader leaves and the state does not. Surviving a trip to
+another tab: Memory's sub-tab, its query and the rows a search already answered with,
+Triggers' kind filter and open row, every queued note, a credential's save note, the
+drain stamp. Deliberately *not* surviving, because it belongs to the surface it was
+typed into rather than to the house: a half-typed credential (`IntegrationRow.tsx`), the
+Quiet card's record of which expiry chip you last pressed and the `applied` note it draws
+from it (`asked` in `SystemBench.tsx`), an unfolded semantic card (`MemoryBench.tsx`), and
+the pairing code, which `useSystem` clears the moment the bench stops showing — a six-digit secret left standing on a screen nobody is watching is
+the thing that decision exists to prevent. The list's scroll position goes with them,
+which is a cost rather than a choice (`docs/backlog/low/pwa-phase3-followups.md` §15).
+
+**The `enabled` gate.** `useMemory(enabled)`, `useTriggers(enabled)` and
+`useSystem(enabled, onHeld)` each take `bench === "…"` from the panel and hand it to
+every `useQuery` they own, so a bench nobody is looking at does not scan a Redis
+keyspace, glob a directory, or probe every connected service in turn. `useActivity` takes the
+same gate over its *reads* only — the eight head pages, the visibility re-read and
+`mergeRows` — while its socket stays subscribed and its frames keep landing, because the
+header speaks for the feed on all four benches and a count that stopped counting would
+be a lie told quietly. `useOverview(enabled)` gained the flag for the opposite case: a
+*disabled* observer never fetches but still re-renders when whoever is polling gets an
+answer, which is how Memory's scratchpad card reads the Librarian's schedule
+(`useOverview(false)`) off the poll the Room is already running.
+
+**The episodic adapter.** `GET /api/admin/memory/episodic` answers in three shapes for
+what the design draws as one row, and `toEpisodicRow` in `lib/memory.ts` is the one
+place that knows it. Nothing above that file branches on a *shape* again — `MemoryBench`
+reads `row.store` twice, for the muted cold line and the store dot (`MemoryBench.tsx:118`),
+and never to decide what a row says:
+
+| | browse · hot (Redis hash) | browse · cold (SQLite row) | search (`EpisodicResult`) |
+|---|---|---|---|
+| identity | **absent** — the key is discarded | `id` | `id` |
+| the sentence | `content` | `summary` | `summary` |
+| time | epoch seconds **as a string** | epoch seconds as a REAL | an **ISO 8601 string** |
+| entities | `"lamp,kitchen"` | `"[\"lamp\",\"kitchen\"]"` | `["lamp","kitchen"]` |
+| significance | a string float | JSON text `{"overall": …}` | an object `{"overall": …}` |
+| recall | `retrieval_count` as a string, `last_retrieved` `0.0` for never | **absent** | `retrieval_count` — real for a hot row, hardcoded for a cold one; `last_retrieved` never set at all |
+| score | absent | absent | `score` |
+
+Two consequences the rows say out loud rather than paper over. A hot browse row gets the
+key `hot:<index>`, because it carries no id at all and the list is replaced whole on
+every read — correct there and nowhere else. And **a cold row prints no recall clause at
+all**, in either shape: the columns are not in the cold schema, so a browse omits them,
+and a cold search row carries a `retrieval_count` the store hardcodes and `recall()`
+increments — always exactly 1, whatever the row's history. So `recalled` is `null` for
+every cold row and the meta line drops the clause, the way it drops a significance the
+server did not send. Absent, not zero: `never recalled` would be a claim about the house
+drawn from a missing column. What the server would have to change is
+`docs/backlog/low/pwa-phase3-followups.md` §16. The same evidence moved `decaying` onto
+**hot** rows, where both the handoff and the Librarian's decay pass put it (the
+vocabulary entry above says what it means). Numeric parsing runs before `Date.parse`, or
+an epoch string silently becomes the year 1758.
+
+**Queued is not applied**, and it is the house style for every fire-and-forget control.
+A trigger's enable/disable and `Fire now` (`core/channels/admin_api.py:655`, `:674`),
+`Send them now` (`:627`) and `Run consolidation now` (`:633`) all answer
+`{"status":"queued"}` — the route publishes an internal action and returns, so none of
+them is evidence that anything happened. So the row **does not move**: the switch keeps
+reporting the stored state
+(`aria-checked` is the last read's value, never the requested one), the control's own
+label becomes the status word (`Fire now` → `Fire again`), and an `--accent-text` mono
+note under the meta line says when this client queued it —
+`queued 21:15 · enabling · takes effect within 60 s`. A fire's note names the evidence
+the reader would have to go and find: `queued 21:14 · look for trigger.fired on the
+events stream to know it ran`. The exceptions are the direct writes the server confirms
+and answers with the new state — DND set/clear, ending a session, and `Save & test`,
+which is a `PUT` followed by a separate status probe, hence the two words in its note
+(`saved · testing`). Even those move on the *re-read* rather than on the tap: the visible
+beat between the two is the point. Accent is never success: it marks a decision waiting
+on the world, and as text it is always `--accent-text` (`TriggerRow.tsx:271-273`) — raw
+`--accent` is a fill. Green is the mirror image: `--green` fills exactly one thing in the
+client, the Door's `Applied` dot (`DoorLayer.tsx:43`), and every green *word* and *dot* on
+the Workshop is `--green-text`. There is no red.
+
+### The rules this phase's reviews kept enforcing
+
+Five findings came back often enough across the review rounds to be house style now.
+The first two govern **anything a reader must read to trust the screen** — a state word, a
+value, a label, a control — and not decoration that already carries a text equivalent.
+Two of the five have a live counterexample in the tree; each is named under its own rule
+rather than left for the next reviewer to find.
+
+- **Dim by token, never by `opacity`.** A spent one-shot, an offline health grid and an
+  ended session all recede by swapping to `--fg2`/`--muted`, not by an alpha. A
+  composited opacity takes the handoff's `.55` under AA (a meta line lands at 2.71:1 in
+  light) and — the reason it is a rule — it is invisible to `src/test/contrast.ts`,
+  which is the file that exists to stop exactly that. **There is no "outside the rule"
+  for a graphic.** This paragraph used to exempt the routine sparkline's older bars
+  (`opacity: 0.7`) on the grounds that the `role="img"` label carried the number the bars
+  drew — but the label is what a screen reader gets, and a low-vision sighted reader gets
+  the bars. At `0.7` over `--accent` they composited to 1.67:1 on `--bg` in light. They
+  dim by token now (`--muted`, with `--accent-text` for the newest), and both pairs are
+  measured in `src/test/contrast.test.ts` like every other one.
+- **`aria-disabled` plus a no-op handler, never `disabled`.** A control that disables
+  itself under the finger that just pressed it throws focus to `<body>` mid-action, and
+  where the control is described by the note the press produced — a switch and its
+  `queued …` line — a real `disabled` leaves a screen reader with nothing at all about
+  the request it just sent. The handler checks the flag itself and returns. One control
+  predates both rules and breaks both at once — Activity's `All streams` button is a real
+  `disabled` carrying `opacity: 0.4` (`ActivityBench.tsx:245-251`), phase-2 code this
+  phase did not reopen. Filed rather than fixed here
+  (`docs/backlog/low/pwa-phase3-followups.md` §21).
+- **Never say the house is empty before the server has answered.** An empty list has
+  three possible meanings and they are different news: the read was refused
+  (`Routines could not be read.`), the read has not landed
+  (`Routines has not been read yet.`), or the store really is empty
+  (`No routines learned yet.`). Refusal outranks the unlanded read, since an errored
+  query is both at once. Every bench carries a permanently-mounted `role="status"`
+  region labelled `Read errors` for the refusals — mounted empty, because VoiceOver can
+  miss a region inserted with its text already in it. The unlanded read is the half that
+  is easy to get wrong: it has to be keyed on `dataUpdatedAt`, never on `isFetching`,
+  because react-query's default `networkMode: "online"` **pauses** a read with no network
+  rather than failing it — a paused query is not fetching, holds no data and raises no
+  error, so a bench reached for the first time on a phone with no signal looks exactly like
+  one that asked and was told the house is empty. All three benches carry the same `read`
+  flag for it (`useMemory.ts:241-246`, `useSystem.ts:881-905`, `useTriggers.ts`), and a
+  bench that has not read says **nothing** rather than guessing which of the three it is.
+- **Never let a client-set mark outlive its evidence.** A `Pending` lives exactly
+  `REREAD_MS` (60 s), after which the list itself is the evidence; `useSystem` prunes
+  its `ended` and `saves` marks against the records still in the last read, so a mark
+  cannot keep answering for a session or an integration the house has forgotten; a
+  health dot goes out with the rest of the grid once the reads stop landing, even though
+  react-query still holds the `alive` that lit it.
+- **Every new colour pair is measured in `src/test/contrast.ts` against the surround it
+  really sits on.** Phase 3 added `--green-text` (raw `--green` is 2.29:1 on light
+  `--bg`, and green became a *word* here rather than a dot) and added `line` and `muted`
+  to `TOKENS`, without which a control's **boundary** could not be measured at all. A
+  state-bearing control owes 3:1 for both its indicator and its boundary (WCAG 1.4.11),
+  and a pair measured on `--bg` says nothing about the same control inside a card — the
+  Workshop's `Switch` is measured on both, because System puts one in a `Section`.
+
+There is one live region for the whole layer that survives a change of bench: the state
+word in the Workshop's header (`role="status"`), which is why Activity's stale-feed
+banner kept its sentence and lost both its region role and its accessible name — it is a
+bare `<div data-testid="feed-banner">` now (`ActivityBench.tsx:135-148`), and `Feed status`
+appears nowhere in `web/src`. Two regions saying the same thing is worse than one. Only the state word is inside it. The rate and the held count are a
+*sibling* span, not an `aria-hidden` child: `role="status"` implies
+`aria-atomic="true"`, so any mutation inside re-presents the whole sentence, and a
+reader who heard `live` every time the rate ticked would have traded one noise for
+another. Whether iOS diffs the accessibility tree or the DOM is not something jsdom can
+answer, so it is a line on the device checklist.
+
+---
+
 ## Routes
 
 | Path | Element | Notes |
@@ -431,7 +649,7 @@ DoorProvider → Routes`. `DoorProvider` sits inside `AuthGate` so nothing reads
 
 | Kind | Keys |
 |---|---|
-| TanStack Query | `["auth-status"]`, `["overview"]`, `["integrations"]`, `["attention"]`, `["room-history"]`, `["deferred"]`, `["pending-actions"]`, `["trace", stream, id]` (the Why sheet — `staleTime` of the join window, not the app's 10 s) |
+| TanStack Query | `["auth-status"]`, `["overview"]`, `["integrations"]`, `["attention"]`, `["room-history"]`, `["deferred"]`, `["pending-actions"]`, `["trace", stream, id]` (the Why sheet — `staleTime` of the join window, not the app's 10 s); and the benches' own: `["memory", "episodic", "browse"]`, `["memory", "episodic", "search", query]`, `["memory", "semantic" \| "routines" \| "scratchpad"]`, `["triggers"]`, `["system", "sessions" \| "credentials" \| "integrations" \| "attention"]`, `["system", "integration-status", name]`. Each bench's keys sit under one prefix, which is how `REHYDRATE_KEYS` (`ConnectionProvider.tsx`) reaches all of them with `["memory"]`, `["triggers"]` and `["system"]` |
 | `localStorage` | `alfred.theme`, `alfred.device`, `alfred.unsent`, `alfred.session`, `alfred.session-at` — every key is `alfred.<noun>`, `alfred.session-at` the one compound noun |
 
 ---
@@ -601,8 +819,9 @@ pages on `visibilitychange`.
 
 `ConnectionProvider` puts `status` and `error` on the console (`console.warn`), the same
 complaint at most once a minute (`WARN_EVERY_MS` — the pump repeats `redis_error` every
-second for the whole of an outage); nothing on screen shows them until the Workshop's
-System bench (phase 3).
+second for the whole of an outage). Nothing on screen shows them, still: the System
+bench reports the *reads* that failed, and each bench's `Read errors` region says the
+same about its own, but no surface carries the socket's own frames.
 
 ---
 
@@ -689,8 +908,11 @@ Spec §4 lists twelve. The automated half lives in `web/src`
 `recorder.test.ts` for codec negotiation, `lifecycle.test.ts` and
 `ConnectionProvider.test.tsx` for rehydration, `Layer.test.tsx` and `DoorLayer.test.tsx`
 for explicit dismissal, `PresenceField.test.tsx` for reduce-motion). The half that needs
-a real phone is `docs/superpowers/qa/2026-09-07-pwa-phase1-ios-checklist.md`, and
-`2026-09-10-pwa-phase2-ios-checklist.md` beside it for the Workshop and the bench.
+a real phone is `docs/superpowers/qa/2026-09-07-pwa-phase1-ios-checklist.md`, with
+`2026-09-10-pwa-phase2-ios-checklist.md` beside it for the Workshop and the Activity
+bench and `2026-09-16-pwa-phase3-ios-checklist.md` for the other three — the last of
+which carries the questions jsdom cannot answer at all, such as whether VoiceOver
+re-announces an `aria-atomic` region whose sibling text changed.
 
 Two of them bite hardest:
 
@@ -810,17 +1032,25 @@ fallback ever grows conditional handling.
 
 ---
 
-## What phases 1 and 2 do not cover
+## What phases 1 to 3 do not cover
 
-- **Memory, Triggers and System** — phase 3. The Workshop's switcher has their tabs;
-  each says `not built yet · phase 3`. Telemetry `status`/`error` frames still reach
-  only the console until System exists.
 - **Install, standalone and Reach gates, the service worker, icons and Web Push** —
   phases 4 and 5. `web/public/manifest.json` ships SVG only and carries the phase-1
   palette's dark ground; it cannot follow the theme the way `applyTheme` rewrites the
   `theme-color` meta, so a light-hour install gets a dark splash until phase 4 says
-  otherwise.
+  otherwise. System has **no Reach card**: it would be a control that cannot work,
+  which is the defect the phase-2 placeholder tabs were.
+- **Trigger editing, service restart and log download** — the three things the old SPA
+  could do that no endpoint supports. Only the first is said out loud in the client: the
+  Triggers footer reads `Nothing here edits a trigger — ask Alfred to change or remove
+  one.` (`TriggersBench.tsx:160-161`). Restart and log download are absent without comment,
+  because System has no ops section for a sentence to sit in. `docs/backlog/low/pwa-phase3-followups.md`
+  §7 and §10 name the routes each would need.
+- **Telemetry `status`/`error` frames** (`redis_error`, `invalid JSON`) still reach only
+  the console, rate-limited by `WARN_EVERY_MS`. The System bench reports the *reads* that
+  failed, not the socket's own frames.
 - **Desktop** — phase 6. The client is phone-first and there is no wide composition.
 
-Open follow-ups: `docs/backlog/low/pwa-phase1-followups.md` and
-`docs/backlog/low/pwa-phase2-followups.md`.
+Open follow-ups: `docs/backlog/low/pwa-phase1-followups.md`,
+`docs/backlog/low/pwa-phase2-followups.md` and
+`docs/backlog/low/pwa-phase3-followups.md`.

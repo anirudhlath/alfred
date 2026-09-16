@@ -307,10 +307,15 @@ describe("SetupGate — step 2, the attention set", () => {
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
     const puts = calls.filter((call) => call.url.startsWith("/api/admin/attention/"));
     expect(puts).toHaveLength(2);
+    // Both keys, always: `putAttention` is one seam shared with the System
+    // bench, and `AttentionUpdate` defaults each side to `[]`, so an empty one
+    // is the same request as an absent one.
     expect(puts.find((call) => call.url.endsWith("/fan"))?.body).toEqual({
       allow: ["fan.bathroom", "fan.study", "switch.desk", "switch.lamp"],
+      ask: [],
     });
     expect(puts.find((call) => call.url.endsWith("/light"))?.body).toEqual({
+      allow: [],
       ask: ["light.hall", "light.kitchen", "light.living_room"],
     });
   });
@@ -394,7 +399,7 @@ describe("SetupGate — step 2, the attention set", () => {
       {
         url: "/api/admin/attention/fan",
         method: "PUT",
-        body: { allow: ["fan.bathroom", "fan.study", "switch.desk", "switch.lamp"] },
+        body: { allow: ["fan.bathroom", "fan.study", "switch.desk", "switch.lamp"], ask: [] },
       },
     ]);
   });

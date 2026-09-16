@@ -59,30 +59,8 @@ export interface AuthStatus {
   authenticated: boolean;
 }
 
-export interface CredentialField {
-  label: string;
-  field_type: "text" | "password" | "url";
-  required: boolean;
-  placeholder: string;
-  default: string;
-  help_text: string;
-  transient: boolean;
-}
-
-export interface IntegrationInfo {
-  name: string;
-  category: string;
-  kind?: "adapter" | "service";
-  schema: { fields: Record<string, CredentialField> };
-  configured: Record<string, boolean>;
-}
-
-/** One domain of the Reflex attention set. `members` may act, `seen` is everything observed. */
-export interface AttentionDomain {
-  domain: string;
-  members: string[];
-  seen: string[];
-}
+// `IntegrationField`, `Integration` and `AttentionDomain` live in `lib/system.ts`,
+// beside the reads that fetch them — one declaration and one import path each.
 
 /** GET /api/actions/pending and GET /api/actions/{request_id}. */
 export interface PendingAction {

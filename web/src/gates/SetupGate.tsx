@@ -2,14 +2,20 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Gate } from "@/gates/Gate";
 import { StepList, type ProgressStep } from "@/gates/StepList";
-import { api, ApiError, put } from "@/lib/api";
+import { ApiError } from "@/lib/api";
 import { defaultDeviceName, failureText, rememberDevice } from "@/lib/auth";
 import { hhmm } from "@/lib/format";
 import { partOfDay } from "@/lib/headline";
-import type { AttentionDomain, IntegrationInfo } from "@/lib/types";
+import {
+  fetchAttention,
+  fetchIntegrations,
+  HOME_SERVICE,
+  putAttention,
+  saveCredentials,
+  type AttentionDomain,
+  type Integration,
+} from "@/lib/system";
 import { registerPasskey } from "@/lib/webauthn";
-
-const HOME_SERVICE = "home-service";
 
 /**
  * "Locks, alarms and the garage are never on this list; those always come to
@@ -74,17 +80,22 @@ export function SetupGate({ onDone }: SetupGateProps) {
 
   // Both reads start as soon as the passkey exists, so step 2's skip decision is
   // already settled by the time the user presses Continue.
-  const integrations = useQuery<IntegrationInfo[]>({
+  // Both reads keep the gate's own cache keys rather than the System bench's
+  // `["system", …]` prefix, deliberately: that prefix is in `REHYDRATE_KEYS`, and
+  // a foreground return would refetch `attention` under a choice already made —
+  // exactly what the `staleTime` below exists to prevent. The *reads themselves*
+  // are shared with the bench; only the caching policy is this gate's own.
+  const integrations = useQuery<Integration[]>({
     queryKey: ["integrations"],
-    queryFn: () => api<IntegrationInfo[]>("/api/integrations"),
+    queryFn: fetchIntegrations,
     enabled: step >= 1,
     // A failure here is shown in the foot line, not retried behind a dead button.
     retry: false,
   });
 
-  const attention = useQuery<{ domains: AttentionDomain[] }>({
+  const attention = useQuery<AttentionDomain[]>({
     queryKey: ["attention"],
-    queryFn: () => api<{ domains: AttentionDomain[] }>("/api/admin/attention"),
+    queryFn: fetchAttention,
     enabled: step >= 1,
     // 503 is "the store is down", which is a skip, not something to retry at.
     retry: false,
@@ -101,7 +112,7 @@ export function SetupGate({ onDone }: SetupGateProps) {
   );
 
   const rows = useMemo(
-    () => (attention.data?.domains ?? []).filter((row) => !NEVER_AUTOMATIC.has(row.domain)),
+    () => (attention.data ?? []).filter((row) => !NEVER_AUTOMATIC.has(row.domain)),
     [attention.data],
   );
 
@@ -139,13 +150,13 @@ export function SetupGate({ onDone }: SetupGateProps) {
     }
   }
 
-  async function saveCredentials(): Promise<void> {
+  async function connectHome(): Promise<void> {
     setBusy(true);
     setFootOverride(null);
     const body: Record<string, string> = {};
     for (const [key, field] of fields) body[key] = credentials[key] ?? field.default;
     try {
-      await put(`/api/integrations/${HOME_SERVICE}/credentials`, body);
+      await saveCredentials(HOME_SERVICE, body);
       setStep(2);
     } catch (error) {
       if (error instanceof ApiError && error.status === 403) return;
@@ -175,7 +186,7 @@ export function SetupGate({ onDone }: SetupGateProps) {
         // `allow` adds what has been seen; `ask` removes what is a member today —
         // and the removal is sticky, so the YAML seed will not re-add it.
         for (const page of pages(allow ? row.seen : row.members)) {
-          await put(`/api/admin/attention/${row.domain}`, allow ? { allow: page } : { ask: page });
+          await putAttention(row.domain, allow ? page : [], allow ? [] : page);
         }
       }
       onDone();
@@ -215,7 +226,7 @@ export function SetupGate({ onDone }: SetupGateProps) {
         body="Now the house. Paste a long-lived Home Assistant token; I will read state and, later, act on the devices you allow."
         primary={{
           label: "Continue",
-          onClick: () => void saveCredentials(),
+          onClick: () => void connectHome(),
           busy,
           disabled: fields.length === 0,
         }}
