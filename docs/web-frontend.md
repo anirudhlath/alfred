@@ -1021,7 +1021,7 @@ untouched:
 | --- | --- | --- |
 | `/assets/*`, status < 400 | `public, max-age=31536000, immutable` | Content-hashed, so the bytes behind a URL never change. Errors are excluded — a pinned 404 has no URL to bust it. |
 | `text/html` | `no-cache, no-store, must-revalidate` | `index.html` and every SPA-fallback route: never stored, so a deploy is picked up on the next load. |
-| everything else | `no-cache, must-revalidate` | Unhashed `web/public/` files (`/icon.svg`, `/manifest.json`): revalidated on every load. |
+| everything else | `no-cache, must-revalidate` | Unhashed `web/public/` files (`/icon.svg`, `/apple-touch-icon.png`, `/icon-192.png`, `/icon-512.png`, `/manifest.json`): revalidated on every load. |
 
 Tier 3 does not save bandwidth today. `mount_spa`'s fallback serves those files through a
 bare `FileResponse`, which ignores `If-None-Match`/`If-Modified-Since` — only

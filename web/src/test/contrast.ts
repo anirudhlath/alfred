@@ -99,8 +99,13 @@ function oklchToLinear(l: number, c: number, hDeg: number): [number, number, num
   ];
 }
 
-/** Relative luminance of `#rgb`, `#rrggbb` or `oklch(L C H)`. */
-export function luminance(color: string): number {
+/** The inverse of `toLinear`: a linear-light channel back to the 0–1 sRGB one. */
+function toGamma(channel: number): number {
+  return channel <= 0.0031308 ? channel * 12.92 : 1.055 * channel ** (1 / 2.4) - 0.055;
+}
+
+/** Linear-light sRGB of `#rgb`, `#rrggbb` or `oklch(L C H)` — the one parser both readings share. */
+function toLinearRgb(color: string): [number, number, number] {
   const value = color.trim();
   // `#fff` and not only `#ffffff`: the short form is what the three monogram
   // call sites write (`EventRow`, `WhySheet`, `StreamChips`), and a test that
@@ -111,12 +116,30 @@ export function luminance(color: string): number {
     const digits = hex[1].length === 3 ? hex[1].replace(/./g, (digit) => digit + digit) : hex[1];
     const int = Number.parseInt(digits, 16);
     const [r, g, b] = [(int >> 16) & 255, (int >> 8) & 255, int & 255].map((c) => toLinear(c / 255));
-    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    return [r, g, b];
   }
   const parts = /^oklch\(\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*\)$/i.exec(value);
   if (!parts) throw new Error(`contrast.ts cannot read the colour "${value}"`);
-  const [r, g, b] = oklchToLinear(Number(parts[1]), Number(parts[2]), Number(parts[3]));
+  return oklchToLinear(Number(parts[1]), Number(parts[2]), Number(parts[3]));
+}
+
+/** Relative luminance of `#rgb`, `#rrggbb` or `oklch(L C H)`. */
+export function luminance(color: string): number {
+  const [r, g, b] = toLinearRgb(color);
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+/**
+ * The same colour as `#RRGGBB` — for the files that cannot hold an `oklch()` and
+ * must restate one. `web/public/icon.svg` is the case that wanted this: librsvg
+ * 2.62 does not parse `oklch()`, so the icon carries a hex, and `icons.test.ts`
+ * converts the token here rather than trusting a second hand-copied literal.
+ * Retune `--accent` and the icon test fails until the PNGs are re-rendered,
+ * which is the drift that was previously invisible.
+ */
+export function srgbHex(color: string): string {
+  const channels = toLinearRgb(color).map((c) => Math.round(toGamma(c) * 255));
+  return `#${channels.map((c) => c.toString(16).padStart(2, "0")).join("").toUpperCase()}`;
 }
 
 /** The WCAG ratio between two colours, 1 to 21. Which one is the text does not matter. */

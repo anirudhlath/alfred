@@ -1,14 +1,20 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
   <!-- The handoff's home-screen mark (Alfred.dc.html:530): a capital A in the
        dark theme's accent on the dark theme's ground. Drawn as two strokes
-       rather than as a text element, so it rasterises identically everywhere — see the
-       plan's deviation 7. #F79E75 is oklch(0.78 0.12 45), src/index.css:38.
+       rather than as a text element, so that it rasterises identically
+       everywhere — see the plan's deviation 7.
+
+       #F79E75 is oklch(0.78 0.12 45), the dark theme's accent token at
+       src/index.css:38, converted because librsvg 2.62 cannot parse oklch().
+       src/test/icons.test.ts converts that token itself and holds both this
+       literal and the rendered pixels to it, so the icon cannot drift away
+       from the palette in silence.
 
        Full-bleed and square on purpose: iOS masks the tile, and anything
        outside a rounded rect would composite to black (spec §4.2).
 
        The glyph sits inside the maskable safe circle (radius 204.8 on this
-       canvas; furthest rendered pixel measured at (132, 372), 170 from the
+       canvas; furthest rendered pixel measured at (131, 372), 170.5 from the
        centre), so one file serves "any" and "maskable". -->
   <rect width="512" height="512" fill="#25221F"/>
   <g fill="none" stroke="#F79E75" stroke-width="44" stroke-linecap="butt" stroke-linejoin="round">

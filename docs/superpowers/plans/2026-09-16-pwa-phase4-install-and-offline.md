@@ -40,7 +40,7 @@
 
 9. **The kill switch is a file, not a paragraph** (task 11). `web/public/sw.kill.js` is checked in, tested, and shipped by copying its bytes over `web/public/sw.js`. **Deleting `sw.js` does not work and must never be tried:** `mount_spa` (`core/channels/spa.py:42-49`) answers any unknown path with `index.html` and a 200, so the browser's update check would fetch a page of HTML, reject it on MIME type, and leave the old worker installed and still serving its cache.
 
-10. **Icons are checked-in bytes, not a build step.** Four files (`icon.svg`, `apple-touch-icon.png`, `icon-192.png`, `icon-512.png`) generated once from one source SVG by a command written down in `web/README.md`. No `sharp`, no `svgo`, no CI dependency on `rsvg-convert`, and the container's `webbuild` stage is unchanged. A test reads the PNG headers directly and asserts the dimensions and the absence of an alpha channel, which is what iOS actually cares about (§4.2).
+10. **Icons are checked-in bytes, not a build step.** Four files (`icon.svg`, `apple-touch-icon.png`, `icon-192.png`, `icon-512.png`) generated once from one source SVG by a command written down in `web/README.md`. No `sharp`, no `svgo`, no CI dependency on `rsvg-convert`, and the container's `webbuild` stage is unchanged. A test reads the PNG bytes directly and asserts the dimensions and the absence of an alpha channel, which is what iOS actually cares about (§4.2). *(Corrected in task 1: a header read alone proved decorative under mutation — it passes on a PNG rendered from any drawing at all — so the shipped test decodes the pixels with `node:zlib` and checks the colours, the census, the mark's reach and its shape. Still no new dependency.)*
 
 11. **No `apple-touch-startup-image`.** The per-device media-query matrix is a dozen more checked-in PNGs that go stale with every new iPhone size. iOS 15+ composes a launch screen from the manifest's `name`, `background_color` and icon instead, which is why task 2 makes `background_color` follow the theme.
 
@@ -56,7 +56,7 @@
 | 6 | `manifest.theme_color` | one static file, currently the dark token in both themes — a phase-1 defect deferred here, noted in `web/README.md` | **two manifests**, `/manifest.json` (dark) and `/manifest-light.json` (light); `applyTheme()` swaps the `<link rel="manifest">` alongside the `theme-color` meta it already rewrites | A manifest is static and the theme is the hour's. iOS reads the manifest at *Add to Home Screen* time, which is after the theme has applied, so the splash matches the theme the user installed under. On iOS `theme_color` is largely inert anyway (`apple-mobile-web-app-status-bar-style` is `black-translucent`, so the page's own background shows through); it is `background_color`, the launch screen, that this actually fixes. |
 | 7 | Icon mark | `Alfred.dc.html:530`: letter `A`, `oklch(0.78 0.12 45)`, `500 30px 'DM Sans'`, on `#25221F` | the same mark drawn as two `<path>` strokes, not `<text>` | A `<text>` icon renders with whatever font the *rasteriser* has. `@fontsource-variable/dm-sans` ships `woff2` only, which neither `rsvg-convert` nor `resvg` can load, and the current `icon.svg` asks for Georgia — so today's icon is already whatever serif the machine had. Geometry renders identically everywhere. |
 | 8 | Icon shape | current `icon.svg` has `rx="64"` | full-bleed square, no radius | iOS applies its own squircle mask to `apple-touch-icon`; anything outside the rounded rect is transparent, and iOS composites transparency as **black**, so `rx="64"` puts black slivers in the home-screen tile's corners. §4.2's "opaque, no alpha" is the same requirement said another way. |
-| 9 | Maskable icon | spec §4.2: "plus 192/512 maskable for the manifest" | one 512 PNG marked `purpose: "any maskable"`, not a second file | Measured on the geometry in task 1: the glyph's furthest point is 190 px from the centre of a 512 canvas and the maskable safe circle's radius is 204.8 px, so the same art is safe under a mask and correct unmasked. A separate maskable file would be the same bytes with a different name. |
+| 9 | Maskable icon | spec §4.2: "plus 192/512 maskable for the manifest" | one 512 PNG marked `purpose: "any maskable"`, not a second file | Measured on the geometry in task 1: the glyph's furthest point is 170.5 px from the centre of a 512 canvas *(corrected in task 1: this said **190 px**, which is no corner of the drawing — see the correction under task 1 step 3)* and the maskable safe circle's radius is 204.8 px, so the same art is safe under a mask and correct unmasked. A separate maskable file would be the same bytes with a different name. |
 | 10 | Precache scope | Workbox precaches every build output | `index.html` + the `/assets/` URLs the HTML names + the `/assets/*.woff2` the stylesheet names | The build emits 20 font files (~800 kB) because `@fontsource/geist-mono` ships `.woff` fallbacks beside every `.woff2`. No browser that can run a service worker asks for a `.woff`. Skipping them halves the precache; anything missed is still caught cache-first on first use. |
 | 11 | `favicon.svg`, `icons.svg` | untouched since phase 1a (its decision 3) | **deleted** | `favicon.svg` is the Vite template's purple bolt and `icons.svg` is the outgoing SPA's Bluesky/social sprite sheet. Nothing in `web/src`, `index.html`, `core/` or the manifest references either; both are shipped to every visitor by `mount_spa`. |
 
@@ -134,11 +134,13 @@ Identical to phases 1 to 3, repeated because they are load-bearing:
 | `web/public/apple-touch-icon.png` | 180×180, opaque, no alpha — the iOS home-screen tile (§4.2) | 1 |
 | `web/public/icon-192.png`, `web/public/icon-512.png` | manifest raster icons; the 512 doubles as the maskable | 1 |
 | `web/public/favicon.svg`, `web/public/icons.svg` | **deleted** — dead since the phase-1 rewrite | 1 |
-| `web/src/test/icons.test.ts` | Reads the PNG headers: dimensions, colour type, no alpha | 1 |
+| `web/src/test/icons.test.ts` | Decodes the PNGs: dimensions, colour type, no transparency, the two token colours, the mark's reach and its shape | 1 |
 | `web/public/manifest.json`, `web/public/manifest-light.json` | The two manifests, identical but for the two colours | 2 |
 | `web/src/lib/theme.ts` | Export `THEME_COLOR`; `applyTheme` swaps the manifest link | 2 |
+| `web/src/test/contrast.ts` | Gains `srgbHex()`, so a file that cannot hold an `oklch()` restates no literal | 1 |
 | `web/src/test/manifest.test.ts` | Both manifests parsed, compared, and held to `THEME_COLOR` | 2 |
 | `web/index.html` | `apple-touch-icon` link; the manifest link keeps its `id` for the swap | 1, 2 |
+| `web/tsconfig.app.json`, `web/tsconfig.node.json` | `icons.test.ts` reads bytes, so it is checked by the Node project, not the browser one | 1 |
 | `web/eslint.config.js` | A block for `public/*.js` with the service-worker globals | 3 |
 | `web/src/test/sw-harness.ts` | Fake `ServiceWorkerGlobalScope`, fake `CacheStorage`, event dispatch | 3 |
 | `web/public/sw.js` | The worker: precache, purge, route, update handshake | 3–8 |
@@ -243,10 +245,13 @@ The mark is the handoff's, from the home-screen mockup (`Alfred.dc.html:530`): a
 
 **Files:**
 - Create: `web/src/test/icons.test.ts`
+- Modify: `web/src/test/contrast.ts` *(added in task 1: `srgbHex()`, so the icon's hex is converted from `--accent` rather than restated)*
+- Modify: `web/tsconfig.app.json`, `web/tsconfig.node.json` *(added in task 1: `icons.test.ts` reads bytes, so the Node project checks it)*
 - Modify: `web/public/icon.svg`
 - Create: `web/public/apple-touch-icon.png`, `web/public/icon-192.png`, `web/public/icon-512.png`
 - Delete: `web/public/favicon.svg`, `web/public/icons.svg`
 - Modify: `web/index.html`, `web/src/test/index-html.test.ts`
+- Modify: `web/README.md` *(added in task 1: decision 10's regeneration command, which nothing else in the repo carried)*, `core/channels/spa.py` *(a docstring naming the deleted `favicon.svg`; no behaviour)*, `docs/web-frontend.md` *(the unhashed-file list)*
 
 - [ ] **Step 1: Write the failing test**
 
@@ -323,6 +328,31 @@ describe("icon.svg", () => {
 });
 ```
 
+> **Corrected in task 1 — the block above is not what shipped; read
+> `web/src/test/icons.test.ts` instead.** Three things about it did not survive contact:
+>
+> 1. **`new URL("…", import.meta.url)` is Vite's asset syntax, not Node's.** The plugin
+>    rewrites the literal form into a `data:` URL of the file's current bytes and the
+>    template form into an `import.meta.glob` lookup that resolves to `src/test/undefined`.
+>    The first throws `TypeError: The URL must be of scheme file`; the second would have
+>    gone on throwing `ENOENT` after the PNGs existed, so the test could never have gone
+>    green. Resolve the directory once — `resolve(dirname(fileURLToPath(import.meta.url)), "../../public")`
+>    — and join onto it.
+> 2. **`node:fs` does not type-check under `tsconfig.app.json`**, whose `types` is
+>    `["vite/client"]` alone, so `npm run build` fails with four `TS2591`s. The file moved
+>    to `tsconfig.node.json` (which already carries `@types/node` for `vite.config.ts`)
+>    rather than widen the app project — adding `node` there would put `process`, `Buffer`
+>    and Node's `setTimeout` overloads in front of every browser component in `src`.
+> 3. **A header read is decorative.** Bytes 0–25 say nothing about what was drawn, and
+>    mutation testing proved it: PNGs re-rendered from a magenta square with a Georgia `B`
+>    passed, as did a 34-byte truncation, a `tRNS` chunk making the ground transparent, and
+>    a glyph stretched to 345 px from the centre. The shipped test decodes the pixels with
+>    `node:zlib` (no new dependency) and asserts the two colours and their census, that
+>    every other pixel is a blend of them, the mark's reach against the maskable safe
+>    circle, a vertical scan that reads apex-counter-crossbar-feet, and opaque corners —
+>    and it takes both colours from the tokens through `contrast.ts`'s new `srgbHex()`, so
+>    retuning `--accent` fails the icon rather than silently leaving it peach.
+
 - [ ] **Step 2: Run it and read the failure**
 
 ```bash
@@ -334,20 +364,22 @@ Expected: FAIL — `ENOENT` on `apple-touch-icon.png`, and `icon.svg` failing al
 
 - [ ] **Step 3: Write `web/public/icon.svg`**
 
-The geometry, stated once so it is reviewable. The canvas is 512. The glyph's apex is `(256, 152)` and its feet are `(152, 382)` and `(360, 382)`; the strokes are 44 wide with round joins, and the crossbar sits at `y = 316`, its ends tucked just inside the legs. Furthest point from the centre `(256, 256)`: the left foot's outer corner at `(132, 391)`, **190 px** — inside the 204.8 px radius of a maskable icon's safe circle (40% of the canvas), which is why decision 9 ships one file for both purposes.
+The geometry, stated once so it is reviewable. The canvas is 512. The glyph's apex is `(256, 152)` and its feet are `(152, 382)` and `(360, 382)`; the strokes are 44 wide with round joins, and the crossbar sits at `y = 316`, its ends tucked just inside the legs. Furthest point from the centre `(256, 256)`: the left foot's outer corner at `(131.9, 372.9)`, **170.5 px** — inside the 204.8 px radius of a maskable icon's safe circle (40% of the canvas), which is why decision 9 ships one file for both purposes. *(Corrected in task 1: this read `(132, 391)`, **190 px**. That pair mixes the x of the butt cap's outer corner with the y of its inner one — the two corners are `(131.9, 372.9)` at 170.5 px and `(172.1, 391.1)` at 159.0 px — and 190 px is neither. Measured on the shipped render, the furthest inked pixel is `(131, 372)`, 170.5 px. The conclusion is unchanged and has 34 px more margin than claimed.)*
 
 ```svg
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
   <!-- The handoff's home-screen mark (Alfred.dc.html:530): a capital A in the
        dark theme's accent on the dark theme's ground. Drawn as two strokes
-       rather than <text> so it rasterises identically everywhere — see the
-       plan's deviation 7. #F79E75 is oklch(0.78 0.12 45), src/index.css:38.
+       rather than as a text element, so it rasterises identically everywhere —
+       see the plan's deviation 7. #F79E75 is oklch(0.78 0.12 45),
+       src/index.css:38.
 
        Full-bleed and square on purpose: iOS masks the tile, and anything
        outside a rounded rect would composite to black (spec §4.2).
 
        The glyph sits inside the maskable safe circle (radius 204.8 on this
-       canvas; furthest point 190), so one file serves "any" and "maskable". -->
+       canvas; furthest rendered pixel measured at (132, 372), 170 from the
+       centre), so one file serves "any" and "maskable". -->
   <rect width="512" height="512" fill="#25221F"/>
   <g fill="none" stroke="#F79E75" stroke-width="44" stroke-linecap="butt" stroke-linejoin="round">
     <path d="M152 382 L256 152 L360 382"/>
@@ -355,6 +387,11 @@ The geometry, stated once so it is reviewable. The canvas is 512. The glyph's ap
   </g>
 </svg>
 ```
+
+*(Corrected in task 1: the comment above read "rather than `<text>`" — the very literal
+step 1's test forbids **in this file** — so the plan as written could not go green. The
+shipped test strips comments before searching the markup, which fixes it at the root;
+the wording here is what shipped.)*
 
 - [ ] **Step 4: Generate the three PNGs and delete the two dead SVGs**
 
@@ -405,7 +442,7 @@ Add one test beside the existing metas:
 npx vitest run src/test/icons.test.ts src/test/index-html.test.ts
 ```
 
-Expected: PASS, 10 tests across 2 files.
+Expected: PASS. *(Corrected in task 1: 34 tests across 2 files — 25 in `icons.test.ts` once it decodes pixels rather than headers, and 9 in `index-html.test.ts`, whose 7 pre-existing tests this line forgot.)*
 
 - [ ] **Step 8: Commit**
 
@@ -414,7 +451,7 @@ git add web/public web/index.html web/src/test/icons.test.ts web/src/test/index-
 git commit -m "feat(web): the app's icon set, drawn as geometry and opaque for iOS"
 ```
 
-Counts after this task: **71 files / ~1 513 tests**.
+Counts after this task: **71 files / 1 530 tests** *(corrected in task 1: this said ~1 513, which was right for the header-read test; the pixel-reading one it shipped with carries 16 more, and `index-html.test.ts` gained a second guard)*.
 
 ---
 
@@ -2068,11 +2105,19 @@ with `import { installServiceWorker } from "@/lib/sw";` at the top.
 Read the file first for how it currently asserts on `main.tsx`'s side effects, and add one test in the same shape:
 
 ```ts
+  // `import source from "../main.tsx?raw";` at the top of the file — *corrected in
+  // task 1*, where this exact `readFileSync(fileURLToPath(new URL(…)))` shape cost a
+  // deviation twice over. `new URL("…", import.meta.url)` is **Vite's asset syntax**,
+  // not Node's: the plugin rewrites it into a `data:` URL, so `fileURLToPath` throws
+  // `TypeError: The URL must be of scheme file`. And `node:fs` does not type-check
+  // under `tsconfig.app.json`, whose `types` is `["vite/client"]` alone. `?raw` is the
+  // house idiom for reading a file from a test (`src/test/index-html.test.ts:3-5`) and
+  // has neither problem. Reach for `node:fs` only for bytes `?raw` would mangle — a
+  // PNG — and move that file to `tsconfig.node.json` when you do.
   it("registers the service worker after the first render", () => {
     // Order matters: the render is what paints, and the worker is not on that
     // path. The assertion is on the source, because main.tsx runs once per
     // module load and cannot be re-imported per test.
-    const source = readFileSync(fileURLToPath(new URL("./main.tsx", import.meta.url)), "utf8");
     const render = source.indexOf("createRoot");
     const register = source.indexOf("installServiceWorker()");
     expect(render).toBeGreaterThan(-1);

@@ -66,8 +66,8 @@ class SpaCacheMiddleware(BaseHTTPMiddleware):
     * ``text/html`` — the entry point and every SPA-fallback route (``/``,
       ``/index.html``, ``/actions/{id}``). Not stored at all, so a deploy is picked up on
       the next load.
-    * everything else — unhashed ``web/public/`` files such as ``/favicon.svg`` and
-      ``/manifest.json``. Revalidated on every load, which today costs the full body:
+    * everything else — unhashed ``web/public/`` files such as ``/apple-touch-icon.png``
+      and ``/manifest.json``. Revalidated on every load, which today costs the full body:
       :func:`mount_spa`'s fallback serves these through a bare ``FileResponse``, which
       ignores ``If-None-Match``/``If-Modified-Since`` (only ``StaticFiles.get_response``
       honours conditional requests), so revalidation answers 200, not 304. The header is

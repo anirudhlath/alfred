@@ -99,11 +99,13 @@ Phase 3: the Workshop's other three benches, each a pure view over one hook call
 
 ## What it does not
 
-- **Install and Reach gates, the service worker, icons and Web Push** — phases 4
-  and 5. The standalone metas are already in `index.html`, and `public/manifest.json`
-  carries the phase-1 palette's dark ground — a manifest cannot follow the theme the way
+- **Install and Reach gates, the service worker and Web Push** — phases 4 and 5.
+  The standalone metas are already in `index.html`, and `public/manifest.json` carries
+  the phase-1 palette's dark ground — a manifest cannot follow the theme the way
   `applyTheme` rewrites the `theme-color` meta, so a light-hour install still gets a dark
-  splash until phase 4 decides otherwise. Nothing else in `public/` has been touched.
+  splash until phase 4's manifest task lands. The **icon set has shipped** — it is the
+  first piece of phase 4 — and is the only part of `public/` that has changed; see "The
+  icons" below.
 - **Four things the old SPA could do and this client cannot**, which is the whole of the
   remaining parity gap (spec §8's gate is *full capability parity with the old SPA*).
   Three of them have no endpoint to call: **creating, editing or deleting a trigger**
@@ -116,6 +118,30 @@ Phase 3: the Workshop's other three benches, each a pure view over one hook call
 
 ## Things worth knowing before you change something
 
+- **The icons are checked-in bytes, not a build step.** `public/icon.svg` is the
+  source — the handoff's home-screen mark (`Alfred.dc.html:530`), a capital `A` drawn as
+  two stroked paths on a full-bleed square — and the three PNGs beside it are rendered
+  from it once and committed. Nothing in the build, the container image or CI rasterises
+  anything, so `rsvg-convert` is needed only by whoever changes the drawing:
+
+  ```bash
+  cd web
+  rsvg-convert -w 180 -h 180 -b '#25221F' public/icon.svg -o public/apple-touch-icon.png
+  rsvg-convert -w 192 -h 192 -b '#25221F' public/icon.svg -o public/icon-192.png
+  rsvg-convert -w 512 -h 512 -b '#25221F' public/icon.svg -o public/icon-512.png
+  ```
+
+  `-b` is what forces an opaque background: iOS composites transparency on a home-screen
+  tile as **black**, so the PNGs must carry no alpha (spec §4.2), which is also why the
+  square is full-bleed rather than rounded — iOS applies its own mask. ImageMagick is a
+  working substitute (`magick -background '#25221F' -density 1024 … -alpha remove -alpha off`);
+  if either tool leaves the alpha channel in place, `magick in.png -alpha off PNG24:out.png`
+  strips it. `src/test/icons.test.ts` decodes the committed PNGs and checks the pixels —
+  the two colours and their census, the mark's reach against the maskable safe circle, and
+  a scan down the middle that reads apex, counter, crossbar, feet — so a regenerated icon
+  that came from a different drawing fails rather than ships. Both colours come from
+  `--bg` and `--accent` via `contrast.ts`, so retuning the palette fails that test until
+  the icon is redrawn and re-rendered.
 - `--app-height` and `--viewport-top` are the visual viewport's height and offset,
   written by `installViewportVars()`. `100vh` is wrong in Safari; do not reach for it,
   and do not try to compute a keyboard inset by subtracting the two viewports from

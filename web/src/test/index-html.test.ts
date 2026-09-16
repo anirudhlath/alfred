@@ -54,6 +54,12 @@ describe("index.html", () => {
     expect(html).toContain('<link rel="apple-touch-icon" href="/apple-touch-icon.png" />');
   });
 
+  it("keeps the SVG favicon for everything that is not an iOS home screen", () => {
+    // The raster tile is iOS's alone. A tab, a bookmark and the installed
+    // manifest all take the SVG, which is the only one of the four that scales.
+    expect(html).toContain('<link rel="icon" href="/icon.svg" />');
+  });
+
   it("keeps the manifest link untouched for phase 4", () => {
     expect(html).toContain('<link rel="manifest" href="/manifest.json" />');
   });
