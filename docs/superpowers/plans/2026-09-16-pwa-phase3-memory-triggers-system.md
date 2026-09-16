@@ -29,6 +29,8 @@
 
 ### Deviations from the handoff (deliberate; flag them in review)
 
+Added while building: **`2.1 ev/s`, not the handoff's `2.1/s`** — `rateText` is shared with the Room status line and the Workshop header, where the handoff itself writes `ev/s`, and one number reading two ways is worse than the mismatch. **`resets 00:00` dropped** — the cost window rolls on UTC midnight, so the string is false outside UTC. **Health's four cards are internal borders in one `Section`**, not the handoff's four radius-12 cards with an 8 px gap; the mandated frame forces it. Backlog all three in task 11.
+
 | # | Where | Handoff says | This plan ships | Why |
 |---|---|---|---|---|
 | 1 | Episodic, no results | `best score 0.31 · threshold 0.55 · 128 hot, 1 204 cold searched` | `nothing scored above the server's threshold` | `recall()` returns matches only. The score of the best *rejected* row, the threshold and the corpus sizes are not in the response and are not on any endpoint. Printing them would be invention. |
@@ -838,34 +840,37 @@ const health = {
 
 ## Task 8: `SystemBench` — the frame, Health, Quiet, Maintenance
 
-**Files:** Create `web/src/workshop/SystemBench.tsx`, `SystemBench.test.tsx`.
+**Files:** Create `web/src/workshop/SystemBench.tsx`, `SystemBench.test.tsx`, `web/src/workshop/SystemFrame.tsx`, `web/src/workshop/Switch.tsx`. Modify `web/src/workshop/TriggerRow.tsx` (adopt the shared switch), `web/src/lib/system.ts` (`spendHeadline`, the `5-min mean` label), `web/src/workshop/useSystem.ts` (`online` from `dataUpdatedAt`; key `maintenance.error` per control) and their tests.
 
 ~~**First, widen the hook.**~~ Task 7's fix round already shipped `useSystem(enabled, onHeld)` with `onHeld` hung on `quiet` (`c4e8bb3`). Nothing to do here; `useSystem.ts` is not a task 8 file after all.
 
 `SystemBench({ system }: { system: System })`. A scrolling column of sections. **The section frame** (used here and by task 9, so export it from this file):
 
 ```tsx
+// web/src/workshop/SystemFrame.tsx
 export function Section({ title, aside, children }: { title: string; aside?: ReactNode; children: ReactNode }) …
 ```
 
 `aside` carries Health's live stamp. Task 9's four sections use the two-prop form.
 
+The frame lives in `web/src/workshop/SystemFrame.tsx`, not in the bench — task 9 imports it, and the bench was already the largest view in `src/workshop/` before task 9's four sections. The switch lives in `web/src/workshop/Switch.tsx`, shared with `TriggerRow`: the two were forked byte-for-byte, and the copied contrast rationale then asserted ratios measured against `--bg` for a control that sits on `--surface`.
+
 — a caps `.t-meta-strong` label with `0.08em` letter-spacing in `--fg2` and 8 px below it; then a `rounded-xl` container with a 1 px `--line` border and `--surface` background; rows inside it 56 px tall, divided by 1 px `--line`, 12 px side padding.
 
 Handoff §8. The plan first said "16 px above the label" *and* "22 px between sections", which is 38 px between a card and the next label; it is 16 px above the **first** label and 22 px between sections, carried on the label's own top margin so task 9's sections inherit it.
 
-**Health** — a stamp on the right of the section label: `live · 21:14:07` in `--muted` while online, `unknown since 21:14` in `--accent-text` while not. Then a 2×2 grid of stat cards (`padding 12 14`), each an 8 px dot (`--green` for alive, `--muted` for unknown) driven by the cell's own `alive` flag — **never by string-matching its `value`**, a 20 px/500 value, and a mono label:
+**Health** — a stamp on the right of the section label: `live · 21:14:07` in `--muted` while online, `unknown since 21:14` in `--accent-text` while not. Then a 2×2 grid of stat cards (`padding 12 14`), each an 8 px dot driven by the cell's own `alive` flag — **never by string-matching its `value`** — distinguishing its two states by **fill vs outline**, `MemoryBench.tsx:114-122`'s idiom, not by hue: `--green` against `--muted` is 1.22:1 dark and 1.51:1 light, two circles of near-identical luminance, a 20 px/500 value, and a mono label:
 
 | value | label |
 |---|---|
 | `alive` | `bus · redis · <n> streams` |
 | `380 ms` | `reflex · <model>` |
-| `2.1 ev/s` | `event rate · 5-minute mean` |
+| `2.1 ev/s` | `event rate · 5-min mean` |
 | `ok` | `home assistant · 210 ms` |
 
-Deviation 8 removes the handoff's `6 services` and `gpu 41%` — neither has a source. **Offline the grid recedes by swapping to `--fg2`, and prints what `healthGrid` actually answers** — `unknown · — · — ev/s · —` with `not read yet` notes, not the handoff's invented `?` — the handoff says opacity .55; see the Triggers task for why this phase dims by token instead. A stale number presented at full strength is the §5.2 failure.
+Deviation 8 removes the handoff's `6 services` and `gpu 41%` — neither has a source. **Offline the grid recedes by swapping to `--fg2` *and blanks itself*** — `?`, `?`, `?`, `—` over `bus · unknown since 21:14`, `reflex · unknown`, `event rate · unknown`, `home assistant · unknown`, which is not invented: `docs/design/2026-09-04-pwa-client-handoff/Alfred.dc.html:817` builds that grid literally. A dimmed `210 ms` is still a latency claim about a service that is down. (`healthGrid`'s `not read yet` notes are for the never-read case; this is the went-stale case.) The dots go out with it — the same line sets `dot: t.muted` offline. **And "offline" is `overviewQuery.dataUpdatedAt` going stale, never `error !== null`:** TanStack Query 5 defaults to `networkMode: "online"`, so with no network the poll is *paused*, not failed — `data` is retained and `error` stays `null` for ever while the wall-clock stamp keeps ticking `live · …` over four frozen cells — the handoff says opacity .55; see the Triggers task for why this phase dims by token instead. A stale number presented at full strength is the §5.2 failure.
 
-Under the grid, the spend card: title `Cloud spend today`, then mono `$1.42 of $5.00`, a 4 px bar filling `spendFraction(cost)` (`--accent` on `--line`; the clamp and the zero-cap guard live in `lib/system.ts`, not here), and the note. **The handoff's note — `38 requests · avg $0.037 · resets 00:00 · at the cap, the conscious mind declines and says so` — is not what task 7 shipped:** `spendNote` returns `$1.42 of $5.00 today · 38 requests · $0.037 each`, leading with the money the mono headline already shows, and carries neither `resets 00:00` nor the at-the-cap clause, neither of which has a source in the API. Rendering both prints the amount twice six pixels apart, so the card is one mono line. `role="img"` on the bar with the note as its label; a zero or missing cap draws an empty bar and the text says why. Never `NaN`.
+Under the grid, the spend card: title `Cloud spend today`, then mono `$1.42 of $5.00`, a 4 px bar filling `spendFraction(cost)` (`--accent` on `--line`; the clamp and the zero-cap guard live in `lib/system.ts`, not here), and the note. Task 7's `spendNote` led with the money the mono headline already shows, so the card was first built as one line; that was overruled. **`lib/system.ts` gains `spendHeadline(cost)`** (`$1.42 of $5.00` / `$1.42 · no cap set` / `no spend recorded today`) and `spendNote` loses its money clause and gains the handoff's `at the cap, the conscious mind declines and says so` — **copy, not data**: it needs no server field, it is verifiably true (`core/conscious/engine.py:672-686` returns exactly that System-1 fallback when `is_budget_exceeded()`), and it is the only place in the client that says what the cap *does*. `resets 00:00` stays dropped: `core/conscious/cost.py:70` rolls the day on `datetime.now(UTC)`, so the window resets at UTC midnight and `00:00` is false for any household outside it. The bar's `aria-labelledby` names both ids. `role="img"` on the bar with the note as its label; a zero or missing cap draws an empty bar and the text says why. Never `NaN`.
 
 **Quiet** —
 - Row 1 (56 px min): `Do-not-disturb`, a `role="switch"` reporting `dnd.active`. This one **moves on tap**, once the server has confirmed, because `POST /api/admin/dnd` is a direct write (decision 6's exception) — and says `Applied`. In flight it is `aria-busy` (`quiet.setting`) and `aria-disabled`, not `disabled`, for the reason the Triggers task gives. Task 7 deliberately does **not** patch the cache optimistically: the switch moves when the overview re-read lands. The visible gap is the point — an un-retired optimistic claim resurrects the old position the next time a calendar meeting moves the switch on its own.
