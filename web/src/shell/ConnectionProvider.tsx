@@ -60,9 +60,12 @@ function subscribeOnline(fn: () => void): () => void {
 /**
  * What a suspended PWA has to re-read on return; the telemetry socket replays
  * nothing. Matched by prefix (`invalidateQueries` is not `exact`), so
- * `["memory"]` covers the Memory bench's four reads at once — and only the
- * enabled one of them refetches, because an inactive query is invalidated
- * without being run.
+ * `["memory"]` covers the Memory bench's four reads at once and `["system"]`
+ * covers the System bench's five plus a status probe per integration — and only
+ * the enabled ones refetch, because an inactive query is invalidated without
+ * being run. A phone that was asleep for an hour is exactly where a session
+ * list, a trigger's enabled flag and a service's health are most likely to have
+ * moved without this client hearing about it.
  */
 const REHYDRATE_KEYS = [
   ["overview"],
@@ -70,6 +73,8 @@ const REHYDRATE_KEYS = [
   ["pending-actions"],
   ["deferred"],
   ["memory"],
+  ["triggers"],
+  ["system"],
 ] as const satisfies readonly (readonly string[])[];
 
 /**

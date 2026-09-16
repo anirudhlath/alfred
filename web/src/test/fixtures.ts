@@ -1,4 +1,5 @@
 import type { Routine, SemanticFile } from "@/lib/memory";
+import type { AuthSession, Credential, Integration } from "@/lib/system";
 import type { Trigger } from "@/lib/triggers";
 import type {
   ActionResultEvent,
@@ -539,5 +540,87 @@ export const trigger = (overrides: Partial<Trigger> = {}): Trigger => ({
   },
   urgency: "important",
   conditions: { cron: null, run_at: new Date(TRIGGER_RUN_AT).toISOString() },
+  ...overrides,
+});
+
+// ---------------------------------------------------------------------------
+// System (`/api/auth/*`, `/api/integrations`, `/api/admin/attention`)
+// ---------------------------------------------------------------------------
+
+/**
+ * 2026-09-16 07:02, on the device's own clock — when the fixture session signed
+ * in and when the fixture passkey was last used. Local rather than UTC for the
+ * reason its neighbours are: `hhmm` reads the device's clock, so a UTC instant
+ * would stamp one string in CI and another on a developer's machine.
+ */
+export const SYSTEM_SIGNED_IN_AT = new Date(2026, 8, 16, 7, 2, 0).getTime();
+
+/** 12 Aug — when the fixture passkey was registered, weeks before today. */
+export const SYSTEM_REGISTERED_AT = new Date(2026, 7, 12, 19, 10, 0).getTime();
+
+/** 21:30 the same evening: the `now` every System meta assertion is read against. */
+export const SYSTEM_NOW = new Date(2026, 8, 16, 21, 30, 0).getTime();
+
+/**
+ * One live session as `GET /api/auth/sessions` sends it. Not the caller's own:
+ * `current` is the interesting case and every test that wants it says so.
+ */
+export const authSession = (overrides: Partial<AuthSession> = {}): AuthSession => ({
+  session_id: "sess-phone",
+  credential_id: "cred-phone",
+  device_name: "Phone",
+  channel: "web",
+  ip: "192.168.1.24",
+  user_agent: "Mozilla/5.0",
+  created_at: new Date(SYSTEM_SIGNED_IN_AT).toISOString(),
+  expires_in: 7 * 3600,
+  current: false,
+  ...overrides,
+});
+
+/** One registered passkey as `GET /api/auth/credentials` sends it. */
+export const credential = (overrides: Partial<Credential> = {}): Credential => ({
+  credential_id: "cred-phone",
+  device_name: "Phone",
+  transports: ["internal"],
+  created_at: new Date(SYSTEM_REGISTERED_AT).toISOString(),
+  last_used_at: new Date(SYSTEM_SIGNED_IN_AT).toISOString(),
+  current: false,
+  ...overrides,
+});
+
+/**
+ * One entry of `GET /api/integrations` — the registry-declared home service,
+ * with both its fields stored. `integrationsFixture` above is the setup gate's
+ * pair, typed `IntegrationInfo`; this one is the System bench's `Integration`,
+ * whose `kind` is not optional.
+ */
+export const integration = (overrides: Partial<Integration> = {}): Integration => ({
+  name: "home-service",
+  category: "service",
+  kind: "service",
+  schema: {
+    fields: {
+      url: {
+        label: "Home Assistant URL",
+        field_type: "url",
+        required: true,
+        placeholder: "",
+        default: "",
+        help_text: "",
+        transient: false,
+      },
+      token: {
+        label: "Access Token",
+        field_type: "password",
+        required: true,
+        placeholder: "",
+        default: "",
+        help_text: "",
+        transient: false,
+      },
+    },
+  },
+  configured: { url: true, token: true },
   ...overrides,
 });

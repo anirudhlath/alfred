@@ -218,6 +218,8 @@ describe("ConnectionProvider", () => {
       '["pending-actions"]',
       '["deferred"]',
       '["memory"]',
+      '["triggers"]',
+      '["system"]',
     ]);
   });
 
