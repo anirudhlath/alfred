@@ -57,8 +57,20 @@ function subscribeOnline(fn: () => void): () => void {
   return () => void onlineListeners.delete(fn);
 }
 
-/** What a suspended PWA has to re-read on return; the telemetry socket replays nothing. */
-const REHYDRATE_KEYS = [["overview"], ["room-history"], ["pending-actions"], ["deferred"]];
+/**
+ * What a suspended PWA has to re-read on return; the telemetry socket replays
+ * nothing. Matched by prefix (`invalidateQueries` is not `exact`), so
+ * `["memory"]` covers the Memory bench's four reads at once — and only the
+ * enabled one of them refetches, because an inactive query is invalidated
+ * without being run.
+ */
+const REHYDRATE_KEYS = [
+  ["overview"],
+  ["room-history"],
+  ["pending-actions"],
+  ["deferred"],
+  ["memory"],
+];
 
 /**
  * How often the same complaint from the telemetry pump may reach the console.

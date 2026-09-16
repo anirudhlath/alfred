@@ -217,6 +217,7 @@ describe("ConnectionProvider", () => {
       '["room-history"]',
       '["pending-actions"]',
       '["deferred"]',
+      '["memory"]',
     ]);
   });
 
