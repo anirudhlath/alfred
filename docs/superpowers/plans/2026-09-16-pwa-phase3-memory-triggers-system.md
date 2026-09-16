@@ -603,28 +603,27 @@ describe("triggerMeta", () => {
   const now = Date.UTC(2026, 8, 16, 21, 30, 0);
   it("prints a cron verbatim, because the next fire time is in another process", () => {
     expect(triggerMeta(trigger({ trigger_type: "time", conditions: { cron: "0 19 * * 4" },
-      last_fired: "2026-09-16T21:13:00Z" }), now))
-      .toBe("recurring · cron 0 19 * * 4 · last fired 21:13");
+      created_by: "conversation", created_at: "2026-09-16T20:52:00Z" }), now))
+      .toBe("recurring · cron 0 19 * * 4 · created from conversation 20:52");
   });
   it("formats a run_at, which it can read honestly", () => {
     expect(triggerMeta(trigger({ trigger_type: "time", one_shot: true,
-      conditions: { run_at: "2026-09-17T08:40:00Z" }, last_fired: null }), now))
-      .toBe("one-shot · runs 08:40 tomorrow · never fired");
+      conditions: { run_at: "2026-09-17T08:40:00Z" } }), now))
+      .toBe("one-shot · runs 08:40 tomorrow · created from conversation 20:52");
   });
   it("names the entity a sensor trigger watches", () => {
     expect(triggerMeta(trigger({ trigger_type: "sensor",
-      conditions: { entity_id: "binary_sensor.front_door", state_match: "on" },
-      last_fired: null }), now))
-      .toBe("recurring · binary_sensor.front_door is on · never fired");
+      conditions: { entity_id: "binary_sensor.front_door", state_match: "on" } }), now))
+      .toBe("recurring · binary_sensor.front_door is on · created from conversation 20:52");
   });
   it("drops the state clause when a sensor trigger matches any state", () => { /* "… on any change" */ });
   it("counts what a composite needs", () => {
     /* conditions: { children: [{}, {}, {}], require: 2 } -> "recurring · 2 of 3 conditions · …" */
   });
-  it("says today, yesterday and a date for last_fired", () => { /* dayLabel */ });
+  it("gives created_at a day label, so a week-old trigger is not a bare clock", () => { /* dayLabel */ });
   it("says nothing it cannot read rather than guessing", () => {
     expect(triggerMeta(trigger({ trigger_type: "time", conditions: {} }), now))
-      .toBe("recurring · no schedule stored · never fired");
+      .toBe("recurring · no schedule stored · created from conversation 20:52");
   });
 });
 ```
@@ -633,7 +632,7 @@ describe("triggerMeta", () => {
 
 - [ ] **Step 2: Run, watch fail. Step 3: Implement.**
 
-`triggerMeta` assembles `[one_shot ? "one-shot" : "recurring", <what it does>, <last fired>]` with ` · `. The middle clause is a `switch` on `triggerKind`. `fetchTriggers` unwraps `{triggers}`; `setTriggerEnabled` is `post(\`/api/admin/triggers/${encodeURIComponent(id)}/enabled\`, { enabled })` returning `void`; `fireTrigger` likewise on `/fire`. **`encodeURIComponent` on the id is not optional** — ids come from the LLM's trigger-creation tool.
+`triggerMeta` assembles `[one_shot ? "one-shot" : "recurring", <what it does>, "created from <created_by> <stamp>"]` with ` · ` — the handoff's three clauses (§7: `one-shot · fires 08:40 tomorrow · created from conversation 20:52`). The middle clause is a `switch` on `triggerKind`. **`last_fired` is deliberately not in the meta line** — the handoff does not put it there and the row is already three clauses long; it belongs in the expanded detail (task 6). `fetchTriggers` unwraps `{triggers}`; `setTriggerEnabled` is `post(\`/api/admin/triggers/${encodeURIComponent(id)}/enabled\`, { enabled })` returning `void`; `fireTrigger` likewise on `/fire`. **`encodeURIComponent` on the id is not optional** — ids come from the LLM's trigger-creation tool.
 
 - [ ] **Step 4: Green, lint, build. Step 5: Commit** `feat(web): trigger kinds and meta lines`
 
@@ -676,31 +675,43 @@ Timers in a `useRef<Map<string, ReturnType<typeof setTimeout>>>`, cleared in a `
 
 ### `TriggerRow({ trigger, pending, firedAt, open, onToggleOpen, onToggle, onFire })`
 
-64 px minimum, `--line` divider, 16 px side padding.
+Handoff §7. Rows carry a 1 px `--line` top border and `padding 11 0`; 16 px side padding comes from the bench.
 
-- Left column: the kind label in mono `.t-meta`, uppercase — `time` / `schedule` / `sensor` / `composite`; the name in `.t-body`; `triggerMeta(trigger, Date.now())` in `.t-meta-strong`.
-- Right: **a 52×32 switch that does not move on tap.** It is a `<button role="switch" aria-checked={trigger.enabled}>`; while `pending` is set it gains `aria-busy="true"`, its knob keeps its old position, and the pending note appears under the meta line:
+- Left column: the kind in **mono 10 px `--accent-text`** — `time` / `schedule` / `sensor` / `composite`; the name at 14.5 px; then `triggerMeta(trigger, Date.now())` in `.t-meta-strong`.
+- **A one-shot that has already fired renders at opacity .55** (`one_shot && last_fired`). It is done; it should not read as live.
+- Right: **a 52×32 switch that does not move on tap.** A `<button role="switch" aria-checked={trigger.enabled}>`; track `--accent` on and `--line` off, a 26 px knob in `--bg` travelling left 3 → 23 over 200 ms. While `pending` is set it gains `aria-busy="true"`, the knob keeps its old position, and an **accent mono** note appears under the meta line, verbatim:
 
   `queued 21:15 · enabling · takes effect within 60 s`
 
-  in `--accent-text`, `.t-meta-strong`, mono. `disabling` for the other direction. The switch is `disabled` while pending — a second tap inside the window can only confuse the reader, and the server would queue a second action against a state neither of us knows.
-- A failed mutation replaces the note with `<status> · that did not land · the scheduler still has the old setting`, where `<status>` is the ApiError's status. For a 500 specifically, add ` · this record cannot be read` — deviation 6's only reachable form.
-- Expanded (`aria-expanded` on the row button): `created_by`, `created_at` via `dayLabel`, `urgency`; the action as `rawCall(action.tool_name, action.parameters)` in a mono `<pre>` when there is one and `no action · notification only` when there is not; the conditions as a mono `<pre>` of `JSON.stringify(conditions, null, 2)`; then **Fire now**.
-- **Fire now** is a 44 px `<button>`, `--ink` on `--paper`. Tapping it makes it read `Queued` and disables it for the window. Under it, once `firedAt` is set: `queued 21:15 · the engine fires it when it next reads the queue`. Never `Fired`. We do not know that.
+  `disabling` for the other direction. The switch is `disabled` while pending — a second tap inside the window can only confuse the reader, and the server would queue a second action against a state neither of us knows.
+- A failed mutation replaces the note with `<status> · that did not land · the scheduler still has the old setting`, where `<status>` is the ApiError's status.
+- **The corrupt-record card** — the one form of deviation 6 that is reachable. When a mutation answers **500**, the row is replaced by a `--surface` card carrying the handoff's copy, with the server's own detail in place of its example byte offset:
+
+  `This record can't be read.` / `500 · <the server's detail> · the scheduler skips it · fix in the store or delete`
+
+  and **both the switch and Fire now disabled**. `GET /api/admin/triggers` drops unparseable records, so this can only appear after a toggle on a record that decayed since the read.
+- Expanded (`aria-expanded` on the row button): `created_by`, `created_at` via `dayLabel`, `urgency`, and **`last fired <stamp>` / `never fired`** — which the meta line deliberately leaves out. Then the payload: the action as `rawCall(action.tool_name, action.parameters)` in a mono `<pre>`, or `no action · notification only`; then the conditions as a mono `<pre>` of `JSON.stringify(conditions, null, 2)`.
+- **Fire now** is a 44 px **outlined** button (1 px `--line`, transparent fill), reading `Fire again` once `firedAt` is set. Tapping disables it for the window. The note under it is the handoff's, verbatim:
+
+  `queued only; look for trigger.fired on the events stream to know it ran`
+
+  and once queued, `queued 21:15 · look for trigger.fired on the events stream to know it ran`. Never `Fired`. We do not know that.
 
 ### `TriggersBench({ triggers }: { triggers: Triggers })`
 
-Kind chips across the top in `StreamChips`' idiom (read that file; match it, do not fork it): `all · time · schedule · sensor · composite`, each 32 px, the selected one `--field` on `--surface`. A count beside `all` only — per-kind counts would need a second pass over the list for information nobody asked for.
+Kind chips across the top: `All · Time · Schedule · Sensor · Composite`, each 32 px in a 44 px track. Reuse the shared segmented-control helper task 3 extracted for the Memory sub-tabs rather than forking a third copy of the roving-tabindex logic — but note these are **filters, not tabs**: `aria-pressed` buttons in a group, not a `tablist`. Share the keyboard helper only if it fits honestly; if it does not, say so and use plain buttons. A count beside `All` only.
 
 Rows below in `flex-1 overflow-y-auto`. Empty: `No triggers yet.` for a genuinely empty list; `No <kind> triggers.` when a filter empties it. Error: the bench-wide `error` in a banner at the top, rows still shown beneath.
 
-**The footer note, verbatim, always, under the list:**
+**The footer note — the handoff's sentence verbatim, then ours:**
 
-> Changes are queued for the trigger engine. It applies them within 60 seconds. Nothing here edits a trigger — ask Alfred to change or remove one.
+> Switches are fire-and-forget: the server queues the change and the scheduler picks it up within 60 s. A row keeps its old state, with a note, until a fresh read confirms.
+>
+> Nothing here edits a trigger — ask Alfred to change or remove one.
 
-`.t-meta-strong`, 16 px padding, `env(safe-area-inset-bottom)` under it. The second sentence is doing real work: there is no create/edit/delete route (deviation), and a reader who does not know that will hunt for a button that is not there.
+`.t-meta-strong`, 16 px padding, `env(safe-area-inset-bottom)` under it. The second line is doing real work: there is no create/edit/delete route (deviation), and a reader who does not know that will hunt for a button that is not there.
 
-- [ ] **Step 1: `TriggerRow.test.tsx`** (~14): renders kind, name and meta; the switch reports `aria-checked` from `enabled`; **tapping while pending is impossible and the knob has not moved** (assert `aria-checked` is still the old value and the button is disabled); the queued note is exact; the failure note carries the status; a 500 adds its clause; expand reveals the action and conditions; a trigger with no action says `no action · notification only`; Fire now calls `onFire` once and then reads `Queued`; the row is ≥44 px; `onToggle` is not called by tapping the row body (expanding must not toggle — the classic defect in this layout, and worth its own test).
+- [ ] **Step 1: `TriggerRow.test.tsx`** (~16): renders kind, name and meta; the switch reports `aria-checked` from `enabled`; **tapping while pending is impossible and the knob has not moved** (assert `aria-checked` is still the old value and the button is disabled); the queued note is exact; the failure note carries the status; **a 500 renders the corrupt-record card with the server's detail and disables both controls**; a fired one-shot is dimmed and a live one is not; expand reveals `last fired`, the action and the conditions; a trigger with no action says `no action · notification only`; Fire now calls `onFire` once, then reads `Fire again` with the queued note; the row is ≥44 px; `onToggle` is not called by tapping the row body (expanding must not toggle — the classic defect in this layout, and worth its own test).
 - [ ] **Step 2: `TriggersBench.test.tsx`** (~10): chips render and filter; the `all` count; both empty states with their exact sentences; **the footer note is quoted exactly**; the error banner leaves the rows in place; each trigger gets a row.
 - [ ] **Step 3: Run both, fail. Step 4: Implement. Step 5: Green, lint, build.**
 
