@@ -11,11 +11,17 @@ import {
 } from "@/lib/triggers";
 
 /**
- * How long a queued change stays unknown. `POST …/enabled` answers
- * `{"status":"queued","effective_within_seconds":60}`: the route publishes to
- * the actions stream and the triggers process applies the change inside its own
- * 60 s cache window. Nothing tells this client when that happened — so the row
- * waits out the window with a note on it, and then the list is read again.
+ * How long a row's note lives, and how long after a request the list is read
+ * again. `POST …/enabled` answers `{"status":"queued","effective_within_seconds":60}`:
+ * the route publishes to the actions stream and the triggers process applies
+ * the change inside its own 60 s cache window. Nothing tells this client when
+ * that happened — so the row waits out the window with a note on it, and then
+ * the list is read again.
+ *
+ * A *refused* request queued nothing and the list cannot have changed for it,
+ * and it takes the same window all the same: the failure note is a client claim
+ * like any other, and this is how long any of them may stand before the server
+ * speaks for the row again (spec §5.2).
  */
 export const REREAD_MS = 60_000;
 
@@ -115,10 +121,16 @@ export function useTriggers(enabled: boolean): Triggers {
   // re-render a list.
   const windows = useRef(new Map<string, ReturnType<typeof setTimeout>>());
 
-  // Which attempt a row's note belongs to, so an answer that arrives after a
-  // later tap — or after the window closed — can tell it is no longer the
-  // row's news. Same idiom as `useActivity`'s read generation.
-  const attempts = useRef(new Map<string, number>());
+  // Every request this hook has sent, counted. Per hook rather than per row so
+  // that no two attempts ever share a number — which is what makes dropping a
+  // row's entry below safe.
+  const sent = useRef(0);
+
+  // The attempt each row is waiting on. An answer whose number is no longer
+  // here is no longer the row's news: either a later tap replaced it, or the
+  // window it belonged to closed and took the entry with it. `useActivity`
+  // keeps one generation for one list; a row here supersedes only itself.
+  const waiting = useRef(new Map<string, number>());
 
   useEffect(() => {
     const running = windows.current;
@@ -144,9 +156,15 @@ export function useTriggers(enabled: boolean): Triggers {
       running.set(
         id,
         setTimeout(() => {
+          // Hygiene, not behaviour: clearing a handle that has already fired is
+          // a no-op, and this only keeps the map to the rows still counting.
           running.delete(id);
+          // The row is waiting on nothing now: an answer still in flight has
+          // been outlived by its own note and must not reopen one.
+          waiting.current.delete(id);
+          // The note is always this window's — the same call set one and opened
+          // the other — so there is nothing to check before dropping it.
           setPending((current) => {
-            if (!(id in current)) return current;
             const next = { ...current };
             delete next[id];
             return next;
@@ -171,34 +189,46 @@ export function useTriggers(enabled: boolean): Triggers {
    * intent, and it takes the row's note and its window with it.
    */
   const queue = useCallback(
-    (id: string, kind: PendingKind, send: () => Promise<void>, accepted?: (at: number) => void) => {
+    (
+      id: string,
+      control: PendingKind,
+      send: () => Promise<void>,
+      accepted?: (at: number) => void,
+    ) => {
       const at = Date.now();
-      const mine = (attempts.current.get(id) ?? 0) + 1;
-      attempts.current.set(id, mine);
-      setPending((current) => ({ ...current, [id]: { kind, at } }));
+      const mine = ++sent.current;
+      waiting.current.set(id, mine);
+      // Built fresh, never spread over the note it replaces: a second tap after
+      // a refusal is a new request that has not failed, and inheriting the old
+      // `error` and `status` would put a failure sentence — or the card that
+      // says the record cannot be read — under a control that is merely busy.
+      setPending((current) => ({ ...current, [id]: { kind: control, at } }));
       openWindow(id);
       void send().then(
         () => {
-          if (attempts.current.get(id) !== mine) return;
+          // Deliberately not behind the guard below. That the server took this
+          // request is a fact about what this client did, and stays true
+          // whatever has happened to the row since: dropping it would leave the
+          // button reading `Fire` for a fire that was accepted, and the next
+          // tap would queue a second one.
           accepted?.(at);
         },
         (error: unknown) => {
-          if (attempts.current.get(id) !== mine) return;
-          setPending((current) => {
-            const note = current[id];
-            // The window closed while this was in flight: the row has gone back
-            // to what the server says, and a failure note now would reopen a
-            // claim nothing is holding.
-            if (note === undefined) return current;
-            return {
-              ...current,
-              [id]: {
-                ...note,
-                error: errorText(error),
-                ...(error instanceof ApiError ? { status: error.status } : {}),
-              },
-            };
-          });
+          // A later tap has spoken for this row, or the window this attempt
+          // belonged to closed and the list is about to speak for it. Either
+          // way this answer is no longer the row's news, and a note now would
+          // be a client claim standing on nothing (spec §5.2).
+          if (waiting.current.get(id) !== mine) return;
+          // The guard above is also what makes the spread below safe: a row
+          // still waiting on this attempt has not had its note dropped.
+          setPending((current) => ({
+            ...current,
+            [id]: {
+              ...current[id],
+              error: errorText(error),
+              ...(error instanceof ApiError ? { status: error.status } : {}),
+            },
+          }));
         },
       );
     },
@@ -222,7 +252,13 @@ export function useTriggers(enabled: boolean): Triggers {
       // Stamped only once the server has taken it, and with the instant the
       // note already quotes, so the button and the note cannot disagree.
       queue(id, "firing", () => fireTrigger(id), (at) =>
-        setFired((current) => ({ ...current, [id]: at })),
+        setFired((current) => {
+          // Two fires can be in flight at once and answer out of order; the
+          // button reads the most recent acceptance, never an older one that
+          // landed late.
+          const known = current[id];
+          return known !== undefined && known >= at ? current : { ...current, [id]: at };
+        }),
       );
     },
     [queue],
