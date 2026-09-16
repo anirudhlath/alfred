@@ -199,6 +199,13 @@ describe("TriggersBench", () => {
     expect(
       screen.getByText("queued 21:15 · disabling · takes effect within 60 s"),
     ).toBeInTheDocument();
+    // And the row it was handed to did **not** move (decision 6): the note is
+    // what this client asked for, the switch is what the last read said. A
+    // bench that passed an optimistic `on` down would print the same sentence
+    // over a switch that had already flipped itself.
+    const control = screen.getByRole("switch", { name: door.name });
+    expect(control).toHaveAttribute("aria-checked", String(door.enabled));
+    expect(control).toHaveAttribute("aria-busy", "true");
   });
 
   it("gives every chip a tap target of at least 44 px and a label that stays on one line", () => {

@@ -157,10 +157,22 @@ describe("TriggerRow", () => {
       { enabled: true },
       { pending: { kind: "disabling", at: QUEUED_AT, error: "Trigger not found", status: 404 } },
     );
-    expect(
-      screen.getByText("404 · that did not land · the scheduler still has the old setting"),
-    ).toBeInTheDocument();
-    expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "true");
+    const refusal = screen.getByText(
+      "404 · that did not land · the scheduler still has the old setting",
+    );
+    expect(refusal).toBeInTheDocument();
+    const control = screen.getByRole("switch");
+    expect(control).toHaveAttribute("aria-checked", "true");
+    // `aria-checked` alone discriminates nothing here — the switch never moves
+    // in either branch. Waiting and refused are the two facts that differ: the
+    // request has landed and been turned down, so there is nothing in flight.
+    expect(control).not.toHaveAttribute("aria-busy");
+    // Still inert, and for the other reason: a second press would queue a
+    // request against a state neither end agrees on.
+    expect(control).toHaveAttribute("aria-disabled", "true");
+    // A refusal is settled, so it keeps `.t-meta-strong`'s own --fg2 — the
+    // accent is for a decision still waiting on the world (decision 7).
+    expect(refusal.style.color).toBe("");
   });
 
   // There is no setting in a fire: it either queued or it did not, and nothing

@@ -633,12 +633,28 @@ describe("useTriggers", () => {
 
     await waitFor(() => expect(result.current.error).toBe("redis gone"));
     expect(result.current.triggers).toEqual([]);
+    // Twice, not once: this query sets no `retry` of its own, so it inherits
+    // the app's — one more go at a 5xx. The number is the only way that
+    // inheritance is visible from here, and a `retry: false` added to
+    // `useTriggers.ts` would otherwise cost nothing.
+    expect(reads()).toEqual([LIST, LIST]);
 
     rerender({ on: false });
 
     // The read is idle behind a closed bench; a cached error is a complaint
     // about a screen nobody is looking at.
     expect(result.current.error).toBeNull();
+  });
+
+  // The other half of the same policy: a 401, 403 or 404 is the house
+  // answering, and asking again only doubles the noise (`QueryProvider`).
+  it("asks once and no more when the list read is refused outright", async () => {
+    list = { status: 404, body: { detail: "no such route" } };
+    const { result } = renderTriggers();
+
+    await waitFor(() => expect(result.current.error).toBe("no such route"));
+    await settle();
+    expect(reads()).toEqual([LIST]);
   });
 
   it("is loading while the read is in flight, and not once it has settled", async () => {
