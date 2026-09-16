@@ -943,6 +943,7 @@ const openHeld = useCallback(() => setSheetOpen(true), []);
   10. ops actions (restart a service, download logs)
   11. passkey removal with a confirmation design
   12. session-gating the credential `PUT`, or a clearer story for editing from outside
+  13. recall stats on cold *browse* rows — the SELECT in `admin_api.py` omits `retrieval_count` and `last_retrieved`, so every cold browse row reads `never recalled`, and any cold row under the decay floor reads `decaying` whatever its real history. Search rows carry the stats; browse rows cannot.
 - [ ] **Step 4: `docs/backlog/low/pwa-phase2-followups.md`** — close item §3 (the live region), noting task 10 moved it into the header.
 - [ ] **Step 5: the QA checklist** — device steps in the phase-2 checklist's format, covering: all four benches reachable and each one's first paint; the episodic search keyboard (does the field zoom? it must not); a trigger toggle showing the queued note and the row not moving; a trigger toggle over a dropped connection; DND on and off from System and the Room's row agreeing; Held back opening from both places; the pairing code readable at arm's length; Save & test from off-LAN showing the network sentence; VoiceOver hearing one announcement per socket drop, not two; every bench under a 60 s socket outage.
 - [ ] **Step 6: Commit** `docs(web): phase 3 conventions, backlog and device checklist`
