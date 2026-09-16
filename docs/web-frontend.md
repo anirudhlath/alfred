@@ -248,6 +248,26 @@ the Door's phase pill (`Confirmed · queued`, `Applied`, `Expired`, `Answered`),
 the inverted layer's own type. Do not invent new words — the vocabulary is the contract
 the spec's honesty rules (§5.2) are written against.
 
+**`decaying`** is the ninth word, and it is here because the spec's list above never
+enumerated it while the handoff's prototype uses it: `Alfred.dc.html:684` sets an episodic
+row's meta to `17:58 today · significance 0.34 · recalled 0× · hot · decaying`. Since the
+spec makes the handoff's copy final too, the word is the design's rather than an
+invention, and it is written down here so the omission is not mistaken for a licence to
+coin more.
+
+> **`decaying`** — a **hot** episodic memory the house weighed lightly (significance below
+> `DECAY_FLOOR`, 0.4) and has never reached for. It is the population the Librarian's decay
+> pass migrates into cold storage; it is never said of a cold row, because decay is what
+> puts a row there and nothing removes one afterwards. It marks a standing, not a schedule:
+> the client cannot compute the pass's own pressure formula, which also weighs age and
+> retrieval recency against a threshold no endpoint reports — and that threshold is
+> currently unreachable, so nothing migrates at all today
+> (`docs/backlog/high/librarian-decay-threshold-unreachable.md`,
+> `docs/backlog/low/pwa-phase3-followups.md` §20).
+
+It is drawn after the store rather than instead of the recall count, exactly as the
+prototype draws it: the count is the evidence for the mark.
+
 ---
 
 ## The gates
@@ -513,10 +533,11 @@ and a cold search row carries a `retrieval_count` the store hardcodes and `recal
 increments — always exactly 1, whatever the row's history. So `recalled` is `null` for
 every cold row and the meta line drops the clause, the way it drops a significance the
 server did not send. Absent, not zero: `never recalled` would be a claim about the house
-drawn from a missing column. `decaying` is derived from significance alone for the same
-reason — it is the one cold-store signal that means what it says. What the server would
-have to change is `docs/backlog/low/pwa-phase3-followups.md` §16. Numeric parsing runs
-before `Date.parse`, or an epoch string silently becomes the year 1758.
+drawn from a missing column. What the server would have to change is
+`docs/backlog/low/pwa-phase3-followups.md` §16. The same evidence moved `decaying` onto
+**hot** rows, where both the handoff and the Librarian's decay pass put it (the
+vocabulary entry above says what it means). Numeric parsing runs before `Date.parse`, or
+an epoch string silently becomes the year 1758.
 
 **Queued is not applied**, and it is the house style for every fire-and-forget control.
 A trigger's enable/disable and `Fire now` (`core/channels/admin_api.py:655`, `:674`),

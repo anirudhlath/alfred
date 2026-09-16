@@ -221,22 +221,44 @@ describe("toEpisodicRow", () => {
     ]);
   });
 
-  it("calls a cold row with low significance decaying, whatever it claims about recalls", () => {
-    expect(toEpisodicRow({ ...COLD, significance: 0.2 }, 0).decaying).toBe(true);
-    expect(toEpisodicRow({ ...COLD, significance: 0.8 }, 0).decaying).toBe(false);
-    // A cold *search* row, carrying the fabricated count. It used to block the
-    // flag outright, which is the whole reason the term came out.
-    expect(toEpisodicRow({ ...FOUND, significance: 0.2, retrieval_count: 1 }, 0).decaying).toBe(
-      true,
+  it("calls a lightly-weighted, never-recalled HOT row decaying — the handoff's own row", () => {
+    // `Alfred.dc.html:684`: significance 0.34, recalled 0×, hot · decaying.
+    const row = { ...HOT, significance: "0.34", retrieval_count: "0" };
+    expect(toEpisodicRow(row, 0).decaying).toBe(true);
+  });
+
+  it("does not call a hot row the house has reached for decaying", () => {
+    // The same row, retrieved once. Retrieval resists migration pressure in the
+    // Librarian's formula, and the count is real on a hot row.
+    expect(toEpisodicRow({ ...HOT, significance: "0.34", retrieval_count: "1" }, 0).decaying).toBe(
+      false,
     );
-    expect(toEpisodicRow({ ...HOT, significance: "0.2" }, 0).decaying).toBe(false);
+    expect(toEpisodicRow({ ...HOT, significance: "0.8", retrieval_count: "0" }, 0).decaying).toBe(
+      false,
+    );
+  });
+
+  it("never calls a COLD row decaying, whatever its significance", () => {
+    // The handoff does not either: its cold row at significance 0.22 with no
+    // recalls reads a plain `cold` (`Alfred.dc.html:687`). Decay migrates hot
+    // entries *into* cold storage; a cold row has already arrived, and nothing
+    // in the Librarian removes one.
+    expect(toEpisodicRow({ ...COLD, significance: 0.22 }, 0).decaying).toBe(false);
+    expect(toEpisodicRow({ ...COLD, significance: 0.8 }, 0).decaying).toBe(false);
+    expect(toEpisodicRow({ ...FOUND, significance: 0.2, retrieval_count: 1 }, 0).decaying).toBe(
+      false,
+    );
   });
 
   it("never calls a row it cannot read the significance of decaying", () => {
     // `null < DECAY_FLOOR` is true in JS, so dropping the guard would condemn
-    // every cold row whose significance column is unreadable.
-    expect(toEpisodicRow({ ...COLD, significance: "not a score" }, 0).decaying).toBe(false);
-    expect(toEpisodicRow({ ...COLD, significance: undefined }, 0).decaying).toBe(false);
+    // every hot row whose significance field is unreadable.
+    expect(
+      toEpisodicRow({ ...HOT, significance: "not a score", retrieval_count: "0" }, 0).decaying,
+    ).toBe(false);
+    expect(toEpisodicRow({ ...HOT, significance: undefined, retrieval_count: "0" }, 0).decaying).toBe(
+      false,
+    );
   });
 });
 
@@ -282,10 +304,12 @@ describe("episodicMeta", () => {
     );
   });
 
-  it("says decaying instead of a recall count when the row is decaying", () => {
-    expect(episodicMeta(toEpisodicRow({ ...COLD, significance: 0.2 }, 0), NOW)).toBe(
-      "07:02 earlier today · significance 0.20 · decaying · cold",
-    );
+  it("marks a decaying row after the store, keeping its recall count", () => {
+    // The handoff's line, verbatim in shape (`Alfred.dc.html:684`):
+    // `17:58 today · significance 0.34 · recalled 0× · hot · decaying`.
+    expect(
+      episodicMeta(toEpisodicRow({ ...HOT, significance: "0.34", retrieval_count: "0" }, 0), NOW),
+    ).toBe("07:02 earlier today · significance 0.34 · never recalled · hot · decaying");
   });
 
   // The whole reason the stamp takes a `now`: a memory browser goes back weeks,

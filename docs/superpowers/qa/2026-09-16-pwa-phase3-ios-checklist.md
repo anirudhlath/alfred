@@ -74,6 +74,14 @@ again; the steps ask what the *user* sees.
 - [ ] Search for gibberish: `Nothing close enough to "<your gibberish>".` The list does
       not go blank behind an error, and no score or threshold is quoted
 - [ ] Clear the field and submit: back to browse, newest first
+- [ ] **`decaying` appears only on `hot` rows**, drawn after the store and *after* the
+      recall count, not instead of it:
+      `HH:MM <day> · significance 0.34 · never recalled · hot · decaying`. A cold row never
+      carries it, however lightly it is weighed — decay is what moved it to cold. Worth
+      knowing while you look: nothing is actually being swept today, because the
+      Librarian's threshold is unreachable
+      (`docs/backlog/high/librarian-decay-threshold-unreachable.md`), so a marked row will
+      still be there tomorrow. That is the server's, not the bench's
 - [ ] **A `cold` row says nothing about recalls** — its meta line runs
       `HH:MM <day> · significance 0.40 · cold`, with no `never recalled` and no count,
       because the cold store has no such column and its search path invents one

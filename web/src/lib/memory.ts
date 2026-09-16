@@ -41,7 +41,11 @@ export interface EpisodicRow {
   entities: string[];
   /** The match score, present only on a search result. */
   score: number | null;
-  /** A cold row the house weighed lightly. See `toEpisodicRow` for what it is not. */
+  /**
+   * A **hot** memory the house weighed lightly and has never reached for — the
+   * population the Librarian's decay pass migrates into cold storage. Never true
+   * of a cold row: decay is what *put* it there. See `toEpisodicRow`.
+   */
   decaying: boolean;
 }
 
@@ -89,8 +93,21 @@ export const ROUTINE_STAGES = [
   "archived",
 ] as const satisfies readonly RoutineState[];
 
-/** Below this, with nothing ever recalling it, a cold row is on its way out. */
-const DECAY_FLOOR = 0.3;
+/**
+ * The significance below which a never-recalled *hot* memory is marked `decaying`.
+ *
+ * 0.4 rather than a rounder number for two converging reasons. The handoff's own
+ * decaying row scores **0.34** (`Alfred.dc.html:684`) and its plain-`hot` rows
+ * score 0.62 and 0.71, so the boundary sits between them. And
+ * `docs/backlog/high/librarian-decay-threshold-unreachable.md` records that
+ * passive observations score between 0.105 and 0.355 overall and "should be the
+ * first thing a working threshold sweeps out" — 0.4 covers that whole band.
+ *
+ * It is a boundary on the one input a row carries, not a reproduction of the
+ * Librarian's pressure formula, which also weighs age and retrieval recency and
+ * whose threshold this client cannot see. See `toEpisodicRow`.
+ */
+const DECAY_FLOOR = 0.4;
 
 const num = (value: unknown): number | null => {
   // `Number("")` is 0, which would read a blank hash field as a real zero.
@@ -182,19 +199,29 @@ export function toEpisodicRow(raw: Record<string, unknown>, index: number): Epis
     lastRecalled: cold ? null : time(raw.last_retrieved),
     entities: entityList(raw.entities),
     score: num(raw.score),
-    // Significance alone, because it is the only thing the cold store reports
-    // that means what it says. The old term `recalled === 0` was noise in both
-    // directions: a cold browse row reports 0 because the column is missing
-    // rather than because nothing reached for it, and a cold search row reports
-    // the fabricated 1, which made the flag unreachable for exactly the rows a
-    // reader searches. A null significance is still never condemned — `null <
+    // **Hot rows only.** The Librarian's decay pass reads the hot store and
+    // migrates what it finds into the cold one (`core/librarian/consolidator.py`,
+    // `_apply_decay`); nothing anywhere deletes a cold row. So a cold row is
+    // where decay *ends*, and marking one would promise a removal that cannot
+    // happen. The handoff says the same in its fixtures: its decaying row is hot
+    // (`Alfred.dc.html:684`) and its cold row at significance 0.22 with no
+    // recalls reads a plain `cold` (`:687`).
+    //
+    // Low significance and never reached for — the two inputs the pass weighs
+    // that a row actually carries, and both are honest on a hot row, where
+    // `retrieval_count` is a real field in the Redis hash. This is the shape of
+    // the population the pass targets, not a recomputation of its pressure
+    // formula: that also weighs age and retrieval *recency* against a threshold
+    // no endpoint reports. A null significance is never condemned — `null <
     // DECAY_FLOOR` is true in JS, which would sweep in every unreadable row.
     //
-    // What it is *not*: a prediction that the row will be removed. The
-    // Librarian's decay pass migrates *hot* entries into cold storage
-    // (`core/librarian/consolidator.py`, `_apply_decay`) and nothing deletes a
-    // cold one. This marks a memory that has already been set down lightly.
-    decaying: cold && significance !== null && significance < DECAY_FLOOR,
+    // Today the pass never actually fires: its threshold is unreachable at the
+    // shipped defaults, so nothing has ever migrated
+    // (`docs/backlog/high/librarian-decay-threshold-unreachable.md`, and
+    // `docs/backlog/low/pwa-phase3-followups.md` §20 for what that costs this
+    // word). The mark still describes the row correctly; it is the sweep that is
+    // broken, and it is filed.
+    decaying: !cold && significance !== null && significance < DECAY_FLOOR && recalled === 0,
   };
 }
 
@@ -215,13 +242,17 @@ export function toEpisodicRow(raw: Record<string, unknown>, index: number): Epis
  * `EpisodicRow.recalled` sets out: absent on a browse, invented on a search. So a
  * cold row reads `07:02 earlier today · significance 0.40 · cold`, and says
  * nothing about recalls rather than `never recalled`, which would be a claim
- * about the house drawn from a column that does not exist. `decaying` still
- * appears there — it is derived from significance, which cold rows do report.
+ * about the house drawn from a column that does not exist.
+ *
+ * `decaying` is a trailing mark after the store, not a replacement for the recall
+ * count — the handoff's line is
+ * `17:58 today · significance 0.34 · recalled 0× · hot · decaying`
+ * (`Alfred.dc.html:684`), and the count is the evidence for the mark rather than
+ * something it supersedes. It can only appear on a hot row; see `toEpisodicRow`.
  */
 export function episodicMeta(row: EpisodicRow, now: number): string {
-  const recall = row.decaying
-    ? "decaying"
-    : row.recalled === null
+  const recall =
+    row.recalled === null
       ? null
       : row.recalled === 0
         ? "never recalled"
@@ -231,6 +262,7 @@ export function episodicMeta(row: EpisodicRow, now: number): string {
   if (row.significance !== null) parts.push(`significance ${row.significance.toFixed(2)}`);
   if (recall !== null) parts.push(recall);
   parts.push(row.store);
+  if (row.decaying) parts.push("decaying");
   if (row.score !== null) parts.push(`match ${row.score.toFixed(2)}`);
   return parts.join(" · ");
 }

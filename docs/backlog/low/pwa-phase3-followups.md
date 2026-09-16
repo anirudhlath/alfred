@@ -289,12 +289,14 @@ fixed. `EpisodicEntry.last_retrieved` is never set by `recall()` at all
 invented is the §5.2 failure in its purest form, and nothing in the response lets a
 client tell it from a real count.
 
-`decaying` was re-derived in the same change (`memory.ts:197`). It was
-`cold && significance < DECAY_FLOOR && recalled === 0`, and that last term was noise in
-both directions: a cold browse row scored 0 because the column is missing rather than
-because nothing reached for it, and a cold search row scored the fabricated 1, which made
-the flag unreachable for exactly the rows a reader searches. It is now significance
-alone — the one cold-store signal that means what it says.
+`decaying` moved off cold rows entirely as a result — see §20, which is where that word's
+remaining problem lives. The short version: it was
+`cold && significance < DECAY_FLOOR && recalled === 0`, and every term of that was wrong.
+The store was inverted, and the recall term was noise in both directions — a cold browse
+row scored 0 because the column is missing rather than because nothing reached for it, and
+a cold search row scored the fabricated 1, which made the flag unreachable for exactly the
+rows a reader searches. On a hot row, where `retrieval_count` is real, the term means what
+it says again.
 
 **Acceptance:** `retrieval_count` and `last_retrieved` columns on `episodic_entries`,
 written by a cold-store `record_retrievals()` of its own and returned by both the browse
@@ -342,12 +344,44 @@ any household outside UTC.
 ISO instant — and the note formats it in the reader's zone; the rate one closes when the
 handoff is revised.
 
+## 20. `decaying` marks a population the Librarian never actually sweeps
+
+The word is the handoff's, not an invention: `Alfred.dc.html:684` sets an episodic row's
+meta to `17:58 today · significance 0.34 · recalled 0× · hot · decaying`, and its cold row
+at significance 0.22 with no recalls reads a plain `cold` (`:687`). Phase 3 had it exactly
+inverted — `decaying` was computed for **cold** rows only — which promised a removal that
+cannot happen: `_apply_decay` (`core/librarian/consolidator.py:627`) reads the *hot* store
+and migrates entries *into* cold storage, and nothing in the tree deletes a cold episodic
+row (the only `delete()` calls in `core/memory/episodic/memory.py:162`, `:170` target the
+hot store). The client now marks hot rows below `DECAY_FLOOR` that have never been
+recalled, which is the population the pass targets.
+
+**What is still not true.** That pass has never run. `pressure` is bounded above by 1.0
+and `decay_migration_threshold` defaults to exactly 1.0, so the comparison is never true —
+no episodic entry has ever been migrated out of hot storage, and none will at the shipped
+defaults. That is filed in full, with the arithmetic, at
+`docs/backlog/high/librarian-decay-threshold-unreachable.md`; this entry exists only to
+record what it costs the *client*, which that ticket does not mention: while the threshold
+stands, `decaying` names a standing rather than anything in motion. A reader who leaves a
+marked row alone for a month will find it exactly where it was.
+
+Nothing on the client can fix that, and nothing on the client should pretend to — the
+alternative is dropping a word the design asked for because the server has a bug that is
+already filed against it.
+
+**Acceptance:** `librarian-decay-threshold-unreachable.md` lands (a reachable threshold,
+wired through from config at both production call sites). Then re-check this bench against
+it: whether `DECAY_FLOOR = 0.4` still picks out roughly what the corrected threshold
+sweeps, and whether the mark should consult age — which the row does carry, and which the
+pass weighs most heavily — rather than significance and recall count alone.
+
 ---
 
 ## Checked and not filed
 
-The plan's task 11 listed a twentieth item: `bus · redis · 1 streams`, an ungrammatical
-count for a house running a single stream. **It is not a defect.** `web/src/lib/system.ts:536-538`
+The plan's task 11 listed a twentieth item of its own — not the §20 above, which was found
+later while settling the word `decaying`. The plan's was `bus · redis · 1 streams`, an
+ungrammatical count for a house running a single stream. **It is not a defect.** `web/src/lib/system.ts:536-538`
 reads `` `bus · redis · ${streamCount} ${streamCount === 1 ? "stream" : "streams"}` ``,
 and `web/src/lib/system.test.ts:738` ("calls the rate alive on a house carrying a single
 stream") asserts `bus · redis · 1 stream` exactly, with a companion at `:721-727` pinning

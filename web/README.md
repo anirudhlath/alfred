@@ -60,7 +60,9 @@ Tests live beside their source (`lib/history.ts` → `lib/history.test.ts`).
   phase pill, not the Room's; the Workshop's status line adds the
   handoff's `live · N ev/s`, `paused · N new` and `last true HH:MM · not live`.
   `unknown since HH:MM`, `takes effect within 60 s`, `hot / cold` and
-  `candidate · active · dormant · archived` arrived with the phase-3 benches.
+  `candidate · active · dormant · archived` arrived with the phase-3 benches, as did
+  `decaying` — the handoff's own word for a hot memory weighed lightly and never
+  recalled, defined in `docs/web-frontend.md` because spec §10's list omits it.
   Mono, lower case — the one exception is the Door's phase pill
   (`Confirmed · queued`, `Applied`, `Expired`, `Answered`), set in the layer's own type,
   ink on paper. Do not invent new words for system state.
