@@ -85,8 +85,10 @@ function maintenance(overrides: Partial<Maintenance> = {}): Maintenance {
 /**
  * The bench is a pure view over one state object, so its tests build that
  * object rather than a `QueryClient` — the same bargain `TriggersBench.test.tsx`
- * and `MemoryBench.test.tsx` make with theirs. The five sections task 9 adds are
- * given empty, honest sub-objects: nothing in this file reads them.
+ * and `MemoryBench.test.tsx` make with theirs. The four middle sections are
+ * given empty, honest sub-objects: what they draw is
+ * `SystemSections.test.tsx`'s and `IntegrationRow.test.tsx`'s, and this file
+ * asserts only that the bench mounts them in the right order.
  */
 function state(overrides: Partial<System> = {}): System {
   return {
@@ -96,7 +98,7 @@ function state(overrides: Partial<System> = {}): System {
     online: true,
     quiet: quiet(),
     sessions: { list: [], ended: {}, ending: {}, end: vi.fn(), error: null },
-    credentials: { list: [], error: null },
+    credentials: { list: [], signOut: vi.fn(), signingOut: false, error: null },
     integrations: { list: [], rows: {}, saves: {}, save: vi.fn(), error: null },
     attention: { domains: [], saving: {}, allow: vi.fn(), ask: vi.fn(), error: null },
     pairing: { code: null, expiresAt: null, minting: false, error: null, mint: vi.fn() },
@@ -809,11 +811,19 @@ describe("SystemBench · Maintenance", () => {
 });
 
 describe("SystemBench", () => {
+  // Level 3, because the Reflex section gives each attention domain a level-4
+  // sub-heading of its own and this is a claim about the sections.
   it("names its sections in the order the handoff puts them", () => {
     render(<SystemBench system={state()} />);
-    expect(screen.getAllByRole("heading").map((heading) => heading.textContent)).toEqual([
+    expect(
+      screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent),
+    ).toEqual([
       "Health",
       "Quiet",
+      "Sessions",
+      "Connected services",
+      "Devices & identity",
+      "Reflex",
       "Maintenance",
     ]);
   });
@@ -825,12 +835,16 @@ describe("SystemBench", () => {
     }
   });
 
-  // A button with no explicit type submits the form it is in. The Workshop is
-  // not a form today and task 9's credential rows will be.
+  // A button with no explicit type submits the form it is standing in. The one
+  // form on this bench is a service's credential row, and the only control
+  // allowed to submit it is the one that says it will.
   it("presses nothing it is standing inside", () => {
     render(<SystemBench system={state({ quiet: quiet({ active: true }) })} />);
     for (const control of [...screen.getAllByRole("button"), ...screen.getAllByRole("switch")]) {
-      expect(control).toHaveAttribute("type", "button");
+      const type = control.getAttribute("type");
+      expect(type).not.toBeNull();
+      if (type === "submit") expect(control.closest("form")).not.toBeNull();
+      else expect(type).toBe("button");
     }
   });
 

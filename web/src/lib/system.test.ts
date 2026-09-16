@@ -320,6 +320,24 @@ describe("serviceNote", () => {
     );
     expect(serviceNote("failed", null)).toBe(serviceNote("failed"));
   });
+
+  // The one status that is not the service's. `GET /api/integrations/{name}/status`
+  // 404s from Alfred's own route when the registry no longer carries the name,
+  // so blaming the service for it would send the reader to check a box that
+  // answered nothing at all.
+  it("does not blame the service for Alfred's own 404", () => {
+    expect(serviceNote("failed", 404)).toBe(
+      "404 · Alfred does not know this name · " +
+        "the service may have unregistered since the list was read",
+    );
+    expect(serviceNote("failed", 404)).not.toContain("from the service");
+  });
+
+  // A new sentence, not a new state word: the row on the right still reads
+  // `failed`, and the closed vocabulary is untouched.
+  it("keeps the 404 inside the failed state rather than inventing a word", () => {
+    expect(serviceNote("failed", 404).startsWith("404 · ")).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -531,9 +549,7 @@ describe("healthGrid", () => {
       registryRead: true,
       home: undefined,
     });
-    // `1 streams` is task 7's wording, pinned here as it stands rather than
-    // quietly corrected: this test is about the flag, not the plural.
-    expect(health.bus.note).toBe("bus · redis · 1 streams");
+    expect(health.bus.note).toBe("bus · redis · 1 stream");
     expect(health.rate.alive).toBe(true);
   });
 

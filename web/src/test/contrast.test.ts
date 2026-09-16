@@ -199,6 +199,45 @@ describe("contrast ratios", () => {
       expect(contrast(token(theme, "fg2"), token(theme, "line"))).toBeGreaterThanOrEqual(3);
     });
 
+    it(`${theme}: a service's state word reads on the card it sits on`, () => {
+      // The Connected services row prints `ok`, `failed` or `unset` as its own
+      // word (`workshop/IntegrationRow.tsx`) — 11 px text on `--surface`, so
+      // AA's 4.5:1 is the bar and `--green` itself is nowhere near it. `unset`
+      // takes `--fg2` rather than the handoff's `--muted`, which is the pair
+      // the light-only test below names.
+      expect(contrast(token(theme, "green-text"), token(theme, "surface"))).toBeGreaterThanOrEqual(
+        4.5,
+      );
+      expect(contrast(token(theme, "accent-text"), token(theme, "surface"))).toBeGreaterThanOrEqual(
+        4.5,
+      );
+      expect(contrast(token(theme, "fg2"), token(theme, "surface"))).toBeGreaterThanOrEqual(4.5);
+      // And the failed dot's ring, which is a state indicator rather than text
+      // and so is owed 3:1 against the card (WCAG 1.4.11).
+      expect(contrast(token(theme, "accent-text"), token(theme, "surface"))).toBeGreaterThanOrEqual(
+        3,
+      );
+    });
+
+    it(`${theme}: a credential field is findable, and carries what is typed into it`, () => {
+      // The credential form's inputs (`workshop/IntegrationRow.tsx`) sit inside
+      // a section card, so the edge that makes them findable is measured
+      // against `--surface` and not the page. `--muted`, not `--line`, for the
+      // reason the Quiet chips give — 1.09:1 is no edge at all.
+      expect(contrast(token(theme, "muted"), token(theme, "surface"))).toBeGreaterThanOrEqual(3);
+      expect(contrast(token(theme, "fg"), token(theme, "field"))).toBeGreaterThanOrEqual(4.5);
+      // The placeholder, which is the row's `saved` — the whole evidence that
+      // something is stored and the field is deliberately empty.
+      expect(contrast(token(theme, "fg2"), token(theme, "field"))).toBeGreaterThanOrEqual(4.5);
+    });
+
+    it(`${theme}: a pairing code reads at arm's length on a card`, () => {
+      // 32 px mono in `--fg` on `--surface` (`workshop/SystemSections.tsx`) —
+      // read off this screen and typed into another one. The same pair carries
+      // every section's row title and its empty-state sentence.
+      expect(contrast(token(theme, "fg"), token(theme, "surface"))).toBeGreaterThanOrEqual(4.5);
+    });
+
     it(`${theme}: a chosen chip carries its own label`, () => {
       // Quiet's expiry chips fill with `--ink` and label in `--paper`, the same
       // pairing the Memory bench's chosen sub-tab uses — and the fill has to be
@@ -218,6 +257,12 @@ describe("contrast ratios", () => {
    * raw token would not have done" cannot fail a build.
    */
   it("light: names the tokens the System bench could not have used", () => {
+    // `unset`, if it were the handoff's `--muted` on a card. 3.20:1 — under AA
+    // at the 11 px it is drawn at, and this word is the entire state of the
+    // row rather than decoration beside it, so it takes `--fg2` instead. (The
+    // dark theme clears it at 4.53:1, which is exactly why the claim is made
+    // here and not inside the loop above.)
+    expect(contrast(token("light", "muted"), token("light", "surface"))).toBeLessThan(4.5);
     // The dot, if it were filled `--green` on a card (`HealthStat`).
     expect(contrast(token("light", "green"), token("light", "surface"))).toBeLessThan(3);
     // The spend fill, if it were the raw accent on its `--line` track.

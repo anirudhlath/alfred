@@ -13,6 +13,7 @@ import {
   fetchIntegrationStatus,
   healthGrid,
   HOME_SERVICE,
+  logoutSession,
   mintPairingCode,
   putAttention,
   runLibrarian,
@@ -93,6 +94,15 @@ export interface Sessions {
 /** The registered passkeys. Nothing here removes one — that is a foot-gun with no design. */
 export interface Credentials {
   list: Credential[];
+  /**
+   * End this device's own session. It lives beside the passkeys rather than in
+   * `sessions` because that is where the control is: the sessions list offers
+   * `current` as a label and no way to end the row you are reading it on, so
+   * signing out is the identity section's business and needs no id.
+   */
+  signOut: () => void;
+  /** The `POST` is in flight; the control is busy and refuses a second press. */
+  signingOut: boolean;
   error: string | null;
 }
 
@@ -232,6 +242,8 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
   const [ended, setEnded] = useState<Record<string, number>>({});
   const [ending, setEnding] = useState<Record<string, boolean>>({});
   const [endError, setEndError] = useState<string | null>(null);
+  const [signingOut, setSigningOut] = useState(false);
+  const [signOutError, setSignOutError] = useState<string | null>(null);
   const [saves, setSaves] = useState<Record<string, CredentialSave>>({});
   const [attentionSaving, setAttentionSaving] = useState<Record<string, boolean>>({});
   const [attentionError, setAttentionError] = useState<string | null>(null);
@@ -483,6 +495,27 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
     [claim, queryClient],
   );
 
+  const signOut = useCallback(() => {
+    const fresh = claim("logout");
+    setSigningOut(true);
+    setSignOutError(null);
+    void logoutSession().then(
+      () => {
+        if (!fresh()) return;
+        setSigningOut(false);
+        // The cookie is gone; this re-read is the request that 401s and raises
+        // the Expired gate over the bench, exactly as ending your own session
+        // does. Nothing here claims to have signed out until the route said so.
+        void queryClient.invalidateQueries({ queryKey: SESSIONS_KEY });
+      },
+      (error: unknown) => {
+        if (!fresh()) return;
+        setSigningOut(false);
+        setSignOutError(errorText(error));
+      },
+    );
+  }, [claim, queryClient]);
+
   // ── Connected services ─────────────────────────────────────────────────────
 
   const save = useCallback(
@@ -698,7 +731,9 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
     },
     credentials: {
       list: credentialsQuery.data ?? [],
-      error: complaint(credentialsQuery.error, null),
+      signOut,
+      signingOut,
+      error: complaint(credentialsQuery.error, signOutError),
     },
     integrations: {
       list,

@@ -29,6 +29,7 @@ const ATTENTION = "/api/admin/attention";
 const DND = "/api/admin/dnd";
 const DRAIN = "/api/admin/notifications/drain";
 const LIBRARIAN = "/api/admin/librarian/run";
+const LOGOUT = "/api/auth/logout";
 
 const statusPath = (name: string) => `${INTEGRATIONS}/${name}/status`;
 const credentialsPath = (name: string) => `${INTEGRATIONS}/${name}/credentials`;
@@ -1006,6 +1007,39 @@ describe("useSystem", () => {
     // waiting on the bench would read as a mint that had just failed.
     expect(result.current.pairing.error).toBeNull();
     expect(result.current.pairing.code).toBeNull();
+  });
+
+  it("signs this device out, and lets the 401 behind it raise the gate", async () => {
+    const { result } = await openBench();
+    const expired = listen("expired");
+    hold("POST", LOGOUT);
+
+    act(() => result.current.credentials.signOut());
+    await waitFor(() => expect(result.current.credentials.signingOut).toBe(true));
+    // Staged before the route answers, because the cookie is cleared on the way
+    // out: every read after it is a read without one.
+    answer("GET", SESSIONS, { status: 401, body: { detail: "Not authenticated" } });
+    unhold("POST", LOGOUT);
+    await releaseNext("POST", LOGOUT);
+
+    await waitFor(() => expect(result.current.credentials.signingOut).toBe(false));
+    expect(sent("POST", LOGOUT)).toBeDefined();
+    // The re-read behind it is the request that 401s. Raising the gate is
+    // `api`'s job, not the bench's: the sections stay up behind it holding what
+    // they were last told.
+    await waitFor(() => expect(expired).toHaveBeenCalled());
+  });
+
+  it("says why a refused sign-out did not land, and stays signed in", async () => {
+    answer("POST", LOGOUT, { status: 503, body: { detail: "Session store unavailable" } });
+    const { result } = await openBench();
+
+    act(() => result.current.credentials.signOut());
+
+    await waitFor(() => expect(result.current.credentials.error).toBe("Session store unavailable"));
+    expect(result.current.credentials.signingOut).toBe(false);
+    // The passkeys are still on screen: a refused sign-out changed nothing.
+    expect(result.current.credentials.list).toHaveLength(1);
   });
 
   it("queues a drain and a consolidation, and leaves them queued", async () => {

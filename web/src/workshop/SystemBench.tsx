@@ -11,6 +11,12 @@ import {
 import type { Overview } from "@/lib/types";
 import { Switch } from "./Switch";
 import { SystemRow, SystemSection } from "./SystemFrame";
+import {
+  IdentitySection,
+  ReflexSection,
+  ServicesSection,
+  SessionsSection,
+} from "./SystemSections";
 import type { Maintenance, Quiet, System } from "./useSystem";
 
 export interface SystemBenchProps {
@@ -586,8 +592,10 @@ function MaintenanceSection({ maintenance, now }: { maintenance: Maintenance; no
  * stamp above them is entitled to speak for. The telemetry pump's liveness is
  * the Workshop header's business and says nothing about these figures.
  *
- * Task 9 adds Sessions, Connected services, Devices & identity and Reflex
- * between Quiet and Maintenance.
+ * Seven sections, in the handoff's order: Health, Quiet, Sessions, Connected
+ * services, Devices & identity, Reflex, Maintenance. The four in the middle
+ * live in `SystemSections.tsx` — they share this file's frame and nothing else,
+ * and the bench was already the largest view in `src/workshop/` without them.
  */
 export function SystemBench({ system }: SystemBenchProps) {
   // The clock every stamp on the bench is dated against — read once when the
@@ -636,6 +644,14 @@ export function SystemBench({ system }: SystemBenchProps) {
           readAt={readAt}
         />
         <QuietSection quiet={system.quiet} maintenance={system.maintenance} now={now} />
+        {/* One clock for the whole bench, as the consolidation row and the
+            expiry chips already share: a session list and a passkey list span
+            weeks, and two stamps a pixel apart must not disagree about which
+            day `tomorrow` is. */}
+        <SessionsSection sessions={system.sessions} now={now} />
+        <ServicesSection integrations={system.integrations} />
+        <IdentitySection credentials={system.credentials} pairing={system.pairing} now={now} />
+        <ReflexSection attention={system.attention} />
         <MaintenanceSection maintenance={system.maintenance} now={now} />
       </div>
     </>

@@ -111,18 +111,33 @@ export type ServiceState = "ok" | "failed" | "unset" | "testing" | "queued";
 const ASSUMED_FAILURE_STATUS = 401;
 
 /**
+ * The one status on this route that is **not** the service's answer. `GET
+ * /api/integrations/{name}/status` looks the name up in the registry first and
+ * 404s on its own when it is not there, so a service that has unregistered
+ * since the list was read produces a 404 that the service itself never sent.
+ *
+ * Its own sentence rather than its own state word: the row on the right still
+ * reads `failed`, and the closed vocabulary is untouched.
+ */
+const UNKNOWN_NAME_NOTE =
+  "404 · Alfred does not know this name · " +
+  "the service may have unregistered since the list was read";
+
+/**
  * The sentence under a service's row — the handoff's four, plus `queued`. Not a
  * gloss on the state word, which the row already carries on its right: this is
  * the line that says what is stored and what happens next.
  *
  * `status` is the one the last probe actually reported, so a service answering
- * 502 is not accused of rejecting a password.
+ * 502 is not accused of rejecting a password — and a 404, which is Alfred's own
+ * route rather than the service, gets a sentence that says so.
  */
 export function serviceNote(state: ServiceState, status: number | null = null): string {
   switch (state) {
     case "ok":
       return "stored encrypted at rest · last check ok";
     case "failed":
+      if (status === 404) return UNKNOWN_NAME_NOTE;
       return (
         `${status ?? ASSUMED_FAILURE_STATUS} from the service on the last check · ` +
         "stored value kept until you replace it"
@@ -420,7 +435,9 @@ export function healthGrid({ overview, registryRead, home }: HealthInput): Healt
   return {
     bus: {
       value: connected ? "alive" : "unknown",
-      note: read ? `bus · redis · ${streamCount} streams` : "bus · redis · not read yet",
+      note: read
+        ? `bus · redis · ${streamCount} ${streamCount === 1 ? "stream" : "streams"}`
+        : "bus · redis · not read yet",
       alive: connected,
     },
     reflex: {
@@ -525,6 +542,23 @@ export async function endAuthSession(id: string): Promise<void> {
   await api<{ deleted: boolean }>(`/api/auth/sessions/${encodeURIComponent(id)}`, {
     method: "DELETE",
   });
+}
+
+/**
+ * `POST /api/auth/logout` — ends the caller's own session and clears the cookie.
+ *
+ * Not `DELETE /api/auth/sessions/{id}` on your own row: this route needs no id,
+ * which is the whole point of the control it sits under — a reader signing this
+ * device out should not have to find themselves in a list first. `?all=1` is
+ * deliberately not sent; signing every device out is a different decision from
+ * signing this one out, and there is no screen asking for it.
+ *
+ * Nothing here raises the Expired gate. The cookie is gone, so the next read of
+ * anything 401s and `api` raises it — one path out, whichever request gets
+ * there first.
+ */
+export async function logoutSession(): Promise<void> {
+  await post<{ status: string }>("/api/auth/logout");
 }
 
 /** `GET /api/auth/credentials` — every registered passkey, no secrets on the row. */
