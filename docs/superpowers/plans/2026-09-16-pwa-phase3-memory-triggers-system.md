@@ -109,7 +109,7 @@ Identical to phases 1 and 2, repeated because they are load-bearing:
 - **Named exports** everywhere except `App.tsx`.
 - **Colours come from CSS custom properties** — `style={{ color: "var(--muted)" }}`. Never a Tailwind palette colour. The decided pairs are not re-argued: accent-as-text is `--accent-text`; text on a filled accent is `--on-accent`; a filled dark button is `--ink` on `--paper`; a selected segment is `--field` on `--surface` with `--fg2` for the unselected labels.
 - **Type comes from the `.t-*` classes.** `.t-meta` is decorative meta only — a stamp beside the line it stamps. **Anything a reader must take on its own to trust the screen is `.t-meta-strong`**, because `--muted` is 3.46:1 on `--bg` in light. Every status sentence in these three benches is load-bearing, so the default here is `.t-meta-strong`; `.t-meta` is the exception, not the rule.
-- **A new token or colour pair must be restated in `src/test/contrast.ts`** or `token()` throws. This plan adds no tokens.
+- **A new token or colour pair must be restated in `src/test/contrast.ts`** or `token()` throws. This plan adds exactly one: **`--green-text`**, because phase 3 is the first place green is a *word* rather than a dot (the rising trend, the `model: ok` pill) and raw `--green` is 2.29:1 on light `--bg`. Same reason `--accent-text` exists. `--green` still fills dots.
 - **Safe areas via `env()`, never a literal.**
 - **Every tappable element is ≥44 px tall**; smaller visuals grow their hit area with negative insets (`after:-inset-y-1`).
 - **Tests live next to the source.** Each test file builds its own providers — a fresh `QueryClient` per file. A bench test needs no providers at all.
@@ -542,7 +542,7 @@ Empty states, exactly:
 - browsing, nothing there → `No episodic memories yet.`
 - `model: 503` → `The embedder is not answering, so meaning search is off. Browsing still works.` **and the previous rows stay on screen below it.**
 
-**Semantic.** One card per file: the file name in mono `.t-body`, `dir · modified HH:MM` in `.t-meta-strong`, then the content in a `<pre>` with `whitespace-pre-wrap break-words`, clamped to 12 lines with a `Show all` / `Show less` toggle (a real `<button>`, ≥44 px). Empty: `No semantic memory files yet.`
+**Semantic.** One card per file: the file name in mono `.t-body`, `dir · modified HH:MM` in `.t-meta-strong`, then the content in a `<pre>` with `whitespace-pre-wrap break-words`, clamped to 12 lines with a `Show all` / `Show less` toggle (a real `<button>`, ≥44 px). Empty: `No semantic memory files yet.` Routines empty: `No routines learned yet.`
 
 **Scratchpad.** The content in the same `<pre>`, and above it `pending_queue N in the queue` (`.t-meta-strong`, `0 in the queue` when empty — never hide a zero here, an empty queue is a fact worth stating). Empty content: `The scratchpad is empty.`
 
