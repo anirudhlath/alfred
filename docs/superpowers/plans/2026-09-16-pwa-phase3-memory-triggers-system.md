@@ -525,6 +525,7 @@ Keep the last good rows: read `episodic.data ?? []`, and set `placeholderData: (
 - Create: `web/src/workshop/RoutineRow.tsx`, `web/src/workshop/RoutineRow.test.tsx`
 
 `MemoryBench({ memory }: { memory: Memory })` — a pure view, no `QueryClient` in its tests.
+
 **Layout (handoff §6).** A sub-tab row under the bench switcher: four **44 px pills, radius 22**, the active one filled `--paper` on `--ink`, the rest `--fg2`. This is a different control from `BenchSwitcher`'s `--field` segments — the handoff specifies it separately — so share only the keyboard logic (roving tabindex, wrapping arrows, `Home`/`End`) by extracting it to `workshop/tabs.ts` and having `BenchSwitcher` use it too, rather than copying thirty lines of a11y-critical code. Below the pills, `flex-1 overflow-y-auto` content with `padding 12 16 40`, gap 12. The tabpanel always carries `tabIndex={0}`, for the reason `Workshop.tsx` writes out: Scratchpad holds nothing focusable, ever.
 
 **Each tab opens with its note**, `.t-meta-strong`, verbatim from the handoff:
