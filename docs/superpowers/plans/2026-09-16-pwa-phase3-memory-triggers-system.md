@@ -192,9 +192,11 @@ export function fireTrigger(id: string): Promise<void>;
 
 // workshop/useTriggers.ts
 export const REREAD_MS = 60_000;
-export type Pending = { kind: "enabling" | "disabling" | "firing"; at: number; error?: string };
+export type Pending = { kind: "enabling" | "disabling" | "firing"; at: number; error?: string; status?: number };
 export interface Triggers { kind; setKind; triggers: Trigger[]; shown: Trigger[]; open: string | null;
-  toggleOpen; pending: Record<string, Pending>; toggle; fire; fired: Record<string, number>;
+  toggleOpen; pending: Record<string, Pending>; toggle(t: Trigger); fire(t: Trigger);
+  /** When *this client queued* a fire — never when the trigger ran, which no read reports. */
+  fired: Record<string, number>;
   loading; error: string | null }
 export function useTriggers(enabled: boolean): Triggers;
 
@@ -510,7 +512,7 @@ Four `useQuery` calls keyed `["memory","episodic",submitted]`, `["memory","seman
 
 Keep the last good rows: read `episodic.data ?? []`, and set `placeholderData: (prev) => prev` so a failed search does not empty the list. `error` is `errorText(first error)`.
 
-- [ ] **Step 4: Add the keys to `REHYDRATE_KEYS`**
+- [ ] **Step 4: Add the keys to `REHYDRATE_KEYS`** — `"memory"` here; `"triggers"` and `"system"` land with task 7, which must also update the exact-list assertion in `ConnectionProvider.test.tsx`.
 
 `web/src/shell/ConnectionProvider.tsx` line ~61. Add `"memory"` so returning to the foreground re-reads what is on screen. The list is prefix-matched — confirm that in the file before assuming; if it matches exact keys, add all four.
 
@@ -661,7 +663,7 @@ The interesting part. `POST …/enabled` returns `{"status":"queued","effective_
 10. `fire marks the row firing and clears it on the same 60 s window` + `fired` keeps the timestamp so the row can say `fired 21:15`.
 11. `two rows can be pending at once, independently`.
 12. `expands one trigger at a time`.
-13. `clears every timer on unmount` — unmount, advance, no fetch. Leaking a 60 s timer per toggle is how a long-lived PWA ends up storming the API.
+13. `clears every timer on unmount` — **and the naive version of this test does not bite**: after unmount the query has no observers, and `invalidateQueries` refetches only *active* queries, so leaked timers fire invisibly. Mount, toggle three rows, unmount, then **mount again on the same `QueryClient`** (the Workshop closing and reopening) and advance: a leak shows up as stray reads. Leaking a 60 s timer per toggle is how a long-lived PWA ends up storming the API.
 14. `polls on nothing` — 5 minutes of fake time, still one fetch.
 
 - [ ] **Step 2: Run, watch fail. Step 3: Implement.**
@@ -726,7 +728,7 @@ At the end of this task: **62 test files, ~951 tests.**
 
 ## Task 7: `lib/system.ts` and `useSystem`
 
-**Files:** Create `web/src/lib/system.ts`, `system.test.ts`, `web/src/workshop/useSystem.ts`, `useSystem.test.tsx`. Modify `web/src/shell/ConnectionProvider.tsx` (`REHYDRATE_KEYS` gains `"system"`).
+**Files:** Create `web/src/lib/system.ts`, `system.test.ts`, `web/src/workshop/useSystem.ts`, `useSystem.test.tsx`. Modify `web/src/shell/ConnectionProvider.tsx` (`REHYDRATE_KEYS` gains **both** `"system"` and `"triggers"` — task 5 deliberately left the latter to this task rather than widening its own commit) and `ConnectionProvider.test.tsx` (its exact-list assertion).
 
 The System bench reads from **six** places, three of them outside `/api/admin`:
 
