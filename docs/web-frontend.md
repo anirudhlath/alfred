@@ -63,7 +63,7 @@ web/
       format.ts          # hhmm, hhmmss, dayMonth, dayLabel, mmss, usd, evs, shortId,
                          # humaniseTool, rawCall, notificationText
       theme.ts           # Theme, THEME_KEY, resolveInitialTheme, applyTheme, storedTheme
-      viewport.ts        # installViewportVars, keyboardInset, useKeyboardOpen
+      viewport.ts        # installViewportVars
       lifecycle.ts       # onVisible(fn) — the one visibilitychange subscription
       audio.ts           # One unlocked AudioContext: installAudioUnlock, playWavBase64
       recorder.ts        # pickMimeType (mp4→aac→default), Recorder, blobToDataUrl
@@ -173,7 +173,7 @@ palette colour.
 | `--ring`, `--scrim` | Focus ring, and the dim behind a layer |
 | `--ring-text-l` | The lightness `ringText()` uses for a stream hue set as text — 0.75 on ink, 0.52 on paper |
 | `--ease-rise`, `--ease-settle`, `--ease-sink` | The three easing curves: rise in, settle, leave |
-| `--app-height`, `--keyboard-inset` | Written by `installViewportVars()` (below) |
+| `--app-height`, `--viewport-top` | The visual viewport's height and offset, written by `installViewportVars()` (below) |
 
 `ThemeProvider` writes `data-theme` on `<html>` and rewrites the single
 `<meta name="theme-color">` so Safari's chrome matches. The choice is stored under
@@ -685,7 +685,7 @@ graph TD
 
 Spec §4 lists twelve. The automated half lives in `web/src`
 (`index-html.test.ts` for the metas, `viewport.test.ts` and `Composer.test.tsx` for
-`--app-height` / `--keyboard-inset`, `audio.test.ts` for the single unlocked context,
+`--app-height` / `--viewport-top`, `audio.test.ts` for the single unlocked context,
 `recorder.test.ts` for codec negotiation, `lifecycle.test.ts` and
 `ConnectionProvider.test.tsx` for rehydration, `Layer.test.tsx` and `DoorLayer.test.tsx`
 for explicit dismissal, `PresenceField.test.tsx` for reduce-motion). The half that needs
@@ -694,13 +694,24 @@ a real phone is `docs/superpowers/qa/2026-09-07-pwa-phase1-ios-checklist.md`, an
 
 Two of them bite hardest:
 
-- **`100vh` is wrong in Safari.** `installViewportVars()` writes `--app-height` from
-  `innerHeight` and `--keyboard-inset` from `visualViewport`. `#root` takes `--app-height`
-  as `height` — not `min-height` — with `overflow: hidden`, so the shell *is* the viewport
-  and nothing scrolls but the regions that opt in: the Timeline, the Sheet body, the
-  gate's copy region. A root that can grow scrolls the document instead, carrying the
-  header and composer off-screen and leaving the Timeline's follow-the-bottom anchor
-  nothing to scroll. The composer pays for the keyboard once, via `.pb-keyboard`.
+- **`100vh` is wrong in Safari, and so is the window.** `installViewportVars()` writes
+  `--app-height` and `--viewport-top` from `visualViewport`'s own height and offset —
+  the band of screen that is actually visible. `#root` and every `.viewport-fill` layer
+  are fixed boxes at exactly those coordinates, `height` and not `min-height`, with
+  `overflow: hidden`, so the shell *is* the viewport and nothing scrolls but the regions
+  that opt in: the Timeline, the Sheet body, the gate's copy region. A root that can grow
+  scrolls the document instead, carrying the header and composer off-screen and leaving
+  the Timeline's follow-the-bottom anchor nothing to scroll; `body` is `position: fixed`
+  so iOS cannot scroll the document to reveal a focused field either.
+
+  **Never derive a keyboard inset from `innerHeight - visualViewport.height`.** Phase 2
+  did, and the phone reported the composer clipped off the *top* of the screen: the two
+  readings settle at different moments, and one frame of disagreement leaves most of a
+  keyboard as padding on a column that is already keyboard-free, overflowing a shell
+  shorter than itself. Measured in standalone mode on a real iPhone, neither reading
+  moves when the keyboard opens at all — iOS slides the webview itself, invisibly to JS.
+  What the composer still owes is the home indicator, and that is a question about its
+  own field's focus, which is what `Composer.tsx` asks.
 - **Audio needs a gesture.** `installAudioUnlock()` runs in `main.tsx`, before the first
   tap. iOS will not retroactively allow a sound requested before a gesture resumed a
   context, so a fresh `new Audio()` is silently dropped.
