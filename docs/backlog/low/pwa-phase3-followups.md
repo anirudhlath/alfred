@@ -258,38 +258,50 @@ beside `expanded` and `solo`, restored in a layout effect on remount, and assert
 test that trips to another bench and back. The virtualisation ticket
 (`pwa-phase2-followups.md` §1) would subsume it.
 
-## 16. Cold rows never carry honest recall stats
+## 16. The cold store reports no recall history, so the bench shows none
 
-A cold *browse* row reads `never recalled`, and any cold row under the decay floor reads
-`decaying`, whatever its real history — `recalled` is 0 because the response has no such
-field, and `decaying` is computed against that zero
-(`web/src/lib/memory.ts:168`, `:184-190`, `DECAY_FLOOR = 0.3` at `:79`).
+**The client half is done; this is the server half.** Cold rows now print no recall
+clause at all — not `never recalled`, not a count — in either shape
+(`web/src/lib/memory.ts:169-183`, `episodicMeta` at `:222-229`). The clause is
+deliberately **absent rather than zero**: a cold row reads
+`07:02 earlier today · significance 0.40 · cold`. Hot rows are unaffected, because
+`retrieval_count` and `last_retrieved` are real fields in the Redis hash, written by
+`record_retrievals()` (`core/memory/vector_store.py:88-96`).
 
-The plan blamed the SELECT. It is worse than that, and this is the correction: the
-columns **do not exist in the cold schema at all**. The browse SELECT
-(`core/channels/admin_api.py:547-552`) reads
-`id, timestamp, source, summary, entities, valence, significance, semantic_key`, and
+Two separate server facts forced it, and both have to change before the clause can come
+back.
+
+**The columns do not exist.** The plan blamed the browse SELECT
+(`core/channels/admin_api.py:547-552`, reading
+`id, timestamp, source, summary, entities, valence, significance, semantic_key`), but
 `core/memory/episodic/schema.sql:12-20` plus the v2 migration
-(`core/memory/sqlite_vec_store.py:308-312`) is the whole table. Real retrieval stats live
-only in the hot Redis hash, written by `record_retrievals()`
-(`core/memory/vector_store.py:88-96`).
+(`core/memory/sqlite_vec_store.py:308-312`) is the whole table — there is nothing for a
+wider SELECT to read.
 
-Nor does search rescue a cold row, which the plan assumed it did: the cold store
-hardcodes `retrieval_count=0, last_retrieved=0.0` into the metadata it returns
-(`core/memory/sqlite_vec_store.py:630-631`), and `recall()` writes
+**And search invents the number.** The cold store hardcodes
+`retrieval_count=0, last_retrieved=0.0` into the metadata it returns
+(`core/memory/sqlite_vec_store.py:630-631`) and `recall()` writes
 `search_result.metadata.retrieval_count + 1` into the entry
-(`core/memory/episodic/memory.py:132`). **So every cold search row reports
-`retrieval_count: 1` regardless of history, and the bench prints `recalled 1×` from it.**
-`EpisodicEntry.last_retrieved` is never set by `recall()` at all
-(`core/memory/schemas.py:44`), so it is null for hot and cold search rows alike. That is a
-number the screen presents as fact and the server invented — a §5.2 failure that the
-client cannot detect from the response.
+(`core/memory/episodic/memory.py:132`), so **every cold search row claims exactly one
+recall, regardless of history** — which the bench printed as `recalled 1×` until this was
+fixed. `EpisodicEntry.last_retrieved` is never set by `recall()` at all
+(`core/memory/schemas.py:44`). A number the screen presents as fact and the server
+invented is the §5.2 failure in its purest form, and nothing in the response lets a
+client tell it from a real count.
+
+`decaying` was re-derived in the same change (`memory.ts:197`). It was
+`cold && significance < DECAY_FLOOR && recalled === 0`, and that last term was noise in
+both directions: a cold browse row scored 0 because the column is missing rather than
+because nothing reached for it, and a cold search row scored the fabricated 1, which made
+the flag unreachable for exactly the rows a reader searches. It is now significance
+alone — the one cold-store signal that means what it says.
 
 **Acceptance:** `retrieval_count` and `last_retrieved` columns on `episodic_entries`,
-written by the cold store's own `record_retrievals`, returned by both the browse SELECT
-and the search metadata; `recall()` stops incrementing a count it was handed. Until then,
-consider having the client drop the recall clause for cold rows entirely rather than
-print a fabricated `recalled 1×`.
+written by a cold-store `record_retrievals()` of its own and returned by both the browse
+SELECT and the search metadata; `recall()` stops incrementing a count it was handed and
+starts setting `last_retrieved`. Then `toEpisodicRow` drops the `cold ? null :` guard,
+`episodicMeta` drops the null branch, and the recall clause returns for both stores —
+along with the question of whether `decaying` should consult it again.
 
 ## 17. Health's four stats are one card, not four
 

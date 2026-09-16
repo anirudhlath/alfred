@@ -507,13 +507,16 @@ place that knows it. Nothing above that file branches on a store again:
 
 Two consequences the rows say out loud rather than paper over. A hot browse row gets the
 key `hot:<index>`, because it carries no id at all and the list is replaced whole on
-every read — correct there and nowhere else. And a cold row has no honest recall stats in
-any shape: the columns are not in the cold schema, so a cold *browse* row reads
-`never recalled` and its `decaying` flag is computed against a zero it was never told,
-while a cold *search* row reports the count the server fabricates. Both are filed
-(`docs/backlog/low/pwa-phase3-followups.md` §16), and the second is the one to fix first
-— it is a number the screen presents as fact. Numeric parsing runs before `Date.parse`,
-or an epoch string silently becomes the year 1758.
+every read — correct there and nowhere else. And **a cold row prints no recall clause at
+all**, in either shape: the columns are not in the cold schema, so a browse omits them,
+and a cold search row carries a `retrieval_count` the store hardcodes and `recall()`
+increments — always exactly 1, whatever the row's history. So `recalled` is `null` for
+every cold row and the meta line drops the clause, the way it drops a significance the
+server did not send. Absent, not zero: `never recalled` would be a claim about the house
+drawn from a missing column. `decaying` is derived from significance alone for the same
+reason — it is the one cold-store signal that means what it says. What the server would
+have to change is `docs/backlog/low/pwa-phase3-followups.md` §16. Numeric parsing runs
+before `Date.parse`, or an epoch string silently becomes the year 1758.
 
 **Queued is not applied**, and it is the house style for every fire-and-forget control.
 A trigger's enable/disable and `Fire now` (`core/channels/admin_api.py:655`, `:674`),

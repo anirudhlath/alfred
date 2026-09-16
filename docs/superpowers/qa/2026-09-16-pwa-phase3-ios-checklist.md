@@ -74,10 +74,11 @@ again; the steps ask what the *user* sees.
 - [ ] Search for gibberish: `Nothing close enough to "<your gibberish>".` The list does
       not go blank behind an error, and no score or threshold is quoted
 - [ ] Clear the field and submit: back to browse, newest first
-- [ ] Known and already filed, so do not raise it twice: every `cold` row on a *browse*
-      reads `never recalled`, and every `cold` row in a *search* reads `recalled 1×`.
-      Both are the server's, not the bench's (`…/pwa-phase3-followups.md` §16). Note
-      whether any cold search row shows a count other than 1 — that would be new
+- [ ] **A `cold` row says nothing about recalls** — its meta line runs
+      `HH:MM <day> · significance 0.40 · cold`, with no `never recalled` and no count,
+      because the cold store has no such column and its search path invents one
+      (`…/pwa-phase3-followups.md` §16). A `hot` row *does* carry the clause. Any
+      `recalled N×` beside the word `cold` is a regression
 - [ ] Semantic: cards unfold to their Markdown and fold again. Leaving the bench and
       returning folds them — that is deliberate
 - [ ] Routines: the lifecycle rail shows `candidate · active · dormant · archived` with

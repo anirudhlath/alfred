@@ -18,17 +18,30 @@ export interface EpisodicRow {
   at: number | null;
   significance: number | null;
   /**
-   * Deliberate recalls of this memory. Always 0 on a *browse* of the cold store:
-   * that SELECT returns no retrieval stats at all, so `episodicMeta` prints
-   * "never recalled" and `decaying` reads a zero it was never told. Only a
-   * search result carries a cold row's real count.
+   * Deliberate recalls of this memory, or **null when the store does not report
+   * them** — which is every cold row, in both shapes.
+   *
+   * The cold store has no retrieval columns at all (`core/memory/episodic/schema.sql`),
+   * so a cold browse row simply omits the field. A cold *search* row is worse: the
+   * store hardcodes `retrieval_count=0` into the metadata it returns
+   * (`core/memory/sqlite_vec_store.py`) and `recall()` writes that `+ 1` into the
+   * entry (`core/memory/episodic/memory.py`), so every one of them claims exactly
+   * one recall it has no record of. Printing either would be the §5.2 failure this
+   * whole bench exists to avoid, so both become null and the meta line drops the
+   * clause rather than showing a zero.
+   *
+   * Hot rows keep it: `retrieval_count` and `last_retrieved` are real fields in
+   * the Redis hash, written by `record_retrievals()`.
+   * (`docs/backlog/low/pwa-phase3-followups.md` §16 is what would let cold rows
+   * report recalls again.)
    */
-  recalled: number;
+  recalled: number | null;
+  /** As `recalled`: null for a cold row, whatever the payload claimed. */
   lastRecalled: number | null;
   entities: string[];
   /** The match score, present only on a search result. */
   score: number | null;
-  /** Low significance, cold, never recalled: on its way out at the next pass. */
+  /** A cold row the house weighed lightly. See `toEpisodicRow` for what it is not. */
   decaying: boolean;
 }
 
@@ -152,7 +165,11 @@ export function toEpisodicRow(raw: Record<string, unknown>, index: number): Epis
   const store: MemoryStore = raw.store === "cold" ? "cold" : "hot";
   const id = typeof raw.id === "string" && raw.id !== "" ? raw.id : null;
   const significance = significanceOf(raw.significance);
-  const recalled = Math.max(0, Math.trunc(num(raw.retrieval_count) ?? 0));
+  // Hot only. A cold row's retrieval stats are absent on a browse and invented on
+  // a search (see `EpisodicRow.recalled`), and a number that is sometimes a fact
+  // and sometimes an artefact is not a number a row may print.
+  const cold = store === "cold";
+  const recalled = cold ? null : Math.max(0, Math.trunc(num(raw.retrieval_count) ?? 0));
   return {
     key: id ?? `${store}:${index}`,
     id,
@@ -162,35 +179,58 @@ export function toEpisodicRow(raw: Record<string, unknown>, index: number): Epis
     at: time(raw.timestamp),
     significance,
     recalled,
-    lastRecalled: time(raw.last_retrieved),
+    lastRecalled: cold ? null : time(raw.last_retrieved),
     entities: entityList(raw.entities),
     score: num(raw.score),
-    decaying: store === "cold" && significance !== null && significance < DECAY_FLOOR && recalled === 0,
+    // Significance alone, because it is the only thing the cold store reports
+    // that means what it says. The old term `recalled === 0` was noise in both
+    // directions: a cold browse row reports 0 because the column is missing
+    // rather than because nothing reached for it, and a cold search row reports
+    // the fabricated 1, which made the flag unreachable for exactly the rows a
+    // reader searches. A null significance is still never condemned — `null <
+    // DECAY_FLOOR` is true in JS, which would sweep in every unreadable row.
+    //
+    // What it is *not*: a prediction that the row will be removed. The
+    // Librarian's decay pass migrates *hot* entries into cold storage
+    // (`core/librarian/consolidator.py`, `_apply_decay`) and nothing deletes a
+    // cold one. This marks a memory that has already been set down lightly.
+    decaying: cold && significance !== null && significance < DECAY_FLOOR,
   };
 }
 
 /**
- * `07:02 earlier today · significance 0.40 · recalled 2× · cold · match 0.62` —
- * the row's second line, in the handoff's order (§6): when, how much it
- * weighed, how often it has been reached for, which store it is in, and — only
- * on a search result — how well it matched.
+ * `07:02 earlier today · significance 0.70 · recalled 2× · hot` — the row's
+ * second line, in the handoff's order (§6): when, how much it weighed, how often
+ * it has been reached for, which store it is in, and — only on a search result —
+ * how well it matched.
  *
  * `now` because a memory browser goes back weeks: a bare wall clock on a row
  * from last Tuesday says 07:02 and means nothing. A row whose time could not be
  * read stamps `--:--` and claims no day at all rather than guessing at one.
- * Significance is dropped entirely when the row did not carry one — the cold
- * browse sends it, the hot hash sends it, but a row that did not is not a zero.
+ *
+ * Every clause is dropped rather than defaulted when the server did not send what
+ * it needs. Significance goes when the row carried none — the cold browse sends
+ * it, the hot hash sends it, but a row that did not is not a zero. The recall
+ * clause goes on **every cold row**, in both shapes, for the reason
+ * `EpisodicRow.recalled` sets out: absent on a browse, invented on a search. So a
+ * cold row reads `07:02 earlier today · significance 0.40 · cold`, and says
+ * nothing about recalls rather than `never recalled`, which would be a claim
+ * about the house drawn from a column that does not exist. `decaying` still
+ * appears there — it is derived from significance, which cold rows do report.
  */
 export function episodicMeta(row: EpisodicRow, now: number): string {
   const recall = row.decaying
     ? "decaying"
-    : row.recalled === 0
-      ? "never recalled"
-      : `recalled ${row.recalled}×`;
+    : row.recalled === null
+      ? null
+      : row.recalled === 0
+        ? "never recalled"
+        : `recalled ${row.recalled}×`;
   const parts =
     row.at === null ? ["--:--"] : [`${hhmm(row.at)} ${dayLabel(new Date(row.at), new Date(now))}`];
   if (row.significance !== null) parts.push(`significance ${row.significance.toFixed(2)}`);
-  parts.push(recall, row.store);
+  if (recall !== null) parts.push(recall);
+  parts.push(row.store);
   if (row.score !== null) parts.push(`match ${row.score.toFixed(2)}`);
   return parts.join(" · ");
 }

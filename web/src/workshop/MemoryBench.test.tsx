@@ -132,8 +132,10 @@ describe("MemoryBench", () => {
     expect(
       screen.getByText("07:02 earlier today · significance 0.70 · recalled 3× · hot"),
     ).toHaveClass("t-meta-strong");
+    // No recall clause on a cold row at all: the cold store reports no retrieval
+    // stats, and `never recalled` would be a claim drawn from their absence.
     expect(
-      screen.getByText("07:02 earlier today · significance 0.40 · never recalled · cold"),
+      screen.getByText("07:02 earlier today · significance 0.40 · cold"),
     ).toBeInTheDocument();
     // The handoff mutes a cold row; --fg2, which reads at 15 px where --muted does not.
     expect(screen.getByText("Asked about the dentist").style.color).toBe("var(--fg2)");

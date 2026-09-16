@@ -129,7 +129,10 @@ describe("toEpisodicRow", () => {
       text: "Asked about the dentist",
       at: MEMORY_AT,
       significance: 0.4,
-      recalled: 0,
+      // Not 0: the cold store reports no retrieval stats at all, and a field the
+      // server never sent is not a count of none.
+      recalled: null,
+      lastRecalled: null,
       entities: ["dentist"],
     });
   });
@@ -140,9 +143,28 @@ describe("toEpisodicRow", () => {
       at: MEMORY_AT,
       entities: ["dentist"],
       score: 0.62,
-      recalled: 2,
-      lastRecalled: MEMORY_RECALLED_AT,
     });
+  });
+
+  it("reads an ISO last_retrieved on a hot search row", () => {
+    // The ISO branch of `time()` for the recall stamp, asserted on a *hot* row:
+    // a cold one drops both recall fields whatever the payload says.
+    expect(toEpisodicRow({ ...FOUND, store: "hot" }, 0).lastRecalled).toBe(MEMORY_RECALLED_AT);
+  });
+
+  it("drops the recall count on a cold search row, which the server fabricates", () => {
+    // `sqlite_vec_store` hands `recall()` a hardcoded `retrieval_count=0` and
+    // `recall()` returns it +1, so every cold search row claims exactly one
+    // recall it has no record of. The row says nothing instead.
+    expect(toEpisodicRow({ ...FOUND, retrieval_count: 1 }, 0)).toMatchObject({
+      store: "cold",
+      recalled: null,
+      lastRecalled: null,
+    });
+  });
+
+  it("keeps a hot row's recall stats, which the Redis hash really holds", () => {
+    expect(toEpisodicRow(HOT, 0)).toMatchObject({ store: "hot", recalled: 3 });
   });
 
   it("reads the significance each store spells differently, and a bare number besides", () => {
@@ -199,10 +221,14 @@ describe("toEpisodicRow", () => {
     ]);
   });
 
-  it("calls a cold row with low significance and no recalls decaying", () => {
+  it("calls a cold row with low significance decaying, whatever it claims about recalls", () => {
     expect(toEpisodicRow({ ...COLD, significance: 0.2 }, 0).decaying).toBe(true);
     expect(toEpisodicRow({ ...COLD, significance: 0.8 }, 0).decaying).toBe(false);
-    expect(toEpisodicRow({ ...FOUND, significance: 0.2 }, 0).decaying).toBe(false);
+    // A cold *search* row, carrying the fabricated count. It used to block the
+    // flag outright, which is the whole reason the term came out.
+    expect(toEpisodicRow({ ...FOUND, significance: 0.2, retrieval_count: 1 }, 0).decaying).toBe(
+      true,
+    );
     expect(toEpisodicRow({ ...HOT, significance: "0.2" }, 0).decaying).toBe(false);
   });
 
@@ -230,15 +256,29 @@ describe("episodicMeta", () => {
     );
   });
 
-  it("says never recalled rather than 0×", () => {
-    expect(episodicMeta(toEpisodicRow(COLD, 0), NOW)).toBe(
-      "07:02 earlier today · significance 0.40 · never recalled · cold",
+  it("says never recalled rather than 0× on a hot row, which really reports none", () => {
+    expect(episodicMeta(toEpisodicRow({ ...HOT, retrieval_count: "0" }, 0), NOW)).toBe(
+      "07:02 earlier today · significance 0.70 · never recalled · hot",
     );
+  });
+
+  it("says nothing at all about a cold row's recalls", () => {
+    // Not `never recalled`, which would be a claim about the house drawn from a
+    // field the cold store does not have.
+    expect(episodicMeta(toEpisodicRow(COLD, 0), NOW)).toBe(
+      "07:02 earlier today · significance 0.40 · cold",
+    );
+  });
+
+  it("prints no recall clause for a cold search row carrying the fabricated count", () => {
+    const meta = episodicMeta(toEpisodicRow({ ...FOUND, retrieval_count: 1 }, 0), NOW);
+    expect(meta).toBe("07:02 earlier today · significance 0.40 · cold · match 0.62");
+    expect(meta).not.toContain("recalled");
   });
 
   it("adds the match score when one is in the row", () => {
     expect(episodicMeta(toEpisodicRow(FOUND, 0), NOW)).toBe(
-      "07:02 earlier today · significance 0.40 · recalled 2× · cold · match 0.62",
+      "07:02 earlier today · significance 0.40 · cold · match 0.62",
     );
   });
 
