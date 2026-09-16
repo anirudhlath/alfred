@@ -20,6 +20,9 @@ import {
   saveCredentials,
   serviceRows,
   setDnd,
+  SAVE_TIMED_OUT,
+  SAVE_TIMEOUT_MS,
+  SIGNED_OUT_ANYWAY,
   type AttentionDomain,
   type AuthSession,
   type Credential,
@@ -53,6 +56,23 @@ const STALE_MS = 30_000;
  */
 export const STALE_AFTER_MS = OVERVIEW_POLL_MS * 2;
 
+/**
+ * Everything in `marks` whose key is still in `live`, or `marks` itself when
+ * nothing has to go. Returning the same object is what lets this be called from
+ * the render body: `setState` with the value it already holds bails out, so a
+ * list that has not moved cannot loop.
+ *
+ * A client-side mark must not outlive the evidence for it, and a session or an
+ * integration that is no longer in the list is evidence that has gone: without
+ * this the `ended` and `saves` maps grow for the life of the Workshop and keep
+ * answering for records the house has forgotten.
+ */
+function keepLive<T>(marks: Record<string, T>, live: ReadonlySet<string>): Record<string, T> {
+  const keys = Object.keys(marks);
+  if (keys.every((key) => live.has(key))) return marks;
+  return Object.fromEntries(keys.filter((key) => live.has(key)).map((key) => [key, marks[key]]));
+}
+
 /** The query keys, all under one prefix so `REHYDRATE_KEYS` covers them with `["system"]`. */
 const SESSIONS_KEY = ["system", "sessions"] as const;
 const CREDENTIALS_KEY = ["system", "credentials"] as const;
@@ -79,6 +99,13 @@ export interface Quiet {
 export interface Sessions {
   list: AuthSession[];
   /**
+   * A read has landed at least once. Without it a section cannot tell an empty
+   * list from one it has not been told about yet, and would open by asserting
+   * `No other sessions.` on the frame the bench mounts — a sentence that is
+   * also never true, since a signed-in reader always holds one.
+   */
+  read: boolean;
+  /**
    * Sessions this client has ended, by `session_id` → when the server confirmed
    * it. Not when the button was pressed: task 9 prints this as `ended 21:15 ·
    * applied`, and `applied` is a confirmed-state word.
@@ -86,14 +113,23 @@ export interface Sessions {
   ended: Record<string, number>;
   /** Sessions with a `DELETE` in flight, by `session_id`. */
   ending: Record<string, boolean>;
+  /**
+   * Why a row's own end was refused, by `session_id`. Keyed, like `ending`
+   * beside it: one string per section would let a second row's attempt erase
+   * the first's refusal, and `errorText` carries no device name to tell them
+   * apart with.
+   */
+  failed: Record<string, string>;
   end: (id: string) => void;
-  /** The read's failure, or the last end's. Null while the bench is not showing. */
+  /** The read's failure. Null while the bench is not showing. */
   error: string | null;
 }
 
 /** The registered passkeys. Nothing here removes one — that is a foot-gun with no design. */
 export interface Credentials {
   list: Credential[];
+  /** A read has landed at least once — see `Sessions.read`. */
+  read: boolean;
   /**
    * End this device's own session. It lives beside the passkeys rather than in
    * `sessions` because that is where the control is: the sessions list offers
@@ -135,6 +171,8 @@ export interface CredentialSave {
 
 export interface Integrations {
   list: Integration[];
+  /** A read has landed at least once — see `Sessions.read`. */
+  read: boolean;
   /** Each integration's state word, round trip and last failure status, by name. */
   rows: Record<string, ServiceRow>;
   /** One entry per name this client has tried to save credentials for. */
@@ -145,12 +183,17 @@ export interface Integrations {
 
 export interface Attention {
   domains: AttentionDomain[];
+  /** A read has landed at least once — see `Sessions.read`. */
+  read: boolean;
   /** Domains with a write in flight, by name. */
   saving: Record<string, boolean>;
+  /** Why a domain's own write was refused, by name — keyed for `Sessions.failed`'s reason. */
+  failed: Record<string, string>;
   /** Let the Reflex act on this entity without asking. */
   allow: (domain: string, entity: string) => void;
   /** Take it back — a sticky removal the YAML seed will not undo. */
   ask: (domain: string, entity: string) => void;
+  /** The read's failure. A 503 here is the store being down, never an empty set. */
   error: string | null;
 }
 
@@ -241,12 +284,12 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
   const [dndError, setDndError] = useState<string | null>(null);
   const [ended, setEnded] = useState<Record<string, number>>({});
   const [ending, setEnding] = useState<Record<string, boolean>>({});
-  const [endError, setEndError] = useState<string | null>(null);
+  const [endFailed, setEndFailed] = useState<Record<string, string>>({});
   const [signingOut, setSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState<string | null>(null);
   const [saves, setSaves] = useState<Record<string, CredentialSave>>({});
   const [attentionSaving, setAttentionSaving] = useState<Record<string, boolean>>({});
-  const [attentionError, setAttentionError] = useState<string | null>(null);
+  const [attentionFailed, setAttentionFailed] = useState<Record<string, string>>({});
   const [pairing, setPairing] = useState<{ code: string; expires_at: string } | null>(null);
   const [minting, setMinting] = useState(false);
   const [pairingError, setPairingError] = useState<string | null>(null);
@@ -465,7 +508,13 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
     (id: string) => {
       const fresh = claim(`session:${id}`);
       setEnding((current) => ({ ...current, [id]: true }));
-      setEndError(null);
+      // This row's own slot, so a second row's attempt cannot erase it.
+      setEndFailed((current) => {
+        if (current[id] === undefined) return current;
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
       const settle = () =>
         setEnding((current) => {
           const next = { ...current };
@@ -488,7 +537,7 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
         (error: unknown) => {
           if (!fresh()) return;
           settle();
-          setEndError(errorText(error));
+          setEndFailed((current) => ({ ...current, [id]: errorText(error) }));
         },
       );
     },
@@ -505,13 +554,19 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
         setSigningOut(false);
         // The cookie is gone; this re-read is the request that 401s and raises
         // the Expired gate over the bench, exactly as ending your own session
-        // does. Nothing here claims to have signed out until the route said so.
+        // does.
         void queryClient.invalidateQueries({ queryKey: SESSIONS_KEY });
       },
       (error: unknown) => {
         if (!fresh()) return;
         setSigningOut(false);
-        setSignOutError(errorText(error));
+        // `auth_routes.logout` clears the cookie on its 503 as well as on its
+        // 200, so this device is signed out whatever the status line said. The
+        // re-read goes out on this branch too — without it the Expired gate
+        // arrives half a minute later on the overview poll, with nothing tying
+        // it to the tap the reader was told had failed.
+        setSignOutError(`${errorText(error)} · ${SIGNED_OUT_ANYWAY}`);
+        void queryClient.invalidateQueries({ queryKey: SESSIONS_KEY });
       },
     );
   }, [claim, queryClient]);
@@ -525,9 +580,31 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
         ...current,
         [name]: { saving: true, savedAt: null, error: null, gated: false },
       }));
-      void saveCredentials(name, values).then(
+      // Nothing in this tree sets a fetch timeout, and a socket the house
+      // accepts and never answers would leave this row reading `Testing…` and
+      // refusing every press until the Workshop is closed. `done` is what makes
+      // the timer and the answer mutually exclusive: whichever arrives first
+      // settles the row, and the loser writes nothing.
+      const leave = new AbortController();
+      let done = false;
+      const expire = setTimeout(() => {
+        if (done || !fresh()) return;
+        done = true;
+        leave.abort();
+        setSaves((current) => ({
+          ...current,
+          [name]: { saving: false, savedAt: null, error: SAVE_TIMED_OUT, gated: false },
+        }));
+      }, SAVE_TIMEOUT_MS);
+      const settle = (): boolean => {
+        if (done || !fresh()) return false;
+        done = true;
+        clearTimeout(expire);
+        return true;
+      };
+      void saveCredentials(name, values, leave.signal).then(
         async () => {
-          if (!fresh()) return;
+          if (!settle()) return;
           // Built fresh rather than spread over whatever is there: an entry left
           // by an earlier attempt belongs to a different request.
           setSaves((current) => ({
@@ -555,7 +632,7 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
           void queryClient.invalidateQueries({ queryKey: INTEGRATIONS_KEY });
         },
         (error: unknown) => {
-          if (!fresh()) return;
+          if (!settle()) return;
           setSaves((current) => ({
             ...current,
             [name]: {
@@ -580,7 +657,12 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
     (domain: string, allow: string[], ask: string[]) => {
       const fresh = claim(`attention:${domain}`);
       setAttentionSaving((current) => ({ ...current, [domain]: true }));
-      setAttentionError(null);
+      setAttentionFailed((current) => {
+        if (current[domain] === undefined) return current;
+        const next = { ...current };
+        delete next[domain];
+        return next;
+      });
       const settle = () =>
         setAttentionSaving((current) => {
           const next = { ...current };
@@ -605,7 +687,7 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
         },
         (error: unknown) => {
           if (!fresh()) return;
-          setAttentionError(errorText(error));
+          setAttentionFailed((current) => ({ ...current, [domain]: errorText(error) }));
           settle();
           // The route writes one entity at a time and says outright that the
           // writes are not transactional, so a refusal can leave part of the
@@ -632,6 +714,12 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
     const fresh = claim("pairing");
     setMinting(true);
     setPairingError(null);
+    // The code on screen belongs to the request that is now being replaced, and
+    // there is no route that revokes it: a second mint leaves the first live on
+    // the server for its five minutes with nothing showing it. Clearing here is
+    // the most the client can say truthfully — and it is also what keeps a
+    // *failed* second mint from leaving the old code standing under the error.
+    setPairing(null);
     void mintPairingCode(leaving.current.signal).then(
       (minted) => {
         // Without the guard, two mints answering out of order would leave the
@@ -696,11 +784,37 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
 
   // ── What the bench reads ───────────────────────────────────────────────────
 
+  // A mark whose record has gone is a mark with nothing left to be about.
+  // Adjusted during render — the pattern React documents for resetting state
+  // when an input changes — and keyed on the read that would have dropped it,
+  // so an ended session's `applied` line goes on the re-read that stops
+  // listing it, which is exactly when the row itself goes.
+  const sessionList = sessionsQuery.data ?? [];
+  const [prunedSessions, setPrunedSessions] = useState(sessionsQuery.dataUpdatedAt);
+  if (prunedSessions !== sessionsQuery.dataUpdatedAt) {
+    setPrunedSessions(sessionsQuery.dataUpdatedAt);
+    const live = new Set(sessionList.map((session) => session.session_id));
+    setEnded((current) => keepLive(current, live));
+    setEndFailed((current) => keepLive(current, live));
+  }
+
+  const [prunedSaves, setPrunedSaves] = useState(integrationsQuery.dataUpdatedAt);
+  if (prunedSaves !== integrationsQuery.dataUpdatedAt) {
+    setPrunedSaves(integrationsQuery.dataUpdatedAt);
+    setSaves((current) => keepLive(current, new Set(list.map((entry) => entry.name))));
+  }
+
   const quietActive = dnd?.active ?? false;
   const librarian = overview?.librarian;
   const idle = finiteNumber(overview?.session?.idle_minutes);
 
-  /** A section's own failure, and nothing at all from a bench nobody is looking at. */
+  /**
+   * A section's own failure, and nothing at all from a bench nobody is looking
+   * at. The read outranks the write, and the order is load-bearing: a write
+   * refused ten minutes ago must not stand in front of a list that cannot be
+   * read *now*, because the second is a fact about everything on screen and
+   * the first is a fact about one tap.
+   */
   const complaint = (read: Error | null, wrote: string | null): string | null => {
     if (!enabled) return null;
     return read !== null ? errorText(read) : wrote;
@@ -723,20 +837,28 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
       onHeld,
     },
     sessions: {
-      list: sessionsQuery.data ?? [],
+      list: sessionList,
+      // `dataUpdatedAt` and not `isSuccess`: react-query drops back to `error`
+      // status on a later failure while keeping the data, and the question a
+      // section is asking is "has this ever been read", not "did the last
+      // attempt succeed".
+      read: sessionsQuery.dataUpdatedAt !== 0,
       ended,
       ending,
+      failed: enabled ? endFailed : {},
       end,
-      error: complaint(sessionsQuery.error, endError),
+      error: complaint(sessionsQuery.error, null),
     },
     credentials: {
       list: credentialsQuery.data ?? [],
+      read: credentialsQuery.dataUpdatedAt !== 0,
       signOut,
       signingOut,
       error: complaint(credentialsQuery.error, signOutError),
     },
     integrations: {
       list,
+      read: integrationsQuery.dataUpdatedAt !== 0,
       rows,
       saves,
       save,
@@ -744,10 +866,12 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
     },
     attention: {
       domains: attentionQuery.data ?? [],
+      read: attentionQuery.dataUpdatedAt !== 0,
       saving: attentionSaving,
+      failed: enabled ? attentionFailed : {},
       allow,
       ask,
-      error: complaint(attentionQuery.error, attentionError),
+      error: complaint(attentionQuery.error, null),
     },
     pairing: {
       code: pairing?.code ?? null,

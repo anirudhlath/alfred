@@ -598,11 +598,27 @@ function MaintenanceSection({ maintenance, now }: { maintenance: Maintenance; no
  * and the bench was already the largest view in `src/workshop/` without them.
  */
 export function SystemBench({ system }: SystemBenchProps) {
-  // The clock every stamp on the bench is dated against — read once when the
-  // bench mounts, as `MemoryBench` and `TriggersBench` do, so the consolidation
-  // row and the expiry chips agree about which day tomorrow is. The chips send
-  // the clock as it is at the *tap*, which is the instant the house will hold.
-  const [now] = useState(() => Date.now());
+  // The clock every stamp on the bench is dated against — one clock, so two
+  // stamps a pixel apart never disagree about which day `tomorrow` is. The
+  // chips send the clock as it is at the *tap*, which is the instant the house
+  // will hold.
+  //
+  // It ticks, where `MemoryBench` and `TriggersBench` freeze theirs at mount.
+  // They can: their rows are dated in days. This bench prints `signed in 23:50`
+  // and `last used 23:50` off `sessionMeta`/`credentialMeta`, which choose
+  // between `HH:MM`, `yesterday` and a date by comparing against this value —
+  // so a Workshop left open across midnight would relabel last night's session
+  // as tonight's and go on doing it until something else re-rendered. A minute
+  // is the finest thing either formatter resolves, so a minute is what it costs.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    // Not aligned to the top of the minute: the drift is at most 59 s on a
+    // boundary a reader cannot see, and an aligned timer is a second timer to
+    // get wrong. In an effect and never in the render body — the hooks purity
+    // rule bans reading the clock while rendering.
+    const tick = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(tick);
+  }, []);
   const { online, readAt } = system;
   // Two different silences. A grid that has *never* been read says `not read
   // yet` and keeps its own em-dashes; one that has stopped being refreshed

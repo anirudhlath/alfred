@@ -18,6 +18,7 @@ import {
   overviewFixture,
 } from "@/test/fixtures";
 import { OVERVIEW_POLL_MS } from "@/room/useOverview";
+import { SAVE_TIMED_OUT, SAVE_TIMEOUT_MS } from "@/lib/system";
 import { STALE_AFTER_MS, useSystem } from "./useSystem";
 
 const OVERVIEW = "/api/admin/overview";
@@ -344,6 +345,7 @@ describe("useSystem", () => {
       state: "ok",
       latency: 42,
       status: null,
+      detail: null,
     });
     expect(result.current.integrations.rows["home-service"]?.latency).toBe(210);
   });
@@ -576,13 +578,43 @@ describe("useSystem", () => {
     expect(result.current.sessions.ended["sess-laptop"]).toBeUndefined();
 
     unhold("DELETE", sessionPath("sess-laptop"));
-    answer("GET", SESSIONS, { status: 200, body: { sessions: [PHONE] } });
     await releaseNext("DELETE", sessionPath("sess-laptop"), { status: 200, body: { deleted: true } });
 
-    await waitFor(() => expect(result.current.sessions.list).toHaveLength(1));
-    expect(result.current.sessions.ended["sess-laptop"]).toBeGreaterThan(0);
+    // The re-read still carries the row — the mark exists for exactly this
+    // window, between the confirmation and the list catching up.
+    await waitFor(() => expect(result.current.sessions.ended["sess-laptop"]).toBeGreaterThan(0));
+    expect(result.current.sessions.list).toHaveLength(2);
     expect(result.current.sessions.ending["sess-laptop"]).toBeUndefined();
     expect(countOf("DELETE", sessionPath("sess-laptop"))).toBe(1);
+  });
+
+  // The mark is a fact about a row. With the row gone it is a fact about
+  // nothing, and a map that only ever grows is a leak for the life of the
+  // Workshop.
+  it("drops the ended mark once the list no longer carries the row", async () => {
+    const { result } = await openBench();
+
+    answer("GET", SESSIONS, { status: 200, body: { sessions: [PHONE] } });
+    act(() => result.current.sessions.end("sess-laptop"));
+
+    await waitFor(() => expect(result.current.sessions.list).toHaveLength(1));
+    await waitFor(() => expect(result.current.sessions.ended["sess-laptop"]).toBeUndefined());
+    expect(Object.keys(result.current.sessions.ended)).toEqual([]);
+  });
+
+  // A save entry for a service the registry no longer carries has no row to
+  // render it either.
+  it("drops a credential save once the registry no longer carries the service", async () => {
+    const { result } = await openBench();
+
+    // The registry has dropped `weather` by the time the save's own re-read
+    // goes out, so the row it belonged to is gone with it.
+    answer("GET", INTEGRATIONS, { status: 200, body: [HOME] });
+    act(() => result.current.integrations.save("weather", { api_key: "k" }));
+
+    await waitFor(() => expect(result.current.integrations.list).toHaveLength(1));
+    await waitFor(() => expect(result.current.integrations.saves["weather"]).toBeUndefined());
+    expect(Object.keys(result.current.integrations.saves)).toEqual([]);
   });
 
   it("does not come apart when you end the session you are holding", async () => {
@@ -602,20 +634,43 @@ describe("useSystem", () => {
     expect(countOf("GET", SESSIONS)).toBe(2);
   });
 
-  it("reports a refused end, and clears the complaint on the next try", async () => {
+  it("reports a refused end on the row it was refused for, and clears it on the next try", async () => {
     answer("DELETE", sessionPath("sess-laptop"), { status: 503, body: { detail: "Redis unavailable" } });
     const { result } = await openBench();
 
     act(() => result.current.sessions.end("sess-laptop"));
-    await waitFor(() => expect(result.current.sessions.error).toBe("Redis unavailable"));
+    await waitFor(() =>
+      expect(result.current.sessions.failed["sess-laptop"]).toBe("Redis unavailable"),
+    );
     expect(result.current.sessions.ending["sess-laptop"]).toBeUndefined();
     expect(result.current.sessions.list).toHaveLength(2);
+    // A refused *write* is announced on the control that sent it; the section's
+    // own line is for a list that could not be read.
+    expect(result.current.sessions.error).toBeNull();
 
     answer("DELETE", sessionPath("sess-laptop"), { status: 200, body: { deleted: true } });
     act(() => result.current.sessions.end("sess-laptop"));
 
     await waitFor(() => expect(result.current.sessions.ended["sess-laptop"]).toBeGreaterThan(0));
-    expect(result.current.sessions.error).toBeNull();
+    expect(result.current.sessions.failed["sess-laptop"]).toBeUndefined();
+  });
+
+  // `errorText` carries no device name, so one shared slot would say a session
+  // failed without saying which.
+  it("keeps one row's refusal out of another row's way", async () => {
+    answer("DELETE", sessionPath("sess-laptop"), { status: 503, body: { detail: "Redis unavailable" } });
+    answer("DELETE", sessionPath("sess-desk"), { status: 502, body: { detail: "Bad gateway" } });
+    const { result } = await openBench();
+
+    act(() => result.current.sessions.end("sess-laptop"));
+    await waitFor(() =>
+      expect(result.current.sessions.failed["sess-laptop"]).toBe("Redis unavailable"),
+    );
+
+    act(() => result.current.sessions.end("sess-desk"));
+    await waitFor(() => expect(result.current.sessions.failed["sess-desk"]).toBe("Bad gateway"));
+    // The first row's refusal is still standing.
+    expect(result.current.sessions.failed["sess-laptop"]).toBe("Redis unavailable");
   });
 
   it("lets the newest end of one session have the last word", async () => {
@@ -679,6 +734,74 @@ describe("useSystem", () => {
     expect(result.current.integrations.saves["weather"]?.error).toBeNull();
     // `configured` moved, and the form's placeholders are drawn from it.
     await waitFor(() => expect(countOf("GET", INTEGRATIONS)).toBe(2));
+  });
+
+  // A save entry is a fact about the attempt in flight, not a pile of every
+  // attempt ever made: spread over the last one it would carry that one's
+  // `savedAt`, and the row would read `saved · testing` for a PUT that has not
+  // been answered yet.
+  it("starts each save from nothing, not from the last one's answer", async () => {
+    const { result } = await openBench();
+
+    act(() => result.current.integrations.save("weather", { api_key: "abc" }));
+    await waitFor(() =>
+      expect(result.current.integrations.saves["weather"]?.savedAt).toBeGreaterThan(0),
+    );
+
+    hold("PUT", credentialsPath("weather"));
+    act(() => result.current.integrations.save("weather", { api_key: "def" }));
+
+    await waitFor(() => expect(result.current.integrations.saves["weather"]?.saving).toBe(true));
+    expect(result.current.integrations.saves["weather"]?.savedAt).toBeNull();
+    expect(result.current.integrations.rows["weather"]?.state).toBe("testing");
+  });
+
+  // Nothing else in this tree has a timeout, and this one write cannot go
+  // without: a hung PUT leaves the button reading `Testing…`, refusing every
+  // press, with no recovery short of closing the Workshop.
+  it("gives up on a save that never answers, and does not guess what happened", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { result } = await openBench();
+    hold("PUT", credentialsPath("weather"));
+
+    act(() => result.current.integrations.save("weather", { api_key: "abc" }));
+    await waitFor(() => expect(result.current.integrations.saves["weather"]?.saving).toBe(true));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SAVE_TIMEOUT_MS);
+    });
+
+    await waitFor(() => expect(result.current.integrations.saves["weather"]?.saving).toBe(false));
+    expect(result.current.integrations.saves["weather"]?.error).toBe(SAVE_TIMED_OUT);
+    // Never a stamp: the client has no idea whether the credentials were
+    // stored, and `savedAt` is what the row prints as `saved · testing`.
+    expect(result.current.integrations.saves["weather"]?.savedAt).toBeNull();
+    expect(result.current.integrations.rows["weather"]?.state).not.toBe("queued");
+  });
+
+  it("does not time out a save that answered in time", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { result } = await openBench();
+    hold("PUT", credentialsPath("weather"));
+
+    act(() => result.current.integrations.save("weather", { api_key: "abc" }));
+    await waitFor(() => expect(result.current.integrations.saves["weather"]?.saving).toBe(true));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SAVE_TIMEOUT_MS - 1_000);
+    });
+    unhold("PUT", credentialsPath("weather"));
+    await releaseNext("PUT", credentialsPath("weather"), { status: 200, body: { status: "ok" } });
+
+    await waitFor(() =>
+      expect(result.current.integrations.saves["weather"]?.savedAt).toBeGreaterThan(0),
+    );
+    // And the timer that is still pending must not fire over the answer.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SAVE_TIMEOUT_MS);
+    });
+    expect(result.current.integrations.saves["weather"]?.error).toBeNull();
+    expect(result.current.integrations.saves["weather"]?.saving).toBe(false);
   });
 
   it("says testing, not queued, while the credentials are still going", async () => {
@@ -878,8 +1001,11 @@ describe("useSystem", () => {
     act(() => result.current.attention.allow("fan", "fan.bathroom"));
 
     await waitFor(() =>
-      expect(result.current.attention.error).toBe("Attention store unavailable"),
+      expect(result.current.attention.failed["fan"]).toBe("Attention store unavailable"),
     );
+    // Keyed, like the busy flag beside it: a write on another domain must not
+    // erase it, and a refused write is not a list that could not be read.
+    expect(result.current.attention.error).toBeNull();
     // The route writes one entity at a time and is explicit that the writes are
     // not transactional: what is on screen is no longer evidence.
     await waitFor(() => expect(countOf("GET", ATTENTION)).toBe(before + 1));
@@ -994,6 +1120,53 @@ describe("useSystem", () => {
     expect(result.current.pairing.error).toBeNull();
   });
 
+  // A second code silently orphans the first, which stays live on the server for
+  // five minutes with nothing on screen showing it. The reader must not be
+  // holding a code that is no longer the one the house will accept.
+  it("takes the old code down the moment a new one is asked for", async () => {
+    answer("POST", PAIRING, {
+      status: 200,
+      body: { code: "042317", expires_at: "2026-09-16T21:20:00Z" },
+    });
+    const { result } = await openBench();
+
+    act(() => result.current.pairing.mint());
+    await waitFor(() => expect(result.current.pairing.code).toBe("042317"));
+
+    hold("POST", PAIRING);
+    act(() => result.current.pairing.mint());
+    // In flight: the first code is already gone rather than sitting under a
+    // spinner as though it were still good.
+    await waitFor(() => expect(result.current.pairing.minting).toBe(true));
+    expect(result.current.pairing.code).toBeNull();
+    expect(result.current.pairing.expiresAt).toBeNull();
+
+    unhold("POST", PAIRING);
+    await releaseNext("POST", PAIRING, {
+      status: 200,
+      body: { code: "998811", expires_at: "2026-09-16T21:25:00Z" },
+    });
+    await waitFor(() => expect(result.current.pairing.code).toBe("998811"));
+  });
+
+  it("leaves no code behind when the second mint is refused", async () => {
+    answer("POST", PAIRING, {
+      status: 200,
+      body: { code: "042317", expires_at: "2026-09-16T21:20:00Z" },
+    });
+    const { result } = await openBench();
+
+    act(() => result.current.pairing.mint());
+    await waitFor(() => expect(result.current.pairing.code).toBe("042317"));
+
+    answer("POST", PAIRING, { status: 503, body: { detail: "Redis unavailable" } });
+    act(() => result.current.pairing.mint());
+
+    await waitFor(() => expect(result.current.pairing.error).toBe("Redis unavailable"));
+    // The refusal must not sit under a code the house may already have replaced.
+    expect(result.current.pairing.code).toBeNull();
+  });
+
   it("forgets a refused mint when the bench is left, not just while it is shut", async () => {
     answer("POST", PAIRING, { status: 503, body: { detail: "Redis unavailable" } });
     const { result, rerender } = await openBench();
@@ -1030,16 +1203,62 @@ describe("useSystem", () => {
     await waitFor(() => expect(expired).toHaveBeenCalled());
   });
 
-  it("says why a refused sign-out did not land, and stays signed in", async () => {
+  // `auth_routes.logout` builds its 503 response and then calls
+  // `_clear_session_cookie` unconditionally, so the cookie is gone whatever the
+  // status line says. Reporting "it failed" and leaving the passkeys up would
+  // let the Expired gate arrive half a minute later with nothing tying it to the
+  // tap the reader was told had not landed.
+  it("says a refused sign-out signed you out anyway, and goes and looks", async () => {
+    const expired = listen("expired");
     answer("POST", LOGOUT, { status: 503, body: { detail: "Session store unavailable" } });
+    answer("GET", SESSIONS, { status: 401, body: { detail: "Not authenticated" } });
     const { result } = await openBench();
 
     act(() => result.current.credentials.signOut());
 
-    await waitFor(() => expect(result.current.credentials.error).toBe("Session store unavailable"));
+    await waitFor(() =>
+      expect(result.current.credentials.error).toBe(
+        "Session store unavailable · signed out here either way · " +
+          "the house may hold the session until it expires",
+      ),
+    );
     expect(result.current.credentials.signingOut).toBe(false);
-    // The passkeys are still on screen: a refused sign-out changed nothing.
-    expect(result.current.credentials.list).toHaveLength(1);
+    // The re-read goes out on this branch too, and it is the request that 401s.
+    await waitFor(() => expect(expired).toHaveBeenCalled());
+  });
+
+  // A refusal is news about one tap. The next tap is a new one, and the old
+  // sentence must not still be standing when it answers.
+  it("clears a stale sign-out refusal when the next attempt starts", async () => {
+    answer("POST", LOGOUT, { status: 503, body: { detail: "Session store unavailable" } });
+    const { result } = await openBench();
+
+    act(() => result.current.credentials.signOut());
+    await waitFor(() => expect(result.current.credentials.error).not.toBeNull());
+
+    answer("POST", LOGOUT, { status: 200, body: { status: "ok" } });
+    act(() => result.current.credentials.signOut());
+    await waitFor(() => expect(result.current.credentials.signingOut).toBe(false));
+    expect(result.current.credentials.error).toBeNull();
+  });
+
+  // The guard every other write on this bench has. Without it a superseded
+  // sign-out's answer lands on top of the one the reader is waiting for.
+  it("lets the newest sign-out have the last word", async () => {
+    const { result } = await openBench();
+    hold("POST", LOGOUT);
+
+    act(() => result.current.credentials.signOut());
+    act(() => result.current.credentials.signOut());
+    unhold("POST", LOGOUT);
+
+    // The superseded attempt answers first, and with a refusal: neither its
+    // sentence nor its settling may reach the control.
+    await releaseNext("POST", LOGOUT, { status: 503, body: { detail: "Session store unavailable" } });
+    await releaseNext("POST", LOGOUT, { status: 200, body: { status: "ok" } });
+
+    await waitFor(() => expect(result.current.credentials.signingOut).toBe(false));
+    expect(result.current.credentials.error).toBeNull();
   });
 
   it("queues a drain and a consolidation, and leaves them queued", async () => {
@@ -1261,6 +1480,54 @@ describe("useSystem", () => {
     expect(result.current.online).toBe(false);
   });
 
+  // Every one of these sections has an empty-state sentence, and each of them is
+  // a claim about the house. Before the first answer the section has nothing to
+  // claim: `No other sessions.` on a signed-in reader is only ever false.
+  it("says no list has been read until one has", async () => {
+    hold("GET", SESSIONS);
+    hold("GET", CREDENTIALS);
+    hold("GET", INTEGRATIONS);
+    hold("GET", ATTENTION);
+    const { result } = renderSystem();
+
+    expect(result.current.sessions.read).toBe(false);
+    expect(result.current.credentials.read).toBe(false);
+    expect(result.current.integrations.read).toBe(false);
+    expect(result.current.attention.read).toBe(false);
+
+    unhold("GET", SESSIONS);
+    unhold("GET", CREDENTIALS);
+    unhold("GET", INTEGRATIONS);
+    unhold("GET", ATTENTION);
+    await releaseNext("GET", SESSIONS);
+    await releaseNext("GET", CREDENTIALS);
+    await releaseNext("GET", INTEGRATIONS);
+    await releaseNext("GET", ATTENTION);
+
+    await waitFor(() => expect(result.current.sessions.read).toBe(true));
+    await waitFor(() => expect(result.current.credentials.read).toBe(true));
+    await waitFor(() => expect(result.current.integrations.read).toBe(true));
+    await waitFor(() => expect(result.current.attention.read).toBe(true));
+  });
+
+  // "Has this ever been read", not "did the last attempt succeed": react-query
+  // drops back to `error` status on a later failure while keeping the data, and
+  // the rows underneath are still the ones that were read.
+  it("goes on saying a list has been read after a later attempt fails", async () => {
+    const client = makeClient();
+    const { result } = await openBench(client);
+    expect(result.current.sessions.read).toBe(true);
+
+    answer("GET", SESSIONS, { status: 503, body: { detail: "Session store unavailable" } });
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["system", "sessions"] });
+    });
+
+    await waitFor(() => expect(result.current.sessions.error).toBe("Session store unavailable"));
+    expect(result.current.sessions.read).toBe(true);
+    expect(result.current.sessions.list).toHaveLength(2);
+  });
+
   it("reports one section's failed read without emptying the others", async () => {
     answer("GET", SESSIONS, { status: 503, body: { detail: "Session store unavailable" } });
     const { result } = renderSystem();
@@ -1272,6 +1539,24 @@ describe("useSystem", () => {
     expect(result.current.attention.domains.length).toBeGreaterThan(0);
     // The spine answered, so the bench itself has nothing to complain about.
     expect(result.current.error).toBeNull();
+  });
+
+  // A write refused ten minutes ago must not stand in front of a list that
+  // cannot be read *now*: the second is a fact about everything on the card, the
+  // first is a fact about one tap.
+  it("lets a live read failure outrank a write refusal", async () => {
+    answer("GET", CREDENTIALS, { status: 503, body: { detail: "Passkey store unavailable" } });
+    answer("POST", LOGOUT, { status: 503, body: { detail: "Session store unavailable" } });
+    const { result } = renderSystem();
+
+    await waitFor(() => expect(result.current.credentials.error).toBe("Passkey store unavailable"));
+
+    act(() => result.current.credentials.signOut());
+    await waitFor(() => expect(result.current.credentials.signingOut).toBe(false));
+
+    // Both are now true, and the list nobody can read is the one that governs
+    // every row on the card.
+    expect(result.current.credentials.error).toBe("Passkey store unavailable");
   });
 
   it("complains on the spine when the overview is the read that failed", async () => {

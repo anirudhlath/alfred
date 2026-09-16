@@ -23,7 +23,8 @@ const LAPTOP = authSession({
   session_id: "sess-laptop",
   credential_id: "cred-laptop",
   device_name: "Laptop",
-  ip: "192.168.1.31",
+  // A documentation address (RFC 5737), never a real one — `alfred` is public.
+  ip: "192.0.2.31",
   current: false,
 });
 
@@ -52,19 +53,30 @@ const ATTENTION_INTRO =
   "Alfred acts on these without asking. Everything else it asks about first.";
 
 function sessions(overrides: Partial<Sessions> = {}): Sessions {
-  return { list: [PHONE, LAPTOP], ended: {}, ending: {}, end: vi.fn(), error: null, ...overrides };
+  return {
+    list: [PHONE, LAPTOP],
+    read: true,
+    ended: {},
+    ending: {},
+    failed: {},
+    end: vi.fn(),
+    error: null,
+    ...overrides,
+  };
 }
 
 const row = (overrides: Partial<ServiceRow> = {}): ServiceRow => ({
   state: "ok",
   latency: 210,
   status: null,
+  detail: null,
   ...overrides,
 });
 
 function integrations(overrides: Partial<Integrations> = {}): Integrations {
   return {
     list: [HOME, WEATHER],
+    read: true,
     rows: { "home-service": row(), weather: row({ state: "unset", latency: null }) },
     saves: {},
     save: vi.fn(),
@@ -76,6 +88,7 @@ function integrations(overrides: Partial<Integrations> = {}): Integrations {
 function credentials(overrides: Partial<Credentials> = {}): Credentials {
   return {
     list: [credential({ current: true })],
+    read: true,
     signOut: vi.fn(),
     signingOut: false,
     error: null,
@@ -93,7 +106,9 @@ function attention(overrides: Partial<Attention> = {}): Attention {
       { domain: "light", members: ["light.hall"], seen: ["light.hall", "light.study"] },
       { domain: "lock", members: [], seen: ["lock.front"] },
     ],
+    read: true,
     saving: {},
+    failed: {},
     allow: vi.fn(),
     ask: vi.fn(),
     error: null,
@@ -149,6 +164,9 @@ describe("SessionsSection", () => {
     expect(screen.queryByRole("button", { name: /current/ })).not.toBeInTheDocument();
     expect(within(rowOf("Phone")).queryByRole("button")).not.toBeInTheDocument();
     const end = screen.getByRole("button", { name: /^End Laptop$/ });
+    // The `aria-label` carries the device name so four rows do not all announce
+    // the same word; the visible control still has to read `End`.
+    expect(end.textContent).toBe("End");
     expect(end).toHaveStyle({ color: "var(--accent-text)" });
     expect(tall(end)).toBe(true);
   });
@@ -224,6 +242,70 @@ describe("SessionsSection", () => {
     expect(screen.getByText("No other sessions.")).toBeInTheDocument();
   });
 
+  // A signed-in reader always has at least their own session, so this sentence
+  // is only ever shown when it is false: before the first answer the list is
+  // empty because nothing has replied.
+  it("says nothing at all until a read has landed", () => {
+    render(<SessionsSection sessions={sessions({ list: [], read: false })} now={SYSTEM_NOW} />);
+    expect(screen.queryByText("No other sessions.")).not.toBeInTheDocument();
+  });
+
+  it("does not call a list it could not read an empty one", () => {
+    render(
+      <SessionsSection
+        sessions={sessions({ list: [], error: "Session store unavailable" })}
+        now={SYSTEM_NOW}
+      />,
+    );
+    expect(screen.getByText("Session store unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("No other sessions.")).not.toBeInTheDocument();
+  });
+
+  // `endFailed` is keyed exactly as `ending` is: a second row's attempt must not
+  // erase the first row's refusal, and `errorText` carries no device name.
+  it("puts a refused end on the row that was refused", () => {
+    render(
+      <SessionsSection
+        sessions={sessions({ failed: { "sess-laptop": "503 · Session store unavailable" } })}
+        now={SYSTEM_NOW}
+      />,
+    );
+    const refusal = within(rowOf("Laptop")).getByText("503 · Session store unavailable");
+    expect(hasClass(refusal, "t-meta-strong")).toBe(true);
+    expect(within(rowOf("Phone")).queryByText(/503/)).not.toBeInTheDocument();
+    // It failed, so the session is still live and still endable.
+    expect(screen.getByRole("button", { name: /^End Laptop$/ })).toBeInTheDocument();
+  });
+
+  // Two laptops on one account share a device name. Keyed on it they would be
+  // one React child, and the ended stamp would land on whichever won.
+  it("keys a row on its session id and not on the device's name", () => {
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+    render(
+      <SessionsSection
+        sessions={sessions({
+          list: [
+            authSession({ session_id: "sess-a", device_name: "Laptop" }),
+            authSession({ session_id: "sess-b", device_name: "Laptop" }),
+          ],
+          ended: { "sess-b": ENDED_AT },
+        })}
+        now={SYSTEM_NOW}
+      />,
+    );
+    expect(screen.getAllByText("Laptop")).toHaveLength(2);
+    expect(screen.getAllByText("ended 21:15 · applied")).toHaveLength(1);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  // `SectionNote` returns nothing when there is nothing to say; a bordered strip
+  // of empty card is a fact the reader has to work out is not one.
+  it("leaves no empty note behind when nothing failed", () => {
+    render(<SessionsSection sessions={sessions()} now={SYSTEM_NOW} />);
+    expect(document.querySelectorAll("p")).toHaveLength(0);
+  });
+
   it("carries its own read failure rather than taking the bench down", () => {
     render(
       <SessionsSection sessions={sessions({ error: "Session store unavailable" })} now={SYSTEM_NOW} />,
@@ -257,9 +339,11 @@ describe("ServicesSection", () => {
     render(<ServicesSection integrations={integrations()} />);
     expect(screen.getByRole("heading", { name: "Connected services" })).toBeInTheDocument();
     expect(screen.getByText("home-service")).toBeInTheDocument();
-    // Decorative meta: the name above it and the note below carry the facts.
+    // Not decorative: it is the only thing separating `weather` the adapter from
+    // `weather` the registry service, and `--muted` is 3.20:1 on this card.
     const kind = screen.getByText("service · service");
-    expect(hasClass(kind, "t-meta")).toBe(true);
+    expect(hasClass(kind, "t-meta-strong")).toBe(true);
+    expect(hasClass(kind, "t-meta")).toBe(false);
     expect(screen.getByText("weather · adapter")).toBeInTheDocument();
   });
 
@@ -300,12 +384,12 @@ describe("ServicesSection", () => {
     expect(ok).toHaveAttribute("aria-hidden", "true");
   });
 
-  it("times the round trip it has one for, and stays silent about the ones it does not", () => {
+  // The handoff puts latency in the Health grid and nowhere else. Beside the
+  // state word it is a second reading of one probe, and during a save it is a
+  // round trip measured against the credentials being replaced.
+  it("leaves the round trip to the Health grid", () => {
     render(<ServicesSection integrations={integrations()} />);
-    expect(screen.getByText("210 ms")).toBeInTheDocument();
-    // A failed attempt has no round trip of its own, and the retained number
-    // beside it belongs to an earlier one.
-    expect(screen.queryAllByText(/ ms$/)).toHaveLength(1);
+    expect(screen.queryAllByText(/ ms$/)).toHaveLength(0);
   });
 
   // The section prints `serviceNote` and never a word of its own.
@@ -320,8 +404,15 @@ describe("ServicesSection", () => {
         "502 from the service on the last check · stored value kept until you replace it",
       ],
       [
+        // No status on the wire and nothing said: the row must not invent one.
         row({ state: "failed", status: null }),
-        "401 from the service on the last check · stored value kept until you replace it",
+        "the last check came back unhealthy · stored value kept until you replace it",
+      ],
+      [
+        // `_service_status` answers 200 with `healthy: false` and the reason in
+        // `detail` for an unreachable service, which is the commonest failure.
+        row({ state: "failed", status: null, detail: "connection refused" }),
+        "connection refused · stored value kept until you replace it",
       ],
       [
         row({ state: "failed", status: 404 }),
@@ -333,7 +424,9 @@ describe("ServicesSection", () => {
         <ServicesSection integrations={integrations({ list: [HOME], rows: { "home-service": state } })} />,
       );
       expect(screen.getByText(note)).toBeInTheDocument();
-      expect(screen.getByText(note).textContent).toBe(serviceNote(state.state, state.status));
+      expect(screen.getByText(note).textContent).toBe(
+        serviceNote(state.state, state.status, state.detail),
+      );
       unmount();
     }
   });
@@ -357,6 +450,42 @@ describe("ServicesSection", () => {
     expect(screen.getByText("No connected services.")).toBeInTheDocument();
   });
 
+  // `IntegrationRegistry.available()` always yields the registered adapters, so
+  // this sentence can only be true before the registry has answered — which is
+  // exactly when it must not be shown.
+  it("says nothing at all until a read has landed", () => {
+    render(<ServicesSection integrations={integrations({ list: [], rows: {}, read: false })} />);
+    expect(screen.queryByText("No connected services.")).not.toBeInTheDocument();
+  });
+
+  it("does not call a registry it could not read an empty one", () => {
+    render(
+      <ServicesSection
+        integrations={integrations({ list: [], rows: {}, error: "Registry unavailable" })}
+      />,
+    );
+    expect(screen.getByText("Registry unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("No connected services.")).not.toBeInTheDocument();
+  });
+
+  // Every adapter in one category would collapse to a single row.
+  it("keys a row on the service's name and not on its category", () => {
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+    const sibling = integration({ name: "calendar-service" });
+    render(
+      <ServicesSection
+        integrations={integrations({
+          list: [HOME, sibling],
+          rows: { "home-service": row(), "calendar-service": row({ state: "unset" }) },
+        })}
+      />,
+    );
+    expect(screen.getByText("home-service")).toBeInTheDocument();
+    expect(screen.getByText("calendar-service")).toBeInTheDocument();
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
   it("carries its own read failure", () => {
     render(<ServicesSection integrations={integrations({ error: "Registry unavailable" })} />);
     expect(screen.getByText("Registry unavailable")).toBeInTheDocument();
@@ -378,9 +507,12 @@ describe("IdentitySection", () => {
     expect(
       screen.getByText("passkey · registered 12 Aug · internal · last used 07:02 · this device"),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText(credentialMeta(credential({ current: true }), SYSTEM_NOW)),
-    ).toBeInTheDocument();
+    const meta = screen.getByText(credentialMeta(credential({ current: true }), SYSTEM_NOW));
+    // The whole basis for keeping or removing a passkey, and `--muted` is
+    // 3.20:1 on this card in light.
+    expect(hasClass(meta, "t-meta-strong")).toBe(true);
+    expect(hasClass(meta, "t-meta")).toBe(false);
+    expect(hasClass(screen.getByText("Phone"), "t-row")).toBe(true);
   });
 
   it("counts what is registered beside the control that adds one", () => {
@@ -424,12 +556,41 @@ describe("IdentitySection", () => {
     expect(code).toHaveTextContent("042317");
     expect(code).toHaveStyle({ fontSize: "32px", letterSpacing: "0.18em" });
     expect(hasClass(code, "font-mono")).toBe(true);
+    // Read off this screen and typed into another one, so it carries `--fg`
+    // rather than the card's meta token.
+    expect(code.style.color).toBe("var(--fg)");
     // There is no way to re-show it, and the note is where that is said.
+    const note = screen.getByText(
+      "Pairing window closes 21:20 · enter this on the new device · not shown again once you leave",
+    );
+    // Wired to the control that minted it: unannounced, the one clause the
+    // reader must act on before leaving is the one they never hear.
     expect(
-      screen.getByText(
-        "Pairing window closes 21:20 · enter this on the new device · not shown again once you leave",
-      ),
+      screen.getByRole("button", { name: "Add a passkey on another device" }),
+    ).toHaveAttribute("aria-describedby", note.id);
+  });
+
+  it("describes nothing while there is no code to describe", () => {
+    render(<IdentitySection credentials={credentials()} pairing={pairing()} now={SYSTEM_NOW} />);
+    expect(
+      screen.getByRole("button", { name: "Add a passkey on another device" }),
+    ).not.toHaveAttribute("aria-describedby");
+  });
+
+  // An invented window is worse than none: the code would carry a closing time
+  // the server never stated.
+  it("drops the closing time rather than faking one", () => {
+    render(
+      <IdentitySection
+        credentials={credentials()}
+        pairing={pairing({ code: "042317", expiresAt: "whenever" })}
+        now={SYSTEM_NOW}
+      />,
+    );
+    expect(
+      screen.getByText("enter this on the new device · not shown again once you leave"),
     ).toBeInTheDocument();
+    expect(screen.queryByText(/Pairing window closes/)).not.toBeInTheDocument();
   });
 
   it("refuses a second mint while the first is still going", () => {
@@ -447,6 +608,10 @@ describe("IdentitySection", () => {
     render(<IdentitySection credentials={state} pairing={pairing()} now={SYSTEM_NOW} />);
     const out = screen.getByRole("button", { name: "Sign out on this device" });
     expect(tall(out)).toBe(true);
+    // Plain, not accent: the card's one "look here" colour belongs to the
+    // control that adds a device, not the one that takes the house away.
+    expect(out.style.color).toBe("var(--fg)");
+    expect(out.style.fontWeight).toBe("400");
     fireEvent.click(out);
     expect(state.signOut).toHaveBeenCalledTimes(1);
   });
@@ -481,15 +646,82 @@ describe("IdentitySection", () => {
       />,
     );
     expect(screen.getByText("Session store unavailable")).toBeInTheDocument();
-    expect(screen.getByText("Redis unavailable")).toBeInTheDocument();
+    const mintFailed = screen.getByText("Redis unavailable");
+    // Under the code it replaces and above the sign-out control, not at the end
+    // of the card where it would read as the sign-out's refusal.
+    const out = screen.getByRole("button", { name: "Sign out on this device" });
+    expect(mintFailed.compareDocumentPosition(out) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("says so when no passkey has been read", () => {
+  it("says so when a read has landed and found no passkey", () => {
     render(
       <IdentitySection credentials={credentials({ list: [] })} pairing={pairing()} now={SYSTEM_NOW} />,
     );
     expect(screen.getByText("No passkeys registered.")).toBeInTheDocument();
     expect(screen.getByText("0 registered")).toBeInTheDocument();
+  });
+
+  // A reader holding a passkey would be told there are none — and `0 registered`
+  // is a count of a list nobody has read, which is a claim rather than a blank.
+  it("neither denies nor counts passkeys before a read has landed", () => {
+    render(
+      <IdentitySection
+        credentials={credentials({ list: [], read: false })}
+        pairing={pairing()}
+        now={SYSTEM_NOW}
+      />,
+    );
+    expect(screen.queryByText("No passkeys registered.")).not.toBeInTheDocument();
+    expect(screen.queryByText("0 registered")).not.toBeInTheDocument();
+  });
+
+  it("does not call a list it could not read an empty one", () => {
+    render(
+      <IdentitySection
+        credentials={credentials({ list: [], error: "Session store unavailable" })}
+        pairing={pairing()}
+        now={SYSTEM_NOW}
+      />,
+    );
+    expect(screen.getByText("Session store unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("No passkeys registered.")).not.toBeInTheDocument();
+  });
+
+  it("keys a passkey on its credential id and not on the device's name", () => {
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+    render(
+      <IdentitySection
+        credentials={credentials({
+          list: [
+            credential({ credential_id: "cred-a", device_name: "Laptop", current: true }),
+            credential({ credential_id: "cred-b", device_name: "Laptop" }),
+          ],
+        })}
+        pairing={pairing()}
+        now={SYSTEM_NOW}
+      />,
+    );
+    expect(screen.getAllByText("Laptop")).toHaveLength(2);
+    expect(screen.getByText("2 registered")).toBeInTheDocument();
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  // Literal ids would make two cards on one document describe each other.
+  it("gives each card its own ids", () => {
+    const state = pairing({ code: "042317", expiresAt: PAIRING_CLOSES });
+    render(
+      <>
+        <IdentitySection credentials={credentials()} pairing={state} now={SYSTEM_NOW} />
+        <IdentitySection credentials={credentials()} pairing={state} now={SYSTEM_NOW} />
+      </>,
+    );
+    const [first, second] = screen.getAllByRole("button", {
+      name: "Add a passkey on another device",
+    });
+    expect(first.getAttribute("aria-describedby")).not.toBe(
+      second.getAttribute("aria-describedby"),
+    );
   });
 });
 
@@ -518,6 +750,10 @@ describe("ReflexSection", () => {
     render(<ReflexSection attention={state} />);
     const chip = screen.getByRole("button", { name: "light.hall · ask before acting" });
     expect(chip).toHaveTextContent("light.hall");
+    // The symbol carries no meaning a reader could not get from the name, and
+    // announced it would say the entity twice.
+    const symbol = within(chip).getByText("×");
+    expect(symbol).toHaveAttribute("aria-hidden", "true");
     expect(chip).toHaveStyle({ background: "var(--ink)", color: "var(--paper)" });
     expect(tall(chip)).toBe(true);
     fireEvent.click(chip);
@@ -529,6 +765,7 @@ describe("ReflexSection", () => {
     const state = attention();
     render(<ReflexSection attention={state} />);
     const chip = screen.getByRole("button", { name: "light.study · act without asking" });
+    expect(within(chip).getByText("+")).toHaveAttribute("aria-hidden", "true");
     // Hollow: a bordered chip on the card rather than a filled one.
     expect(chip.style.background).toBe("transparent");
     expect(chip.style.borderColor).toBe("var(--muted)");
@@ -565,6 +802,31 @@ describe("ReflexSection", () => {
     expect(screen.getByText("Nothing is on the attention set yet.")).toBeInTheDocument();
   });
 
+  it("says nothing at all until a read has landed", () => {
+    render(<ReflexSection attention={attention({ domains: [], read: false })} />);
+    expect(screen.queryByText("Nothing is on the attention set yet.")).not.toBeInTheDocument();
+    // The sentence that says what the set means is not a claim about its
+    // contents, so it stands whatever has answered.
+    expect(screen.getByText(ATTENTION_INTRO)).toBeInTheDocument();
+  });
+
+  // `attentionSaving` is keyed by domain and so is this: pressing a chip in one
+  // domain must not erase the refusal another is still showing.
+  it("puts a refused write under the domain that was refused", () => {
+    render(
+      <ReflexSection attention={attention({ failed: { light: "503 · Attention store unavailable" } })} />,
+    );
+    const refusal = screen.getByText("503 · Attention store unavailable");
+    expect(hasClass(refusal, "t-meta-strong")).toBe(true);
+    // Inside `light`'s block, below its chips — not at the top of the card.
+    const heading = screen.getByRole("heading", { level: 4, name: "light" });
+    const block = heading.parentElement as HTMLElement;
+    expect(block.contains(refusal)).toBe(true);
+    expect(within(block).getByRole("button", { name: /^light\.hall/ })).toBeInTheDocument();
+    const chip = screen.getByRole("button", { name: "light.hall · ask before acting" });
+    expect(chip.compareDocumentPosition(refusal) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   // The endpoint distinguishes "nothing configured" from "the store is down",
   // and this section must not flatten the two.
   it("reports a store that is down rather than calling the set empty", () => {
@@ -587,10 +849,17 @@ describe("ReflexSection", () => {
 // ---------------------------------------------------------------------------
 
 describe("SystemSections", () => {
-  it("keeps every control at a thumb's height and out of any form it stands in", () => {
+  /**
+   * All four at once, with a service row opened so the bench's only `<form>` is
+   * really on the page. Without it the rule below has nothing to bite on — a
+   * default-typed button is only dangerous inside a form, and Save is the one
+   * control that stands in one.
+   */
+  function drawAll() {
     render(
       <>
         <SessionsSection sessions={sessions()} now={SYSTEM_NOW} />
+        <ServicesSection integrations={integrations()} />
         <IdentitySection
           credentials={credentials()}
           pairing={pairing({ code: "042317", expiresAt: PAIRING_CLOSES })}
@@ -599,13 +868,64 @@ describe("SystemSections", () => {
         <ReflexSection attention={attention()} />
       </>,
     );
+    fireEvent.click(screen.getByRole("button", { name: /home-service/ }));
+  }
+
+  // Every one of these is the reason the rows under it may be out of date, so
+  // it is the last line on the bench that may be hard to read.
+  it("writes every section's failure in the type that carries it", () => {
+    render(
+      <>
+        <SessionsSection sessions={sessions({ error: "Session store unavailable" })} now={SYSTEM_NOW} />
+        <ServicesSection integrations={integrations({ error: "Registry unavailable" })} />
+        <IdentitySection
+          credentials={credentials({ error: "Passkey store unavailable" })}
+          pairing={pairing({ error: "Redis unavailable" })}
+          now={SYSTEM_NOW}
+        />
+        <ReflexSection attention={attention({ error: "Attention store unavailable" })} />
+      </>,
+    );
+    for (const text of [
+      "Session store unavailable",
+      "Registry unavailable",
+      "Passkey store unavailable",
+      "Redis unavailable",
+      "Attention store unavailable",
+    ]) {
+      const note = screen.getByText(text);
+      expect(hasClass(note, "t-meta-strong")).toBe(true);
+      expect(hasClass(note, "t-meta")).toBe(false);
+      expect(note.style.color).toBe("");
+    }
+  });
+
+  it("keeps every control at a thumb's height", () => {
+    drawAll();
     const controls = screen.getAllByRole("button");
-    expect(controls.length).toBeGreaterThan(4);
+    expect(controls.length).toBeGreaterThan(8);
     for (const control of controls) {
       expect(tall(control)).toBe(true);
-      // A button with no explicit type submits the form it is standing in, and
-      // the services section puts one around a credential form.
+    }
+  });
+
+  // A button with no explicit type submits the form it is standing in. Exactly
+  // one control on these four sections is allowed to do that, and it has to be
+  // inside the form it submits.
+  it("lets nothing submit a form by accident", () => {
+    drawAll();
+    expect(document.querySelectorAll("form")).toHaveLength(1);
+    const submits = screen
+      .getAllByRole("button")
+      .filter((control) => control.getAttribute("type") === "submit");
+    expect(submits).toHaveLength(1);
+    expect(submits[0]).toHaveAccessibleName("Save & test");
+    expect(submits[0].closest("form")).not.toBeNull();
+
+    for (const control of screen.getAllByRole("button")) {
+      if (control.getAttribute("type") === "submit") continue;
       expect(control).toHaveAttribute("type", "button");
+      expect(control.closest("form")).toBeNull();
     }
   });
 });

@@ -36,6 +36,56 @@ export interface Integration {
   configured: Record<string, boolean>;
 }
 
+/**
+ * The fields a save has to carry. `PUT …/credentials` validates **before** it
+ * stores: `validate_credential_body` (`core/channels/service_credentials.py`)
+ * 422s on any `required && !transient` field missing from the body, whatever is
+ * already in the keyring, and `CredentialField.required` defaults to true
+ * (`core/integrations/base.py`). So a partial write is not a thing this API
+ * offers, and a form that sent one would be unrotatable: a new token for
+ * `home-service` alone comes back `422 · Missing required fields: ['url']`,
+ * naming a field whose own placeholder had just said it was saved.
+ */
+export function requiredFields(entry: Integration): string[] {
+  return Object.entries(entry.schema.fields)
+    .filter(([, field]) => field.required && !field.transient)
+    .map(([key]) => key);
+}
+
+/** The labels of the required fields still empty, in the schema's own order. */
+export function missingLabels(entry: Integration, values: Record<string, string>): string[] {
+  return requiredFields(entry)
+    .filter((key) => (values[key] ?? "").trim() === "")
+    .map((key) => entry.schema.fields[key].label);
+}
+
+/**
+ * The standing rule under every credential form, because the API has no
+ * partial write and a reader cannot be expected to know that.
+ */
+export const SAVE_TOGETHER =
+  "Every field is sent together · retype the ones already stored, or nothing is saved.";
+
+/** Why the save is being held, with the fields named rather than left to be hunted. */
+export function missingNote(labels: readonly string[]): string {
+  return `Still blank: ${labels.join(", ")} · nothing is sent until every field is filled.`;
+}
+
+/**
+ * What a stored field's own box says. `saved` alone was read as "no need to
+ * retype", which the route makes false for every service with more than one
+ * required field.
+ */
+export const STORED_PLACEHOLDER = "saved · retype to save";
+
+/**
+ * A transient field is passed to the adapter and never persisted
+ * (`CredentialField.transient`), so `configured` is false for it for ever and
+ * the box can never say `saved`. Without this line a reader has no way to know
+ * the `mfa_code` they typed last time is not still in the house.
+ */
+export const TRANSIENT_NOTE = "not stored · sent with this save and forgotten";
+
 /** One domain of the Reflex attention set. `members` may act, `seen` is everything observed. */
 export interface AttentionDomain {
   domain: string;
@@ -82,14 +132,19 @@ export interface Credential {
 }
 
 /**
- * `GET /api/integrations/{name}/status`. A service's answer also carries a
- * `detail` object — the proxied `/health` body, or `{error}` when the probe
- * could not reach it — which nothing on this bench reads yet.
+ * `GET /api/integrations/{name}/status`.
+ *
+ * `detail` is the whole reason a failed row can say anything true: a service
+ * that is unreachable, sick or has no endpoint declared answers **200** with
+ * `healthy: false` and `detail: {error: …}` (`core/channels/web_server.py`,
+ * `_service_status`), so there is no HTTP status to quote and the real reason
+ * is here. A healthy service's `detail` is its own `/health` body.
  */
 export interface IntegrationStatus {
   name: string;
   healthy: boolean;
   latency_ms: number | null;
+  detail?: unknown;
 }
 
 // ---------------------------------------------------------------------------
@@ -103,12 +158,18 @@ export interface IntegrationStatus {
  */
 export type ServiceState = "ok" | "failed" | "unset" | "testing" | "queued";
 
+/** The second half of every `failed` note: nothing was thrown away. */
+const KEPT = "stored value kept until you replace it";
+
 /**
- * The status the `failed` note names when nothing better is known. The handoff
- * writes `401` because a rejected token is the common case; a probe that never
- * reached the service has no status of its own to quote.
+ * What a failed check says when the probe carried no status and the service
+ * sent no words of its own. The handoff writes `401` here; that number is
+ * **not** printed, because the commonest failure on this route is a 200 with
+ * `healthy: false` and no status anywhere — and accusing a service of
+ * rejecting a password it never saw is the same error the 404 branch below
+ * exists to stop, applied to the commoner case.
  */
-const ASSUMED_FAILURE_STATUS = 401;
+const UNEXPLAINED_FAILURE = "the last check came back unhealthy";
 
 /**
  * The one status on this route that is **not** the service's answer. `GET
@@ -128,20 +189,24 @@ const UNKNOWN_NAME_NOTE =
  * gloss on the state word, which the row already carries on its right: this is
  * the line that says what is stored and what happens next.
  *
- * `status` is the one the last probe actually reported, so a service answering
- * 502 is not accused of rejecting a password — and a 404, which is Alfred's own
- * route rather than the service, gets a sentence that says so.
+ * Three sources, in order of how much they know: a status the probe really
+ * reported (so a service answering 502 is not accused of rejecting a
+ * password), then the words the service sent about itself, then the bare fact
+ * that the check did not come back ok. Nothing is invented at any step.
  */
-export function serviceNote(state: ServiceState, status: number | null = null): string {
+export function serviceNote(
+  state: ServiceState,
+  status: number | null = null,
+  detail: string | null = null,
+): string {
   switch (state) {
     case "ok":
       return "stored encrypted at rest · last check ok";
     case "failed":
       if (status === 404) return UNKNOWN_NAME_NOTE;
-      return (
-        `${status ?? ASSUMED_FAILURE_STATUS} from the service on the last check · ` +
-        "stored value kept until you replace it"
-      );
+      if (status !== null) return `${status} from the service on the last check · ${KEPT}`;
+      if (detail !== null && detail.trim() !== "") return `${detail.trim()} · ${KEPT}`;
+      return `${UNEXPLAINED_FAILURE} · ${KEPT}`;
     case "unset":
       return "nothing stored · Alfred answers without this source";
     case "testing":
@@ -329,10 +394,25 @@ export interface SavingState {
 /** What one service's row knows about itself. */
 export interface ServiceRow {
   state: ServiceState;
-  /** The last probe's round trip in ms; null whenever there is no answer to time. */
+  /**
+   * The last probe's round trip in ms; null whenever there is no answer to time.
+   *
+   * Deliberately **not** drawn on the row (deviation: the handoff puts latency
+   * on the Health grid and nowhere else). A row's state word can come from a
+   * *save* rather than from the probe, and `210 ms  testing` beside a
+   * credential that is being replaced times a round trip against the old one.
+   * Kept on the contract because the Health grid's home card is derived from
+   * the same probe and `useSystem.test.tsx` pins it.
+   */
   latency: number | null;
   /** The status behind a `failed`, for the row's note. Null when nobody sent one. */
   status: number | null;
+  /**
+   * What the service said about itself on the last check, when it said
+   * anything: the `detail.error` of a 200 with `healthy: false`. This is the
+   * only thing that explains the commonest failure on this route.
+   */
+  detail: string | null;
 }
 
 /**
@@ -360,9 +440,27 @@ export function serviceRows(
       // next to the word `failed` — two readings of one probe, disagreeing.
       latency: probe === undefined || probe.isError ? null : (probe.data?.latency_ms ?? null),
       status: probe?.status ?? null,
+      // Same reading as the latency beside it: a retained `detail` belongs to
+      // the probe that produced it, not to the attempt that has just failed.
+      detail: probe === undefined || probe.isError ? null : detailText(probe.data?.detail),
     };
   });
   return rows;
+}
+
+/**
+ * One readable line out of a `detail` object, or nothing. Only a string field
+ * is taken — a `/health` payload is arbitrary and JSON-dumping it into a
+ * sentence would put a brace where a reason should be.
+ */
+function detailText(detail: unknown): string | null {
+  if (detail === null || typeof detail !== "object") return null;
+  const record = detail as Record<string, unknown>;
+  for (const key of ["error", "detail", "message"]) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim() !== "") return value.trim();
+  }
+  return null;
 }
 
 function serviceState(
@@ -556,10 +654,23 @@ export async function endAuthSession(id: string): Promise<void> {
  * Nothing here raises the Expired gate. The cookie is gone, so the next read of
  * anything 401s and `api` raises it — one path out, whichever request gets
  * there first.
+ *
+ * **A refusal is not a reprieve.** `auth_routes.logout` builds its 503 response
+ * and then calls `_clear_session_cookie` on it unconditionally, so a reader who
+ * taps this during a Redis blip is signed out of this device whatever the
+ * status line says. The caller must treat any answer as signed out.
  */
 export async function logoutSession(): Promise<void> {
   await post<{ status: string }>("/api/auth/logout");
 }
+
+/**
+ * What a *refused* sign-out still did. Appended to the server's own words
+ * rather than replacing them: the store being down is news, and so is the fact
+ * that it changed nothing about this device being signed out.
+ */
+export const SIGNED_OUT_ANYWAY =
+  "signed out here either way · the house may hold the session until it expires";
 
 /** `GET /api/auth/credentials` — every registered passkey, no secrets on the row. */
 export async function fetchCredentials(): Promise<Credential[]> {
@@ -610,12 +721,26 @@ export function fetchIntegrationStatus(name: string): Promise<IntegrationStatus>
 export async function saveCredentials(
   name: string,
   values: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<void> {
-  await put<{ status: string }>(
-    `/api/integrations/${encodeURIComponent(name)}/credentials`,
-    values,
-  );
+  await api<{ status: string }>(`/api/integrations/${encodeURIComponent(name)}/credentials`, {
+    method: "PUT",
+    body: JSON.stringify(values),
+    signal,
+  });
 }
+
+/** How long a credential save is given before the row stops waiting on it. */
+export const SAVE_TIMEOUT_MS = 20_000;
+
+/**
+ * The one refusal with no server behind it. Nothing in this tree sets a fetch
+ * timeout, so a socket the house accepts and never answers would otherwise
+ * leave the row reading `Testing…`, refusing every press, for the life of the
+ * Workshop. It says what it does not know: the `PUT` may have landed.
+ */
+export const SAVE_TIMED_OUT =
+  "No answer in 20 s · whether it was stored is unknown · try again.";
 
 /**
  * `GET /api/admin/attention` — every domain the Reflex has observed. A 503 here

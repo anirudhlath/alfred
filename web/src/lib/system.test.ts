@@ -11,6 +11,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   credentialMeta,
   healthGrid,
+  missingLabels,
+  missingNote,
+  requiredFields,
+  SAVE_TOGETHER,
   serviceNote,
   serviceRows,
   sessionMeta,
@@ -18,6 +22,8 @@ import {
   spendHeadline,
   spendNote,
   staleGrid,
+  STORED_PLACEHOLDER,
+  TRANSIENT_NOTE,
   type Integration,
   type ProbeState,
 } from "./system";
@@ -314,11 +320,35 @@ describe("serviceNote", () => {
     );
   });
 
-  it("falls back to 401 only when the probe carried no status", () => {
+  // `_service_status` answers **200 with `healthy: false` and the reason in
+  // `detail`** for a service that is unreachable or sick, so `status` is null on
+  // the commonest failure of all. Printing a made-up `401` there sends the
+  // reader to check a password that was never the problem.
+  it("passes on the service's own reason when there was no status", () => {
+    expect(serviceNote("failed", null, "connection refused")).toBe(
+      "connection refused · stored value kept until you replace it",
+    );
+    // Whitespace is not a reason.
+    expect(serviceNote("failed", null, "   ")).toBe(serviceNote("failed"));
+  });
+
+  it("says only what it knows when the probe carried neither", () => {
     expect(serviceNote("failed")).toBe(
-      "401 from the service on the last check · stored value kept until you replace it",
+      "the last check came back unhealthy · stored value kept until you replace it",
     );
     expect(serviceNote("failed", null)).toBe(serviceNote("failed"));
+    expect(serviceNote("failed", null, null)).toBe(serviceNote("failed"));
+    // No number anywhere: a status the service never sent is an accusation.
+    expect(serviceNote("failed")).not.toMatch(/\d/);
+  });
+
+  // The status outranks the detail: a real number from the wire is the more
+  // precise fact, and the two never disagree in practice.
+  it("prefers a real status to a reason when it has both", () => {
+    expect(serviceNote("failed", 502, "connection refused")).toBe(
+      "502 from the service on the last check · stored value kept until you replace it",
+    );
+    expect(serviceNote("failed", 404, "connection refused")).toBe(serviceNote("failed", 404));
   });
 
   // The one status that is not the service's. `GET /api/integrations/{name}/status`
@@ -381,14 +411,14 @@ const rowOf = (
 
 describe("serviceRows", () => {
   it("reports a healthy probe's word and its round trip", () => {
-    expect(rowOf(HOME, probe())).toEqual({ state: "ok", latency: 210, status: null });
+    expect(rowOf(HOME, probe())).toEqual({ state: "ok", latency: 210, status: null, detail: null });
   });
 
   it("calls a service that answered healthy false failed, with the trip it took", () => {
     // A sick service is a 200 with `healthy: false`, so that round trip was
     // really measured — unlike the one on the branch below.
     expect(rowOf(HOME, probe({ data: { name: "home-service", healthy: false, latency_ms: 18 } })))
-      .toEqual({ state: "failed", latency: 18, status: null });
+      .toEqual({ state: "failed", latency: 18, status: null, detail: null });
   });
 
   it("drops the retained round trip when the latest attempt could not reach it", () => {
@@ -398,6 +428,8 @@ describe("serviceRows", () => {
       state: "failed",
       latency: null,
       status: 502,
+      // A transport failure has no body, so there is nothing the service said.
+      detail: null,
     });
   });
 
@@ -406,11 +438,17 @@ describe("serviceRows", () => {
       state: "testing",
       latency: null,
       status: null,
+      detail: null,
     });
   });
 
   it("says testing for an entry with no probe of its own yet", () => {
-    expect(rowOf(HOME, undefined)).toEqual({ state: "testing", latency: null, status: null });
+    expect(rowOf(HOME, undefined)).toEqual({
+      state: "testing",
+      latency: null,
+      status: null,
+      detail: null,
+    });
   });
 
   it("says unset when nothing at all is stored", () => {
@@ -464,8 +502,13 @@ describe("serviceRows", () => {
       [probe({ data: { name: "weather", healthy: true, latency_ms: 42 } }), probe({ isError: true, status: 503 })],
       {},
     );
-    expect(rows["weather"]).toEqual({ state: "ok", latency: 42, status: null });
-    expect(rows["home-service"]).toEqual({ state: "failed", latency: null, status: 503 });
+    expect(rows["weather"]).toEqual({ state: "ok", latency: 42, status: null, detail: null });
+    expect(rows["home-service"]).toEqual({
+      state: "failed",
+      latency: null,
+      status: 503,
+      detail: null,
+    });
   });
 
   it("holds a row for every entry and nothing else", () => {
@@ -474,6 +517,158 @@ describe("serviceRows", () => {
       "home-service",
     ]);
     expect(serviceRows([], [], {})).toEqual({});
+  });
+});
+
+describe("serviceRows · what the service said", () => {
+  it("carries the reason a 200 gave for being unhealthy", () => {
+    const sick = probe({
+      data: {
+        name: "home-service",
+        healthy: false,
+        latency_ms: null,
+        detail: { error: "connection refused" },
+      },
+    });
+    expect(rowOf(HOME, sick).detail).toBe("connection refused");
+  });
+
+  it("takes the first of the keys the route is known to use, and trims it", () => {
+    const withKey = (detail: unknown) =>
+      rowOf(HOME, probe({ data: { name: "home-service", healthy: false, latency_ms: null, detail } }))
+        .detail;
+    expect(withKey({ detail: "no endpoint configured" })).toBe("no endpoint configured");
+    expect(withKey({ message: "timed out" })).toBe("timed out");
+    expect(withKey({ error: "  refused  " })).toBe("refused");
+    // `error` is the key `_service_status` actually sets, so it wins.
+    expect(withKey({ message: "timed out", error: "refused" })).toBe("refused");
+  });
+
+  it("says nothing rather than guessing at a shape it does not recognise", () => {
+    const withKey = (detail: unknown) =>
+      rowOf(HOME, probe({ data: { name: "home-service", healthy: false, latency_ms: null, detail } }))
+        .detail;
+    expect(withKey(undefined)).toBeNull();
+    expect(withKey(null)).toBeNull();
+    expect(withKey("refused")).toBeNull();
+    expect(withKey({ error: 503 })).toBeNull();
+    expect(withKey({ error: "   " })).toBeNull();
+    expect(withKey({})).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The credential form's rules
+// ---------------------------------------------------------------------------
+
+/** Two required fields, one required-but-transient, one optional. */
+const FOUR: Integration = integration({
+  schema: {
+    fields: {
+      username: {
+        label: "Username",
+        field_type: "text",
+        required: true,
+        placeholder: "",
+        default: "",
+        help_text: "",
+        transient: false,
+      },
+      password: {
+        label: "Password",
+        field_type: "password",
+        required: true,
+        placeholder: "",
+        default: "",
+        help_text: "",
+        transient: false,
+      },
+      mfa_code: {
+        label: "MFA code",
+        field_type: "text",
+        required: true,
+        placeholder: "",
+        default: "",
+        help_text: "",
+        transient: true,
+      },
+      note: {
+        label: "Note",
+        field_type: "text",
+        required: false,
+        placeholder: "",
+        default: "",
+        help_text: "",
+        transient: false,
+      },
+    },
+  },
+  configured: {},
+});
+
+describe("requiredFields", () => {
+  // `validate_credential_body` 422s on any `required && !transient` field absent
+  // from the body, whatever the keyring already holds — so this is the exact set
+  // the form must have before it may send anything.
+  it("is what the route will refuse a body without", () => {
+    expect(requiredFields(FOUR)).toEqual(["username", "password"]);
+  });
+
+  // A transient field is never persisted, so insisting on it would make every
+  // later rotation of another field impossible without an MFA code to hand.
+  it("leaves out a field the house will not keep", () => {
+    expect(requiredFields(FOUR)).not.toContain("mfa_code");
+  });
+
+  it("holds the schema's own order, so the form's marks match its boxes", () => {
+    expect(requiredFields(integration())).toEqual(["url", "token"]);
+  });
+});
+
+describe("missingLabels", () => {
+  it("names what is still blank, in the reader's words and not the wire's", () => {
+    expect(missingLabels(FOUR, {})).toEqual(["Username", "Password"]);
+    expect(missingLabels(FOUR, { username: "ada" })).toEqual(["Password"]);
+  });
+
+  it("counts whitespace as blank", () => {
+    expect(missingLabels(FOUR, { username: "   ", password: "hunter2" })).toEqual(["Username"]);
+  });
+
+  it("is empty once every required field has something in it", () => {
+    expect(missingLabels(FOUR, { username: "ada", password: "hunter2" })).toEqual([]);
+    // An optional field left blank does not hold the save.
+    expect(missingLabels(FOUR, { username: "ada", password: "hunter2", note: "" })).toEqual([]);
+  });
+});
+
+describe("the form's standing copy", () => {
+  // The route takes the whole body or nothing, so the screen must say so before
+  // the reader types rather than after the 422.
+  it("says the save is all-or-nothing", () => {
+    expect(SAVE_TOGETHER).toBe(
+      "Every field is sent together · retype the ones already stored, or nothing is saved.",
+    );
+  });
+
+  it("names the blank fields and says nothing is sent until they are filled", () => {
+    expect(missingNote(["Username", "Password"])).toBe(
+      "Still blank: Username, Password · nothing is sent until every field is filled.",
+    );
+    expect(missingNote(["Password"])).toBe(
+      "Still blank: Password · nothing is sent until every field is filled.",
+    );
+  });
+
+  // `saved` alone read as "no need to retype", which is the one thing the route
+  // will not allow.
+  it("says a stored field still has to be retyped", () => {
+    expect(STORED_PLACEHOLDER).toBe("saved · retype to save");
+    expect(STORED_PLACEHOLDER).toContain("retype");
+  });
+
+  it("says outright that a transient field is not kept", () => {
+    expect(TRANSIENT_NOTE).toBe("not stored · sent with this save and forgotten");
   });
 });
 

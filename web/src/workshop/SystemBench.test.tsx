@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DND_UNCONFIRMED, healthGrid, spendHeadline, spendNote, type Health } from "@/lib/system";
-import { overviewFixture, SYSTEM_NOW } from "@/test/fixtures";
+import { authSession, credential, integration, overviewFixture, SYSTEM_NOW } from "@/test/fixtures";
 import { SystemBench } from "./SystemBench";
 import type { Maintenance, Quiet, System } from "./useSystem";
 
@@ -97,10 +97,36 @@ function state(overrides: Partial<System> = {}): System {
     readAt: LAST_READ,
     online: true,
     quiet: quiet(),
-    sessions: { list: [], ended: {}, ending: {}, end: vi.fn(), error: null },
-    credentials: { list: [], signOut: vi.fn(), signingOut: false, error: null },
-    integrations: { list: [], rows: {}, saves: {}, save: vi.fn(), error: null },
-    attention: { domains: [], saving: {}, allow: vi.fn(), ask: vi.fn(), error: null },
+    sessions: {
+      list: [],
+      read: true,
+      ended: {},
+      ending: {},
+      failed: {},
+      end: vi.fn(),
+      error: null,
+    },
+    credentials: { list: [], read: true, signOut: vi.fn(), signingOut: false, error: null },
+    // One service, so the bench really does mount a `<form>`: the rule below
+    // exists for the credential row's Save button and nothing else on the bench
+    // stands inside a form.
+    integrations: {
+      list: [integration()],
+      read: true,
+      rows: { "home-service": { state: "ok", latency: 210, status: null, detail: null } },
+      saves: {},
+      save: vi.fn(),
+      error: null,
+    },
+    attention: {
+      domains: [],
+      read: true,
+      saving: {},
+      failed: {},
+      allow: vi.fn(),
+      ask: vi.fn(),
+      error: null,
+    },
     pairing: { code: null, expiresAt: null, minting: false, error: null, mint: vi.fn() },
     maintenance: maintenance(),
     loading: false,
@@ -840,6 +866,13 @@ describe("SystemBench", () => {
   // allowed to submit it is the one that says it will.
   it("presses nothing it is standing inside", () => {
     render(<SystemBench system={state({ quiet: quiet({ active: true }) })} />);
+    // Open the service row, or the bench has no form and the rule has nothing
+    // to bite on.
+    fireEvent.click(screen.getByRole("button", { name: /home-service/ }));
+    expect(document.querySelectorAll("form")).toHaveLength(1);
+    expect(
+      screen.getAllByRole("button").filter((c) => c.getAttribute("type") === "submit"),
+    ).toHaveLength(1);
     for (const control of [...screen.getAllByRole("button"), ...screen.getAllByRole("switch")]) {
       const type = control.getAttribute("type");
       expect(type).not.toBeNull();
@@ -920,5 +953,57 @@ describe("SystemBench", () => {
     // this bench has no footer to pay on its behalf.
     expect(column?.style.paddingBottom).toContain("40px");
     expect(column?.style.paddingBottom).toContain("safe-area-inset-bottom");
+  });
+  // ── The clock the dated sections are read against ────────────────────────
+
+  /**
+   * A session and a passkey from ten minutes ago, on a bench opened just before
+   * midnight. `sessionMeta` and `credentialMeta` both choose between `HH:MM`,
+   * `yesterday` and a date by comparing against the bench's `now`, so a frozen
+   * clock relabels last night's sign-in as tonight's and goes on doing it.
+   *
+   * Local dates, never `Date.UTC` or a `Z` string: `hhmm` reads the device's
+   * clock, and CI runs at UTC while a developer's machine does not.
+   */
+  const LATE = new Date(2026, 8, 16, 23, 50, 0);
+
+  function lateEvening() {
+    vi.setSystemTime(new Date(2026, 8, 16, 23, 55, 0));
+    return state({
+      sessions: {
+        ...state().sessions,
+        list: [authSession({ current: false, created_at: LATE.toISOString() })],
+      },
+      credentials: {
+        ...state().credentials,
+        list: [credential({ created_at: LATE.toISOString(), last_used_at: LATE.toISOString() })],
+      },
+    });
+  }
+
+  it("re-dates the session list when the bench is left open across midnight", () => {
+    render(<SystemBench system={lateEvening()} />);
+    expect(screen.getByText(/signed in 23:50 ·/)).toBeInTheDocument();
+
+    act(() => void vi.advanceTimersByTime(15 * 60_000));
+    expect(screen.getByText(/signed in 23:50 yesterday ·/)).toBeInTheDocument();
+    expect(screen.queryByText(/signed in 23:50 ·/)).not.toBeInTheDocument();
+  });
+
+  it("re-dates the passkey list with it, off the same clock", () => {
+    render(<SystemBench system={lateEvening()} />);
+    expect(screen.getByText(/last used 23:50$/)).toBeInTheDocument();
+
+    act(() => void vi.advanceTimersByTime(15 * 60_000));
+    expect(screen.getByText(/last used 23:50 yesterday$/)).toBeInTheDocument();
+  });
+
+  // One clock for the whole bench: two stamps a pixel apart must not disagree
+  // about which day `tomorrow` is.
+  it("dates every section off one clock and not two", () => {
+    render(<SystemBench system={lateEvening()} />);
+    act(() => void vi.advanceTimersByTime(15 * 60_000));
+    expect(screen.getByText(/signed in 23:50 yesterday/)).toBeInTheDocument();
+    expect(screen.getByText(/registered yesterday ·/)).toBeInTheDocument();
   });
 });

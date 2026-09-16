@@ -71,6 +71,7 @@ function SessionRow({
   now,
   endedAt,
   ending,
+  failed,
   onEnd,
 }: {
   session: AuthSession;
@@ -78,6 +79,8 @@ function SessionRow({
   /** When the *server* confirmed the end — never when the button was pressed. */
   endedAt: number | undefined;
   ending: boolean;
+  /** Why *this* row's end was refused, if it was. */
+  failed: string | undefined;
   onEnd: (id: string) => void;
 }) {
   const spent = endedAt !== undefined;
@@ -96,7 +99,18 @@ function SessionRow({
         {/* `applied`, from the closed vocabulary, and stamped at the answer:
             `useSystem` records the moment the route confirmed the delete, so
             this is never a request time wearing a confirmation's clothes. */}
+        {/* **Deviation from the handoff** (`Alfred.dc.html:822`), which
+            *replaces* the meta line with `ended HH:MM · applied`. Appended
+            instead: the handoff's row is a mock with one session in it, and on
+            a real list of four the replacement erases which device was signed
+            in where at the moment you most want to check you ended the right
+            one. Nothing else on the bench loses a fact to gain one. */}
         {spent && <span className="t-meta-strong">{`ended ${hhmm(endedAt)} · applied`}</span>}
+        {/* Beside the row it belongs to and not at the top of the card: with
+            four sessions listed and one `End` refused, a section-wide sentence
+            names the failure without naming which device is still signed in.
+            `useSystem` keys these exactly as it keys the busy flags. */}
+        {failed !== undefined && <span className="t-meta-strong">{failed}</span>}
       </div>
       {session.current ? (
         // A label, not a control. You do not end the session you are reading
@@ -136,20 +150,25 @@ export function SessionsSection({ sessions, now }: { sessions: Sessions; now: nu
   return (
     <SystemSection title="Sessions">
       <SectionNote text={sessions.error} />
-      {sessions.list.length === 0 ? (
-        <EmptyRow>No other sessions.</EmptyRow>
-      ) : (
-        sessions.list.map((session) => (
-          <SessionRow
-            key={session.session_id}
-            session={session}
-            now={now}
-            endedAt={sessions.ended[session.session_id]}
-            ending={sessions.ending[session.session_id] === true}
-            onEnd={sessions.end}
-          />
-        ))
-      )}
+      {sessions.list.length > 0
+        ? sessions.list.map((session) => (
+            <SessionRow
+              key={session.session_id}
+              session={session}
+              now={now}
+              endedAt={sessions.ended[session.session_id]}
+              ending={sessions.ending[session.session_id] === true}
+              failed={sessions.failed[session.session_id]}
+              onEnd={sessions.end}
+            />
+          ))
+        : // Only once a read has actually landed. Before that the list is empty
+          // because nothing has answered yet, and `No other sessions.` would be
+          // a statement about the house made from no evidence — on the very
+          // first paint of the bench, and again for as long as a slow house
+          // takes to answer. The section note carries a failure; this sentence
+          // is reserved for a successful read that found nothing.
+          sessions.read && sessions.error === null && <EmptyRow>No other sessions.</EmptyRow>}
     </SystemSection>
   );
 }
@@ -169,19 +188,21 @@ export function ServicesSection({ integrations }: { integrations: Integrations }
   return (
     <SystemSection title="Connected services">
       <SectionNote text={integrations.error} />
-      {integrations.list.length === 0 ? (
-        <EmptyRow>No connected services.</EmptyRow>
-      ) : (
-        integrations.list.map((entry) => (
-          <IntegrationRow
-            key={entry.name}
-            entry={entry}
-            row={integrations.rows[entry.name]}
-            save={integrations.saves[entry.name]}
-            onSave={integrations.save}
-          />
-        ))
-      )}
+      {integrations.list.length > 0
+        ? integrations.list.map((entry) => (
+            <IntegrationRow
+              key={entry.name}
+              entry={entry}
+              row={integrations.rows[entry.name]}
+              save={integrations.saves[entry.name]}
+              onSave={integrations.save}
+            />
+          ))
+        : // Gated on a landed read, as `SessionsSection` is: a house that has
+          // not answered yet is not a house with nothing connected.
+          integrations.read && integrations.error === null && (
+            <EmptyRow>No connected services.</EmptyRow>
+          )}
     </SystemSection>
   );
 }
@@ -240,13 +261,16 @@ export function IdentitySection({
   return (
     <SystemSection title="Devices & identity">
       <SectionNote text={credentials.error} />
-      {credentials.list.length === 0 ? (
-        <EmptyRow>No passkeys registered.</EmptyRow>
-      ) : (
-        credentials.list.map((passkey) => (
-          <CredentialRow key={passkey.credential_id} passkey={passkey} now={now} />
-        ))
-      )}
+      {credentials.list.length > 0
+        ? credentials.list.map((passkey) => (
+            <CredentialRow key={passkey.credential_id} passkey={passkey} now={now} />
+          ))
+        : // A read that has not landed is not a house with no passkeys — and
+          // this one would be alarming as well as wrong, since a reader holding
+          // a passkey would be told there are none.
+          credentials.read && credentials.error === null && (
+            <EmptyRow>No passkeys registered.</EmptyRow>
+          )}
 
       <SystemRow>
         <button
@@ -262,7 +286,11 @@ export function IdentitySection({
         >
           Add a passkey on another device
         </button>
-        <span className="t-meta-strong shrink-0">{`${credentials.list.length} registered`}</span>
+        {/* A count of a list nobody has read yet is `0 registered`, which is a
+            claim rather than a blank. It appears when the read does. */}
+        {credentials.read && (
+          <span className="t-meta-strong shrink-0">{`${credentials.list.length} registered`}</span>
+        )}
       </SystemRow>
 
       {pairing.code !== null && (
@@ -294,7 +322,12 @@ export function IdentitySection({
             if (!credentials.signingOut) credentials.signOut();
           }}
           className="t-row min-h-11 text-left"
-          style={{ color: "var(--accent-text)" }}
+          // Plain text weight, not the accent the two controls above wear. Those
+          // two add something; this one takes the house away, and accent here
+          // would make the destructive control the brightest thing in the
+          // section. `--fg` is 13.70:1 on this card, so it is still plainly a
+          // line you can press — the label says what it does.
+          style={{ color: "var(--fg)", fontWeight: 400 }}
         >
           Sign out on this device
         </button>
@@ -356,11 +389,14 @@ function AttentionChip({
 function AttentionDomainBlock({
   domain,
   busy,
+  failed,
   allow,
   ask,
 }: {
   domain: AttentionDomain;
   busy: boolean;
+  /** Why *this* domain's last write was refused, if it was. */
+  failed: string | undefined;
   allow: (domain: string, entity: string) => void;
   ask: (domain: string, entity: string) => void;
 }) {
@@ -390,6 +426,10 @@ function AttentionDomainBlock({
           />
         ))}
       </div>
+      {/* Under the chips that failed, not at the top of the card: the busy flag
+          is keyed by domain and so is this, or pressing a chip in `climate`
+          would wipe the refusal `light` is still showing. */}
+      {failed !== undefined && <span className="t-meta-strong">{failed}</span>}
     </div>
   );
 }
@@ -409,17 +449,23 @@ export function ReflexSection({ attention }: { attention: Attention }) {
     <SystemSection title="Reflex">
       <p className="t-meta-strong m-0 px-3 py-2.5">{ATTENTION_INTRO}</p>
       <SectionNote text={attention.error} />
-      {attention.domains.length === 0
-        ? attention.error === null && <EmptyRow>Nothing is on the attention set yet.</EmptyRow>
-        : attention.domains.map((domain) => (
+      {attention.domains.length > 0
+        ? attention.domains.map((domain) => (
             <AttentionDomainBlock
               key={domain.domain}
               domain={domain}
               busy={attention.saving[domain.domain] === true}
+              failed={attention.failed[domain.domain]}
               allow={attention.allow}
               ask={attention.ask}
             />
-          ))}
+          ))
+        : // `read` as well as `error === null`: a 503 is not the only way to
+          // have nothing to say. Before the first answer the set is empty
+          // because nothing has been asked, and this sentence would report a
+          // Reflex trusted with nothing.
+          attention.read &&
+          attention.error === null && <EmptyRow>Nothing is on the attention set yet.</EmptyRow>}
     </SystemSection>
   );
 }
