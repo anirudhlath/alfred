@@ -25,17 +25,26 @@ that order, then serves the built `dist/` to `tests/core/channels/test_spa_ci.py
 ```
 src/lib/        no React: api, sockets, formatters, the presence physics,
                 the action reducer, the slide maths, audio and recording,
-                the stream catalogue (streams.ts), the feed reducer (feed.ts)
-                and the causal thread (trace.ts)
-src/shell/      providers and the two surfaces everything rises on
+                the stream catalogue (streams.ts), the feed reducer (feed.ts),
+                the causal thread (trace.ts) — and one module per bench:
+                memory.ts (the three-shape episodic adapter), triggers.ts
+                (kinds and meta lines), system.ts (sessions, credentials,
+                pairing, integrations, attention, the health cells)
+src/shell/      providers, the two surfaces everything rises on, and the
+                ErrorBoundary the Workshop wraps its panel in
 src/gates/      setup, sign-in, expired, denied — and the router between them
 src/room/       the one screen: presence field, headline, timeline, composer,
                 and the handle into the Workshop (WorkshopHandle.tsx)
 src/door/       the approval interrupt: banner, fuse, slide, deep link
-src/workshop/   the Workshop layer: the bench switcher, the Activity bench,
-                its rows and chips, and the hook behind them
+src/workshop/   the Workshop layer: the bench switcher (BenchSwitcher.tsx,
+                tabs.ts) and four benches, each a pure view over one hook —
+                ActivityBench + EventRow/StreamChips/useActivity,
+                MemoryBench + RoutineRow/useMemory,
+                TriggersBench + TriggerRow/useTriggers,
+                SystemBench + SystemSections/IntegrationRow/useSystem,
+                over the shared SystemFrame.tsx and Switch.tsx
 src/sheets/     the held-back queue and `Why Alfred did that`
-src/test/       jsdom setup and shared fixtures
+src/test/       jsdom setup, shared fixtures, and the contrast restatement
 ```
 
 Tests live beside their source (`lib/history.ts` → `lib/history.test.ts`).
@@ -51,12 +60,12 @@ Tests live beside their source (`lib/history.ts` → `lib/history.test.ts`).
   phase pill, not the Room's; the Workshop's status line adds the
   handoff's `live · N ev/s`, `paused · N new` and `last true HH:MM · not live`.
   `unknown since HH:MM`, `takes effect within 60 s`, `hot / cold` and
-  `candidate · active · dormant · archived` are the phase-3 benches' words and arrive
-  with them. Mono, lower case — the one exception is the Door's phase pill
+  `candidate · active · dormant · archived` arrived with the phase-3 benches.
+  Mono, lower case — the one exception is the Door's phase pill
   (`Confirmed · queued`, `Applied`, `Expired`, `Answered`), set in the layer's own type,
   ink on paper. Do not invent new words for system state.
 
-## What phases 1 and 2 cover
+## What phases 1 to 3 cover
 
 Phase 1: shell, theme and viewport; the four identity gates; the Room (presence
 field, headline, status line, offline note, DND row and the held-back sheet, the
@@ -70,10 +79,24 @@ expanded to its payload; and causality — `why?` on the Room's reflex rows and
 `Why · causal thread` on the bench's RX rows open the `Why Alfred did that` sheet, a
 column of the entries that share an id with the observation, joined by name.
 
+Phase 3: the Workshop's other three benches, each a pure view over one hook called in
+`WorkshopPanel` and gated on whether its bench is showing (see `docs/web-frontend.md`,
+"The Workshop's four benches").
+
+- **Memory** — episodic browse and search by meaning over hot and cold, an honest
+  `model:` pill, the semantic documents, the routine lifecycle with its rail and
+  confidence sparkline, and the scratchpad. Read-only: no route exists to forget,
+  redact or promote, so the bench offers no button that pretends to.
+- **Triggers** — every trigger, filtered by kind, toggled and fired. Both controls are
+  fire-and-forget, so the row keeps the state the last read gave it and carries a
+  `queued HH:MM · … · takes effect within 60 s` note until a fresh read says otherwise.
+- **System** — health, cloud spend, quiet hours and the held-back queue, maintenance,
+  auth sessions, connected services and their credential forms, passkeys and pairing,
+  and the reflex attention set. Web Push (the Reach card) lands with phase 5; the card
+  is deliberately absent rather than inert.
+
 ## What it does not
 
-- **Memory, Triggers and System** — phase 3. The switcher has their tabs; each says
-  `not built yet · phase 3`.
 - **Install and Reach gates, the service worker, icons and Web Push** — phases 4
   and 5. The standalone metas are already in `index.html`, and `public/manifest.json`
   carries the phase-1 palette's dark ground — a manifest cannot follow the theme the way

@@ -47,19 +47,25 @@ it within a minute. And it never says "not caused by". **Acceptance:** the bus s
 `core/reflex/runner.py`), `/api/admin/streams/{name}` can filter by it, and the sheet's
 solid links become that id — the heuristic stays for events from before the stamp.
 
-## 3. Memory, Triggers and System are tabs that say so
+## 3. Memory, Triggers and System are tabs that say so — **closed by phase 3**
 
-`BenchSwitcher` has all four tabs; three render `not built yet · phase 3`. Phase 3's plan
-replaces the placeholder in `Workshop.tsx`'s `WorkshopPanel` and takes the rest of spec
-§10's vocabulary (`unknown since`, `takes effect within 60 s`, `hot / cold`,
-`candidate · active · dormant · archived`) with it. Telemetry `status` / `error` frames
-(`redis_error`, `invalid JSON`) reach only the console until System exists.
+`BenchSwitcher` has all four tabs; three rendered `not built yet · phase 3`. Phase 3
+replaced that placeholder in `Workshop.tsx`'s `WorkshopPanel` with the three benches and
+took the rest of spec §10's vocabulary (`unknown since`, `takes effect within 60 s`,
+`hot / cold`, `candidate · active · dormant · archived`) with it. What phase 3 could not
+close is in `docs/backlog/low/pwa-phase3-followups.md`. Telemetry `status` / `error`
+frames (`redis_error`, `invalid JSON`) still reach only the console — System reports the
+*reads* that failed, not the socket's own frames.
 
-One thing moves with them. The Workshop's status line is deliberately not a live region —
-everything it says is announced better elsewhere, and the Activity bench's "Feed status"
-banner is what speaks a socket drop. On the other three benches that banner is unmounted
-with the bench, so nothing announces one. The live region should move up into the header
-when those three land (there is a comment in `Workshop.tsx` saying so).
+The live region moved with them, as this item said it should. Phase 3's task 10 made the
+Workshop header's state word a `role="status"` region (`Workshop.tsx`) and took the
+region role off the Activity bench's "Feed status" banner, which keeps its sentence: two
+regions saying the same thing is worse than one, and the header's is the only one on the
+layer that survives a change of bench. Only the state word is inside it — `role="status"`
+implies `aria-atomic="true"`, so the rate and the held count sit in a sibling span where
+there is nothing to re-present. Each bench also carries a permanently-mounted
+`Read errors` region of its own, which is a different fact: a read that came back
+refused, rather than the connection.
 
 ## 4. Stream names, again
 
