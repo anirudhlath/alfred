@@ -76,29 +76,44 @@ function corruptNote(detail: string | undefined): string {
 }
 
 /**
+ * `503 · that did not land · nothing was queued` — what a request the server
+ * refused left behind. The status when a server answered with one; otherwise
+ * what we do have, because a request that never arrived must not print a number
+ * nobody sent.
+ *
+ * One sentence builder for both controls: the switch's refusal and the fire's
+ * are the same news about two different requests, and they are drawn in two
+ * different places.
+ */
+function refusedNote(pending: Pending): string {
+  const head = pending.status ?? pending.error;
+  return `${head} · that did not land · ${REFUSED_TAIL[pending.kind]}`;
+}
+
+/**
  * The row's own note: one line, under the meta, saying what this client has
- * asked for and does not yet know the outcome of.
+ * asked of the **switch** and does not yet know the outcome of. It is what
+ * `describedBy` points the switch at, so nothing may appear here that the
+ * switch did not send.
  *
  * `queued` is accent, because it is a decision waiting on the world rather than
  * something that went well (decision 7). A refusal is settled — it takes
  * `.t-meta-strong`'s own --fg2 and no more, and there is no red on this bench.
  *
- * A *fire* has no line here: its note belongs under the button that sent it,
- * where the handoff puts it, and the control and its note travel together.
- * There is deliberately no `firing · takes effect within 60 s` third sentence —
+ * A *fire* has no line here at all, queued or refused: its note belongs under
+ * the button that sent it, where the handoff puts it, and the control and its
+ * note travel together — the rule `SystemBench`'s drain and run notes follow
+ * ("a refusal is the news, and it belongs to the control that caused it rather
+ * than to a loose line at the end of the card"). A refused fire used to reach
+ * the error branch first and land here, on the switch, which had sent nothing,
+ * while `FireControl` went on describing itself as `queued only`. There is
+ * deliberately no `firing · takes effect within 60 s` third sentence either:
  * the 60 s is the *enabled-cache* window and says nothing about a manual fire.
- * A fire that was *refused* does appear, because a refusal is news about the
- * row whether or not the reader has it open.
  */
 function rowNote(pending: Pending | undefined): { text: string; queued: boolean } | null {
   if (pending === undefined) return null;
-  if (pending.error !== undefined) {
-    // The status when a server answered with one; otherwise what we do have. A
-    // request that never arrived must not print a number nobody sent.
-    const head = pending.status ?? pending.error;
-    return { text: `${head} · that did not land · ${REFUSED_TAIL[pending.kind]}`, queued: false };
-  }
   if (pending.kind === "firing") return null;
+  if (pending.error !== undefined) return { text: refusedNote(pending), queued: false };
   return {
     text: `queued ${hhmm(pending.at)} · ${pending.kind} · takes effect within 60 s`,
     queued: true,
@@ -135,18 +150,30 @@ function CorruptCard({ detail, noteId }: { detail: string | undefined; noteId: s
  *
  * Never `Fired`. The server queued it; what the trigger then did is on the
  * events stream and nowhere in this response.
+ *
+ * `refusal` outranks everything: a fire the server turned down is not `queued
+ * only; look for trigger.fired …`, and that sentence read out to whoever has
+ * just pressed the button is the opposite of what happened. `firedAt` is set
+ * only on acceptance, so it stays the *label's* input — a second fire refused
+ * after a first was accepted is still `Fire again` — while the note and the
+ * accent follow the refusal, exactly as `drainNote`/`drainQueued` do one bench
+ * over.
  */
 function FireControl({
   firedAt,
+  refusal,
   inert,
   onFire,
 }: {
   firedAt: number | undefined;
+  /** Why the last fire was refused, when it was. Null is no refusal to report. */
+  refusal: string | null;
   inert: boolean;
   onFire: () => void;
 }) {
   const noteId = useId();
-  const queued = firedAt !== undefined;
+  const fired = firedAt !== undefined;
+  const queued = refusal === null && fired;
   return (
     <div className="flex flex-col gap-1">
       {/* `border-line` is 1.18:1 on the page like the switch's track was, and
@@ -163,14 +190,14 @@ function FireControl({
         className="h-11 self-start rounded-[22px] border border-line bg-transparent px-[18px] text-[14px] font-medium"
         style={{ color: "var(--fg)" }}
       >
-        {queued ? "Fire again" : "Fire now"}
+        {fired ? "Fire again" : "Fire now"}
       </button>
       <span
         id={noteId}
         className="t-meta-strong"
         style={queued ? { color: "var(--accent-text)" } : undefined}
       >
-        {queued ? `queued ${hhmm(firedAt)} · ${FIRE_TAIL}` : FIRE_NOTE}
+        {refusal ?? (fired ? `queued ${hhmm(firedAt)} · ${FIRE_TAIL}` : FIRE_NOTE)}
       </span>
     </div>
   );
@@ -203,6 +230,13 @@ export function TriggerRow({
   // collapsed row with its reason folded away inside the panel.
   const switching = pending !== undefined && pending.kind !== "firing";
   const note = corrupt ? null : rowNote(pending);
+  // The fire's own refusal, which `rowNote` deliberately does not carry. A 500
+  // is the corrupt-record card's rather than this note's: the card says the
+  // same thing at more length, and both at once would be the refusal twice.
+  const fireRefused =
+    !corrupt && pending?.kind === "firing" && pending.error !== undefined
+      ? refusedNote(pending)
+      : null;
   // It has happened and it cannot happen again. It recedes by losing its hue
   // rather than by opacity: composited, `.55` takes the meta line to 2.71:1 and
   // the name to 3.63:1 in light, and a whole-row alpha is invisible to
@@ -293,6 +327,7 @@ export function TriggerRow({
           </pre>
           <FireControl
             firedAt={firedAt}
+            refusal={fireRefused}
             // Any request at all holds the fire: a second one would take the
             // row's one note, and with it the record of the first.
             inert={pending !== undefined}

@@ -82,8 +82,20 @@ export function TriggersBench({ triggers }: TriggersBenchProps) {
                   never the filtered count, which would make the chip that
                   clears the filter report the filter's own answer. The other
                   four would each need their own count, and four numbers that
-                  only move together are four things to read. */}
-              {kind === "all" && <span className="font-mono"> {triggers.triggers.length}</span>}
+                  only move together are four things to read.
+
+                  Gated on the read, as the empty state eleven lines below is
+                  and for the same reason: `All 0` before the server has
+                  answered is a count of a house nobody has asked, which is a
+                  claim rather than a blank. `SystemSections` writes the rule
+                  down — "a count of a list nobody has read yet is `0
+                  registered` … It appears when the read does." On a phone with
+                  no signal the read is *paused*, so the list area correctly
+                  said nothing while this chip said `All 0` over the top of
+                  it. */}
+              {kind === "all" && triggers.read && (
+                <span className="font-mono"> {triggers.triggers.length}</span>
+              )}
             </button>
           );
         })}
@@ -137,8 +149,14 @@ export function TriggersBench({ triggers }: TriggersBenchProps) {
             time on a phone with no signal is not fetching, holds no rows and
             has no error to show. `loading` says the same thing there as it does
             for an answered, genuinely empty house. `read` is the flag
-            `MemoryBench` and every `SystemSections` card already guard on. */}
-        {triggers.shown.length === 0 && triggers.read && (
+            `MemoryBench` and every `SystemSections` card already guard on.
+
+            `error === null` as well, which is the other half of that guard and
+            the term all four `SystemSections` empty gates carry: once a read
+            has landed, `read` stays true through every later failure, so a
+            house that answered empty and then lost its store went on being
+            called empty under a region reporting the 500. */}
+        {triggers.shown.length === 0 && triggers.read && triggers.error === null && (
           <li className="flex flex-col items-center gap-1.5 py-10 text-center">
             {/* Two different facts. A house with no triggers is one thing; a
                 chip the reader set three taps ago and has since forgotten is

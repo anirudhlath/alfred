@@ -1,10 +1,16 @@
-import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, renderHook, waitFor } from "@testing-library/react";
+import {
+  focusManager,
+  onlineManager,
+  QueryClient,
+  QueryClientProvider,
+} from "@tanstack/react-query";
+import { act, render, renderHook, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Trigger } from "@/lib/triggers";
 import { QUERY_DEFAULTS } from "@/shell/QueryProvider";
 import { trigger } from "@/test/fixtures";
+import { TriggersBench } from "./TriggersBench";
 import { REREAD_MS, useTriggers } from "./useTriggers";
 
 const LIST = "/api/admin/triggers";
@@ -160,6 +166,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   onlineManager.setOnline(true);
+  focusManager.setFocused(undefined);
 });
 
 describe("useTriggers", () => {
@@ -662,5 +669,68 @@ describe("useTriggers", () => {
     await answerHeld(LIST, list);
 
     await waitFor(() => expect(result.current.loading).toBe(false));
+  });
+});
+
+/**
+ * The bench over its own hook. `TriggersBench.test.tsx` hand-builds a
+ * `Triggers`, so a chip ungated on a flag the hook really produces is invisible
+ * to it; and the assertions above read the hook's fields rather than the
+ * sentences and numbers a reader gets.
+ */
+function TriggersBenchOverHook() {
+  return <TriggersBench triggers={useTriggers(true)} />;
+}
+
+function renderBench() {
+  return render(
+    <QueryClientProvider client={makeClient()}>
+      <TriggersBenchOverHook />
+    </QueryClientProvider>,
+  );
+}
+
+const allChip = () => screen.getByRole("button", { name: /^All/ });
+
+describe("TriggersBench over useTriggers", () => {
+  it("does not count a house it has never asked", async () => {
+    // The same paused read the hook test above describes: no network, so
+    // react-query pauses rather than fails — not fetching, no data, no error.
+    // The empty state below the chips was already gated on `read`; the count
+    // above it was not, so the bench said nothing in the list and `All 0` over
+    // the top of it.
+    onlineManager.setOnline(false);
+    renderBench();
+    await settle();
+
+    expect(calls).toEqual([]);
+    expect(allChip()).toHaveTextContent(/^All$/);
+    expect(screen.queryByText("No triggers yet.")).toBeNull();
+
+    onlineManager.setOnline(true);
+    await waitFor(() => expect(allChip()).toHaveTextContent("All 3"));
+  });
+
+  it("stops calling the house empty once a later read of it is refused", async () => {
+    // A landed, genuinely empty read: the sentence is earned here.
+    list = { status: 200, body: { triggers: [] } };
+    renderBench();
+    await waitFor(() => expect(screen.getByText("No triggers yet.")).toBeInTheDocument());
+    expect(allChip()).toHaveTextContent("All 0");
+
+    // Then the store goes. `read` stays true — the data is retained — so the
+    // gate's `read` term alone no longer says anything, and the bench went on
+    // asserting an empty house under a region reporting a 500. The four
+    // `SystemSections` empty gates all carry `error === null` beside `read`
+    // for exactly this; this one did not.
+    list = { status: 500, body: { detail: "redis gone" } };
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    await wait(31_000);
+    act(() => focusManager.setFocused(true));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Read errors")).toHaveTextContent("redis gone"),
+    );
+
+    expect(screen.queryByText("No triggers yet.")).toBeNull();
   });
 });

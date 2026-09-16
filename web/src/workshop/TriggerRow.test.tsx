@@ -166,8 +166,45 @@ describe("TriggerRow", () => {
   // There is no setting in a fire: it either queued or it did not, and nothing
   // about the trigger changed either way.
   it("says a refused fire queued nothing, rather than talking about a setting", () => {
-    renderRow({}, { pending: { kind: "firing", at: QUEUED_AT, error: "gone", status: 404 } });
+    renderRow({}, { pending: { kind: "firing", at: QUEUED_AT, error: "gone", status: 404 }, open: true });
     expect(screen.getByText("404 · that did not land · nothing was queued")).toBeInTheDocument();
+  });
+
+  // A refusal belongs to the control that caused it, which is the fire — not to
+  // the switch, which sent nothing. The switch's own note is for the setting it
+  // failed to change, and a fire changes no setting.
+  it("hangs a refused fire off the fire button and never off the switch", () => {
+    renderRow(
+      {},
+      { pending: { kind: "firing", at: QUEUED_AT, error: "Service Unavailable", status: 503 }, open: true },
+    );
+    const refusal = screen.getByText("503 · that did not land · nothing was queued");
+    const fire = screen.getByRole("button", { name: "Fire now" });
+
+    // The button no longer promises a queue that never happened: a reader who
+    // focuses `Fire now` used to hear `queued only; …`, the opposite of what
+    // the server said.
+    expect(fire).toHaveAttribute("aria-describedby", refusal.id);
+    expect(screen.queryByText(FIRE_NOTE)).toBeNull();
+    // And the switch, which sent nothing, describes nothing.
+    expect(screen.getByRole("switch")).not.toHaveAttribute("aria-describedby");
+  });
+
+  // A refusal is settled, so it takes `.t-meta-strong`'s own `--fg2` — the
+  // accent is for a decision still waiting on the world.
+  it("keeps the accent for a fire that really was queued", () => {
+    const { update } = renderRow({}, { pending: { kind: "firing", at: QUEUED_AT }, firedAt: QUEUED_AT, open: true });
+    expect(screen.getByText(/^queued 21:15 · look for/)).toHaveStyle({
+      color: "var(--accent-text)",
+    });
+
+    update({
+      pending: { kind: "firing", at: QUEUED_AT, error: "Service Unavailable", status: 503 },
+      firedAt: QUEUED_AT,
+      open: true,
+    });
+    const refusal = screen.getByText("503 · that did not land · nothing was queued");
+    expect(refusal.style.color).toBe("");
   });
 
   // A request that never reached a server has no status, and the row must not
