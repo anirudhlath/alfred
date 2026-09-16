@@ -215,26 +215,52 @@ describe("toEpisodicRow", () => {
 });
 
 describe("episodicMeta", () => {
-  it("stamps, names the store and counts recalls", () => {
-    expect(episodicMeta(toEpisodicRow(HOT, 0))).toBe("07:02 · hot · recalled 3×");
-  });
+  /**
+   * Nine in the evening of the day the fixtures were written. Passed in rather
+   * than read off the clock: `dayLabel` answers "earlier today" or "12 Aug"
+   * depending on when the suite runs, and CI runs in UTC at an hour nobody
+   * chose.
+   */
+  const NOW = new Date(2026, 8, 16, 21, 0, 0).getTime();
 
-  it("says never recalled rather than 0×", () => {
-    expect(episodicMeta(toEpisodicRow(COLD, 0))).toBe("07:02 · cold · never recalled");
-  });
-
-  it("adds the match score when one is in the row", () => {
-    expect(episodicMeta(toEpisodicRow(FOUND, 0))).toBe("07:02 · cold · recalled 2× · match 0.62");
-  });
-
-  it("says decaying instead of a recall count when the row is decaying", () => {
-    expect(episodicMeta(toEpisodicRow({ ...COLD, significance: 0.2 }, 0))).toBe(
-      "07:02 · cold · decaying",
+  it("stamps the day, weighs the row, counts recalls and names the store last", () => {
+    // The handoff's order (§6): `20:52 today · significance 0.62 · recalled 1× · hot`.
+    expect(episodicMeta(toEpisodicRow(HOT, 0), NOW)).toBe(
+      "07:02 earlier today · significance 0.70 · recalled 3× · hot",
     );
   });
 
-  it("says --:-- for a row with no readable time", () => {
-    expect(episodicMeta(toEpisodicRow({ store: "hot" }, 0))).toBe("--:-- · hot · never recalled");
+  it("says never recalled rather than 0×", () => {
+    expect(episodicMeta(toEpisodicRow(COLD, 0), NOW)).toBe(
+      "07:02 earlier today · significance 0.40 · never recalled · cold",
+    );
+  });
+
+  it("adds the match score when one is in the row", () => {
+    expect(episodicMeta(toEpisodicRow(FOUND, 0), NOW)).toBe(
+      "07:02 earlier today · significance 0.40 · recalled 2× · cold · match 0.62",
+    );
+  });
+
+  it("says decaying instead of a recall count when the row is decaying", () => {
+    expect(episodicMeta(toEpisodicRow({ ...COLD, significance: 0.2 }, 0), NOW)).toBe(
+      "07:02 earlier today · significance 0.20 · decaying · cold",
+    );
+  });
+
+  // The whole reason the stamp takes a `now`: a memory browser goes back weeks,
+  // and a bare wall clock on a row from last Tuesday says nothing.
+  it("names the day a row older than today came from", () => {
+    const nextDay = new Date(2026, 8, 17, 9, 0, 0).getTime();
+    expect(episodicMeta(toEpisodicRow(HOT, 0), nextDay)).toContain("07:02 yesterday");
+    const nextWeek = new Date(2026, 8, 23, 9, 0, 0).getTime();
+    expect(episodicMeta(toEpisodicRow(HOT, 0), nextWeek)).toContain("07:02 16 Sep");
+  });
+
+  it("claims no day and no significance for a row that carried neither", () => {
+    expect(episodicMeta(toEpisodicRow({ store: "hot" }, 0), NOW)).toBe(
+      "--:-- · never recalled · hot",
+    );
   });
 });
 
@@ -250,6 +276,7 @@ describe("routineTrend", () => {
     expect(routineTrend(routine())).toEqual({
       text: "0.82 · +0.11 since last week",
       rising: true,
+      confidence: "0.82",
     });
   });
 
@@ -257,6 +284,7 @@ describe("routineTrend", () => {
     expect(routineTrend(routine({ confidence_history: [0.9, 0.82] }))).toEqual({
       text: "0.82 · -0.08 since last week",
       rising: false,
+      confidence: "0.82",
     });
   });
 
@@ -264,6 +292,7 @@ describe("routineTrend", () => {
     expect(routineTrend(routine({ confidence_history: [0.82] }))).toEqual({
       text: "0.82 · first reading",
       rising: false,
+      confidence: "0.82",
     });
   });
 
@@ -275,6 +304,7 @@ describe("routineTrend", () => {
     expect(routineTrend(routine({ confidence_history: [0.82, 0.82] }))).toEqual({
       text: "0.82 · +0.00 since last week",
       rising: false,
+      confidence: "0.82",
     });
   });
 });

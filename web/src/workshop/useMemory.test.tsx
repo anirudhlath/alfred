@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { coldRow, hotRow, routine, searchRow, semanticFile } from "@/test/fixtures";
+import { coldRow, hotRow, overviewFixture, routine, searchRow, semanticFile } from "@/test/fixtures";
 import { useMemory } from "./useMemory";
 
 const EPISODIC = "/api/admin/memory/episodic";
@@ -469,6 +469,46 @@ describe("useMemory", () => {
     await settle();
 
     expect(calls).toEqual([]);
+  });
+
+  it("keeps the query the rows answer, not the one still being typed", async () => {
+    const { result } = renderMemory();
+    await waitFor(() => expect(result.current.rows).toHaveLength(2));
+    expect(result.current.submitted).toBe("");
+
+    searchFor(result, "dentist");
+    await waitFor(() => expect(result.current.searched).toBe(true));
+    expect(result.current.submitted).toBe("dentist");
+
+    // The empty state quotes `submitted`, so typing on after a search must not
+    // rewrite the sentence under rows that answered the older words.
+    act(() => result.current.setQuery("dentist appointment"));
+    expect(result.current.submitted).toBe("dentist");
+  });
+
+  it("reads the Librarian's schedule off the overview without asking for it", async () => {
+    const { result, client } = renderMemory();
+    await waitFor(() => expect(result.current.rows).toHaveLength(2));
+    // Nothing has polled the overview in this test, so there is nothing to say.
+    expect(result.current.consolidation).toBeNull();
+
+    // What the Room and the Workshop's header put there on their own cadence.
+    await act(() => {
+      client.setQueryData(["overview"], {
+        ...overviewFixture,
+        librarian: { last_run_at: "2026-09-16T03:00:00Z", reviewed: 12, next_run_at: "2026-09-17T03:00:00Z" },
+      });
+      return Promise.resolve();
+    });
+
+    await waitFor(() =>
+      expect(result.current.consolidation).toEqual({
+        last: "2026-09-16T03:00:00Z",
+        next: "2026-09-17T03:00:00Z",
+      }),
+    );
+    // And no read of its own: the scratchpad's stat card costs one cache hit.
+    expect(calls).toEqual([EPISODIC]);
   });
 
   it("does not poll: memory changes at consolidation speed, not at chat speed", async () => {

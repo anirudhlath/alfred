@@ -110,6 +110,23 @@ describe("contrast ratios", () => {
       expect(contrast(token(theme, "green-text"), token(theme, "bg"))).toBeGreaterThanOrEqual(4.5);
     });
 
+    it(`${theme}: the accent reads as text on a card as well as on the page`, () => {
+      // `Show all` on a semantic card is the first --accent-text on --surface
+      // (`MemoryBench.tsx`). It clears AA at 4.85:1 in light — but the pair had
+      // never been measured, and an unmeasured pair is how a 2.34:1 back button
+      // shipped on this branch.
+      expect(contrast(token(theme, "accent-text"), token(theme, "surface"))).toBeGreaterThanOrEqual(
+        4.5,
+      );
+    });
+
+    it(`${theme}: a filled dark control carries its own label`, () => {
+      // --ink filled with --paper on it: the Memory bench's chosen sub-tab pill
+      // (handoff §6) and the Activity bench's Pause button. The two tokens swap
+      // with the theme, so the ratio holds either way round.
+      expect(contrast(token(theme, "paper"), token(theme, "ink"))).toBeGreaterThanOrEqual(4.5);
+    });
+
     it(`${theme}: a field's placeholder reads in the field it sits in`, () => {
       expect(contrast(token(theme, "fg2"), token(theme, "field"))).toBeGreaterThanOrEqual(4.5);
     });

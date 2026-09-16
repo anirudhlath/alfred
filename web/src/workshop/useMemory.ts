@@ -11,6 +11,7 @@ import {
   type Scratchpad,
   type SemanticFile,
 } from "@/lib/memory";
+import { useOverview } from "@/room/useOverview";
 
 /** The bench's four sub-tabs, in the order it draws them. */
 export type MemoryTab = "episodic" | "semantic" | "routines" | "scratchpad";
@@ -31,12 +32,31 @@ export type ModelState = "unknown" | "ok" | "503";
  */
 const STALE_MS = 30_000;
 
+/**
+ * The Librarian's nightly pass, for the scratchpad's stat card. Both stamps are
+ * ISO strings the server sends, and both can be absent: a house that has never
+ * consolidated has no last run, and a Librarian that is not scheduled has no
+ * next one. Null when the overview has not answered — not a pair of nulls,
+ * which would read as "scheduled: never".
+ */
+export interface Consolidation {
+  last: string | null;
+  next: string | null;
+}
+
 export interface Memory {
   tab: MemoryTab;
   setTab: (tab: MemoryTab) => void;
   /** What the search field holds. Typing this does not search. */
   query: string;
   setQuery: (query: string) => void;
+  /**
+   * The query the rows on screen actually answer — what was last submitted,
+   * which is not what the field holds the moment the reader types again. The
+   * empty state quotes this, so it cannot claim the server was asked for a word
+   * it has never seen. `""` while browsing.
+   */
+  submitted: string;
   /** The form's onSubmit. An empty query submits as a browse. */
   submit: () => void;
   /** A submitted query is in flight. A browse is not a search. */
@@ -55,6 +75,8 @@ export interface Memory {
   files: SemanticFile[];
   routines: Routine[];
   scratchpad: Scratchpad | null;
+  /** When the Librarian last ran and when it runs next, or null until the overview has answered. */
+  consolidation: Consolidation | null;
   /** The one expanded routine's name. */
   openRoutine: string | null;
   toggleRoutine: (name: string) => void;
@@ -151,6 +173,14 @@ export function useMemory(enabled: boolean): Memory {
     staleTime: STALE_MS,
   });
 
+  // The scratchpad's second stat card is the Librarian's schedule, which lives
+  // on the overview rather than on `/memory/scratchpad` (plan deviation 15).
+  // Disabled on purpose: this is a read of what the key already holds — the
+  // Room and the Workshop's own header are polling it — and a stamp on a stat
+  // card is not worth a request of its own. A disabled observer still re-renders
+  // when their poll lands.
+  const librarian = useOverview(false).data?.librarian;
+
   // One source for both: the rows are the search's matches when it has any, and
   // `searched` is that same fact. The `submitted` guard is not belt and braces
   // — a disabled query is *pending*, so clearing the field back to a browse
@@ -199,6 +229,7 @@ export function useMemory(enabled: boolean): Memory {
     setTab,
     query,
     setQuery,
+    submitted,
     submit,
     searching: searchQuery.isFetching,
     searched,
@@ -207,6 +238,7 @@ export function useMemory(enabled: boolean): Memory {
     files: semanticQuery.data ?? [],
     routines: routinesQuery.data ?? [],
     scratchpad: scratchpadQuery.data ?? null,
+    consolidation: librarian ? { last: librarian.last_run_at, next: librarian.next_run_at } : null,
     openRoutine,
     toggleRoutine,
     loading:

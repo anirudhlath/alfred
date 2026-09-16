@@ -13,12 +13,12 @@ vi.mock("@/shell/ConnectionProvider", () => ({ markTrue: markTrueMock }));
 /** When set, the overview read 500s — Redis is down behind it. */
 let overviewDown = false;
 
-function renderOverview() {
+function renderOverview(enabled = true) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
-  return renderHook(() => useOverview(), { wrapper });
+  return { client, ...renderHook(() => useOverview(enabled), { wrapper }) };
 }
 
 describe("useOverview", () => {
@@ -40,6 +40,17 @@ describe("useOverview", () => {
     const { result } = renderOverview();
     await waitFor(() => expect(result.current.data).toEqual(overviewFixture));
     expect(markTrueMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads what the key already holds without asking for it again", async () => {
+    // What the Memory bench's scratchpad does with the Librarian's schedule:
+    // a disabled observer fetches nothing and still sees whoever is polling.
+    const { result, client } = renderOverview(false);
+    expect(result.current.data).toBeUndefined();
+    expect(fetch).not.toHaveBeenCalled();
+    client.setQueryData(["overview"], overviewFixture);
+    await waitFor(() => expect(result.current.data).toEqual(overviewFixture));
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("leaves last-true alone when the read fails", async () => {

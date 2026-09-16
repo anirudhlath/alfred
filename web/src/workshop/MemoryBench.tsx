@@ -1,40 +1,89 @@
-import { useId, useState, type KeyboardEvent } from "react";
-import { hhmm } from "@/lib/format";
-import { episodicMeta, type EpisodicRow, type Scratchpad, type SemanticFile } from "@/lib/memory";
+import { useId, useMemo, useState, type KeyboardEvent } from "react";
+import { dayLabel, hhmm } from "@/lib/format";
+import {
+  episodicMeta,
+  type EpisodicRow,
+  type Scratchpad as ScratchpadState,
+  type SemanticFile,
+} from "@/lib/memory";
 import { RoutineRow } from "./RoutineRow";
-import type { Memory, MemoryTab } from "./useMemory";
+import { tabId, tabKeyDown } from "./tabs";
+import type { Consolidation, Memory, MemoryTab } from "./useMemory";
 
 export interface MemoryBenchProps {
   memory: Memory;
 }
 
-const TABS: { id: MemoryTab; label: string }[] = [
-  { id: "episodic", label: "Episodic" },
-  { id: "semantic", label: "Semantic" },
-  { id: "routines", label: "Routines" },
-  { id: "scratchpad", label: "Scratchpad" },
+/**
+ * The four sub-tabs and the sentence each one opens with, verbatim from the
+ * handoff (§6). Episodic's is the most important sentence on the bench: it is
+ * the reason the endpoint passes `update_stats=False`, and a memory browser
+ * that silently reinforced whatever you looked at would corrupt the very decay
+ * it is showing you.
+ *
+ * Scratchpad's is the one the handoff asked for and did not write; it is in the
+ * handoff's voice and says only what `LibrarianAgent` does.
+ */
+const TABS: { id: MemoryTab; label: string; note: string }[] = [
+  {
+    id: "episodic",
+    label: "Episodic",
+    note: "Browsing here does not count as recall. Nothing you open is kept warmer or colder for it.",
+  },
+  {
+    id: "semantic",
+    label: "Semantic",
+    note: "Human-readable documents the conscious mind reads before every reply. Rewritten by the nightly consolidation.",
+  },
+  {
+    id: "routines",
+    label: "Routines",
+    note: "Patterns Alfred noticed on its own. Ignored suggestions lose confidence and slide right until archived.",
+  },
+  {
+    id: "scratchpad",
+    label: "Scratchpad",
+    note: "Working notes Alfred keeps between consolidations. The nightly pass reads them and rewrites semantic memory.",
+  },
 ];
 
-/**
- * The single most important sentence on the bench. The episodic endpoint passes
- * `update_stats=False` for it: a memory browser that quietly reinforced
- * whatever you looked at would corrupt the very decay it is showing you.
- */
-const BROWSE_NOTE =
-  "Browsing here does not count as recall. Nothing you open is kept warmer or colder for it.";
+/** The same four, in the same order, as the keyboard walks them. */
+const TAB_IDS: readonly MemoryTab[] = TABS.map((tab) => tab.id);
 
 /** How many lines of a semantic file are shown before `Show all`. */
 const CLAMP_LINES = 12;
-/**
- * Roughly what a phone column fits on one line at 14 px. Only an estimate, and
- * deliberately a generous one: offering `Show all` on a file that turned out to
- * fit costs a reader one no-op tap, while withholding it on one that did not
- * hides the end of the document behind a clamp with no way past it.
- */
+/** Roughly what a 393 px column fits on one line at 14 px. */
 const CLAMP_CHARS = 60;
 
-function overflows(content: string): boolean {
-  return content.split("\n").length > CLAMP_LINES || content.length > CLAMP_LINES * CLAMP_CHARS;
+/**
+ * How many lines a file will take once it has wrapped — an estimate, not a
+ * measurement. A real one costs a layout effect and a `scrollHeight` read per
+ * card (`ActivityBench.tsx` does that for the one place it matters), and jsdom
+ * lays nothing out, so a measured clamp would be untestable as well as
+ * expensive.
+ *
+ * Neither way of being wrong hides anything: the clamp and the `Show all`
+ * button are gated on this one number, so a short estimate draws the whole file
+ * with no clamp at all, and a long one offers a button with nothing to show.
+ */
+function estimateLines(content: string): number {
+  return content
+    .split("\n")
+    .reduce((lines, line) => lines + Math.max(1, Math.ceil(line.length / CLAMP_CHARS)), 0);
+}
+
+/** `-webkit-line-clamp` from the constant the estimate compares against, so the two cannot drift. */
+const CLAMP_STYLE = {
+  display: "-webkit-box",
+  WebkitBoxOrient: "vertical",
+  WebkitLineClamp: CLAMP_LINES,
+  overflow: "hidden",
+} as const;
+
+/** `07:02 earlier today` — the stamp shape `episodicMeta` uses, for the lines that are not rows. */
+function stamp(at: string | number, now: number): string {
+  const date = new Date(at);
+  return `${hhmm(date)} ${dayLabel(date, new Date(now))}`;
 }
 
 /** The empty-list block every tab uses: a sentence, and the evidence under it. */
@@ -47,11 +96,18 @@ function Empty({ line, note }: { line: string; note?: string }) {
   );
 }
 
-function EpisodicItem({ row }: { row: EpisodicRow }) {
+function EpisodicItem({ row, now }: { row: EpisodicRow; now: number }) {
   const hot = row.store === "hot";
   return (
-    <li className="flex shrink-0 flex-col gap-0.5 py-[11px]" style={{ borderTop: "1px solid var(--line)" }}>
-      <span className="t-body line-clamp-2">{row.text}</span>
+    <li
+      className="flex shrink-0 flex-col gap-0.5 py-[11px]"
+      style={{ borderTop: "1px solid var(--line)" }}
+    >
+      {/* The handoff mutes a cold row; --fg2 rather than --muted, which is
+          3.46:1 on --bg in light (index.css, .t-meta-strong). */}
+      <span className="t-body line-clamp-2" style={hot ? undefined : { color: "var(--fg2)" }}>
+        {row.text}
+      </span>
       <span className="flex items-center gap-1.5">
         {/* Redundancy for the eye only: the meta line beside it already says
             `hot` or `cold` in words. */}
@@ -64,7 +120,7 @@ function EpisodicItem({ row }: { row: EpisodicRow }) {
             borderColor: hot ? "transparent" : "var(--line)",
           }}
         />
-        <span className="t-meta-strong">{episodicMeta(row)}</span>
+        <span className="t-meta-strong">{episodicMeta(row, now)}</span>
       </span>
       {/* Decorative: the line above carries everything load-bearing. */}
       {row.entities.length > 0 && <span className="t-meta">{row.entities.join(" · ")}</span>}
@@ -72,36 +128,45 @@ function EpisodicItem({ row }: { row: EpisodicRow }) {
   );
 }
 
-function Episodic({ memory }: { memory: Memory }) {
+function Episodic({ memory, now }: { memory: Memory; now: number }) {
   return (
     <>
       <div className="flex-1 overflow-y-auto px-4 pt-2.5">
-        <p className="t-meta-strong m-0">{BROWSE_NOTE}</p>
         {memory.model === "503" && (
           // The rows stay on screen underneath: a refused search is no reason
-          // to take the last true thing we were told away (spec §5.2).
-          <p
-            className="t-body mt-2.5 mb-0 rounded-[10px] px-3 py-2"
+          // to take the last true thing we were told away (spec §5.2). The
+          // handoff's line 1 is "Embedding model is still loading", which we
+          // cannot know — a 503 says only that nothing answered.
+          <div
+            className="mb-2.5 flex flex-col gap-1 rounded-[10px] px-3 py-2"
             style={{ background: "var(--surface)" }}
           >
-            The embedder is not answering, so meaning search is off. Browsing still works.
-          </p>
+            <span className="t-body">The embedder is not answering.</span>
+            <span className="t-meta-strong">
+              503 · search by meaning unavailable · the list below is by recency
+            </span>
+          </div>
         )}
         {memory.rows.length === 0 ? (
           // `searched` is a search that *answered*, so a pending or refused one
-          // never claims the server rejected anything.
+          // never claims the server rejected anything. The sentence quotes what
+          // the server was asked, not what the field holds now.
           memory.searched ? (
             <Empty
-              line="Nothing scored above the server's threshold."
+              line={`Nothing close enough to "${memory.submitted}".`}
               note="searched by meaning · the server does not report what it rejected"
             />
           ) : (
             <Empty line="No episodic memories yet." />
           )
         ) : (
-          <ul role="list" aria-busy={memory.searching} className="m-0 mt-2.5 flex list-none flex-col p-0">
+          <ul
+            role="list"
+            aria-label="Episodic memories"
+            className="m-0 flex list-none flex-col p-0"
+          >
             {memory.rows.map((row) => (
-              <EpisodicItem key={row.key} row={row} />
+              <EpisodicItem key={row.key} row={row} now={now} />
             ))}
           </ul>
         )}
@@ -143,24 +208,33 @@ function Episodic({ memory }: { memory: Memory }) {
   );
 }
 
-function SemanticCard({ file }: { file: SemanticFile }) {
-  // View state, not server state: which file is unfolded is nobody's business
-  // but this card's, and it is fair for it to fold again on the way back.
+/**
+ * One semantic document. Which card is unfolded is this card's own business and
+ * nobody else's — unlike the open routine, which `useMemory` holds because only
+ * one may be open at a time and it has to survive a trip to another bench.
+ * Several of these can be open at once, nothing else needs to know which, and a
+ * clamp is a way of *showing* a file rather than a selection within the bench,
+ * so it is fair for it to fold again on the way back.
+ */
+function SemanticCard({ file, now }: { file: SemanticFile; now: number }) {
   const [open, setOpen] = useState(false);
-  const clampable = overflows(file.content);
+  const long = useMemo(() => estimateLines(file.content) > CLAMP_LINES, [file.content]);
   return (
-    <li className="flex shrink-0 flex-col gap-1.5 rounded-xl p-3.5" style={{ background: "var(--surface)" }}>
+    <li
+      className="flex shrink-0 flex-col gap-1.5 rounded-xl p-3.5"
+      style={{ background: "var(--surface)" }}
+    >
       <span className="t-body font-mono">{file.name}</span>
-      <span className="t-meta-strong">{`${file.dir} · modified ${hhmm(file.modified)}`}</span>
-      <pre
-        className={`m-0 font-sans text-[14px] leading-[1.55] break-words whitespace-pre-wrap${
-          clampable && !open ? " line-clamp-[12]" : ""
-        }`}
-        style={{ color: "var(--fg2)" }}
+      {/* The day as well as the clock: these are rewritten at nightly-into-
+          weekly cadence, so a bare 03:00 could be a week old. */}
+      <span className="t-meta-strong">{`${file.dir} · modified ${stamp(file.modified, now)}`}</span>
+      <p
+        className="m-0 text-[14px] leading-[1.55] break-words whitespace-pre-wrap"
+        style={{ color: "var(--fg2)", ...(long && !open ? CLAMP_STYLE : {}) }}
       >
         {file.content}
-      </pre>
-      {clampable && (
+      </p>
+      {long && (
         <button
           type="button"
           onClick={() => setOpen((shown) => !shown)}
@@ -174,7 +248,7 @@ function SemanticCard({ file }: { file: SemanticFile }) {
   );
 }
 
-function Semantic({ files }: { files: SemanticFile[] }) {
+function Semantic({ files, now }: { files: SemanticFile[]; now: number }) {
   return (
     <div className="flex-1 overflow-y-auto px-4 pt-2.5 pb-10">
       {files.length === 0 ? (
@@ -182,7 +256,7 @@ function Semantic({ files }: { files: SemanticFile[] }) {
       ) : (
         <ul role="list" aria-label="Semantic files" className="m-0 flex list-none flex-col gap-3 p-0">
           {files.map((file) => (
-            <SemanticCard key={`${file.dir}/${file.name}`} file={file} />
+            <SemanticCard key={`${file.dir}/${file.name}`} file={file} now={now} />
           ))}
         </ul>
       )}
@@ -211,15 +285,51 @@ function Routines({ memory }: { memory: Memory }) {
   );
 }
 
-function ScratchpadView({ scratchpad }: { scratchpad: Scratchpad | null }) {
-  // Null is "not read yet", which is the Workshop header's business to say.
-  if (scratchpad === null) return null;
+/** One of the scratchpad's two stat cards (handoff §6): a number, and what it counts. */
+function Stat({ value, note }: { value: string; note: string }) {
   return (
-    <div className="flex flex-1 flex-col gap-1.5 overflow-y-auto px-4 pt-2.5 pb-10">
-      {/* Never hidden when it is zero: an empty queue is a fact about the
-          nightly consolidation, not the absence of one. */}
-      <span className="t-meta-strong">{`${scratchpad.pending_queue} in the queue`}</span>
-      {scratchpad.content === "" ? (
+    <div
+      className="flex flex-1 flex-col gap-1 rounded-xl p-3.5"
+      style={{ border: "1px solid var(--line)" }}
+    >
+      <span className="t-title font-mono">{value}</span>
+      <span className="t-meta-strong">{note}</span>
+    </div>
+  );
+}
+
+function Scratchpad({
+  scratchpad,
+  consolidation,
+  now,
+}: {
+  scratchpad: ScratchpadState | null;
+  consolidation: Consolidation | null;
+  now: number;
+}) {
+  return (
+    <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 pt-2.5 pb-10">
+      <div className="flex gap-3">
+        {/* Never hidden when it is zero: an empty queue is a fact about the
+            nightly consolidation, not the absence of one. */}
+        {scratchpad && (
+          <Stat value={String(scratchpad.pending_queue)} note="episodes queued, unscored" />
+        )}
+        {/* The Librarian's schedule, off the overview. `never run` rather than
+            an invented stamp, and `--:--` for a pass that is not scheduled —
+            `next_run_at` is null when the Librarian is not running. */}
+        {consolidation && (
+          <Stat
+            value={consolidation.next === null ? "--:--" : hhmm(consolidation.next)}
+            note={`next consolidation · last ${
+              consolidation.last === null ? "never run" : stamp(consolidation.last, now)
+            }`}
+          />
+        )}
+      </div>
+      {scratchpad === null ? (
+        <Empty line="The scratchpad has not been read yet." />
+      ) : scratchpad.content === "" ? (
         <Empty line="The scratchpad is empty." />
       ) : (
         <pre
@@ -251,37 +361,39 @@ function ScratchpadView({ scratchpad }: { scratchpad: Scratchpad | null }) {
 export function MemoryBench({ memory }: MemoryBenchProps) {
   const base = useId();
   const panelId = `${base}-panel`;
-  const tabId = (tab: MemoryTab) => `${base}-${tab}`;
-  const index = TABS.findIndex((entry) => entry.id === memory.tab);
+  // The clock every stamp on the bench is dated against: a memory browser goes
+  // back weeks, so `07:02` alone says nothing and `episodicMeta` wants a `now`.
+  // Read once when the bench mounts — `DoorProvider` takes the same lazy
+  // initialiser, and reading it during render is impure — so every row agrees
+  // about which day it is. It does not tick: a bench left open across midnight
+  // would keep saying "earlier today" until the Workshop is next opened, and a
+  // second-by-second clock in a read-only browser is motion for nothing.
+  const [now] = useState(() => Date.now());
+  const note = TABS.find((tab) => tab.id === memory.tab)?.note;
 
-  // Automatic activation, wrapping — `BenchSwitcher`'s keyboard, because this
-  // is the same control one level in and two segmented controls that behave
-  // differently would be worse than either.
+  // The arrows, Home and End, and the roving focus that goes with them, are
+  // `tabs.ts`'s — the same keyboard the bench switcher above has, which is the
+  // one thing these two controls must not differ in.
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
-    if (step === 0) return;
-    // Otherwise the arrow also scrolls the bench underneath.
-    event.preventDefault();
-    const next = (index + step + TABS.length) % TABS.length;
-    memory.setTab(TABS[next].id);
-    event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+    tabKeyDown(event, TAB_IDS, memory.tab, memory.setTab);
   }
 
   return (
     <>
+      {/* The handoff's pills (§6), not the switcher's segments (§4): 44 px,
+          radius 22, the chosen one filled `--ink` on `--paper`. */}
       <div
         role="tablist"
         aria-label="Memory"
         onKeyDown={onKeyDown}
-        className="mx-4 mt-2.5 grid h-11 shrink-0 grid-cols-4 gap-[3px] rounded-xl p-[6px]"
-        style={{ background: "var(--surface)" }}
+        className="mx-4 mt-2.5 grid shrink-0 grid-cols-4 gap-2"
       >
         {TABS.map(({ id, label }) => {
           const active = id === memory.tab;
           return (
             <button
               key={id}
-              id={tabId(id)}
+              id={tabId(base, id)}
               type="button"
               role="tab"
               aria-selected={active}
@@ -289,12 +401,10 @@ export function MemoryBench({ memory }: MemoryBenchProps) {
               // Roving tabindex: one stop for the control, then the arrows.
               tabIndex={active ? 0 : -1}
               onClick={() => memory.setTab(id)}
-              // 32 px of segment inside a 44 px track, and the `after` box
-              // gives the other 12 px back to the finger.
-              className="relative rounded-lg border-0 text-[13px] font-medium after:absolute after:inset-x-0 after:-inset-y-1.5 after:content-['']"
+              className="h-11 rounded-[22px] border-0 text-[13px] font-medium"
               style={{
-                background: active ? "var(--field)" : "transparent",
-                color: active ? "var(--fg)" : "var(--fg2)",
+                background: active ? "var(--ink)" : "transparent",
+                color: active ? "var(--paper)" : "var(--fg2)",
               }}
             >
               {label}
@@ -302,20 +412,33 @@ export function MemoryBench({ memory }: MemoryBenchProps) {
           );
         })}
       </div>
+      <p className="t-meta-strong mx-4 mt-2.5 mb-0">{note}</p>
       {/* Not a region: see the component note. `t-meta-strong` because this is
           the line saying part of the bench is missing. */}
       {memory.error && <p className="t-meta-strong mx-4 mt-2.5 mb-0">{memory.error}</p>}
       <div
         id={panelId}
         role="tabpanel"
-        aria-labelledby={tabId(memory.tab)}
+        aria-labelledby={tabId(base, memory.tab)}
         aria-busy={memory.loading}
+        // Always on, for `Workshop.tsx`'s reason one level up: the APG makes
+        // the panel's tab stop required when the panel holds nothing focusable,
+        // and Scratchpad never does while Semantic does only when a file is
+        // long enough to need `Show all`. A stop that appears and disappears
+        // under the reader is worse than one that is always there.
+        tabIndex={0}
         className="flex min-h-0 flex-1 flex-col"
       >
-        {memory.tab === "episodic" && <Episodic memory={memory} />}
-        {memory.tab === "semantic" && <Semantic files={memory.files} />}
+        {memory.tab === "episodic" && <Episodic memory={memory} now={now} />}
+        {memory.tab === "semantic" && <Semantic files={memory.files} now={now} />}
         {memory.tab === "routines" && <Routines memory={memory} />}
-        {memory.tab === "scratchpad" && <ScratchpadView scratchpad={memory.scratchpad} />}
+        {memory.tab === "scratchpad" && (
+          <Scratchpad
+            scratchpad={memory.scratchpad}
+            consolidation={memory.consolidation}
+            now={now}
+          />
+        )}
       </div>
     </>
   );

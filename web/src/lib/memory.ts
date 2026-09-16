@@ -1,5 +1,5 @@
 import { api } from "./api";
-import { hhmm } from "./format";
+import { dayLabel, hhmm } from "./format";
 
 export type MemoryStore = "hot" | "cold";
 
@@ -169,14 +169,28 @@ export function toEpisodicRow(raw: Record<string, unknown>, index: number): Epis
   };
 }
 
-/** `07:02 · cold · recalled 2× · match 0.62` — the row's second line. */
-export function episodicMeta(row: EpisodicRow): string {
+/**
+ * `07:02 earlier today · significance 0.40 · recalled 2× · cold · match 0.62` —
+ * the row's second line, in the handoff's order (§6): when, how much it
+ * weighed, how often it has been reached for, which store it is in, and — only
+ * on a search result — how well it matched.
+ *
+ * `now` because a memory browser goes back weeks: a bare wall clock on a row
+ * from last Tuesday says 07:02 and means nothing. A row whose time could not be
+ * read stamps `--:--` and claims no day at all rather than guessing at one.
+ * Significance is dropped entirely when the row did not carry one — the cold
+ * browse sends it, the hot hash sends it, but a row that did not is not a zero.
+ */
+export function episodicMeta(row: EpisodicRow, now: number): string {
   const recall = row.decaying
     ? "decaying"
     : row.recalled === 0
       ? "never recalled"
       : `recalled ${row.recalled}×`;
-  const parts = [row.at === null ? "--:--" : hhmm(row.at), row.store, recall];
+  const parts =
+    row.at === null ? ["--:--"] : [`${hhmm(row.at)} ${dayLabel(new Date(row.at), new Date(now))}`];
+  if (row.significance !== null) parts.push(`significance ${row.significance.toFixed(2)}`);
+  parts.push(recall, row.store);
   if (row.score !== null) parts.push(`match ${row.score.toFixed(2)}`);
   return parts.join(" · ");
 }
@@ -187,18 +201,25 @@ export function episodicMeta(row: EpisodicRow): string {
  * Librarian's nightly-into-weekly pass.
  *
  * The number is `confidence`, not `confidence_history.at(-1)`: history is what
- * the last pass recorded, `confidence` is what the routine is worth now.
+ * the last pass recorded, `confidence` is what the routine is worth now. It is
+ * handed back formatted as well as spelled into the sentence, so the sparkline
+ * that labels itself with the same number does not round it a second way.
  */
-export function routineTrend(routine: Routine): { text: string; rising: boolean } {
+export function routineTrend(routine: Routine): {
+  text: string;
+  rising: boolean;
+  confidence: string;
+} {
   const history = routine.confidence_history;
-  const now = routine.confidence.toFixed(2);
+  const confidence = routine.confidence.toFixed(2);
   const previous = history.length >= 2 ? history[history.length - 2] : null;
-  if (previous === null) return { text: `${now} · first reading`, rising: false };
+  if (previous === null) return { text: `${confidence} · first reading`, rising: false, confidence };
   const delta = routine.confidence - previous;
   const sign = delta >= 0 ? "+" : "-";
   return {
-    text: `${now} · ${sign}${Math.abs(delta).toFixed(2)} since last week`,
+    text: `${confidence} · ${sign}${Math.abs(delta).toFixed(2)} since last week`,
     rising: delta > 0,
+    confidence,
   };
 }
 

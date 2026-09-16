@@ -37,6 +37,8 @@ export const TOKENS: Record<Theme, Record<string, string>> = {
     "accent-text": "oklch(0.78 0.12 45)",
     "on-accent": "#25221F",
     "green-text": "oklch(0.70 0.13 150)",
+    ink: "#F1ECE4",
+    paper: "#25221F",
     "ring-text-l": "0.75",
   },
   light: {
@@ -49,6 +51,8 @@ export const TOKENS: Record<Theme, Record<string, string>> = {
     "accent-text": "oklch(0.52 0.13 45)",
     "on-accent": "#221F1B",
     "green-text": "oklch(0.50 0.13 150)",
+    ink: "#221F1B",
+    paper: "#F1ECE4",
     "ring-text-l": "0.52",
   },
 };

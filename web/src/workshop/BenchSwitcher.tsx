@@ -1,4 +1,5 @@
 import type { KeyboardEvent } from "react";
+import { tabId, tabKeyDown } from "./tabs";
 
 export type Bench = "activity" | "memory" | "triggers" | "system";
 
@@ -9,17 +10,21 @@ const BENCHES: { id: Bench; label: string }[] = [
   { id: "system", label: "System" },
 ];
 
+/** The same four, in the same order, as the keyboard walks them. */
+const BENCH_IDS: readonly Bench[] = BENCHES.map((entry) => entry.id);
+
 /**
  * The id of one bench's tab. The `tabpanel` names the tab that labels it and
  * the tab names the panel it controls, so the two ends have to agree on a
  * string: `Workshop` owns the base and both sides derive from it.
  */
 // One helper exported beside the component, as `ConnectionProvider.tsx`,
-// `DoorProvider.tsx` and `ThemeProvider.tsx` already do: a file of its own for
-// one template string would cost more than the fast-refresh boundary it buys.
+// `DoorProvider.tsx` and `ThemeProvider.tsx` already do. The spelling itself
+// now belongs to `tabs.ts`, which the Memory bench's sub-tabs share; this stays
+// as the name the Workshop already imports.
 // eslint-disable-next-line react-refresh/only-export-components
 export function benchTabId(base: string, bench: Bench): string {
-  return `${base}-${bench}`;
+  return tabId(base, bench);
 }
 
 export interface BenchSwitcherProps {
@@ -49,22 +54,11 @@ export interface BenchSwitcherProps {
  * clear step below the chosen bench's `--fg`.
  */
 export function BenchSwitcher({ bench, onChange, idBase, panelId }: BenchSwitcherProps) {
-  const index = BENCHES.findIndex((entry) => entry.id === bench);
-
-  // Automatic activation — the arrow moves the selection along with the focus,
-  // which is what a segmented control does and what the APG allows for a tab
-  // set whose panels are all cheap to render. Wraps, so the four are a ring.
+  // The arrows, Home and End, and the roving focus that goes with them, are
+  // `tabs.ts`'s — shared with the Memory bench's sub-tabs so there is one
+  // keyboard to get right rather than two.
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
-    if (step === 0) return;
-    // Otherwise the arrow also scrolls the bench underneath.
-    event.preventDefault();
-    const next = (index + step + BENCHES.length) % BENCHES.length;
-    onChange(BENCHES[next].id);
-    // All four tabs are mounted, so the one to focus exists now — before React
-    // has moved the roving `tabIndex` onto it. Focusing a `tabIndex={-1}`
-    // element from script is legal; the render that follows fixes the order.
-    event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+    tabKeyDown(event, BENCH_IDS, bench, onChange);
   }
 
   return (

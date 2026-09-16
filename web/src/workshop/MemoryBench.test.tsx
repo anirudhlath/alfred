@@ -1,9 +1,20 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { toEpisodicRow } from "@/lib/memory";
 import { coldRow, hotRow, routine, semanticFile } from "@/test/fixtures";
 import { MemoryBench } from "./MemoryBench";
 import type { Memory } from "./useMemory";
+
+/**
+ * Nine in the evening of the day the memory fixtures were written. Pinned,
+ * because every stamp on this bench is `hhmm` plus a day label: on the real
+ * clock the same row reads "earlier today" this evening and "16 Sep" next week.
+ */
+const NOW = new Date(2026, 8, 16, 21, 0, 0);
+
+/** The Librarian's last and next pass, built locally so the strings hold in any zone. */
+const LAST_RUN = new Date(2026, 8, 16, 3, 0, 0).toISOString();
+const NEXT_RUN = new Date(2026, 8, 17, 3, 0, 0).toISOString();
 
 /**
  * The bench is a pure view over one state object, so its tests build that
@@ -16,6 +27,7 @@ function state(overrides: Partial<Memory> = {}): Memory {
     setTab: vi.fn(),
     query: "",
     setQuery: vi.fn(),
+    submitted: "",
     submit: vi.fn(),
     searching: false,
     searched: false,
@@ -24,6 +36,7 @@ function state(overrides: Partial<Memory> = {}): Memory {
     files: [],
     routines: [],
     scratchpad: null,
+    consolidation: null,
     openRoutine: null,
     toggleRoutine: vi.fn(),
     loading: false,
@@ -40,8 +53,14 @@ const NOTE =
 
 const searchField = () => screen.getByRole("searchbox", { name: "Search memory" });
 
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime(NOW);
+});
+afterEach(() => vi.useRealTimers());
+
 describe("MemoryBench", () => {
-  it("offers the four sub-tabs and hands a tap back to the hook", () => {
+  it("offers the four sub-tabs as pills and hands a tap back to the hook", () => {
     const memory = state();
     render(<MemoryBench memory={memory} />);
     const tabs = screen.getAllByRole("tab");
@@ -52,11 +71,26 @@ describe("MemoryBench", () => {
       "Scratchpad",
     ]);
     expect(tabs[0]).toHaveAttribute("aria-selected", "true");
-    expect(tabs[0].style.background).toBe("var(--field)");
+    // The handoff's pill, filled ink on paper — not the bench switcher's segment.
+    expect(tabs[0]).toHaveClass("h-11");
+    expect(tabs[0].style.background).toBe("var(--ink)");
+    expect(tabs[0].style.color).toBe("var(--paper)");
     expect(tabs[1].style.background).toBe("transparent");
     expect(tabs[1].style.color).toBe("var(--fg2)");
     fireEvent.click(tabs[2]);
     expect(memory.setTab).toHaveBeenCalledWith("routines");
+  });
+
+  it("walks the sub-tabs on the same keyboard the bench switcher has", () => {
+    const memory = state({ tab: "semantic" });
+    render(<MemoryBench memory={memory} />);
+    const tabs = screen.getAllByRole("tab");
+    fireEvent.keyDown(tabs[1], { key: "ArrowRight" });
+    expect(memory.setTab).toHaveBeenLastCalledWith("routines");
+    fireEvent.keyDown(tabs[1], { key: "End" });
+    expect(memory.setTab).toHaveBeenLastCalledWith("scratchpad");
+    fireEvent.keyDown(tabs[1], { key: "Home" });
+    expect(memory.setTab).toHaveBeenLastCalledWith("episodic");
   });
 
   // The sentence the endpoint's `update_stats=False` exists for.
@@ -65,16 +99,41 @@ describe("MemoryBench", () => {
     expect(screen.getByText(NOTE)).toHaveClass("t-meta-strong");
   });
 
-  it("keeps the browsing note off the other sub-tabs", () => {
-    render(<MemoryBench memory={state({ tab: "scratchpad" })} />);
+  it("opens each of the other sub-tabs with its own note", () => {
+    const { rerender } = render(<MemoryBench memory={state({ tab: "semantic" })} />);
     expect(screen.queryByText(NOTE)).toBeNull();
+    expect(
+      screen.getByText(
+        "Human-readable documents the conscious mind reads before every reply. Rewritten by the nightly consolidation.",
+      ),
+    ).toBeInTheDocument();
+    rerender(<MemoryBench memory={state({ tab: "routines" })} />);
+    expect(
+      screen.getByText(
+        "Patterns Alfred noticed on its own. Ignored suggestions lose confidence and slide right until archived.",
+      ),
+    ).toBeInTheDocument();
+    rerender(<MemoryBench memory={state({ tab: "scratchpad" })} />);
+    expect(
+      screen.getByText(
+        "Working notes Alfred keeps between consolidations. The nightly pass reads them and rewrites semantic memory.",
+      ),
+    ).toBeInTheDocument();
   });
 
-  it("draws a hot row filled and a cold row hollow, each with its own meta", () => {
+  it("draws a hot row filled and a cold row hollow, each stamped with its day", () => {
     render(<MemoryBench memory={state({ rows: [hot, cold] })} />);
-    expect(screen.getByText("Kitchen lamp turned off")).toHaveClass("line-clamp-2");
-    expect(screen.getByText("07:02 · hot · recalled 3×")).toHaveClass("t-meta-strong");
-    expect(screen.getByText("07:02 · cold · never recalled")).toBeInTheDocument();
+    const hotText = screen.getByText("Kitchen lamp turned off");
+    expect(hotText).toHaveClass("line-clamp-2");
+    expect(hotText.style.color).toBe("");
+    expect(
+      screen.getByText("07:02 earlier today · significance 0.70 · recalled 3× · hot"),
+    ).toHaveClass("t-meta-strong");
+    expect(
+      screen.getByText("07:02 earlier today · significance 0.40 · never recalled · cold"),
+    ).toBeInTheDocument();
+    // The handoff mutes a cold row; --fg2, which reads at 15 px where --muted does not.
+    expect(screen.getByText("Asked about the dentist").style.color).toBe("var(--fg2)");
     const [hotDot, coldDot] = screen.getAllByTestId("store-dot");
     // Redundancy for the eye; the meta line beside it says hot or cold in words.
     expect(hotDot).toHaveAttribute("aria-hidden", "true");
@@ -104,9 +163,15 @@ describe("MemoryBench", () => {
     expect(memory.submit).toHaveBeenCalledTimes(1);
   });
 
-  it("says what the server will not tell us when a search matched nothing", () => {
-    render(<MemoryBench memory={state({ searched: true, model: "ok" })} />);
-    expect(screen.getByText("Nothing scored above the server's threshold.")).toBeInTheDocument();
+  it("quotes the words that were searched, not the ones still being typed", () => {
+    render(
+      <MemoryBench
+        memory={state({ searched: true, model: "ok", submitted: "dentist", query: "dentist app" })}
+      />,
+    );
+    expect(screen.getByText('Nothing close enough to "dentist".')).toBeInTheDocument();
+    // Deviation 1: `recall()` returns matches only, so there is no rejected
+    // best score, threshold or corpus size to print.
     expect(
       screen.getByText("searched by meaning · the server does not report what it rejected"),
     ).toHaveClass("t-meta-strong");
@@ -115,7 +180,7 @@ describe("MemoryBench", () => {
   it("tells an empty store from an empty search", () => {
     render(<MemoryBench memory={state()} />);
     expect(screen.getByText("No episodic memories yet.")).toBeInTheDocument();
-    expect(screen.queryByText("Nothing scored above the server's threshold.")).toBeNull();
+    expect(screen.queryByText(/Nothing close enough/)).toBeNull();
   });
 
   it("greens the model pill only once a search has answered", () => {
@@ -128,25 +193,39 @@ describe("MemoryBench", () => {
   });
 
   // The honesty case: a refused search is no reason to take the last true thing
-  // we were told off the screen.
+  // we were told off the screen. And a 503 says nothing answered — not, as the
+  // handoff has it, that a model is still loading.
   it("keeps the rows on screen while saying the embedder is down", () => {
     render(<MemoryBench memory={state({ model: "503", rows: [hot, cold] })} />);
+    expect(screen.getByText("The embedder is not answering.")).toBeInTheDocument();
     expect(
-      screen.getByText("The embedder is not answering, so meaning search is off. Browsing still works."),
-    ).toBeInTheDocument();
+      screen.getByText("503 · search by meaning unavailable · the list below is by recency"),
+    ).toHaveClass("t-meta-strong");
     expect(screen.getByText("Kitchen lamp turned off")).toBeInTheDocument();
     expect(screen.getByText("Asked about the dentist")).toBeInTheDocument();
   });
 
-  it("marks the list busy while a search is in flight", () => {
-    render(<MemoryBench memory={state({ rows: [hot], searching: true })} />);
-    expect(screen.getByRole("list")).toHaveAttribute("aria-busy", "true");
+  it("marks the panel busy while a read is in flight, wherever the list is", () => {
+    render(<MemoryBench memory={state({ loading: true })} />);
+    // On the panel, not the list: an empty list is not rendered at all, and a
+    // search from an empty store is exactly when the signal matters most.
+    expect(screen.getByRole("tabpanel")).toHaveAttribute("aria-busy", "true");
+  });
+
+  it("gives the panel a tab stop of its own, on every sub-tab", () => {
+    const { rerender } = render(<MemoryBench memory={state({ tab: "scratchpad" })} />);
+    expect(screen.getByRole("tabpanel")).toHaveAttribute("tabindex", "0");
+    rerender(<MemoryBench memory={state({ tab: "semantic" })} />);
+    expect(screen.getByRole("tabpanel")).toHaveAttribute("tabindex", "0");
   });
 
   it("names each semantic file, when it was rewritten, and what is in it", () => {
     render(<MemoryBench memory={state({ tab: "semantic", files: [semanticFile()] })} />);
     expect(screen.getByText("food.md")).toBeInTheDocument();
-    expect(screen.getByText("preferences · modified 07:02")).toHaveClass("t-meta-strong");
+    // The day as well as the clock: these are rewritten weekly at the slowest.
+    expect(screen.getByText("preferences · modified 07:02 earlier today")).toHaveClass(
+      "t-meta-strong",
+    );
     expect(screen.getByText(/No coriander/)).toBeInTheDocument();
   });
 
@@ -154,17 +233,29 @@ describe("MemoryBench", () => {
     const content = Array.from({ length: 20 }, (_, line) => `line ${line}`).join("\n");
     render(<MemoryBench memory={state({ tab: "semantic", files: [semanticFile({ content })] })} />);
     const body = screen.getByText(/line 19/);
-    expect(body).toHaveClass("line-clamp-[12]");
+    expect(body.style.getPropertyValue("-webkit-line-clamp")).toBe("12");
     const show = screen.getByRole("button", { name: "Show all" });
     expect(show).toHaveClass("min-h-11");
     fireEvent.click(show);
-    expect(body).not.toHaveClass("line-clamp-[12]");
+    expect(body.style.getPropertyValue("-webkit-line-clamp")).toBe("");
     expect(screen.getByRole("button", { name: "Show less" })).toBeInTheDocument();
+  });
+
+  // The wrapping half of the estimate: one line, no newline in it, far past a
+  // phone column.
+  it("clamps a file whose one line wraps past the clamp", () => {
+    render(
+      <MemoryBench
+        memory={state({ tab: "semantic", files: [semanticFile({ content: "x".repeat(800) })] })}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Show all" })).toBeInTheDocument();
   });
 
   it("offers no Show all for a file that fits", () => {
     render(<MemoryBench memory={state({ tab: "semantic", files: [semanticFile()] })} />);
     expect(screen.queryByRole("button", { name: "Show all" })).toBeNull();
+    expect(screen.getByText(/No coriander/).style.getPropertyValue("-webkit-line-clamp")).toBe("");
   });
 
   it("says when there are no semantic files at all", () => {
@@ -196,24 +287,45 @@ describe("MemoryBench", () => {
 
   // Never hidden: an empty queue is a fact about the consolidation, not an
   // absence of one.
-  it("states the pending queue even when it is empty", () => {
+  it("counts the queue even when it is empty, and says when the next pass is", () => {
     render(
       <MemoryBench
-        memory={state({ tab: "scratchpad", scratchpad: { content: "notes", pending_queue: 0 } })}
+        memory={state({
+          tab: "scratchpad",
+          scratchpad: { content: "notes", pending_queue: 0 },
+          consolidation: { last: LAST_RUN, next: NEXT_RUN },
+        })}
       />,
     );
-    expect(screen.getByText("0 in the queue")).toHaveClass("t-meta-strong");
+    expect(screen.getByText("0")).toHaveClass("t-title");
+    expect(screen.getByText("episodes queued, unscored")).toHaveClass("t-meta-strong");
+    expect(screen.getByText("03:00")).toBeInTheDocument();
+    expect(screen.getByText("next consolidation · last 03:00 earlier today")).toBeInTheDocument();
     expect(screen.getByText("notes")).toBeInTheDocument();
   });
 
-  it("says when the scratchpad is empty, and counts what is waiting for it", () => {
+  it("says never run rather than inventing a stamp for a pass that has not happened", () => {
     render(
       <MemoryBench
-        memory={state({ tab: "scratchpad", scratchpad: { content: "", pending_queue: 14 } })}
+        memory={state({
+          tab: "scratchpad",
+          scratchpad: { content: "", pending_queue: 14 },
+          consolidation: { last: null, next: null },
+        })}
       />,
     );
-    expect(screen.getByText("14 in the queue")).toBeInTheDocument();
+    expect(screen.getByText("14")).toBeInTheDocument();
+    expect(screen.getByText("--:--")).toBeInTheDocument();
+    expect(screen.getByText("next consolidation · last never run")).toBeInTheDocument();
     expect(screen.getByText("The scratchpad is empty.")).toBeInTheDocument();
+  });
+
+  it("says the scratchpad has not been read rather than showing a blank tab", () => {
+    render(<MemoryBench memory={state({ tab: "scratchpad" })} />);
+    expect(screen.getByText("The scratchpad has not been read yet.")).toBeInTheDocument();
+    // Nothing to count and no schedule in hand: neither card is drawn.
+    expect(screen.queryByText("episodes queued, unscored")).toBeNull();
+    expect(screen.queryByText(/next consolidation/)).toBeNull();
   });
 
   it("shows the read that failed without a region of its own to say it in", () => {

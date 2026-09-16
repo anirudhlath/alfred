@@ -25,6 +25,7 @@ function renderRow(overrides: Partial<Routine> = {}, open = false) {
 }
 
 const bars = () => Array.from(screen.getByRole("img").children) as HTMLElement[];
+const heights = () => bars().map((bar) => bar.style.height);
 
 describe("RoutineRow", () => {
   it("names the routine and reports the confidence it is worth now", () => {
@@ -33,37 +34,53 @@ describe("RoutineRow", () => {
     expect(screen.getByText("0.82 · +0.11 since last week")).toBeInTheDocument();
   });
 
-  it("colours a rising routine green", () => {
+  it("gives a rising routine the accent", () => {
     renderRow();
-    expect(screen.getByText("0.82 · +0.11 since last week").style.color).toBe("var(--green-text)");
+    expect(screen.getByText("0.82 · +0.11 since last week").style.color).toBe("var(--accent-text)");
   });
 
-  // A routine losing confidence is the Librarian working, not a fault: --fg2,
-  // and no red anywhere on the bench.
+  // A routine losing confidence is the Librarian working, not a fault: it takes
+  // `.t-meta-strong`'s own --fg2 and no more, and no red anywhere on the bench.
   it("colours a falling routine no differently from any other meta", () => {
     renderRow({ confidence_history: [0.9, 0.82] });
-    expect(screen.getByText("0.82 · -0.08 since last week").style.color).toBe("var(--fg2)");
+    const trend = screen.getByText("0.82 · -0.08 since last week");
+    expect(trend.style.color).toBe("");
+    expect(trend).toHaveClass("t-meta-strong");
   });
 
-  it("fills the rail up to the current stage and leaves the ones ahead hollow", () => {
+  it("fills the rail up to the stage the routine is at", () => {
     renderRow({ state: "dormant" });
     const rail = screen.getByTestId("lifecycle-rail");
-    // A picture of the lifecycle: the words below carry the same fact.
-    expect(rail).toHaveAttribute("aria-hidden", "true");
-    const dots = within(rail).getAllByTestId("stage-dot");
-    expect(dots).toHaveLength(4);
-    expect(dots.map((dot) => dot.style.background)).toEqual([
-      "var(--line)",
-      "var(--line)",
+    expect(within(rail).getAllByTestId("stage-bar").map((bar) => bar.style.background)).toEqual([
+      "var(--muted)",
+      "var(--muted)",
       "var(--accent)",
-      "transparent",
+      "var(--line)",
     ]);
-    expect(dots[3].style.borderColor).toBe("var(--line)");
   });
 
-  it("says which stage the routine is at in words", () => {
+  it("names all four stages and marks which one is now", () => {
     renderRow({ state: "archived" });
-    expect(screen.getByText("stage: archived")).toHaveClass("sr-only");
+    const rail = screen.getByTestId("lifecycle-rail");
+    expect(within(rail).getAllByTestId("stage-column").map((column) => column.textContent)).toEqual([
+      "candidate",
+      "active",
+      "dormant",
+      "archived",
+    ]);
+    const current = within(rail)
+      .getAllByTestId("stage-column")
+      .map((column) => column.getAttribute("aria-current"));
+    expect(current).toEqual([null, null, null, "step"]);
+  });
+
+  // The handoff mutes a routine that has fallen out of use; --fg2 rather than
+  // --muted, which is 3.46:1 on --bg in light (index.css, .t-meta-strong).
+  it("steps a dormant routine's name back, and leaves an active one alone", () => {
+    renderRow({ state: "dormant" });
+    expect(screen.getByText("evening-lights").style.color).toBe("var(--fg2)");
+    renderRow({ state: "active" });
+    expect(screen.getAllByText("evening-lights")[1].style.color).toBe("");
   });
 
   it("toggles by name, and says whether it is open", () => {
@@ -82,11 +99,13 @@ describe("RoutineRow", () => {
     expect(screen.queryByRole("img")).toBeNull();
   });
 
-  it("lists the steps in order with the tool each one runs", () => {
+  it("numbers the steps in order and names the tool each one runs", () => {
     renderRow({}, true);
     expect(screen.getByText("2 steps · learned from 2 memories")).toBeInTheDocument();
     const steps = within(screen.getByRole("list", { name: "Steps" })).getAllByRole("listitem");
     expect(steps).toHaveLength(2);
+    expect(steps[0]).toHaveTextContent("1.");
+    expect(steps[1]).toHaveTextContent("2.");
     expect(steps[0]).toHaveTextContent("Dim the living room to 30%");
     expect(within(steps[0]).getByText(humaniseTool("home.light_set"))).toBeInTheDocument();
   });
@@ -95,44 +114,58 @@ describe("RoutineRow", () => {
     renderRow({ steps: [{ description: "Wait for the TV to start", action: null }] }, true);
     const steps = within(screen.getByRole("list", { name: "Steps" })).getAllByRole("listitem");
     expect(steps).toHaveLength(1);
-    expect(steps[0]).toHaveTextContent("Wait for the TV to start");
-    expect(steps[0].textContent).toBe("Wait for the TV to start");
+    // The ordinal and the description, and nothing where a tool would be.
+    expect(steps[0].children).toHaveLength(2);
+    expect(steps[0].textContent).toBe("1.Wait for the TV to start");
   });
 
-  it("draws one bar per reading and says what the picture means", () => {
+  it("draws one bar per reading and captions what the picture is", () => {
     renderRow({}, true);
     expect(screen.getByRole("img")).toHaveAccessibleName(
       "confidence over the last 3 consolidations, now 0.82",
     );
     expect(bars()).toHaveLength(3);
+    // Counted, not the handoff's flat "last 8": three readings are three.
+    const caption = screen.getByText("confidence, last 3 consolidations");
+    expect(caption).toHaveAttribute("aria-hidden", "true");
   });
 
   // A flat line is a claim about a routine nothing has scored yet.
   it("draws no sparkline at all for a routine with no history", () => {
     renderRow({ confidence_history: [] }, true);
     expect(screen.queryByRole("img")).toBeNull();
+    expect(screen.queryByText(/consolidations$/)).toBeNull();
   });
 
-  it("draws only the last eight readings of a longer history", () => {
-    const history = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.78, 0.79, 0.81, 0.82];
+  it("draws only the last eight readings, with the newest tallest and solid", () => {
+    const history = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.78, 0.79, 0.81, 0.9];
     renderRow({ confidence_history: history }, true);
     expect(screen.getByRole("img")).toHaveAccessibleName(
       "confidence over the last 8 consolidations, now 0.82",
     );
     const drawn = bars();
     expect(drawn).toHaveLength(8);
-    // The tallest of the eight is the newest, which is also the only solid one.
+    // The last eight of the twelve, 28 px at full confidence: 0.5 → 14 px,
+    // 0.9 → 25 px, and the two readings a hundredth apart round to the same bar.
+    expect(heights()).toEqual(["14px", "17px", "20px", "21px", "22px", "22px", "23px", "25px"]);
     expect(drawn.map((bar) => bar.style.opacity)).toEqual([
-      "0.35",
-      "0.35",
-      "0.35",
-      "0.35",
-      "0.35",
-      "0.35",
-      "0.35",
+      "0.7",
+      "0.7",
+      "0.7",
+      "0.7",
+      "0.7",
+      "0.7",
+      "0.7",
       "1",
     ]);
     expect(drawn.every((bar) => bar.style.background === "var(--accent)")).toBe(true);
+  });
+
+  // A consolidation that scored zero still happened, and a score outside 0-1 is
+  // a bug in the store rather than a bar taller than its own box.
+  it("floors a zero reading and clamps one outside the scale", () => {
+    renderRow({ confidence_history: [0, -1, 2, 0.5] }, true);
+    expect(heights()).toEqual(["2px", "2px", "28px", "14px"]);
   });
 
   it("is a 44 px tap target", () => {

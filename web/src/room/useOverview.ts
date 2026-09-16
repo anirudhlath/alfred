@@ -9,10 +9,18 @@ import { markTrue } from "@/shell/ConnectionProvider";
  * The Room's vitals. Polled rather than pushed: the overview aggregates Redis
  * reads that no stream announces. A successful read is also proof the house is
  * reachable, so it stamps last-true.
+ *
+ * `enabled` is for the callers that want what this key already holds without
+ * asking for it again: a disabled observer never fetches and still re-renders
+ * when whoever *is* polling gets an answer. The Memory bench's scratchpad reads
+ * the Librarian's schedule that way — the Room and the Workshop header are
+ * already on this key, and a stamp on a stat card is not worth a read of its
+ * own (plan deviation 15).
  */
-export function useOverview() {
+export function useOverview(enabled = true) {
   return useQuery<Overview>({
     queryKey: ["overview"],
+    enabled,
     queryFn: async () => {
       const overview = await api<Overview>("/api/admin/overview");
       markTrue();
