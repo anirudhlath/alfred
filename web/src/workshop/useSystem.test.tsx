@@ -4,7 +4,7 @@ import {
   QueryClient,
   QueryClientProvider,
 } from "@tanstack/react-query";
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, render, renderHook, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { authEvents, type AuthEventKind } from "@/lib/auth-events";
@@ -19,6 +19,7 @@ import {
 } from "@/test/fixtures";
 import { OVERVIEW_POLL_MS } from "@/room/useOverview";
 import { SAVE_TIMED_OUT, SAVE_TIMEOUT_MS } from "@/lib/system";
+import { SystemBench } from "./SystemBench";
 import { STALE_AFTER_MS, useSystem } from "./useSystem";
 
 const OVERVIEW = "/api/admin/overview";
@@ -427,9 +428,14 @@ describe("useSystem", () => {
     expect(result.current.health.rate.value).toBe("— ev/s");
     expect(result.current.health.home.note).toBe("home assistant · not read yet");
     expect(result.current.maintenance.idleMinutes).toBeNull();
-    // Zero and not one: the held count is a number the bench prints beside a
-    // control, and a default of anything else is a queue nobody reported.
-    expect(result.current.quiet.held).toBe(0);
+    // Null and not zero: the held count is a number the bench prints beside a
+    // control, and `0 held` before the read that would settle it is a claim
+    // about a queue nobody has looked at, not a blank. The same reading
+    // `idleMinutes` above it already took.
+    expect(result.current.quiet.held).toBeNull();
+    // And the whole Librarian block, for the same reason: `last: null` alone
+    // reads as `never run` on screen.
+    expect(result.current.maintenance.consolidation).toBeNull();
     expect(result.current.loading).toBe(true);
   });
 
@@ -1275,9 +1281,11 @@ describe("useSystem", () => {
     await waitFor(() => expect(result.current.maintenance.ranAt).toBeGreaterThan(0));
     expect(countOf("POST", LIBRARIAN)).toBe(1);
     expect(countOf("POST", DRAIN)).toBe(1);
-    expect(result.current.maintenance.last).toBe("2026-09-07T03:00:00Z");
-    expect(result.current.maintenance.reviewed).toBe(42);
-    expect(result.current.maintenance.next).toBe("2026-09-08T03:00:00Z");
+    expect(result.current.maintenance.consolidation).toEqual({
+      last: "2026-09-07T03:00:00Z",
+      reviewed: 42,
+      next: "2026-09-08T03:00:00Z",
+    });
   });
 
   it("does not stamp a queue the server refused, and clears the complaint next time", async () => {
@@ -1647,5 +1655,84 @@ describe("useSystem", () => {
     // nothing is read a second time for the walk back.
     expect(result.current.sessions.list).toHaveLength(2);
     expect(reads()).toEqual(OPENING_READS);
+  });
+});
+
+/**
+ * The bench over its own hook. `SystemBench.test.tsx` hand-builds a `System`, so
+ * it can only prove the view draws what it is handed — a card gated on a flag
+ * the hook never actually produces, or ungated on one it does, is invisible
+ * there; and the assertions above read the hook's fields rather than the
+ * sentences a reader gets. Three claims lived in that gap.
+ */
+function renderBench(client = makeClient()) {
+  return render(
+    <QueryClientProvider client={client}>
+      <SystemBenchOverHook />
+    </QueryClientProvider>,
+  );
+}
+
+function SystemBenchOverHook() {
+  return <SystemBench system={useSystem(true, onHeld)} />;
+}
+
+describe("SystemBench over useSystem", () => {
+  it("says nothing about the nightly pass until the overview has answered", async () => {
+    hold("GET", OVERVIEW);
+    renderBench();
+
+    // The same unread overview, two cards apart. The Health grid has always
+    // said so; Maintenance was flattening "not read", "no librarian block" and
+    // "has genuinely never run" into one `?? null` and printing the third.
+    await waitFor(() =>
+      expect(screen.getByText("bus · redis · not read yet")).toBeInTheDocument(),
+    );
+    expect(screen.getByText("Nightly consolidation")).toBeInTheDocument();
+    expect(screen.queryByText("never run")).toBeNull();
+
+    await releaseNext("GET", OVERVIEW, { status: 200, body: overviewFixture });
+    await waitFor(() => expect(screen.queryByText(/^last /)).toBeInTheDocument());
+  });
+
+  it("says nothing about the held queue until the overview has answered", async () => {
+    hold("GET", OVERVIEW);
+    renderBench();
+
+    await waitFor(() => expect(screen.getByText("Held back")).toBeInTheDocument());
+    // `0 held` is a count of a queue nobody has read — the claim
+    // `SystemSections`' own `N registered` is gated against.
+    expect(screen.queryByText(/held$/)).toBeNull();
+
+    await releaseNext("GET", OVERVIEW, { status: 200, body: overviewFixture });
+    await waitFor(() => expect(screen.getByText(/\d+ held$/)).toBeInTheDocument());
+  });
+
+  it("keeps the registry read after a later read of it fails", async () => {
+    const client = makeClient();
+    renderBench(client);
+    await waitFor(() =>
+      expect(screen.getByText("home assistant · 210 ms")).toBeInTheDocument(),
+    );
+
+    // The proxy reloads under the next poll. react-query drops to `error`
+    // status and keeps the data, so the section below still lists every
+    // service — while `isSuccess` flipped and the card above it claimed the
+    // registry had never been read.
+    answer("GET", INTEGRATIONS, { status: 500, body: { detail: "registry gone" } });
+    // Past `STALE_MS`, then a focus — the read the running app makes every time
+    // the reader comes back to the tab, and the only way to reach a *later*
+    // failure over a landed read.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(31_000);
+    });
+    act(() => focusManager.setFocused(true));
+    await waitFor(() => expect(countOf("GET", INTEGRATIONS)).toBeGreaterThan(1));
+    await settle();
+
+    expect(screen.getByLabelText("Read errors")).toHaveTextContent("registry gone");
+    expect(screen.getByText("Connected services")).toBeInTheDocument();
+    expect(screen.queryByText("home assistant · not read yet")).toBeNull();
   });
 });

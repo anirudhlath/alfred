@@ -68,9 +68,7 @@ function quiet(overrides: Partial<Quiet> = {}): Quiet {
 
 function maintenance(overrides: Partial<Maintenance> = {}): Maintenance {
   return {
-    last: LAST_RUN,
-    reviewed: 42,
-    next: NEXT_RUN,
+    consolidation: { last: LAST_RUN, reviewed: 42, next: NEXT_RUN },
     idleMinutes: 30,
     drainedAt: null,
     ranAt: null,
@@ -788,13 +786,13 @@ describe("SystemBench · Maintenance", () => {
 
   it("dates it against the bench's clock rather than against today", () => {
     render(
-      <SystemBench system={state({ maintenance: maintenance({ last: YESTERDAY_RUN }) })} />,
+      <SystemBench system={state({ maintenance: maintenance({ consolidation: { last: YESTERDAY_RUN, reviewed: 42, next: NEXT_RUN } }) })} />,
     );
     expect(screen.getByText("last 03:00 yesterday · 42 reviewed")).toBeInTheDocument();
   });
 
   it("counts nothing when the house did not say what was reviewed", () => {
-    render(<SystemBench system={state({ maintenance: maintenance({ reviewed: null }) })} />);
+    render(<SystemBench system={state({ maintenance: maintenance({ consolidation: { last: LAST_RUN, reviewed: null, next: NEXT_RUN } }) })} />);
     expect(screen.getByText("last 03:00 earlier today")).toBeInTheDocument();
     expect(screen.queryByText(/reviewed/)).not.toBeInTheDocument();
   });
@@ -802,10 +800,23 @@ describe("SystemBench · Maintenance", () => {
   it("says never run rather than inventing a pass", () => {
     render(
       <SystemBench
-        system={state({ maintenance: maintenance({ last: null, reviewed: null, next: null }) })}
+        system={state({
+          maintenance: maintenance({ consolidation: { last: null, reviewed: null, next: null } }),
+        })}
       />,
     );
     expect(screen.getByText("never run")).toBeInTheDocument();
+    expect(screen.queryByText(/^next /)).not.toBeInTheDocument();
+  });
+
+  it("says nothing at all about a pass the overview has not reported", () => {
+    // Three different facts used to flatten into one `?? null` and print the
+    // third: the overview has not landed, it answered without a `librarian`
+    // block, and the pass has genuinely never run. Only the last licenses a
+    // sentence, and `null` here is the first two.
+    render(<SystemBench system={state({ maintenance: maintenance({ consolidation: null }) })} />);
+    expect(screen.getByText("Nightly consolidation")).toBeInTheDocument();
+    expect(screen.queryByText("never run")).not.toBeInTheDocument();
     expect(screen.queryByText(/^next /)).not.toBeInTheDocument();
   });
 

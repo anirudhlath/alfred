@@ -17,7 +17,7 @@ import {
   ServicesSection,
   SessionsSection,
 } from "./SystemSections";
-import type { Maintenance, Quiet, System } from "./useSystem";
+import type { LibrarianPass, Maintenance, Quiet, System } from "./useSystem";
 
 export interface SystemBenchProps {
   system: System;
@@ -370,8 +370,9 @@ function QuietSection({
       : `on · until ${whenLabel(new Date(untilMs), new Date(now))} · ${ahead ? QUIET_DRAINS : QUIET_PASSED}`;
   const note = quiet.error ?? (mine !== null ? "applied" : null);
   // A queue that nothing is going to drain, and something in it to drain. An
-  // empty queue is not growing, whatever the switch is set to.
-  const growing = quiet.active && quiet.held > 0 && !ahead;
+  // empty queue is not growing, whatever the switch is set to — and neither is
+  // one nobody has read.
+  const growing = quiet.active && quiet.held !== null && quiet.held > 0 && !ahead;
 
   const drained = maintenance.drainedAt;
   // A refusal is the news, and it belongs to the control that caused it rather
@@ -469,12 +470,18 @@ function QuietSection({
       >
         <span className="t-row">Held back</span>
         <span className="flex items-center gap-1.5">
-          <span
-            className="t-meta-strong"
-            style={growing ? { color: "var(--accent-text)" } : undefined}
-          >
-            {growing ? `${quiet.held} · growing` : `${quiet.held} held`}
-          </span>
+          {/* The count appears when the read does, as `SystemSections`'
+              `N registered` does: `0 held` before the overview has answered is
+              a count of a queue nobody has looked at. The row itself stays —
+              it is a way into the sheet whether or not the number is known. */}
+          {quiet.held !== null && (
+            <span
+              className="t-meta-strong"
+              style={growing ? { color: "var(--accent-text)" } : undefined}
+            >
+              {growing ? `${quiet.held} · growing` : `${quiet.held} held`}
+            </span>
+          )}
           <span aria-hidden="true" className="t-meta-strong">
             ›
           </span>
@@ -508,12 +515,17 @@ function QuietSection({
   );
 }
 
-/** `last 03:00 earlier today · 42 reviewed` — or `never run`, which is a fact too. */
-function consolidationLine(maintenance: Maintenance, now: number): string {
-  const last = isoMs(maintenance.last);
+/**
+ * `last 03:00 earlier today · 42 reviewed` — or `never run`, which is a fact
+ * too, and is why this takes a `LibrarianPass` rather than the whole
+ * `Maintenance`: `never run` is only sayable about a block the overview
+ * actually sent, and the caller is what proves there is one.
+ */
+function consolidationLine(pass: LibrarianPass, now: number): string {
+  const last = isoMs(pass.last);
   if (last === null) return "never run";
   const line = `last ${hhmm(last)} ${dayLabel(new Date(last), new Date(now))}`;
-  return maintenance.reviewed === null ? line : `${line} · ${maintenance.reviewed} reviewed`;
+  return pass.reviewed === null ? line : `${line} · ${pass.reviewed} reviewed`;
 }
 
 /**
@@ -525,7 +537,8 @@ function consolidationLine(maintenance: Maintenance, now: number): string {
  */
 function MaintenanceSection({ maintenance, now }: { maintenance: Maintenance; now: number }) {
   const runId = useId();
-  const next = isoMs(maintenance.next);
+  const pass = maintenance.consolidation;
+  const next = pass === null ? null : isoMs(pass.next);
   const ran = maintenance.ranAt;
   const idle = maintenance.idleMinutes;
   // The refusal on the control that caused it, as the drain's is.
@@ -538,7 +551,12 @@ function MaintenanceSection({ maintenance, now }: { maintenance: Maintenance; no
       <SystemRow>
         <div className="flex min-w-0 flex-col gap-0.5 py-2">
           <span className="t-row">Nightly consolidation</span>
-          <span className="t-meta-strong">{consolidationLine(maintenance, now)}</span>
+          {/* Nothing at all until the overview has answered — the gate the row
+              two below already takes for `idleMinutes`, and the one
+              `MemoryBench`'s own consolidation stat takes on the same key.
+              `never run` is a claim about the Librarian, and an unread overview
+              is no evidence for it. */}
+          {pass !== null && <span className="t-meta-strong">{consolidationLine(pass, now)}</span>}
         </div>
         {next !== null && (
           <span className="t-meta-strong shrink-0">

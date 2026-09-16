@@ -85,8 +85,14 @@ export interface Quiet {
   active: boolean;
   /** When the quiet ends, or null for no expiry. Not the same fact as `active`. */
   until: string | null;
-  /** How many notifications the queue is holding back. */
-  held: number;
+  /**
+   * How many notifications the queue is holding back — **null** until the
+   * overview has answered. Never 0 before the read that would settle it: `0
+   * held` is a count of a queue nobody has looked at, which is a claim rather
+   * than a blank, and it is the same gate `SystemSections`' `N registered`
+   * takes ("a count of a list nobody has read yet is `0 registered`").
+   */
+  held: number | null;
   /** The write is in flight; the switch is busy and does not move. */
   setting: boolean;
   /** Why the last write was refused, or why its position could not be confirmed. */
@@ -197,11 +203,33 @@ export interface Attention {
   error: string | null;
 }
 
-export interface Maintenance {
-  /** The Librarian's last pass and what it reviewed, from the overview. */
+/**
+ * The Librarian's nightly pass, off the overview: when it last ran, how much it
+ * reviewed, and when it runs next. Every field can legitimately be null — a
+ * house that has never consolidated has no last run, and a Librarian that is
+ * not scheduled has no next one — which is exactly why the *group* has to carry
+ * the unread case instead of a fourth null.
+ *
+ * `useMemory`'s `Consolidation` is the same fact and says the same thing: "Null
+ * when the overview has not answered — not a pair of nulls, which would read as
+ * 'scheduled: never'." This one adds `reviewed`, which only the System bench
+ * prints.
+ */
+export interface LibrarianPass {
   last: string | null;
   reviewed: number | null;
   next: string | null;
+}
+
+export interface Maintenance {
+  /**
+   * The Librarian's pass, or **null** until the overview has answered — and
+   * null too when it answered without a `librarian` block, since neither is
+   * evidence that the pass has never run. Flattening the three with `?? null`
+   * put `never run` on screen beside a Health grid already saying `not read
+   * yet` about the very same unread overview.
+   */
+  consolidation: LibrarianPass | null;
   /**
    * The chat session's idle timeout in minutes, or **null** until the overview
    * has answered. Never 0: a zero would print `0 minutes`, which is a guess
@@ -479,7 +507,14 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
     overview,
     // Only once the registry has answered is "not registered" a fact about the
     // house rather than a claim made ahead of the read that would settle it.
-    registryRead: integrationsQuery.isSuccess,
+    //
+    // `dataUpdatedAt` and not `isSuccess`, as every sibling in the returned
+    // object already has it: react-query drops back to `error` status on a
+    // later failure while keeping the data, and the question this is asking is
+    // "has this ever been read", not "did the last attempt succeed". Under
+    // `isSuccess` a proxy reload left Connected services listing every service
+    // while the home card above it read `not read yet`.
+    registryRead: integrationsQuery.dataUpdatedAt !== 0,
     home: probes[list.findIndex((entry) => entry.name === HOME_SERVICE)],
   });
 
@@ -866,7 +901,7 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
       // `until` belongs to an active quiet. A cleared one carrying a stale
       // instant would otherwise print an expiry for a switch that is off.
       until: quietActive ? (dnd?.until ?? null) : null,
-      held: overview?.counts.deferred ?? 0,
+      held: overview?.counts.deferred ?? null,
       setting: settingDnd,
       error: enabled ? dndError : null,
       set: setQuiet,
@@ -917,9 +952,12 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
       mint,
     },
     maintenance: {
-      last: librarian?.last_run_at ?? null,
-      reviewed: librarian?.reviewed ?? null,
-      next: librarian?.next_run_at ?? null,
+      // `librarian ? … : null`, which is `useMemory`'s spelling for this exact
+      // overview key: the group is the unit that is known or unknown, and only
+      // a landed block licenses a sentence about the pass.
+      consolidation: librarian
+        ? { last: librarian.last_run_at, reviewed: librarian.reviewed, next: librarian.next_run_at }
+        : null,
       idleMinutes: idle !== null && idle > 0 ? idle : null,
       drainedAt,
       ranAt,
