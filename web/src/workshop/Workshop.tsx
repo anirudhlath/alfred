@@ -98,18 +98,26 @@ function WorkshopPanel({ onClose, onWhy }: WorkshopPanelProps) {
 
   return (
     <>
-      {/* The handoff's status-bar clearance is 62 px to the *ink* (README §4,
-          "Header padding 62 16 0"), and the `‹ Room` button underneath is a
-          44 px touch target around 18 px of text — 13 px of its own box above
-          the first pixel anyone sees. 62 px of padding on top of that reads as
-          ~75 and was the gap reported from the phone. 48 + 13 puts the word
-          back where the handoff drew it.
+      {/* The handoff's "Header padding 62 16 0" (README §4) is measured from the
+          top of a 393x852 iPhone *mock*, and the mock has the status bar drawn
+          into it. Reading it as padding inside the app added the status bar a
+          second time, which is the gap the phone reported twice — at 62 and
+          again at 48.
 
-          A literal rather than `env(safe-area-inset-top)`: index.html asks for
-          `viewport-fit=cover`, but neither this header nor the Room's reads the
-          inset, and one surface guessing differently from the other would step
-          the two apart. Phase 3 moves both or neither. */}
-      <header ref={header} className="flex flex-col gap-2.5 px-4 pt-12">
+          `env(safe-area-inset-top)` rather than any literal, because the two
+          things the literal would have to guess are exactly what the env knows:
+          whether `viewport-fit=cover` put this surface under the status bar
+          (inset 59, total 67) or below it (inset 0, total 8). Both land the ink
+          21 px under the clock — the `‹ Room` button is a 44 px touch target
+          around 18 px of text, so 13 px of its own box sits above the first
+          pixel anyone sees. The Room's header keeps its literal on purpose: it
+          is a headline in an open field, not a nav bar, and the phone called
+          that one right. */}
+      <header
+        ref={header}
+        className="flex flex-col gap-2.5 px-4"
+        style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 8px)" }}
+      >
         <div className="flex items-center justify-between">
           <button
             type="button"
