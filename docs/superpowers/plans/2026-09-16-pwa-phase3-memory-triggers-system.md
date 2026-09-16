@@ -192,7 +192,7 @@ export function fireTrigger(id: string): Promise<void>;
 
 // workshop/useTriggers.ts
 export const REREAD_MS = 60_000;
-export type Pending = { kind: "enabling" | "disabling" | "firing"; at: number; error?: string; status?: number };
+export interface Pending { kind: "enabling" | "disabling" | "firing"; at: number; error?: string; status?: number }
 export interface Triggers { kind; setKind; triggers: Trigger[]; shown: Trigger[]; open: string | null;
   toggleOpen; pending: Record<string, Pending>; toggle(t: Trigger); fire(t: Trigger);
   /** When *this client queued* a fire — never when the trigger ran, which no read reports. */
@@ -690,7 +690,7 @@ Handoff §7. Rows carry a 1 px `--line` top border and `padding 11 0`; 16 px sid
 
   `disabling` for the other direction. The switch is `disabled` while pending — a second tap inside the window can only confuse the reader, and the server would queue a second action against a state neither of us knows.
 - A failed mutation replaces the note with `<status> · that did not land · the scheduler still has the old setting`, where `<status>` is the ApiError's status.
-- **The corrupt-record card** — the one form of deviation 6 that is reachable. When a mutation answers **500**, the row is replaced by a `--surface` card carrying the handoff's copy, with the server's own detail in place of its example byte offset:
+- **The corrupt-record card** — the one form of deviation 6 that is reachable. It **self-dismisses 60 s after the tap**, because the hook's window clears every note whatever it says (task 5, behaviour 8). That is deliberate: a client-side claim must not outlive the evidence for it, and the next read either shows the trigger again or does not. When a mutation answers **500**, the row is replaced by a `--surface` card carrying the handoff's copy, with the server's own detail in place of its example byte offset:
 
   `This record can't be read.` / `500 · <the server's detail> · the scheduler skips it · fix in the store or delete`
 
