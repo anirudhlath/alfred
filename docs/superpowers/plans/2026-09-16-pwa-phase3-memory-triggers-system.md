@@ -168,7 +168,9 @@ export function fetchScratchpad(): Promise<Scratchpad>;
 // workshop/useMemory.ts
 export type MemoryTab = "episodic" | "semantic" | "routines" | "scratchpad";
 export type ModelState = "unknown" | "ok" | "503";
-export interface Memory { tab; setTab; query; setQuery; submit; searching; searched: boolean;
+export interface Memory { tab; setTab; query; setQuery; submit; searching;
+  /** A search *answered*, not merely was typed — so a refused or pending search never claims the "nothing matched" empty state. */
+  searched: boolean;
   rows: EpisodicRow[]; model: ModelState; files: SemanticFile[]; routines: Routine[];
   scratchpad: Scratchpad | null; openRoutine: string | null; toggleRoutine; loading; error: string | null }
 export function useMemory(enabled: boolean): Memory;
