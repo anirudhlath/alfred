@@ -29,7 +29,7 @@
 
 ### Deviations from the handoff (deliberate; flag them in review)
 
-Added while building: **`2.1 ev/s`, not the handoff's `2.1/s`** — `rateText` is shared with the Room status line and the Workshop header, where the handoff itself writes `ev/s`, and one number reading two ways is worse than the mismatch. **`resets 00:00` dropped** — the cost window rolls on UTC midnight, so the string is false outside UTC. **Health's four cards are internal borders in one `Section`**, not the handoff's four radius-12 cards with an 8 px gap; the mandated frame forces it. Backlog all three in task 11.
+Added while building: **`2.1 ev/s`, not the handoff's `2.1/s`** — `rateText` is shared with the Room status line and the Workshop header, where the handoff itself writes `ev/s`, and one number reading two ways is worse than the mismatch. **`resets 00:00` dropped** — the cost window rolls on UTC midnight, so the string is false outside UTC. **Health's four cards are internal borders in one `SystemSection`**, not the handoff's four radius-12 cards with an 8 px gap; the mandated frame forces it. Backlog all three in task 11.
 
 | # | Where | Handoff says | This plan ships | Why |
 |---|---|---|---|---|
@@ -137,7 +137,9 @@ Identical to phases 1 and 2, repeated because they are load-bearing:
 | `web/src/workshop/TriggersBench.tsx` | Kind chips, list, empty state, the footer note | 6 |
 | `web/src/lib/system.ts` | Auth sessions, credentials, pairing, integrations, attention: types + fetches + formatters | 7 |
 | `web/src/workshop/useSystem.ts` | The System bench's one hook over overview + five reads and their writes | 7 |
-| `web/src/workshop/SystemBench.tsx` | Section frame, Health, Quiet, Maintenance | 8 |
+| `web/src/workshop/SystemFrame.tsx` | `SystemSection` and `SystemRow`, shared by tasks 8 and 9 | 8 |
+| `web/src/workshop/Switch.tsx` | the Workshop's switch, shared with `TriggerRow` | 8 |
+| `web/src/workshop/SystemBench.tsx` | Health, Quiet, Maintenance | 8 |
 | `web/src/workshop/SystemSections.tsx` | Sessions, Connected services, Devices & identity, Reflex | 9 |
 | `web/src/workshop/Workshop.tsx` | Mount the three benches, delete `UNBUILT`, move the live region into the header | 10 |
 | `web/src/workshop/ActivityBench.tsx` | Drop the duplicate `role="status"` on the feed banner | 10 |
@@ -844,11 +846,12 @@ const health = {
 
 ~~**First, widen the hook.**~~ Task 7's fix round already shipped `useSystem(enabled, onHeld)` with `onHeld` hung on `quiet` (`c4e8bb3`). Nothing to do here; `useSystem.ts` is not a task 8 file after all.
 
-`SystemBench({ system }: { system: System })`. A scrolling column of sections. **The section frame** (used here and by task 9, so export it from this file):
+`SystemBench({ system }: { system: System })`. A scrolling column of sections. **The section frame** lives in its own module, `workshop/SystemFrame.tsx`, because task 9 imports it and a file named for the frame is one task 9 can read without reading Health, Quiet and Maintenance first:
 
 ```tsx
 // web/src/workshop/SystemFrame.tsx
-export function Section({ title, aside, children }: { title: string; aside?: ReactNode; children: ReactNode }) …
+export function SystemSection({ title, aside, children }: { title: string; aside?: ReactNode; children: ReactNode }) …
+export function SystemRow({ children }: { children: ReactNode }) …
 ```
 
 `aside` carries Health's live stamp. Task 9's four sections use the two-prop form.
@@ -894,7 +897,7 @@ Under the grid, the spend card: title `Cloud spend today`, then mono `$1.42 of $
 
 **Files:** Create `web/src/workshop/SystemSections.tsx`, `SystemSections.test.tsx`. Modify `SystemBench.tsx` to render them, and `web/src/lib/system.ts` + `system.test.ts` for the one note below that task 7 left open.
 
-Four exported components, each taking its own slice of `System`, each with its own tests. They live in one file because they share the `Section` frame and the same row idiom, and four one-component files would be four copies of the same imports.
+Four exported components, each taking its own slice of `System`, each with its own tests. They live in one file because they share `SystemFrame`'s `SystemSection`/`SystemRow` and the same row idiom, and four one-component files would be four copies of the same imports.
 
 ### `SessionsSection({ sessions })`
 Rows 56 px: `device_name`, then `sessionMeta(s, now)` in mono `.t-meta-strong` — the handoff's `passkey · pwa · signed in 07:02 · 192.168.1.24`. On the right, **`current`** for your own (a disabled label, not a button — you do not "end" the session you are using from a list) and **`End`** in `--accent-text` otherwise, ≥44 px. After ending: the row recedes to `--fg2` (not opacity .5 — see the Triggers task) and reads `ended 21:15 · applied`, then disappears on the re-read. Empty: `No other sessions.`
@@ -938,6 +941,8 @@ At the end of this task: **66 test files.** The plan's running test totals were 
 The task that makes any of the previous nine visible. Three separate concerns; do them in order and commit once.
 
 **Files:** Modify `web/src/workshop/Workshop.tsx`, `Workshop.test.tsx`, `web/src/workshop/ActivityBench.tsx`, `ActivityBench.test.tsx`, `web/src/room/Room.tsx`.
+
+**Carried over from task 8:** `HealthStamp`'s 1 Hz `setInterval` runs for the life of the mounted bench (it is gated on `online`, not on visibility). If the four benches are switched by a `switch (bench)` that unmounts the ones not showing — which 10a's wording implies — this is free. If any of them is kept mounted behind a hidden `tabpanel` instead, it becomes a 1 Hz `setState` behind a screen nobody is looking at, and the stamp needs a visibility gate as well.
 
 ### 10a — the benches
 
@@ -1006,6 +1011,10 @@ const openHeld = useCallback(() => setSheetOpen(true), []);
   12. session-gating the credential `PUT`, or a clearer story for editing from outside
   13. a shared `RawDump` for the `key: value` pill markup, which now exists once in `EventRow.tsx` and once in `TriggerRow.tsx`. Task 6 deliberately kept each as a per-file module constant rather than inventing a cross-file styling module inside a bench commit; if a third copy appears, extract it.
   14. recall stats on cold *browse* rows — the SELECT in `admin_api.py` omits `retrieval_count` and `last_retrieved`, so every cold browse row reads `never recalled`, and any cold row under the decay floor reads `decaying` whatever its real history. Search rows carry the stats; browse rows cannot.
+  15. **Health's four stat cards are internal borders inside one container**, not the handoff's four radius-12 cards with an 8 px gap (`Alfred.dc.html:357`). The `SystemSection` frame is one card with rows in it, and every other section on the bench needs exactly that; four free-standing cards inside a section that is itself a card would be a card in a card, or a section that is not a `SystemSection`. The tension is the frame's, not the grid's — revisit if task 9's sections ever want a second frame.
+  16. **The health dot sits above its value rather than 8 px to its left** (`Alfred.dc.html:358`), and the value carries `font-mono` where the prototype's `stat` role is DM Sans. Both were kept for the reason the four-card row above gives: the column is what fits the 2×2 grid inside a section-width card at 360 px.
+  17. **Two copy deviations already shipped**: `2.1 ev/s` against the handoff's `2.1/s` (`rateText` is shared with the Room status line, where the handoff itself writes `ev/s`), and `resets 00:00` dropped from the spend note (`core/conscious/cost.py:70` rolls the day on `datetime.now(UTC)`, so the string is false for any household outside UTC). Both would close with a backend that reported the window it actually uses.
+  18. **`bus · redis · 1 streams`** — `lib/system.ts`'s bus note is `${streamCount} streams` with no singular, so a household running one stream reads an ungrammatical count. Found by mutation testing in task 8's fix round and pinned as it stands (`system.test.ts`, "calls the rate alive on a house carrying a single stream") rather than corrected inside a bench commit; the handoff's example only ever shows three.
 - [ ] **Step 4: `docs/backlog/low/pwa-phase2-followups.md`** — close item §3 (the live region), noting task 10 moved it into the header.
 - [ ] **Step 5: the QA checklist** — device steps in the phase-2 checklist's format, covering: all four benches reachable and each one's first paint; the episodic search keyboard (does the field zoom? it must not); a trigger toggle showing the queued note and the row not moving; a trigger toggle over a dropped connection; DND on and off from System and the Room's row agreeing; Held back opening from both places; the pairing code readable at arm's length; **the Triggers kind chips at 360 px — five `flex-1` chips give ~60.8 px each and "Composite" at 13 px medium is right at that width, so check it does not clip or wrap** (task 6 shipped `whitespace-nowrap px-1` rather than guess); Save & test from off-LAN showing the network sentence; VoiceOver hearing one announcement per socket drop, not two; every bench under a 60 s socket outage.
 - [ ] **Step 6: Commit** `docs(web): phase 3 conventions, backlog and device checklist`

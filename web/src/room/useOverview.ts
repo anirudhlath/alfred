@@ -16,6 +16,15 @@ import { markTrue } from "@/shell/ConnectionProvider";
 const OVERVIEW_KEY = ["overview"] as const;
 
 /**
+ * How often the overview is re-read. Exported because it is also the unit a
+ * reader of this data has to measure staleness in: the System bench calls its
+ * grid unknown after two of these have gone by without an answer, and a poll
+ * period written down twice would let the two drift until the bench either
+ * cried wolf or never cried at all.
+ */
+export const OVERVIEW_POLL_MS = 30_000;
+
+/**
  * The Room's vitals. Polled rather than pushed: the overview aggregates Redis
  * reads that no stream announces. A successful read is also proof the house is
  * reachable, so it stamps last-true.
@@ -36,7 +45,7 @@ export function useOverview(enabled = true) {
       markTrue();
       return overview;
     },
-    refetchInterval: 30_000,
+    refetchInterval: OVERVIEW_POLL_MS,
     // Two observers on this key do not double the polls, but `staleTime` is not
     // what stops them: `refetchInterval` does not consult staleness. What
     // re-syncs them is react-query restarting every observer's interval on each

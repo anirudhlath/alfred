@@ -1,5 +1,5 @@
 import { api, post, put } from "./api";
-import { dayLabel, finiteNumber, isoMs, pastLabel, rateText, usd } from "./format";
+import { dayLabel, finiteNumber, hhmm, isoMs, pastLabel, rateText, usd } from "./format";
 import type { Overview } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -222,28 +222,51 @@ function capOf(cost: Overview["cost"]): number | null {
 }
 
 /**
- * `$0.42 of $5.00 today · 118 requests · $0.0036 each` — the spend card's note,
+ * What the cap *does*, which is the only reason a cap is on screen at all:
+ * `core/conscious/engine.py` returns the System-1 fallback saying precisely
+ * this when `is_budget_exceeded()`. Copy, not data — it needs no field and it
+ * is true of every house — so it is dropped only when there is no cap for it
+ * to be about.
+ *
+ * The handoff's `resets 00:00` is deliberately *not* here: `core/conscious/
+ * cost.py` rolls the day on `datetime.now(UTC)`, so the window resets at UTC
+ * midnight and `00:00` is false for every household that is not on it.
+ */
+const AT_THE_CAP = "at the cap, the conscious mind declines and says so";
+
+/**
+ * `$1.42 of $5.00` — the spend card's own line, and the money in one place.
+ * `$1.42 · no cap set` when there is nothing to measure against, and the
+ * server's own silence when it reported no spend at all: a house that has
+ * spent nothing today sends `cost: null`, which is a fact about the day rather
+ * than a missing read.
+ */
+export function spendHeadline(cost: Overview["cost"]): string {
+  if (cost === null) return "no spend recorded today";
+  const spend = usd(finiteNumber(cost.spend_usd) ?? 0);
+  const cap = capOf(cost);
+  return cap === null ? `$${spend} · no cap set` : `$${spend} of $${usd(cap)}`;
+}
+
+/**
+ * `38 requests · $0.0036 each · at the cap, the conscious mind declines and
+ * says so` — everything about today's spend that is not the money itself,
  * with every clause the server did not send dropped rather than filled in.
  *
- * `cost` is null on a house that has spent nothing today, which is a fact about
- * the day and not a missing read. A cap of zero — or one that is not a number —
- * is not divided by: the note says there is no cap instead, and `spendFraction`
- * draws an empty bar.
+ * The money moved out to `spendHeadline` above: the card prints both, and a
+ * note that opened with the same `$1.42 of $5.00` as the line above it was one
+ * amount printed twice, six pixels apart.
  */
 export function spendNote(cost: Overview["cost"]): string {
-  if (cost === null) return "no spend recorded today";
+  if (cost === null) return "";
 
-  const spend = finiteNumber(cost.spend_usd) ?? 0;
-  const cap = capOf(cost);
-  const clauses =
-    cap === null
-      ? [`$${usd(spend)} today`, "no cap set"]
-      : [`$${usd(spend)} of $${usd(cap)} today`];
-
+  const clauses: string[] = [];
   const requests = finiteNumber(cost.request_count);
   if (requests !== null) clauses.push(`${requests} ${requests === 1 ? "request" : "requests"}`);
   const average = finiteNumber(cost.avg_usd);
   if (average !== null) clauses.push(`$${perRequest(average)} each`);
+  // Only where there is a cap to decline at. A house with none never meets it.
+  if (capOf(cost) !== null) clauses.push(AT_THE_CAP);
 
   return clauses.join(" · ");
 }
@@ -413,7 +436,7 @@ export function healthGrid({ overview, registryRead, home }: HealthInput): Healt
       value: rateText(overview),
       // A description of the measure, not a claim about the figure, so it is
       // true before the first read as well as after it.
-      note: "event rate · 5-minute mean",
+      note: "event rate · 5-min mean",
       alive: streamCount > 0,
     },
     home: homeCell(registryRead, home),
@@ -441,6 +464,28 @@ function homeCell(registryRead: boolean, home: ProbeState | undefined): HealthCe
     latency === null ? "no round trip measured" : `${Math.round(latency)} ms`;
   const healthy = home.data?.healthy === true;
   return { value: healthy ? "ok" : "failed", note: `home assistant · ${trip}`, alive: healthy };
+}
+
+/**
+ * The same four cards once the reads have stopped landing (handoff §8, the
+ * offline grid). Every value is blanked and every label says `unknown`,
+ * because the numbers `healthGrid` last derived are now a photograph: a
+ * dimmed `210 ms` is still a latency claim about a service that may be down,
+ * and that is the §5.2 failure with the brightness turned down.
+ *
+ * Distinct from `healthGrid`'s own `not read yet`, which is the *never*-read
+ * case and is not the same sentence. `readAt` is when the house was last
+ * heard from, so the bus card names the moment the rest of the grid stopped
+ * being evidence — the same instant the section's stamp prints.
+ */
+export function staleGrid(readAt: number): Health {
+  const since = `unknown since ${hhmm(readAt)}`;
+  return {
+    bus: { value: "?", note: `bus · ${since}`, alive: false },
+    reflex: { value: "?", note: "reflex · unknown", alive: false },
+    rate: { value: "?", note: "event rate · unknown", alive: false },
+    home: { value: "—", note: "home assistant · unknown", alive: false },
+  };
 }
 
 /**

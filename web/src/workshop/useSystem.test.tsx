@@ -1,4 +1,9 @@
-import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  focusManager,
+  onlineManager,
+  QueryClient,
+  QueryClientProvider,
+} from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,7 +17,8 @@ import {
   integration,
   overviewFixture,
 } from "@/test/fixtures";
-import { useSystem } from "./useSystem";
+import { OVERVIEW_POLL_MS } from "@/room/useOverview";
+import { STALE_AFTER_MS, useSystem } from "./useSystem";
 
 const OVERVIEW = "/api/admin/overview";
 const SESSIONS = "/api/auth/sessions";
@@ -236,6 +242,7 @@ afterEach(() => {
   for (const off of listeners) off();
   for (const queue of parked.values()) for (const resolve of queue) resolve(OK);
   focusManager.setFocused(undefined);
+  onlineManager.setOnline(true);
   vi.useRealTimers();
 });
 
@@ -399,7 +406,7 @@ describe("useSystem", () => {
     });
     expect(result.current.health.rate).toEqual({
       value: "2.1 ev/s",
-      note: "event rate · 5-minute mean",
+      note: "event rate · 5-min mean",
       alive: true,
     });
     expect(result.current.health.home).toEqual({
@@ -419,6 +426,9 @@ describe("useSystem", () => {
     expect(result.current.health.rate.value).toBe("— ev/s");
     expect(result.current.health.home.note).toBe("home assistant · not read yet");
     expect(result.current.maintenance.idleMinutes).toBeNull();
+    // Zero and not one: the held count is a number the bench prints beside a
+    // control, and a default of anything else is a queue nobody reported.
+    expect(result.current.quiet.held).toBe(0);
     expect(result.current.loading).toBe(true);
   });
 
@@ -832,8 +842,12 @@ describe("useSystem", () => {
     expect(countOf("GET", ATTENTION)).toBe(before);
     expect(result.current.attention.saving["fan"]).toBeUndefined();
     expect(result.current.attention.error).toBeNull();
-    // Every other domain is untouched.
-    expect(result.current.attention.domains).toHaveLength(attentionFixture.domains.length);
+    // The whole list, not the row a `find` turns up: mapping the answer onto
+    // the rows it does *not* describe leaves the length right and the domain
+    // still findable, while overwriting every other domain in the house.
+    expect(result.current.attention.domains).toEqual(
+      attentionFixture.domains.map((row) => (row.domain === "fan" ? updated : row)),
+    );
   });
 
   it("appends a domain the cached list had never seen", async () => {
@@ -1020,14 +1034,32 @@ describe("useSystem", () => {
     const { result } = await openBench();
 
     act(() => result.current.maintenance.drain());
-    await waitFor(() => expect(result.current.maintenance.error).toBe("Redis unavailable"));
+    await waitFor(() => expect(result.current.maintenance.drainError).toBe("Redis unavailable"));
     expect(result.current.maintenance.drainedAt).toBeNull();
 
     answer("POST", DRAIN, OK);
     act(() => result.current.maintenance.drain());
 
     await waitFor(() => expect(result.current.maintenance.drainedAt).toBeGreaterThan(0));
-    expect(result.current.maintenance.error).toBeNull();
+    expect(result.current.maintenance.drainError).toBeNull();
+  });
+
+  // One slot each. The two controls sit in different sections of the bench, and
+  // a shared string would print the notifier's refusal under the Librarian's
+  // button — two failures neither the reader nor a test could tell apart.
+  it("keeps a refused drain and a refused run apart", async () => {
+    answer("POST", DRAIN, { status: 503, body: { detail: "Redis unavailable" } });
+    answer("POST", LIBRARIAN, { status: 409, body: { detail: "A run is already going" } });
+    const { result } = await openBench();
+
+    act(() => result.current.maintenance.drain());
+    await waitFor(() => expect(result.current.maintenance.drainError).toBe("Redis unavailable"));
+    expect(result.current.maintenance.runError).toBeNull();
+
+    act(() => result.current.maintenance.run());
+    await waitFor(() => expect(result.current.maintenance.runError).toBe("A run is already going"));
+    // The drain's refusal is still the drain's; the run did not clear it.
+    expect(result.current.maintenance.drainError).toBe("Redis unavailable");
   });
 
   it("reports the idle timeout the house named", async () => {
@@ -1045,6 +1077,16 @@ describe("useSystem", () => {
     const { result } = await openBench();
 
     expect(result.current.maintenance.idleMinutes).toBeNull();
+  });
+
+  it("keeps a one-minute idle timeout, which is a real setting and not a zero", async () => {
+    answer("GET", OVERVIEW, {
+      status: 200,
+      body: { ...overviewFixture, session: { idle_minutes: 1 } },
+    });
+    const { result } = await openBench();
+
+    expect(result.current.maintenance.idleMinutes).toBe(1);
   });
 
   it("counts the notifications the house is holding back", async () => {
@@ -1083,6 +1125,108 @@ describe("useSystem", () => {
     expect(result.current.error).toBeNull();
   });
 
+  // ── Is any of this still true? ─────────────────────────────────────────────
+
+  it("stamps when the overview landed, and calls itself live for it", async () => {
+    const { result } = await openBench();
+
+    expect(result.current.readAt).toBeGreaterThan(0);
+    expect(result.current.online).toBe(true);
+  });
+
+  it("knows nothing yet rather than something stale before the first answer", async () => {
+    hold("GET", OVERVIEW);
+    const { result } = renderSystem();
+    await settle();
+
+    // `unknown since --:--` is not a time, and `not read yet` is a different
+    // sentence from `unknown` — so the never-read case has no stamp at all.
+    expect(result.current.readAt).toBeNull();
+    expect(result.current.online).toBe(false);
+  });
+
+  it("stops calling itself live once two polls have gone by with no answer", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { result } = await openBench();
+    const landed = result.current.readAt;
+
+    // The server takes the connection and never answers. There is no timeout
+    // anywhere in this tree, so nothing fails, nothing pauses, and the last
+    // answer sits in the cache looking exactly like a fresh one.
+    hold("GET", OVERVIEW);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(STALE_AFTER_MS + 1_000);
+    });
+
+    expect(result.current.error).toBeNull();
+    expect(result.current.overview).toBeDefined();
+    expect(result.current.readAt).toBe(landed);
+    expect(result.current.online).toBe(false);
+  });
+
+  // Two polls and not one: a single missed answer is the ordinary shape of a
+  // slow request, and a bench that went `unknown` every time one poll ran long
+  // would cry wolf on a house that is fine.
+  it("gives the house two polls of silence before it stops believing the grid", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { result } = await openBench();
+
+    hold("GET", OVERVIEW);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(OVERVIEW_POLL_MS + 1_000);
+    });
+    expect(result.current.online).toBe(true);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(OVERVIEW_POLL_MS);
+    });
+    expect(result.current.online).toBe(false);
+  });
+
+  it("is live again on the next answer, and dates it to that answer", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { result } = await openBench();
+    const landed = result.current.readAt;
+
+    hold("GET", OVERVIEW);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(STALE_AFTER_MS + 1_000);
+    });
+    expect(result.current.online).toBe(false);
+
+    unhold("GET", OVERVIEW);
+    await releaseNext("GET", OVERVIEW);
+    await waitFor(() => expect(result.current.online).toBe(true));
+    expect(result.current.readAt).toBeGreaterThan(landed ?? 0);
+  });
+
+  it("stops calling itself live when there is no network to poll on", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { result } = await openBench();
+    expect(result.current.online).toBe(true);
+
+    // react-query's default `networkMode: "online"` **pauses** rather than
+    // failing: the data is kept and the error stays null, which is precisely
+    // why `error === null` cannot be what the stamp speaks for.
+    onlineManager.setOnline(false);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(OVERVIEW_POLL_MS);
+    });
+
+    expect(result.current.error).toBeNull();
+    expect(result.current.overview).toBeDefined();
+    expect(result.current.online).toBe(false);
+  });
+
+  it("claims nothing about a bench nobody is looking at", async () => {
+    const { result, rerender } = await openBench();
+    expect(result.current.online).toBe(true);
+
+    rerender({ on: false });
+
+    expect(result.current.online).toBe(false);
+  });
+
   it("reports one section's failed read without emptying the others", async () => {
     answer("GET", SESSIONS, { status: 503, body: { detail: "Session store unavailable" } });
     const { result } = renderSystem();
@@ -1115,7 +1259,7 @@ describe("useSystem", () => {
     await waitFor(() => expect(result.current.integrations.error).toBe("Redis unavailable"));
     await waitFor(() => expect(result.current.attention.error).toBe("Redis unavailable"));
     act(() => result.current.maintenance.drain());
-    await waitFor(() => expect(result.current.maintenance.error).toBe("Redis unavailable"));
+    await waitFor(() => expect(result.current.maintenance.drainError).toBe("Redis unavailable"));
 
     rerender({ on: false });
 
@@ -1127,7 +1271,8 @@ describe("useSystem", () => {
     expect(result.current.attention.error).toBeNull();
     expect(result.current.quiet.error).toBeNull();
     expect(result.current.pairing.error).toBeNull();
-    expect(result.current.maintenance.error).toBeNull();
+    expect(result.current.maintenance.drainError).toBeNull();
+    expect(result.current.maintenance.runError).toBeNull();
   });
 
   it("keeps what the bench learned across a trip to another bench", async () => {

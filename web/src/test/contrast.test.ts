@@ -142,18 +142,90 @@ describe("contrast ratios", () => {
     });
 
     it(`${theme}: a switch shows which way it is set`, () => {
-      // The Triggers bench's switch (`workshop/TriggerRow.tsx`). WCAG 1.4.11
-      // asks 3:1 of two things here and neither is text: the boundary that
-      // makes the control findable, and the knob that says which way it is
-      // set. The handoff's own pairing fails both — a `--bg` knob on a
-      // `--line` track is 1.18:1 in light, and the track's edge against the
-      // page is the same 1.18:1 — so the track takes an inset `--muted` edge
-      // and the knob takes the token that reads on whichever track it is on.
+      // The Workshop's switch (`workshop/Switch.tsx`). WCAG 1.4.11 asks 3:1 of
+      // two things here and neither is text: the boundary that makes the
+      // control findable, and the knob that says which way it is set. The
+      // handoff's own pairing fails both — a `--bg` knob on a `--line` track is
+      // 1.18:1 in light, and the track's edge against the page is the same
+      // 1.18:1 — so the track takes an inset `--muted` edge and the knob takes
+      // the token that reads on whichever track it is on.
+      //
+      // The inset edge, not the track fill, is the outermost pixel of the
+      // control, so it is the boundary the ratio is owed for. The raw `--accent`
+      // ON track is 2.17:1 on a card in light and is *not* that boundary.
       expect(contrast(token(theme, "muted"), token(theme, "bg"))).toBeGreaterThanOrEqual(3);
       expect(contrast(token(theme, "on-accent"), token(theme, "accent"))).toBeGreaterThanOrEqual(3);
       expect(contrast(token(theme, "fg2"), token(theme, "line"))).toBeGreaterThanOrEqual(3);
     });
+
+    it(`${theme}: a control on a card is bounded against the card, not the page`, () => {
+      // The System bench puts the same switch, and four expiry chips, inside a
+      // `SystemSection` card. `--surface` is a step off `--bg`, so a boundary
+      // measured against the page proves nothing here — which is how a
+      // seven-line rationale came to be copied onto a surround it had never
+      // been run against. The chips' own `--muted` border is this same pair.
+      expect(contrast(token(theme, "muted"), token(theme, "surface"))).toBeGreaterThanOrEqual(3);
+      // What the card's own hairline would have given instead — and it is the
+      // same 1.09:1 in both themes, so it is asserted in both.
+      expect(contrast(token(theme, "line"), token(theme, "surface"))).toBeLessThan(1.2);
+    });
+
+    it(`${theme}: a health dot says which state it is in without its hue`, () => {
+      // `HealthStat`'s dot (`workshop/SystemBench.tsx`) is filled when the
+      // reading is alive and an empty `--muted` ring when it is not, which is
+      // `MemoryBench`'s store dot exactly. Two *filled* circles would leave hue
+      // as the only channel, and `--green` against `--muted` is 1.22:1 dark and
+      // 1.51:1 light — no difference at all to a reader who cannot separate the
+      // two hues, in either theme.
+      expect(contrast(token(theme, "green"), token(theme, "muted"))).toBeLessThan(3);
+      // Both states against the card they sit on, which is the ratio 1.4.11
+      // actually asks for.
+      expect(contrast(token(theme, "green-text"), token(theme, "surface"))).toBeGreaterThanOrEqual(
+        3,
+      );
+      expect(contrast(token(theme, "muted"), token(theme, "surface"))).toBeGreaterThanOrEqual(3);
+    });
+
+    it(`${theme}: the spend bar reads as a graphic and not only as a sentence`, () => {
+      // `SpendCard`'s bar (`workshop/SystemBench.tsx`) is a `role="img"` whose
+      // `aria-labelledby` carries the fact in words — but a low-vision sighted
+      // reader gets only the graphic, so the fill needs 3:1 against its track
+      // and the track needs 3:1 against the card. The fill takes
+      // `--accent-text` and the track an outlined `--muted` edge.
+      expect(contrast(token(theme, "accent-text"), token(theme, "line"))).toBeGreaterThanOrEqual(3);
+      expect(contrast(token(theme, "muted"), token(theme, "surface"))).toBeGreaterThanOrEqual(3);
+      // And once the reads stop landing the fill leaves the accent for `--fg2`:
+      // receding here is losing the attention colour, not losing contrast.
+      expect(contrast(token(theme, "fg2"), token(theme, "line"))).toBeGreaterThanOrEqual(3);
+    });
+
+    it(`${theme}: a chosen chip carries its own label`, () => {
+      // Quiet's expiry chips fill with `--ink` and label in `--paper`, the same
+      // pairing the Memory bench's chosen sub-tab uses — and the fill has to be
+      // findable on a card, not only on the page.
+      expect(contrast(token(theme, "paper"), token(theme, "ink"))).toBeGreaterThanOrEqual(4.5);
+      expect(contrast(token(theme, "ink"), token(theme, "surface"))).toBeGreaterThanOrEqual(3);
+      // And an unchosen one is text on the card it sits on.
+      expect(contrast(token(theme, "fg2"), token(theme, "surface"))).toBeGreaterThanOrEqual(4.5);
+    });
   }
+
+  /**
+   * Light is the theme every one of these pairs fails in, and it is a live
+   * runtime state (`lib/theme.ts`), not a hypothetical. Asserted on its own
+   * rather than inside the loop above, where the dark values pass and would
+   * make the claim vacuous — and asserted at all because a comment saying "the
+   * raw token would not have done" cannot fail a build.
+   */
+  it("light: names the tokens the System bench could not have used", () => {
+    // The dot, if it were filled `--green` on a card (`HealthStat`).
+    expect(contrast(token("light", "green"), token("light", "surface"))).toBeLessThan(3);
+    // The spend fill, if it were the raw accent on its `--line` track.
+    expect(contrast(token("light", "accent"), token("light", "line"))).toBeLessThan(3);
+    // The switch's ON track against the card, which is why the boundary is the
+    // inset `--muted` edge drawn over it rather than the track fill itself.
+    expect(contrast(token("light", "accent"), token("light", "surface"))).toBeLessThan(3);
+  });
 
   it("styles ::placeholder rather than leaving it to preflight", () => {
     // Tailwind's preflight gives `::placeholder` `color-mix(in oklab,

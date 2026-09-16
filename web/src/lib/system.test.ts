@@ -15,7 +15,9 @@ import {
   serviceRows,
   sessionMeta,
   spendFraction,
+  spendHeadline,
   spendNote,
+  staleGrid,
   type Integration,
   type ProbeState,
 } from "./system";
@@ -162,40 +164,63 @@ describe("credentialMeta", () => {
   });
 });
 
-describe("spendNote", () => {
-  it("states the spend against the cap and the request count", () => {
-    expect(spendNote(COST)).toBe("$0.42 of $5.00 today · 118 requests · $0.0036 each");
+describe("spendHeadline", () => {
+  it("states the spend against the cap", () => {
+    expect(spendHeadline(COST)).toBe("$0.42 of $5.00");
   });
 
-  it("drops the clauses the server did not send", () => {
-    expect(spendNote({ date: "2026-09-16", spend_usd: 0.42, cap_usd: 5 })).toBe(
-      "$0.42 of $5.00 today",
-    );
+  it("says there is no cap rather than dividing by one", () => {
+    expect(spendHeadline({ ...COST, cap_usd: 0 })).toBe("$0.42 · no cap set");
+    expect(spendHeadline({ ...COST, cap_usd: -5 })).toBe("$0.42 · no cap set");
+    expect(spendHeadline({ ...COST, cap_usd: Number.NaN })).toBe("$0.42 · no cap set");
+    // Zero is the only number that means "no cap": a household that sets a
+    // one-dollar ceiling has set one, and hiding it would hide the sentence
+    // about what happens when the day reaches it.
+    expect(spendHeadline({ ...COST, cap_usd: 1 })).toBe("$0.42 of $1.00");
   });
 
   it("says no spend recorded today for a null cost", () => {
-    expect(spendNote(null)).toBe("no spend recorded today");
+    expect(spendHeadline(null)).toBe("no spend recorded today");
   });
 
-  it("does not divide by a zero cap", () => {
+  it("reads a missing spend as nothing spent rather than as no figure", () => {
+    expect(spendHeadline({ ...COST, spend_usd: Number.NaN })).toBe("$0.00 of $5.00");
+    expect(spendHeadline({ ...COST, spend_usd: Number.NaN })).not.toContain("NaN");
+  });
+});
+
+describe("spendNote", () => {
+  it("counts the requests and says what the cap does", () => {
+    expect(spendNote(COST)).toBe(
+      "118 requests · $0.0036 each · at the cap, the conscious mind declines and says so",
+    );
+  });
+
+  // Copy, not data: `core/conscious/engine.py` returns the System-1 fallback
+  // saying exactly this when the budget is spent, so it needs no field — but a
+  // house with no cap never meets one, and the sentence goes with it.
+  it("drops the cap sentence when there is no cap to meet", () => {
     const note = spendNote({ ...COST, cap_usd: 0 });
-    expect(note).toBe("$0.42 today · no cap set · 118 requests · $0.0036 each");
+    expect(note).toBe("118 requests · $0.0036 each");
     expect(note).not.toContain("NaN");
     expect(spendFraction({ ...COST, cap_usd: 0 })).toBe(0);
   });
 
-  it("treats a negative cap as no cap at all", () => {
-    expect(spendNote({ ...COST, cap_usd: -5 })).toContain("no cap set");
+  it("drops the clauses the server did not send", () => {
+    expect(spendNote({ date: "2026-09-16", spend_usd: 0.42, cap_usd: 5 })).toBe(
+      "at the cap, the conscious mind declines and says so",
+    );
+  });
+
+  it("says nothing at all about a day with no cost recorded", () => {
+    expect(spendNote(null)).toBe("");
+  });
+
+  it("treats a negative cap and one that is not a number as no cap at all", () => {
+    expect(spendNote({ ...COST, cap_usd: -5 })).not.toContain("at the cap");
     expect(spendFraction({ ...COST, cap_usd: -5 })).toBe(0);
-  });
-
-  it("treats a cap that is not a number as no cap at all", () => {
-    expect(spendNote({ ...COST, cap_usd: Number.NaN })).toContain("no cap set");
+    expect(spendNote({ ...COST, cap_usd: Number.NaN })).not.toContain("at the cap");
     expect(spendFraction({ ...COST, cap_usd: Number.NaN })).toBe(0);
-  });
-
-  it("reads a missing spend as nothing spent rather than as no figure", () => {
-    expect(spendNote({ ...COST, spend_usd: Number.NaN })).toContain("$0.00 of $5.00 today");
   });
 
   it("prints a per-request cost the two-decimal form would round away", () => {
@@ -204,6 +229,9 @@ describe("spendNote", () => {
     expect(spendNote({ ...COST, avg_usd: 0.037 })).toContain("$0.037 each");
     expect(spendNote({ ...COST, avg_usd: 0.5 })).toContain("$0.50 each");
     expect(spendNote({ ...COST, avg_usd: 0 })).toContain("$0.00 each");
+    // Four places and no more: a fifth is a tenth of a hundredth of a cent,
+    // which is a number nobody can act on at the width this clause is read at.
+    expect(spendNote({ ...COST, avg_usd: 0.000123 })).toContain("$0.0001 each");
   });
 
   it("keeps a per-request cost of a dollar or more to plain cents", () => {
@@ -214,15 +242,36 @@ describe("spendNote", () => {
   });
 
   it("counts one request in the singular", () => {
-    expect(spendNote({ date: "2026-09-16", spend_usd: 0.01, cap_usd: 5, request_count: 1 })).toBe(
-      "$0.01 of $5.00 today · 1 request",
-    );
+    expect(
+      spendNote({ date: "2026-09-16", spend_usd: 0.01, cap_usd: 5, request_count: 1 }),
+    ).toContain("1 request ·");
   });
 
   it("counts a day with no requests rather than dropping the clause", () => {
-    expect(spendNote({ date: "2026-09-16", spend_usd: 0, cap_usd: 5, request_count: 0 })).toBe(
-      "$0.00 of $5.00 today · 0 requests",
-    );
+    expect(
+      spendNote({ date: "2026-09-16", spend_usd: 0, cap_usd: 5, request_count: 0 }),
+    ).toContain("0 requests");
+  });
+});
+
+describe("staleGrid", () => {
+  // The went-stale case, which is not the never-read case: `healthGrid` says
+  // `not read yet` before the first answer, and this says `unknown` after the
+  // answers stop. A dimmed `210 ms` is still a latency claim.
+  it("blanks every value and dates the moment the house went quiet", () => {
+    const grid = staleGrid(new Date(2026, 8, 16, 21, 14, 0).getTime());
+    expect(Object.values(grid).map((cell) => cell.value)).toEqual(["?", "?", "?", "—"]);
+    expect(Object.values(grid).map((cell) => cell.note)).toEqual([
+      "bus · unknown since 21:14",
+      "reflex · unknown",
+      "event rate · unknown",
+      "home assistant · unknown",
+    ]);
+  });
+
+  it("leaves nothing alive to draw a live dot from", () => {
+    const grid = staleGrid(Date.now());
+    expect(Object.values(grid).every((cell) => !cell.alive)).toBe(true);
   });
 });
 
@@ -241,6 +290,12 @@ describe("spendFraction", () => {
 
   it("does not draw a negative bar", () => {
     expect(spendFraction({ date: "2026-09-16", spend_usd: -2, cap_usd: 5 })).toBe(0);
+  });
+
+  it("draws an empty bar for a day whose spend the server did not report", () => {
+    // A missing figure is nothing spent so far as this screen can tell; any
+    // other default draws a proportion of a cap out of a field that is absent.
+    expect(spendFraction({ ...COST, spend_usd: Number.NaN })).toBe(0);
   });
 });
 
@@ -353,6 +408,17 @@ describe("serviceRows", () => {
     expect(rowOf(entry, probe()).state).toBe("ok");
   });
 
+  it("says unset for a one-field service with nothing in its one field", () => {
+    // `fields.length > 0` and not `> 1`: a service whose whole credential is a
+    // single API key is the common shape, and it is exactly the one an
+    // off-by-one here would quietly exempt from ever reading `nothing stored`.
+    const entry = integration({
+      schema: { fields: { token: integration().schema.fields.token } },
+      configured: { token: false },
+    });
+    expect(rowOf(entry, probe()).state).toBe("unset");
+  });
+
   it("does not call a service with no credential schema unset", () => {
     const entry = integration({ schema: { fields: {} }, configured: {} });
     expect(rowOf(entry, probe()).state).toBe("ok");
@@ -404,7 +470,7 @@ describe("healthGrid", () => {
     expect(health.reflex).toEqual({ value: "—", note: "reflex · not read yet", alive: false });
     expect(health.rate).toEqual({
       value: "— ev/s",
-      note: "event rate · 5-minute mean",
+      note: "event rate · 5-min mean",
       alive: false,
     });
     expect(health.home).toEqual({
@@ -424,7 +490,7 @@ describe("healthGrid", () => {
     expect(health.reflex).toEqual({ value: "380 ms", note: "reflex · reflex-3b", alive: true });
     expect(health.rate).toEqual({
       value: "2.1 ev/s",
-      note: "event rate · 5-minute mean",
+      note: "event rate · 5-min mean",
       alive: true,
     });
   });
@@ -449,9 +515,26 @@ describe("healthGrid", () => {
     // No streams is Redis down, whatever the connected flag says about itself.
     expect(health.rate).toEqual({
       value: "— ev/s",
-      note: "event rate · 5-minute mean",
+      note: "event rate · 5-min mean",
       alive: false,
     });
+  });
+
+  // One stream is a bus that is carrying something. `> 0` and not `> 1`: a
+  // household with a single stream is the smallest working Alfred there is.
+  it("calls the rate alive on a house carrying a single stream", () => {
+    const health = healthGrid({
+      overview: {
+        ...overviewFixture,
+        streams: { events: overviewFixture.streams.events },
+      },
+      registryRead: true,
+      home: undefined,
+    });
+    // `1 streams` is task 7's wording, pinned here as it stands rather than
+    // quietly corrected: this test is about the flag, not the plural.
+    expect(health.bus.note).toBe("bus · redis · 1 streams");
+    expect(health.rate.alive).toBe(true);
   });
 
   it("keeps a silent house's rate alive", () => {

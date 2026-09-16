@@ -26,10 +26,13 @@ export type Theme = "dark" | "light";
  * colours are — so a test can resolve what the browser would and the guard can
  * hold the restatement to the stylesheet.
  *
- * Nor is every entry a *text* colour. `--line` and `--muted` are here because
- * WCAG 1.4.11 asks 3:1 of a control's boundary and of whatever shows which way
- * it is set, and neither is text: the Triggers bench's switch is a knob on a
- * track, and both pairs went unmeasured until it needed them.
+ * Nor is every entry a *text* colour. `--line`, `--muted` and `--surface` are
+ * here because WCAG 1.4.11 asks 3:1 of a control's boundary and of whatever
+ * shows which way it is set, and none of them is text: the Triggers bench's
+ * switch is a knob on a track, and both pairs went unmeasured until it needed
+ * them. `--green` is here for the opposite reason — so that the claim it is
+ * *not* good enough for a dot on a card can be made as a measurement rather
+ * than as a comment.
  */
 export const TOKENS: Record<Theme, Record<string, string>> = {
   dark: {
@@ -43,6 +46,7 @@ export const TOKENS: Record<Theme, Record<string, string>> = {
     accent: "oklch(0.78 0.12 45)",
     "accent-text": "oklch(0.78 0.12 45)",
     "on-accent": "#25221F",
+    green: "oklch(0.70 0.13 150)",
     "green-text": "oklch(0.70 0.13 150)",
     ink: "#F1ECE4",
     paper: "#25221F",
@@ -59,6 +63,7 @@ export const TOKENS: Record<Theme, Record<string, string>> = {
     accent: "oklch(0.72 0.13 45)",
     "accent-text": "oklch(0.52 0.13 45)",
     "on-accent": "#221F1B",
+    green: "oklch(0.70 0.13 150)",
     "green-text": "oklch(0.50 0.13 150)",
     ink: "#221F1B",
     paper: "#F1ECE4",

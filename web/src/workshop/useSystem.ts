@@ -28,7 +28,7 @@ import {
   type ServiceRow,
 } from "@/lib/system";
 import type { Overview } from "@/lib/types";
-import { useOverview } from "@/room/useOverview";
+import { OVERVIEW_POLL_MS, useOverview } from "@/room/useOverview";
 
 /**
  * How long a read stays fresh. None of these five changes at chat speed — a
@@ -36,6 +36,21 @@ import { useOverview } from "@/room/useOverview";
  * a credential — so a trip to Memory and back re-uses what is already in hand.
  */
 const STALE_MS = 30_000;
+
+/**
+ * How long the last overview keeps speaking for the house. Two polls, not one:
+ * a single missed read is a hiccup on a phone radio, and calling the grid
+ * unknown for it would make the word meaningless. Two is the point at which
+ * nothing is arriving.
+ *
+ * This is what `error === null` cannot tell us. react-query's default
+ * `networkMode: "online"` **pauses** a query with no network rather than
+ * failing it — `fetchStatus` becomes `"paused"`, the data is retained and the
+ * error stays null — and a server that accepts the socket and never answers
+ * leaves the request in flight for ever, because nothing in this tree sets a
+ * timeout. Both look exactly like a healthy bench until a clock says otherwise.
+ */
+export const STALE_AFTER_MS = OVERVIEW_POLL_MS * 2;
 
 /** The query keys, all under one prefix so `REHYDRATE_KEYS` covers them with `["system"]`. */
 const SESSIONS_KEY = ["system", "sessions"] as const;
@@ -144,7 +159,15 @@ export interface Maintenance {
   drainedAt: number | null;
   /** When this client queued a Librarian run — never evidence that it ran. */
   ranAt: number | null;
-  error: string | null;
+  /**
+   * Why the last drain was refused, and why the last run was. Two slots, not
+   * one: the two controls sit in different sections of the bench, and a single
+   * shared string would put the notifier's 503 under the Librarian's button.
+   * Each is rendered as its own control's description, never as a loose line at
+   * the end of a card, so the reader who pressed the thing is the one told.
+   */
+  drainError: string | null;
+  runError: string | null;
   drain: () => void;
   run: () => void;
 }
@@ -153,6 +176,20 @@ export interface System {
   /** The raw vitals, for the spend card's own formatters. */
   overview: Overview | undefined;
   health: Health;
+  /**
+   * When the overview last landed, in epoch ms — null before it ever has. The
+   * Health stamp prints it and the offline grid dates itself from it, so both
+   * name the same instant.
+   */
+  readAt: number | null;
+  /**
+   * This bench's own reads are still landing: an overview arrived inside the
+   * last `STALE_AFTER_MS` and the poll is not paused. Not the chat socket's
+   * liveness — every number on the grid comes from this poll, so this poll is
+   * what the grid is entitled to speak for — and deliberately not
+   * `error === null`, which stays true through an aeroplane-mode evening.
+   */
+  online: boolean;
   quiet: Quiet;
   sessions: Sessions;
   credentials: Credentials;
@@ -203,7 +240,8 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
   const [pairingError, setPairingError] = useState<string | null>(null);
   const [drainedAt, setDrainedAt] = useState<number | null>(null);
   const [ranAt, setRanAt] = useState<number | null>(null);
-  const [maintenanceError, setMaintenanceError] = useState<string | null>(null);
+  const [drainError, setDrainError] = useState<string | null>(null);
+  const [runError, setRunError] = useState<string | null>(null);
 
   // ── The supersession guard, shared by all six controls ─────────────────────
 
@@ -259,6 +297,45 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
   const overviewQuery = useOverview(enabled);
   const overview = overviewQuery.data;
   const refetchOverview = overviewQuery.refetch;
+
+  // ── Is any of this still true? ─────────────────────────────────────────────
+
+  // `dataUpdatedAt` is 0 until the first answer, which is the never-read case
+  // and not the went-stale one: the grid has its own `not read yet` wording for
+  // that, and `unknown since --:--` is not a time.
+  const readAt = overviewQuery.dataUpdatedAt === 0 ? null : overviewQuery.dataUpdatedAt;
+
+  const [aged, setAged] = useState(false);
+
+  useEffect(() => {
+    // One timer that fires at the moment the last answer stops being evidence,
+    // rather than a clock ticking every second to ask the same question of an
+    // arithmetic that cannot change in between. Re-armed on each fresh read,
+    // which is also what takes the flag back down.
+    if (!enabled || readAt === null) return;
+    const timer = setTimeout(
+      () => setAged(true),
+      Math.max(0, readAt + STALE_AFTER_MS - Date.now()),
+    );
+    return () => clearTimeout(timer);
+  }, [enabled, readAt]);
+
+  // Adjusted during render rather than in that effect, which cannot lower the
+  // flag without painting one frame of a stale grid over a read that has just
+  // landed. `readAt` is the input it follows.
+  const [agedFor, setAgedFor] = useState(readAt);
+  if (agedFor !== readAt) {
+    setAgedFor(readAt);
+    setAged(false);
+  }
+
+  const online =
+    enabled &&
+    readAt !== null &&
+    !aged &&
+    // Paused is react-query's word for "there is no network to try on". It
+    // keeps the data and raises no error, so nothing else here would notice.
+    overviewQuery.fetchStatus !== "paused";
 
   // None of the five carries a `refetchInterval`. A session list, a passkey, an
   // integration and an attention set change when a person changes them, and the
@@ -557,25 +634,30 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
   // ── Maintenance ────────────────────────────────────────────────────────────
 
   const queueMaintenance = useCallback(
-    (key: string, send: () => Promise<void>, stamp: (at: number) => void) => {
+    (
+      key: string,
+      send: () => Promise<void>,
+      stamp: (at: number) => void,
+      complain: (why: string | null) => void,
+    ) => {
       const fresh = claim(key);
-      setMaintenanceError(null);
+      complain(null);
       void send().then(
         // Stamped only once the server has taken it, and never as evidence the
         // work happened: both routes publish an internal action and return.
         () => void (fresh() && stamp(Date.now())),
-        (error: unknown) => void (fresh() && setMaintenanceError(errorText(error))),
+        (error: unknown) => void (fresh() && complain(errorText(error))),
       );
     },
     [claim],
   );
 
   const drain = useCallback(
-    () => queueMaintenance("drain", drainDeferred, setDrainedAt),
+    () => queueMaintenance("drain", drainDeferred, setDrainedAt, setDrainError),
     [queueMaintenance],
   );
   const run = useCallback(
-    () => queueMaintenance("librarian", runLibrarian, setRanAt),
+    () => queueMaintenance("librarian", runLibrarian, setRanAt, setRunError),
     [queueMaintenance],
   );
 
@@ -594,6 +676,8 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
   return {
     overview,
     health,
+    readAt,
+    online,
     quiet: {
       active: quietActive,
       // `until` belongs to an active quiet. A cleared one carrying a stale
@@ -644,7 +728,8 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
       idleMinutes: idle !== null && idle > 0 ? idle : null,
       drainedAt,
       ranAt,
-      error: enabled ? maintenanceError : null,
+      drainError: enabled ? drainError : null,
+      runError: enabled ? runError : null,
       drain,
       run,
     },

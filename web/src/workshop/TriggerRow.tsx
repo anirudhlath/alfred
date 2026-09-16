@@ -1,6 +1,7 @@
 import { useId } from "react";
 import { hhmm, pastLabel, rawCall } from "@/lib/format";
 import { triggerKind, triggerMeta, type Trigger } from "@/lib/triggers";
+import { Switch } from "./Switch";
 import type { Pending, PendingKind } from "./useTriggers";
 
 export interface TriggerRowProps {
@@ -23,10 +24,6 @@ export interface TriggerRowProps {
   onToggle: (trigger: Trigger) => void;
   onFire: (trigger: Trigger) => void;
 }
-
-/** The knob's two positions in a 52 px track: 3 px in from either end (handoff §7). */
-const KNOB_OFF = "3px";
-const KNOB_ON = "23px";
 
 /** The handoff's sentence about what a fire does and does not tell us (§7). */
 const FIRE_TAIL = "look for trigger.fired on the events stream to know it ran";
@@ -106,77 +103,6 @@ function rowNote(pending: Pending | undefined): { text: string; queued: boolean 
     text: `queued ${hhmm(pending.at)} · ${pending.kind} · takes effect within 60 s`,
     queued: true,
   };
-}
-
-interface SwitchProps {
-  on: boolean;
-  label: string;
-  /** Inert, but still focusable — see the comment on the handler. */
-  inert: boolean;
-  /** Waiting on the server, as opposed to merely refusing to be pressed. */
-  busy: boolean;
-  describedBy: string | undefined;
-  onToggle: () => void;
-}
-
-/**
- * The switch that **does not move when you press it** (handoff §7, decision 6).
- * `POST …/enabled` answers `queued`: the triggers process applies the change
- * inside its own 60 s cache window and nothing tells this client when. So
- * `aria-checked` keeps reporting the `enabled` the last read gave us, the knob
- * keeps its position, and the note underneath carries the state that was
- * *asked for* — which is the only thing we know.
- *
- * `aria-disabled` rather than `disabled`, for the reason `ActivityBench`'s
- * `↑ older` button writes out: a control that disables itself under the finger
- * that just pressed it throws focus to `<body>` mid-action. It matters more
- * here than there — the control is described by the queued note, and a
- * description is announced on focus, so a real `disabled` would leave a screen
- * reader with nothing at all about the request it just sent, for the whole
- * window. The handler no-ops instead.
- *
- * The colours are not the handoff's, and the handoff's do not pass: a `--bg`
- * knob on a `--line` track is 1.18:1 in light and the track's own edge against
- * the page is the same 1.18:1, where WCAG 1.4.11 asks 3:1 of both a control's
- * boundary and whatever shows which way it is set. The track takes an *inset*
- * `--muted` edge — inset so the 52×32 box and the knob's 3 → 23 travel are the
- * handoff's exactly — and the knob takes the token that reads on the track it
- * is on. All three pairs are measured in `test/contrast.test.ts`.
- */
-function Switch({ on, label, inert, busy, describedBy, onToggle }: SwitchProps) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      // The stored state, always. Never the state this client asked for.
-      aria-checked={on}
-      aria-label={label}
-      aria-busy={busy ? true : undefined}
-      aria-disabled={inert ? true : undefined}
-      aria-describedby={describedBy}
-      onClick={() => {
-        // A second tap inside the window can only confuse the reader, and the
-        // server would queue a second action against a state neither of us
-        // knows. `aria-disabled` does not stop the event, so this does.
-        if (!inert) onToggle();
-      }}
-      className="relative mt-[11px] h-8 w-[52px] shrink-0 rounded-2xl border-0 after:absolute after:inset-x-0 after:-inset-y-1.5 after:content-['']"
-      style={{
-        background: on ? "var(--accent)" : "var(--line)",
-        boxShadow: "inset 0 0 0 1px var(--muted)",
-      }}
-    >
-      <span
-        aria-hidden="true"
-        data-testid="switch-knob"
-        className="absolute top-[3px] h-[26px] w-[26px] rounded-full transition-[left] duration-200"
-        style={{
-          left: on ? KNOB_ON : KNOB_OFF,
-          background: on ? "var(--on-accent)" : "var(--fg2)",
-        }}
-      />
-    </button>
-  );
 }
 
 /**
@@ -315,16 +241,29 @@ export function TriggerRow({
               *which* record is broken is not worth drawing. */}
           {!corrupt && <span className="t-meta-strong">{triggerMeta(trigger, now)}</span>}
         </button>
-        <Switch
-          on={trigger.enabled}
-          label={trigger.name}
-          inert={corrupt || switching}
-          // Waiting, as opposed to merely refusing to be pressed: a refusal has
-          // already landed and a record that cannot be read is not being updated.
-          busy={switching && pending.error === undefined}
-          describedBy={corrupt || note ? noteId : undefined}
-          onToggle={() => onToggle(trigger)}
-        />
+        {/* The switch that **does not move when you press it** (handoff §7,
+            decision 6): `POST …/enabled` answers `queued`, the triggers process
+            applies the change inside its own 60 s cache window, and nothing
+            tells this client when. So `on` keeps reporting the `enabled` the
+            last read gave us and the note underneath carries what was *asked
+            for*, which is the only thing we know.
+
+            The nudge is the row's, not the switch's: this row hangs its
+            controls from `items-start` so a two-line name does not centre the
+            switch against it. */}
+        <span className="mt-[11px] flex shrink-0">
+          <Switch
+            on={trigger.enabled}
+            label={trigger.name}
+            inert={corrupt || switching}
+            // Waiting, as opposed to merely refusing to be pressed: a refusal
+            // has already landed and a record that cannot be read is not being
+            // updated.
+            busy={switching && pending.error === undefined}
+            describedBy={corrupt || note ? noteId : undefined}
+            onToggle={() => onToggle(trigger)}
+          />
+        </span>
       </div>
       {corrupt && <CorruptCard detail={pending.error} noteId={noteId} />}
       {note && (
