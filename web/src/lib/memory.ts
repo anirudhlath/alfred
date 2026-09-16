@@ -126,7 +126,10 @@ const parseJson = (value: string): unknown => {
 
 /**
  * Epoch seconds (number or string) or an ISO string, all to epoch ms. `num` runs
- * first, or `Date.parse("1758006120")` silently becomes the year 1758.
+ * first so the epoch-seconds contract is this function's own, rather than
+ * whatever `Date.parse` makes of a bare numeric string. Measured: a ten-digit
+ * `"1758006120"` is `NaN` there, and a four-digit `"1758"` is the year 1758,
+ * which `isoMs` then drops for being <= 0. Neither is a reading worth inheriting.
  *
  * A non-positive result is null, not 1970: the hot hash writes `last_retrieved:
  * 0.0` to mean "nothing has ever recalled this", and no memory is older than the
