@@ -50,6 +50,10 @@ describe("index.html", () => {
     expect(html).toContain('<meta name="apple-mobile-web-app-title" content="Alfred" />');
   });
 
+  it("gives iOS a raster home-screen icon, which is the only kind it takes", () => {
+    expect(html).toContain('<link rel="apple-touch-icon" href="/apple-touch-icon.png" />');
+  });
+
   it("keeps the manifest link untouched for phase 4", () => {
     expect(html).toContain('<link rel="manifest" href="/manifest.json" />');
   });
