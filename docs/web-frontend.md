@@ -190,7 +190,7 @@ palette colour.
 | `--on-accent` | Text and icons on an accent fill — the theme's own dark colour either way (7.61:1 dark, 6.33:1 light). Never `--ink`, which is near-white in dark and reads 1.77:1 |
 | `--accent-text` | The accent *as* text: `‹ Room`, `Why · causal thread`, a sheet's `Done`. Dark's accent is already 7.61:1 on `--bg`, so it is the same colour there; light's is 2.34:1, which is why the token exists |
 | `--green` | Applied / healthy, as a **fill**: the Door's `Applied` dot on `--ink`, which is the only thing still using it |
-| `--green-text` | Green *as* a word — `model: ok`, System's `alive` — and also the health dot, which is a state indicator and owes 3:1 rather than a fill's nothing. Raw `--green` is 2.29:1 on light `--bg` and 2.12:1 on a card; same reason `--accent-text` exists |
+| `--green-text` | Green *as* a word — Memory's `model: ok` pill (`MemoryBench.tsx`) and Connected services' `ok` verdict (`IntegrationRow.tsx`) — and also the dots: the health dot and the service dot, which are state indicators and owe 3:1 rather than a fill's nothing. System's `alive` is the dot and not the word; the word itself is `--fg`/`--fg2` with the rest of the cell. Raw `--green` is 2.29:1 on light `--bg` and 2.12:1 on a card; same reason `--accent-text` exists |
 | `--ink`, `--paper`, `--paper-muted` | The Door's inverted surface and its text |
 | `--ring`, `--scrim` | Focus ring, and the dim behind a layer |
 | `--ring-text-l` | The lightness `ringText()` uses for a stream hue set as text — 0.75 on ink, 0.52 on paper |
@@ -492,10 +492,10 @@ so the reads stop when the reader leaves and the state does not. Surviving a tri
 another tab: Memory's sub-tab, its query and the rows a search already answered with,
 Triggers' kind filter and open row, every queued note, a credential's save note, the
 drain stamp. Deliberately *not* surviving, because it belongs to the surface it was
-typed into rather than to the house: a half-typed credential (`IntegrationRow.tsx`), a
-confirmation prompt waiting for a second tap (`SystemBench.tsx`), an unfolded semantic
-card (`MemoryBench.tsx`), and the pairing code, which `useSystem` clears the moment the
-bench stops showing — a six-digit secret left standing on a screen nobody is watching is
+typed into rather than to the house: a half-typed credential (`IntegrationRow.tsx`), the
+Quiet card's record of which expiry chip you last pressed and the `applied` note it draws
+from it (`asked` in `SystemBench.tsx`), an unfolded semantic card (`MemoryBench.tsx`), and
+the pairing code, which `useSystem` clears the moment the bench stops showing — a six-digit secret left standing on a screen nobody is watching is
 the thing that decision exists to prevent. The list's scroll position goes with them,
 which is a cost rather than a choice (`docs/backlog/low/pwa-phase3-followups.md` §15).
 
@@ -513,7 +513,9 @@ answer, which is how Memory's scratchpad card reads the Librarian's schedule
 
 **The episodic adapter.** `GET /api/admin/memory/episodic` answers in three shapes for
 what the design draws as one row, and `toEpisodicRow` in `lib/memory.ts` is the one
-place that knows it. Nothing above that file branches on a store again:
+place that knows it. Nothing above that file branches on a *shape* again — `MemoryBench`
+reads `row.store` twice, for the muted cold line and the store dot (`MemoryBench.tsx:118`),
+and never to decide what a row says:
 
 | | browse · hot (Redis hash) | browse · cold (SQLite row) | search (`EpisodicResult`) |
 |---|---|---|---|
@@ -546,31 +548,44 @@ A trigger's enable/disable and `Fire now` (`core/channels/admin_api.py:655`, `:6
 them is evidence that anything happened. So the row **does not move**: the switch keeps
 reporting the stored state
 (`aria-checked` is the last read's value, never the requested one), the control's own
-label becomes the status word (`Fire now` → `Fire again`), and an `--accent` mono note
-under the meta line says when this client queued it —
+label becomes the status word (`Fire now` → `Fire again`), and an `--accent-text` mono
+note under the meta line says when this client queued it —
 `queued 21:15 · enabling · takes effect within 60 s`. A fire's note names the evidence
 the reader would have to go and find: `queued 21:14 · look for trigger.fired on the
 events stream to know it ran`. The exceptions are the direct writes the server confirms
 and answers with the new state — DND set/clear, ending a session, and `Save & test`,
 which is a `PUT` followed by a separate status probe, hence the two words in its note
 (`saved · testing`). Even those move on the *re-read* rather than on the tap: the visible
-beat between the two is the point. `--accent` is never success: it marks a decision
-waiting on the world. `--green` is only `alive`, `ok` and `applied`; there is no red.
+beat between the two is the point. Accent is never success: it marks a decision waiting
+on the world, and as text it is always `--accent-text` (`TriggerRow.tsx:271-273`) — raw
+`--accent` is a fill. Green is the mirror image: `--green` fills exactly one thing in the
+client, the Door's `Applied` dot (`DoorLayer.tsx:43`), and every green *word* and *dot* on
+the Workshop is `--green-text`. There is no red.
 
 ### The rules this phase's reviews kept enforcing
 
 Five findings came back often enough across the review rounds to be house style now.
+The first two govern **anything a reader must read to trust the screen** — a state word, a
+value, a label, a control — and not decoration that already carries a text equivalent.
+Three of the five have a live counterexample in the tree; each is named under its own
+rule rather than left for the next reviewer to find.
 
 - **Dim by token, never by `opacity`.** A spent one-shot, an offline health grid and an
   ended session all recede by swapping to `--fg2`/`--muted`, not by an alpha. A
   composited opacity takes the handoff's `.55` under AA (a meta line lands at 2.71:1 in
   light) and — the reason it is a rule — it is invisible to `src/test/contrast.ts`,
-  which is the file that exists to stop exactly that.
+  which is the file that exists to stop exactly that. Outside the rule: the routine
+  sparkline's older bars are `opacity: 0.7` (`RoutineRow.tsx:111`), inside a `role="img"`
+  whose `aria-label` carries the number the bars draw. Nothing there has to be read.
 - **`aria-disabled` plus a no-op handler, never `disabled`.** A control that disables
   itself under the finger that just pressed it throws focus to `<body>` mid-action, and
   where the control is described by the note the press produced — a switch and its
   `queued …` line — a real `disabled` leaves a screen reader with nothing at all about
-  the request it just sent. The handler checks the flag itself and returns.
+  the request it just sent. The handler checks the flag itself and returns. One control
+  predates both rules and breaks both at once — Activity's `All streams` button is a real
+  `disabled` carrying `opacity: 0.4` (`ActivityBench.tsx:245-251`), phase-2 code this
+  phase did not reopen. Filed rather than fixed here
+  (`docs/backlog/low/pwa-phase3-followups.md` §21).
 - **Never say the house is empty before the server has answered.** An empty list has
   three possible meanings and they are different news: the read was refused
   (`Routines could not be read.`), the read has not landed
@@ -578,7 +593,13 @@ Five findings came back often enough across the review rounds to be house style 
   (`No routines learned yet.`). Refusal outranks the unlanded read, since an errored
   query is both at once. Every bench carries a permanently-mounted `role="status"`
   region labelled `Read errors` for the refusals — mounted empty, because VoiceOver can
-  miss a region inserted with its text already in it.
+  miss a region inserted with its text already in it. The unlanded read is the half that
+  is easy to get wrong: it has to be keyed on `dataUpdatedAt`, never on `isFetching`,
+  because react-query **pauses** rather than fetches when there is no network and a paused
+  query reports neither. Memory and System key on the read
+  (`useMemory.ts:241-246`); Triggers keys on `isFetching` and so says `No triggers yet.` to
+  a reader who reached it for the first time offline
+  (`docs/backlog/low/pwa-phase3-followups.md` §22).
 - **Never let a client-set mark outlive its evidence.** A `Pending` lives exactly
   `REREAD_MS` (60 s), after which the list itself is the evidence; `useSystem` prunes
   its `ended` and `saves` marks against the records still in the last read, so a mark
@@ -594,9 +615,10 @@ Five findings came back often enough across the review rounds to be house style 
   Workshop's `Switch` is measured on both, because System puts one in a `Section`.
 
 There is one live region for the whole layer that survives a change of bench: the state
-word in the Workshop's header (`role="status"`), which is why Activity's *Feed status*
-banner kept its sentence and lost its region role — two regions saying the same thing is
-worse than one. Only the state word is inside it. The rate and the held count are a
+word in the Workshop's header (`role="status"`), which is why Activity's stale-feed
+banner kept its sentence and lost both its region role and its accessible name — it is a
+bare `<div data-testid="feed-banner">` now (`ActivityBench.tsx:135-148`), and `Feed status`
+appears nowhere in `web/src`. Two regions saying the same thing is worse than one. Only the state word is inside it. The rate and the held count are a
 *sibling* span, not an `aria-hidden` child: `role="status"` implies
 `aria-atomic="true"`, so any mutation inside re-presents the whole sentence, and a
 reader who heard `live` every time the rate ticked would have traded one noise for
@@ -1014,8 +1036,11 @@ fallback ever grows conditional handling.
   otherwise. System has **no Reach card**: it would be a control that cannot work,
   which is the defect the phase-2 placeholder tabs were.
 - **Trigger editing, service restart and log download** — the three things the old SPA
-  could do that no endpoint supports. The Triggers footer says so in the client, and
-  `docs/backlog/low/pwa-phase3-followups.md` §7 and §10 name the routes each would need.
+  could do that no endpoint supports. Only the first is said out loud in the client: the
+  Triggers footer reads `Nothing here edits a trigger — ask Alfred to change or remove
+  one.` (`TriggersBench.tsx:160-161`). Restart and log download are absent without comment,
+  because System has no ops section for a sentence to sit in. `docs/backlog/low/pwa-phase3-followups.md`
+  §7 and §10 name the routes each would need.
 - **Telemetry `status`/`error` frames** (`redis_error`, `invalid JSON`) still reach only
   the console, rate-limited by `WARN_EVERY_MS`. The System bench reports the *reads* that
   failed, not the socket's own frames.

@@ -8,7 +8,9 @@ for that.
 
 Every claim below was re-checked against the tree on the branch that files it. Where the
 plan's own wording turned out to be wrong, this file says what the code actually does,
-not what the plan expected — see §13, §16 and the closing note.
+not what the plan expected — see §13, §16 and the two closing notes. Four of the plan's
+claims did not survive the check; the plan itself has been amended in place at each of
+them, and "Where the plan was stale" below is the index.
 
 ## 1. Episodic search cannot say why nothing matched
 
@@ -19,9 +21,11 @@ response. `EpisodicMemory.recall` (`core/memory/episodic/memory.py:62`) returns
 `list[EpisodicResult]` — entry, score, source store — and the route flattens exactly
 that (`core/channels/admin_api.py:518-527`). Rows below the cut are dropped by
 `merged[:limit]` (`memory.py:109`) and nothing counts what was searched. There is not
-even a threshold to report: both stores are searched with the ABC default
-`min_similarity: float = 0.0` (`core/memory/vector_store.py:59`), so the only cut that
-happens is the limit.
+even a threshold to report: `recall()` calls `search()` on both stores without passing
+one (`memory.py:89-90`), and both concrete stores redeclare the same default the ABC
+carries — `min_similarity: float = 0.0` (`core/memory/redis_vector_store.py:247` and
+`core/memory/sqlite_vec_store.py:462`, against `core/memory/vector_store.py:59`). The
+effective cut is 0.0 and the only real one is the limit.
 
 **Acceptance:** `recall()` returns the corpus sizes it searched, the effective
 `min_similarity` and the best rejected score alongside the matches; `GET
@@ -46,7 +50,7 @@ reads it and the pill is honest before the first search.
 
 `GET /api/admin/memory/episodic` walks the hot store with
 `scan_iter(match=f"{CONTEXT_PREFIX}*")` and then `hgetall(key)`, discarding `key`
-(`core/channels/admin_api.py:530-538`; `CONTEXT_PREFIX = "ctx:"` at
+(`core/channels/admin_api.py:529-538`; `CONTEXT_PREFIX = "ctx:"` at
 `shared/streams.py:35`). The hash itself stores no id field — the id *is* the key
 (`core/memory/redis_vector_store.py:225`). So the client keys those rows `hot:<index>`,
 which is correct only because the list is replaced whole on every read: nothing can link
@@ -63,25 +67,34 @@ for the same memory: `content` vs `summary`, a comma string vs a JSON string vs 
 of entities, epoch-seconds-as-a-string vs a REAL vs an ISO 8601 string, a string float vs
 JSON text vs a dumped object for significance. `toEpisodicRow` (`web/src/lib/memory.ts`)
 absorbs all of it and is tested against all three literal shapes, which is the only
-reason nothing above that file branches on a store.
+reason nothing above that file has to branch on a *shape*. (`MemoryBench` still reads
+`row.store` — for the muted cold line and the store dot — but never to decide what a row
+says.)
 
 This is cheap to keep and expensive to get wrong once: the adapter has to parse numbers
 before `Date.parse`, or an epoch string becomes the year 1758.
 
-**Acceptance:** the three branches of `memory_episodic` (`core/channels/admin_api.py:487`)
+**Acceptance:** the three branches of `memory_episodic` (`core/channels/admin_api.py:488`)
 serialise one Pydantic row model, with one name and one type per field; the client's
 adapter shrinks to the store flag and the score.
 
 ## 5. No `next_fire_time` over HTTP, so a cron trigger can only be printed
 
-A one-shot's meta reads `one-shot · runs 08:40 tomorrow` from `run_at`; a recurring one
-reads `recurring · cron 0 19 * * 4`, because the schedule is all there is.
+A one-shot's meta reads `one-shot · runs 08:40 tomorrow · created from conversation 20:52`
+from `run_at`; a recurring one reads `recurring · cron 0 19 * * 4 · created from …`,
+because the schedule is all there is — the third clause is `created_by` and the created
+stamp, and it is on every row whatever the kind (`web/src/lib/triggers.ts:183-192`).
 `next_fire_time` is a method on the trigger objects
 (`core/triggers/models.py:60`, `core/triggers/types/time.py:66`,
-`core/triggers/types/composite.py:81`) whose only consumer is `TriggerEngine.next_wakeup`
-inside the triggers process (`core/triggers/engine.py:104`, called at `:117`). The list
-route hands back the stored JSON verbatim (`core/channels/admin_api.py:424`), which for
-a `TimeTrigger` is `{cron, run_at}` and nothing computed.
+`core/triggers/types/composite.py:81`), and every consumer of it is inside the triggers
+process: `TriggerEngine.next_wakeup` (`core/triggers/engine.py:104`, calling it at `:117`),
+`TimeTrigger.evaluate`
+itself (`core/triggers/types/time.py:94`) and `CompositeTrigger.next_fire_time` folding its
+children (`core/triggers/types/composite.py:84`). So the fire decision runs through it too,
+not only the wakeup alarm — the computation exists and is exercised on three paths; it
+simply never crosses HTTP. The list route hands back the stored JSON verbatim
+(`core/channels/admin_api.py:424`), which for a `TimeTrigger` is `{cron, run_at}` and
+nothing computed.
 
 **Acceptance:** `GET /api/admin/triggers` includes a computed `next_fire_time` per row
 (the engine already has the code; the admin API needs the same construction), and
@@ -101,14 +114,23 @@ except (json.JSONDecodeError, ValueError):
 ```
 
 (`core/channels/admin_api.py:423-426`). The trigger id is discarded a line earlier, so
-even a placeholder row has nothing to key on. The single-trigger path does the honest
-thing already — `_validate_trigger_exists` 500s on unparseable data
-(`admin_api.py:648-653`). The same swallow guards deferred notifications
-(`:440-441`) and devices (`:483-484`), so this is one pattern in three places.
+even a placeholder row has nothing to key on. The same swallow guards deferred
+notifications (`:440-441`). **Two places, not three** — the device list already does what
+this entry asks for, which makes it the model rather than a third instance:
+
+```python
+except (json.JSONDecodeError, ValueError):
+    out.append({"device_token": tok})
+```
+
+(`admin_api.py:483-484`) — the row survives, keyed on the one field the route holds
+outside the unparseable blob. The single-trigger path is honest a different way:
+`_validate_trigger_exists` 500s on unparseable data (`admin_api.py:648-653`).
 
 **Acceptance:** the list route yields `{"trigger_id": tid, "error": "..."}` for a value it
-cannot parse instead of `continue`, the client renders the handoff's card from it, and
-the deferred and device lists get the same treatment.
+cannot parse instead of `continue` — keeping the id rather than discarding it, the way the
+device loop keeps the token — the client renders the handoff's card from it, and the
+deferred list gets the same treatment.
 
 ## 7. No trigger create, edit or delete
 
@@ -119,10 +141,14 @@ fires, and its footer says `Nothing here edits a trigger — ask Alfred to chang
 one.` rather than leaving a reader hunting for a button.
 
 Full CRUD does exist, but on the triggers process's own tool-dispatch server — `POST
-/triggers`, `PATCH /triggers/{id}`, `DELETE /triggers/{id}` (`core/triggers/server.py:25`,
-`:35`, `:41`) on `TRIGGER_PORT` (`core/triggers/__main__.py:322-323`) — which carries **no
-authentication dependencies at all**. It is an internal service and must not be proxied
-as-is.
+/triggers`, `GET /triggers`, `PATCH /triggers/{id}`, `DELETE /triggers/{id}` and
+`PATCH /triggers/{id}/toggle` (`core/triggers/server.py:25`, `:30`, `:35`, `:41`, `:46`) on
+`TRIGGER_PORT` (`core/triggers/__main__.py:322-323`) — which carries **no authentication
+dependencies at all**. Seven routes with `/health` and `POST /jsonrpc`, and the last is the
+reason the warning is not a formality: the shim dispatches whatever it is handed,
+`await client.dispatch(method, params)` over *any* registered tool method
+(`core/triggers/server.py:54-60`). It is an internal service and must not be proxied
+as-is, in whole or in part.
 
 **Acceptance:** `POST`, `PATCH` and `DELETE /api/admin/triggers[/{id}]` on the
 session-gated admin router, delegating to the store the internal service already uses;
@@ -140,25 +166,38 @@ would have expired. The Quiet card therefore carries the footnote
 `A meeting in your calendar can also quiet Alfred; that is not shown here.`
 
 **Acceptance:** `GET /api/admin/dnd` (or an `overview.dnd` widened to the same shape)
-returns `DNDChecker.is_active()`'s answer with the reason — `manual` or `calendar` — and
-the expiry it is honouring; the footnote is replaced by the calendar's own row.
+returns `DNDChecker.is_active()`'s answer with `DNDStatus.source` — `manual` or `calendar`
+(`dnd.py:77`, `:104`) — and the expiry it is honouring. **Not `DNDStatus.reason`**, which
+is free text: the calendar branch sets it to
+`f"In meeting: {event.get('summary', 'Unknown')}"` (`dnd.py:103`), so a row keyed on it
+would print a meeting title where the bench wants one of two words. The footnote is
+replaced by the calendar's own row.
 
 ## 9. Health has no service, GPU or satellite inventory
 
 The handoff's Health grid reads `bus · redis 6 services, 8 streams` and
 `reflex · reflex-3b · gpu 41%`. Neither number has a source. `_base_overview`
-(`core/channels/admin_api.py:188`, keys at `:195-205`) exposes `redis`, `cost`, `dnd`,
+(`core/channels/admin_api.py:188`, keys at `:197-205`) exposes `redis`, `cost`, `dnd`,
 `counts`, `streams`, `inference`, `reflex{model,last_ms,p50_ms}`, `librarian` and
-`session` — no service registry, no GPU telemetry anywhere in the repo, and the satellite
+`session` — no service list, no GPU telemetry anywhere in the repo, and the satellite
 bridge is wired into the lifespan (`core/channels/web_server.py:361-389`) and never
 exposed. So the bench ships `bus · redis · N streams` from
-`Object.keys(overview.streams).length` and `reflex · <model>`. The nearest per-service
-fact is `GET /api/integrations/{name}/status` (`web_server.py:764`), one service at a
-time, which the Connected services section already uses.
+`Object.keys(overview.streams).length` and `reflex · <model>`.
 
-**Acceptance:** the overview gains a `services` list (name, healthy, latency) built from
-the registry the status route already walks, and a `gpu` block where there is a device to
-report one from; the two cells print the handoff's line.
+**A registry does exist**, and it is the overview that does not read it: services declare
+themselves into the Redis hash `TOOL_REGISTRY_KEY = "alfred:tool_registry"`
+(`shared/streams.py:13`), which `list_service_manifests()`
+(`core/channels/service_credentials.py:80-89`) walks and `GET /api/integrations`
+(`core/channels/web_server.py:603-629`) already returns alongside the in-process adapter
+registry. What the registry carries is a credentials manifest, not health — the per-service
+health fact is `GET /api/integrations/{name}/status` (`web_server.py:764`), which walks
+nothing and probes one named service at a time, and which the Connected services section
+already calls once per row.
+
+**Acceptance:** the overview gains a `services` list (name, healthy, latency) built by
+walking the two registries `GET /api/integrations` walks and probing each the way
+`GET /api/integrations/{name}/status` probes one, and a `gpu` block where there is a device
+to report one from; the two cells print the handoff's line.
 
 ## 10. No ops actions — no restart, no log download
 
@@ -232,8 +271,8 @@ other. So the System bench can read
 opened from the row two lines above it — still offers `Drain queue now`.
 
 The server is idempotent: the route publishes an internal action
-(`core/channels/admin_api.py:627`) and the handler LPOPs until the queue is empty, so a
-second drain finds nothing. This is a narrative defect, not a delivery one.
+(`core/channels/admin_api.py:629`, under the decorator at `:627`) and the handler LPOPs
+until the queue is empty, so a second drain finds nothing. This is a narrative defect, not a delivery one.
 
 **Acceptance:** `drainedAt` has one owner above both surfaces — the Room, or a small
 provider — and the sheet's button reads `Queued` when the bench queued it, and the other
@@ -262,11 +301,12 @@ test that trips to another bench and back. The virtualisation ticket
 
 **The client half is done; this is the server half.** Cold rows now print no recall
 clause at all — not `never recalled`, not a count — in either shape
-(`web/src/lib/memory.ts:169-183`, `episodicMeta` at `:222-229`). The clause is
+(`toEpisodicRow` at `web/src/lib/memory.ts:181-226`, the guard at `:187-189`;
+`episodicMeta` at `:253-268`). The clause is
 deliberately **absent rather than zero**: a cold row reads
 `07:02 earlier today · significance 0.40 · cold`. Hot rows are unaffected, because
 `retrieval_count` and `last_retrieved` are real fields in the Redis hash, written by
-`record_retrievals()` (`core/memory/vector_store.py:88-96`).
+`record_retrievals()` (`core/memory/vector_store.py:81`, the write at `:90-97`).
 
 Two separate server facts forced it, and both have to change before the clause can come
 back.
@@ -308,7 +348,7 @@ along with the question of whether `decaying` should consult it again.
 ## 17. Health's four stats are one card, not four
 
 The handoff draws a 2×2 grid with an 8 px gap whose cells are each their own radius-12
-bordered card (`Alfred.dc.html:356-358`). The bench
+bordered card (`docs/design/2026-09-04-pwa-client-handoff/Alfred.dc.html:356-358`). The bench
 draws a 2×2 grid of internal borders inside one `SystemSection`
 (`web/src/workshop/SystemBench.tsx:253-258`, edges computed at `:149`), because the
 section frame is itself the radius-12 card (`SystemFrame.tsx:36-39`) and every other
@@ -321,7 +361,7 @@ tension is the frame's, not the grid's.
 ## 18. The health dot sits above its value, and the value is mono
 
 The handoff puts the dot 8 px to the left of a 20 px value that inherits DM Sans
-(`Alfred.dc.html:359`). The stat is a `flex flex-col gap-1` with the dot first and a
+(`docs/design/2026-09-04-pwa-client-handoff/Alfred.dc.html:359`). The stat is a `flex flex-col gap-1` with the dot first and a
 `t-title font-mono` value under it (`web/src/workshop/SystemBench.tsx:151-166`), for the
 reason §17 gives: the column is what fits a 2×2 grid inside a section-width card at
 360 px.
@@ -346,8 +386,9 @@ handoff is revised.
 
 ## 20. `decaying` marks a population the Librarian never actually sweeps
 
-The word is the handoff's, not an invention: `Alfred.dc.html:684` sets an episodic row's
-meta to `17:58 today · significance 0.34 · recalled 0× · hot · decaying`, and its cold row
+The word is the handoff's, not an invention:
+`docs/design/2026-09-04-pwa-client-handoff/Alfred.dc.html:684` sets an episodic row's meta
+to `17:58 today · significance 0.34 · recalled 0× · hot · decaying`, and its cold row
 at significance 0.22 with no recalls reads a plain `cold` (`:687`). Phase 3 had it exactly
 inverted — `decaying` was computed for **cold** rows only — which promised a removal that
 cannot happen: `_apply_decay` (`core/librarian/consolidator.py:627`) reads the *hot* store
@@ -375,6 +416,60 @@ it: whether `DECAY_FLOOR = 0.4` still picks out roughly what the corrected thres
 sweeps, and whether the mark should consult age — which the row does carry, and which the
 pass weighs most heavily — rather than significance and recall count alone.
 
+## 21. Two controls predate the dim-by-token and `aria-disabled` rules
+
+`docs/web-frontend.md` states both rules absolutely and phase 3's own code keeps them, so
+the two places in the tree that do not are named here rather than left for the next
+reviewer to rediscover.
+
+**Activity's `All streams` button breaks both** (`web/src/workshop/ActivityBench.tsx:245-251`):
+`disabled={activity.solo === null}` with `style={{ opacity: activity.solo === null ? 0.4 : 1 }}`.
+It is phase-2 code and phase 3 did not reopen it. The consequences are the ones the rules
+were written for: at `0.4` the label composites to well under AA and `src/test/contrast.ts`
+cannot see it, and a real `disabled` takes the control out of the tab order the moment the
+last chip is deselected — which is exactly when a reader is on it.
+
+**The routine sparkline uses `opacity: 0.7` on its older bars**
+(`web/src/workshop/RoutineRow.tsx:111`). This one is phase-3 code and is **deliberate**, not
+a miss: the bars sit inside a `role="img"` whose `aria-label` carries the confidence and
+the count of readings (`RoutineRow.tsx:92-94`), so nothing there has to be read off the
+pixels. It is recorded because "never by `opacity`" read literally would forbid it, and the
+rule's scope — anything a reader must read to trust the screen — is what actually governs.
+
+**Acceptance:** `All streams` takes `aria-disabled` with a no-op handler and recedes by
+swapping its colour to `--fg2`, with the pair restated in `src/test/contrast.ts`; its bench
+test asserts the control stays focusable and keeps its name. The sparkline needs no change
+unless the picture ever loses its text equivalent.
+
+## 22. Triggers claims an empty house when its read was paused, not answered
+
+Found while writing the device checklist, and the only place on the three benches where an
+empty sentence outruns its evidence.
+
+`TriggersBench` gets the rule right — `No triggers yet.` is drawn only when
+`triggers.shown.length === 0 && !triggers.loading` (`web/src/workshop/TriggersBench.tsx:134`),
+with a test pinning it (`TriggersBench.test.tsx:126-130`). The hook is what lies:
+`loading: query.isFetching` (`web/src/workshop/useTriggers.ts:288`). react-query sets
+`fetchStatus` to `"paused"` — not `"fetching"` — when `networkMode: "online"` finds no
+network, so `isFetching` is **false** for a read that has never happened. With no data and
+no error either, the bench concludes the house has no triggers.
+
+To see it: launch the app online, let the Room paint, turn Airplane mode on, then open the
+Workshop and go to Triggers for the first time this session. Memory, reached the same way,
+says `Episodic memory has not been read yet.` — because `useMemory` derives its `read` flag
+from `dataUpdatedAt !== 0` (`useMemory.ts:241-246`), which a paused query never sets.
+`useSystem` is safe for the same reason (`credentials.read`, `attention.read`, and a health
+grid keyed on `readAt`), and its `online` flag explicitly discounts
+`fetchStatus === "paused"` (`useSystem.ts:406-412`) — the pattern was understood on that
+bench and not carried to this one.
+
+**Acceptance:** `useTriggers` exposes a `read` flag derived from `query.dataUpdatedAt !== 0`
+alongside `loading`, `TriggersBench` guards the empty sentence on `read` rather than on
+`!loading`, and a test renders the bench with `read: false, loading: false` — the paused
+shape, which no current fixture produces — and asserts neither `No triggers yet.` nor
+`No <kind> triggers.` appears. The QA checklist's outage section loses its recorded
+exception with it.
+
 ---
 
 ## Checked and not filed
@@ -387,3 +482,33 @@ and `web/src/lib/system.test.ts:738` ("calls the rate alive on a house carrying 
 stream") asserts `bus · redis · 1 stream` exactly, with a companion at `:721-727` pinning
 `0 streams`. The singular was fixed in the same round that found it and the plan's list
 was never amended.
+
+---
+
+## Where the plan was stale
+
+Four claims in `docs/superpowers/plans/2026-09-16-pwa-phase3-memory-triggers-system.md`
+turned out not to match the code. Each is corrected in the plan in place, marked
+*(corrected in task 11)*; this is the index, so a reader of either document finds the
+other.
+
+1. **Decision 6 listed `Save & test` among the `{"status":"queued"}` controls.** It is a
+   confirmed direct write — `PUT /api/integrations/{name}/credentials` answers
+   `{"status": "ok"}` (`core/channels/web_server.py:678`) — followed by a separate
+   `GET …/status` probe. It belongs with DND and ending a session, and
+   `docs/web-frontend.md` already describes it that way.
+2. **Deviation 1's replacement copy was `nothing scored above the server's threshold`.**
+   There is no threshold in the response to be above (§1 above). The bench ships
+   `Nothing close enough to "<query>".` with the note
+   `searched by meaning · the server does not report what it rejected`
+   (`web/src/workshop/MemoryBench.tsx:174`).
+3. **Deviation 11 quoted the calendar footnote lower-case and without its full stop.** The
+   shipped copy is `A meeting in your calendar can also quiet Alfred; that is not shown
+   here.` — which the plan's own task 8 section quotes correctly, so the deviations table
+   was the stale half.
+4. **The Conventions section named System's `alive` as the second thing `--green-text`
+   buys.** `alive` is `--fg`/`--fg2` with the rest of the health cell
+   (`SystemBench.tsx:161-166`); only the dot beside it is `--green-text`
+   (`:155-159`). The second green *word* is Connected services' `ok`
+   (`IntegrationRow.tsx:38`). This one had been copied forward into
+   `docs/web-frontend.md`'s token table and is corrected there too.

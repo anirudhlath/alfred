@@ -59,9 +59,11 @@ frames (`redis_error`, `invalid JSON`) still reach only the console — System r
 
 The live region moved with them, as this item said it should. Phase 3's task 10 made the
 Workshop header's state word a `role="status"` region (`Workshop.tsx`) and took the
-region role off the Activity bench's "Feed status" banner, which keeps its sentence: two
-regions saying the same thing is worse than one, and the header's is the only one on the
-layer that survives a change of bench. Only the state word is inside it — `role="status"`
+region role — and with it the accessible name `Feed status`, which appears nowhere in
+`web/src` now — off the Activity bench's stale-feed banner, which keeps its sentence and
+is a bare `<div data-testid="feed-banner">` (`ActivityBench.tsx:135-148`): two regions
+saying the same thing is worse than one, and the header's is the only one on the layer
+that survives a change of bench. Only the state word is inside it — `role="status"`
 implies `aria-atomic="true"`, so the rate and the held count sit in a sibling span where
 there is nothing to re-present. Each bench also carries a permanently-mounted
 `Read errors` region of its own, which is a different fact: a read that came back

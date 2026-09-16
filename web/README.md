@@ -104,6 +104,14 @@ Phase 3: the Workshop's other three benches, each a pure view over one hook call
   carries the phase-1 palette's dark ground — a manifest cannot follow the theme the way
   `applyTheme` rewrites the `theme-color` meta, so a light-hour install still gets a dark
   splash until phase 4 decides otherwise. Nothing else in `public/` has been touched.
+- **Four things the old SPA could do and this client cannot**, which is the whole of the
+  remaining parity gap (spec §8's gate is *full capability parity with the old SPA*).
+  Three of them have no endpoint to call: **creating, editing or deleting a trigger**
+  (the admin API has browse, toggle and fire and nothing else — the Triggers footer says
+  so out loud), **restarting a service**, and **downloading logs**. The fourth has an
+  endpoint and no UI: **removing a passkey** — `DELETE /api/auth/credentials/{id}` exists
+  and refuses the last one, but taking away the passkey in your hand needs a confirmation
+  design first. Filed as `docs/backlog/low/pwa-phase3-followups.md` §7, §10 and §11.
 - **Desktop** — phase 6.
 
 ## Things worth knowing before you change something
