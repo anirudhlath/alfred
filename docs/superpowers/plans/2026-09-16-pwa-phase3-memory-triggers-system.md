@@ -835,24 +835,39 @@ export function Section({ title, children }: { title: string; children: ReactNod
 
 — a caps `.t-meta-strong` label with `0.08em` letter-spacing in `--fg2`, 16 px above and 8 px below; then a `rounded-xl` container with a 1 px `--line` border and `--surface` background; rows inside it 56 px tall, divided by 1 px `--line`, 12 px side padding.
 
-**Health** — a 2×2 grid of stat cells, each the big value in `.t-title` and the note under it in `.t-meta-strong`: bus, reflex, event rate, home assistant, exactly as `system.health` gives them. `alive` is the only thing that gets `--green`; `unknown` gets `--fg2`, never red.
+Handoff §8. Sections are separated by a 22 px gap.
 
-Under the grid, the spend row: `spendNote(cost)` and a 4 px bar, `--accent` filling `spend_usd / cap_usd` clamped to `[0, 1]`, `--line` behind it. `role="img"` with the note as its label; a zero or missing cap draws an empty bar and the text says why.
+**Health** — a stamp on the right of the section label: `live · 21:14:07` in `--muted` while online, `unknown since 21:14` in `--accent-text` while not. Then a 2×2 grid of stat cards (`padding 12 14`), each an 8 px dot (`--green` for alive, `--muted` for unknown), a 20 px/500 value, and a mono label:
+
+| value | label |
+|---|---|
+| `alive` | `bus · redis · <n> streams` |
+| `380 ms` | `reflex · <model>` |
+| `2.1/s` | `event rate · 5-min mean` |
+| `ok` | `home assistant · 210 ms` |
+
+Deviation 8 removes the handoff's `6 services` and `gpu 41%` — neither has a source. **Offline, the values read `?` or `—` and the whole grid drops to opacity .55.** A stale number presented at full strength is the §5.2 failure.
+
+Under the grid, the spend card: title `Cloud spend today`, then mono `$1.42 of $5.00`, a 4 px bar filling `spend_usd / cap_usd` clamped to `[0, 1]` (`--accent` on `--line`), and the note — the handoff's, with the clauses the server did not send dropped:
+
+`38 requests · avg $0.037 · resets 00:00 · at the cap, the conscious mind declines and says so`
+
+`role="img"` on the bar with the note as its label; a zero or missing cap draws an empty bar and the text says why. Never `NaN`.
 
 **Quiet** —
-- Row 1: `Do not disturb`, a `role="switch"` reporting `dnd.active`. This one **moves on tap**, once the server has confirmed, because `POST /api/admin/dnd` is a direct write (decision 6's exception). While in flight it is `aria-busy` and disabled.
-- Row 2, only while active: expiry chips — `30 min`, `2 hours`, `until 07:00`, `no expiry` — each a ≥44 px button posting `active: true` with the computed `until` (an ISO string; `no expiry` sends `null`). The current one is `aria-pressed`.
-- Row 3: `N held back ›`, opening the Held-back sheet through `system.quiet.onHeld`. Count from `overview.counts.deferred`.
+- Row 1 (56 px min): `Do-not-disturb`, a `role="switch"` reporting `dnd.active`. This one **moves on tap**, once the server has confirmed, because `POST /api/admin/dnd` is a direct write (decision 6's exception) — and says `Applied`. While in flight it is `aria-busy` and disabled.
+- The sub-line, verbatim per state: `off · urgent still speaks regardless` / `on · until 08:30 · queue drains then` / `on · no expiry · queue will not drain on its own`.
+- Row 2, only while active: expiry chips `1 h · until noon · until 22:00 · no expiry`, 44 px, radius 10, each posting `active: true` with the computed `until` as an ISO string (`no expiry` sends `null`). The current one is `aria-pressed`.
+- Row 3: `Held back` with `2 held ›` on the right — **`2 · growing` in `--accent-text` when there is no expiry**, because a queue with no drain is a different fact from a queue with one. Opens the Held-back sheet through `system.quiet.onHeld`. Count from `overview.counts.deferred`.
 - Row 4: `Send them now` — `drainDeferred()`. After it: `queued 21:15 · the notifier sends them when it next reads the queue`. Never `Sent`.
-- The state sentence under the switch: `off · urgent still speaks regardless` / `on until 07:00 · urgent still speaks regardless` / `on with no expiry · this queue never drains on its own`.
 - **The footnote, verbatim:** `A meeting in your calendar can also quiet Alfred; that is not shown here.` — `.t-meta-strong`. Deviation 11; it is the difference between a screen that is wrong and a screen that is honest about its blind spot.
 
 **Maintenance** —
-- `Last consolidation` — `librarian.last_run_at` via `dayLabel` + `hhmm`, `reviewed N memories`, `next <stamp>`; `never run` when null.
-- `Run consolidation now` — a ≥44 px button; after it, `queued 21:15 · the Librarian starts on its own schedule`.
-- `Version` and `Session idle timeout` rows: `session.idle_minutes` minutes, from the overview. No restart, no shutdown, no log download — none of it has a route (log the gap in the backlog).
+- `Nightly consolidation` / `last 03:00 · 42 reviewed` from `librarian.{last_run_at, reviewed}` via `dayLabel` + `hhmm`; `never run` when null. `next <stamp>` beside it when `next_run_at` is set.
+- `Run consolidation now`, a 44 px **outlined** button reading `Run again` once used, with the handoff's note: `queued only; the run reports on the events stream, not here`, becoming `queued 21:15 · progress shows on the events stream as consolidation.*`.
+- `Session idle timeout` row: `session.idle_minutes` minutes, from the overview. No restart, no shutdown, no log download — none of it has a route (log the gap in the backlog).
 
-- [ ] **Step 1: Write `SystemBench.test.tsx`** (~18) against a `state(overrides)` factory: the four health cells render their values and notes; `alive` is green and `unknown` is not red; the spend bar clamps at a full cap and does not produce `NaN` with a zero cap; the DND switch reports and flips; expiry chips only appear while active and post the right shape; **the calendar footnote is quoted exactly**; the three DND state sentences; held-back opens via the callback; drain and consolidation each render their exact queued note and never say "sent"/"done"; `never run` renders; every button is ≥44 px.
+- [ ] **Step 1: Write `SystemBench.test.tsx`** (~22) against a `state(overrides)` factory: the four health cells render their values and labels; `alive` is green and `unknown` is not red; **offline renders `?`/`—` and dims the grid**; the live/`unknown since` stamp; the spend bar clamps at a full cap and does not produce `NaN` with a zero cap; the spend note drops the clauses the server did not send; the DND switch reports, flips and says `Applied`; expiry chips only appear while active and post the right `until`; **the calendar footnote is quoted exactly**; the three DND state sentences verbatim; `2 · growing` only with no expiry; held-back opens via the callback; drain and consolidation each render their exact queued note and never say "sent"/"done"; `Run again` after a run; `never run` renders; every button is ≥44 px.
 - [ ] **Step 2: Fail. Step 3: Implement. Step 4: Green, lint, build. Step 5: Commit** `feat(web): System bench health, quiet hours and maintenance`
 
 ---
