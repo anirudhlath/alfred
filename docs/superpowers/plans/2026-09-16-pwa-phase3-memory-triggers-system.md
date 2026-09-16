@@ -840,17 +840,19 @@ const health = {
 
 **Files:** Create `web/src/workshop/SystemBench.tsx`, `SystemBench.test.tsx`.
 
-**First, widen the hook.** Task 7 shipped `useSystem(enabled)`; this bench reads `system.quiet.onHeld`, so add the second parameter (`onHeld: () => void`) and pass it through to `quiet`. Task 10 calls it with both.
+~~**First, widen the hook.**~~ Task 7's fix round already shipped `useSystem(enabled, onHeld)` with `onHeld` hung on `quiet` (`c4e8bb3`). Nothing to do here; `useSystem.ts` is not a task 8 file after all.
 
 `SystemBench({ system }: { system: System })`. A scrolling column of sections. **The section frame** (used here and by task 9, so export it from this file):
 
 ```tsx
-export function Section({ title, children }: { title: string; children: ReactNode }) …
+export function Section({ title, aside, children }: { title: string; aside?: ReactNode; children: ReactNode }) …
 ```
 
-— a caps `.t-meta-strong` label with `0.08em` letter-spacing in `--fg2`, 16 px above and 8 px below; then a `rounded-xl` container with a 1 px `--line` border and `--surface` background; rows inside it 56 px tall, divided by 1 px `--line`, 12 px side padding.
+`aside` carries Health's live stamp. Task 9's four sections use the two-prop form.
 
-Handoff §8. Sections are separated by a 22 px gap.
+— a caps `.t-meta-strong` label with `0.08em` letter-spacing in `--fg2` and 8 px below it; then a `rounded-xl` container with a 1 px `--line` border and `--surface` background; rows inside it 56 px tall, divided by 1 px `--line`, 12 px side padding.
+
+Handoff §8. The plan first said "16 px above the label" *and* "22 px between sections", which is 38 px between a card and the next label; it is 16 px above the **first** label and 22 px between sections, carried on the label's own top margin so task 9's sections inherit it.
 
 **Health** — a stamp on the right of the section label: `live · 21:14:07` in `--muted` while online, `unknown since 21:14` in `--accent-text` while not. Then a 2×2 grid of stat cards (`padding 12 14`), each an 8 px dot (`--green` for alive, `--muted` for unknown) driven by the cell's own `alive` flag — **never by string-matching its `value`**, a 20 px/500 value, and a mono label:
 
@@ -858,16 +860,12 @@ Handoff §8. Sections are separated by a 22 px gap.
 |---|---|
 | `alive` | `bus · redis · <n> streams` |
 | `380 ms` | `reflex · <model>` |
-| `2.1/s` | `event rate · 5-min mean` |
+| `2.1 ev/s` | `event rate · 5-minute mean` |
 | `ok` | `home assistant · 210 ms` |
 
-Deviation 8 removes the handoff's `6 services` and `gpu 41%` — neither has a source. **Offline, the values read `?` or `—` and the grid recedes by swapping to `--fg2`** — the handoff says opacity .55; see the Triggers task for why this phase dims by token instead. A stale number presented at full strength is the §5.2 failure.
+Deviation 8 removes the handoff's `6 services` and `gpu 41%` — neither has a source. **Offline the grid recedes by swapping to `--fg2`, and prints what `healthGrid` actually answers** — `unknown · — · — ev/s · —` with `not read yet` notes, not the handoff's invented `?` — the handoff says opacity .55; see the Triggers task for why this phase dims by token instead. A stale number presented at full strength is the §5.2 failure.
 
-Under the grid, the spend card: title `Cloud spend today`, then mono `$1.42 of $5.00`, a 4 px bar filling `spendFraction(cost)` (`--accent` on `--line`; the clamp and the zero-cap guard live in `lib/system.ts`, not here), and the note — the handoff's, with the clauses the server did not send dropped:
-
-`38 requests · avg $0.037 · resets 00:00 · at the cap, the conscious mind declines and says so`
-
-`role="img"` on the bar with the note as its label; a zero or missing cap draws an empty bar and the text says why. Never `NaN`.
+Under the grid, the spend card: title `Cloud spend today`, then mono `$1.42 of $5.00`, a 4 px bar filling `spendFraction(cost)` (`--accent` on `--line`; the clamp and the zero-cap guard live in `lib/system.ts`, not here), and the note. **The handoff's note — `38 requests · avg $0.037 · resets 00:00 · at the cap, the conscious mind declines and says so` — is not what task 7 shipped:** `spendNote` returns `$1.42 of $5.00 today · 38 requests · $0.037 each`, leading with the money the mono headline already shows, and carries neither `resets 00:00` nor the at-the-cap clause, neither of which has a source in the API. Rendering both prints the amount twice six pixels apart, so the card is one mono line. `role="img"` on the bar with the note as its label; a zero or missing cap draws an empty bar and the text says why. Never `NaN`.
 
 **Quiet** —
 - Row 1 (56 px min): `Do-not-disturb`, a `role="switch"` reporting `dnd.active`. This one **moves on tap**, once the server has confirmed, because `POST /api/admin/dnd` is a direct write (decision 6's exception) — and says `Applied`. In flight it is `aria-busy` (`quiet.setting`) and `aria-disabled`, not `disabled`, for the reason the Triggers task gives. Task 7 deliberately does **not** patch the cache optimistically: the switch moves when the overview re-read lands. The visible gap is the point — an un-retired optimistic claim resurrects the old position the next time a calendar meeting moves the switch on its own.
