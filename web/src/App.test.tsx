@@ -58,17 +58,26 @@ vi.mock("@/lib/telemetry-socket", () => ({
   },
 }));
 
-// A microphone that opens at once and has nothing to say: enough for a hold to
-// begin and end without getUserMedia, which jsdom does not have.
+/**
+ * What `Recorder.stop()` hands back. `null` — nothing recorded — is the default
+ * and is enough for a hold to begin and end without `getUserMedia`, which jsdom
+ * does not have. A test that wants the *send* half of a release sets a take
+ * here: `HoldToTalk` drops a null one on the floor, so with only the default a
+ * `Room` that passed no `onAudio` at all would look exactly the same.
+ */
+const mic = vi.hoisted(() => ({
+  recording: null as { blob: Blob; durationMs: number } | null,
+}));
+
 vi.mock("@/lib/recorder", () => ({
   Recorder: class {
     analyser = null;
     async start() {}
     async stop() {
-      return null;
+      return mic.recording;
     }
   },
-  blobToDataUrl: async () => "",
+  blobToDataUrl: async () => "data:audio/mp4;base64,AAAA",
   pickMimeType: () => "audio/mp4",
 }));
 
@@ -118,6 +127,11 @@ function fetched(): string[] {
 beforeEach(() => {
   socket.status = "online";
   routes = { ...ROUTES };
+  mic.recording = null;
+  // Module-level, so without this the Door-tick test's `rows` already carries
+  // every row the tests ahead of it summarised, and `toBeGreaterThan(0)` is
+  // true before that test has rendered a thing.
+  summarised.count = 0;
   // Four minutes before the fixture's fuse lapses, so the deep link opens a
   // live Door and not the one that expired the morning the fixture was written.
   vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -206,6 +220,9 @@ describe("App", () => {
     expect(screen.queryByRole("heading", { name: "Listening, sir." })).not.toBeInTheDocument();
     // Nothing behind the gate has asked the house for anything — the Door in
     // particular, whose 401 would raise the Expired gate over the sign-in.
+    // `every` is true of an empty list, so the gate's own read is named first:
+    // without it a build that fetched nothing at all would pass this line.
+    expect(fetched()).toContain("/api/auth/status");
     expect(fetched().every((url) => url.startsWith("/api/auth/"))).toBe(true);
   });
 
@@ -534,5 +551,23 @@ describe("App — the socket's word", () => {
 
     fireEvent.pointerUp(button, { pointerId: 1 });
     expect(await screen.findByRole("heading", { name: "Listening, sir." })).toBeInTheDocument();
+  });
+
+  it("sends the take the microphone came back with, and shows it going", async () => {
+    // Two seconds, which clears `HoldToTalk`'s one-second floor. The test above
+    // releases an *empty* microphone, so it walks the same path whether or not
+    // `Room` wires `onAudio` to anything: this is the half that does not.
+    mic.recording = { blob: new Blob(["take"], { type: "audio/mp4" }), durationMs: 2000 };
+    render(<App />);
+    await screen.findByRole("heading", { name: "Listening, sir." });
+    const button = screen.getByRole("button", { name: "Hold to talk" });
+
+    fireEvent.pointerDown(button, { pointerId: 1 });
+    fireEvent.pointerUp(button, { pointerId: 1 });
+
+    // The dashed bubble is only drawn once the frame has left, so its length is
+    // the audio the Room actually handed the socket, not the button's own idea
+    // of how long a finger was down.
+    expect(await screen.findByText("audio sent · 2.0 s · waiting on server")).toBeInTheDocument();
   });
 });

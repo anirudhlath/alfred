@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StreamPage, TelemetryMessage } from "@/lib/types";
 import { WhySheet } from "@/sheets/WhySheet";
 import { ConnectionProvider } from "@/shell/ConnectionProvider";
+import { QUERY_DEFAULTS } from "@/shell/QueryProvider";
 import { overviewFixture, reflexObservationsPage } from "@/test/fixtures";
 import { Workshop } from "./Workshop";
 
@@ -92,12 +93,38 @@ const anchorEntry = reflexObservationsPage.entries[2];
 /** Every path this render has asked for, in order — see "asks for nothing". */
 const asked: string[] = [];
 
+/**
+ * Paths `stubFetch` should refuse, mapped to the `detail` it answers with.
+ * Empty for all but the read-error test: the rest of this file is about a
+ * Workshop whose reads all landed, and a bench whose spine read came back
+ * refused is the only thing that puts a word in the region below.
+ */
+const refused = new Map<string, string>();
+
+/**
+ * The app's own query policy, not a test-only one. Three trees in this file
+ * built a no-retry client instead, which is a *different* client from the one
+ * the Workshop ships inside (`QueryProvider`): one attempt where the app makes
+ * two, and a zero stale time where the app holds a read for ten seconds. "Asks
+ * for nothing" and "one read per bench" are claims about that policy, so they
+ * are measured against it. Only the backoff is the harness's — a real 1 s wait
+ * between two attempts buys the assertions nothing but seconds.
+ */
+const makeClient = (): QueryClient =>
+  new QueryClient({
+    defaultOptions: { ...QUERY_DEFAULTS, queries: { ...QUERY_DEFAULTS.queries, retryDelay: 0 } },
+  });
+
 function stubFetch(): void {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       asked.push(url);
+      const refusal = refused.get(url);
+      if (refusal !== undefined) {
+        return new Response(JSON.stringify({ detail: refusal }), { status: 503 });
+      }
       if (url === "/api/admin/overview") return new Response(JSON.stringify(overviewFixture), { status: 200 });
       if (url === "/api/admin/streams/reflex_observations?count=50") {
         return new Response(JSON.stringify(reflexObservationsPage), { status: 200 });
@@ -132,7 +159,7 @@ function workshopPanel(): HTMLElement {
  * file proves only that the `memo` itself works.
  */
 function mountInRoom() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = makeClient();
   const onClose = vi.fn();
   const onWhy = vi.fn();
   const onHeld = vi.fn();
@@ -157,7 +184,7 @@ function mountInRoom() {
 }
 
 function mount(open: boolean, onClose = vi.fn(), onWhy = vi.fn(), onHeld = vi.fn()) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = makeClient();
   const tree = (isOpen: boolean) => (
     <QueryClientProvider client={client}>
       <ConnectionProvider>
@@ -172,6 +199,11 @@ function mount(open: boolean, onClose = vi.fn(), onWhy = vi.fn(), onHeld = vi.fn
 beforeEach(() => {
   sockets.telemetryUp = true;
   asked.length = 0;
+  refused.clear();
+  // Module-level, so without this the memo test's `before` already carries
+  // every row the tests ahead of it summarised, and `toBeGreaterThan(0)` is
+  // true before that test has rendered a thing.
+  summarised.count = 0;
   vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.setSystemTime(new Date(2026, 8, 7, 21, 14, 0));
   stubFetch();
@@ -187,7 +219,10 @@ describe("Workshop", () => {
   it("rises under the sheets as the Workshop, and Room closes it", () => {
     const { onClose } = mount(true);
     const dialog = screen.getByRole("dialog", { name: "Workshop" });
-    expect(dialog.className).toContain("z-10");
+    // The whole token: `toContain("z-10")` is also true of `z-100`, which is a
+    // different layer and would put the Workshop over the sheets it must sit
+    // under (`shell/Layer.ts`).
+    expect(dialog.classList.contains("z-10")).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Room" }));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
@@ -316,13 +351,25 @@ describe("Workshop", () => {
     expect(screen.getByTestId("workshop-status").textContent).toBe("paused · 0 new");
   });
 
-  it("leaves each bench its own read-error region", async () => {
+  it("leaves each bench its own read-error region, and puts the refusal in it", async () => {
+    // Both halves of the region, because they are announced differently: the
+    // spine read is printed *and* announced, and the four section reads are
+    // announced only — each already prints inside the card it belongs to. With
+    // every read answering 200 the region is present and empty, and a bench
+    // that had dropped the text would pass on the role alone.
+    refused.set("/api/admin/overview", "The overview is unavailable.");
+    refused.set("/api/auth/sessions", "Sessions could not be read.");
     mount(true);
     fireEvent.click(screen.getByRole("tab", { name: "System" }));
     // A different fact from the header's, and the one thing that would
     // otherwise go unsaid: the header speaks for the connection, this speaks
     // for a read that came back refused.
-    expect(await screen.findByRole("status", { name: "Read errors" })).toBeInTheDocument();
+    const region = await screen.findByRole("status", { name: "Read errors" });
+    await waitFor(() => expect(region.textContent).toContain("The overview is unavailable."));
+    await waitFor(() => expect(region.textContent).toContain("Sessions could not be read."));
+    // Shown, not merely announced — the spine's failure is the one the reader
+    // who can see the bench needs, because every card below derives from it.
+    expect(region.className).not.toContain("sr-only");
     expect(screen.getByTestId("workshop-state")).toHaveAttribute("role", "status");
   });
 
@@ -490,7 +537,7 @@ describe("Workshop", () => {
     // the sheet must not dismiss the surface underneath it as well.
     const onClose = vi.fn();
     const sheetClose = vi.fn();
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const client = makeClient();
     render(
       <QueryClientProvider client={client}>
         <ConnectionProvider>
