@@ -1,3 +1,4 @@
+import type { Routine, SemanticFile } from "@/lib/memory";
 import type {
   ActionResultEvent,
   AttentionDomain,
@@ -379,3 +380,119 @@ export const actionResultFixture: ActionResultEvent = {
   result: { state: "unlocked" },
   timestamp: "2026-09-07T07:42:10Z",
 };
+
+// ---------------------------------------------------------------------------
+// Memory (`GET /api/admin/memory/*`)
+// ---------------------------------------------------------------------------
+
+/**
+ * 2026-09-16 07:02, on the device's own clock. Local rather than UTC on purpose:
+ * `hhmm` reads the device's clock, so a UTC instant would stamp one string in CI
+ * and another on a developer's machine.
+ */
+export const MEMORY_AT = new Date(2026, 8, 16, 7, 2, 0).getTime();
+
+/** An hour later — when the search fixture was last recalled. */
+export const MEMORY_RECALLED_AT = new Date(2026, 8, 16, 8, 0, 0).getTime();
+
+/**
+ * Browse · hot: a `CONTEXT_PREFIX` Redis hash, `HGETALL`'d with its key
+ * discarded — so it has no id, and every value is a string.
+ */
+export const hotRow = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+  type: "episodic",
+  store: "hot",
+  content: "Kitchen lamp turned off",
+  semantic_key: "kitchen lamp",
+  source: "system1_action",
+  entities: "lamp,kitchen",
+  timestamp: String(MEMORY_AT / 1000),
+  significance: "0.7",
+  retrieval_count: "3",
+  last_retrieved: "0",
+  compressed: "",
+  ...overrides,
+});
+
+/**
+ * Browse · cold: a SQLite row. `timestamp` is a REAL, `entities` a JSON string,
+ * `significance` the JSON text of a whole `SignificanceScore`, and the SELECT
+ * carries no retrieval stats at all.
+ */
+export const coldRow = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+  store: "cold",
+  id: "ep-91",
+  timestamp: MEMORY_AT / 1000,
+  source: "conversation",
+  summary: "Asked about the dentist",
+  entities: '["dentist"]',
+  valence: "neutral",
+  significance:
+    '{"overall": 0.4, "safety": 0.0, "novelty": 0.0,' +
+    ' "personal": 0.0, "emotional": 0.0, "source": "heuristic"}',
+  semantic_key: "dentist",
+  compressed_into: null,
+  ...overrides,
+});
+
+/**
+ * Search: `{store, score, **EpisodicEntry.model_dump(mode="json")}` — an ISO
+ * timestamp, a real array of entities, and `significance` as an object.
+ */
+export const searchRow = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+  store: "cold",
+  score: 0.62,
+  id: "ep-91",
+  timestamp: new Date(MEMORY_AT).toISOString(),
+  source: "conversation",
+  summary: "Asked about the dentist",
+  entities: ["dentist"],
+  significance: {
+    overall: 0.4,
+    safety: 0,
+    novelty: 0,
+    personal: 0,
+    emotional: 0,
+    source: "heuristic",
+  },
+  semantic_key: "dentist",
+  retrieval_count: 2,
+  last_retrieved: new Date(MEMORY_RECALLED_AT).toISOString(),
+  compressed_into: null,
+  valence: "neutral",
+  ...overrides,
+});
+
+/** One learned routine, mid-lifecycle and rising: 0.71 → 0.82 at the last pass. */
+export const routine = (overrides: Partial<Routine> = {}): Routine => ({
+  name: "evening-lights",
+  trigger_pattern: "sunset",
+  steps: [
+    {
+      description: "Dim the living room to 30%",
+      action: {
+        tool_name: "home.light_set",
+        target_service: "home-service",
+        parameters: { entity_id: "light.living_room", brightness: 30 },
+      },
+    },
+    { description: "Wait for the TV to start", action: null },
+  ],
+  confidence: 0.82,
+  learned_from: ["ep-1", "ep-2"],
+  state: "active",
+  last_hit: "2026-09-15T19:02:00Z",
+  consecutive_misses: 0,
+  last_suggested: null,
+  confidence_history: [0.6, 0.71, 0.82],
+  ...overrides,
+});
+
+/** One semantic file, as the server reads it off disk. */
+export const semanticFile = (overrides: Partial<SemanticFile> = {}): SemanticFile => ({
+  name: "food.md",
+  dir: "preferences",
+  content: "# Food\n\nNo coriander. Tea, not coffee, after six.",
+  modified: new Date(MEMORY_AT).toISOString(),
+  ...overrides,
+});
