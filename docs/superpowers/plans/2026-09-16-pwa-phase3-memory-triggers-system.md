@@ -153,8 +153,12 @@ Identical to phases 1 and 2, repeated because they are load-bearing:
 // lib/memory.ts
 export type MemoryStore = "hot" | "cold";
 export interface EpisodicRow { key: string; id: string | null; store: MemoryStore; text: string;
-  at: number | null; significance: number | null; recalled: number; lastRecalled: number | null;
+  at: number | null; significance: number | null; recalled: number | null; lastRecalled: number | null;
   entities: string[]; score: number | null; decaying: boolean }
+// `recalled: number | null` *(corrected in task 11: this block declared `number`)* —
+// the cold store reports no retrieval stats at all, so a cold row's count is
+// absent rather than zero, and `recalled 0×` would be a claim drawn from that
+// absence. `episodicMeta` drops the clause entirely on a cold row.
 export interface SemanticFile { name: string; dir: "preferences" | "profile"; content: string; modified: string }
 export interface RoutineStep { description: string; action: { tool_name: string; target_service: string; parameters: Record<string, unknown> } | null }
 export type RoutineState = "candidate" | "active" | "dormant" | "archived";
@@ -346,7 +350,7 @@ describe("toEpisodicRow", () => {
 });
 ```
 
-`decaying` is `store === "cold" && significance !== null && significance < DECAY_FLOOR && recalled === 0`. It is the only derived judgement in the file and it exists because the design's cold rows carry a `decaying` note; keep the rule in one place so the bench never re-derives it.
+`decaying` is `!cold && significance !== null && significance < DECAY_FLOOR && recalled === 0` *(corrected in task 11: this line said `store === "cold" && …`, the opposite of what shipped)*. It is a **hot** row's word: the Librarian's decay pass reads the hot store and migrates what it finds into the cold one, and nothing deletes a cold row — so cold is where decay *ends*, and marking one would promise a removal that cannot happen. The handoff's own fixtures say the same (its decaying row is hot, `Alfred.dc.html:684`; its cold row at significance 0.22 with no recalls reads a plain `cold`, `:687`). It is the only derived judgement in the file; keep the rule in one place so the bench never re-derives it.
 
 Then the meta line and the routine formatters:
 
@@ -923,7 +927,7 @@ Rows: the name, `category · kind` in **`.t-meta-strong`** — `--muted` is 3.20
 | `ok` | `stored encrypted at rest · last check ok` |
 | `failed` | `<status> from the service on the last check · stored value kept until you replace it` |
 | `unset` | `nothing stored · Alfred answers without this source` |
-| `testing` | `round-trip in progress · up to 10 s` |
+| `testing` | `round-trip in progress · up to 20 s` *(corrected in task 11: the handoff's `10 s` is not the wait the row keeps — `SAVE_TIMEOUT_MS` is 20 s, and the note now reads the constant)* |
 | `queued` | `saved · testing` |
 
 The handoff writes `401` in the `failed` note because that is the common case; pass the status the server actually reported and **never invent one**: `_service_status` (`core/channels/web_server.py:709-760`) answers **200 with `healthy: false` and `detail: {error: …}`** for an unreachable service, so a `failed` row commonly has no status at all, and defaulting to `401` accuses the service of rejecting a token it never saw — the same error the 404 branch exists to prevent, in the commoner case. Carry the probe's `detail` through `IntegrationStatus` and say what it says. **A 404 is the exception and needs its own branch** — task 7 shipped it reading `404 from the service on the last check`, which is false: a 404 there comes from Alfred's own route, not from the service. Say `404 · Alfred does not know this name · the service may have unregistered since the list was read` instead. This is a new sentence, not a new state word; the closed vocabulary is unaffected. (Task 7 first gave `serviceNote` five short glosses on the state *word* — `reachable`, `not answering` — which nothing consumes, since the word on the right of the row is the bare `ServiceState`. Overruled, so the export is not dead.)

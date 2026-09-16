@@ -8,7 +8,7 @@ for that.
 
 Every claim below was re-checked against the tree on the branch that files it. Where the
 plan's own wording turned out to be wrong, this file says what the code actually does,
-not what the plan expected — see §13, §16 and the two closing notes. Four of the plan's
+not what the plan expected — see §13, §16 and the two closing notes. Seven of the plan's
 claims did not survive the check; the plan itself has been amended in place at each of
 them, and "Where the plan was stale" below is the index.
 
@@ -460,7 +460,7 @@ was never amended.
 
 ## Where the plan was stale
 
-Four claims in `docs/superpowers/plans/2026-09-16-pwa-phase3-memory-triggers-system.md`
+Seven claims in `docs/superpowers/plans/2026-09-16-pwa-phase3-memory-triggers-system.md`
 turned out not to match the code. Each is corrected in the plan in place, marked
 *(corrected in task 11)*; this is the index, so a reader of either document finds the
 other.
@@ -485,3 +485,17 @@ other.
    (`:155-159`). The second green *word* is Connected services' `ok`
    (`IntegrationRow.tsx:38`). This one had been copied forward into
    `docs/web-frontend.md`'s token table and is corrected there too.
+5. **The contract block declared `recalled: number`** (plan `:156`). It shipped as
+   `number | null` (`web/src/lib/memory.ts:38`): the cold store reports no retrieval
+   stats, so a cold row's count is *absent*, and `recalled 0×` would be a claim read out
+   of that absence. `episodicMeta` drops the clause on a cold row entirely.
+6. **Task 1's body said `decaying` is `store === "cold" && …`** (plan `:349`) — the
+   opposite of what merged. It is `!cold && …` (`web/src/lib/memory.ts:224`), because the
+   decay pass migrates *hot* rows into cold and nothing deletes a cold one: cold is where
+   decay ends. §20 above is the companion finding about what the word costs while the
+   pass cannot fire.
+7. **The `serviceNote` table promised `round-trip in progress · up to 10 s`** (plan
+   `:926`, copied from the handoff). `SAVE_TIMEOUT_MS` is 20 s
+   (`web/src/lib/system.ts`), so the row waited twice as long as its own note said. Both
+   that note and `SAVE_TIMED_OUT` now read the constant, with a test tying the three
+   together.

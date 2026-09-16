@@ -567,16 +567,20 @@ the Workshop is `--green-text`. There is no red.
 Five findings came back often enough across the review rounds to be house style now.
 The first two govern **anything a reader must read to trust the screen** — a state word, a
 value, a label, a control — and not decoration that already carries a text equivalent.
-Three of the five have a live counterexample in the tree; each is named under its own
-rule rather than left for the next reviewer to find.
+Two of the five have a live counterexample in the tree; each is named under its own rule
+rather than left for the next reviewer to find.
 
 - **Dim by token, never by `opacity`.** A spent one-shot, an offline health grid and an
   ended session all recede by swapping to `--fg2`/`--muted`, not by an alpha. A
   composited opacity takes the handoff's `.55` under AA (a meta line lands at 2.71:1 in
   light) and — the reason it is a rule — it is invisible to `src/test/contrast.ts`,
-  which is the file that exists to stop exactly that. Outside the rule: the routine
-  sparkline's older bars are `opacity: 0.7` (`RoutineRow.tsx:111`), inside a `role="img"`
-  whose `aria-label` carries the number the bars draw. Nothing there has to be read.
+  which is the file that exists to stop exactly that. **There is no "outside the rule"
+  for a graphic.** This paragraph used to exempt the routine sparkline's older bars
+  (`opacity: 0.7`) on the grounds that the `role="img"` label carried the number the bars
+  drew — but the label is what a screen reader gets, and a low-vision sighted reader gets
+  the bars. At `0.7` over `--accent` they composited to 1.67:1 on `--bg` in light. They
+  dim by token now (`--muted`, with `--accent-text` for the newest), and both pairs are
+  measured in `src/test/contrast.test.ts` like every other one.
 - **`aria-disabled` plus a no-op handler, never `disabled`.** A control that disables
   itself under the finger that just pressed it throws focus to `<body>` mid-action, and
   where the control is described by the note the press produced — a switch and its
