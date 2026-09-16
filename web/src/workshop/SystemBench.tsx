@@ -5,6 +5,7 @@ import {
   spendHeadline,
   spendNote,
   staleGrid,
+  staleSpend,
   type Health,
   type HealthCell,
 } from "@/lib/system";
@@ -191,14 +192,32 @@ function HealthStat({
  * handoff dims this card too — and the *fill* leaves the accent for `--fg2`.
  * Receding here means losing the attention colour, not losing contrast: a
  * graphic dimmed under 3:1 would trade §5.2 for 1.4.11.
+ *
+ * Dimming is not all it does, because dimming is not what `staleGrid` does
+ * either. The amount, the note and the bar's own width are claims about a
+ * figure nothing is refreshing, so under the same silence they are blanked the
+ * same way the four cards above are: `staleSpend` for the words and an empty
+ * bar for the graphic. The never-read case is left alone — there is no instant
+ * to date a silence from, and `spendHeadline` already says the right thing
+ * about a cost the overview has not reported.
  */
-function SpendCard({ cost, online }: { cost: Overview["cost"]; online: boolean }) {
+function SpendCard({
+  cost,
+  online,
+  readAt,
+}: {
+  cost: Overview["cost"];
+  online: boolean;
+  readAt: number | null;
+}) {
   const base = useId();
   const amountId = `${base}-amount`;
   const noteId = `${base}-note`;
-  const note = spendNote(cost);
+  // The same gate the grid takes one level up, and for the same two reasons.
+  const stale = !online && readAt !== null ? staleSpend(readAt) : null;
+  const note = stale === null ? spendNote(cost) : stale.note;
   // One decimal, so a width of 28.400000000000002% never reaches the DOM.
-  const width = `${(spendFraction(cost) * 100).toFixed(1)}%`;
+  const width = stale === null ? `${(spendFraction(cost) * 100).toFixed(1)}%` : "0%";
   return (
     <div data-testid="spend-card" className="flex flex-col gap-2 border-t border-line px-3.5 py-3">
       <div className="flex items-baseline justify-between gap-3">
@@ -206,7 +225,7 @@ function SpendCard({ cost, online }: { cost: Overview["cost"]; online: boolean }
           Cloud spend today
         </span>
         <span id={amountId} className="t-meta-strong shrink-0 font-mono">
-          {spendHeadline(cost)}
+          {stale === null ? spendHeadline(cost) : stale.headline}
         </span>
       </div>
       <div
@@ -256,7 +275,7 @@ function HealthSection({
           <HealthStat key={key} cell={health[key]} index={index} online={online} />
         ))}
       </div>
-      <SpendCard cost={cost} online={online} />
+      <SpendCard cost={cost} online={online} readAt={readAt} />
     </SystemSection>
   );
 }

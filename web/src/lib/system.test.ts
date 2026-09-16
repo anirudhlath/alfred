@@ -22,6 +22,7 @@ import {
   spendHeadline,
   spendNote,
   staleGrid,
+  staleSpend,
   STORED_PLACEHOLDER,
   TRANSIENT_NOTE,
   type Integration,
@@ -278,6 +279,21 @@ describe("staleGrid", () => {
   it("leaves nothing alive to draw a live dot from", () => {
     const grid = staleGrid(Date.now());
     expect(Object.values(grid).every((cell) => !cell.alive)).toBe(true);
+  });
+});
+
+describe("staleSpend", () => {
+  // The card the grid sits above, under the same silence and by the same
+  // argument: `$1.42 of $5.00` and `38 requests · $0.0036 each` are the two
+  // things a reader takes from this card, and a dimmed claim is still a claim.
+  it("blanks the money and dates the silence from the same instant the grid does", () => {
+    const readAt = new Date(2026, 8, 16, 21, 14, 0).getTime();
+    expect(staleSpend(readAt)).toEqual({
+      headline: "?",
+      note: "cloud spend · unknown since 21:14",
+    });
+    // The same minute the bus card names — one silence, not two.
+    expect(staleGrid(readAt).bus.note).toContain("unknown since 21:14");
   });
 });
 

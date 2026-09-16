@@ -440,6 +440,41 @@ describe("SystemBench · Cloud spend", () => {
     expect(screen.getByTestId("spend-fill")).toHaveStyle({ background: "var(--fg2)" });
   });
 
+  // The same argument that blanks the grid six pixels above: a dimmed
+  // `$1.42 of $5.00` is still a claim about today's spend, and a bar 28.4%
+  // along is still a claim about the fraction of the cap that is gone. Dimming
+  // the title and the fill left both of the things a reader takes away
+  // asserted at full strength from a photograph.
+  it("blanks the amount, the note and the bar once the reads stop landing", () => {
+    const { rerender } = render(<SystemBench system={state()} />);
+    expect(screen.getByText(SPEND_AMOUNT)).toBeInTheDocument();
+
+    rerender(<SystemBench system={state({ online: false })} />);
+    const card = within(screen.getByTestId("spend-card"));
+    expect(card.queryByText(SPEND_AMOUNT)).toBeNull();
+    expect(card.queryByText(SPEND_NOTE)).toBeNull();
+    expect(card.getByText("?")).toBeInTheDocument();
+    // Dated from the same instant the grid's bus card and the section stamp
+    // name, so the card does not invent a second silence.
+    expect(card.getByText("cloud spend · unknown since 21:14")).toBeInTheDocument();
+    expect(screen.getByTestId<HTMLElement>("spend-fill").style.width).toBe("0%");
+    expect(
+      card.getByRole("img", { name: "? cloud spend · unknown since 21:14" }),
+    ).toBeInTheDocument();
+  });
+
+  // The never-read case is not the went-stale case: there is no instant to date
+  // the silence from, so the card says what it always says about a cost the
+  // overview has not reported.
+  it("does not date a silence it has never heard anything through", () => {
+    render(
+      <SystemBench system={state({ online: false, readAt: null, overview: undefined })} />,
+    );
+    const card = within(screen.getByTestId("spend-card"));
+    expect(card.getByText("no spend recorded today")).toBeInTheDocument();
+    expect(card.queryByText(/unknown since/)).toBeNull();
+  });
+
   it("clamps a bar that has run past its cap", () => {
     const cost = { date: "2026-09-16", spend_usd: 9, cap_usd: 5 };
     render(<SystemBench system={state({ overview: { ...overviewFixture, cost } })} />);

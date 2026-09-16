@@ -600,6 +600,28 @@ export function staleGrid(readAt: number): Health {
   };
 }
 
+/** The spend card's two lines once the reads have stopped landing. */
+export interface StaleSpend {
+  headline: string;
+  note: string;
+}
+
+/**
+ * The spend card under the same silence `staleGrid` blanks the four cards for,
+ * and by the same argument: a dimmed `$1.42 of $5.00` is still a claim about
+ * what has been spent today, and `38 requests · $0.0036 each` is still a claim
+ * about what bought it. Those are the two things a reader takes away from this
+ * card, so dimming the title and the bar fill and leaving both at full strength
+ * was §5.2 with the brightness turned down on the wrong half.
+ *
+ * Dated from the same `readAt` the bus card and the section stamp print, so the
+ * card names the moment the rest of the section stopped being evidence rather
+ * than inventing a second silence.
+ */
+export function staleSpend(readAt: number): StaleSpend {
+  return { headline: "?", note: `cloud spend · unknown since ${hhmm(readAt)}` };
+}
+
 /**
  * The write landed and the read behind it did not. The switch is still showing
  * the last thing the server said, which is now out of date — and saying so is
