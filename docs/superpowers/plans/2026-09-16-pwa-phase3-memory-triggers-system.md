@@ -44,7 +44,8 @@
 | 11 | System › Quiet | three DND states | same three, plus the footnote `a meeting in your calendar can also quiet Alfred; that is not shown here` | `overview.dnd` is the raw manual key. `DNDChecker` also honours calendar DND and lazily expires a stale manual window, and neither is visible over HTTP — so "off" here can be wrong. §5.2's whole point is that we say so. |
 | 12 | System › Connected services | one `Save & test` | one button, two calls (`PUT` then `GET …/status`), and a distinct 403 | The `PUT` is network-gated while every read on the bench is session-gated, so credential editing fails off-LAN while the rest of the screen works. That 403 gets its own sentence, not the generic one. |
 | 13 | System › Reflex | not specified by the handoff | a section built from the System card idiom | Spec §10 names `System › Reflex` for the attention set and gives no fidelity-locked design. `GET/PUT /api/admin/attention` exist; the section is caps label + radius-12 container + 56 px rows, like its neighbours. |
-| 14 | Routines | confidence sparkline "last 8 consolidations" | shipped | `RoutineSpec.confidence_history` landed in phase 0b. The §10 row proposing we drop it is superseded by the build list under it. |
+| 14 | Routines | confidence sparkline "last 8 consolidations" | shipped |
+| 15 | Scratchpad | two stat cards: `14`/`episodes queued, unscored` and `03:00`/`next consolidation · last 03:00 today` | both, the second from `overview.librarian` | `pending_queue` covers the first; the second needs the Librarian's schedule, which is on the overview and not on `/memory/scratchpad`. `useMemory` reads the already-cached `useOverview()` rather than adding a poll. | `RoutineSpec.confidence_history` landed in phase 0b. The §10 row proposing we drop it is superseded by the build list under it. |
 
 ---
 
@@ -157,7 +158,7 @@ export interface Routine { name: string; trigger_pattern: string; steps: Routine
 export interface Scratchpad { content: string; pending_queue: number }
 export const ROUTINE_STAGES = [...] as const satisfies readonly RoutineState[];   // candidate · active · dormant · archived
 export function toEpisodicRow(raw: Record<string, unknown>, index: number): EpisodicRow;
-export function episodicMeta(row: EpisodicRow): string;   // no `now`: the stamp is hhmm only
+export function episodicMeta(row: EpisodicRow, now: number): string;   // `now` is for dayLabel: "20:52 today · …"
 export function routineTrend(routine: Routine): { text: string; rising: boolean };
 export function routineDetail(routine: Routine): string;
 export function fetchEpisodic(query: string): Promise<EpisodicRow[]>;
