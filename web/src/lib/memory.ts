@@ -17,6 +17,12 @@ export interface EpisodicRow {
   /** Epoch ms, or null when the row carried no readable time. */
   at: number | null;
   significance: number | null;
+  /**
+   * Deliberate recalls of this memory. Always 0 on a *browse* of the cold store:
+   * that SELECT returns no retrieval stats at all, so `episodicMeta` prints
+   * "never recalled" and `decaying` reads a zero it was never told. Only a
+   * search result carries a cold row's real count.
+   */
   recalled: number;
   lastRecalled: number | null;
   entities: string[];
@@ -63,12 +69,12 @@ export interface Scratchpad {
 }
 
 /** The Librarian's lifecycle, in the order the rail draws it. */
-export const ROUTINE_STAGES: readonly RoutineState[] = [
+export const ROUTINE_STAGES = [
   "candidate",
   "active",
   "dormant",
   "archived",
-] as const;
+] as const satisfies readonly RoutineState[];
 
 /** Below this, with nothing ever recalling it, a cold row is on its way out. */
 const DECAY_FLOOR = 0.3;
@@ -107,14 +113,15 @@ const time = (value: unknown): number | null => {
 /**
  * The three stores spell significance three ways: a string float in the hot
  * Redis hash, JSON text in the cold store's TEXT column, and a dumped
- * `SignificanceScore` object from search. All of them mean `overall`.
+ * `SignificanceScore` object from search. All of them mean `overall`. A bare
+ * number is read too, which no store sends today but every one of them could.
  */
 const significanceOf = (value: unknown): number | null => {
   const direct = num(value);
   if (direct !== null) return direct;
   const parsed: unknown = typeof value === "string" ? parseJson(value) : value;
   if (parsed !== null && typeof parsed === "object" && "overall" in parsed) {
-    return num((parsed as { overall: unknown }).overall);
+    return num(parsed.overall);
   }
   return null;
 };
@@ -217,18 +224,20 @@ export async function fetchEpisodic(query: string): Promise<EpisodicRow[]> {
     ? `/api/admin/memory/episodic?${new URLSearchParams({ q: query }).toString()}`
     : "/api/admin/memory/episodic";
   const body = await api<{ entries?: Record<string, unknown>[] }>(path);
-  return (body?.entries ?? []).map((entry, index) => toEpisodicRow(entry, index));
+  return (body.entries ?? []).map((entry, index) => toEpisodicRow(entry, index));
 }
 
 export async function fetchSemantic(): Promise<SemanticFile[]> {
-  return (await api<{ files?: SemanticFile[] }>("/api/admin/memory/semantic"))?.files ?? [];
+  const body = await api<{ files?: SemanticFile[] }>("/api/admin/memory/semantic");
+  return body.files ?? [];
 }
 
 export async function fetchRoutines(): Promise<Routine[]> {
-  return (await api<{ routines?: Routine[] }>("/api/admin/memory/routines"))?.routines ?? [];
+  const body = await api<{ routines?: Routine[] }>("/api/admin/memory/routines");
+  return body.routines ?? [];
 }
 
 export async function fetchScratchpad(): Promise<Scratchpad> {
   const body = await api<Partial<Scratchpad>>("/api/admin/memory/scratchpad");
-  return { content: body?.content ?? "", pending_queue: body?.pending_queue ?? 0 };
+  return { content: body.content ?? "", pending_queue: body.pending_queue ?? 0 };
 }

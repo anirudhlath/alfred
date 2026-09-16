@@ -1,4 +1,13 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  coldRow,
+  hotRow,
+  MEMORY_AT,
+  MEMORY_RECALLED_AT,
+  routine,
+  searchRow,
+  semanticFile,
+} from "@/test/fixtures";
+import { describe, expect, it, vi } from "vitest";
 import { ApiError } from "./api";
 import {
   episodicMeta,
@@ -11,23 +20,16 @@ import {
   routineTrend,
   toEpisodicRow,
 } from "./memory";
-import type { Routine } from "./memory";
 
-afterEach(() => {
-  vi.unstubAllGlobals();
-});
-
-// Local, not UTC: `hhmm` reads the device's own clock, so a UTC-constructed
-// instant would stamp differently on a developer's machine than in CI.
-const AT = new Date(2026, 8, 16, 7, 2, 0).getTime();
-const AT_ISO = new Date(AT).toISOString();
-const RECALLED_AT = new Date(2026, 8, 16, 8, 0, 0).getTime();
-const RECALLED_AT_ISO = new Date(RECALLED_AT).toISOString();
+const AT_ISO = new Date(MEMORY_AT).toISOString();
+const RECALLED_AT_ISO = new Date(MEMORY_RECALLED_AT).toISOString();
 
 /**
  * The three shapes `GET /api/admin/memory/episodic` answers in, written out
  * literally rather than built by a helper: that they differ this much for one
- * drawn row is the reason `toEpisodicRow` exists.
+ * drawn row is the reason `toEpisodicRow` exists. `the shared fixtures` below
+ * pins `hotRow`/`coldRow`/`searchRow` to them, so the copies Tasks 2 and 3
+ * import cannot drift away from the shapes asserted here.
  */
 
 /** Browse · hot — a `CONTEXT_PREFIX` Redis hash, so every value is a string. */
@@ -38,7 +40,7 @@ const HOT = {
   semantic_key: "kitchen lamp",
   source: "system1_action",
   entities: "lamp,kitchen",
-  timestamp: String(AT / 1000),
+  timestamp: String(MEMORY_AT / 1000),
   significance: "0.7",
   retrieval_count: "3",
   last_retrieved: "0",
@@ -49,7 +51,7 @@ const HOT = {
 const COLD = {
   store: "cold",
   id: "ep-91",
-  timestamp: AT / 1000,
+  timestamp: MEMORY_AT / 1000,
   source: "conversation",
   summary: "Asked about the dentist",
   entities: '["dentist"]',
@@ -70,7 +72,14 @@ const FOUND = {
   source: "conversation",
   summary: "Asked about the dentist",
   entities: ["dentist"],
-  significance: { overall: 0.4, safety: 0, novelty: 0, personal: 0, emotional: 0, source: "heuristic" },
+  significance: {
+    overall: 0.4,
+    safety: 0,
+    novelty: 0,
+    personal: 0,
+    emotional: 0,
+    source: "heuristic",
+  },
   semantic_key: "dentist",
   retrieval_count: 2,
   last_retrieved: RECALLED_AT_ISO,
@@ -78,8 +87,16 @@ const FOUND = {
   valence: "neutral",
 };
 
-const ok = (body: unknown) =>
-  vi.fn<typeof fetch>(async () => new Response(JSON.stringify(body), { status: 200 }));
+const respond = (body: unknown, status = 200) =>
+  vi.fn<typeof fetch>(async () => new Response(JSON.stringify(body), { status }));
+
+describe("the shared fixtures", () => {
+  it("still mirror the three shapes this file spells out", () => {
+    expect(hotRow()).toEqual(HOT);
+    expect(coldRow()).toEqual(COLD);
+    expect(searchRow()).toEqual(FOUND);
+  });
+});
 
 describe("toEpisodicRow", () => {
   it("reads a hot row's content, comma entities and string numbers", () => {
@@ -87,7 +104,7 @@ describe("toEpisodicRow", () => {
     expect(row).toMatchObject({
       store: "hot",
       text: "Kitchen lamp turned off",
-      at: AT,
+      at: MEMORY_AT,
       significance: 0.7,
       recalled: 3,
       entities: ["lamp", "kitchen"],
@@ -99,6 +116,10 @@ describe("toEpisodicRow", () => {
     expect(toEpisodicRow(HOT, 4)).toMatchObject({ key: "hot:4", id: null });
   });
 
+  it("treats a blank id as no id rather than as an empty React key", () => {
+    expect(toEpisodicRow({ ...COLD, id: "" }, 3)).toMatchObject({ key: "cold:3", id: null });
+  });
+
   it("reads a cold row's summary and JSON entities", () => {
     const row = toEpisodicRow(COLD, 0);
     expect(row).toMatchObject({
@@ -106,7 +127,7 @@ describe("toEpisodicRow", () => {
       id: "ep-91",
       key: "ep-91",
       text: "Asked about the dentist",
-      at: AT,
+      at: MEMORY_AT,
       significance: 0.4,
       recalled: 0,
       entities: ["dentist"],
@@ -116,17 +137,17 @@ describe("toEpisodicRow", () => {
   it("reads a search row's ISO timestamp, array entities and score", () => {
     const row = toEpisodicRow(FOUND, 0);
     expect(row).toMatchObject({
-      at: AT,
+      at: MEMORY_AT,
       entities: ["dentist"],
       score: 0.62,
       recalled: 2,
-      lastRecalled: RECALLED_AT,
+      lastRecalled: MEMORY_RECALLED_AT,
     });
   });
 
-  it("reads the significance all three stores spell differently", () => {
-    // A string float (hot hash), JSON text (the cold store's TEXT column), a
-    // dumped SignificanceScore (search) and a bare number all mean 0.4.
+  it("reads the significance each store spells differently, and a bare number besides", () => {
+    // A string float (the hot hash), JSON text (the cold store's TEXT column), a
+    // dumped SignificanceScore (search) — and a bare number, defensively.
     expect(toEpisodicRow({ ...COLD, significance: "0.4" }, 0).significance).toBe(0.4);
     expect(toEpisodicRow({ ...COLD, significance: '{"overall": 0.4}' }, 0).significance).toBe(0.4);
     expect(toEpisodicRow({ ...COLD, significance: { overall: 0.4 } }, 0).significance).toBe(0.4);
@@ -143,6 +164,11 @@ describe("toEpisodicRow", () => {
   it("reads an empty string as no value rather than as zero", () => {
     const row = toEpisodicRow({ ...HOT, timestamp: "", significance: "", retrieval_count: "" }, 0);
     expect(row).toMatchObject({ at: null, significance: null, recalled: 0 });
+  });
+
+  it("keeps the recall count a whole number that cannot go below none", () => {
+    expect(toEpisodicRow({ ...HOT, retrieval_count: "2.7" }, 0).recalled).toBe(2);
+    expect(toEpisodicRow({ ...HOT, retrieval_count: -1 }, 0).recalled).toBe(0);
   });
 
   it("survives every field being missing", () => {
@@ -179,6 +205,13 @@ describe("toEpisodicRow", () => {
     expect(toEpisodicRow({ ...FOUND, significance: 0.2 }, 0).decaying).toBe(false);
     expect(toEpisodicRow({ ...HOT, significance: "0.2" }, 0).decaying).toBe(false);
   });
+
+  it("never calls a row it cannot read the significance of decaying", () => {
+    // `null < DECAY_FLOOR` is true in JS, so dropping the guard would condemn
+    // every cold row whose significance column is unreadable.
+    expect(toEpisodicRow({ ...COLD, significance: "not a score" }, 0).decaying).toBe(false);
+    expect(toEpisodicRow({ ...COLD, significance: undefined }, 0).decaying).toBe(false);
+  });
 });
 
 describe("episodicMeta", () => {
@@ -201,22 +234,9 @@ describe("episodicMeta", () => {
   });
 
   it("says --:-- for a row with no readable time", () => {
-    expect(episodicMeta(toEpisodicRow({ store: "hot" }, 0))).toMatch(/^--:-- · hot/);
+    expect(episodicMeta(toEpisodicRow({ store: "hot" }, 0))).toBe("--:-- · hot · never recalled");
   });
 });
-
-const base: Routine = {
-  name: "evening-lights",
-  trigger_pattern: "sunset",
-  steps: [],
-  confidence: 0.82,
-  learned_from: ["ep-1"],
-  state: "active",
-  last_hit: "2026-09-15T19:02:00Z",
-  consecutive_misses: 0,
-  last_suggested: null,
-  confidence_history: [0.6, 0.71, 0.82],
-};
 
 describe("ROUTINE_STAGES", () => {
   it("is the Librarian's lifecycle, in order", () => {
@@ -226,29 +246,33 @@ describe("ROUTINE_STAGES", () => {
 
 describe("routineTrend", () => {
   it("reports a rise against the previous consolidation", () => {
-    expect(routineTrend(base)).toEqual({ text: "0.82 · +0.11 since last week", rising: true });
+    // The fixture's history is 0.6 → 0.71 → 0.82, at a confidence of 0.82.
+    expect(routineTrend(routine())).toEqual({
+      text: "0.82 · +0.11 since last week",
+      rising: true,
+    });
   });
 
   it("reports a fall", () => {
-    expect(routineTrend({ ...base, confidence_history: [0.9, 0.82] })).toEqual({
+    expect(routineTrend(routine({ confidence_history: [0.9, 0.82] }))).toEqual({
       text: "0.82 · -0.08 since last week",
       rising: false,
     });
   });
 
   it("says nothing about a trend it has only one reading for", () => {
-    expect(routineTrend({ ...base, confidence_history: [0.82] })).toEqual({
+    expect(routineTrend(routine({ confidence_history: [0.82] }))).toEqual({
       text: "0.82 · first reading",
       rising: false,
     });
   });
 
   it("treats an empty history as a first reading rather than reading confidence twice", () => {
-    expect(routineTrend({ ...base, confidence_history: [] }).text).toBe("0.82 · first reading");
+    expect(routineTrend(routine({ confidence_history: [] })).text).toBe("0.82 · first reading");
   });
 
   it("does not call a routine that held still rising", () => {
-    expect(routineTrend({ ...base, confidence_history: [0.82, 0.82] })).toEqual({
+    expect(routineTrend(routine({ confidence_history: [0.82, 0.82] }))).toEqual({
       text: "0.82 · +0.00 since last week",
       rising: false,
     });
@@ -257,34 +281,29 @@ describe("routineTrend", () => {
 
 describe("routineDetail", () => {
   it("counts the steps and the evidence", () => {
-    expect(
-      routineDetail({
-        ...base,
-        steps: [
-          { description: "a", action: null },
-          { description: "b", action: null },
-        ],
-      }),
-    ).toBe("2 steps · learned from 1 memory");
+    expect(routineDetail(routine({ learned_from: ["ep-1"] }))).toBe(
+      "2 steps · learned from 1 memory",
+    );
   });
 
-  it("pluralises the evidence and says none when there is none", () => {
-    expect(routineDetail({ ...base, learned_from: ["ep-1", "ep-2"] })).toBe(
-      "0 steps · learned from 2 memories",
-    );
-    expect(routineDetail({ ...base, learned_from: [] })).toBe("0 steps · no evidence kept");
+  it("pluralises the evidence", () => {
+    expect(routineDetail(routine())).toBe("2 steps · learned from 2 memories");
+  });
+
+  it("says no evidence kept when the routine has none", () => {
+    expect(routineDetail(routine({ learned_from: [] }))).toBe("2 steps · no evidence kept");
   });
 
   it("says 1 step, not 1 steps", () => {
-    expect(routineDetail({ ...base, steps: [{ description: "a", action: null }] })).toBe(
-      "1 step · learned from 1 memory",
+    expect(routineDetail(routine({ steps: [{ description: "a", action: null }] }))).toBe(
+      "1 step · learned from 2 memories",
     );
   });
 });
 
 describe("fetchEpisodic", () => {
   it("browses without a q parameter", async () => {
-    const fetchMock = ok({ entries: [] });
+    const fetchMock = respond({ entries: [] });
     vi.stubGlobal("fetch", fetchMock);
 
     expect(await fetchEpisodic("")).toEqual([]);
@@ -292,7 +311,7 @@ describe("fetchEpisodic", () => {
   });
 
   it("encodes the query it searches with", async () => {
-    const fetchMock = ok({ entries: [] });
+    const fetchMock = respond({ entries: [] });
     vi.stubGlobal("fetch", fetchMock);
 
     await fetchEpisodic("dentist & co");
@@ -303,7 +322,7 @@ describe("fetchEpisodic", () => {
   });
 
   it("maps every entry through the adapter, index and all", async () => {
-    vi.stubGlobal("fetch", ok({ entries: [HOT, COLD] }));
+    vi.stubGlobal("fetch", respond({ entries: [HOT, COLD] }));
 
     const rows = await fetchEpisodic("");
 
@@ -315,26 +334,20 @@ describe("fetchEpisodic", () => {
   });
 
   it("reads a body with no entries as no rows", async () => {
-    vi.stubGlobal("fetch", ok({}));
+    vi.stubGlobal("fetch", respond({}));
     expect(await fetchEpisodic("")).toEqual([]);
   });
 
   it("lets the embedder's 503 through, for the model pill to read", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(JSON.stringify({ detail: "Vector search unavailable" }), { status: 503 }),
-      ),
-    );
+    vi.stubGlobal("fetch", respond({ detail: "Vector search unavailable" }, 503));
     await expect(fetchEpisodic("dentist")).rejects.toBeInstanceOf(ApiError);
   });
 });
 
 describe("the other three reads", () => {
   it("unwraps the semantic envelope", async () => {
-    const file = { name: "food.md", dir: "preferences" as const, content: "# Food", modified: AT_ISO };
-    const fetchMock = ok({ files: [file] });
+    const file = semanticFile();
+    const fetchMock = respond({ files: [file] });
     vi.stubGlobal("fetch", fetchMock);
 
     expect(await fetchSemantic()).toEqual([file]);
@@ -342,18 +355,23 @@ describe("the other three reads", () => {
   });
 
   it("unwraps the routines envelope", async () => {
-    const fetchMock = ok({ routines: [base] });
+    const fetchMock = respond({ routines: [routine()] });
     vi.stubGlobal("fetch", fetchMock);
 
-    expect(await fetchRoutines()).toEqual([base]);
+    expect(await fetchRoutines()).toEqual([routine()]);
     expect(String(fetchMock.mock.calls[0][0])).toBe("/api/admin/memory/routines");
   });
 
-  it("reads the scratchpad and its queue, and a missing queue as none", async () => {
-    vi.stubGlobal("fetch", ok({ content: "- lamp", pending_queue: 2 }));
-    expect(await fetchScratchpad()).toEqual({ content: "- lamp", pending_queue: 2 });
+  it("reads the scratchpad and its queue", async () => {
+    const fetchMock = respond({ content: "- lamp", pending_queue: 2 });
+    vi.stubGlobal("fetch", fetchMock);
 
-    vi.stubGlobal("fetch", ok({}));
+    expect(await fetchScratchpad()).toEqual({ content: "- lamp", pending_queue: 2 });
+    expect(String(fetchMock.mock.calls[0][0])).toBe("/api/admin/memory/scratchpad");
+  });
+
+  it("reads a scratchpad with nothing in it as empty, not as absent", async () => {
+    vi.stubGlobal("fetch", respond({}));
     expect(await fetchScratchpad()).toEqual({ content: "", pending_queue: 0 });
   });
 });
