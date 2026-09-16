@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { QUERY_DEFAULTS } from "@/shell/QueryProvider";
 import { coldRow, hotRow, overviewFixture, routine, searchRow, semanticFile } from "@/test/fixtures";
 import { useMemory } from "./useMemory";
 
@@ -81,8 +82,18 @@ function stubFetch(): void {
   );
 }
 
+/**
+ * A client on the app's own policy, as `useSystem.test.tsx` builds one. A test
+ * client with its own `retry: false` proves the harness's default rather than
+ * the source's: the one retry this hook gets on a 5xx — and the one it is
+ * denied on a 4xx — are both invisible under it, and the 503 the model pill is
+ * set from is a 5xx. Only the backoff is the harness's; a real 1 s wait between
+ * two attempts buys the assertions nothing but seconds.
+ */
 function renderMemory(enabled = true) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = new QueryClient({
+    defaultOptions: { ...QUERY_DEFAULTS, queries: { ...QUERY_DEFAULTS.queries, retryDelay: 0 } },
+  });
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
@@ -306,7 +317,12 @@ describe("useMemory", () => {
     act(() => result.current.submit());
 
     await waitFor(() => expect(result.current.model).toBe("ok"));
-    expect(asked(EPISODIC)).toHaveLength(3);
+    // Four attempts, not three: the browse, the refused search *twice* —
+    // `QUERY_DEFAULTS` retries a 5xx once, and a 503 from the embedder is a
+    // 5xx — and the resubmission that answered. Under a test-local
+    // `retry: false` this read three, which was the harness's policy and not
+    // the app's.
+    expect(asked(EPISODIC)).toHaveLength(4);
   });
 
   it("browses when a blank query is submitted", async () => {

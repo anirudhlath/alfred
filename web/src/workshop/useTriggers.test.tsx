@@ -3,6 +3,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Trigger } from "@/lib/triggers";
+import { QUERY_DEFAULTS } from "@/shell/QueryProvider";
 import { trigger } from "@/test/fixtures";
 import { REREAD_MS, useTriggers } from "./useTriggers";
 
@@ -85,8 +86,18 @@ function stubFetch(): void {
   );
 }
 
+/**
+ * A client on the app's own policy, as `useSystem.test.tsx` builds one. A test
+ * client with its own `retry: false` proves the harness's default rather than
+ * the source's: the list read gets one retry on a 5xx and none on a 4xx, and
+ * every assertion about a refused read measures that policy or nothing. Only
+ * the backoff is the harness's — a real 1 s wait between two attempts buys the
+ * assertions nothing but seconds.
+ */
 const makeClient = (): QueryClient =>
-  new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  new QueryClient({
+    defaultOptions: { ...QUERY_DEFAULTS, queries: { ...QUERY_DEFAULTS.queries, retryDelay: 0 } },
+  });
 
 /**
  * `client` is passed in by the unmount test — one Workshop closing and the next
