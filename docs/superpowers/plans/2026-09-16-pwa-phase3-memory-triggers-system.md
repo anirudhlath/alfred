@@ -678,33 +678,34 @@ Timers in a `useRef<Map<string, ReturnType<typeof setTimeout>>>`, cleared in a `
 
 **Files:** Create `web/src/workshop/TriggerRow.tsx`, `TriggerRow.test.tsx`, `TriggersBench.tsx`, `TriggersBench.test.tsx`.
 
-### `TriggerRow({ trigger, pending, firedAt, open, onToggleOpen, onToggle, onFire })`
+### `TriggerRow({ trigger, now, pending, firedAt, open, onToggleOpen, onToggle, onFire })`
 
 Handoff §7. Rows carry a 1 px `--line` top border and `padding 11 0`; 16 px side padding comes from the bench.
 
-- Left column: the kind in **mono 10 px `--accent-text`** — `time` / `schedule` / `sensor` / `composite`; the name at 14.5 px; then `triggerMeta(trigger, Date.now())` in `.t-meta-strong`.
+- Left column: the kind in **mono 10 px `--accent-text`** — `time` / `schedule` / `sensor` / `composite`; the name at 14.5 px; then `triggerMeta(trigger, now)` in `.t-meta-strong`. **`now` is a prop, never `Date.now()` in render** — `eslint-plugin-react-hooks` v7's purity rule forbids it, and a per-row clock lets two rows disagree about which day `tomorrow` is. The bench holds one `useState(() => Date.now())`, as `MemoryBench` does.
 - **A one-shot that has already fired renders at opacity .55** (`one_shot && last_fired`). It is done; it should not read as live.
 - Right: **a 52×32 switch that does not move on tap.** A `<button role="switch" aria-checked={trigger.enabled}>`; track `--accent` on and `--line` off, a 26 px knob in `--bg` travelling left 3 → 23 over 200 ms. While `pending` is set it gains `aria-busy="true"`, the knob keeps its old position, and an **accent mono** note appears under the meta line, verbatim:
 
   `queued 21:15 · enabling · takes effect within 60 s`
 
-  `disabling` for the other direction. The switch is `disabled` while pending — a second tap inside the window can only confuse the reader, and the server would queue a second action against a state neither of us knows.
-- A failed mutation replaces the note with `<status> · that did not land · the scheduler still has the old setting`, where `<status>` is the ApiError's status.
+  `disabling` for the other direction. The switch carries **`aria-disabled`, not `disabled`**, while pending — `ActivityBench`'s `↑ older` button documents why: a control that disables itself under the finger that just pressed it throws focus to `<body>` mid-action, and a keyboard or screen-reader user loses their place in the list. The click handler no-ops instead — a second tap inside the window can only confuse the reader, and the server would queue a second action against a state neither of us knows.
+- A failed mutation replaces the note with `<status or message> · that did not land · the scheduler still has the old setting`. `Pending.status` is present only when a server answered, so a request that never arrived prints its error text rather than a number nobody sent.
 - **The corrupt-record card** — the one form of deviation 6 that is reachable. It **self-dismisses 60 s after the tap**, because the hook's window clears every note whatever it says (task 5, behaviour 8). That is deliberate: a client-side claim must not outlive the evidence for it, and the next read either shows the trigger again or does not. When a mutation answers **500**, the row is replaced by a `--surface` card carrying the handoff's copy, with the server's own detail in place of its example byte offset:
 
   `This record can't be read.` / `500 · <the server's detail> · the scheduler skips it · fix in the store or delete`
 
-  and **both the switch and Fire now disabled**. `GET /api/admin/triggers` drops unparseable records, so this can only appear after a toggle on a record that decayed since the read.
+  and **both the switch and Fire now `aria-disabled`**. The card replaces the **meta line** — which is built from the very conditions the server has just said it cannot parse — and keeps the kind, name and switch: a card that does not say *which* record is broken is not worth drawing, and the disabled controls the copy promises have to exist in order to be disabled. `GET /api/admin/triggers` drops unparseable records, so this can only appear after a toggle on a record that decayed since the read.
 - Expanded (`aria-expanded` on the row button): `created_by`, `created_at` via `dayLabel`, `urgency`, and **`last fired <stamp>` / `never fired`** — which the meta line deliberately leaves out. Then the payload: the action as `rawCall(action.tool_name, action.parameters)` in a mono `<pre>`, or `no action · notification only`; then the conditions as a mono `<pre>` of `JSON.stringify(conditions, null, 2)`.
 - **Fire now** is a 44 px **outlined** button (1 px `--line`, transparent fill), reading `Fire again` once `firedAt` is set. Tapping disables it for the window. The note under it is the handoff's, verbatim:
 
   `queued only; look for trigger.fired on the events stream to know it ran`
 
   and once queued, `queued 21:15 · look for trigger.fired on the events stream to know it ran`. Never `Fired`. We do not know that.
+- **A queued fire gets no row-level note** — its note lives under its own button, inside the expanded detail. Do not invent a `firing · takes effect within 60 s` third sentence: the 60 s is the *enabled-cache* window and says nothing about a manual fire. A **refused** fire does surface at row level, because a refusal is news about the row whether or not it is open.
 
 ### `TriggersBench({ triggers }: { triggers: Triggers })`
 
-Kind chips across the top: `All · Time · Schedule · Sensor · Composite`, each 32 px in a 44 px track. Reuse the shared segmented-control helper task 3 extracted for the Memory sub-tabs rather than forking a third copy of the roving-tabindex logic — but note these are **filters, not tabs**: `aria-pressed` buttons in a group, not a `tablist`. Share the keyboard helper only if it fits honestly; if it does not, say so and use plain buttons. A count beside `All` only.
+Kind chips across the top: `All · Time · Schedule · Sensor · Composite`, each 32 px in a 44 px track. These are **filters, not tabs** — `aria-pressed` buttons in a `role="group"`, walked by Tab — so `workshop/tabs.ts` does **not** fit: `tabKeyDown` moves focus among `[role="tab"]` children and activates on arrow. Plain buttons, with a comment saying why the shared helper was declined. Their borders are `--muted`, not `--line`: five adjacent tap targets edged in `--line` sit at 1.18:1, the finding `StreamChips` already documents. A count beside `All` only.
 
 Rows below in `flex-1 overflow-y-auto`. Empty: `No triggers yet.` for a genuinely empty list; `No <kind> triggers.` when a filter empties it. Error: the bench-wide `error` in a banner at the top, rows still shown beneath.
 
