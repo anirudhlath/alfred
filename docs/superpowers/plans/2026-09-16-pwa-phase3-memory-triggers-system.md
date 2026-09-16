@@ -880,7 +880,7 @@ Under the grid, the spend card: title `Cloud spend today`, then mono `$1.42 of $
 **Maintenance** —
 - `Nightly consolidation` / `last 03:00 · 42 reviewed` from `librarian.{last_run_at, reviewed}` via `dayLabel` + `hhmm`; `never run` when null. `next <stamp>` beside it when `next_run_at` is set.
 - `Run consolidation now`, a 44 px **outlined** button reading `Run again` once used, with the handoff's note: `queued only; the run reports on the events stream, not here`, becoming `queued 21:15 · progress shows on the events stream as consolidation.*`.
-- `Session idle timeout` row: `session.idle_minutes` minutes, from the overview. No restart, no shutdown, no log download — none of it has a route (log the gap in the backlog).
+- `Session idle timeout` row: `session.idle_minutes` minutes, from the overview — and `idleMinutes` is `null`, never `0`, until it lands, so print nothing rather than `0 minutes`. No restart, no shutdown, no log download — none of it has a route (log the gap in the backlog).
 
 - [ ] **Step 1: Write `SystemBench.test.tsx`** (~22) against a `state(overrides)` factory: the four health cells render their values and labels; `alive` is green and `unknown` is not red; **offline renders `?`/`—` and dims the grid**; the live/`unknown since` stamp; the spend bar clamps at a full cap and does not produce `NaN` with a zero cap; the spend note drops the clauses the server did not send; the DND switch reports, flips and says `Applied`; expiry chips only appear while active and post the right `until`; **the calendar footnote is quoted exactly**; the three DND state sentences verbatim; `2 · growing` only with no expiry; held-back opens via the callback; drain and consolidation each render their exact queued note and never say "sent"/"done"; `Run again` after a run; `never run` renders; every button is ≥44 px.
 - [ ] **Step 2: Fail. Step 3: Implement. Step 4: Green, lint, build. Step 5: Commit** `feat(web): System bench health, quiet hours and maintenance`
@@ -889,7 +889,7 @@ Under the grid, the spend card: title `Cloud spend today`, then mono `$1.42 of $
 
 ## Task 9: `SystemSections` — Sessions, Connected services, Devices & identity, Reflex
 
-**Files:** Create `web/src/workshop/SystemSections.tsx`, `SystemSections.test.tsx`. Modify `SystemBench.tsx` to render them.
+**Files:** Create `web/src/workshop/SystemSections.tsx`, `SystemSections.test.tsx`. Modify `SystemBench.tsx` to render them, and `web/src/lib/system.ts` + `system.test.ts` for the one note below that task 7 left open.
 
 Four exported components, each taking its own slice of `System`, each with its own tests. They live in one file because they share the `Section` frame and the same row idiom, and four one-component files would be four copies of the same imports.
 
@@ -909,7 +909,7 @@ Rows: the name, `category · kind` in `.t-meta`, then on the right the state wor
 | `testing` | `round-trip in progress · up to 10 s` |
 | `queued` | `saved · testing` |
 
-The handoff writes `401` in the `failed` note because that is the common case; pass the status the server actually reported, and fall back to `401` only when there is none. (Task 7 first gave `serviceNote` five short glosses on the state *word* — `reachable`, `not answering` — which nothing consumes, since the word on the right of the row is the bare `ServiceState`. Overruled, so the export is not dead.)
+The handoff writes `401` in the `failed` note because that is the common case; pass the status the server actually reported, and fall back to `401` only when there is none. **A 404 is the exception and needs its own branch** — task 7 shipped it reading `404 from the service on the last check`, which is false: a 404 there comes from Alfred's own route, not from the service. Say `404 · Alfred does not know this name · the service may have unregistered since the list was read` instead. This is a new sentence, not a new state word; the closed vocabulary is unaffected. (Task 7 first gave `serviceNote` five short glosses on the state *word* — `reachable`, `not answering` — which nothing consumes, since the word on the right of the row is the bare `ServiceState`. Overruled, so the export is not dead.)
 
 On 403 from the `PUT` — read it off `integrations.saves[name].gated`, which task 7 sets rather than making the view parse a status: `Credentials can only be changed from the home network.` in `--fg2`, with the form left filled so nothing is lost. Note that `api` already emits `denied` for every 403, so the Denied gate will rise over this — confirm what that looks like and, if the gate explains it better than the inline sentence does, say so in your report rather than fighting it.
 
