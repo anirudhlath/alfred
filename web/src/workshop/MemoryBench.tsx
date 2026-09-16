@@ -95,14 +95,22 @@ function stamp(at: string | number, now: number): string {
  * §5.2 is most often lost to: the bench that says `No routines learned yet.`
  * over a 500 has invented an answer the server never gave.
  *
- * The refusal outranks the unlanded read: a query that errored has no `data`
- * and no `dataUpdatedAt`, so both are true at once and only one of them is the
- * news.
+ * **A landed read outranks the error beside it.** On Episodic the two do not
+ * even belong to the same request: `Memory.error` carries the *search's*
+ * refusal as well as the browse's, and the list under this sentence is the
+ * browse. A 503 from the embedder was leaving a browse that answered perfectly
+ * well labelled `Episodic memory could not be read.` — the browse was read; the
+ * search failed, and the region above the list is where that is said.
+ *
+ * The refusal still outranks an *unlanded* read, which is the case the order
+ * was written for: a query that has only ever errored has no `data` and no
+ * `dataUpdatedAt`, so `!read` and `error` are true at once and only one of them
+ * is the news.
  */
 function emptyLine(memory: Memory, subject: string, nothing: string): string {
+  if (memory.read) return nothing;
   if (memory.error !== null) return `${subject} could not be read.`;
-  if (!memory.read) return `${subject} has not been read yet.`;
-  return nothing;
+  return `${subject} has not been read yet.`;
 }
 
 function Empty({ line, note }: { line: string; note?: string }) {
@@ -166,10 +174,20 @@ function Episodic({ memory, now }: { memory: Memory; now: number }) {
           </div>
         )}
         {memory.rows.length === 0 ? (
-          // `searched` is a search that *answered*, so a pending or refused one
-          // never claims the server rejected anything. The sentence quotes what
-          // the server was asked, not what the field holds now.
-          memory.searched ? (
+          // Nothing at all while a search is in flight — which is what
+          // `searching` is for, and until now no component read it.
+          // `placeholderData: keepPreviousData` hands back the *previous*
+          // search's answer while the next key is pending, so a previous `[]`
+          // arrives here as this search's own empty result, with `submitted`
+          // already advanced to words the server has not been asked about.
+          // `Nothing close enough to "<new query>".` over a request in flight is
+          // the §5.2 failure the flag's own contract forbids; and the other
+          // sentence is no better, since the browse underneath may be holding
+          // rows. A search that has not answered has no empty state.
+          memory.searching ? null : memory.searched ? (
+            // `searched` is a search that *answered*, so a refused one never
+            // claims the server rejected anything. The sentence quotes what the
+            // server was asked, not what the field holds now.
             <Empty
               line={`Nothing close enough to "${memory.submitted}".`}
               note="searched by meaning · the server does not report what it rejected"

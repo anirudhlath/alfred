@@ -59,14 +59,27 @@ export interface Memory {
   submitted: string;
   /** The form's onSubmit. An empty query submits as a browse. */
   submit: () => void;
-  /** A submitted query is in flight. A browse is not a search. */
+  /**
+   * A submitted query is in flight. A browse is not a search.
+   *
+   * Load-bearing for the empty state, not decoration: `searched` below is true
+   * of the rows in hand and says nothing about the request that is still out,
+   * so the view gates both empty sentences on this. `MemoryBench` is its one
+   * consumer.
+   */
   searching: boolean;
   /**
    * The rows on screen are a search's matches rather than a browse — which is
    * what tells the two empty states apart ("nothing scored above the
    * threshold" against "no episodic memories yet"). Read from the answer and
-   * never from the field: a search still in flight, or one that was refused, is
-   * showing the browse and must not claim otherwise.
+   * never from the field: a search that was refused is showing the browse and
+   * must not claim otherwise.
+   *
+   * It is a fact about the rows and not about the latest submission. While a
+   * *second* search is in flight `placeholderData` keeps the first one's
+   * answer, so this stays true of matches the reader can still see — and
+   * `submitted` has already moved on. Anything printing the submitted words
+   * must gate on `searching` as well; the view does.
    */
   searched: boolean;
   /** What the list shows: the search's matches, or the browse under them. */

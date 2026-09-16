@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QUERY_DEFAULTS } from "@/shell/QueryProvider";
 import { coldRow, hotRow, overviewFixture, routine, searchRow, semanticFile } from "@/test/fixtures";
+import { MemoryBench } from "./MemoryBench";
 import { useMemory } from "./useMemory";
 
 const EPISODIC = "/api/admin/memory/episodic";
@@ -557,5 +558,82 @@ describe("useMemory", () => {
     });
 
     expect(calls).toEqual([EPISODIC]);
+  });
+});
+
+/**
+ * The bench over its own hook, which is the seam neither half's tests reach:
+ * `MemoryBench.test.tsx` hand-builds a `Memory` and so can only prove the view
+ * draws what it is handed, and the assertions above read the hook's fields
+ * rather than the sentences a reader gets. A claim made from a state the hook
+ * cannot actually produce — or withheld in one it can — is invisible to both.
+ */
+function Bench() {
+  return <MemoryBench memory={useMemory(true)} />;
+}
+
+function renderBench() {
+  const client = new QueryClient({
+    defaultOptions: { ...QUERY_DEFAULTS, queries: { ...QUERY_DEFAULTS.queries, retryDelay: 0 } },
+  });
+  return render(
+    <QueryClientProvider client={client}>
+      <Bench />
+    </QueryClientProvider>,
+  );
+}
+
+/** Type into the bench's own field and submit its own form. */
+function searchOnScreen(text: string): void {
+  const field = screen.getByRole("searchbox", { name: "Search memory" });
+  fireEvent.change(field, { target: { value: text } });
+  fireEvent.submit(field.closest("form") as HTMLFormElement);
+}
+
+describe("MemoryBench over useMemory", () => {
+  it("does not say a search found nothing while that search is still in flight", async () => {
+    renderBench();
+    await waitFor(() => expect(screen.getAllByRole("listitem")).toHaveLength(2));
+
+    // A first search that genuinely found nothing. This is the honest empty
+    // state, and it is what leaves `searchQuery.data` at `[]`.
+    search = ok({ entries: [] });
+    searchOnScreen("zzz");
+    await waitFor(() => expect(screen.getByText('Nothing close enough to "zzz".')).toBeInTheDocument());
+
+    // A second search, held open. `keepPreviousData` hands back the first
+    // search's `[]` while the new key is pending, so the rows are empty and
+    // `submitted` has already moved on — the two facts that between them
+    // sentence a request the server has not answered.
+    held = defer();
+    search = ok({ entries: [searchRow()] });
+    searchOnScreen("dentist");
+    await waitFor(() => expect(asked(EPISODIC)).toHaveLength(3));
+
+    expect(screen.queryByText('Nothing close enough to "dentist".')).toBeNull();
+    // Nor the other empty state, which would be a claim about a store whose
+    // browse is holding two rows.
+    expect(screen.queryByText("No episodic memories yet.")).toBeNull();
+
+    held.release();
+    await waitFor(() => expect(screen.getAllByRole("listitem")).toHaveLength(1));
+  });
+
+  it("does not blame the browse for a search the embedder refused", async () => {
+    browse = ok({ entries: [] });
+    renderBench();
+    await waitFor(() => expect(screen.getByText("No episodic memories yet.")).toBeInTheDocument());
+
+    search = EMBEDDER_DOWN;
+    searchOnScreen("dentist");
+    await waitFor(() =>
+      expect(screen.getByText("The embedder is not answering.")).toBeInTheDocument(),
+    );
+
+    // The browse was read, and it is what the list is showing. The refusal is
+    // news about the search, and the region above says so.
+    expect(screen.getByText("No episodic memories yet.")).toBeInTheDocument();
+    expect(screen.queryByText("Episodic memory could not be read.")).toBeNull();
+    expect(screen.getByLabelText("Read errors")).toHaveTextContent("Vector search unavailable");
   });
 });
