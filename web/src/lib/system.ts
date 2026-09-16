@@ -391,20 +391,20 @@ export interface SavingState {
   savedAt: number | null;
 }
 
-/** What one service's row knows about itself. */
+/**
+ * What one service's row knows about itself.
+ *
+ * There is deliberately **no** round trip on it (deviation: the handoff puts
+ * latency on the Health grid and nowhere else). A row's state word can come
+ * from a *save* rather than from the probe, so `210 ms  testing` beside a
+ * credential being replaced would time a round trip against the old one — and
+ * the Health grid does not come through here either: `homeCell` reads
+ * `latency_ms` off the probe itself. The field was carried on this contract and
+ * pinned by ten assertions while no screen read it, which is a fact about the
+ * tests rather than about the house.
+ */
 export interface ServiceRow {
   state: ServiceState;
-  /**
-   * The last probe's round trip in ms; null whenever there is no answer to time.
-   *
-   * Deliberately **not** drawn on the row (deviation: the handoff puts latency
-   * on the Health grid and nowhere else). A row's state word can come from a
-   * *save* rather than from the probe, and `210 ms  testing` beside a
-   * credential that is being replaced times a round trip against the old one.
-   * Kept on the contract because the Health grid's home card is derived from
-   * the same probe and `useSystem.test.tsx` pins it.
-   */
-  latency: number | null;
   /** The status behind a `failed`, for the row's note. Null when nobody sent one. */
   status: number | null;
   /**
@@ -416,7 +416,7 @@ export interface ServiceRow {
 }
 
 /**
- * Which word a service's row wears, and the two numbers under it. The order of
+ * Which word a service's row wears, and what explains it. The order of
  * the ladder is the point: a save this client sent outranks a probe, a probe
  * still in flight outranks its last answer, and an integration with nothing
  * stored says so rather than reporting the health of a connection it was never
@@ -435,13 +435,10 @@ export function serviceRows(
     const probe = probes[index];
     rows[entry.name] = {
       state: serviceState(entry, probe, saves[entry.name]),
-      // A failed attempt has no round trip of its own, and the retained `data`
-      // beside it belongs to an earlier one. Reporting it would put `210 ms`
-      // next to the word `failed` — two readings of one probe, disagreeing.
-      latency: probe === undefined || probe.isError ? null : (probe.data?.latency_ms ?? null),
       status: probe?.status ?? null,
-      // Same reading as the latency beside it: a retained `detail` belongs to
-      // the probe that produced it, not to the attempt that has just failed.
+      // A failed attempt has no answer of its own, and the retained `data`
+      // beside it belongs to an earlier one: a `detail` reported next to the
+      // word `failed` would be two readings of one probe, disagreeing.
       detail: probe === undefined || probe.isError ? null : detailText(probe.data?.detail),
     };
   });

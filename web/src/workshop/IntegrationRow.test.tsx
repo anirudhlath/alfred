@@ -112,7 +112,6 @@ const MIXED: Integration = integration({
 
 const row = (overrides: Partial<ServiceRow> = {}): ServiceRow => ({
   state: "ok",
-  latency: 210,
   status: null,
   detail: null,
   ...overrides,
@@ -168,12 +167,12 @@ describe("IntegrationRow", () => {
     expect(screen.getByText(serviceNote("ok"))).toBeInTheDocument();
   });
 
-  // The handoff puts latency in the Health grid and nowhere else. It would be a
-  // second reading of one probe beside the state word, and while a *save* is in
-  // flight the retained figure is a round trip measured against the credentials
-  // being replaced.
+  // The handoff puts latency in the Health grid and nowhere else, so `ServiceRow`
+  // no longer carries one at all. This holds the *screen* to that: a round trip
+  // beside the state word is a second reading of one probe, and while a save is
+  // in flight it is a trip measured against the credentials being replaced.
   it("never prints a round trip beside the state word", () => {
-    draw({ row: row({ state: "queued", latency: 210 }) });
+    draw({ row: row({ state: "queued" }) });
     expect(screen.queryByText(/\bms\b/)).not.toBeInTheDocument();
   });
 
@@ -545,10 +544,10 @@ describe("IntegrationRow", () => {
   it("prints the library's note for every state and never a word of its own", () => {
     const states: ServiceRow[] = [
       row({ state: "ok" }),
-      row({ state: "unset", latency: null }),
-      row({ state: "failed", latency: null, status: 404 }),
-      row({ state: "failed", latency: null, status: null }),
-      row({ state: "failed", latency: null, status: null, detail: "connection refused" }),
+      row({ state: "unset" }),
+      row({ state: "failed", status: 404 }),
+      row({ state: "failed", status: null }),
+      row({ state: "failed", status: null, detail: "connection refused" }),
     ];
     for (const state of states) {
       const { unmount } = draw({ row: state });
@@ -562,7 +561,7 @@ describe("IntegrationRow", () => {
   // The service answered 200 and said it was sick; the row must pass on what it
   // said rather than accuse it of a status it never sent.
   it("carries the service's own reason through to the note", () => {
-    draw({ row: row({ state: "failed", latency: null, status: null, detail: "connection refused" }) });
+    draw({ row: row({ state: "failed", status: null, detail: "connection refused" }) });
     expect(screen.getByText(/^connection refused · /)).toBeInTheDocument();
   });
 

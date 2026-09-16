@@ -410,23 +410,23 @@ const rowOf = (
 ) => serviceRows([entry], [state], save ? { [entry.name]: save } : {})[entry.name];
 
 describe("serviceRows", () => {
-  it("reports a healthy probe's word and its round trip", () => {
-    expect(rowOf(HOME, probe())).toEqual({ state: "ok", latency: 210, status: null, detail: null });
+  it("reports a healthy probe's word", () => {
+    expect(rowOf(HOME, probe())).toEqual({ state: "ok", status: null, detail: null });
   });
 
-  it("calls a service that answered healthy false failed, with the trip it took", () => {
-    // A sick service is a 200 with `healthy: false`, so that round trip was
-    // really measured — unlike the one on the branch below.
+  it("calls a service that answered healthy false failed, and sends no status with it", () => {
+    // A sick service is a 200 with `healthy: false`: an answer, so there is no
+    // status behind the word — unlike the branch below.
     expect(rowOf(HOME, probe({ data: { name: "home-service", healthy: false, latency_ms: 18 } })))
-      .toEqual({ state: "failed", latency: 18, status: null, detail: null });
+      .toEqual({ state: "failed", status: null, detail: null });
   });
 
-  it("drops the retained round trip when the latest attempt could not reach it", () => {
+  it("drops what the service last said when the latest attempt could not reach it", () => {
     // react-query keeps the last good answer behind a failure; reporting its
-    // latency would put `210 ms` next to the word `failed`.
+    // `detail` would explain the word `failed` with a sentence from the probe
+    // before it.
     expect(rowOf(HOME, probe({ isError: true, status: 502 }))).toEqual({
       state: "failed",
-      latency: null,
       status: 502,
       // A transport failure has no body, so there is nothing the service said.
       detail: null,
@@ -436,7 +436,6 @@ describe("serviceRows", () => {
   it("says testing while the first probe is still in flight", () => {
     expect(rowOf(HOME, probe({ data: undefined, isPending: true }))).toEqual({
       state: "testing",
-      latency: null,
       status: null,
       detail: null,
     });
@@ -445,7 +444,6 @@ describe("serviceRows", () => {
   it("says testing for an entry with no probe of its own yet", () => {
     expect(rowOf(HOME, undefined)).toEqual({
       state: "testing",
-      latency: null,
       status: null,
       detail: null,
     });
@@ -502,10 +500,9 @@ describe("serviceRows", () => {
       [probe({ data: { name: "weather", healthy: true, latency_ms: 42 } }), probe({ isError: true, status: 503 })],
       {},
     );
-    expect(rows["weather"]).toEqual({ state: "ok", latency: 42, status: null, detail: null });
+    expect(rows["weather"]).toEqual({ state: "ok", status: null, detail: null });
     expect(rows["home-service"]).toEqual({
       state: "failed",
-      latency: null,
       status: 503,
       detail: null,
     });

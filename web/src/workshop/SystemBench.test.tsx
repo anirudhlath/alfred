@@ -113,7 +113,7 @@ function state(overrides: Partial<System> = {}): System {
     integrations: {
       list: [integration()],
       read: true,
-      rows: { "home-service": { state: "ok", latency: 210, status: null, detail: null } },
+      rows: { "home-service": { state: "ok", status: null, detail: null } },
       saves: {},
       save: vi.fn(),
       error: null,

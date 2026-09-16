@@ -343,11 +343,10 @@ describe("useSystem", () => {
     expect(countOf("GET", statusPath("home-service"))).toBe(1);
     expect(result.current.integrations.rows["weather"]).toEqual({
       state: "ok",
-      latency: 42,
       status: null,
       detail: null,
     });
-    expect(result.current.integrations.rows["home-service"]?.latency).toBe(210);
+    expect(result.current.integrations.rows["home-service"]?.state).toBe("ok");
   });
 
   it("retries a probe that never reached the service, and keeps the row", async () => {
@@ -360,7 +359,6 @@ describe("useSystem", () => {
     // is retried like any other transport failure.
     expect(countOf("GET", statusPath("weather"))).toBe(2);
     expect(result.current.integrations.list.map((row) => row.name)).toContain("weather");
-    expect(result.current.integrations.rows["weather"]?.latency).toBeNull();
     expect(result.current.integrations.rows["weather"]?.status).toBe(503);
   });
 
@@ -376,7 +374,7 @@ describe("useSystem", () => {
 
     // A sick service is a 200 with `healthy: false`, which is an answer.
     expect(countOf("GET", statusPath("weather"))).toBe(1);
-    expect(result.current.integrations.rows["weather"]?.latency).toBe(18);
+    expect(result.current.integrations.rows["weather"]?.detail).toBeNull();
   });
 
   it("does not ask the attention store twice when it is down", async () => {

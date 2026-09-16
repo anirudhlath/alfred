@@ -67,7 +67,6 @@ function sessions(overrides: Partial<Sessions> = {}): Sessions {
 
 const row = (overrides: Partial<ServiceRow> = {}): ServiceRow => ({
   state: "ok",
-  latency: 210,
   status: null,
   detail: null,
   ...overrides,
@@ -77,7 +76,7 @@ function integrations(overrides: Partial<Integrations> = {}): Integrations {
   return {
     list: [HOME, WEATHER],
     read: true,
-    rows: { "home-service": row(), weather: row({ state: "unset", latency: null }) },
+    rows: { "home-service": row(), weather: row({ state: "unset" }) },
     saves: {},
     save: vi.fn(),
     error: null,
@@ -359,7 +358,7 @@ describe("ServicesSection", () => {
     render(
       <ServicesSection
         integrations={integrations({
-          rows: { "home-service": row({ state: "failed", latency: null, status: 502 }), weather: row() },
+          rows: { "home-service": row({ state: "failed", status: 502 }), weather: row() },
         })}
       />,
     );
@@ -372,7 +371,7 @@ describe("ServicesSection", () => {
     render(
       <ServicesSection
         integrations={integrations({
-          rows: { "home-service": row(), weather: row({ state: "failed", latency: null, status: 401 }) },
+          rows: { "home-service": row(), weather: row({ state: "failed", status: 401 }) },
         })}
       />,
     );
@@ -384,9 +383,8 @@ describe("ServicesSection", () => {
     expect(ok).toHaveAttribute("aria-hidden", "true");
   });
 
-  // The handoff puts latency in the Health grid and nowhere else. Beside the
-  // state word it is a second reading of one probe, and during a save it is a
-  // round trip measured against the credentials being replaced.
+  // The handoff puts latency in the Health grid and nowhere else, so `ServiceRow`
+  // no longer carries one. This holds the rendered section to it as well.
   it("leaves the round trip to the Health grid", () => {
     render(<ServicesSection integrations={integrations()} />);
     expect(screen.queryAllByText(/ ms$/)).toHaveLength(0);
@@ -438,7 +436,7 @@ describe("ServicesSection", () => {
       <ServicesSection
         integrations={integrations({
           list: [HOME],
-          rows: { "home-service": row({ state: "failed", latency: null, status: 404 }) },
+          rows: { "home-service": row({ state: "failed", status: 404 }) },
         })}
       />,
     );
