@@ -21,16 +21,24 @@ const SPARK_HEIGHT = 28;
 /** A reading of 0 still gets a bar, or the picture loses a consolidation that happened. */
 const SPARK_FLOOR = 2;
 
-/** The stages a routine has already been through are spent, not current, not ahead. */
+/**
+ * The stages a routine has already been through are spent, not current, not
+ * ahead. `--accent-text` for the current one rather than raw `--accent`, which
+ * is 2.34:1 on --bg in the light theme where 1.4.11 asks 3:1 of a graphic that
+ * carries state; `--muted` is 3.46:1 and passes. A stage still ahead keeps
+ * `--line` (1.18:1) on purpose: it is the absence of a bar, and which stage is
+ * now is carried by the four stage names and `aria-current` under it. Measured
+ * in `test/contrast.test.ts`.
+ */
 function barFill(index: number, current: number): string {
-  if (index === current) return "var(--accent)";
+  if (index === current) return "var(--accent-text)";
   return index < current ? "var(--muted)" : "var(--line)";
 }
 
 /**
  * The lifecycle (handoff §6): four columns, a 3 px bar each — accent for where
- * the routine is, muted for what it has been through, line for what is ahead —
- * with the stage's own name under it.
+ * the routine is, muted for what it has been through, line for what is ahead
+ * (see `barFill`) — with the stage's own name under it.
  *
  * The names are real text rather than a picture with a visually-hidden caption:
  * a reader gets the four stages and `aria-current` says which one is now, the
@@ -73,8 +81,8 @@ function Rail({ state }: { state: RoutineState }) {
 }
 
 /**
- * Eight bars of confidence, newest last and the only solid one, captioned with
- * what they are. Fewer than eight readings draws what there is, left-aligned;
+ * Eight bars of confidence, newest last and the only one in the accent,
+ * captioned with what they are. Fewer than eight readings draws what there is, left-aligned;
  * **no readings draws nothing at all**, because a flat line is a claim about a
  * routine that has never been scored.
  *
@@ -107,8 +115,12 @@ function Sparkline({ routine, confidence }: { routine: Routine; confidence: stri
               // score, and a reading outside that is a bug to draw honestly at
               // the rail rather than to trust.
               height: `${Math.max(SPARK_FLOOR, Math.round(Math.min(1, Math.max(0, value)) * SPARK_HEIGHT))}px`,
-              background: "var(--accent)",
-              opacity: index === readings.length - 1 ? 1 : 0.7,
+              // Dimmed by token, never by an opacity: a whole-bar alpha
+              // composites whatever is under it and is invisible to
+              // `src/test/contrast.ts`, the same reason `HealthStat` dims its
+              // grid by token. The older bars were --accent at 0.7, which is
+              // 1.67:1 on --bg in light; --muted is 3.46:1.
+              background: index === readings.length - 1 ? "var(--accent-text)" : "var(--muted)",
             }}
           />
         ))}

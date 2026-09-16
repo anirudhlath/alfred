@@ -54,7 +54,7 @@ describe("RoutineRow", () => {
     expect(within(rail).getAllByTestId("stage-bar").map((bar) => bar.style.background)).toEqual([
       "var(--muted)",
       "var(--muted)",
-      "var(--accent)",
+      "var(--accent-text)",
       "var(--line)",
     ]);
   });
@@ -137,7 +137,7 @@ describe("RoutineRow", () => {
     expect(screen.queryByText(/consolidations$/)).toBeNull();
   });
 
-  it("draws only the last eight readings, with the newest tallest and solid", () => {
+  it("draws only the last eight readings, with the newest tallest and in the accent", () => {
     const history = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.78, 0.79, 0.81, 0.9];
     renderRow({ confidence_history: history }, true);
     expect(screen.getByRole("img")).toHaveAccessibleName(
@@ -148,17 +148,16 @@ describe("RoutineRow", () => {
     // The last eight of the twelve, 28 px at full confidence: 0.5 → 14 px,
     // 0.9 → 25 px, and the two readings a hundredth apart round to the same bar.
     expect(heights()).toEqual(["14px", "17px", "20px", "21px", "22px", "22px", "23px", "25px"]);
-    expect(drawn.map((bar) => bar.style.opacity)).toEqual([
-      "0.7",
-      "0.7",
-      "0.7",
-      "0.7",
-      "0.7",
-      "0.7",
-      "0.7",
-      "1",
+    // Dimmed by token, never by an opacity: a whole-bar alpha composites what
+    // is under it and is invisible to `src/test/contrast.ts`. --accent-text for
+    // the newest and --muted for the rest, both ≥3:1 on --bg in both themes
+    // (pinned in `test/contrast.test.ts`); raw --accent is 2.34:1 in light and
+    // at 0.7 alpha the older bars were 1.67:1.
+    expect(drawn.map((bar) => bar.style.opacity)).toEqual(Array(8).fill(""));
+    expect(drawn.map((bar) => bar.style.background)).toEqual([
+      ...Array(7).fill("var(--muted)"),
+      "var(--accent-text)",
     ]);
-    expect(drawn.every((bar) => bar.style.background === "var(--accent)")).toBe(true);
   });
 
   // A consolidation that scored zero still happened, and a score outside 0-1 is

@@ -172,8 +172,8 @@ describe("contrast ratios", () => {
 
     it(`${theme}: a health dot says which state it is in without its hue`, () => {
       // `HealthStat`'s dot (`workshop/SystemBench.tsx`) is filled when the
-      // reading is alive and an empty `--muted` ring when it is not, which is
-      // `MemoryBench`'s store dot exactly. Two *filled* circles would leave hue
+      // reading is alive and an empty `--muted` ring when it is not, the shape
+      // `MemoryBench`'s store dot takes in its own hue (pinned below). Two *filled* circles would leave hue
       // as the only channel, and `--green` against `--muted` is 1.22:1 dark and
       // 1.51:1 light — no difference at all to a reader who cannot separate the
       // two hues, in either theme.
@@ -197,6 +197,41 @@ describe("contrast ratios", () => {
       // And once the reads stop landing the fill leaves the accent for `--fg2`:
       // receding here is losing the attention colour, not losing contrast.
       expect(contrast(token(theme, "fg2"), token(theme, "line"))).toBeGreaterThanOrEqual(3);
+    });
+
+    it(`${theme}: a memory row's store dot says hot from cold without its hue`, () => {
+      // `EpisodicItem`'s dot (`workshop/MemoryBench.tsx`) is filled when the
+      // row is still in the hot store and an empty ring when it has decayed to
+      // cold. The rows sit on the page rather than on a card, so both states
+      // are owed 3:1 against `--bg` (WCAG 1.4.11).
+      expect(contrast(token(theme, "accent-text"), token(theme, "bg"))).toBeGreaterThanOrEqual(3);
+      expect(contrast(token(theme, "muted"), token(theme, "bg"))).toBeGreaterThanOrEqual(3);
+      // What the cold ring used to be. `--line` is the page's hairline and was
+      // never a state indicator; at this ratio the cold dot was a gap in the
+      // row, not a circle. Asserted in both themes because it fails in both.
+      expect(contrast(token(theme, "line"), token(theme, "bg"))).toBeLessThan(1.3);
+    });
+
+    it(`${theme}: a routine's sparkline and rail read as graphics`, () => {
+      // `RoutineRow`'s bars (`workshop/RoutineRow.tsx`) are the only drawing of
+      // a routine's confidence and of where it is in its lifecycle, and they
+      // sit on the page. The newest reading and the current stage take
+      // `--accent-text`; the older readings and the spent stages take
+      // `--muted`. Both are owed 3:1 against `--bg`.
+      expect(contrast(token(theme, "accent-text"), token(theme, "bg"))).toBeGreaterThanOrEqual(3);
+      expect(contrast(token(theme, "muted"), token(theme, "bg"))).toBeGreaterThanOrEqual(3);
+      // The two are 1.49:1 dark and 1.52:1 light against *each other*, so which
+      // bar is newest is not carried by the pair — it is carried by position
+      // (newest last), by the picture's own `aria-label`, and on the rail by
+      // four visible stage names with `aria-current` on one of them. The hue is
+      // redundancy, exactly as it is on the dots above.
+      expect(contrast(token(theme, "accent-text"), token(theme, "muted"))).toBeLessThan(3);
+      // A stage still *ahead* keeps `--line`, which is no contrast at all — on
+      // purpose. It is the absence of a bar over a column the reader can
+      // already read, not a state indicator whose colour has to be told apart
+      // from another one, and there is no token between `--line` and `--muted`
+      // to draw it in. Pinned so the choice is a measurement and not a comment.
+      expect(contrast(token(theme, "line"), token(theme, "bg"))).toBeLessThan(1.3);
     });
 
     it(`${theme}: a service's state word reads on the card it sits on`, () => {
@@ -267,6 +302,11 @@ describe("contrast ratios", () => {
     expect(contrast(token("light", "green"), token("light", "surface"))).toBeLessThan(3);
     // The spend fill, if it were the raw accent on its `--line` track.
     expect(contrast(token("light", "accent"), token("light", "line"))).toBeLessThan(3);
+    // The Memory bench's hot store dot and the Routines rail's current stage,
+    // if either were the raw accent on the page — 2.34:1, under the 3:1 1.4.11
+    // asks of a graphic that carries state. Both take `--accent-text` instead.
+    // (Dark clears it at 7.61:1, which is why the claim is made here.)
+    expect(contrast(token("light", "accent"), token("light", "bg"))).toBeLessThan(3);
     // The switch's ON track against the card, which is why the boundary is the
     // inset `--muted` edge drawn over it rather than the track fill itself.
     expect(contrast(token("light", "accent"), token("light", "surface"))).toBeLessThan(3);

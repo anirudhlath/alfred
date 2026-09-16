@@ -416,10 +416,10 @@ it: whether `DECAY_FLOOR = 0.4` still picks out roughly what the corrected thres
 sweeps, and whether the mark should consult age — which the row does carry, and which the
 pass weighs most heavily — rather than significance and recall count alone.
 
-## 21. Two controls predate the dim-by-token and `aria-disabled` rules
+## 21. One control predates the dim-by-token and `aria-disabled` rules
 
 `docs/web-frontend.md` states both rules absolutely and phase 3's own code keeps them, so
-the two places in the tree that do not are named here rather than left for the next
+the one place in the tree that does not is named here rather than left for the next
 reviewer to rediscover.
 
 **Activity's `All streams` button breaks both** (`web/src/workshop/ActivityBench.tsx:245-251`):
@@ -429,17 +429,19 @@ were written for: at `0.4` the label composites to well under AA and `src/test/c
 cannot see it, and a real `disabled` takes the control out of the tab order the moment the
 last chip is deselected — which is exactly when a reader is on it.
 
-**The routine sparkline uses `opacity: 0.7` on its older bars**
-(`web/src/workshop/RoutineRow.tsx:111`). This one is phase-3 code and is **deliberate**, not
-a miss: the bars sit inside a `role="img"` whose `aria-label` carries the confidence and
-the count of readings (`RoutineRow.tsx:92-94`), so nothing there has to be read off the
-pixels. It is recorded because "never by `opacity`" read literally would forbid it, and the
-rule's scope — anything a reader must read to trust the screen — is what actually governs.
+~~**The routine sparkline uses `opacity: 0.7` on its older bars**~~ *(fixed in task 11)*. This
+entry used to defend the opacity as deliberate, on the grounds that the bars sit inside a
+`role="img"` whose `aria-label` carries the confidence and the count of readings, so
+nothing there had to be read off the pixels. **That argument was wrong about the reader it
+was made for.** A low-vision sighted reader gets the picture and not the label, and
+`--accent` at `0.7` composites to 1.67:1 on `--bg` in light — the older bars were not dim,
+they were gone. The bars now dim by token (`--muted` for the older readings,
+`--accent-text` for the newest) and both pairs are measured in `src/test/contrast.test.ts`.
+The rail's current stage moved off raw `--accent` (2.34:1 in light) in the same change.
 
 **Acceptance:** `All streams` takes `aria-disabled` with a no-op handler and recedes by
 swapping its colour to `--fg2`, with the pair restated in `src/test/contrast.ts`; its bench
-test asserts the control stays focusable and keeps its name. The sparkline needs no change
-unless the picture ever loses its text equivalent.
+test asserts the control stays focusable and keeps its name.
 
 ---
 

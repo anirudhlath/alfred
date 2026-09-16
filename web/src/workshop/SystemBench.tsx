@@ -117,14 +117,14 @@ function HealthStamp({ online, readAt }: { online: boolean; readAt: number | nul
  * beside it: a grid that lit up because a string happened to read `alive` is
  * one rename away from lying.
  *
- * Filled when alive and an empty ring when not, which is `MemoryBench`'s store
- * dot exactly (`MemoryBench.tsx`): two filled circles a hue apart are 1.51:1 in
- * light, so hue would be the only channel carrying the state and a reader who
- * cannot separate those two hues would have nothing. Fill-versus-outline is a
- * second channel and costs one line. `--green-text` rather than `--green`,
- * which is 2.12:1 on a card in light where 1.4.11 asks 3:1 of a state
- * indicator; both it and the `--muted` ring are measured in
- * `test/contrast.test.ts`. The dot stays `aria-hidden` and redundant: the value
+ * Filled when alive and an empty ring when not — the shape `MemoryBench`'s
+ * store dot and `IntegrationRow`'s `StateDot` both take, in this surface's own
+ * hue: two filled circles a hue apart are 1.51:1 in light, so hue would be the
+ * only channel carrying the state and a reader who cannot separate those two
+ * hues would have nothing. Fill-versus-outline is a second channel and costs
+ * one line. `--green-text` rather than `--green`, which is 2.12:1 on a card in
+ * light where 1.4.11 asks 3:1 of a state indicator; both it and the `--muted`
+ * ring are measured in `test/contrast.test.ts`. The dot stays `aria-hidden` and redundant: the value
  * beside it says `alive` or `unknown` in words.
  *
  * A dot goes out with the rest of the grid once the reads stop landing, even

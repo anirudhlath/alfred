@@ -136,14 +136,19 @@ function EpisodicItem({ row, now }: { row: EpisodicRow; now: number }) {
       </span>
       <span className="flex items-center gap-1.5">
         {/* Redundancy for the eye only: the meta line beside it already says
-            `hot` or `cold` in words. */}
+            `hot` or `cold` in words. Filled versus an empty ring, in
+            `HealthStat`'s and `StateDot`'s spelling: `--accent-text` rather
+            than raw `--accent` (2.34:1 on --bg in light, under the 3:1 1.4.11
+            asks of a graphic that carries state) and a `--muted` ring rather
+            than `--line`, which at 1.18:1 left the cold dot invisible. Both
+            measured in `test/contrast.test.ts`. */}
         <span
           aria-hidden="true"
           data-testid="store-dot"
           className="h-1.5 w-1.5 shrink-0 rounded-full border"
           style={{
-            background: hot ? "var(--accent)" : "transparent",
-            borderColor: hot ? "transparent" : "var(--line)",
+            background: hot ? "var(--accent-text)" : "transparent",
+            borderColor: hot ? "var(--accent-text)" : "var(--muted)",
           }}
         />
         <span className="t-meta-strong">{episodicMeta(row, now)}</span>

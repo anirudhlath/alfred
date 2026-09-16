@@ -142,9 +142,14 @@ describe("MemoryBench", () => {
     const [hotDot, coldDot] = screen.getAllByTestId("store-dot");
     // Redundancy for the eye; the meta line beside it says hot or cold in words.
     expect(hotDot).toHaveAttribute("aria-hidden", "true");
-    expect(hotDot.style.background).toBe("var(--accent)");
+    // `--accent-text` and a `--muted` ring, which is `HealthStat`'s spelling and
+    // `StateDot`'s: raw --accent is 2.34:1 on --bg in light and --line is
+    // 1.18:1, so the cold ring would be invisible. Both pinned in
+    // `test/contrast.test.ts`.
+    expect(hotDot.style.background).toBe("var(--accent-text)");
+    expect(hotDot.style.borderColor).toBe("var(--accent-text)");
     expect(coldDot.style.background).toBe("transparent");
-    expect(coldDot.style.borderColor).toBe("var(--line)");
+    expect(coldDot.style.borderColor).toBe("var(--muted)");
     // Decorative, and only when the row has any.
     expect(screen.getByText("lamp · kitchen")).toHaveClass("t-meta");
   });
