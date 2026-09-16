@@ -1,4 +1,5 @@
 import type { Routine, SemanticFile } from "@/lib/memory";
+import type { Trigger } from "@/lib/triggers";
 import type {
   ActionResultEvent,
   AttentionDomain,
@@ -494,5 +495,47 @@ export const semanticFile = (overrides: Partial<SemanticFile> = {}): SemanticFil
   dir: "preferences",
   content: "# Food\n\nNo coriander. Tea, not coffee, after six.",
   modified: new Date(MEMORY_AT).toISOString(),
+  ...overrides,
+});
+
+// ---------------------------------------------------------------------------
+// Triggers (`GET /api/admin/triggers`)
+// ---------------------------------------------------------------------------
+
+/**
+ * 2026-09-16 20:52, on the device's own clock — when the fixture trigger was
+ * written. Local rather than UTC for the same reason `MEMORY_AT` is: `hhmm`
+ * reads the device's clock, so a UTC instant would stamp one string in CI and
+ * another on a developer's machine.
+ */
+export const TRIGGER_CREATED_AT = new Date(2026, 8, 16, 20, 52, 0);
+
+/** 21:30 the same evening: the `now` every meta assertion is read against. */
+export const TRIGGER_NOW = new Date(2026, 8, 16, 21, 30, 0).getTime();
+
+/** 08:40 the next morning — the one-shot's due time, so `tomorrow` is testable. */
+export const TRIGGER_RUN_AT = new Date(2026, 8, 17, 8, 40, 0);
+
+/**
+ * One stored trigger, exactly as `BaseTrigger.model_dump_json()` leaves it in the
+ * Redis hash `GET /api/admin/triggers` reads. A time trigger with a `run_at` and
+ * no cron by default, so `triggerKind` calls it `time` until a test hands it one.
+ */
+export const trigger = (overrides: Partial<Trigger> = {}): Trigger => ({
+  trigger_id: "trg_bins",
+  trigger_type: "time",
+  name: "Bins out",
+  enabled: true,
+  one_shot: false,
+  created_by: "conversation",
+  created_at: TRIGGER_CREATED_AT.toISOString(),
+  last_fired: null,
+  action: {
+    tool_name: "notify.send",
+    target_service: "notifications",
+    parameters: { message: "Bins go out tonight" },
+  },
+  urgency: "important",
+  conditions: { cron: null, run_at: TRIGGER_RUN_AT.toISOString() },
   ...overrides,
 });
