@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { STREAMS } from "@/lib/streams";
 import type { StreamEntry, StreamPage, TelemetryMessage } from "@/lib/types";
 import { ConnectionProvider } from "@/shell/ConnectionProvider";
+import { QUERY_DEFAULTS } from "@/shell/QueryProvider";
 import { useActivity } from "./useActivity";
 
 const { telemetries } = vi.hoisted(() => ({ telemetries: [] as unknown[] }));
@@ -185,7 +186,14 @@ function rowKeys(): string[] {
 }
 
 function mount(enabled = true) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // `useActivity` runs no query at all — it reads the stream over the socket —
+  // so this client exists only because `ConnectionProvider`'s tree needs one.
+  // It is still the app's own policy rather than a bespoke `retry: false`: the
+  // day something under here does reach for a query, a divergent client is the
+  // kind of thing that is discovered by a test that cannot fail.
+  const client = new QueryClient({
+    defaultOptions: { ...QUERY_DEFAULTS, queries: { ...QUERY_DEFAULTS.queries, retryDelay: 0 } },
+  });
   const tree = (showing: boolean) => (
     <QueryClientProvider client={client}>
       <ConnectionProvider>

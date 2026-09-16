@@ -48,20 +48,34 @@ describe("ErrorBoundary", () => {
   });
 
   it("does not un-fail on a re-render: the way back is a fresh mount", () => {
+    /**
+     * `Layer` in miniature. `mounted` is the layer opening and closing — the
+     * app's only way out of a failed bench — and it is a *conditional* around
+     * the same boundary in the same tree position, not a second `render()`: a
+     * fresh `render()` builds a new container and could not carry the old
+     * instance's state whatever the boundary did, so it would repeat the first
+     * test in this file rather than say anything new.
+     */
     function Host() {
       const [throwing, setThrowing] = useState(true);
+      const [mounted, setMounted] = useState(true);
       return (
         <>
           <button type="button" onClick={() => setThrowing(false)}>
             fix it
           </button>
-          <ErrorBoundary fallback={<p>gone</p>}>
-            <Boom throwing={throwing} />
-          </ErrorBoundary>
+          <button type="button" onClick={() => setMounted((open) => !open)}>
+            toggle the layer
+          </button>
+          {mounted && (
+            <ErrorBoundary fallback={<p>gone</p>}>
+              <Boom throwing={throwing} />
+            </ErrorBoundary>
+          )}
         </>
       );
     }
-    const { unmount } = render(<Host />);
+    render(<Host />);
     expect(screen.getByText("gone")).toBeInTheDocument();
     // The child is *fixed* before the re-render, which is the only version of
     // this that proves anything: re-rendering a child that still throws draws
@@ -71,15 +85,18 @@ describe("ErrorBoundary", () => {
     fireEvent.click(screen.getByRole("button", { name: "fix it" }));
     // A boundary that healed on the next render would re-run the same bad
     // state under the same finger. The Workshop's way out is `Layer`
-    // unmounting it, which is this:
+    // unmounting it, which is the two clicks below.
     expect(screen.getByText("gone")).toBeInTheDocument();
     expect(screen.queryByText("the bench")).toBeNull();
-    unmount();
-    render(
-      <ErrorBoundary fallback={<p>gone</p>}>
-        <Boom throwing={false} />
-      </ErrorBoundary>,
-    );
+
+    const layer = screen.getByRole("button", { name: "toggle the layer" });
+    fireEvent.click(layer);
+    expect(screen.queryByText("gone")).toBeNull();
+    fireEvent.click(layer);
+    // Closing and reopening is the whole reset — the surface's own lifecycle
+    // rather than a second mechanism. It works only while `failed` lives on the
+    // instance: anything remembered outside it would survive this and hand the
+    // reader a bench that is permanently broken.
     expect(screen.getByText("the bench")).toBeInTheDocument();
   });
 });
