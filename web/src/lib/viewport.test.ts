@@ -1,6 +1,5 @@
-import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { installViewportVars, KEYBOARD_OPEN_PX, keyboardInset, useKeyboardOpen } from "./viewport";
+import { installViewportVars } from "./viewport";
 
 /** A visualViewport a test can drive: a real EventTarget with settable geometry. */
 class FakeVisualViewport extends EventTarget {
@@ -44,83 +43,99 @@ function resizeWindowTo(value: number): void {
 }
 
 const appHeight = () => document.documentElement.style.getPropertyValue("--app-height");
-const keyboard = () => document.documentElement.style.getPropertyValue("--keyboard-inset");
+const viewportTop = () => document.documentElement.style.getPropertyValue("--viewport-top");
 
 beforeEach(() => setInnerHeight(852));
 
 afterEach(() => {
   install(original as FakeVisualViewport | null);
   document.documentElement.style.removeProperty("--app-height");
-  document.documentElement.style.removeProperty("--keyboard-inset");
+  document.documentElement.style.removeProperty("--viewport-top");
 });
 
 describe("installViewportVars", () => {
-  it("mirrors the window onto the document element", () => {
+  it("mirrors the visible band onto the document element", () => {
     install(new FakeVisualViewport(852));
     const uninstall = installViewportVars();
 
     expect(appHeight()).toBe("852px");
-    expect(keyboard()).toBe("0px");
+    expect(viewportTop()).toBe("0px");
 
     uninstall();
   });
 
-  it("reports the keyboard inset when the viewport shrinks, and keeps the column", () => {
+  it("shrinks the shell to the band the keyboard leaves", () => {
     const viewport = new FakeVisualViewport(852);
     install(viewport);
     const uninstall = installViewportVars();
 
     viewport.resizeTo(500);
 
-    // .pb-keyboard pays for the keyboard; a shorter column would pay for it twice.
-    expect(keyboard()).toBe("352px");
-    expect(appHeight()).toBe("852px");
+    expect(appHeight()).toBe("500px");
 
     uninstall();
   });
 
-  it("follows the viewport when it is scrolled under the keyboard", () => {
+  it("takes the visual viewport's word over the layout viewport's", () => {
+    // The frame that broke phase 2: iOS has shrunk the visual viewport for the
+    // keyboard and the layout viewport has not caught up. The shell is the band
+    // that is on screen — 500 px — and never the 852 px window around it.
+    const viewport = new FakeVisualViewport(500);
+    install(viewport);
+    setInnerHeight(852);
+    const uninstall = installViewportVars();
+
+    expect(appHeight()).toBe("500px");
+
+    uninstall();
+  });
+
+  it("follows the viewport when iOS pans it under a focused field", () => {
     const viewport = new FakeVisualViewport(500);
     install(viewport);
     const uninstall = installViewportVars();
 
     viewport.scrollTo(60);
 
-    // 852 - 500 - 60: the offset is part of what is hidden.
-    expect(keyboard()).toBe("292px");
-    expect(appHeight()).toBe("852px");
+    // The band did not change size, only where it starts.
+    expect(appHeight()).toBe("500px");
+    expect(viewportTop()).toBe("60px");
 
     uninstall();
   });
 
-  it("rounds the inset to whole pixels", () => {
-    const viewport = new FakeVisualViewport(500.4);
+  it("rounds to whole pixels", () => {
+    install(new FakeVisualViewport(500.4, 59.6));
+    const uninstall = installViewportVars();
+
+    expect(appHeight()).toBe("500px");
+    expect(viewportTop()).toBe("60px");
+
+    uninstall();
+  });
+
+  it("falls back to the window where there is no visual viewport", () => {
+    install(null);
+    const uninstall = installViewportVars();
+
+    expect(appHeight()).toBe("852px");
+    expect(viewportTop()).toBe("0px");
+
+    resizeWindowTo(400);
+    expect(appHeight()).toBe("400px");
+
+    uninstall();
+  });
+
+  it("follows window resizes with a visual viewport too", () => {
+    const viewport = new FakeVisualViewport(852);
     install(viewport);
     const uninstall = installViewportVars();
 
-    // 852 - 500.4 = 351.6
-    expect(keyboard()).toBe("352px");
-
-    uninstall();
-  });
-
-  it("follows window resizes, with or without a visual viewport", () => {
-    install(null);
-    let uninstall = installViewportVars();
-
-    resizeWindowTo(400);
-
-    expect(appHeight()).toBe("400px");
-    expect(keyboard()).toBe("0px");
-
-    uninstall();
-    install(new FakeVisualViewport(300));
-    uninstall = installViewportVars();
-
-    resizeWindowTo(300);
+    viewport.height = 300;
+    resizeWindowTo(300); // rotation: the window event is the only one iOS sends
 
     expect(appHeight()).toBe("300px");
-    expect(keyboard()).toBe("0px");
 
     uninstall();
   });
@@ -132,56 +147,12 @@ describe("installViewportVars", () => {
     uninstall();
 
     viewport.resizeTo(500);
-    expect(keyboard()).toBe("0px");
+    expect(appHeight()).toBe("852px");
 
     viewport.scrollTo(60);
-    expect(keyboard()).toBe("0px");
+    expect(viewportTop()).toBe("0px");
 
     resizeWindowTo(400);
     expect(appHeight()).toBe("852px");
-  });
-
-  it("reports no keyboard where there is no visual viewport", () => {
-    install(null);
-    const uninstall = installViewportVars();
-
-    expect(appHeight()).toBe("852px");
-    expect(keyboard()).toBe("0px");
-    expect(keyboardInset()).toBe(0);
-
-    uninstall();
-  });
-
-  it("never reports a negative inset", () => {
-    // iOS briefly reports a viewport taller than the window during rotation.
-    install(new FakeVisualViewport(900));
-    const uninstall = installViewportVars();
-
-    expect(keyboard()).toBe("0px");
-    expect(appHeight()).toBe("852px");
-
-    uninstall();
-  });
-});
-
-describe("useKeyboardOpen", () => {
-  it("flips as the inset crosses the threshold, not at any inset at all", () => {
-    const viewport = new FakeVisualViewport(852);
-    install(viewport);
-
-    const { result } = renderHook(() => useKeyboardOpen());
-    expect(result.current).toBe(false);
-
-    act(() => viewport.resizeTo(852 - KEYBOARD_OPEN_PX)); // inset exactly at the line — not open
-    expect(result.current).toBe(false);
-
-    act(() => viewport.resizeTo(852 - KEYBOARD_OPEN_PX - 1)); // one past it — open
-    expect(result.current).toBe(true);
-
-    act(() => viewport.scrollTo(1)); // the scroll takes it back to the line
-    expect(result.current).toBe(false);
-
-    act(() => viewport.resizeTo(852));
-    expect(result.current).toBe(false);
   });
 });

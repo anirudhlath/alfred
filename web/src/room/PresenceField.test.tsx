@@ -5,7 +5,7 @@ import { THEME_KEY } from "@/lib/theme";
 import { ThemeProvider } from "@/shell/ThemeProvider";
 import { PresenceField } from "./PresenceField";
 
-/** 12 pt dot grid, W 393 / H 190: 34 columns x 17 rows. */
+/** 12 pt dot grid at the 393 fallback width jsdom measures, H 190: 34 columns x 17 rows. */
 const STEP = 12;
 const DOTS = 34 * 17;
 
@@ -95,14 +95,30 @@ afterEach(() => {
 });
 
 describe("PresenceField", () => {
-  it("is a 393x190 canvas that takes no pointer events", () => {
+  it("is a full-width 190 px canvas that takes no pointer events", () => {
     const { container } = renderField(new PresenceSignal());
     const canvas = container.querySelector("canvas")!;
     expect(canvas).toBeInTheDocument();
     expect(canvas).toHaveAttribute("aria-hidden", "true");
-    expect(canvas.style.width).toBe("393px");
+    // No inline width: 393 was the mock's iPhone, and on anything else it left
+    // the dots short of both edges. The element is what decides now.
+    expect(canvas.style.width).toBe("");
+    expect(canvas).toHaveClass("w-full");
     expect(canvas.style.height).toBe("190px");
     expect(canvas.style.pointerEvents).toBe("none");
+  });
+
+  it("sizes the grid to the element it is measured on", () => {
+    const width = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(440);
+
+    const { container } = renderField(new PresenceSignal());
+    const canvas = container.querySelector("canvas")!;
+
+    // 440 CSS px at dpr 1, and ceil(440 / 12) + 1 = 38 columns rather than 34.
+    expect(canvas.width).toBe(440);
+    expect(recorded.arcs.length).toBeGreaterThanOrEqual(38 * 17);
+
+    width.mockRestore();
   });
 
   it("scales the backing store by the device pixel ratio, capped at 2", () => {

@@ -48,7 +48,7 @@ export function Sheet({ open, title, onClose, children }: SheetProps) {
       role="dialog"
       aria-modal="true"
       aria-labelledby={titleId}
-      className="fixed inset-0 z-20 flex flex-col justify-end outline-none"
+      className="viewport-fill z-20 flex flex-col justify-end outline-none"
     >
       <button
         type="button"

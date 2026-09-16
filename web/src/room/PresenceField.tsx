@@ -3,7 +3,13 @@ import type { PresenceSignal } from "@/lib/presence-signal";
 import { useReducedMotion } from "@/shell/presence";
 import { useTheme } from "@/shell/ThemeProvider";
 
-const W = 393;
+/**
+ * The handoff's canvas was 393 wide because that is an iPhone 14 Pro. The field
+ * is the full width of whatever phone it is on, measured per frame from the
+ * element itself; this is only what jsdom and a detached canvas get, where
+ * `clientWidth` is 0.
+ */
+const W_FALLBACK = 393;
 const H = 190;
 /** 12 pt dot grid — the handoff's "Presence field" paragraph. */
 const STEP = 12;
@@ -49,8 +55,12 @@ export function PresenceField({ signal, offline }: PresenceFieldProps) {
     // for whoever ticks next, and no mid-swell frame is ever left standing.
     const draw = (now: number, frozen = false) => {
       const dpr = Math.min(2, window.devicePixelRatio || 1);
-      if (canvas.width !== W * dpr) {
-        canvas.width = W * dpr;
+      // Measured every frame rather than observed: the loop is already running,
+      // and a rotation is two reads rather than a ResizeObserver's lifetime.
+      const w = canvas.clientWidth || W_FALLBACK;
+      const backing = Math.round(w * dpr);
+      if (canvas.width !== backing) {
+        canvas.width = backing;
         canvas.height = H * dpr;
         // Resizing wipes the bitmap, resting frame included.
         stillRef.current = false;
@@ -78,7 +88,7 @@ export function PresenceField({ signal, offline }: PresenceFieldProps) {
       stillRef.current = still;
 
       g.setTransform(dpr, 0, 0, dpr, 0, 0);
-      g.clearRect(0, 0, W, H);
+      g.clearRect(0, 0, w, H);
 
       // The wave phase only advances while something is flowing, so the field is
       // genuinely motionless at rest rather than slowly creeping.
@@ -101,7 +111,7 @@ export function PresenceField({ signal, offline }: PresenceFieldProps) {
           : "205,132,80";
       const base = offline ? 0.42 : dark ? 0.55 : 0.7;
 
-      const cols = Math.ceil(W / STEP) + 1;
+      const cols = Math.ceil(w / STEP) + 1;
       const rows = Math.ceil(H / STEP) + 1;
 
       // Tides: low bands are long swells travelling across, high bands are short
@@ -142,7 +152,7 @@ export function PresenceField({ signal, offline }: PresenceFieldProps) {
             const g2 = Math.abs(p2 - 0.5);
             const band = Math.exp(-Math.pow(g1 / 0.11, 2));
             const back = Math.exp(-Math.pow(g2 / 0.18, 2)) * 0.35;
-            const lean = 1 - Math.abs(x - W / 2) / (W * 0.9);
+            const lean = 1 - Math.abs(x - w / 2) / (w * 0.9);
             z += (band * 1.15 + back) * lean * th * GAIN;
           }
 
@@ -176,8 +186,11 @@ export function PresenceField({ signal, offline }: PresenceFieldProps) {
     // handoff's motion section, and the JS half of the CSS `prefers-reduced-motion`
     // block in index.css.
     if (reduced) {
-      draw(0, true);
-      return;
+      // The loop is what normally notices a rotation; without it, the window is.
+      const redraw = () => draw(0, true);
+      redraw();
+      window.addEventListener("resize", redraw);
+      return () => window.removeEventListener("resize", redraw);
     }
 
     const start = () => {
@@ -209,9 +222,8 @@ export function PresenceField({ signal, offline }: PresenceFieldProps) {
     <canvas
       ref={canvasRef}
       aria-hidden="true"
-      className="absolute top-0 left-1/2 -translate-x-1/2"
+      className="absolute inset-x-0 top-0 w-full"
       style={{
-        width: `${W}px`,
         height: `${H}px`,
         pointerEvents: "none",
         WebkitMaskImage: "linear-gradient(to bottom, rgba(0,0,0,.95) 30%, transparent 100%)",

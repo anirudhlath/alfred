@@ -3,19 +3,24 @@ import { describe, expect, it, vi } from "vitest";
 import { WorkshopHandle } from "./WorkshopHandle";
 
 describe("WorkshopHandle", () => {
-  it("reads workshop under a chevron, over the bar", () => {
+  it("reads workshop under a chevron", () => {
     render(<WorkshopHandle onOpen={() => {}} />);
     const handle = screen.getByRole("button", { name: "Open the Workshop" });
     expect(handle).toHaveTextContent("workshop");
     expect(handle).toHaveClass("min-h-11");
-    // Both are pictures; the word under them is what is read.
+    // The chevron is a picture; the word under it is what is read.
     expect(handle.querySelector("[data-testid=handle-chevron]")).toHaveAttribute(
       "aria-hidden",
       "true",
     );
-    const bar = handle.querySelector("[data-testid=handle-bar]");
-    expect(bar).toHaveAttribute("aria-hidden", "true");
-    expect(bar).toHaveStyle({ background: "var(--fg)" });
+  });
+
+  it("draws no home indicator of its own", () => {
+    // The handoff's 139x5 bar is the iPhone frame the mock was drawn on, not the
+    // design. iOS draws the real one over env(safe-area-inset-bottom).
+    render(<WorkshopHandle onOpen={() => {}} />);
+    const handle = screen.getByRole("button", { name: "Open the Workshop" });
+    expect(handle.querySelector("[data-testid=handle-bar]")).toBeNull();
   });
 
   it("opens on a tap", () => {

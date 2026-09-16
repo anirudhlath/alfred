@@ -1,31 +1,14 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Composer } from "./Composer";
 
-function setViewport(height: number, innerHeight = 852): void {
-  Object.defineProperty(window, "innerHeight", { configurable: true, value: innerHeight });
-  Object.defineProperty(window, "visualViewport", {
-    configurable: true,
-    value: Object.assign(new EventTarget(), { height, offsetTop: 0 }),
-  });
+/** What a tap on the field does. `.focus()` is what fires React's `onFocus`. */
+function focusField(): HTMLElement {
+  const field = screen.getByLabelText("Message Alfred");
+  act(() => field.focus());
+  return field;
 }
-
-const originalViewport = window.visualViewport;
-const originalInnerHeight = window.innerHeight;
-
-// Both, or the 852 px `innerHeight` outlives the test that set it and every
-// later test sees 84 px of phantom keyboard against setup.ts's 768 px viewport.
-afterEach(() => {
-  Object.defineProperty(window, "visualViewport", {
-    configurable: true,
-    value: originalViewport,
-  });
-  Object.defineProperty(window, "innerHeight", {
-    configurable: true,
-    value: originalInnerHeight,
-  });
-});
 
 describe("Composer", () => {
   it("invites a message and offers the hold slot while empty", () => {
@@ -137,22 +120,31 @@ describe("Composer", () => {
     expect(onSend).toHaveBeenCalledWith("Turn the hall light off");
   });
 
-  it("drops the home-indicator inset once the keyboard is up", () => {
-    setViewport(500); // 852 - 500 = 352 px of keyboard
+  it("keeps the home-indicator inset while the field is idle", () => {
     const { container } = render(<Composer online onSend={() => {}} hold={null} />);
-    const row = container.querySelector(".pb-keyboard")!;
-    expect(row).toHaveClass("keyboard-up");
+    expect(container.querySelector(".pb-keyboard")!).not.toHaveClass("keyboard-up");
   });
 
-  it("keeps the inset while the keyboard is down", () => {
-    setViewport(852);
+  it("drops the home-indicator inset once the field has focus", () => {
     const { container } = render(<Composer online onSend={() => {}} hold={null} />);
-    const row = container.querySelector(".pb-keyboard")!;
-    expect(row).not.toHaveClass("keyboard-up");
+
+    focusField();
+
+    // The keys cover the indicator strip; paying for it again leaves a band of
+    // background between the field and the keyboard.
+    expect(container.querySelector(".pb-keyboard")!).toHaveClass("keyboard-up");
   });
 
-  it("shows the handle under the row while the keyboard is down", () => {
-    setViewport(852);
+  it("takes the inset back when focus leaves", () => {
+    const { container } = render(<Composer online onSend={() => {}} hold={null} />);
+
+    const field = focusField();
+    act(() => field.blur());
+
+    expect(container.querySelector(".pb-keyboard")!).not.toHaveClass("keyboard-up");
+  });
+
+  it("shows the handle under the row while the field is idle", () => {
     const { container } = render(
       <Composer online onSend={() => {}} hold={null} handle={<button type="button">workshop</button>} />,
     );
@@ -162,9 +154,24 @@ describe("Composer", () => {
     expect(container.querySelector(".pb-keyboard")!.lastElementChild).toContainElement(handle);
   });
 
-  it("hides the handle while the keyboard is up", () => {
-    setViewport(500);
-    render(<Composer online onSend={() => {}} hold={null} handle={<button type="button">workshop</button>} />);
+  it("hides the handle while the field has focus", () => {
+    render(
+      <Composer online onSend={() => {}} hold={null} handle={<button type="button">workshop</button>} />,
+    );
+
+    focusField();
+
     expect(screen.queryByRole("button", { name: "workshop" })).toBeNull();
+  });
+
+  it("brings the handle back when focus leaves", () => {
+    render(
+      <Composer online onSend={() => {}} hold={null} handle={<button type="button">workshop</button>} />,
+    );
+
+    const field = focusField();
+    act(() => field.blur());
+
+    expect(screen.getByRole("button", { name: "workshop" })).toBeInTheDocument();
   });
 });
