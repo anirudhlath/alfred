@@ -48,9 +48,16 @@ export function Room() {
    * outlives the surface that opened it.
    */
   const [why, setWhy] = useState<StreamRef | null>(null);
-  // Stable, so the memoised Workshop does not re-render for every chat frame,
-  // overview poll and Door tick the Room re-renders on (Workshop.tsx).
+  // Stable, both of them, so the memoised Workshop does not re-render for every
+  // chat frame, overview poll and Door tick the Room re-renders on
+  // (Workshop.tsx) — an inline arrow would undo that memoisation entirely.
   const closeWorkshop = useCallback(() => setWorkshopOpen(false), []);
+  /**
+   * The Held-back sheet's one opener, shared by the DND row here and System ›
+   * Quiet inside the Workshop. One sheet and one piece of state: the Workshop
+   * does not render a second copy, it asks for this one.
+   */
+  const openHeld = useCallback(() => setSheetOpen(true), []);
 
   // Read once, refreshed when the app returns — a PWA left open overnight must
   // not still be saying "Good evening".
@@ -111,11 +118,7 @@ export function Room() {
         <StatusLine overview={overview} online={online} lastTrueAt={lastTrueAt} />
         <OfflineNote online={online} reconnecting={reconnecting} lastTrueAt={lastTrueAt} />
         {dnd.active ? (
-          <DndRow
-            until={dnd.until}
-            heldCount={overview?.counts.deferred ?? 0}
-            onOpen={() => setSheetOpen(true)}
-          />
+          <DndRow until={dnd.until} heldCount={overview?.counts.deferred ?? 0} onOpen={openHeld} />
         ) : null}
       </header>
 
@@ -151,7 +154,7 @@ export function Room() {
 
       <WhySheet anchor={why} onClose={() => setWhy(null)} />
 
-      <Workshop open={workshopOpen} onClose={closeWorkshop} onWhy={setWhy} />
+      <Workshop open={workshopOpen} onClose={closeWorkshop} onWhy={setWhy} onHeld={openHeld} />
 
       <DoorLayer
         tracked={door.current}

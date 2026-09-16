@@ -88,18 +88,50 @@ const observation = reflexObservationsPage.entries.find(
 /** The same row, non-optional, for the sheet the Escape test opens over the Workshop. */
 const anchorEntry = reflexObservationsPage.entries[2];
 
+/** Every path this render has asked for, in order — see "asks for nothing". */
+const asked: string[] = [];
+
 function stubFetch(): void {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
+      asked.push(url);
       if (url === "/api/admin/overview") return new Response(JSON.stringify(overviewFixture), { status: 200 });
       if (url === "/api/admin/streams/reflex_observations?count=50") {
         return new Response(JSON.stringify(reflexObservationsPage), { status: 200 });
       }
+      // The one read on these benches that answers a **bare array** rather
+      // than an envelope (`lib/system.ts`, `fetchIntegrations`).
+      if (url === "/api/integrations") return new Response("[]", { status: 200 });
+      // Every other read on the three new benches: a body with none of the
+      // keys they look for, which each fetcher reads as an empty list. The
+      // benches mount and say they have nothing, which is all these tests ask
+      // of them — what each one does with a full list is its own file's.
       return new Response(JSON.stringify(empty), { status: 200 });
     }),
   );
+}
+
+/**
+ * The Workshop's own `tabpanel`. Found by document order rather than by role
+ * alone: the Memory bench has a `tabpanel` of its own for its four sub-tabs,
+ * and it is a descendant of this one.
+ */
+function workshopPanel(): HTMLElement {
+  return screen.getAllByRole("tabpanel")[0];
+}
+
+/**
+ * What a screen reader would announce from a live region: its text with every
+ * `aria-hidden` subtree dropped. `toHaveTextContent` reads the lot, hidden
+ * children included, and the difference between the two is the whole point of
+ * the header's nested rate span.
+ */
+function spoken(el: HTMLElement): string {
+  const clone = el.cloneNode(true) as HTMLElement;
+  for (const hidden of clone.querySelectorAll('[aria-hidden="true"]')) hidden.remove();
+  return clone.textContent ?? "";
 }
 
 /**
@@ -111,11 +143,12 @@ function mountInRoom() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const onClose = vi.fn();
   const onWhy = vi.fn();
+  const onHeld = vi.fn();
   const bump = { fire: () => {} };
   function Room() {
     const [, setTick] = useState(0);
     bump.fire = () => setTick((tick) => tick + 1);
-    return <Workshop open onClose={onClose} onWhy={onWhy} />;
+    return <Workshop open onClose={onClose} onWhy={onWhy} onHeld={onHeld} />;
   }
   render(
     <QueryClientProvider client={client}>
@@ -127,21 +160,22 @@ function mountInRoom() {
   return { rerenderRoom: () => act(() => bump.fire()) };
 }
 
-function mount(open: boolean, onClose = vi.fn(), onWhy = vi.fn()) {
+function mount(open: boolean, onClose = vi.fn(), onWhy = vi.fn(), onHeld = vi.fn()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const tree = (isOpen: boolean) => (
     <QueryClientProvider client={client}>
       <ConnectionProvider>
-        <Workshop open={isOpen} onClose={onClose} onWhy={onWhy} />
+        <Workshop open={isOpen} onClose={onClose} onWhy={onWhy} onHeld={onHeld} />
       </ConnectionProvider>
     </QueryClientProvider>
   );
   const view = render(tree(open));
-  return { ...view, onClose, onWhy, reopen: (isOpen: boolean) => view.rerender(tree(isOpen)) };
+  return { ...view, onClose, onWhy, onHeld, reopen: (isOpen: boolean) => view.rerender(tree(isOpen)) };
 }
 
 beforeEach(() => {
   sockets.telemetryUp = true;
+  asked.length = 0;
   vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.setSystemTime(new Date(2026, 8, 7, 21, 14, 0));
   stubFetch();
@@ -162,15 +196,121 @@ describe("Workshop", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("opens on Activity; the other benches say they are not built", () => {
+  it("opens on Activity, and each tab brings up the bench it names", async () => {
     mount(true);
     expect(screen.getByRole("tab", { name: "Activity" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("button", { name: "Pause feed" })).toBeInTheDocument();
+
+    // Each bench found by the one control only it has, rather than by a
+    // heading: the tablist is Memory's, the kind chips are Triggers', and the
+    // switch is System's.
     fireEvent.click(screen.getByRole("tab", { name: "Memory" }));
-    expect(screen.getByText("not built yet · phase 3")).toBeInTheDocument();
+    expect(screen.getByRole("tablist", { name: "Memory" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Pause feed" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Triggers" }));
+    expect(screen.getByRole("group", { name: "Trigger kinds" })).toBeInTheDocument();
+    expect(screen.queryByRole("tablist", { name: "Memory" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("tab", { name: "System" }));
+    expect(screen.getByRole("switch", { name: "Do-not-disturb" })).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Trigger kinds" })).toBeNull();
+
     fireEvent.click(screen.getByRole("tab", { name: "Activity" }));
     expect(screen.getByRole("button", { name: "Pause feed" })).toBeInTheDocument();
+    // The System bench's five reads land after the bench has gone; letting them
+    // settle here keeps the noise out of the next test.
+    await waitFor(() => expect(asked).toContain("/api/auth/sessions"));
+  });
+
+  it("keeps a bench's own state through a trip to another bench", async () => {
+    mount(true);
+    fireEvent.click(screen.getByRole("tab", { name: "Memory" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Semantic" }));
+    expect(screen.getByRole("tab", { name: "Semantic" })).toHaveAttribute("aria-selected", "true");
+
+    fireEvent.click(screen.getByRole("tab", { name: "Activity" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Memory" }));
+
+    // The sub-tab lives in `useMemory`, which is called in `WorkshopPanel`
+    // above the bench that was swapped out — the convention every hook here
+    // follows, and the reason a reader can leave a bench mid-thought.
+    expect(await screen.findByRole("tab", { name: "Semantic" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("unmounts the bench nobody is looking at, and its clock with it", async () => {
+    mount(true);
+    fireEvent.click(screen.getByRole("tab", { name: "System" }));
+    // Two `setInterval`s live on this bench: the 1 Hz health stamp and the
+    // minute tick that dates its session rows. A `switch` that returned all
+    // four benches and hid three would leave both running behind a panel
+    // nobody can see, for the life of the Workshop.
+    expect(await screen.findByTestId("health-stamp")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Activity" }));
+    expect(screen.queryByTestId("health-stamp")).toBeNull();
+  });
+
+  it("asks for nothing on behalf of a bench nobody has opened", async () => {
+    mount(true);
+    await waitFor(() => expect(asked).toContain("/api/admin/overview"));
+    // Every hook is called on every render; each one is gated on its own bench.
+    expect(asked).not.toContain("/api/admin/triggers");
+    expect(asked).not.toContain("/api/auth/sessions");
+
+    fireEvent.click(screen.getByRole("tab", { name: "System" }));
+    await waitFor(() => expect(asked).toContain("/api/auth/sessions"));
+  });
+
+  it("announces the connection from the header, whichever bench is up", async () => {
+    mount(true);
+    const status = screen.getByTestId("workshop-status");
+    expect(status).toHaveAttribute("role", "status");
+    expect(status).toHaveAttribute("aria-live", "polite");
+
+    // The point of moving it: on three of the four benches nothing else on
+    // screen says the pump has stopped, because the Activity banner that used
+    // to say it is unmounted with its bench.
+    fireEvent.click(screen.getByRole("tab", { name: "Memory" }));
+    vi.setSystemTime(new Date(2026, 8, 7, 21, 40, 0));
+    act(() => telemetry().onstatus("offline"));
+    const onMemory = screen.getByTestId("workshop-status");
+    expect(onMemory).toHaveAttribute("aria-live", "polite");
+    expect(onMemory).toHaveTextContent("last true 21:40 · not live");
+    await waitFor(() => expect(asked).toContain("/api/admin/memory/episodic"));
+  });
+
+  it("keeps the rate out of what that region announces", async () => {
+    mount(true);
+    const status = screen.getByTestId("workshop-status");
+    await waitFor(() => expect(status).toHaveTextContent("live · 2.1 ev/s"));
+    // The rate moves every 30 s. Inside a polite region it would be read out
+    // every poll, so it is in an `aria-hidden` span: seen, never spoken.
+    expect(spoken(status)).toBe("live");
+    expect(spoken(status)).not.toContain("ev/s");
+
+    fireEvent.click(screen.getByRole("button", { name: "Pause feed" }));
+    // The held count *is* news, and is announced.
+    expect(spoken(screen.getByTestId("workshop-status"))).toBe("paused · 0 new");
+  });
+
+  it("leaves each bench its own read-error region", async () => {
+    mount(true);
+    fireEvent.click(screen.getByRole("tab", { name: "System" }));
+    // A different fact from the header's, and the one thing that would
+    // otherwise go unsaid: the header speaks for the connection, this speaks
+    // for a read that came back refused.
+    expect(await screen.findByRole("status", { name: "Read errors" })).toBeInTheDocument();
+    expect(screen.getByTestId("workshop-status")).toHaveAttribute("role", "status");
+  });
+
+  it("hands the Held-back sheet up to the Room", async () => {
+    const { onHeld } = mount(true);
+    fireEvent.click(screen.getByRole("tab", { name: "System" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Held back/ }));
+    // The sheet is the Room's — Quiet's third row is the only thing on this
+    // bench that leaves it.
+    expect(onHeld).toHaveBeenCalledTimes(1);
   });
 
   it("says live with the overview's rate", async () => {
@@ -202,7 +342,9 @@ describe("Workshop", () => {
     // set `lastTrueAt` to 21:14, but the pump has never been live, and the
     // header may not say a thing the banner below it contradicts.
     expect(screen.getByTestId("workshop-status")).toHaveTextContent("last true --:-- · not live");
-    expect(screen.getByRole("status", { name: "Feed status" })).toHaveTextContent(
+    // The bench's banner says the same thing in its own words, and no longer
+    // as a second polite region — the header's is the one that speaks now.
+    expect(screen.getByTestId("feed-banner")).toHaveTextContent(
       "Feed has not been live yet. Nothing below is live.",
     );
     // Pause is honoured underneath, but the status line still says not live.
@@ -221,7 +363,7 @@ describe("Workshop", () => {
     act(() => telemetry().onstatus("offline"));
 
     expect(screen.getByTestId("workshop-status")).toHaveTextContent("last true 21:40 · not live");
-    expect(screen.getByRole("status", { name: "Feed status" })).toHaveTextContent(
+    expect(screen.getByTestId("feed-banner")).toHaveTextContent(
       "Feed stopped at 21:40. Nothing below is live.",
     );
   });
@@ -243,27 +385,23 @@ describe("Workshop", () => {
 
   it("hangs the bench off its own tab", () => {
     mount(true);
-    const panel = screen.getByRole("tabpanel");
+    const panel = workshopPanel();
     const activity = screen.getByRole("tab", { name: "Activity" });
     expect(activity).toHaveAttribute("aria-controls", panel.id);
     expect(panel).toHaveAttribute("aria-labelledby", activity.id);
     expect(panel).toContainElement(screen.getByRole("button", { name: "Pause feed" }));
 
-    // The APG makes the panel's tab stop optional when it holds something
-    // focusable and required when it does not — and three of the four benches
-    // are a bare `<p>` with nothing to reach. Always on, so the rule does not
-    // change under the reader as they walk the switcher.
+    // The stop that lands on the bench itself rather than inside it, on every
+    // bench, so the keyboard path does not change under the reader as they
+    // walk the switcher.
     expect(panel).toHaveAttribute("tabindex", "0");
 
     fireEvent.click(screen.getByRole("tab", { name: "Memory" }));
-    expect(screen.getByRole("tabpanel")).toHaveAttribute(
-      "aria-labelledby",
-      screen.getByRole("tab", { name: "Memory" }).id,
-    );
-    expect(screen.getByRole("tabpanel")).toHaveAttribute("tabindex", "0");
+    expect(workshopPanel()).toHaveAttribute("aria-labelledby", screen.getByRole("tab", { name: "Memory" }).id);
+    expect(workshopPanel()).toHaveAttribute("tabindex", "0");
   });
 
-  it("keeps the Activity bench's state through a trip to another bench", () => {
+  it("keeps the Activity bench's hold through a trip to another bench", () => {
     mount(true);
     fireEvent.click(screen.getByRole("button", { name: "Pause feed" }));
     fireEvent.click(screen.getByRole("tab", { name: "Memory" }));
@@ -292,7 +430,7 @@ describe("Workshop", () => {
     render(
       <QueryClientProvider client={client}>
         <ConnectionProvider>
-          <Workshop open onClose={onClose} onWhy={vi.fn()} />
+          <Workshop open onClose={onClose} onWhy={vi.fn()} onHeld={vi.fn()} />
           <WhySheet anchor={{ stream: "reflex_observations", entry: anchorEntry }} onClose={sheetClose} />
         </ConnectionProvider>
       </QueryClientProvider>,
