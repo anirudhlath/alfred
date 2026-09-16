@@ -64,14 +64,53 @@ export function rawCall(toolName: string, params: Record<string, unknown>): stri
   return entries.length === 0 ? `${toolName} {}` : `${toolName} { ${entries.join(", ")} }`;
 }
 
+const DAY_MS = 86_400_000;
+
+const startOfDay = (value: Date): number =>
+  new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
+
+/**
+ * Whole days from `now`'s midnight to `date`'s: 0 today, positive ahead, negative
+ * behind. One signed count for all three labels below, which otherwise counted in
+ * opposite directions a call apart.
+ */
+const daysAhead = (date: Date, now: Date): number =>
+  Math.round((startOfDay(date) - startOfDay(now)) / DAY_MS);
+
 /** Timeline day divider: `earlier today` · `yesterday` · `4 Sep`. */
 export function dayLabel(date: Date, now: Date): string {
-  const startOfDay = (value: Date) =>
-    new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
-  const days = Math.round((startOfDay(now) - startOfDay(date)) / 86_400_000);
-  if (days <= 0) return "earlier today";
-  if (days === 1) return "yesterday";
+  const days = daysAhead(date, now);
+  if (days >= 0) return "earlier today";
+  if (days === -1) return "yesterday";
   return dayMonth(date);
+}
+
+/**
+ * `08:40 tomorrow` · `23:15` · `08:00 earlier today` · `20:52 yesterday` · `12 Sep`
+ * — a stamp that may be ahead of `now`. `dayLabel` alone cannot say so: written
+ * for a feed, where everything is behind, it answers "earlier today" for every
+ * date in the future.
+ *
+ * A bare clock means *still ahead, today*, and nothing else. A moment already
+ * behind says which day it was, because `runs 08:00` on a one-shot that was due
+ * this morning is otherwise indistinguishable from one due tonight.
+ */
+export function whenLabel(date: Date, now: Date): string {
+  const days = daysAhead(date, now);
+  if (days === 1) return `${hhmm(date)} tomorrow`;
+  if (days > 1) return `${hhmm(date)} ${dayMonth(date)}`;
+  if (days === 0 && date.getTime() > now.getTime()) return hhmm(date);
+  return `${hhmm(date)} ${dayLabel(date, now)}`;
+}
+
+/**
+ * `20:52` · `20:52 yesterday` · `20:52 9 Sep` — a stamp the reader already knows
+ * is behind them: when a trigger was created, when a session signed in. The day
+ * is named only when it is not today, where `whenLabel` would add an "earlier
+ * today" that a line already spoken in the past tense does not need.
+ */
+export function pastLabel(date: Date, now: Date): string {
+  return daysAhead(date, now) === 0 ? hhmm(date) : whenLabel(date, now);
 }
 
 /**

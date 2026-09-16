@@ -506,15 +506,17 @@ export const semanticFile = (overrides: Partial<SemanticFile> = {}): SemanticFil
  * 2026-09-16 20:52, on the device's own clock — when the fixture trigger was
  * written. Local rather than UTC for the same reason `MEMORY_AT` is: `hhmm`
  * reads the device's clock, so a UTC instant would stamp one string in CI and
- * another on a developer's machine.
+ * another on a developer's machine. Epoch ms like its neighbours, not a `Date`:
+ * a shared `Date` is mutable, and one `setHours` in a future test file would
+ * poison every file importing it.
  */
-export const TRIGGER_CREATED_AT = new Date(2026, 8, 16, 20, 52, 0);
+export const TRIGGER_CREATED_AT = new Date(2026, 8, 16, 20, 52, 0).getTime();
 
 /** 21:30 the same evening: the `now` every meta assertion is read against. */
 export const TRIGGER_NOW = new Date(2026, 8, 16, 21, 30, 0).getTime();
 
 /** 08:40 the next morning — the one-shot's due time, so `tomorrow` is testable. */
-export const TRIGGER_RUN_AT = new Date(2026, 8, 17, 8, 40, 0);
+export const TRIGGER_RUN_AT = new Date(2026, 8, 17, 8, 40, 0).getTime();
 
 /**
  * One stored trigger, exactly as `BaseTrigger.model_dump_json()` leaves it in the
@@ -528,7 +530,7 @@ export const trigger = (overrides: Partial<Trigger> = {}): Trigger => ({
   enabled: true,
   one_shot: false,
   created_by: "conversation",
-  created_at: TRIGGER_CREATED_AT.toISOString(),
+  created_at: new Date(TRIGGER_CREATED_AT).toISOString(),
   last_fired: null,
   action: {
     tool_name: "notify.send",
@@ -536,6 +538,6 @@ export const trigger = (overrides: Partial<Trigger> = {}): Trigger => ({
     parameters: { message: "Bins go out tonight" },
   },
   urgency: "important",
-  conditions: { cron: null, run_at: TRIGGER_RUN_AT.toISOString() },
+  conditions: { cron: null, run_at: new Date(TRIGGER_RUN_AT).toISOString() },
   ...overrides,
 });

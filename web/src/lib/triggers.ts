@@ -1,5 +1,5 @@
 import { api, post } from "./api";
-import { dayLabel, dayMonth, hhmm } from "./format";
+import { pastLabel, whenLabel } from "./format";
 import type { Urgency } from "./types";
 
 /**
@@ -11,7 +11,7 @@ export type TriggerType = "time" | "sensor" | "composite";
 
 /**
  * What the bench groups by. `schedule` is not a stored type: a `time` trigger
- * carrying a `cron` recurs, one carrying a `run_at` happens once, and the
+ * armed with a `cron` recurs, one armed with a `run_at` happens once, and the
  * handoff's chips (§7) draw that distinction even though the record does not.
  */
 export type TriggerKind = "time" | "schedule" | "sensor" | "composite";
@@ -35,12 +35,12 @@ export interface TriggerAction {
 /**
  * One trigger as `GET /api/admin/triggers` sends it: `BaseTrigger.model_dump_json()`
  * read straight back out of the Redis hash, so `created_at`/`last_fired` are ISO
- * strings and `conditions` is whichever subclass `Conditions` model wrote it.
+ * strings and `conditions` is whatever the subclass `Conditions` model wrote.
  *
  * `conditions` is deliberately `Record<string, unknown>` rather than a union:
  * the three shapes are the subclasses' business, the admin route re-serves them
- * unvalidated, and every read of them in this file is guarded. Only the helpers
- * below look inside one.
+ * unvalidated, and the tool that writes them hands the model's raw dict to
+ * pydantic — so every read of one below is guarded.
  */
 export interface Trigger {
   trigger_id: string;
@@ -56,51 +56,72 @@ export interface Trigger {
   conditions: Record<string, unknown>;
 }
 
-/** A condition field that is actually there: a non-blank string, or nothing. */
-const str = (value: unknown): string | null =>
-  typeof value === "string" && value.trim() !== "" ? value : null;
-
-/** An ISO stamp that parses. An unreadable one is no time at all, never 1970. */
-const at = (value: unknown): Date | null => {
-  const iso = str(value);
-  if (iso === null) return null;
-  const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? null : date;
+/** A condition field that is really there: a non-blank string, trimmed to what it says. */
+const str = (value: unknown): string | null => {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed === "" ? null : trimmed;
 };
 
-const DAY_MS = 86_400_000;
+/**
+ * An ISO stamp that parses, as epoch ms. Every trigger time is one —
+ * `model_dump_json` writes `created_at`, `last_fired` and a time record's
+ * `run_at` as ISO strings — so unlike `memory.ts`'s namesake this reads no epoch
+ * numbers. Non-positive is null for the same reason it is there: no trigger was
+ * written in 1969, and an epoch-0 stamp is a field that was never set.
+ */
+const time = (value: unknown): number | null => {
+  const iso = str(value);
+  if (iso === null) return null;
+  const parsed = Date.parse(iso);
+  return Number.isNaN(parsed) || parsed <= 0 ? null : parsed;
+};
 
-const startOfDay = (date: Date): number =>
-  new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+/** A count a row can print: finite, whole, never negative. */
+const count = (value: unknown): number | null =>
+  typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : null;
+
+/** A JSON object with something in it — an empty match constrains nothing. */
+const record = (value: unknown): Record<string, unknown> | null => {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const entries = value as Record<string, unknown>;
+  return Object.keys(entries).length === 0 ? null : entries;
+};
+
+/** What a time record is armed with. */
+type TimeSchedule = { at: number } | { cron: string };
 
 /**
- * `08:40` today · `08:40 tomorrow` · `08:40 12 Sep` · `20:52 yesterday`.
+ * `run_at` first, exactly as the engine reads it: `TimeTrigger.next_fire_time`
+ * returns out of its `run_at` branch unconditionally, and returns nothing at all
+ * once `last_fired >= run_at`, so it never falls through to a cron. A record
+ * carrying both fires once and dies — and one can be written, because
+ * `TimeTrigger.Conditions` has both fields optional with no validator between
+ * them and the trigger tool passes the model's raw conditions dict in.
  *
- * `dayLabel` alone cannot do this: it was written for a feed, where everything
- * is in the past, so it answers "earlier today" for every future date. A trigger
- * line looks forward — `runs 08:40` on a row due next Thursday would be a lie —
- * so the future is labelled here and the past is handed to `dayLabel`, which
- * already spells it the way the rest of the client does.
+ * The single place that precedence lives, so the chip and the row's own line
+ * cannot disagree about which field is in charge.
  */
-function whenLabel(date: Date, now: Date): string {
-  const days = Math.round((startOfDay(date) - startOfDay(now)) / DAY_MS);
-  if (days === 0) return hhmm(date);
-  if (days === 1) return `${hhmm(date)} tomorrow`;
-  if (days > 1) return `${hhmm(date)} ${dayMonth(date)}`;
-  return `${hhmm(date)} ${dayLabel(date, now)}`;
-}
+const timeSchedule = (conditions: Record<string, unknown>): TimeSchedule | null => {
+  const at = time(conditions.run_at);
+  if (at !== null) return { at };
+  const cron = str(conditions.cron);
+  return cron === null ? null : { cron };
+};
 
 /**
  * Which chip a trigger belongs under. `sensor` and `composite` are the stored
- * type; a `time` record splits on whether it holds a cron, and a type this
- * client has never heard of is read as time-ish rather than dropped from every
- * filtered list.
+ * type; everything else is read as a time record — including a `trigger_type`
+ * this client has never heard of, deliberately, so an unknown row still lands
+ * under a chip instead of dropping out of every filtered list. One armed with a
+ * cron is chipped `schedule` on exactly the evidence a known record would be.
  */
 export function triggerKind(trigger: Trigger): TriggerKind {
   if (trigger.trigger_type === "sensor" || trigger.trigger_type === "composite") {
     return trigger.trigger_type;
   }
-  return str(trigger.conditions.cron) === null ? "time" : "schedule";
+  const schedule = timeSchedule(trigger.conditions);
+  return schedule !== null && "cron" in schedule ? "schedule" : "time";
 }
 
 /** The middle clause: what this trigger actually waits for. */
@@ -112,32 +133,44 @@ function waitsFor(trigger: Trigger, now: Date): string {
       const entity = str(conditions.entity_id);
       if (entity === null) return "no entity stored";
       const state = str(conditions.state_match);
-      return state === null ? `${entity} on any change` : `${entity} is ${state}`;
+      const attributes = record(conditions.attribute_match);
+      // Both clauses, because either one alone narrows the match: a row that
+      // said "on any change" while an `attribute_match` was in force would be
+      // describing a trigger that does not fire on any change.
+      if (state === null && attributes === null) return `${entity} on any change`;
+      const clauses = [entity];
+      if (state !== null) clauses.push(`is ${state}`);
+      if (attributes !== null) clauses.push(`with ${attributeList(attributes)}`);
+      return clauses.join(" ");
     }
 
     case "composite": {
       const children = Array.isArray(conditions.children) ? conditions.children.length : null;
-      const required = typeof conditions.require === "number" ? conditions.require : null;
+      const required = count(conditions.require);
+      // Half a record is not a count. `2 of 3` read off a missing `require`
+      // would be invented, and `? of 3` is not in the vocabulary.
       if (children === null || required === null) return "no conditions stored";
       return `${required} of ${children} conditions`;
     }
 
-    // One case for both halves of a time record, because `schedule` is only
-    // ever a time record that had a cron. A record holding both is drawn by its
-    // cron, so this line agrees with the kind beside it — though
-    // `TimeTrigger.next_fire_time` reads `run_at` first and would fire that
-    // one. Nothing writes both: the LLM's tool sets one field or the other.
     case "time":
     case "schedule": {
-      const cron = str(conditions.cron);
-      // Printed, not resolved: `next_fire_time()` lives in the triggers process
-      // and needs the user's timezone and `last_fired` to mean anything. A cron
-      // we can only show; inventing "fires 19:00 Thursday" here would be a guess.
-      if (cron !== null) return `cron ${cron}`;
-      const runAt = at(conditions.run_at);
-      return runAt === null ? "no schedule stored" : `runs ${whenLabel(runAt, now)}`;
+      const schedule = timeSchedule(conditions);
+      if (schedule === null) return "no schedule stored";
+      // A cron is printed, never resolved: `next_fire_time()` runs in the
+      // triggers process and needs the user's timezone and `last_fired` to mean
+      // anything, and neither is on this response.
+      if ("cron" in schedule) return `cron ${schedule.cron}`;
+      return `runs ${whenLabel(new Date(schedule.at), now)}`;
     }
   }
+}
+
+/** `battery 12, mode "eco"` — the attributes a sensor match requires, as `rawCall` spells them. */
+function attributeList(attributes: Record<string, unknown>): string {
+  return Object.entries(attributes)
+    .map(([key, value]) => `${key} ${JSON.stringify(value)}`)
+    .join(", ");
 }
 
 /**
@@ -152,11 +185,12 @@ function waitsFor(trigger: Trigger, now: Date): string {
  */
 export function triggerMeta(trigger: Trigger, now: number): string {
   const clock = new Date(now);
-  const created = at(trigger.created_at);
+  const created = time(trigger.created_at);
+  const stamp = created === null ? "--:--" : pastLabel(new Date(created), clock);
   return [
     trigger.one_shot ? "one-shot" : "recurring",
     waitsFor(trigger, clock),
-    `created from ${trigger.created_by} ${created === null ? "--:--" : whenLabel(created, clock)}`,
+    `created from ${trigger.created_by} ${stamp}`,
   ].join(" · ");
 }
 

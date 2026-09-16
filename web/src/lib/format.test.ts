@@ -8,9 +8,11 @@ import {
   humaniseTool,
   mmss,
   notificationText,
+  pastLabel,
   rawCall,
   shortId,
   usd,
+  whenLabel,
 } from "./format";
 import type { StreamSummary } from "./types";
 
@@ -135,6 +137,50 @@ describe("dayLabel", () => {
   });
   it("calls a timestamp from a skewed clock today, not a day in the future", () => {
     expect(dayLabel(new Date(2026, 8, 8, 9, 0), now)).toBe("earlier today");
+  });
+});
+
+describe("whenLabel", () => {
+  const now = new Date(2026, 8, 16, 21, 30);
+
+  it("leaves a moment still ahead today a bare clock", () => {
+    expect(whenLabel(new Date(2026, 8, 16, 23, 15), now)).toBe("23:15");
+  });
+
+  it("names tomorrow, which dayLabel would call earlier today", () => {
+    expect(whenLabel(new Date(2026, 8, 17, 8, 40), now)).toBe("08:40 tomorrow");
+  });
+
+  it("dates anything further ahead than tomorrow", () => {
+    expect(whenLabel(new Date(2026, 8, 24, 8, 40), now)).toBe("08:40 24 Sep");
+  });
+
+  it("says a moment already behind is behind, not merely today", () => {
+    expect(whenLabel(new Date(2026, 8, 16, 8, 0), now)).toBe("08:00 earlier today");
+    expect(whenLabel(new Date(2026, 8, 16, 21, 30), now)).toBe("21:30 earlier today");
+  });
+
+  it("hands the past to dayLabel, so the two never spell a day differently", () => {
+    expect(whenLabel(new Date(2026, 8, 15, 20, 52), now)).toBe("20:52 yesterday");
+    expect(whenLabel(new Date(2026, 8, 9, 20, 52), now)).toBe("20:52 9 Sep");
+  });
+});
+
+describe("pastLabel", () => {
+  const now = new Date(2026, 8, 16, 21, 30);
+
+  it("leaves today a bare clock, however far back in the day", () => {
+    expect(pastLabel(new Date(2026, 8, 16, 20, 52), now)).toBe("20:52");
+    expect(pastLabel(new Date(2026, 8, 16, 0, 1), now)).toBe("00:01");
+  });
+
+  it("names the day as soon as it is not today", () => {
+    expect(pastLabel(new Date(2026, 8, 15, 20, 52), now)).toBe("20:52 yesterday");
+    expect(pastLabel(new Date(2026, 8, 9, 20, 52), now)).toBe("20:52 9 Sep");
+  });
+
+  it("labels a stamp from a clock running ahead rather than swallowing it", () => {
+    expect(pastLabel(new Date(2026, 8, 17, 8, 40), now)).toBe("08:40 tomorrow");
   });
 });
 
