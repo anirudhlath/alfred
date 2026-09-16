@@ -1,4 +1,4 @@
-import type { StreamSummary } from "./types";
+import type { Overview, StreamSummary } from "./types";
 
 /** `21:02:11` — the Workshop's row stamp, to the second, on the device's own clock. */
 export function hhmmss(value: string | number | Date): string {
@@ -34,6 +34,39 @@ export function mmss(seconds: number): string {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
 }
 
+/**
+ * An ISO stamp that parses, as epoch ms; null for anything that does not.
+ *
+ * The one copy of a guard `triggers.ts`, `memory.ts` and `system.ts` each grew
+ * their own: a stamp is absent (`""`, which the sessions route sends for a field
+ * the hash never carried), unparseable, or not a string at all, and all three
+ * mean "no time" rather than `Invalid Date`. Handing one to `pastLabel` is not
+ * caught downstream — `hhmm` guards NaN, but `dayMonth` prints `NaN undefined`.
+ *
+ * Non-positive is null for the same reason it is here at all: nothing this app
+ * reads was written in 1969, and an epoch-0 stamp is a field never set.
+ *
+ * There is deliberately no separate guard for the blank string: `Date.parse("")`
+ * is `NaN`, so the check below already answers it, and a second one in front
+ * would be a branch no input can reach — untestable by construction and read by
+ * the next person as though it were load-bearing. The `trim` stays because it
+ * feeds the parse: a stamp arriving with a space around it is still a stamp.
+ */
+export function isoMs(value: unknown): number | null {
+  if (typeof value !== "string") return null;
+  const parsed = Date.parse(value.trim());
+  return Number.isNaN(parsed) || parsed <= 0 ? null : parsed;
+}
+
+/**
+ * A number a line may print: finite, and nothing else. `null` and `undefined`
+ * are absent fields, and `NaN`/`Infinity` are arithmetic that got away — none of
+ * the three belongs in a sentence.
+ */
+export function finiteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 /** `1.42`. The currency symbol belongs to the sentence around it, not here. */
 export function usd(value: number): string {
   return value.toFixed(2);
@@ -43,6 +76,22 @@ export function usd(value: number): string {
 export function evs(streams: Record<string, StreamSummary>): string {
   const total = Object.values(streams).reduce((sum, stream) => sum + (stream.rate_5m ?? 0), 0);
   return total === 0 ? "0" : total.toFixed(1);
+}
+
+/**
+ * `2.1 ev/s`, or `— ev/s` when the map is absent or empty. An empty `streams` is
+ * Redis down (see `isFirstRun`), and `evs({})` is a bare `0` — the string
+ * reserved for a house that really is silent. A first run keeps its keys, each
+ * at length 0, and still reads `0 ev/s`.
+ *
+ * Shared by the Room's status line, the Workshop's header and the System
+ * bench's health grid, so the three cannot drift into telling different stories
+ * about the same map. Here rather than beside `useOverview` because the health
+ * grid derives in `lib/`, which cannot import upward from `room/`.
+ */
+export function rateText(overview: Overview | undefined): string {
+  const streams = overview?.streams;
+  return streams && Object.keys(streams).length > 0 ? `${evs(streams)} ev/s` : "— ev/s";
 }
 
 /** `a91f` — enough of a request id to match one line against another. */

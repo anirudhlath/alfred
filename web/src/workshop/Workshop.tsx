@@ -1,7 +1,8 @@
 import { memo, useEffect, useId, useRef, useState } from "react";
 import { hhmm } from "@/lib/format";
 import type { StreamRef } from "@/lib/streams";
-import { rateText, useOverview } from "@/room/useOverview";
+import { rateText } from "@/lib/format";
+import { useOverview } from "@/room/useOverview";
 import { Layer } from "@/shell/Layer";
 import { ActivityBench } from "./ActivityBench";
 import { BenchSwitcher, benchTabId, type Bench } from "./BenchSwitcher";

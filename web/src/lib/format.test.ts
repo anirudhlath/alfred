@@ -3,18 +3,21 @@ import {
   dayLabel,
   dayMonth,
   evs,
+  finiteNumber,
   hhmm,
   hhmmss,
   humaniseTool,
+  isoMs,
   mmss,
   notificationText,
   pastLabel,
+  rateText,
   rawCall,
   shortId,
   usd,
   whenLabel,
 } from "./format";
-import type { StreamSummary } from "./types";
+import type { Overview, StreamSummary } from "./types";
 
 describe("hhmm", () => {
   it("formats a Date as a zero-padded local clock time", () => {
@@ -202,5 +205,90 @@ describe("notificationText", () => {
   it("has nothing to say for a notification carrying neither", () => {
     expect(notificationText("  ", "  ")).toBeUndefined();
     expect(notificationText(undefined, null)).toBeUndefined();
+  });
+});
+
+describe("isoMs", () => {
+  it("parses a stamp the server sent", () => {
+    const at = new Date(2026, 8, 16, 7, 2, 0);
+    expect(isoMs(at.toISOString())).toBe(at.getTime());
+  });
+
+  it("takes a stamp with surrounding space", () => {
+    expect(isoMs("  2026-09-16T07:02:00Z ")).toBe(Date.parse("2026-09-16T07:02:00Z"));
+  });
+
+  it("says nothing for a field the record never carried", () => {
+    // The sessions route defaults `ip`, `user_agent` and `created_at` to `""`.
+    expect(isoMs("")).toBeNull();
+    expect(isoMs("   ")).toBeNull();
+  });
+
+  it("says nothing for a string that will not parse", () => {
+    // Not a blank one: the two guards would otherwise mask each other, and only
+    // this case reaches `Date.parse` at all.
+    expect(isoMs("not a date")).toBeNull();
+  });
+
+  it("says nothing for a value that is not a string", () => {
+    expect(isoMs(null)).toBeNull();
+    expect(isoMs(undefined)).toBeNull();
+    expect(isoMs(1788000000000)).toBeNull();
+    expect(isoMs({ at: "2026-09-16T07:02:00Z" })).toBeNull();
+  });
+
+  it("says nothing for a stamp at or before the epoch", () => {
+    // Nothing this app reads was written in 1969; an epoch-0 stamp is a field
+    // that was never set.
+    expect(isoMs("1970-01-01T00:00:00Z")).toBeNull();
+    expect(isoMs("1969-07-20T20:17:00Z")).toBeNull();
+  });
+});
+
+describe("finiteNumber", () => {
+  it("takes a number a line may print", () => {
+    expect(finiteNumber(0)).toBe(0);
+    expect(finiteNumber(-3.5)).toBe(-3.5);
+  });
+
+  it("refuses arithmetic that got away", () => {
+    expect(finiteNumber(Number.NaN)).toBeNull();
+    expect(finiteNumber(Number.POSITIVE_INFINITY)).toBeNull();
+    expect(finiteNumber(Number.NEGATIVE_INFINITY)).toBeNull();
+  });
+
+  it("refuses an absent field, and a number written as a string", () => {
+    expect(finiteNumber(null)).toBeNull();
+    expect(finiteNumber(undefined)).toBeNull();
+    expect(finiteNumber("42")).toBeNull();
+  });
+});
+
+describe("rateText", () => {
+  const summary = (rate: number): StreamSummary => ({
+    length: 1,
+    last_id: null,
+    last_ts: null,
+    rate_5m: rate,
+  });
+  const overview = (streams: Record<string, StreamSummary>): Overview =>
+    ({ streams }) as Overview;
+
+  it("sums the five-minute rates and names the unit", () => {
+    expect(rateText(overview({ events: summary(1.4), user_requests: summary(0.7) }))).toBe(
+      "2.1 ev/s",
+    );
+  });
+
+  it("says nothing for a house that has not been read", () => {
+    expect(rateText(undefined)).toBe("— ev/s");
+  });
+
+  it("says nothing for an empty map, which is Redis down", () => {
+    expect(rateText(overview({}))).toBe("— ev/s");
+  });
+
+  it("reads a first run, whose keys are all there and all at zero, as silent", () => {
+    expect(rateText(overview({ events: summary(0) }))).toBe("0 ev/s");
   });
 });

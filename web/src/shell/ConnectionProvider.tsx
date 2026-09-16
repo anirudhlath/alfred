@@ -66,6 +66,13 @@ function subscribeOnline(fn: () => void): () => void {
  * being run. A phone that was asleep for an hour is exactly where a session
  * list, a trigger's enabled flag and a service's health are most likely to have
  * moved without this client hearing about it.
+ *
+ * Spelled out rather than imported from the hooks that own these keys: this
+ * module is imported *by* `useOverview` (for `markTrue`), so importing back
+ * would close a cycle and leave this list reading a temporal-dead-zone
+ * `undefined` on whichever evaluation order the bundler picked. Every entry is
+ * a prefix rather than a whole key, so a key that later gains a segment is
+ * still covered by the one above it.
  */
 const REHYDRATE_KEYS = [
   ["overview"],

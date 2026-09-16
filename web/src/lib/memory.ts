@@ -1,5 +1,5 @@
 import { api } from "./api";
-import { dayLabel, hhmm } from "./format";
+import { dayLabel, hhmm, isoMs } from "./format";
 
 export type MemoryStore = "hot" | "cold";
 
@@ -105,9 +105,9 @@ const parseJson = (value: string): unknown => {
 const time = (value: unknown): number | null => {
   const seconds = num(value);
   if (seconds !== null) return seconds > 0 ? Math.round(seconds * 1000) : null;
-  if (typeof value !== "string") return null;
-  const parsed = Date.parse(value);
-  return Number.isNaN(parsed) || parsed <= 0 ? null : parsed;
+  // The ISO tail is `format.ts`'s guard; only the epoch-seconds branch above is
+  // this store's own business.
+  return isoMs(value);
 };
 
 /**

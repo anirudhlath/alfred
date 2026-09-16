@@ -1,28 +1,46 @@
 import { api, post, put } from "./api";
-import { pastLabel, usd } from "./format";
-import type { AttentionDomain, CredentialField, IntegrationInfo, Overview } from "./types";
+import { dayLabel, finiteNumber, isoMs, pastLabel, rateText, usd } from "./format";
+import type { Overview } from "./types";
 
-/**
- * One domain of the Reflex attention set. Re-exported rather than restated:
- * `GET /api/admin/attention` is the same endpoint the setup gate reads, and two
- * declarations of one wire shape drift apart the first time the server changes.
- */
-export type { AttentionDomain };
+// ---------------------------------------------------------------------------
+// Wire shapes
+// ---------------------------------------------------------------------------
 
 /**
  * One field of an integration's credential schema — `core/integrations/base.py`'s
- * `CredentialField`, under the name this bench's form builder uses for it.
+ * `CredentialField`. Declared here rather than in `types.ts` because this module
+ * is what reads the endpoint; one shape, one declaration, one import path.
  */
-export type IntegrationField = CredentialField;
+export interface IntegrationField {
+  label: string;
+  field_type: "text" | "password" | "url";
+  required: boolean;
+  placeholder: string;
+  default: string;
+  help_text: string;
+  /** Passed to the adapter and never persisted, so it is never `configured`. */
+  transient: boolean;
+}
 
 /**
- * One entry of `GET /api/integrations`. `kind` is required here where
- * `IntegrationInfo` leaves it optional: `build_integration_entry` takes it as a
- * positional argument and the route calls it for every adapter and every
- * registry-declared service, so the field is on every entry the bench can meet.
+ * One entry of `GET /api/integrations`. `kind` is required: `build_integration_entry`
+ * takes it as a positional argument and the route calls it for every adapter and
+ * every registry-declared service, so the field is on every entry there is.
  */
-export interface Integration extends Omit<IntegrationInfo, "kind"> {
+export interface Integration {
+  name: string;
+  category: string;
   kind: "adapter" | "service";
+  schema: { fields: Record<string, IntegrationField> };
+  /** Which fields have something in the keyring. Never the values, which the route does not send. */
+  configured: Record<string, boolean>;
+}
+
+/** One domain of the Reflex attention set. `members` may act, `seen` is everything observed. */
+export interface AttentionDomain {
+  domain: string;
+  members: string[];
+  seen: string[];
 }
 
 /**
@@ -30,8 +48,9 @@ export interface Integration extends Omit<IntegrationInfo, "kind"> {
  * `created_at` are the session hash's own fields and the route defaults each to
  * `""` — an empty one is a record that never carried it, not an error.
  *
- * `expires_in` is seconds off the Redis TTL, so it counts down between reads;
- * every session is an 8 h one (`_AUTH_SESSION_TTL`).
+ * `expires_in` is seconds off the Redis TTL, and `_expires_in` maps a missing
+ * key, a persistent key and anything non-numeric all to **0**. So `0` means
+ * "no TTL reported", not "expiring now", and a row must not count it down.
  */
 export interface AuthSession {
   session_id: string;
@@ -73,6 +92,10 @@ export interface IntegrationStatus {
   latency_ms: number | null;
 }
 
+// ---------------------------------------------------------------------------
+// The service vocabulary
+// ---------------------------------------------------------------------------
+
 /**
  * What a connected service's row says about itself. A closed vocabulary:
  * `queued` is this client's own claim that a save landed, `testing` is a probe
@@ -80,33 +103,42 @@ export interface IntegrationStatus {
  */
 export type ServiceState = "ok" | "failed" | "unset" | "testing" | "queued";
 
-/** Each state's one sentence. The row prints this and never a word of its own. */
-const SERVICE_NOTES: Record<ServiceState, string> = {
-  ok: "reachable",
-  failed: "not answering",
-  unset: "no credentials saved",
-  testing: "testing…",
-  queued: "saved · testing",
-};
-
-export function serviceNote(state: ServiceState): string {
-  return SERVICE_NOTES[state];
-}
+/**
+ * The status the `failed` note names when nothing better is known. The handoff
+ * writes `401` because a rejected token is the common case; a probe that never
+ * reached the service has no status of its own to quote.
+ */
+const ASSUMED_FAILURE_STATUS = 401;
 
 /**
- * An ISO stamp that parses, as epoch ms. Null for anything else — the sessions
- * route defaults a missing `created_at` to `""`, and a passkey that has never
- * been used has a literal `null` `last_used_at`.
+ * The sentence under a service's row — the handoff's four, plus `queued`. Not a
+ * gloss on the state word, which the row already carries on its right: this is
+ * the line that says what is stored and what happens next.
+ *
+ * `status` is the one the last probe actually reported, so a service answering
+ * 502 is not accused of rejecting a password.
  */
-const time = (value: string | null): number | null => {
-  if (value === null || value.trim() === "") return null;
-  const parsed = Date.parse(value);
-  return Number.isNaN(parsed) || parsed <= 0 ? null : parsed;
-};
+export function serviceNote(state: ServiceState, status: number | null = null): string {
+  switch (state) {
+    case "ok":
+      return "stored encrypted at rest · last check ok";
+    case "failed":
+      return (
+        `${status ?? ASSUMED_FAILURE_STATUS} from the service on the last check · ` +
+        "stored value kept until you replace it"
+      );
+    case "unset":
+      return "nothing stored · Alfred answers without this source";
+    case "testing":
+      return "round-trip in progress · up to 10 s";
+    case "queued":
+      return "saved · testing";
+  }
+}
 
-/** A number the notes below may print: finite, and nothing else. */
-const finite = (value: number | undefined): number | null =>
-  typeof value === "number" && Number.isFinite(value) ? value : null;
+// ---------------------------------------------------------------------------
+// Row and card formatters
+// ---------------------------------------------------------------------------
 
 /**
  * `passkey · web · signed in 07:02 · 192.168.1.24` — the session row's second
@@ -124,45 +156,69 @@ const finite = (value: number | undefined): number | null =>
  * empty, which would leave the line ending in a separator.
  */
 export function sessionMeta(session: AuthSession, now: number): string {
-  const at = time(session.created_at);
+  const at = isoMs(session.created_at);
   const clauses = ["passkey", session.channel];
   if (session.current) clauses.push("this device");
+  // Not left to `pastLabel`: an unparseable stamp reaches `dayMonth` through it
+  // and prints `NaN undefined`, which is worse than saying nothing.
   clauses.push(`signed in ${at === null ? "--:--" : pastLabel(new Date(at), new Date(now))}`);
   if (session.ip.trim() !== "") clauses.push(session.ip);
   return clauses.join(" · ");
 }
 
 /**
- * `internal, hybrid · last used 07:02` — the passkey row's second line.
+ * `passkey · registered 12 Aug · internal, hybrid · last used 07:02 · this device`
+ * — the passkey row's second line, minus the device name, which is the row's title.
  *
- * Both clauses can be absent in the record and neither is left blank: a passkey
- * registered by an authenticator that reported no transports says so, and one
- * that has never signed in says `never used` rather than an empty stamp.
+ * Built by the same rule as `sessionMeta` and in the same order, because the two
+ * sit on one screen: the credential kind, then when it came to be, then what it
+ * is, then when it was last used, then whether it is the one in your hand. A
+ * clause the server did not send is dropped rather than filled in — an
+ * authenticator that reported no transports has nothing to say about them.
  *
- * `now` for the same reason `sessionMeta` takes it, and more so: a passkey's
- * last use can be weeks old, where a bare clock would be a lie about today.
+ * `never used` is not such a clause: a passkey that has never signed in is a
+ * fact worth stating, and one the sheet reads for whether to keep it.
  */
 export function credentialMeta(credential: Credential, now: number): string {
-  const transports =
-    credential.transports.length === 0
-      ? "no transports recorded"
-      : credential.transports.join(", ");
-  const at = time(credential.last_used_at);
-  const used = at === null ? "never used" : `last used ${pastLabel(new Date(at), new Date(now))}`;
-  return `${transports} · ${used}`;
+  const clock = new Date(now);
+  const clauses = ["passkey"];
+
+  const registered = isoMs(credential.created_at);
+  if (registered !== null) clauses.push(`registered ${dayLabel(new Date(registered), clock)}`);
+  if (credential.transports.length > 0) clauses.push(credential.transports.join(", "));
+
+  const used = isoMs(credential.last_used_at);
+  clauses.push(used === null ? "never used" : `last used ${pastLabel(new Date(used), clock)}`);
+  if (credential.current) clauses.push("this device");
+
+  return clauses.join(" · ");
 }
 
 /**
  * `$0.0036` — a per-request cost. `usd()` is `toFixed(2)`, which reads a third
- * of a cent as `0.00`, so the average gets four places instead, trimmed back to
- * the two every other money string on this screen has: `0.0036`, `0.037`,
- * `0.50`. An average below a hundredth of a cent still reads `0.00`, which is
- * the honest answer at that scale.
+ * of a cent as `0.00`, so a sub-dollar average gets four places instead, trimmed
+ * back to the two every other money string on this screen has: `0.0036`,
+ * `0.037`, `0.50`.
+ *
+ * A dollar or more takes plain cents: the extra places exist to keep a fraction
+ * of a cent legible, and `$1234.5678 each` is neither legible nor to the point.
  */
 function perRequest(value: number): string {
+  if (value >= 1) return usd(value);
   const trimmed = value.toFixed(4).replace(/0+$/, "");
   const [, decimals = ""] = trimmed.split(".");
   return decimals.length >= 2 ? trimmed : usd(value);
+}
+
+/**
+ * The cap, or null when there is nothing to measure against. The single guard
+ * behind both the note and the bar — kept in one place so the sentence and the
+ * width can never disagree about whether a cap exists.
+ */
+function capOf(cost: Overview["cost"]): number | null {
+  if (cost === null) return null;
+  const cap = finiteNumber(cost.cap_usd);
+  return cap === null || cap <= 0 ? null : cap;
 }
 
 /**
@@ -177,33 +233,233 @@ function perRequest(value: number): string {
 export function spendNote(cost: Overview["cost"]): string {
   if (cost === null) return "no spend recorded today";
 
-  const spend = finite(cost.spend_usd) ?? 0;
-  const cap = finite(cost.cap_usd);
+  const spend = finiteNumber(cost.spend_usd) ?? 0;
+  const cap = capOf(cost);
   const clauses =
-    cap === null || cap <= 0
+    cap === null
       ? [`$${usd(spend)} today`, "no cap set"]
       : [`$${usd(spend)} of $${usd(cap)} today`];
 
-  const requests = finite(cost.request_count);
-  if (requests !== null) clauses.push(`${requests} requests`);
-  const average = finite(cost.avg_usd);
+  const requests = finiteNumber(cost.request_count);
+  if (requests !== null) clauses.push(`${requests} ${requests === 1 ? "request" : "requests"}`);
+  const average = finiteNumber(cost.avg_usd);
   if (average !== null) clauses.push(`$${perRequest(average)} each`);
 
   return clauses.join(" · ");
 }
 
 /**
- * How full the spend bar is, in `[0, 1]`. Zero when there is no cost to draw
- * and zero when there is no cap to measure against — the one place the division
+ * How full the spend bar is, in `[0, 1]`. Zero when there is no cost to draw and
+ * zero when there is no cap to measure against — the one place the division
  * happens, so no view can produce a `NaN` width from it.
  */
 export function spendFraction(cost: Overview["cost"]): number {
-  if (cost === null) return 0;
-  const cap = finite(cost.cap_usd);
-  const spend = finite(cost.spend_usd) ?? 0;
-  if (cap === null || cap <= 0) return 0;
+  const cap = capOf(cost);
+  if (cost === null || cap === null) return 0;
+  const spend = finiteNumber(cost.spend_usd) ?? 0;
   return Math.min(1, Math.max(0, spend / cap));
 }
+
+// ---------------------------------------------------------------------------
+// Derivations the bench renders from
+// ---------------------------------------------------------------------------
+
+/**
+ * One status probe's fetch state — as much of a react-query result as the two
+ * derivations below read, so both are testable without a `QueryClient`.
+ *
+ * `data` and `isError` are deliberately separate facts: react-query keeps the
+ * last successful answer after a later attempt fails, so a probe can be `isError`
+ * and still be holding a `healthy: true` from ten minutes ago.
+ */
+export interface ProbeState {
+  data: IntegrationStatus | undefined;
+  /** No answer has ever come back — the first probe is still in flight. */
+  isPending: boolean;
+  /** The last attempt failed to get an answer at all. */
+  isError: boolean;
+  /** The status that failure carried, when a server sent one. */
+  status: number | null;
+}
+
+/** As much of a credential save as `serviceRows` reads. */
+export interface SavingState {
+  saving: boolean;
+  savedAt: number | null;
+}
+
+/** What one service's row knows about itself. */
+export interface ServiceRow {
+  state: ServiceState;
+  /** The last probe's round trip in ms; null whenever there is no answer to time. */
+  latency: number | null;
+  /** The status behind a `failed`, for the row's note. Null when nobody sent one. */
+  status: number | null;
+}
+
+/**
+ * Which word a service's row wears, and the two numbers under it. The order of
+ * the ladder is the point: a save this client sent outranks a probe, a probe
+ * still in flight outranks its last answer, and an integration with nothing
+ * stored says so rather than reporting the health of a connection it was never
+ * given the credentials for.
+ *
+ * `probes` is positional against `list` — one probe per entry, in order, which
+ * is how `useQueries` hands them back.
+ */
+export function serviceRows(
+  list: readonly Integration[],
+  probes: readonly (ProbeState | undefined)[],
+  saves: Readonly<Record<string, SavingState>>,
+): Record<string, ServiceRow> {
+  const rows: Record<string, ServiceRow> = {};
+  list.forEach((entry, index) => {
+    const probe = probes[index];
+    rows[entry.name] = {
+      state: serviceState(entry, probe, saves[entry.name]),
+      // A failed attempt has no round trip of its own, and the retained `data`
+      // beside it belongs to an earlier one. Reporting it would put `210 ms`
+      // next to the word `failed` — two readings of one probe, disagreeing.
+      latency: probe === undefined || probe.isError ? null : (probe.data?.latency_ms ?? null),
+      status: probe?.status ?? null,
+    };
+  });
+  return rows;
+}
+
+function serviceState(
+  entry: Integration,
+  probe: ProbeState | undefined,
+  save: SavingState | undefined,
+): ServiceState {
+  // `saved · testing` only once the server has taken the credentials; while the
+  // `PUT` itself is still in flight nothing has been saved yet.
+  if (save?.saving === true) return save.savedAt === null ? "testing" : "queued";
+  if (probe === undefined || probe.isPending) return "testing";
+  const fields = Object.keys(entry.schema.fields);
+  // `every`, not `some`: a half-filled form is configured enough to probe, and
+  // saying `nothing stored` over a service that is answering would be wrong.
+  if (fields.length > 0 && fields.every((field) => entry.configured[field] !== true)) {
+    return "unset";
+  }
+  // Load-bearing: without it the retained `data` above reads `ok` for a service
+  // whose latest probe could not reach it at all.
+  if (probe.isError) return "failed";
+  return probe.data?.healthy === true ? "ok" : "failed";
+}
+
+/**
+ * One stat card on the health grid. `alive` is a flag rather than a word the
+ * view matches on: a card that dims because the string it was handed happened
+ * not to read `alive` is a screen one rename away from lying.
+ */
+export interface HealthCell {
+  value: string;
+  note: string;
+  alive: boolean;
+}
+
+/** The four cards, in the order the grid draws them. No GPU figure, no service count. */
+export interface Health {
+  bus: HealthCell;
+  reflex: HealthCell;
+  rate: HealthCell;
+  home: HealthCell;
+}
+
+export interface HealthInput {
+  overview: Overview | undefined;
+  /**
+   * `GET /api/integrations` has answered. Without it there is no telling a house
+   * with no home service from one whose registry has simply not been read yet,
+   * and only the first of those is a fact about the house.
+   */
+  registryRead: boolean;
+  /** The home service's probe; absent when the registry does not carry one. */
+  home: ProbeState | undefined;
+}
+
+/**
+ * The four cards, derived here so the view holds no logic and every branch is
+ * reachable from a plain function call.
+ *
+ * Nothing on this grid claims anything before the read that would settle it: a
+ * note is never more confident than the value beside it, and `not read yet` is
+ * a different sentence from `not registered`.
+ */
+export function healthGrid({ overview, registryRead, home }: HealthInput): Health {
+  const read = overview !== undefined;
+  const connected = overview?.redis.connected === true;
+  const streamCount = Object.keys(overview?.streams ?? {}).length;
+  const reflex = overview?.reflex;
+  const lastMs = finiteNumber(reflex?.last_ms);
+
+  return {
+    bus: {
+      value: connected ? "alive" : "unknown",
+      note: read ? `bus · redis · ${streamCount} streams` : "bus · redis · not read yet",
+      alive: connected,
+    },
+    reflex: {
+      value: lastMs === null ? "—" : `${Math.round(lastMs)} ms`,
+      note: !read
+        ? "reflex · not read yet"
+        : reflex?.model
+          ? `reflex · ${reflex.model}`
+          : "reflex · no model reported",
+      alive: lastMs !== null,
+    },
+    rate: {
+      value: rateText(overview),
+      // A description of the measure, not a claim about the figure, so it is
+      // true before the first read as well as after it.
+      note: "event rate · 5-minute mean",
+      alive: streamCount > 0,
+    },
+    home: homeCell(registryRead, home),
+  };
+}
+
+/**
+ * The fourth card reads the *probe*, never the credential word: `unset` is the
+ * right thing on a Services row and the wrong thing here, where a service that
+ * is up and answering in 210 ms would otherwise be reported by the state of its
+ * keyring.
+ */
+function homeCell(registryRead: boolean, home: ProbeState | undefined): HealthCell {
+  if (!registryRead) return { value: "—", note: "home assistant · not read yet", alive: false };
+  if (home === undefined) {
+    return { value: "—", note: "home assistant · not registered", alive: false };
+  }
+  if (home.isPending) return { value: "—", note: "home assistant · testing", alive: false };
+  // No latency on this branch: the number react-query is still holding belongs
+  // to an earlier probe, not to the one that just failed.
+  if (home.isError) return { value: "failed", note: "home assistant · not answering", alive: false };
+
+  const latency = finiteNumber(home.data?.latency_ms);
+  const trip =
+    latency === null ? "no round trip measured" : `${Math.round(latency)} ms`;
+  const healthy = home.data?.healthy === true;
+  return { value: healthy ? "ok" : "failed", note: `home assistant · ${trip}`, alive: healthy };
+}
+
+/**
+ * The write landed and the read behind it did not. The switch is still showing
+ * the last thing the server said, which is now out of date — and saying so is
+ * the only honest thing left, because nothing else on the row can tell.
+ */
+export const DND_UNCONFIRMED = "Set, but the house has not confirmed it yet.";
+
+/**
+ * The name the home service registers under, so nothing matches on a guess:
+ * `tests/core/channels/test_double_gate.py` pins it, and the setup gate imports
+ * this same constant.
+ */
+export const HOME_SERVICE = "home-service";
+
+// ---------------------------------------------------------------------------
+// Reads and writes
+// ---------------------------------------------------------------------------
 
 /** `GET /api/auth/sessions` — newest first, the caller's own marked `current`. */
 export async function fetchAuthSessions(): Promise<AuthSession[]> {
@@ -234,23 +490,19 @@ export async function fetchCredentials(): Promise<Credential[]> {
 
 /**
  * `POST /api/auth/pairing` — a one-shot code for registering a passkey on a new
- * device, valid five minutes. Session-gated only, deliberately: the device
- * doing the minting is often the one that is away from the home network, so the
- * code's own budget stands in for the network half of the gate.
+ * device, valid five minutes. Session-gated only, deliberately: the device doing
+ * the minting is often the one that is away from the home network, so the code's
+ * own budget stands in for the network half of the gate.
  *
- * The reply also carries `ttl_seconds`; `expires_at` is the same fact as an
- * instant, and an instant is what the note shows.
+ * `signal` because this is the one write whose *success* can do harm after the
+ * caller has gone: a code minted for a screen that has closed is live on the
+ * server for five minutes with no surface able to show it. Aborting an unmounted
+ * mint is the most the client can do; the code's own TTL is the backstop for one
+ * that had already landed.
  */
-export function mintPairingCode(): Promise<{ code: string; expires_at: string }> {
-  return post<{ code: string; expires_at: string }>("/api/auth/pairing");
+export function mintPairingCode(signal?: AbortSignal): Promise<{ code: string; expires_at: string }> {
+  return api<{ code: string; expires_at: string }>("/api/auth/pairing", { method: "POST", signal });
 }
-
-/**
- * The name the home service registers under, so nothing on this bench matches
- * on a guess: `tests/core/channels/test_double_gate.py` pins it, and the setup
- * gate looks it up the same way.
- */
-export const HOME_SERVICE = "home-service";
 
 /**
  * `GET /api/integrations` — a **bare array**, not an envelope. The one endpoint
@@ -263,9 +515,9 @@ export function fetchIntegrations(): Promise<Integration[]> {
 
 /**
  * `GET /api/integrations/{name}/status` — an adapter's in-process health check,
- * or a service's proxied `/health`. Never throws for an unhealthy integration:
- * the route answers 200 with `healthy: false`. A throw here is the request
- * failing, which the caller reads as `failed` all the same.
+ * or a service's proxied `/health`. A sick service is a **200** with
+ * `healthy: false`, not a throw; a throw here is the request itself failing,
+ * which is a different fact and retried like any other transport failure.
  */
 export function fetchIntegrationStatus(name: string): Promise<IntegrationStatus> {
   return api<IntegrationStatus>(`/api/integrations/${encodeURIComponent(name)}/status`);
@@ -273,8 +525,8 @@ export function fetchIntegrationStatus(name: string): Promise<IntegrationStatus>
 
 /**
  * `PUT /api/integrations/{name}/credentials` — the one write on this bench
- * behind two gates: a session *and* the trusted network. Off the home network
- * it answers 403 while every read on the bench still works (deviation 12).
+ * behind two gates: a session *and* the trusted network. Off the home network it
+ * answers 403 while every read on the bench still works (deviation 12).
  */
 export async function saveCredentials(
   name: string,
@@ -298,9 +550,13 @@ export async function fetchAttention(): Promise<AttentionDomain[]> {
 
 /**
  * `PUT /api/admin/attention/{domain}` — add to (`allow`) or sticky-remove from
- * (`ask`) one domain's set. Answers with that domain read back, so the caller
- * needs no second read; the route applies `ask` after `allow`, so an entity in
- * both ends up removed.
+ * (`ask`) one domain's set. Answers with that domain read back, so a caller that
+ * succeeds needs no second read; the route applies `ask` after `allow`, so an
+ * entity in both ends up removed.
+ *
+ * A *refusal* is another matter: the route writes one entity at a time and is
+ * explicit that the writes are not transactional, so a failure can leave part of
+ * the change applied and the caller must go and look.
  */
 export function putAttention(
   domain: string,
@@ -314,13 +570,13 @@ export function putAttention(
 }
 
 /**
- * `POST /api/admin/dnd` — a direct write, unlike the trigger controls: the
- * route sets or deletes the Redis key itself and answers with the state. The
- * switch may move on this.
+ * `POST /api/admin/dnd` — a direct write, unlike the trigger controls: the route
+ * sets or deletes the Redis key itself and answers with the state. The switch
+ * may move on this, once a read has confirmed it.
  *
  * `until` is omitted rather than sent as null, so "clear it" and "on, with no
- * expiry" are one rule: the key is only ever present when there is an instant
- * to put in it.
+ * expiry" are one rule: the key is only ever present when there is an instant to
+ * put in it.
  */
 export async function setDnd(active: boolean, until: string | null): Promise<void> {
   await post<{ active: boolean }>("/api/admin/dnd", {

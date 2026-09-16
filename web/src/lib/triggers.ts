@@ -1,5 +1,5 @@
 import { api, post } from "./api";
-import { pastLabel, whenLabel } from "./format";
+import { finiteNumber, isoMs, pastLabel, whenLabel } from "./format";
 import type { Urgency } from "./types";
 
 /**
@@ -67,19 +67,16 @@ const str = (value: unknown): string | null => {
  * An ISO stamp that parses, as epoch ms. Every trigger time is one —
  * `model_dump_json` writes `created_at`, `last_fired` and a time record's
  * `run_at` as ISO strings — so unlike `memory.ts`'s namesake this reads no epoch
- * numbers. Non-positive is null for the same reason it is there: no trigger was
- * written in 1969, and an epoch-0 stamp is a field that was never set.
+ * numbers. `format.ts` owns the guard; this is the name the rest of the file
+ * reads by.
  */
-const time = (value: unknown): number | null => {
-  const iso = str(value);
-  if (iso === null) return null;
-  const parsed = Date.parse(iso);
-  return Number.isNaN(parsed) || parsed <= 0 ? null : parsed;
-};
+const time = isoMs;
 
 /** A count a row can print: finite, whole, never negative. */
-const count = (value: unknown): number | null =>
-  typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : null;
+const count = (value: unknown): number | null => {
+  const parsed = finiteNumber(value);
+  return parsed === null ? null : Math.max(0, Math.trunc(parsed));
+};
 
 /** A JSON object with something in it — an empty match constrains nothing. */
 const record = (value: unknown): Record<string, unknown> | null => {

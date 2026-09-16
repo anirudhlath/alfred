@@ -1,10 +1,8 @@
 import type { Routine, SemanticFile } from "@/lib/memory";
-import type { AuthSession, Credential, Integration } from "@/lib/system";
+import type { AttentionDomain, AuthSession, Credential, Integration } from "@/lib/system";
 import type { Trigger } from "@/lib/triggers";
 import type {
   ActionResultEvent,
-  AttentionDomain,
-  IntegrationInfo,
   NotificationEvent,
   Overview,
   PendingAction,
@@ -15,7 +13,7 @@ import type {
  * `GET /api/integrations`. Two entries on purpose: the setup gate must find
  * `home-service` by name rather than by position.
  */
-export const integrationsFixture: IntegrationInfo[] = [
+export const integrationsFixture: Integration[] = [
   {
     name: "weather",
     category: "weather",
@@ -591,9 +589,8 @@ export const credential = (overrides: Partial<Credential> = {}): Credential => (
 
 /**
  * One entry of `GET /api/integrations` — the registry-declared home service,
- * with both its fields stored. `integrationsFixture` above is the setup gate's
- * pair, typed `IntegrationInfo`; this one is the System bench's `Integration`,
- * whose `kind` is not optional.
+ * with both its fields stored. `integrationsFixture` above is the pair the
+ * setup gate reads; this is the single row the System bench's tests build on.
  */
 export const integration = (overrides: Partial<Integration> = {}): Integration => ({
   name: "home-service",
