@@ -61,6 +61,76 @@ const COST = {
   avg_usd: 0.0036,
 };
 
+/**
+ * The same guard `lib/memory.test.ts` and `lib/triggers.test.ts` keep over
+ * their own fixtures, for the three this file is the home of. A fixture is a
+ * claim about a wire shape, and a test suite is the only thing checking it:
+ * every formatter below reads these objects, so a fixture that quietly grew a
+ * field the route does not send — or lost one it does — would leave the whole
+ * System bench passing against a house that does not exist. Keys only, because
+ * the values are each test's own business, and `sort()` because JSON object
+ * order is not part of the contract.
+ */
+describe("the shared fixtures", () => {
+  it("carry exactly what GET /api/auth/sessions sends, and nothing invented", () => {
+    // `core/identity/auth_routes.py`, `list_sessions`.
+    expect(Object.keys(authSession()).sort()).toEqual([
+      "channel",
+      "created_at",
+      "credential_id",
+      "current",
+      "device_name",
+      "expires_in",
+      "ip",
+      "session_id",
+      "user_agent",
+    ]);
+  });
+
+  it("carry exactly what GET /api/auth/credentials sends", () => {
+    // `core/identity/auth_routes.py`, `list_passkeys`. No `public_key` and no
+    // `sign_count`: the store has both and the route sends neither.
+    expect(Object.keys(credential()).sort()).toEqual([
+      "created_at",
+      "credential_id",
+      "current",
+      "device_name",
+      "last_used_at",
+      "transports",
+    ]);
+  });
+
+  it("carry exactly what one entry of GET /api/integrations sends, fields and all", () => {
+    // `core/channels/service_credentials.py`, `build_integration_entry`, whose
+    // `schema` is `CredentialSchema.model_dump()` — so the inner field objects
+    // are pinned too, against `CredentialField` in `core/integrations/base.py`.
+    // Without that half the entry's only interesting shape is unchecked.
+    expect(Object.keys(integration()).sort()).toEqual([
+      "category",
+      "configured",
+      "kind",
+      "name",
+      "schema",
+    ]);
+    const entry = integration();
+    expect(Object.keys(entry.schema).sort()).toEqual(["fields"]);
+    for (const field of Object.values(entry.schema.fields)) {
+      expect(Object.keys(field).sort()).toEqual([
+        "default",
+        "field_type",
+        "help_text",
+        "label",
+        "placeholder",
+        "required",
+        "transient",
+      ]);
+    }
+    // And `configured` names the schema's own fields — the route builds it by
+    // walking them, so a fixture keyed on anything else is not a wire shape.
+    expect(Object.keys(entry.configured).sort()).toEqual(Object.keys(entry.schema.fields).sort());
+  });
+});
+
 describe("sessionMeta", () => {
   it("names the channel, the sign-in time and the address", () => {
     expect(sessionMeta(authSession({ channel: "web", ip: "192.168.1.24" }), SYSTEM_NOW)).toBe(

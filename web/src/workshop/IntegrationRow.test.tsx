@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import {
+  missingLabels,
   missingNote,
   SAVE_TOGETHER,
   serviceNote,
@@ -148,12 +149,22 @@ const form = () => document.querySelector("form") as HTMLFormElement;
 const describedBy = (element: Element): string[] =>
   (element.getAttribute("aria-describedby") ?? "").split(/\s+/).filter(Boolean);
 
-/** Fill every field the form will not send without. */
+/**
+ * Fill every field the form will not send without.
+ *
+ * `entry` is checked against what was typed rather than merely used: every
+ * caller goes on to assert about a form that has *let go*, and the route sends
+ * all fields or none. A schema that grew a required field this helper did not
+ * name would hold the save, and each of those assertions would then be about a
+ * form that never submitted — which reads as a different failure, in a
+ * different test, from the one that is really there. `missingLabels(entry, {})`
+ * is every required label, because nothing is filled in an empty record.
+ */
 function fillRequired(entry: Integration, values: Record<string, string>) {
   for (const [label, value] of Object.entries(values)) {
     fireEvent.change(input(label), { target: { value } });
   }
-  expect(entry).toBeDefined();
+  expect([...missingLabels(entry, {})].sort()).toEqual(Object.keys(values).sort());
 }
 
 describe("IntegrationRow", () => {
@@ -351,8 +362,13 @@ describe("IntegrationRow", () => {
     );
     expect(describedBy(button)).toContain(blank.id);
 
+    button.focus();
     fireEvent.click(button);
     expect(onSave).not.toHaveBeenCalled();
+    // And the focus is still here to hear it. `not.toBeDisabled()` above is
+    // only half the claim: a handler that blurred itself on a refused press
+    // would throw the reader to `<body>` and take the note with it.
+    expect(document.activeElement).toBe(button);
   });
 
   it("drops each mark as its field is filled, and lets go once none is left", () => {
@@ -432,8 +448,10 @@ describe("IntegrationRow", () => {
     expect(button).toHaveAttribute("aria-disabled", "true");
     expect(button).toHaveAttribute("aria-busy", "true");
     expect(button).not.toBeDisabled();
+    button.focus();
     fireEvent.click(button);
     expect(onSave).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(button);
     // The state word is the hook's, and it is already saying the same thing.
     expect(screen.getByText("saved · testing")).toBeInTheDocument();
   });

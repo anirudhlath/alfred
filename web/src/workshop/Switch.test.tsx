@@ -79,8 +79,16 @@ describe("Switch", () => {
     expect(control()).toHaveAttribute("aria-busy", "true");
     expect(control()).toHaveAttribute("aria-describedby", "note");
     expect(control()).not.toBeDisabled();
+    control().focus();
     fireEvent.click(control());
     expect(onToggle).not.toHaveBeenCalled();
+    // The whole reason the refusal lives in the handler rather than in
+    // `disabled`: the note this press produced is the control's own
+    // `aria-describedby`, and a description is announced on focus. A control
+    // that threw focus to `<body>` — by being disabled, or by blurring itself
+    // — would leave a screen reader with nothing at all about what it just
+    // refused. `not.toBeDisabled()` above does not see that happen.
+    expect(document.activeElement).toBe(control());
   });
 
   // Two different facts: a Triggers row whose write was already refused is

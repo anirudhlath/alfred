@@ -243,15 +243,16 @@ describe("contrast ratios", () => {
       expect(contrast(token(theme, "green-text"), token(theme, "surface"))).toBeGreaterThanOrEqual(
         4.5,
       );
+      // The same pair carries the failed dot's ring, which is a state indicator
+      // rather than text and so is owed only 3:1 against the card (WCAG
+      // 1.4.11). It is not asserted again: this line is the stricter of the two
+      // on the identical pair, so a re-assert at 3 could never fail while this
+      // one passed, and a reader counting assertions would read it as a second
+      // measurement.
       expect(contrast(token(theme, "accent-text"), token(theme, "surface"))).toBeGreaterThanOrEqual(
         4.5,
       );
       expect(contrast(token(theme, "fg2"), token(theme, "surface"))).toBeGreaterThanOrEqual(4.5);
-      // And the failed dot's ring, which is a state indicator rather than text
-      // and so is owed 3:1 against the card (WCAG 1.4.11).
-      expect(contrast(token(theme, "accent-text"), token(theme, "surface"))).toBeGreaterThanOrEqual(
-        3,
-      );
     });
 
     it(`${theme}: a credential field is findable, and carries what is typed into it`, () => {
