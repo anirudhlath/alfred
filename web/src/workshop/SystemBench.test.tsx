@@ -412,10 +412,19 @@ describe("SystemBench · Cloud spend", () => {
 
   it("draws the fraction of the cap that is gone, to one decimal", () => {
     render(<SystemBench system={state()} />);
-    // The string in the DOM, not `toHaveStyle`, which cannot tell
-    // `28.400000000000002%` from `28.4%` — and that is the whole job of the
-    // `toFixed(1)` behind it.
     expect(screen.getByTestId<HTMLElement>("spend-fill").style.width).toBe("28.4%");
+  });
+
+  // The fixture above divides exactly — `String(1.42 / 5 * 100)` is `"28.4"`
+  // on the nose — so it says nothing about the rounding. A third of a cap does:
+  // unrounded it reaches the DOM as `33.333333333333336%`, which is the string
+  // `toFixed(1)` exists to keep out of it.
+  it("rounds a fraction that does not divide, rather than printing all of it", () => {
+    const cost = { date: "2026-09-16", spend_usd: 1, cap_usd: 3, request_count: 38 };
+    render(<SystemBench system={state({ overview: { ...overviewFixture, cost } })} />);
+    // The string in the DOM, not `toHaveStyle`, which cannot tell
+    // `33.333333333333336%` from `33.3%`.
+    expect(screen.getByTestId<HTMLElement>("spend-fill").style.width).toBe("33.3%");
   });
 
   it("colours the bar so it reads as a graphic and not only as a sentence", () => {
@@ -496,8 +505,20 @@ describe("SystemBench · Cloud spend", () => {
     expect(screen.getByText("no spend recorded today")).toBeInTheDocument();
     expect(screen.getByTestId<HTMLElement>("spend-fill").style.width).toBe("0%");
     // Nothing else to say, so the bar is named by the amount alone rather than
-    // pointing at an id that is not on the page.
-    expect(screen.getByRole("img", { name: "no spend recorded today" })).toBeInTheDocument();
+    // pointing at an id that is not on the page. The ids, not the accessible
+    // name: a dangling idref contributes nothing to a name, so the name reads
+    // the same whether the second id is there or not.
+    const card = screen.getByTestId("spend-card");
+    const amount = screen.getByText("no spend recorded today");
+    expect(amount.id).not.toBe("");
+    expect(screen.getByRole("img", { name: "no spend recorded today" })).toHaveAttribute(
+      "aria-labelledby",
+      amount.id,
+    );
+    // And there is no note element at all to point at — an empty one would be
+    // invisible to every assertion above and to the reader, and would still
+    // take the id.
+    expect(card.querySelectorAll(".t-meta-strong")).toHaveLength(1);
   });
 });
 
@@ -548,6 +569,11 @@ describe("SystemBench · Quiet", () => {
     const set = vi.fn();
     const { rerender } = render(<SystemBench system={state({ quiet: quiet({ set }) })} />);
     fireEvent.click(dnd());
+    // The visible gap between the tap and the move is the point: `on` is the
+    // stored position, so until the read behind the write lands the switch is
+    // exactly where it was. An optimistic `on` would flip here and the two
+    // assertions below would still hold.
+    expect(dnd()).not.toBeChecked();
     expect(screen.queryByText("applied")).not.toBeInTheDocument();
     rerender(<SystemBench system={state({ quiet: quiet({ active: true, set }) })} />);
     expect(dnd()).toBeChecked();
@@ -590,6 +616,32 @@ describe("SystemBench · Quiet", () => {
       <SystemBench system={state({ quiet: quiet({ active: true, until: NEXT_NOON, set }) })} />,
     );
     expect(screen.getByText("applied")).toBeInTheDocument();
+  });
+
+  // The refusal term in `mine`, which `applied` alone cannot show: `note` reads
+  // `quiet.error ?? …`, so the error wins that line whether or not the term is
+  // there. The chip mark is where it bites — a refused request must not go on
+  // owning the mark because the house drifted into that state some other way.
+  it("hands the mark back to the house when the write was refused", () => {
+    const set = vi.fn();
+    const { rerender } = render(
+      <SystemBench system={state({ quiet: quiet({ active: true, set }) })} />,
+    );
+    act(() => void vi.advanceTimersByTime(61_000));
+    fireEvent.click(chips()[0]);
+    const asked = new Date(SYSTEM_NOW + 61_000 + 3_600_000).toISOString();
+    expect(set).toHaveBeenCalledWith(true, asked);
+
+    // The house is holding that very instant — and refused the write. `1 h` is
+    // a rolling target, so an instant arrived at by any other route is not
+    // knowably an hour from now, and nothing is marked.
+    rerender(
+      <SystemBench
+        system={state({ quiet: quiet({ active: true, until: asked, set, error: DND_UNCONFIRMED }) })}
+      />,
+    );
+    expect(pressed()).toEqual(["false", "false", "false", "false"]);
+    expect(screen.getByText(DND_UNCONFIRMED)).toBeInTheDocument();
   });
 
   it("never claims applied over a write the house did not confirm", () => {
@@ -899,8 +951,11 @@ describe("SystemBench · Maintenance", () => {
 
   it("prints no number at all until the server has sent one", () => {
     render(<SystemBench system={state({ maintenance: maintenance({ idleMinutes: null }) })} />);
-    // Scoped to the row: `0 minutes` would be a guess wearing a number.
-    expect(screen.getByText("Session idle timeout").parentElement).toHaveTextContent(
+    // The whole row, as the sibling two above reads it — `toHaveTextContent` is
+    // a substring match, so it passes on `Session idle timeoutnull minutes`,
+    // and `null minutes` has no digits for the regex below to catch either.
+    // `0 minutes` would be a guess wearing a number; `null minutes` is worse.
+    expect(screen.getByText("Session idle timeout").parentElement?.textContent).toBe(
       "Session idle timeout",
     );
     expect(screen.queryByText(/\d+ minutes?$/)).not.toBeInTheDocument();

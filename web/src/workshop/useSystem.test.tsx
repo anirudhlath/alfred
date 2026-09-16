@@ -1620,14 +1620,25 @@ describe("useSystem", () => {
     for (const url of [SESSIONS, OVERVIEW, CREDENTIALS, INTEGRATIONS, ATTENTION]) {
       answer("GET", url, { status: 503, body: { detail: "Redis unavailable" } });
     }
-    answer("POST", DRAIN, { status: 503, body: { detail: "Redis unavailable" } });
+    for (const url of [DND, DRAIN, LIBRARIAN, PAIRING]) {
+      answer("POST", url, { status: 503, body: { detail: "Redis unavailable" } });
+    }
     const { result, rerender } = renderSystem();
     await waitFor(() => expect(result.current.sessions.error).toBe("Redis unavailable"));
     await waitFor(() => expect(result.current.credentials.error).toBe("Redis unavailable"));
     await waitFor(() => expect(result.current.integrations.error).toBe("Redis unavailable"));
     await waitFor(() => expect(result.current.attention.error).toBe("Redis unavailable"));
+    // Every complaint the hook can hold, not just the reads: four of the nine
+    // fields below are set by a **write**, and a gate on one of those is
+    // unfalsifiable against a field nothing ever filled.
+    act(() => result.current.quiet.set(true, null));
+    await waitFor(() => expect(result.current.quiet.error).toBe("Redis unavailable"));
+    act(() => result.current.pairing.mint());
+    await waitFor(() => expect(result.current.pairing.error).toBe("Redis unavailable"));
     act(() => result.current.maintenance.drain());
     await waitFor(() => expect(result.current.maintenance.drainError).toBe("Redis unavailable"));
+    act(() => result.current.maintenance.run());
+    await waitFor(() => expect(result.current.maintenance.runError).toBe("Redis unavailable"));
 
     rerender({ on: false });
 
