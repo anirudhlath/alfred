@@ -525,45 +525,45 @@ Keep the last good rows: read `episodic.data ?? []`, and set `placeholderData: (
 - Create: `web/src/workshop/RoutineRow.tsx`, `web/src/workshop/RoutineRow.test.tsx`
 
 `MemoryBench({ memory }: { memory: Memory })` — a pure view, no `QueryClient` in its tests.
+**Layout (handoff §6).** A sub-tab row under the bench switcher: four **44 px pills, radius 22**, the active one filled `--paper` on `--ink`, the rest `--fg2`. This is a different control from `BenchSwitcher`'s `--field` segments — the handoff specifies it separately — so share only the keyboard logic (roving tabindex, wrapping arrows, `Home`/`End`) by extracting it to `workshop/tabs.ts` and having `BenchSwitcher` use it too, rather than copying thirty lines of a11y-critical code. Below the pills, `flex-1 overflow-y-auto` content with `padding 12 16 40`, gap 12. The tabpanel always carries `tabIndex={0}`, for the reason `Workshop.tsx` writes out: Scratchpad holds nothing focusable, ever.
 
-**Layout (handoff §6).** A sub-tab row under the bench switcher: four segments, 32 px tall, `--field` on `--surface` for the selected one, `--fg2` labels for the rest, in the same idiom `BenchSwitcher` already uses — read that file and match it rather than inventing a second segmented control. Below it, `flex-1 overflow-y-auto` content. Padding `0 16px`; rows separated by a 1 px `--line` divider, never a border box.
+**Each tab opens with its note**, `.t-meta-strong`, verbatim from the handoff:
 
-**The note, verbatim, once, under the sub-tabs on Episodic:**
+- Episodic: `Browsing here does not count as recall. Nothing you open is kept warmer or colder for it.`
+- Semantic: `Human-readable documents the conscious mind reads before every reply. Rewritten by the nightly consolidation.`
+- Routines: `Patterns Alfred noticed on its own. Ignored suggestions lose confidence and slide right until archived.`
+- Scratchpad: `Working notes Alfred keeps between consolidations. The nightly pass reads them and rewrites semantic memory.` *(invented in the handoff's voice — the handoff says "note" without quoting one.)*
 
-> Browsing here does not count as recall. Nothing you open is kept warmer or colder for it.
+Episodic's is the most important sentence on the bench: it is the reason the endpoint passes `update_stats=False`, and a memory browser that silently reinforced what you looked at would corrupt the decay it is showing you.
 
-`.t-meta-strong`. It is the reason the endpoint passes `update_stats=False`, and it is the single most important sentence on the bench: a memory browser that silently reinforced what you looked at would corrupt the decay it is showing you.
+**Episodic.** Rows with a 1 px `--line` top and `padding 11 0`: an 8 px circle with a 1.5 px `--accent` border, **filled for hot and transparent for cold**, `aria-hidden`; the text at 14.5 px, **cold rows in `--fg2`**; then `episodicMeta(row, now)` in `.t-meta-strong` — `20:52 today · significance 0.62 · recalled 1× · hot`, the store last, `· match 0.62` appended for a search row. The entities go on a third line in `.t-meta` only when there are any: decorative, because the line above already says everything load-bearing.
 
-**Episodic.** A search field (`type="search"`, `aria-label="Search memory"`, **≥16 px**, or iOS zooms on focus) in a `<form>` whose submit calls `memory.submit()`. Beside it the model pill: `model: unknown` / `model: ok` / `model: 503`, mono, `.t-meta-strong`, `--green` only for `ok`. Then rows:
+A pinned footer holds the search: a 50 px `type="search"` field (`aria-label="Search memory"`, placeholder `Search by meaning`, **≥16 px or iOS zooms on focus**) inside a `<form>` whose submit calls `memory.submit()`, and beside it the model pill — `model: unknown` / `model: ok` / `model: 503`, mono, `--green-text` only for `ok`.
 
-- line 1 — `row.text`, `.t-body`, two lines max (`line-clamp-2`).
-- line 2 — `episodicMeta(row)`, `.t-meta-strong`, preceded by a 6 px dot: **filled `--accent` for hot, a 1 px `--line` ring for cold**. Give the dot `aria-hidden` and let the meta line carry the word `hot`/`cold`, which it already does — the dot is redundancy for the eye, not information for a reader.
-- line 3 — the entities, `.t-meta`, only when there are any. Decorative: the row above already says everything load-bearing.
-
-Empty states, exactly:
-- searched, nothing back → `Nothing scored above the server's threshold.` on line 1, `.t-body`; `searched by meaning · the server does not report what it rejected` on line 2, `.t-meta-strong`.
+Empty and error states, exactly:
+- searched, nothing back → `Nothing close enough to "<the submitted query>".` on line 1, then `searched by meaning · the server does not report what it rejected` on line 2. **Quote `submitted`, not `query`** — the field drifts the moment the reader types again.
 - browsing, nothing there → `No episodic memories yet.`
-- `model: 503` → `The embedder is not answering, so meaning search is off. Browsing still works.` **and the previous rows stay on screen below it.**
+- `model: 503` → a `--surface` card reading `The embedder is not answering.` / `503 · search by meaning unavailable · the list below is by recency`, **and the previous rows stay on screen below it.**
 
-**Semantic.** One card per file: the file name in mono `.t-body`, `dir · modified HH:MM` in `.t-meta-strong`, then the content in a `<pre>` with `whitespace-pre-wrap break-words`, clamped to 12 lines with a `Show all` / `Show less` toggle (a real `<button>`, ≥44 px). Empty: `No semantic memory files yet.` Routines empty: `No routines learned yet.`
+**Semantic.** One `--surface` card per file, radius 12, padding 14: the file name at 15 px/500, `dir · modified <day> HH:MM` in mono `.t-meta-strong` (a day label as well as a clock — these are rewritten nightly-into-weekly, so a bare clock on a three-week-old file is quietly false), then the content at 14/1.55 in `--fg2`, `pre-line`, clamped to 12 lines with a `Show all` / `Show less` toggle (a real `<button>`, ≥44 px). The clamp and the button are gated on the same estimate, so nothing is ever hidden without a way past it. Empty: `No semantic memory files yet.`
 
-**Scratchpad.** The content in the same `<pre>`, and above it `pending_queue N in the queue` (`.t-meta-strong`, `0 in the queue` when empty — never hide a zero here, an empty queue is a fact worth stating). Empty content: `The scratchpad is empty.`
+**Scratchpad.** The note, then a `--surface` mono 12/1.65 `pre-wrap` block of the working notes, then two stat cards (1 px `--line`, radius 12): `<pending_queue>` / `episodes queued, unscored`, and `<next consolidation>` / `next consolidation · last 03:00 today`. The second reads `overview.librarian` through `Memory.consolidation` — `useMemory` calls the already-cached `useOverview(false)`, which adds no request — and says `never run` rather than inventing a stamp. Never hide a zero queue; an empty queue is a fact worth stating. Empty content: `The scratchpad is empty.`
 
-**Routines** delegate to `RoutineRow`.
+**Routines** delegate to `RoutineRow`. Empty: `No routines learned yet.`
 
 ### `RoutineRow({ routine, open, onToggle })`
 
-Collapsed: the name in `.t-body`; `routineTrend(routine).text` in `.t-meta-strong`, coloured `--green` when rising and `--fg2` when not (**not red when falling** — a routine losing confidence is the system working); and the lifecycle rail.
+Rows `padding 12 0`. Collapsed: the name at 14.5 px, **`--fg2` for a dormant or archived routine**; `routineTrend(routine).text` in mono on the right, **`--accent-text` when rising** and `--fg2` when not (the handoff's "accent when rising" — a routine losing confidence is the system working, so nothing here is red); and the lifecycle rail.
 
-**The rail** is the design's one real invention and is worth building carefully: four dots joined by 1 px `--line` segments, in `ROUTINE_STAGES` order, the current stage filled `--accent` and the ones before it filled `--line`, the ones after hollow. `aria-hidden` on the whole rail, and a visually-hidden `<span>` carrying `stage: active` so a reader gets the same fact. 44 px tall including the row's own padding.
+**The rail** is four columns, each a 3 px bar with a **visible mono 10 px label** under it — `candidate · active · dormant · archived`. `--accent` for the current stage, `--muted` for the stages passed, `--line` for those ahead. Because the labels are visible and name the stage, no `sr-only` duplicate is needed.
 
-Expanded (the row is a `<button>` with `aria-expanded`): `routineDetail(routine)`, then the steps as an ordered list of `description` lines with `humaniseTool(action.tool_name)` beside each one that has an action, then the sparkline.
+Expanded (the row is a `<button>` with `aria-expanded`): `routineDetail(routine)` in a mono detail block, then the steps as an **ordered list with rendered ordinals** — a routine's steps are order-bearing — each `description` with `humaniseTool(action.tool_name)` beside the ones that have an action. Then the sparkline.
 
-**The sparkline**: 8 bars from `confidence_history.slice(-8)`, 3 px wide, 2 px apart, max height 20 px, `--accent` at 0.35 opacity except the last which is full. `role="img"` with `aria-label={\`confidence over the last ${n} consolidations, now ${confidence}\`}`. Fewer than 8 readings draws what it has, left-aligned; **zero readings draws nothing at all** rather than a flat line, because a flat line is a claim.
+**The sparkline**: up to 8 bars from `confidence_history.slice(-8)`, 3 px wide, 2 px apart, **28 px tall**, `--accent` at 0.7 opacity except the last, which is full. A reading of 0 still gets a floor bar, or the picture loses a consolidation that happened. `role="img"` with `aria-label={\`confidence over the last ${n} consolidations, now ${confidence}\`}`, and a visible `aria-hidden` caption `confidence, last <n> consolidations` — **counting the bars actually drawn**, not a flat 8. Fewer than 8 readings draws what it has, left-aligned; **zero readings draws nothing at all** rather than a flat line, because a flat line is a claim.
 
-- [ ] **Step 1: Write `RoutineRow.test.tsx` first** (~12): renders the name and trend; rising is green and falling is not red (assert the style value, as the other bench tests do); rail marks the current stage and announces it in text; `aria-expanded` flips; steps appear only when open; a step with no action renders its description alone; sparkline has the labelled `img` role with the right count; **no sparkline element at all for an empty history**; eight bars for a twelve-reading history; the last bar is the opaque one; the whole row is ≥44 px; `onToggle` fires with the routine's name.
+- [ ] **Step 1: Write `RoutineRow.test.tsx` first** (~14): renders the name and trend; rising is `--accent-text` and falling is not red (assert the style value, as the other bench tests do); a dormant routine's name is dimmed; the rail's visible labels mark the current stage; a bar's height is asserted, including a 0 reading keeping its floor; `aria-expanded` flips; steps appear only when open; a step with no action renders its description alone; sparkline has the labelled `img` role with the right count; **no sparkline element at all for an empty history**; eight bars for a twelve-reading history; the last bar is the opaque one; the whole row is ≥44 px; `onToggle` fires with the routine's name.
 
-- [ ] **Step 2: Write `MemoryBench.test.tsx`** (~18): the four sub-tabs render and switch via `memory.setTab`; **the browsing note is present on Episodic and quoted exactly**; hot and cold rows render their meta; typing does not call `submit`; submitting the form does; the three empty states each render their exact sentence; the 503 message renders *and the rows are still in the document*; a semantic file clamps and expands; the scratchpad shows `0 in the queue`; routines render one `RoutineRow` each; an error banner renders `memory.error`. Build `Memory` objects with a local `state(overrides)` factory rather than mocking the hook.
+- [ ] **Step 2: Write `MemoryBench.test.tsx`** (~18): the four sub-tabs render and switch via `memory.setTab`; **each tab's note is present and quoted exactly**; hot and cold rows render their meta; typing does not call `submit`; submitting the form does; the three empty states each render their exact sentence; the 503 message renders *and the rows are still in the document*; a semantic file clamps and expands; the scratchpad shows `0 in the queue`; routines render one `RoutineRow` each; an error banner renders `memory.error`. Build `Memory` objects with a local `state(overrides)` factory rather than mocking the hook.
 
 - [ ] **Step 3: Run both, watch them fail. Step 4: Implement. Step 5: Green, lint, build.**
 
