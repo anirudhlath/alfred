@@ -197,8 +197,10 @@ palette colour.
 | `--ease-rise`, `--ease-settle`, `--ease-sink` | The three easing curves: rise in, settle, leave |
 | `--app-height`, `--viewport-top` | The visual viewport's height and offset, written by `installViewportVars()` (below) |
 
-`ThemeProvider` writes `data-theme` on `<html>` and rewrites the single
-`<meta name="theme-color">` so Safari's chrome matches. The choice is stored under
+`ThemeProvider` writes `data-theme` on `<html>`, rewrites the single
+`<meta name="theme-color">` so Safari's chrome matches, and points
+`<link rel="manifest">` at that theme's manifest (`THEME_COLOR` and the two files are
+held together by `src/test/manifest.test.ts`). The choice is stored under
 `alfred.theme`; with nothing stored, the clock picks (dark at night).
 
 The eight stream hues are **not** tokens: the hue is data (`h = 30 + 45·i` over `STREAMS`),
@@ -1021,7 +1023,7 @@ untouched:
 | --- | --- | --- |
 | `/assets/*`, status < 400 | `public, max-age=31536000, immutable` | Content-hashed, so the bytes behind a URL never change. Errors are excluded — a pinned 404 has no URL to bust it. |
 | `text/html` | `no-cache, no-store, must-revalidate` | `index.html` and every SPA-fallback route: never stored, so a deploy is picked up on the next load. |
-| everything else | `no-cache, must-revalidate` | Unhashed `web/public/` files (`/icon.svg`, `/apple-touch-icon.png`, `/icon-192.png`, `/icon-512.png`, `/manifest.json`): revalidated on every load. |
+| everything else | `no-cache, must-revalidate` | Unhashed `web/public/` files (`/icon.svg`, `/apple-touch-icon.png`, `/icon-192.png`, `/icon-512.png`, `/manifest.json`, `/manifest-light.json`): revalidated on every load. |
 
 Tier 3 does not save bandwidth today. `mount_spa`'s fallback serves those files through a
 bare `FileResponse`, which ignores `If-None-Match`/`If-Modified-Since` — only
@@ -1034,12 +1036,13 @@ fallback ever grows conditional handling.
 
 ## What phases 1 to 3 do not cover
 
-- **Install, standalone and Reach gates, the service worker, icons and Web Push** —
-  phases 4 and 5. `web/public/manifest.json` ships SVG only and carries the phase-1
-  palette's dark ground; it cannot follow the theme the way `applyTheme` rewrites the
-  `theme-color` meta, so a light-hour install gets a dark splash until phase 4 says
-  otherwise. System has **no Reach card**: it would be a control that cannot work,
-  which is the defect the phase-2 placeholder tabs were.
+- **Install, standalone and Reach gates, the service worker and Web Push** — phases 4
+  and 5. The icons and the manifests have landed (phase 4's first two tasks):
+  `web/public/manifest.json` and `web/public/manifest-light.json` are identical but for
+  `theme_color`/`background_color`, and `applyTheme` swaps the `<link rel="manifest">`
+  alongside the `theme-color` meta, so a light-hour install gets a light splash. System
+  has **no Reach card**: it would be a control that cannot work, which is the defect the
+  phase-2 placeholder tabs were.
 - **Trigger editing, service restart and log download** — the three things the old SPA
   could do that no endpoint supports. Only the first is said out loud in the client: the
   Triggers footer reads `Nothing here edits a trigger — ask Alfred to change or remove

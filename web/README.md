@@ -100,12 +100,13 @@ Phase 3: the Workshop's other three benches, each a pure view over one hook call
 ## What it does not
 
 - **Install and Reach gates, the service worker and Web Push** — phases 4 and 5.
-  The standalone metas are already in `index.html`, and `public/manifest.json` carries
-  the phase-1 palette's dark ground — a manifest cannot follow the theme the way
-  `applyTheme` rewrites the `theme-color` meta, so a light-hour install still gets a dark
-  splash until phase 4's manifest task lands. The **icon set has shipped** — it is the
-  first piece of phase 4 — and is the only part of `public/` that has changed; see "The
-  icons" below.
+  The standalone metas are already in `index.html`. The **icon set and the manifests have
+  shipped** — the first two pieces of phase 4, and the whole of what `public/` has
+  changed; see "The icons" below. There are two manifests, `manifest.json` and
+  `manifest-light.json`, identical but for `theme_color` and `background_color`, because a
+  manifest is a static file and the theme is the hour's: `applyTheme` swaps the
+  `<link rel="manifest">` alongside the `theme-color` meta, and iOS reads the manifest at
+  Add-to-Home-Screen time, so a light-hour install now gets a light splash.
 - **Four things the old SPA could do and this client cannot**, which is the whole of the
   remaining parity gap (spec §8's gate is *full capability parity with the old SPA*).
   Three of them have no endpoint to call: **creating, editing or deleting a trigger**

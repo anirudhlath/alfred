@@ -139,7 +139,7 @@ Identical to phases 1 to 3, repeated because they are load-bearing:
 | `web/src/lib/theme.ts` | Export `THEME_COLOR`; `applyTheme` swaps the manifest link | 2 |
 | `web/src/test/contrast.ts` | Gains `srgbHex()`, so a file that cannot hold an `oklch()` restates no literal | 1 |
 | `web/src/test/manifest.test.ts` | Both manifests parsed, compared, and held to `THEME_COLOR` | 2 |
-| `web/index.html` | `apple-touch-icon` link; the manifest link keeps its `id` for the swap | 1, 2 |
+| `web/index.html` | `apple-touch-icon` link; the manifest link, which `applyTheme` finds by `rel` *(corrected in task 2: this said the link "keeps its `id`" — it has never had one, and the swap selects on `link[rel="manifest"]`, so task 2 changes no markup at all)* | 1 |
 | `web/tsconfig.app.json`, `web/tsconfig.node.json` | `icons.test.ts` reads bytes, so it is checked by the Node project, not the browser one | 1 |
 | `web/eslint.config.js` | A block for `public/*.js` with the service-worker globals | 3 |
 | `web/src/test/sw-harness.ts` | Fake `ServiceWorkerGlobalScope`, fake `CacheStorage`, event dispatch | 3 |
@@ -464,26 +464,25 @@ Counts after this task: **71 files / 1 530 tests** *(corrected in task 1: this s
 - Create: `web/public/manifest-light.json`
 - Modify: `web/src/lib/theme.ts`, `web/src/lib/theme.test.ts`
 - Create: `web/src/test/manifest.test.ts`
-- Modify: `web/index.html`, `web/src/test/index-html.test.ts`
+- Modify: `web/src/test/index-html.test.ts` *(corrected in task 2: `web/index.html` was listed here and needs no edit — the manifest link is already what the swap looks for. Only its test changes.)*
+- Modify: `web/README.md`, `docs/web-frontend.md` *(added in task 2: both state in prose that a light-hour install gets a dark splash "until phase 4 says otherwise", and both list `public/`'s unhashed files. This task falsifies all three passages, so it fixes them; the rest of the docs pass is still task 13's.)*
 
 - [ ] **Step 1: Write the failing tests for the two files**
 
-`web/src/test/manifest.test.ts`:
+`web/src/test/manifest.test.ts`. *(Corrected in task 2 on two counts. First, the subjects are read through Vite's `?raw` and not `node:fs` + `fileURLToPath`: this file also imports `@/lib/theme`, which touches `document`, so it belongs to the browser TS project — where `types` is `vite/client` alone and `node:fs` is not typed — while the Node project task 1 moved `icons.test.ts` into has neither the `@/` alias nor the DOM lib. `index-html.test.ts` already reads its subject this way. Second, `toMatchObject` is blind to extra members, and an extra member in a manifest is not inert, so a fifth test pins the key set — it is the only assertion here that catches an `display_override` added to both files, which was checked by mutating them. The `strip` helper deletes rather than rest-destructuring into `_t`/`_b` — this repo's eslint fails the build on those two as unused.)*
 
 ```ts
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { THEME_COLOR } from "@/lib/theme";
+// The shipped bytes, not a re-description of them. `?raw` and not `node:fs`:
+// this file also imports `@/lib/theme`, which touches `document`, so it belongs
+// to the browser TS project — where there is no `node` in `types` and no `@/`
+// alias in the Node one. `index-html.test.ts` reads its subject the same way.
+import darkSource from "../../public/manifest.json?raw";
+import lightSource from "../../public/manifest-light.json?raw";
 
-function manifest(name: string): Record<string, unknown> {
-  return JSON.parse(
-    readFileSync(fileURLToPath(new URL(`../../public/${name}`, import.meta.url)), "utf8"),
-  ) as Record<string, unknown>;
-}
-
-const dark = manifest("manifest.json");
-const light = manifest("manifest-light.json");
+const dark = JSON.parse(darkSource) as Record<string, unknown>;
+const light = JSON.parse(lightSource) as Record<string, unknown>;
 
 describe("the manifest", () => {
   it("is an installable standalone app with a stable identity", () => {
@@ -493,11 +492,31 @@ describe("the manifest", () => {
       id: "/",
       name: "Alfred",
       short_name: "Alfred",
+      description: "Your personal butler",
       start_url: "/",
       scope: "/",
       display: "standalone",
       orientation: "portrait",
     });
+  });
+
+  it("carries those members and no others", () => {
+    // toMatchObject above is blind to anything extra, and an extra member in a
+    // manifest is not inert: `display_override`, `related_applications` or a
+    // `launch_handler` would each change how the installed app opens.
+    expect(Object.keys(dark).sort()).toEqual([
+      "background_color",
+      "description",
+      "display",
+      "icons",
+      "id",
+      "name",
+      "orientation",
+      "scope",
+      "short_name",
+      "start_url",
+      "theme_color",
+    ]);
   });
 
   it("ships the raster icons iOS and Chrome each need", () => {
@@ -518,8 +537,12 @@ describe("the manifest", () => {
   it("differs between the two files in nothing but those two colours", () => {
     // Two files is the price of a static manifest and an hourly theme. The
     // price is only worth paying if they cannot drift apart in anything else.
+    // Deleted rather than rest-destructured into `_t`/`_b`: this repo's eslint
+    // reports those as unused, and the two spellings say the same thing.
     const strip = (m: Record<string, unknown>) => {
-      const { theme_color: _t, background_color: _b, ...rest } = m;
+      const rest = { ...m };
+      delete rest.theme_color;
+      delete rest.background_color;
       return rest;
     };
     expect(strip(light)).toEqual(strip(dark));
@@ -569,7 +592,7 @@ describe("applyTheme and the manifest", () => {
 npx vitest run src/test/manifest.test.ts src/lib/theme.test.ts
 ```
 
-Expected: FAIL — `THEME_COLOR` is not exported (`manifest.test.ts` will not even import), and the three `applyTheme` tests fail on `href` still reading `/manifest.json`.
+Expected: FAIL — `manifest.test.ts` does not even load (`manifest-light.json` does not exist yet; `THEME_COLOR` is not exported either, but the missing file is what Vite reports first), and of the three `applyTheme` tests only *"points the manifest at the light file"* fails: the other two pass vacuously against an unswapped link and are guards rather than drivers. *(Corrected in task 2: the original line expected all three to fail.)*
 
 - [ ] **Step 4: Write `web/public/manifest.json`**
 
@@ -671,18 +694,18 @@ Expected: PASS. Then the whole suite, because `applyTheme` runs in every test th
 npx vitest run
 ```
 
-Expected: `Test Files 72 passed (72)`, all green.
+Expected: `Test Files 72 passed (72)`, all green — `Tests 1538 passed (1538)`.
 
 - [ ] **Step 9: Commit**
 
 ```bash
 git add web/public/manifest.json web/public/manifest-light.json web/src/lib/theme.ts \
-        web/src/lib/theme.test.ts web/src/test/manifest.test.ts web/index.html \
-        web/src/test/index-html.test.ts
+        web/src/lib/theme.test.ts web/src/test/manifest.test.ts \
+        web/src/test/index-html.test.ts web/README.md docs/web-frontend.md
 git commit -m "feat(web): a manifest per theme, so a light-hour install gets a light splash"
 ```
 
-Counts after this task: **72 files / ~1 524 tests**.
+Counts after this task: **72 files / 1 538 tests** *(corrected in task 2: this said ~1 524, carried over from the stale 1 513 baseline. The real arithmetic is task 1's 1 530 plus five in `manifest.test.ts` and three in `theme.test.ts`; `index-html.test.ts` replaces a test rather than adding one.)*.
 
 ---
 

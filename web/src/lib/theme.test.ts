@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyTheme, rememberTheme, resolveInitialTheme, storedTheme, THEME_KEY } from "./theme";
 
 afterEach(() => {
@@ -93,5 +93,37 @@ describe("storedTheme", () => {
       throw new Error("SecurityError");
     });
     expect(storedTheme()).toBeNull();
+  });
+});
+
+describe("applyTheme and the manifest", () => {
+  beforeEach(() => {
+    document.head.innerHTML =
+      '<meta name="theme-color" content="#25221F">' +
+      '<link rel="manifest" href="/manifest.json">';
+  });
+
+  afterEach(() => {
+    document.head.innerHTML = "";
+  });
+
+  const href = () => document.querySelector('link[rel="manifest"]')?.getAttribute("href");
+
+  it("points the manifest at the light file in the light theme", () => {
+    applyTheme("light");
+    expect(href()).toBe("/manifest-light.json");
+  });
+
+  it("points it back at the dark file in the dark theme", () => {
+    applyTheme("light");
+    applyTheme("dark");
+    expect(href()).toBe("/manifest.json");
+  });
+
+  it("survives a document with no manifest link at all", () => {
+    // Every test that renders a component has a bare jsdom head. applyTheme
+    // runs on the first render of ThemeProvider in all of them.
+    document.head.innerHTML = '<meta name="theme-color" content="#25221F">';
+    expect(() => applyTheme("light")).not.toThrow();
   });
 });

@@ -60,7 +60,9 @@ describe("index.html", () => {
     expect(html).toContain('<link rel="icon" href="/icon.svg" />');
   });
 
-  it("keeps the manifest link untouched for phase 4", () => {
+  it("links the dark manifest, which applyTheme swaps for the light one", () => {
+    // Dark to match the dark `theme-color` two lines up: both are the
+    // first-paint values, and both are rewritten within a frame by applyTheme.
     expect(html).toContain('<link rel="manifest" href="/manifest.json" />');
   });
 });
