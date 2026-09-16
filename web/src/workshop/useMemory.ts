@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { ApiError, errorText } from "@/lib/api";
 import {
   fetchEpisodic,
@@ -24,8 +24,10 @@ export type ModelState = "unknown" | "ok" | "503";
 
 /**
  * How long a read stays fresh. A trip to Triggers and back inside this window
- * re-uses what is already in hand: memory changes at consolidation speed, and a
- * hot browse scans a Redis keyspace to answer.
+ * re-uses what is already in hand, and none of these reads is cheap enough to
+ * repeat for nothing: a hot browse `SCAN`s a Redis keyspace and `HGETALL`s
+ * every key it finds, the semantic read globs two directories off disk, and
+ * memory changes at consolidation speed rather than at chat speed.
  */
 const STALE_MS = 30_000;
 
@@ -40,9 +42,11 @@ export interface Memory {
   /** A submitted query is in flight. A browse is not a search. */
   searching: boolean;
   /**
-   * The rows answer a query rather than a browse — which is what tells the two
-   * empty states apart ("nothing scored above the threshold" against "no
-   * episodic memories yet").
+   * The rows on screen are a search's matches rather than a browse — which is
+   * what tells the two empty states apart ("nothing scored above the
+   * threshold" against "no episodic memories yet"). Read from the answer and
+   * never from the field: a search still in flight, or one that was refused, is
+   * showing the browse and must not claim otherwise.
    */
   searched: boolean;
   /** What the list shows: the search's matches, or the browse under them. */
@@ -56,7 +60,7 @@ export interface Memory {
   toggleRoutine: (name: string) => void;
   /** A read is in flight. */
   loading: boolean;
-  /** Why the showing tab's read failed, if it did. */
+  /** Why the showing tab's read failed, if it did. Null while the bench is not showing. */
   error: string | null;
 }
 
@@ -84,8 +88,8 @@ export function useMemory(enabled: boolean): Memory {
   // string, so that a refused search still has the browse under it to show. A
   // single key would leave the list empty on a 503 — react-query holds `data`
   // per key, and a failed key has none of its own; `placeholderData` does not
-  // cover it either, since the observer reaches for a placeholder only while a
-  // query is pending, never once it has errored. A failed search is no reason
+  // cover that either, since the observer reaches for a placeholder only while
+  // a query is pending, never once it has errored. A failed search is no reason
   // to take the last true thing we were told off the screen (spec §5.2).
   const browseQuery = useQuery({
     queryKey: ["memory", "episodic", "browse"],
@@ -98,9 +102,15 @@ export function useMemory(enabled: boolean): Memory {
     queryKey: ["memory", "episodic", "search", submitted],
     // The pill is set here, where the answer arrives, in the idiom `useOverview`
     // already uses for `markTrue`: the embedder has no readiness probe, so a
-    // search answering is the only evidence there is. Only a 503 is the model —
-    // a 401 is a gate and a 500 is the store behind it, and reading either as a
-    // dead embedder would be inventing the diagnosis.
+    // search answering is the only evidence there is. Unlike `markTrue`, which
+    // writes module state, this writes *React* state from outside render —
+    // legitimate in a queryFn, which runs from the fetch rather than from a
+    // render or an effect, but it lands a tick after the rows it explains, so
+    // every assertion about the pill has to wait for it. Do not copy the idiom
+    // into a component body, where it would be a render-phase update.
+    //
+    // Only a 503 is the model: a 401 is a gate and a 500 is the store behind
+    // it, and reading either as a dead embedder would be inventing a diagnosis.
     queryFn: async () => {
       try {
         const found = await fetchEpisodic(submitted);
@@ -112,6 +122,11 @@ export function useMemory(enabled: boolean): Memory {
       }
     },
     enabled: showing && submitted !== "",
+    // Holds the matches already on screen while the next search is in flight,
+    // so a second search does not flash the browse between the two answers.
+    // Inert once a query has errored — placeholders are for pending queries —
+    // which is exactly what leaves a refused search falling back to the browse.
+    placeholderData: keepPreviousData,
     staleTime: STALE_MS,
   });
 
@@ -136,9 +151,18 @@ export function useMemory(enabled: boolean): Memory {
     staleTime: STALE_MS,
   });
 
-  const searched = submitted !== "";
-  const rows = (searched ? searchQuery.data : undefined) ?? browseQuery.data ?? [];
+  // One source for both: the rows are the search's matches when it has any, and
+  // `searched` is that same fact. The `submitted` guard is not belt and braces
+  // — a disabled query is *pending*, so clearing the field back to a browse
+  // would otherwise let `keepPreviousData` hand back the matches for words that
+  // are no longer in the box.
+  const matches = submitted === "" ? undefined : searchQuery.data;
+  const searched = matches !== undefined;
+  const rows = matches ?? browseQuery.data ?? [];
 
+  // Lifted out of the callback below only to keep its dependency list honest:
+  // react-query's `refetch` is stable per observer, while depending on the
+  // whole query result would rebuild `submit` on every fetch-state change.
   const refetchBrowse = browseQuery.refetch;
   const refetchSearch = searchQuery.refetch;
   const submit = useCallback(() => {
@@ -160,14 +184,15 @@ export function useMemory(enabled: boolean): Memory {
   // The showing tab's failure, and only it: the other tabs are disabled, and a
   // query holds its last error for as long as it is cached, so reading all of
   // them would carry one tab's old trouble onto the one in front of the reader.
-  const failure =
-    tab === "episodic"
-      ? (searchQuery.error ?? browseQuery.error)
-      : tab === "semantic"
-        ? semanticQuery.error
-        : tab === "routines"
-          ? routinesQuery.error
-          : scratchpadQuery.error;
+  // A bench that is not showing reports nothing at all — with every read idle,
+  // a cached error is a complaint about a screen nobody is looking at.
+  const failures = {
+    episodic: searchQuery.error ?? browseQuery.error,
+    semantic: semanticQuery.error,
+    routines: routinesQuery.error,
+    scratchpad: scratchpadQuery.error,
+  } satisfies Record<MemoryTab, Error | null>;
+  const failure = enabled ? failures[tab] : null;
 
   return {
     tab,

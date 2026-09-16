@@ -40,6 +40,26 @@ const asked = (path: string): string[] => calls.filter((url) => url.split("?")[0
  */
 const qOf = (url: string): string | null => new URL(url, "http://localhost").searchParams.get("q");
 
+interface Gate {
+  promise: Promise<void>;
+  release: () => void;
+}
+
+function defer(): Gate {
+  let release = (): void => {};
+  const promise = new Promise<void>((resolve) => {
+    release = () => resolve();
+  });
+  return { promise, release };
+}
+
+/**
+ * While set, a *search* is held open until the test releases it — the only way
+ * to observe the list mid-flight, which is where "pending" and "failed" have to
+ * be told apart.
+ */
+let held: Gate | null = null;
+
 function stubFetch(): void {
   vi.stubGlobal(
     "fetch",
@@ -47,8 +67,10 @@ function stubFetch(): void {
       const url = String(input);
       calls.push(url);
       const path = url.split("?")[0];
+      const searching = path === EPISODIC && qOf(url) !== null;
+      if (searching && held) await held.promise;
       let answer: Answer;
-      if (path === EPISODIC) answer = qOf(url) === null ? browse : search;
+      if (path === EPISODIC) answer = searching ? search : browse;
       else if (path === SEMANTIC) answer = semantic;
       else if (path === ROUTINES) answer = routines;
       else if (path === SCRATCHPAD) answer = scratchpad;
@@ -64,10 +86,11 @@ function renderMemory(enabled = true) {
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
-  return renderHook(({ on }: { on: boolean }) => useMemory(on), {
+  const view = renderHook(({ on }: { on: boolean }) => useMemory(on), {
     wrapper,
     initialProps: { on: enabled },
   });
+  return { ...view, client };
 }
 
 /** Let every queued microtask run without asserting anything happened. */
@@ -77,8 +100,15 @@ const settle = async (): Promise<void> => {
   });
 };
 
+/** Type a query and submit it, as the bench's form does. */
+function searchFor(result: { current: { setQuery: (q: string) => void; submit: () => void } }, text: string): void {
+  act(() => result.current.setQuery(text));
+  act(() => result.current.submit());
+}
+
 beforeEach(() => {
   calls = [];
+  held = null;
   browse = ok({ entries: [hotRow(), coldRow()] });
   search = ok({ entries: [searchRow()] });
   semantic = ok({ files: [semanticFile()] });
@@ -88,6 +118,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  held?.release();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -128,16 +159,15 @@ describe("useMemory", () => {
     const { result } = renderMemory();
     await waitFor(() => expect(result.current.rows).toHaveLength(2));
 
-    act(() => result.current.setQuery("dentist & co"));
-    act(() => result.current.submit());
+    searchFor(result, "dentist & co");
 
     await waitFor(() => expect(asked(EPISODIC)).toHaveLength(2));
     expect(qOf(asked(EPISODIC)[1])).toBe("dentist & co");
     // Encoded, not raw: a bare ampersand would cut the query in half.
     expect(asked(EPISODIC)[1]).not.toContain("&");
-    expect(result.current.searched).toBe(true);
     await waitFor(() => expect(result.current.rows).toHaveLength(1));
     expect(result.current.rows[0].score).toBe(0.62);
+    expect(result.current.searched).toBe(true);
   });
 
   it("says it is searching only while a submitted query is in flight", async () => {
@@ -146,10 +176,13 @@ describe("useMemory", () => {
     expect(result.current.searching).toBe(false);
     await waitFor(() => expect(result.current.rows).toHaveLength(2));
 
-    act(() => result.current.setQuery("dentist"));
-    act(() => result.current.submit());
+    searchFor(result, "dentist");
 
     expect(result.current.searching).toBe(true);
+    // A first search has no matches to hold over, so the browse stays under it
+    // — and is not claimed as a result while it does.
+    expect(result.current.rows).toHaveLength(2);
+    expect(result.current.searched).toBe(false);
     await waitFor(() => expect(result.current.searching).toBe(false));
   });
 
@@ -158,8 +191,7 @@ describe("useMemory", () => {
     await waitFor(() => expect(result.current.rows).toHaveLength(2));
     expect(result.current.model).toBe("unknown");
 
-    act(() => result.current.setQuery("dentist"));
-    act(() => result.current.submit());
+    searchFor(result, "dentist");
 
     // In flight, nothing is proven yet.
     expect(result.current.model).toBe("unknown");
@@ -172,37 +204,100 @@ describe("useMemory", () => {
     await waitFor(() => expect(result.current.rows).toHaveLength(2));
     const browsed = result.current.rows;
 
-    act(() => result.current.setQuery("dentist"));
-    act(() => result.current.submit());
+    searchFor(result, "dentist");
 
     await waitFor(() => expect(result.current.model).toBe("503"));
     expect(result.current.error).toBe("Vector search unavailable");
-    // The honesty test of the whole bench: a failed search must not blank the screen.
+    // The honesty test of the whole bench: a failed search must not blank the
+    // screen, and must not claim the browse under it is a set of matches.
     expect(result.current.rows).toEqual(browsed);
+    expect(result.current.searched).toBe(false);
+  });
+
+  it("calls a search that matched nothing a search all the same", async () => {
+    search = ok({ entries: [] });
+    const { result } = renderMemory();
+    await waitFor(() => expect(result.current.rows).toHaveLength(2));
+
+    searchFor(result, "dentist");
+
+    // The bench draws two different empty states off this flag; an empty answer
+    // is the one that says the server rejected everything it scored.
+    await waitFor(() => expect(result.current.searched).toBe(true));
+    expect(result.current.rows).toEqual([]);
+  });
+
+  it("holds the matches already on screen while the next search is in flight", async () => {
+    const { result } = renderMemory();
+    await waitFor(() => expect(result.current.rows).toHaveLength(2));
+    searchFor(result, "dentist");
+    await waitFor(() => expect(result.current.rows).toHaveLength(1));
+    const matches = result.current.rows;
+
+    held = defer();
+    search = ok({ entries: [searchRow({ id: "ep-92", summary: "Booked the hygienist" })] });
+    searchFor(result, "hygienist");
+    await waitFor(() => expect(asked(EPISODIC)).toHaveLength(3));
+
+    // Pending is not failed: the list holds the last matches rather than
+    // flashing the browse between one answer and the next.
+    expect(result.current.rows).toEqual(matches);
+    expect(result.current.searched).toBe(true);
+    expect(result.current.searching).toBe(true);
+
+    held.release();
+    await waitFor(() => expect(result.current.rows[0].id).toBe("ep-92"));
+  });
+
+  it("drops back to the browse when the next search fails, rather than showing stale matches", async () => {
+    const { result } = renderMemory();
+    await waitFor(() => expect(result.current.rows).toHaveLength(2));
+    const browsed = result.current.rows;
+    searchFor(result, "dentist");
+    await waitFor(() => expect(result.current.rows).toHaveLength(1));
+
+    search = EMBEDDER_DOWN;
+    searchFor(result, "hygienist");
+
+    await waitFor(() => expect(result.current.model).toBe("503"));
+    // Matches for words nobody asked about are worse than no matches.
+    expect(result.current.rows).toEqual(browsed);
+    expect(result.current.searched).toBe(false);
   });
 
   it("clears the 503 when a later search answers", async () => {
     search = EMBEDDER_DOWN;
     const { result } = renderMemory();
     await waitFor(() => expect(result.current.rows).toHaveLength(2));
-    act(() => result.current.setQuery("dentist"));
-    act(() => result.current.submit());
+    searchFor(result, "dentist");
     await waitFor(() => expect(result.current.model).toBe("503"));
 
     search = ok({ entries: [searchRow()] });
-    act(() => result.current.setQuery("lamp"));
-    act(() => result.current.submit());
+    searchFor(result, "lamp");
 
     await waitFor(() => expect(result.current.model).toBe("ok"));
     expect(result.current.error).toBeNull();
+  });
+
+  it("reads a 503 as the embedder dying, even after one search had answered", async () => {
+    const { result } = renderMemory();
+    await waitFor(() => expect(result.current.rows).toHaveLength(2));
+    searchFor(result, "dentist");
+    await waitFor(() => expect(result.current.model).toBe("ok"));
+
+    // The pill is what the *last* search learned, not what the first one did.
+    search = EMBEDDER_DOWN;
+    searchFor(result, "lamp");
+
+    await waitFor(() => expect(result.current.model).toBe("503"));
+    expect(result.current.error).toBe("Vector search unavailable");
   });
 
   it("retries the same query rather than sitting on a stale failure", async () => {
     search = EMBEDDER_DOWN;
     const { result } = renderMemory();
     await waitFor(() => expect(result.current.rows).toHaveLength(2));
-    act(() => result.current.setQuery("dentist"));
-    act(() => result.current.submit());
+    searchFor(result, "dentist");
     await waitFor(() => expect(result.current.model).toBe("503"));
 
     // The same words a second time: the query key does not change, so nothing
@@ -214,16 +309,30 @@ describe("useMemory", () => {
     expect(asked(EPISODIC)).toHaveLength(3);
   });
 
-  it("does not call the embedder dead for a 401, which is a gate", async () => {
-    search = { status: 401, body: { detail: "Not authenticated" } };
+  it("browses when a blank query is submitted", async () => {
     const { result } = renderMemory();
     await waitFor(() => expect(result.current.rows).toHaveLength(2));
 
-    act(() => result.current.setQuery("dentist"));
-    act(() => result.current.submit());
+    searchFor(result, "   ");
 
-    await waitFor(() => expect(result.current.error).toBe("Not authenticated"));
-    expect(result.current.model).toBe("unknown");
+    // Whitespace is not a question worth embedding on the GPU.
+    await waitFor(() => expect(asked(EPISODIC)).toHaveLength(2));
+    expect(asked(EPISODIC)).toEqual([EPISODIC, EPISODIC]);
+    expect(result.current.searched).toBe(false);
+    expect(result.current.rows).toHaveLength(2);
+  });
+
+  it("goes back to the browse when the search is cleared", async () => {
+    const { result } = renderMemory();
+    await waitFor(() => expect(result.current.rows).toHaveLength(2));
+    const browsed = result.current.rows;
+    searchFor(result, "dentist");
+    await waitFor(() => expect(result.current.searched).toBe(true));
+
+    searchFor(result, "");
+
+    await waitFor(() => expect(result.current.searched).toBe(false));
+    expect(result.current.rows).toEqual(browsed);
   });
 
   it("reads nothing but episodic while the episodic tab is showing", async () => {
@@ -263,15 +372,23 @@ describe("useMemory", () => {
     expect(result.current.rows).toEqual([]);
   });
 
-  it("keeps the tab across a disable and re-enable", async () => {
+  it("keeps the tab, the query and the open routine across a disable and re-enable", async () => {
     const { result, rerender } = renderMemory();
+    searchFor(result, "dentist");
+    await waitFor(() => expect(result.current.searched).toBe(true));
+    act(() => result.current.toggleRoutine("evening-lights"));
     act(() => result.current.setTab("routines"));
     await waitFor(() => expect(result.current.routines).toHaveLength(2));
 
     rerender({ on: false });
     rerender({ on: true });
 
+    // The hook lives in the panel, not in the bench, so a trip to Triggers and
+    // back comes home to the screen you left.
     expect(result.current.tab).toBe("routines");
+    expect(result.current.query).toBe("dentist");
+    expect(result.current.searched).toBe(true);
+    expect(result.current.openRoutine).toBe("evening-lights");
     expect(result.current.routines).toHaveLength(2);
   });
 
@@ -289,11 +406,12 @@ describe("useMemory", () => {
   });
 
   it("reports the failure of the read the tab is showing", async () => {
-    browse = { status: 500, body: { detail: "redis gone" } };
+    // A 503, the embedder's own status, on the read that never embeds anything:
+    // only a search is evidence about the model, whatever the browse answers.
+    browse = { status: 503, body: { detail: "Memory is not answering" } };
     const { result } = renderMemory();
 
-    await waitFor(() => expect(result.current.error).toBe("redis gone"));
-    // A browse that failed says nothing about the embedder: it embeds nothing.
+    await waitFor(() => expect(result.current.error).toBe("Memory is not answering"));
     expect(result.current.model).toBe("unknown");
   });
 
@@ -308,12 +426,49 @@ describe("useMemory", () => {
     expect(result.current.error).toBeNull();
   });
 
-  it("is loading only while a read is in flight", async () => {
+  it("complains about nothing while the bench is not showing", async () => {
+    browse = { status: 500, body: { detail: "redis gone" } };
+    const { result, rerender } = renderMemory();
+    await waitFor(() => expect(result.current.error).toBe("redis gone"));
+
+    rerender({ on: false });
+
+    // Every read is idle behind a closed bench; a cached error is a complaint
+    // about a screen nobody is looking at.
+    expect(result.current.error).toBeNull();
+  });
+
+  it("is loading while a read is in flight, and not once it has settled", async () => {
     const { result } = renderMemory();
     expect(result.current.loading).toBe(true);
 
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.rows).toHaveLength(2);
+  });
+
+  it("re-reads the showing tab when the app comes back to the foreground", async () => {
+    const { result, client } = renderMemory();
+    await waitFor(() => expect(result.current.rows).toHaveLength(2));
+
+    // What ConnectionProvider's REHYDRATE_KEYS does on visibilitychange. The
+    // key is a prefix: one entry has to reach all four reads.
+    await act(() => client.invalidateQueries({ queryKey: ["memory"] }));
+
+    await waitFor(() => expect(asked(EPISODIC)).toHaveLength(2));
+    // …and only the read the bench is showing. Invalidation marks the other
+    // three stale without running them, so returning to the app does not glob
+    // a directory for a tab nobody has opened.
+    expect(calls).toEqual([EPISODIC, EPISODIC]);
+  });
+
+  it("re-reads nothing on the way back when the bench is not showing", async () => {
+    const { client } = renderMemory(false);
+    await settle();
+
+    await act(() => client.invalidateQueries({ queryKey: ["memory"] }));
+    await settle();
+
+    expect(calls).toEqual([]);
   });
 
   it("does not poll: memory changes at consolidation speed, not at chat speed", async () => {
@@ -325,6 +480,6 @@ describe("useMemory", () => {
       await vi.advanceTimersByTimeAsync(300_000);
     });
 
-    expect(asked(EPISODIC)).toHaveLength(1);
+    expect(calls).toEqual([EPISODIC]);
   });
 });

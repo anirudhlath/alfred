@@ -70,7 +70,7 @@ const REHYDRATE_KEYS = [
   ["pending-actions"],
   ["deferred"],
   ["memory"],
-];
+] as const satisfies readonly (readonly string[])[];
 
 /**
  * How often the same complaint from the telemetry pump may reach the console.
