@@ -243,8 +243,22 @@ describe("toEpisodicRow", () => {
     // recalls reads a plain `cold` (`Alfred.dc.html:687`). Decay migrates hot
     // entries *into* cold storage; a cold row has already arrived, and nothing
     // in the Librarian removes one.
-    expect(toEpisodicRow({ ...COLD, significance: 0.22 }, 0).decaying).toBe(false);
+    //
+    // Two guards say so and only one of them is reachable: `recalled` is null
+    // on every cold row, and `null === 0` is false, so `recalled === 0` alone
+    // already answers false here. `!cold` is belt over those braces and cannot
+    // be killed from outside the module — which is why the null is asserted
+    // beside the word, rather than left as an invariant three other tests
+    // happen to hold.
+    const near = toEpisodicRow({ ...COLD, significance: 0.22 }, 0);
+    expect(near.recalled).toBeNull();
+    expect(near.decaying).toBe(false);
     expect(toEpisodicRow({ ...COLD, significance: 0.8 }, 0).decaying).toBe(false);
+    // A cold *search* row, where the server does send a count — and the row
+    // drops it, which is the one input that could otherwise reach zero.
+    const found = toEpisodicRow({ ...FOUND, significance: 0.2, retrieval_count: 0 }, 0);
+    expect(found.recalled).toBeNull();
+    expect(found.decaying).toBe(false);
     expect(toEpisodicRow({ ...FOUND, significance: 0.2, retrieval_count: 1 }, 0).decaying).toBe(
       false,
     );

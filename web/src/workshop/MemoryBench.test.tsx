@@ -12,9 +12,14 @@ import type { Memory } from "./useMemory";
  */
 const NOW = new Date(2026, 8, 16, 21, 0, 0);
 
-/** The Librarian's last and next pass, built locally so the strings hold in any zone. */
+/**
+ * The Librarian's last and next pass, built locally so the strings hold in any
+ * zone. Deliberately a different `hh:mm` from each other: the stat card prints
+ * one and the line under it the other, and while both read `03:00` the card
+ * could be drawing either field and the test could not tell.
+ */
 const LAST_RUN = new Date(2026, 8, 16, 3, 0, 0).toISOString();
-const NEXT_RUN = new Date(2026, 8, 17, 3, 0, 0).toISOString();
+const NEXT_RUN = new Date(2026, 8, 17, 4, 0, 0).toISOString();
 
 /**
  * The bench is a pure view over one state object, so its tests build that
@@ -154,6 +159,18 @@ describe("MemoryBench", () => {
     expect(screen.getByText("lamp · kitchen")).toHaveClass("t-meta");
   });
 
+  // The other half of "only when the row has any": without the guard the row
+  // still draws the line, empty — invisible to every assertion above, and a
+  // stray 4 px of leading under a row that has nothing to say.
+  it("draws no entity line at all for a row that names none", () => {
+    render(<MemoryBench memory={state({ rows: [toEpisodicRow(hotRow({ entities: "" }), 0)] })} />);
+    const row = screen.getByText("Kitchen lamp turned off").closest("li");
+    expect(row).not.toBeNull();
+    // `.t-meta`, which the meta line's own `.t-meta-strong` is not: the entity
+    // line is the only thing in the row that carries it.
+    expect(row?.querySelector(".t-meta")).toBeNull();
+  });
+
   it("takes a typed word without searching for it", () => {
     const memory = state();
     render(<MemoryBench memory={memory} />);
@@ -193,13 +210,20 @@ describe("MemoryBench", () => {
     expect(screen.queryByText(/Nothing close enough/)).toBeNull();
   });
 
+  const DOWN = "The embedder is not answering.";
+
   it("greens the model pill only once a search has answered", () => {
     const { rerender } = render(<MemoryBench memory={state()} />);
     expect(screen.getByText("model: unknown").style.color).toBe("");
+    // And the card belongs to the 503 alone: asserted on every pill state, or
+    // a card drawn unconditionally reads the same as one that is gated.
+    expect(screen.queryByText(DOWN)).toBeNull();
     rerender(<MemoryBench memory={state({ model: "ok" })} />);
     expect(screen.getByText("model: ok").style.color).toBe("var(--green-text)");
+    expect(screen.queryByText(DOWN)).toBeNull();
     rerender(<MemoryBench memory={state({ model: "503" })} />);
     expect(screen.getByText("model: 503").style.color).toBe("");
+    expect(screen.getByText(DOWN)).toBeInTheDocument();
   });
 
   // The honesty case: a refused search is no reason to take the last true thing
@@ -207,7 +231,7 @@ describe("MemoryBench", () => {
   // handoff has it, that a model is still loading.
   it("keeps the rows on screen while saying the embedder is down", () => {
     render(<MemoryBench memory={state({ model: "503", rows: [hot, cold] })} />);
-    expect(screen.getByText("The embedder is not answering.")).toBeInTheDocument();
+    expect(screen.getByText(DOWN)).toBeInTheDocument();
     expect(
       screen.getByText("503 · search by meaning unavailable · the list below is by recency"),
     ).toHaveClass("t-meta-strong");
@@ -309,7 +333,10 @@ describe("MemoryBench", () => {
     );
     expect(screen.getByText("0")).toHaveClass("t-title");
     expect(screen.getByText("episodes queued, unscored")).toHaveClass("t-meta-strong");
-    expect(screen.getByText("03:00")).toBeInTheDocument();
+    // The next pass, not the last one — they are an hour apart in the fixtures
+    // so that this line cannot pass on the wrong field.
+    expect(screen.getByText("04:00")).toBeInTheDocument();
+    expect(screen.queryByText("03:00")).toBeNull();
     expect(screen.getByText("next consolidation · last 03:00 earlier today")).toBeInTheDocument();
     expect(screen.getByText("notes")).toBeInTheDocument();
   });
