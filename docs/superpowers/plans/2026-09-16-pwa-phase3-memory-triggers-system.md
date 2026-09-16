@@ -155,7 +155,7 @@ export interface Routine { name: string; trigger_pattern: string; steps: Routine
   learned_from: string[]; state: RoutineState; last_hit: string | null; consecutive_misses: number;
   last_suggested: string | null; confidence_history: number[] }
 export interface Scratchpad { content: string; pending_queue: number }
-export const ROUTINE_STAGES: readonly RoutineState[];          // candidate · active · dormant · archived
+export const ROUTINE_STAGES = [...] as const satisfies readonly RoutineState[];   // candidate · active · dormant · archived
 export function toEpisodicRow(raw: Record<string, unknown>, index: number): EpisodicRow;
 export function episodicMeta(row: EpisodicRow): string;   // no `now`: the stamp is hhmm only
 export function routineTrend(routine: Routine): { text: string; rising: boolean };
