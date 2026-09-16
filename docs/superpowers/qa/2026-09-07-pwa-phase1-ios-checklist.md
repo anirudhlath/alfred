@@ -47,7 +47,7 @@ never signed in. Record the device, iOS version and date at the bottom.
 - [ ] The timeline is still scrollable with the keyboard up
 - [ ] Dismiss the keyboard: the composer returns without a jump
 - [ ] The home-indicator gap does **not** double up while the keyboard is open
-- [ ] Tap the composer field, then a setup-gate input, in a Safari **tab** and again from the installed icon: the page must not zoom. Both use the handoff's 15px type, and Safari zooms into a focused field under 16px. If it does, put the inputs at 16px — not a `maximum-scale` viewport, which takes pinch zoom from everyone
+- [ ] Tap the composer field, then a setup-gate input, in a Safari **tab** and again from the installed icon: the page must not zoom. Both fields are at 16px rather than the handoff's 15 — Safari zooms into a focused field under 16, and the installed app also carries `maximum-scale=1, user-scalable=no`, which iOS honours in standalone mode. Pinch zoom is given up deliberately (user's call, 2026-09-15); in a Safari tab the 16px type is the whole defence
 
 ## §4.6 — rubber-band scroll
 

@@ -83,10 +83,12 @@ column of the entries that share an id with the observation, joined by name.
 
 ## Things worth knowing before you change something
 
-- `--app-height` and `--keyboard-inset` are written by `installViewportVars()`
-  from `innerHeight` and `visualViewport`. `100vh` is wrong in Safari; do not reach
-  for it, and do not size the column from the visual viewport: the keyboard is paid
-  for once, by `.pb-keyboard`.
+- `--app-height` and `--viewport-top` are the visual viewport's height and offset,
+  written by `installViewportVars()`. `100vh` is wrong in Safari; do not reach for it,
+  and do not try to compute a keyboard inset by subtracting the two viewports from
+  each other — that is the phase-2 bug that clipped the composer off the top of the
+  screen (see `docs/web-frontend.md`, "iOS constraints"). Anything that depends on
+  the keyboard depends on the field's focus instead.
 - All audio plays through one `AudioContext` unlocked by the first tap
   (`lib/audio.ts`). A fresh `new Audio()` is silently dropped on iOS until then.
 - `MediaRecorder` must negotiate `audio/mp4` → `audio/aac` → default. Safari has
