@@ -25,12 +25,19 @@ export type Theme = "dark" | "light";
  * interpolates into an `oklch()`, and it is here for the same reason the
  * colours are — so a test can resolve what the browser would and the guard can
  * hold the restatement to the stylesheet.
+ *
+ * Nor is every entry a *text* colour. `--line` and `--muted` are here because
+ * WCAG 1.4.11 asks 3:1 of a control's boundary and of whatever shows which way
+ * it is set, and neither is text: the Triggers bench's switch is a knob on a
+ * track, and both pairs went unmeasured until it needed them.
  */
 export const TOKENS: Record<Theme, Record<string, string>> = {
   dark: {
     bg: "#25221F",
     surface: "#2F2B27",
     field: "#3A3631",
+    line: "#35312C",
+    muted: "#9A9186",
     fg2: "#D9D2C8",
     fg: "#F1ECE4",
     accent: "oklch(0.78 0.12 45)",
@@ -45,6 +52,8 @@ export const TOKENS: Record<Theme, Record<string, string>> = {
     bg: "#F6F3EE",
     surface: "#EFEAE2",
     field: "#FFFFFF",
+    line: "#E6E1D9",
+    muted: "#8A8177",
     fg2: "#4D4740",
     fg: "#221F1B",
     accent: "oklch(0.72 0.13 45)",

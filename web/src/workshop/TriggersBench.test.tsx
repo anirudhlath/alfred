@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
-import { trigger } from "@/test/fixtures";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { TRIGGER_NOW, trigger } from "@/test/fixtures";
 import { TriggersBench } from "./TriggersBench";
 import type { Triggers } from "./useTriggers";
 
@@ -42,15 +42,31 @@ function state(overrides: Partial<Triggers> = {}): Triggers {
   };
 }
 
-const chips = () => within(screen.getByRole("group", { name: "Trigger kinds" })).getAllByRole("button");
+const chips = () =>
+  within(screen.getByRole("group", { name: "Trigger kinds" })).getAllByRole("button");
 
 const FOOTER_ONE =
-  "Switches are fire-and-forget: the server queues the change and the scheduler picks it up within 60 s. A row keeps its old state, with a note, until a fresh read confirms.";
+  "Switches are fire-and-forget: the server queues the change and the scheduler " +
+  "picks it up within 60 s. A row keeps its old state, with a note, until a fresh read confirms.";
 const FOOTER_TWO = "Nothing here edits a trigger — ask Alfred to change or remove one.";
 
+/**
+ * 21:30 on the evening the fixtures were written. Pinned, because the bench
+ * reads the clock once when it mounts and dates every row against it: on the
+ * real clock the same trigger reads "runs 08:40 tomorrow" tonight and
+ * "runs 08:40 17 Sep" next week.
+ */
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime(TRIGGER_NOW);
+});
+afterEach(() => vi.useRealTimers());
+
 describe("TriggersBench", () => {
-  it("offers the five kinds, and counts only the one that means all of them", () => {
-    render(<TriggersBench triggers={state()} />);
+  // The count is the house's, never the filtered list's: a chip that clears the
+  // filter must not report the filter's own answer.
+  it("offers the five kinds, and counts the whole house beside the one that means all", () => {
+    render(<TriggersBench triggers={state({ kind: "sensor", shown: [door] })} />);
     expect(chips().map((chip) => chip.textContent)).toEqual([
       "All 3",
       "Time",
@@ -83,6 +99,15 @@ describe("TriggersBench", () => {
     expect(screen.queryByText("Bins out")).toBeNull();
   });
 
+  // The bench's own clock, read once at mount and handed to every row, is what
+  // makes `runs 08:40 tomorrow` mean tomorrow rather than a day in 1970.
+  it("dates every row against the one clock it read when it opened", () => {
+    render(<TriggersBench triggers={state({ kind: "all", shown: [bins] })} />);
+    expect(
+      screen.getByText("recurring · runs 08:40 tomorrow · created from conversation 20:52"),
+    ).toBeInTheDocument();
+  });
+
   it("says the house has no triggers when it really has none", () => {
     render(<TriggersBench triggers={state({ triggers: [], shown: [] })} />);
     expect(screen.getByText("No triggers yet.")).toBeInTheDocument();
@@ -96,6 +121,14 @@ describe("TriggersBench", () => {
     expect(screen.queryByText("No triggers yet.")).toBeNull();
   });
 
+  // "No triggers yet." is a claim about the house, and a read still in flight
+  // is no evidence for it.
+  it("claims nothing about an empty house until the server has answered", () => {
+    render(<TriggersBench triggers={state({ triggers: [], shown: [], loading: true })} />);
+    expect(screen.queryByText("No triggers yet.")).toBeNull();
+    expect(screen.getByRole("list", { name: "Triggers" })).toHaveAttribute("aria-busy", "true");
+  });
+
   it("says in the footer that a switch is a request, and that nothing here edits", () => {
     render(<TriggersBench triggers={state()} />);
     expect(screen.getByText(FOOTER_ONE)).toHaveClass("t-meta-strong");
@@ -104,10 +137,21 @@ describe("TriggersBench", () => {
     expect(screen.getByText(FOOTER_TWO)).toHaveClass("t-meta-strong");
   });
 
-  it("reports a failed read without taking the last-known rows away", () => {
+  it("announces a failed read without taking the last-known rows away", () => {
     render(<TriggersBench triggers={state({ error: "Session store unavailable" })} />);
-    expect(screen.getByText("Session store unavailable")).toHaveClass("t-meta-strong");
+    const region = screen.getByRole("status", { name: "Read errors" });
+    expect(region).toHaveTextContent("Session store unavailable");
+    expect(region).toHaveClass("t-meta-strong");
     expect(screen.getAllByRole("listitem")).toHaveLength(3);
+  });
+
+  // Mounted whether or not it has anything to say: a region inserted with its
+  // text already in it can go unread, which is why its neighbours keep theirs.
+  it("keeps the region mounted and out of the way while there is nothing wrong", () => {
+    render(<TriggersBench triggers={state()} />);
+    const region = screen.getByRole("status", { name: "Read errors" });
+    expect(region).toHaveClass("sr-only");
+    expect(region).toHaveTextContent("");
   });
 
   it("wires each row's controls to the hook that owns them", () => {
@@ -131,12 +175,13 @@ describe("TriggersBench", () => {
     ).toBeInTheDocument();
   });
 
-  it("gives every chip a tap target of at least 44 px", () => {
+  it("gives every chip a tap target of at least 44 px and a label that stays on one line", () => {
     render(<TriggersBench triggers={state()} />);
     // 32 px of chip, 6 px of hit area above and below it.
     for (const chip of chips()) {
       expect(chip).toHaveClass("h-8");
       expect(chip).toHaveClass("after:-inset-y-1.5");
+      expect(chip).toHaveClass("whitespace-nowrap");
     }
   });
 });

@@ -140,6 +140,19 @@ describe("contrast ratios", () => {
       // `ActivityBench.test.tsx`'s to check; this is the ratio behind it.
       expect(contrast(token(theme, "on-accent"), token(theme, "accent"))).toBeGreaterThanOrEqual(4.5);
     });
+
+    it(`${theme}: a switch shows which way it is set`, () => {
+      // The Triggers bench's switch (`workshop/TriggerRow.tsx`). WCAG 1.4.11
+      // asks 3:1 of two things here and neither is text: the boundary that
+      // makes the control findable, and the knob that says which way it is
+      // set. The handoff's own pairing fails both — a `--bg` knob on a
+      // `--line` track is 1.18:1 in light, and the track's edge against the
+      // page is the same 1.18:1 — so the track takes an inset `--muted` edge
+      // and the knob takes the token that reads on whichever track it is on.
+      expect(contrast(token(theme, "muted"), token(theme, "bg"))).toBeGreaterThanOrEqual(3);
+      expect(contrast(token(theme, "on-accent"), token(theme, "accent"))).toBeGreaterThanOrEqual(3);
+      expect(contrast(token(theme, "fg2"), token(theme, "line"))).toBeGreaterThanOrEqual(3);
+    });
   }
 
   it("styles ::placeholder rather than leaving it to preflight", () => {

@@ -23,9 +23,9 @@ const KIND_LABELS: Record<KindFilter, string> = {
  * `ActivityBench` is over `Activity` — it fetches nothing, which is what lets
  * its tests build a state rather than a `QueryClient`.
  *
- * The bench carries no live region of its own: the Workshop's header status
- * span is the one that survives a change of bench, and a second region here
- * would announce the same trouble twice.
+ * The bench carries no *connection* region of its own: the Workshop's header
+ * status span is the one that survives a change of bench. Its read errors are
+ * another matter and have a region below, because nothing else would say them.
  */
 export function TriggersBench({ triggers }: TriggersBenchProps) {
   // The clock every stamp on the bench is dated against — read once when the
@@ -41,7 +41,11 @@ export function TriggersBench({ triggers }: TriggersBenchProps) {
       {/* Filters, not tabs — `aria-pressed` buttons in a group. `tabs.ts`'s
           keyboard is deliberately not reused here: it moves focus between
           `role="tab"` children and activates on arrow, which is a tablist's
-          contract and not a toggle group's. The APG walks these with Tab. */}
+          contract and not a toggle group's. The APG walks these with Tab.
+          `StreamChips` is not reused either, for a plainer reason: it is eight
+          hue-keyed monogram tiles with a count and solo semantics, and these
+          are five word labels that pick one filter. They share a height and
+          nothing else. */}
       <div
         role="group"
         aria-label="Trigger kinds"
@@ -57,7 +61,11 @@ export function TriggersBench({ triggers }: TriggersBenchProps) {
               onClick={() => triggers.setKind(kind)}
               // 32 px of chip in a 44 px track: the `after` box adds 6 px above
               // and below, which the row's own height already holds clear.
-              className="relative h-8 flex-1 rounded-lg border text-[13px] font-medium after:absolute after:inset-x-0 after:-inset-y-1.5 after:content-['']"
+              // `whitespace-nowrap` because the labels share the width five
+              // ways and "Composite" is the one that would otherwise wrap
+              // inside a fixed 32 px box on a 360 px screen — whether it fits
+              // at all there is for the device checklist, not for a guess here.
+              className="relative h-8 flex-1 rounded-lg border px-1 text-[13px] font-medium whitespace-nowrap after:absolute after:inset-x-0 after:-inset-y-1.5 after:content-['']"
               style={{
                 background: active ? "var(--ink)" : "transparent",
                 color: active ? "var(--paper)" : "var(--fg2)",
@@ -68,24 +76,36 @@ export function TriggersBench({ triggers }: TriggersBenchProps) {
               }}
             >
               {KIND_LABELS[kind]}
-              {/* The house's own size, beside the chip that means all of it.
-                  The other four would each need their own count, and four
-                  numbers that only move together are four things to read. */}
+              {/* The *house's* size, beside the chip that means all of it —
+                  never the filtered count, which would make the chip that
+                  clears the filter report the filter's own answer. The other
+                  four would each need their own count, and four numbers that
+                  only move together are four things to read. */}
               {kind === "all" && <span className="font-mono"> {triggers.triggers.length}</span>}
             </button>
           );
         })}
       </div>
 
-      {/* Not a region: see the component note. `t-meta-strong` because this is
-          the line saying part of the list is missing. The rows stay underneath
-          — a read that failed is no reason to take the last-known list away
-          (spec §5.2). */}
-      {triggers.error && <p className="t-meta-strong mx-4 mt-2.5 mb-0">{triggers.error}</p>}
+      {/* Mounted whether or not it has anything to say: VoiceOver can miss a
+          region inserted with its text already in it, which is why
+          `ActivityBench` and `room/OfflineNote` both keep theirs. `status` and
+          not `alert` — a read that failed in the background is news, not an
+          interrupt — and `t-meta-strong` because this is the line saying part
+          of the list is missing. The rows stay underneath: a failed read is no
+          reason to take the last-known list away (spec §5.2). */}
+      <p
+        role="status"
+        aria-label="Read errors"
+        className={triggers.error ? "t-meta-strong mx-4 mt-2.5 mb-0" : "sr-only"}
+      >
+        {triggers.error}
+      </p>
 
       <ul
         role="list"
         aria-label="Triggers"
+        aria-busy={triggers.loading}
         className="m-0 flex flex-1 list-none flex-col overflow-y-auto px-4 pt-2 pb-3"
       >
         {triggers.shown.map((trigger) => (
@@ -101,7 +121,11 @@ export function TriggersBench({ triggers }: TriggersBenchProps) {
             onFire={triggers.fire}
           />
         ))}
-        {triggers.shown.length === 0 && (
+        {/* Nothing at all until the server has answered. "No triggers yet." is
+            a claim about the house, and a read still in flight is no evidence
+            for it — on the one bench whose whole ethic is not saying what it
+            does not know. */}
+        {triggers.shown.length === 0 && !triggers.loading && (
           <li className="flex flex-col items-center gap-1.5 py-10 text-center">
             {/* Two different facts. A house with no triggers is one thing; a
                 chip the reader set three taps ago and has since forgotten is

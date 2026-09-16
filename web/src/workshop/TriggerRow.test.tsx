@@ -12,51 +12,42 @@ import type { Pending } from "./useTriggers";
  * one string in CI and another on a developer's machine.
  */
 const QUEUED_AT = new Date(2026, 8, 16, 21, 15, 0).getTime();
+const FIRED_ISO = new Date(2026, 8, 16, 21, 15, 0).toISOString();
+
+interface RowState {
+  pending?: Pending;
+  firedAt?: number;
+  open?: boolean;
+}
 
 /** One row in the list it lives in, as `RoutineRow.test.tsx` renders its own. */
-function renderRow(
-  overrides: Partial<Trigger> = {},
-  props: { pending?: Pending; firedAt?: number; open?: boolean } = {},
-) {
+function renderRow(overrides: Partial<Trigger> = {}, props: RowState = {}) {
   const onToggleOpen = vi.fn();
   const onToggle = vi.fn();
   const onFire = vi.fn();
   const row = trigger(overrides);
-  const { rerender } = render(
+  const draw = (state: RowState) => (
     <ul>
       <TriggerRow
         trigger={row}
         now={TRIGGER_NOW}
-        pending={props.pending}
-        firedAt={props.firedAt}
-        open={props.open ?? false}
+        pending={state.pending}
+        firedAt={state.firedAt}
+        open={state.open ?? false}
         onToggleOpen={onToggleOpen}
         onToggle={onToggle}
         onFire={onFire}
       />
-    </ul>,
+    </ul>
   );
+  const { rerender } = render(draw(props));
   return {
     row,
     onToggleOpen,
     onToggle,
     onFire,
     /** Re-render the same row with a later state, the way the hook would. */
-    update: (next: { pending?: Pending; firedAt?: number; open?: boolean }) =>
-      rerender(
-        <ul>
-          <TriggerRow
-            trigger={row}
-            now={TRIGGER_NOW}
-            pending={next.pending}
-            firedAt={next.firedAt}
-            open={next.open ?? false}
-            onToggleOpen={onToggleOpen}
-            onToggle={onToggle}
-            onFire={onFire}
-          />
-        </ul>,
-      ),
+    update: (next: RowState) => rerender(draw(next)),
   };
 }
 
@@ -88,7 +79,13 @@ describe("TriggerRow", () => {
   it("reports the stored enabled state on the switch", () => {
     renderRow({ enabled: false });
     expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "false");
-    expect(screen.getByRole("switch")).not.toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("switch")).not.toHaveAttribute("aria-busy");
+  });
+
+  // Every switch on the bench would otherwise be announced as an unnamed one.
+  it("names the switch after the trigger it belongs to", () => {
+    renderRow();
+    expect(screen.getByRole("switch", { name: "Bins out" })).toBeInTheDocument();
   });
 
   it("hands a tap on the switch back with the trigger it belongs to", () => {
@@ -108,11 +105,32 @@ describe("TriggerRow", () => {
     const control = screen.getByRole("switch");
     expect(control).toHaveAttribute("aria-checked", "false");
     expect(control).toHaveAttribute("aria-busy", "true");
-    expect(control).toBeDisabled();
-    // The knob keeps the off position; the note carries the wanted state.
+    // `aria-disabled`, not `disabled`: a control that disables itself under the
+    // finger that pressed it throws focus to `<body>`, and a real `disabled`
+    // would never announce the description below to the reader who asked for it.
+    expect(control).toHaveAttribute("aria-disabled", "true");
+    expect(control).not.toBeDisabled();
     expect(knob().style.left).toBe("3px");
     fireEvent.click(control);
     expect(onToggle).not.toHaveBeenCalled();
+  });
+
+  // WCAG 1.4.11: 3:1 for the boundary and 3:1 for whatever shows the state.
+  // The ratios themselves are `test/contrast.test.ts`'s; this is the wiring.
+  it("paints an off switch so that both its edge and its knob can be seen", () => {
+    renderRow({ enabled: false });
+    const off = screen.getByRole("switch");
+    expect(off.style.background).toBe("var(--line)");
+    expect(off.style.boxShadow).toBe("inset 0 0 0 1px var(--muted)");
+    expect(knob().style.background).toBe("var(--fg2)");
+  });
+
+  it("paints an on switch the same way, in the tokens that read on accent", () => {
+    renderRow({ enabled: true });
+    const on = screen.getByRole("switch");
+    expect(on.style.background).toBe("var(--accent)");
+    expect(on.style.boxShadow).toBe("inset 0 0 0 1px var(--muted)");
+    expect(knob().style.background).toBe("var(--on-accent)");
   });
 
   it("says when the change was queued and how long it may take", () => {
@@ -120,6 +138,10 @@ describe("TriggerRow", () => {
     const note = screen.getByText("queued 21:15 · enabling · takes effect within 60 s");
     expect(note.style.color).toBe("var(--accent-text)");
     expect(note).toHaveClass("t-meta-strong");
+    // The note is the switch's own description, which is the only way a reader
+    // who cannot see it learns what happened when they pressed it.
+    expect(screen.getByRole("switch")).toHaveAttribute("aria-describedby", note.id);
+    expect(note.id).not.toBe("");
   });
 
   it("says disabling for a change in the other direction", () => {
@@ -130,7 +152,7 @@ describe("TriggerRow", () => {
     expect(knob().style.left).toBe("23px");
   });
 
-  it("says a refused change did not land, and that the old setting stands", () => {
+  it("says a refused toggle did not land, and that the old setting stands", () => {
     renderRow(
       { enabled: true },
       { pending: { kind: "disabling", at: QUEUED_AT, error: "Trigger not found", status: 404 } },
@@ -141,17 +163,48 @@ describe("TriggerRow", () => {
     expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "true");
   });
 
+  // There is no setting in a fire: it either queued or it did not, and nothing
+  // about the trigger changed either way.
+  it("says a refused fire queued nothing, rather than talking about a setting", () => {
+    renderRow({}, { pending: { kind: "firing", at: QUEUED_AT, error: "gone", status: 404 } });
+    expect(screen.getByText("404 · that did not land · nothing was queued")).toBeInTheDocument();
+  });
+
   // A request that never reached a server has no status, and the row must not
   // print a number nobody sent — so it quotes what it does have.
   it("prints the error itself when no server answered to give a status", () => {
-    renderRow({ enabled: true }, { pending: { kind: "firing", at: QUEUED_AT, error: "Failed to fetch" } });
+    renderRow(
+      { enabled: true },
+      { pending: { kind: "enabling", at: QUEUED_AT, error: "Failed to fetch" } },
+    );
     expect(
-      screen.getByText("Failed to fetch · that did not land · the scheduler still has the old setting"),
+      screen.getByText(
+        "Failed to fetch · that did not land · the scheduler still has the old setting",
+      ),
     ).toBeInTheDocument();
   });
 
+  // The 60 s is the *enabled-cache* window and says nothing about a manual
+  // fire, so there is no third `firing · takes effect within 60 s` sentence.
+  it("keeps a queued fire's note under its own button and off the row", () => {
+    renderRow({}, { pending: { kind: "firing", at: QUEUED_AT }, open: true });
+    expect(screen.queryByText(/takes effect within 60 s/)).toBeNull();
+    expect(screen.getByText(FIRE_NOTE)).toBeInTheDocument();
+  });
+
+  // A queued fire says nothing about the stored `enabled`, so it must not lock
+  // the switch — which is also what stops a collapsed row sitting with an inert
+  // control and its only explanation folded away inside the panel.
+  it("leaves the switch working while a fire is in flight", () => {
+    const { onToggle, row } = renderRow({}, { pending: { kind: "firing", at: QUEUED_AT } });
+    const control = screen.getByRole("switch");
+    expect(control).not.toHaveAttribute("aria-disabled");
+    fireEvent.click(control);
+    expect(onToggle).toHaveBeenCalledWith(row);
+  });
+
   // Deviation 6: `GET /api/admin/triggers` drops unparseable records, so the
-  // only way to meet one is to toggle a record that decayed since the read.
+  // only way to meet one is to act on a record that decayed since the read.
   it("draws the corrupt-record card from a 500, with the server's own detail", () => {
     renderRow(
       {},
@@ -166,13 +219,16 @@ describe("TriggerRow", () => {
       },
     );
     expect(screen.getByText("This record can't be read.")).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        "500 · condition JSON fails to parse at byte 118 · the scheduler skips it · fix in the store or delete",
-      ),
-    ).toBeInTheDocument();
-    expect(screen.getByRole("switch")).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Fire now" })).toBeDisabled();
+    const card = screen.getByText(
+      "500 · condition JSON fails to parse at byte 118 · " +
+        "the scheduler skips it · fix in the store or delete",
+    );
+    expect(screen.getByRole("switch")).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("switch")).toHaveAttribute("aria-describedby", card.id);
+    expect(screen.getByRole("button", { name: "Fire now" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     // The card replaces the meta line, not the name: a card that does not say
     // which record cannot be read is not worth drawing.
     expect(screen.getByText("Bins out")).toBeInTheDocument();
@@ -181,52 +237,70 @@ describe("TriggerRow", () => {
     ).toBeNull();
   });
 
-  // It is done, and it should not read as live.
-  it("dims a one-shot that has already fired", () => {
-    renderRow({ one_shot: true, last_fired: new Date(2026, 8, 16, 21, 15, 0).toISOString() });
-    expect(screen.getByRole("listitem").style.opacity).toBe("0.55");
+  // The documented way to reach the card is a tap on a *collapsed* row, and a
+  // 500 that carried no detail must not leave an empty clause in the sentence.
+  it("draws the card on a collapsed row, saying only what the server sent", () => {
+    renderRow({}, { pending: { kind: "firing", at: QUEUED_AT, status: 500 } });
+    expect(
+      screen.getByText("500 · the scheduler skips it · fix in the store or delete"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("switch")).toHaveAttribute("aria-disabled", "true");
+  });
+
+  // It is done; it should not read as live — and it should still be readable,
+  // which `opacity: .55` is not: composited it takes the meta to 2.71:1 light.
+  it("steps a spent one-shot back by token rather than by opacity", () => {
+    renderRow({ one_shot: true, last_fired: FIRED_ISO });
+    expect(screen.getByRole("listitem").style.opacity).toBe("");
+    expect(screen.getByText("Bins out").style.color).toBe("var(--fg2)");
+    expect(screen.getByText("time").style.color).toBe("var(--fg2)");
   });
 
   it("leaves a one-shot that is still waiting at full strength", () => {
     renderRow({ one_shot: true, last_fired: null });
-    expect(screen.getByRole("listitem").style.opacity).toBe("");
+    expect(screen.getByText("Bins out").style.color).toBe("");
+    expect(screen.getByText("time").style.color).toBe("var(--accent-text)");
   });
 
-  it("does not dim a recurring trigger that has fired", () => {
-    renderRow({ one_shot: false, last_fired: new Date(2026, 8, 16, 21, 15, 0).toISOString() });
-    expect(screen.getByRole("listitem").style.opacity).toBe("");
+  it("does not step back a recurring trigger that has fired", () => {
+    renderRow({ one_shot: false, last_fired: FIRED_ISO });
+    expect(screen.getByText("Bins out").style.color).toBe("");
   });
 
   it("opens on the row body without touching the switch", () => {
-    const { onToggleOpen, onToggle } = renderRow();
+    const { onToggleOpen, onToggle, update } = renderRow();
+    // `aria-controls` pointing at an id that is not in the document is invalid,
+    // so it arrives with the panel it names.
+    expect(rowButton()).not.toHaveAttribute("aria-controls");
     fireEvent.click(rowButton());
     expect(onToggleOpen).toHaveBeenCalledWith("trg_bins");
     // The classic defect in this layout: expanding a row must never queue a change.
     expect(onToggle).not.toHaveBeenCalled();
+    update({ open: true });
+    const panel = openRowButton().getAttribute("aria-controls") ?? "";
+    expect(document.getElementById(panel)).not.toBeNull();
   });
 
   it("holds the detail the meta line leaves out until it is opened", () => {
-    const { update } = renderRow({
-      last_fired: new Date(2026, 8, 16, 21, 15, 0).toISOString(),
-    });
-    expect(
-      screen.queryByText("created by conversation · 20:52 earlier today · urgency important · last fired 21:15 earlier today"),
-    ).toBeNull();
+    const { update } = renderRow({ last_fired: FIRED_ISO });
+    const detail = "created by conversation · 20:52 · urgency important · last fired 21:15";
+    expect(screen.queryByText(detail)).toBeNull();
     update({ open: true });
-    expect(
-      screen.getByText(
-        "created by conversation · 20:52 earlier today · urgency important · last fired 21:15 earlier today",
-      ),
-    ).toBeInTheDocument();
+    expect(screen.getByText(detail)).toBeInTheDocument();
     expect(openRowButton()).toHaveAttribute("aria-expanded", "true");
   });
 
   it("says never fired rather than leaving the clause out", () => {
     renderRow({}, { open: true });
     expect(
-      screen.getByText(
-        "created by conversation · 20:52 earlier today · urgency important · never fired",
-      ),
+      screen.getByText("created by conversation · 20:52 · urgency important · never fired"),
+    ).toBeInTheDocument();
+  });
+
+  it("says --:-- for a stamp it cannot read, rather than a date made of NaN", () => {
+    renderRow({ created_at: "whenever" }, { open: true });
+    expect(
+      screen.getByText("created by conversation · --:-- · urgency important · never fired"),
     ).toBeInTheDocument();
   });
 
@@ -249,26 +323,29 @@ describe("TriggerRow", () => {
 
   it("offers a fire that claims nothing about what the trigger did", () => {
     const { onFire, row, update } = renderRow({}, { open: true });
+    const before = screen.getByRole("button", { name: "Fire now" });
     expect(screen.getByText(FIRE_NOTE)).toHaveClass("t-meta-strong");
-    fireEvent.click(screen.getByRole("button", { name: "Fire now" }));
+    expect(before).toHaveAttribute("aria-describedby", screen.getByText(FIRE_NOTE).id);
+    fireEvent.click(before);
     expect(onFire).toHaveBeenCalledTimes(1);
     expect(onFire).toHaveBeenCalledWith(row);
 
     // Never `Fired`: the events stream is the only thing that knows.
     update({ open: true, firedAt: QUEUED_AT, pending: { kind: "firing", at: QUEUED_AT } });
     const again = screen.getByRole("button", { name: "Fire again" });
-    expect(again).toBeDisabled();
+    expect(again).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(again);
+    expect(onFire).toHaveBeenCalledTimes(1);
     const note = screen.getByText(
       "queued 21:15 · look for trigger.fired on the events stream to know it ran",
     );
     expect(note.style.color).toBe("var(--accent-text)");
-    expect(screen.queryByText("Fired")).toBeNull();
   });
 
   it("keeps reading Fire again once the window has closed", () => {
     renderRow({}, { open: true, firedAt: QUEUED_AT });
     const again = screen.getByRole("button", { name: "Fire again" });
-    expect(again).toBeEnabled();
+    expect(again).not.toHaveAttribute("aria-disabled");
     expect(again).toHaveClass("h-11");
   });
 
