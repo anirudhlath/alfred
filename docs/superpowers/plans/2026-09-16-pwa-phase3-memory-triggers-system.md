@@ -899,21 +899,22 @@ Rows 56 px: `device_name`, then `sessionMeta(s, now)` in mono `.t-meta-strong` �
 ### `ServicesSection({ integrations })`
 Rows: the name, `category · kind` in `.t-meta`, then on the right the state word and an 8 px dot — `ok` in `--green-text` with a `--green` dot, `failed` in `--accent-text`, `unset` in `--muted`. Tapping a row expands a credential form built from `schema.fields`: one labelled input per field, 48 px tall, radius 10, **mono 14 px** (≥16 px if that fights iOS focus zoom — the zoom rule wins over the handoff's 14), `type="password"` for anything the schema marks secret (read the field shape in `core/channels/service_credentials.py` — do not guess the flag's name), placeholder `configured[field] ? "saved" : ""` and **never the value itself**, which the server does not send and must not.
 
-**Save & test** is a filled 44 px button reading `Testing…` while it works → `PUT` then re-`GET …/status`. The note under the row is per state, the handoff's four, verbatim:
+**Save & test** is a filled 44 px button reading `Testing…` while it works → `PUT` then re-`GET …/status`. The note under the row is `serviceNote(state, status)` from `lib/system.ts` — the handoff's four, verbatim, plus `queued`. **This section prints it and never a word of its own:**
 
 | state | note |
 |---|---|
 | `ok` | `stored encrypted at rest · last check ok` |
-| `failed` | `401 from the service on the last check · stored value kept until you replace it` |
+| `failed` | `<status> from the service on the last check · stored value kept until you replace it` |
 | `unset` | `nothing stored · Alfred answers without this source` |
 | `testing` | `round-trip in progress · up to 10 s` |
+| `queued` | `saved · testing` |
 
-The `failed` note names a 401 because that is the common case; use the status the server actually reported when there is one.
+The handoff writes `401` in the `failed` note because that is the common case; pass the status the server actually reported, and fall back to `401` only when there is none. (Task 7 first gave `serviceNote` five short glosses on the state *word* — `reachable`, `not answering` — which nothing consumes, since the word on the right of the row is the bare `ServiceState`. Overruled, so the export is not dead.)
 
 On 403 from the `PUT` — read it off `integrations.saves[name].gated`, which task 7 sets rather than making the view parse a status: `Credentials can only be changed from the home network.` in `--fg2`, with the form left filled so nothing is lost. Note that `api` already emits `denied` for every 403, so the Denied gate will rise over this — confirm what that looks like and, if the gate explains it better than the inline sentence does, say so in your report rather than fighting it.
 
 ### `IdentitySection({ credentials, pairing })`
-Rows per passkey, the handoff's shape: `iPhone 15 Pro · passkey · registered 12 Aug · Face ID · this device` — i.e. `device_name`, then the handoff's line **composed here**: `credentialMeta(c, now)` ships task 7's `internal, hybrid · last used 07:02`, so this section adds `passkey`, the registration day via `dayLabel`, and `this device` around it. (Task 7 and task 9 described the same call producing two different strings; the formatter keeps task 7's and the section composes the rest.) **`Add a passkey on another device`** in `--accent-text`, with `<n> registered` beside it; it mints a pairing code and shows it at 32 px, mono, letter-spaced, with `Pairing window closes 21:20 · enter this on the new device`. The code is shown until the bench is left; there is no way to re-show it and the note says so. Then **`Sign out on this device`** (`POST /api/auth/logout`).
+Rows per passkey, the handoff's shape: `iPhone 15 Pro · passkey · registered 12 Aug · Face ID · this device` — i.e. `device_name`, then `credentialMeta(c, now)`, which carries the **whole** line — `passkey · registered 12 Aug · internal, hybrid · last used 07:02 · this device`, dropping any clause the server did not send. Task 7 first shipped only the transports and the last use, leaving this section to compose three clauses around it; that was overruled, because `sessionMeta` carries `passkey` and `this device` itself and two rows on one screen built by two different rules is the split the formatters exist to prevent. **`Add a passkey on another device`** in `--accent-text`, with `<n> registered` beside it; it mints a pairing code and shows it at 32 px, mono, letter-spaced, with `Pairing window closes 21:20 · enter this on the new device`. The code is shown until the bench is left; there is no way to re-show it and the note says so. Then **`Sign out on this device`** (`POST /api/auth/logout`).
 
 No delete button — `DELETE /api/auth/credentials/{id}` exists and refuses the last one with a 409, but removing the passkey you are holding is a foot-gun with no confirmation design in the handoff. Log it in the backlog and leave it out. *(If review disagrees, it is a small addition — but it ships with a typed confirmation or not at all.)*
 
@@ -923,7 +924,7 @@ Deviation 13 — no fidelity-locked design, so it follows the section frame. One
 - [ ] **Step 1: Write `SystemSections.test.tsx`** (~32, roughly 8 per section) covering: each row's content; `current` is a disabled label and `End` a button; `ended 21:15 · applied` and the dimming; the empty states; the credential form building from the schema, masking secrets, never pre-filling a value, and showing `saved`; **each of the four per-state notes verbatim**; Save & test reading `Testing…` and calling PUT then status in that order; the 403 sentence with the form intact; the pairing code, its closing time and the `<n> registered` count; `this device`; `Sign out on this device`; attention chips both ways with their callbacks; the attention 503 detail; the intro sentence quoted exactly.
 - [ ] **Step 2: Fail. Step 3: Implement. Step 4: Wire the four into `SystemBench` between Quiet and Maintenance** (Health · Quiet · Sessions · Connected services · Devices & identity · Reflex · Maintenance) and extend `SystemBench.test.tsx` with one test asserting the seven section headings in order. **Step 5: Green, lint, build.**
 
-At the end of this task: **66 test files, ~1011 tests.**
+At the end of this task: **66 test files.** The plan's running test totals were written against an early count and are all stale — task 7 already ends at 64 files / 1115 tests. Take the count from the previous task's commit, not from this document.
 
 - [ ] **Step 6: Commit** `feat(web): System bench sessions, services, identity and reflex`
 
