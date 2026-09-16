@@ -36,6 +36,7 @@ function state(overrides: Partial<Triggers> = {}): Triggers {
     toggle: vi.fn(),
     fire: vi.fn(),
     fired: {},
+    read: true,
     loading: false,
     error: null,
     ...overrides,
@@ -124,9 +125,34 @@ describe("TriggersBench", () => {
   // "No triggers yet." is a claim about the house, and a read still in flight
   // is no evidence for it.
   it("claims nothing about an empty house until the server has answered", () => {
-    render(<TriggersBench triggers={state({ triggers: [], shown: [], loading: true })} />);
+    render(
+      <TriggersBench triggers={state({ triggers: [], shown: [], read: false, loading: true })} />,
+    );
     expect(screen.queryByText("No triggers yet.")).toBeNull();
     expect(screen.getByRole("list", { name: "Triggers" })).toHaveAttribute("aria-busy", "true");
+  });
+
+  // The shape `loading` alone cannot see: a read react-query has *paused* for
+  // want of a network is not in flight and has not landed, so the bench is told
+  // nothing by the busy flag and everything by `read`.
+  it("claims nothing about an empty house when the read is paused rather than in flight", () => {
+    render(
+      <TriggersBench triggers={state({ triggers: [], shown: [], read: false, loading: false })} />,
+    );
+    expect(screen.queryByText("No triggers yet.")).toBeNull();
+    expect(screen.queryByText("No composite triggers.")).toBeNull();
+  });
+
+  // ...and a filter that empties a list the bench has never read says nothing
+  // either: the chip narrows a house this bench cannot yet describe.
+  it("claims nothing about a filtered list before the first read lands", () => {
+    render(
+      <TriggersBench
+        triggers={state({ kind: "composite", triggers: [], shown: [], read: false })}
+      />,
+    );
+    expect(screen.queryByText("No composite triggers.")).toBeNull();
+    expect(screen.queryByText("No triggers yet.")).toBeNull();
   });
 
   it("says in the footer that a switch is a request, and that nothing here edits", () => {

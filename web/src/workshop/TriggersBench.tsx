@@ -128,10 +128,17 @@ export function TriggersBench({ triggers }: TriggersBenchProps) {
           />
         ))}
         {/* Nothing at all until the server has answered. "No triggers yet." is
-            a claim about the house, and a read still in flight is no evidence
-            for it — on the one bench whose whole ethic is not saying what it
-            does not know. */}
-        {triggers.shown.length === 0 && !triggers.loading && (
+            a claim about the house, and a read that has not landed is no
+            evidence for it — on the one bench whose whole ethic is not saying
+            what it does not know.
+
+            `read` and not `!loading`: react-query *pauses* a read with no
+            network rather than failing it, so a bench reached for the first
+            time on a phone with no signal is not fetching, holds no rows and
+            has no error to show. `loading` says the same thing there as it does
+            for an answered, genuinely empty house. `read` is the flag
+            `MemoryBench` and every `SystemSections` card already guard on. */}
+        {triggers.shown.length === 0 && triggers.read && (
           <li className="flex flex-col items-center gap-1.5 py-10 text-center">
             {/* Two different facts. A house with no triggers is one thing; a
                 chip the reader set three taps ago and has since forgotten is

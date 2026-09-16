@@ -595,11 +595,12 @@ rule rather than left for the next reviewer to find.
   region labelled `Read errors` for the refusals — mounted empty, because VoiceOver can
   miss a region inserted with its text already in it. The unlanded read is the half that
   is easy to get wrong: it has to be keyed on `dataUpdatedAt`, never on `isFetching`,
-  because react-query **pauses** rather than fetches when there is no network and a paused
-  query reports neither. Memory and System key on the read
-  (`useMemory.ts:241-246`); Triggers keys on `isFetching` and so says `No triggers yet.` to
-  a reader who reached it for the first time offline
-  (`docs/backlog/low/pwa-phase3-followups.md` §22).
+  because react-query's default `networkMode: "online"` **pauses** a read with no network
+  rather than failing it — a paused query is not fetching, holds no data and raises no
+  error, so a bench reached for the first time on a phone with no signal looks exactly like
+  one that asked and was told the house is empty. All three benches carry the same `read`
+  flag for it (`useMemory.ts:241-246`, `useSystem.ts:881-905`, `useTriggers.ts`), and a
+  bench that has not read says **nothing** rather than guessing which of the three it is.
 - **Never let a client-set mark outlive its evidence.** A `Pending` lives exactly
   `REREAD_MS` (60 s), after which the list itself is the evidence; `useSystem` prunes
   its `ended` and `saves` marks against the records still in the last read, so a mark

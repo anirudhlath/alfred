@@ -261,11 +261,10 @@ shown, so everything you have not visited yet is still unread.
       bench that has read nothing knows nothing about the house
 - [ ] **Triggers**: rows already on screen stay for the full minute, with no error line
       and no row silently flipping state
-- [ ] **Triggers, read for the first time offline**: same manoeuvre. Today this reads
-      `No triggers yet.` over a house that has triggers — the one place on the three
-      benches where an empty sentence outruns its evidence. It is filed
-      (`…/pwa-phase3-followups.md` §22); record what you see and move on rather than
-      raising it again
+- [ ] **Triggers, read for the first time offline**: same manoeuvre. The list is empty
+      **and silent** — no rows, and **no sentence at all**. Neither `No triggers yet.` nor
+      `No <kind> triggers.` may appear over a house this bench has never asked. Turn the
+      network on: the rows arrive
 - [ ] **System**: the Health grid's values fall back to `?`/`—`, the whole grid recedes
       to a dimmed colour, **every dot goes out** — including one that was green a moment
       ago — and the stamp turns to `unknown since HH:MM` in accent. A green light over a
@@ -313,8 +312,8 @@ shown, so everything you have not visited yet is still unread.
       English about the screen itself is fine and expected
 - [ ] Nothing green is showing next to anything the app is no longer reading
 - [ ] No control claims an outcome the server only queued
-- [ ] No empty list claims the house is empty unless the read that says so has landed —
-      with the one filed exception recorded under the outage section above
+- [ ] No empty list claims the house is empty unless the read that says so has landed.
+      There is no exception to this on any of the four benches
 - [ ] There is no Reach card, no push toggle and no notification permission prompt
       anywhere. Web Push is phase 5, and an inert card would be the defect the phase-2
       placeholder tabs were

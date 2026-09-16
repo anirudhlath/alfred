@@ -441,35 +441,6 @@ swapping its colour to `--fg2`, with the pair restated in `src/test/contrast.ts`
 test asserts the control stays focusable and keeps its name. The sparkline needs no change
 unless the picture ever loses its text equivalent.
 
-## 22. Triggers claims an empty house when its read was paused, not answered
-
-Found while writing the device checklist, and the only place on the three benches where an
-empty sentence outruns its evidence.
-
-`TriggersBench` gets the rule right — `No triggers yet.` is drawn only when
-`triggers.shown.length === 0 && !triggers.loading` (`web/src/workshop/TriggersBench.tsx:134`),
-with a test pinning it (`TriggersBench.test.tsx:126-130`). The hook is what lies:
-`loading: query.isFetching` (`web/src/workshop/useTriggers.ts:288`). react-query sets
-`fetchStatus` to `"paused"` — not `"fetching"` — when `networkMode: "online"` finds no
-network, so `isFetching` is **false** for a read that has never happened. With no data and
-no error either, the bench concludes the house has no triggers.
-
-To see it: launch the app online, let the Room paint, turn Airplane mode on, then open the
-Workshop and go to Triggers for the first time this session. Memory, reached the same way,
-says `Episodic memory has not been read yet.` — because `useMemory` derives its `read` flag
-from `dataUpdatedAt !== 0` (`useMemory.ts:241-246`), which a paused query never sets.
-`useSystem` is safe for the same reason (`credentials.read`, `attention.read`, and a health
-grid keyed on `readAt`), and its `online` flag explicitly discounts
-`fetchStatus === "paused"` (`useSystem.ts:406-412`) — the pattern was understood on that
-bench and not carried to this one.
-
-**Acceptance:** `useTriggers` exposes a `read` flag derived from `query.dataUpdatedAt !== 0`
-alongside `loading`, `TriggersBench` guards the empty sentence on `read` rather than on
-`!loading`, and a test renders the bench with `read: false, loading: false` — the paused
-shape, which no current fixture produces — and asserts neither `No triggers yet.` nor
-`No <kind> triggers.` appears. The QA checklist's outage section loses its recorded
-exception with it.
-
 ---
 
 ## Checked and not filed

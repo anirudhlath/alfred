@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -144,9 +144,11 @@ beforeEach(() => {
 });
 
 // `fetch` is un-stubbed by `unstubGlobals` in vite.config.ts; the clock is this
-// file's own business.
+// file's own business — and so is the online flag, which is module-level state
+// inside react-query and would otherwise leak into the next file.
 afterEach(() => {
   vi.useRealTimers();
+  onlineManager.setOnline(true);
 });
 
 describe("useTriggers", () => {
@@ -160,6 +162,29 @@ describe("useTriggers", () => {
     expect(result.current.fired).toEqual({});
   });
 
+  // The gap `isFetching` cannot see. With `networkMode: "online"` and no
+  // network react-query *pauses* the read rather than failing it: `fetchStatus`
+  // is `"paused"`, so `isFetching` is false, `data` is undefined and `error`
+  // stays null. A bench that reads "not fetching, no rows, no error" as an
+  // answer says `No triggers yet.` about a house it has never asked.
+  it("reports a paused read as unread rather than as an empty house", async () => {
+    onlineManager.setOnline(false);
+    const { result } = renderTriggers();
+    await settle();
+
+    expect(calls).toEqual([]);
+    expect(result.current).toMatchObject({
+      read: false,
+      loading: false,
+      triggers: [],
+      error: null,
+    });
+
+    onlineManager.setOnline(true);
+    await waitFor(() => expect(result.current.read).toBe(true));
+    expect(result.current.triggers).toHaveLength(3);
+  });
+
   it("reads nothing at all while the bench is not showing", async () => {
     const { result } = renderTriggers(false);
     await settle();
@@ -168,6 +193,7 @@ describe("useTriggers", () => {
     expect(result.current.triggers).toEqual([]);
     expect(result.current.shown).toEqual([]);
     expect(result.current.loading).toBe(false);
+    expect(result.current.read).toBe(false);
   });
 
   it("shows every trigger under the all chip", async () => {
