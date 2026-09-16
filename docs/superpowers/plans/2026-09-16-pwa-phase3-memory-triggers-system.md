@@ -112,7 +112,7 @@ Identical to phases 1 and 2, repeated because they are load-bearing:
 - **Named exports** everywhere except `App.tsx`.
 - **Colours come from CSS custom properties** — `style={{ color: "var(--muted)" }}`. Never a Tailwind palette colour. The decided pairs are not re-argued: accent-as-text is `--accent-text`; text on a filled accent is `--on-accent`; a filled dark button is `--ink` on `--paper`; a selected segment is `--field` on `--surface` with `--fg2` for the unselected labels.
 - **Type comes from the `.t-*` classes.** `.t-meta` is decorative meta only — a stamp beside the line it stamps. **Anything a reader must take on its own to trust the screen is `.t-meta-strong`**, because `--muted` is 3.46:1 on `--bg` in light. Every status sentence in these three benches is load-bearing, so the default here is `.t-meta-strong`; `.t-meta` is the exception, not the rule.
-- **A new token or colour pair must be restated in `src/test/contrast.ts`** or `token()` throws. This plan adds exactly one: **`--green-text`**, because phase 3 is the first place green is a *word* rather than a dot (the `model: ok` pill; System's `alive` in task 8) and raw `--green` is 2.29:1 on light `--bg`. Same reason `--accent-text` exists. `--green` still fills dots.
+- **A new token or colour pair must be restated in `src/test/contrast.ts`** or `token()` throws — and `TOKENS` is missing `line` and `muted`, so the pairs a control's *boundary* needs cannot currently be measured at all. Add them the first time a task needs one. A control that shows state (the trigger switch, the DND switch) needs 3:1 for both its indicator and its boundary, WCAG 1.4.11. This plan adds exactly one: **`--green-text`**, because phase 3 is the first place green is a *word* rather than a dot (the `model: ok` pill; System's `alive` in task 8) and raw `--green` is 2.29:1 on light `--bg`. Same reason `--accent-text` exists. `--green` still fills dots.
 - **Safe areas via `env()`, never a literal.**
 - **Every tappable element is ≥44 px tall**; smaller visuals grow their hit area with negative insets (`after:-inset-y-1`).
 - **Tests live next to the source.** Each test file builds its own providers — a fresh `QueryClient` per file. A bench test needs no providers at all.
@@ -683,7 +683,7 @@ Timers in a `useRef<Map<string, ReturnType<typeof setTimeout>>>`, cleared in a `
 Handoff §7. Rows carry a 1 px `--line` top border and `padding 11 0`; 16 px side padding comes from the bench.
 
 - Left column: the kind in **mono 10 px `--accent-text`** — `time` / `schedule` / `sensor` / `composite`; the name at 14.5 px; then `triggerMeta(trigger, now)` in `.t-meta-strong`. **`now` is a prop, never `Date.now()` in render** — `eslint-plugin-react-hooks` v7's purity rule forbids it, and a per-row clock lets two rows disagree about which day `tomorrow` is. The bench holds one `useState(() => Date.now())`, as `MemoryBench` does.
-- **A one-shot that has already fired renders at opacity .55** (`one_shot && last_fired`). It is done; it should not read as live.
+- **A one-shot that has already fired recedes by swapping tokens, not by opacity** (`one_shot && last_fired`). The handoff says `opacity .55`, but composited that takes the meta line to 2.71:1 and the name to 3.63:1 in light — under AA — and a whole-row opacity is invisible to `contrast.ts`, which is the file that exists to stop exactly this. `RoutineRow` and `StreamChips` both already recede by losing hue rather than alpha. It is done; it should not read as live, and it should still be readable.
 - Right: **a 52×32 switch that does not move on tap.** A `<button role="switch" aria-checked={trigger.enabled}>`; track `--accent` on and `--line` off, a 26 px knob in `--bg` travelling left 3 → 23 over 200 ms. While `pending` is set it gains `aria-busy="true"`, the knob keeps its old position, and an **accent mono** note appears under the meta line, verbatim:
 
   `queued 21:15 · enabling · takes effect within 60 s`
@@ -852,7 +852,7 @@ Handoff §8. Sections are separated by a 22 px gap.
 | `2.1/s` | `event rate · 5-min mean` |
 | `ok` | `home assistant · 210 ms` |
 
-Deviation 8 removes the handoff's `6 services` and `gpu 41%` — neither has a source. **Offline, the values read `?` or `—` and the whole grid drops to opacity .55.** A stale number presented at full strength is the §5.2 failure.
+Deviation 8 removes the handoff's `6 services` and `gpu 41%` — neither has a source. **Offline, the values read `?` or `—` and the grid recedes by swapping to `--fg2`** — the handoff says opacity .55; see the Triggers task for why this phase dims by token instead. A stale number presented at full strength is the §5.2 failure.
 
 Under the grid, the spend card: title `Cloud spend today`, then mono `$1.42 of $5.00`, a 4 px bar filling `spend_usd / cap_usd` clamped to `[0, 1]` (`--accent` on `--line`), and the note — the handoff's, with the clauses the server did not send dropped:
 
@@ -885,7 +885,7 @@ Under the grid, the spend card: title `Cloud spend today`, then mono `$1.42 of $
 Four exported components, each taking its own slice of `System`, each with its own tests. They live in one file because they share the `Section` frame and the same row idiom, and four one-component files would be four copies of the same imports.
 
 ### `SessionsSection({ sessions })`
-Rows 56 px: `device_name`, then `sessionMeta(s)` in mono `.t-meta-strong` — the handoff's `passkey · pwa · signed in 07:02 · 192.168.1.24`. On the right, **`current`** for your own (a disabled label, not a button — you do not "end" the session you are using from a list) and **`End`** in `--accent-text` otherwise, ≥44 px. After ending: the row drops to opacity .5 and reads `ended 21:15 · applied`, then disappears on the re-read. Empty: `No other sessions.`
+Rows 56 px: `device_name`, then `sessionMeta(s)` in mono `.t-meta-strong` — the handoff's `passkey · pwa · signed in 07:02 · 192.168.1.24`. On the right, **`current`** for your own (a disabled label, not a button — you do not "end" the session you are using from a list) and **`End`** in `--accent-text` otherwise, ≥44 px. After ending: the row recedes to `--fg2` (not opacity .5 — see the Triggers task) and reads `ended 21:15 · applied`, then disappears on the re-read. Empty: `No other sessions.`
 
 ### `ServicesSection({ integrations })`
 Rows: the name, `category · kind` in `.t-meta`, then on the right the state word and an 8 px dot — `ok` in `--green-text` with a `--green` dot, `failed` in `--accent-text`, `unset` in `--muted`. Tapping a row expands a credential form built from `schema.fields`: one labelled input per field, 48 px tall, radius 10, **mono 14 px** (≥16 px if that fights iOS focus zoom — the zoom rule wins over the handoff's 14), `type="password"` for anything the schema marks secret (read the field shape in `core/channels/service_credentials.py` — do not guess the flag's name), placeholder `configured[field] ? "saved" : ""` and **never the value itself**, which the server does not send and must not.
