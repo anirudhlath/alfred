@@ -83,9 +83,12 @@ function HealthStamp({ online, readAt }: { online: boolean; readAt: number | nul
 
   useEffect(() => {
     if (!online) return;
-    // In an effect, never in the render body: the hooks purity rule bans
-    // reading the clock while rendering, and this is the one place on the
-    // bench that wants the clock rather than a stamp the server sent. Stepped
+    // In an effect, never in the render body: a render that reads the clock
+    // gives a different answer every time it runs, which is what the purity
+    // rule is about — a lazy `useState` initialiser reads it once and keeps
+    // the answer, which is why `now` below and the two sibling benches may.
+    // This is the one place on the bench that wants the clock ticking rather
+    // than a stamp the server sent. Stepped
     // at once as well as every second — `DoorProvider`'s fuse takes the same
     // shape for the same reason: without the first step a panel that has just
     // come back reads `live · --:--:--` until the second is up.
@@ -614,8 +617,9 @@ export function SystemBench({ system }: SystemBenchProps) {
   useEffect(() => {
     // Not aligned to the top of the minute: the drift is at most 59 s on a
     // boundary a reader cannot see, and an aligned timer is a second timer to
-    // get wrong. In an effect and never in the render body — the hooks purity
-    // rule bans reading the clock while rendering.
+    // get wrong. The *tick* is in an effect and never in the render body; the
+    // initial read above is a lazy initialiser, which runs once at mount and
+    // becomes state — the distinction `HealthStamp` spells out.
     const tick = setInterval(() => setNow(Date.now()), 60_000);
     return () => clearInterval(tick);
   }, []);
@@ -631,19 +635,32 @@ export function SystemBench({ system }: SystemBenchProps) {
   return (
     <>
       {/* Mounted whether or not it has anything to say: VoiceOver can miss a
-          region inserted with its text already in it, which is why the
-          Triggers bench and the Room's offline note both keep theirs. `status`
-          and not `alert` — a read that failed in the background is news, not an
-          interrupt. Read failures only: a refused *write* is announced on the
-          control that sent it, where the reader who pressed it will find it.
+          region inserted with its text already in it. What that buys is an
+          error arriving while the bench is up, which is the common case — it
+          cannot carry across a change of bench, because the bench and this
+          region are unmounted together and come back holding whatever the hook
+          still holds. The header's region (`Workshop.tsx`) is the only one on
+          this surface that outlives a bench swap. `status` and not `alert` — a
+          read that failed in the background is news, not an interrupt. Read
+          failures only: a refused *write* is announced on the control that
+          sent it, where the reader who pressed it will find it.
           The sections stay underneath holding what they were last told (spec
-          §5.2); the Health stamp is what says that is now history. */}
+          §5.2); the Health stamp is what says that is now history.
+
+          Five reads, not one. The visible line is the overview's — the spine
+          every card derives from — and the four section reads are announced
+          beside it and not shown, because each of them is already printed
+          inside the card it belongs to. Shown twice would be clutter; said
+          once is the point. */}
       <p
         role="status"
         aria-label="Read errors"
         className={system.error ? "t-meta-strong mx-4 mt-2.5 mb-0" : "sr-only"}
       >
         {system.error}
+        {system.sectionErrors.length > 0 && (
+          <span className="sr-only">{system.sectionErrors.join(" · ")}</span>
+        )}
       </p>
       <div
         aria-busy={system.loading}

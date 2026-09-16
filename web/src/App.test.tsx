@@ -73,6 +73,25 @@ vi.mock("@/lib/recorder", () => ({
 }));
 
 /**
+ * How many rows the Workshop's feed has summarised. `summarise` runs in
+ * `EventRow`'s render body, unmemoised, so the count is a direct reading of how
+ * many rows re-rendered — which is how the `memo` on `Workshop` is visible from
+ * outside it.
+ */
+const { summarised } = vi.hoisted(() => ({ summarised: { count: 0 } }));
+
+vi.mock("@/lib/streams", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/streams")>();
+  return {
+    ...actual,
+    summarise: (...args: Parameters<typeof actual.summarise>) => {
+      summarised.count += 1;
+      return actual.summarise(...args);
+    },
+  };
+});
+
+/**
  * What the house answers, by path. A test that needs a different house copies
  * these into `routes` and overrides; a `Response` is served as it is, so a test
  * can make the house say 404.
@@ -417,6 +436,56 @@ describe("App", () => {
     expect(screen.queryByRole("dialog", { name: "Why Alfred did that" })).toBeNull();
     // The Workshop is still up, and live again.
     expect(screen.getByRole("dialog", { name: "Workshop" })).not.toHaveAttribute("inert");
+  });
+
+  it("opens the Room's own Held-back sheet from System › Quiet", async () => {
+    routes["/api/admin/notifications/deferred"] = deferredFixture;
+    render(<App />);
+    await screen.findByText("What have I got tomorrow morning?");
+
+    fireEvent.click(screen.getByRole("button", { name: "Open the Workshop" }));
+    const workshop = await screen.findByRole("dialog", { name: "Workshop" });
+    fireEvent.click(within(workshop).getByRole("tab", { name: "System" }));
+    fireEvent.click(await within(workshop).findByRole("button", { name: /^Held back/ }));
+
+    // The whole chain, which no unit test can see: the bench asks
+    // `system.quiet.onHeld`, `Workshop` hands it up as `onHeld`, and the Room
+    // opens the one sheet it already keeps for its own DND row. A second copy
+    // rendered inside the Workshop would look identical from the bench and
+    // would not paint over it.
+    const sheet = await screen.findByRole("dialog", { name: "Held back" });
+    expect(
+      await within(sheet).findByText("The council moved collection to Friday."),
+    ).toBeInTheDocument();
+    expect(workshop).toHaveAttribute("inert");
+  });
+
+  it("keeps the Room's once-a-second Door tick out of the Workshop", async () => {
+    // A pending approval is what makes the Room re-render on a clock
+    // (`DoorProvider` runs its tick only while something is counting), which is
+    // the case `Workshop.tsx` names for its `memo`.
+    routes["/api/actions/pending"] = { actions: [pendingActionFixture] };
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open the Workshop" }));
+    const workshop = await screen.findByRole("dialog", { name: "Workshop" });
+    await within(workshop).findByText("observed media_player.tv · acted");
+
+    const fuse = screen.getByRole("button", { name: /^Lock unlock/ });
+    const rows = summarised.count;
+    const countdown = fuse.textContent;
+    expect(rows).toBeGreaterThan(0);
+
+    act(() => vi.advanceTimersByTime(3000));
+
+    // The Room did re-render — its fuse is counting down.
+    expect(fuse.textContent).not.toBe(countdown);
+    // And not one row under the Workshop re-rendered with it. Measured against
+    // the real Room rather than a stand-in, because the memo only holds while
+    // every prop the Room passes is stable: an inline `onClose`, `onWhy` or
+    // `onHeld` in `Room.tsx` would defeat it and no test in
+    // `workshop/Workshop.test.tsx` could tell.
+    expect(summarised.count).toBe(rows);
   });
 });
 

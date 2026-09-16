@@ -698,9 +698,17 @@ export function mintPairingCode(signal?: AbortSignal): Promise<{ code: string; e
  * `GET /api/integrations` — a **bare array**, not an envelope. The one endpoint
  * on this bench that answers that way (`core/channels/web_server.py`), so the
  * unwrap every neighbour does would read `undefined` here.
+ *
+ * The array is checked rather than asserted, which is what `body.x ?? []` does
+ * for the four neighbours. Without it a 200 carrying a JSON *object* — an error
+ * envelope from a proxy in front of Alfred is the realistic one — reaches
+ * `list.map` in `useSystem` and throws during render, and a render that throws
+ * takes the whole Workshop with it. `null` and a 204 were always safe; this is
+ * the case that was not.
  */
-export function fetchIntegrations(): Promise<Integration[]> {
-  return api<Integration[]>("/api/integrations");
+export async function fetchIntegrations(): Promise<Integration[]> {
+  const body = await api<Integration[] | null>("/api/integrations");
+  return Array.isArray(body) ? body : [];
 }
 
 /**

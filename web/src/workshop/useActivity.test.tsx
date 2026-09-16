@@ -65,6 +65,14 @@ const BASE = 1788815640000;
 const entry = (offsetMs: number): StreamEntry => ({ id: `${BASE + offsetMs}-0`, event: { n: offsetMs } });
 const empty: StreamPage = { entries: [], next_before: null };
 
+/** One live frame off the telemetry socket, for the stream and entry given. */
+const live = (stream: string, e: StreamEntry): TelemetryMessage => ({
+  type: "entry",
+  stream,
+  id: e.id,
+  event: e.event,
+});
+
 /** A read that fails with a reason of its own, so two failures can be told apart. */
 interface Failure {
   status: number;
@@ -130,8 +138,8 @@ async function flush(): Promise<void> {
   });
 }
 
-function Probe() {
-  const a = useActivity();
+function Probe({ enabled = true }: { enabled?: boolean }) {
+  const a = useActivity(enabled);
   return (
     <div>
       <ul aria-label="rows">
@@ -176,15 +184,17 @@ function rowKeys(): string[] {
   );
 }
 
-function mount() {
+function mount(enabled = true) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const tree = (showing: boolean) => (
     <QueryClientProvider client={client}>
       <ConnectionProvider>
-        <Probe />
+        <Probe enabled={showing} />
       </ConnectionProvider>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+  const view = render(tree(enabled));
+  return { ...view, showBench: (showing: boolean) => view.rerender(tree(showing)) };
 }
 
 const headUrl = (name: string) => `/api/admin/streams/${name}?count=50`;
@@ -630,5 +640,87 @@ describe("useActivity", () => {
     await waitFor(() => expect(state().fetchingOlder).toBe(false));
     expect(state().error).toBeNull();
     expect(rowKeys()).toHaveLength(3);
+  });
+
+  it("reads nothing while another bench is showing, and reads on arrival", async () => {
+    routes[headUrl("events")] = { entries: [entry(1000)], next_before: null };
+    const { showBench } = mount(false);
+    await flush();
+    // Eight reads for a list nobody can see is what the gate exists to stop.
+    expect(calls).toEqual([]);
+    expect(state().loaded).toBe(false);
+
+    showBench(true);
+    await waitFor(() => expect(state().loaded).toBe(true));
+    expect(STREAMS.map(headUrl).every((url) => calls.includes(url))).toBe(true);
+    expect(rowKeys()).toEqual([`events:${entry(1000).id}`]);
+  });
+
+  it("does not read the heads when the app returns to a bench nobody is on", async () => {
+    const { showBench } = mount(false);
+    await flush();
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await flush();
+    expect(calls).toEqual([]);
+
+    // On the bench, the same event reads — that half of the rule is what the
+    // suspended-app case depends on (spec §10).
+    showBench(true);
+    await waitFor(() => expect(state().loaded).toBe(true));
+    const before = calls.length;
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await flush();
+    expect(calls.length).toBe(before + STREAMS.length);
+  });
+
+  it("keeps every frame that arrives while another bench is showing", async () => {
+    const { showBench } = mount();
+    await waitFor(() => expect(state().loaded).toBe(true));
+
+    showBench(false);
+    act(() => telemetry().deliver(live("events", entry(5000))));
+    act(() => telemetry().deliver(live("events", entry(6000))));
+    // No merge off the bench — but the frames are in the feed, not on the
+    // floor, and the counts the header speaks for are still true.
+    expect(rowKeys()).toEqual([]);
+    expect(state().counts).toMatchObject({ events: 2 });
+
+    showBench(true);
+    expect(rowKeys()).toEqual([`events:${entry(6000).id}`, `events:${entry(5000).id}`]);
+  });
+
+  it("counts what a hold holds while another bench is showing", async () => {
+    const { showBench } = mount();
+    await waitFor(() => expect(state().loaded).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "pause" }));
+
+    showBench(false);
+    act(() => telemetry().deliver(live("events", entry(7000))));
+    // `paused · N new` is in the Workshop's header on every bench, so the
+    // number behind it has to go on counting when the bench does not.
+    expect(state()).toMatchObject({ paused: true, heldCount: 1 });
+
+    showBench(true);
+    fireEvent.click(screen.getByRole("button", { name: "resume" }));
+    await waitFor(() => expect(state().heldCount).toBe(0));
+    expect(rowKeys()).toContain(`events:${entry(7000).id}`);
+  });
+
+  it("reads the heads once on Resume, not twice", async () => {
+    mount();
+    await waitFor(() => expect(state().loaded).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "pause" }));
+    const before = calls.length;
+
+    fireEvent.click(screen.getByRole("button", { name: "resume" }));
+    await flush();
+    // One owner for the read: the effect that watches `paused`. Two would send
+    // sixteen requests for one tap.
+    expect(calls.length).toBe(before + STREAMS.length);
   });
 });

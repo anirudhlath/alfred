@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StreamPage, TelemetryMessage } from "@/lib/types";
 import { WhySheet } from "@/sheets/WhySheet";
@@ -68,9 +68,10 @@ interface FakeTelemetry {
 }
 
 /**
- * The socket `ConnectionProvider` holds. A module-level singleton built once
- * per module load — i.e. once for the whole file — so this is always the one
- * the mounted tree is listening to.
+ * The socket `ConnectionProvider` holds. The fake constructor pushes every
+ * instance it builds onto `sockets.telemetries`, which is module-level and so
+ * shared by the whole file: the *last* one is the one this test's tree is
+ * listening to, and the ones before it belong to trees already unmounted.
  */
 const telemetry = (): FakeTelemetry => sockets.telemetries.at(-1) as FakeTelemetry;
 
@@ -123,21 +124,12 @@ function workshopPanel(): HTMLElement {
 }
 
 /**
- * What a screen reader would announce from a live region: its text with every
- * `aria-hidden` subtree dropped. `toHaveTextContent` reads the lot, hidden
- * children included, and the difference between the two is the whole point of
- * the header's nested rate span.
- */
-function spoken(el: HTMLElement): string {
-  const clone = el.cloneNode(true) as HTMLElement;
-  for (const hidden of clone.querySelectorAll('[aria-hidden="true"]')) hidden.remove();
-  return clone.textContent ?? "";
-}
-
-/**
  * The Workshop under a parent that re-renders on its own: the Room, whose chat
  * frames, 30 s overview poll and once-a-second Door fuse all do exactly this.
- * Both props it passes are stable, which is what `memo` needs to bite.
+ * All four props this stand-in passes are stable — `open`, and three callbacks
+ * built once — which is what `memo` needs to bite. The real Room has to earn
+ * that with `useCallback`, and `App.test.tsx` is where it is measured; this
+ * file proves only that the `memo` itself works.
  */
 function mountInRoom() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -147,7 +139,11 @@ function mountInRoom() {
   const bump = { fire: () => {} };
   function Room() {
     const [, setTick] = useState(0);
-    bump.fire = () => setTick((tick) => tick + 1);
+    // In an effect, not the render body: assigning there is a side effect on
+    // every pass, and React may render a component twice before committing it.
+    useEffect(() => {
+      bump.fire = () => setTick((tick) => tick + 1);
+    }, []);
     return <Workshop open onClose={onClose} onWhy={onWhy} onHeld={onHeld} />;
   }
   render(
@@ -251,12 +247,30 @@ describe("Workshop", () => {
     expect(screen.queryByTestId("health-stamp")).toBeNull();
   });
 
-  it("asks for nothing on behalf of a bench nobody has opened", async () => {
+  it("asks for nothing on behalf of a bench nobody has opened, and for what the open one needs", async () => {
     mount(true);
     await waitFor(() => expect(asked).toContain("/api/admin/overview"));
     // Every hook is called on every render; each one is gated on its own bench.
+    expect(asked).not.toContain("/api/admin/memory/episodic");
     expect(asked).not.toContain("/api/admin/triggers");
     expect(asked).not.toContain("/api/auth/sessions");
+
+    // The other half of each gate. A gate stuck shut satisfies the three lines
+    // above and leaves every bench blank for ever, which is why both halves are
+    // asserted rather than the closed one alone.
+    fireEvent.click(screen.getByRole("tab", { name: "Memory" }));
+    await waitFor(() => expect(asked).toContain("/api/admin/memory/episodic"));
+    // And no further: `useMemory` gates each sub-tab separately, so arriving on
+    // the bench reads the tab that is showing and not the other three — and no
+    // other bench's hook wakes up because the reader moved. A gate wired to the
+    // wrong bench reads at the wrong time and never at the right one, which
+    // both halves above pass on their own.
+    expect(asked).not.toContain("/api/admin/memory/semantic");
+    expect(asked).not.toContain("/api/admin/triggers");
+    expect(asked).not.toContain("/api/auth/sessions");
+
+    fireEvent.click(screen.getByRole("tab", { name: "Triggers" }));
+    await waitFor(() => expect(asked).toContain("/api/admin/triggers"));
 
     fireEvent.click(screen.getByRole("tab", { name: "System" }));
     await waitFor(() => expect(asked).toContain("/api/auth/sessions"));
@@ -264,9 +278,9 @@ describe("Workshop", () => {
 
   it("announces the connection from the header, whichever bench is up", async () => {
     mount(true);
-    const status = screen.getByTestId("workshop-status");
-    expect(status).toHaveAttribute("role", "status");
-    expect(status).toHaveAttribute("aria-live", "polite");
+    const state = screen.getByTestId("workshop-state");
+    expect(state).toHaveAttribute("role", "status");
+    expect(state).toHaveAttribute("aria-live", "polite");
 
     // The point of moving it: on three of the four benches nothing else on
     // screen says the pump has stopped, because the Activity banner that used
@@ -274,24 +288,32 @@ describe("Workshop", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Memory" }));
     vi.setSystemTime(new Date(2026, 8, 7, 21, 40, 0));
     act(() => telemetry().onstatus("offline"));
-    const onMemory = screen.getByTestId("workshop-status");
+    const onMemory = screen.getByTestId("workshop-state");
     expect(onMemory).toHaveAttribute("aria-live", "polite");
     expect(onMemory).toHaveTextContent("last true 21:40 · not live");
     await waitFor(() => expect(asked).toContain("/api/admin/memory/episodic"));
   });
 
-  it("keeps the rate out of what that region announces", async () => {
+  it("keeps both numbers outside the region that speaks", async () => {
     mount(true);
-    const status = screen.getByTestId("workshop-status");
-    await waitFor(() => expect(status).toHaveTextContent("live · 2.1 ev/s"));
-    // The rate moves every 30 s. Inside a polite region it would be read out
-    // every poll, so it is in an `aria-hidden` span: seen, never spoken.
-    expect(spoken(status)).toBe("live");
-    expect(spoken(status)).not.toContain("ev/s");
+    await waitFor(() =>
+      expect(screen.getByTestId("workshop-status")).toHaveTextContent("live · 2.1 ev/s"),
+    );
+    // `role="status"` implies `aria-atomic="true"`: a change anywhere inside
+    // the region re-presents the whole of it, so a rate ticking every 30 s in
+    // there would have a reader hear "live" twice a minute for ever. An
+    // `aria-hidden` child does not help — the mutation is still inside. The
+    // numbers are a sibling, where there is nothing to diff.
+    expect(screen.getByTestId("workshop-state").textContent).toBe("live");
+    expect(screen.getByTestId("workshop-state")).not.toContainElement(
+      screen.getByTestId("workshop-detail"),
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Pause feed" }));
-    // The held count *is* news, and is announced.
-    expect(spoken(screen.getByTestId("workshop-status"))).toBe("paused · 0 new");
+    // The held count moves with every frame — twice a second at the fixture's
+    // rate. A number to watch, not news to hear, so it stays outside too.
+    expect(screen.getByTestId("workshop-state").textContent).toBe("paused");
+    expect(screen.getByTestId("workshop-status").textContent).toBe("paused · 0 new");
   });
 
   it("leaves each bench its own read-error region", async () => {
@@ -301,7 +323,7 @@ describe("Workshop", () => {
     // otherwise go unsaid: the header speaks for the connection, this speaks
     // for a read that came back refused.
     expect(await screen.findByRole("status", { name: "Read errors" })).toBeInTheDocument();
-    expect(screen.getByTestId("workshop-status")).toHaveAttribute("role", "status");
+    expect(screen.getByTestId("workshop-state")).toHaveAttribute("role", "status");
   });
 
   it("hands the Held-back sheet up to the Room", async () => {
@@ -313,15 +335,19 @@ describe("Workshop", () => {
     expect(onHeld).toHaveBeenCalledTimes(1);
   });
 
-  it("says live with the overview's rate", async () => {
+  it("says live with the overview's rate, and nothing else", async () => {
     mount(true);
-    await waitFor(() => expect(screen.getByTestId("workshop-status")).toHaveTextContent("live · 2.1 ev/s"));
+    // The whole line, not a substring: `toHaveTextContent` also passes on a
+    // header that appends the held count to the rate.
+    await waitFor(() =>
+      expect(screen.getByTestId("workshop-status").textContent).toBe("live · 2.1 ev/s"),
+    );
   });
 
   it("says paused, and counts what the hold is holding", () => {
     mount(true);
     fireEvent.click(screen.getByRole("button", { name: "Pause feed" }));
-    expect(screen.getByTestId("workshop-status")).toHaveTextContent("paused · 0 new");
+    expect(screen.getByTestId("workshop-status").textContent).toBe("paused · 0 new");
 
     // `paused · 0 new` on its own is true of a header that hardcodes both
     // halves, which is what it used to be asserted against. Two frames arrive
@@ -330,7 +356,9 @@ describe("Workshop", () => {
       telemetry().deliver(frame("1788815700000-0"));
       telemetry().deliver(frame("1788815701000-0"));
     });
-    expect(screen.getByTestId("workshop-status")).toHaveTextContent("paused · 2 new");
+    // Exact, because `paused · 2 new · 2.1 ev/s` — a header that stopped
+    // choosing between the two numbers — contains this string too.
+    expect(screen.getByTestId("workshop-status").textContent).toBe("paused · 2 new");
     // The same number, in the one place a screen reader hears it.
     expect(screen.getByRole("button", { name: "Resume · 2 new" })).toBeInTheDocument();
   });
@@ -362,7 +390,10 @@ describe("Workshop", () => {
     vi.setSystemTime(new Date(2026, 8, 7, 21, 40, 0));
     act(() => telemetry().onstatus("offline"));
 
-    expect(screen.getByTestId("workshop-status")).toHaveTextContent("last true 21:40 · not live");
+    // Exact again: a dead pump has no rate and nothing held, and a header that
+    // printed either beside `not live` would be the §5.2 contradiction the
+    // ladder above exists to prevent.
+    expect(screen.getByTestId("workshop-status").textContent).toBe("last true 21:40 · not live");
     expect(screen.getByTestId("feed-banner")).toHaveTextContent(
       "Feed stopped at 21:40. Nothing below is live.",
     );
@@ -410,6 +441,39 @@ describe("Workshop", () => {
     // which is the whole reason it is shaped that way: the hold survives, and
     // so do the rows behind it.
     expect(screen.getByRole("button", { name: "Resume" })).toBeInTheDocument();
+  });
+
+  it("keeps the Triggers kind filter through a trip to another bench", async () => {
+    mount(true);
+    fireEvent.click(screen.getByRole("tab", { name: "Triggers" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Sensor" }));
+    expect(screen.getByRole("button", { name: "Sensor" })).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(screen.getByRole("tab", { name: "System" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Triggers" }));
+    // The filter lives in `useTriggers`, above the bench that was unmounted.
+    // A reader who went to check something and came back is still looking at
+    // the list they left.
+    expect(await screen.findByRole("button", { name: "Sensor" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
+
+  it("keeps a System write's note through a trip to another bench", async () => {
+    mount(true);
+    fireEvent.click(screen.getByRole("tab", { name: "System" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send them now" }));
+    // The server confirmed the queue-up, and the stamp is of that reply — not
+    // of the press (spec §5.2, and `useSystem.ts` on `drainedAt`).
+    expect(await screen.findByText(/^queued 21:14 · /)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Activity" }));
+    fireEvent.click(screen.getByRole("tab", { name: "System" }));
+    // Still the same note, and still the same minute: a bench that remounted
+    // its own state would be back to `queued only; …` with the write it just
+    // sent forgotten.
+    expect(await screen.findByText(/^queued 21:14 · /)).toBeInTheDocument();
   });
 
   it("closes on Escape, which is all a standalone app has", () => {

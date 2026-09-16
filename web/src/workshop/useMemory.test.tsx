@@ -511,6 +511,26 @@ describe("useMemory", () => {
     expect(calls).toEqual([EPISODIC]);
   });
 
+  it("says per tab whether that tab's read has landed", async () => {
+    const { result, rerender } = renderMemory();
+    // False before the answer and false after one that failed: the bench needs
+    // both to keep `No episodic memories yet.` off a screen with no evidence
+    // behind it.
+    expect(result.current.read).toBe(false);
+    await waitFor(() => expect(result.current.read).toBe(true));
+
+    routines = { status: 500, body: { detail: "redis gone" } };
+    act(() => result.current.setTab("routines"));
+    rerender({ on: true });
+    await waitFor(() => expect(result.current.error).toBe("redis gone"));
+    // Episodic landed; Routines did not, and the flag follows the tab.
+    expect(result.current.read).toBe(false);
+
+    act(() => result.current.setTab("episodic"));
+    rerender({ on: true });
+    await waitFor(() => expect(result.current.read).toBe(true));
+  });
+
   it("does not poll: memory changes at consolidation speed, not at chat speed", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const { result } = renderMemory();

@@ -149,8 +149,12 @@ export function ActivityBench({ activity, onWhy }: ActivityBenchProps) {
       {/* The read errors are a different fact from the connection, and nothing
           else on the bench says them, so this region stays. Mounted whether or
           not it has anything to say: VoiceOver can miss a region inserted with
-          its text already in it (`room/OfflineNote.tsx` documents the same
-          pattern for the same socket). Empty, it is `sr-only` — out of flow, so
+          its text already in it. What that buys is an error arriving while the
+          bench is up, which is the common case — it cannot carry across a
+          change of bench, because the bench and this region are unmounted
+          together and come back holding whatever the hook still holds. The
+          header's region (`Workshop.tsx`) is the only one on this surface that
+          outlives a bench swap. Empty, this one is `sr-only` — out of flow, so
           no box opens around nothing. `status` and not `alert`: a read that
           failed in the background is news, not an interrupt. */}
       <p

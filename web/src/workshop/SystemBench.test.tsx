@@ -131,6 +131,7 @@ function state(overrides: Partial<System> = {}): System {
     maintenance: maintenance(),
     loading: false,
     error: null,
+    sectionErrors: [],
     ...overrides,
   };
 }
@@ -369,6 +370,30 @@ describe("SystemBench · Health", () => {
     rerender(<SystemBench system={state({ error: "500 · overview" })} />);
     expect(region).toHaveTextContent("500 · overview");
     expect(hasClass(region, "sr-only")).toBe(false);
+  });
+
+  it("announces the four section reads the overview cannot speak for", () => {
+    render(
+      <SystemBench
+        system={state({
+          sectionErrors: [
+            "Sessions · 401 not signed in",
+            "Connected services · redis gone",
+            "Devices & identity · 403 not on the home network",
+            "Reflex · 503 attention store down",
+          ],
+        })}
+      />,
+    );
+    // Four of the bench's five reads are a section's, and a section prints its
+    // failure inside its own card — where a reader who cannot see the card
+    // finds nothing. The region carries all four and shows none of them twice.
+    const region = screen.getByRole("status", { name: "Read errors" });
+    expect(region).toHaveTextContent("Sessions · 401 not signed in");
+    expect(region).toHaveTextContent("Reflex · 503 attention store down");
+    // Nothing visible at the top of the bench: the overview read is fine, and
+    // the cards below are already saying these in words.
+    expect(hasClass(region, "sr-only")).toBe(true);
   });
 });
 

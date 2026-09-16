@@ -30,9 +30,11 @@ const KIND_LABELS: Record<KindFilter, string> = {
 export function TriggersBench({ triggers }: TriggersBenchProps) {
   // The clock every stamp on the bench is dated against — read once when the
   // bench mounts, as `MemoryBench` does, so every row agrees about which day
-  // "tomorrow" is. A lazy initialiser because the hooks purity rule bans
-  // reading the clock in a render body, and because a trigger list is not a
-  // thing to re-render once a second.
+  // "tomorrow" is. In the initialiser rather than the render body: the rule is
+  // that a render must not *depend* on the clock, and a lazy initialiser runs
+  // once at mount and becomes state, where a bare `Date.now()` beside it would
+  // give a different answer on every render. A trigger list is also not a thing
+  // to re-render once a second.
   const [now] = useState(() => Date.now());
   const empty = triggers.triggers.length === 0;
 
@@ -88,12 +90,16 @@ export function TriggersBench({ triggers }: TriggersBenchProps) {
       </div>
 
       {/* Mounted whether or not it has anything to say: VoiceOver can miss a
-          region inserted with its text already in it, which is why
-          `ActivityBench` and `room/OfflineNote` both keep theirs. `status` and
-          not `alert` — a read that failed in the background is news, not an
-          interrupt — and `t-meta-strong` because this is the line saying part
-          of the list is missing. The rows stay underneath: a failed read is no
-          reason to take the last-known list away (spec §5.2). */}
+          region inserted with its text already in it. What that buys is an
+          error arriving while the bench is up, which is the common case — it
+          cannot carry across a change of bench, because the bench and this
+          region are unmounted together and come back holding whatever the hook
+          still holds. The header's region (`Workshop.tsx`) is the only one on
+          this surface that outlives a bench swap. `status` and not `alert` — a
+          read that failed in the background is news, not an interrupt — and
+          `t-meta-strong` because this is the line saying part of the list is
+          missing. The rows stay underneath: a failed read is no reason to take
+          the last-known list away (spec §5.2). */}
       <p
         role="status"
         aria-label="Read errors"

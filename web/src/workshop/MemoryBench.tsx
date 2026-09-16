@@ -87,6 +87,24 @@ function stamp(at: string | number, now: number): string {
 }
 
 /** The empty-list block every tab uses: a sentence, and the evidence under it. */
+/**
+ * What an empty list means, and the two things it must not be mistaken for. A
+ * read that was refused and one that has not landed are both "nothing on
+ * screen", and neither is "the store is empty" — `ActivityBench`'s `emptyNote`
+ * draws the same three-way distinction for the same reason, and it is the one
+ * §5.2 is most often lost to: the bench that says `No routines learned yet.`
+ * over a 500 has invented an answer the server never gave.
+ *
+ * The refusal outranks the unlanded read: a query that errored has no `data`
+ * and no `dataUpdatedAt`, so both are true at once and only one of them is the
+ * news.
+ */
+function emptyLine(memory: Memory, subject: string, nothing: string): string {
+  if (memory.error !== null) return `${subject} could not be read.`;
+  if (!memory.read) return `${subject} has not been read yet.`;
+  return nothing;
+}
+
 function Empty({ line, note }: { line: string; note?: string }) {
   return (
     <div className="flex flex-col items-center gap-1.5 py-10 text-center">
@@ -157,7 +175,7 @@ function Episodic({ memory, now }: { memory: Memory; now: number }) {
               note="searched by meaning · the server does not report what it rejected"
             />
           ) : (
-            <Empty line="No episodic memories yet." />
+            <Empty line={emptyLine(memory, "Episodic memory", "No episodic memories yet.")} />
           )
         ) : (
           <ul
@@ -248,11 +266,12 @@ function SemanticCard({ file, now }: { file: SemanticFile; now: number }) {
   );
 }
 
-function Semantic({ files, now }: { files: SemanticFile[]; now: number }) {
+function Semantic({ memory, now }: { memory: Memory; now: number }) {
+  const files = memory.files;
   return (
     <div className="flex-1 overflow-y-auto px-4 pt-2.5 pb-10">
       {files.length === 0 ? (
-        <Empty line="No semantic memory files yet." />
+        <Empty line={emptyLine(memory, "Semantic memory", "No semantic memory files yet.")} />
       ) : (
         <ul role="list" aria-label="Semantic files" className="m-0 flex list-none flex-col gap-3 p-0">
           {files.map((file) => (
@@ -268,7 +287,7 @@ function Routines({ memory }: { memory: Memory }) {
   return (
     <div className="flex-1 overflow-y-auto px-4 pt-2.5 pb-10">
       {memory.routines.length === 0 ? (
-        <Empty line="No routines learned yet." />
+        <Empty line={emptyLine(memory, "Routines", "No routines learned yet.")} />
       ) : (
         <ul role="list" aria-label="Routines" className="m-0 flex list-none flex-col p-0">
           {memory.routines.map((routine) => (
@@ -301,10 +320,13 @@ function Stat({ value, note }: { value: string; note: string }) {
 function Scratchpad({
   scratchpad,
   consolidation,
+  error,
   now,
 }: {
   scratchpad: ScratchpadState | null;
   consolidation: Consolidation | null;
+  /** The read's failure: `null` here is an unread pad, and a 503 is not that. */
+  error: string | null;
   now: number;
 }) {
   return (
@@ -328,7 +350,7 @@ function Scratchpad({
         )}
       </div>
       {scratchpad === null ? (
-        <Empty line="The scratchpad has not been read yet." />
+        <Empty line={error === null ? "The scratchpad has not been read yet." : "The scratchpad could not be read."} />
       ) : scratchpad.content === "" ? (
         <Empty line="The scratchpad is empty." />
       ) : (
@@ -354,9 +376,11 @@ function Scratchpad({
  * semantic edit, no promote: none of them has a route, so none of them has a
  * button here.
  *
- * The bench carries no live region of its own — the Workshop's header status
- * span is the one that survives a change of bench, and a second region here
- * would announce the same trouble twice.
+ * It carries one live region, for its read errors, and none for the
+ * connection: the Workshop's header owns that one and is the only one that
+ * survives a change of bench. The two are not the same trouble — `live` in the
+ * header over `redis gone` in the middle of the screen is exactly the state
+ * this region exists to announce.
  */
 export function MemoryBench({ memory }: MemoryBenchProps) {
   const base = useId();
@@ -364,7 +388,8 @@ export function MemoryBench({ memory }: MemoryBenchProps) {
   // The clock every stamp on the bench is dated against: a memory browser goes
   // back weeks, so `07:02` alone says nothing and `episodicMeta` wants a `now`.
   // Read once when the bench mounts — `DoorProvider` takes the same lazy
-  // initialiser, and reading it during render is impure — so every row agrees
+  // initialiser, which runs once and becomes state, where a `Date.now()` in the
+  // render body would answer differently on every render — so every row agrees
   // about which day it is. It does not tick: a bench left open across midnight
   // would keep saying "earlier today" until the Workshop is next opened, and a
   // second-by-second clock in a read-only browser is motion for nothing.
@@ -413,9 +438,26 @@ export function MemoryBench({ memory }: MemoryBenchProps) {
         })}
       </div>
       <p className="t-meta-strong mx-4 mt-2.5 mb-0">{note}</p>
-      {/* Not a region: see the component note. `t-meta-strong` because this is
-          the line saying part of the bench is missing. */}
-      {memory.error && <p className="t-meta-strong mx-4 mt-2.5 mb-0">{memory.error}</p>}
+      {/* This bench's read errors, announced. The Workshop's header speaks for
+          the *connection* and cannot speak for this: a 500 from
+          `/memory/routines` with the socket up leaves the header saying `live`
+          while `redis gone` paints mid-screen, and a reader who cannot see the
+          screen is told nothing at all. The Triggers and System benches carry
+          the same region for the same reason, and none of the three duplicates
+          the header — a refused read and a dropped socket are different facts.
+
+          Mounted whether or not it has anything to say: VoiceOver can miss a
+          region inserted with its text already in it. Empty, it is `sr-only`.
+          `status` and not `alert` — a read that failed in the background is
+          news, not an interrupt. `t-meta-strong` because this is the line that
+          says part of the bench is missing. */}
+      <p
+        role="status"
+        aria-label="Read errors"
+        className={memory.error ? "t-meta-strong mx-4 mt-2.5 mb-0" : "sr-only"}
+      >
+        {memory.error}
+      </p>
       <div
         id={panelId}
         role="tabpanel"
@@ -430,12 +472,13 @@ export function MemoryBench({ memory }: MemoryBenchProps) {
         className="flex min-h-0 flex-1 flex-col"
       >
         {memory.tab === "episodic" && <Episodic memory={memory} now={now} />}
-        {memory.tab === "semantic" && <Semantic files={memory.files} now={now} />}
+        {memory.tab === "semantic" && <Semantic memory={memory} now={now} />}
         {memory.tab === "routines" && <Routines memory={memory} />}
         {memory.tab === "scratchpad" && (
           <Scratchpad
             scratchpad={memory.scratchpad}
             consolidation={memory.consolidation}
+            error={memory.error}
             now={now}
           />
         )}

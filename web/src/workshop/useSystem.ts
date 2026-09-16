@@ -262,17 +262,33 @@ export interface System {
    * one unreadable list does not take the whole screen down with it.
    */
   error: string | null;
+  /**
+   * The other four reads that came back refused, each named by the card it
+   * belongs to. `error` above is the overview's alone — one read of five — and
+   * the four sections print theirs *inside* their cards, which is a fine place
+   * for a reader who can see the card and no place at all for one who cannot.
+   * The bench announces these and shows nothing extra.
+   *
+   * Reads only: `credentials.error` folds a refused sign-out in with the read,
+   * and a write belongs to the control that sent it. This is built from the
+   * queries themselves, where the two are still separable.
+   */
+  sectionErrors: string[];
 }
 
 /**
  * The System bench's one hook: the Room's overview, five reads of its own, and
  * the writes each section owns.
  *
- * `enabled` is `bench === "system"`. It gates every read — the overview
- * included, via the parameter `useOverview` takes for exactly this — because a
- * bench nobody is looking at must not probe every integration in the house. The
- * hook lives in `WorkshopPanel` rather than in the bench, so a queued drain and
- * every save note survive a trip to Triggers.
+ * `enabled` is `bench === "system"`. It gates this bench's own five reads,
+ * because a bench nobody is looking at must not probe every integration in the
+ * house. It does *not* stop the overview being read: `WorkshopPanel` holds an
+ * ungated observer on the same key for the header's rate, so the poll runs
+ * whatever this says. What the parameter spares there is a second observer, not
+ * a request — react-query answers both from one cache entry and re-syncs their
+ * intervals on every update, so two observers are two subscriptions and still
+ * one poll. The hook lives in `WorkshopPanel` rather than in the bench, so a
+ * queued drain and every save note survive a trip to Triggers.
  *
  * `onHeld` opens the Held-back sheet, which is the Room's route rather than the
  * Workshop's; Quiet's third row is the only thing on this bench that leaves it.
@@ -347,8 +363,11 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
   // ── The reads ──────────────────────────────────────────────────────────────
 
   // The Room's poll, shared rather than repeated: this is the same key the
-  // status line and the Workshop header watch, and a second query for it would
-  // double the requests for as long as the layer is up.
+  // status line and the Workshop header watch, and a second *query* for it
+  // would double the requests for as long as the layer is up. The gate here
+  // buys one observer on that key rather than one poll — the header's is
+  // ungated and running either way — and what it is really for is everything
+  // below, which has no other reader.
   const overviewQuery = useOverview(enabled);
   const overview = overviewQuery.data;
   const refetchOverview = overviewQuery.refetch;
@@ -820,6 +839,23 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
     return read !== null ? errorText(read) : wrote;
   };
 
+  // In the order the cards stand on the bench, so the announcement walks the
+  // screen the way a reader would. Named by card title: `errorText` carries the
+  // reason and nothing about where it came from, and "401 not signed in" on its
+  // own names no list.
+  const sectionErrors = !enabled
+    ? []
+    : (
+        [
+          ["Sessions", sessionsQuery.error],
+          ["Connected services", integrationsQuery.error],
+          ["Devices & identity", credentialsQuery.error],
+          ["Reflex", attentionQuery.error],
+        ] as const
+      )
+        .filter(([, error]) => error !== null)
+        .map(([title, error]) => `${title} · ${errorText(error)}`);
+
   return {
     overview,
     health,
@@ -892,6 +928,7 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
       drain,
       run,
     },
+    sectionErrors,
     loading:
       sessionsQuery.isFetching ||
       credentialsQuery.isFetching ||

@@ -1567,6 +1567,49 @@ describe("useSystem", () => {
     expect(result.current.sessions.error).toBeNull();
   });
 
+  it("reads a malformed integrations body as no integrations, not as a crash", async () => {
+    // `GET /api/integrations` answers a bare array; a 200 carrying an object —
+    // an error envelope from a proxy in front of Alfred — used to reach
+    // `list.map` and throw during render, which unmounts the whole app.
+    answer("GET", INTEGRATIONS, { status: 200, body: { detail: "upstream unavailable" } });
+    const { result } = renderSystem();
+
+    await waitFor(() => expect(result.current.integrations.read).toBe(true));
+    expect(result.current.integrations.list).toEqual([]);
+    expect(result.current.integrations.error).toBeNull();
+  });
+
+  it("names every section read that failed, and no write", async () => {
+    answer("GET", SESSIONS, { status: 401, body: { detail: "Not authenticated" } });
+    answer("GET", INTEGRATIONS, { status: 500, body: { detail: "redis gone" } });
+    answer("GET", ATTENTION, { status: 503, body: { detail: "Attention store down" } });
+    answer("POST", LOGOUT, { status: 503, body: { detail: "Session store unavailable" } });
+    const { result, rerender } = renderSystem();
+
+    await waitFor(() =>
+      expect(result.current.sectionErrors).toEqual([
+        "Sessions · Not authenticated",
+        "Connected services · redis gone",
+        "Reflex · Attention store down",
+      ]),
+    );
+
+    // A refused sign-out is a write, and it is announced on the control that
+    // sent it. It reaches `credentials.error`, which the card prints — and it
+    // must not reach a region labelled `Read errors`.
+    act(() => result.current.credentials.signOut());
+    await waitFor(() =>
+      expect(result.current.credentials.error).toContain("Session store unavailable"),
+    );
+    expect(result.current.sectionErrors.some((line) => line.startsWith("Devices & identity"))).toBe(
+      false,
+    );
+
+    // And a bench nobody is looking at announces nothing.
+    rerender({ on: false });
+    expect(result.current.sectionErrors).toEqual([]);
+  });
+
   it("says nothing at all once the bench is closed", async () => {
     for (const url of [SESSIONS, OVERVIEW, CREDENTIALS, INTEGRATIONS, ATTENTION]) {
       answer("GET", url, { status: 503, body: { detail: "Redis unavailable" } });

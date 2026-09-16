@@ -39,6 +39,9 @@ function state(overrides: Partial<Memory> = {}): Memory {
     consolidation: null,
     openRoutine: null,
     toggleRoutine: vi.fn(),
+    // A landed read is the normal case these tests describe; the three that
+    // are about an unlanded or refused one say so.
+    read: true,
     loading: false,
     error: null,
     ...overrides,
@@ -328,12 +331,53 @@ describe("MemoryBench", () => {
     expect(screen.queryByText(/next consolidation/)).toBeNull();
   });
 
-  it("shows the read that failed without a region of its own to say it in", () => {
+  it("announces the read that failed, in a region of its own", () => {
     render(<MemoryBench memory={state({ error: "Vector search unavailable" })} />);
-    const line = screen.getByText("Vector search unavailable");
+    const line = screen.getByRole("status", { name: "Read errors" });
+    expect(line).toHaveTextContent("Vector search unavailable");
     expect(line).toHaveClass("t-meta-strong");
-    // The Workshop header is the bench's live region (plan decision 8); a second
-    // one here would say the same thing twice.
-    expect(screen.queryByRole("status")).toBeNull();
+    // The header's region speaks for the connection, which is still up: a 500
+    // from the store with the socket live is a fact nothing else on this screen
+    // would say aloud.
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+  });
+
+  it("keeps that region mounted and silent while the reads are landing", () => {
+    render(<MemoryBench memory={state()} />);
+    // VoiceOver can miss a region inserted with its text already in it, which
+    // is why this one is always here and `sr-only` when it has nothing to say.
+    const region = screen.getByRole("status", { name: "Read errors" });
+    expect(region).toHaveTextContent("");
+    expect(region).toHaveClass("sr-only");
+  });
+
+  it("does not call a store empty on a read that failed or never landed", () => {
+    // Three sentences for three states, on the tab that has the most to lose:
+    // an unread list, a refused read, and a store that really is empty.
+    const { rerender } = render(<MemoryBench memory={state({ read: false })} />);
+    expect(screen.getByText("Episodic memory has not been read yet.")).toBeInTheDocument();
+
+    rerender(<MemoryBench memory={state({ read: false, error: "redis gone" })} />);
+    expect(screen.getByText("Episodic memory could not be read.")).toBeInTheDocument();
+    expect(screen.queryByText("No episodic memories yet.")).toBeNull();
+
+    rerender(<MemoryBench memory={state()} />);
+    expect(screen.getByText("No episodic memories yet.")).toBeInTheDocument();
+  });
+
+  it("says the same three things on Semantic, Routines and the scratchpad", () => {
+    const { rerender } = render(
+      <MemoryBench memory={state({ tab: "semantic", read: false, error: "redis gone" })} />,
+    );
+    expect(screen.getByText("Semantic memory could not be read.")).toBeInTheDocument();
+
+    rerender(<MemoryBench memory={state({ tab: "routines", read: false })} />);
+    expect(screen.getByText("Routines has not been read yet.")).toBeInTheDocument();
+
+    rerender(<MemoryBench memory={state({ tab: "scratchpad", read: false, error: "redis gone" })} />);
+    expect(screen.getByText("The scratchpad could not be read.")).toBeInTheDocument();
+
+    rerender(<MemoryBench memory={state({ tab: "scratchpad", read: false })} />);
+    expect(screen.getByText("The scratchpad has not been read yet.")).toBeInTheDocument();
   });
 });

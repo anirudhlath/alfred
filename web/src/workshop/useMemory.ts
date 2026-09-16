@@ -82,6 +82,16 @@ export interface Memory {
   toggleRoutine: (name: string) => void;
   /** A read is in flight. */
   loading: boolean;
+  /**
+   * The showing tab's own read has landed at least once, well or badly — the
+   * flag `useSystem`'s sections each carry, for the same reason. Without it an
+   * empty list cannot be told from one nobody has been told about yet, and the
+   * bench opens by asserting `No episodic memories yet.` about a store it has
+   * not read: a claim about the server made from no evidence, which spec §5.2
+   * forbids. `dataUpdatedAt` and not `isSuccess`, because the question is "has
+   * this ever been read", not "did the last attempt succeed".
+   */
+  read: boolean;
   /** Why the showing tab's read failed, if it did. Null while the bench is not showing. */
   error: string | null;
 }
@@ -224,6 +234,17 @@ export function useMemory(enabled: boolean): Memory {
   } satisfies Record<MemoryTab, Error | null>;
   const failure = enabled ? failures[tab] : null;
 
+  // Per tab, like the failures above: Semantic having answered says nothing
+  // about whether Routines has. Episodic reads the *browse*, which is what the
+  // list falls back to — a search that answered takes the `searched` branch and
+  // never reaches the sentence this gates.
+  const reads = {
+    episodic: browseQuery.dataUpdatedAt !== 0,
+    semantic: semanticQuery.dataUpdatedAt !== 0,
+    routines: routinesQuery.dataUpdatedAt !== 0,
+    scratchpad: scratchpadQuery.dataUpdatedAt !== 0,
+  } satisfies Record<MemoryTab, boolean>;
+
   return {
     tab,
     setTab,
@@ -241,6 +262,7 @@ export function useMemory(enabled: boolean): Memory {
     consolidation: librarian ? { last: librarian.last_run_at, next: librarian.next_run_at } : null,
     openRoutine,
     toggleRoutine,
+    read: reads[tab],
     loading:
       browseQuery.isFetching ||
       searchQuery.isFetching ||

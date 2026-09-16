@@ -7,7 +7,13 @@ import type { StreamPage } from "@/lib/types";
 import { useConnection } from "@/shell/ConnectionProvider";
 
 export interface Activity {
-  /** What the list shows: the solo stream or all eight, newest first, from the horizon forward. */
+  /**
+   * What the list shows: the solo stream or all eight, newest first, from the
+   * horizon forward. Empty while another bench is showing — the merge is this
+   * bench's own work and nobody else reads it (see `enabled` below). The
+   * frames themselves are not dropped; they are still in `feed`, and the rows
+   * are there again on the frame the reader comes back.
+   */
   rows: FeedRow[];
   /**
    * Entries *held* per stream — the chips' numbers. This is loaded depth, not
@@ -37,7 +43,7 @@ export interface Activity {
   toggle: (key: string) => void;
   pause: () => void;
   resume: () => void;
-  /** What `↑ older` reads before; null when there is nothing older to fetch. */
+  /** What `↑ older` reads before; null when there is nothing older to fetch, and while another bench is showing. */
   cursor: string | null;
   fetchingOlder: boolean;
   loadOlder: () => void;
@@ -53,6 +59,14 @@ export interface Activity {
 }
 
 /**
+ * What the merge hands back while nobody is looking at this bench. One frozen
+ * object rather than a fresh `{ rows: [], cursor: null }` each render: it is a
+ * `useMemo` result, and a new identity every render would defeat the memo it
+ * is the value of.
+ */
+const NOT_SHOWING: { rows: FeedRow[]; cursor: string | null } = { rows: [], cursor: null };
+
+/**
  * The reads that failed. Only the first one's reason reaches the banner: when
  * eight streams fail eight different ways there is one line to say it in, and
  * the count carries the rest.
@@ -61,7 +75,21 @@ function rejections(results: PromiseSettledResult<StreamPage>[]): PromiseRejecte
   return results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
 }
 
-export function useActivity(): Activity {
+/**
+ * The Activity bench's one hook.
+ *
+ * `enabled` is `bench === "activity"`. It gates the two expensive halves and
+ * neither of the cheap ones: no head reads and no merge while another bench is
+ * showing, but the socket stays subscribed and every frame still lands in the
+ * feed. That split is deliberate, and it is what the Workshop's header needs —
+ * `live`, `liveAt`, `paused` and `heldCount` are on screen on all four benches,
+ * and a held count that stopped counting while the reader was in Memory would
+ * be a number about the server made from a client that had stopped listening.
+ * What is skipped is `mergeRows`, which walks eight streams of up to
+ * `MAX_PER_STREAM` rows each — uncapped once `↑ older` has been pressed — and
+ * whose only reader is the bench itself.
+ */
+export function useActivity(enabled: boolean): Activity {
   const { telemetry, telemetryStatus } = useConnection();
   const [feed, dispatch] = useReducer(feedReducer, undefined, initialFeed);
   const [solo, setSoloState] = useState<StreamName | null>(null);
@@ -109,26 +137,38 @@ export function useActivity(): Activity {
     })();
   }, []);
 
+  // The eight heads, read whenever this bench is the one showing and the feed
+  // is not held. Three moments in one effect, because they are one rule: the
+  // Workshop opening on Activity, the reader coming back to it from another
+  // bench, and Resume — which is why neither `resume` nor `pause` does any of
+  // this itself any more.
+  //
+  // Not while another bench is showing: eight reads for a list nobody can see,
+  // and the reader who arrives gets a fresh one anyway. Not while paused
+  // either — the reducer merges a head page straight into the entries whatever
+  // `paused` says (pages are not live frames), so reading here would slide rows
+  // into a list the handoff promises will not move until Resume.
   useEffect(() => {
+    if (!enabled || feed.paused) return;
     readHeads();
     // Nothing to cancel — a fetch already sent will arrive — but the bench it
     // was for has gone, so retire its generation and let the answer fall away.
+    // This is also what retires a read when the reader pauses or walks off the
+    // bench mid-flight.
     return () => {
       readGeneration.current += 1;
     };
-  }, [readHeads]);
+  }, [enabled, feed.paused, readHeads]);
 
   // Head pages on every return to the foreground: the socket replays nothing,
   // so whatever happened while the app was suspended is only on the server
-  // (spec §10) — but *not* while paused. The reducer merges a head page
-  // straight into the entries whatever `paused` says (pages are not live
-  // frames), so re-reading here would slide rows into a list the handoff
-  // promises will not move until Resume. Resume does the re-read instead,
-  // which also recovers whatever the socket missed during the pause.
+  // (spec §10). Gated on the same two facts as the read above, and for the same
+  // two reasons — a phone brought back into the light while the reader is on
+  // System must not read eight streams for a bench that is not there.
   useEffect(() => {
-    if (feed.paused) return;
+    if (!enabled || feed.paused) return;
     return onVisible(readHeads);
-  }, [feed.paused, readHeads]);
+  }, [enabled, feed.paused, readHeads]);
 
   // All eight streams for as long as the bench is mounted. The socket counts
   // wanters per stream, so this never cancels the Door's own subscription.
@@ -159,7 +199,15 @@ export function useActivity(): Activity {
   }, [telemetryStatus]);
 
   const targets = useMemo<readonly StreamName[]>(() => (solo ? [solo] : STREAMS), [solo]);
-  const { rows, cursor } = useMemo(() => mergeRows(feed, targets), [feed, targets]);
+  // The one piece of work a frame costs that is worth skipping. Every live
+  // frame allocates a new feed — the paused branch of the reducer does too —
+  // so this memo recomputes once per frame, and at 2 ev/s with `↑ older`
+  // pressed that is a merge of an uncapped list twice a second for a bench
+  // nobody is looking at. Skipped rather than computed and thrown away.
+  const { rows, cursor } = useMemo(
+    () => (enabled ? mergeRows(feed, targets) : NOT_SHOWING),
+    [enabled, feed, targets],
+  );
 
   const counts = useMemo(() => {
     const result = {} as Record<StreamName, number>;
@@ -182,19 +230,12 @@ export function useActivity(): Activity {
     setExpanded((current) => (current === key ? null : key));
   }, []);
 
-  const pause = useCallback(() => {
-    // Drop any head read in flight: its pages would land past the hold. Resume
-    // re-reads.
-    readGeneration.current += 1;
-    dispatch({ type: "pause" });
-  }, []);
-
-  // Resume always re-reads the heads: nothing was read while the hold was on,
-  // and a socket that dropped during it lost frames no replay will bring back.
-  const resume = useCallback(() => {
-    dispatch({ type: "resume" });
-    readHeads();
-  }, [readHeads]);
+  // Both are one dispatch each. The read that follows a Resume, and the
+  // retiring of one already in flight when the hold goes on, belong to the
+  // effect above: it runs on exactly the transitions these two cause, and two
+  // owners for one read is how a Resume ends up fetching eight streams twice.
+  const pause = useCallback(() => dispatch({ type: "pause" }), []);
+  const resume = useCallback(() => dispatch({ type: "resume" }), []);
 
   const loadOlder = useCallback(() => {
     if (fetchingOlder) return;
