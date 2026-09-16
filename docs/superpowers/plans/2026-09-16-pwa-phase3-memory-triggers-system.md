@@ -157,7 +157,7 @@ export interface Routine { name: string; trigger_pattern: string; steps: Routine
 export interface Scratchpad { content: string; pending_queue: number }
 export const ROUTINE_STAGES: readonly RoutineState[];          // candidate · active · dormant · archived
 export function toEpisodicRow(raw: Record<string, unknown>, index: number): EpisodicRow;
-export function episodicMeta(row: EpisodicRow, now: number): string;
+export function episodicMeta(row: EpisodicRow): string;   // no `now`: the stamp is hhmm only
 export function routineTrend(routine: Routine): { text: string; rising: boolean };
 export function routineDetail(routine: Routine): string;
 export function fetchEpisodic(query: string): Promise<EpisodicRow[]>;
@@ -238,8 +238,8 @@ The load-bearing task of the Memory bench. `GET /api/admin/memory/episodic` answ
 | the sentence | `content` | `summary` | `summary` |
 | time | `timestamp`, epoch seconds **as a string** | `timestamp`, epoch seconds as a REAL | `timestamp`, an **ISO 8601 string** |
 | entities | `"lamp,kitchen"` | `"[\"lamp\",\"kitchen\"]"` | `["lamp","kitchen"]` |
-| significance | string | number | number |
-| recall | `retrieval_count` as a string | absent | `retrieval_count`, `last_retrieved` |
+| significance | string | **JSON text** `{"overall": …}` (v2 migration column) | **object** `{"overall": …}` (`SignificanceScore`) |
+| recall | `retrieval_count` as a string, `last_retrieved` as `0.0` when never | absent | `retrieval_count`, `last_retrieved` |
 | score | absent | absent | `score` |
 | `store` | `"hot"` | `"cold"` | `"hot"` or `"cold"` |
 
@@ -562,7 +562,7 @@ Expanded (the row is a `<button>` with `aria-expanded`): `routineDetail(routine)
 
 - [ ] **Step 3: Run both, watch them fail. Step 4: Implement. Step 5: Green, lint, build.**
 
-At the end of this task: **58 test files, ~890 tests.** `MemoryBench` is not mounted yet — task 10 does that — so the app is unchanged on screen.
+At the end of this task: **58 test files, ~901 tests.** `MemoryBench` is not mounted yet — task 10 does that — so the app is unchanged on screen.
 
 - [ ] **Step 6: Commit** `feat(web): the Memory bench`
 
@@ -701,7 +701,7 @@ Rows below in `flex-1 overflow-y-auto`. Empty: `No triggers yet.` for a genuinel
 - [ ] **Step 2: `TriggersBench.test.tsx`** (~10): chips render and filter; the `all` count; both empty states with their exact sentences; **the footer note is quoted exactly**; the error banner leaves the rows in place; each trigger gets a row.
 - [ ] **Step 3: Run both, fail. Step 4: Implement. Step 5: Green, lint, build.**
 
-At the end of this task: **62 test files, ~940 tests.**
+At the end of this task: **62 test files, ~951 tests.**
 
 - [ ] **Step 6: Commit** `feat(web): the Triggers bench`
 
@@ -866,7 +866,7 @@ Deviation 13 — no fidelity-locked design, so it follows the frame. One sub-sec
 - [ ] **Step 1: Write `SystemSections.test.tsx`** (~28, roughly 7 per section) covering: each row's content; End's own-session label; the empty states; the credential form building from the schema, masking secrets, never pre-filling a value, and showing `saved`; Save & test calling PUT then status in order; the 403 sentence with the form intact; the pairing code and its closing time; `this passkey`; attention chips both ways with their callbacks; the attention 503 detail; the intro sentence quoted exactly.
 - [ ] **Step 2: Fail. Step 3: Implement. Step 4: Wire the four into `SystemBench` between Quiet and Maintenance** (Health · Quiet · Sessions · Connected services · Devices & identity · Reflex · Maintenance) and extend `SystemBench.test.tsx` with one test asserting the seven section headings in order. **Step 5: Green, lint, build.**
 
-At the end of this task: **66 test files, ~1000 tests.**
+At the end of this task: **66 test files, ~1011 tests.**
 
 - [ ] **Step 6: Commit** `feat(web): System bench sessions, services, identity and reflex`
 
@@ -958,7 +958,7 @@ cd ~/code/.worktrees/alfred/pwa-phase3-benches/web
 npm run lint && npx vitest run && npm run build
 ```
 
-Expected: eslint silent, **~66 test files / ~1000 tests passing**, build clean. The counts are a guide — a task that needed more tests is fine, a task that has fewer than its section said is a skipped test.
+Expected: eslint silent, **~66 test files / ~1011 tests passing**, build clean. The counts are a guide — a task that needed more tests is fine, a task that has fewer than its section said is a skipped test.
 
 - [ ] **Step 2: Run the suite three times.** A bench with timers and fake clocks is where flake lives, and a test that passes four times in five is a broken test.
 
