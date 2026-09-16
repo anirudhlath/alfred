@@ -101,6 +101,15 @@ describe("contrast ratios", () => {
       expect(contrast(token(theme, "fg"), token(theme, "field"))).toBeGreaterThanOrEqual(4.5);
     });
 
+    it(`${theme}: green reads as a word, not only as a dot`, () => {
+      // The Memory bench is the first screen to put green in words — a rising
+      // routine's trend line and the `model: ok` pill, both 11 px on --bg.
+      // --green itself is 6.25:1 on ink but 2.29:1 on paper, the same trap
+      // --accent-text exists for, so the text sites take --green-text and
+      // --green stays what fills the Door's `applied` dot.
+      expect(contrast(token(theme, "green-text"), token(theme, "bg"))).toBeGreaterThanOrEqual(4.5);
+    });
+
     it(`${theme}: a field's placeholder reads in the field it sits in`, () => {
       expect(contrast(token(theme, "fg2"), token(theme, "field"))).toBeGreaterThanOrEqual(4.5);
     });
