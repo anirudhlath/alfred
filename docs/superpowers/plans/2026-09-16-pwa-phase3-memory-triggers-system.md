@@ -207,10 +207,12 @@ export interface Integration { name; category; kind: "adapter" | "service"; sche
 export interface IntegrationStatus { name: string; healthy: boolean; latency_ms: number | null }
 export interface AttentionDomain { domain: string; members: string[]; seen: string[] }
 export type ServiceState = "ok" | "failed" | "unset" | "testing" | "queued";
-export function sessionMeta(session: AuthSession): string;
-export function credentialMeta(credential: Credential): string;
+export const HOME_SERVICE = "home-service";
+export function sessionMeta(session: AuthSession, now: number): string;   // `now` for dayLabel, as triggerMeta
+export function credentialMeta(credential: Credential, now: number): string;
 export function serviceNote(state: ServiceState): string;
 export function spendNote(cost: Overview["cost"]): string;
+export function spendFraction(cost: Overview["cost"]): number;   // clamped [0,1]; 0 past a zero or missing cap
 export function fetchAuthSessions(): Promise<AuthSession[]>;
 export function endAuthSession(id: string): Promise<void>;
 export function fetchCredentials(): Promise<Credential[]>;
@@ -227,7 +229,12 @@ export function runLibrarian(): Promise<void>;
 // workshop/useSystem.ts
 export interface System { overview; health; quiet; sessions; credentials; integrations; attention;
   pairing; maintenance; loading; error: string | null }
-export function useSystem(enabled: boolean): System;
+/** `credentials` is the **passkey** list. Saving a *service's* credentials lives at
+ *  `integrations.saves[name]` = `{ saving, savedAt, error, gated }` — one service refusing
+ *  says nothing about the others, and one field cannot mean both things.
+ *  Each `health` cell is `{ value, note, alive: boolean }`; the flag exists so the view's
+ *  green-vs-muted dot never has to string-match on the word "alive". */
+export function useSystem(enabled: boolean, onHeld: () => void): System;   // second parameter added by task 8
 
 // workshop/Workshop.tsx
 export function Workshop({ open; onClose; onWhy: (ref: StreamRef) => void; onHeld: () => void }): JSX
@@ -833,6 +840,8 @@ const health = {
 
 **Files:** Create `web/src/workshop/SystemBench.tsx`, `SystemBench.test.tsx`.
 
+**First, widen the hook.** Task 7 shipped `useSystem(enabled)`; this bench reads `system.quiet.onHeld`, so add the second parameter (`onHeld: () => void`) and pass it through to `quiet`. Task 10 calls it with both.
+
 `SystemBench({ system }: { system: System })`. A scrolling column of sections. **The section frame** (used here and by task 9, so export it from this file):
 
 ```tsx
@@ -843,7 +852,7 @@ export function Section({ title, children }: { title: string; children: ReactNod
 
 Handoff §8. Sections are separated by a 22 px gap.
 
-**Health** — a stamp on the right of the section label: `live · 21:14:07` in `--muted` while online, `unknown since 21:14` in `--accent-text` while not. Then a 2×2 grid of stat cards (`padding 12 14`), each an 8 px dot (`--green` for alive, `--muted` for unknown), a 20 px/500 value, and a mono label:
+**Health** — a stamp on the right of the section label: `live · 21:14:07` in `--muted` while online, `unknown since 21:14` in `--accent-text` while not. Then a 2×2 grid of stat cards (`padding 12 14`), each an 8 px dot (`--green` for alive, `--muted` for unknown) driven by the cell's own `alive` flag — **never by string-matching its `value`**, a 20 px/500 value, and a mono label:
 
 | value | label |
 |---|---|
@@ -854,14 +863,14 @@ Handoff §8. Sections are separated by a 22 px gap.
 
 Deviation 8 removes the handoff's `6 services` and `gpu 41%` — neither has a source. **Offline, the values read `?` or `—` and the grid recedes by swapping to `--fg2`** — the handoff says opacity .55; see the Triggers task for why this phase dims by token instead. A stale number presented at full strength is the §5.2 failure.
 
-Under the grid, the spend card: title `Cloud spend today`, then mono `$1.42 of $5.00`, a 4 px bar filling `spend_usd / cap_usd` clamped to `[0, 1]` (`--accent` on `--line`), and the note — the handoff's, with the clauses the server did not send dropped:
+Under the grid, the spend card: title `Cloud spend today`, then mono `$1.42 of $5.00`, a 4 px bar filling `spendFraction(cost)` (`--accent` on `--line`; the clamp and the zero-cap guard live in `lib/system.ts`, not here), and the note — the handoff's, with the clauses the server did not send dropped:
 
 `38 requests · avg $0.037 · resets 00:00 · at the cap, the conscious mind declines and says so`
 
 `role="img"` on the bar with the note as its label; a zero or missing cap draws an empty bar and the text says why. Never `NaN`.
 
 **Quiet** —
-- Row 1 (56 px min): `Do-not-disturb`, a `role="switch"` reporting `dnd.active`. This one **moves on tap**, once the server has confirmed, because `POST /api/admin/dnd` is a direct write (decision 6's exception) — and says `Applied`. While in flight it is `aria-busy` and disabled.
+- Row 1 (56 px min): `Do-not-disturb`, a `role="switch"` reporting `dnd.active`. This one **moves on tap**, once the server has confirmed, because `POST /api/admin/dnd` is a direct write (decision 6's exception) — and says `Applied`. In flight it is `aria-busy` (`quiet.setting`) and `aria-disabled`, not `disabled`, for the reason the Triggers task gives. Task 7 deliberately does **not** patch the cache optimistically: the switch moves when the overview re-read lands. The visible gap is the point — an un-retired optimistic claim resurrects the old position the next time a calendar meeting moves the switch on its own.
 - The sub-line, verbatim per state: `off · urgent still speaks regardless` / `on · until 08:30 · queue drains then` / `on · no expiry · queue will not drain on its own`.
 - Row 2, only while active: expiry chips `1 h · until noon · until 22:00 · no expiry`, 44 px, radius 10, each posting `active: true` with the computed `until` as an ISO string (`no expiry` sends `null`). The current one is `aria-pressed`.
 - Row 3: `Held back` with `2 held ›` on the right — **`2 · growing` in `--accent-text` when there is no expiry**, because a queue with no drain is a different fact from a queue with one. Opens the Held-back sheet through `system.quiet.onHeld`. Count from `overview.counts.deferred`.
@@ -885,7 +894,7 @@ Under the grid, the spend card: title `Cloud spend today`, then mono `$1.42 of $
 Four exported components, each taking its own slice of `System`, each with its own tests. They live in one file because they share the `Section` frame and the same row idiom, and four one-component files would be four copies of the same imports.
 
 ### `SessionsSection({ sessions })`
-Rows 56 px: `device_name`, then `sessionMeta(s)` in mono `.t-meta-strong` — the handoff's `passkey · pwa · signed in 07:02 · 192.168.1.24`. On the right, **`current`** for your own (a disabled label, not a button — you do not "end" the session you are using from a list) and **`End`** in `--accent-text` otherwise, ≥44 px. After ending: the row recedes to `--fg2` (not opacity .5 — see the Triggers task) and reads `ended 21:15 · applied`, then disappears on the re-read. Empty: `No other sessions.`
+Rows 56 px: `device_name`, then `sessionMeta(s, now)` in mono `.t-meta-strong` — the handoff's `passkey · pwa · signed in 07:02 · 192.168.1.24`. On the right, **`current`** for your own (a disabled label, not a button — you do not "end" the session you are using from a list) and **`End`** in `--accent-text` otherwise, ≥44 px. After ending: the row recedes to `--fg2` (not opacity .5 — see the Triggers task) and reads `ended 21:15 · applied`, then disappears on the re-read. Empty: `No other sessions.`
 
 ### `ServicesSection({ integrations })`
 Rows: the name, `category · kind` in `.t-meta`, then on the right the state word and an 8 px dot — `ok` in `--green-text` with a `--green` dot, `failed` in `--accent-text`, `unset` in `--muted`. Tapping a row expands a credential form built from `schema.fields`: one labelled input per field, 48 px tall, radius 10, **mono 14 px** (≥16 px if that fights iOS focus zoom — the zoom rule wins over the handoff's 14), `type="password"` for anything the schema marks secret (read the field shape in `core/channels/service_credentials.py` — do not guess the flag's name), placeholder `configured[field] ? "saved" : ""` and **never the value itself**, which the server does not send and must not.
@@ -901,10 +910,10 @@ Rows: the name, `category · kind` in `.t-meta`, then on the right the state wor
 
 The `failed` note names a 401 because that is the common case; use the status the server actually reported when there is one.
 
-On 403 from the `PUT`: `Credentials can only be changed from the home network.` in `--fg2`, with the form left filled so nothing is lost. Note that `api` already emits `denied` for every 403, so the Denied gate will rise over this — confirm what that looks like and, if the gate explains it better than the inline sentence does, say so in your report rather than fighting it.
+On 403 from the `PUT` — read it off `integrations.saves[name].gated`, which task 7 sets rather than making the view parse a status: `Credentials can only be changed from the home network.` in `--fg2`, with the form left filled so nothing is lost. Note that `api` already emits `denied` for every 403, so the Denied gate will rise over this — confirm what that looks like and, if the gate explains it better than the inline sentence does, say so in your report rather than fighting it.
 
 ### `IdentitySection({ credentials, pairing })`
-Rows per passkey, the handoff's shape: `iPhone 15 Pro · passkey · registered 12 Aug · Face ID · this device` — i.e. `device_name`, then `credentialMeta(c)` carrying `passkey`, the registration day via `dayLabel`, the transports, and `this device` for the one you signed in with. **`Add a passkey on another device`** in `--accent-text`, with `<n> registered` beside it; it mints a pairing code and shows it at 32 px, mono, letter-spaced, with `Pairing window closes 21:20 · enter this on the new device`. The code is shown until the bench is left; there is no way to re-show it and the note says so. Then **`Sign out on this device`** (`POST /api/auth/logout`).
+Rows per passkey, the handoff's shape: `iPhone 15 Pro · passkey · registered 12 Aug · Face ID · this device` — i.e. `device_name`, then the handoff's line **composed here**: `credentialMeta(c, now)` ships task 7's `internal, hybrid · last used 07:02`, so this section adds `passkey`, the registration day via `dayLabel`, and `this device` around it. (Task 7 and task 9 described the same call producing two different strings; the formatter keeps task 7's and the section composes the rest.) **`Add a passkey on another device`** in `--accent-text`, with `<n> registered` beside it; it mints a pairing code and shows it at 32 px, mono, letter-spaced, with `Pairing window closes 21:20 · enter this on the new device`. The code is shown until the bench is left; there is no way to re-show it and the note says so. Then **`Sign out on this device`** (`POST /api/auth/logout`).
 
 No delete button — `DELETE /api/auth/credentials/{id}` exists and refuses the last one with a 409, but removing the passkey you are holding is a foot-gun with no confirmation design in the handoff. Log it in the backlog and leave it out. *(If review disagrees, it is a small addition — but it ships with a typed confirmation or not at all.)*
 
@@ -933,7 +942,7 @@ Delete `UNBUILT` and the comment above it. Call the three hooks in `WorkshopPane
 ```tsx
 const memory = useMemory(bench === "memory");
 const triggers = useTriggers(bench === "triggers");
-const system = useSystem(bench === "system", onHeld);
+const system = useSystem(bench === "system", onHeld);   // the second parameter is added by task 8
 ```
 
 Replace the ternary with a `switch (bench)` returning one of the four benches — not a chain of ternaries, and not a lookup object built in the render body (that would be a fresh object every render, which is exactly what `memo` on `Workshop` is there to prevent downstream).
