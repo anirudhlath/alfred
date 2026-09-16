@@ -37,10 +37,12 @@ const ATTENTION_INTRO =
  * unreadable list must not take the bench down with it, and it must not quietly
  * read as an empty one either.
  */
-function SectionNote({ text }: { text: string | null }) {
+function SectionNote({ text, id }: { text: string | null; id?: string }) {
   if (text === null) return null;
   return (
-    <p className="t-meta-strong m-0 border-t border-line px-3 py-2.5 first:border-t-0">{text}</p>
+    <p id={id} className="t-meta-strong m-0 border-t border-line px-3 py-2.5 first:border-t-0">
+      {text}
+    </p>
   );
 }
 
@@ -257,6 +259,16 @@ export function IdentitySection({
 }) {
   const base = useId();
   const codeNoteId = `${base}-code`;
+  const mintErrorId = `${base}-mint-error`;
+  // A mint answers with a code or with a refusal, and the button that asked is
+  // what either one is about — an unwired note at the foot of the card is read
+  // by the eye and by nobody else. The hook clears the code before it sends, so
+  // in practice only one of the two is ever here; joined rather than chosen so
+  // the wiring does not depend on that.
+  const mintDescription =
+    [pairing.error === null ? null : mintErrorId, pairing.code === null ? null : codeNoteId]
+      .filter((id) => id !== null)
+      .join(" ") || undefined;
 
   return (
     <SystemSection title="Devices & identity">
@@ -277,7 +289,7 @@ export function IdentitySection({
           type="button"
           aria-disabled={pairing.minting ? true : undefined}
           aria-busy={pairing.minting ? true : undefined}
-          aria-describedby={pairing.code === null ? undefined : codeNoteId}
+          aria-describedby={mintDescription}
           onClick={() => {
             if (!pairing.minting) pairing.mint();
           }}
@@ -292,6 +304,8 @@ export function IdentitySection({
           <span className="t-meta-strong shrink-0">{`${credentials.list.length} registered`}</span>
         )}
       </SystemRow>
+
+      <SectionNote text={pairing.error} id={mintErrorId} />
 
       {pairing.code !== null && (
         <div className="flex flex-col gap-1.5 border-t border-line px-3 py-3">
@@ -310,8 +324,6 @@ export function IdentitySection({
           </span>
         </div>
       )}
-
-      <SectionNote text={pairing.error} />
 
       <div className="border-t border-line px-3 py-2.5">
         <button

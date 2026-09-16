@@ -14,6 +14,8 @@ import {
   missingLabels,
   missingNote,
   requiredFields,
+  SAVE_TIMED_OUT,
+  SAVE_TIMEOUT_MS,
   SAVE_TOGETHER,
   serviceNote,
   serviceRows,
@@ -325,8 +327,16 @@ describe("serviceNote", () => {
   it("says what is stored and what happens next, for each state", () => {
     expect(serviceNote("ok")).toBe("stored encrypted at rest · last check ok");
     expect(serviceNote("unset")).toBe("nothing stored · Alfred answers without this source");
-    expect(serviceNote("testing")).toBe("round-trip in progress · up to 10 s");
+    expect(serviceNote("testing")).toBe("round-trip in progress · up to 20 s");
     expect(serviceNote("queued")).toBe("saved · testing");
+  });
+
+  // The wait this note promises is the one the row actually keeps. It said 10 s
+  // while `SAVE_TIMEOUT_MS` was 20_000, so a reader watching `Testing…` past
+  // the tenth second had been told the row had already given up.
+  it("promises the wait the row is really going to keep", () => {
+    expect(serviceNote("testing")).toContain(`up to ${SAVE_TIMEOUT_MS / 1000} s`);
+    expect(SAVE_TIMED_OUT).toContain(`No answer in ${SAVE_TIMEOUT_MS / 1000} s`);
   });
 
   it("quotes the status the probe actually reported", () => {

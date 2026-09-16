@@ -157,9 +157,18 @@ export function whenLabel(date: Date, now: Date): string {
  * is behind them: when a trigger was created, when a session signed in. The day
  * is named only when it is not today, where `whenLabel` would add an "earlier
  * today" that a line already spoken in the past tense does not need.
+ *
+ * A stamp that is somehow *ahead* — a clock disagreement between the house and
+ * the phone — is dated rather than hidden, but never with `whenLabel`'s
+ * forward-looking words: `signed in 08:40 tomorrow` is a sentence about
+ * something that has not happened, and `tomorrow` belongs to the surfaces that
+ * mean it.
  */
 export function pastLabel(date: Date, now: Date): string {
-  return daysAhead(date, now) === 0 ? hhmm(date) : whenLabel(date, now);
+  const days = daysAhead(date, now);
+  if (days === 0) return hhmm(date);
+  if (days > 0) return `${hhmm(date)} ${dayMonth(date)}`;
+  return whenLabel(date, now);
 }
 
 /**

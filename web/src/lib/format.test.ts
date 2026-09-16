@@ -182,8 +182,17 @@ describe("pastLabel", () => {
     expect(pastLabel(new Date(2026, 8, 9, 20, 52), now)).toBe("20:52 9 Sep");
   });
 
-  it("labels a stamp from a clock running ahead rather than swallowing it", () => {
-    expect(pastLabel(new Date(2026, 8, 17, 8, 40), now)).toBe("08:40 tomorrow");
+  // `created 08:40 tomorrow` is a sentence about something that has not
+  // happened. The stamp is still shown — a clock disagreement is worth seeing —
+  // but it is dated, not forecast.
+  it("dates a stamp from a clock running ahead rather than forecasting it", () => {
+    expect(pastLabel(new Date(2026, 8, 17, 8, 40), now)).toBe("08:40 17 Sep");
+    expect(pastLabel(new Date(2026, 8, 24, 8, 40), now)).toBe("08:40 24 Sep");
+  });
+
+  // The forward-looking words belong to the surface that is about the future.
+  it("leaves tomorrow to whenLabel, which is the one that means it", () => {
+    expect(whenLabel(new Date(2026, 8, 17, 8, 40), now)).toBe("08:40 tomorrow");
   });
 });
 

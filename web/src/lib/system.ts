@@ -210,7 +210,9 @@ export function serviceNote(
     case "unset":
       return "nothing stored · Alfred answers without this source";
     case "testing":
-      return "round-trip in progress · up to 10 s";
+      // The row's own timeout, not a second number beside it: `SAVE_TIMED_OUT`
+      // is what ends this wait, and the note said 10 s while the row waited 20.
+      return `round-trip in progress · up to ${SAVE_TIMEOUT_MS / 1000} s`;
     case "queued":
       return "saved · testing";
   }
@@ -766,8 +768,7 @@ export const SAVE_TIMEOUT_MS = 20_000;
  * leave the row reading `Testing…`, refusing every press, for the life of the
  * Workshop. It says what it does not know: the `PUT` may have landed.
  */
-export const SAVE_TIMED_OUT =
-  "No answer in 20 s · whether it was stored is unknown · try again.";
+export const SAVE_TIMED_OUT = `No answer in ${SAVE_TIMEOUT_MS / 1000} s · whether it was stored is unknown · try again.`;
 
 /**
  * `GET /api/admin/attention` — every domain the Reflex has observed. A 503 here

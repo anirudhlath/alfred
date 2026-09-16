@@ -395,7 +395,7 @@ describe("ServicesSection", () => {
     const states: [ServiceRow, string][] = [
       [row({ state: "ok" }), "stored encrypted at rest · last check ok"],
       [row({ state: "unset" }), "nothing stored · Alfred answers without this source"],
-      [row({ state: "testing" }), "round-trip in progress · up to 10 s"],
+      [row({ state: "testing" }), "round-trip in progress · up to 20 s"],
       [row({ state: "queued" }), "saved · testing"],
       [
         row({ state: "failed", status: 502 }),
@@ -645,10 +645,17 @@ describe("IdentitySection", () => {
     );
     expect(screen.getByText("Session store unavailable")).toBeInTheDocument();
     const mintFailed = screen.getByText("Redis unavailable");
-    // Under the code it replaces and above the sign-out control, not at the end
-    // of the card where it would read as the sign-out's refusal.
+    // Under the control it belongs to and above the sign-out control, not at
+    // the end of the card where it would read as the sign-out's refusal.
+    const add = screen.getByRole("button", { name: "Add a passkey on another device" });
     const out = screen.getByRole("button", { name: "Sign out on this device" });
+    expect(add.compareDocumentPosition(mintFailed) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(mintFailed.compareDocumentPosition(out) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // And it is that button's own description: a reader who presses `Add a
+    // passkey` and is answered by a note somewhere else in the card is
+    // answered by nothing. The code note is wired the same way.
+    expect(add).toHaveAttribute("aria-describedby", mintFailed.id);
+    expect(mintFailed.id).not.toBe("");
   });
 
   it("says so when a read has landed and found no passkey", () => {
