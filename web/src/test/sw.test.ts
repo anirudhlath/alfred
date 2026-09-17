@@ -207,6 +207,23 @@ describe("install", () => {
     expect(worker.fetched).toEqual(["/index.html"]);
   });
 
+  it("refuses a shell that is an HTML error page", async () => {
+    const worker = loadWorker(source);
+    // isShell's other half, which the content-type fixture above leaves
+    // untested: a proxy's 502 is a real page of real text/html, and it names
+    // assets the moment the proxy's error template carries any. `response.ok`
+    // is the only thing that turns it away.
+    worker.respond(
+      "/index.html",
+      new Response(SHELL_HTML, { status: 502, headers: { "content-type": "text/html" } }),
+    );
+    worker.respond("/assets/index-CY0Sh5Q2.js", js("console.log(1)"));
+    worker.respond("/assets/index-nhBuGG1b.css", css("body{color:red}"));
+    await expect(worker.install()).rejects.toThrow();
+    expect(worker.keys()).toEqual([]);
+    expect(worker.fetched).toEqual(["/index.html"]);
+  });
+
   it.each([
     [
       "the reverse proxy's default page",
@@ -322,6 +339,39 @@ describe("install, and the fonts", () => {
       "/assets/../api/admin/overview.woff2",
       "/api/admin/overview.woff2",
     ],
+    // The next three exist because /assets/ is an ANCHOR, and nothing else in
+    // this file said so. The first two are the whole of the guard: with
+    // `includes` instead of `startsWith` the admin overview is fetched and — the
+    // mount answers application/json, which isAsset accepts — stored in the
+    // shell cache as a font. With the trailing slash dropped, any sibling
+    // directory whose name merely begins "assets" is inside the cache.
+    [
+      "one under a path that only contains /assets/",
+      "/api/admin/assets/overview.woff2",
+      "/api/admin/assets/overview.woff2",
+    ],
+    [
+      "one under a path that only starts with /assets",
+      "/assetsphalt/x-Aa11bB22.woff2",
+      "/assetsphalt/x-Aa11bB22.woff2",
+    ],
+    // %2f is a separator the URL parser does not treat as one: this pathname
+    // really does stay under /assets/, and becomes a traversal the moment
+    // uvicorn decodes it. Inert against StaticFiles, which 404s it — but the
+    // refusal should not depend on a server this file cannot see.
+    [
+      "one hiding its separator as %2f",
+      "/assets/..%2fapi/admin/overview.woff2",
+      "/assets/..%2fapi/admin/overview.woff2",
+    ],
+    // Not isAssetUrl's business but the extension's: `includes(".woff2")` takes
+    // this, and a proxy that pre-compresses writes exactly this name beside
+    // every asset it serves.
+    [
+      "one whose name only contains .woff2",
+      "/assets/dm-sans-latin-standard-normal-Bf69Tn_J.woff2.br",
+      "/assets/dm-sans-latin-standard-normal-Bf69Tn_J.woff2.br",
+    ],
   ])("refuses %s font, however the stylesheet names it", async (_name, named, routed) => {
     const worker = loadWorker(source);
     worker.respond("/index.html", html(SHELL_HTML));
@@ -375,14 +425,192 @@ describe("install, and the fonts", () => {
     ]);
   });
 
+  it("takes a font however the stylesheet cases it", async () => {
+    const worker = loadWorker(source);
+    worker.respond("/index.html", html(SHELL_HTML));
+    worker.respond("/assets/index-CY0Sh5Q2.js", js("console.log(1)"));
+    // CSS url() is an ASCII case-insensitive token and a filename is whatever
+    // the filesystem says. A case-sensitive regex would be a second refusal
+    // standing beside isAssetUrl, undocumented, and paid for in a typeface that
+    // silently does not arrive. The path keeps its own case — only the test for
+    // the extension ignores it — because the server's does.
+    worker.respond(
+      "/assets/index-nhBuGG1b.css",
+      css(`@font-face{src:URL(/assets/upper-Aa11bB22.woff2)}
+@font-face{src:url(/assets/shouty-Cc33dD44.WOFF2)}`),
+    );
+    worker.respond("/assets/upper-Aa11bB22.woff2", font());
+    worker.respond("/assets/shouty-Cc33dD44.WOFF2", font());
+    await worker.install();
+    expect(worker.keys()).toEqual(
+      [
+        "/__shell-manifest",
+        ...SHELL_ASSETS,
+        "/assets/upper-Aa11bB22.woff2",
+        "/assets/shouty-Cc33dD44.WOFF2",
+        "/index.html",
+      ].sort(),
+    );
+  });
+
+  it("takes a url() out of a comment or a string, which is the price of a wide regex", async () => {
+    const worker = loadWorker(source);
+    worker.respond("/index.html", html(SHELL_HTML));
+    worker.respond("/assets/index-CY0Sh5Q2.js", js("console.log(1)"));
+    // Pinned as a cost, not as a feature. This worker matches `url(` in text; it
+    // does not tokenise CSS, and it is not going to — a CSS parser inside a
+    // service worker is a far worse trade than one install request and some
+    // cache bytes nothing asks for. The real stylesheet does carry a comment
+    // (Tailwind's licence banner), so the shape is real even if today's content
+    // is harmless. What bounds the cost is isAssetUrl, which is why the second
+    // and third rules here are still refused.
+    worker.respond(
+      "/assets/index-nhBuGG1b.css",
+      css(`/*! banner url(/assets/ghost-Aa11bB22.woff2) */
+.a::after{content:"url(/assets/ghost2-Cc33dD44.woff2)"}
+/* url(/api/admin/overview.woff2) and url(https://cdn.example.invalid/assets/x.woff2) */`),
+    );
+    worker.respond("/assets/ghost-Aa11bB22.woff2", font());
+    worker.respond("/assets/ghost2-Cc33dD44.woff2", font());
+    worker.respond("/api/admin/overview.woff2", font());
+    worker.respond("https://cdn.example.invalid/assets/x.woff2", font());
+    await worker.install();
+    expect(worker.fetched).toEqual([
+      "/index.html",
+      ...SHELL_ASSETS,
+      "/assets/ghost-Aa11bB22.woff2",
+      "/assets/ghost2-Cc33dD44.woff2",
+    ]);
+  });
+
+  it("fetches a font two rules name only once", async () => {
+    const worker = loadWorker(source);
+    worker.respond("/index.html", html(SHELL_HTML));
+    worker.respond("/assets/index-CY0Sh5Q2.js", js("console.log(1)"));
+    // A shape @fontsource emits: one src: list naming the same file twice for
+    // two format() hints. Two fetches and two puts of identical bytes is the
+    // cheap half of the cost; a manifest entry listed twice is the one activate
+    // prunes against, which is why the asset pass holds the same property.
+    worker.respond(
+      "/assets/index-nhBuGG1b.css",
+      css(`@font-face{src:url(/assets/twice-Aa11bB22.woff2)format("woff2-variations"),url(/assets/twice-Aa11bB22.woff2)format("woff2")}`),
+    );
+    worker.respond("/assets/twice-Aa11bB22.woff2", font());
+    await worker.install();
+    expect(worker.fetched).toEqual([
+      "/index.html",
+      ...SHELL_ASSETS,
+      "/assets/twice-Aa11bB22.woff2",
+    ]);
+    const listed = await worker.store.get(worker.cache)!.get(`${ORIGIN}/__shell-manifest`)!.json();
+    expect(listed).toEqual(["/index.html", ...SHELL_ASSETS, "/assets/twice-Aa11bB22.woff2"]);
+  });
+
+  it("fetches a font two stylesheets name only once", async () => {
+    const worker = loadWorker(source);
+    // A code-split build emits a stylesheet per chunk, and two that both pull
+    // in the same @fontsource subset each carry its @font-face. fontsInCss
+    // dedupes within one sheet; this is the pass across them.
+    worker.respond(
+      "/index.html",
+      html(`<!doctype html><html lang="en"><head>
+<script type="module" crossorigin src="/assets/index-CY0Sh5Q2.js"></script>
+<link rel="stylesheet" crossorigin href="/assets/index-nhBuGG1b.css">
+<link rel="stylesheet" crossorigin href="/assets/room-Dk3mQ9pR.css">
+</head><body><div id="root"></div></body></html>`),
+    );
+    worker.respond("/assets/index-CY0Sh5Q2.js", js("console.log(1)"));
+    const face = `@font-face{src:url(/assets/shared-Aa11bB22.woff2)format("woff2")}`;
+    worker.respond("/assets/index-nhBuGG1b.css", css(face));
+    worker.respond("/assets/room-Dk3mQ9pR.css", css(`${face}\n.x{color:red}`));
+    worker.respond("/assets/shared-Aa11bB22.woff2", font());
+    await worker.install();
+    const sheets = ["/assets/index-nhBuGG1b.css", "/assets/room-Dk3mQ9pR.css"];
+    expect(worker.fetched).toEqual([
+      "/index.html",
+      "/assets/index-CY0Sh5Q2.js",
+      ...sheets,
+      "/assets/shared-Aa11bB22.woff2",
+    ]);
+    const listed = await worker.store.get(worker.cache)!.get(`${ORIGIN}/__shell-manifest`)!.json();
+    expect(listed).toEqual([
+      "/index.html",
+      "/assets/index-CY0Sh5Q2.js",
+      ...sheets,
+      "/assets/shared-Aa11bB22.woff2",
+    ]);
+  });
+
+  it("resolves a relative url() against the stylesheet, as a browser does", async () => {
+    const worker = loadWorker(source);
+    worker.respond("/index.html", html(SHELL_HTML));
+    worker.respond("/assets/index-CY0Sh5Q2.js", js("console.log(1)"));
+    // @fontsource's own CSS writes url(./files/…), and Vite rewrites it to a
+    // root-absolute path only while `base` is "/" — a sub-path deploy emits the
+    // relative form. A browser resolves it against the stylesheet; resolving it
+    // against the document instead yields /x.woff2, which isAssetUrl then
+    // refuses, and the typeface is silently absent offline.
+    worker.respond(
+      "/assets/index-nhBuGG1b.css",
+      css(`@font-face{src:url(./relative-Aa11bB22.woff2)format("woff2")}`),
+    );
+    worker.respond("/assets/relative-Aa11bB22.woff2", font());
+    await worker.install();
+    expect(worker.keys()).toEqual(
+      [
+        "/__shell-manifest",
+        ...SHELL_ASSETS,
+        "/assets/relative-Aa11bB22.woff2",
+        "/index.html",
+      ].sort(),
+    );
+  });
+
+  it("does not fetch a font the HTML already named", async () => {
+    const worker = loadWorker(source);
+    // A <link rel="preload" as="font"> is a normal thing to add to index.html,
+    // and the asset pass takes it as an asset. Without this the font pass takes
+    // it a second time and the manifest carries it twice.
+    worker.respond(
+      "/index.html",
+      html(`<!doctype html><html lang="en"><head>
+<link rel="preload" as="font" href="/assets/dm-sans-latin-standard-normal-Bf69Tn_J.woff2" crossorigin />
+<script type="module" crossorigin src="/assets/index-CY0Sh5Q2.js"></script>
+<link rel="stylesheet" crossorigin href="/assets/index-nhBuGG1b.css">
+</head><body><div id="root"></div></body></html>`),
+    );
+    worker.respond("/assets/dm-sans-latin-standard-normal-Bf69Tn_J.woff2", font());
+    worker.respond("/assets/index-CY0Sh5Q2.js", js("console.log(1)"));
+    worker.respond("/assets/index-nhBuGG1b.css", css(SHELL_CSS));
+    // The stylesheet's other font is routed so that the preloaded one is the
+    // only thing this test is asking about.
+    worker.respond(SHELL_FONTS[1], font());
+    await worker.install();
+    expect(worker.fetched).toEqual([
+      "/index.html",
+      "/assets/dm-sans-latin-standard-normal-Bf69Tn_J.woff2",
+      ...SHELL_ASSETS,
+      SHELL_FONTS[1],
+    ]);
+    const listed = await worker.store.get(worker.cache)!.get(`${ORIGIN}/__shell-manifest`)!.json();
+    expect(listed).toEqual([
+      "/index.html",
+      "/assets/dm-sans-latin-standard-normal-Bf69Tn_J.woff2",
+      ...SHELL_ASSETS,
+      SHELL_FONTS[1],
+    ]);
+  });
+
   it("reads the stylesheet for fonts and not the entry chunk", async () => {
     const worker = loadWorker(source);
     worker.respond("/index.html", html(SHELL_HTML));
-    // A minified bundle is 400 kB of text that already contains `url(` — a
-    // method of that name, twice, in this build's WebSocket client — and any
-    // library that injects styles at runtime carries @font-face rules in it.
-    // The stylesheet is the fonts' manifest; the bundle is not a list of
-    // anything.
+    // A bundle is not a list of anything. This build's chunk does contain the
+    // text `url(` twice, but both are a zero-argument method of that name in the
+    // WebSocket client and the regex captures neither — so the rule rests on
+    // what a bundle IS, not on that: any library that injects styles at runtime
+    // carries @font-face rules inside it, and reading 414 kB into a string to
+    // find out costs the install and returns nothing. The planted rule below is
+    // the shape that would be taken.
     worker.respond(
       "/assets/index-CY0Sh5Q2.js",
       js('const s="@font-face{src:url(/assets/ghost-D3adB33f.woff2)}";'),
@@ -403,7 +631,14 @@ describe("install, and the fonts", () => {
     await worker.install();
     expect(worker.keys()).not.toContain(SHELL_FONTS[0]);
     // The second font still landed, so the loop declined one rather than stopping.
-    expect(worker.keys()).toEqual(["/__shell-manifest", ...SHELL_ASSETS, SHELL_FONTS[1], "/index.html"].sort());
+    expect(worker.keys()).toEqual(
+      ["/__shell-manifest", ...SHELL_ASSETS, SHELL_FONTS[1], "/index.html"].sort(),
+    );
+    // And the manifest records what was CACHED, not what was wanted. Listing a
+    // font that was declined is a name activate keeps a slot open for and task 7
+    // would look up and miss — the record has to be fact, not intent.
+    const listed = await worker.store.get(worker.cache)!.get(`${ORIGIN}/__shell-manifest`)!.json();
+    expect(listed).toEqual(["/index.html", ...SHELL_ASSETS, SHELL_FONTS[1]]);
   });
 
   it("installs anyway when a font cannot be fetched at all", async () => {
@@ -421,5 +656,60 @@ describe("install, and the fonts", () => {
     expect(worker.keys()).toEqual(
       ["/__shell-manifest", ...SHELL_ASSETS, SHELL_FONTS[1], "/index.html"].sort(),
     );
+  });
+});
+
+describe("install, and the network that never answers", () => {
+  it("gives every request a deadline", async () => {
+    const worker = shell();
+    await worker.install();
+    // One per fetch, the shell and the chunks included. A `.catch()` handles a
+    // fetch that rejects and does nothing at all for one that never settles, so
+    // this is the only thing standing between a captive portal and an install
+    // that hangs until the browser kills it.
+    expect(worker.deadlines).toEqual([10000, 10000, 10000]);
+    expect(worker.deadlines).toHaveLength(worker.fetched.length);
+    // And takes each one back down once its request is done. A deadline left
+    // armed fires ten seconds later against nothing, holding the worker awake
+    // to do it.
+    expect(worker.deadlinesCleared).toBe(worker.deadlines.length);
+  });
+
+  it("gives up on a font that accepts the connection and answers nothing", async () => {
+    const worker = loadWorker(source);
+    worker.respond("/index.html", html(SHELL_HTML));
+    worker.respond("/assets/index-CY0Sh5Q2.js", js("console.log(1)"));
+    worker.respond("/assets/index-nhBuGG1b.css", css(SHELL_CSS));
+    // Not a rejection and not a wrong answer: a black hole. This is what a
+    // captive portal does, and the outcome without a deadline is the one the
+    // font loop's catch exists to prevent — waitUntil never settles, the
+    // browser kills the install, and the phone has no worker at all.
+    worker.hang(SHELL_FONTS[0]);
+    worker.respond(SHELL_FONTS[1], font());
+    await worker.install();
+    expect(worker.keys()).toEqual(
+      ["/__shell-manifest", ...SHELL_ASSETS, SHELL_FONTS[1], "/index.html"].sort(),
+    );
+    expect(worker.deadlines).toEqual([10000, 10000, 10000, 10000, 10000]);
+  });
+
+  it("fails the install when it is an asset that never answers", async () => {
+    const worker = loadWorker(source);
+    worker.respond("/index.html", html(SHELL_HTML));
+    // The asset loop has the same hole and the same fix, but the opposite
+    // resolution: a shell missing its entry chunk must not install, so the
+    // deadline arrives as a rejection and takes the install down cleanly
+    // instead of leaving it hanging.
+    worker.hang("/assets/index-CY0Sh5Q2.js");
+    worker.respond("/assets/index-nhBuGG1b.css", css(SHELL_CSS));
+    await expect(worker.install()).rejects.toThrow();
+    expect(worker.keys()).toEqual([]);
+  });
+
+  it("fails the install when it is the shell itself that never answers", async () => {
+    const worker = loadWorker(source);
+    worker.hang("/index.html");
+    await expect(worker.install()).rejects.toThrow();
+    expect(worker.keys()).toEqual([]);
   });
 });

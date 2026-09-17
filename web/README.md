@@ -129,8 +129,9 @@ Phase 3: the Workshop's other three benches, each a pure view over one hook call
 
 ## The service worker
 
-`public/sw.js` is hand-written, ~130 lines, and shipped verbatim by Vite's `public/` copy
-— no `vite-plugin-pwa`, no Workbox, no generated precache manifest. The reasoning is in
+`public/sw.js` is hand-written — 83 lines of code under twice as many of comment — and
+shipped verbatim by Vite's `public/` copy: no `vite-plugin-pwa`, no Workbox, no generated
+precache manifest. The reasoning is in
 `docs/superpowers/plans/2026-09-16-pwa-phase4-install-and-offline.md`; the short version
 is that a versioned cache, an explicit purge and a documented kill switch all have to be
 things a reviewer can *read in the shipped bytes*, and a negative requirement — "this
@@ -138,11 +139,28 @@ worker never caches `/api`" — is one assertion against a hand-written file and
 against a plugin's route table.
 
 **What it does today is install, and only install.** It fetches `/index.html` past the
-HTTP cache, takes the `/assets/…` URLs Vite wrote into it as the precache manifest, fetches
-those past the HTTP cache too, and writes them plus a `/__shell-manifest` record of what it
-took into `alfred-shell-v1`. It has no `fetch` handler, so every request still goes to the
-network untouched, and **nothing registers it yet** — `src/lib/sw.ts` is a later slice of
-phase 4. Until then it is inert bytes in `public/`.
+HTTP cache and takes the `/assets/…` URLs Vite wrote into it as the precache manifest —
+the entry chunk and the stylesheet. It then reads the **stylesheet** for the `url()` rules
+the HTML never mentions and takes the `.woff2` among them: 8 files, 139 436 of this build's
+220 380 font bytes. The 10 `.woff` fallbacks `@fontsource` ships beside them are skipped,
+because nothing that can run a service worker has needed one for years. All of it plus a
+`/__shell-manifest` record of what it actually cached goes into `alfred-shell-v1`.
+
+Three things about how it fetches. Everything goes out `cache: "reload"`, so a worker
+installing seconds after a deploy cannot precache the bytes that deploy replaced.
+Everything carries a 10-second `AbortSignal`, because `install` runs inside `waitUntil()`
+and one request that is accepted and never answered — a captive portal — would otherwise
+hang the install until the browser killed it, leaving the phone with no worker at all. And
+a missing *font* is survivable where a missing *chunk* is not: the app is legible in the
+system stack, so the font loop declines and carries on while the asset loop throws.
+
+What may be cached is one function, `isAssetUrl`: same origin, under `/assets/`, no encoded
+separator. The extraction either side of it is deliberately wide so that widening it cannot
+widen the cache.
+
+It has no `fetch` handler, so every request still goes to the network untouched, and
+**nothing registers it yet** — `src/lib/sw.ts` is a later slice of phase 4. Until then it
+is inert bytes in `public/`.
 
 Three rules govern it, and they are restated at the top of the file itself:
 

@@ -39,13 +39,18 @@ export default defineConfig([
       // and quietly escape the fake scope. This is the only thing that says so.
       'no-restricted-globals': [
         'error',
+        // Kept in step with SEALED in src/test/sw-harness.ts, which shadows the
+        // same names at run time.
         ...[
+          'AbortController',
           'addEventListener',
           'caches',
+          'clearTimeout',
           'clients',
           'fetch',
           'location',
           'registration',
+          'setTimeout',
           'skipWaiting',
         ].map((name) => ({
           name,

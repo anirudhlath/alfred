@@ -24,7 +24,7 @@ describe("the fake scope's event semantics", () => {
     // task 5's activate is `purge().then(() => claim())` with more to come.
     const worker = loadWorker(`
       self.addEventListener("activate", (event) => {
-        event.waitUntil(new Promise((resolve) => setTimeout(() => {
+        event.waitUntil(new Promise((resolve) => self.setTimeout(() => {
           self.caches.open("alfred-slow");
           resolve();
         }, 5)));

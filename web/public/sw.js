@@ -35,6 +35,33 @@ const SHELL = "/index.html";
    navigation and not under /assets/, the only two things this worker's routing
    will ever answer. */
 const MANIFEST = "/__shell-manifest";
+/* The one path prefix this worker may store under, named rather than spelled
+   inline because it is the whole of the refusal isAssetUrl makes. */
+const ASSETS = "/assets/";
+/* Every network call here gets a deadline, and that is a different guarantee
+   from the `.catch()` in the font loop. A catch covers a fetch that REJECTS; it
+   does nothing at all for one that never settles, which is exactly what a
+   captive portal does — it accepts the connection and answers nothing. precache
+   runs inside waitUntil(), so one hung request hangs the whole install until the
+   browser gives up on it, and the phone is left with no worker: the outcome the
+   font loop's catch exists to avoid, reached through the other door.
+
+   Per request, not per install, so a slow-but-progressing phone is not punished
+   for being slow; the ceiling is this times the eleven requests a real build
+   makes, and only the fonts' share of it is survivable. */
+const TIMEOUT_MS = 10000;
+
+/* The only way this file fetches anything.
+
+   `cache: "reload"` — the HTTP cache is the only thing that could hand a fresh
+   worker the bytes a deploy just replaced. */
+function fetchFresh(url) {
+  const controller = new self.AbortController();
+  const deadline = self.setTimeout(() => controller.abort(), TIMEOUT_MS);
+  return self
+    .fetch(url, { cache: "reload", signal: controller.signal })
+    .finally(() => self.clearTimeout(deadline));
+}
 
 /* The origin this worker was served from, and the only one it will ever touch.
    `self.registration.scope` rather than `self.location`: the scope is what
@@ -50,11 +77,33 @@ function scopeOrigin() {
    back. Everything the HTML names that is not a same-origin /assets/ path —
    /manifest.json, the icons, anything under /api, a CDN script somebody adds —
    is refused here, which is what keeps widening the extraction below from
-   widening the cache. */
-function isAssetUrl(url) {
+   widening the cache.
+
+   `base` is what the URL is relative to, and it differs by caller because it
+   differs in a browser: index.html's own references resolve against the
+   document, and a url() inside a stylesheet resolves against the STYLESHEET.
+   Getting that wrong cannot widen anything — the guard runs on the result — but
+   it silently precaches a key nothing will ever ask for.
+
+   Three things it is deliberately strict about, in the order they bite:
+   the origin, the /assets/ prefix — an anchor, so /api/admin/assets/x and
+   /assetsphalt/x are both outside it — and an encoded separator, which the URL
+   parser does not treat as one and a server may: /assets/..%2fapi/x reads as a
+   path under /assets/ here and as a traversal once uvicorn has decoded it. No
+   name Vite emits contains a %2f.
+
+   Known and accepted: the pathname is what survives, so a query or a fragment
+   is dropped. Vite hashes into the filename and never writes either, and
+   dropping them keeps one spelling of a cache key across the manifest, the
+   cache and task 7's lookup. */
+function isAssetUrl(url, base) {
   try {
-    const resolved = new URL(url, scopeOrigin());
-    return resolved.origin === scopeOrigin() && resolved.pathname.startsWith("/assets/");
+    const resolved = new URL(url, base || scopeOrigin());
+    return (
+      resolved.origin === scopeOrigin() &&
+      resolved.pathname.startsWith(ASSETS) &&
+      !/%2f/i.test(resolved.pathname)
+    );
   } catch {
     return false;
   }
@@ -67,11 +116,15 @@ function isAssetUrl(url) {
    The extraction is deliberately wide and the refusal is isAssetUrl's alone:
    one place decides what may be stored, not two. Deduplicated because a build
    that splits writes a `modulepreload` hint beside the tag that names the same
-   URL, and the same bytes twice is two fetches and two puts. */
+   URL, and the same bytes twice is two fetches and two puts.
+
+   `(url) => isAssetUrl(url)` rather than a bare `isAssetUrl`: filter passes the
+   index as the second argument, which is isAssetUrl's `base`, and every asset
+   after the first would resolve against a number and be refused. */
 function assetsInHtml(html) {
   const urls = [...html.matchAll(/(?:src|href)="([^"]+)"/g)]
     .map((match) => match[1])
-    .filter(isAssetUrl)
+    .filter((url) => isAssetUrl(url))
     .map((url) => new URL(url, scopeOrigin()).pathname);
   return [...new Set(urls)];
 }
@@ -85,23 +138,46 @@ function assetsInHtml(html) {
    the only one in assetsInHtml. It is what turns away the six
    url(data:font/woff2;base64,…) rules in the real stylesheet (whose bytes are
    already cached, inside the stylesheet itself), a CDN's @font-face, and a path
-   that walks out of /assets/, which is resolved before it is judged.
+   that walks out of /assets/, which is resolved before it is judged. `base` is
+   the stylesheet's own URL, which is what a browser resolves a url() against.
+
+   Wide really is wide, and two consequences are accepted rather than fixed. A
+   url() inside a comment or a content: string is taken — the real stylesheet
+   carries one comment, Tailwind's licence banner — and so is one under a
+   property that has nothing to do with fonts. Both cost an install request and
+   some cache bytes that nothing asks for; neither can escape isAssetUrl. The
+   alternative is a CSS tokeniser inside a service worker, which is not a trade
+   this file will make. Case-insensitive because CSS is: `URL(…)` and `.WOFF2`
+   are the same token to a browser, and a silently missing typeface is a poor
+   thing to buy with an `i`.
 
    Then a pathname, as assetsInHtml returns: it is what goes into MANIFEST, and
    activate prunes by comparing that record against the cache's own keys, so a
    font recorded with the stylesheet's spacing still on it is a font the next
    activate deletes.
 
-   `.woff2` is the second, narrower question, and it is about browsers rather
-   than about what may be stored: @fontsource ships a `.woff` beside almost
-   every woff2 — 10 of them, 79 kB of this build's 215 kB of fonts — and
-   everything that can run a service worker has supported woff2 for years. */
-function fontsInCss(css) {
-  return [...css.matchAll(/url\(\s*["']?([^)"']+)/g)]
+   `.woff2` last, and it is a narrower question than the others — about
+   browsers, not about what may be stored. @fontsource ships a `.woff` beside
+   four of these faces and for six more it is the only file (10 in all, 80 944 of
+   this build's 220 380 font bytes), and everything that can run a service worker
+   has supported woff2 for years: a `.woff` is dead weight ALWAYS, whoever is
+   reading. `endsWith`, not `includes`, so a `x.woff2.br` sidecar from a
+   pre-compressing proxy is not mistaken for a typeface.
+
+   The latin-ext and cyrillic subsets (56 732 of the 139 436 bytes taken) are
+   NOT the same trade and are kept deliberately. Every face is unicode-range
+   gated, so a browser asks for them only when the text contains those
+   codepoints — but "only when" is not "never": a memory, a trigger name or a
+   pasted line can contain one at any time, and the price of having guessed
+   wrong is tofu on a phone with no network. Dead-always is refused; dead-until
+   is bought. Duplicates are not removed here: precache() holds that property
+   over every stylesheet at once, and one place is enough. */
+function fontsInCss(css, base) {
+  return [...css.matchAll(/url\(\s*["']?([^)"']+)/gi)]
     .map((match) => match[1])
-    .filter(isAssetUrl)
-    .map((url) => new URL(url, scopeOrigin()).pathname)
-    .filter((path) => path.endsWith(".woff2"));
+    .filter((url) => isAssetUrl(url, base))
+    .map((url) => new URL(url, base).pathname)
+    .filter((path) => path.toLowerCase().endsWith(".woff2"));
 }
 
 /* `/assets` is a StaticFiles MOUNT (core/channels/spa.py:39-40), not part of the
@@ -126,9 +202,7 @@ function isShell(response) {
 async function precache() {
   const cache = await self.caches.open(CACHE);
 
-  /* `cache: "reload"` on every one of these: the HTTP cache is the only thing
-     that could hand a fresh worker the bytes a deploy just replaced. */
-  const shell = await self.fetch(SHELL, { cache: "reload" });
+  const shell = await fetchFresh(SHELL);
   if (!isShell(shell)) throw new Error(`shell ${shell.status}`);
   const urls = assetsInHtml(await shell.clone().text());
 
@@ -143,34 +217,49 @@ async function precache() {
 
   const responses = [];
   for (const url of urls) {
-    const response = await self.fetch(url, { cache: "reload" });
+    const response = await fetchFresh(url);
     /* Throwing aborts the install, which is the right answer: a half-precached
        shell boots to a blank screen offline, and a worker that never installs
-       leaves the previous one — or no worker at all — in charge. */
+       leaves the previous one — or no worker at all — in charge. A deadline
+       that fires here arrives as a rejection and lands in the same place. */
     if (!isAsset(response)) throw new Error(`${url} ${response.status}`);
     responses.push(response);
   }
 
-  /* The stylesheet only. The entry chunk is 400 kB of minified JavaScript that
-     already contains `url(` — a method of that name, in the WebSocket client —
-     and any library that injects styles carries @font-face rules in it. A
-     bundle is not a list of what the app needs offline. */
-  const fonts = [];
+  /* The stylesheet only. A bundle is not a list of what the app needs offline:
+     any library that injects styles carries @font-face rules inside it, and
+     reading 414 kB of minified JavaScript into a string to regex it is a cost
+     with no return. (This build's chunk does contain the text `url(` twice, but
+     both are a zero-argument method of that name in the WebSocket client, so
+     the regex captures nothing from it — the rule stands on its own, not on
+     that measurement.) */
+  const named = [];
   for (let i = 0; i < urls.length; i += 1) {
     if (!urls[i].endsWith(".css")) continue;
-    fonts.push(...fontsInCss(await responses[i].clone().text()));
+    const base = new URL(urls[i], scopeOrigin()).href;
+    named.push(...fontsInCss(await responses[i].clone().text(), base));
   }
+
+  /* One fetch, one put and one manifest entry per URL, whatever names it: a
+     single src: list can name a file twice, two stylesheets can name the same
+     subset, and a <link rel="preload" as="font"> would have taken it in the
+     asset pass already. Task 3 holds the same property over the HTML for the
+     same reason — a manifest listing something twice is what activate prunes
+     against. */
+  const fonts = [...new Set(named)].filter((url) => !urls.includes(url));
 
   /* Unlike a missing chunk above, a missing font does NOT fail the install. The
      app is legible in the system stack, and an install aborted over a typeface
      leaves the phone with no worker at all — the worse of the two, and one that
-     only sw.js's own bytes changing would undo. Both failures are declined the
-     same way: no answer (the fetch rejects) and a wrong answer (a proxy's page
+     only sw.js's own bytes changing would undo. All three failures are declined
+     the same way: no answer (the fetch rejects), no answer ever (the deadline
+     fires, which arrives as a rejection too) and a wrong answer (a proxy's page
      under a .woff2 URL). Anything skipped is still picked up cache-first the
-     first time it is asked for. */
+     first time it is asked for — by the fetch handler task 7 adds; until then
+     it is simply absent. */
   const cached = [];
   for (const url of fonts) {
-    const response = await self.fetch(url, { cache: "reload" }).catch(() => null);
+    const response = await fetchFresh(url).catch(() => null);
     if (response && isAsset(response)) cached.push([url, response]);
   }
 

@@ -49,10 +49,31 @@ export interface Harness {
   cache: string;
   /** Program `self.fetch`: exact pathname → the response to answer with. */
   respond(pathname: string, response: Response): void;
+  /**
+   * Program `self.fetch` to accept the connection and never answer — a captive
+   * portal, a black-holed route. The only thing that can end it is the worker's
+   * own `AbortSignal`; a worker without one waits for ever, and the test that
+   * asked for this fails on vitest's timeout, which is the correct verdict.
+   */
+  hang(pathname: string): void;
   /** Every pathname `self.fetch` was called with, in order. */
   fetched: string[];
   /** Of those, the ones asked for with `{ cache: "reload" }`. */
   reloaded: string[];
+  /**
+   * The delay, in ms, of every deadline the worker armed, in order. Fired at
+   * 0 ms here regardless — a routed response resolves in a microtask and clears
+   * its timer long before the macrotask runs, so only a hung fetch ever sees
+   * one — but the requested value is recorded so a test can pin it.
+   */
+  deadlines: number[];
+  /**
+   * How many of those the worker cleared. A deadline left armed still fires
+   * ten seconds later, against a request that finished long ago: harmless in
+   * itself, but it keeps the worker alive to do nothing, and a phone is where
+   * that is least welcome. Equal to `deadlines.length` for a tidy worker.
+   */
+  deadlinesCleared: number;
   install(): Promise<void>;
   activate(): Promise<void>;
   /** `undefined` means the worker never called respondWith — i.e. left it to the network. */
@@ -90,12 +111,15 @@ function cacheName(source: string): string | undefined {
  * this refuses them at run time, where the harness can say why.
  */
 const SEALED = [
+  "AbortController",
   "addEventListener",
   "caches",
+  "clearTimeout",
   "clients",
   "fetch",
   "location",
   "registration",
+  "setTimeout",
   "skipWaiting",
 ] as const;
 
@@ -118,10 +142,17 @@ export function loadWorker(source: string): Harness {
   const store = new Map<string, Map<string, Response>>();
   /** Keyed by absolute href, not pathname: a cross-origin URL is a different route. */
   const routes = new Map<string, Response>();
+  /** Absolute hrefs that accept the connection and answer nothing. */
+  const hangs = new Set<string>();
   /** A list per type, not one handler: a real scope runs every listener it was given. */
   const listeners = new Map<string, ((event: unknown) => void)[]>();
-  const harness: Partial<Harness> & { fetched: string[]; reloaded: string[]; navigated: string[] } =
-    { fetched: [], reloaded: [], navigated: [] };
+  const harness: Partial<Harness> & {
+    fetched: string[];
+    reloaded: string[];
+    navigated: string[];
+    deadlines: number[];
+  } = { fetched: [], reloaded: [], navigated: [], deadlines: [] };
+  let deadlinesCleared = 0;
   const ownCache = cacheName(source);
   /** Named as a function so neither `cache` nor `keys()` has to reach for `this`. */
   const cacheOrThrow = (): string => {
@@ -174,18 +205,44 @@ export function loadWorker(source: string): Harness {
       keys: () => Promise.resolve([...store.keys()]),
       delete: (name: string) => Promise.resolve(store.delete(name)),
     },
-    fetch: vi.fn((input: string | { url: string }, init?: { cache?: string }) => {
-      const url = new URL(typeof input === "string" ? input : input.url, ORIGIN);
-      harness.fetched.push(url.pathname);
-      // Recorded rather than asserted on the source: `cache: "reload"` is the
-      // only thing between a worker installing seconds after a deploy and a
-      // precache of the bytes that deploy just replaced.
-      if (init?.cache === "reload") harness.reloaded.push(url.pathname);
-      const response = routes.get(url.href);
-      // No route programmed = no network. A real worker sees a TypeError here.
-      if (!response) return Promise.reject(new TypeError(`no route for ${url.href}`));
-      return Promise.resolve(response.clone());
-    }),
+    // Real, so the worker's own AbortController semantics are exercised rather
+    // than a model of them.
+    AbortController,
+    // The requested delay is recorded and the timer is armed at 0 ms: a routed
+    // response settles in a microtask, which runs before any macrotask, so a
+    // healthy fetch always clears its deadline first and only a hung one ever
+    // reaches the abort. That keeps the deadline testable without a real wait.
+    setTimeout: (fn: () => void, ms: number) => {
+      harness.deadlines.push(ms);
+      return setTimeout(fn, 0);
+    },
+    clearTimeout: (id: ReturnType<typeof setTimeout>) => {
+      deadlinesCleared += 1;
+      clearTimeout(id);
+    },
+    fetch: vi.fn(
+      (input: string | { url: string }, init?: { cache?: string; signal?: AbortSignal }) => {
+        const url = new URL(typeof input === "string" ? input : input.url, ORIGIN);
+        harness.fetched.push(url.pathname);
+        // Recorded rather than asserted on the source: `cache: "reload"` is the
+        // only thing between a worker installing seconds after a deploy and a
+        // precache of the bytes that deploy just replaced.
+        if (init?.cache === "reload") harness.reloaded.push(url.pathname);
+        if (hangs.has(url.href)) {
+          // Answers nothing, ever. A worker that passed no signal is left
+          // hanging on purpose — that IS the bug being tested for.
+          return new Promise<Response>((_, reject) => {
+            init?.signal?.addEventListener("abort", () =>
+              reject(new DOMException("The user aborted a request.", "AbortError")),
+            );
+          });
+        }
+        const response = routes.get(url.href);
+        // No route programmed = no network. A real worker sees a TypeError here.
+        if (!response) return Promise.reject(new TypeError(`no route for ${url.href}`));
+        return Promise.resolve(response.clone());
+      },
+    ),
   };
 
   new Function("self", ...SEALED, source)(scope, ...SEALED.map(seal));
@@ -207,7 +264,12 @@ export function loadWorker(source: string): Harness {
     fetched: harness.fetched,
     reloaded: harness.reloaded,
     navigated: harness.navigated,
+    deadlines: harness.deadlines,
+    get deadlinesCleared() {
+      return deadlinesCleared;
+    },
     respond: (pathname, response) => void routes.set(new URL(pathname, ORIGIN).href, response),
+    hang: (pathname) => void hangs.add(new URL(pathname, ORIGIN).href),
     install: () => extendable("install"),
     activate: () => extendable("activate"),
     async request({ path, mode = "no-cors", method = "GET", origin = ORIGIN }) {
