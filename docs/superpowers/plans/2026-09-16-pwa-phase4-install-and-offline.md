@@ -32,7 +32,7 @@
 
 5. **Offline at the query layer is already solved and is not reopened here.** react-query's default `networkMode: "online"` *pauses* rather than fails, the benches derive `read` from `dataUpdatedAt !== 0`, `OfflineNote` and `StatusLine` carry `last true HH:MM`, and the Door refuses to confirm offline. All of that is phases 1 to 3 and stays exactly as it is. Phase 4 adds the layer *below* it: the shell boots from cache, and `AuthGate` — which today shows the presence field and no copy, **for ever**, when the auth read is paused — says which of the three meanings its silence has.
 
-6. **The §6.4 install rail is phase 5's, not this phase's.** Spec §8 lists phase 5's content as "Web Push: VAPID, adapter, registration, service-worker handlers, **install-and-enable sequence**" — the six-step rail is named there by the spec itself, and phase 4's line is "manifest, icons, service worker, offline states". Every step of that rail exists to reach step 6, *Allow in iOS*; shipping steps 1 to 4 with nothing behind them is a control that pretends, which is the defect phase 2's placeholder tabs were and phase 3's absent Reach card avoided. So: **no `install` gate, no `standalone` gate, no Reach prompt row and no System › Reach card in this phase.** What phase 4 owes phase 5 is that the gesture the rail teaches actually produces a correct app — a manifest with a real icon set, `display: standalone`, a `background_color` that matches the theme at install *(corrected in task 2: this said "a splash that matches the theme" — see decision 11; the launch screen on iOS is `apple-touch-startup-image`'s, which this phase does not ship)*, and a worker that phase 5 adds `push` and `notificationclick` handlers to. That list is written down in task 13 so phase 5 can start from it.
+6. **The §6.4 install rail is phase 5's, not this phase's.** Spec §8 lists phase 5's content as "Web Push: VAPID, adapter, registration, service-worker handlers, **install-and-enable sequence**" — the six-step rail is named there by the spec itself, and phase 4's line is "manifest, icons, service worker, offline states". Every step of that rail exists to reach step 6, *Allow in iOS*; shipping steps 1 to 4 with nothing behind them is a control that pretends, which is the defect phase 2's placeholder tabs were and phase 3's absent Reach card avoided. So: **no `install` gate, no `standalone` gate, no Reach prompt row and no System › Reach card in this phase.** What phase 4 owes phase 5 is that the gesture the rail teaches actually produces a correct app — a manifest with a real icon set, `display: standalone`, a `background_color` that matches the theme at install *(corrected in task 2: this said "a splash that matches the theme" — see decision 11; the launch screen on iOS is `apple-touch-startup-image`'s, which this phase does not ship)*, and a worker that phase 5 adds `push` and `notificationclick` handlers to. That list is written down in task 13 so phase 5 can start from it. **One condition task 5 attached to the last item, and it is the kind that fails silently:** `activate` deletes every cache on this origin that is not `alfred-shell-<VERSION>`, and `caches` is scoped to the **origin**, not to the worker. So (a) the purge assumes this origin serves Alfred and nothing else — a second app or a second worker scope behind the same hostname would have its caches deleted on every activate — and (b) any cache phase 5 wants for itself (notification media, a send-outbox) must either live *inside* `alfred-shell-<VERSION>` or be named in a keep-list in `purge()`. Otherwise it is dropped between deploys, by a line written a phase earlier, with nothing in the failure to point at it.
 
 7. **A new worker waits; the user takes it.** `install` never calls `skipWaiting()`. A build that swaps itself under a running conversation loses whatever was on screen. The waiting worker is announced in the Room, and one tap posts `SKIP_WAITING`, which is what makes an update possible **without reinstalling the app** — the requirement that is otherwise very hard to satisfy on iOS. `registration.update()` runs on every return to the foreground (`onVisible`, already in `lib/lifecycle.ts`), because an installed PWA is *opened*, not reloaded, and could otherwise run for weeks on the build it was installed with.
 
@@ -193,6 +193,9 @@ export interface Harness {
   reloaded: string[];
   /** Accept the connection and never answer; only the worker's own signal ends it. */
   hang(pathname: string): void;
+  /** Make a delete reject: a cache NAME for caches.delete, a pathname for Cache.delete.
+      Added in task 5 — the only way a test reaches a worker's per-delete catch. */
+  refuseDelete(key: string): void;
   /** The delay of every deadline the worker armed, and how many it cleared. */
   deadlines: number[];
   deadlinesCleared: number;
@@ -1629,7 +1632,7 @@ One wrinkle, stated in a comment rather than engineered around: the new worker i
 >
 > 1. **Two more places the harness passed a worker that cannot run on a phone**,
 >    found by writing this task's tests against it. Both are `FakeCache`, both
->    are pinned in `sw-harness.test.ts`, and the second is what makes four of
+>    are pinned in `sw-harness.test.ts`, and the second is what makes two of
 >    this task's mutants killable at all.
 >    - **`match()` handed back the stored `Response` object.** A real
 >      `Cache.match` constructs a new one per call, so reading a body never
@@ -1685,6 +1688,71 @@ One wrinkle, stated in a comment rather than engineered around: the new worker i
 > 5. **`withFonts()` moved to module scope** in `sw.test.ts`, unchanged, so the
 >    activate tests can prove the purge keeps a *full* cache rather than the two
 >    assets `shell()` has. No test of task 4's changed.
+>
+> **Corrected again after review** (two reviews: one against this plan, one on
+> quality). The seventeen mutants above were all confirmed killed independently,
+> and both sole-killer claims held — but the reviews found four ways the purge
+> could still fail as a recovery path, three of them unreachable from any test:
+>
+> 6. **`if (!listed) return` covered one of the three ways a record can be
+>    untrustworthy.** Absent was handled; **wrong shape** and **unreadable** were
+>    not, and both are worse than absent.
+>    - A record that parses but is not an array **silently empties the cache**:
+>      `[MANIFEST, ...record]` spreads a JSON *string* into single characters,
+>      none of which resolve to a real key, so the shell, the entry chunk and the
+>      stylesheet are all deleted, nothing rejects, and the first anyone hears of
+>      it is a blank screen on a phone with no network. Not live today —
+>      `precache()` is the only writer and always writes an array — but it goes
+>      live the moment the record's shape changes, and `{version, files}` is the
+>      obvious next edit.
+>    - A record that is not readable as JSON **rejects `purge()`**, so `claim()`
+>      never runs and `waitUntil` gets a rejected promise — *after* the version
+>      purge has deleted the old cache and *before* the entry purge runs. Old
+>      world gone, stale entries kept, pages left on the previous worker. HTML is
+>      the live shape here: `/__shell-manifest` is not a real endpoint, so
+>      `mount_spa` answers it with `index.html` and a 200.
+>
+>    All three now read the same way — **keep everything, and let the next
+>    install rewrite the record** — because deleting on a record you cannot read
+>    is guessing, and the thing it guesses with is the only offline copy of the
+>    app. One `try`/`catch` and one `Array.isArray`, and a test for each shape.
+> 7. **Neither purge loop isolated a failure.** Both were bare sequential
+>    `await`s, so one rejecting `delete` aborted every cache after it, skipped
+>    the entry purge and skipped the claim: one transient error and the recovery
+>    path does nothing at all. Now caught per delete. This was *unreachable from
+>    the suite* — `settled()` could not reject — so `sw-harness.ts` gained
+>    `refuseDelete(key)` (a cache name for `caches.delete`, a pathname for
+>    `Cache.delete`, told apart by the slash) and `settled()` learned to reject
+>    rather than throw inside a timer callback. Two tests, two sole-killed
+>    mutants.
+> 8. **The entry purge was never given more than one stale entry**, so
+>    `await cache.delete(request); break;` survived the whole suite while a real
+>    deploy leaves at least two (the old chunk *and* the old stylesheet), which
+>    under that mutant accumulate one build per activate for ever. The fixture
+>    now plants both, plus an `index-<hash>.js.map` sidecar whose URL *extends* a
+>    kept one — which kills a keep-set matched by `startsWith` instead of `has`.
+> 9. **Two narrower things, fixed and documented rather than engineered
+>    around.** The entry keys are now snapshotted *before* the record is read:
+>    a worker installing concurrently writes its entries first and its record
+>    last, so reading the record first meant its entries could be deleted by this
+>    activate while its install had already resolved and would never refetch
+>    them. The swap makes the losing window a strict subset of what it was; it
+>    does not close it, and closing it needs a lock two workers do not have. And
+>    the entry purge also reaches whatever task 7 runtime-caches — intended (the
+>    record is what this build needs, a runtime entry is re-fetchable, and the
+>    alternative is a cache with no ceiling), but a decision task 7 inherits
+>    rather than makes, so `purge()` says so.
+> 10. **Three documentation defects this task created or inherited.** The
+>    harness's `cacheName()` comment still said the `alfred-` prefix "is the
+>    invariant task 5's purge and task 11's kill switch both key on" — this is
+>    the commit that stopped the purge keying on it, and the claim was wrong
+>    about the mechanism besides. `web/README.md` restated the literal
+>    `alfred-shell-v1` in prose, where the tests deliberately read it from
+>    `VERSION`. And **eight** tests read the stored manifest with a bare
+>    `!.json()`, which leaves the cache's own copy consumed — harmless until
+>    correction 1's `match()` clone, which *throws* on a disturbed body, so the
+>    next test that reads a body and then activates would get a synchronous error
+>    no browser produces. All eight now `.clone()`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1789,11 +1857,13 @@ self.addEventListener("activate", (event) => {
 npx vitest run src/test/sw.test.ts
 ```
 
-Expected: PASS, 23 tests *(corrected in task 3: 15 as planned; +8 from task 3's extra tests)* *(corrected in task 5: **53** in `sw.test.ts` — task 4's 42 plus this block's 11 — and `sw-harness.test.ts` moves 12 → 14. Then mutate: a green here is worth reading only after the seventeen mutants in step 4a have died.)*
+Expected: PASS, 23 tests *(corrected in task 3: 15 as planned; +8 from task 3's extra tests)* *(corrected in task 5: **53** in `sw.test.ts` — task 4's 42 plus this block's 11 — and `sw-harness.test.ts` moves 12 → 14. Then mutate: a green here is worth reading only after the mutants in step 4a have died.)* *(corrected again after review: **57** in `sw.test.ts` and **15** in `sw-harness.test.ts` — the review round added four activate tests and one harness test, listed in corrections 6 to 8.)*
 
 - [ ] **Step 4a: Mutate the worker, and keep only the tests that bite** *(added in task 5)*
 
-Every task in this phase has had surviving mutants found in review. Copy `public/sw.js` to a scratch directory outside the repo, mutate one thing at a time, copy it back over `public/sw.js`, `rm -rf node_modules/.vite` (the tests import the worker through `?raw`, which Vite caches), run `npx vitest run src/test/sw.test.ts`, and restore. The seventeen that were run, all killed: no version purge; an `alfred-` prefix filter on it; an unawaited `caches.delete`; deleting its own cache too; dropping everything when there is no record; `MANIFEST` missing from the keep-set; an empty keep-set; a keep-set one entry short; the draft's pathname comparison; no entry purge; an unawaited `cache.delete`; an `/assets/`-only prune; the record rewritten empty after the prune; `claim()` beside `purge()`; `Promise.all([purge(), claim()])`; no `claim()`; and the whole thing outside `waitUntil()`.
+Every task in this phase has had surviving mutants found in review. Copy `public/sw.js` to a scratch directory outside the repo, mutate one thing at a time, copy it back over `public/sw.js`, `rm -rf node_modules/.vite` (the tests import the worker through `?raw`, which Vite caches), run `npx vitest run src/test/sw.test.ts`, and restore. The **twenty-six** that were run, all killed: no version purge; an `alfred-` prefix filter on it; an unawaited `caches.delete`; an uncaught one; deleting its own cache too; dropping everything when there is no record; `MANIFEST` missing from the keep-set; an empty keep-set; a keep-set one entry short; the draft's pathname comparison; a keep-set matched by `startsWith`; no entry purge; an unawaited `cache.delete`; an uncaught one; a `break` after the first entry deleted; an `/assets/`-only prune; the record rewritten empty after the prune; a truthiness test in place of `Array.isArray`; no `try`/`catch` around the record read; a `catch` that drops everything; a `catch` that continues with an empty keep-set; `claim()` beside `purge()`; `Promise.all([purge(), claim()])`; no `claim()`; and the whole thing outside `waitUntil()`.
+
+Two are **equivalent** mutants, recorded so the next reader does not chase them: reverting the keys-before-record snapshot (correction 9 — the race it narrows is inexpressible with one worker per store), and dropping the `listed &&` guard (an absent record then reaches `undefined.json()`, which the `catch` reads as untrustworthy and answers identically; the explicit form stays because "absent" should be said, not inferred from a `TypeError`).
 
 - [ ] **Step 5: Commit**
 
@@ -1802,7 +1872,7 @@ git add web/public/sw.js web/src/test/sw.test.ts web/src/test/sw-harness.ts web/
 git commit -m "feat(web): purge every other cache and every stale entry on activate"
 ```
 
-Counts after this task: **73 files / ~1 539 tests** *(corrected in task 5: measured, **74 files / 1 607 tests**. No new file — all four this task touches already existed — and the delta is +13 on task 4's 1 594: 11 in `sw.test.ts` and 2 in `sw-harness.test.ts`.)*
+Counts after this task: **73 files / ~1 539 tests** *(corrected in task 5: measured, **74 files / 1 607 tests**. No new file — all four this task touches already existed — and the delta is +13 on task 4's 1 594: 11 in `sw.test.ts` and 2 in `sw-harness.test.ts`.)* *(corrected again after review: **74 files / 1 612 tests**, delta +18. The review round added five tests — four activate, one harness.)*
 
 ---
 
@@ -3187,7 +3257,7 @@ Counts after this task: **79 files / ~1 596 tests**.
 
 1. **Why it is hand-written and not `vite-plugin-pwa`** — decision 2, condensed: Vite's `index.html` *is* the precache manifest; the policy has to be readable in review; every behaviour is pinned by a test; and the load-bearing requirement is a *negative* one.
 2. **The one rule** — app shell and static assets only; `/api/*`, `/health` and the sockets are never passed to `respondWith()`, so they are not merely network-only but never seen. Say it in those terms, and say why: *a cached API response is the client stating a server fact it has not just read, with a longer half-life.*
-3. **The four events** — install (fetch `/index.html`, read its `/assets/` URLs, follow the stylesheet to the `woff2`, write the manifest sentinel, and **never** `skipWaiting`); activate (drop every other cache, drop every entry not in the sentinel, claim); fetch (navigation network-first, `/assets/*` cache-first, everything else untouched); message (`SKIP_WAITING` only).
+3. **The four events** — install (fetch `/index.html`, read its `/assets/` URLs, follow the stylesheet to the `woff2`, write the manifest sentinel, and **never** `skipWaiting`); activate (drop every other cache, drop every entry not in the sentinel, claim); fetch (navigation network-first, `/assets/*` cache-first, everything else untouched); message (`SKIP_WAITING` only). Under activate, say the two things that are not obvious from the code: **`caches` is origin-scoped**, so "every other cache" means every cache any code on this hostname owns, and the purge therefore assumes the origin is Alfred's alone and requires phase 5 to fold any cache of its own into `alfred-shell-<VERSION>`; and a record that is **absent, not a list, or not readable** is all read as "keep everything", because deleting on a record you cannot read is guessing with the only offline copy of the app.
 4. **The two things a 200 does not mean** — `mount_spa`'s fallback answers any unknown path with `index.html`, so the worker decides on content type, not status; and a captive portal answers 200 with its own page, which is why the navigation branch checks `isShell` before refreshing the cache.
 5. **How the cache is versioned** — `VERSION` in `sw.js`; bump it when the *policy* changes, not on a deploy, because asset URLs are content-hashed and the sentinel prune handles a deploy.
 6. **"The kill switch"** — its own sub-heading. The procedure (`cp web/public/sw.kill.js web/public/sw.js`, rebuild, deploy), **why deleting `sw.js` does not work**, and the last resort (delete the home-screen icon and add it again; nothing is lost).

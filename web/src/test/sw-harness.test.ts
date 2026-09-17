@@ -104,6 +104,21 @@ describe("the fake CacheStorage", () => {
     expect(worker.keys("alfred-shell-v1")).toContain("/x");
   });
 
+  it("can be told to refuse a delete, which is the only way a worker's catch is reachable", async () => {
+    // Nothing else in this fake can produce a rejecting delete, so without it a
+    // worker with no per-delete `catch` — one transient failure and neither
+    // purge finishes — passes the whole suite.
+    const worker = loadWorker(`
+      self.addEventListener("activate", (event) => {
+        event.waitUntil(self.caches.delete("alfred-gone"));
+      });
+    `);
+    worker.store.set("alfred-gone", new Map());
+    worker.refuseDelete("alfred-gone");
+    await expect(worker.activate()).rejects.toThrow(/storage error/);
+    expect([...worker.store.keys()]).toEqual(["alfred-gone"]);
+  });
+
   it("rejects a put of a response whose body has already been read", async () => {
     // Real Cache.put does. Without this, `await shell.text()` in place of
     // `await shell.clone().text()` is invisible here and fatal in a browser:

@@ -129,7 +129,7 @@ Phase 3: the Workshop's other three benches, each a pure view over one hook call
 
 ## The service worker
 
-`public/sw.js` is hand-written — 100 lines of code under twice as many of comment — and
+`public/sw.js` is hand-written — 105 lines of code under twice as many of comment — and
 shipped verbatim by Vite's `public/` copy: no `vite-plugin-pwa`, no Workbox, no generated
 precache manifest. The reasoning is in
 `docs/superpowers/plans/2026-09-16-pwa-phase4-install-and-offline.md`; the short version
@@ -144,7 +144,9 @@ the entry chunk and the stylesheet. It then reads the **stylesheet** for the `ur
 the HTML never mentions and takes the `.woff2` among them: 8 files, 139 436 of this build's
 220 380 font bytes. The 10 `.woff` fallbacks `@fontsource` ships beside them are skipped,
 because nothing that can run a service worker has needed one for years. All of it plus a
-`/__shell-manifest` record of what it actually cached goes into `alfred-shell-v1`.
+`/__shell-manifest` record of what it actually cached goes into `alfred-shell-<VERSION>`
+(the one constant at the top of `sw.js`; the tests read it from there rather than restating
+it, and this file names no version for the same reason).
 
 Three things about how it fetches. Everything goes out `cache: "reload"`, so a worker
 installing seconds after a deploy cannot precache the bytes that deploy replaced.
@@ -159,18 +161,30 @@ separator. The extraction either side of it is deliberately wide so that widenin
 widen the cache.
 
 **`activate` is the purge, and it is the recovery path from a bad cache.** Two of them.
-Every cache whose name is not `alfred-shell-v1` is deleted outright — no `alfred-` prefix
+Every cache whose name is not the current one is deleted outright — no `alfred-` prefix
 filter, because anything this origin holds that is not the current cache is not ours to
 keep — so bumping `VERSION` takes the whole previous world with it. Then, inside the
 current cache, every entry the `/__shell-manifest` record does not name: asset URLs are
 content-hashed, and `VERSION` is bumped by hand, so for every deploy that does *not* bump
 it this is the only thing that reaches what the previous build of the same file cached.
 Entries are compared on the full URL, not the pathname, so a cross-origin copy sharing a
-path with something precached goes too. A cache with no record is kept rather than emptied:
-the reading of a missing record has to be "I cannot tell what is mine", because the
-alternative turns one absent entry into a blank screen on the next cold launch. Only then
-does it `clients.claim()` — a page handed to this worker mid-purge is being served from a
-cache that is still being emptied underneath it.
+path with something precached goes too. It also reaches whatever a future `fetch` handler
+stores at runtime, which is intended: the record is what this build needs, a runtime entry
+is re-fetchable, and the alternative is a cache with no ceiling.
+
+**A record it cannot trust means keep everything.** All three shapes — absent, not a list,
+or not readable as JSON — are read the same way, because deleting on a record you cannot
+read is guessing, and the thing it guesses with is the only copy of the app the phone has
+offline. The two that are not merely defensive: a JSON *string* would spread into single
+characters and take every precached entry with it, silently; and an unreadable body would
+reject `purge()` itself, so the claim never happens — after the version purge has already
+dropped the old cache. Each delete is caught on its own for the same reason: one transient
+storage failure must not cost the caches behind it, the entry purge, or the claim.
+
+Only then does it `clients.claim()` — a page handed to this worker mid-purge is being
+served from a cache that is still being emptied underneath it. The one race left is a
+worker *installing* while this one activates: the entry keys are snapshotted before the
+record is read, which narrows it, and closing it would need a lock two workers do not have.
 
 It has no `fetch` handler, so every request still goes to the network untouched, and
 **nothing registers it yet** — `src/lib/sw.ts` is a later slice of phase 4. Until then it

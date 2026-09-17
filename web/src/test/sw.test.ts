@@ -77,9 +77,15 @@ describe("install", () => {
   it("records what it cached, so activate can prune against it", async () => {
     const worker = shell();
     await worker.install();
+    // `.clone()`, here and everywhere a test reads a stored body directly. The
+    // store holds the cache's own Response, so reading it leaves that copy
+    // consumed — and `FakeCache.match` clones, which THROWS on a disturbed
+    // body. A bare `.json()` followed by an activate is a synchronous error out
+    // of `match()` that no browser produces.
     const listed = await worker.store
       .get(worker.cache)!
       .get(`${ORIGIN}/__shell-manifest`)!
+      .clone()
       .json();
     expect(listed).toEqual(["/index.html", ...SHELL_ASSETS]);
   });
@@ -158,7 +164,7 @@ describe("install", () => {
     worker.respond("/assets/index-nhBuGG1b.css", css("body{color:red}"));
     await worker.install();
     expect(worker.fetched).toEqual(["/index.html", ...SHELL_ASSETS]);
-    const listed = await worker.store.get(worker.cache)!.get(`${ORIGIN}/__shell-manifest`)!.json();
+    const listed = await worker.store.get(worker.cache)!.get(`${ORIGIN}/__shell-manifest`)!.clone().json();
     expect(listed).toEqual(["/index.html", ...SHELL_ASSETS]);
   });
 
@@ -268,7 +274,7 @@ describe("install", () => {
 });
 
 describe("install, and the fonts", () => {
-  const cached =["/__shell-manifest", ...SHELL_ASSETS, ...SHELL_FONTS, "/index.html"].sort();
+  const cached = ["/__shell-manifest", ...SHELL_ASSETS, ...SHELL_FONTS, "/index.html"].sort();
 
   it("follows the stylesheet to the woff2 files the HTML never names", async () => {
     const worker = withFonts();
@@ -302,7 +308,7 @@ describe("install, and the fonts", () => {
     await worker.install();
     // A font cached but unlisted is a font the versioned purge deletes on the
     // very next activate — precached once, gone before it was ever served.
-    const listed = await worker.store.get(worker.cache)!.get(`${ORIGIN}/__shell-manifest`)!.json();
+    const listed = await worker.store.get(worker.cache)!.get(`${ORIGIN}/__shell-manifest`)!.clone().json();
     expect(listed).toEqual(["/index.html", ...SHELL_ASSETS, ...SHELL_FONTS]);
   });
 
@@ -421,7 +427,7 @@ describe("install, and the fonts", () => {
     // And it is recorded under the URL it is cached under. A manifest entry
     // that still carries the stylesheet's spacing is a font activate cannot
     // match against the cache key, so the purge deletes it on the next boot.
-    const listed = await worker.store.get(worker.cache)!.get(`${ORIGIN}/__shell-manifest`)!.json();
+    const listed = await worker.store.get(worker.cache)!.get(`${ORIGIN}/__shell-manifest`)!.clone().json();
     expect(listed).toEqual([
       "/index.html",
       ...SHELL_ASSETS,
@@ -507,7 +513,7 @@ describe("install, and the fonts", () => {
       ...SHELL_ASSETS,
       "/assets/twice-Aa11bB22.woff2",
     ]);
-    const listed = await worker.store.get(worker.cache)!.get(`${ORIGIN}/__shell-manifest`)!.json();
+    const listed = await worker.store.get(worker.cache)!.get(`${ORIGIN}/__shell-manifest`)!.clone().json();
     expect(listed).toEqual(["/index.html", ...SHELL_ASSETS, "/assets/twice-Aa11bB22.woff2"]);
   });
 
@@ -537,7 +543,7 @@ describe("install, and the fonts", () => {
       ...sheets,
       "/assets/shared-Aa11bB22.woff2",
     ]);
-    const listed = await worker.store.get(worker.cache)!.get(`${ORIGIN}/__shell-manifest`)!.json();
+    const listed = await worker.store.get(worker.cache)!.get(`${ORIGIN}/__shell-manifest`)!.clone().json();
     expect(listed).toEqual([
       "/index.html",
       "/assets/index-CY0Sh5Q2.js",
@@ -597,7 +603,7 @@ describe("install, and the fonts", () => {
       ...SHELL_ASSETS,
       SHELL_FONTS[1],
     ]);
-    const listed = await worker.store.get(worker.cache)!.get(`${ORIGIN}/__shell-manifest`)!.json();
+    const listed = await worker.store.get(worker.cache)!.get(`${ORIGIN}/__shell-manifest`)!.clone().json();
     expect(listed).toEqual([
       "/index.html",
       "/assets/dm-sans-latin-standard-normal-Bf69Tn_J.woff2",
@@ -642,7 +648,7 @@ describe("install, and the fonts", () => {
     // And the manifest records what was CACHED, not what was wanted. Listing a
     // font that was declined is a name activate keeps a slot open for and task 7
     // would look up and miss — the record has to be fact, not intent.
-    const listed = await worker.store.get(worker.cache)!.get(`${ORIGIN}/__shell-manifest`)!.json();
+    const listed = await worker.store.get(worker.cache)!.get(`${ORIGIN}/__shell-manifest`)!.clone().json();
     expect(listed).toEqual(["/index.html", ...SHELL_ASSETS, SHELL_FONTS[1]]);
   });
 
@@ -750,14 +756,97 @@ describe("activate", () => {
   it("deletes the assets of a build this worker did not precache", async () => {
     const worker = shell();
     await worker.install();
-    // The previous deploy's entry chunk, left in the cache by the previous
-    // worker — which had the same VERSION, because most deploys do not bump it,
-    // so the cache is not dropped wholesale and this is the only thing that
-    // reaches it. Nothing will ever ask for it: its URL is content-hashed.
-    worker.store.get(worker.cache)!.set(at("/assets/index-OLD.js"), js("old"));
+    // The previous deploy's entry chunk AND its stylesheet, left in the cache by
+    // the previous worker — which had the same VERSION, because most deploys do
+    // not bump it, so the cache is not dropped wholesale and this is the only
+    // thing that reaches them. Nothing will ever ask for either: their URLs are
+    // content-hashed. Two of them, not one, because a real deploy leaves at
+    // least two and a purge that deletes one and stops passes every
+    // single-entry fixture while the cache grows by a build on every activate.
+    const entries = worker.store.get(worker.cache)!;
+    entries.set(at("/assets/index-OLD.js"), js("old"));
+    entries.set(at("/assets/index-OLD.css"), css("old"));
+    // And a sidecar whose URL EXTENDS one the record names — what Vite emits
+    // with sourcemaps on. A keep-set matched by prefix rather than by equality
+    // keeps it for ever.
+    entries.set(at("/assets/index-CY0Sh5Q2.js.map"), js("{}"));
     await worker.activate();
     expect(worker.keys()).not.toContain("/assets/index-OLD.js");
+    expect(worker.keys()).not.toContain("/assets/index-OLD.css");
+    expect(worker.keys()).not.toContain("/assets/index-CY0Sh5Q2.js.map");
     expect(worker.keys()).toContain("/assets/index-CY0Sh5Q2.js");
+  });
+
+  it("keeps everything when the record is not a list", async () => {
+    const worker = shell();
+    await worker.install();
+    // A valid JSON body that is not an array. `[MANIFEST, ...record]` spreads a
+    // string into single characters, none of which resolve to a real key, so
+    // index.html, the entry chunk and the stylesheet all go — and nothing
+    // rejects, so the first anyone hears of it is a blank screen on a phone
+    // with no network. `precache()` always writes an array today; this is the
+    // guard for the edit that changes the record's shape.
+    worker.store
+      .get(worker.cache)!
+      .set(at("/__shell-manifest"), new Response(JSON.stringify("/index.html")));
+    await worker.activate();
+    expect(worker.keys()).toEqual(["/__shell-manifest", ...SHELL_ASSETS, "/index.html"]);
+    expect(worker.claimCalls).toBe(1);
+  });
+
+  it("keeps everything when the record cannot be read at all", async () => {
+    const worker = shell();
+    worker.store.set("alfred-shell-v0", new Map());
+    await worker.install();
+    const entries = worker.store.get(worker.cache)!;
+    entries.set(at("/assets/index-OLD.js"), js("old"));
+    // Not JSON. `/__shell-manifest` is not a real endpoint — `mount_spa` answers
+    // any unknown path with index.html and a 200 — so a page of HTML is what the
+    // network would put under that key. Unguarded, `.json()` rejects, which
+    // takes `purge()` down AFTER the version purge has deleted the old world and
+    // BEFORE the entry purge runs, and the claim never happens: old cache gone,
+    // stale entries kept, pages left on the previous worker.
+    entries.set(at("/__shell-manifest"), html("<!doctype html><html></html>"));
+    await expect(worker.activate()).resolves.toBeUndefined();
+    // The version purge still finished.
+    expect([...worker.store.keys()]).toEqual([worker.cache]);
+    // Everything is kept, the stale entry included: a record it cannot read is
+    // not a licence to guess which entries were ours.
+    expect(worker.keys()).toEqual(
+      ["/__shell-manifest", "/assets/index-OLD.js", ...SHELL_ASSETS, "/index.html"].sort(),
+    );
+    expect(worker.claimCalls).toBe(1);
+  });
+
+  it("deletes the caches after one that refuses to go, and still prunes and claims", async () => {
+    const worker = shell();
+    worker.store.set("alfred-shell-v0", new Map());
+    worker.store.set("workbox-precache-v2", new Map());
+    // The one failure a real CacheStorage produces here. Uncaught, it aborts
+    // every cache after it, skips the entry purge entirely and skips the claim —
+    // one transient error and the recovery path does nothing at all.
+    worker.refuseDelete("alfred-shell-v0");
+    await worker.install();
+    worker.store.get(worker.cache)!.set(at("/assets/index-OLD.js"), js("old"));
+    await worker.activate();
+    expect([...worker.store.keys()]).toEqual(["alfred-shell-v0", worker.cache]);
+    expect(worker.keys()).not.toContain("/assets/index-OLD.js");
+    expect(worker.claimCalls).toBe(1);
+  });
+
+  it("prunes the entries after one that refuses to go, and still claims", async () => {
+    const worker = shell();
+    await worker.install();
+    const entries = worker.store.get(worker.cache)!;
+    entries.set(at("/assets/index-OLD.js"), js("old"));
+    entries.set(at("/assets/index-OLD.css"), css("old"));
+    worker.refuseDelete("/assets/index-OLD.js");
+    await worker.activate();
+    // The one that refused is still there, which nothing can help. The one
+    // behind it in the loop is not, and the pages are claimed.
+    expect(worker.keys()).toContain("/assets/index-OLD.js");
+    expect(worker.keys()).not.toContain("/assets/index-OLD.css");
+    expect(worker.claimCalls).toBe(1);
   });
 
   it("keeps every byte this install wrote, fonts and all", async () => {

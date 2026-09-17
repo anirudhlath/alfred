@@ -290,9 +290,11 @@ async function purge() {
      this origin holds that is not the current cache is not ours to keep, and
      that includes whatever a previous experiment (or a Workbox trial) left.
      Awaited, not fired off: an unawaited delete is outside waitUntil, and the
-     browser may stop the worker with the cache still there. */
+     browser may stop the worker with the cache still there. Caught per delete,
+     too: this is the recovery path from a bad cache, and one transient failure
+     must not cost the caches after it, the entry purge below, or the claim. */
   for (const name of await self.caches.keys()) {
-    if (name !== CACHE) await self.caches.delete(name);
+    if (name !== CACHE) await self.caches.delete(name).catch(() => {});
   }
 
   /* Within a version: every entry that is not in the manifest install just
@@ -302,27 +304,62 @@ async function purge() {
      the previous build of this same file cached. On iOS an origin over its
      storage budget is evicted whole rather than trimmed.
 
+     It also reaches, by the same rule, whatever the fetch handler stores at
+     runtime: an asset cached on a cache-first miss is not in the record install
+     wrote, so the next activate takes it. That is the intended reading — the
+     record is what this build needs, a runtime entry is re-fetchable, and the
+     alternative is a cache with no ceiling — but it is a decision the fetch
+     handler inherits rather than makes, so it is written down here.
+
      Note the window this leaves: the new worker precaches into the cache the
      old one is still serving from, so between install and activate the cached
      shell is the new HTML. Its assets are already cached by then, and the only
      reader of a cached shell is an offline navigation. */
   const cache = await self.caches.open(CACHE);
-  const listed = await cache.match(MANIFEST);
-  /* No record means no way to tell what is ours, and the reading of that is
-     "keep", not "drop": emptying the cache here would turn one absent entry
-     into a blank screen on the next cold launch. */
-  if (!listed) return;
-  /* Absolute, because a cache key is. The record holds pathnames — one spelling
-     across the manifest, the cache and task 7's lookup — but comparing on the
-     pathname alone would keep a cross-origin entry that merely shares one, and
-     a poisoned CDN copy of the entry chunk is exactly the thing this purge is
-     the recovery from. Resolved against the scope for the same reason
-     isAssetUrl does: one notion of "us" in this file. */
-  const keep = new Set(
-    [MANIFEST, ...(await listed.json())].map((path) => new URL(path, scopeOrigin()).href),
-  );
-  for (const request of await cache.keys()) {
-    if (!keep.has(request.url)) await cache.delete(request);
+  /* Snapshotted BEFORE the record is read, and the order is the whole point. A
+     worker installing concurrently (the page re-checks for an update on every
+     return to the foreground) writes its entries first and its record last. Read
+     the record first and any entry it wrote after that read but before this
+     snapshot is deleted — and its install has already resolved, so it never
+     refetches. This way round, an install that completes between the two reads
+     is read from its own record, and entries written after the snapshot are not
+     in it to delete. It narrows the race; it does not close it. Closing it needs
+     a lock two workers can share, which a service worker does not have. */
+  const entries = await cache.keys();
+
+  /* Three ways the record can be untrustworthy — absent, wrong shape, or
+     unreadable — and one reading of all three: keep everything, and let the next
+     install rewrite the record. Deleting on a record you cannot read is
+     guessing, and the thing it guesses with is the only copy of this app the
+     phone has offline. */
+  let keep;
+  try {
+    const listed = await cache.match(MANIFEST);
+    const record = listed && (await listed.json());
+    /* Array.isArray, not a truth test. A JSON string spreads into single
+       characters, none of which resolve to a real key, so every precached entry
+       would go — silently, with nothing rejecting. `precache()` is the only
+       writer today and always writes an array; the guard is for the edit that
+       changes the record's shape (`{version, files}` is the obvious one). */
+    if (!Array.isArray(record)) return;
+    /* Absolute, because a cache key is. The record holds pathnames — one
+       spelling across the manifest, the cache and task 7's lookup — but
+       comparing on the pathname alone would keep a cross-origin entry that
+       merely shares one, and a poisoned CDN copy of the entry chunk is exactly
+       the thing this purge is the recovery from. Resolved against the scope for
+       the same reason isAssetUrl does: one notion of "us" in this file. */
+    keep = new Set([MANIFEST, ...record].map((path) => new URL(path, scopeOrigin()).href));
+  } catch {
+    /* A body that is not JSON. /__shell-manifest is not a real endpoint —
+       mount_spa answers any unknown path with index.html and a 200 — so a page
+       of HTML is what the network would put under that key if anything ever
+       fetched it. Uncaught, the rejection would take the claim down with it,
+       AFTER the version purge above had already deleted the old world. */
+    return;
+  }
+
+  for (const request of entries) {
+    if (!keep.has(request.url)) await cache.delete(request).catch(() => {});
   }
 }
 

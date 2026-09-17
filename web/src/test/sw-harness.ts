@@ -16,7 +16,22 @@ const absolute = (key: string | { url: string }): string =>
  * `await`. A macrotask does not, which is the whole reason for this.
  */
 const settled = <T>(value: () => T): Promise<T> =>
-  new Promise((resolve) => setTimeout(() => resolve(value()), 0));
+  new Promise((resolve, reject) =>
+    setTimeout(() => {
+      // A throw inside the timer callback would be an uncaught exception rather
+      // than a rejected promise, which is not what a storage failure looks like.
+      try {
+        resolve(value());
+      } catch (error) {
+        reject(error);
+      }
+    }, 0),
+  );
+
+/** What a delete that has been programmed to fail rejects with. */
+const storageFailure = (): never => {
+  throw new DOMException("A storage error occurred.", "UnknownError");
+};
 
 /** Enough of `Cache` for this worker: open, match, put, keys, delete. */
 class FakeCache {
@@ -24,8 +39,10 @@ class FakeCache {
   // tsconfig's `erasableSyntaxOnly` rejects parameter properties (TS1294), and
   // `tsc -b` is the only one of lint/vitest/build that says so.
   readonly entries: Map<string, Response>;
-  constructor(entries: Map<string, Response>) {
+  readonly refuses: (url: string) => boolean;
+  constructor(entries: Map<string, Response>, refuses: (url: string) => boolean) {
     this.entries = entries;
+    this.refuses = refuses;
   }
   /**
    * Real `Cache.match` constructs a NEW Response every call, so reading one
@@ -53,7 +70,8 @@ class FakeCache {
     return Promise.resolve([...this.entries.keys()].map((url) => ({ url })));
   }
   delete(key: string | { url: string }): Promise<boolean> {
-    return settled(() => this.entries.delete(absolute(key)));
+    const url = absolute(key);
+    return settled(() => (this.refuses(url) ? storageFailure() : this.entries.delete(url)));
   }
 }
 
@@ -75,6 +93,14 @@ export interface Harness {
    * asked for this fails on vitest's timeout, which is the correct verdict.
    */
   hang(pathname: string): void;
+  /**
+   * Program a delete to reject, which is the one failure a real `CacheStorage`
+   * produces that this fake otherwise cannot — and therefore the only way a
+   * test can reach a worker's per-delete `catch`. A cache NAME for
+   * `caches.delete`, a pathname for `Cache.delete`; they are told apart by the
+   * slash, which every URL has and no cache name here does.
+   */
+  refuseDelete(key: string): void;
   /** Every pathname `self.fetch` was called with, in order. */
   fetched: string[];
   /** Of those, the ones asked for with `{ cache: "reload" }`. */
@@ -112,10 +138,15 @@ export interface Harness {
 }
 
 /**
- * The worker's own cache name, built from the `VERSION` it declares. The
- * `alfred-` prefix is restated here rather than read, on purpose: it is the
- * invariant task 5's purge and task 11's kill switch both key on, so a worker
- * that stopped using it should turn these tests red.
+ * The worker's own cache name, built from the `VERSION` it declares, so that a
+ * bump moves these tests rather than making them vacuous. The `alfred-` prefix
+ * is restated here rather than read because there is nothing to read it from —
+ * the worker builds the name from a template literal and exports nothing.
+ *
+ * It is NOT an invariant anything keys on: `purge()` deletes every cache that
+ * is not the current one, prefix or no prefix, and `sw.kill.js` deletes every
+ * cache unfiltered. What this catches is a worker that renames its cache — the
+ * tests go red because the name moved, not because a prefix rule was broken.
  */
 function cacheName(source: string): string | undefined {
   const version = /const VERSION = "([^"]+)"/.exec(source)?.[1];
@@ -163,6 +194,8 @@ export function loadWorker(source: string): Harness {
   const routes = new Map<string, Response>();
   /** Absolute hrefs that accept the connection and answer nothing. */
   const hangs = new Set<string>();
+  /** Cache names and absolute entry hrefs whose deletion rejects. */
+  const refusals = new Set<string>();
   /** A list per type, not one handler: a real scope runs every listener it was given. */
   const listeners = new Map<string, ((event: unknown) => void)[]>();
   const harness: Partial<Harness> & {
@@ -219,10 +252,13 @@ export function loadWorker(source: string): Harness {
     caches: {
       open: (name: string) => {
         if (!store.has(name)) store.set(name, new Map());
-        return Promise.resolve(new FakeCache(store.get(name)!));
+        return Promise.resolve(
+          new FakeCache(store.get(name)!, (url: string) => refusals.has(url)),
+        );
       },
       keys: () => Promise.resolve([...store.keys()]),
-      delete: (name: string) => settled(() => store.delete(name)),
+      delete: (name: string) =>
+        settled(() => (refusals.has(name) ? storageFailure() : store.delete(name))),
     },
     // Real, so the worker's own AbortController semantics are exercised rather
     // than a model of them.
@@ -289,6 +325,11 @@ export function loadWorker(source: string): Harness {
     },
     respond: (pathname, response) => void routes.set(new URL(pathname, ORIGIN).href, response),
     hang: (pathname) => void hangs.add(new URL(pathname, ORIGIN).href),
+    // A cache name has no slash and a URL always does, which is the whole of
+    // the distinction: `caches.delete` is given the raw name, `Cache.delete` an
+    // absolute href.
+    refuseDelete: (key) =>
+      void refusals.add(key.includes("/") ? new URL(key, ORIGIN).href : key),
     install: () => extendable("install"),
     activate: () => extendable("activate"),
     async request({ path, mode = "no-cors", method = "GET", origin = ORIGIN }) {
