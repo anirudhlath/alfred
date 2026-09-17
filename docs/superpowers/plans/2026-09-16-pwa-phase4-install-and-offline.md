@@ -167,7 +167,9 @@ const VERSION = "v1";
 const CACHE = `alfred-shell-${VERSION}`;   // every cache this origin holds starts "alfred-"
 const SHELL = "/index.html";               // the one navigation response, cached under one key
 const MANIFEST = "/__shell-manifest";      // install's record of what it cached, for activate to prune against
-function assetsInHtml(html: string): string[];
+function scopeOrigin(): string;                  // new URL(self.registration.scope).origin
+function isAssetUrl(url: string): boolean;       // same-origin AND under /assets/
+function assetsInHtml(html: string): string[];   // extracts wide, refuses through isAssetUrl
 function fontsInCss(css: string): string[];
 function isShell(response: Response): boolean;   // ok && content-type is text/html
 function isAsset(response: Response): boolean;   // ok && content-type is NOT text/html
@@ -180,6 +182,8 @@ async function asset(request, pathname: string): Promise<Response>;
 export interface Harness {
   /** cache name → (absolute URL → Response). The whole of the fake CacheStorage. */
   store: Map<string, Map<string, Response>>;
+  /** The cache the loaded worker names, read out of its own VERSION. */
+  cache: string;
   /** Program `self.fetch`: exact pathname → the response to answer with. */
   respond(pathname: string, response: Response): void;
   /** Every pathname `self.fetch` was called with, in order. */
@@ -805,8 +809,60 @@ Two jsdom facts that shape the harness, both worth knowing before you write it:
 **Files:**
 - Create: `web/src/test/sw-harness.ts`
 - Create: `web/src/test/sw.test.ts`
+- Create: `web/src/test/sw-harness.test.ts` *(added in task 3 — see the correction below)*
 - Create: `web/public/sw.js`
-- Modify: `web/eslint.config.js`
+- Modify: `web/eslint.config.js`, `web/README.md`
+
+> **Corrected in task 3, after review. The three code fences below (steps 2, 3 and 5) are
+> the pre-review draft; the files in the tree are what shipped and are authoritative.**
+> Two of the changes are behaviour, not tests, and tasks 4 to 11 build on them:
+>
+> 1. **A 200 page of `text/html` that names no `/assets/` installed cleanly as the app
+>    shell.** `isShell` was "200 + text/html" and nothing more, so when `assetsInHtml`
+>    returned `[]` the validation loop was a no-op and `precache()` wrote that page as
+>    `/index.html`. Two inputs that really answer that description: the reverse proxy's
+>    default page (this origin is behind one) while a proxy host is edited or a DNS record
+>    moves, and the **dev server's own `index.html`**, which names `/@vite/client` and
+>    `/src/main.tsx` and nothing hashed — so once task 9 registers the worker, every
+>    `npm run dev` would have installed a zero-asset shell. Nothing re-installs afterwards:
+>    `install` only re-runs when `sw.js`'s own bytes change, so the recovery is task 11.
+>    `precache()` now refuses `urls.length === 0`.
+> 2. **`isAsset`'s comment was backwards for the only URL space it sees, and the half that
+>    fires was untested.** `/assets` is a StaticFiles **mount** (`core/channels/spa.py:39-40`),
+>    so `spa_fallback` never sees it: a removed hashed chunk comes back **404
+>    `application/json`**, not the SPA's HTML — `tests/core/channels/test_spa.py:155-160`
+>    already pins that 404. So `response.ok` is the guard that actually fires, and the
+>    `text/html` branch cannot while the mount exists. Both halves stay (a proxy or captive
+>    portal can answer 200 with a page at any time), the comment says which is which, and
+>    there is now a test for each.
+> 3. **One refusal instead of two places and one guard.** The extraction regex was the only
+>    thing keeping `/api` out of the precache. It is now deliberately wide and a single
+>    named guard, `isAssetUrl`, decides — same-origin **and** under `/assets/` — so
+>    widening the extraction can no longer widen the cache. `assetsInHtml` normalises to
+>    pathnames and deduplicates (a split build writes a `modulepreload` hint beside the tag
+>    naming the same URL). Task 6's fetch-handler guard should read the origin from the
+>    same `scopeOrigin()` rather than restating `new URL(self.registration.scope).origin`.
+> 4. **`eslint.config.js` gained `no-restricted-globals`.** The block as planned did not
+>    enforce the invariant its comment claimed: `globals.serviceworker` makes bare `caches`,
+>    `fetch`, `clients`, `skipWaiting` and `registration` *defined*, so `no-undef` was
+>    silent and rule 3 of the worker's header — the seam `new Function("self", source)`
+>    depends on — was enforced by nothing. The harness seals the same names at run time by
+>    passing them to `new Function` as parameters, so a bare `fetch` can no longer reach
+>    Node's real network.
+> 5. **`web/src/test/sw-harness.test.ts` is new, and is the reason to trust the other
+>    eight tasks' tests.** The harness modelled `ExtendableEvent` loosely enough to pass
+>    workers that cannot run on a phone: it kept only the last listener per type and only
+>    the last `waitUntil`, `FakeCache.put` never looked at the body (so `await shell.text()`
+>    for `await shell.clone().text()` was invisible here and fatal in a browser),
+>    `clients.matchAll()` ignored its options and always answered one window client (task 11
+>    would have passed without `includeUncontrolled` or a prior `claim()`), and fetch routes
+>    keyed on pathname so cross-origin collapsed onto same-origin. All fixed, and each fix
+>    is pinned by a test in that file.
+> 6. **The harness reads the cache name from the worker's own `VERSION`** and exposes it as
+>    `worker.cache`. Three copies of `alfred-shell-v1` across two files meant a `VERSION`
+>    bump — the thing task 5's purge exists for — turned assertions vacuous or broke them
+>    with `Cannot read properties of undefined`. The `alfred-` prefix stays restated in the
+>    harness on purpose: that one *is* the invariant tasks 5 and 11 key on.
 
 - [ ] **Step 1: Teach ESLint about `public/*.js`**
 
@@ -1244,16 +1300,17 @@ npx vitest run src/test/sw.test.ts
 npm run lint
 ```
 
-Expected: PASS, 6 tests *(corrected in task 3: 5, before the sixth test step 3 added)*. ESLint silent — if it complains that `self` is undefined, the `public/*.js` block from step 1 is missing or misplaced. **Then run `npm run build` too**: it is the only part of the gate that type-checks the harness.
+Expected: PASS, 14 tests in `sw.test.ts` and 12 in `sw-harness.test.ts` *(corrected in task 3: 5 as planned — see the correction block at the head of this task)*. ESLint silent — if it complains that `self` is undefined, the `public/*.js` block from step 1 is missing or misplaced. **Then run `npm run build` too**: it is the only part of the gate that type-checks the harness.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add web/eslint.config.js web/public/sw.js web/src/test/sw-harness.ts web/src/test/sw.test.ts
+git add web/eslint.config.js web/public/sw.js web/README.md \
+        web/src/test/sw-harness.ts web/src/test/sw-harness.test.ts web/src/test/sw.test.ts
 git commit -m "feat(web): a service worker that precaches the shell index.html names"
 ```
 
-Counts after this task: **73 files / 1 546 tests** *(corrected in task 3: this said ~1 529. Tasks 1 and 2 moved the baseline to 72 files / 1 540 — the plan's estimate was written against master's 1 503 and never took their corrections in. 1 540 + 6 = 1 546.)*
+Counts after this task: **74 files / 1 566 tests** *(corrected in task 3: this said ~1 529, on master's 1 503 baseline. Tasks 1 and 2 moved it to 72 files / 1 540; this task adds `sw.test.ts` (14) and `sw-harness.test.ts` (12). Every later task in this plan quotes a total on the stale baseline — read the delta each one adds, not the total.)*
 
 ---
 
@@ -1318,15 +1375,19 @@ describe("install, and the fonts", () => {
     expect(worker.keys()).toContain("/index.html");
   });
 
-  it("refuses a shell that is not HTML", async () => {
-    const worker = loadWorker(source);
-    // A proxy misconfiguration, a captive portal, an auth redirect: whatever it
-    // is, it is not this app, and caching it makes every offline launch show it.
-    worker.respond("/index.html", js("not a page"));
-    await expect(worker.install()).rejects.toThrow();
-  });
 });
 ```
+
+*(Corrected in task 3: a fifth test stood here, `refuses a shell that is not HTML`, with
+`worker.respond("/index.html", js("not a page"))`. It has moved into task 3, where the code
+it tests lives, and its fixture had to change on the way. As written it passed on a worker
+with **no `isShell` check at all**: `"not a page"` names no assets, so task 3's zero-asset
+refusal rejects it first, and the two assets it would otherwise have fetched had no routes
+programmed — so the install failed for want of a network rather than for the reason the
+test claimed. Task 3's version serves the real shell HTML under a `text/javascript`
+content type and routes every asset it names, which leaves `isShell` as the only thing that
+can refuse it. Both mutants — `isShell` → `response.ok` and `isShell` → `true` — survived
+the fixture as written and die against the new one.)*
 
 - [ ] **Step 2: Run them and read the failures**
 
@@ -1334,7 +1395,7 @@ describe("install, and the fonts", () => {
 npx vitest run src/test/sw.test.ts -t "fonts"
 ```
 
-Expected: FAIL on the first three (no font is fetched or cached at all); the last two already pass, because `isShell`/`isAsset` landed in task 3 — leave them in, they are the regression guard for those two branches. *(Corrected in task 3: "refuses a shell that is not HTML" is still the only test of `isShell`, but `isAsset`'s install-time branch is now pinned by task 3's own "refuses an asset that comes back as the SPA fallback"; this file's `isAsset` test is the **font** path, which is non-fatal on purpose. The two are different branches and both are wanted.)*
+Expected: FAIL on the first three (no font is fetched or cached at all); the fourth already passes, because `isAsset` landed in task 3 — leave it in, it is the regression guard for the **font** path, which is non-fatal on purpose and is a different branch from task 3's fatal one. *(Corrected in task 3: this said "the last two", when `isShell`'s test moved into task 3 — see the note under step 1.)*
 
 - [ ] **Step 3: Add `fontsInCss` and the second pass to `precache()`**
 
@@ -1350,6 +1411,11 @@ function fontsInCss(css) {
   return [...css.matchAll(/url\(\s*["']?(\/assets\/[^)"']+\.woff2)/g)].map((match) => match[1]);
 }
 ```
+
+*(Corrected in task 3: route the result through `isAssetUrl` the way `assetsInHtml` now
+does — `.filter(isAssetUrl)` — so there stays exactly **one** place in this worker that
+decides what may be precached. The `/assets/` text in this regex is then a narrowing for
+`url(data:…)`, not the guard.)*
 
 and, in `precache()`, between the asset loop and the `cache.put` loop:
 
@@ -1391,7 +1457,7 @@ then extend the writes and the manifest:
 npx vitest run src/test/sw.test.ts
 ```
 
-Expected: PASS, 11 tests *(corrected in task 3: 10, before its sixth test)*. Task 3's `records what it cached` still expects three entries, because that fixture's stylesheet has no `url()` at all — check it did not silently change.
+Expected: PASS, 18 tests *(corrected in task 3: 10 as planned. Task 3 shipped 14 rather than 5 — see its own counts — and this task's `refuses a shell that is not HTML` moved into it, so this block adds four, not five)*. Task 3's `records what it cached` still expects three entries, because that fixture's stylesheet has no `url()` at all — check it did not silently change.
 
 - [ ] **Step 5: Commit**
 
@@ -1517,7 +1583,7 @@ self.addEventListener("activate", (event) => {
 npx vitest run src/test/sw.test.ts
 ```
 
-Expected: PASS, 15 tests.
+Expected: PASS, 23 tests *(corrected in task 3: 15 as planned; +8 from task 3's extra tests)*.
 
 - [ ] **Step 5: Commit**
 
@@ -1620,6 +1686,12 @@ Expected: FAIL — there is no `fetch` listener yet, so `request()` resolves `un
 
 - [ ] **Step 3: Add the fetch listener with the refusals and nothing else**
 
+*(Corrected in task 3: two edits to the block below. It read `new URL(self.registration.scope).origin`
+inline — use task 3's `scopeOrigin()`, which is that expression and is already what
+`isAssetUrl` reads, so this file keeps one notion of "us". And **delete the "AS SHIPPED
+TODAY" paragraph from the top of `sw.js`** in this commit: it says the file answers no
+request and has no fetch handler, which stops being true here.)*
+
 ```js
 self.addEventListener("fetch", (event) => {
   const request = event.request;
@@ -1629,7 +1701,7 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(request.url);
   /* Nothing in this client loads a cross-origin URL, and if one ever appears it
      is not the shell and must not land in the shell's cache. */
-  if (url.origin !== new URL(self.registration.scope).origin) return;
+  if (url.origin !== scopeOrigin()) return;
 
   /* Rule 1 of the header. Checked before anything else, including the
      navigation branch — a hand-typed API URL arrives with mode "navigate".
@@ -1654,7 +1726,7 @@ npx vitest run src/test/sw.test.ts
 npm run lint
 ```
 
-Expected: PASS, 28 tests. ESLint silent.
+Expected: PASS, 36 tests *(corrected in task 3: 28 as planned; +8)*. ESLint silent.
 
 - [ ] **Step 5: Commit**
 
@@ -1833,7 +1905,7 @@ and, at the end of the `fetch` listener, after the refusals:
 npx vitest run src/test/sw.test.ts
 ```
 
-Expected: PASS, 37 tests — including all thirteen of task 6's, which now have branches that could have broken them.
+Expected: PASS, 45 tests *(corrected in task 3: 37 as planned; +8)* — including all thirteen of task 6's, which now have branches that could have broken them.
 
 - [ ] **Step 5: Commit**
 
@@ -1911,7 +1983,7 @@ npx vitest run src/test/sw.test.ts
 npm run lint && npm run build
 ```
 
-Expected: PASS, 40 tests. ESLint silent, build clean, and `web/dist/sw.js` now exists:
+Expected: PASS, 48 tests *(corrected in task 3: 40 as planned; +8)*. ESLint silent, build clean, and `web/dist/sw.js` now exists:
 
 ```bash
 ls -l dist/sw.js dist/manifest.json dist/manifest-light.json dist/apple-touch-icon.png

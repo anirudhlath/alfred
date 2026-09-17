@@ -20,9 +20,9 @@ export default defineConfig([
     },
   },
   {
-    // The two service workers. Not TypeScript — they are shipped verbatim by
-    // Vite's public/ copy, are loaded as classic (non-module) workers, and are
-    // evaluated in tests with `new Function("self", source)`, which refuses
+    // The service workers in public/. Not TypeScript — they are shipped verbatim
+    // by Vite's public/ copy, are loaded as classic (non-module) workers, and
+    // are evaluated in tests with `new Function("self", source)`, which refuses
     // import/export. `sourceType: 'script'` is what keeps all three honest.
     files: ['public/*.js'],
     extends: [js.configs.recommended],
@@ -30,6 +30,28 @@ export default defineConfig([
       globals: globals.serviceworker,
       ecmaVersion: 2023,
       sourceType: 'script',
+    },
+    rules: {
+      // Rule 3 of sw.js's header: every global goes through `self.`, because
+      // that object is the entire world src/test/sw-harness.ts can replace.
+      // `no-undef` cannot enforce it — `globals.serviceworker` makes every one
+      // of these *defined*, so a single bare `caches.open(…)` would lint clean
+      // and quietly escape the fake scope. This is the only thing that says so.
+      'no-restricted-globals': [
+        'error',
+        ...[
+          'addEventListener',
+          'caches',
+          'clients',
+          'fetch',
+          'location',
+          'registration',
+          'skipWaiting',
+        ].map((name) => ({
+          name,
+          message: `Reach it through self.${name} — the tests replace the worker's scope through \`self\`.`,
+        })),
+      ],
     },
   },
 ])

@@ -99,10 +99,10 @@ Phase 3: the Workshop's other three benches, each a pure view over one hook call
 
 ## What it does not
 
-- **Install and Reach gates, the service worker and Web Push** — phases 4 and 5.
-  The standalone metas are already in `index.html`. The **icon set and the manifests have
-  shipped** — the first two pieces of phase 4, and the whole of what `public/` has
-  changed; see "The icons" below. There are two manifests, `manifest.json` and
+- **Install and Reach gates, and Web Push** — the rest of phase 4, and phase 5.
+  The standalone metas are already in `index.html`. The **icon set, the manifests and a
+  service worker have shipped** — see "The icons" below, and "The service worker".
+  Nothing registers the worker yet, so it is inert bytes in `public/` until it is. There are two manifests, `manifest.json` and
   `manifest-light.json`, identical but for `theme_color` and `background_color`, and
   `applyTheme` swaps the `<link rel="manifest">` alongside the `theme-color` meta.
   **Read that narrowly, because it is not yet known to fix anything on a phone.** A
@@ -126,6 +126,50 @@ Phase 3: the Workshop's other three benches, each a pure view over one hook call
   and refuses the last one, but taking away the passkey in your hand needs a confirmation
   design first. Filed as `docs/backlog/low/pwa-phase3-followups.md` §7, §10 and §11.
 - **Desktop** — phase 6.
+
+## The service worker
+
+`public/sw.js` is hand-written, ~130 lines, and shipped verbatim by Vite's `public/` copy
+— no `vite-plugin-pwa`, no Workbox, no generated precache manifest. The reasoning is in
+`docs/superpowers/plans/2026-09-16-pwa-phase4-install-and-offline.md`; the short version
+is that a versioned cache, an explicit purge and a documented kill switch all have to be
+things a reviewer can *read in the shipped bytes*, and a negative requirement — "this
+worker never caches `/api`" — is one assertion against a hand-written file and an argument
+against a plugin's route table.
+
+**What it does today is install, and only install.** It fetches `/index.html` past the
+HTTP cache, takes the `/assets/…` URLs Vite wrote into it as the precache manifest, fetches
+those past the HTTP cache too, and writes them plus a `/__shell-manifest` record of what it
+took into `alfred-shell-v1`. It has no `fetch` handler, so every request still goes to the
+network untouched, and **nothing registers it yet** — `src/lib/sw.ts` is a later slice of
+phase 4. Until then it is inert bytes in `public/`.
+
+Three rules govern it, and they are restated at the top of the file itself:
+
+1. **It caches the app shell and nothing else.** `/api/*`, `/health` and the two sockets
+   are never fetched, never stored, and will never be passed to `respondWith()`. This
+   client's whole design is that it never states a server fact it has not just read; a
+   cached API response is that failure with a longer half-life.
+2. **Navigations will be network-first**, so a bad cache is invisible to an online phone
+   and the browser's own update check on `/sw.js` keeps running — which is what lets a
+   kill switch land if this file ever has to be withdrawn.
+3. **Every global goes through `self.`**, which is the seam `src/test/sw-harness.ts`
+   replaces to evaluate the shipped bytes in a fake `ServiceWorkerGlobalScope`. It is
+   enforced by `no-restricted-globals` in `eslint.config.js`, not by convention:
+   `globals.serviceworker` would otherwise make a bare `caches` perfectly legal.
+
+Two things to know before editing it. **A 200 is not proof of anything** — `/assets` is a
+StaticFiles mount (`core/channels/spa.py:39-40`), so a removed hashed chunk answers 404
+with a JSON body, while every *other* unknown path answers `index.html` with a 200, so the
+worker checks the status *and* the content type. And **a shell that names no `/assets/` at
+all is refused**: a reverse proxy's default page and the dev server's own `index.html` are
+both 200 `text/html`, and either would install cleanly as the shell and then stay, because
+`install` only re-runs when `sw.js`'s own bytes change.
+
+The tests are `src/test/sw.test.ts` (the worker, driven event by event) and
+`src/test/sw-harness.test.ts` (the fake scope itself — it has to model `ExtendableEvent`,
+`Cache.put` and `Clients.matchAll` closely enough that a test passing here means a worker
+that runs on a phone).
 
 ## Things worth knowing before you change something
 
