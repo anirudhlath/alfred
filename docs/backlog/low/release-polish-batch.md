@@ -26,6 +26,9 @@ of integrations and, per field, whether each credential is configured (a reconna
 `health_check` on demand. Scope limit: **no credential values are exposed** by either endpoint —
 only presence/config state — which is why this rates low.
 
+**Update — the two unauthenticated reads are fixed** on the PWA Phase 0 security branch; both now
+require `require_authenticated`. The bind-host half of this item is still open.
+
 **#49 — no third-party ML model license docs** (`core/voice/tts_kokoro.py`, `core/voice/tts.py`, `shared/config.py`, `README.md`, `core/voice/stt.py`)
 The repo auto-downloads several third-party models with no NOTICE/docs page recording their
 licenses. The Kokoro-82M default voice (`core/voice/tts_kokoro.py`, ~353 MB auto-downloaded from
@@ -62,7 +65,7 @@ in a public repo's CI logs.
 
 ## Acceptance Criteria
 - [ ] Channels process defaults its bind host to `127.0.0.1` (configurable, e.g. via env/config) instead of unconditional `0.0.0.0` in `core/channels/__main__.py`.
-- [ ] `GET /api/integrations` and `GET /api/integrations/{name}/status` enforce `require_trusted_network`/`require_authenticated`, matching the existing credential-write endpoints.
+- [x] `GET /api/integrations` and `GET /api/integrations/{name}/status` enforce an auth gate. **Deliberate deviation from the original wording:** the reads got `require_authenticated` only, *not* `require_trusted_network` — the PWA reads them from the public host, so network-gating them would break it. The credential *writes* (and `POST/DELETE /api/devices/register`) got both gates.
 - [ ] A `docs/model-licenses.md` (or README section) lists each auto-downloaded model and its license: EmbeddingGemma (Gemma ToU, gated), Piper `en_GB-alan` (MIT model / CC BY-SA-heritage dataset — credit Alan Pope / MycroftAI), Whisper large-v3-turbo (MIT), Silero VAD (MIT), and the default SLM.
 - [ ] The `OLLAMA_MODEL` default in `shared/config.py` is reconciled with the default SLM named in `README.md` (no remaining conflict).
 - [ ] `LICENSE` (or a new `NOTICE` file) carries a one-line project copyright/AGPL notice block per the AGPL "How to Apply These Terms" appendix (e.g. "Alfred — Ambient Multi-Agent System, Copyright (C) 2025-2026 Anirudh Lath …"); no change to the disclosed MIT-window history.

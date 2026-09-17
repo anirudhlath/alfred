@@ -2,11 +2,24 @@
 
 ## Overview
 
-The web frontend is a single-page application (SPA) that replaces the legacy vanilla
-`index.html` / `settings.html` / `app.js` / `settings.js` files. It provides a Mission
-Control-style interface for chat, live telemetry, memory inspection, trigger management,
-health monitoring, and integration settings. The SPA is built and served by the Alfred
+The web frontend is the phone-first PWA client that replaced the Mission Control SPA
+(icon rail, telemetry rail, data tables, shadcn component library — all removed in the
+phase 1 rewrite). It is a single-page application built and served by the Alfred
 channels process on port 8081.
+
+It has **one screen** (the Room), **one interrupt** (the Door), and **four identity
+gates** that rise over both — and, under the Room, the **Workshop**, where the house's
+eight Redis streams are read as they happen. There is no navigation: a notification tap
+deep-links to the approval it names, the Workshop is a layer rather than a route, and
+everything else is one merged timeline.
+
+Design source: `docs/design/2026-09-04-pwa-client-handoff/` (tokens, copy, and the
+`Alfred.dc.html` prototype the presence field and the slide maths were ported from).
+Spec: `docs/superpowers/specs/2026-09-04-mobile-first-pwa-client-design.md`.
+Client-side working notes: `web/README.md`.
+
+Phases 1 to 3 of six. The service worker, icons, Web Push and the desktop composition
+are later phases — see "What phases 1 to 3 do not cover" at the end.
 
 ---
 
@@ -18,15 +31,15 @@ channels process on port 8081.
 | Runtime | React | 19.x |
 | Language | TypeScript | ~6.x |
 | Styling | Tailwind CSS | v4.x (Vite plugin, `@theme inline`) |
-| Components | shadcn/ui (Radix UI primitives) | radix-ui 1.x |
 | Data fetching | TanStack Query | 5.x |
-| Routing | react-router-dom | v7.x |
-| Icons | lucide-react | latest |
-| Toast | sonner | 2.x |
-| Command palette | cmdk | 1.x |
-| Markdown | react-markdown | 10.x |
-| Testing | Vitest + Testing Library | 4.x |
-| Fonts | Inter Variable (sans), JetBrains Mono (mono), Geist Variable |
+| Routing | react-router-dom | 7.x |
+| Testing | Vitest + Testing Library (jsdom) | Vitest 4.x, `@testing-library/react` 16.x, `jest-dom` 6.x |
+| Lint | ESLint | 10.x |
+| Fonts | DM Sans Variable (sans), Geist Mono (mono) |
+
+No component library, no icon package, no markdown renderer, no toast library, no
+command palette. The presence field is a `<canvas>`, the Door's fuse is a
+`conic-gradient`, and slide-to-confirm is four pointer handlers and a keyboard path.
 
 ---
 
@@ -34,121 +47,610 @@ channels process on port 8081.
 
 ```
 web/
+  index.html       # viewport-fit=cover, interactive-widget=resizes-content,
+                   # one theme-color meta (applyTheme rewrites it), Apple standalone metas
   src/
-    lib/           # Pure utilities and socket clients
-      api.ts           # fetch wrapper with ApiError + 401→/login redirect
-      chat-socket.ts   # ChatSocket wrapping ReconnectingSocket("/ws")
-      telemetry-socket.ts  # TelemetrySocket wrapping ReconnectingSocket("/ws/telemetry")
-      types.ts         # Shared TypeScript interfaces (ChatServerMessage, TelemetryMessage,
-                       # Overview, Trigger, EpisodicEntry, SemanticFile, Routine, …)
-      format.ts        # categorize(), summarize(), timeOf(), CATEGORY_CLASS, SourceCategory
-      utils.ts         # cn() Tailwind class merger
-      webauthn.ts      # registerPasskey(), login(), logout() WebAuthn browser API wrappers
-      ws.ts            # ReconnectingSocket (reconnect + exponential backoff + code-4001 gate)
-    shell/         # App-level chrome and socket context
-      AlfredProvider.tsx   # Split contexts (AlfredStatusContext + AlfredFeedContext), sockets,
-                           # module-level singleton instances, FEED_MAX=500 ring buffer
-      AppShell.tsx         # Layout: IconRail | [TopBar / <Outlet>] | Toaster | CommandPalette
-      CommandPalette.tsx   # ⌘K palette — navigation + curated controls
-      IconRail.tsx         # Left nav: Chat, Activity, Memory, Triggers, Health, Settings
-      TelemetryRail.tsx    # Right sidebar on Chat: live feed preview + vitals (collapsible)
-      TopBar.tsx           # Page header
-    chat/          # Chat feature
-      ChatPage.tsx         # Message list + Composer + TelemetryRail
-      Composer.tsx         # Text input + VoiceButton
-      MessageItem.tsx      # Renders a chat message (user / alfred / notification)
-      VoiceButton.tsx      # MediaRecorder + AudioContext level meter, emits base64 WebM
-      use-chat.ts          # useChat() hook — subscribes to ChatSocket, queues messages
-    pages/         # Full-page views
-      ActivityPage.tsx     # Live event feed with pause/filter/inspect; merges live + backfill
-      EventInspector.tsx   # Side panel: pretty-prints a selected FeedEntry as JSON
-      HealthPage.tsx       # Connectivity, cost, integrations, streams, sessions, devices
-      LoginPage.tsx        # WebAuthn conditional UI login
-      MemoryPage.tsx       # Tabs: episodic (search) / semantic / routines / scratchpad
-      OnboardingPage.tsx   # 6-step wizard: passkey → personal → proactivity → guest → integrations → done
-      SettingsPage.tsx     # Session (sign-out) + IntegrationCards
-      TriggersPage.tsx     # Trigger list + DND toggle + deferred queue + notification history
-      IntegrationCard.tsx  # Reusable integration credential form card
-    components/
-      ui/                  # shadcn/ui component primitives (alert, badge, button, card,
-                           # command, dialog, input, progress, scroll-area, select,
-                           # separator, sheet, skeleton, sonner, switch, table, tabs,
-                           # textarea, tooltip)
+    lib/           # No React: transport, formatters, physics, pure reducers
+      api.ts             # api/post/put, ApiError{status,detail}; 401→expired, 403→denied
+      auth-events.ts     # authEvents.on/emit — the emitter api() announces gates on
+      auth.ts            # fetchAuthStatus, DEVICE_KEY, rememberDevice, deviceFootLine
+      webauthn.ts        # registerPasskey(), loginPasskey(), sessionChannel()
+      ws.ts              # ReconnectingSocket — backoff, code-4001 gate, ping keepalive
+      chat-socket.ts     # ChatSocket over /ws (channel "web_pwa", timezone, session_id)
+      telemetry-socket.ts# TelemetrySocket over /ws/telemetry; subscriptions refcounted
+      types.ts           # The shared type contract (hand-mirrors the bus/admin schemas)
+      format.ts          # hhmm, hhmmss, dayMonth, dayLabel, mmss, usd, evs, shortId,
+                         # humaniseTool, rawCall, notificationText
+      theme.ts           # Theme, THEME_KEY, resolveInitialTheme, applyTheme, storedTheme
+      viewport.ts        # installViewportVars
+      lifecycle.ts       # onVisible(fn) — the one visibilitychange subscription
+      audio.ts           # One unlocked AudioContext: installAudioUnlock, playWavBase64
+      recorder.ts        # pickMimeType (mp4→aac→default), Recorder, blobToDataUrl
+      presence-signal.ts # PresenceSignal — the ported signal() envelopes
+      headline.ts        # greetingFor, pickHeadline — the whole priority table, pure
+      history.ts         # TimelineItem, fetchRoomHistory, toTimelineItems,
+                         # sessionWindow, withDividers, SESSION_IDLE_MS
+      actions.ts         # actionReducer, fuseRemaining, tombstoneItems, the three fetches
+      slide.ts           # CONFIRM_RATIO, slideKnob, hintOpacity
+      streams.ts         # STREAMS, STREAM_INFO, isStreamName, streamLabel,
+                         # ring/ringFill/ringText, idMs/compareIds, fetchStreamPage,
+                         # rowKey, summarise, and the shared scalar/record/strings —
+                         # the eight streams and one line for any event on any of them
+      feed.ts            # feedReducer, mergeRows, olderTargets — eight paged lists,
+                         # pause/hold, the horizon; MAX_PER_STREAM
+      trace.ts           # fetchThread, buildThread, nodeMeta — the causal thread
+      memory.ts          # EpisodicRow, toEpisodicRow (the three-shape adapter),
+                         # episodicMeta, routineTrend/routineDetail, the four reads
+      triggers.ts        # Trigger, triggerKind, triggerMeta, list/toggle/fire
+      system.ts          # AuthSession, Credential, Integration, AttentionDomain,
+                         # sessionMeta/credentialMeta/serviceNote/spendNote, the
+                         # health cells, and every read and write the System bench makes
+    shell/         # Providers, and the two surfaces everything rises on
+      QueryProvider.tsx      # QueryClient defaults
+      ErrorBoundary.tsx      # The Workshop's; a bench that throws costs the layer
+      ThemeProvider.tsx      # useTheme(); writes data-theme and the theme-color meta
+      ThemeToggle.tsx        # 44x44 half-filled circle
+      ConnectionProvider.tsx # Socket singletons, useConnection(), markTrue()
+      presence.ts            # usePresence, useModalFocus, riseStyle, prefersReducedMotion
+      Layer.tsx              # Portal + rise in/out + focus trap + inert + level
+                             # (workshop z-10 · layer z-30 · gate z-40)
+      Sheet.tsx              # Bottom sheet + scrim + explicit Done + Escape
+    gates/         # Identity, over whatever is on screen
+      AuthGate.tsx     # Which gate, over what
+      Gate.tsx         # kicker / title / body / children / footer
+      GateField.tsx    # 220px dot field, drifting slowly
+      StepList.tsx     # 48px rows, 22px ring; progress and toggle variants
+      SetupGate.tsx    # First run: passkey → home-service credentials → attention set
+      SignInGate.tsx   # Passkey sign-in
+      ExpiredGate.tsx  # 401
+      DeniedGate.tsx   # 403
+    room/          # The one screen
+      Room.tsx           # Composes all of it
+      PresenceField.tsx  # 393x190 canvas; the ported presence()
+      Headline.tsx       # The page's one h1
+      OfflineNote.tsx    # role="status", mounted always, filled only when not online
+      DndRow.tsx         # Do-not-disturb + "{n} held ›"
+      StatusLine.tsx     # The mono-12 status line: clock or last-true, cloud, reflex, rate
+      Timeline.tsx       # The list and its scroll anchoring
+      rows/              # Divider, YouBubble, AlfredRow, ActRow, Tombstone,
+                         # TranscribingBubble, ThinkingRow, FirstDay
+      Composer.tsx       # 50px field, send / hold slot, keyboard padding
+      HoldToTalk.tsx     # Pointer hold, mic, caption, bars
+      WorkshopHandle.tsx # The 44px handle under the composer; hidden with the keyboard up
+      useOverview.ts     # ["overview"], 30s poll, isFirstRun(), sessionIdleMs(), rateText()
+      useRoomHistory.ts  # ["room-history"], read once, re-read on return
+      useRoom.ts         # Live timeline state, the session window, send,
+                         # unsent queue, no-reply timeout
+    door/          # The approval interrupt
+      DoorProvider.tsx  # useDoor(); the reducer's three feeds and the 1s tick
+      DoorBanner.tsx    # The ink banner above the composer
+      DoorLayer.tsx     # The full inverted layer
+      FuseRing.tsx      # 34px and 168px conic ring
+      SlideToConfirm.tsx# Slide with travel
+      useActionRoute.ts # /actions/:id
+    workshop/      # The layer under the Room
+      Workshop.tsx      # Layer level "workshop": ‹ Room, the header's live region,
+                        # the switcher, all four hooks, and the one mounted bench
+      BenchSwitcher.tsx # The four-tab segmented control: a full ARIA tab set
+      tabs.ts           # tabId and tabKeyDown — the two tab sets' shared behaviour
+                        # (the switcher and Memory's sub-tabs; the chips are not tabs)
+      ActivityBench.tsx # Stale banner, chips, ↑ older, the list and its scroll
+                        # anchoring, the footer
+      EventRow.tsx      # Monogram, line, meta; expanded payload and pills
+      StreamChips.tsx   # Eight chips with counts; tap to solo
+      useActivity.ts    # Head reads, the subscription, rehydrate on return, paging
+      MemoryBench.tsx   # Four sub-tabs: Episodic list + search footer, Semantic
+                        # cards, Routines, Scratchpad
+      RoutineRow.tsx    # One routine: trend, lifecycle rail, detail, sparkline
+      useMemory.ts      # Sub-tab, browse/search, the four reads, the model pill
+      TriggersBench.tsx # Kind chips, the list, both empty states, the footer note
+      TriggerRow.tsx    # Kind, name, meta, the switch, payload, Fire now
+      useTriggers.ts    # The list, the kind filter, the pending map, the 60 s re-read
+      SystemBench.tsx   # Health, Quiet (and Held back), Maintenance
+      SystemSections.tsx# Sessions, Connected services, Devices & identity, Reflex
+      IntegrationRow.tsx# One service: state, dot, and the credential form
+      SystemFrame.tsx   # SystemSection and SystemRow — the shared card idiom
+      Switch.tsx        # The Workshop's 52x32 switch, measured on both surrounds
+      useSystem.ts      # The overview plus five reads, and every write on the bench
+    sheets/
+      HeldBackSheet.tsx # ["deferred"] + drain
+      WhySheet.tsx      # ["trace", stream, id] — the causal thread as a column
     test/
-      setup.ts             # Vitest / Testing Library setup
-    index.css      # Tailwind v4 @import + CSS custom properties + @theme registration
-    main.tsx       # React entrypoint
-    App.tsx        # Router, QueryClient, auth gate (Guarded), route tree
+      setup.ts      # jsdom stubs: matchMedia, ResizeObserver, visualViewport, PointerEvent
+      fixtures.ts   # Shared fixtures: overview, streams, deferred, pending actions
+      contrast.ts   # WCAG ratios over the palette, restated from index.css
+    index.css     # Tailwind import, fonts, tokens per [data-theme], @theme inline,
+                  # the type scale, keyframes, safe areas, the fuse arc and its masks
+    main.tsx      # installViewportVars() → installAudioUnlock() → createRoot
+    App.tsx       # Providers and the three routes
 ```
+
+Tests live beside their source (`lib/history.ts` → `lib/history.test.ts`). One test file
+may cover a small family that ships together (`Layer.test.tsx` covers `Sheet`,
+`Headline.test.tsx` covers `OfflineNote` and `DndRow`).
 
 ---
 
-## Design Tokens — Mission Control Color Language
+## Design Tokens
 
-A single dark theme. No light mode by design. All colors are defined as CSS custom
-properties in `web/src/index.css` and registered into Tailwind via `@theme inline`.
+Two themes — dark and light — defined as CSS custom properties under
+`:root[data-theme="dark"]` and `:root[data-theme="light"]` in `web/src/index.css`, and
+registered into Tailwind via `@theme inline`. Nothing in the client uses a Tailwind
+palette colour.
 
-### Source Colors
+| Token | Meaning |
+|---|---|
+| `--bg` | The room itself |
+| `--surface` | Raised paper: notes, bubbles, sheets |
+| `--field` | Input fill — a step *above* `--surface` in both themes. In dark it was the same colour as `--surface` (1.00:1) until phase 2, which made the chosen bench and a sheet's input invisible |
+| `--line` | Hairlines |
+| `--keyboard` | The composer's own ground — a design-system token; no component paints it yet |
+| `--muted`, `--fg2`, `--fg` | The three text weights, quietest first. `--muted` is 3.46:1 on `--bg` in light theme — under AA, so it is for decoration, not for anything a reader must take on its own. `--fg2` is also what `input::placeholder` is set to: Tailwind's preflight would otherwise half-dissolve `--fg` into `--field` (3.84:1 dark, 3.22:1 light), and the Composer's `Offline · will send when connected` is the only thing that says a typed message will be queued |
+| `--accent` | Alfred's warm signal — presence, focus, the fuse. A **fill**: what sits on it takes `--on-accent` |
+| `--on-accent` | Text and icons on an accent fill — the theme's own dark colour either way (7.61:1 dark, 6.33:1 light). Never `--ink`, which is near-white in dark and reads 1.77:1 |
+| `--accent-text` | The accent *as* text: `‹ Room`, `Why · causal thread`, a sheet's `Done`. Dark's accent is already 7.61:1 on `--bg`, so it is the same colour there; light's is 2.34:1, which is why the token exists |
+| `--green` | Applied / healthy, as a **fill**: the Door's `Applied` dot on `--ink`, which is the only thing still using it |
+| `--green-text` | Green *as* a word — Memory's `model: ok` pill (`MemoryBench.tsx`) and Connected services' `ok` verdict (`IntegrationRow.tsx`) — and also the dots: the health dot and the service dot, which are state indicators and owe 3:1 rather than a fill's nothing. System's `alive` is the dot and not the word; the word itself is `--fg`/`--fg2` with the rest of the cell. Raw `--green` is 2.29:1 on light `--bg` and 2.12:1 on a card; same reason `--accent-text` exists |
+| `--ink`, `--paper`, `--paper-muted` | The Door's inverted surface and its text |
+| `--ring`, `--scrim` | Focus ring, and the dim behind a layer |
+| `--ring-text-l` | The lightness `ringText()` uses for a stream hue set as text — 0.75 on ink, 0.52 on paper |
+| `--ease-rise`, `--ease-settle`, `--ease-sink` | The three easing curves: rise in, settle, leave |
+| `--app-height`, `--viewport-top` | The visual viewport's height and offset, written by `installViewportVars()` (below) |
 
-These are the semantic paint language used throughout the UI. Each color encodes which
-part of the Alfred system an element relates to:
+`ThemeProvider` writes `data-theme` on `<html>` and rewrites the single
+`<meta name="theme-color">` so Safari's chrome matches. The choice is stored under
+`alfred.theme`; with nothing stored, the clock picks (dark at night).
 
-| Token | CSS var | Hex | Meaning |
+The eight stream hues are **not** tokens: the hue is data (`h = 30 + 45·i` over `STREAMS`),
+so it comes from `STREAM_INFO` through three functions in `lib/streams.ts` —
+`ring(hue)` at L 0.62 for the Room's 8 px marks, which carry no text; `ringFill(hue)` at
+L 0.52 for the fills under white text (monogram tiles, the soloed chip), because white on
+`ring()` is 3.45:1; and `ringText(hue)`, the hue *as* text, whose lightness is the one
+per-theme token above. `src/test/contrast.ts` restates the palette and holds the pairs a
+test can check to 4.5:1; `contrast.test.ts` compares that restatement against `index.css`
+verbatim, so a palette edit that leaves it behind fails rather than passing quietly.
+Phase 3 added `line`, `muted`, `green`, `green-text`, `ink` and `paper` to it: a control
+that shows state owes 3:1 for its **boundary** as well as its indicator (WCAG 1.4.11),
+and a boundary painted in `--line` could not be measured at all until then.
+
+### Type scale
+
+Type comes from the `.t-*` classes in `index.css`, never an ad-hoc size:
+`.t-gate`, `.t-headline`, `.t-title`, `.t-alfred`, `.t-you`, `.t-body`, `.t-row`,
+`.t-label`, `.t-meta`, `.t-fuse`, `.t-status` — and `.t-monogram`, the Workshop's 9 px
+stream monogram (`EventRow`, the Why sheet). `.t-meta-strong` is `.t-meta`'s type in a
+colour that can be read (`--fg2` rather than `--muted`): the rule, decided once in
+`index.css` rather than re-argued per call site, is that meta which is genuinely
+decorative — a stamp beside the line it stamps, a count beside the thing counted — stays
+on `.t-meta`, and anything a reader must take on its own to trust the screen takes
+`.t-meta-strong`. The sizes outside the scale are written as
+explicit arbitrary values: 15px (body copy in the gates, sheets, composer and Door),
+16px (the gates' buttons, the Door's title and pill), 14px (an event row's line and the
+bench's `All streams`), 13.5px (the held-back sheet's note and the Why sheet's intro),
+13px (the offline, DND and banner notes, the Room's `why?`, the bench's stale banner, its
+row pills and its four tabs), 11.5px (the raw call), 11px (the Door's mono labels),
+10.5px (the bubbles' stamps) and 10px (the stream chips).
+
+### The closed status vocabulary
+
+System state is said in mono, lower case, and only in the words spec §10 closes:
+`queued`, `applied`, `last true HH:MM`, `unknown since HH:MM`, `hot / cold`,
+`candidate · active · dormant · archived`, `expired · not done`,
+`takes effect within 60 s`. The Room and the Door use the first three and
+`expired · not done` — `queued` and `applied` are the Door's phase pill, not the
+Room's; the
+Workshop's status line adds the handoff's `live · N ev/s`, `paused · N new` and
+`last true HH:MM · not live`; the rest arrived with the phase-3 benches —
+`hot / cold` and `candidate · active · dormant · archived` on Memory,
+`takes effect within 60 s` on Triggers, `unknown since HH:MM` on System's health stamp.
+The one exception to mono-and-lower-case is
+the Door's phase pill (`Confirmed · queued`, `Applied`, `Expired`, `Answered`), set in
+the inverted layer's own type. Do not invent new words — the vocabulary is the contract
+the spec's honesty rules (§5.2) are written against.
+
+**`decaying`** is the ninth word, and it is here because the spec's list above never
+enumerated it while the handoff's prototype uses it: `Alfred.dc.html:684` sets an episodic
+row's meta to `17:58 today · significance 0.34 · recalled 0× · hot · decaying`. Since the
+spec makes the handoff's copy final too, the word is the design's rather than an
+invention, and it is written down here so the omission is not mistaken for a licence to
+coin more.
+
+> **`decaying`** — a **hot** episodic memory the house weighed lightly (significance below
+> `DECAY_FLOOR`, 0.4) and has never reached for. It is the population the Librarian's decay
+> pass migrates into cold storage; it is never said of a cold row, because decay is what
+> puts a row there and nothing removes one afterwards. It marks a standing, not a schedule:
+> the client cannot compute the pass's own pressure formula, which also weighs age and
+> retrieval recency against a threshold no endpoint reports — and that threshold is
+> currently unreachable, so nothing migrates at all today
+> (`docs/backlog/high/librarian-decay-threshold-unreachable.md`,
+> `docs/backlog/low/pwa-phase3-followups.md` §20).
+
+It is drawn after the store rather than instead of the recall count, exactly as the
+prototype draws it: the count is the evidence for the mark.
+
+---
+
+## The gates
+
+`AuthGate` reads `GET /api/auth/status` (`["auth-status"]`) and decides what rises:
+
+| Condition | Gate | Over |
+|---|---|---|
+| `registered: false` | `SetupGate` — passkey → home-service credentials → attention set | Nothing yet |
+| `registered: true, authenticated: false` | `SignInGate` — passkey | Nothing yet |
+| `authEvents` emitted `expired` (any HTTP 401) | `ExpiredGate` | The last-known Room |
+| `authEvents` emitted `denied` (any HTTP 403) | `DeniedGate` | The last-known Room |
+
+**401 and 403 never redirect.** `api()` emits on `authEvents` (`lib/auth-events.ts`) and
+the gate rises *over* whatever is on screen, so a lapsed session never blanks the state
+the user was looking at (spec §5.2). A rejected passkey assertion is a 401 too, and is
+excluded: `/api/auth/login/*` and `/api/auth/register/*` show the failure in the gate
+that asked rather than raising a second one.
+
+The session TTL is 8 hours, a hard cap from login with no sliding renewal, and the
+Expired gate says so.
+
+The copy region inside `Gate` scrolls: the shell is a fixed height (constraint §4.4), so
+an inner `mt-auto` column keeps short copy bottom-aligned while setup's tall credential
+step scrolls instead of clipping.
+
+---
+
+## The Room
+
+Everything on screen is one timeline.
+
+- **Presence field** — a 393x190 `<canvas>` driven by `PresenceSignal`: the microphone
+  while you hold the button, a thinking envelope while Alfred is working, and a still
+  frame under `prefers-reduced-motion`.
+- **Headline** — the page's one `<h1>`. `pickHeadline()` is a pure priority table:
+  offline and reconnecting outrank everything (an unreachable house must not say
+  "Good morning, sir."), then holding, then busy, then DND, then the first-day greeting.
+- **Status line and offline note** — the vitals, and `last true HH:MM` whenever the
+  socket is not online. The note's `role="status"` region stays mounted and empty while
+  online: VoiceOver can miss a live region inserted with its text already in it.
+- **Timeline** — `useRoomHistory` reads four stream pages once
+  (`user_requests`, `user_responses`, `reflex_observations` with an `action`, and
+  `notifications` without a `pending_action_id`) and `toTimelineItems` merges them by
+  timestamp. `sessionWindow` then keeps **the current session** — the turns since the
+  last silence of the session idle timeout (satellite turns included; they land on the
+  same two streams) — plus the house's own rows for the day, or from the session's start
+  if that came earlier. That window is conversational continuity across every channel,
+  not a claim about what Alfred still has in context: which server session a turn belongs
+  to is `chat-socket.ts`'s business ("Sessions" below), and that id can turn over inside
+  one window. `useRoom` merges
+  the result with the live rows (what you sent, what Alfred said, what he did while you
+  watched) and the Door's tombstones, neither of which is ever windowed. After a break
+  the Room opens on the day's house rows alone — on nothing at all when there are none;
+  older turns are the Activity bench's — open the Workshop. Row text comes from `notificationText`
+  ("WebSocket Protocols" below).
+- **Composer and hold-to-talk** — text queues under `alfred.unsent` while the house is
+  unreachable and retries in order on the next socket open; holding records through
+  `MediaRecorder` with a one-second floor.
+- **Held-back sheet** — the DND row's `{n} held ›` opens `["deferred"]` and can drain it.
+
+Nothing in the Room polls except the overview (30 s). The telemetry socket starts at `$`
+and replays nothing, so `ConnectionProvider` invalidates `["overview"]`,
+`["room-history"]`, `["pending-actions"]` and `["deferred"]` on `visibilitychange` —
+that is what makes a suspended PWA correct on return (constraint §4.10).
+
+---
+
+## The Door
+
+A critical action needing approval. It is tracked by `actionReducer` over
+`TrackedAction[]`, fed from three independent places so it survives a cold launch, a
+notification tap and a suspended app:
+
+1. `GET /api/actions/pending` (`["pending-actions"]`) — the cold-launch read.
+2. A `/ws` `notification` frame carrying `metadata.pending_action_id`.
+3. The `home_action_results` telemetry stream.
+
+Phases: `pending` → `queued` → `applied`, plus `expired` and `answered`.
+
+**A 200 from `POST /api/actions/{request_id}/confirm` means queued, never applied** —
+the endpoint republishes the action and returns before anything runs. `applied` comes
+only from `home_action_results`. A 404 on confirm means the approval was already
+consumed: the phase becomes `answered`.
+
+Confirmation is a slide with travel (`CONFIRM_RATIO = 0.85`), never a tap; iOS gives the
+client no haptics, so the resistance is the confirmation. An approval that lapses leaves
+a struck-through tombstone in the thread. `/actions/:id` renders the same Room with the
+Door open over it — `useActionRoute` reads the action once and tells the Door when the
+deep link finds one already gone.
+
+---
+
+## The Workshop
+
+A `Layer` at level `workshop` (z-10): under the sheets (z-20), the Door (z-30) and the
+gates (z-40), over the Room. It is mounted in `Room.tsx` next to `DoorLayer`, opened by
+the handle under the composer, and closed by `‹ Room` or Escape. Its header line is the
+socket's word first (`last true HH:MM · not live` while the telemetry socket is down),
+then the feed's (`paused · N new`), then the overview's rate (`live · N ev/s`) — and
+since phase 3 the state word is the app's one bench-independent live region
+("The Workshop's four benches", below). All four benches are built: Activity, Memory,
+Triggers and System.
+
+An `ErrorBoundary` sits inside the layer and around the panel, not around the app: a
+bench that throws costs the reader the Workshop and not the Room under it, and closing
+the layer unmounts the boundary so the next open starts clean. Its fallback is a
+`role="alert"` — the only one in the client, because this happened under the reader's
+hands rather than arriving behind them — saying `This bench stopped working.` and
+offering `Room`.
+
+`BenchSwitcher` is a full ARIA tab set rather than four buttons wearing `role="tab"`:
+every tab carries an id and `aria-controls` for the one `role="tabpanel"` the Workshop
+renders, only the chosen tab is in the tab order (roving `tabIndex`), and ←/→ move the
+selection with the focus and wrap around the four.
+
+**Activity** is `useActivity` over `feedReducer` (`lib/feed.ts`). Opening the bench
+reads each stream's head page (`GET /api/admin/streams/{name}?count=50`) and subscribes
+to all eight; `entry` frames are inserted at the top, or held while paused (`paused · N
+new`, released on resume). Everything is keyed and ordered by the Redis id — `idMs`
+is the millisecond half — never by `event.timestamp`. Each stream keeps its newest
+`MAX_PER_STREAM` (400) entries, or as many as `↑ older` has already fetched, whichever is
+deeper: the depth the user paged to is a floor the cap never rolls back. Past it the
+oldest fall off the bottom and the cursor moves up to match, so nothing becomes
+unreachable. Older mode is exempt from the cap by design, so a paged stream grows without
+a ceiling — the virtualization ticket carries the cost
+(`docs/backlog/low/pwa-phase2-followups.md` §1).
+
+The hook's `loaded` says the head read *settled*, however it settled; `streamLoaded` says
+it per stream. Both are needed to say what an empty list means without inventing
+anything: nothing loaded yet, `0 entries · nothing has been written` for a stream that
+answered, and `could not be read` for one that did not. "Nothing has been written" about
+a stream the bench never read would be a claim about the server it has no evidence for
+(spec §5.2).
+
+**The horizon.** The list is a merge of up to eight independently paged streams. A
+stream that can still page (`next_before` set) is only known back to its oldest loaded
+entry, so rows from any stream older than the *shallowest* such stream are withheld —
+otherwise one stream's past would sit next to another's silence and read as a quiet
+spell. `↑ older` fetches the streams sitting at the horizon, and the button's label is
+that cursor. Solo-ing a chip narrows the merge (and the horizon) to one stream.
+
+**Rehydrate on return** (§4.10): the telemetry socket starts at `$` and replays nothing,
+so `useActivity` re-reads every head page on `visibilitychange`. The reducer merges an
+overlapping page in place and starts a stream over when the page does not reach the
+entries it already had — a gap it cannot see across is not papered over. Not while
+paused, though: a page is not a live frame and the reducer would merge it straight in,
+sliding rows into a list the handoff promises will not move until Resume. Resume does
+that re-read instead.
+
+**Holding the reader's place.** Live rows land on top of the list, which would push
+whatever is being read down the screen; WebKit has never shipped `overflow-anchor`, so
+`ActivityBench` measures the growth in a `useLayoutEffect` and gives it back to
+`scrollTop` — keyed on which row is newest, so an `↑ older` page or an opening payload
+(the reader's own doing) moves nothing, and skipped at `scrollTop === 0`, where watching
+rows arrive is the point. A second layout effect resets the scroll to the top when the
+solo changes: a different stream is a different list.
+
+**Causality.** A reflex act row in the Room (`why?`), or an RX or AL row in Activity
+(`Why · causal thread`), opens `WhySheet` with a `StreamRef`. The two streams the bench
+offers it on are `WHY_STREAMS` in `ActivityBench.tsx`: both have a cause the server holds
+— an observation's `trigger_event`, and a reply's `actions_taken` naming the tool an
+action ran. The reply is spec §5.1's own conversation turn ("correlate one conversation
+turn with the system activity it caused"); the Room's Alfred bubbles do not offer it yet
+(`docs/backlog/low/pwa-phase2-followups.md` §11). Notifications and triggers are left out
+because they have no such id, and a pill that always produced a dashed-only column would
+be noise. `lib/trace.ts` reads one
+page of 100 from every stream up to ten minutes after the observation
+(`fetchThreadCandidates`), then `buildThread` joins from the observation outward on the
+ids events actually carry — `event_id` (an observation's `trigger_event` is the
+originating event's full dump, which is how a fired trigger reaches the observation it
+caused), `request_id`, `session_id`, a reply's `actions_taken` naming an action's tool,
+and an action's `entity_id` against a state change within a minute — transitively
+through anything admitted. `trigger_id` is deliberately **not** a join: it names the
+rule rather than the firing, so two firings of one recurring trigger inside the window
+would join, and the walk would carry on from the second firing to its own observation,
+action and result, drawing solid connectors across two unrelated episodes. Up to six
+unjoined entries within five seconds of a joined one are added as `adjacent in time
+only`, drawn with a dashed connector.
+
+A thread of one means one thing only: nothing the anchor's ids reach was inside the
+read. It is not the ordinary case for a passive observation — every bus event carries an
+`event_id` (`bus/schemas/events.py`) and `trigger_event` is the originating event's full
+dump (`core/reflex/runner.py`), so an observation with no action still normally joins the
+`home_state` row that caused it. A lone anchor is that row having aged past its stream's
+hundred entries, or an anchor whose schema carries no id anything else in the window
+shares. The sheet says so rather than promising solid and dashed links and then showing
+neither: `Nothing else in the eight streams is joined to this row.` The footnote states what was searched (`searched 8 streams · 100 entries each ·
+±10 min`, or `searched 7 of 8 streams (1 could not be read) · …` when a stream's read
+failed — the reason is said, not left to be inferred from the count) and appends
+` · N stream(s) could not be read back far enough` for every stream whose page both
+filled and stopped inside the window — a stream busy enough to fill its hundred entries
+inside the window hides the anchor's whole past behind them (`home_state` need only
+produce 0.17 entries a second), and a one-node thread must not read as "nothing else was
+involved". The query's `staleTime` is the join window itself: the
+window has closed behind a thread by the time that much has passed, so re-asking the
+same row does not re-read eight streams. The sheet never says "not caused by" — the
+client cannot prove that. A server-side correlation id is the follow-up (spec §7,
+`docs/backlog/low/pwa-phase2-followups.md`).
+
+---
+
+## The Workshop's four benches
+
+Phase 3 put Memory, Triggers and System beside Activity. The four share one shape, and
+it is written down here because the shape — not the screens — is what a fifth bench
+would have to keep.
+
+**A bench is a pure view over one hook.** `ActivityBench({ activity, onWhy })`,
+`MemoryBench({ memory })`, `TriggersBench({ triggers })`, `SystemBench({ system })`. A
+bench fetches nothing, owns no query and imports no `api`; everything that talks to the
+server lives in `lib/memory.ts`, `lib/triggers.ts` and `lib/system.ts` — types, fetches,
+and the pure formatters that turn what the server sent into what a row can say — with
+one hook over each. That is what makes a bench testable by handing it an object: a bench
+test builds no `QueryClient` and no providers at all, and the hook's exported state
+interface (`Memory`, `Triggers`, `System`) is the whole contract between the two halves.
+
+**The hooks are called in `WorkshopPanel`, above the bench that gets swapped out.** All
+four, side by side, each gated on whether its own bench is showing. Only one bench is
+mounted at a time — a `switch` with a `never` arm, not four panels with three hidden —
+so the reads stop when the reader leaves and the state does not. Surviving a trip to
+another tab: Memory's sub-tab, its query and the rows a search already answered with,
+Triggers' kind filter and open row, every queued note, a credential's save note, the
+drain stamp. Deliberately *not* surviving, because it belongs to the surface it was
+typed into rather than to the house: a half-typed credential (`IntegrationRow.tsx`), the
+Quiet card's record of which expiry chip you last pressed and the `applied` note it draws
+from it (`asked` in `SystemBench.tsx`), an unfolded semantic card (`MemoryBench.tsx`), and
+the pairing code, which `useSystem` clears the moment the bench stops showing — a six-digit secret left standing on a screen nobody is watching is
+the thing that decision exists to prevent. The list's scroll position goes with them,
+which is a cost rather than a choice (`docs/backlog/low/pwa-phase3-followups.md` §15).
+
+**The `enabled` gate.** `useMemory(enabled)`, `useTriggers(enabled)` and
+`useSystem(enabled, onHeld)` each take `bench === "…"` from the panel and hand it to
+every `useQuery` they own, so a bench nobody is looking at does not scan a Redis
+keyspace, glob a directory, or probe every connected service in turn. `useActivity` takes the
+same gate over its *reads* only — the eight head pages, the visibility re-read and
+`mergeRows` — while its socket stays subscribed and its frames keep landing, because the
+header speaks for the feed on all four benches and a count that stopped counting would
+be a lie told quietly. `useOverview(enabled)` gained the flag for the opposite case: a
+*disabled* observer never fetches but still re-renders when whoever is polling gets an
+answer, which is how Memory's scratchpad card reads the Librarian's schedule
+(`useOverview(false)`) off the poll the Room is already running.
+
+**The episodic adapter.** `GET /api/admin/memory/episodic` answers in three shapes for
+what the design draws as one row, and `toEpisodicRow` in `lib/memory.ts` is the one
+place that knows it. Nothing above that file branches on a *shape* again — `MemoryBench`
+reads `row.store` twice, for the muted cold line and the store dot (`MemoryBench.tsx:118`),
+and never to decide what a row says:
+
+| | browse · hot (Redis hash) | browse · cold (SQLite row) | search (`EpisodicResult`) |
 |---|---|---|---|
-| `reflex` | `--reflex` | `#7dd3fc` | System 1 — Reflex Engine, fast-path events |
-| `conscious` | `--conscious` | `#4ade80` | System 2 — Conscious Engine, LLM responses |
-| `memory` | `--memory` | `#facc15` | Memory layer — significance, routines |
-| `trigger` | `--trigger` | `#f472b6` | Trigger Engine, notifications |
-| `home` | `--home` | `#38bdf8` | Home Assistant / IoT events |
-| `user` | `--user` | `#94a3b8` | User requests |
-| `ok` | `--ok` | `#4ade80` | Health: good |
-| `warn` | `--warn` | `#facc15` | Health: approaching threshold |
-| `bad` | `--bad` | `#f87171` | Health: degraded / error |
+| identity | **absent** — the key is discarded | `id` | `id` |
+| the sentence | `content` | `summary` | `summary` |
+| time | epoch seconds **as a string** | epoch seconds as a REAL | an **ISO 8601 string** |
+| entities | `"lamp,kitchen"` | `"[\"lamp\",\"kitchen\"]"` | `["lamp","kitchen"]` |
+| significance | a string float | JSON text `{"overall": …}` | an object `{"overall": …}` |
+| recall | `retrieval_count` as a string, `last_retrieved` `0.0` for never | **absent** | `retrieval_count` — real for a hot row, hardcoded for a cold one; `last_retrieved` never set at all |
+| score | absent | absent | `score` |
 
-### @theme Registration Pattern
+Two consequences the rows say out loud rather than paper over. A hot browse row gets the
+key `hot:<index>`, because it carries no id at all and the list is replaced whole on
+every read — correct there and nowhere else. And **a cold row prints no recall clause at
+all**, in either shape: the columns are not in the cold schema, so a browse omits them,
+and a cold search row carries a `retrieval_count` the store hardcodes and `recall()`
+increments — always exactly 1, whatever the row's history. So `recalled` is `null` for
+every cold row and the meta line drops the clause, the way it drops a significance the
+server did not send. Absent, not zero: `never recalled` would be a claim about the house
+drawn from a missing column. What the server would have to change is
+`docs/backlog/low/pwa-phase3-followups.md` §16. The same evidence moved `decaying` onto
+**hot** rows, where both the handoff and the Librarian's decay pass put it (the
+vocabulary entry above says what it means). Numeric parsing runs before `Date.parse`, or
+an epoch string silently becomes the year 1758.
 
-Tailwind v4 requires every CSS custom property to be explicitly mapped into the
-`@theme inline` block so that utility classes like `text-reflex`, `bg-memory`, `border-ok`
-are generated:
+**Queued is not applied**, and it is the house style for every fire-and-forget control.
+A trigger's enable/disable and `Fire now` (`core/channels/admin_api.py:655`, `:674`),
+`Send them now` (`:627`) and `Run consolidation now` (`:633`) all answer
+`{"status":"queued"}` — the route publishes an internal action and returns, so none of
+them is evidence that anything happened. So the row **does not move**: the switch keeps
+reporting the stored state
+(`aria-checked` is the last read's value, never the requested one), the control's own
+label becomes the status word (`Fire now` → `Fire again`), and an `--accent-text` mono
+note under the meta line says when this client queued it —
+`queued 21:15 · enabling · takes effect within 60 s`. A fire's note names the evidence
+the reader would have to go and find: `queued 21:14 · look for trigger.fired on the
+events stream to know it ran`. The exceptions are the direct writes the server confirms
+and answers with the new state — DND set/clear, ending a session, and `Save & test`,
+which is a `PUT` followed by a separate status probe, hence the two words in its note
+(`saved · testing`). Even those move on the *re-read* rather than on the tap: the visible
+beat between the two is the point. Accent is never success: it marks a decision waiting
+on the world, and as text it is always `--accent-text` (`TriggerRow.tsx:271-273`) — raw
+`--accent` is a fill. Green is the mirror image: `--green` fills exactly one thing in the
+client, the Door's `Applied` dot (`DoorLayer.tsx:43`), and every green *word* and *dot* on
+the Workshop is `--green-text`. There is no red.
 
-```css
-@theme inline {
-  --color-reflex:   var(--reflex);
-  --color-conscious: var(--conscious);
-  --color-memory:   var(--memory);
-  --color-trigger:  var(--trigger);
-  --color-home:     var(--home);
-  --color-user:     var(--user);
-  --color-ok:       var(--ok);
-  --color-warn:     var(--warn);
-  --color-bad:      var(--bad);
-  --color-panel:    var(--panel);
-  /* … shadcn tokens … */
-}
-```
+### The rules this phase's reviews kept enforcing
 
-Once registered, source colors are usable as standard Tailwind utilities anywhere:
-`text-reflex`, `bg-trigger/20`, `border-memory`, etc.
+Five findings came back often enough across the review rounds to be house style now.
+The first two govern **anything a reader must read to trust the screen** — a state word, a
+value, a label, a control — and not decoration that already carries a text equivalent.
+Two of the five have a live counterexample in the tree; each is named under its own rule
+rather than left for the next reviewer to find.
 
-### `SourceCategory` → Tailwind class mapping
+- **Dim by token, never by `opacity`.** A spent one-shot, an offline health grid and an
+  ended session all recede by swapping to `--fg2`/`--muted`, not by an alpha. A
+  composited opacity takes the handoff's `.55` under AA (a meta line lands at 2.71:1 in
+  light) and — the reason it is a rule — it is invisible to `src/test/contrast.ts`,
+  which is the file that exists to stop exactly that. **There is no "outside the rule"
+  for a graphic.** This paragraph used to exempt the routine sparkline's older bars
+  (`opacity: 0.7`) on the grounds that the `role="img"` label carried the number the bars
+  drew — but the label is what a screen reader gets, and a low-vision sighted reader gets
+  the bars. At `0.7` over `--accent` they composited to 1.67:1 on `--bg` in light. They
+  dim by token now (`--muted`, with `--accent-text` for the newest), and both pairs are
+  measured in `src/test/contrast.test.ts` like every other one.
+- **`aria-disabled` plus a no-op handler, never `disabled`.** A control that disables
+  itself under the finger that just pressed it throws focus to `<body>` mid-action, and
+  where the control is described by the note the press produced — a switch and its
+  `queued …` line — a real `disabled` leaves a screen reader with nothing at all about
+  the request it just sent. The handler checks the flag itself and returns. One control
+  predates both rules and breaks both at once — Activity's `All streams` button is a real
+  `disabled` carrying `opacity: 0.4` (`ActivityBench.tsx:245-251`), phase-2 code this
+  phase did not reopen. Filed rather than fixed here
+  (`docs/backlog/low/pwa-phase3-followups.md` §21).
+- **Never say the house is empty before the server has answered.** An empty list has
+  three possible meanings and they are different news: the read was refused
+  (`Routines could not be read.`), the read has not landed
+  (`Routines has not been read yet.`), or the store really is empty
+  (`No routines learned yet.`). Refusal outranks the unlanded read, since an errored
+  query is both at once. Every bench carries a permanently-mounted `role="status"`
+  region labelled `Read errors` for the refusals — mounted empty, because VoiceOver can
+  miss a region inserted with its text already in it. The unlanded read is the half that
+  is easy to get wrong: it has to be keyed on `dataUpdatedAt`, never on `isFetching`,
+  because react-query's default `networkMode: "online"` **pauses** a read with no network
+  rather than failing it — a paused query is not fetching, holds no data and raises no
+  error, so a bench reached for the first time on a phone with no signal looks exactly like
+  one that asked and was told the house is empty. All three benches carry the same `read`
+  flag for it (`useMemory.ts:241-246`, `useSystem.ts:881-905`, `useTriggers.ts`), and a
+  bench that has not read says **nothing** rather than guessing which of the three it is.
+- **Never let a client-set mark outlive its evidence.** A `Pending` lives exactly
+  `REREAD_MS` (60 s), after which the list itself is the evidence; `useSystem` prunes
+  its `ended` and `saves` marks against the records still in the last read, so a mark
+  cannot keep answering for a session or an integration the house has forgotten; a
+  health dot goes out with the rest of the grid once the reads stop landing, even though
+  react-query still holds the `alive` that lit it.
+- **Every new colour pair is measured in `src/test/contrast.ts` against the surround it
+  really sits on.** Phase 3 added `--green-text` (raw `--green` is 2.29:1 on light
+  `--bg`, and green became a *word* here rather than a dot) and added `line` and `muted`
+  to `TOKENS`, without which a control's **boundary** could not be measured at all. A
+  state-bearing control owes 3:1 for both its indicator and its boundary (WCAG 1.4.11),
+  and a pair measured on `--bg` says nothing about the same control inside a card — the
+  Workshop's `Switch` is measured on both, because System puts one in a `Section`.
 
-`CATEGORY_CLASS` in `lib/format.ts` maps feed entries to their source color:
+There is one live region for the whole layer that survives a change of bench: the state
+word in the Workshop's header (`role="status"`), which is why Activity's stale-feed
+banner kept its sentence and lost both its region role and its accessible name — it is a
+bare `<div data-testid="feed-banner">` now (`ActivityBench.tsx:135-148`), and `Feed status`
+appears nowhere in `web/src`. Two regions saying the same thing is worse than one. Only the state word is inside it. The rate and the held count are a
+*sibling* span, not an `aria-hidden` child: `role="status"` implies
+`aria-atomic="true"`, so any mutation inside re-presents the whole sentence, and a
+reader who heard `live` every time the rate ticked would have traded one noise for
+another. Whether iOS diffs the accessibility tree or the DOM is not something jsdom can
+answer, so it is a line on the device checklist.
 
-```ts
-export const CATEGORY_CLASS: Record<SourceCategory, string> = {
-  reflex:   "text-reflex",
-  conscious: "text-conscious",
-  memory:   "text-memory",
-  trigger:  "text-trigger",
-  user:     "text-user",
-  home:     "text-home",
-  system:   "text-muted-foreground",
-};
-```
+---
 
-`SourceCategory` is the union `"reflex" | "conscious" | "memory" | "trigger" | "user" | "home" | "system"`.
-Note: `"memory"` is a reserved category — no stream produces it automatically; pages
-assign it manually (e.g. the Memory page).
+## Routes
+
+| Path | Element | Notes |
+|---|---|---|
+| `/` | `Room` | The one screen |
+| `/actions/:id` | `Room` | Same screen; `useActionRoute` opens the Door over it (spec §6.3) |
+| `*` | `<Navigate to="/" replace>` | There is nowhere else |
+
+Provider order in `App.tsx` is load-bearing:
+`QueryProvider → ThemeProvider → ConnectionProvider → BrowserRouter → AuthGate →
+DoorProvider → Routes`. `DoorProvider` sits inside `AuthGate` so nothing reads
+`/api/actions/pending` before there is a session to read it with.
+
+### Client state keys
+
+| Kind | Keys |
+|---|---|
+| TanStack Query | `["auth-status"]`, `["overview"]`, `["integrations"]`, `["attention"]`, `["room-history"]`, `["deferred"]`, `["pending-actions"]`, `["trace", stream, id]` (the Why sheet — `staleTime` of the join window, not the app's 10 s); and the benches' own: `["memory", "episodic", "browse"]`, `["memory", "episodic", "search", query]`, `["memory", "semantic" \| "routines" \| "scratchpad"]`, `["triggers"]`, `["system", "sessions" \| "credentials" \| "integrations" \| "attention"]`, `["system", "integration-status", name]`. Each bench's keys sit under one prefix, which is how `REHYDRATE_KEYS` (`ConnectionProvider.tsx`) reaches all of them with `["memory"]`, `["triggers"]` and `["system"]` |
+| `localStorage` | `alfred.theme`, `alfred.device`, `alfred.unsent`, `alfred.session`, `alfred.session-at` — every key is `alfred.<noun>`, `alfred.session-at` the one compound noun |
 
 ---
 
@@ -161,13 +663,62 @@ Used by `ChatSocket` (`lib/chat-socket.ts`).
 #### Client → Server
 
 ```json
-{"type": "text",  "content": "<message>", "channel": "web_pwa", "session_id": "<id>"}
-{"type": "audio", "content": "<base64-webm-data-url>", "channel": "web_pwa"}
+{"type": "text",  "content": "<message>", "channel": "web_pwa", "timezone": "<IANA>", "session_id": "<id>"}
+{"type": "audio", "content": "<base64-audio-data-url>", "channel": "web_pwa", "timezone": "<IANA>", "session_id": "<id>"}
+{"type": "ping"}
 ```
 
-`session_id` is sent only on the first message of a new connection and is read from
-`localStorage` under key `alfred_session_id`. After the first send, `firstMessageSent`
-is set and session_id is omitted from subsequent payloads.
+`session_id` rides the connection's first text or audio frame — `payload()` in
+`chat-socket.ts` is shared by both — and only when the client holds an id the server does
+not already have. **Sessions** below has the rules.
+
+`ping` is a keepalive (Cloudflare drops proxied sockets idle ~100s); the server answers
+`{"type": "pong"}` and does nothing else — in particular a ping does not count as the
+first message, so `session_id` restore still works after any number of them. The pong is
+answered on the same serial receive loop as chat turns, so it can lag a full
+conscious-engine turn (`publish_and_wait` timeout 60s) — pong latency is not a liveness
+signal. `ReconnectingSocket` sends these on a 30s interval and tracks `lastMessageAt`, so
+unlike the outgoing SPA this client does keep an idle socket open through a proxy.
+
+The audio data URL is whatever `pickMimeType()` negotiated — `audio/mp4`, then
+`audio/aac`, then the browser default. Safari has no WebM and throws from the
+`MediaRecorder` constructor if you ask for it.
+
+A frame that is malformed JSON, valid JSON but not an object (`[]`, `"str"`, `1`), or
+binary rather than text, is refused with
+`{"type": "error", "text": "Expected a JSON object", "session_id": "<id>"}` and the
+connection stays open.
+
+#### Sessions
+
+The server assigns an id per connection and pushes it in a `session` frame before the
+client has said anything (`core/channels/web_server.py`); a client holding no id of its
+own adopts that one. `alfred.session` holds the id, and `alfred.session-at` an ISO stamp
+that only a send writes; `adopt` and `forget` are the id's only writers, and `forget`
+takes the stamp with it, so an id adopted but never sent on carries no stamp at all.
+
+The first message of a connection decides which session the turn belongs to. A stored id
+whose stamp has been idle for the timeout or longer is let go, stamp and all, and this
+connection's assigned id takes its place; a missing or unreadable stamp counts as idle,
+so a phone from before the stamp existed gets one fresh session. What survives is sent as
+`session_id` only if the server does not already have it — when the two agree the frame
+says nothing, because the server named that id itself. Only a send the socket actually
+took commits anything: one it refused spends neither the connection's one chance to carry
+`session_id` nor a record of activity the server never saw. After that first frame,
+`session_id` is omitted until the next open.
+
+The timeout is the server's own rather than a client constant:
+`Overview.session.idle_minutes` → `sessionIdleMs()` (`room/useOverview.ts`) →
+`chat.setIdleMs()` in a `Room` effect, with `SESSION_IDLE_MS` (30 min, `lib/history.ts`)
+standing in until the overview answers. It is the same boundary the Room windows its
+timeline on, so the thread and the id turn over together — and the stand-in is a real
+state, not a formality: on a cold launch nothing has asked `/api/admin/overview` yet, so
+both the window and the socket sit at thirty minutes, and a house configured below that
+renders the thread once and shrinks it one round trip later.
+
+The server locks the id after the first message (`session_locked`), so a session that
+idles out mid-connection cannot rotate until the socket next reopens — which on iOS it
+does, every time the app is backgrounded long enough.
 
 #### Server → Client (`ChatServerMessage`)
 
@@ -175,17 +726,27 @@ is set and session_id is omitted from subsequent payloads.
 | { type: "session";       session_id: string }
 | { type: "transcription"; text: string; session_id: string }
 | { type: "response";      text: string; audio?: string; session_id: string;
-                            actions_taken?: string[]; mood?: string }
-| { type: "notification";  title: string; body: string; urgency: string;
-                            notification_id: string; audio?: string }
+                            actions_taken?: string[]; mood?: Mood }
+| { type: "notification";  title: string; body: string; urgency: Urgency;
+                            notification_id: string; audio?: string;
+                            metadata?: Record<string, unknown> }
 | { type: "error";         text: string; session_id?: string }
+| { type: "pong" }
 ```
 
-- `response.actions_taken` — optional list of tool names the Conscious Engine executed.
-- `response.mood` — optional affective tone label from the Conscious Engine.
-- `response.audio` — base64 WAV data URL for TTS playback (URGENT notifications only).
-- `notification` messages are injected by the channels WebSocket deliver worker when a
-  notification arrives for the active web session.
+- `response.actions_taken` — tool names the Conscious Engine executed; the Alfred row's
+  meta reads them.
+- `response.mood` — affective tone label. An `error` frame has neither, and says
+  `error · HH:MM` rather than inventing a mood.
+- `response.audio` — base64 WAV data URL, played through the one unlocked `AudioContext`.
+- `notification.metadata.pending_action_id`, when present, routes the frame to the Door
+  instead of the thread. The frame carries no `source`, so a live act row reads
+  `HH:MM · live · {urgency}`; the same notification re-read from the stream later shows
+  its real source. The row's text is the body, else the title — a title is often a bare
+  label such as "Routine Suggestion" — from `notificationText` (`lib/format.ts`), which
+  the live row, the history row and the held-back sheet all share so a live row and its
+  history copy still pair on the read-back.
+- `pong` is swallowed in `ChatSocket` and never reaches listeners.
 
 #### Reconnect / backoff / 4001
 
@@ -193,27 +754,50 @@ is set and session_id is omitted from subsequent payloads.
 
 - Initial connect: emits `"connecting"` status.
 - On successful open: resets attempt counter, emits `"online"`.
-- On close with code **4001**: emits `"unauthorized"` and stops — no retry. The `api()`
-  helper redirects to `/login` on HTTP 401; the WS gate handles WS 4001 separately.
+- On close with code **4001**: emits `"unauthorized"` and stops — no retry. The socket is
+  reopened by `ConnectionProvider` after a successful sign-in, not by a backoff timer.
 - On other close: exponential backoff starting at 500ms, doubling per attempt, capped
-  at 8 seconds. Emits `"reconnecting"` while retrying.
-- `ChatSocket.onopen` resets `firstMessageSent` so session_id is re-sent on reconnect.
+  at 8 seconds. Emits `"reconnecting"` for the first two failures and `"offline"` from
+  the third (`OFFLINE_AFTER_ATTEMPTS`), or at once while `navigator.onLine` is false —
+  and keeps retrying either way; the next open makes it `"online"` again. The Room
+  says `Reconnecting…` for the one and `Unreachable.` for the other.
+- `ChatSocket.onopen` clears `firstMessageSent` and the previous connection's assigned
+  id, so a live stored id is offered again on the next connection. `ws.ts` calls
+  `onopen()` **before** `onstatus("online")` on purpose: `useRoom` flushes the unsent
+  queue on that status, and a flush that ran first would send the new connection's first
+  message with the old connection's state behind it.
 
 ### Telemetry (`/ws/telemetry`)
 
 Used by `TelemetrySocket` (`lib/telemetry-socket.ts`). Provides a live push of Redis
-stream entries.
+stream entries. The Door subscribes to one stream, `home_action_results`, for the app's
+lifetime — it is what turns a queued approval into an applied one; the Workshop
+subscribes to all eight while it is up and lets them go when it leaves.
 
 #### Client → Server
 
 ```json
-{"type": "subscribe",   "streams": ["events", "actions", "user_requests"]}
-{"type": "unsubscribe", "streams": ["home_state"]}
+{"type": "subscribe", "streams": ["home_action_results"]}
+{"type": "unsubscribe", "streams": ["home_action_results"]}
+{"type": "ping"}
 ```
 
-On reconnect, all current subscriptions are re-sent automatically (`onopen` replays
-`this.subscriptions`). `TelemetrySocket.subscribe()` persists the set so reconnects
-restore state without consumer involvement.
+`TelemetrySocket` counts wanters per stream: `subscribe` goes out only when a count
+leaves zero, `unsubscribe` only when one reaches it — so the Workshop closing never takes
+the Door's stream with it. Both methods walk `new Set(streams)`, so a name repeated in one
+call is one wanter and `subscribe(["events", "events"])` is released by a single
+`unsubscribe`. Every `subscribe` owes exactly one `unsubscribe`; the Door never pays,
+deliberately, and an over-counted stream costs frames nobody reads while one released
+early goes quiet on a surface still watching it.
+
+`ping` is the same keepalive as on `/ws`: answered with `{"type": "pong"}`, and it emits
+no `subscribed` ack and leaves the subscription set untouched.
+
+On reconnect, everything still wanted is re-sent automatically (`onopen` replays the
+keys of the wanter map), with no consumer involvement. Subscriptions start at `$`:
+nothing that happened while the app was suspended is replayed, which is why the query
+keys above are invalidated on return — and why `useActivity` re-reads all eight head
+pages on `visibilitychange`.
 
 #### Server → Client (`TelemetryMessage`)
 
@@ -221,57 +805,138 @@ restore state without consumer involvement.
 | { type: "subscribed"; streams: string[] }
 | { type: "entry"; stream: string; id: string; event: Record<string, unknown> }
 | { type: "status"; detail: string }
+| { type: "error"; message: string }
+| { type: "pong" }
 ```
 
 - `subscribed` — full current subscription set, sent after every subscribe/unsubscribe.
 - `entry` — one per new Redis stream entry; `event` is the deserialized payload
   (not a raw JSON string).
-- `status` — transient pump error; connection stays alive, pump retries after 1s backoff.
+- `status` — transient pump error (`detail: "redis_error"`); connection stays alive, pump
+  retries after 1s backoff.
+- `error` — a frame the server could not read (`message: "invalid JSON"`). Note the field
+  is `message` here and `text` on `/ws`.
 
-#### Context split: status feed vs. activity feed
-
-`AlfredProvider` splits its state into two React contexts to avoid unnecessary re-renders:
-
-- **`AlfredStatusContext`** — holds `chat`, `telemetry`, `chatStatus`, `telemetryStatus`.
-  Re-creates only when socket statuses change (rare). Components subscribe via
-  `useAlfredStatus()`.
-- **`AlfredFeedContext`** — holds the `feed` ring buffer (capped at `FEED_MAX = 500`
-  entries). Re-creates on every incoming telemetry entry (frequent). Components subscribe
-  via `useAlfredFeed()`.
-- `useAlfred()` merges both for backward compatibility.
-
-`TelemetryRail` subscribes to both (uses `useAlfred()`). `ActivityPage` uses
-`useAlfredFeed()` only. `IconRail` uses `useAlfredStatus()` only.
-
-#### TelemetryRail — event-driven overview refetch
-
-`TelemetryRail` watches the feed head and refetches `GET /api/admin/overview` only when:
-1. The newest entry belongs to a `VITAL_CATEGORIES` stream (`"conscious"`, `"trigger"`,
-   `"user"`).
-2. At least 5 seconds have elapsed since the last refetch (`performance.now()` throttle
-   stored in a `useRef`).
-
-Home and reflex stream churn (high volume) does not trigger refetches.
+`ConnectionProvider` puts `status` and `error` on the console (`console.warn`), the same
+complaint at most once a minute (`WARN_EVERY_MS` — the pump repeats `redis_error` every
+second for the whole of an outage). Nothing on screen shows them, still: the System
+bench reports the *reads* that failed, and each bench's `Read errors` region says the
+same about its own, but no surface carries the socket's own frames.
 
 ---
 
-## Routes
+## Data Flow
 
-| Path | Component | Notes |
-|---|---|---|
-| `/login` | `LoginPage` | WebAuthn conditional UI login |
-| `/onboarding` | `OnboardingPage` | 6-step setup wizard, no auth required |
-| `/` | `ChatPage` | Default after auth; chat + TelemetryRail |
-| `/activity` | `ActivityPage` | Live event feed; pause/filter/inspect |
-| `/memory` | `MemoryPage` | Episodic / semantic / routines / scratchpad tabs |
-| `/triggers` | `TriggersPage` | Trigger list + DND + deferred queue |
-| `/system` | `HealthPage` | Connectivity, cost, streams, sessions, devices (note: backend `GET /health` is the service healthcheck consumed by iOS AlfredKit; SPA system page lives at `/system` to avoid the catch-all being shadowed) |
-| `/settings` | `SettingsPage` | Sign-out + integration credential cards |
+```mermaid
+graph TD
+    subgraph Browser
+        QC[QueryClient<br/>TanStack Query]
+        Router[BrowserRouter<br/>react-router v7]
 
-All routes except `/login` and `/onboarding` are guarded by `Guarded`, which checks
-`GET /api/auth/status` and redirects to `/onboarding` (not registered) or `/login`
-(not authenticated). The `api()` helper also redirects to `/login` on any HTTP 401
-response.
+        subgraph ConnectionProvider
+            ChatSock[ChatSocket<br/>/ws]
+            TelSock[TelemetrySocket<br/>/ws/telemetry]
+            Conn[useConnection<br/>online · chatStatus · lastTrueAt]
+        end
+
+        AuthGate[AuthGate<br/>setup · sign-in · expired · denied]
+
+        subgraph Room
+            Presence[PresenceField<br/>PresenceSignal]
+            Head[Headline · StatusLine · OfflineNote · DndRow]
+            TL[Timeline<br/>useRoom + useRoomHistory]
+            Comp[Composer · HoldToTalk]
+            Sheet[HeldBackSheet]
+            Why[WhySheet<br/>lib/trace.ts]
+        end
+
+        subgraph Workshop
+            Bench[BenchSwitcher<br/>Activity · Memory · Triggers · System]
+            Feed[useActivity<br/>feedReducer · mergeRows]
+        end
+
+        subgraph DoorProvider
+            Reducer[actionReducer<br/>TrackedAction phases]
+            Banner[DoorBanner]
+            Layer[DoorLayer<br/>FuseRing · SlideToConfirm]
+        end
+    end
+
+    subgraph "Alfred :8081"
+        WS_CHAT["/ws chat"]
+        WS_TEL["/ws/telemetry<br/>Door: home_action_results<br/>Workshop: all eight"]
+        REST["/api/admin/* · /api/actions/* · /api/auth/*"]
+    end
+
+    ChatSock -->|WebSocket| WS_CHAT
+    TelSock  -->|WebSocket| WS_TEL
+    QC       -->|REST fetch| REST
+
+    ChatSock --> Conn
+    TelSock  --> Conn
+    Conn --> Head
+    Conn --> AuthGate
+
+    ChatSock -->|response · transcription · error| TL
+    ChatSock -->|notification without pending_action_id| TL
+    ChatSock -->|notification with pending_action_id| Reducer
+    TelSock  -->|result: applied| Reducer
+    TelSock  -->|entry x8| Feed
+    QC       -->|pending-actions| Reducer
+    Feed --> Bench
+    Feed -->|head + older pages| REST
+    TL   -->|why? on a reflex row| Why
+    Feed -->|Why · causal thread| Why
+    Why  -->|8 stream pages| REST
+
+    QC --> Head
+    QC --> TL
+    QC --> Sheet
+    Reducer --> Banner
+    Reducer --> Layer
+    Reducer -->|tombstones| TL
+    Comp -->|sendText · sendAudio| ChatSock
+```
+
+---
+
+## iOS constraints
+
+Spec §4 lists twelve. The automated half lives in `web/src`
+(`index-html.test.ts` for the metas, `viewport.test.ts` and `Composer.test.tsx` for
+`--app-height` / `--viewport-top`, `audio.test.ts` for the single unlocked context,
+`recorder.test.ts` for codec negotiation, `lifecycle.test.ts` and
+`ConnectionProvider.test.tsx` for rehydration, `Layer.test.tsx` and `DoorLayer.test.tsx`
+for explicit dismissal, `PresenceField.test.tsx` for reduce-motion). The half that needs
+a real phone is `docs/superpowers/qa/2026-09-07-pwa-phase1-ios-checklist.md`, with
+`2026-09-10-pwa-phase2-ios-checklist.md` beside it for the Workshop and the Activity
+bench and `2026-09-16-pwa-phase3-ios-checklist.md` for the other three — the last of
+which carries the questions jsdom cannot answer at all, such as whether VoiceOver
+re-announces an `aria-atomic` region whose sibling text changed.
+
+Two of them bite hardest:
+
+- **`100vh` is wrong in Safari, and so is the window.** `installViewportVars()` writes
+  `--app-height` and `--viewport-top` from `visualViewport`'s own height and offset —
+  the band of screen that is actually visible. `#root` and every `.viewport-fill` layer
+  are fixed boxes at exactly those coordinates, `height` and not `min-height`, with
+  `overflow: hidden`, so the shell *is* the viewport and nothing scrolls but the regions
+  that opt in: the Timeline, the Sheet body, the gate's copy region. A root that can grow
+  scrolls the document instead, carrying the header and composer off-screen and leaving
+  the Timeline's follow-the-bottom anchor nothing to scroll; `body` is `position: fixed`
+  so iOS cannot scroll the document to reveal a focused field either.
+
+  **Never derive a keyboard inset from `innerHeight - visualViewport.height`.** Phase 2
+  did, and the phone reported the composer clipped off the *top* of the screen: the two
+  readings settle at different moments, and one frame of disagreement leaves most of a
+  keyboard as padding on a column that is already keyboard-free, overflowing a shell
+  shorter than itself. Measured in standalone mode on a real iPhone, neither reading
+  moves when the keyboard opens at all — iOS slides the webview itself, invisibly to JS.
+  What the composer still owes is the home indicator, and that is a question about its
+  own field's focus, which is what `Composer.tsx` asks.
+- **Audio needs a gesture.** `installAudioUnlock()` runs in `main.tsx`, before the first
+  tap. iOS will not retroactively allow a sound requested before a gesture resumed a
+  context, so a fresh `new Audio()` is silently dropped.
 
 ---
 
@@ -280,16 +945,21 @@ response.
 ```bash
 cd web
 npm install           # first time
-npm run dev           # Vite dev server, HMR, proxies /api + /ws → localhost:8081
+npm run dev           # Vite dev server, HMR, proxies /api + /health + /ws* → localhost:8081
 npm run lint          # ESLint
 npm test              # Vitest (jsdom)
 npm run build         # tsc -b && vite build → web/dist/
 npm run preview       # serve web/dist/ locally
 ```
 
-The Vite proxy configuration routes all `/api/*`, `/health` (backend healthcheck), and `/ws*` requests to
-`http://localhost:8081` (or `ws://localhost:8081` for WebSocket upgrades) during development.
-No CORS configuration is required — all traffic appears to come from the same origin.
+The type check lives in `build` (`tsc -b`), not in `lint`. CI runs `lint`, `test` and
+`build`, in that order, then serves the built `dist/` to
+`tests/core/channels/test_spa_ci.py`.
+
+The Vite proxy routes all `/api/*`, `/health` (backend healthcheck), and `/ws*` requests
+to `http://localhost:8081` (or `ws://localhost:8081` for WebSocket upgrades) during
+development. No CORS configuration is required — all traffic appears to come from the
+same origin.
 
 Alfred must be running (`uv run python -m runner`) before `npm run dev` is useful.
 
@@ -305,14 +975,18 @@ cd web && npm run build   # outputs to web/dist/
 
 ### Serving (Python side)
 
-`core/channels/web_server.py` calls `mount_spa(app, web_dist_path)` at startup if
+`core/channels/web_server.py` calls `mount_spa(app, _SPA_DIST)` at startup if
 `web/dist/` exists. The `mount_spa` function (`core/channels/spa.py`):
 
 1. Mounts `web/dist/assets/` at `/assets` via FastAPI `StaticFiles`.
 2. Adds a catch-all `GET /{full_path:path}` handler that:
    - Returns the file at `web/dist/{full_path}` if it exists and is within `dist/`
      (path containment check: `candidate.is_relative_to(dist.resolve())`).
-   - Falls back to `web/dist/index.html` for all other paths (client-side routing support).
+   - Falls back to `web/dist/index.html` for all other paths — which is what makes
+     `/actions/{id}` load from a cold notification tap.
+   - **Except** `api/*`, `ws*` and `health` (`_NON_SPA_PREFIXES` / `_NON_SPA_PATHS`),
+     which raise a real 404. A REST or WebSocket client hitting a renamed endpoint —
+     the iOS AlfredKit client, say — must get a 404, not 200 and a page of HTML.
 
 If `web/dist/` is absent (dev mode), `mount_spa` is a no-op — the dev Vite server handles
 the SPA.
@@ -323,118 +997,60 @@ The `Containerfile` has a dedicated build stage:
 
 ```dockerfile
 FROM node:22-slim AS webbuild
-COPY web/package.json web/package-lock.json ./
-COPY web/ ./
+WORKDIR /web
+COPY alfred/web/package.json alfred/web/package-lock.json ./
+RUN npm ci
+COPY alfred/web/ ./
 RUN npm run build
 
 # In the main stage:
 COPY --from=webbuild /web/dist /app/web/dist
 ```
 
+(The build context is the directory *above* the checkout — hence `alfred/web/`.)
+
 The `webbuild` stage produces `web/dist/`; the main stage copies only the compiled
 output. Node.js is not present in the production image.
 
 Hashed asset filenames (e.g. `/assets/index-Bx3kYp9z.js`) are generated by Vite for
-cache busting. Note: `NoCacheStaticMiddleware` currently applies `Cache-Control: no-cache`
-to all static responses. Immutable cache headers for `/assets/*` are tracked in
-[docs/backlog/low/web-asset-cache-headers.md](backlog/low/web-asset-cache-headers.md).
+cache busting. `SpaCacheMiddleware` (`core/channels/spa.py`) turns that into a
+three-tier `Cache-Control` policy over everything outside `/api/`, which is left
+untouched:
+
+| Response | Header | Why |
+| --- | --- | --- |
+| `/assets/*`, status < 400 | `public, max-age=31536000, immutable` | Content-hashed, so the bytes behind a URL never change. Errors are excluded — a pinned 404 has no URL to bust it. |
+| `text/html` | `no-cache, no-store, must-revalidate` | `index.html` and every SPA-fallback route: never stored, so a deploy is picked up on the next load. |
+| everything else | `no-cache, must-revalidate` | Unhashed `web/public/` files (`/icon.svg`, `/manifest.json`): revalidated on every load. |
+
+Tier 3 does not save bandwidth today. `mount_spa`'s fallback serves those files through a
+bare `FileResponse`, which ignores `If-None-Match`/`If-Modified-Since` — only
+`StaticFiles.get_response` honours conditional requests — so a revalidation returns 200
+with the full body, not a 304. `no-cache, must-revalidate` is still the correct header:
+it is what a caching proxy in front of Alfred needs, and the 304 arrives for free if the
+fallback ever grows conditional handling.
 
 ---
 
-## Component Data Flow
+## What phases 1 to 3 do not cover
 
-```mermaid
-graph TD
-    subgraph Browser
-        QC[QueryClient<br/>TanStack Query]
-        Router[BrowserRouter<br/>react-router v7]
+- **Install, standalone and Reach gates, the service worker, icons and Web Push** —
+  phases 4 and 5. `web/public/manifest.json` ships SVG only and carries the phase-1
+  palette's dark ground; it cannot follow the theme the way `applyTheme` rewrites the
+  `theme-color` meta, so a light-hour install gets a dark splash until phase 4 says
+  otherwise. System has **no Reach card**: it would be a control that cannot work,
+  which is the defect the phase-2 placeholder tabs were.
+- **Trigger editing, service restart and log download** — the three things the old SPA
+  could do that no endpoint supports. Only the first is said out loud in the client: the
+  Triggers footer reads `Nothing here edits a trigger — ask Alfred to change or remove
+  one.` (`TriggersBench.tsx:160-161`). Restart and log download are absent without comment,
+  because System has no ops section for a sentence to sit in. `docs/backlog/low/pwa-phase3-followups.md`
+  §7 and §10 name the routes each would need.
+- **Telemetry `status`/`error` frames** (`redis_error`, `invalid JSON`) still reach only
+  the console, rate-limited by `WARN_EVERY_MS`. The System bench reports the *reads* that
+  failed, not the socket's own frames.
+- **Desktop** — phase 6. The client is phone-first and there is no wide composition.
 
-        subgraph AlfredProvider
-            ChatSock[ChatSocket<br/>/ws]
-            TelSock[TelemetrySocket<br/>/ws/telemetry]
-            StatusCtx[AlfredStatusContext<br/>chatStatus · telemetryStatus]
-            FeedCtx[AlfredFeedContext<br/>feed ring buffer 500]
-        end
-
-        subgraph AppShell
-            IconRail[IconRail<br/>useAlfredStatus]
-            TopBar[TopBar]
-            Outlet[Page Outlet]
-            CmdPalette[CommandPalette ⌘K]
-        end
-
-        subgraph Pages
-            ChatPage[ChatPage<br/>useChat + TelemetryRail]
-            ActivityPage[ActivityPage<br/>useAlfredFeed]
-            MemoryPage[MemoryPage]
-            TriggersPage[TriggersPage]
-            HealthPage[HealthPage]
-            SettingsPage[SettingsPage]
-        end
-
-        subgraph TelemetryRail
-            Vitals[Vitals<br/>COST · SESSIONS · DND · EVENTS/MIN]
-            FeedPreview[Feed preview<br/>14 latest entries]
-        end
-    end
-
-    subgraph "Alfred :8081"
-        WS_CHAT["/ws chat"]
-        WS_TEL["/ws/telemetry"]
-        REST["/api/admin/* /api/*"]
-    end
-
-    ChatSock -->|WebSocket| WS_CHAT
-    TelSock  -->|WebSocket| WS_TEL
-    QC       -->|REST fetch| REST
-
-    ChatSock --> StatusCtx
-    TelSock  --> StatusCtx
-    TelSock  --> FeedCtx
-
-    StatusCtx --> IconRail
-    FeedCtx   --> ActivityPage
-    StatusCtx & FeedCtx --> ChatPage
-    StatusCtx & FeedCtx --> TelemetryRail
-
-    QC --> MemoryPage
-    QC --> TriggersPage
-    QC --> HealthPage
-    QC --> SettingsPage
-    QC --> TelemetryRail
-```
-
----
-
-## Memory Page — Episodic Search Behavior
-
-The Memory page's episodic tab calls `GET /api/admin/memory/episodic?q=<query>` on Enter.
-The server uses `EpisodicMemory.recall(update_stats=False)` — retrieval counters are NOT
-incremented. This is intentional: admin browsing must not perturb the
-`retrieval_count`/`last_retrieved` fields that the Librarian uses for decay decisions.
-
----
-
-## Activity Page — Live + Backfill Merge
-
-`ActivityPage` merges two data sources when a stream filter is active:
-
-1. **Live feed** — real-time entries from `AlfredFeedContext` (capped to `FEED_MAX = 500`).
-2. **Historical backfill** — `GET /api/admin/streams/{name}?count=100` (TanStack Query,
-   fetched when a stream is selected).
-
-Entries are deduplicated by `id` and sorted newest-first by Redis stream ID.
-When no stream filter is active, only the live feed is shown.
-
----
-
-## ⌘K Command Palette
-
-`CommandPalette` (`shell/CommandPalette.tsx`) opens on `⌘K` / `Ctrl+K`.
-
-**Navigation group:** Chat, Activity, Memory, Triggers, Health, Settings.
-
-**Controls group:** DND on, DND off, Drain deferred notifications, Run Librarian now.
-
-Controls call the admin REST API via `post()`. On success, TanStack Query keys
-`["overview"]`, `["deferred"]`, and `["triggers"]` are invalidated.
+Open follow-ups: `docs/backlog/low/pwa-phase1-followups.md`,
+`docs/backlog/low/pwa-phase2-followups.md` and
+`docs/backlog/low/pwa-phase3-followups.md`.

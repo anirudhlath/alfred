@@ -32,6 +32,7 @@ flowchart TB
     subgraph HOST["Host (macOS dev / CachyOS prod)"]
         Browser["Browser / iOS app"]
         Ollama["Ollama (optional, external)"]
+        Embed["Embedding server (optional, external)"]
         OR["OpenRouter (external)"]
         subgraph C["alfred container — one fat OCI image"]
             tini["tini (PID 1)"]
@@ -49,6 +50,7 @@ flowchart TB
     end
     Browser -->|"only :8081 exposed"| core
     core -.->|OLLAMA_HOST / OPENROUTER_API_KEY| Ollama
+    core -.->|"EMBEDDING_HOST (only when EMBEDDING_BACKEND=openai)"| Embed
     core -.-> OR
     C -.->|"volume: /data (persistent mode)"| DataVol[("data volume")]
     C -.->|"volume: /models (HF + voice model cache)"| ModelVol[("model cache volume")]
@@ -75,6 +77,7 @@ sequenceDiagram
     participant Agent as HomeAgent
     participant Svc as home-service
     participant HA2 as Home Assistant
+    participant Ing as Memory Ingestor
 
     HA->>MQTT: Publish state change (home/state_changed)
     MQTT->>Bridge: Deliver message
@@ -94,14 +97,22 @@ sequenceDiagram
         Agent-->>Runner: ActionResult
         Runner->>Redis: XADD alfred:home:action_results
         Runner->>Redis: LPUSH alfred:scratchpad:queue
+        Runner->>Redis: XADD alfred:reflex:observations (action + result)
+    else No action — passive observation
+        Runner->>Redis: SET alfred:observer:seen:{entity_id} NX EX 300
+        opt Debounce window free
+            Runner->>Redis: XADD alfred:reflex:observations (action = null)
+        end
     end
     Runner->>Redis: XACK (acknowledge processed message)
+    Redis->>Ing: XREADGROUP memory-ingestor
+    Ing->>Redis: write episodic entry (ctx:{observation_id})
 ```
 
 **Key behaviors:**
 
 - If Ollama is down, `process_event` raises an exception. The Runner does NOT ACK the message, so Redis redelivers it on the next `XREADGROUP` cycle.
-- If the SLM returns `{"action": "none"}`, no action is dispatched and the message is ACKed normally.
+- If the SLM returns `{"action": "none"}`, no action is dispatched and the message is ACKed normally — but the event is no longer forgotten. `observe_passively()` (`core/reflex/runner.py`) publishes a `ReflexObservation` with `action=None` to `alfred:reflex:observations`, debounced per entity by a `SET NX EX` on `alfred:observer:seen:{entity_id}` (`OBSERVATION_DEBOUNCE_SECONDS`, default 300). The write is best-effort and wrapped in its own `try` — a failure is logged and the message is still ACKed, because a passive observation is bookkeeping for an event the engine has already finished handling, and propagating would feed every no-action event back into a fresh SLM inference on the next reclaim pass. See 3.7.1 and [the design spec](superpowers/specs/2026-09-03-passive-observation-design.md).
 - The SLM response is validated: `target_service` must match a registered service in the tool registry. Unknown services are rejected.
 
 ## 3. Component Architecture
@@ -118,6 +129,7 @@ graph TB
         Runner["Reflex Runner<br/><code>uv run python -m core.reflex</code>"]
         AttnSet["AttentionSet<br/>Tier-2 SLM gate"]
         Engine[Reflex Engine]
+        Observer["observe_passively()<br/>per-entity debounce"]
         CtxReader[ContextReader]
         Registry[ToolRegistry]
         MemReader[Memory Reader]
@@ -162,6 +174,8 @@ graph TB
     end
 
     subgraph "Memory System"
+        Ingestor["Memory Ingestor<br/><code>uv run python -m core.memory.ingestor_main</code>"]
+        Scorer["SignificanceScorer ×2<br/>alfred:entity:freq +<br/>alfred:entity:freq:observed"]
         EpisodicStore[EpisodicStore<br/>Redis hot + SQLite cold]
         SemanticProfile["Semantic Profiles<br/>core/memory/profile/*.md"]
         Routines["Procedural Routines<br/>core/memory/routines/*.yaml"]
@@ -222,6 +236,10 @@ graph TB
     DomRouter -->|SET/GETDEL<br/>alfred:pending_actions:*| Redis
     Runner --> ScratchWriter
     Runner --> TelCollector
+    Runner -->|"action is None"| Observer
+    Observer -->|"SET NX EX<br/>alfred:observer:seen:*"| Redis
+    Runner -->|"ReflexObservation XADD<br/>alfred:reflex:observations"| Redis
+    Observer -->|"ReflexObservation XADD<br/>(action = null)"| Redis
 
     Engine --> CtxReader
     Engine --> Registry
@@ -274,6 +292,10 @@ graph TB
     SessionMgr -->|GET/SET sessions| Redis
     CostTracker -->|GET/SET cost| Redis
     IdentityGate -->|voiceprint lookup| Redis
+    Ingestor -->|"XREADGROUP + reclaim_stale<br/>alfred:reflex:observations"| Redis
+    Ingestor --> Scorer
+    Ingestor -->|"write EpisodicEntry"| EpisodicStore
+    Scorer -->|"ZINCRBY entity frequency"| Redis
     EpisodicStore -->|hot writes| Redis
     EpisodicStore -->|cold archive| SQLite["SQLite DB"]
     Librarian -->|drain scratchpad| Redis
@@ -439,7 +461,7 @@ Alfred's memory is biologically-inspired with three layers:
 
 **Episodic Memory** (`core/memory/episodic/`):
 
-Two-tier storage: Redis for hot (recent) entries, SQLite for cold archive. Entries are `EpisodicEntry` models with timestamps, source, content, and importance scores. Embeddings are computed via `sentence-transformers` for semantic search. A `DecayScheduler` handles time-based importance decay.
+Two-tier storage: Redis for hot (recent) entries, SQLite for cold archive. Entries are `EpisodicEntry` models with timestamps, source, content, and importance scores. Embeddings are computed via the configured embedding backend (see [3.7.2](#372-embedding-backends)) for semantic search. A `DecayScheduler` handles time-based importance decay.
 
 **Semantic Memory** (`core/memory/profile/`, `core/memory/preferences/`):
 
@@ -453,11 +475,123 @@ YAML-defined routines (e.g., morning routine, bedtime routine) that encode learn
 
 **Scratchpad** (`core/memory/scratchpad.md`):
 
-Append-only log of runtime observations. Components push entries to `alfred:scratchpad:queue` via `LPUSH`. The `ScratchpadWriter` drains the queue every 5 seconds and appends to disk.
+Append-only log of runtime observations. Components push entries to `alfred:scratchpad:queue` via `LPUSH`. The `ScratchpadWriter` drains the queue every 5 seconds, appends to disk, and forwards the same entries to `alfred:librarian:queue` (`RPUSH`) for consolidation.
+
+The writer is the **only** consumer of `alfred:scratchpad:queue`. When the Librarian also drained it, the 5-second writer beat the hourly Librarian every time and consolidation always saw an empty queue — nothing a user said ever reached long-term memory. Give any new consumer its own fan-out queue rather than a second claim on this one.
 
 **Librarian** (`core/librarian/consolidator.py`):
 
-Nightly consolidation process. Drains the scratchpad via atomic `RENAME`, extracts episodic entries, archives to cold storage, and updates semantic profiles. Run via `python -m core.librarian`.
+Nightly consolidation process. Drains `alfred:librarian:queue` via atomic `RENAME` (to `alfred:librarian:queue:processing`, deleted only after episodic writes succeed, so a crash mid-cycle replays rather than loses), extracts episodic entries, archives to cold storage, and updates semantic profiles. Stamps `alfred:librarian:status` after every cycle that completes, no-op cycles included — a cycle that raises between the drain and the tail never reaches the stamp (`scheduler.py` swallows the exception and carries on), so the hash can lag a failing pass. Run via `python -m core.librarian`.
+
+#### 3.7.1 Memory Ingestor (Reflex → Episodic)
+
+**Files:** `core/memory/ingestor.py`, `core/memory/ingestor_main.py`, `core/memory/significance.py`
+
+A supervised process (`memory-ingestor` in `runner/__main__.py`) that consumes
+`alfred:reflex:observations` with consumer group `memory-ingestor` and turns each
+`ReflexObservation` into an `EpisodicEntry`. Two components publish to that stream —
+`core/reflex/runner.py` and `core/routing/domain_router.py` — and this is its only
+consumer group (the admin API's stream browser reads it with `XREVRANGE`, without a
+group). It handles **two** shapes of observation:
+
+| `obs.action` | `EpisodicEntry.source` | Summary | Frequency key used for novelty |
+|---|---|---|---|
+| an `ActionRequest` | `"reflex"` | `[reflex:{origin}] {tool_name}({params}) → {status}` | `alfred:entity:freq` |
+| `None` (passive) | `"observation"` | `[observation] {entity}: {old} → {new} (key=value, …)` | `alfred:entity:freq:observed` |
+
+**Passive observations** are the no-action path described in [Section 2](#2-event-pipeline):
+the Reflex Engine saw the event, considered it, and did nothing. Before this existed the
+event was dropped, so episodic memory only ever contained what Alfred *did* — and the
+Librarian's pattern detection, which reads episodic entries, had nothing to run over. The
+summary folds a fixed tuple of salient attributes (`media_title`, `brightness`,
+`temperature`, `friendly_name`) in as `key=value` pairs so the consolidation LLM — which
+sees only `- {summary}` — can correlate on them; the semantic key is
+`Observed {entity} change from {old} to {new}`.
+
+**Two scorers, deliberately.** `ingestor_main.py` builds a second `SignificanceScorer`
+bound to `OBSERVED_FREQUENCY_KEY` and passes it as a **required** argument. Novelty is
+`1/count` over a `ZINCRBY`'d sorted set, so running ~200–300 passive observations a day
+through the shared `alfred:entity:freq` would drive every count high enough to flatten
+novelty for real reflex actions too. The argument is required rather than optional
+because an omitted keyword silently produced exactly that contamination.
+
+**Delivery.** Entry ids are `obs.observation_id`, minted at publish time, so a redelivery
+overwrites the same `ctx:{id}` hash instead of writing a second copy. The loop ACKs only
+on success and therefore reclaims its PEL — with `reclaim_stale()`, the one deliberate
+exception to `reclaim_replayable()` in the codebase, because a ten-minute-old observation
+is still worth *remembering* even though it is too stale to *act on*. Unparseable payloads
+are ACKed and dropped; an entry that parses but fails deterministically downstream is
+retried at most `_MAX_DELIVERY_ATTEMPTS` (5) times, counted in
+`alfred:memory:ingest:attempts`, then ACKed away — otherwise it sits at the head of the
+PEL and starves everything behind it.
+
+Passive observations surface in the episodic tab of the web Memory page, rendered by
+`web/src/lib/format.ts` as `{entity}: {old} → {new}` rather than the bare word
+"observation". Full rationale and the seven-day review point:
+[docs/superpowers/specs/2026-09-03-passive-observation-design.md](superpowers/specs/2026-09-03-passive-observation-design.md).
+
+#### 3.7.2 Embedding backends
+
+`EmbeddingProvider` (`core/memory/embedding_provider.py`) has two implementations, selected
+per process by `EMBEDDING_BACKEND` through `build_embedding_provider()`
+(`core/memory/embedding_backend.py`) — the memory counterpart of the `REFLEX_BACKEND` seam in
+`core/reflex/inference.py`:
+
+| Backend | Class | Where the model lives |
+|---|---|---|
+| `sentence_transformers` (default) | `SentenceTransformerProvider` | In-process, one copy per service |
+| `openai` | `OpenAICompatEmbeddingProvider` | A shared OpenAI-compatible embeddings server at `EMBEDDING_HOST` |
+
+Four services construct a provider (conscious, channels/admin, memory ingestor, librarian).
+Under the default backend each loads its own copy of the model and of torch; the `openai`
+backend collapses that onto one resident model. vLLM serves embeddings when started with
+`--runner pooling`. The factory is a registry keyed by backend name — an accepted name and
+its builder are the same entry, so a backend cannot be added and then silently fall through
+to another one's provider — and `AlfredConfig.from_env()` rejects an unrecognised
+`EMBEDDING_BACKEND` before any service starts, so a typo fails once and identically
+everywhere rather than disabling memory in some processes and crashing others.
+
+`EMBEDDING_MODEL` names the model under either backend, so `EMBEDDING_DIM` keeps tracking it
+via `embedding_dim_for()`. Width is then checked in three places, because a mismatch is
+otherwise silent: the HTTP provider verifies **every** response against `EMBEDDING_DIM` (not
+only at warmup — a shared server can be restarted onto a different model while a service
+holds a provider for days), both vector stores refuse to run against an index built at a
+different width and latch that refusal with the recovery procedure in the error text (indexed
+by symptom in `docs/deployment.md`), and `alfredctl doctor --online` POSTs one embedding and compares what
+the server actually emits.
+
+None of the three is a preflight against the data you already have. All three compare
+config to the *server*; nothing compares config to the **existing index**, which is what
+actually breaks — `doctor` never opens Redis or the cold SQLite file, so it reports a green
+embeddings row for a model change that will latch both stores on the next start. Look before
+you change `EMBEDDING_MODEL`/`EMBEDDING_BACKEND`: `redis-cli FT.INFO idx:context` reports the
+hot index's `dim` (`docker exec <alfred-container> redis-cli …` in a container deployment),
+and the cold widths are in the `vec_episodic_content`/`vec_episodic_semantic` DDL in
+`sqlite_master`. If either differs from the width of the model you are moving to, plan the
+recovery in `docs/deployment.md` before restarting, not after.
+
+`EmbeddingProvider` carries concrete `warmup()` and `aclose()` defaults, so a caller holding
+the ABC never needs to know which backend it got. Services warm through `core/warmup.py` and
+release through `teardown()` (`core/shutdown.py`), which drains the background tasks holding
+the provider before closing it — the HTTP backend owns an httpx connection pool, the
+in-process one owns nothing and no-ops.
+
+Two behavioural differences are worth knowing before switching. **Over-long input:**
+`sentence-transformers` silently truncates at the model's max sequence length, while an
+OpenAI-compatible server hard-fails with HTTP 400, so a long preferences or profile document
+that indexes today can fail outright after the switch (the server's own message is preserved
+in the raised error). **Round trips:** `EpisodicMemory.write()`, its migration path and
+`ContextIndexManager.index_episodic()` each `asyncio.gather` two `embed()` calls — cheap
+in-process, but two HTTP requests where one `embed_batch()` would do.
+
+`EMBEDDING_HOST` is a **bare origin** — the client appends `/v1/embeddings` itself, and a
+trailing `/v1` (exactly how vLLM and the OpenAI docs print base URLs) is stripped for you
+rather than producing `/v1/v1/embeddings`, a 404 from an otherwise healthy server. It is also
+rewritten from `localhost` to the container→host gateway by both launch paths, via
+`shared/gateway.py`. Two more env vars apply to this backend: `EMBEDDING_API_KEY` is sent as a
+bearer token when set (for a server started with `--api-key`), and `EMBEDDING_TIMEOUT_SECONDS`
+bounds read/write per request (default 30s; connect is pinned at 5s because involuntary recall
+embeds the user's query inline in the reply path).
 
 ### 3.8 Conscious Engine (System 2)
 
@@ -514,8 +648,10 @@ pipeline.
 **Admin API** (`core/channels/admin_api.py`):
 
 Read-only observability endpoints plus curated controls, all under `/api/admin/`. Requires
-both a trusted network IP (localhost or Tailscale CGNAT) and a valid `alfred_auth` session
-cookie. See [docs/admin-api.md](admin-api.md) for full details.
+a valid `alfred_auth` session cookie and nothing else — the trusted-network gate is reserved
+for the endpoints that can mint or widen credentials (passkey registration, credential
+writes, device tokens, voice enrolment). See [docs/admin-api.md](admin-api.md) for full
+details.
 
 **Telemetry WebSocket** (`core/channels/telemetry_ws.py`):
 
@@ -646,7 +782,7 @@ by urgency level. URGENT notifications always bypass DND.
 
 ## 4.5 Authentication (WebAuthn)
 
-The web PWA uses passkey-based authentication via the WebAuthn standard. Registration is gated to the Tailscale trusted network. Auth sessions are stored in Redis and carried via HttpOnly cookies. The WebSocket handler validates the cookie on connection and rejects unauthenticated clients (code 4001). See [docs/webauthn.md](webauthn.md) for details.
+The web PWA uses passkey-based authentication via the WebAuthn standard. Registration is gated to trusted networks (loopback, RFC1918 and Tailscale by default; tune with `ALFRED_TRUSTED_NETWORKS` / `ALFRED_TRUSTED_NETWORKS_STRICT`) **or** a valid `X-Pairing-Code` header — a 6-digit code minted by a signed-in device (`POST /api/auth/pairing`), good for 5 minutes, with wrong guesses budgeted per client address — a single IPv4 address or an IPv6 /64 — (10, then that client is refused for the rest of its 5-minute counter; the code is never destroyed by a guess) — which is how a phone enrols from outside the LAN. Auth sessions are stored in Redis (8h TTL, no sliding renewal) and carried via HttpOnly cookies; a signed-in session can list and end sessions, and list and remove passkeys (never the last one). The WebSocket handler validates the cookie on connection and rejects unauthenticated clients (code 4001). See [docs/webauthn.md](webauthn.md) for details.
 
 ## 5. Data Flow
 
@@ -677,6 +813,7 @@ graph LR
 | `UserRequest` | Interaction channels | Inbound user interaction (text/audio) | `channel`, `session_id`, `identity_claim`, `content_type`, `content` |
 | `AlfredResponse` | Conscious Engine | Outbound response to user | `channel`, `session_id`, `text`, `actions_taken`, `mood` |
 | `TriggerCreated` | Trigger Engine | A trigger was dynamically created | `trigger_type`, `name`, `conditions`, `action`, `one_shot` |
+| `ReflexObservation` | Reflex Runner, DomainRouter | Records what the reflex did — or saw and chose not to do (`action`/`result` are `None`) | `origin`, `trigger_event`, `action`, `result`, `decision_context` |
 
 All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `timestamp`, and `source`.
 
@@ -687,7 +824,9 @@ All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `
 | `alfred:home:state_changed` | Stream | State change events from the home domain |
 | `alfred:home:action_results` | Stream | Action execution results |
 | `alfred:tool_registry` | Hash | Service name to tool manifest JSON |
-| `alfred:scratchpad:queue` | List | Pending scratchpad observations |
+| `alfred:scratchpad:queue` | List | Pending scratchpad observations (drained by `ScratchpadWriter` only) |
+| `alfred:librarian:queue` | List | Consolidation feed — writer fan-out, drained by the Librarian |
+| `alfred:librarian:status` | Hash | Librarian run status — `last_run_at` (ISO), `reviewed` (count, as str), `next_run_at` (ISO); written best-effort by the consolidator and scheduler |
 | `alfred:context:{service}` | String (JSON) | Service entity context snapshot (TTL 600s) |
 | `alfred:triggers` | Hash | Trigger ID → JSON (Trigger Engine runtime store) |
 | `alfred:triggers:changed` | Pub/Sub | Cross-process `TriggerStore` coherence (saved/deleted/tz-changed) |
@@ -697,11 +836,19 @@ All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `
 | `alfred:sessions:{id}` | String (JSON) | Conversation session state |
 | `alfred:cost:daily` | String (JSON) | Daily Claude API cost tracking |
 | `alfred:memory:episodic` | Stream | Hot episodic memory entries |
+| `alfred:reflex:observations` | Stream | `ReflexObservation` feed — reflex actions *and* passive observations, drained by the `memory-ingestor` group |
+| `alfred:entity:freq` | Sorted Set | Entity sighting counts behind the novelty dimension of `SignificanceScorer` (novelty = `1/count`) |
+| `alfred:entity:freq:observed` | Sorted Set | The same counts for **passive** observations only — a separate population, so ~200–300 entries/day cannot flatten novelty for real reflex actions |
+| `alfred:observer:seen:{entity_id}` | String | Per-entity passive-observation debounce (`SET NX EX`, TTL `OBSERVATION_DEBOUNCE_SECONDS`, default 300); present means "already recorded this entity recently, skip" |
+| `alfred:memory:ingest:attempts` | Hash | Stream-entry ID → delivery count for the Memory Ingestor; at 5 the entry is ACK-dropped so a deterministically-failing entry cannot starve the PEL (TTL 3600s, crash-safety net only) |
 | `alfred:identity:voiceprint` | Hash | Voiceprint embeddings for identity |
 | `alfred:notifications:queue` | Stream | Proactive notification queue |
 | `alfred:attention:{domain}` | Set | Tier-2 Reflex attention set membership (`core/reflex/attention.py`) |
 | `alfred:attention:{domain}:seen` | Set | Sticky removals -- entities the YAML seed must not re-add |
 | `alfred:pending_actions:{request_id}` | String (JSON) | Parked critical `ActionRequest` awaiting confirmation (TTL 300s, `core/routing/pending.py`) |
+| `alfred:auth:{session_id}` | Hash | Passkey session: `authenticated`, `credential_id`, `created_at`, `ip`, `user_agent`, `channel` (TTL 8h, `core/identity/auth_routes.py`) |
+| `alfred:webauthn:pairing` | String | The active 6-digit device-pairing code (TTL 300s, single-use) |
+| `alfred:webauthn:pairing:fails:{bucket}` | String (int) | Wrong guesses from one client address — a single IPv4 address (`203.0.113.5`) or an IPv6 /64 (`2001:db8::/64`) (TTL 300s); at 10 that client is refused for the rest of the TTL, even with the correct code — the code itself stays live for every other client |
 
 ### 5.3 Consumer Groups
 
@@ -710,6 +857,11 @@ The Reflex Runner uses a consumer group (`reflex-engine`, consumer `worker-1`) o
 - At-least-once delivery (messages are not lost if the consumer crashes).
 - Future horizontal scaling (add `worker-2`, `worker-3`, etc.).
 - Message acknowledgment (`XACK`) only after successful processing.
+
+At-least-once is only real if the loop reclaims its own pending-entries list: `XREADGROUP '>'`
+delivers *new* messages only, so an entry left un-ACKed by a failure is never redelivered on its
+own. The Memory Ingestor (`memory-ingestor` on `alfred:reflex:observations`) reclaims every ~60s
+via `reclaim_stale()` and caps redeliveries at 5 — see 3.7.1 and the rule in `CLAUDE.md`.
 
 ## 6. Configuration
 

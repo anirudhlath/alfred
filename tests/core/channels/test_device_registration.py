@@ -1,19 +1,15 @@
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.core.channels.conftest import _TEST_SESSION_ID, make_session_redis
+
 
 @pytest.fixture
 def mock_redis():
-    mock = AsyncMock()
-    mock.hset = AsyncMock()
-    mock.hdel = AsyncMock()
-    mock.hgetall = AsyncMock(return_value={})
-    mock.close = AsyncMock()
-    mock.xread = AsyncMock(return_value=[])
-    return mock
+    return make_session_redis()
 
 
 @pytest.fixture
@@ -29,7 +25,39 @@ def app(mock_redis):
 
 @pytest.fixture
 def client(app):
+    """Signed-in client. Device tokens are credential-equivalent: the endpoint needs
+    a passkey session *and* a trusted network (TestClient's peer is trusted)."""
+    c = TestClient(app)
+    c.cookies.set("alfred_auth", _TEST_SESSION_ID)
+    return c
+
+
+@pytest.fixture
+def anon_client(app):
     return TestClient(app)
+
+
+def test_register_device_requires_session(anon_client, mock_redis) -> None:
+    resp = anon_client.post(
+        "/api/devices/register",
+        json={
+            "device_token": "aabbccdd11223344aabbccdd11223344",
+            "platform": "ios",
+            "identity": "sir",
+        },
+    )
+    assert resp.status_code == 401
+    mock_redis.hset.assert_not_called()
+
+
+def test_unregister_device_requires_session(anon_client, mock_redis) -> None:
+    resp = anon_client.request(
+        "DELETE",
+        "/api/devices/register",
+        json={"device_token": "aabbccdd11223344aabbccdd11223344"},
+    )
+    assert resp.status_code == 401
+    mock_redis.hdel.assert_not_called()
 
 
 def test_register_device_stores_token(client, mock_redis) -> None:
@@ -65,7 +93,7 @@ def test_unregister_device_removes_token(client, mock_redis) -> None:
     mock_redis.hdel.assert_called_once_with("alfred:push:devices", token)
 
 
-def test_register_device_missing_token_returns_422(client, mock_redis) -> None:
+def test_register_device_missing_token_returns_422(client) -> None:
     resp = client.post(
         "/api/devices/register",
         json={"platform": "ios", "identity": "sir"},
@@ -73,7 +101,7 @@ def test_register_device_missing_token_returns_422(client, mock_redis) -> None:
     assert resp.status_code == 422
 
 
-def test_register_device_short_token_rejected(client, mock_redis) -> None:
+def test_register_device_short_token_rejected(client) -> None:
     """Device tokens shorter than 32 hex chars are rejected."""
     resp = client.post(
         "/api/devices/register",
@@ -82,7 +110,7 @@ def test_register_device_short_token_rejected(client, mock_redis) -> None:
     assert resp.status_code == 422
 
 
-def test_register_device_non_hex_token_rejected(client, mock_redis) -> None:
+def test_register_device_non_hex_token_rejected(client) -> None:
     """Device tokens with non-hex characters are rejected."""
     resp = client.post(
         "/api/devices/register",
@@ -95,7 +123,7 @@ def test_register_device_non_hex_token_rejected(client, mock_redis) -> None:
     assert resp.status_code == 422
 
 
-def test_register_device_invalid_platform_rejected(client, mock_redis) -> None:
+def test_register_device_invalid_platform_rejected(client) -> None:
     """Only ios/ipados/macos platforms are accepted."""
     resp = client.post(
         "/api/devices/register",
@@ -108,7 +136,7 @@ def test_register_device_invalid_platform_rejected(client, mock_redis) -> None:
     assert resp.status_code == 422
 
 
-def test_unregister_device_invalid_token_rejected(client, mock_redis) -> None:
+def test_unregister_device_invalid_token_rejected(client) -> None:
     """Unregistration also validates device token format."""
     resp = client.request(
         "DELETE",

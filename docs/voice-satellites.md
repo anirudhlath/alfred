@@ -199,10 +199,12 @@ enrolled=False`.
 field per enrolled identity, value is a mean-normalized 192-dim ECAPA embedding as float32
 bytes.
 
-**Enrollment:** the web Settings page's Voice Enrollment card (`web/src/pages/
-VoiceEnrollmentCard.tsx`) records 3 mic samples and reads them aloud against rotating prompts,
-then `POST`s all three to `/api/voice/enroll` (trusted-network + authenticated-session gated,
-`core/channels/web_server.py`). The handler decodes each sample to 16kHz PCM
+**Enrollment:** `POST /api/voice/enroll` (trusted-network + authenticated-session gated,
+`core/channels/web_server.py`) takes 3 recorded samples of the identity speaking. **There is
+no client surface for it in PWA phase 1** — the Settings page that carried the Voice
+Enrollment card was removed in the hard cut, and the Workshop that reinstates one is phase 2
+(`docs/backlog/low/pwa-phase1-followups.md` §5). Until then the endpoint is driven directly.
+The handler decodes each sample to 16kHz PCM
 (`core/voice/audio.decode_to_pcm16k`) and calls `SpeakerID.enroll(identity, samples)`, which
 embeds each sample, averages them, L2-normalizes, and writes to the Redis hash.
 

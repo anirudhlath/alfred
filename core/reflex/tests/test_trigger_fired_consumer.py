@@ -377,5 +377,7 @@ async def test_handle_trigger_fired_publishes_observation(
     obs_json = obs_call.args[1]["event"]
     obs = ReflexObservation.model_validate_json(obs_json)
     assert obs.origin == "trigger_fired"
+    assert obs.action is not None
     assert obs.action.tool_name == "lighting.dim_lights"
+    assert obs.result is not None
     assert obs.result.status == "success"

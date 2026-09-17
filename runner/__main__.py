@@ -10,26 +10,25 @@ Pass ``--debug`` to enable verbose LiteLLM logging.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
+import pwd
 import shutil
 import sys
 from pathlib import Path
 
 from runner.supervisor import ServiceSpec, Supervisor
 from shared.config import AlfredConfig, data_mode, data_path, data_root
+from shared.env import is_truthy_flag
+from shared.gateway import GATEWAY_REWRITE_KEYS
 from shared.logging import configure_logging
 from shared.otel import init_tracing
 
-# Env vars pointing at host services — localhost inside a container means the container
-# itself, not the host. Rewrite to the container→host gateway so `docker compose up` with
-# OLLAMA_HOST=localhost "just works", matching what `alfredctl up` already does.
-_GATEWAY_REWRITE_KEYS = (
-    "OLLAMA_HOST",
-    "LMSTUDIO_HOST",
-    "OPENAI_COMPAT_HOST",
-    "HA_HOST",
-    "OTEL_EXPORTER_OTLP_ENDPOINT",
-)
+logger = logging.getLogger(__name__)
+
+# Which env vars get rewritten lives in shared/gateway.py, one copy for both launch
+# paths, so `docker compose up` with OLLAMA_HOST=localhost "just works" and means the
+# same thing as `alfredctl up`.
 # Docker adds host.docker.internal via extra_hosts; Podman uses host.containers.internal.
 _GATEWAY_HOSTS = ("host.docker.internal", "host.containers.internal")
 
@@ -59,7 +58,7 @@ def rewrite_host_gateway(env: dict[str, str] | None = None) -> None:
     gateway = _reachable_gateway()
     if gateway is None:
         return
-    for key in _GATEWAY_REWRITE_KEYS:
+    for key in GATEWAY_REWRITE_KEYS:
         value = target.get(key, "")
         if "localhost" in value or "127.0.0.1" in value:
             target[key] = value.replace("localhost", gateway).replace("127.0.0.1", gateway)
@@ -90,7 +89,7 @@ def build_services() -> list[ServiceSpec]:
         ),
         ServiceSpec(name="memory-ingestor", module="core.memory.ingestor_main", delay=1.5),
     ]
-    if os.getenv("ALFRED_MANAGE_INFRA", "").lower() in ("1", "true", "yes"):
+    if is_truthy_flag(os.getenv("ALFRED_MANAGE_INFRA")):
         services = _infra_services() + services
     return services
 
@@ -164,7 +163,29 @@ def _write_mosquitto_conf() -> Path:
         f"persistence_location {conf.parent}/\n"
         "log_dest stdout\n"
     )
+    _grant_broker_ownership(conf.parent)
     return conf
+
+
+def _grant_broker_ownership(persistence_dir: Path) -> None:
+    """Hand the persistence dir to the ``mosquitto`` user.
+
+    Started as root, mosquitto drops privileges to ``mosquitto`` — but the runner
+    creates this directory as root, so the broker cannot create ``mosquitto.db``
+    inside it and every autosave fails with EACCES. No-op when the runner is
+    already unprivileged (native dev) or the user does not exist.
+    """
+    if os.geteuid() != 0:
+        return
+    try:
+        broker = pwd.getpwnam("mosquitto")
+    except KeyError:
+        logger.debug("No 'mosquitto' user — leaving %s owned by root", persistence_dir)
+        return
+    try:
+        os.chown(persistence_dir, broker.pw_uid, broker.pw_gid)
+    except OSError:
+        logger.warning("Could not chown %s — MQTT persistence may fail", persistence_dir)
 
 
 def main() -> None:

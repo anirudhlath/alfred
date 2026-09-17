@@ -6,8 +6,11 @@ two independently-named lists: in-process adapters
 (`IntegrationRegistry.available()`) and registry-declared sovereign services
 (`list_service_manifests`). If an adapter and a service happen to share a `name`
 (e.g. someone names a sovereign service `weather`), the merged list silently contains
-two entries with the same `"name"` field — the frontend `IntegrationCard` list would
-render both with no indication anything is wrong.
+two entries with the same `"name"` field, and nothing in the response says so. The
+frontend card list that would have rendered both indistinguishably is gone — the hard
+cut removed it, and PWA phase 1 reads `/api/integrations` only to find home-service in
+the setup gate — so the rendering half of this question moves to the Workshop (phase 2).
+The server-side warning below stands on its own regardless.
 
 ## Context
 Names are chosen independently: adapter names come from `IntegrationRegistry`

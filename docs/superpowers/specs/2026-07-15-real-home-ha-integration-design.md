@@ -8,7 +8,7 @@
 
 Enter a Home Assistant URL + long-lived token in Alfred's web UI, and Alfred
 initializes everything itself: connects to the real apartment HA
-(`http://192.168.50.159:8123`), discovers every entity/device/area, generates
+(`http://192.168.1.10:8123`), discovers every entity/device/area, generates
 its full control surface, and stays proactive to live state changes. No manual
 `.env` edits, no HA-side automation setup, no hand-written per-domain features.
 
@@ -70,7 +70,7 @@ home-service declares:
 
 | field | type | notes |
 |-------|------|-------|
-| `url` | `url` | default `http://homeassistant.local:8123`; user sets `http://192.168.50.159:8123` |
+| `url` | `url` | default `http://homeassistant.local:8123`; user sets `http://192.168.1.10:8123` |
 | `token` | `password` | HA long-lived access token |
 
 ### Core: merged integrations API (`core/channels/web_server.py`)
@@ -253,7 +253,7 @@ live HA data joins the QA backlog.
 ### Rollout
 
 1. Land everything working against the dev HA (identical code path).
-2. Go live: Settings → HA card → enter `http://192.168.50.159:8123` + token
+2. Go live: Settings → HA card → enter `http://192.168.1.10:8123` + token
    minted from the HA profile page → save. Done.
 3. Follow-up (out of scope here): refresh eval fixtures via
    `python -m evals capture-context` against the real home.

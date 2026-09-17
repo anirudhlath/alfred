@@ -55,7 +55,7 @@ async def test_ingest_observation_writes_to_episodic() -> None:
 
     obs = _make_observation()
 
-    await ingest_observation(obs, mock_episodic, mock_scorer)
+    await ingest_observation(obs, mock_episodic, mock_scorer, AsyncMock())
 
     mock_episodic.write.assert_called_once()
     entry: EpisodicEntry = mock_episodic.write.call_args.args[0]
@@ -79,7 +79,7 @@ async def test_ingest_observation_includes_decision_context() -> None:
 
     obs = _make_observation(decision_context="Motion detected at night, turning on hallway light")
 
-    await ingest_observation(obs, mock_episodic, mock_scorer)
+    await ingest_observation(obs, mock_episodic, mock_scorer, AsyncMock())
 
     entry: EpisodicEntry = mock_episodic.write.call_args.args[0]
     assert "Motion detected at night" in entry.summary
@@ -98,7 +98,7 @@ async def test_ingest_observation_trigger_fired_origin() -> None:
 
     obs = _make_observation(origin="trigger_fired")
 
-    await ingest_observation(obs, mock_episodic, mock_scorer)
+    await ingest_observation(obs, mock_episodic, mock_scorer, AsyncMock())
 
     entry: EpisodicEntry = mock_episodic.write.call_args.args[0]
     assert entry.source == "reflex"
@@ -118,7 +118,7 @@ async def test_ingest_observation_extracts_entities() -> None:
 
     obs = _make_observation(entity_id="light.kitchen")
 
-    await ingest_observation(obs, mock_episodic, mock_scorer)
+    await ingest_observation(obs, mock_episodic, mock_scorer, AsyncMock())
 
     entry: EpisodicEntry = mock_episodic.write.call_args.args[0]
     assert "light.kitchen" in entry.entities

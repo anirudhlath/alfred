@@ -6,13 +6,15 @@ dispatches actions via a DomainAgent, and publishes structured observations.
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
 from typing import TYPE_CHECKING
 
 import redis.asyncio as aioredis
 
 from bus.schemas.events import ReflexObservation, StateChangedEvent
-from shared.streams import decode_stream_value
+from shared.streams import OBSERVED_ENTITY_PREFIX, decode_stream_value
 from shared.types import AioRedis as AioRedis  # noqa: TC001  # re-export for backward compat
 
 if TYPE_CHECKING:
@@ -27,6 +29,41 @@ if TYPE_CHECKING:
     from core.routing.domain_router import DomainAgent
 
 logger = logging.getLogger(__name__)
+
+
+def _debounce_default() -> int:
+    """Read the debounce window from the env, tolerating garbage.
+
+    This module is imported at module scope by several unrelated services
+    (for ``ensure_consumer_group``), so a malformed value must never raise
+    at import time and take them down with it.
+    """
+    raw = os.getenv("OBSERVATION_DEBOUNCE_SECONDS", "").strip()
+    if not raw:
+        return 300
+    try:
+        seconds = int(raw)
+    except ValueError:
+        logger.warning("Invalid OBSERVATION_DEBOUNCE_SECONDS %r — using 300", raw)
+        return 300
+    if seconds < 1:
+        # Silently clamping made "0 to disable" look like it worked while
+        # actually recording on a 1-second window.
+        logger.warning(
+            "OBSERVATION_DEBOUNCE_SECONDS %r is below the 1s minimum — clamping to 1. "
+            "Passive observation cannot be disabled this way.",
+            raw,
+        )
+        return 1
+    return seconds
+
+
+# Per-entity window for passive observation. Deliberately separate from the
+# attention gate's 5-second cooldown: that one asks "is this SLM call worth
+# making", this one asks "is this worth remembering". Values differ by two
+# orders of magnitude. Tunable without a rebuild — see the review point in
+# docs/superpowers/specs/2026-09-03-passive-observation-design.md.
+OBSERVATION_DEBOUNCE_SECONDS = _debounce_default()
 
 
 async def publish_observation(
@@ -46,6 +83,42 @@ async def publish_observation(
         result=result,
     )
     await redis.xadd(stream, {"event": observation.model_dump_json()})
+
+
+async def observe_passively(
+    redis: AioRedis,
+    stream: str,
+    event: StateChangedEvent,
+    debounce_seconds: int = OBSERVATION_DEBOUNCE_SECONDS,
+) -> bool:
+    """Record an event the Reflex Engine saw but took no action on.
+
+    Debounced per entity so one flapping device cannot flood episodic
+    memory. Returns True if an observation was published.
+    """
+    seen_key = f"{OBSERVED_ENTITY_PREFIX}{event.entity_id}"
+    # Redis rejects a zero TTL outright ("invalid expire time"), which under
+    # the no-action path would raise on every event it is meant to record.
+    if not await redis.set(seen_key, "1", nx=True, ex=max(1, debounce_seconds)):
+        logger.debug("Observation debounced: %s", event.entity_id)
+        return False
+
+    observation = ReflexObservation(
+        source="reflex-engine",
+        origin="state_change",
+        trigger_event=event.model_dump(),
+    )
+    try:
+        await redis.xadd(stream, {"event": observation.model_dump_json()})
+    except Exception:
+        # Release the window, or the redelivered event finds the key already
+        # set and the retry silently records nothing. Suppressed: a failing DEL
+        # would replace the original exception and hide why the publish failed.
+        with contextlib.suppress(Exception):
+            await redis.delete(seen_key)
+        raise
+    logger.debug("Observed: %s (%s → %s)", event.entity_id, event.old_state, event.new_state)
+    return True
 
 
 async def ensure_consumer_group(
@@ -75,10 +148,11 @@ async def process_stream_entry(
 ) -> bool:
     """Process a single Redis Stream entry. Returns True if an action was taken.
 
-    Raises on retriable errors (e.g., Ollama down) so the caller can
-    choose not to ACK the message. Returns False for skip-worthy errors
-    (malformed event, no action needed) AND for attention-gated events —
-    gated events are still ACKed by the caller.
+    Raises on retriable errors (e.g., Ollama down) so the caller can choose not
+    to ACK the message. Returns False — and is ACKed by the caller — for
+    malformed events, attention-gated events, and events the engine chose not
+    to act on. That last branch is not a no-op: it records a debounced passive
+    observation, best-effort, so a failed write never blocks the ACK.
     """
     raw_event = entry_data.get("event") or entry_data.get(b"event")
     if raw_event is None:
@@ -107,7 +181,20 @@ async def process_stream_entry(
     # so the caller does NOT ACK the message — Redis will redeliver it.
     action = await engine.process_event(event)
     if action is None:
-        logger.debug("No action for event %s", event.entity_id)
+        # Record it rather than dropping it. Without this Alfred remembers
+        # only what it did, never what it saw, and pattern detection has
+        # nothing to run over.
+        #
+        # Isolated — failures don't block ACK. Recording is bookkeeping for an
+        # event the engine has already finished handling, and under Redis
+        # maxmemory the deny-oom commands it needs (SET, XADD) are rejected
+        # while XREADGROUP/XACK still succeed. Propagating would leave every
+        # no-action event un-ACKed and feed each one back into a fresh SLM
+        # inference on the next reclaim pass.
+        try:
+            await observe_passively(redis, observation_stream, event)
+        except Exception as e:
+            logger.warning("Passive observation failed for %s: %s", event.entity_id, e)
         return False
 
     result = await agent.execute_action(action)

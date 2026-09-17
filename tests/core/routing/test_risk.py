@@ -43,12 +43,24 @@ async def test_returns_declared_risk() -> None:
 
 
 @pytest.mark.asyncio
-async def test_defaults_to_benign_when_absent() -> None:
+async def test_unknown_when_the_tool_is_not_in_the_registry() -> None:
+    """Fail closed: an unregistered tool has NO known risk, so it must not read benign.
+
+    Defaulting to benign let a hallucinated tool name from the Reflex SLM through the
+    tiered-autonomy gate and execute unconfirmed.
+    """
     from core.routing.risk import tool_risk
 
-    assert await tool_risk(_redis(None), "ghost-service", "x.y") == "benign"
-    assert await tool_risk(_redis(_MANIFEST.encode()), "home-service", "home.ghost") == "benign"
+    assert await tool_risk(_redis(None), "ghost-service", "x.y") == "unknown"
+    assert await tool_risk(_redis(_MANIFEST.encode()), "home-service", "home.ghost") == "unknown"
+    assert await tool_risk(_redis(b"{not json"), "home-service", "home.unlock_door") == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_registered_tool_without_a_risk_field_is_benign() -> None:
+    """Legacy manifests predate risk tagging — a *declared* tool still defaults benign."""
+    from core.routing.risk import tool_risk
+
     assert (
         await tool_risk(_redis(_MANIFEST.encode()), "home-service", "home.legacy_tool") == "benign"
     )
-    assert await tool_risk(_redis(b"{not json"), "home-service", "home.unlock_door") == "benign"

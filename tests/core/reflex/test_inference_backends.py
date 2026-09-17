@@ -124,3 +124,12 @@ async def test_openai_warmup_pings_models_endpoint(monkeypatch: pytest.MonkeyPat
 
     url, _ = stub.requests[0]
     assert url == "http://vllm:8000/v1/models"
+
+
+async def test_unknown_backend_error_quotes_the_raw_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The normalised name is not what the user typed — grep-ability needs the raw value."""
+    from core.reflex import inference
+
+    monkeypatch.setenv("REFLEX_BACKEND", " Ollama Turbo ")
+    with pytest.raises(RuntimeError, match=r"' Ollama Turbo '"):
+        await inference.infer("hello")

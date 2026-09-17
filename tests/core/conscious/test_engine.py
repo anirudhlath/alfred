@@ -523,3 +523,208 @@ async def test_check_routine_suggestions_no_routines(
     now = _dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=_dt.UTC)
     await engine.check_routine_suggestions(now=now, notifier=notifier)
     notifier.publish.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Critical-action reason tests
+# ---------------------------------------------------------------------------
+
+
+def _critical_tool() -> ToolInfo:
+    return ToolInfo(
+        name="home.unlock_door",
+        description="Unlock a door",
+        parameters={"entity_id": {"type": "str", "description": "Lock entity"}},
+        feature_name="home",
+        feature_description="Home control",
+        target_service="home-service",
+        risk="critical",
+    )
+
+
+def test_critical_tools_get_a_reason_parameter(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """Critical tools are offered an optional `reason` argument; benign tools are not."""
+    engine = ConsciousEngine(**mock_deps)
+    benign = ToolInfo(
+        name="home.get_lights",
+        description="Get light state",
+        parameters={},
+        feature_name="home",
+        feature_description="Home control",
+        target_service="home-service",
+    )
+
+    result = engine._tools_to_openai_format([_critical_tool(), benign])
+
+    critical_schema = result[0]["function"]["parameters"]
+    assert critical_schema["properties"]["reason"]["type"] == "string"
+    assert "reason" not in critical_schema["required"]
+    assert "entity_id" in critical_schema["required"]
+    benign_schema = result[1]["function"]["parameters"]
+    assert "reason" not in benign_schema["properties"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_moves_reason_onto_the_action(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """`reason` leaves `parameters` (the domain service never sees it) and lands on the action."""
+    action_result = MagicMock()
+    action_result.status = "success"
+    action_result.result = {"ok": True}
+    mock_deps["domain_router"].route.return_value = action_result
+    engine = ConsciousEngine(**mock_deps)
+
+    tool_call = {
+        "id": "tc-1",
+        "name": "home.unlock_door",
+        "input": {"entity_id": "lock.front_door", "reason": "The dog walker is here."},
+    }
+    await engine._dispatch_tool_call(tool_call, tools=[_critical_tool()])
+
+    routed = mock_deps["domain_router"].route.call_args[0][0]
+    assert routed.reason == "The dog walker is here."
+    assert routed.parameters == {"entity_id": "lock.front_door"}
+    # The caller's dict is not mutated
+    assert tool_call["input"] == {
+        "entity_id": "lock.front_door",
+        "reason": "The dog walker is here.",
+    }
+
+
+def _critical_tool_with_own_reason() -> ToolInfo:
+    """A critical tool that declares `reason` as its own domain parameter."""
+    return ToolInfo(
+        name="home.log_incident",
+        description="Log an incident",
+        parameters={"reason": {"type": "str", "description": "Incident reason for the audit log"}},
+        feature_name="home",
+        feature_description="Home control",
+        target_service="home-service",
+        risk="critical",
+    )
+
+
+def test_tool_declaring_its_own_reason_keeps_its_schema(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """The injected `reason` never overwrites a tool's own `reason` parameter."""
+    engine = ConsciousEngine(**mock_deps)
+
+    schema = engine._tools_to_openai_format([_critical_tool_with_own_reason()])[0]["function"][
+        "parameters"
+    ]
+
+    assert schema["properties"]["reason"]["description"] == "Incident reason for the audit log"
+    assert "reason" in schema["required"]  # the tool's own required parameter
+
+
+@pytest.mark.asyncio
+async def test_dispatch_preserves_a_tools_own_reason_parameter(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """A critical tool declaring its own `reason` still receives it in `parameters`."""
+    mock_deps["domain_router"].route.return_value = MagicMock(status="success", result={"ok": True})
+    engine = ConsciousEngine(**mock_deps)
+
+    await engine._dispatch_tool_call(
+        {"id": "tc-1", "name": "home.log_incident", "input": {"reason": "Smoke alarm tripped."}},
+        tools=[_critical_tool_with_own_reason()],
+    )
+
+    routed = mock_deps["domain_router"].route.call_args[0][0]
+    assert routed.parameters == {"reason": "Smoke alarm tripped."}
+    assert routed.reason is None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_leaves_reason_alone_for_benign_tools(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """Only critical tools are offered `reason`, so benign tools keep theirs verbatim."""
+    mock_deps["domain_router"].route.return_value = MagicMock(status="success", result={"ok": True})
+    engine = ConsciousEngine(**mock_deps)
+    benign = ToolInfo(
+        name="home.log_note",
+        description="Log a note",
+        parameters={"reason": {"type": "str", "description": "Why"}},
+        feature_name="home",
+        feature_description="Home control",
+        target_service="home-service",
+    )
+
+    await engine._dispatch_tool_call(
+        {"id": "tc-1", "name": "home.log_note", "input": {"reason": "Just because."}},
+        tools=[benign],
+    )
+
+    routed = mock_deps["domain_router"].route.call_args[0][0]
+    assert routed.parameters == {"reason": "Just because."}
+    assert routed.reason is None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_tolerates_null_tool_input(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """`input: null` (a model emitting the JSON literal) must not raise — `json.loads("null")`."""
+    engine = ConsciousEngine(**mock_deps)
+
+    result = await engine._dispatch_tool_call(
+        {"id": "tc-1", "name": "integration_weather_get_current", "input": None}, tools=[]
+    )
+
+    assert result["tool_use_id"] == "tc-1"
+    # It reached the integration call (unregistered here) rather than being rejected
+    # as malformed — `null` means "no arguments", not "bad arguments".
+    assert result["content"] == "Error: unknown integration tool 'integration_weather_get_current'"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_ignores_non_string_and_blank_reasons(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """A non-string or whitespace-only `reason` is dropped, never str()-repr'd onto the action."""
+    mock_deps["domain_router"].route.return_value = MagicMock(status="success", result={"ok": True})
+    engine = ConsciousEngine(**mock_deps)
+
+    for bad_reason in ({"why": "nested"}, "   "):
+        await engine._dispatch_tool_call(
+            {
+                "id": "tc-1",
+                "name": "home.unlock_door",
+                "input": {"entity_id": "lock.front_door", "reason": bad_reason},
+            },
+            tools=[_critical_tool()],
+        )
+        routed = mock_deps["domain_router"].route.call_args[0][0]
+        assert routed.reason is None, bad_reason
+        assert routed.parameters == {"entity_id": "lock.front_door"}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_rejects_malformed_tool_arguments(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """A non-null, non-object `input` is an error — never a zero-argument call."""
+    engine = ConsciousEngine(**mock_deps)
+    expected = "Error: malformed tool arguments (expected a JSON object)"
+
+    with patch.object(engine, "_execute_integration_call", new=AsyncMock()) as integration_call:
+        for bad_input in ([], "x", 5):
+            domain = await engine._dispatch_tool_call(
+                {"id": "tc-1", "name": "home.unlock_door", "input": bad_input},
+                tools=[_critical_tool()],
+            )
+            integration = await engine._dispatch_tool_call(
+                {"id": "tc-2", "name": "integration_weather_get_current", "input": bad_input},
+                tools=[],
+            )
+            assert domain["content"] == expected, bad_input
+            assert integration["content"] == expected, bad_input
+
+        # Nothing was dispatched anywhere on the malformed path.
+        integration_call.assert_not_called()
+    mock_deps["domain_router"].route.assert_not_called()

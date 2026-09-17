@@ -33,19 +33,36 @@ class RedisVectorStore(VectorStore):
     Index creation is deferred to the first operation via ``ensure_index()``.
     If RediSearch is unavailable the store degrades gracefully — ``add`` and
     ``delete`` still work on plain Redis hashes, but ``search`` returns ``[]``.
+
+    A dimension mismatch against an existing index is the one case that is
+    deliberately *not* graceful (see ``_verify_index_dim``): it is latched and
+    re-raised from ``ensure_index()``, so ``add``, ``search`` and ``count`` all
+    raise rather than write vectors the index can never match.
     """
 
     def __init__(self, redis: AioRedis, dim: int = 384) -> None:
         self._redis = redis
         self._dim = dim
         self._index_ready: bool = False
+        # Set once a dimension mismatch is proven; see ensure_index().
+        self._dim_mismatch: str | None = None
 
     # ------------------------------------------------------------------
     # Index lifecycle
     # ------------------------------------------------------------------
 
     async def ensure_index(self) -> None:
-        """Create the RediSearch index if it does not already exist."""
+        """Create the RediSearch index if it does not already exist.
+
+        A proven dimension mismatch is latched and re-raised without touching
+        Redis again: every ``add``/``search``/``count`` enters here, so re-probing
+        would replay the 40-argument ``FT.CREATE`` plus an ``FT.INFO``, and log a
+        traceback, on every memory operation for the life of the process. The
+        latch holds until restart even if an operator fixes the index externally
+        — which the recovery message already tells them to do anyway.
+        """
+        if self._dim_mismatch is not None:
+            raise RuntimeError(self._dim_mismatch)
         if self._index_ready:
             return
         try:
@@ -107,6 +124,7 @@ class RedisVectorStore(VectorStore):
             # Index may already exist — that is fine
             err = str(exc)
             if "Index already exists" in err or "already exists" in err.lower():
+                await self._verify_index_dim()
                 self._index_ready = True
                 logger.debug("RediSearch index %s already exists", CONTEXT_INDEX)
             else:
@@ -114,6 +132,81 @@ class RedisVectorStore(VectorStore):
                     "RediSearch unavailable — vector search disabled: %s", exc, exc_info=True
                 )
                 # Leave _index_ready = False so search degrades gracefully
+
+    async def _verify_index_dim(self) -> None:
+        """Refuse to use an index that was built at a different vector width.
+
+        Changing EMBEDDING_MODEL (or EMBEDDING_BACKEND) changes the width. Writing
+        those vectors into an index built at the old one produces no exception and
+        no log — searches simply stop matching.
+
+        "Refuse" is narrower than "refuse to start": both warmup call sites
+        (``core/conscious/__main__.py``, ``core/memory/ingestor_main.py``) go through
+        ``start_warmup``, and ``core/warmup.py:_warm_one`` catches ``Exception`` and
+        only warns, so the service comes up and everything but memory keeps working.
+        What stops is every store operation, since ``add``/``search``/``count`` all
+        call ``ensure_index()`` first. In the ingestor that means the stream entry is
+        never ``XACK``ed (``core/memory/ingestor.py:121``), so the pending list grows
+        while ingestion is stuck — nothing is lost and it replays once the dimension
+        is fixed, but an operator watching the PEL should know why it is growing.
+        """
+        try:
+            raw = await self._redis.execute_command("FT.INFO", CONTEXT_INDEX)  # type: ignore[no-untyped-call]
+        except Exception as exc:
+            # Only a mismatch we can *prove* is worth failing on: an FT.INFO that
+            # errors tells us nothing about the width, and refusing to run on it
+            # would turn a transient Redis hiccup into a memory outage.
+            logger.warning("Could not read %s dimension (FT.INFO failed): %s", CONTEXT_INDEX, exc)
+            return
+        existing = _index_vector_dim(_parse_ft_info(raw))
+        if existing is None:
+            # Never silent. A parser that quietly returns None disables this guard,
+            # which is the exact failure the guard exists to prevent — and this file
+            # has form: the RESP2-only reply parser shipped broken with no exception
+            # and no log line (see the RediSearch gotcha in CLAUDE.md).
+            logger.warning(
+                "Could not determine the vector dimension of existing index %s from "
+                "FT.INFO — dimension guard skipped, an embedding model change will "
+                "NOT be caught here",
+                CONTEXT_INDEX,
+            )
+            return
+        if existing == self._dim:
+            return
+        self._dim_mismatch = (
+            f"RediSearch index {CONTEXT_INDEX} was built with dim={existing} but the "
+            f"configured embedding model produces dim={self._dim}; vectors of the new "
+            f"width can never match, so memory refuses to run. "
+            f"To go back: restore the previous EMBEDDING_MODEL/EMBEDDING_BACKEND — "
+            f"nothing has been lost. "
+            f"To go forward: drop the index (WITHOUT 'DD') and restart. You do NOT "
+            f"need to stop Alfred first — no new vectors can be written, because "
+            f"add() raises here before it writes. Redis lives inside the Alfred "
+            f"container in a container deployment, so run redis-cli there; prefix "
+            f"the line below with, for example, 'docker exec <alfred-container>':\n"
+            f"  redis-cli FT.DROPINDEX {CONTEXT_INDEX}\n"
+            f"Unlike the cold store's guard this latch does not quiesce the keyspace "
+            f"— delete(), exists() and update_metadata() never call ensure_index() "
+            f"and keep running — but none of them writes a vector, so they cannot "
+            f"corrupt the rebuild. "
+            f"The restart is not optional: this latch is per-process and nothing "
+            f"clears it in place, so every service holding a store (conscious, "
+            f"memory-ingestor, librarian, channels/admin) raises until restarted. "
+            f"Restarting then recreates the index at dim={self._dim} and keeps every "
+            f"{CONTEXT_PREFIX}* hash — but entries still holding old-width vectors "
+            f"fail to index (FT.INFO hash_indexing_failures) and stay unsearchable, "
+            f"because nothing re-embeds them: semantic entries are rebuilt from disk "
+            f"on the Librarian's next reindex_semantic_files() cycle and routines are "
+            f"re-derived from YAML on restart, but episodic entries have no re-embed "
+            f"path at all, so only new writes become searchable. "
+            f"Expect to do this twice: the cold SQLite store was built at the old "
+            f"width too, so its own guard raises next, with its own procedure. "
+            f"Do NOT add 'DD' unless you accept the loss: it DELETES every "
+            f"{CONTEXT_PREFIX}* hash, and episodic entries live in the hot store until "
+            f"the Librarian's decay pass copies them to cold SQLite, so 'DD' "
+            f"permanently destroys the most recent memories."
+        )
+        raise RuntimeError(self._dim_mismatch)
 
     # ------------------------------------------------------------------
     # VectorStore interface
@@ -267,36 +360,70 @@ class RedisVectorStore(VectorStore):
 # ------------------------------------------------------------------
 
 
-def _parse_ft_results(raw: object, min_similarity: float) -> list[SearchResult]:
-    """Parse the flat list returned by FT.SEARCH into SearchResult objects."""
+def _decoded(value: object) -> str:
+    """Bytes or str from Redis → str."""
+    return value.decode() if isinstance(value, bytes) else str(value)
+
+
+def _ft_documents(raw: object) -> list[tuple[str, dict[str, str]]]:
+    """Normalise an FT.SEARCH reply to (doc_key, fields) pairs.
+
+    The reply shape depends on the negotiated protocol, which redis-py picks —
+    RESP2 gives a flat array ``[total, key, [f, v, ...], ...]`` while RESP3 gives a
+    mapping ``{"results": [{"id": ..., "extra_attributes": {...}}, ...]}``. Handle
+    both: pinning one protocol would work until the next client upgrade silently
+    switched it back, and the failure mode here is empty results, not an error.
+    """
+    if isinstance(raw, dict):
+        decoded_top = {_decoded(k): v for k, v in raw.items()}
+        documents = decoded_top.get("results")
+        if not isinstance(documents, (list, tuple)):
+            return []
+        pairs: list[tuple[str, dict[str, str]]] = []
+        for document in documents:
+            if not isinstance(document, dict):
+                continue
+            entry = {_decoded(k): v for k, v in document.items()}
+            attributes = entry.get("extra_attributes")
+            if not isinstance(attributes, dict):
+                continue
+            pairs.append(
+                (
+                    _decoded(entry.get("id", "")),
+                    {_decoded(k): _decoded(v) for k, v in attributes.items()},
+                )
+            )
+        return pairs
+
     if not isinstance(raw, (list, tuple)) or len(raw) < 1:
         return []
 
     items = list(raw)
     # First element is the total count; then pairs of (key, [field, value, ...])
-    results: list[SearchResult] = []
+    pairs = []
     i = 1
     while i + 1 < len(items):
-        doc_key = items[i]
-        fields_raw = items[i + 1]
+        doc_key, fields_raw = items[i], items[i + 1]
         i += 2
-
         if not isinstance(fields_raw, (list, tuple)):
             continue
-
-        fields: dict[str, str] = {}
-        j = 0
         field_list = list(fields_raw)
-        while j + 1 < len(field_list):
-            fname = field_list[j]
-            fval = field_list[j + 1]
-            if isinstance(fname, bytes):
-                fname = fname.decode()
-            if isinstance(fval, bytes):
-                fval = fval.decode()
-            fields[str(fname)] = str(fval)
-            j += 2
+        pairs.append(
+            (
+                _decoded(doc_key),
+                {
+                    _decoded(field_list[j]): _decoded(field_list[j + 1])
+                    for j in range(0, len(field_list) - 1, 2)
+                },
+            )
+        )
+    return pairs
 
+
+def _parse_ft_results(raw: object, min_similarity: float) -> list[SearchResult]:
+    """Parse an FT.SEARCH reply (RESP2 or RESP3) into SearchResult objects."""
+    results: list[SearchResult] = []
+    for doc_key, fields in _ft_documents(raw):
         score_str = fields.get("__score", "1.0")
         try:
             # RediSearch cosine distance: 0 = identical, 2 = opposite.
@@ -309,9 +436,7 @@ def _parse_ft_results(raw: object, min_similarity: float) -> list[SearchResult]:
         if score < min_similarity:
             continue
 
-        doc_id = str(doc_key)
-        if isinstance(doc_key, bytes):
-            doc_id = doc_key.decode()
+        doc_id = doc_key
         # Strip the CONTEXT_PREFIX to get the bare id
         if doc_id.startswith(CONTEXT_PREFIX):
             doc_id = doc_id[len(CONTEXT_PREFIX) :]
@@ -340,17 +465,41 @@ def _parse_ft_results(raw: object, min_similarity: float) -> list[SearchResult]:
 
 
 def _parse_ft_info(raw: object) -> dict[str, object]:
-    """Parse the flat alternating key/value list from FT.INFO."""
+    """Parse an FT.INFO reply (RESP2 alternating list, or RESP3 mapping)."""
+    if isinstance(raw, dict):
+        return {_decoded(key): value for key, value in raw.items()}
     if not isinstance(raw, (list, tuple)):
         return {}
     items = list(raw)
-    result: dict[str, object] = {}
-    i = 0
-    while i + 1 < len(items):
-        key = items[i]
-        val = items[i + 1]
-        if isinstance(key, bytes):
-            key = key.decode()
-        result[str(key)] = val
-        i += 2
-    return result
+    return {_decoded(items[i]): items[i + 1] for i in range(0, len(items) - 1, 2)}
+
+
+def _index_vector_dim(info: dict[str, object]) -> int | None:
+    """Vector dimension declared by an existing index, or None if undeterminable.
+
+    ``FT.INFO``'s ``attributes`` entry is a list of per-field descriptors whose shape
+    follows the negotiated protocol: RESP3 gives dicts, RESP2 gives flat alternating
+    lists. Normalise both, then read ``dim`` off the first vector field. Returning
+    None (rather than guessing) keeps a parse quirk from failing startup.
+    """
+    attributes = info.get("attributes")
+    if not isinstance(attributes, (list, tuple)):
+        return None
+    for attribute in attributes:
+        if isinstance(attribute, dict):
+            fields = {_decoded(k): v for k, v in attribute.items()}
+        elif isinstance(attribute, (list, tuple)):
+            items = list(attribute)
+            fields = {_decoded(items[i]): items[i + 1] for i in range(0, len(items) - 1, 2)}
+        else:
+            continue
+        raw_dim = fields.get("dim")
+        # RediSearch already returns doubles for some numeric attributes (a live
+        # RESP3 reply carries ``b'WEIGHT': 1.0``), so a ``dim`` of ``768.0`` must
+        # read as 768 rather than silently disabling the guard.
+        if isinstance(raw_dim, (bytes, str, int, float)):
+            try:
+                return int(raw_dim)
+            except (ValueError, OverflowError):
+                return None
+    return None

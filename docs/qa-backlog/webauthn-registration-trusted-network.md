@@ -24,5 +24,11 @@
 - Onboarding proceeds to step 1
 
 ## Notes
-- Registration MUST be on trusted network (localhost or Tailscale CGNAT)
-- If attempted from untrusted network, should get 403 error
+- Registration MUST be on a trusted network (localhost or Tailscale CGNAT) **or** carry a
+  valid `X-Pairing-Code` header on both `register/begin` and `register/complete` — a
+  6-digit code minted by an already-signed-in device via `POST /api/auth/pairing`
+  (5-minute TTL, single-use; 10 wrong guesses refuse the guessing address, not the
+  code). This case covers the network path; the pairing path is
+  [`webauthn-registration-pairing-code.md`](webauthn-registration-pairing-code.md),
+  which needs a second device already registered.
+- If attempted from an untrusted network with no code, should get 403 error

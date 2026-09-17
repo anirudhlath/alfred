@@ -7,6 +7,8 @@ import base64
 import ipaddress
 import json
 import os
+import re
+import time
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,19 +20,17 @@ import redis.asyncio as aioredis  # noqa: TC002 — patched at runtime by tests 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from loguru import logger
 from pydantic import BaseModel, Field
-from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 if TYPE_CHECKING:
-    from starlette.responses import Response
-
     from core.integrations.base import CredentialSchema
 
 from bus.schemas.events import UserRequest
-from core.channels.admin_api import create_admin_router, require_authenticated
+from core.channels.admin_api import aclose_episodic, create_admin_router, require_authenticated
 from core.channels.request_bus import publish_and_wait
 from core.channels.satellite.bridge import SatelliteBridge
 from core.channels.satellite.config import load_satellites
 from core.channels.satellite.pipeline import SatellitePipeline
+from core.channels.spa import SpaCacheMiddleware
 from core.channels.telemetry_ws import register_telemetry_ws
 from core.channels.voice_models import (  # re-exported for tests (see __all__)
     aget_speaker_id,
@@ -45,8 +45,16 @@ from core.identity.credentials import CredentialStore
 from core.identity.ws_auth import require_ws_auth
 from core.notifications.adapters.satellite import SatelliteChannelAdapter
 from core.notifications.channels import ChannelRegistry
-from core.routing.pending import confirm_pending_action
+from core.routing.pending import (
+    confirm_pending_action,
+    get_pending_action,
+    list_pending_actions,
+    pending_action_payload,
+    pending_key,
+)
+from core.shutdown import teardown
 from core.warmup import start_warmup
+from shared.env import is_truthy_flag
 from shared.redis_streams import create_redis
 from shared.usertime import is_valid_timezone
 
@@ -87,7 +95,7 @@ def get_web_websockets() -> list[WebSocket]:
     return [ws for ws, ch in _active_websockets.items() if ch != "ios"]
 
 
-_ALLOWED_AUDIO_FORMATS = {"wav", "webm", "aac", "m4a", "ogg", "mp3"}
+_ALLOWED_AUDIO_FORMATS = {"wav", "webm", "aac", "m4a", "mp4", "ogg", "mp3"}
 
 
 def _decode_audio(data_url: str) -> tuple[bytes, str]:
@@ -136,6 +144,15 @@ class VoiceEnrollmentPayload(BaseModel):
 
 
 _DEVICE_TOKEN_PATTERN = r"^[a-fA-F0-9]+$"
+
+# ``ActionRequest.request_id`` is a uuid4 string (bus/schemas/events.py), 36 characters;
+# the class also covers the hand-written ids the schema allows, with the same 128-char
+# ceiling ``_SESSION_ID_RE`` uses in core/identity/auth_routes.py. Anything else cannot
+# name a parked action, so it is refused before Redis or the log line sees it.
+_REQUEST_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
+# One vocabulary for an unreachable action store, as with the auth router's
+# "Session store unavailable" and the admin router's "Attention store unavailable".
+_ACTION_STORE_DOWN = "Action store unavailable"
 
 
 class DeviceRegistration(BaseModel):
@@ -196,7 +213,7 @@ _TAILSCALE_RANGE = "100.64.0.0/10"
 
 def _strict_networks() -> bool:
     """True → drop the RFC1918 LAN defaults (loopback + Tailscale + explicit list only)."""
-    return os.getenv("ALFRED_TRUSTED_NETWORKS_STRICT", "").strip().lower() in ("1", "true", "yes")
+    return is_truthy_flag(os.getenv("ALFRED_TRUSTED_NETWORKS_STRICT"))
 
 
 def _trusted_networks() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
@@ -216,6 +233,11 @@ def _trusted_networks() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
     return nets
 
 
+def _elapsed_ms(started: float) -> float:
+    """Milliseconds since a ``time.perf_counter()`` reading, one decimal."""
+    return round((time.perf_counter() - started) * 1000, 1)
+
+
 async def require_trusted_network(request: Request) -> None:
     """FastAPI dependency — restrict to localhost, LAN, Tailscale, or configured nets."""
     client_host = request.client.host if request.client else ""
@@ -231,15 +253,18 @@ async def require_trusted_network(request: Request) -> None:
         with suppress(TypeError):  # IPv4 addr vs IPv6 net → TypeError, skip
             if addr in net:
                 return
-    # Actionable 403: name the rejected IP and how to allow it.
-    raise HTTPException(
-        status_code=403,
-        detail=(
-            f"Access restricted to trusted networks: {client_host} is not trusted. "
-            f"Add its subnet to ALFRED_TRUSTED_NETWORKS (e.g. '{client_host}/24'), "
+    # The rejected IP is named either way — the deploy runbook has the operator read
+    # the observed peer out of this body. The *guidance* (env-var name, example CIDR,
+    # Tailscale hint) is withheld from anonymous callers: this gate deliberately runs
+    # before the session gate, so on an internet-facing host the body is reachable by
+    # a stranger, and naming the knob describes how the perimeter is configured.
+    detail = f"Access restricted to trusted networks: {client_host} is not trusted."
+    if getattr(request.state, "authenticated", False):
+        detail += (
+            f" Add its subnet to ALFRED_TRUSTED_NETWORKS (e.g. '{client_host}/24'), "
             "or reach Alfred via localhost or Tailscale."
-        ),
-    )
+        )
+    raise HTTPException(status_code=403, detail=detail)
 
 
 async def _init_apns_adapter(pool: aioredis.Redis) -> None:
@@ -366,20 +391,23 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     yield
 
     shutdown.set()
-    delivery_task.cancel()
-    credential_push_task.cancel()
-    warmup_task.cancel()
-
-    if satellite_bridge is not None:
-        await satellite_bridge.stop()
-
     apns = ChannelRegistry.get_instance("apns")
-    if apns is not None and hasattr(apns, "close"):
-        await apns.close()
-
-    await credential_store.close()
-    await app.state.http.aclose()
-    await pool.close()
+    # One protected sequence rather than a bare chain: every close here used to sit
+    # behind the one before it, so a single raiser (or a cancellation during shutdown)
+    # silently skipped the rest — leaking the http client and the Redis pool.
+    await teardown(
+        tasks=[delivery_task, credential_push_task, warmup_task],
+        closers={
+            "satellite bridge": satellite_bridge.stop if satellite_bridge is not None else None,
+            "apns adapter": getattr(apns, "close", None) if apns is not None else None,
+            "credential store": credential_store.close,
+            # The admin API's episodic embedding provider is a module-level singleton
+            # (it must outlive any single request), so this hook is its only close.
+            "admin episodic provider": aclose_episodic,
+            "http client": app.state.http.aclose,
+            "redis pool": pool.close,
+        },
+    )
 
 
 def _ensure_integrations_registered() -> None:
@@ -403,6 +431,14 @@ async def _validate_and_store(name: str, schema: CredentialSchema, body: dict[st
     await asyncio.gather(
         *[aset_secret(name, f, v) for f, v in body.items() if not schema.fields[f].transient]
     )
+
+
+# The credential-equivalent routes (credential writes, device-token writes, voice
+# enrolment) carry BOTH gates. Order is load-bearing: the network gate runs FIRST so an
+# anonymous caller is refused on network grounds without the session ever being
+# consulted — a session-first order would make 401-vs-403 a session-validity oracle for
+# a stolen cookie. Kept as one list so a new route cannot pick up half the pair.
+_CREDENTIAL_GATES = [Depends(require_trusted_network), Depends(require_authenticated)]
 
 
 def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
@@ -433,7 +469,35 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
         try:
             while True:
-                data = await websocket.receive_json()
+                try:
+                    data = await websocket.receive_json()
+                except (json.JSONDecodeError, KeyError):
+                    # KeyError: starlette indexes message["text"], which a binary frame
+                    # does not carry. Both refused below with non-object frames.
+                    data = None
+
+                if not isinstance(data, dict):
+                    # Malformed JSON, or a bare JSON scalar/array with no .get. Refuse it
+                    # rather than dying with a 1011 and taking the socket down. (The
+                    # handler catches only WebSocketDisconnect, so an escaping
+                    # JSONDecodeError would close the connection.)
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "text": "Expected a JSON object",
+                            "session_id": session_id,
+                        }
+                    )
+                    continue
+
+                # Keepalive (Cloudflare drops proxied sockets idle ~100s). Answered
+                # before the session-restore block so pings never count as the
+                # client's first message. Note the pong rides the same serial receive
+                # loop as chat turns, so it can lag a full conscious-engine turn
+                # (publish_and_wait timeout 60s) — pong latency is not a liveness signal.
+                if data.get("type") == "ping":
+                    await websocket.send_json({"type": "pong"})
+                    continue
 
                 # Allow client to restore a previous session on its first message only
                 if not session_locked and (client_sid := data.get("session_id")):
@@ -536,7 +600,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         finally:
             _active_websockets.pop(websocket, None)
 
-    @app.get("/api/integrations")
+    @app.get("/api/integrations", dependencies=[Depends(require_authenticated)])
     async def list_integrations() -> list[dict[str, Any]]:
         """List integration adapters + registry-declared sovereign services (C5)."""
         from core.channels.service_credentials import (
@@ -595,7 +659,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.put(
         "/api/integrations/{name}/credentials",
-        dependencies=[Depends(require_trusted_network)],
+        dependencies=_CREDENTIAL_GATES,
     )
     async def save_credentials(name: str, request: Request) -> dict[str, Any]:
         """Save credentials to the OS keyring (adapters + registry-declared services)."""
@@ -615,7 +679,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.delete(
         "/api/integrations/{name}/credentials",
-        dependencies=[Depends(require_trusted_network)],
+        dependencies=_CREDENTIAL_GATES,
     )
     async def delete_credentials(name: str) -> dict[str, str]:
         """Clear all credentials for an adapter or service from the OS keyring."""
@@ -657,21 +721,47 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
             or manifest.manifest.get("service_endpoint")
             or ""
         )
-        if not endpoint:
-            return {"name": name, "healthy": False, "detail": {"error": "no endpoint declared"}}
-        health_url = urljoin(endpoint, "/health")
+        # Manifests are service-written, so the endpoint may be absent, empty or
+        # not even a string — all of which mean "nothing to probe", not a 500.
+        if not isinstance(endpoint, str) or not endpoint:
+            return {
+                "name": name,
+                "healthy": False,
+                "detail": {"error": "no endpoint declared"},
+                "latency_ms": None,
+            }
+        started = time.perf_counter()
         try:
-            resp = await app.state.http.get(health_url)
+            # urljoin is inside the try: a malformed endpoint ("http://[::1")
+            # raises ValueError here, and httpx.InvalidURL is not an HTTPError.
+            resp = await app.state.http.get(urljoin(endpoint, "/health"))
             payload: dict[str, Any] = resp.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            return {"name": name, "healthy": False, "detail": {"error": str(exc)}}
+        except (httpx.HTTPError, httpx.InvalidURL, ValueError) as exc:
+            return {
+                "name": name,
+                "healthy": False,
+                "detail": {"error": str(exc)},
+                "latency_ms": _elapsed_ms(started),
+            }
+        except Exception as exc:
+            # The narrow tuple above is the known-and-expected set; anything else
+            # (a closed app.state.http raises RuntimeError, and InvalidURL was
+            # already missed once) is a bug report, not a 500 for the operator.
+            logger.warning("Status probe for service {} failed unexpectedly: {}", name, exc)
+            return {
+                "name": name,
+                "healthy": False,
+                "detail": {"error": f"{type(exc).__name__}: {exc}"},
+                "latency_ms": _elapsed_ms(started),
+            }
         return {
             "name": name,
             "healthy": service_payload_healthy(resp.status_code, payload),
             "detail": payload,
+            "latency_ms": _elapsed_ms(started),
         }
 
-    @app.get("/api/integrations/{name}/status")
+    @app.get("/api/integrations/{name}/status", dependencies=[Depends(require_authenticated)])
     async def integration_status(name: str) -> dict[str, Any]:
         """Health check for an adapter (in-process) or service (proxied /health)."""
         from core.integrations.registry import IntegrationRegistry
@@ -681,22 +771,28 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         except KeyError:
             return await _service_status(name)
 
+        # get() lazily constructs the adapter and blocks on a keyring read, so
+        # timing it would bill the first call after boot/reconfigure for the
+        # cold start. Construct first, then time the probe alone.
         try:
             instance = IntegrationRegistry.get(name)
+        except Exception:
+            return {"name": name, "healthy": False, "latency_ms": None}
+
+        started = time.perf_counter()
+        try:
             healthy = await instance.health_check()
         except Exception:
             healthy = False
-        return {"name": name, "healthy": healthy}
+        return {"name": name, "healthy": healthy, "latency_ms": _elapsed_ms(started)}
 
-    @app.post("/api/onboarding")
-    async def save_onboarding(payload: OnboardingPayload, request: Request) -> dict[str, str]:
+    @app.post("/api/onboarding", dependencies=[Depends(require_authenticated)])
+    async def save_onboarding(payload: OnboardingPayload) -> dict[str, str]:
         """Save onboarding preferences to semantic memory files.
 
         Writes default values for any null fields. Skips writing if the
         preference file already exists (prevents clobbering Librarian data).
         """
-        if not getattr(request.state, "authenticated", False):
-            raise HTTPException(status_code=401, detail="Authentication required")
         today = datetime.now(UTC).strftime("%Y-%m-%d")
         prefs_dir, profile_dir = _get_prefs_dirs()
         prefs_dir.mkdir(parents=True, exist_ok=True)
@@ -745,15 +841,49 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         logger.info("Onboarding preferences saved ({} fields)", n_fields)
         return {"status": "ok"}
 
-    @app.post("/api/actions/{request_id}/confirm")
-    async def confirm_action(request_id: str, request: Request) -> dict[str, str]:
+    # Must stay above /api/actions/{request_id} — FastAPI matches in registration order.
+    @app.get("/api/actions/pending", dependencies=[Depends(require_authenticated)])
+    async def list_pending() -> dict[str, list[dict[str, Any]]]:
+        """Every critical action still waiting for confirmation, oldest first."""
+        r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
+        try:
+            items = await list_pending_actions(r)
+        except Exception as e:
+            logger.warning("Could not list the pending actions: {}", e)
+            raise HTTPException(status_code=503, detail=_ACTION_STORE_DOWN) from e
+        return {"actions": [pending_action_payload(a, ttl) for a, ttl in items]}
+
+    @app.get("/api/actions/{request_id}", dependencies=[Depends(require_authenticated)])
+    async def get_pending(request_id: str) -> dict[str, Any]:
+        """One pending action with its remaining fuse. Does not consume it."""
+        if not _REQUEST_ID_RE.fullmatch(request_id):
+            raise HTTPException(status_code=400, detail="Invalid request id")
+        r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
+        try:
+            item = await get_pending_action(r, request_id)
+        except ValueError:
+            # Same tombstone the list gives an unreadable entry (core/routing/pending.py):
+            # a value that no longer parses is gone as far as a client is concerned, and
+            # the two reads must not disagree about the same key.
+            logger.warning(
+                "Pending action key {} is unreadable — answering 404", pending_key(request_id)
+            )
+            item = None
+        except Exception as e:
+            logger.warning("Could not read pending action {}: {}", request_id, e)
+            raise HTTPException(status_code=503, detail=_ACTION_STORE_DOWN) from e
+        if item is None:
+            raise HTTPException(status_code=404, detail="Pending action not found or expired")
+        action, ttl = item
+        return pending_action_payload(action, ttl)
+
+    @app.post("/api/actions/{request_id}/confirm", dependencies=[Depends(require_authenticated)])
+    async def confirm_action(request_id: str) -> dict[str, str]:
         """Confirm a pending critical action — republishes it with confirmed=True.
 
         The pending entry was stored by the DomainRouter's critical-action
         interception (TTL 5 min). Expired or unknown IDs return 404.
         """
-        if not getattr(request.state, "authenticated", False):
-            raise HTTPException(status_code=401, detail="Authentication required")
         r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
         confirmed = await confirm_pending_action(r, request_id)
         if confirmed is None:
@@ -765,7 +895,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.post(
         "/api/voice/enroll",
-        dependencies=[Depends(require_trusted_network), Depends(require_authenticated)],
+        dependencies=_CREDENTIAL_GATES,
     )
     async def voice_enroll(payload: VoiceEnrollmentPayload) -> dict[str, str]:
         """Enroll a voiceprint from mic samples (trusted network + session only)."""
@@ -784,7 +914,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.post(
         "/api/devices/register",
-        dependencies=[Depends(require_trusted_network)],
+        dependencies=_CREDENTIAL_GATES,
     )
     async def register_device(payload: DeviceRegistration) -> dict[str, str]:
         """Register an APNs device token for push notifications."""
@@ -804,7 +934,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.delete(
         "/api/devices/register",
-        dependencies=[Depends(require_trusted_network)],
+        dependencies=_CREDENTIAL_GATES,
     )
     async def unregister_device(payload: DeviceUnregistration) -> dict[str, str]:
         """Remove an APNs device token."""
@@ -815,17 +945,10 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         logger.info("Unregistered device token")
         return {"status": "ok"}
 
-    app.include_router(create_admin_router(require_trusted_network))
+    app.include_router(create_admin_router())
     register_telemetry_ws(app)
 
-    class NoCacheStaticMiddleware(BaseHTTPMiddleware):
-        async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-            response: Response = await call_next(request)
-            if request.url.path.endswith((".css", ".js", ".html")):
-                response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-            return response
-
-    app.add_middleware(NoCacheStaticMiddleware)
+    app.add_middleware(SpaCacheMiddleware)
     app.add_middleware(AuthCookieMiddleware)
 
     return app

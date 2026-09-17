@@ -30,8 +30,9 @@
 4. Complete WebAuthn passkey registration through the onboarding wizard (Register your
    device → Touch ID prompt → completes). This specifically exercises the
    `ALFRED_TRUSTED_NETWORKS` auto-injection of the Apple vmnet subnet
-   (`192.168.64.0/24`) — registration is gated to trusted networks, and requests arrive
-   from the vmnet gateway, not localhost, when hitting the container's own IP.
+   (`192.168.64.0/24`) — registration is gated to trusted networks (a pairing code is the
+   only other way through, and this case deliberately does not use one), and requests
+   arrive from the vmnet gateway, not localhost, when hitting the container's own IP.
 5. Send a chat message that requires the local reflex/System 1 path (e.g. a request that
    would trigger a smart-home style tool call) if a home-service is registered, OR simply
    confirm a conversational round-trip via System 2 completes.

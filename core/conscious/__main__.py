@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import time
 from typing import TYPE_CHECKING, Any
 
 # Import modules to trigger @register decorators
@@ -16,14 +17,15 @@ import core.integrations.apple_health
 import core.integrations.robinhood
 import core.integrations.weather
 import core.triggers.types  # noqa: F401  # trigger type registrations
-from bus.schemas.events import ActionRequest, UserRequest
+from bus.schemas.events import ActionRequest
 from core.conscious.context_assembler import ContextAssembler
 from core.conscious.cost import CostTracker
 from core.conscious.engine import ConsciousConfig, ConsciousDeps, ConsciousEngine
 from core.conscious.identity import IdentityGate
+from core.conscious.runner import process_request_entry
 from core.conscious.session import SessionManager
 from core.memory.context_index import ContextIndexManager
-from core.memory.embedding_provider import SentenceTransformerProvider
+from core.memory.embedding_backend import build_embedding_provider
 from core.memory.episodic.memory import EpisodicMemory
 from core.memory.paths import (
     episodic_cold_path,
@@ -41,6 +43,7 @@ from core.reflex.context_reader import ContextReader
 from core.reflex.runner import ensure_consumer_group
 from core.reflex.tool_registry import ToolRegistry
 from core.routing.domain_router import DomainRouter
+from core.shutdown import teardown
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
 from core.triggers.store import TriggerStore
 from core.warmup import start_warmup
@@ -48,11 +51,10 @@ from domains.home.home_agent import HomeAgent
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
 from shared.otel import init_tracing
-from shared.redis_streams import create_redis, read_group
+from shared.redis_streams import create_redis, read_group, reclaim_replayable
 from shared.streams import (
     ACTIONS_STREAM,
     USER_REQUESTS_STREAM,
-    USER_RESPONSES_STREAM,
     decode_stream_value,
 )
 
@@ -137,6 +139,10 @@ async def _consume_internal_actions(
                 await asyncio.sleep(1)
 
 
+# One PEL recovery pass per minute at the loop's 5s block.
+_PEL_RECLAIM_EVERY = 12
+
+
 async def run(config: AlfredConfig) -> None:
     log = configure_logging(service="conscious")
     init_tracing(
@@ -167,7 +173,7 @@ async def run(config: AlfredConfig) -> None:
     hot_store = None
     cold_store = None
     try:
-        embedder = SentenceTransformerProvider(config.embedding_model)
+        embedder = build_embedding_provider(config)
         hot_store = RedisVectorStore(redis=r, dim=config.embedding_dim)
         cold_store = SqliteVecStore(
             db_path=str(episodic_cold_path()),
@@ -199,7 +205,7 @@ async def run(config: AlfredConfig) -> None:
         warmup_task = start_warmup(
             "conscious",
             {
-                "embedding model": lambda: warm_embedder.embed("warmup"),
+                "embedding model": warm_embedder.warmup,
                 "redis vector index": warm_hot.ensure_index,
                 "sqlite cold store": warm_cold._get_db,
             },
@@ -380,57 +386,54 @@ async def run(config: AlfredConfig) -> None:
     try:
         while not _shutdown.is_set():
             entries = await read_group(r, group, consumer, {stream: ">"}, count=1, block=5000)
+            batch = [pair for _stream_key, stream_entries in entries for pair in stream_entries]
 
-            for _stream_key, stream_entries in entries:
-                for entry_id, entry_data in stream_entries:
-                    try:
-                        raw = entry_data.get("event") or entry_data.get(b"event")
-                        if raw is None:
-                            await r.xack(stream, group, entry_id)
-                            continue
-                        event_str = decode_stream_value(raw)
-                        request = UserRequest.model_validate_json(event_str)
-
-                        response = await engine.process_request(request)
-
-                        await r.xadd(  # type: ignore[misc,unused-ignore]
-                            USER_RESPONSES_STREAM,
-                            {"event": response.model_dump_json()},
-                        )
-                        await r.xack(stream, group, entry_id)
-
-                        # Check budget alert after successful processing
-                        await cost_tracker.send_alert_if_needed()
-                    except Exception as e:
-                        log.error("Error processing request {}: {}", entry_id, e)
-                        # Message stays in PEL for recovery — no xack on failure
-
-            # Periodically reclaim stale pending messages (PEL recovery)
+            # XREADGROUP '>' never redelivers, so an un-ACKed entry only comes back
+            # through an explicit reclaim — and it has to be *processed*, not merely
+            # counted, or the same entries are re-claimed every pass forever.
             pel_counter += 1
-            if pel_counter >= 12:  # ~every 60s at 5s block
+            if pel_counter >= _PEL_RECLAIM_EVERY:
                 pel_counter = 0
-                try:
-                    claimed: Any = await r.xautoclaim(  # type: ignore[misc,unused-ignore]
-                        stream, group, consumer, min_idle_time=60000, start_id="0-0", count=5
+                batch.extend(
+                    await reclaim_replayable(
+                        r, stream, group, consumer, now_ms=int(time.time() * 1000)
                     )
-                    if claimed and len(claimed) > 1 and claimed[1]:
-                        log.info("Reclaimed {} stale PEL messages", len(claimed[1]))
-                except Exception:
-                    pass  # xautoclaim not supported on older Redis — skip gracefully
+                )
+
+            for entry_id, entry_data in batch:
+                await process_request_entry(
+                    entry_id,
+                    entry_data,
+                    engine=engine,
+                    redis=r,
+                    stream=stream,
+                    group=group,
+                    cost_tracker=cost_tracker,
+                )
     finally:
         log.info("Shutting down Conscious Engine...")
-        if warmup_task is not None:
-            warmup_task.cancel()
-        writer_task.cancel()
-        if librarian_task is not None:
-            librarian_task.cancel()
-        internal_actions_task.cancel()
-        trigger_refresh_task.cancel()
-        if routine_suggestion_task is not None:
-            routine_suggestion_task.cancel()
-        delivery_task.cancel()
-        await trigger_store.stop_sync()
-        await r.aclose()
+        # Tasks are awaited, not merely cancelled: librarian_task runs consolidate()
+        # -> embed(), so closing the provider while it is still in flight would
+        # surface as a warning blaming EMBEDDING_HOST for a close we caused. Closing
+        # the provider is unconditional because the EmbeddingProvider type does not
+        # say which backend this is — the HTTP one owns a connection pool, the
+        # in-process one owns nothing and no-ops.
+        await teardown(
+            tasks=[
+                warmup_task,
+                writer_task,
+                librarian_task,
+                internal_actions_task,
+                trigger_refresh_task,
+                routine_suggestion_task,
+                delivery_task,
+            ],
+            closers={
+                "trigger store sync": trigger_store.stop_sync,
+                "embedding provider": embedder.aclose if embedder is not None else None,
+                "redis": r.aclose,
+            },
+        )
 
 
 def main() -> None:

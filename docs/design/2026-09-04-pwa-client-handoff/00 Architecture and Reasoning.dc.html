@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#f4f1eb;color:#221f1a;font-family:-apple-system,"Helvetica Neue",Helvetica,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:#8a4a2b;text-decoration:none}a:hover{text-decoration:underline}
+</style>
+</helmet>
+<div style="max-width:720px;margin:0 auto;padding:72px 28px 120px;display:flex;flex-direction:column;gap:52px;text-wrap:pretty">
+
+<header style="display:flex;flex-direction:column;gap:14px">
+  <div style="font:500 12px/1 'Geist Mono',ui-monospace,monospace;letter-spacing:.08em;color:#8a4a2b">ALFRED · 00 · ARCHITECTURE &amp; REASONING</div>
+  <h1 style="margin:0;font:400 46px/1.06 'Newsreader',Georgia,serif;letter-spacing:-.01em">One room, one door, one workshop.</h1>
+  <p style="margin:0;font-size:17px;line-height:1.55;color:#4a453d">How a calm butler, an irreversible decision and dense debugging share a 393pt screen without becoming three products. Read this before the screens.</p>
+  <p style="margin:0;font:400 12.5px/1.6 'Geist Mono',ui-monospace,monospace;color:#7a736a">Grounded in the backend as it stands: the 8 catalogued streams, admin controls that return <i>queued</i> and cannot report outcome, the 300s pending-action TTL, the 60s trigger-cache window, routine states candidate → active → dormant → archived, hot/cold episodic stores, moods neutral · pleased · concerned · amused · serious.</p>
+</header>
+
+<section style="display:flex;flex-direction:column;gap:14px">
+  <h2 style="margin:0;font:500 27px/1.2 'Newsreader',Georgia,serif">1 · Three states of mind, two places</h2>
+  <p style="margin:0;font-size:16px;line-height:1.6">The brief mentions a five-mode framing but describes three: talking, answering, debugging. Three is right as a description of the person. It is wrong as a map of the app, because <em>answering</em> is not somewhere the user goes. It is something that arrives, while they are doing one of the other two, or nothing at all. If approvals get a tab, the sharp case lives behind navigation; if they are a toast, an irreversible action gets the weight of a dismissible notice.</p>
+  <p style="margin:0;font-size:16px;line-height:1.6">So the architecture has <strong>two places and one interruption</strong>. Modes 1 and 3 are places at different depths of the same material. Mode 2 is a door that opens over either.</p>
+</section>
+
+<section style="display:flex;flex-direction:column;gap:18px">
+  <h2 style="margin:0;font:500 27px/1.2 'Newsreader',Georgia,serif">2 · The map</h2>
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+    <div style="background:#ebe6dc;border-radius:12px;padding:18px 18px 20px;display:flex;flex-direction:column;gap:10px;min-height:250px">
+      <div style="font:500 11px/1 'Geist Mono',ui-monospace,monospace;letter-spacing:.08em;color:#8a4a2b">THE ROOM · DEFAULT</div>
+      <div style="font:500 20px/1.15 'Newsreader',Georgia,serif">Where you talk</div>
+      <p style="margin:0;font-size:13.5px;line-height:1.5;color:#4a453d">One scrolling timeline. Alfred's presence at the top, the conversation in the middle, the composer with hold-to-talk at the bottom. Notifications and Alfred's autonomous acts appear here as quiet lines in the same thread, not in a separate inbox. 95% of use never leaves it.</p>
+    </div>
+    <div style="background:#2a2521;color:#f4f1eb;border-radius:12px;padding:18px 18px 20px;display:flex;flex-direction:column;gap:10px">
+      <div style="font:500 11px/1 'Geist Mono',ui-monospace,monospace;letter-spacing:.08em;color:#d9a48a">THE DOOR · INTERRUPTION</div>
+      <div style="font:500 20px/1.15 'Newsreader',Georgia,serif">Where you decide</div>
+      <p style="margin:0;font-size:13.5px;line-height:1.5;color:#cfc7bb">A full-height sheet that rises over whatever is on screen when a critical action is pending. Shows exactly what will run, who asked for it, and the five-minute fuse. Confirmed by a slide with travel, never a tap. When it expires it stays as a tombstone so you know what didn't happen.</p>
+    </div>
+    <div style="background:#ebe6dc;border-radius:12px;padding:18px 18px 20px;display:flex;flex-direction:column;gap:10px">
+      <div style="font:500 11px/1 'Geist Mono',ui-monospace,monospace;letter-spacing:.08em;color:#8a4a2b">THE WORKSHOP · BELOW</div>
+      <div style="font:500 20px/1.15 'Newsreader',Georgia,serif">Where you look under the floor</div>
+      <p style="margin:0;font-size:13.5px;line-height:1.5;color:#4a453d">Pulled up from the bottom of the Room. Four benches: <b>Activity</b> (the eight streams), <b>Memory</b> (episodic, semantic, routines, scratchpad), <b>Triggers</b>, <b>System</b> (health, spend, sessions, devices, credentials, identity, consolidation). Every bench closes back to the Room.</p>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+    <div style="border:1px solid #d8d1c4;border-radius:12px;padding:16px 18px;display:flex;flex-direction:column;gap:8px">
+      <div style="font:500 11px/1 'Geist Mono',ui-monospace,monospace;letter-spacing:.08em;color:#7a736a">NAVIGATION · PHONE</div>
+      <p style="margin:0;font-size:13.5px;line-height:1.55;color:#4a453d">No tab bar in the Room; it is a presence, not an app shell. One handle at the bottom edge opens the Workshop. Inside, a segmented bench switcher sits at the top and every detail view carries its own back chevron and swipe-back, because there is no browser chrome to fall back on. Filters and controls sit low, above the thumb, never in the top corners.</p>
+    </div>
+    <div style="border:1px solid #d8d1c4;border-radius:12px;padding:16px 18px;display:flex;flex-direction:column;gap:8px">
+      <div style="font:500 11px/1 'Geist Mono',ui-monospace,monospace;letter-spacing:.08em;color:#7a736a">NAVIGATION · DESKTOP</div>
+      <p style="margin:0;font-size:13.5px;line-height:1.55;color:#4a453d">The two depths become two columns: the Room stays a 420pt column on the left, permanently; the Workshop opens to its right and its detail views open as a third column. Nothing is redesigned for desktop, it is the phone's layers laid side by side. The Door still covers everything.</p>
+    </div>
+  </div>
+</section>
+
+<section style="display:flex;flex-direction:column;gap:14px">
+  <h2 style="margin:0;font:500 27px/1.2 'Newsreader',Georgia,serif">3 · Why it stays one product: a single spine</h2>
+  <p style="margin:0;font-size:16px;line-height:1.6">Everything Alfred does is an event on a stream. The Room shows a small, human-worded subset of that stream (what Alfred said, what it did on its own, what it is asking). The Workshop's Activity bench is the same stream with the filter removed and the payloads exposed. The Door is one event from that stream, enlarged and given a fuse. Because all three render the same underlying line, the same source attribution, the same time stamps and the same status words, they read as depths of one thing rather than three apps.</p>
+  <p style="margin:0;font-size:16px;line-height:1.6">The concrete link: any autonomous line in the Room has a <strong>Why?</strong> affordance. It opens the causal thread (section 4) which is itself a Workshop view. Going from calm to forensic is one tap and no change of vocabulary.</p>
+</section>
+
+<section style="display:flex;flex-direction:column;gap:14px">
+  <h2 style="margin:0;font:500 27px/1.2 'Newsreader',Georgia,serif">4 · Making two minds legible</h2>
+  <p style="margin:0;font-size:16px;line-height:1.6">Every line carries an <strong>actor</strong>: You, Alfred (conscious), Reflex, Trigger, House, or System. Actors are the unit the user actually reasons about ("did the little model do that or the big one?"), and each maps to real fields: <code style="font:12.5px 'Geist Mono',monospace">source</code> on every event, <code style="font:12.5px 'Geist Mono',monospace">fired_by</code> on trigger fires, the <code style="font:12.5px 'Geist Mono',monospace">reflex*</code> source prefix the router itself uses to enforce autonomy.</p>
+  <p style="margin:0;font-size:16px;line-height:1.6">The <strong>causal thread</strong> answers "why did Alfred just do that." It is a vertical chain: what you said (session_id) → what the conscious mind decided (actions_taken) → the action request → its result (request_id) → the notification it produced. For reflex acts the chain starts at the state change that woke it (ReflexObservation carries trigger_event, action, result and decision_context together). Links the backend can join by id are drawn solid; adjacency in time alone is drawn dashed and labelled as such. The thread never asserts a connection it cannot prove.</p>
+  <p style="margin:0;font-size:16px;line-height:1.6">The mood word (pleased, concerned, amused, serious, neutral) is shown under each reply in small type next to the tools executed. It is the system reporting on itself, so it is rendered as metadata, not as an emoji or a colour wash.</p>
+</section>
+
+<section style="display:flex;flex-direction:column;gap:14px">
+  <h2 style="margin:0;font:500 27px/1.2 'Newsreader',Georgia,serif">5 · Honesty as vocabulary</h2>
+  <p style="margin:0;font-size:16px;line-height:1.6">The interface has a fixed set of status words and uses no others, so that the same word means the same thing on every bench.</p>
+  <div style="display:grid;grid-template-columns:150px 1fr;gap:10px 18px;font-size:14.5px;line-height:1.5;padding:16px 18px;background:#ebe6dc;border-radius:12px">
+    <div style="font:500 12.5px/1.6 'Geist Mono',monospace">Queued</div><div>The server accepted it. Nothing else is known. Used for drain, consolidate, fire, enable/disable. Enable/disable adds <i>"takes effect within 60 s"</i> and the row keeps its old state until a fresh read confirms.</div>
+    <div style="font:500 12.5px/1.6 'Geist Mono',monospace">Applied</div><div>Only for direct writes the server confirmed: DND set/clear, session ended, approval confirmed.</div>
+    <div style="font:500 12.5px/1.6 'Geist Mono',monospace">Last true 14:02</div><div>Every figure shown while offline or reconnecting carries the time it was last true, in place of a live indicator. Health is never shown as current from cache; it is shown as <i>"unknown since 14:02"</i>.</div>
+    <div style="font:500 12.5px/1.6 'Geist Mono',monospace">hot / cold</div><div>Episodic memories keep their store. Cold is set in a lighter weight and never re-coloured to look equal.</div>
+    <div style="font:500 12.5px/1.6 'Geist Mono',monospace">candidate → active → dormant → archived</div><div>Routine lifecycle shown as a four-stop rail with the current stop marked and the confidence trend beside it. "Detected" and "confirmed" in the brief are candidate and active here, matching the store.</div>
+    <div style="font:500 12.5px/1.6 'Geist Mono',monospace">Expired</div><div>An approval that ran out. Kept in the Room as a grey tombstone with the time it lapsed, so the absence of an action is as visible as an action.</div>
+  </div>
+  <p style="margin:0;font-size:15px;line-height:1.6;color:#4a453d">Two footnotes worth surfacing in place: the Memory bench states once, at the top of search, that browsing here does not touch retrieval counts or decay. The System bench shows the deferred queue depth beside the DND control whenever DND has no expiry, with the note that it will not drain on its own.</p>
+</section>
+
+<section style="display:flex;flex-direction:column;gap:14px">
+  <h2 style="margin:0;font:500 27px/1.2 'Newsreader',Georgia,serif">6 · Eight sources at reading speed</h2>
+  <p style="margin:0;font-size:16px;line-height:1.6">Eight hues alone fail in a fast feed; three or four is the limit for pre-attentive colour. So each stream gets two redundant channels: a two-letter monogram in a fixed left column, and a hue from an evenly spaced oklch ring at constant lightness and chroma so no source shouts louder than another. The hue does the glance, the monogram does the confirmation. Filtering is a row of these same chips at the bottom of the bench, tap to solo, tap again to restore.</p>
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+    <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:#fff;border-radius:10px"><div style="width:30px;height:30px;border-radius:8px;background:oklch(0.62 0.11 30);color:#fff;font:500 11px/30px 'Geist Mono',monospace;text-align:center">UR</div><div><div style="font-size:13px;font-weight:600">You</div><div style="font:11px 'Geist Mono',monospace;color:#7a736a">user_requests</div></div></div>
+    <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:#fff;border-radius:10px"><div style="width:30px;height:30px;border-radius:8px;background:oklch(0.62 0.11 75);color:#fff;font:500 11px/30px 'Geist Mono',monospace;text-align:center">AL</div><div><div style="font-size:13px;font-weight:600">Alfred said</div><div style="font:11px 'Geist Mono',monospace;color:#7a736a">user_responses</div></div></div>
+    <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:#fff;border-radius:10px"><div style="width:30px;height:30px;border-radius:8px;background:oklch(0.62 0.11 120);color:#fff;font:500 11px/30px 'Geist Mono',monospace;text-align:center">EV</div><div><div style="font-size:13px;font-weight:600">Bus events</div><div style="font:11px 'Geist Mono',monospace;color:#7a736a">events</div></div></div>
+    <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:#fff;border-radius:10px"><div style="width:30px;height:30px;border-radius:8px;background:oklch(0.62 0.11 165);color:#fff;font:500 11px/30px 'Geist Mono',monospace;text-align:center">AC</div><div><div style="font-size:13px;font-weight:600">Actions</div><div style="font:11px 'Geist Mono',monospace;color:#7a736a">actions</div></div></div>
+    <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:#fff;border-radius:10px"><div style="width:30px;height:30px;border-radius:8px;background:oklch(0.62 0.11 210);color:#fff;font:500 11px/30px 'Geist Mono',monospace;text-align:center">RX</div><div><div style="font-size:13px;font-weight:600">Reflex</div><div style="font:11px 'Geist Mono',monospace;color:#7a736a">reflex_observations</div></div></div>
+    <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:#fff;border-radius:10px"><div style="width:30px;height:30px;border-radius:8px;background:oklch(0.62 0.11 255);color:#fff;font:500 11px/30px 'Geist Mono',monospace;text-align:center">NT</div><div><div style="font-size:13px;font-weight:600">Notifications</div><div style="font:11px 'Geist Mono',monospace;color:#7a736a">notifications</div></div></div>
+    <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:#fff;border-radius:10px"><div style="width:30px;height:30px;border-radius:8px;background:oklch(0.62 0.11 300);color:#fff;font:500 11px/30px 'Geist Mono',monospace;text-align:center">HS</div><div><div style="font-size:13px;font-weight:600">House state</div><div style="font:11px 'Geist Mono',monospace;color:#7a736a">home_state</div></div></div>
+    <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:#fff;border-radius:10px"><div style="width:30px;height:30px;border-radius:8px;background:oklch(0.62 0.11 345);color:#fff;font:500 11px/30px 'Geist Mono',monospace;text-align:center">HR</div><div><div style="font-size:13px;font-weight:600">House results</div><div style="font:11px 'Geist Mono',monospace;color:#7a736a">home_action_results</div></div></div>
+  </div>
+  <p style="margin:0;font-size:15px;line-height:1.6;color:#4a453d">Density rules for the bench: every event is exactly two lines (what, then who·when·id) so 9–10 fit above the filter row; tapping expands the payload in place as wrapped mono, never a horizontal table; pause is a large control above the thumb, and paging back is a pull at the bottom that shows the cursor id it is fetching before.</p>
+</section>
+
+<section style="display:flex;flex-direction:column;gap:14px">
+  <h2 style="margin:0;font:500 27px/1.2 'Newsreader',Georgia,serif">7 · Weight without haptics</h2>
+  <p style="margin:0;font-size:16px;line-height:1.6">The Door uses three substitutes for vibration. <strong>Travel:</strong> confirmation is a slide across the full width of the sheet; the thumb has to move roughly 280pt, and the handle resists at the start (eased, not linear) and snaps home if released before 85%. <strong>Time:</strong> the fuse is a 300 s arc drawn from the real TTL, ticking in whole seconds; the last 30 s change the arc weight, not the colour. <strong>Settlement:</strong> on completion the handle overshoots and settles with a slow spring (≈ 600 ms), the sheet's title changes to "Confirmed · queued", and only when an action_result with that request_id arrives does the word become "Applied". The exact curves and timings are in the motion spec that ships with the design system.</p>
+  <p style="margin:0;font-size:16px;line-height:1.6">The sheet states the action in a full sentence built from the tool name and parameters ("Unlock the front door") and shows the raw call underneath in mono, so the plain-language line can be trusted rather than believed.</p>
+</section>
+
+<section style="display:flex;flex-direction:column;gap:14px">
+  <h2 style="margin:0;font:500 27px/1.2 'Newsreader',Georgia,serif">8 · What it should feel like</h2>
+  <p style="margin:0;font-size:16px;line-height:1.6">Two lineages are in the brief: Pennyworth and JARVIS. A manor and a reactor. One is warm, discreet, made of paper and lamplight; the other is cool, precise, made of light and instruments. The three directions that follow sit at different points on that line. All three avoid the dashboard: no cards of KPIs on the home surface, no tab bar, no accent colour on everything. Presence is shown by a single slow-moving element that breathes when Alfred is listening and goes still when it is offline.</p>
+</section>
+
+<section style="display:flex;flex-direction:column;gap:14px">
+  <h2 style="margin:0;font:500 27px/1.2 'Newsreader',Georgia,serif">9 · Surface inventory</h2>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 24px;font-size:14px;line-height:1.55">
+    <div><div style="font:500 11px/1 'Geist Mono',monospace;letter-spacing:.08em;color:#8a4a2b;margin-bottom:6px">THE ROOM</div>Idle · listening (hold) · transcribing · replying · offline (last-true stamp) · reconnecting · keyboard raised · empty first day · 30-min boundary ("earlier today") · DND on with deferred count · deferred queue sheet · why-thread</div>
+    <div><div style="font:500 11px/1 'Geist Mono',monospace;letter-spacing:.08em;color:#8a4a2b;margin-bottom:6px">THE DOOR</div>Pending · sliding · confirmed-queued · applied · failed · expired tombstone · already-consumed (404 on confirm) · offline (cannot confirm)</div>
+    <div><div style="font:500 11px/1 'Geist Mono',monospace;letter-spacing:.08em;color:#8a4a2b;margin-bottom:6px">WORKSHOP · ACTIVITY</div>Live · paused (n new) · filtered · paging back · event payload · empty stream · stale</div>
+    <div><div style="font:500 11px/1 'Geist Mono',monospace;letter-spacing:.08em;color:#8a4a2b;margin-bottom:6px">WORKSHOP · MEMORY</div>Episodic search (hot/cold) · model loading (503) · no results · semantic documents · routine list + lifecycle rail · routine detail · scratchpad with queue depth</div>
+    <div><div style="font:500 11px/1 'Geist Mono',monospace;letter-spacing:.08em;color:#8a4a2b;margin-bottom:6px">WORKSHOP · TRIGGERS</div>List by kind (time · schedule · sensor · composite) · one-shot vs recurring · detail with last fired · toggle queued (60 s) · fire queued · corrupt record (500)</div>
+    <div><div style="font:500 11px/1 'Geist Mono',monospace;letter-spacing:.08em;color:#8a4a2b;margin-bottom:6px">WORKSHOP · SYSTEM</div>Health (Redis, local model, event rate) · spend vs cap · DND control · deferred queue · sessions + end · devices · credentials per service (set · testing · failed) · consolidate now (queued) · identity: passkeys, first-run setup, sign in, permission denied (403 off-network), not authenticated (401)</div>
+  </div>
+</section>
+
+<section style="display:flex;flex-direction:column;gap:12px;padding:20px 22px;background:#2a2521;color:#f4f1eb;border-radius:12px">
+  <div style="font:500 11px/1 'Geist Mono',ui-monospace,monospace;letter-spacing:.08em;color:#d9a48a">NEXT</div>
+  <p style="margin:0;font-size:15.5px;line-height:1.6">Three visual directions follow, each showing the Room in both themes: <a href="Direction A - Manor.dc.html" style="color:#f4f1eb;text-decoration:underline">A · Manor</a>, <a href="Direction B - Reactor.dc.html" style="color:#f4f1eb;text-decoration:underline">B · Reactor</a>, <a href="Direction C - Study.dc.html" style="color:#f4f1eb;text-decoration:underline">C · Study</a>. Pick one and the whole inventory above gets built as a working prototype on it, then the desktop layout and the design system with the approval motion spec.</p>
+</section>
+</div>
+</x-dc>
+</body>
+</html>

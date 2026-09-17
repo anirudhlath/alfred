@@ -1,43 +1,37 @@
 """Tests for the admin API router: auth gating + overview."""
 
 import json
-from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-from fastapi import HTTPException
+import pytest
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 import core.channels.admin_api as admin_api
+from core.channels.admin_api import (
+    _MAX_ENTITIES_PER_LIST,
+    _MAX_ENTITY_ID_LEN,
+    _REFLEX_LATENCY_SAMPLES,
+    require_authenticated,
+)
 from core.channels.web_server import create_app, require_trusted_network
-from shared.streams import AUTH_SESSION_PREFIX
-
-_SESSION = "admin-test-session"
-
-
-def _aiter(items: list[Any]) -> AsyncIterator[Any]:
-    async def gen() -> AsyncIterator[Any]:
-        for item in items:
-            yield item
-
-    return gen()
+from core.reflex.inference import REFLEX_BACKENDS
+from tests.core.channels.conftest import _TEST_SESSION_ID, session_hgetall
+from tests.helpers import aiter_values, attention_redis
 
 
 def make_admin_client(mock_redis: AsyncMock, *, authed: bool = True) -> TestClient:
     """App with mocked redis; cookie optional to exercise the 401 path."""
-
-    async def _fake_hgetall(key: str) -> dict[bytes, bytes]:
-        if key == f"{AUTH_SESSION_PREFIX}{_SESSION}":
-            return {b"authenticated": b"1"}
-        return {}
-
+    # Tests that need HGETALL for their own data install their own side effect (and
+    # delegate the session key to the same shared fake); the rest get it from here.
     if mock_redis.hgetall._mock_side_effect is None:
-        mock_redis.hgetall = AsyncMock(side_effect=_fake_hgetall)
+        mock_redis.hgetall = session_hgetall()
     app = create_app(redis_url="redis://localhost:6379")
     app.state.redis = mock_redis
     client = TestClient(app)
     if authed:
-        client.cookies.set("alfred_auth", _SESSION)
+        client.cookies.set("alfred_auth", _TEST_SESSION_ID)
     return client
 
 
@@ -47,8 +41,9 @@ def _overview_redis() -> AsyncMock:
     r.get = AsyncMock(return_value=None)
     r.hlen = AsyncMock(return_value=0)
     r.llen = AsyncMock(return_value=0)
-    r.scan_iter = MagicMock(return_value=_aiter([]))
+    r.scan_iter = MagicMock(return_value=aiter_values([]))
     r.xinfo_stream = AsyncMock(side_effect=Exception("missing"))
+    r.xrevrange = AsyncMock(return_value=[])
     return r
 
 
@@ -58,15 +53,29 @@ def test_admin_requires_auth_cookie() -> None:
     assert resp.status_code == 401
 
 
-def test_admin_requires_trusted_network() -> None:
+def test_admin_reads_and_controls_need_only_a_session() -> None:
+    """Admin is gated by the passkey session alone — a public caller with a valid
+    cookie gets reads AND controls. The network gate is reserved for endpoints that
+    can mint or widen credentials (registration, credential writes, device tokens)."""
     client = make_admin_client(_overview_redis())
 
-    def _reject() -> None:
-        raise HTTPException(status_code=403, detail="untrusted")
+    # Structural half: no admin route may carry a network gate, and every one must
+    # carry the session gate. Asserting on the route table (rather than overriding a
+    # dependency) catches a gate re-added under a different callable.
+    admin_routes = [
+        route
+        for route in client.app.routes  # type: ignore[attr-defined]
+        if isinstance(route, APIRoute) and route.path.startswith("/api/admin")
+    ]
+    assert admin_routes, "no admin routes registered"
+    for route in admin_routes:
+        deps = [d.call for d in route.dependant.dependencies]
+        assert require_authenticated in deps, route.path
+        assert require_trusted_network not in deps, route.path
 
-    client.app.dependency_overrides[require_trusted_network] = _reject  # type: ignore[attr-defined]
-    resp = client.get("/api/admin/overview")
-    assert resp.status_code == 403
+    # Behavioural half: a read and a control both succeed on a session alone.
+    assert client.get("/api/admin/overview").status_code == 200
+    assert client.post("/api/admin/dnd", json={"active": True}).status_code == 200
 
 
 def test_overview_shape() -> None:
@@ -89,6 +98,7 @@ def test_overview_shape() -> None:
     assert data["counts"] == {"sessions": 0, "devices": 0, "deferred": 0, "triggers": 0}
     assert data["streams"]["events"]["length"] == 0
     assert data["inference"] == {"ollama": False, "lmstudio": False}
+    assert data["session"] == {"idle_minutes": 30}
 
 
 def test_overview_reports_redis_down() -> None:
@@ -106,6 +116,24 @@ def test_overview_reports_redis_down() -> None:
     assert data["counts"] == {"sessions": 0, "devices": 0, "deferred": 0, "triggers": 0}
     assert data["streams"] == {}
     assert data["inference"] == {"ollama": False, "lmstudio": False}
+    assert data["reflex"] == {"model": None, "last_ms": None, "p50_ms": None}
+    assert data["librarian"] == {"last_run_at": None, "reviewed": None, "next_run_at": None}
+    assert data["session"] == {"idle_minutes": 30}
+
+
+@pytest.mark.parametrize("redis_up", [True, False], ids=["healthy", "degraded"])
+def test_overview_session_idle_follows_config(monkeypatch: Any, redis_up: bool) -> None:
+    """The SPA windows the Room to the server's session; it must read the real value —
+    including when Redis is down, since this is config, not Redis."""
+    monkeypatch.setenv("SESSION_TIMEOUT_MINUTES", "10")
+    r = _overview_redis()
+    if not redis_up:
+        r.ping = AsyncMock(side_effect=ConnectionError("down"))
+    client = make_admin_client(r)
+
+    resp = client.get("/api/admin/overview")
+    assert resp.status_code == 200
+    assert resp.json()["session"] == {"idle_minutes": 10}
 
 
 def test_overview_survives_corrupt_cost_and_dnd() -> None:
@@ -129,6 +157,224 @@ def test_overview_inference_up_with_http_client() -> None:
     resp = client.get("/api/admin/overview")
     assert resp.status_code == 200
     assert resp.json()["inference"] == {"ollama": True, "lmstudio": True}
+
+
+def _observation(observed_at: str, triggered_at: str) -> tuple[bytes, dict[bytes, bytes]]:
+    event = {
+        "event_type": "reflex_observation",
+        "timestamp": observed_at,
+        "source": "reflex-engine",
+        "origin": "state_change",
+        "trigger_event": {"event_type": "state_changed", "timestamp": triggered_at},
+    }
+    return (b"1-0", {b"event": json.dumps(event).encode()})
+
+
+def test_overview_reports_reflex_latency_and_librarian_status(monkeypatch: Any) -> None:
+    monkeypatch.setenv("REFLEX_BACKEND", "ollama")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen3:8b")
+    r = _overview_redis()
+    # newest first, as XREVRANGE returns them
+    r.xrevrange = AsyncMock(
+        return_value=[
+            _observation("2026-09-04T10:00:00.900123Z", "2026-09-04T10:00:00.000000Z"),
+            _observation("2026-09-04T09:59:00.250125Z", "2026-09-04T09:59:00.000000Z"),
+            _observation("2026-09-04T09:58:00.100000Z", "2026-09-04T09:58:00.000000Z"),
+            (b"0-0", {b"event": b"not json"}),  # corrupt entry is skipped
+        ]
+    )
+
+    session = session_hgetall()
+
+    async def _hgetall(key: str) -> dict[bytes, bytes]:
+        if session_data := await session(key):
+            return session_data
+        if key == "alfred:librarian:status":
+            return {
+                b"last_run_at": b"2026-09-04T09:00:00+00:00",
+                b"reviewed": b"23",
+                b"next_run_at": b"2026-09-04T10:00:00+00:00",
+            }
+        return {}
+
+    r.hgetall = AsyncMock(side_effect=_hgetall)
+    client = make_admin_client(r)
+
+    data = client.get("/api/admin/overview").json()
+
+    assert data["reflex"] == {"model": "qwen3:8b", "last_ms": 900.1, "p50_ms": 250.1}
+    assert data["librarian"] == {
+        "last_run_at": "2026-09-04T09:00:00+00:00",
+        "reviewed": 23,
+        "next_run_at": "2026-09-04T10:00:00+00:00",
+    }
+    r.xrevrange.assert_awaited_once_with("alfred:reflex:observations", max="+", min="-", count=20)
+
+
+def test_overview_reflex_model_normalises_the_backend_name(monkeypatch: Any) -> None:
+    """The dispatcher strips and lowercases REFLEX_BACKEND before matching it
+    (core/reflex/inference.py); so must the overview, or `REFLEX_BACKEND=OpenAI`
+    reports a model the engine never runs."""
+    monkeypatch.setenv("REFLEX_BACKEND", " OpenAI ")
+    monkeypatch.setenv("OPENAI_COMPAT_MODEL", "Qwen/Qwen3-8B")
+    client = make_admin_client(_overview_redis())
+
+    assert client.get("/api/admin/overview").json()["reflex"]["model"] == "Qwen/Qwen3-8B"
+
+
+def test_overview_reflex_model_is_null_when_unconfigured(monkeypatch: Any) -> None:
+    """OPENAI_COMPAT_MODEL defaults to "" — report null, not an empty string."""
+    monkeypatch.setenv("REFLEX_BACKEND", "openai")
+    monkeypatch.setenv("OPENAI_COMPAT_MODEL", "")
+    client = make_admin_client(_overview_redis())
+
+    assert client.get("/api/admin/overview").json()["reflex"]["model"] is None
+
+
+def test_overview_reflex_model_is_null_for_a_backend_the_dispatcher_rejects(
+    monkeypatch: Any,
+) -> None:
+    """`core/reflex/inference.py` raises on anything outside its accepted set, so
+    `REFLEX_BACKEND=vllm` runs no model at all. Falling back to `OLLAMA_MODEL` would
+    name a model the engine will never reach — and hide a misconfiguration that is
+    otherwise only visible in a crash."""
+    monkeypatch.setenv("REFLEX_BACKEND", "vllm")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen3:8b")
+    monkeypatch.setenv("OPENAI_COMPAT_MODEL", "Qwen/Qwen3-8B")
+    client = make_admin_client(_overview_redis())
+
+    assert client.get("/api/admin/overview").json()["reflex"]["model"] is None
+
+
+def test_overview_reflex_model_covers_every_backend_the_dispatcher_accepts(
+    monkeypatch: Any,
+) -> None:
+    """The overview mirrors the dispatcher's set rather than retyping it, so a new
+    backend cannot be added there and silently report null here."""
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen3:8b")
+    monkeypatch.setenv("OPENAI_COMPAT_MODEL", "Qwen/Qwen3-8B")
+    client = make_admin_client(_overview_redis())
+
+    for backend in REFLEX_BACKENDS:
+        monkeypatch.setenv("REFLEX_BACKEND", backend)
+        assert client.get("/api/admin/overview").json()["reflex"]["model"] is not None
+
+
+def test_overview_reflex_reads_only_the_newest_samples(monkeypatch: Any) -> None:
+    """The window is the newest 20 observations. Pinned by what it *does* to the
+    median — a fake that honours `count` the way Redis does — rather than by
+    asserting the argument, which a cap of any size would satisfy."""
+    monkeypatch.setenv("REFLEX_BACKEND", "ollama")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen3:8b")
+    # Newest first: 1..20 ms, then one much older and much slower entry.
+    entries = [
+        _observation(f"2026-09-04T10:00:00.{ms:06d}Z", "2026-09-04T10:00:00.000000Z")
+        for ms in [n * 1000 for n in range(1, _REFLEX_LATENCY_SAMPLES + 1)]
+    ]
+    entries.append(_observation("2026-09-04T09:00:01.000000Z", "2026-09-04T09:00:00.000000Z"))
+    r = _overview_redis()
+
+    async def _revrange(_stream: str, count: int | None = None, **_bounds: str) -> list[Any]:
+        """XREVRANGE honouring `count`, which is what makes the window observable."""
+        return entries[: count if count is not None else len(entries)]
+
+    r.xrevrange = AsyncMock(side_effect=_revrange)
+    client = make_admin_client(r)
+
+    reflex = client.get("/api/admin/overview").json()["reflex"]
+
+    assert _REFLEX_LATENCY_SAMPLES == 20
+    # Median of 1..20 ms. Reading the 21st (a 1000 ms outlier) would move it to 11.0.
+    assert reflex["p50_ms"] == 10.5
+    assert reflex["last_ms"] == 1.0
+
+
+def test_overview_reflex_skips_mixed_timezone_entries(monkeypatch: Any) -> None:
+    """A naive/aware timestamp pair raises on subtraction — skip it, never 500."""
+    monkeypatch.setenv("REFLEX_BACKEND", "ollama")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen3:8b")
+    r = _overview_redis()
+    r.xrevrange = AsyncMock(
+        return_value=[
+            # Aware observation, naive trigger: `observed - triggered` is a TypeError.
+            _observation("2026-09-04T10:00:00.400000Z", "2026-09-04T10:00:00.000000"),
+            _observation("2026-09-04T09:59:00.250125Z", "2026-09-04T09:59:00.000000Z"),
+        ]
+    )
+    client = make_admin_client(r)
+
+    resp = client.get("/api/admin/overview")
+
+    assert resp.status_code == 200
+    # Only the well-formed entry counts, so it is both the latest and the median.
+    assert resp.json()["reflex"] == {"model": "qwen3:8b", "last_ms": 250.1, "p50_ms": 250.1}
+
+
+@pytest.mark.parametrize(
+    "reviewed",
+    [
+        pytest.param(b"abc", id="not-a-number"),
+        # U+00B2 SUPERSCRIPT TWO: str.isdigit() says yes, int() raises.
+        pytest.param(b"\xc2\xb2", id="superscript-two"),
+    ],
+)
+def test_overview_librarian_reviewed_rejects_non_integers(reviewed: bytes) -> None:
+    r = _overview_redis()
+
+    session = session_hgetall()
+
+    async def _hgetall(key: str) -> dict[bytes, bytes]:
+        if session_data := await session(key):
+            return session_data
+        return {b"last_run_at": b"2026-09-04T09:00:00+00:00", b"reviewed": reviewed}
+
+    r.hgetall = AsyncMock(side_effect=_hgetall)
+    client = make_admin_client(r)
+
+    resp = client.get("/api/admin/overview")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["librarian"]["reviewed"] is None
+    # The unparseable count must not blank the fields around it.
+    assert data["librarian"]["last_run_at"] == "2026-09-04T09:00:00+00:00"
+
+
+def test_overview_librarian_survives_hash_failure() -> None:
+    """A failing status hash read nulls the librarian block, it doesn't 500."""
+    r = _overview_redis()
+
+    session = session_hgetall()
+
+    async def _hgetall(key: str) -> dict[bytes, bytes]:
+        if session_data := await session(key):
+            return session_data
+        raise ConnectionError("hash read failed")
+
+    r.hgetall = AsyncMock(side_effect=_hgetall)
+    client = make_admin_client(r)
+
+    resp = client.get("/api/admin/overview")
+
+    assert resp.status_code == 200
+    assert resp.json()["librarian"] == {
+        "last_run_at": None,
+        "reviewed": None,
+        "next_run_at": None,
+    }
+
+
+def test_overview_reflex_survives_stream_failure(monkeypatch: Any) -> None:
+    monkeypatch.setenv("REFLEX_BACKEND", "openai")
+    monkeypatch.setenv("OPENAI_COMPAT_MODEL", "Qwen/Qwen3-8B")
+    r = _overview_redis()
+    r.xrevrange = AsyncMock(side_effect=Exception("boom"))
+    client = make_admin_client(r)
+
+    data = client.get("/api/admin/overview").json()
+
+    assert data["reflex"] == {"model": "Qwen/Qwen3-8B", "last_ms": None, "p50_ms": None}
+    assert data["librarian"] == {"last_run_at": None, "reviewed": None, "next_run_at": None}
 
 
 def test_streams_list() -> None:
@@ -192,14 +438,15 @@ def test_stream_history_notification_payload_decode() -> None:
 
 def test_memory_episodic_recent_lists_hot_and_cold(tmp_path: Any, monkeypatch: Any) -> None:
     r = _overview_redis()
-    r.scan_iter = MagicMock(return_value=_aiter([b"ctx:abc"]))
+    r.scan_iter = MagicMock(return_value=aiter_values([b"ctx:abc"]))
 
     # hgetall serves BOTH the auth middleware (session key) and the ctx hash —
     # route by key, otherwise the request 401s before reaching the endpoint.
+    session = session_hgetall()
+
     async def _hgetall(key: Any) -> dict[bytes, bytes]:
-        key_str = key.decode() if isinstance(key, bytes) else key
-        if key_str == f"{AUTH_SESSION_PREFIX}{_SESSION}":
-            return {b"authenticated": b"1"}
+        if session_data := await session(key):
+            return session_data
         return {
             b"content": b"User asked about lights",
             b"type": b"episodic",
@@ -263,12 +510,13 @@ def test_memory_episodic_hot_scan_filters_out_non_episodic(tmp_path: Any, monkey
     """Hot scan must return only type=episodic entries, skipping routine/semantic."""
     r = _overview_redis()
     # Two ctx keys: one episodic, one routine
-    r.scan_iter = MagicMock(return_value=_aiter([b"ctx:episodic1", b"ctx:routine1"]))
+    r.scan_iter = MagicMock(return_value=aiter_values([b"ctx:episodic1", b"ctx:routine1"]))
+
+    session = session_hgetall()
 
     async def _hgetall(key: Any) -> dict[bytes, bytes]:
-        key_str = key.decode() if isinstance(key, bytes) else key
-        if key_str == f"{AUTH_SESSION_PREFIX}{_SESSION}":
-            return {b"authenticated": b"1"}
+        if session_data := await session(key):
+            return session_data
         if b"episodic1" in (key if isinstance(key, bytes) else key.encode()):
             return {
                 b"content": b"User asked about lights",
@@ -342,9 +590,11 @@ def test_memory_episodic_search_success_and_no_stat_mutation(
 def test_triggers_list() -> None:
     r = _overview_redis()
 
+    session = session_hgetall()
+
     async def _hgetall(key: str) -> dict[bytes, bytes]:
-        if key == f"{AUTH_SESSION_PREFIX}{_SESSION}":
-            return {b"authenticated": b"1"}
+        if session_data := await session(key):
+            return session_data
         return {
             b"t1": json.dumps(
                 {
@@ -376,7 +626,7 @@ def test_deferred_notifications() -> None:
 
 def test_sessions_list() -> None:
     r = _overview_redis()
-    r.scan_iter = MagicMock(return_value=_aiter([b"alfred:sessions:s1"]))
+    r.scan_iter = MagicMock(return_value=aiter_values([b"alfred:sessions:s1"]))
     r.ttl = AsyncMock(return_value=1200)
     client = make_admin_client(r)
     resp = client.get("/api/admin/sessions")
@@ -388,11 +638,13 @@ def test_sessions_list() -> None:
 def test_sessions_list_populated() -> None:
     """Sessions list with a real session hash — channel, turns, created_at, and ttl populated."""
     r = _overview_redis()
-    r.scan_iter = MagicMock(return_value=_aiter([b"alfred:sessions:s2"]))
+    r.scan_iter = MagicMock(return_value=aiter_values([b"alfred:sessions:s2"]))
+
+    session = session_hgetall()
 
     async def _hgetall(key: str) -> dict[bytes, bytes]:
-        if key == f"{AUTH_SESSION_PREFIX}{_SESSION}":
-            return {b"authenticated": b"1"}
+        if session_data := await session(key):
+            return session_data
         # Session hash for s2
         return {
             b"channel": b"web_pwa",
@@ -420,15 +672,58 @@ def test_sessions_list_populated() -> None:
 def test_devices_list() -> None:
     r = _overview_redis()
 
+    session = session_hgetall()
+
     async def _hgetall(key: str) -> dict[bytes, bytes]:
-        if key == f"{AUTH_SESSION_PREFIX}{_SESSION}":
-            return {b"authenticated": b"1"}
+        if session_data := await session(key):
+            return session_data
         return {b"tok1": json.dumps({"platform": "ios", "identity": "sir"}).encode()}
 
     r.hgetall = AsyncMock(side_effect=_hgetall)
     client = make_admin_client(r)
     resp = client.get("/api/admin/devices")
     assert resp.json()["devices"][0]["platform"] == "ios"
+
+
+def test_devices_list_truncates_the_device_token() -> None:
+    """A full APNs token is credential-equivalent; admin is session-only, so the
+    route returns a 12-char prefix — enough to tell devices apart — and no more."""
+    full_token = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+    r = _overview_redis()
+
+    session = session_hgetall()
+
+    async def _hgetall(key: str) -> dict[bytes, bytes]:
+        if session_data := await session(key):
+            return session_data
+        return {full_token.encode(): json.dumps({"platform": "ios"}).encode()}
+
+    r.hgetall = AsyncMock(side_effect=_hgetall)
+    client = make_admin_client(r)
+    resp = client.get("/api/admin/devices")
+
+    assert resp.json()["devices"][0]["device_token"] == full_token[:12]
+    assert full_token not in resp.text
+
+
+def test_devices_list_truncates_the_token_on_corrupt_metadata() -> None:
+    """The except branch truncates too — corrupt JSON must not leak the full token."""
+    full_token = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+    r = _overview_redis()
+
+    session = session_hgetall()
+
+    async def _hgetall(key: str) -> dict[bytes, bytes]:
+        if session_data := await session(key):
+            return session_data
+        return {full_token.encode(): b"not json"}
+
+    r.hgetall = AsyncMock(side_effect=_hgetall)
+    client = make_admin_client(r)
+    resp = client.get("/api/admin/devices")
+
+    assert resp.json()["devices"] == [{"device_token": full_token[:12]}]
+    assert full_token not in resp.text
 
 
 # ---------------------------------------------------------------------------
@@ -640,3 +935,312 @@ def test_set_trigger_enabled_corrupt_json_returns_500() -> None:
     resp = client.post("/api/admin/triggers/t1/enabled", json={"enabled": True})
     assert resp.status_code == 500
     assert "corrupt" in resp.json()["detail"].lower()
+
+
+def test_memory_episodic_search_returns_503_when_embedding_fails(
+    monkeypatch: Any,
+) -> None:
+    """A failing embed is a 503, not a 500.
+
+    Construction stopped proving usability when the HTTP embedding backend arrived:
+    ``OpenAICompatEmbeddingProvider.__init__`` only builds an httpx client, so a down
+    or restarting embedding server first surfaces inside ``recall()``, which embeds
+    the query before touching either store. Uncaught, that is a stack trace from a
+    module whose contract is that reads never 500.
+    """
+
+    class _UnreachableMemory:
+        async def recall(self, **kwargs: Any) -> list[Any]:
+            raise RuntimeError("Embedding request failed: cannot reach the server")
+
+    monkeypatch.setattr(admin_api, "_get_episodic_lazy", lambda r: _UnreachableMemory())
+    client = make_admin_client(_overview_redis())
+    resp = client.get("/api/admin/memory/episodic?q=lights")
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "Vector search unavailable"
+
+
+async def test_aclose_episodic_closes_the_cached_provider() -> None:
+    """The cached provider is closed on shutdown — it is not closed per request."""
+
+    class _FakeEmbedder:
+        def __init__(self) -> None:
+            self.closed = 0
+
+        async def aclose(self) -> None:
+            self.closed += 1
+
+    embedder = _FakeEmbedder()
+    admin_api._episodic_embedder = embedder
+    admin_api._episodic_memory = object()
+
+    await admin_api.aclose_episodic()
+    assert embedder.closed == 1
+    # Idempotent: the hook can run after a failed startup, or twice.
+    await admin_api.aclose_episodic()
+    assert embedder.closed == 1
+    assert admin_api._episodic_memory is None
+
+
+async def test_aclose_episodic_survives_a_failing_close() -> None:
+    """Shutdown runs after `yield` in the lifespan; raising there skips the rest of it."""
+
+    class _AngryEmbedder:
+        async def aclose(self) -> None:
+            raise RuntimeError("pool already gone")
+
+    admin_api._episodic_embedder = _AngryEmbedder()
+    admin_api._episodic_memory = object()
+    await admin_api.aclose_episodic()
+    assert admin_api._episodic_embedder is None
+
+
+def test_attention_get_lists_every_domain() -> None:
+    """Three domains, keyed out of order — the response is sorted by domain."""
+    sets = {
+        "alfred:attention:media:seen": {"player.living_room"},
+        "alfred:attention:home": {"light.kitchen"},
+        "alfred:attention:home:seen": {"light.kitchen", "sensor.dryer_power"},
+        "alfred:attention:calendar": {"calendar.work"},
+    }
+    r = attention_redis(sets)
+    client = make_admin_client(r)
+
+    resp = client.get("/api/admin/attention")
+
+    assert resp.status_code == 200
+    r.scan_iter.assert_called_once_with(match="alfred:attention:*", count=100)
+    assert resp.json() == {
+        "domains": [
+            {"domain": "calendar", "members": ["calendar.work"], "seen": []},
+            {
+                "domain": "home",
+                "members": ["light.kitchen"],
+                "seen": ["light.kitchen", "sensor.dryer_power"],
+            },
+            {"domain": "media", "members": [], "seen": ["player.living_room"]},
+        ]
+    }
+
+
+def test_attention_get_skips_only_the_domain_that_fails() -> None:
+    """One unreadable set costs its own row, not the whole page."""
+    sets = {
+        "alfred:attention:home": {"light.kitchen"},
+        "alfred:attention:media": {"player.living_room"},
+    }
+    r = attention_redis(sets)
+    healthy = r.smembers
+
+    async def _flaky(key: str) -> set[bytes]:
+        if key.startswith("alfred:attention:media"):
+            raise ConnectionError("down")
+        return await healthy(key)  # type: ignore[no-any-return]
+
+    r.smembers = AsyncMock(side_effect=_flaky)
+    client = make_admin_client(r)
+
+    resp = client.get("/api/admin/attention")
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "domains": [{"domain": "home", "members": ["light.kitchen"], "seen": []}]
+    }
+
+
+def test_attention_get_is_503_when_the_attention_store_is_down() -> None:
+    """An outage must not read as "nothing configured": `{"domains": []}` is the one
+    shape the PWA setup gate cannot afford to confuse, so the scan failure answers
+    503 in the same vocabulary as its sibling PUT."""
+    r = _overview_redis()
+    r.scan_iter = MagicMock(side_effect=ConnectionError("down"))
+    client = make_admin_client(r)
+
+    resp = client.get("/api/admin/attention")
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "Attention store unavailable"
+
+
+def test_attention_put_adds_and_removes() -> None:
+    sets: dict[str, set[str]] = {"alfred:attention:home": {"sensor.dryer_power"}}
+    client = make_admin_client(attention_redis(sets))
+
+    resp = client.put(
+        "/api/admin/attention/home",
+        json={"allow": ["light.kitchen"], "ask": ["sensor.dryer_power"]},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "domain": "home",
+        "members": ["light.kitchen"],
+        "seen": ["light.kitchen", "sensor.dryer_power"],
+    }
+    assert sets["alfred:attention:home"] == {"light.kitchen"}
+    # Removal is sticky: the entity stays in :seen so the seed rule can't re-add it
+    assert "sensor.dryer_power" in sets["alfred:attention:home:seen"]
+
+
+@pytest.mark.parametrize(
+    "domain",
+    [
+        # The load-bearing case: this would write into another domain's sticky set.
+        "home:seen",
+        "%2E%2E",  # a literal `../x` is resolved away before it reaches the route
+        "home%0A",  # a trailing newline: `$` would accept it, `fullmatch` does not
+        "*",
+        "Home",
+        "a-b",
+        "a" * 65,
+    ],
+)
+def test_attention_put_rejects_bad_domain(domain: str) -> None:
+    client = make_admin_client(attention_redis({}))
+
+    resp = client.put(f"/api/admin/attention/{domain}", json={"allow": ["x"]})
+
+    assert resp.status_code == 400
+
+
+def test_attention_put_accepts_a_lowercase_underscored_domain() -> None:
+    sets: dict[str, set[str]] = {}
+    client = make_admin_client(attention_redis(sets))
+
+    resp = client.put("/api/admin/attention/home_2", json={"allow": ["light.kitchen"]})
+
+    assert resp.status_code == 200
+    assert sets["alfred:attention:home_2"] == {"light.kitchen"}
+
+
+def test_attention_put_returns_503_when_the_store_fails() -> None:
+    r = attention_redis({})
+    r.sadd = AsyncMock(side_effect=ConnectionError("down"))
+    client = make_admin_client(r)
+
+    resp = client.put("/api/admin/attention/home", json={"allow": ["light.kitchen"]})
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "Attention store unavailable"
+
+
+def test_attention_put_accepts_an_empty_body() -> None:
+    """Both lists default to empty: a no-op PUT reads the domain back untouched."""
+    sets: dict[str, set[str]] = {
+        "alfred:attention:home": {"light.kitchen"},
+        "alfred:attention:home:seen": {"light.kitchen"},
+    }
+    client = make_admin_client(attention_redis(sets))
+
+    resp = client.put("/api/admin/attention/home", json={})
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "domain": "home",
+        "members": ["light.kitchen"],
+        "seen": ["light.kitchen"],
+    }
+    assert sets == {
+        "alfred:attention:home": {"light.kitchen"},
+        "alfred:attention:home:seen": {"light.kitchen"},
+    }
+
+
+def test_attention_put_applies_ask_after_allow() -> None:
+    """An entity in both lists ends up removed and sticky — `ask` is applied last."""
+    sets: dict[str, set[str]] = {}
+    client = make_admin_client(attention_redis(sets))
+
+    resp = client.put(
+        "/api/admin/attention/home",
+        json={"allow": ["light.kitchen"], "ask": ["light.kitchen"]},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"domain": "home", "members": [], "seen": ["light.kitchen"]}
+
+
+def test_attention_put_rejects_an_oversized_list() -> None:
+    client = make_admin_client(attention_redis({}))
+
+    resp = client.put(
+        "/api/admin/attention/home",
+        json={"allow": [f"light.l{i}" for i in range(_MAX_ENTITIES_PER_LIST + 1)]},
+    )
+
+    assert resp.status_code == 422
+
+
+def test_attention_put_rejects_a_non_list_body() -> None:
+    client = make_admin_client(attention_redis({}))
+
+    resp = client.put("/api/admin/attention/home", json={"allow": "notalist"})
+
+    assert resp.status_code == 422
+
+
+@pytest.mark.parametrize("entity_id", ["", "   ", "x" * (_MAX_ENTITY_ID_LEN + 1)])
+def test_attention_put_rejects_a_bad_entity_id(entity_id: str) -> None:
+    """257 characters, not some number well past the cap: the reject edge has to sit
+    exactly one past the accept edge or an off-by-one moves unnoticed."""
+    client = make_admin_client(attention_redis({}))
+
+    resp = client.put("/api/admin/attention/home", json={"allow": [entity_id]})
+
+    assert resp.status_code == 422
+
+
+def test_attention_put_accepts_an_entity_id_at_the_length_cap() -> None:
+    """256 is the accept edge."""
+    sets: dict[str, set[str]] = {}
+    entity_id = "x" * _MAX_ENTITY_ID_LEN
+    client = make_admin_client(attention_redis(sets))
+
+    resp = client.put("/api/admin/attention/home", json={"allow": [entity_id]})
+
+    assert resp.status_code == 200
+    assert _MAX_ENTITY_ID_LEN == 256
+    assert sets["alfred:attention:home"] == {entity_id}
+
+
+def test_attention_put_accepts_a_full_list() -> None:
+    """200 entries is the accept edge; 201 is refused above."""
+    sets: dict[str, set[str]] = {}
+    allow = [f"light.l{i}" for i in range(_MAX_ENTITIES_PER_LIST)]
+    client = make_admin_client(attention_redis(sets))
+
+    resp = client.put("/api/admin/attention/home", json={"allow": allow})
+
+    assert resp.status_code == 200
+    assert _MAX_ENTITIES_PER_LIST == 200
+    assert sets["alfred:attention:home"] == set(allow)
+
+
+def test_attention_put_accepts_a_domain_at_the_length_cap() -> None:
+    """64 characters is the accept edge of `_DOMAIN_RE`; 65 is refused above."""
+    sets: dict[str, set[str]] = {}
+    domain = "d" * 64
+    client = make_admin_client(attention_redis(sets))
+
+    resp = client.put(f"/api/admin/attention/{domain}", json={"allow": ["light.kitchen"]})
+
+    assert resp.status_code == 200
+    assert sets[f"alfred:attention:{domain}"] == {"light.kitchen"}
+
+
+def test_attention_put_strips_surrounding_whitespace() -> None:
+    sets: dict[str, set[str]] = {}
+    client = make_admin_client(attention_redis(sets))
+
+    resp = client.put("/api/admin/attention/home", json={"allow": ["  light.kitchen  "]})
+
+    assert resp.status_code == 200
+    assert sets["alfred:attention:home"] == {"light.kitchen"}
+
+
+def test_attention_requires_auth() -> None:
+    client = make_admin_client(attention_redis({}), authed=False)
+    assert client.get("/api/admin/attention").status_code == 401
+    assert client.put("/api/admin/attention/home", json={"allow": []}).status_code == 401
+    # The gate runs before validation: a malformed body must not leak a 422 either.
+    assert client.put("/api/admin/attention/home", json={"allow": "x"}).status_code == 401

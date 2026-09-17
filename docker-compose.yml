@@ -9,9 +9,17 @@
 # the container rewrites it to the host gateway automatically. The secrets passphrase is
 # generated and persisted in the data volume on first boot — no manual step required
 # (override with ALFRED_SECRETS_PASSPHRASE in .env to pin your own).
+#
+# Pinned so the project name does not depend on the directory compose runs from. CD runs
+# `docker compose up -d` from ~/code/alfred-deploy/, which would otherwise derive the
+# project `alfred-deploy` — new empty volumes (losing the secrets passphrase persisted in
+# alfred_data on first boot) and a second container racing this one for :8081.
+name: alfred
 services:
   alfred:
     image: alfred:latest
+    # Fixed so post-deploy verification can find it: `alfredctl smoke --attach --name alfred`.
+    container_name: alfred
     env_file: .env
     environment:
       ALFRED_DATA_MODE: persistent

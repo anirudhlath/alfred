@@ -25,8 +25,9 @@ These are non-negotiable constraints. Every design decision must respect them.
 
 ## 4. Stateful Memory (Librarian Pattern)
 - Core preferences in Markdown + YAML frontmatter (core/memory/preferences/)
-- Real-time writes go to scratchpad.md ONLY (via Redis List → async writer)
+- Real-time writes go to scratchpad.md ONLY (via Redis List → async writer), which fans the same entries out to `alfred:librarian:queue` for consolidation — never add a second consumer to `alfred:scratchpad:queue`
 - Core preference files are NEVER edited during runtime
+- The repo ships NO memory content — no preferences, profile or routine files. Seeded fixtures are read back as though the user had stated them (the Reflex Engine feeds preferences straight into the SLM prompt), so a template becomes real behaviour in a real house
 - The Librarian Agent consolidates nightly (Phase 3)
 
 ## 5. Fluid Intelligence

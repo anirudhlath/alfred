@@ -3,6 +3,12 @@
 EVENTS_STREAM = "alfred:events"
 ACTIONS_STREAM = "alfred:actions"
 SCRATCHPAD_QUEUE = "alfred:scratchpad:queue"
+# Consolidation feed. The ScratchpadWriter forwards here after appending to
+# scratchpad.md, so the Librarian has its own queue to drain instead of racing
+# the writer for SCRATCHPAD_QUEUE (which the writer always won).
+LIBRARIAN_QUEUE = "alfred:librarian:queue"
+# HASH: last_run_at (ISO), reviewed (int as str), next_run_at (ISO) — read by the admin overview
+LIBRARIAN_STATUS_KEY = "alfred:librarian:status"
 TRIGGERS_KEY = "alfred:triggers"
 TOOL_REGISTRY_KEY = "alfred:tool_registry"
 CONTEXT_KEY_PREFIX = "alfred:context:"
@@ -28,6 +34,22 @@ VOICEPRINT_KEY = "alfred:identity:voiceprint"
 CONTEXT_INDEX = "idx:context"
 CONTEXT_PREFIX = "ctx:"
 ENTITY_FREQUENCY_KEY = "alfred:entity:freq"
+# Passive observations are scored against their own frequency population.
+# Sharing ENTITY_FREQUENCY_KEY would drive every count high enough that
+# novelty (1/count) collapses to ~0 for real reflex actions too.
+OBSERVED_FREQUENCY_KEY = "alfred:entity:freq:observed"
+
+# Per-entry delivery-attempt counters for the Memory Ingestor (hash field ->
+# count, whole-key TTL as a crash-safety net). Bounds retries of an entry that
+# parses but fails deterministically downstream: without a cap it is reclaimed
+# forever, burning a ZINCRBY on the observed-frequency key every pass and
+# consuming the reclaim budget of everything behind it in the PEL.
+INGEST_ATTEMPTS_KEY = "alfred:memory:ingest:attempts"
+
+# Per-entity debounce for passive observation (SET NX EX). One noisy device
+# accounted for 64% of qualifying events on the live instance, so this is
+# what keeps episodic memory readable.
+OBSERVED_ENTITY_PREFIX = "alfred:observer:seen:"
 
 # Phase 3: Runtime config + cost
 RUNTIME_CONFIG_KEY = "alfred:config:runtime"
@@ -53,6 +75,17 @@ TRIGGER_SYNC_OP_TZ_CHANGED = "tz-changed"
 # Auth (WebAuthn)
 AUTH_SESSION_PREFIX: str = "alfred:auth:"
 WEBAUTHN_CHALLENGE_PREFIX: str = "alfred:webauthn:challenge:"
+WEBAUTHN_PAIRING_KEY: str = "alfred:webauthn:pairing"  # the active 6-digit code, 5 min
+WEBAUTHN_PAIRING_FAILS_PREFIX: str = "alfred:webauthn:pairing:fails:"
+"""+ client bucket -> wrong guesses at the pairing code from that client (TTL 300s).
+
+The bucket is a single IPv4 address or an IPv6 /64 (``_pairing_fails_key`` in
+core/identity/auth_routes.py — a v6 end site is delegated a whole /64, so keying on the
+bare address would give one guesser 2**64 budgets). Per client rather than one global
+counter: this route is reachable from any network, so a single counter let a stranger's
+guesses lock out the code a real device was waiting on. Spending the budget
+(``_PAIRING_MAX_FAILURES``) refuses that client for the rest of the TTL; the code itself
+stays live for everyone else."""
 
 
 def decode_stream_value(raw: str | bytes) -> str:

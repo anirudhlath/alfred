@@ -6,7 +6,7 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 
 from core.notifications.schema import Urgency
 from shared.streams import COST_DAILY_KEY
@@ -25,6 +25,13 @@ class CostState(BaseModel):
     spend_usd: float
     cap_usd: float
     alert_sent: bool = False
+    request_count: int = 0  # record_spend calls today (one per handled request)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def avg_usd(self) -> float:
+        """Mean spend per recorded request today (0.0 before the first)."""
+        return round(self.spend_usd / self.request_count, 6) if self.request_count else 0.0
 
 
 # Approximate pricing per million tokens (via OpenRouter)
@@ -90,11 +97,12 @@ class CostTracker:
         """Record spend for a Claude API call. Returns updated state."""
         state = await self._get_state()
         cost = self._estimate_cost(prompt_tokens, completion_tokens, model)
-        state = CostState(
-            date=state.date,
-            spend_usd=state.spend_usd + cost,
-            cap_usd=self._daily_cap,
-            alert_sent=state.alert_sent,
+        state = state.model_copy(
+            update={
+                "spend_usd": state.spend_usd + cost,
+                "cap_usd": self._daily_cap,
+                "request_count": state.request_count + 1,
+            }
         )
         await self._save_state(state)
         logger.debug(
@@ -118,12 +126,7 @@ class CostTracker:
     async def mark_alert_sent(self) -> None:
         """Mark that the 80% budget alert has been sent."""
         state = await self._get_state()
-        state = CostState(
-            date=state.date,
-            spend_usd=state.spend_usd,
-            cap_usd=state.cap_usd,
-            alert_sent=True,
-        )
+        state = state.model_copy(update={"alert_sent": True})
         await self._save_state(state)
 
     async def send_alert_if_needed(self) -> bool:
@@ -139,11 +142,6 @@ class CostTracker:
             source="cost_tracker",
             urgency=Urgency.URGENT,
         )
-        state = CostState(
-            date=state.date,
-            spend_usd=state.spend_usd,
-            cap_usd=state.cap_usd,
-            alert_sent=True,
-        )
+        state = state.model_copy(update={"alert_sent": True})
         await self._save_state(state)
         return True

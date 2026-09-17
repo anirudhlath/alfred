@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from runner.__main__ import _redis_command, _write_mosquitto_conf, build_services
@@ -72,3 +73,74 @@ def test_mosquitto_conf_generated_under_data_dir(
     text = conf.read_text()
     assert "listener 1883" in text
     assert "persistence false" in text
+
+
+def _record_chowns(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, int, int]]:
+    """Capture os.chown calls made by the runner instead of performing them."""
+    calls: list[tuple[str, int, int]] = []
+
+    def fake_chown(path: int | str | Path, uid: int, gid: int) -> None:
+        calls.append((str(path), uid, gid))
+
+    monkeypatch.setattr("runner.__main__.os.chown", fake_chown)
+    return calls
+
+
+def test_mosquitto_dir_handed_to_broker_user_when_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Mosquitto drops privileges, so the root-created dir must become its own."""
+    monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("runner.__main__.os.geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "runner.__main__.pwd.getpwnam",
+        lambda _: SimpleNamespace(pw_uid=100, pw_gid=101),
+    )
+    calls = _record_chowns(monkeypatch)
+    conf = _write_mosquitto_conf()
+    assert calls == [(str(conf.parent), 100, 101)]
+
+
+def test_mosquitto_dir_not_chowned_when_not_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Native dev runs unprivileged — the broker already owns what it creates."""
+    monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("runner.__main__.os.geteuid", lambda: 1000)
+    calls = _record_chowns(monkeypatch)
+    _write_mosquitto_conf()
+    assert calls == []
+
+
+def test_mosquitto_chown_skipped_when_user_absent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A root host without a `mosquitto` user must still boot."""
+    monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("runner.__main__.os.geteuid", lambda: 0)
+
+    def raise_keyerror(_: str) -> SimpleNamespace:
+        raise KeyError("mosquitto")
+
+    monkeypatch.setattr("runner.__main__.pwd.getpwnam", raise_keyerror)
+    calls = _record_chowns(monkeypatch)
+    assert _write_mosquitto_conf().exists()
+    assert calls == []
+
+
+def test_mosquitto_chown_failure_is_not_fatal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A chown refusal degrades to today's behaviour rather than killing the runner."""
+    monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("runner.__main__.os.geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "runner.__main__.pwd.getpwnam",
+        lambda _: SimpleNamespace(pw_uid=100, pw_gid=101),
+    )
+
+    def raise_oserror(*_: object) -> None:
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr("runner.__main__.os.chown", raise_oserror)
+    assert _write_mosquitto_conf().exists()

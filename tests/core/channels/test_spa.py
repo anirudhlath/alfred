@@ -7,7 +7,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from core.channels.spa import mount_spa
+from core.channels.spa import SpaCacheMiddleware, mount_spa
+
+_IMMUTABLE = "public, max-age=31536000, immutable"
+_NO_STORE = "no-cache, no-store, must-revalidate"
+_NO_CACHE = "no-cache, must-revalidate"
 
 
 def _dist(tmp_path: Path) -> Path:
@@ -15,6 +19,7 @@ def _dist(tmp_path: Path) -> Path:
     (dist / "assets").mkdir(parents=True)
     (dist / "index.html").write_text("<html>alfred</html>")
     (dist / "assets" / "app.js").write_text("// js")
+    (dist / "manifest.json").write_text('{"name": "alfred"}')
     return dist
 
 
@@ -123,3 +128,50 @@ def test_missing_dist_logs_warning(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 
     fake_logger.warning.assert_called_once()
     assert "npm run build" in str(fake_logger.warning.call_args)
+
+
+# ---------------------------------------------------------------------------
+# Cache headers
+# ---------------------------------------------------------------------------
+
+
+def _cached_app(tmp_path: Path) -> TestClient:
+    app = FastAPI()
+
+    @app.get("/api/thing")
+    async def thing() -> dict[str, bool]:
+        return {"ok": True}
+
+    mount_spa(app, _dist(tmp_path))
+    app.add_middleware(SpaCacheMiddleware)
+    return TestClient(app)
+
+
+def test_hashed_assets_are_immutable(tmp_path: Path) -> None:
+    client = _cached_app(tmp_path)
+    assert client.get("/assets/app.js").headers["cache-control"] == _IMMUTABLE
+
+
+def test_missing_assets_are_not_pinned(tmp_path: Path) -> None:
+    """A 404 under /assets/ must never be immutable — the hashed URL that would bust
+    it does not exist, so a year-long pin is unrecoverable for that client."""
+    resp = _cached_app(tmp_path).get("/assets/missing-Bx3kYp9z.js")
+    assert resp.status_code == 404
+    assert resp.headers["cache-control"] == _NO_CACHE
+
+
+def test_entry_point_is_never_cached(tmp_path: Path) -> None:
+    client = _cached_app(tmp_path)
+    for path in ("/", "/index.html", "/activity"):
+        assert client.get(path).headers["cache-control"] == _NO_STORE, path
+
+
+def test_unhashed_public_files_revalidate(tmp_path: Path) -> None:
+    """Vite copies web/public/ through unhashed, so those cannot be immutable — but
+    no-store would re-download them every load; no-cache lets a 304 skip the bytes."""
+    assert _cached_app(tmp_path).get("/manifest.json").headers["cache-control"] == _NO_CACHE
+
+
+def test_api_responses_are_left_alone(tmp_path: Path) -> None:
+    client = _cached_app(tmp_path)
+    assert "cache-control" not in client.get("/api/thing").headers

@@ -114,6 +114,7 @@ class DomainRouter:
                     "pending_action_id": action.request_id,
                     "tool_name": action.tool_name,
                     "parameters": action.parameters,
+                    "reason": action.reason,
                 },
             )
         else:

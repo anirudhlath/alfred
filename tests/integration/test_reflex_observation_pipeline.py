@@ -52,7 +52,7 @@ async def test_reflex_observation_reaches_episodic_memory() -> None:
         )
     )
 
-    await ingest_observation(obs, mock_episodic, mock_scorer)
+    await ingest_observation(obs, mock_episodic, mock_scorer, AsyncMock())
 
     # Verify episodic write
     mock_episodic.write.assert_called_once()

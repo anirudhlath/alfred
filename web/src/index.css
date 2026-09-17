@@ -1,97 +1,514 @@
 @import "tailwindcss";
-@import "tw-animate-css";
+@import "@fontsource-variable/dm-sans/standard.css";
+@import "@fontsource/geist-mono/400.css";
+@import "@fontsource/geist-mono/500.css";
 
-/* Radix sets data-orientation; the shadcn Tabs primitive keys its layout off these
-   custom variants (data-horizontal:flex-col, group-data-horizontal/tabs:h-8, …).
-   Without them the tab list renders beside the content instead of above it. */
-@custom-variant data-horizontal (&[data-orientation="horizontal"]);
-@custom-variant data-vertical (&[data-orientation="vertical"]);
+/* Registered so the fuse ring's `transition: --fuse-pct` has a type to
+   interpolate (see `.fuse-arc`). Tailwind v4 already leans on @property, so this
+   asks nothing more of the browser than the rest of the stylesheet does. */
+@property --fuse-pct {
+  syntax: "<percentage>";
+  inherits: false;
+  initial-value: 0%;
+}
 
+/* ------------------------------------------------------------------ palette
+   Handoff, "Design tokens". Both blocks carry every token, so one selector is
+   the whole theme and nothing leaks between them. Dark is also what :root gets
+   before ThemeProvider has written data-theme — the first paint of a cold start
+   is dark, which is the design's default. */
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #25221F;
+  --surface: #2F2B27;
+  /* A step *above* --surface, the way paper's white field is a step above its
+     own: a field is a filled box you can see the edges of. It was #2F2B27 —
+     the very same colour as --surface, 1.00:1 — which made the Workshop's
+     chosen bench invisible on the theme of the first paint, and an input
+     invisible against the sheet behind it. 1.17:1 on --surface now, close to
+     light's 1.20:1; --fg reads 10.19:1 on it. Consumers: the Composer's text
+     field, the setup gate's inputs, the bench switcher's selection. */
+  --field: #3A3631;
+  --line: #35312C;
+  --keyboard: #1C1A17;
+  --muted: #9A9186;
+  --fg2: #D9D2C8;
+  --fg: #F1ECE4;
+  --accent: oklch(0.78 0.12 45);
+  /* Text and icons *on* `--accent`. The accent is a light peach on ink and a
+     mid peach on paper, so what goes on it is the theme's own dark colour
+     either way — never `--ink`, which is near-white here and would read at
+     1.77:1 (7.61:1 as written; 6.33:1 in light). Both values are restated in
+     `src/test/contrast.ts`, which holds the pair to 4.5:1; edit these two
+     lines and its guard test fails until the restatement follows. */
+  --on-accent: #25221F;
+  /* The accent *as* text: `‹ Room`, `Why · causal thread`, a sheet's `Done`.
+     Ink's accent is already 7.61:1 on --bg, so this is the same colour; paper's
+     is 2.34:1, which is the whole reason the token exists. Never a fill —
+     fills stay on --accent with --on-accent over them. Restated in
+     `src/test/contrast.ts`, which holds this one to 4.5:1 on --bg. */
+  --accent-text: oklch(0.78 0.12 45);
+  --green: oklch(0.70 0.13 150);
+  /* Green *as* text: the Memory bench's rising routine and its `model: ok`
+     pill are the first places green is a word rather than a dot. The same
+     story as --accent-text one line up — ink's green is already 6.25:1 on
+     --bg, so this is the same colour; paper's is 2.29:1, which is the whole
+     reason the token exists. --green stays what fills a dot (the Door's
+     `applied`). Restated in `src/test/contrast.ts`, which holds this one to
+     4.5:1 on --bg. */
+  --green-text: oklch(0.70 0.13 150);
+  --ink: #F1ECE4;
+  --paper: #25221F;
+  --paper-muted: #7D756B;
+  --ring: #D6D0C7;
+  /* Lightness for `ringText()` in lib/streams.ts — the stream hue used as text
+     on `--bg`. 0.75 on ink clears AA on all eight hues (worst 6.76:1). */
+  --ring-text-l: 0.75;
+  --scrim: rgba(20, 17, 14, 0.45);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #F6F3EE;
+  --surface: #EFEAE2;
+  --field: #FFFFFF;
+  --line: #E6E1D9;
+  --keyboard: #E6E1D9;
+  --muted: #8A8177;
+  --fg2: #4D4740;
+  --fg: #221F1B;
+  --accent: oklch(0.72 0.13 45);
+  /* The same dark colour on paper's accent: 6.33:1. See dark, above. */
+  --on-accent: #221F1B;
+  /* Paper's accent darkened until it is readable as text: 5.25:1 on --bg,
+     4.85:1 on --surface, 4.94:1 on --paper. The undarkened accent is 2.34:1 and
+     was the colour of every back button on this branch. See dark, above. */
+  --accent-text: oklch(0.52 0.13 45);
+  --green: oklch(0.70 0.13 150);
+  /* Paper's green darkened until it is readable as text: 5.10:1 on --bg and
+     4.72:1 on --surface. The undarkened green is 2.29:1. See dark, above. */
+  --green-text: oklch(0.50 0.13 150);
+  --ink: #221F1B;
+  --paper: #F1ECE4;
+  --paper-muted: #9A9186;
+  --ring: #3D3832;
+  /* 0.52 on paper; the same hue must go darker here (worst 4.62:1). */
+  --ring-text-l: 0.52;
+  --scrim: rgba(20, 17, 14, 0.45);
+}
+
+/* ---------------------------------------------------- theme-independent bits
+   The easing curves, the font stacks, and the two viewport variables
+   installViewportVars() overwrites on the same element. The stream hues
+   (h = 30 + 45·i in the handoff) are not tokens: the hue is data, so it comes
+   from STREAM_INFO through ring()/ringFill()/ringText() in lib/streams.ts.
+   Only their lightness-on-the-page is a token, --ring-text-l above. */
 :root {
-  /* Mission Control — single dark theme by design (no light mode, no switching) */
-  --background: #090c12;
-  --foreground: #e2e8f0;
-  --card: #0b101a;
-  --card-foreground: #e2e8f0;
-  --popover: #0b101a;
-  --popover-foreground: #e2e8f0;
-  --primary: #7dd3fc;
-  --primary-foreground: #06080c;
-  --secondary: #13203a;
-  --secondary-foreground: #e2e8f0;
-  --muted: #141c29;
-  --muted-foreground: #64748b;
-  --accent: #13203a;
-  --accent-foreground: #e2e8f0;
-  --destructive: #f87171;
-  --border: #1a2230;
-  --input: #1a2230;
-  --ring: #7dd3fc;
-  --radius: 0.5rem;
+  --ease-rise: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-settle: cubic-bezier(0.2, 1.4, 0.3, 1);
+  /* `rise` mirrored in time, for the leave — what `animation-direction:
+     reverse` used to play. Not a third curve. */
+  --ease-sink: cubic-bezier(0.8, 0, 0.8, 0.2);
 
-  /* Panels darker than content background */
-  --panel: #070a0f;
+  --font-sans: "DM Sans Variable", -apple-system, Helvetica, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, monospace;
 
-  /* Source colors — the one color language, used everywhere */
-  --reflex: #7dd3fc;
-  --conscious: #4ade80;
-  --memory: #facc15;
-  --trigger: #f472b6;
-  --home: #38bdf8;
-  --user: #94a3b8;
-
-  /* Status */
-  --ok: #4ade80;
-  --warn: #facc15;
-  --bad: #f87171;
+  --app-height: 100dvh;
+  --viewport-top: 0px;
 }
 
+/* Tailwind utilities that point at the tokens rather than copying them, so a
+   theme switch moves every utility with it. */
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
-  --color-popover: var(--popover);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-primary: var(--primary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-secondary: var(--secondary);
-  --color-secondary-foreground: var(--secondary-foreground);
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-field: var(--field);
+  --color-line: var(--line);
+  --color-keyboard: var(--keyboard);
   --color-muted: var(--muted);
-  --color-muted-foreground: var(--muted-foreground);
+  --color-fg2: var(--fg2);
+  --color-fg: var(--fg);
   --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-destructive: var(--destructive);
-  --color-border: var(--border);
-  --color-input: var(--input);
+  --color-on-accent: var(--on-accent);
+  --color-accent-text: var(--accent-text);
+  --color-green: var(--green);
+  --color-green-text: var(--green-text);
+  --color-ink: var(--ink);
+  --color-paper: var(--paper);
+  --color-paper-muted: var(--paper-muted);
   --color-ring: var(--ring);
-  --color-panel: var(--panel);
-  --color-reflex: var(--reflex);
-  --color-conscious: var(--conscious);
-  --color-memory: var(--memory);
-  --color-trigger: var(--trigger);
-  --color-home: var(--home);
-  --color-user: var(--user);
-  --color-ok: var(--ok);
-  --color-warn: var(--warn);
-  --color-bad: var(--bad);
-  --font-sans: "Inter Variable", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, monospace;
-  --radius-lg: var(--radius);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-sm: calc(var(--radius) - 4px);
+  --color-scrim: var(--scrim);
+
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+
+  --ease-rise: var(--ease-rise);
+  --ease-settle: var(--ease-settle);
 }
 
-body {
-  @apply bg-background text-foreground font-sans antialiased;
+@layer base {
+  html {
+    height: 100%;
+  }
+
+  /* Constraint §4.6: a standalone app must not rubber-band like a web page.
+     The scroll containers inside the shell keep their own overscroll, so a
+     timeline can still bounce at its ends without moving the page.
+
+     `position: fixed` on the body as well as `overscroll-behavior`: iOS will
+     scroll the *document* to bring a focused field above the keyboard, and a
+     document that cannot scroll is the only way to refuse. Everything the app
+     draws is a fixed box on the visible band anyway (#root below), so the body
+     has no layout left to lose. */
+  body {
+    position: fixed;
+    inset: 0;
+    overflow: hidden;
+    overscroll-behavior: none;
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Constraint §4.4: 100vh is wrong in Safari. --app-height and --viewport-top
+     are the visual viewport's own height and offset (lib/viewport.ts), so the
+     shell is the band of screen that is on screen — under a keyboard, after an
+     iOS pan, or neither. The fallback keeps it full-height before the JS has
+     run. One declaration, not two — an undefined var() is invalid at
+     computed-value time and would fall all the way back to `auto`, not to a
+     previous declaration.
+
+     `height`, not `min-height`, and `overflow: hidden`: a min-height root grows
+     with the thread, so the document becomes the scroller, the header and the
+     composer scroll away with it, and the Timeline never overflows — its
+     follow-the-bottom anchor has nothing to scroll. Measured at 390x844 with a
+     6600px thread: root 6773px and the Timeline's scrollHeight equal to its
+     clientHeight. A fixed height makes the shell the viewport, and nothing
+     scrolls but the regions that opt in. */
+  #root {
+    display: flex;
+    flex-direction: column;
+    position: fixed;
+    left: 0;
+    right: 0;
+    top: var(--viewport-top, 0px);
+    height: var(--app-height, 100dvh);
+    overflow: hidden;
+  }
+
+  button {
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+  }
+
+  /* No scrollbars anywhere: iOS hides them anyway, and the app looks like iOS. */
+  ::-webkit-scrollbar {
+    display: none;
+  }
 }
 
-/* Live pulse dot — aliveness is data motion, not decoration */
-@keyframes pulse-glow {
-  0%, 100% { opacity: 1; box-shadow: 0 0 6px currentColor; }
-  50% { opacity: 0.5; box-shadow: 0 0 2px currentColor; }
+@layer components {
+  /* ---------------------------------------------------------- the type scale
+     DM Sans for anything a person says or reads, Geist Mono for anything the
+     machine says about itself. Alfred's voice is one size above yours. */
+  .t-gate {
+    font-size: 30px;
+    line-height: 1.15;
+    font-weight: 500;
+    letter-spacing: -0.02em;
+  }
+  .t-headline {
+    font-size: 26px;
+    line-height: 1.15;
+    font-weight: 500;
+    letter-spacing: -0.02em;
+  }
+  .t-title {
+    font-size: 20px;
+    line-height: 1.2;
+    font-weight: 500;
+    letter-spacing: -0.02em;
+  }
+  .t-alfred {
+    font-size: 19px;
+    line-height: 1.4;
+    font-weight: 400;
+    letter-spacing: -0.01em;
+  }
+  .t-you {
+    font-size: 15px;
+    line-height: 1.4;
+    font-weight: 400;
+  }
+  .t-body {
+    font-size: 15px;
+    line-height: 1.5;
+    font-weight: 400;
+  }
+  .t-row {
+    font-size: 14.5px;
+    line-height: 1.35;
+    font-weight: 400;
+  }
+  .t-label {
+    font-size: 11px;
+    line-height: 1;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .t-meta {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.5;
+    font-weight: 400;
+    color: var(--muted);
+  }
+  /* The same type, in a colour you can read: --muted is 3.46:1 on --bg in the
+     light theme, under AA at 11 px. The rule, decided once here rather than
+     re-argued at each call site: meta that is genuinely decorative — a stamp
+     beside the line it stamps, a count beside the thing counted — stays on
+     `.t-meta`, and anything a reader must take on its own to trust the screen
+     takes this one. The Workshop's status line, its unbuilt-bench note, and
+     the Activity bench's read-error and empty-list lines are four, because
+     each is the only words in its region. The Why sheet adds three: its one
+     live region (reading, or the read that failed), the footnote saying how
+     much of the past was searched, and every thread node's meta line. That
+     last is the first site here that is *not* the only words in its region —
+     it sits under the node's `.t-row` — and it still qualifies under the rule
+     above: it is the whole evidence for the link drawn beside it, and a reader
+     who cannot make out `joined by request_id 4b1d` cannot tell a join from a
+     coincidence.
+     The Room's Workshop handle is an eighth, and the plainest case of the rule:
+     `workshop` is the only word in the control, and the control is the only way
+     off the Room.
+     The ~17 other `.t-meta` sites are phase-1 scope and unaudited: some sit on
+     --ink, where --muted is the wrong family of token entirely and
+     --paper-muted is the answer, so they need measuring before they move. */
+  .t-meta-strong {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.5;
+    font-weight: 400;
+    color: var(--fg2);
+  }
+  /* A field's own placeholder. Left to Tailwind's preflight it is
+     `color-mix(in oklab, currentcolor 50%, transparent)` — `--fg` at half
+     strength over `--field`, which is 3.84:1 in the dark theme and 3.22:1 in
+     light, both under AA. The two fields that carry one say something a reader
+     has to be able to take: the Composer's `Offline · will send when
+     connected` is the only thing on screen promising a typed message will be
+     queued rather than lost, and the setup gate's placeholders are the shape
+     of the credential being asked for. `--fg2` is 7.99:1 dark / 9.17:1 light
+     on `--field`, the same colour `.t-meta-strong` above uses for the same
+     reason. `opacity: 1` because preflight resets it for Firefox and this rule
+     wins the cascade outright — the layer would otherwise take the reset with
+     it. Restated in `src/test/contrast.ts`, which holds the pair to 4.5:1. */
+  input::placeholder {
+    color: var(--fg2);
+    opacity: 1;
+  }
+
+  .t-monogram {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    line-height: 22px;
+    font-weight: 500;
+  }
+  .t-fuse {
+    font-family: var(--font-mono);
+    font-size: 40px;
+    line-height: 1;
+    font-weight: 500;
+    letter-spacing: -0.02em;
+  }
+  .t-status {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--muted);
+  }
+
+  /* --------------------------------------------------------------- motion
+     Everything that enters does so from the bottom. --layer-duration is set by
+     the component (sheets 380, workshop 400, door 420). Nothing fades in, except
+     under reduce-motion, below. */
+  .rise-in {
+    animation: rise var(--layer-duration, 400ms) var(--ease-rise) both;
+  }
+  /* `sink` is its own keyframes, not `rise` reversed: two classes on the same
+     animation-name would not restart it, so a layer re-opened mid-leave would
+     finish sinking. Reversing the direction also reversed the easing, which
+     `--ease-sink` keeps: the leave still accelerates away. */
+  .rise-out {
+    animation: sink var(--layer-duration, 400ms) var(--ease-sink) both;
+  }
+
+  /* The gates' presence field: a dot grid that only drifts a pixel and back. */
+  .gate-field {
+    background-image: radial-gradient(
+      circle,
+      color-mix(in oklab, var(--accent) 55%, transparent) 1px,
+      transparent 1.6px
+    );
+    background-size: 12px 12px;
+    -webkit-mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.9) 25%, transparent 100%);
+    mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.9) 25%, transparent 100%);
+    animation: drift 6s ease-in-out infinite;
+  }
+  :root[data-theme="light"] .gate-field {
+    background-image: radial-gradient(
+      circle,
+      color-mix(in oklab, var(--accent) 70%, transparent) 1px,
+      transparent 1.6px
+    );
+  }
+
+  /* --------------------------------------------------------- full-screen surfaces
+     Every layer sits on the visible band, exactly like #root. `inset-0` would
+     pin it to the *layout* viewport instead, and with a keyboard up on iOS that
+     is partly the piece of screen the keyboard is over. */
+  .viewport-fill {
+    position: fixed;
+    left: 0;
+    right: 0;
+    top: var(--viewport-top, 0px);
+    height: var(--app-height, 100dvh);
+  }
+
+  /* ---------------------------------------------------- keyboard + home indicator
+     Constraint §4.3 (home indicator) and §4.5 (the keyboard covers fixed
+     elements). The shell is already the visible band, so the keyboard has been
+     subtracted from the height this row sits at the bottom of and there is no
+     inset left to pay — only the home indicator. A Tailwind padding utility on
+     the same element would out-rank this rule outright (`utilities` is a later
+     layer than `components`) and silently drop it, so the element that carries
+     .pb-keyboard carries no other padding. */
+  .pb-keyboard {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  /* With the keyboard up, iOS has already covered the home-indicator strip, and
+     paying for it again leaves a visible band of background between the field
+     and the keys. */
+  .pb-keyboard.keyboard-up {
+    padding-bottom: 0;
+  }
+
+  /* ------------------------------------------------------------------- fuse
+     The arc is a conic gradient driven by two custom properties the component
+     sets, so the gradient itself never has to be built in JS. The 900 ms linear
+     sweep between one-second steps is on `--fuse-pct`, registered as a
+     <percentage> at the top of this file: a gradient image cannot be
+     interpolated, so `transition: background` — the prototype's own line —
+     would step, not sweep. Nothing pulses. The two masks are the prototype's
+     own radii per size — not a formula: applying either one's proportions to
+     the other size gives a solid disc instead of a hairline. */
+  .fuse-arc {
+    background: conic-gradient(var(--fuse-color) var(--fuse-pct), var(--ring) 0);
+    transition: --fuse-pct 0.9s linear;
+  }
+  .fuse-168 {
+    -webkit-mask-image: radial-gradient(circle, transparent 79px, #000 80px);
+    mask-image: radial-gradient(circle, transparent 79px, #000 80px);
+  }
+  .fuse-34 {
+    -webkit-mask-image: radial-gradient(circle, transparent 14px, #000 15px);
+    mask-image: radial-gradient(circle, transparent 14px, #000 15px);
+  }
 }
-.pulse-dot {
-  @apply inline-block size-1.5 rounded-full;
-  animation: pulse-glow 2s ease-in-out infinite;
+
+@keyframes rise {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+@keyframes sink {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(100%);
+  }
+}
+
+/* Only used as the reduce-motion substitutes for `rise` and `sink`. */
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes wave {
+  0%,
+  100% {
+    transform: scaleY(0.4);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes drift {
+  0% {
+    background-position: 0 0;
+  }
+  50% {
+    background-position: 2px 1px;
+  }
+  100% {
+    background-position: 0 0;
+  }
+}
+
+/* Handoff: "reduce-motion: presence field static, rise becomes a 200 ms opacity
+   step". The blanket rule stops every other animation and transition; the two
+   class rules that follow it win on specificity and give `rise` and `sink` their
+   opacity step. The canvas presence field checks the same query in JS (plan 1b). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .rise-in {
+    animation: fade 200ms linear both !important;
+  }
+  .rise-out {
+    animation: fade-out 200ms linear both !important;
+  }
 }

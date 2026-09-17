@@ -10,9 +10,14 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 UrgencyLevel = Literal["informational", "important", "urgent"]
+
+# An ActionRequest's reason rides into APNs notification metadata, whose payload
+# ceiling is 4 KB. A model-generated reason has no natural bound, so cap it here —
+# at the schema, which is the one place every producer passes through.
+REASON_MAX_LEN = 500
 
 
 class BaseEvent(BaseModel):
@@ -43,7 +48,20 @@ class ActionRequest(BaseEvent):
     target_service: str = Field(description="Which microservice should handle this")
     tool_name: str = Field(description="MCP tool name, e.g. smart_home.dim_lights")
     parameters: dict[str, Any] = Field(default_factory=dict)
+    reason: str | None = None  # why the actor wants this — shown on the confirmation prompt
     confirmed: bool = False  # set True only by the confirmation flow (contract C3)
+
+    @field_validator("reason")
+    @classmethod
+    def _cap_reason(cls, value: str | None) -> str | None:
+        """Truncate an over-long reason to ``REASON_MAX_LEN``.
+
+        Truncate, never reject: the reason is explanatory text riding alongside the
+        action, and dropping a door-unlock request because the model was wordy about
+        it would be the worse failure. 500 characters is well inside the 4 KB APNs
+        payload it ends up in, with room for the rest of the notification.
+        """
+        return value if value is None else value[:REASON_MAX_LEN]
 
 
 class ActionResult(BaseEvent):
@@ -136,11 +154,12 @@ class TriggerCreated(BaseEvent):
 
 
 class ReflexObservation(BaseEvent):
-    """A structured observation of a Reflex Engine action for System 2 awareness.
+    """A structured observation of a Reflex Engine event for System 2 awareness.
 
-    Published after every Reflex action execution. The Memory Ingestor
-    consumes these and writes them to episodic memory so that the
-    Conscious Engine can recall Reflex actions during context assembly.
+    Published after a Reflex action executes, and also when the Reflex
+    Engine considers an event and takes no action (``action is None``).
+    The Memory Ingestor consumes these and writes them to episodic memory
+    so that the Conscious Engine can recall them during context assembly.
     """
 
     event_type: str = "reflex_observation"
@@ -149,8 +168,11 @@ class ReflexObservation(BaseEvent):
     trigger_event: dict[str, Any] = Field(
         description="The originating event payload (StateChanged or TriggerFired)"
     )
-    action: ActionRequest
-    result: ActionResult
+    # None means: this event was seen, considered, and no action was taken.
+    # Passive observations exist so pattern detection has something to read;
+    # without them Alfred only remembers what it did, never what it saw.
+    action: ActionRequest | None = None
+    result: ActionResult | None = None
     decision_context: str | None = None
 
 

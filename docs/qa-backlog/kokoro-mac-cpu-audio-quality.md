@@ -14,9 +14,9 @@
 - (Optional) stopwatch or browser devtools timing for latency observation
 
 ## Test Steps
-1. Open the Chat page (`/`) and send several short text messages that will produce a spoken
-   reply — vary content: a short factual answer, a longer multi-sentence answer, one with
-   numbers/dates, one with a proper noun or two.
+1. Open the Room (`/`), tap once to unlock the audio context, then send several short text
+   messages that will produce a spoken reply — vary content: a short factual answer, a longer
+   multi-sentence answer, one with numbers/dates, one with a proper noun or two.
 2. Listen to each reply. Judge by ear: does it sound like a natural (if synthetic) male US
    voice, free of clipping, crackling, robotic artifacts, or dropped syllables?
 3. For the very first reply after a fresh runner start, note that synthesis may be slow

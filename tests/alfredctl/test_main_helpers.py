@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import pytest
 import typer
 
+from alfredctl import doctor as doctor_mod
 from alfredctl import main
 from alfredctl import runtime as rt
 from alfredctl import smoke as smoke_mod
@@ -151,3 +152,278 @@ def test_smoke_exits_nonzero_when_checks_fail(monkeypatch: pytest.MonkeyPatch) -
 
     assert exc_info.value.exit_code == 1
     assert down_calls == [Runtime("docker", "docker").name]
+
+
+def _capture_smoke_name(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """Run main.smoke with every side effect stubbed; capture the container it targets."""
+    seen: dict[str, str] = {}
+
+    def _fake_run_checks(
+        exe: str, name: str, base_url: str, timeout: float = 300.0, *, deep: bool = False
+    ) -> list[smoke_mod.SmokeCheck]:
+        seen["name"] = name
+        return [smoke_mod.SmokeCheck("health", True, "GET /health → 200")]
+
+    _stub_smoke_deps(monkeypatch, [])
+    # These tests are about which container is targeted, not which port; give the
+    # attach path a port so it gets past the guard that now refuses to assume one.
+    monkeypatch.setattr(main, "_published_port", lambda exe, name: 8081)
+    monkeypatch.setattr(main, "_resolve_url", lambda r, plan: "http://localhost:8081")
+    monkeypatch.setattr(main.smoke_mod, "run_checks", _fake_run_checks)
+    return seen
+
+
+def test_smoke_name_option_targets_that_container(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _capture_smoke_name(monkeypatch)
+    main.smoke(attach=True, name="alfred")
+    assert seen["name"] == "alfred"
+
+
+def test_smoke_without_name_keeps_branch_container(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _capture_smoke_name(monkeypatch)
+    monkeypatch.setattr(main.rt, "container_name", lambda: "alfred-somebranch")
+    main.smoke(attach=True)
+    assert seen["name"] == "alfred-somebranch"
+
+
+def test_smoke_name_without_attach_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--name only makes sense against an already-running container; without --attach,
+    smoke boots its own (branch-named) container, so a --name override would silently
+    check a container that was never started. Nothing in main.rt/up/down is stubbed
+    here — the guard must fire before any of that runs."""
+    with pytest.raises(typer.BadParameter):
+        main.smoke(attach=False, name="alfred")
+
+
+def _capture_doctor_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
+    """Run main.doctor with the real checks stubbed; capture the .env path it validates."""
+    seen: dict[str, Path] = {}
+
+    def _fake_run_checks(env_file: Path, *, online: bool = True) -> list[doctor_mod.DoctorCheck]:
+        seen["env_file"] = env_file
+        return [doctor_mod.DoctorCheck(".env", "pass", str(env_file))]
+
+    monkeypatch.setattr(main.doctor_mod, "run_checks", _fake_run_checks)
+    return seen
+
+
+def test_doctor_env_file_option_overrides_repo_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    seen = _capture_doctor_env(monkeypatch)
+    main.doctor(online=False, env_file=tmp_path / "deploy.env")
+    assert seen["env_file"] == tmp_path / "deploy.env"
+
+
+def test_doctor_without_env_file_uses_repo_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    seen = _capture_doctor_env(monkeypatch)
+    monkeypatch.setattr(main.staging, "repo_root", lambda: tmp_path)
+    main.doctor(online=False)
+    assert seen["env_file"] == tmp_path / ".env"
+
+
+def test_render_doctor_survives_markup_in_a_probe_body() -> None:
+    """Details quote remote text verbatim, and rich reads `[...]` as markup.
+
+    Observed shape: a model server naming a path in its error body. `[/models/bge-m3]`
+    parses as a closing tag and raised MarkupError out of `table.add_row` — a traceback
+    from the command whose whole contract is "safe to run anywhere".
+    """
+    checks = [
+        doctor_mod.DoctorCheck(
+            "memory embeddings",
+            "warn",
+            'HTTP 400: {"error":"model not found at [/models/bge-m3]"}',
+        )
+    ]
+    assert main._render_doctor(checks) is False
+
+
+def test_render_doctor_still_reports_failure() -> None:
+    # The escape must not cost the return value the caller exits on.
+    assert main._render_doctor([doctor_mod.DoctorCheck("x", "fail", "[/oops]")]) is True
+
+
+class _StopBeforeDockerError(Exception):
+    """Raised in place of the build, to prove the preflight print was survived."""
+
+
+def test_up_preflight_survives_markup_in_a_detail(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`up` renders the same details `doctor` does, through its own f-string.
+
+    A `[/...]` in a detail parses as a closing tag and raised MarkupError — the crash
+    _render_doctor was fixed for, reached through the other renderer. `up` runs its
+    preflight offline, so today the shape arrives from an operator-supplied .env value
+    rather than a server, and the day that preflight goes online it arrives from both.
+    """
+
+    def _stop(**kwargs: object) -> None:
+        raise _StopBeforeDockerError
+
+    monkeypatch.setattr(main.rt, "detect", lambda name: APPLE)
+    monkeypatch.setattr(
+        main.doctor_mod,
+        "run_checks",
+        lambda *a, **k: [
+            doctor_mod.DoctorCheck(
+                "memory embeddings", "warn", "model=[/models/bge-m3] in-process, dim=384 assumed"
+            )
+        ],
+    )
+    monkeypatch.setattr(main, "build", _stop)
+    with pytest.raises(_StopBeforeDockerError):
+        main.up()
+
+
+# --- smoke: which host port to probe -------------------------------------------------
+#
+# `smoke --attach` used to hardcode 8081. On a host already running Alfred there — the
+# normal case for a deployment box — that probed the *other* container and reported it
+# green, a pass for something nobody asked about. The port is now read from the runtime.
+
+
+@pytest.mark.parametrize(
+    ("stdout", "expected"),
+    [
+        ("0.0.0.0:8082\n[::]:8082\n", 8082),  # docker publishes both families
+        ("0.0.0.0:8081\n", 8081),
+        ("[::]:9000\n", 9000),
+        ("", None),  # published nothing for 8081
+        ("garbage\n", None),
+    ],
+)
+def test_published_port_reads_the_runtime(
+    monkeypatch: pytest.MonkeyPatch, stdout: str, expected: int | None
+) -> None:
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout, ""),
+    )
+    assert main._published_port("docker", "alfred-x") == expected
+
+
+def test_published_port_is_none_when_the_runtime_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 1, "", "No such container"),
+    )
+    assert main._published_port("docker", "alfred-gone") is None
+
+
+def test_smoke_attach_probes_the_containers_own_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The regression: attaching to a container on 8082 must not probe 8081."""
+    _stub_smoke_deps(monkeypatch, [])
+    monkeypatch.setattr(main, "_published_port", lambda exe, name: 8082)
+    seen: list[str] = []
+
+    def _capture(
+        exe: str, name: str, base_url: str, **kwargs: object
+    ) -> list[smoke_mod.SmokeCheck]:
+        seen.append(base_url)
+        return [smoke_mod.SmokeCheck("health", True, "ok")]
+
+    monkeypatch.setattr(smoke_mod, "run_checks", _capture)
+    main.smoke(runtime=None, attach=True, name="alfred-other", timeout=1.0)
+    assert seen == ["http://localhost:8082"]
+
+
+def test_smoke_attach_fails_loudly_when_the_port_is_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Falling back to 8081 here is what produced a green result for the wrong container."""
+    _stub_smoke_deps(monkeypatch, [])
+    monkeypatch.setattr(main, "_published_port", lambda exe, name: None)
+    monkeypatch.setattr(
+        smoke_mod, "run_checks", lambda *a, **k: pytest.fail("must not probe an assumed port")
+    )
+    with pytest.raises(typer.BadParameter, match="could not determine which host port"):
+        main.smoke(runtime=None, attach=True, name="alfred-stopped", timeout=1.0)
+
+
+def test_smoke_forwards_its_port_to_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--port exists so a smoke run can coexist with an Alfred already on 8081."""
+    fake_runtime = Runtime("docker", "docker")
+    monkeypatch.setattr(rt, "detect", lambda preferred: fake_runtime)
+    monkeypatch.setattr(main, "down", lambda runtime=None: None)
+    up_kwargs: dict[str, object] = {}
+    monkeypatch.setattr(main, "up", lambda **kwargs: up_kwargs.update(kwargs))
+    seen: list[str] = []
+
+    def _capture(
+        exe: str, name: str, base_url: str, **kwargs: object
+    ) -> list[smoke_mod.SmokeCheck]:
+        seen.append(base_url)
+        return [smoke_mod.SmokeCheck("health", True, "ok")]
+
+    monkeypatch.setattr(smoke_mod, "run_checks", _capture)
+    main.smoke(runtime=None, port=8082, timeout=1.0)
+    assert up_kwargs["port"] == 8082
+    assert seen == ["http://localhost:8082"]
+
+
+def test_smoke_rejects_port_with_attach() -> None:
+    """Contradictory: --attach reads the port off a container that already chose one."""
+    with pytest.raises(typer.BadParameter, match="--port does not apply with --attach"):
+        main.smoke(runtime=None, attach=True, port=8082)
+
+
+def _stub_up_deps(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, notes: tuple[str, ...] = ()
+) -> None:
+    """Stand up everything `up()` touches outside the container runtime: runtime
+    detection, the offline preflight, the repo root, and the plan itself."""
+    monkeypatch.setattr(rt, "detect", lambda preferred: Runtime("docker", "docker"))
+    monkeypatch.setattr(main.doctor_mod, "run_checks", lambda *a, **k: [])
+    monkeypatch.setattr(main.staging, "repo_root", lambda: tmp_path)
+    plan = LaunchPlan(
+        run_args=[],
+        url_hint="http://localhost:8081",
+        name="alfred-x",
+        image="alfred:x",
+        notes=notes,
+    )
+    monkeypatch.setattr(main.launch, "build_plan", lambda *a, **k: plan)
+    monkeypatch.setattr(main, "_resolve_url", lambda r, plan: "http://localhost:8081")
+
+
+def _run_up(tmp_path: Path) -> None:
+    main.up(mode="ephemeral", models=tmp_path / "models", do_build=False)
+
+
+def test_up_prints_plan_notes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`plan.notes` is the only channel for decisions invisible in `run_args` — today
+    that is the withheld container subnet, which costs the operator host access to
+    passkey registration. Computing it and never showing it is the same as not having
+    it."""
+    _stub_up_deps(monkeypatch, tmp_path, notes=("strict-mode-note",))
+    monkeypatch.setattr(main, "_run", lambda cmd, check=True: None)
+
+    _run_up(tmp_path)
+
+    assert "strict-mode-note" in capsys.readouterr().out
+
+
+def test_up_prints_plan_notes_even_when_the_launch_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Printed after `_run`, a container that fails to start swallows the note — and a
+    strict-mode launch that dies on some unrelated misconfiguration is exactly when the
+    operator is about to go hunting for why registration 403s."""
+    _stub_up_deps(monkeypatch, tmp_path, notes=("strict-mode-note",))
+
+    def _fail(cmd: list[str], *, check: bool = True) -> None:
+        if check:  # the `rm -f` precursor passes check=False and is allowed through
+            raise subprocess.CalledProcessError(125, cmd)
+
+    monkeypatch.setattr(main, "_run", _fail)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        _run_up(tmp_path)
+
+    assert "strict-mode-note" in capsys.readouterr().out

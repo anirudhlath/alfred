@@ -1124,6 +1124,184 @@ async def test_consolidate_includes_pattern_detection_in_result() -> None:
     assert result["patterns_detected"] == 0
 
 
+@pytest.mark.asyncio
+async def test_update_routine_lifecycle_hit_appends_confidence_history() -> None:
+    """Every lifecycle pass appends the routine's current confidence, newest last."""
+    from core.memory.schemas import RoutineSpec
+
+    routine = RoutineSpec(
+        name="morning_routine",
+        trigger_pattern="morning",
+        steps=[],
+        confidence=0.8,
+        learned_from=["ep-1"],
+        state="active",
+        confidence_history=[0.7],
+    )
+    librarian, routine_store = _make_librarian_with_routine_store([routine])
+
+    import datetime as dt
+
+    with patch("core.librarian.consolidator.datetime") as mock_dt:
+        mock_dt.now.return_value = dt.datetime(2026, 3, 24, 8, 0, 0, tzinfo=dt.UTC)
+        mock_dt.UTC = dt.UTC
+        mock_dt.timedelta = dt.timedelta
+        await librarian._update_routine_lifecycle()
+
+    saved = routine_store.save.call_args[0][0]
+    assert saved.confidence_history == [0.7, 0.8]
+
+
+@pytest.mark.asyncio
+async def test_update_routine_lifecycle_miss_records_confidence_and_caps_at_8() -> None:
+    """A miss appends the new confidence (undecayed here); the list never exceeds 8."""
+    from core.memory.schemas import RoutineSpec
+
+    routine = RoutineSpec(
+        name="evening_routine",
+        trigger_pattern="evening",  # 17:00-23:00, so a noon check is a miss
+        steps=[],
+        confidence=0.8,
+        learned_from=["ep-1"],
+        state="active",
+        consecutive_misses=0,
+        confidence_history=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
+    )
+    librarian, routine_store = _make_librarian_with_routine_store([routine])
+
+    import datetime as dt
+
+    with patch("core.librarian.consolidator.datetime") as mock_dt:
+        mock_dt.now.return_value = dt.datetime(2026, 3, 24, 12, 0, 0, tzinfo=dt.UTC)
+        mock_dt.UTC = dt.UTC
+        mock_dt.timedelta = dt.timedelta
+        await librarian._update_routine_lifecycle()
+
+    saved = routine_store.save.call_args[0][0]
+    assert saved.consecutive_misses == 1
+    assert len(saved.confidence_history) == 8
+    assert saved.confidence_history[-1] == saved.confidence
+    assert saved.confidence_history[0] == 0.2  # oldest sample dropped
+
+
+@pytest.mark.asyncio
+async def test_update_routine_lifecycle_miss_records_the_decayed_confidence() -> None:
+    """A candidate past its suggestion cooldown decays, and the *decayed* value is recorded."""
+    import datetime as dt
+
+    from core.memory.schemas import RoutineSpec
+
+    routine = RoutineSpec(
+        name="evening_routine",
+        trigger_pattern="evening",  # 17:00-23:00, so a noon check is a miss
+        steps=[],
+        confidence=0.8,
+        learned_from=["ep-1"],
+        state="candidate",  # only candidates decay
+        consecutive_misses=0,
+        last_suggested=dt.datetime(2026, 3, 22, 12, 0, tzinfo=dt.UTC),  # 48h before "now"
+        confidence_history=[0.9, 0.85],
+    )
+    librarian, routine_store = _make_librarian_with_routine_store([routine])
+
+    with patch("core.librarian.consolidator.datetime") as mock_dt:
+        mock_dt.now.return_value = dt.datetime(2026, 3, 24, 12, 0, 0, tzinfo=dt.UTC)
+        mock_dt.UTC = dt.UTC
+        mock_dt.timedelta = dt.timedelta
+        await librarian._update_routine_lifecycle()
+
+    saved = routine_store.save.call_args[0][0]
+    assert saved.confidence == pytest.approx(0.75)
+    assert saved.confidence_history[-1] == pytest.approx(0.75)
+    assert saved.confidence_history[-1] < 0.8  # the pre-decay value was not recorded
+    assert saved.confidence_history[:2] == [0.9, 0.85]
+
+
+_PATTERN_LLM_PAYLOAD = [
+    {
+        "name": "evening_dim",
+        "trigger_pattern": "20:00 daily",
+        "steps": [{"description": "Dim living room lights to 30%"}],
+        "confidence": 0.8,
+        "learned_from": ["ep-0", "ep-2", "ep-4"],
+    }
+]
+
+
+def _pattern_llm_response() -> Any:
+    """An LLM response yielding one 0.8-confidence candidate."""
+    mock_response = AsyncMock()
+    mock_response.choices = [AsyncMock(message=AsyncMock(content=json.dumps(_PATTERN_LLM_PAYLOAD)))]
+    return mock_response
+
+
+@pytest.mark.asyncio
+async def test_detect_patterns_leaves_confidence_history_empty() -> None:
+    """Detection does not seed the history — the lifecycle pass writes the first sample."""
+    from unittest.mock import MagicMock
+
+    routine_store = MagicMock()
+    routine_store.list_all.return_value = []
+    librarian = _make_librarian()
+    librarian._routines = routine_store
+    entries = [_make_entry_with_id(f"ep-{i}", days_ago=i * 2) for i in range(5)]
+
+    with patch("litellm.acompletion", return_value=_pattern_llm_response()):
+        result = await librarian._detect_patterns(entries)
+
+    assert result[0].confidence_history == []
+
+
+@pytest.mark.asyncio
+async def test_new_candidate_records_exactly_one_sample_per_consolidation_pass() -> None:
+    """Detection + lifecycle run in the same cycle, so night one must be [c], not [c, c]."""
+    import datetime as dt
+    from unittest.mock import MagicMock
+
+    stored: list[Any] = []
+
+    def _save(routine: Any) -> None:
+        stored[:] = [r for r in stored if r.name != routine.name]
+        stored.append(routine)
+
+    routine_store = MagicMock()
+    routine_store.save.side_effect = _save
+    routine_store.list_all.side_effect = lambda: list(stored)
+
+    librarian = _make_librarian()
+    librarian._routines = routine_store
+    entries = [_make_entry_with_id(f"ep-{i}", days_ago=i * 2) for i in range(5)]
+
+    with patch("litellm.acompletion", return_value=_pattern_llm_response()):
+        await librarian._detect_patterns(entries)
+
+    with patch("core.librarian.consolidator.datetime") as mock_dt:
+        mock_dt.now.return_value = dt.datetime(2026, 3, 24, 12, 0, 0, tzinfo=dt.UTC)
+        mock_dt.UTC = dt.UTC
+        mock_dt.timedelta = dt.timedelta
+        await librarian._update_routine_lifecycle()
+
+    assert len(stored) == 1
+    assert stored[0].confidence_history == [0.8]
+
+
+def test_routine_spec_without_history_loads_empty() -> None:
+    """Routines saved before this change (no confidence_history key) still validate."""
+    from core.memory.schemas import RoutineSpec
+
+    loaded = RoutineSpec.model_validate(
+        {
+            "name": "old",
+            "trigger_pattern": "morning",
+            "steps": [],
+            "confidence": 0.5,
+            "learned_from": [],
+            "state": "active",
+        }
+    )
+    assert loaded.confidence_history == []
+
+
 # ---------------------------------------------------------------------------
 # Part J: Routine reindex on startup
 # ---------------------------------------------------------------------------
@@ -1658,3 +1836,94 @@ async def test_compression_fallback_concatenation_when_no_api_key() -> None:
 
     mock_llm.assert_not_called()
     assert episodic_memory.copy_to_cold_and_remove.await_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_consolidate_records_status_on_empty_scratchpad() -> None:
+    """Even a no-op cycle stamps last_run_at/reviewed so the dashboard shows it ran."""
+    from shared.streams import LIBRARIAN_STATUS_KEY
+
+    librarian = _make_librarian(api_key="")
+    librarian._redis.lrange.return_value = []
+    librarian._redis.rename.side_effect = Exception("no such key")
+
+    await librarian.consolidate()
+
+    librarian._redis.hset.assert_awaited()
+    key, mapping = (
+        librarian._redis.hset.call_args[0][0],
+        librarian._redis.hset.call_args.kwargs["mapping"],
+    )
+    assert key == LIBRARIAN_STATUS_KEY
+    assert mapping["reviewed"] == "0"
+    datetime.datetime.fromisoformat(mapping["last_run_at"])  # ISO-8601, raises otherwise
+
+
+@pytest.mark.asyncio
+async def test_record_next_run_writes_next_run_at() -> None:
+    from shared.streams import LIBRARIAN_STATUS_KEY
+
+    librarian = _make_librarian(api_key="")
+    at = datetime.datetime(2026, 9, 4, 9, 30, tzinfo=_UTC)
+
+    await librarian.record_next_run(at)
+
+    librarian._redis.hset.assert_awaited_once_with(
+        LIBRARIAN_STATUS_KEY, mapping={"next_run_at": "2026-09-04T09:30:00+00:00"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_status_write_failure_does_not_break_consolidation() -> None:
+    """`_record_run` is best-effort: the stamp fails, the cycle still reports."""
+    from shared.streams import LIBRARIAN_STATUS_KEY
+
+    librarian = _make_librarian(api_key="")
+    librarian._redis.lrange.return_value = []
+    librarian._redis.rename.side_effect = Exception("no such key")
+    librarian._redis.hset.side_effect = ConnectionError("redis down")
+
+    result = await librarian.consolidate()
+
+    assert result["entries_processed"] == 0
+    # The write has to have been attempted, or this passes against a consolidator that
+    # never stamps the status hash — which is what it is meant to prove survives.
+    assert librarian._redis.hset.await_args.args[0] == LIBRARIAN_STATUS_KEY
+    assert set(librarian._redis.hset.await_args.kwargs["mapping"]) == {
+        "last_run_at",
+        "reviewed",
+    }
+
+
+@pytest.mark.asyncio
+async def test_consolidate_records_reviewed_count_of_drained_lines() -> None:
+    """`reviewed` is the number of scratchpad lines drained, not a constant."""
+    from shared.streams import LIBRARIAN_STATUS_KEY
+
+    episodic_memory = AsyncMock()
+    scorer = AsyncMock()
+    scorer.score.return_value = SignificanceScore(
+        overall=0.4, safety=0.0, novelty=0.5, personal=0.3, emotional=0.2
+    )
+    context_index = AsyncMock()
+    context_index.reindex_semantic_files = AsyncMock()
+
+    librarian = _make_librarian(
+        api_key="",
+        episodic_memory=episodic_memory,
+        scorer=scorer,
+        context_index=context_index,
+    )
+
+    lines = [
+        b"2026-03-19T10:00:00Z [reflex] dim lights -> success",
+        b"2026-03-19T10:05:00Z [reflex] lock door -> success",
+    ]
+    librarian._redis.lrange.side_effect = [[], lines]
+    librarian._redis.rename.return_value = None
+    librarian._redis.delete.return_value = None
+
+    await librarian.consolidate()
+
+    assert librarian._redis.hset.call_args[0][0] == LIBRARIAN_STATUS_KEY
+    assert librarian._redis.hset.call_args.kwargs["mapping"]["reviewed"] == "2"

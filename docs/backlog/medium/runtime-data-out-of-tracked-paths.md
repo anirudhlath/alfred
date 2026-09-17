@@ -45,7 +45,7 @@ Three runtime-mutated data channels live in tracked paths:
    into commits happen in this repo.
 
 ## Acceptance Criteria
-- [ ] `core/memory/routines/*.yaml` are gitignored, with a tracked `.example` fixture retained (mirroring the `preferences/` pattern) so a fresh clone still seeds routines.
+- [x] `core/memory/routines/*.yaml` are gitignored — **done**, and deliberately with *no* tracked fixture retained. The `.example` preferences/profile templates were removed in the same change: `seed_defaults()` promotes them to *active* memory, so a shipped fixture is indistinguishable from something the user actually said, and the Reflex Engine acted on one (see `docs/autonomy.md`). A fresh clone now starts with empty memory; `tests/core/memory/test_no_seed_content.py` keeps it that way.
 - [ ] `research/data/` telemetry CSVs (`reflex/raw.csv`, `tokens/raw.csv`) are relocated to an untracked, gitignored data directory; only seed/example fixtures and curated/aggregate notes remain tracked.
 - [ ] A research/ policy is decided and documented — either keep only curated/aggregate notes tracked, or add a pre-commit check that rejects `data/` additions containing entity names, room-level events, or conversation content.
 - [ ] `data/` is added to `.gitignore` (on the PR branch and/or master) so the ECAPA model cache (`data/models/spkrec-ecapa-voxceleb`) and `data/credentials.db` cannot be swept in by `git add -A`.

@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#25221f;color:#f1ece4;font-family:'DM Sans',-apple-system,Helvetica,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:oklch(0.78 0.12 45);text-decoration:none}a:hover{text-decoration:underline}
+@keyframes drift{0%{background-position:0 0}50%{background-position:2px 1px}100%{background-position:0 0}}
+::-webkit-scrollbar{display:none}
+</style>
+</helmet>
+<div data-screen-label="Alfred desktop" style="min-height:100vh;display:grid;grid-template-columns:420px 1px minmax(380px,1fr) 1px minmax(360px,520px);background:#25221f;color:#f1ece4">
+
+  <div style="display:flex;flex-direction:column;position:relative;height:100vh;overflow:hidden">
+    <div style="position:absolute;inset:0 0 auto 0;height:170px;pointer-events:none;background-image:radial-gradient(circle, oklch(0.72 0.13 45 / .55) 1px, transparent 1.6px);background-size:12px 12px;-webkit-mask-image:linear-gradient(to bottom, rgba(0,0,0,.9) 25%, transparent 100%);mask-image:linear-gradient(to bottom, rgba(0,0,0,.9) 25%, transparent 100%);animation:drift 6s ease-in-out infinite"></div>
+    <div style="position:relative;padding:40px 28px 0;display:flex;flex-direction:column;gap:4px">
+      <div style="font-size:26px;font-weight:500;letter-spacing:-.02em;line-height:1.15">Listening, sir.</div>
+      <div style="font:12px 'Geist Mono',monospace;color:#9a9186">21:14 · cloud 1.42 / 5.00 · reflex 380 ms · 2.1 ev/s</div>
+    </div>
+    <div style="flex:1;overflow-y:auto;padding:22px 28px 12px;display:flex;flex-direction:column;gap:16px;position:relative">
+      <div style="display:flex;align-items:center;gap:10px;padding:6px 0"><div style="flex:1;height:1px;background:#35312c"></div><div style="font:11px 'Geist Mono',monospace;color:#9a9186">earlier today</div><div style="flex:1;height:1px;background:#35312c"></div></div>
+      <div style="display:flex;gap:12px;padding:10px 0;border-top:1px solid #35312c;border-bottom:1px solid #35312c;align-items:flex-start"><div style="width:8px;height:8px;border-radius:2px;background:oklch(0.62 0.11 210);margin-top:6px;flex-shrink:0"></div><div style="flex:1;display:flex;flex-direction:column;gap:2px"><div style="font-size:14.5px;line-height:1.35;color:#d9d2c8">Dimmed the living room for the film</div><div style="font:11px 'Geist Mono',monospace;color:#9a9186">17:58 · reflex · 380 ms</div></div><a href="#" style="font-size:13px;font-weight:500">why?</a></div>
+      <div style="display:flex;gap:12px;padding:10px 0;border-top:1px solid #35312c;border-bottom:1px solid #35312c;align-items:flex-start"><div style="width:8px;height:8px;border-radius:2px;background:oklch(0.62 0.11 120);margin-top:6px;flex-shrink:0"></div><div style="flex:1;display:flex;flex-direction:column;gap:2px"><div style="font-size:14.5px;line-height:1.35;color:#d9d2c8">Your parcel arrived, the door sensor saw it</div><div style="font:11px 'Geist Mono',monospace;color:#9a9186">18:20 · trigger · one-shot, now archived</div></div></div>
+      <div style="display:flex;gap:12px;padding:10px 0;border-top:1px solid #35312c;border-bottom:1px solid #35312c;align-items:flex-start;background:#2f2b27;margin:0 -12px;padding-left:12px;padding-right:12px;border-radius:10px"><div style="width:8px;height:8px;border-radius:2px;background:oklch(0.62 0.11 210);margin-top:6px;flex-shrink:0"></div><div style="flex:1;display:flex;flex-direction:column;gap:2px"><div style="font-size:14.5px;line-height:1.35;color:#f1ece4">Mentioned the front door had been open two minutes</div><div style="font:11px 'Geist Mono',monospace;color:#9a9186">18:21 · reflex · spoken aloud · thread open →</div></div></div>
+      <div style="display:flex;align-items:center;gap:10px;padding:6px 0"><div style="flex:1;height:1px;background:#35312c"></div><div style="font:11px 'Geist Mono',monospace;color:#9a9186">new conversation · 20:52</div><div style="flex:1;height:1px;background:#35312c"></div></div>
+      <div style="align-self:flex-end;max-width:300px;padding:10px 14px;border:1px solid #35312c;border-radius:16px 16px 4px 16px;font-size:15px;line-height:1.4">What have I got tomorrow morning?</div>
+      <div style="display:flex;flex-direction:column;gap:7px;max-width:340px"><div style="font-size:19px;line-height:1.4;letter-spacing:-.01em">The dentist at nine, sir. I'd leave by twenty to; there's rain forecast from eight.</div><div style="font:11px 'Geist Mono',monospace;color:#9a9186">pleased · calendar.today, weather.forecast · 20:52</div></div>
+    </div>
+    <div style="padding:0 20px 24px;display:flex;gap:10px;align-items:center">
+      <div style="flex:1;height:50px;border-radius:25px;border:1px solid #35312c;background:#2f2b27;display:flex;align-items:center;padding:0 18px;font-size:15px;color:#9a9186">Ask or tell Alfred <span style="margin-left:auto;font:11px 'Geist Mono',monospace">⌘K</span></div>
+      <div style="width:56px;height:56px;border-radius:28px;border:1.5px solid oklch(0.78 0.12 45);display:flex;align-items:center;justify-content:center;flex-shrink:0"><div style="width:14px;height:22px;border-radius:7px;background:oklch(0.78 0.12 45)"></div></div>
+    </div>
+  </div>
+  <div style="background:#35312c"></div>
+
+  <div style="display:flex;flex-direction:column;height:100vh;overflow:hidden">
+    <div style="padding:40px 24px 0;display:flex;flex-direction:column;gap:12px">
+      <div style="display:flex;align-items:center;justify-content:space-between"><div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#9a9186;font-weight:500">Workshop</div><div style="font:11px 'Geist Mono',monospace;color:#9a9186">live · 2.1 ev/s</div></div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);height:44px;border-radius:12px;background:#2f2b27;padding:3px;gap:3px;max-width:520px">
+        <div style="border-radius:9px;background:#3a352f;color:#f1ece4;font-size:13px;font-weight:500;display:flex;align-items:center;justify-content:center">Activity</div>
+        <div style="border-radius:9px;color:#9a9186;font-size:13px;font-weight:500;display:flex;align-items:center;justify-content:center">Memory</div>
+        <div style="border-radius:9px;color:#9a9186;font-size:13px;font-weight:500;display:flex;align-items:center;justify-content:center">Triggers</div>
+        <div style="border-radius:9px;color:#9a9186;font-size:13px;font-weight:500;display:flex;align-items:center;justify-content:center">System</div>
+      </div>
+      <div style="display:flex;gap:6px;max-width:520px">
+        <div style="flex:1;height:36px;border-radius:8px;border:1.5px solid oklch(0.62 0.11 30);color:oklch(0.62 0.11 30);font:500 10px 'Geist Mono',monospace;display:flex;align-items:center;justify-content:center;gap:4px">UR <span style="opacity:.7">1</span></div>
+        <div style="flex:1;height:36px;border-radius:8px;border:1.5px solid oklch(0.62 0.11 75);color:oklch(0.62 0.11 75);font:500 10px 'Geist Mono',monospace;display:flex;align-items:center;justify-content:center;gap:4px">AL <span style="opacity:.7">1</span></div>
+        <div style="flex:1;height:36px;border-radius:8px;border:1.5px solid oklch(0.62 0.11 120);color:oklch(0.62 0.11 120);font:500 10px 'Geist Mono',monospace;display:flex;align-items:center;justify-content:center;gap:4px">EV <span style="opacity:.7">3</span></div>
+        <div style="flex:1;height:36px;border-radius:8px;border:1.5px solid oklch(0.62 0.11 165);color:oklch(0.62 0.11 165);font:500 10px 'Geist Mono',monospace;display:flex;align-items:center;justify-content:center;gap:4px">AC <span style="opacity:.7">1</span></div>
+        <div style="flex:1;height:36px;border-radius:8px;border:1.5px solid oklch(0.62 0.11 210);background:oklch(0.62 0.11 210);color:#fff;font:500 10px 'Geist Mono',monospace;display:flex;align-items:center;justify-content:center;gap:4px">RX <span style="opacity:.8">2</span></div>
+        <div style="flex:1;height:36px;border-radius:8px;border:1.5px solid oklch(0.62 0.11 255);color:oklch(0.62 0.11 255);font:500 10px 'Geist Mono',monospace;display:flex;align-items:center;justify-content:center;gap:4px">NT <span style="opacity:.7">1</span></div>
+        <div style="flex:1;height:36px;border-radius:8px;border:1.5px solid oklch(0.62 0.11 300);color:oklch(0.62 0.11 300);font:500 10px 'Geist Mono',monospace;display:flex;align-items:center;justify-content:center;gap:4px">HS <span style="opacity:.7">3</span></div>
+        <div style="flex:1;height:36px;border-radius:8px;border:1.5px solid oklch(0.62 0.11 345);color:oklch(0.62 0.11 345);font:500 10px 'Geist Mono',monospace;display:flex;align-items:center;justify-content:center;gap:4px">HR <span style="opacity:.7">1</span></div>
+        <div style="height:36px;padding:0 12px;border-radius:8px;border:1px solid #35312c;color:#f1ece4;font-size:12px;font-weight:500;display:flex;align-items:center">All</div>
+        <div style="height:36px;padding:0 12px;border-radius:8px;background:#f1ece4;color:#25221f;font-size:12px;font-weight:500;display:flex;align-items:center">Pause</div>
+      </div>
+    </div>
+    <div style="flex:1;overflow-y:auto;padding:12px 24px 0;display:flex;flex-direction:column;max-width:568px">
+      <div style="height:36px;display:flex;align-items:center;justify-content:center;font:11px 'Geist Mono',monospace;color:#9a9186">↑ older · before cursor 1983</div>
+      <div style="display:grid;grid-template-columns:22px 1fr;gap:10px;padding:9px 0;border-top:1px solid #35312c;opacity:.35"><div style="width:22px;height:22px;border-radius:6px;background:oklch(0.62 0.11 300);color:#fff;font:500 9px/22px 'Geist Mono',monospace;text-align:center">HS</div><div style="display:flex;flex-direction:column;gap:2px"><div style="font-size:14px">light.hall → off</div><div style="font:11px 'Geist Mono',monospace;color:#9a9186">21:13:58 · entity light.hall · via HA websocket</div></div></div>
+      <div style="display:grid;grid-template-columns:22px 1fr;gap:10px;padding:9px 0;border-top:1px solid #35312c;opacity:.35"><div style="width:22px;height:22px;border-radius:6px;background:oklch(0.62 0.11 120);color:#fff;font:500 9px/22px 'Geist Mono',monospace;text-align:center">EV</div><div style="display:flex;flex-direction:column;gap:2px"><div style="font-size:14px">trigger fired: bins_reminder</div><div style="font:11px 'Geist Mono',monospace;color:#9a9186">21:13:40 · fired_by scheduler · recurring</div></div></div>
+      <div style="border-top:1px solid #35312c;background:#2f2b27;margin:0 -12px;padding:0 12px;border-radius:10px">
+        <div style="display:grid;grid-template-columns:22px 1fr;gap:10px;padding:9px 0"><div style="width:22px;height:22px;border-radius:6px;background:oklch(0.62 0.11 210);color:#fff;font:500 9px/22px 'Geist Mono',monospace;text-align:center">RX</div><div style="display:flex;flex-direction:column;gap:2px"><div style="font-size:14px">observed light.living_room dim · acted</div><div style="font:11px 'Geist Mono',monospace;color:#9a9186">21:02:11 · 380 ms · decision "movie started, evening" · watch-listed</div></div></div>
+        <pre style="margin:0 0 12px 32px;padding:10px 12px;border-radius:8px;background:#25221f;font:11px/1.55 'Geist Mono',monospace;color:#d9d2c8;white-space:pre-wrap">{
+ "trigger_event": "media_player.tv → playing",
+ "action": "light.turn_on {brightness:30%}",
+ "result": "ok",
+ "decision_context": "movie started, evening, user home",
+ "latency_ms": 380,
+ "model": "reflex-3b"
+}</pre>
+      </div>
+      <div style="display:grid;grid-template-columns:22px 1fr;gap:10px;padding:9px 0;border-top:1px solid #35312c;opacity:.35"><div style="width:22px;height:22px;border-radius:6px;background:oklch(0.62 0.11 165);color:#fff;font:500 9px/22px 'Geist Mono',monospace;text-align:center">AC</div><div style="display:flex;flex-direction:column;gap:2px"><div style="font-size:14px">home.light_set living_room 30%</div><div style="font:11px 'Geist Mono',monospace;color:#9a9186">21:02:11 · request 4b1d · risk low · reflex*</div></div></div>
+      <div style="display:grid;grid-template-columns:22px 1fr;gap:10px;padding:9px 0;border-top:1px solid #35312c;opacity:.35"><div style="width:22px;height:22px;border-radius:6px;background:oklch(0.62 0.11 345);color:#fff;font:500 9px/22px 'Geist Mono',monospace;text-align:center">HR</div><div style="display:flex;flex-direction:column;gap:2px"><div style="font-size:14px">light.living_room ok</div><div style="font:11px 'Geist Mono',monospace;color:#9a9186">21:02:12 · request 4b1d · 210 ms round-trip</div></div></div>
+      <div style="display:grid;grid-template-columns:22px 1fr;gap:10px;padding:9px 0;border-top:1px solid #35312c"><div style="width:22px;height:22px;border-radius:6px;background:oklch(0.62 0.11 210);color:#fff;font:500 9px/22px 'Geist Mono',monospace;text-align:center">RX</div><div style="display:flex;flex-direction:column;gap:2px"><div style="font-size:14px">observed motion_hall · no action</div><div style="font:11px 'Geist Mono',monospace;color:#9a9186">20:58:03 · 88 ms · decision "user moving about, lights already on"</div></div></div>
+      <div style="display:grid;grid-template-columns:22px 1fr;gap:10px;padding:9px 0;border-top:1px solid #35312c;opacity:.35"><div style="width:22px;height:22px;border-radius:6px;background:oklch(0.62 0.11 30);color:#fff;font:500 9px/22px 'Geist Mono',monospace;text-align:center">UR</div><div style="display:flex;flex-direction:column;gap:2px"><div style="font-size:14px">"What have I got tomorrow morning?"</div><div style="font:11px 'Geist Mono',monospace;color:#9a9186">20:52:03 · session s_9f2 · text</div></div></div>
+      <div style="display:grid;grid-template-columns:22px 1fr;gap:10px;padding:9px 0;border-top:1px solid #35312c;opacity:.35"><div style="width:22px;height:22px;border-radius:6px;background:oklch(0.62 0.11 75);color:#fff;font:500 9px/22px 'Geist Mono',monospace;text-align:center">AL</div><div style="display:flex;flex-direction:column;gap:2px"><div style="font-size:14px">"The dentist at nine, sir…"</div><div style="font:11px 'Geist Mono',monospace;color:#9a9186">20:52:06 · mood pleased · 2.9 s · £0.04</div></div></div>
+      <div style="height:24px"></div>
+    </div>
+    <div style="padding:10px 24px 24px;font:11px 'Geist Mono',monospace;color:#9a9186;line-height:1.5">Soloed RX: other streams dimmed rather than removed, so the neighbourhood stays visible. Keyboard: J/K move, Enter opens payload, Space pauses, 1–8 solo a stream.</div>
+  </div>
+  <div style="background:#35312c"></div>
+
+  <div style="display:flex;flex-direction:column;height:100vh;overflow:hidden;background:#2a2723">
+    <div style="padding:40px 24px 14px;display:flex;flex-direction:column;gap:6px;border-bottom:1px solid #35312c">
+      <div style="display:flex;align-items:center;justify-content:space-between"><div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#9a9186;font-weight:500">Causal thread</div><div style="font:11px 'Geist Mono',monospace;color:#9a9186">esc closes</div></div>
+      <div style="font-size:20px;font-weight:500;letter-spacing:-.02em">Why Alfred spoke about the door</div>
+      <div style="font-size:13.5px;line-height:1.5;color:#d9d2c8">Solid links are joined by an id the server holds. Dashed means adjacent in time only.</div>
+    </div>
+    <div style="flex:1;overflow-y:auto;padding:18px 24px 40px;display:flex;flex-direction:column">
+      <div style="display:grid;grid-template-columns:22px 1fr;gap:12px"><div style="display:flex;flex-direction:column;align-items:center"><div style="width:22px;height:22px;border-radius:6px;background:oklch(0.62 0.11 300);color:#fff;font:500 9px/22px 'Geist Mono',monospace;text-align:center">HS</div><div style="flex:1;width:0;min-height:22px;border-left:1.5px solid #35312c;margin:4px 0"></div></div><div style="padding-bottom:14px;display:flex;flex-direction:column;gap:3px"><div style="font-size:14.5px;line-height:1.35">binary_sensor.front_door → on</div><div style="font:11px 'Geist Mono',monospace;color:#9a9186;line-height:1.5">18:19:02 · home_state · entity_id joins ↓</div></div></div>
+      <div style="display:grid;grid-template-columns:22px 1fr;gap:12px"><div style="display:flex;flex-direction:column;align-items:center"><div style="width:22px;height:22px;border-radius:6px;background:oklch(0.62 0.11 210);color:#fff;font:500 9px/22px 'Geist Mono',monospace;text-align:center">RX</div><div style="flex:1;width:0;min-height:22px;border-left:1.5px solid #35312c;margin:4px 0"></div></div><div style="padding-bottom:14px;display:flex;flex-direction:column;gap:3px"><div style="font-size:14.5px;line-height:1.35">Reflex watched it for 120 s, then chose to speak</div><div style="font:11px 'Geist Mono',monospace;color:#9a9186;line-height:1.5">18:21:02 · reflex_observations · decision_context "door open, evening, user home" · 380 ms · joined by trigger_event</div></div></div>
+      <div style="display:grid;grid-template-columns:22px 1fr;gap:12px"><div style="display:flex;flex-direction:column;align-items:center"><div style="width:22px;height:22px;border-radius:6px;background:oklch(0.62 0.11 165);color:#fff;font:500 9px/22px 'Geist Mono',monospace;text-align:center">AC</div><div style="flex:1;width:0;min-height:22px;border-left:1.5px dashed #35312c;margin:4px 0"></div></div><div style="padding-bottom:14px;display:flex;flex-direction:column;gap:3px"><div style="font-size:14.5px;line-height:1.35">speak("The front door has been open two minutes, sir.")</div><div style="font:11px 'Geist Mono',monospace;color:#9a9186;line-height:1.5">18:21:02 · actions · request_id 7c2e · joined by request_id</div></div></div>
+      <div style="display:grid;grid-template-columns:22px 1fr;gap:12px"><div style="display:flex;flex-direction:column;align-items:center"><div style="width:22px;height:22px;border-radius:6px;background:oklch(0.62 0.11 255);color:#fff;font:500 9px/22px 'Geist Mono',monospace;text-align:center">NT</div><div style="flex:1;width:0;min-height:22px;border-left:1.5px solid #35312c;margin:4px 0"></div></div><div style="padding-bottom:14px;display:flex;flex-direction:column;gap:3px"><div style="font-size:14.5px;line-height:1.35">Spoken aloud, priority important</div><div style="font:11px 'Geist Mono',monospace;color:#9a9186;line-height:1.5">18:21:03 · notifications · adjacent in time only</div></div></div>
+      <div style="display:grid;grid-template-columns:22px 1fr;gap:12px"><div style="display:flex;flex-direction:column;align-items:center"><div style="width:22px;height:22px;border-radius:6px;background:oklch(0.62 0.11 300);color:#fff;font:500 9px/22px 'Geist Mono',monospace;text-align:center">HS</div></div><div style="display:flex;flex-direction:column;gap:3px"><div style="font-size:14.5px;line-height:1.35">binary_sensor.front_door → off</div><div style="font:11px 'Geist Mono',monospace;color:#9a9186;line-height:1.5">18:21:40 · home_state · not caused by the above</div></div></div>
+    </div>
+    <div style="padding:14px 24px 24px;border-top:1px solid #35312c;font-size:12.5px;line-height:1.55;color:#9a9186">Desktop is the phone's layers side by side: Room (420pt, permanent) · Workshop bench · detail. The Door still covers all three. Below 1100pt the detail column becomes a sheet over the bench; below 760pt the layout is the phone. <a href="Alfred.dc.html">Phone prototype</a> · <a href="Alfred Design System.dc.html">Design system</a></div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

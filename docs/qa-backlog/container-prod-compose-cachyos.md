@@ -37,8 +37,9 @@
    one) — trigger a state-change event (e.g. via a real HA integration if configured, or
    a manual `redis-cli XADD` into `alfred:home:state_changed` if not) and check
    `docker compose logs` for a successful round-trip to Ollama on the host.
-6. Confirm `ALFRED_TRUSTED_NETWORKS` needs to be set manually for WebAuthn/admin access
-   through this path (compose does not auto-inject the Docker bridge subnet the way
+6. Confirm `ALFRED_TRUSTED_NETWORKS` needs to be set manually for WebAuthn registration
+   (and the other credential writes) through this path — the admin API needs only a
+   session and is unaffected (compose does not auto-inject the Docker bridge subnet the way
    `alfredctl up` does) — either set it in `.env` before this test or confirm the
    documented gap is accurate.
 7. `docker compose down` (without `-v`) then `docker compose up -d` again — confirm state

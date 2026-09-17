@@ -22,9 +22,7 @@ def _clean_registry(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def mock_store() -> AsyncMock:
-    store = AsyncMock()
-    store.save = AsyncMock()
-    store.delete = AsyncMock()
+    store = AsyncMock(spec_set=TriggerStore)
     store.list_all = AsyncMock(return_value=[])
     store.get = AsyncMock(return_value=None)
     return store
@@ -47,7 +45,7 @@ def test_feature_name() -> None:
 def test_get_tools_includes_crud() -> None:
     from core.triggers.feature import TriggerFeature, TriggerFeatureContext
 
-    f = TriggerFeature(ctx=TriggerFeatureContext(store=AsyncMock()))
+    f = TriggerFeature(ctx=TriggerFeatureContext(store=AsyncMock(spec_set=TriggerStore)))
     tools = f.get_tools()
     tool_names = [t.name for t in tools]
     assert any("create_trigger" in n for n in tool_names)
@@ -60,7 +58,7 @@ def test_get_tools_includes_crud() -> None:
 def test_dynamic_description_includes_trigger_types() -> None:
     from core.triggers.feature import TriggerFeature, TriggerFeatureContext
 
-    f = TriggerFeature(ctx=TriggerFeatureContext(store=AsyncMock()))
+    f = TriggerFeature(ctx=TriggerFeatureContext(store=AsyncMock(spec_set=TriggerStore)))
     tools = f.get_tools()
     create_tool = next(t for t in tools if "create_trigger" in t.name)
     assert "time" in create_tool.description
@@ -263,7 +261,7 @@ async def test_update_trigger_invalid_urgency(mock_store: AsyncMock) -> None:
 def test_dynamic_description_includes_urgency() -> None:
     from core.triggers.feature import TriggerFeature, TriggerFeatureContext
 
-    f = TriggerFeature(ctx=TriggerFeatureContext(store=AsyncMock()))
+    f = TriggerFeature(ctx=TriggerFeatureContext(store=AsyncMock(spec_set=TriggerStore)))
     tools = f.get_tools()
     create_tool = next(t for t in tools if "create_trigger" in t.name)
     assert "urgency" in create_tool.description

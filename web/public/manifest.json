@@ -4,8 +4,8 @@
     "description": "Your personal butler",
     "start_url": "/",
     "display": "standalone",
-    "background_color": "#1a1612",
-    "theme_color": "#1a1612",
+    "background_color": "#25221F",
+    "theme_color": "#25221F",
     "icons": [
         {
             "src": "/icon.svg",

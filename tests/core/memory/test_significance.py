@@ -331,3 +331,35 @@ async def test_entity_frequency_tracked_on_zincrby(
     assert keys_used == {ENTITY_FREQUENCY_KEY}
     members_tracked = {c.args[2] for c in calls}
     assert members_tracked == {"light_sensor", "motion_sensor"}
+
+
+# ---------------------------------------------------------------------------
+# Frequency-key isolation for passive observations
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_scorer_defaults_to_the_shared_frequency_key(
+    mock_redis: AsyncMock, config: AlfredConfig
+) -> None:
+    """Existing callers keep the old behaviour."""
+    scorer = SignificanceScorer(redis=mock_redis, config=config)
+    await scorer._score_novelty(_make_entry(entities=["light.hallway"]))
+    assert mock_redis.zincrby.await_args.args[0] == ENTITY_FREQUENCY_KEY
+
+
+@pytest.mark.asyncio
+async def test_scorer_can_use_a_separate_frequency_key(
+    mock_redis: AsyncMock, config: AlfredConfig
+) -> None:
+    """Passive observations must not contaminate the reflex-action population."""
+    from shared.streams import OBSERVED_FREQUENCY_KEY
+
+    scorer = SignificanceScorer(
+        redis=mock_redis, config=config, frequency_key=OBSERVED_FREQUENCY_KEY
+    )
+    await scorer._score_novelty(_make_entry(source="observation", entities=["light.hallway"]))
+
+    keys_used = {c.args[0] for c in mock_redis.zincrby.await_args_list}
+    assert keys_used == {OBSERVED_FREQUENCY_KEY}
+    assert ENTITY_FREQUENCY_KEY not in keys_used

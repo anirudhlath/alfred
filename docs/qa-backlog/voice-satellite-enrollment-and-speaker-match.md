@@ -1,6 +1,6 @@
-# Voice Satellite: Browser Voice Enrollment + Satellite Speaker-ID Match
+# Voice Satellite: Voice Enrollment + Satellite Speaker-ID Match
 
-**Feature:** Voice Enrollment Card (`web/src/pages/VoiceEnrollmentCard.tsx`) + `SpeakerID` (`core/voice/speaker_id.py`) end-to-end
+**Feature:** `POST /api/voice/enroll` + `SpeakerID` (`core/voice/speaker_id.py`) end-to-end
 **Priority:** critical
 **Type:** e2e
 
@@ -9,21 +9,22 @@
   `uv run python -m runner`
 - `config/satellites.yaml` with a `127.0.0.1` entry and the macOS dev satellite running (real
   mic/speaker), as in `voice-satellite-real-mic-full-loop.md`
-- A real browser (Chrome/Safari) on the same trusted network as the server (localhost or
-  Tailscale) with a registered WebAuthn passkey and an active authenticated session — `/api/voice/enroll`
-  is gated by both `require_trusted_network` and `require_authenticated`
-  (`core/channels/web_server.py`)
-- Microphone permission available to the browser
+- An authenticated session cookie from a device on the trusted network (localhost or
+  Tailscale) — `/api/voice/enroll` is gated by both `require_trusted_network` and
+  `require_authenticated` (`core/channels/web_server.py`)
+- A way to record three samples and post them: **PWA phase 1 has no enrollment surface**
+  (see the first note below), so drive the endpoint directly — `curl` with the session cookie,
+  or the HTTP client of your choice
 
 ## Test Steps
-1. Open the web app (`http://localhost:8081`), log in via passkey, navigate to Settings
-2. Locate the "VOICE ENROLLMENT" card and confirm it shows `0 / 3` samples and the first
-   prompt ("Alfred, what's on my calendar for tomorrow morning?")
-3. Click the mic button, read the first prompt aloud, click again to stop recording — confirm
-   the counter advances to `1 / 3` and the prompt updates to the second sentence
-4. Repeat for samples 2 and 3 (each with its own prompt)
-5. After the 3rd sample, confirm the card auto-submits (`POST /api/voice/enroll`) and the UI
-   transitions to "Voiceprint enrolled. Satellites will recognize your voice."
+1. Record three samples of the same person speaking a normal sentence each (any recorder;
+   the handler decodes whatever `decode_to_pcm16k` accepts)
+2. `POST` all three to `/api/voice/enroll` with `identity: "sir"` and the session cookie
+3. Confirm the response is a success, not a 401 (no session) or 403 (untrusted origin)
+4. Repeat the post with three fresh samples to confirm re-enrollment is an overwrite, not an
+   error — see the last note
+5. (Skipped in phase 1 — there is no card to watch. The equivalent UI assertions belong with
+   the Workshop's enrollment surface when it ships.)
 6. Check the channels process log for `Enrolled voiceprint for 'sir' (3 samples)`
 7. Walk to (or sit near) the dev-mac satellite, say the wake word, and speak a normal request
    in your own voice
@@ -37,8 +38,8 @@
    `voice_id` match on the other person's voice — since only one identity is enrolled
 
 ## Expected Result
-- Steps 2-5: recording flow works end to end in a real browser with a real mic — 3 real
-  samples recorded, submitted, and the UI reflects success
+- Steps 1-4: three real samples of a real human voice are accepted and stored — this case
+  exists because synthetic embeddings cannot exercise the real ECAPA model
 - Step 6-8: the enrolled voiceprint is later matched on a live satellite utterance spoken by
   the SAME person who enrolled — `method=voice_id` appears in the log with a confidence at or
   above the `SPEAKER_ID_THRESHOLD` default (0.45 cosine, mapped to a reported confidence
@@ -46,14 +47,17 @@
 - Step 9: a different speaker's voice does not spuriously match the enrolled voiceprint
 
 ## Notes
-- This exercises the ONLY parts of the enrollment path automated tests cannot reach: a real
-  `getUserMedia`/`MediaRecorder` flow in an actual browser (`web/src/chat/VoiceButton.tsx`),
-  and cosine similarity behavior of the real ECAPA-TDNN model against two genuinely different
-  human voices. `tests/core/voice/test_speaker_id.py` and
-  `tests/core/channels/test_voice_enroll.py` only exercise this with synthetic/injected
-  embeddings.
-- The enrollment card hardcodes `identity: "sir"` (see `VoiceEnrollmentCard.tsx`) — there is
-  no UI yet for enrolling additional household members under other names; a recognized
+- **There is no enrollment UI in PWA phase 1.** The Settings page that carried the Voice
+  Enrollment card was removed in the hard cut; `docs/voice-satellites.md` and
+  `docs/backlog/low/pwa-phase1-followups.md` §5 both record that the Workshop reinstates it in
+  phase 2. The client's own microphone path (`web/src/room/HoldToTalk.tsx`) records for chat
+  only and never posts to `/api/voice/enroll`.
+- This case exercises what automated tests cannot reach: the cosine-similarity behaviour of
+  the real ECAPA-TDNN model against two genuinely different human voices.
+  `tests/core/voice/test_speaker_id.py` and `tests/core/channels/test_voice_enroll.py` only
+  exercise this with synthetic/injected embeddings.
+- Enroll under `identity: "sir"` — there is no path yet for enrolling additional household
+  members under other names; a recognized
   non-"sir" voiceprint would currently be downgraded to guest regardless of match confidence
   (tracked in `docs/backlog/low/satellite-multi-user-voice-identity.md`) — step 9 above is
   expected to show `local_claim`/guest-adjacent behavior, not a crash

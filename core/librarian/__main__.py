@@ -13,13 +13,14 @@ from typing import TYPE_CHECKING
 
 from core.librarian.consolidator import Librarian
 from core.memory.context_index import ContextIndexManager
-from core.memory.embedding_provider import SentenceTransformerProvider
+from core.memory.embedding_backend import build_embedding_provider
 from core.memory.episodic.memory import EpisodicMemory
 from core.memory.paths import episodic_cold_path, preferences_dir, profile_dir
 from core.memory.redis_vector_store import RedisVectorStore
 from core.memory.routines.store import RoutineStore
 from core.memory.significance import SignificanceScorer
 from core.memory.sqlite_vec_store import SqliteVecStore
+from core.shutdown import teardown
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
 from shared.redis_streams import create_redis
@@ -39,7 +40,7 @@ async def run() -> None:
     episodic_memory = None
     scorer = None
     try:
-        embedder = SentenceTransformerProvider(config.embedding_model)
+        embedder = build_embedding_provider(config)
         hot_store = RedisVectorStore(redis=r, dim=config.embedding_dim)
         cold_store = SqliteVecStore(
             db_path=str(episodic_cold_path()),
@@ -80,7 +81,14 @@ async def run() -> None:
         result = await librarian.consolidate()
         log.info("Librarian finished: %s", result)
     finally:
-        await r.aclose()
+        # This process runs one cycle and exits, so a pool left open here is leaked on
+        # every single invocation.
+        await teardown(
+            closers={
+                "embedding provider": embedder.aclose if embedder is not None else None,
+                "redis": r.aclose,
+            }
+        )
 
 
 def main() -> None:

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+
+from fastapi.testclient import TestClient
+
+from core.channels.web_server import create_app
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    from fastapi.testclient import TestClient
 
 
 def test_onboarding_writes_defaults_for_null_fields(web_client: TestClient, tmp_path: Path) -> None:
@@ -71,3 +73,26 @@ def test_onboarding_does_not_overwrite_existing(web_client: TestClient, tmp_path
     assert "personal.md" not in written
     assert "proactivity.md" not in written
     assert (prefs_dir / "personal.md").read_text() == "existing content"
+
+
+def test_onboarding_requires_auth(tmp_path: Path) -> None:
+    """No session cookie → 401, and not a single preference file is written.
+
+    `_get_prefs_dirs` is redirected at tmp_path so a regression fails loudly here
+    instead of quietly seeding the real preference directories.
+    """
+    import core.channels.web_server as ws
+
+    app = create_app(redis_url="redis://localhost:6379")
+    app.state.redis = AsyncMock()
+    client = TestClient(app)  # no auth cookie
+
+    with (
+        patch.object(ws, "_atomic_write") as write,
+        patch.object(ws, "_get_prefs_dirs", return_value=(tmp_path / "prefs", tmp_path / "prof")),
+    ):
+        resp = client.post("/api/onboarding", json={})
+
+    assert resp.status_code == 401
+    write.assert_not_called()
+    assert list(tmp_path.iterdir()) == []

@@ -192,7 +192,7 @@ def test_validate_credential_body_accepts_complete(home_service_manifest: dict[s
 async def test_build_service_info_shape(home_service_manifest: dict[str, Any]) -> None:
     from shared.secrets import set_secret
 
-    set_secret("home-service", "url", "http://192.168.50.159:8123")
+    set_secret("home-service", "url", "http://192.168.1.10:8123")
     schema = _schema_of(home_service_manifest)
     info = await build_integration_entry("home-service", "service", "service", schema)
     assert info["name"] == "home-service"
@@ -214,12 +214,12 @@ async def test_stored_pushable_credentials_requires_all_required(
     schema = _schema_of(home_service_manifest)
     assert await stored_pushable_credentials("home-service", schema) is None
 
-    set_secret("home-service", "url", "http://192.168.50.159:8123")
+    set_secret("home-service", "url", "http://192.168.1.10:8123")
     assert await stored_pushable_credentials("home-service", schema) is None  # token missing
 
     set_secret("home-service", "token", "tok")
     assert await stored_pushable_credentials("home-service", schema) == {
-        "url": "http://192.168.50.159:8123",
+        "url": "http://192.168.1.10:8123",
         "token": "tok",
     }
 
@@ -311,7 +311,7 @@ async def test_worker_re_pushes_stored_credentials(
 ) -> None:
     from shared.secrets import set_secret
 
-    set_secret("home-service", "url", "http://192.168.50.159:8123")
+    set_secret("home-service", "url", "http://192.168.1.10:8123")
     set_secret("home-service", "token", "tok")
 
     redis, shutdown = _worker_redis(
@@ -327,7 +327,7 @@ async def test_worker_re_pushes_stored_credentials(
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         await credential_push_worker(redis, http, shutdown=shutdown)
 
-    assert pushes == [{"url": "http://192.168.50.159:8123", "token": "tok"}]
+    assert pushes == [{"url": "http://192.168.1.10:8123", "token": "tok"}]
     redis.xack.assert_awaited_once()
 
 
@@ -337,7 +337,7 @@ async def test_worker_skips_when_credentials_incomplete(
 ) -> None:
     from shared.secrets import set_secret
 
-    set_secret("home-service", "url", "http://192.168.50.159:8123")  # token missing
+    set_secret("home-service", "url", "http://192.168.1.10:8123")  # token missing
 
     redis, shutdown = _worker_redis(
         home_service_manifest, _stream_entries(_service_registered_json())
@@ -401,7 +401,7 @@ async def test_worker_push_failure_logged_and_acked(
 ) -> None:
     from shared.secrets import set_secret
 
-    set_secret("home-service", "url", "http://192.168.50.159:8123")
+    set_secret("home-service", "url", "http://192.168.1.10:8123")
     set_secret("home-service", "token", "tok")
 
     redis, shutdown = _worker_redis(

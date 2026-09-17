@@ -1,0 +1,89 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderHook, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SESSION_IDLE_MS } from "@/lib/history";
+import type { Overview } from "@/lib/types";
+import { overviewFixture } from "@/test/fixtures";
+import { sessionIdleMs, useOverview } from "./useOverview";
+
+const { markTrueMock } = vi.hoisted(() => ({ markTrueMock: vi.fn() }));
+vi.mock("@/shell/ConnectionProvider", () => ({ markTrue: markTrueMock }));
+
+/** When set, the overview read 500s — Redis is down behind it. */
+let overviewDown = false;
+
+function renderOverview(enabled = true) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  return { client, ...renderHook(() => useOverview(enabled), { wrapper }) };
+}
+
+describe("useOverview", () => {
+  beforeEach(() => {
+    overviewDown = false;
+    markTrueMock.mockClear();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        expect(String(input)).toBe("/api/admin/overview");
+        if (overviewDown) return new Response('{"detail":"redis is down"}', { status: 500 });
+        return new Response(JSON.stringify(overviewFixture), { status: 200 });
+      }),
+    );
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("stamps last-true on every successful read: the house answered", async () => {
+    const { result } = renderOverview();
+    await waitFor(() => expect(result.current.data).toEqual(overviewFixture));
+    expect(markTrueMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads what the key already holds without asking for it again", async () => {
+    // What the Memory bench's scratchpad does with the Librarian's schedule:
+    // a disabled observer fetches nothing and still sees whoever is polling.
+    const { result, client } = renderOverview(false);
+    expect(result.current.data).toBeUndefined();
+    expect(fetch).not.toHaveBeenCalled();
+    client.setQueryData(["overview"], overviewFixture);
+    await waitFor(() => expect(result.current.data).toEqual(overviewFixture));
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("leaves last-true alone when the read fails", async () => {
+    overviewDown = true;
+    const { result } = renderOverview();
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(markTrueMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("sessionIdleMs", () => {
+  it("reads the server's idle timeout in minutes", () => {
+    expect(sessionIdleMs({ ...overviewFixture, session: { idle_minutes: 10 } })).toBe(600_000);
+  });
+
+  it("falls back to the default before the overview has answered", () => {
+    expect(sessionIdleMs(undefined)).toBe(SESSION_IDLE_MS);
+  });
+
+  // The house always sends `session`; a cached shell can still meet a server
+  // from before it did.
+  it("falls back to the default when the overview has no session at all", () => {
+    const overview = { ...overviewFixture, session: undefined as unknown as Overview["session"] };
+    expect(sessionIdleMs(overview)).toBe(SESSION_IDLE_MS);
+  });
+
+  // `Infinity` last: a window that never breaks is a socket that never rotates.
+  it.each([0, -5, Number.NaN, Number.POSITIVE_INFINITY])(
+    "falls back to the default for %s minutes",
+    (minutes) => {
+      expect(sessionIdleMs({ ...overviewFixture, session: { idle_minutes: minutes } })).toBe(
+        SESSION_IDLE_MS,
+      );
+    },
+  );
+});

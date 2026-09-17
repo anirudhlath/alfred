@@ -10,7 +10,7 @@
 - Session cookie expired or cleared
 
 ## Test Steps
-1. Clear cookies or wait for session expiry (24hr)
+1. Clear cookies or wait for session expiry (8h)
 2. Open Alfred PWA at `http://localhost:8081`
 3. Observe login screen appears with "Sign in with Passkey" button
 4. Check if browser shows passkey autofill suggestion in the input field (Conditional UI)

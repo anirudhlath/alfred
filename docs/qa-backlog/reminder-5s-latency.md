@@ -8,7 +8,7 @@
 - Full Alfred stack running via `uv run python -m runner` (bridge, reflex, triggers, conscious, channels, memory-ingestor all report started)
 - Redis Stack running and reachable
 - Ollama/LiteLLM route configured so the Conscious Engine can actually respond (this test measures real LLM latency as part of the budget, not a mock)
-- Web SPA open in a browser, authenticated (passkey or trusted network), on the Chat page
+- PWA client open in a browser, authenticated (passkey or trusted network), standing in the Room
 - Terminal tailing runner output (or `docs/qa-backlog` convention: watch stdout, which is loguru-prefixed per service, e.g. `[triggers]`, `[conscious]`)
 
 ## Test Steps

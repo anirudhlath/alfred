@@ -8,7 +8,7 @@
 - Full Alfred stack running via `uv run python -m runner` (hot-reload enabled by default)
 - Redis Stack running and reachable
 - Terminal access to find/kill the `triggers` child process by PID (`ps aux | grep core.triggers` or watch runner's `[triggers]`-prefixed startup line for the PID)
-- Web SPA authenticated, on Chat page
+- PWA client authenticated, standing in the Room
 
 ## Test Steps
 

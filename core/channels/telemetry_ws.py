@@ -102,11 +102,20 @@ def register_telemetry_ws(app: FastAPI) -> None:
         pump_task = asyncio.create_task(pump())
         try:
             while True:
-                raw = await websocket.receive_text()
                 try:
-                    msg = json.loads(raw)
-                except json.JSONDecodeError:
+                    # KeyError: starlette indexes message["text"], which a binary frame
+                    # does not carry — refuse it rather than letting it kill the socket.
+                    msg = json.loads(await websocket.receive_text())
+                except (json.JSONDecodeError, KeyError):
                     await websocket.send_json({"type": "error", "message": "invalid JSON"})
+                    continue
+                if not isinstance(msg, dict):
+                    # A bare JSON scalar/array parses fine but has no .get — refuse it
+                    # rather than dying with a 1011 and taking the socket down.
+                    await websocket.send_json({"type": "error", "message": "invalid JSON"})
+                    continue
+                if msg.get("type") == "ping":
+                    await websocket.send_json({"type": "pong"})
                     continue
                 names = [n for n in msg.get("streams", []) if n in STREAM_CATALOG]
                 if msg.get("type") == "subscribe":

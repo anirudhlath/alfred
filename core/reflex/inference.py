@@ -12,14 +12,23 @@ import os
 
 from core.reflex import ollama_client, openai_client
 
-_BACKENDS = ("ollama", "openai")
+REFLEX_BACKENDS: tuple[str, ...] = ("ollama", "openai")
+"""Every ``REFLEX_BACKEND`` value the dispatcher accepts.
+
+Public because the admin overview reports the model each one would use and must
+answer ``null`` for a backend this module would refuse — retyping the list there
+would let the two drift into naming a model the engine never runs."""
 
 
 def _backend() -> str:
-    name = os.getenv("REFLEX_BACKEND", "ollama").strip().lower() or "ollama"
-    if name not in _BACKENDS:
+    raw = os.getenv("REFLEX_BACKEND", "ollama")
+    name = raw.strip().lower() or "ollama"
+    if name not in REFLEX_BACKENDS:
         raise RuntimeError(
-            f"Unknown REFLEX_BACKEND {name!r} (expected one of: {', '.join(_BACKENDS)})"
+            # Both spellings: the normalised name is what was matched, but only the
+            # raw one greps against the user's .env.
+            f"Unknown REFLEX_BACKEND {raw!r} "
+            f"(read as {name!r}; expected one of: {', '.join(REFLEX_BACKENDS)})"
         )
     return name
 
