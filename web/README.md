@@ -129,7 +129,7 @@ Phase 3: the Workshop's other three benches, each a pure view over one hook call
 
 ## The service worker
 
-`public/sw.js` is hand-written — 83 lines of code under twice as many of comment — and
+`public/sw.js` is hand-written — 100 lines of code under twice as many of comment — and
 shipped verbatim by Vite's `public/` copy: no `vite-plugin-pwa`, no Workbox, no generated
 precache manifest. The reasoning is in
 `docs/superpowers/plans/2026-09-16-pwa-phase4-install-and-offline.md`; the short version
@@ -138,7 +138,7 @@ things a reviewer can *read in the shipped bytes*, and a negative requirement �
 worker never caches `/api`" — is one assertion against a hand-written file and an argument
 against a plugin's route table.
 
-**What it does today is install, and only install.** It fetches `/index.html` past the
+**What it does today is install and activate.** It fetches `/index.html` past the
 HTTP cache and takes the `/assets/…` URLs Vite wrote into it as the precache manifest —
 the entry chunk and the stylesheet. It then reads the **stylesheet** for the `url()` rules
 the HTML never mentions and takes the `.woff2` among them: 8 files, 139 436 of this build's
@@ -157,6 +157,20 @@ system stack, so the font loop declines and carries on while the asset loop thro
 What may be cached is one function, `isAssetUrl`: same origin, under `/assets/`, no encoded
 separator. The extraction either side of it is deliberately wide so that widening it cannot
 widen the cache.
+
+**`activate` is the purge, and it is the recovery path from a bad cache.** Two of them.
+Every cache whose name is not `alfred-shell-v1` is deleted outright — no `alfred-` prefix
+filter, because anything this origin holds that is not the current cache is not ours to
+keep — so bumping `VERSION` takes the whole previous world with it. Then, inside the
+current cache, every entry the `/__shell-manifest` record does not name: asset URLs are
+content-hashed, and `VERSION` is bumped by hand, so for every deploy that does *not* bump
+it this is the only thing that reaches what the previous build of the same file cached.
+Entries are compared on the full URL, not the pathname, so a cross-origin copy sharing a
+path with something precached goes too. A cache with no record is kept rather than emptied:
+the reading of a missing record has to be "I cannot tell what is mine", because the
+alternative turns one absent entry into a blank screen on the next cold launch. Only then
+does it `clients.claim()` — a page handed to this worker mid-purge is being served from a
+cache that is still being emptied underneath it.
 
 It has no `fetch` handler, so every request still goes to the network untouched, and
 **nothing registers it yet** — `src/lib/sw.ts` is a later slice of phase 4. Until then it

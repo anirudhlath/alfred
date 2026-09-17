@@ -42,6 +42,24 @@ function shell(): Harness {
   return worker;
 }
 
+/**
+ * The same shell with the stylesheet that names two woff2 files — everything a
+ * real install writes. At module scope because the activate tests need a full
+ * cache to prove the purge keeps one, not only the two assets `shell()` has.
+ */
+function withFonts(): Harness {
+  const worker = loadWorker(source);
+  worker.respond("/index.html", html(SHELL_HTML));
+  worker.respond("/assets/index-CY0Sh5Q2.js", js("console.log(1)"));
+  worker.respond("/assets/index-nhBuGG1b.css", css(SHELL_CSS));
+  for (const path of SHELL_FONTS) worker.respond(path, font());
+  // The fallback is routed on purpose, exactly as the three refusals above
+  // are: without a route a worker that took it would "pass" by failing to
+  // fetch it rather than by declining to.
+  worker.respond(WOFF_FALLBACK, font());
+  return worker;
+}
+
 /** A 404 from the /assets StaticFiles mount: JSON, not the SPA's HTML fallback. */
 const notFound = () =>
   new Response('{"detail":"Not Found"}', {
@@ -250,20 +268,7 @@ describe("install", () => {
 });
 
 describe("install, and the fonts", () => {
-  function withFonts(): Harness {
-    const worker = loadWorker(source);
-    worker.respond("/index.html", html(SHELL_HTML));
-    worker.respond("/assets/index-CY0Sh5Q2.js", js("console.log(1)"));
-    worker.respond("/assets/index-nhBuGG1b.css", css(SHELL_CSS));
-    for (const path of SHELL_FONTS) worker.respond(path, font());
-    // The fallback is routed on purpose, exactly as the three refusals above
-    // are: without a route a worker that took it would "pass" by failing to
-    // fetch it rather than by declining to.
-    worker.respond(WOFF_FALLBACK, font());
-    return worker;
-  }
-
-  const cached = ["/__shell-manifest", ...SHELL_ASSETS, ...SHELL_FONTS, "/index.html"].sort();
+  const cached =["/__shell-manifest", ...SHELL_ASSETS, ...SHELL_FONTS, "/index.html"].sort();
 
   it("follows the stylesheet to the woff2 files the HTML never names", async () => {
     const worker = withFonts();
@@ -711,5 +716,180 @@ describe("install, and the network that never answers", () => {
     worker.hang("/index.html");
     await expect(worker.install()).rejects.toThrow();
     expect(worker.keys()).toEqual([]);
+  });
+});
+
+describe("activate", () => {
+  /** The absolute key a cache entry is really stored under. */
+  const at = (path: string, origin = ORIGIN) => `${origin}${path}`;
+
+  it("deletes every cache this worker does not own", async () => {
+    const worker = shell();
+    // Neither is empty: "reach every byte an earlier version wrote" is the
+    // point of the version purge, and a previous version's cache is full of
+    // them — a whole build's shell, assets and fonts under hashed names that
+    // nothing will ever ask for again.
+    worker.store.set(
+      "alfred-shell-v0",
+      new Map([[at("/index.html"), html("<!doctype html><html>the build before</html>")]]),
+    );
+    // Not prefixed `alfred-`, deliberately. Anything this origin holds that is
+    // not the current cache is not ours to keep: a Workbox trial's precache, an
+    // experiment, whatever the outgoing SPA left behind.
+    worker.store.set(
+      "workbox-precache-v2",
+      new Map([[at("/assets/index-OLDER.js"), js("older")]]),
+    );
+    await worker.install();
+    await worker.activate();
+    // Read from the worker's own VERSION, so a bump moves this test rather than
+    // making it vacuous.
+    expect([...worker.store.keys()]).toEqual([worker.cache]);
+  });
+
+  it("deletes the assets of a build this worker did not precache", async () => {
+    const worker = shell();
+    await worker.install();
+    // The previous deploy's entry chunk, left in the cache by the previous
+    // worker — which had the same VERSION, because most deploys do not bump it,
+    // so the cache is not dropped wholesale and this is the only thing that
+    // reaches it. Nothing will ever ask for it: its URL is content-hashed.
+    worker.store.get(worker.cache)!.set(at("/assets/index-OLD.js"), js("old"));
+    await worker.activate();
+    expect(worker.keys()).not.toContain("/assets/index-OLD.js");
+    expect(worker.keys()).toContain("/assets/index-CY0Sh5Q2.js");
+  });
+
+  it("keeps every byte this install wrote, fonts and all", async () => {
+    const worker = withFonts();
+    await worker.install();
+    const wrote = worker.keys();
+    worker.store.get(worker.cache)!.set(at("/assets/index-OLD.js"), js("old"));
+    await worker.activate();
+    // The other half, and the one that fails in the safe-looking direction: a
+    // keep-set built from the wrong field, or a manifest read the wrong way,
+    // empties the cache while every "it deleted the stale thing" assertion
+    // still passes, and the next cold launch is a blank screen. The fonts are
+    // in here because they are the entries install appends LAST, which is where
+    // an off-by-one in the record shows up.
+    expect(worker.keys()).toEqual(wrote);
+  });
+
+  it("keeps its own record of what it cached", async () => {
+    const worker = shell();
+    await worker.install();
+    await worker.activate();
+    // Pruning the manifest would leave the next activate with nothing to prune
+    // against, and it would drop the whole cache.
+    expect(worker.keys()).toContain("/__shell-manifest");
+    // Intact, not merely present: a purge that rewrote the record with what it
+    // happened to keep would pass the line above and delete the shell the first
+    // time anything was missing from it.
+    const listed = await worker.store.get(worker.cache)!.get(at("/__shell-manifest"))!.clone().json();
+    expect(listed).toEqual(["/index.html", ...SHELL_ASSETS]);
+  });
+
+  it("leaves the activate after it something to prune against", async () => {
+    const worker = withFonts();
+    await worker.install();
+    await worker.activate();
+    const wrote = worker.keys();
+    // A deploy that does not bump VERSION installs into the same cache, and the
+    // activate after it prunes against the same record. The harness cannot load
+    // two workers over one store, so this second activate stands in for the
+    // next build's — same bytes, same cache, same record. If the first purge
+    // consumed or dropped the record, this one keeps nothing.
+    worker.store.get(worker.cache)!.set(at("/assets/index-OLD.js"), js("old"));
+    await worker.activate();
+    expect(worker.keys()).toEqual(wrote);
+  });
+
+  it("takes control of the pages already open", async () => {
+    const worker = shell();
+    await worker.install();
+    await worker.activate();
+    expect(worker.claimCalls).toBe(1);
+  });
+
+  it("claims the open pages only once the purge has finished", async () => {
+    const worker = shell();
+    worker.store.set("alfred-shell-v0", new Map());
+    await worker.install();
+    worker.store.get(worker.cache)!.set(at("/assets/index-OLD.js"), js("old"));
+    // `claimCalls` at the moment of each deletion. A worker that claims first —
+    // `waitUntil(purge()); self.clients.claim()`, or `Promise.all([purge(),
+    // claim()])` — waits on everything a real ExtendableEvent waits on and
+    // passes every other test in this block, while handing the open pages a
+    // worker whose cache is still being emptied underneath them.
+    const claimedBy: number[] = [];
+    const watch = <K>(map: Map<K, unknown>) => {
+      const real = map.delete.bind(map);
+      map.delete = (key: K) => {
+        claimedBy.push(worker.claimCalls);
+        return real(key);
+      };
+    };
+    watch(worker.store); // the version purge
+    watch(worker.store.get(worker.cache)!); // the entry purge
+    await worker.activate();
+    // Two deletions, each of them before the claim. Spelled as a list rather
+    // than `.every()`, which an empty list satisfies.
+    expect(claimedBy).toEqual([0, 0]);
+    expect(worker.claimCalls).toBe(1);
+  });
+
+  it("survives activating with an empty cache", async () => {
+    // The kill switch has run, or a user cleared site data, or this is the
+    // first activate after an install that failed. Nothing to prune against,
+    // and dropping everything would be the wrong reading of that.
+    const worker = shell();
+    await expect(worker.activate()).resolves.toBeUndefined();
+    expect([...worker.store.keys()]).toEqual([worker.cache]);
+    // And it still claims. A purge that threw on the missing record would take
+    // the claim down with it and leave the open pages on the old worker.
+    expect(worker.claimCalls).toBe(1);
+  });
+
+  it("keeps a cache it has no record for rather than emptying it", async () => {
+    const worker = shell();
+    await worker.install();
+    worker.store.get(worker.cache)!.delete(at("/__shell-manifest"));
+    await worker.activate();
+    // No path in this worker reaches this today — install writes the record or
+    // writes nothing. It is the READING of a missing record, and the reading
+    // has to be "I cannot tell what is mine, so I keep it": the alternative
+    // turns one absent bookkeeping entry into a blank screen on the next cold
+    // launch, which is the failure the whole phase exists to prevent.
+    expect(worker.keys()).toEqual([...SHELL_ASSETS, "/index.html"].sort());
+  });
+
+  it("deletes an API response nothing should ever have cached", async () => {
+    const worker = shell();
+    await worker.install();
+    // Decision 3's failure with a longer half-life: a stale `dnd: false` served
+    // from cache, with no stamp and no way for the reader to know. Nothing in
+    // this worker can write one — but the purge is the recovery path for a
+    // build that could have, and for whatever a previous sw.js of this same
+    // VERSION left, which is every deploy that does not bump it.
+    worker.store.get(worker.cache)!.set(at("/api/admin/overview"), js('{"dnd":false}'));
+    await worker.activate();
+    expect(worker.keys()).not.toContain("/api/admin/overview");
+  });
+
+  it("deletes a cross-origin entry whose path matches one it keeps", async () => {
+    const worker = shell();
+    await worker.install();
+    // Same pathname, different origin — a CDN copy of the entry chunk that a
+    // previous build of this same VERSION stored. Nothing this worker writes
+    // can look like this, which is exactly why the purge is the only thing that
+    // would ever remove it; a keep-set compared on pathnames keeps it for ever.
+    const poisoned = "https://cdn.example.invalid/assets/index-CY0Sh5Q2.js";
+    worker.store.get(worker.cache)!.set(poisoned, js("cdn"));
+    await worker.activate();
+    // On the absolute keys, not `worker.keys()`, which maps to pathnames and
+    // cannot tell the two apart.
+    const urls = [...worker.store.get(worker.cache)!.keys()];
+    expect(urls).not.toContain(poisoned);
+    expect(urls).toContain(at("/assets/index-CY0Sh5Q2.js"));
   });
 });

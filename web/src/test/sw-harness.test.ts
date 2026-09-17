@@ -57,6 +57,53 @@ describe("the fake scope's event semantics", () => {
 });
 
 describe("the fake CacheStorage", () => {
+  it("answers every match with a fresh body, as a real Cache does", async () => {
+    // Real Cache.match constructs a new Response per call; handing back the
+    // stored object instead leaves it consumed the moment anything reads it.
+    // Task 5's purge reads the shell manifest with .json(), so a harness that
+    // did that would let one activate eat the record the NEXT one prunes
+    // against — and every assertion about the manifest after an activate would
+    // be reading a corpse rather than the cache.
+    const worker = loadWorker(`
+      self.addEventListener("activate", (event) => {
+        event.waitUntil((async () => {
+          const cache = await self.caches.open("alfred-shell-v1");
+          await cache.put("/x", new Response("once"));
+          const first = await (await cache.match("/x")).text();
+          const second = await (await cache.match("/x")).text();
+          await cache.put("/read-twice", new Response(first + second));
+        })());
+      });
+    `);
+    await worker.activate();
+    const entries = worker.store.get("alfred-shell-v1")!;
+    await expect(entries.get(`${ORIGIN}/read-twice`)!.clone().text()).resolves.toBe("onceonce");
+    // And the stored entry is still readable itself, which is the other half of
+    // what clone() means: a match must not spend the cache's copy.
+    await expect(entries.get(`${ORIGIN}/x`)!.clone().text()).resolves.toBe("once");
+  });
+
+  it("does not delete until the promise it handed back has settled", async () => {
+    // A real delete goes to disk, so a missing `await` means the deletion is
+    // outside waitUntil: the event finishes, the browser is free to kill the
+    // worker, and the cache the purge was supposed to drop is still there.
+    // Modelled as a macrotask so that is visible here and not only on a phone.
+    const worker = loadWorker(`
+      self.addEventListener("activate", (event) => {
+        event.waitUntil((async () => {
+          const cache = await self.caches.open("alfred-shell-v1");
+          await cache.put("/x", new Response("x"));
+          self.caches.delete("alfred-gone");
+          cache.delete("/x");
+        })());
+      });
+    `);
+    worker.store.set("alfred-gone", new Map());
+    await worker.activate();
+    expect([...worker.store.keys()]).toContain("alfred-gone");
+    expect(worker.keys("alfred-shell-v1")).toContain("/x");
+  });
+
   it("rejects a put of a response whose body has already been read", async () => {
     // Real Cache.put does. Without this, `await shell.text()` in place of
     // `await shell.clone().text()` is invisible here and fatal in a browser:

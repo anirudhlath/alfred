@@ -2,12 +2,13 @@
    docs/superpowers/plans/2026-09-16-pwa-phase4-install-and-offline.md and the
    summary is in web/README.md, "The service worker".
 
-   AS SHIPPED TODAY this file has one handler, `install`: it precaches the app
-   shell and stops. It answers no request — there is no `fetch` handler in it
-   yet — so everything still goes to the network untouched. The three rules
-   below are the policy the rest of it is built under; rules 1 and 2 describe
-   the fetch handler that later commits add, and this paragraph goes when they
-   land.
+   AS SHIPPED TODAY this file has two handlers: `install` precaches the app
+   shell, and `activate` purges every cache this version does not own and every
+   entry this install did not write, then claims the open pages. It answers no
+   request — there is no `fetch` handler in it yet — so everything still goes to
+   the network untouched. The three rules below are the policy the rest of it is
+   built under; rules 1 and 2 describe the fetch handler that later commits add,
+   and this paragraph goes when they land.
 
    1. It caches the app shell and NOTHING ELSE. `/api/*`, `/health` and the two
       sockets are never fetched here, never stored, and — once there is a fetch
@@ -279,4 +280,55 @@ async function precache() {
 
 self.addEventListener("install", (event) => {
   event.waitUntil(precache());
+});
+
+/* The recovery path from a bad cache, and the one place stale bytes are ever
+   deleted. Two purges, because there are two ways they accumulate. */
+async function purge() {
+  /* Between versions: bump VERSION and the next activate takes the whole
+     previous world with it. The `alfred-` prefix is not filtered on — anything
+     this origin holds that is not the current cache is not ours to keep, and
+     that includes whatever a previous experiment (or a Workbox trial) left.
+     Awaited, not fired off: an unawaited delete is outside waitUntil, and the
+     browser may stop the worker with the cache still there. */
+  for (const name of await self.caches.keys()) {
+    if (name !== CACHE) await self.caches.delete(name);
+  }
+
+  /* Within a version: every entry that is not in the manifest install just
+     wrote. Asset URLs are content-hashed, so a deploy's worth of them is dead
+     the moment a new worker activates — and VERSION is bumped by hand, so for
+     every deploy that does not bump it this is the ONLY thing that reaches what
+     the previous build of this same file cached. On iOS an origin over its
+     storage budget is evicted whole rather than trimmed.
+
+     Note the window this leaves: the new worker precaches into the cache the
+     old one is still serving from, so between install and activate the cached
+     shell is the new HTML. Its assets are already cached by then, and the only
+     reader of a cached shell is an offline navigation. */
+  const cache = await self.caches.open(CACHE);
+  const listed = await cache.match(MANIFEST);
+  /* No record means no way to tell what is ours, and the reading of that is
+     "keep", not "drop": emptying the cache here would turn one absent entry
+     into a blank screen on the next cold launch. */
+  if (!listed) return;
+  /* Absolute, because a cache key is. The record holds pathnames — one spelling
+     across the manifest, the cache and task 7's lookup — but comparing on the
+     pathname alone would keep a cross-origin entry that merely shares one, and
+     a poisoned CDN copy of the entry chunk is exactly the thing this purge is
+     the recovery from. Resolved against the scope for the same reason
+     isAssetUrl does: one notion of "us" in this file. */
+  const keep = new Set(
+    [MANIFEST, ...(await listed.json())].map((path) => new URL(path, scopeOrigin()).href),
+  );
+  for (const request of await cache.keys()) {
+    if (!keep.has(request.url)) await cache.delete(request);
+  }
+}
+
+/* claim() after purge(), not beside it: a page handed to this worker before the
+   purge has finished is a page being served from a cache that is still being
+   emptied underneath it. */
+self.addEventListener("activate", (event) => {
+  event.waitUntil(purge().then(() => self.clients.claim()));
 });

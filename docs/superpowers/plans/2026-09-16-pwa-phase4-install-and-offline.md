@@ -143,7 +143,7 @@ Identical to phases 1 to 3, repeated because they are load-bearing:
 | `web/index.html` | `apple-touch-icon` link; the manifest link, which `applyTheme` finds by `rel` *(corrected in task 2: this said the link "keeps its `id`" — it has never had one, and the swap selects on `link[rel="manifest"]`, so task 2 changes no markup at all)* | 1 |
 | `web/tsconfig.app.json`, `web/tsconfig.node.json` | `icons.test.ts` reads bytes, so it is checked by the Node project, not the browser one | 1 |
 | `web/eslint.config.js` | A block for `public/*.js` with the service-worker globals | 3 |
-| `web/src/test/sw-harness.ts` | Fake `ServiceWorkerGlobalScope`, fake `CacheStorage`, event dispatch | 3 |
+| `web/src/test/sw-harness.ts` | Fake `ServiceWorkerGlobalScope`, fake `CacheStorage`, event dispatch | 3, 5 |
 | `web/public/sw.js` | The worker: precache, purge, route, update handshake | 3–8 |
 | `web/src/test/sw.test.ts` | Every branch of the worker, through dispatched events | 3–8 |
 | `web/public/sw.kill.js` | The kill switch: unregister and drop every cache | 11 |
@@ -1621,6 +1621,70 @@ One wrinkle, stated in a comment rather than engineered around: the new worker i
 **Files:**
 - Modify: `web/public/sw.js`
 - Modify: `web/src/test/sw.test.ts`
+- Modify: `web/src/test/sw-harness.ts`, `web/src/test/sw-harness.test.ts` *(added in task 5 — see correction 1 below)*
+
+> **Corrected in task 5, after mutating the shipped worker against seventeen
+> mutants. The two code fences below (steps 1 and 3) are the pre-implementation
+> draft; the files in the tree are what shipped and are authoritative.**
+>
+> 1. **Two more places the harness passed a worker that cannot run on a phone**,
+>    found by writing this task's tests against it. Both are `FakeCache`, both
+>    are pinned in `sw-harness.test.ts`, and the second is what makes four of
+>    this task's mutants killable at all.
+>    - **`match()` handed back the stored `Response` object.** A real
+>      `Cache.match` constructs a new one per call, so reading a body never
+>      spends the cache's copy. `purge()` reads the manifest with `.json()`, so
+>      under the old fake one activate consumed the record the next one prunes
+>      against: a second activate threw where a browser would not, and every
+>      assertion about the manifest *after* an activate was reading a corpse. It
+>      now answers `?.clone()`.
+>    - **`delete()` resolved in a microtask, which made a missing `await`
+>      invisible.** Microtasks drain before an `await`ed event settles, so
+>      `await self.caches.delete(name)` and `self.caches.delete(name)` were
+>      indistinguishable here and very different on a phone — an unawaited delete
+>      is outside `waitUntil`, and the browser may stop the worker with the cache
+>      still there. Both deletes now settle on a macrotask, and the two
+>      unawaited-delete mutants die.
+> 2. **The keep-set is absolute URLs, not pathnames.** Step 3's draft compared
+>    `new URL(request.url).pathname` against a set of the manifest's pathnames,
+>    which keeps any **cross-origin** entry that merely shares a pathname with
+>    something precached — a CDN copy of `/assets/index-<hash>.js` survives every
+>    purge for ever. Nothing this worker writes can look like that (`isAssetUrl`
+>    refuses another origin), which is exactly why the purge is the only thing
+>    that would ever remove one: `VERSION` is bumped by hand, so for every deploy
+>    that does not bump it the entry purge is all that reaches what the *previous
+>    build of this same file* cached. The record still holds pathnames — one
+>    spelling across the manifest, the cache and task 7's lookup — and `purge()`
+>    resolves them through `scopeOrigin()` before comparing, the same notion of
+>    "us" `isAssetUrl` uses.
+> 3. **Eleven tests, not five.** The five below all shipped (with `worker.cache`
+>    in place of the literal `"alfred-shell-v1"`, per task 3's correction 6). The
+>    six added are the ones that bite: *keeps every byte this install wrote,
+>    fonts and all* (the only thing that catches a keep-set one entry short —
+>    the fonts are what install appends last); *leaves the activate after it
+>    something to prune against* (a purge that rewrites the record with what it
+>    happened to keep passes everything else, then empties the cache one activate
+>    later); *claims the open pages only once the purge has finished* (see 4);
+>    *keeps a cache it has no record for rather than emptying it* (the plan's
+>    empty-cache test states that intention against an **empty** fixture, where
+>    dropping everything and keeping everything look identical); *deletes an API
+>    response nothing should ever have cached*; and *deletes a cross-origin entry
+>    whose path matches one it keeps*. The last two are decision 3's recovery
+>    path, and each is the sole killer of a mutant: an `/assets/`-only prune, and
+>    the draft's pathname comparison.
+> 4. **The ordering of `purge().then(() => claim())` had to be tested, not
+>    assumed.** A real `ExtendableEvent` waits on every promise and the harness
+>    was fixed in task 3 to match — which is precisely why `waitUntil(purge());
+>    claim()` and `waitUntil(Promise.all([purge(), claim()]))` pass a
+>    `claimCalls === 1` assertion while handing the open pages a worker whose
+>    cache is still being emptied underneath them. The shipped test records
+>    `worker.claimCalls` at the moment of each deletion (by wrapping the store
+>    Maps' own `delete`, which is all public harness surface) and expects
+>    `[0, 0]` — a list rather than an `.every()`, which no deletion at all would
+>    satisfy.
+> 5. **`withFonts()` moved to module scope** in `sw.test.ts`, unchanged, so the
+>    activate tests can prove the purge keeps a *full* cache rather than the two
+>    assets `shell()` has. No test of task 4's changed.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1681,7 +1745,7 @@ describe("activate", () => {
 npx vitest run src/test/sw.test.ts -t "activate"
 ```
 
-Expected: FAIL — there is no `activate` listener, so nothing is deleted and `claimCalls` is 0.
+Expected: FAIL — there is no `activate` listener, so nothing is deleted and `claimCalls` is 0. *(Corrected in task 5: of the eleven shipped, **nine fail** here and **two pass vacuously** — `keeps its own record of what it cached` and `keeps a cache it has no record for rather than emptying it`, both of which a worker that deletes nothing at all satisfies by doing nothing. Note the filter catches two of task 3's install tests as well, whose names contain the word "activate"; 13 run, not 11.)*
 
 - [ ] **Step 3: Add `purge()` and the listener**
 
@@ -1725,16 +1789,20 @@ self.addEventListener("activate", (event) => {
 npx vitest run src/test/sw.test.ts
 ```
 
-Expected: PASS, 23 tests *(corrected in task 3: 15 as planned; +8 from task 3's extra tests)*.
+Expected: PASS, 23 tests *(corrected in task 3: 15 as planned; +8 from task 3's extra tests)* *(corrected in task 5: **53** in `sw.test.ts` — task 4's 42 plus this block's 11 — and `sw-harness.test.ts` moves 12 → 14. Then mutate: a green here is worth reading only after the seventeen mutants in step 4a have died.)*
+
+- [ ] **Step 4a: Mutate the worker, and keep only the tests that bite** *(added in task 5)*
+
+Every task in this phase has had surviving mutants found in review. Copy `public/sw.js` to a scratch directory outside the repo, mutate one thing at a time, copy it back over `public/sw.js`, `rm -rf node_modules/.vite` (the tests import the worker through `?raw`, which Vite caches), run `npx vitest run src/test/sw.test.ts`, and restore. The seventeen that were run, all killed: no version purge; an `alfred-` prefix filter on it; an unawaited `caches.delete`; deleting its own cache too; dropping everything when there is no record; `MANIFEST` missing from the keep-set; an empty keep-set; a keep-set one entry short; the draft's pathname comparison; no entry purge; an unawaited `cache.delete`; an `/assets/`-only prune; the record rewritten empty after the prune; `claim()` beside `purge()`; `Promise.all([purge(), claim()])`; no `claim()`; and the whole thing outside `waitUntil()`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add web/public/sw.js web/src/test/sw.test.ts
+git add web/public/sw.js web/src/test/sw.test.ts web/src/test/sw-harness.ts web/src/test/sw-harness.test.ts
 git commit -m "feat(web): purge every other cache and every stale entry on activate"
 ```
 
-Counts after this task: **73 files / ~1 539 tests**.
+Counts after this task: **73 files / ~1 539 tests** *(corrected in task 5: measured, **74 files / 1 607 tests**. No new file — all four this task touches already existed — and the delta is +13 on task 4's 1 594: 11 in `sw.test.ts` and 2 in `sw-harness.test.ts`.)*
 
 ---
 

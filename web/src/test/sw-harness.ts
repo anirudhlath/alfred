@@ -6,6 +6,18 @@ export const ORIGIN = "https://alfred.example.com";
 const absolute = (key: string | { url: string }): string =>
   new URL(typeof key === "string" ? key : key.url, ORIGIN).href;
 
+/**
+ * A delete that is not done when it is called. Real `caches.delete()` and
+ * `Cache.delete()` go to disk, so a worker that does not `await` one has left
+ * it outside `waitUntil` — the event finishes, the browser is free to stop the
+ * worker, and the cache the purge meant to drop is still there on the next
+ * boot. Resolving in a microtask would hide that: microtasks drain before an
+ * `await`ed event settles, so the missing `await` would look identical to the
+ * `await`. A macrotask does not, which is the whole reason for this.
+ */
+const settled = <T>(value: () => T): Promise<T> =>
+  new Promise((resolve) => setTimeout(() => resolve(value()), 0));
+
 /** Enough of `Cache` for this worker: open, match, put, keys, delete. */
 class FakeCache {
   // Declared and assigned rather than a `readonly` constructor parameter:
@@ -15,8 +27,15 @@ class FakeCache {
   constructor(entries: Map<string, Response>) {
     this.entries = entries;
   }
+  /**
+   * Real `Cache.match` constructs a NEW Response every call, so reading one
+   * body never spends the cache's copy. Handing back the stored object would
+   * make `purge()`'s `await listed.json()` consume the shell manifest: the
+   * record the next activate prunes against, gone after one read, and every
+   * assertion about it after an activate reading a corpse.
+   */
   match(key: string | { url: string }): Promise<Response | undefined> {
-    return Promise.resolve(this.entries.get(absolute(key)));
+    return Promise.resolve(this.entries.get(absolute(key))?.clone());
   }
   put(key: string | { url: string }, response: Response): Promise<void> {
     // Real `Cache.put` rejects a Response whose body is already read or locked.
@@ -34,7 +53,7 @@ class FakeCache {
     return Promise.resolve([...this.entries.keys()].map((url) => ({ url })));
   }
   delete(key: string | { url: string }): Promise<boolean> {
-    return Promise.resolve(this.entries.delete(absolute(key)));
+    return settled(() => this.entries.delete(absolute(key)));
   }
 }
 
@@ -203,7 +222,7 @@ export function loadWorker(source: string): Harness {
         return Promise.resolve(new FakeCache(store.get(name)!));
       },
       keys: () => Promise.resolve([...store.keys()]),
-      delete: (name: string) => Promise.resolve(store.delete(name)),
+      delete: (name: string) => settled(() => store.delete(name)),
     },
     // Real, so the worker's own AbortController semantics are exercised rather
     // than a model of them.
