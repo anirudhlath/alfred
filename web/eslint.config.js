@@ -19,4 +19,17 @@ export default defineConfig([
       globals: globals.browser,
     },
   },
+  {
+    // The two service workers. Not TypeScript — they are shipped verbatim by
+    // Vite's public/ copy, are loaded as classic (non-module) workers, and are
+    // evaluated in tests with `new Function("self", source)`, which refuses
+    // import/export. `sourceType: 'script'` is what keeps all three honest.
+    files: ['public/*.js'],
+    extends: [js.configs.recommended],
+    languageOptions: {
+      globals: globals.serviceworker,
+      ecmaVersion: 2023,
+      sourceType: 'script',
+    },
+  },
 ])

@@ -843,7 +843,13 @@ const absolute = (key: string | { url: string }): string =>
 
 /** Enough of `Cache` for this worker: open, match, put, keys, delete. */
 class FakeCache {
-  constructor(readonly entries: Map<string, Response>) {}
+  // Declared and assigned rather than a `readonly` constructor parameter:
+  // tsconfig's `erasableSyntaxOnly` rejects parameter properties (TS1294), and
+  // `tsc -b` is the only one of lint/vitest/build that says so.
+  readonly entries: Map<string, Response>;
+  constructor(entries: Map<string, Response>) {
+    this.entries = entries;
+  }
   match(key: string | { url: string }): Promise<Response | undefined> {
     return Promise.resolve(this.entries.get(absolute(key)));
   }
@@ -1012,6 +1018,13 @@ export const font = () =>
   new Response("woff2", { status: 200, headers: { "content-type": "font/woff2" } });
 ```
 
+*(Corrected in task 3: `FakeCache` was written `constructor(readonly entries: Map<string, Response>) {}`.
+Both `web/tsconfig.app.json` and `web/tsconfig.node.json` set `erasableSyntaxOnly`, which rejects
+parameter properties — TS1294. Worth knowing for every later task: **`npm run lint` and `npx vitest run`
+both pass on it.** Vitest strips types without checking them and ESLint is not type-aware here, so
+`tsc -b` inside `npm run build` is the only member of the gate that says so. Run the whole gate, not
+two thirds of it.)*
+
 - [ ] **Step 3: Write the failing test for install's precache**
 
 `web/src/test/sw.test.ts`:
@@ -1079,8 +1092,13 @@ describe("install", () => {
     await worker.install();
     // Without `cache: "reload"`, a worker installing seconds after a deploy can
     // precache the bytes that deploy just replaced, and serve them until the
-    // next one. Every install fetch, not merely the HTML.
-    expect(worker.reloaded).toEqual(worker.fetched);
+    // next one. Every install fetch, not merely the HTML — spelled out rather
+    // than compared against `fetched`, which two empty lists would also satisfy.
+    expect(worker.reloaded).toEqual([
+      "/index.html",
+      "/assets/index-CY0Sh5Q2.js",
+      "/assets/index-nhBuGG1b.css",
+    ]);
   });
 
   it("fails the install rather than caching half a shell", async () => {
@@ -1090,23 +1108,44 @@ describe("install", () => {
     // The entry chunk has no route: the network is gone mid-install. A
     // half-precached shell is a shell that boots to a blank screen offline.
     await expect(worker.install()).rejects.toThrow();
+    // Not "some of it": nothing. Everything is validated before anything is
+    // written, so a failed install leaves the previous worker's cache alone.
+    expect(worker.keys()).toEqual([]);
+  });
+
+  it("refuses an asset that comes back as the SPA fallback", async () => {
+    const worker = loadWorker(source);
+    worker.respond("/index.html", html(SHELL_HTML));
+    // mount_spa answers any unknown path with index.html and a 200, so a hashed
+    // chunk this deploy removed arrives as a page of HTML with `ok` true.
+    // Caching that under a .js URL is how a PWA bricks itself.
+    worker.respond("/assets/index-CY0Sh5Q2.js", html(SHELL_HTML));
+    worker.respond("/assets/index-nhBuGG1b.css", css("body{color:red}"));
+    await expect(worker.install()).rejects.toThrow();
+    expect(worker.keys()).toEqual([]);
   });
 });
 ```
 
-Delete the third test's stray loop before you commit — it is there in the plan only to make the point that `worker.fetched` is the assertion; write it as:
+*(Corrected in task 3, three ways; the block above is what shipped.*
 
-```ts
-  it("fetches past the HTTP cache, so a deploy cannot be precached stale", async () => {
-    const worker = shell();
-    await worker.install();
-    expect(worker.fetched).toEqual([
-      "/index.html",
-      "/assets/index-CY0Sh5Q2.js",
-      "/assets/index-nhBuGG1b.css",
-    ]);
-  });
-```
+*1. **The instruction that stood here is gone.** It read "Delete the third test's stray loop before you
+commit … write it as:" and then restated the third test under the fourth's name. There is no loop in
+the third test, and following it would have deleted the only assertion on `reloaded` — the one thing
+standing between a worker that installs seconds after a deploy and a precache of the bytes that deploy
+just replaced.*
+
+*2. **`expect(worker.reloaded).toEqual(worker.fetched)` is not an assertion.** Two empty lists satisfy
+it, so it passes on a worker that fetches nothing at all. Spelled out as a literal list instead.*
+
+*3. **A sixth test, because `precache()`'s `isAsset` guard was pinned by nothing in the whole plan.**
+Mutation in a scratch copy: `if (!isAsset(response)) continue;` and `isAsset` reduced to
+`return response.ok;` both left the five tests above green. Task 4's "installs anyway when a font is
+missing" exercises the **font** path, which is deliberately non-fatal, and task 7's "refuses to store
+the SPA fallback" exercises `asset()`'s **runtime** branch — neither reaches the install-time one, and
+that is the branch whose own comment says it is the difference between a deploy and a brick.
+`expect(worker.keys()).toEqual([])` went onto both failure tests at the same time: they claimed "rather
+than caching half a shell" and checked no part of it.)*
 
 - [ ] **Step 4: Run it and read the failure**
 
@@ -1205,7 +1244,7 @@ npx vitest run src/test/sw.test.ts
 npm run lint
 ```
 
-Expected: PASS, 5 tests. ESLint silent — if it complains that `self` is undefined, the `public/*.js` block from step 1 is missing or misplaced.
+Expected: PASS, 6 tests *(corrected in task 3: 5, before the sixth test step 3 added)*. ESLint silent — if it complains that `self` is undefined, the `public/*.js` block from step 1 is missing or misplaced. **Then run `npm run build` too**: it is the only part of the gate that type-checks the harness.
 
 - [ ] **Step 7: Commit**
 
@@ -1214,7 +1253,7 @@ git add web/eslint.config.js web/public/sw.js web/src/test/sw-harness.ts web/src
 git commit -m "feat(web): a service worker that precaches the shell index.html names"
 ```
 
-Counts after this task: **73 files / ~1 529 tests**.
+Counts after this task: **73 files / 1 546 tests** *(corrected in task 3: this said ~1 529. Tasks 1 and 2 moved the baseline to 72 files / 1 540 — the plan's estimate was written against master's 1 503 and never took their corrections in. 1 540 + 6 = 1 546.)*
 
 ---
 
@@ -1295,7 +1334,7 @@ describe("install, and the fonts", () => {
 npx vitest run src/test/sw.test.ts -t "fonts"
 ```
 
-Expected: FAIL on the first three (no font is fetched or cached at all); the last two already pass, because `isShell`/`isAsset` landed in task 3 — leave them in, they are the regression guard for those two branches.
+Expected: FAIL on the first three (no font is fetched or cached at all); the last two already pass, because `isShell`/`isAsset` landed in task 3 — leave them in, they are the regression guard for those two branches. *(Corrected in task 3: "refuses a shell that is not HTML" is still the only test of `isShell`, but `isAsset`'s install-time branch is now pinned by task 3's own "refuses an asset that comes back as the SPA fallback"; this file's `isAsset` test is the **font** path, which is non-fatal on purpose. The two are different branches and both are wanted.)*
 
 - [ ] **Step 3: Add `fontsInCss` and the second pass to `precache()`**
 
@@ -1352,7 +1391,7 @@ then extend the writes and the manifest:
 npx vitest run src/test/sw.test.ts
 ```
 
-Expected: PASS, 10 tests. Task 3's `records what it cached` still expects three entries, because that fixture's stylesheet has no `url()` at all — check it did not silently change.
+Expected: PASS, 11 tests *(corrected in task 3: 10, before its sixth test)*. Task 3's `records what it cached` still expects three entries, because that fixture's stylesheet has no `url()` at all — check it did not silently change.
 
 - [ ] **Step 5: Commit**
 
@@ -1361,7 +1400,7 @@ git add web/public/sw.js web/src/test/sw.test.ts
 git commit -m "feat(web): precache the woff2 the stylesheet names, and only those"
 ```
 
-Counts after this task: **73 files / ~1 534 tests**.
+Counts after this task: **73 files / ~1 551 tests** *(corrected in task 3: this said ~1 534, on the same stale baseline. Every later task's absolute count in this plan is low by the same arithmetic — read the delta each task adds, not the total.)*
 
 ---
 
