@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 // The shipped bytes, not a TypeScript copy of them — same reason
 // index-html.test.ts reads the shipped index.html.
 import source from "../../public/sw.js?raw";
-import { css, html, js, loadWorker, ORIGIN, type Harness } from "./sw-harness";
+import { css, font, html, js, loadWorker, ORIGIN, type Harness } from "./sw-harness";
 
 /** What `vite build` really emits: one module script, one stylesheet. */
 const SHELL_HTML = `<!doctype html><html lang="en"><head>
@@ -13,6 +13,26 @@ const SHELL_HTML = `<!doctype html><html lang="en"><head>
 </head><body><div id="root"></div></body></html>`;
 
 const SHELL_ASSETS = ["/assets/index-CY0Sh5Q2.js", "/assets/index-nhBuGG1b.css"];
+
+/**
+ * Shaped like the stylesheet `npm run build` really emits, checked against
+ * `dist/assets/index-*.css` on 2026-09-16: root-absolute `/assets/` URLs, no
+ * space before `format(…)`, the `.woff` fallback sharing a `src` with its
+ * `.woff2`, and a subset small enough that Vite inlined it — the real file has
+ * six `url(data:font/woff2;…)` and two `url(data:font/woff;…)`.
+ */
+const SHELL_CSS = `@font-face{font-family:DM Sans Variable;font-display:swap;src:url(/assets/dm-sans-latin-standard-normal-Bf69Tn_J.woff2)format("woff2-variations")}
+@font-face{font-family:Geist Mono;font-weight:400;src:url(/assets/geist-mono-latin-400-normal-DTRLJnHl.woff2)format("woff2"),url(/assets/geist-mono-latin-400-normal-B2yvC1Cq.woff)format("woff")}
+@font-face{font-family:Geist Mono;font-weight:500;src:url(data:font/woff2;base64,d09GMgABAAAA)format("woff2")}`;
+
+/** The two the stylesheet names as files, in the order it names them. */
+const SHELL_FONTS = [
+  "/assets/dm-sans-latin-standard-normal-Bf69Tn_J.woff2",
+  "/assets/geist-mono-latin-400-normal-DTRLJnHl.woff2",
+];
+
+/** One of the ten `.woff` fallbacks this build emits beside the `.woff2`. */
+const WOFF_FALLBACK = "/assets/geist-mono-latin-400-normal-B2yvC1Cq.woff";
 
 function shell(): Harness {
   const worker = loadWorker(source);
@@ -209,5 +229,197 @@ describe("install", () => {
     // sw.js's own bytes change. The recovery would be the kill switch.
     await expect(worker.install()).rejects.toThrow();
     expect(worker.keys()).toEqual([]);
+  });
+});
+
+describe("install, and the fonts", () => {
+  function withFonts(): Harness {
+    const worker = loadWorker(source);
+    worker.respond("/index.html", html(SHELL_HTML));
+    worker.respond("/assets/index-CY0Sh5Q2.js", js("console.log(1)"));
+    worker.respond("/assets/index-nhBuGG1b.css", css(SHELL_CSS));
+    for (const path of SHELL_FONTS) worker.respond(path, font());
+    // The fallback is routed on purpose, exactly as the three refusals above
+    // are: without a route a worker that took it would "pass" by failing to
+    // fetch it rather than by declining to.
+    worker.respond(WOFF_FALLBACK, font());
+    return worker;
+  }
+
+  const cached = ["/__shell-manifest", ...SHELL_ASSETS, ...SHELL_FONTS, "/index.html"].sort();
+
+  it("follows the stylesheet to the woff2 files the HTML never names", async () => {
+    const worker = withFonts();
+    await worker.install();
+    // The HTML names two things and neither is a typeface, so without this pass
+    // a cold offline launch renders in -apple-system rather than DM Sans.
+    expect(worker.keys()).toEqual(cached);
+  });
+
+  it("stores the font bytes under the font's own URL", async () => {
+    const worker = withFonts();
+    await worker.install();
+    // The key set says nothing about what is under each key: a loop that put
+    // the stylesheet's response under the font's URL passes the test above.
+    const entries = worker.store.get(worker.cache)!;
+    for (const path of SHELL_FONTS) {
+      await expect(entries.get(`${ORIGIN}${path}`)!.clone().text()).resolves.toBe("woff2");
+    }
+  });
+
+  it("asks past the HTTP cache for the fonts too", async () => {
+    const worker = withFonts();
+    await worker.install();
+    // Same reason as the shell and the chunks: a worker installing seconds
+    // after a deploy must not precache the bytes that deploy replaced.
+    expect(worker.reloaded).toEqual(["/index.html", ...SHELL_ASSETS, ...SHELL_FONTS]);
+  });
+
+  it("records the fonts in the manifest, so activate does not prune them", async () => {
+    const worker = withFonts();
+    await worker.install();
+    // A font cached but unlisted is a font the versioned purge deletes on the
+    // very next activate — precached once, gone before it was ever served.
+    const listed = await worker.store.get(worker.cache)!.get(`${ORIGIN}/__shell-manifest`)!.json();
+    expect(listed).toEqual(["/index.html", ...SHELL_ASSETS, ...SHELL_FONTS]);
+  });
+
+  it("skips the .woff fallbacks, which no worker-capable browser asks for", async () => {
+    const worker = withFonts();
+    await worker.install();
+    // @fontsource ships one beside every woff2 — ten in this build, 79 kB of
+    // the 215 kB of fonts. Every browser that can run a service worker has
+    // supported woff2 for years, so taking them is a third of the install for
+    // bytes nothing will ever ask for.
+    expect(worker.fetched).not.toContain(WOFF_FALLBACK);
+    expect(worker.keys()).not.toContain(WOFF_FALLBACK);
+  });
+
+  it("ignores url(data:…), which is already inside the stylesheet it cached", async () => {
+    const worker = withFonts();
+    await worker.install();
+    // Two guards refuse it, which is why this dies only when fontsInCss is
+    // rewritten wide open rather than when either one is edited: isAssetUrl
+    // first (a data: URL's origin is not this one), and the .woff2 narrowing
+    // second (its pathname is `font/woff2;base64,…`). That rewrite is exactly
+    // what this exists to catch. Asserted on what was FETCHED, not on the keys
+    // — a data: URL that slipped through has no route, so it would fail quietly
+    // and cache nothing while still costing a request on every install. And on
+    // the payload rather than the scheme, because `fetched` records pathnames
+    // and this one does not start with "data:".
+    expect(worker.fetched.filter((path) => path.includes("base64"))).toEqual([]);
+  });
+
+  it.each([
+    [
+      "a CDN's",
+      "https://fonts.cdn.example.invalid/assets/inter-latin.woff2",
+      "https://fonts.cdn.example.invalid/assets/inter-latin.woff2",
+    ],
+    ["one outside /assets/", "/fonts/legacy-Bf69Tn.woff2", "/fonts/legacy-Bf69Tn.woff2"],
+    [
+      "one that walks out of /assets/",
+      "/assets/../api/admin/overview.woff2",
+      "/api/admin/overview.woff2",
+    ],
+  ])("refuses %s font, however the stylesheet names it", async (_name, named, routed) => {
+    const worker = loadWorker(source);
+    worker.respond("/index.html", html(SHELL_HTML));
+    worker.respond("/assets/index-CY0Sh5Q2.js", js("console.log(1)"));
+    worker.respond("/assets/index-nhBuGG1b.css", css(`@font-face{src:url(${named})format("woff2")}`));
+    // Routed, again, so the refusal is a refusal. The third row is why the URL
+    // is resolved before it is judged rather than after: `/assets/../api/…`
+    // passes a `startsWith("/assets/")` written against the raw text, and the
+    // browser would send it to /api.
+    worker.respond(routed, font());
+    await worker.install();
+    expect(worker.fetched).toEqual(["/index.html", ...SHELL_ASSETS]);
+    expect(worker.keys()).toEqual(["/__shell-manifest", ...SHELL_ASSETS, "/index.html"]);
+  });
+
+  it("takes a font however the stylesheet spaces and quotes it", async () => {
+    const worker = loadWorker(source);
+    worker.respond("/index.html", html(SHELL_HTML));
+    worker.respond("/assets/index-CY0Sh5Q2.js", js("console.log(1)"));
+    // Vite's minified output is unquoted and unspaced, and @fontsource's own
+    // source CSS is too — but `url("…")` is the CSS spec's form, and a
+    // stylesheet that is hand-written, postcss-processed or built with
+    // cssMinify off carries it. Dropping a font because of a quotation mark
+    // would be silent: the app still renders, in the wrong typeface.
+    worker.respond(
+      "/assets/index-nhBuGG1b.css",
+      css(`@font-face{src:url( "/assets/quoted-Aa11bB22.woff2" )}
+@font-face{src:url( /assets/spaced-Cc33dD44.woff2 )}`),
+    );
+    worker.respond("/assets/quoted-Aa11bB22.woff2", font());
+    worker.respond("/assets/spaced-Cc33dD44.woff2", font());
+    await worker.install();
+    expect(worker.keys()).toEqual(
+      [
+        "/__shell-manifest",
+        ...SHELL_ASSETS,
+        "/assets/quoted-Aa11bB22.woff2",
+        "/assets/spaced-Cc33dD44.woff2",
+        "/index.html",
+      ].sort(),
+    );
+    // And it is recorded under the URL it is cached under. A manifest entry
+    // that still carries the stylesheet's spacing is a font activate cannot
+    // match against the cache key, so the purge deletes it on the next boot.
+    const listed = await worker.store.get(worker.cache)!.get(`${ORIGIN}/__shell-manifest`)!.json();
+    expect(listed).toEqual([
+      "/index.html",
+      ...SHELL_ASSETS,
+      "/assets/quoted-Aa11bB22.woff2",
+      "/assets/spaced-Cc33dD44.woff2",
+    ]);
+  });
+
+  it("reads the stylesheet for fonts and not the entry chunk", async () => {
+    const worker = loadWorker(source);
+    worker.respond("/index.html", html(SHELL_HTML));
+    // A minified bundle is 400 kB of text that already contains `url(` — a
+    // method of that name, twice, in this build's WebSocket client — and any
+    // library that injects styles at runtime carries @font-face rules in it.
+    // The stylesheet is the fonts' manifest; the bundle is not a list of
+    // anything.
+    worker.respond(
+      "/assets/index-CY0Sh5Q2.js",
+      js('const s="@font-face{src:url(/assets/ghost-D3adB33f.woff2)}";'),
+    );
+    worker.respond("/assets/index-nhBuGG1b.css", css("body{color:red}"));
+    worker.respond("/assets/ghost-D3adB33f.woff2", font());
+    await worker.install();
+    expect(worker.fetched).toEqual(["/index.html", ...SHELL_ASSETS]);
+  });
+
+  it("installs anyway when a font comes back as something that is not a font", async () => {
+    const worker = withFonts();
+    // A font that 404s from behind a proxy, or once the /assets mount is gone,
+    // comes back as index.html with a 200. It must not be cached as a font —
+    // and it must not fail an install over a typeface: an install aborted here
+    // leaves the phone with no worker at all, which is the worse of the two.
+    worker.respond(SHELL_FONTS[0], html("<!doctype html><html></html>"));
+    await worker.install();
+    expect(worker.keys()).not.toContain(SHELL_FONTS[0]);
+    // The second font still landed, so the loop declined one rather than stopping.
+    expect(worker.keys()).toEqual(["/__shell-manifest", ...SHELL_ASSETS, SHELL_FONTS[1], "/index.html"].sort());
+  });
+
+  it("installs anyway when a font cannot be fetched at all", async () => {
+    const worker = loadWorker(source);
+    worker.respond("/index.html", html(SHELL_HTML));
+    worker.respond("/assets/index-CY0Sh5Q2.js", js("console.log(1)"));
+    worker.respond("/assets/index-nhBuGG1b.css", css(SHELL_CSS));
+    // The other failure: not a wrong answer but no answer. The first font has
+    // no route — the network went away mid-install — and fetch() rejects with a
+    // TypeError, which fails the whole install unless it is caught. Aborting
+    // here would be worse than the missing typeface: it leaves the phone with
+    // no worker at all, and install only re-runs when sw.js's bytes change.
+    worker.respond(SHELL_FONTS[1], font());
+    await worker.install();
+    expect(worker.keys()).toEqual(
+      ["/__shell-manifest", ...SHELL_ASSETS, SHELL_FONTS[1], "/index.html"].sort(),
+    );
   });
 });

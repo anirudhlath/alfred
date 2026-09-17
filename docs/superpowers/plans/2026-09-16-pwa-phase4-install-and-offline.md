@@ -58,7 +58,7 @@
 | 7 | Icon mark | `Alfred.dc.html:530`: letter `A`, `oklch(0.78 0.12 45)`, `500 30px 'DM Sans'`, on `#25221F` | the same mark drawn as two `<path>` strokes, not `<text>` | A `<text>` icon renders with whatever font the *rasteriser* has. `@fontsource-variable/dm-sans` ships `woff2` only, which neither `rsvg-convert` nor `resvg` can load, and the current `icon.svg` asks for Georgia — so today's icon is already whatever serif the machine had. Geometry renders identically everywhere. |
 | 8 | Icon shape | current `icon.svg` has `rx="64"` | full-bleed square, no radius | iOS applies its own squircle mask to `apple-touch-icon`; anything outside the rounded rect is transparent, and iOS composites transparency as **black**, so `rx="64"` puts black slivers in the home-screen tile's corners. §4.2's "opaque, no alpha" is the same requirement said another way. |
 | 9 | Maskable icon | spec §4.2: "plus 192/512 maskable for the manifest" | one 512 PNG marked `purpose: "any maskable"`, not a second file | Measured on the geometry in task 1: the glyph's furthest point is 170.5 px from the centre of a 512 canvas *(corrected in task 1: this said **190 px**, which is no corner of the drawing — see the correction under task 1 step 3)* and the maskable safe circle's radius is 204.8 px, so the same art is safe under a mask and correct unmasked. A separate maskable file would be the same bytes with a different name. |
-| 10 | Precache scope | Workbox precaches every build output | `index.html` + the `/assets/` URLs the HTML names + the `/assets/*.woff2` the stylesheet names | The build emits 20 font files (~800 kB) because `@fontsource/geist-mono` ships `.woff` fallbacks beside every `.woff2`. No browser that can run a service worker asks for a `.woff`. Skipping them halves the precache; anything missed is still caught cache-first on first use. |
+| 10 | Precache scope | Workbox precaches every build output | `index.html` + the `/assets/` URLs the HTML names + the `/assets/*.woff2` the stylesheet names | The build emits 18 font files because `@fontsource/geist-mono` ships `.woff` fallbacks beside its `.woff2`. No browser that can run a service worker asks for a `.woff`. Skipping them saves 80 944 of the 220 380 font bytes; anything missed is still caught cache-first on first use. *(Corrected in task 4, against a real build: this said "20 font files (~800 kB)" and "halves the precache". Measured: 8 `.woff2` = 139 436 B, 10 `.woff` = 80 944 B, so the saving is 37% of the fonts and ~13% of a ~620 kB precache whose largest single item is the 414 kB entry chunk. Four subsets have no `.woff2` file at all — Vite inlined them, and the stylesheet carries six `url(data:font/woff2;…)` and two `url(data:font/woff;…)` rules.)* |
 | 11 | `favicon.svg`, `icons.svg` | untouched since phase 1a (its decision 3) | **deleted** | `favicon.svg` is the Vite template's purple bolt and `icons.svg` is the outgoing SPA's Bluesky/social sprite sheet. Nothing in `web/src`, `index.html`, `core/` or the manifest references either; both are shipped to every visitor by `mount_spa`. |
 
 ---
@@ -1316,13 +1316,63 @@ Counts after this task: **74 files / 1 566 tests** *(corrected in task 3: this s
 
 ## Task 4: The fonts, and the shell that is not a shell
 
-Two holes in task 3's precache. The first: `dist/assets/` holds **20 font files**, referenced from the stylesheet's `url()` rules and not from the HTML, so a cold offline launch currently renders in `-apple-system` rather than DM Sans. The second: `mount_spa`'s fallback makes a 200 meaningless, and task 3 guards the *assets* against it but not the *shell fetch* against a redirect to something that is not HTML at all.
+One hole in task 3's precache *(corrected in task 4: this said "two", and the second — the shell fetch's own `isShell` guard — landed in task 3 along with the test for it, so the title's second clause is now history rather than work)*: `dist/assets/` holds **18 font files**, referenced from the stylesheet's `url()` rules and not from the HTML, so a cold offline launch currently renders in `-apple-system` rather than DM Sans.
 
-`@fontsource/geist-mono` ships a `.woff` beside every `.woff2`. No browser that can run a service worker asks for a `.woff`, so precaching them would double the install for nothing; anything missed is still picked up cache-first on first use (task 7).
+`@fontsource/geist-mono` ships a `.woff` beside almost every `.woff2`. No browser that can run a service worker asks for a `.woff`, so precaching them would spend a third of the install on bytes nothing will ever request; anything missed is still picked up cache-first on first use (task 7).
 
 **Files:**
 - Modify: `web/public/sw.js`
 - Modify: `web/src/test/sw.test.ts`
+
+> **Corrected in task 4, against a real `npm run build` on 2026-09-16. The code
+> fences below are the pre-implementation draft; the files in the tree are what
+> shipped and are authoritative.**
+>
+> 1. **The font arithmetic was wrong in both directions.** This build emits **18**
+>    font files, not 20, and **220 380 bytes** of them, not ~800 kB: 8 `.woff2`
+>    (139 436 B) and 10 `.woff` (80 944 B). Skipping the `.woff` therefore saves
+>    **37% of the fonts, not half the precache** — the precache is ~620 kB, of
+>    which the entry chunk is 414 kB. Four subsets have no `.woff2` file at all
+>    because Vite inlined them under `assetsInlineLimit`: the stylesheet carries
+>    six `url(data:font/woff2;base64,…)` and two `url(data:font/woff;base64,…)`,
+>    so the data: refusal is not a hypothetical — it is eight rules in the real
+>    file, and their bytes are already cached inside the stylesheet.
+>    Deviation #10's row is corrected to match. The fixture's
+>    `dm-sans-latin-wght-normal-Bf69Tn_J.woff2` is a name from an older
+>    `@fontsource-variable/dm-sans`; this build emits
+>    `dm-sans-latin-standard-normal-Bf69Tn_J.woff2`, and the shipped fixture uses
+>    the real spellings, real `format("woff2-variations")` and no space before
+>    `format(`, so that it models the bytes rather than a memory of them.
+> 2. **Step 1's `url(data:…)` test was vacuous as written.** `worker.fetched`
+>    records `new URL(input, ORIGIN).pathname`, and a data: URL's pathname is
+>    `font/woff2;base64,…` — it never starts with `"data:"`, so
+>    `fetched.filter((path) => path.startsWith("data:"))` is `[]` on a worker that
+>    fetches every data URL in the stylesheet. The shipped test looks for
+>    `"base64"` in the pathname instead. It is also honest about which guard
+>    fires: **both** do, so it dies only when `fontsInCss` is rewritten wide open,
+>    which is the regression it exists to catch.
+> 3. **The regex is wide and `isAssetUrl` is the refusal — as task 3 asked, which
+>    the `/\/assets\//` anchor below would have prevented.** Anchored, nothing
+>    reaching `.filter(isAssetUrl)` can ever fail it, so "one place decides what
+>    may be precached" would have been a comment rather than a property. Shipped:
+>    `url\(\s*["']?([^)"']+)` → `.filter(isAssetUrl)` → resolve to a pathname →
+>    `.endsWith(".woff2")`. That order matters. `isAssetUrl` first, so a CDN's
+>    `@font-face`, a `/fonts/` path and `url(/assets/../api/…)` are all turned
+>    away by the same guard the assets use; the pathname next, so the manifest
+>    entry matches the cache key task 5 prunes against; `.woff2` last, because it
+>    is a question about *browsers*, not about what may be stored.
+> 4. **`.trim()` is gone.** The WHATWG URL parser strips leading and trailing
+>    whitespace from its input, so `url( /assets/x.woff2 )` normalises with or
+>    without it: no test could tell the two apart, which made it dead.
+> 5. **Four tests became thirteen**, and the planned skip-the-`.woff` test only
+>    bites once the `.woff` is *routed* — otherwise it passes because a worker
+>    that wanted it could not fetch it, which is task 3's lesson again.
+>    The additions pin the things the planned four leave open: the fonts are in
+>    the **manifest** (without it activate prunes them on the next boot), they are
+>    fetched `cache: "reload"`, the bytes under a font's key are that font's, a
+>    fetch that *rejects* is survived as well as one that answers wrongly, the
+>    stylesheet is read and the 414 kB entry chunk is not, and a quoted or spaced
+>    `url()` still lands under a normalised key.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1395,7 +1445,7 @@ the fixture as written and die against the new one.)*
 npx vitest run src/test/sw.test.ts -t "fonts"
 ```
 
-Expected: FAIL on the first three (no font is fetched or cached at all); the fourth already passes, because `isAsset` landed in task 3 — leave it in, it is the regression guard for the **font** path, which is non-fatal on purpose and is a different branch from task 3's fatal one. *(Corrected in task 3: this said "the last two", when `isShell`'s test moved into task 3 — see the note under step 1.)*
+Expected: FAIL on the first three (no font is fetched or cached at all); the fourth already passes, because `isAsset` landed in task 3 — leave it in, it is the regression guard for the **font** path, which is non-fatal on purpose and is a different branch from task 3's fatal one. *(Corrected in task 3: this said "the last two", when `isShell`'s test moved into task 3 — see the note under step 1.)* *(Corrected in task 4: of the thirteen shipped, **six** fail here and seven pass — and those seven pass **vacuously**, because a worker with no font pass at all fetches no font, right or wrong. That is not a green to trust: all thirteen were re-checked by mutation after step 3, against sixteen mutants of `sw.js`. Two findings came out of it — the normalise-to-a-pathname step survived deletion until the quoted/spaced test also asserted the **manifest**, and the `url(data:…)` test survives either guard being removed on its own, which its comment now says out loud.)*
 
 - [ ] **Step 3: Add `fontsInCss` and the second pass to `precache()`**
 
@@ -1457,7 +1507,7 @@ then extend the writes and the manifest:
 npx vitest run src/test/sw.test.ts
 ```
 
-Expected: PASS, 18 tests *(corrected in task 3: 10 as planned. Task 3 shipped 14 rather than 5 — see its own counts — and this task's `refuses a shell that is not HTML` moved into it, so this block adds four, not five)*. Task 3's `records what it cached` still expects three entries, because that fixture's stylesheet has no `url()` at all — check it did not silently change.
+Expected: PASS, 27 tests *(corrected in task 3: 10 as planned. Task 3 shipped 14 rather than 5 — see its own counts — and this task's `refuses a shell that is not HTML` moved into it, so this block adds four, not five)* *(corrected in task 4: 18 on that arithmetic; this block shipped thirteen tests rather than four, so 14 + 13 = 27)*. Task 3's `records what it cached` still expects three entries, because that fixture's stylesheet has no `url()` at all — check it did not silently change.
 
 - [ ] **Step 5: Commit**
 
@@ -1466,7 +1516,7 @@ git add web/public/sw.js web/src/test/sw.test.ts
 git commit -m "feat(web): precache the woff2 the stylesheet names, and only those"
 ```
 
-Counts after this task: **73 files / ~1 551 tests** *(corrected in task 3: this said ~1 534, on the same stale baseline. Every later task's absolute count in this plan is low by the same arithmetic — read the delta each task adds, not the total.)*
+Counts after this task: **74 files / 1 579 tests** *(corrected in task 3: this said ~1 534, on the same stale baseline. Every later task's absolute count in this plan is low by the same arithmetic — read the delta each task adds, not the total.)* *(corrected in task 4: measured, not projected. The file count does not move — both files this task touches already existed — and the delta is +13 on task 3's 1 566.)*
 
 ---
 

@@ -76,6 +76,34 @@ function assetsInHtml(html) {
   return [...new Set(urls)];
 }
 
+/* The stylesheet is the fonts' manifest the way index.html is the assets': the
+   build writes 8 woff2 files into /assets/ and names them from url() rules the
+   HTML never mentions, so without this pass a cold offline launch renders in
+   -apple-system rather than DM Sans.
+
+   Wide extraction, one refusal — isAssetUrl again, for the same reason it is
+   the only one in assetsInHtml. It is what turns away the six
+   url(data:font/woff2;base64,…) rules in the real stylesheet (whose bytes are
+   already cached, inside the stylesheet itself), a CDN's @font-face, and a path
+   that walks out of /assets/, which is resolved before it is judged.
+
+   Then a pathname, as assetsInHtml returns: it is what goes into MANIFEST, and
+   activate prunes by comparing that record against the cache's own keys, so a
+   font recorded with the stylesheet's spacing still on it is a font the next
+   activate deletes.
+
+   `.woff2` is the second, narrower question, and it is about browsers rather
+   than about what may be stored: @fontsource ships a `.woff` beside almost
+   every woff2 — 10 of them, 79 kB of this build's 215 kB of fonts — and
+   everything that can run a service worker has supported woff2 for years. */
+function fontsInCss(css) {
+  return [...css.matchAll(/url\(\s*["']?([^)"']+)/g)]
+    .map((match) => match[1])
+    .filter(isAssetUrl)
+    .map((url) => new URL(url, scopeOrigin()).pathname)
+    .filter((path) => path.endsWith(".woff2"));
+}
+
 /* `/assets` is a StaticFiles MOUNT (core/channels/spa.py:39-40), not part of the
    SPA fallback, so a hashed file a deploy has removed comes back 404 with an
    `application/json` body — `{"detail":"Not Found"}` — and it is `response.ok`
@@ -123,12 +151,41 @@ async function precache() {
     responses.push(response);
   }
 
+  /* The stylesheet only. The entry chunk is 400 kB of minified JavaScript that
+     already contains `url(` — a method of that name, in the WebSocket client —
+     and any library that injects styles carries @font-face rules in it. A
+     bundle is not a list of what the app needs offline. */
+  const fonts = [];
+  for (let i = 0; i < urls.length; i += 1) {
+    if (!urls[i].endsWith(".css")) continue;
+    fonts.push(...fontsInCss(await responses[i].clone().text()));
+  }
+
+  /* Unlike a missing chunk above, a missing font does NOT fail the install. The
+     app is legible in the system stack, and an install aborted over a typeface
+     leaves the phone with no worker at all — the worse of the two, and one that
+     only sw.js's own bytes changing would undo. Both failures are declined the
+     same way: no answer (the fetch rejects) and a wrong answer (a proxy's page
+     under a .woff2 URL). Anything skipped is still picked up cache-first the
+     first time it is asked for. */
+  const cached = [];
+  for (const url of fonts) {
+    const response = await self.fetch(url, { cache: "reload" }).catch(() => null);
+    if (response && isAsset(response)) cached.push([url, response]);
+  }
+
   /* Nothing is written until everything has been validated, so a shell that
      fails on its second asset leaves the previous worker's cache untouched
      rather than half replaced. */
   await cache.put(SHELL, shell);
   for (let i = 0; i < urls.length; i += 1) await cache.put(urls[i], responses[i]);
-  await cache.put(MANIFEST, new Response(JSON.stringify([SHELL, ...urls])));
+  for (const [url, response] of cached) await cache.put(url, response);
+  /* The fonts are listed too: activate prunes everything this record does not
+     name, so a font cached but unlisted is deleted before it is ever served. */
+  await cache.put(
+    MANIFEST,
+    new Response(JSON.stringify([SHELL, ...urls, ...cached.map(([url]) => url)])),
+  );
 }
 
 self.addEventListener("install", (event) => {
