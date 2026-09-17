@@ -213,4 +213,51 @@ describe("the seams the harness depends on", () => {
     // sw.kill.js owns no cache; it deletes all of them.
     expect(() => loadWorker("/* no version here */").cache).toThrow(/declares no VERSION/);
   });
+
+  it("hands back a file-local function by the name the worker declares it under", () => {
+    // The only way into a classic worker's internals, and the whole of what
+    // makes `isRefused` testable on the half that matters: the requests it must
+    // NOT refuse, which are indistinguishable from unhandled ones from outside.
+    const worker = loadWorker("function isRefused() { return 42; }", { expose: ["isRefused"] });
+    expect(worker.inner.isRefused()).toBe(42);
+  });
+
+  it("evaluates the exposed worker's listeners exactly as an unexposed one's", async () => {
+    // The tail is appended to the shipped bytes, so the source that registers
+    // the listeners has to still be the source that ships. A `return` that
+    // landed anywhere but last would cut the file short and take them with it.
+    const worker = loadWorker(
+      `function isRefused() { return true; }
+       self.addEventListener("install", () => { self.caches.open("alfred-still-here"); });`,
+      { expose: ["isRefused"] },
+    );
+    await worker.install();
+    expect([...worker.store.keys()]).toEqual(["alfred-still-here"]);
+  });
+
+  it("refuses a name the worker does not declare", () => {
+    // Red the moment sw.js renames or deletes the function, which is the point:
+    // a test reaching for a guard that is gone must not quietly reach nothing.
+    expect(() => loadWorker('const VERSION = "v1";', { expose: ["isRefused"] })).toThrow(
+      /isRefused is not defined/,
+    );
+  });
+
+  it("carries a request's headers to the worker, case-insensitively", async () => {
+    // Real `Headers`, not a plain object: a worker asks for "range" and a
+    // browser sends "Range", and a fake that could not tell them apart would
+    // pass a guard that never fires on a phone.
+    const worker = loadWorker(`
+      self.addEventListener("fetch", (event) => {
+        if (event.request.headers.get("range")) {
+          event.respondWith(Promise.resolve(new Response("ranged")));
+        }
+      });
+    `);
+    const response = await worker.request({
+      path: "/assets/x.js",
+      headers: { Range: "bytes=0-1023" },
+    });
+    await expect(response!.text()).resolves.toBe("ranged");
+  });
 });

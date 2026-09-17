@@ -2,21 +2,15 @@
    docs/superpowers/plans/2026-09-16-pwa-phase4-install-and-offline.md and the
    summary is in web/README.md, "The service worker".
 
-   AS SHIPPED TODAY this file has two handlers: `install` precaches the app
-   shell, and `activate` purges every cache this version does not own and every
-   entry this install did not write, then claims the open pages. It answers no
-   request — there is no `fetch` handler in it yet — so everything still goes to
-   the network untouched. The three rules below are the policy the rest of it is
-   built under; rules 1 and 2 describe the fetch handler that later commits add,
-   and this paragraph goes when they land.
+   Three rules, and everything in the file is under them.
 
    1. It caches the app shell and NOTHING ELSE. `/api/*`, `/health` and the two
-      sockets are never fetched here, never stored, and — once there is a fetch
-      handler — never passed to respondWith() at all: not "network-only", but
-      never seen, so no branch here can store one of their responses even by
-      accident. This client's whole design is that it never states a server fact
-      it has not just read; a cached API response is that failure with a longer
-      half-life.
+      sockets are never fetched here, never stored, and never passed to
+      respondWith() at all: not "network-only", but never seen, so no branch
+      here can store one of their responses even by accident. `isRefused` is
+      where that is decided, once, for every branch. This client's whole design
+      is that it never states a server fact it has not just read; a cached API
+      response is that failure with a longer half-life.
    2. A navigation is network-first. The cached shell is served on exactly one
       path — a phone with no network — so a bad cache is invisible to an online
       phone, and the browser's own update check on /sw.js keeps running, which
@@ -368,4 +362,89 @@ async function purge() {
    emptied underneath it. */
 self.addEventListener("activate", (event) => {
   event.waitUntil(purge().then(() => self.clients.claim()));
+});
+
+/* Rule 1 of the header, and the whole of it in one predicate, so that every
+   branch the fetch handler grows is downstream of one refusal rather than
+   beside a chain of early returns that the next branch is free to precede.
+
+   True means: respondWith() is never called, so nothing below can store this
+   response, serve it, or see it. Stronger than "network-only", and it is the
+   one thing in this file worth over-testing — a cached API response is this
+   client stating a server fact it has not just read, with a half-life.
+
+   False does NOT mean "answered". /manifest.json, /icon.svg and
+   /apple-touch-icon.png are not refused and are not answered either: they fall
+   out of the branches below unhandled, which is a different thing.
+
+   A function rather than inline tests because a refusal that cannot be called
+   cannot be tested on its own, and the half of this guard that matters most is
+   the paths it must NOT refuse — invisible from outside, where "refused" and
+   "unhandled" are both an untouched request. src/test/sw-harness.ts reaches it
+   by name. */
+function isRefused(request) {
+  /* A POST is never a shell request, and the Cache API cannot store one anyway. */
+  if (request.method !== "GET") return true;
+
+  /* A Range asks for part of a body and every branch below answers with a whole
+     one — a different answer to a different question, and the canonical way a
+     cache-first worker stalls a media element in Safari. Nothing in this client
+     sends one: there is no <audio> or <video> element in src/, and a spoken
+     reply arrives over /ws as base64 and is decoded through an AudioContext
+     (src/lib/audio.ts). Named for the reason /ws is named — so the branch that
+     would break under one is never written. */
+  if (request.headers.get("range")) return true;
+
+  const url = new URL(request.url);
+
+  /* "Same origin" is two questions and the second is easy to miss: a blob: URL's
+     origin is the origin INSIDE it, so blob:https://this-host/<uuid> compares
+     EQUAL to ours below while its "pathname" is a whole URL and nothing this
+     worker could fetch or key a cache on. A service worker is only ever
+     dispatched for http(s), so this is unreachable — but the comparison under it
+     reads as if it were sufficient, and it is not. */
+  if (url.protocol !== "https:" && url.protocol !== "http:") return true;
+
+  /* Nothing in this client loads a cross-origin URL, and if one ever appears it
+     is not the shell and must not land in the shell's cache. On the origin, and
+     never on the href: credentials are not part of an origin, so
+     https://this-host@evil.invalid/ is evil.invalid and is refused here, while
+     https://user@this-host/assets/x is us and is not. */
+  if (url.origin !== scopeOrigin()) return true;
+
+  /* An encoded separator is a pathname this worker and the server read
+     differently: /assets/..%2fapi/x is a path under /assets/ to the URL parser
+     and a traversal once uvicorn has decoded it. A worker that cannot agree with
+     the server about which path it is holding must not answer it. isAssetUrl
+     refuses the same shape at install time; this is that refusal at the other
+     door, and it is what lets the /assets/ branch key a cache on a pathname it
+     trusts. Dot segments need no rule: `new URL` has already resolved /assets/../
+     into whatever it really means, which is why this reads the parsed pathname
+     and never the string the request arrived with. */
+  if (/%2f/i.test(url.pathname)) return true;
+
+  /* Anchored, all three, because <Route path="*"> makes every unknown path a
+     navigation the SPA answers — so a guard that widens does not merely cache
+     less, it hands a phone with no network a browser error page instead of the
+     app. /api/ and not /api, so /apifoo and /assets/vendor/api/x.js are ordinary
+     paths. /health exactly, so /healthz is. /ws exactly or under /ws/, and not a
+     "/ws" prefix, which would take /ws-telemetry — a plausible mistyping of the
+     socket, and an ordinary path — along with the two real ones.
+
+     /ws and /ws/telemetry cannot reach a fetch handler at all — a WebSocket
+     upgrade is not a fetch. They are named so nobody deletes a guard they think
+     is dead, and so nobody adds a caching branch they think is missing. */
+  return (
+    url.pathname.startsWith("/api/") ||
+    url.pathname === "/health" ||
+    url.pathname === "/ws" ||
+    url.pathname.startsWith("/ws/")
+  );
+}
+
+/* Judged before any branch, deliberately: a hand-typed API URL in the address
+   bar arrives with mode "navigate", and a navigation branch that ran first
+   would cache whatever came back as this app's shell. */
+self.addEventListener("fetch", (event) => {
+  if (isRefused(event.request)) return;
 });

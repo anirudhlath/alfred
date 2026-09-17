@@ -143,7 +143,7 @@ Identical to phases 1 to 3, repeated because they are load-bearing:
 | `web/index.html` | `apple-touch-icon` link; the manifest link, which `applyTheme` finds by `rel` *(corrected in task 2: this said the link "keeps its `id`" — it has never had one, and the swap selects on `link[rel="manifest"]`, so task 2 changes no markup at all)* | 1 |
 | `web/tsconfig.app.json`, `web/tsconfig.node.json` | `icons.test.ts` reads bytes, so it is checked by the Node project, not the browser one | 1 |
 | `web/eslint.config.js` | A block for `public/*.js` with the service-worker globals | 3 |
-| `web/src/test/sw-harness.ts` | Fake `ServiceWorkerGlobalScope`, fake `CacheStorage`, event dispatch | 3, 5 |
+| `web/src/test/sw-harness.ts` | Fake `ServiceWorkerGlobalScope`, fake `CacheStorage`, event dispatch; from task 6 also `fetchRequest`, a settable scope, and `inner` for a file-local function | 3, 5, 6 |
 | `web/public/sw.js` | The worker: precache, purge, route, update handshake | 3–8 |
 | `web/src/test/sw.test.ts` | Every branch of the worker, through dispatched events | 3–8 |
 | `web/public/sw.kill.js` | The kill switch: unregister and drop every cache | 11 |
@@ -174,12 +174,17 @@ function assetsInHtml(html: string): string[];   // extracts wide, refuses throu
 function fontsInCss(css: string, base: string): string[];  // base = the stylesheet's own URL
 function isShell(response: Response): boolean;   // ok && content-type is text/html
 function isAsset(response: Response): boolean;   // ok && content-type is NOT text/html
+function isRefused(request): boolean;            // added in task 6 — the whole of rule 1, in one predicate
 async function precache(): Promise<void>;        // install
 async function purge(): Promise<void>;           // activate
 async function navigate(request): Promise<Response>;
 async function asset(request, pathname: string): Promise<Response>;
 
 // src/test/sw-harness.ts
+export interface FetchRequest { url: string; method: string; mode: string; headers: Headers }  // task 6
+export interface RequestSpec { path: string; mode?; method?; origin?; headers? }               // task 6
+export function fetchRequest(spec: RequestSpec): FetchRequest;                                 // task 6
+export interface LoadOptions { expose?: readonly string[]; scope?: string }                    // task 6
 export interface Harness {
   /** cache name → (absolute URL → Response). The whole of the fake CacheStorage. */
   store: Map<string, Map<string, Response>>;
@@ -199,10 +204,14 @@ export interface Harness {
   /** The delay of every deadline the worker armed, and how many it cleared. */
   deadlines: number[];
   deadlinesCleared: number;
+  /** The worker's own file-local functions, by name. Added in task 6 — a classic
+      worker exports nothing, and a refusal's must-NOT-refuse half is invisible
+      through a dispatched event, where "refused" and "unhandled" are both undefined. */
+  inner: Record<string, (...args: never[]) => unknown>;
   install(): Promise<void>;
   activate(): Promise<void>;
   /** `undefined` means the worker never called respondWith — i.e. left it to the network. */
-  request(init: { path: string; mode?: string; method?: string; origin?: string }): Promise<Response | undefined>;
+  request(spec: RequestSpec): Promise<Response | undefined>;
   message(data: unknown): Promise<void>;
   skipWaitingCalls: number;
   claimCalls: number;
@@ -212,7 +221,7 @@ export interface Harness {
   keys(name?: string): string[];
 }
 export const ORIGIN = "https://alfred.example.com";
-export function loadWorker(source: string): Harness;
+export function loadWorker(source: string, options?: LoadOptions): Harness;  // `options` added in task 6
 export function html(body: string): Response;   // 200, content-type text/html
 export function js(body: string): Response;     // 200, content-type text/javascript
 export function css(body: string): Response;    // 200, content-type text/css
@@ -1885,6 +1894,96 @@ This is constraint 3 of the header comment and decision 3 of the plan, and it is
 **Files:**
 - Modify: `web/public/sw.js`
 - Modify: `web/src/test/sw.test.ts`
+- Modify: `web/src/test/sw-harness.ts`, `web/src/test/sw-harness.test.ts` *(added in task 6 — see correction 2)*
+
+> **Corrected in task 6, after attacking the draft guard with thirty mutants
+> across two subjects. The code fences below (steps 1 and 3) are the
+> pre-implementation draft; the files in the tree are what shipped and are
+> authoritative.**
+>
+> 1. **The refusal is a named function, `isRefused(request)`, not a chain of
+>    early returns inside the listener.** The draft's shape cannot be tested at
+>    all in this commit, and the plan knew it — step 2 says so and defers to task
+>    7. But deferring loses the half that matters. Through a dispatched event,
+>    "refused" and "not handled" are **both** `undefined`, so the paths the guard
+>    must NOT refuse are unassertable *even after* task 7 lands: `/manifest.json`
+>    is not refused and is not answered either, and no black-box test can tell
+>    that from a guard that has quietly swallowed it. A named function can be
+>    called, and both directions can be said. It is also what lets the next
+>    branch be added *after* the refusal rather than beside it.
+> 2. **Three additions to the harness**, each forced by a fixture the draft had
+>    no way to write.
+>    - `loadWorker(source, { expose: ["isRefused"] })` → `Harness.inner`. The tail
+>      `;return { isRefused };` is appended to the shipped bytes and evaluated in
+>      the same `new Function` call, so the source that registered the listeners
+>      is still the source that ships. A name the file does not declare is a
+>      `ReferenceError` at load — the same red-when-renamed reach `cacheName()`
+>      already makes into `VERSION`.
+>    - `LoadOptions.scope`, which moves the whole instance's origin. Without it
+>      the harness serves exactly one origin and it is https, so **`url.protocol
+>      !== "https:"` survives every possible test** — a worker that refused its
+>      own origin on `http://localhost` (which is `npm run preview`, and this
+>      box's own container port; a worker is a secure context, and localhost is
+>      the one http origin that qualifies). With it, that mutant dies.
+>    - `fetchRequest(spec)` / `FetchRequest` / `RequestSpec`, exported, plus
+>      `headers` on `request()`. Real `Headers`, so `get("range")` is as
+>      case-insensitive as a browser's, and the same builder feeds both the
+>      dispatched event and the direct call so the two cannot drift.
+> 3. **Three refusals the draft did not have.** Each closes a hole that was
+>    measured, not imagined.
+>    - **Protocol.** `new URL("blob:https://alfred.example.com/<uuid>").origin`
+>      is `https://alfred.example.com` — **equal to ours**. The draft's origin
+>      comparison reads as if it settled the question and does not. Unreachable
+>      today (a worker is only ever dispatched for http(s)), and named for the
+>      same reason `/ws` is: the comparison under it looks sufficient.
+>    - **`Range`.** A ranged GET asks for part of a body; task 7's cache-first
+>      branch answers with a whole one and a 200 — the canonical way a worker
+>      stalls a media element in Safari. Nothing here sends one (no `<audio>` or
+>      `<video>` in `src/`; a spoken reply arrives over `/ws` as base64 and is
+>      decoded through an `AudioContext`), so this is the second deliberately
+>      dead guard in the file, and the only one this task adds by choice.
+>    - **A percent-encoded separator.** `/assets/..%2fapi/x` is a path under
+>      `/assets/` to the URL parser and a traversal once uvicorn has decoded it,
+>      and **neither of the two `%2F` fixtures contains `/api/` at all**, so no
+>      path clause reaches them. `isAssetUrl` already refuses this shape at
+>      install time; this is that refusal at the other door, and it is what lets
+>      task 7 keep `startsWith(ASSETS)` rather than needing `isAssetUrl` (see
+>      correction 6). Dot segments need no rule — `new URL` has already resolved
+>      `/assets/../api/x` into `/api/admin/overview`, which the tests assert
+>      rather than assume.
+> 4. **`/ws` is anchored (`=== "/ws" || startsWith("/ws/")`), not a `/ws`
+>    prefix** — the same lesson task 4's review drew about `/assets/`, and the
+>    same reason: `<Route path="*">` makes every unknown path a navigation the
+>    SPA answers, so a guard that widens does not cache less, it hands a phone
+>    with no network a browser error page instead of the app.
+> 5. **The first fixture written for that was wrong, and only the mutation run
+>    said so.** `/workshop` was chosen as the path a `/ws` prefix would swallow.
+>    It does not begin `/ws` — w, o, r — so it killed nothing, and the prefix
+>    mutant survived a suite that had been written specifically to catch it. The
+>    fixture is now `/ws-telemetry` (a plausible mistyping of the real socket,
+>    and an ordinary path), `/workshop` stays beside it as the looser-guard case,
+>    and one test states both directions explicitly — the two sockets refused,
+>    three near-misses not — because each direction is invisible on its own.
+> 6. **What task 7 inherits from this, and it is now two things.** Task 5 wrote
+>    down that the entry purge also reaches whatever task 7 runtime-caches; this
+>    adds that **task 7's `startsWith(ASSETS)` is safe only because `isRefused`
+>    runs first**. It is what turns away the cross-origin URL, the `%2f` path and
+>    the ranged GET before the pathname is ever trusted as a cache key. If the
+>    refusal is ever moved after a branch, that branch needs `isAssetUrl`.
+> 7. **Step 2's "run them again after task 7" was done here, not deferred.**
+>    Task 7's two handlers were transcribed into a scratch copy of the worker
+>    (outside the repo) and the whole suite re-run against it: all 127 pass, and
+>    six mutants of *that* subject die on the black-box block — including the two
+>    that matter most, `the listener never consults the refusal` and `the refusal
+>    runs after the navigation branch`. So the black-box half is a live
+>    regression guard from the moment task 7 lands, which is what the plan
+>    claimed and had no way to check.
+> 8. **The "AS SHIPPED TODAY" paragraph is gone, replaced by one line** ("Three
+>    rules, and everything in the file is under them"), because deleting it
+>    outright would also have deleted the sentence that frames the three rules as
+>    *policy* rather than as a description of the code. Rule 1 lost its "once
+>    there is a fetch handler" clause and now names `isRefused` as where it is
+>    decided.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1964,6 +2063,12 @@ npx vitest run src/test/sw.test.ts -t "refuses"
 
 Expected: FAIL — there is no `fetch` listener yet, so `request()` resolves `undefined` for *everything* and these tests pass vacuously. **That is not good enough:** run them again after task 7 and confirm they still pass with the handler in place. Note this in the commit message so a reviewer knows the order.
 
+*(Corrected in task 6: the shipped block fails for a better reason first —
+`ReferenceError: isRefused is not defined`, out of `loadWorker`, because the
+predicate block calls the function directly. Only the second block, the one
+dispatched through `request()`, is vacuous, and correction 7 above is how that
+was checked rather than deferred.)*
+
 - [ ] **Step 3: Add the fetch listener with the refusals and nothing else**
 
 *(Corrected in task 3: two edits to the block below. It read `new URL(self.registration.scope).origin`
@@ -2006,7 +2111,46 @@ npx vitest run src/test/sw.test.ts
 npm run lint
 ```
 
-Expected: PASS, 36 tests *(corrected in task 3: 28 as planned; +8)*. ESLint silent.
+Expected: PASS, 36 tests *(corrected in task 3: 28 as planned; +8)* *(corrected in task 6: **108** in `sw.test.ts` — task 5's 57 plus this block's 51 — and `sw-harness.test.ts` moves 15 → 19. Then mutate: a green here is worth reading only after the mutants in step 4a have died.)*. ESLint silent.
+
+- [ ] **Step 4a: Mutate the guard, both on its own and under task 7** *(added in task 6)*
+
+Same loop as task 5's step 4a — scratch copy outside the repo, one mutation at a
+time, `rm -rf node_modules/.vite` between runs (the tests import the worker
+through `?raw`, which Vite caches), restore afterwards.
+
+**Twenty-four against the shipped worker, twenty-two killed:** no method check; only
+POST refused; no `Range` check; no protocol check; **the protocol allowlist
+narrowed to `https:`** (the sole killer is the `http://localhost` scope fixture,
+and it was written *because* this one survived first time); no origin check; the
+origin compared on the href instead (sole killer: *does not refuse credentials
+on our own host*); no encoded-separator check; that check made case-sensitive;
+that check read off the whole href rather than the pathname (sole killer: *does
+not refuse an encoded separator that is only in the query*); `/api` in place of
+`/api/`; `/api/` matched with `includes`; no `/api` clause; `/health` as a
+prefix; no `/health` clause; **`/ws` as a prefix — the plan's own draft** (sole
+killer: `/ws-telemetry`, and see correction 5 for the fixture that did not kill
+it); no `/ws` exact clause; no `/ws/` prefix clause; the whole path list dropped;
+refuses nothing; refuses everything; and the listener inverted.
+
+Two are **equivalent** and are recorded so the next reader does not chase them:
+reading the header as `"Range"` rather than `"range"` (`Headers.get` is
+case-insensitive, which is the point of using a real one), and moving the
+protocol check below the origin check (a blob: URL's origin *is* ours, so it
+reaches the protocol check either way).
+
+One **survives by construction and is expected to**: a listener that never
+consults `isRefused`. Nothing else is in the handler yet, so both of its branches
+are externally identical — which is the whole reason the predicate is called
+directly above.
+
+**Six more against task 7's shape**, transcribed into the scratch copy (see
+correction 7), all killed, and all of them on the black-box block: the listener
+never consulting the refusal (4 failing); the refusal running *after* the
+navigation branch (2); and no method / origin / `Range` / encoded-separator
+check. Restore the pristine file afterwards — note that a mutation script which
+copies its own "pristine" back will happily restore the *overlay* if that is what
+it was last pointed at.
 
 - [ ] **Step 5: Commit**
 
@@ -2018,7 +2162,14 @@ These tests pass vacuously until task 7 adds the branches that could have
 broken them; they are the regression guard from that point on."
 ```
 
-Counts after this task: **73 files / ~1 552 tests**.
+*(Corrected in task 6: `web/src/test/sw-harness.ts` and
+`web/src/test/sw-harness.test.ts` are in the commit too — see correction 2 — and
+only the second `describe` is vacuous, so the message says which.)*
+
+Counts after this task: **73 files / ~1 552 tests** *(corrected in task 6:
+measured, **74 files / 1 667 tests**. No new file — all four this task touches
+already existed — and the delta is +55 on task 5's 1 612: 51 in `sw.test.ts` and
+4 in `sw-harness.test.ts`.)*
 
 ---
 
@@ -2166,6 +2317,19 @@ async function asset(request, pathname) {
 
 and, at the end of the `fetch` listener, after the refusals:
 
+*(Corrected in task 6: two things this inherits. The listener's refusals are now
+one call, `if (isRefused(event.request)) return;`, and the `url` the two branches
+below need is parsed after it — so the block below opens with `const url = new
+URL(event.request.url);`. And `startsWith("/assets/")` should be
+`startsWith(ASSETS)`, the constant task 3 named; it is safe as a bare prefix test
+**only because `isRefused` ran first** — that is what turns away a cross-origin
+URL, a `%2f` pathname and a ranged GET before the pathname is trusted as a cache
+key. Move the refusal after either branch and this needs `isAssetUrl` instead.
+One more thing task 7 owes: the paths task 6 pins as **not** refused become
+assertable here for the first time, so this task adds the positive side —
+`/ws-telemetry` and `/workshop` get the cached shell offline, `/manifest.json`
+still falls through unanswered.)*
+
 ```js
   if (request.mode === "navigate") {
     event.respondWith(navigate(request));
@@ -2185,7 +2349,7 @@ and, at the end of the `fetch` listener, after the refusals:
 npx vitest run src/test/sw.test.ts
 ```
 
-Expected: PASS, 45 tests *(corrected in task 3: 37 as planned; +8)* — including all thirteen of task 6's, which now have branches that could have broken them.
+Expected: PASS, 45 tests *(corrected in task 3: 37 as planned; +8)* — including all thirteen of task 6's, which now have branches that could have broken them. *(Corrected in task 6: 51 of task 6's, of which the 13 in the second `describe` are the ones that were vacuous. All of them were already run green against a scratch transcription of this task's two handlers — see task 6's correction 7 — so a failure here is this task's code, not that block's.)*
 
 - [ ] **Step 5: Commit**
 

@@ -3,8 +3,8 @@ import { vi } from "vitest";
 /** Every URL in these tests is absolute, because a real `fetch` event's is. */
 export const ORIGIN = "https://alfred.example.com";
 
-const absolute = (key: string | { url: string }): string =>
-  new URL(typeof key === "string" ? key : key.url, ORIGIN).href;
+const absolute = (key: string | { url: string }, base: string): string =>
+  new URL(typeof key === "string" ? key : key.url, base).href;
 
 /**
  * A delete that is not done when it is called. Real `caches.delete()` and
@@ -40,9 +40,12 @@ class FakeCache {
   // `tsc -b` is the only one of lint/vitest/build that says so.
   readonly entries: Map<string, Response>;
   readonly refuses: (url: string) => boolean;
-  constructor(entries: Map<string, Response>, refuses: (url: string) => boolean) {
+  /** The origin a relative cache key resolves against — the worker's own. */
+  readonly origin: string;
+  constructor(entries: Map<string, Response>, refuses: (url: string) => boolean, origin: string) {
     this.entries = entries;
     this.refuses = refuses;
+    this.origin = origin;
   }
   /**
    * Real `Cache.match` constructs a NEW Response every call, so reading one
@@ -52,7 +55,7 @@ class FakeCache {
    * assertion about it after an activate reading a corpse.
    */
   match(key: string | { url: string }): Promise<Response | undefined> {
-    return Promise.resolve(this.entries.get(absolute(key))?.clone());
+    return Promise.resolve(this.entries.get(absolute(key, this.origin))?.clone());
   }
   put(key: string | { url: string }, response: Response): Promise<void> {
     // Real `Cache.put` rejects a Response whose body is already read or locked.
@@ -62,7 +65,7 @@ class FakeCache {
     if (response.bodyUsed || response.body?.locked) {
       return Promise.reject(new TypeError("Failed to execute 'put' on 'Cache': Response body is already used"));
     }
-    this.entries.set(absolute(key), response);
+    this.entries.set(absolute(key, this.origin), response);
     return Promise.resolve();
   }
   /** Real `Cache.keys()` answers Requests carrying absolute URLs. So does this. */
@@ -70,9 +73,50 @@ class FakeCache {
     return Promise.resolve([...this.entries.keys()].map((url) => ({ url })));
   }
   delete(key: string | { url: string }): Promise<boolean> {
-    const url = absolute(key);
+    const url = absolute(key, this.origin);
     return settled(() => (this.refuses(url) ? storageFailure() : this.entries.delete(url)));
   }
+}
+
+/**
+ * The fields of a fetch event's request the workers read. A plain object and
+ * not a `Request`: undici refuses to construct one with mode `"navigate"`, and
+ * that is the mode the whole navigation branch turns on.
+ */
+export interface FetchRequest {
+  url: string;
+  method: string;
+  mode: string;
+  /** Real `Headers`, so `get("range")` is as case-insensitive as a browser's. */
+  headers: Headers;
+}
+
+/** What a test says to describe one. */
+export interface RequestSpec {
+  /** A path, or a whole URL when the point of the test is the URL's shape. */
+  path: string;
+  mode?: string;
+  method?: string;
+  origin?: string;
+  headers?: Record<string, string>;
+}
+
+/**
+ * Build the request a fetch event would carry. Exported because the refusal is
+ * tested both ways — through a dispatched event, and called directly with one
+ * of these.
+ */
+export function fetchRequest({
+  path,
+  mode = "no-cors",
+  method = "GET",
+  origin = ORIGIN,
+  headers = {},
+}: RequestSpec): FetchRequest {
+  // `new URL(path, origin)` ignores the base for an absolute URL, which is what
+  // lets a test pass `blob:…`, `data:…` or `//host/x` as `path` and get exactly
+  // the URL a browser would have resolved.
+  return { url: new URL(path, origin).href, method, mode, headers: new Headers(headers) };
 }
 
 export interface Harness {
@@ -119,15 +163,26 @@ export interface Harness {
    * that is least welcome. Equal to `deadlines.length` for a tidy worker.
    */
   deadlinesCleared: number;
+  /**
+   * The worker's own file-local functions, by the name the file declares them
+   * under — `loadWorker(source, { expose: ["isRefused"] })` is what puts one
+   * here, and a
+   * name the file does not declare is a `ReferenceError` at load, which is the
+   * correct verdict for a test asking after something that is gone.
+   *
+   * A classic worker exports nothing, so the only other way to reach a policy
+   * function inside one is through whatever branch consults it. That is enough
+   * for every other function in `sw.js` and it is not enough for `isRefused`:
+   * half of what that guard is for is the requests it must NOT refuse, and from
+   * outside "refused" and "not handled" are the same `undefined`. Same species
+   * of reach as `cacheName()` below — one name read out of the shipped source,
+   * red the moment the file renames it.
+   */
+  inner: Record<string, (...args: never[]) => unknown>;
   install(): Promise<void>;
   activate(): Promise<void>;
   /** `undefined` means the worker never called respondWith — i.e. left it to the network. */
-  request(init: {
-    path: string;
-    mode?: string;
-    method?: string;
-    origin?: string;
-  }): Promise<Response | undefined>;
+  request(spec: RequestSpec): Promise<Response | undefined>;
   message(data: unknown): Promise<void>;
   skipWaitingCalls: number;
   claimCalls: number;
@@ -180,6 +235,25 @@ const seal = (name: string): unknown => {
   return new Proxy(function sealed() {} as object, { get: complain, apply: complain });
 };
 
+/** How a test asks for a worker that is not the default one. */
+export interface LoadOptions {
+  /** File-local names to hand back on `inner`; see that field. */
+  expose?: readonly string[];
+  /**
+   * Where the worker is registered, `ORIGIN`'s root by default. The one thing
+   * it changes that matters is the SCHEME: a worker is a secure context, which
+   * means https everywhere except `http://localhost`, and `npm run preview`
+   * and this box's own container port are both that. Without this the http arm
+   * of any same-scheme guard is unexercisable and a worker that refused its own
+   * origin on localhost would pass every test here.
+   *
+   * It moves the whole instance — routes, cache keys, `client.url` — so a test
+   * using it passes `origin` to `fetchRequest` too, since that default is
+   * module-level and stays `ORIGIN`.
+   */
+  scope?: string;
+}
+
 /**
  * Evaluate a service worker's shipped source against a fake global scope and
  * hand back the levers a test needs.
@@ -187,8 +261,12 @@ const seal = (name: string): unknown => {
  * `new Function("self", source)` is the whole trick: the worker reaches every
  * global through `self.`, so one object is the entire world it can see. Nothing
  * here is mocked at the module boundary — these tests run the bytes that ship.
+ *
  */
-export function loadWorker(source: string): Harness {
+export function loadWorker(source: string, options: LoadOptions = {}): Harness {
+  const { expose = [], scope: scopeUrl = `${ORIGIN}/` } = options;
+  /** This instance's notion of "us" — `ORIGIN` unless a test moved the scope. */
+  const origin = new URL(scopeUrl).origin;
   const store = new Map<string, Map<string, Response>>();
   /** Keyed by absolute href, not pathname: a cross-origin URL is a different route. */
   const routes = new Map<string, Response>();
@@ -216,7 +294,7 @@ export function loadWorker(source: string): Harness {
   let unregisterCalls = 0;
 
   const client = {
-    url: `${ORIGIN}/`,
+    url: `${origin}/`,
     navigate: (url: string) => {
       harness.navigated.push(url);
       return Promise.resolve();
@@ -228,7 +306,7 @@ export function loadWorker(source: string): Harness {
       listeners.set(type, [...(listeners.get(type) ?? []), fn]);
     },
     registration: {
-      scope: `${ORIGIN}/`,
+      scope: scopeUrl,
       unregister: () => {
         unregisterCalls += 1;
         return Promise.resolve(true);
@@ -253,7 +331,7 @@ export function loadWorker(source: string): Harness {
       open: (name: string) => {
         if (!store.has(name)) store.set(name, new Map());
         return Promise.resolve(
-          new FakeCache(store.get(name)!, (url: string) => refusals.has(url)),
+          new FakeCache(store.get(name)!, (url: string) => refusals.has(url), origin),
         );
       },
       keys: () => Promise.resolve([...store.keys()]),
@@ -277,7 +355,7 @@ export function loadWorker(source: string): Harness {
     },
     fetch: vi.fn(
       (input: string | { url: string }, init?: { cache?: string; signal?: AbortSignal }) => {
-        const url = new URL(typeof input === "string" ? input : input.url, ORIGIN);
+        const url = new URL(typeof input === "string" ? input : input.url, origin);
         harness.fetched.push(url.pathname);
         // Recorded rather than asserted on the source: `cache: "reload"` is the
         // only thing between a worker installing seconds after a deploy and a
@@ -300,7 +378,12 @@ export function loadWorker(source: string): Harness {
     ),
   };
 
-  new Function("self", ...SEALED, source)(scope, ...SEALED.map(seal));
+  /* The tail is appended to the shipped bytes rather than woven into them, so
+     the source that registered these listeners is still the source that ships.
+     It runs last, after every declaration the file makes. */
+  const tail = expose.length ? `\n;return { ${expose.join(", ")} };` : "";
+  const inner = (new Function("self", ...SEALED, source + tail)(scope, ...SEALED.map(seal)) ??
+    {}) as Record<string, (...args: never[]) => unknown>;
 
   /** Runs every listener and waits on every promise each one extended with. */
   const extendable = async (type: string, data?: unknown) => {
@@ -323,19 +406,20 @@ export function loadWorker(source: string): Harness {
     get deadlinesCleared() {
       return deadlinesCleared;
     },
-    respond: (pathname, response) => void routes.set(new URL(pathname, ORIGIN).href, response),
-    hang: (pathname) => void hangs.add(new URL(pathname, ORIGIN).href),
+    respond: (pathname, response) => void routes.set(new URL(pathname, origin).href, response),
+    hang: (pathname) => void hangs.add(new URL(pathname, origin).href),
     // A cache name has no slash and a URL always does, which is the whole of
     // the distinction: `caches.delete` is given the raw name, `Cache.delete` an
     // absolute href.
     refuseDelete: (key) =>
-      void refusals.add(key.includes("/") ? new URL(key, ORIGIN).href : key),
+      void refusals.add(key.includes("/") ? new URL(key, origin).href : key),
+    inner,
     install: () => extendable("install"),
     activate: () => extendable("activate"),
-    async request({ path, mode = "no-cors", method = "GET", origin = ORIGIN }) {
-      // A plain object, not a Request: undici refuses to construct one with
-      // mode "navigate", and the worker reads only these three fields.
-      const request = { url: new URL(path, origin).href, method, mode };
+    async request(spec) {
+      // The same builder the direct tests use, so a request dispatched through
+      // an event and one handed to `isRefused` cannot drift apart.
+      const request = fetchRequest(spec);
       let answered: Promise<Response> | undefined;
       for (const listener of listeners.get("fetch") ?? []) {
         listener({
