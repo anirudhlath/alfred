@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Phase 4 of spec §8 — *PWA: manifest, icons, service worker, offline states*. After this phase the client installs to the iOS home screen with a correct icon and splash, launches with no network at all, says something honest while it has read nothing, and can take a new build without being reinstalled. Gate: *Installs and behaves as native*.
+**Goal:** Phase 4 of spec §8 — *PWA: manifest, icons, service worker, offline states*. After this phase the client installs to the iOS home screen with a correct icon, launches with no network at all, says something honest while it has read nothing, and can take a new build without being reinstalled. Gate: *Installs and behaves as native*.
 
 **Architecture:** One hand-written service worker at `web/public/sw.js`, ~110 lines, which precaches the app shell (`index.html` plus every `/assets/…` the HTML names plus the `woff2` its stylesheet names) into a versioned cache, purges every other cache on activate, serves navigations network-first and `/assets/*` cache-first, and **never touches `/api/*`, `/health` or the sockets at all**. Its page-side half is `web/src/lib/sw.ts`: registers in production, unregisters in dev, re-checks for an update on every return to the foreground, and exposes the switch that takes a waiting build. A second, checked-in worker (`web/public/sw.kill.js`) is the kill switch. Under all of it, two small pieces of honesty: the manifest now follows the theme through a link swap, and `AuthGate` grows a gate for the one state it could not previously express — *the app is up, the phone has no network, and nothing has been read*.
 
@@ -32,7 +32,7 @@
 
 5. **Offline at the query layer is already solved and is not reopened here.** react-query's default `networkMode: "online"` *pauses* rather than fails, the benches derive `read` from `dataUpdatedAt !== 0`, `OfflineNote` and `StatusLine` carry `last true HH:MM`, and the Door refuses to confirm offline. All of that is phases 1 to 3 and stays exactly as it is. Phase 4 adds the layer *below* it: the shell boots from cache, and `AuthGate` — which today shows the presence field and no copy, **for ever**, when the auth read is paused — says which of the three meanings its silence has.
 
-6. **The §6.4 install rail is phase 5's, not this phase's.** Spec §8 lists phase 5's content as "Web Push: VAPID, adapter, registration, service-worker handlers, **install-and-enable sequence**" — the six-step rail is named there by the spec itself, and phase 4's line is "manifest, icons, service worker, offline states". Every step of that rail exists to reach step 6, *Allow in iOS*; shipping steps 1 to 4 with nothing behind them is a control that pretends, which is the defect phase 2's placeholder tabs were and phase 3's absent Reach card avoided. So: **no `install` gate, no `standalone` gate, no Reach prompt row and no System › Reach card in this phase.** What phase 4 owes phase 5 is that the gesture the rail teaches actually produces a correct app — a manifest with a real icon set, `display: standalone`, a splash that matches the theme, and a worker that phase 5 adds `push` and `notificationclick` handlers to. That list is written down in task 13 so phase 5 can start from it.
+6. **The §6.4 install rail is phase 5's, not this phase's.** Spec §8 lists phase 5's content as "Web Push: VAPID, adapter, registration, service-worker handlers, **install-and-enable sequence**" — the six-step rail is named there by the spec itself, and phase 4's line is "manifest, icons, service worker, offline states". Every step of that rail exists to reach step 6, *Allow in iOS*; shipping steps 1 to 4 with nothing behind them is a control that pretends, which is the defect phase 2's placeholder tabs were and phase 3's absent Reach card avoided. So: **no `install` gate, no `standalone` gate, no Reach prompt row and no System › Reach card in this phase.** What phase 4 owes phase 5 is that the gesture the rail teaches actually produces a correct app — a manifest with a real icon set, `display: standalone`, a `background_color` that matches the theme at install *(corrected in task 2: this said "a splash that matches the theme" — see decision 11; the launch screen on iOS is `apple-touch-startup-image`'s, which this phase does not ship)*, and a worker that phase 5 adds `push` and `notificationclick` handlers to. That list is written down in task 13 so phase 5 can start from it.
 
 7. **A new worker waits; the user takes it.** `install` never calls `skipWaiting()`. A build that swaps itself under a running conversation loses whatever was on screen. The waiting worker is announced in the Room, and one tap posts `SKIP_WAITING`, which is what makes an update possible **without reinstalling the app** — the requirement that is otherwise very hard to satisfy on iOS. `registration.update()` runs on every return to the foreground (`onVisible`, already in `lib/lifecycle.ts`), because an installed PWA is *opened*, not reloaded, and could otherwise run for weeks on the build it was installed with.
 
@@ -42,7 +42,7 @@
 
 10. **Icons are checked-in bytes, not a build step.** Four files (`icon.svg`, `apple-touch-icon.png`, `icon-192.png`, `icon-512.png`) generated once from one source SVG by a command written down in `web/README.md`. No `sharp`, no `svgo`, no CI dependency on `rsvg-convert`, and the container's `webbuild` stage is unchanged. A test reads the PNG bytes directly and asserts the dimensions and the absence of an alpha channel, which is what iOS actually cares about (§4.2). *(Corrected in task 1: a header read alone proved decorative under mutation — it passes on a PNG rendered from any drawing at all — so the shipped test decodes the pixels with `node:zlib` and checks the colours, the census, the mark's reach and its shape. Still no new dependency.)*
 
-11. **No `apple-touch-startup-image`.** The per-device media-query matrix is a dozen more checked-in PNGs that go stale with every new iPhone size. iOS 15+ composes a launch screen from the manifest's `name`, `background_color` and icon instead, which is why task 2 makes `background_color` follow the theme.
+11. **No `apple-touch-startup-image`.** The per-device media-query matrix is a dozen more checked-in PNGs that go stale with every new iPhone size, and that is the whole of the reason. *(Corrected in task 2: this decision originally rested on "iOS 15+ composes a launch screen from the manifest's `name`, `background_color` and icon instead", and that is backwards. `apple-touch-startup-image` is the only launch-screen mechanism iOS has — which is why it exists — and iOS ignores the manifest's icons outright, as `web/index.html:22-23` already said in this tree. So the refusal stands on the maintenance cost alone, and task 2's `background_color` work is **not** what gives iOS a themed launch screen. Nobody here has measured what an iPhone does with either; the backlog entry says measure first, then decide.)*
 
 ### Deviations from the spec and the handoff (deliberate; flag them in review)
 
@@ -53,7 +53,8 @@
 | 3 | Update prompt | **nothing** — the handoff has no update, reload or new-version copy at all, and no `updatefound` scene | invented: `A newer Alfred is waiting. Nothing is lost; I pick up where we left off.` + a `Reload` text button | An update path the user can trigger without reinstalling is a hard requirement. The second clause is the handoff's own, verbatim from the install gate's foot (`Alfred.dc.html:669`). |
 | 4 | Cold offline launch | **nothing** — the handoff's offline scenes are all *a running app that lost its socket*, never a launch with no network | invented: kicker `offline · nothing read yet`, title `No way to the house.`, body `This phone has no connection, so I cannot ask the house who you are. Nothing is lost; I pick up where we left off as soon as there is a signal.` | Phase 3's rule: never say the house is empty before the server has answered, and say *which* of the three meanings the silence has. Modelled line for line on the 403 gate (`DeniedGate.tsx`), whose shape the handoff did fix. |
 | 5 | Cold offline gate | — | **no retry button** | With `navigator.onLine === false`, react-query pauses; a `Try again` would queue a paused fetch and show nothing. The gate clears itself when the `online` event fires, which is the same event react-query resumes on. A button that pretends is worse than no button. |
-| 6 | `manifest.theme_color` | one static file, currently the dark token in both themes — a phase-1 defect deferred here, noted in `web/README.md` | **two manifests**, `/manifest.json` (dark) and `/manifest-light.json` (light); `applyTheme()` swaps the `<link rel="manifest">` alongside the `theme-color` meta it already rewrites | A manifest is static and the theme is the hour's. iOS reads the manifest at *Add to Home Screen* time, which is after the theme has applied, so the splash matches the theme the user installed under. On iOS `theme_color` is largely inert anyway (`apple-mobile-web-app-status-bar-style` is `black-translucent`, so the page's own background shows through); it is `background_color`, the launch screen, that this actually fixes. |
+| 6 | `manifest.theme_color` | one static file, currently the dark token in both themes — a phase-1 defect deferred here, noted in `web/README.md` | **two manifests**, `/manifest.json` (dark) and `/manifest-light.json` (light); `applyTheme()` swaps the `<link rel="manifest">` alongside the `theme-color` meta it already rewrites | A manifest is static and the theme is the hour's, so the link points at whichever is true now. *(Corrected in task 2, which found the original claim — "iOS reads the manifest at Add to Home Screen time … it is `background_color`, the launch screen, that this actually fixes" — to be wrong twice over. **A manifest is consumed at install time**, so the most this can ever do is align one install with the theme in force at that moment: it does not follow the theme afterwards, and an install at 22:00 keeps its launch screen at noon for ever. **And on iOS it may do nothing at all** — WebKit fetches at most one manifest per document load and has no observer for a later `href` change, while `main.tsx` is a deferred module, so the swap lands after parsing; the manifest iOS reads may always be the dark one `index.html` ships. iOS's launch screen comes from `apple-touch-startup-image` regardless (decision 11). What is left standing is Chromium, which does observe the link — and the one measured-by-reasoning cost below.)* |
+| 6b | — | — | **Chrome may reinstall the WebAPK about once a day** | A consequence of shipping two manifests, not a choice, and new in task 2. Chrome re-reads an observed manifest and its WebAPK update check fingerprints `name`, `short_name`, `start_url`, `scope`, `display`, `orientation`, `theme_color` and `background_color` — and the last two are exactly what differs between the pair. Crossing 07:00 or 19:00 therefore presents a manifest that disagrees with the installed app, which is the condition that schedules an update. Throttled, that is roughly one silent reinstall a day. **Reasoned from Chrome's documented fingerprint, not measured** — there is no Android device in this project and no Android line on any checklist. `id: "/"` is identical in both files, so nothing is orphaned either way. |
 | 7 | Icon mark | `Alfred.dc.html:530`: letter `A`, `oklch(0.78 0.12 45)`, `500 30px 'DM Sans'`, on `#25221F` | the same mark drawn as two `<path>` strokes, not `<text>` | A `<text>` icon renders with whatever font the *rasteriser* has. `@fontsource-variable/dm-sans` ships `woff2` only, which neither `rsvg-convert` nor `resvg` can load, and the current `icon.svg` asks for Georgia — so today's icon is already whatever serif the machine had. Geometry renders identically everywhere. |
 | 8 | Icon shape | current `icon.svg` has `rx="64"` | full-bleed square, no radius | iOS applies its own squircle mask to `apple-touch-icon`; anything outside the rounded rect is transparent, and iOS composites transparency as **black**, so `rx="64"` puts black slivers in the home-screen tile's corners. §4.2's "opaque, no alpha" is the same requirement said another way. |
 | 9 | Maskable icon | spec §4.2: "plus 192/512 maskable for the manifest" | one 512 PNG marked `purpose: "any maskable"`, not a second file | Measured on the geometry in task 1: the glyph's furthest point is 170.5 px from the centre of a 512 canvas *(corrected in task 1: this said **190 px**, which is no corner of the drawing — see the correction under task 1 step 3)* and the maskable safe circle's radius is 204.8 px, so the same art is safe under a mask and correct unmasked. A separate maskable file would be the same bytes with a different name. |
@@ -136,9 +137,9 @@ Identical to phases 1 to 3, repeated because they are load-bearing:
 | `web/public/favicon.svg`, `web/public/icons.svg` | **deleted** — dead since the phase-1 rewrite | 1 |
 | `web/src/test/icons.test.ts` | Decodes the PNGs: dimensions, colour type, no transparency, the two token colours, the mark's reach and its shape | 1 |
 | `web/public/manifest.json`, `web/public/manifest-light.json` | The two manifests, identical but for the two colours | 2 |
-| `web/src/lib/theme.ts` | Export `THEME_COLOR`; `applyTheme` swaps the manifest link | 2 |
+| `web/src/lib/theme.ts` | `applyTheme` swaps the manifest link *(corrected in task 2: this said "Export `THEME_COLOR`"; nothing is exported — see the contract block)* | 2 |
 | `web/src/test/contrast.ts` | Gains `srgbHex()`, so a file that cannot hold an `oklch()` restates no literal | 1 |
-| `web/src/test/manifest.test.ts` | Both manifests parsed, compared, and held to `THEME_COLOR` | 2 |
+| `web/src/test/manifest.test.ts` | Both manifests parsed, compared, held to `--bg` through `contrast.ts`, and checked against the files actually in `public/` *(corrected in task 2: "held to `THEME_COLOR`")* | 2 |
 | `web/index.html` | `apple-touch-icon` link; the manifest link, which `applyTheme` finds by `rel` *(corrected in task 2: this said the link "keeps its `id`" — it has never had one, and the swap selects on `link[rel="manifest"]`, so task 2 changes no markup at all)* | 1 |
 | `web/tsconfig.app.json`, `web/tsconfig.node.json` | `icons.test.ts` reads bytes, so it is checked by the Node project, not the browser one | 1 |
 | `web/eslint.config.js` | A block for `public/*.js` with the service-worker globals | 3 |
@@ -231,8 +232,14 @@ export function UpdateNote(props: UpdateNoteProps): JSX.Element;
 // src/gates/OfflineGate.tsx
 export function OfflineGate(): JSX.Element;
 
-// src/lib/theme.ts — newly exported; the value is unchanged
-export const THEME_COLOR: Record<Theme, string>;   // { dark: "#25221F", light: "#F6F3EE" }
+// src/lib/theme.ts — nothing new is exported.
+// (Corrected in task 2: this promised `export const THEME_COLOR: Record<Theme, string>`.
+// Exporting it would have made the manifests' only anchor a record that is itself
+// anchored to nothing — a retune of `--bg` in index.css would leave the manifests, the
+// record and Safari's chrome all on the old colour with the suite green, which was
+// demonstrated. `src/test/manifest.test.ts` pins the files to `token(theme, "bg")`
+// instead, which `contrast.test.ts` already holds to the stylesheet, so `THEME_COLOR`
+// stays private and no module surface grows.)
 ```
 
 ---
@@ -457,7 +464,9 @@ Counts after this task: **71 files / 1 530 tests** *(corrected in task 1: this s
 
 ## Task 2: Two manifests, and a theme that reaches the splash
 
-`web/public/manifest.json` today names one SVG icon and carries `#25221F` for both colours. `web/README.md` calls the second half a defect and defers it here: *"a manifest cannot follow the theme the way `applyTheme` rewrites the `theme-color` meta, so a light-hour install still gets a dark splash until phase 4 decides otherwise."* Decision: it follows the theme, through the link.
+`web/public/manifest.json` today names one SVG icon and carries `#25221F` for both colours. `web/README.md` calls the second half a defect and defers it here: *"a manifest cannot follow the theme the way `applyTheme` rewrites the `theme-color` meta, so a light-hour install still gets a dark splash until phase 4 decides otherwise."* Decision: the link points at the manifest that is true now.
+
+*(Corrected in task 2, and it changes what this task is for. A manifest is consumed at **install** time, so a link swap can at most align one install with the theme in force at Add to Home Screen — it is not a splash that follows the theme, and an install at 22:00 keeps its colours at noon for ever. On iOS it may be inert entirely: WebKit fetches at most one manifest per document load, `main.tsx` is a deferred module, and there is no observer for a later `href` change, so the manifest iOS reads may always be the dark one `index.html` ships; iOS's launch screen comes from `apple-touch-startup-image` anyway (decision 11). The swap is still worth shipping — Chromium observes the link, the code is three lines, and being wrong in the same direction as the theme is strictly better than being wrong in both — but every claim this task makes in prose has to be hedged to that, and deviation 6b is the Android cost. What is **not** hedged is the rest: the icon members, `id`, `scope`, `display`, and the two files agreeing.)*
 
 **Files:**
 - Modify: `web/public/manifest.json`
@@ -465,24 +474,59 @@ Counts after this task: **71 files / 1 530 tests** *(corrected in task 1: this s
 - Modify: `web/src/lib/theme.ts`, `web/src/lib/theme.test.ts`
 - Create: `web/src/test/manifest.test.ts`
 - Modify: `web/src/test/index-html.test.ts` *(corrected in task 2: `web/index.html` was listed here and needs no edit — the manifest link is already what the swap looks for. Only its test changes.)*
-- Modify: `web/README.md`, `docs/web-frontend.md` *(added in task 2: both state in prose that a light-hour install gets a dark splash "until phase 4 says otherwise", and both list `public/`'s unhashed files. This task falsifies all three passages, so it fixes them; the rest of the docs pass is still task 13's.)*
+- Modify: `web/README.md`, `docs/web-frontend.md`, `docs/superpowers/qa/2026-09-07-pwa-phase1-ios-checklist.md` *(added in task 2. Four passages are falsified by this commit and fixed here: `web/README.md`'s "until phase 4's manifest task lands", `docs/web-frontend.md`'s tier-3 file list and its "what phases 1 to 3 do not cover" bullet, and the phase-1 checklist's §4.2 line, which still said the manifest ships SVG only and no `apple-touch-icon` exists — task 13 writes a **new** checklist and would never have revisited that one. `docs/web-frontend.md`'s overview line and directory map were corrected too, both left disagreeing with the tier-3 list about whether the icons had landed. The `ThemeProvider` paragraph at `docs/web-frontend.md:200` is **not** touched — this commit does not falsify it, and it is task 13 step 1.8's material. The rest of the docs pass is still task 13's.)*
 
 - [ ] **Step 1: Write the failing tests for the two files**
 
-`web/src/test/manifest.test.ts`. *(Corrected in task 2 on two counts. First, the subjects are read through Vite's `?raw` and not `node:fs` + `fileURLToPath`: this file also imports `@/lib/theme`, which touches `document`, so it belongs to the browser TS project — where `types` is `vite/client` alone and `node:fs` is not typed — while the Node project task 1 moved `icons.test.ts` into has neither the `@/` alias nor the DOM lib. `index-html.test.ts` already reads its subject this way. Second, `toMatchObject` is blind to extra members, and an extra member in a manifest is not inert, so a fifth test pins the key set — it is the only assertion here that catches an `display_override` added to both files, which was checked by mutating them. The `strip` helper deletes rather than rest-destructuring into `_t`/`_b` — this repo's eslint fails the build on those two as unused.)*
+`web/src/test/manifest.test.ts`. *(Corrected in task 2, four times over — the plan's snippet is superseded by what shipped, below.* ***One****: the subjects are read through Vite's `import.meta.glob("…/public/*.json", { query: "?raw" })` and not `node:fs` + `fileURLToPath`. The file imports from `@/lib/theme`, which touches `document`, so it belongs to the browser TS project — where `types` is `vite/client` alone and `node:fs` is not typed — while the Node project task 1 moved `icons.test.ts` into has neither the `@/` alias nor the DOM lib. The glob rather than two `?raw` imports because the URLs `applyTheme` hands the browser must be checked against the **directory**: renaming `manifest-light.json` and fixing the one import that named it left 1 538 tests green while the app asked for a URL the SPA fallback answers with `index.html` as 200 `text/html`.* ***Two****: the colours are `srgbHex(token(theme, "bg"))`, not `THEME_COLOR` — see the contract block for why that export was dropped — and the last test pins the `theme-color` meta to the same token, which is the only thing holding `lib/theme.ts`'s private restatement to the stylesheet.* ***Three****: `toMatchObject` is blind to extra members, and an extra member in a manifest is not inert, so a test pins the key set; a `display_override` added to **both** files is caught by nothing else, which was checked by mutating them. The `description` member in the first assertion is also an addition to the plan's snippet.* ***Four****: `strip` deletes rather than rest-destructuring into `_t`/`_b` — this repo's eslint fails the build on those two as unused.)*
 
 ```ts
-import { describe, expect, it } from "vitest";
-import { THEME_COLOR } from "@/lib/theme";
-// The shipped bytes, not a re-description of them. `?raw` and not `node:fs`:
-// this file also imports `@/lib/theme`, which touches `document`, so it belongs
-// to the browser TS project — where there is no `node` in `types` and no `@/`
-// alias in the Node one. `index-html.test.ts` reads its subject the same way.
-import darkSource from "../../public/manifest.json?raw";
-import lightSource from "../../public/manifest-light.json?raw";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { applyTheme, type Theme } from "@/lib/theme";
+import { srgbHex, token } from "./contrast";
 
-const dark = JSON.parse(darkSource) as Record<string, unknown>;
-const light = JSON.parse(lightSource) as Record<string, unknown>;
+/**
+ * Every JSON file that is really in `web/public/`, keyed by the URL `mount_spa`
+ * serves it at. A glob rather than two `?raw` imports, because the URLs
+ * `applyTheme` hands the browser have to be checked against the directory and
+ * not against a copy of themselves: renaming `manifest-light.json` and fixing
+ * the one import that named it left the suite green while the installed app
+ * asked for a file the SPA fallback answers with `index.html` as 200
+ * `text/html` — a manifest that fails to parse, with a console warning nobody
+ * reads. Missing here throws at import, so the whole file goes red at once.
+ */
+const PUBLIC = new Map(
+  Object.entries(
+    import.meta.glob("../../public/*.json", { eager: true, query: "?raw", import: "default" }),
+  ).map(([path, source]) => [
+    `/${path.split("/").pop()}`,
+    JSON.parse(source as string) as Record<string, unknown>,
+  ]),
+);
+
+function served(url: string): Record<string, unknown> {
+  const parsed = PUBLIC.get(url);
+  if (parsed === undefined) {
+    throw new Error(
+      `web/public/ serves no JSON at ${url} — it has ${[...PUBLIC.keys()].join(", ")}`,
+    );
+  }
+  return parsed;
+}
+
+/**
+ * The ground colour, taken from `index.css` through `contrast.ts`'s tokens
+ * rather than restated. `contrast.test.ts` holds `TOKENS` to the stylesheet
+ * verbatim, so retuning `--bg` the sanctioned way fails here until the manifests
+ * are re-coloured too — `icons.test.ts:32` set the idiom one commit ago. The
+ * literals are the private `THEME_COLOR` record in `lib/theme.ts`, which is
+ * nothing but this pair spelled again for the `theme-color` meta; the last test
+ * below is what keeps the two spellings from parting.
+ */
+const ground = (theme: Theme) => srgbHex(token(theme, "bg"));
+
+const dark = served("/manifest.json");
+const light = served("/manifest-light.json");
 
 describe("the manifest", () => {
   it("is an installable standalone app with a stable identity", () => {
@@ -527,11 +571,11 @@ describe("the manifest", () => {
     ]);
   });
 
-  it("carries each theme's own ground", () => {
-    expect(dark.theme_color).toBe(THEME_COLOR.dark);
-    expect(dark.background_color).toBe(THEME_COLOR.dark);
-    expect(light.theme_color).toBe(THEME_COLOR.light);
-    expect(light.background_color).toBe(THEME_COLOR.light);
+  it("carries each theme's own ground, as index.css declares it", () => {
+    expect(dark.theme_color).toBe(ground("dark"));
+    expect(dark.background_color).toBe(ground("dark"));
+    expect(light.theme_color).toBe(ground("light"));
+    expect(light.background_color).toBe(ground("light"));
   });
 
   it("differs between the two files in nothing but those two colours", () => {
@@ -546,6 +590,37 @@ describe("the manifest", () => {
       return rest;
     };
     expect(strip(light)).toEqual(strip(dark));
+  });
+});
+
+describe("the URL applyTheme points the link at", () => {
+  beforeEach(() => {
+    document.head.innerHTML =
+      '<meta name="theme-color" content="#25221F">' +
+      '<link rel="manifest" href="/manifest.json">';
+  });
+
+  afterEach(() => {
+    document.head.innerHTML = "";
+    document.documentElement.removeAttribute("data-theme");
+  });
+
+  const themes: Theme[] = ["dark", "light"];
+
+  it.each(themes)("in the %s theme names a file that exists and carries that ground", (theme) => {
+    applyTheme(theme);
+    const href = document.querySelector('link[rel="manifest"]')?.getAttribute("href") ?? "";
+    expect(PUBLIC.has(href), `applyTheme("${theme}") points at ${href}, which is not in public/`).toBe(
+      true,
+    );
+    expect(served(href).background_color).toBe(ground(theme));
+    expect(served(href).theme_color).toBe(ground(theme));
+    // The meta and the manifest are the same fact told to two readers, and
+    // `lib/theme.ts` spells the colour a second time to tell it. This is the
+    // only thing holding that second spelling to the stylesheet.
+    expect(document.querySelector('meta[name="theme-color"]')?.getAttribute("content")).toBe(
+      ground(theme),
+    );
   });
 });
 ```
@@ -640,15 +715,18 @@ cd ~/code/.worktrees/alfred/pwa-phase4-install/web
 sed 's/#25221F/#F6F3EE/g' public/manifest.json > public/manifest-light.json
 ```
 
-- [ ] **Step 6: Export `THEME_COLOR` and swap the link in `web/src/lib/theme.ts`**
+- [ ] **Step 6: Add `MANIFEST` and swap the link in `web/src/lib/theme.ts`** *(corrected in task 2: this step was "Export `THEME_COLOR`", and nothing is exported — the contract block above says why. `THEME_COLOR` stays private and keeps its literals; `src/test/manifest.test.ts` anchors it through the meta instead.)*
 
 ```ts
 /**
  * `--bg` per theme, as index.css declares it. Safari's chrome reads it from the
- * meta; the two manifests carry it as `theme_color` and `background_color`, and
- * `src/test/manifest.test.ts` holds those files to this record.
+ * meta, and the two manifests carry the same pair as `theme_color` and
+ * `background_color`. Not exported: `src/test/manifest.test.ts` pins both the
+ * files and this record's effect on the meta to `--bg` itself, through
+ * `contrast.ts`'s tokens, so the stylesheet stays the one source and a retune
+ * fails rather than drifts.
  */
-export const THEME_COLOR: Record<Theme, string> = { dark: "#25221F", light: "#F6F3EE" };
+const THEME_COLOR: Record<Theme, string> = { dark: "#25221F", light: "#F6F3EE" };
 
 /** The manifest per theme. See `applyTheme` for why there are two. */
 const MANIFEST: Record<Theme, string> = {
@@ -657,16 +735,21 @@ const MANIFEST: Record<Theme, string> = {
 };
 ```
 
-and, inside `applyTheme`, after the `theme-color` line:
+and, inside `applyTheme`, after the `theme-color` line — the comment is the one place a reader meets the limits of this feature, so it states them rather than the claim the plan started with:
 
 ```ts
   // A manifest is a static file and the theme is the hour's, so there are two
-  // of them and the link points at whichever is true now. iOS reads the
-  // manifest at Add-to-Home-Screen time — after this has run — so the launch
-  // screen matches the theme the app was installed under, which is the defect
-  // phase 1 deferred to phase 4 (web/README.md). On iOS it is
-  // `background_color` that this really fixes: the status bar is
-  // `black-translucent`, so `theme_color` never gets a look in there.
+  // of them and the link points at whichever is true now. Read this narrowly: a
+  // manifest is consumed at *install* time, so at best this aligns the installed
+  // app with the theme in force at Add to Home Screen. It never follows the
+  // theme afterwards — whoever installs at 22:00 keeps a dark launch screen at
+  // noon for ever — and on iOS it may do nothing at all: WebKit fetches at most
+  // one manifest per document load, and this runs after parsing (main.tsx is a
+  // deferred module), with no observer to re-read the href. Chromium does
+  // observe it, which is where the value is, and where the cost is too: its
+  // WebAPK update check fingerprints these two colours, so crossing 07:00 or
+  // 19:00 can schedule a silent reinstall. Unverified on a device either way —
+  // docs/superpowers/qa/ holds the checklist that would settle it.
   document.querySelector('link[rel="manifest"]')?.setAttribute("href", MANIFEST[theme]);
 ```
 
@@ -694,18 +777,19 @@ Expected: PASS. Then the whole suite, because `applyTheme` runs in every test th
 npx vitest run
 ```
 
-Expected: `Test Files 72 passed (72)`, all green — `Tests 1538 passed (1538)`.
+Expected: `Test Files 72 passed (72)`, all green — `Tests 1540 passed (1540)`.
 
 - [ ] **Step 9: Commit**
 
 ```bash
 git add web/public/manifest.json web/public/manifest-light.json web/src/lib/theme.ts \
         web/src/lib/theme.test.ts web/src/test/manifest.test.ts \
-        web/src/test/index-html.test.ts web/README.md docs/web-frontend.md
+        web/src/test/index-html.test.ts web/README.md docs/web-frontend.md \
+        docs/superpowers/qa/2026-09-07-pwa-phase1-ios-checklist.md
 git commit -m "feat(web): a manifest per theme, so a light-hour install gets a light splash"
 ```
 
-Counts after this task: **72 files / 1 538 tests** *(corrected in task 2: this said ~1 524, carried over from the stale 1 513 baseline. The real arithmetic is task 1's 1 530 plus five in `manifest.test.ts` and three in `theme.test.ts`; `index-html.test.ts` replaces a test rather than adding one.)*.
+Counts after this task: **72 files / 1 540 tests** *(corrected in task 2: this said ~1 524, carried over from the stale 1 513 baseline. The real arithmetic is task 1's 1 530 plus seven in `manifest.test.ts` — five on the files, and one per theme on the URL the swap produces — and three in `theme.test.ts`; `index-html.test.ts` replaces a test rather than adding one.)*.
 
 ---
 
@@ -2803,14 +2887,14 @@ Counts after this task: **79 files / ~1 596 tests**.
   3. **The update note is only visible in the Room.** A gate covers it. Accepted in task 10, but if the device checklist finds it undiscoverable, a row in System › Maintenance is the alternative — the handoff has no design for either.
   4. **The precache and the live cache are the same cache.** Between install and activate the cached shell is the *new* HTML while the *old* worker is still serving. Unreachable except by an offline navigation in a window of seconds; the fix is a second cache and a copy at activate, which is more machinery than the window is worth.
   5. **A font missed at install is fetched on first use, so it is not in the sentinel**, and the next activate prunes it — costing one re-download per deploy on a browser whose subsets the stylesheet does not name. Closing it means writing the runtime-cached set back into the sentinel.
-  6. **No `apple-touch-startup-image`** (decision 11). If the manifest-derived launch screen turns out to be wrong on the device, the per-device matrix is what replaces it.
+  6. **No `apple-touch-startup-image`, and nobody has looked at what iOS actually shows** (decision 11) — **measure first, then decide.** *(Corrected in task 2: this entry read "if the manifest-derived launch screen turns out to be wrong on the device, the per-device matrix is what replaces it", which assumed a manifest-derived launch screen exists on iOS. It does not — `apple-touch-startup-image` is the only mechanism iOS has.)* So the first step is an observation, not a fix: install the app in each theme and write down what the launch screen is — the icon on a plain ground, a white flash, a stretched screenshot. Only then is it worth pricing the per-device matrix, which is a dozen checked-in PNGs that go stale with every new iPhone size, against a launch screen nobody minds. Task 2's two manifests are unaffected either way: they are Chromium's, and `background_color` is what Android composes from.
   7. **The two manifests are a copy, kept honest by a test** rather than generated. A `vite build` hook that emits the light one from the dark one would remove the copy; it would also be the first build-time codegen in this tree.
   8. **`navigator.onLine` is the only offline signal at cold launch.** It is true on a network with no route to the house — which lands in `AuthGate`'s existing fail-closed branch rather than the offline gate, so it is correct, but it means a phone on a captive portal sees `SignInGate` rather than an explanation.
   9. **Nothing tests that `dist/sw.js` exists.** Task 14 step 4 checks it by hand. A Python-side assertion in `tests/core/channels/test_spa_ci.py` — `/sw.js` answers with a JavaScript content type and not `text/html` — would make a regression here a CI failure instead of a device failure, and that regression is the one that silently leaves every phone on its old worker.
 
 - [ ] **Step 5: the QA checklist** — `docs/superpowers/qa/2026-09-16-pwa-phase4-ios-checklist.md`, in the phase-3 checklist's format. **This box is headless: none of this can be run here.** The list:
   - **Install.** Safari → Share → Add to Home Screen. The tile shows the accent `A` on the dark ground with **no black corners** and no page screenshot. The name under it reads `Alfred`.
-  - **Splash.** Install during daylight with the light theme active; the launch screen is `#F6F3EE`, not `#25221F`. Then switch to dark, reinstall, and confirm it is `#25221F`. This is the phase-1 defect task 2 closed, and it is the only way to verify it.
+  - **The launch screen — an observation, not an assertion.** *(Corrected in task 2: this step used to say the launch screen "is `#F6F3EE`, not `#25221F`" and called it the phase-1 defect task 2 closed. It very likely is not: iOS builds a launch screen from `apple-touch-startup-image`, which this app does not ship, and may never read the swapped manifest at all — decision 11 and deviation 6.)* So: install during daylight with the light theme active, kill the app, open it from the home screen and **write down what you see** — the colour of the screen before the app paints, whether an icon appears on it, whether it flashes white. Then switch to dark, reinstall, and record it again. Two identical answers mean the manifest swap is inert on iOS, which is the expected result and **not a defect to fix on the spot**; it is the measurement backlog item 6 is waiting for. Whatever the answer, note it against `docs/backlog/low/pwa-phase4-followups.md` §6.
   - **Standalone.** No Safari chrome, no address bar. The status bar is translucent over the app's own background, and the composer still sits above the home indicator.
   - **Cold offline launch.** Airplane mode, then open from the home screen. The app **paints** — real type, real palette, presence field — and shows `offline · nothing read yet` / `No way to the house.` Turn the radio back on: the gate clears itself with no tap.
   - **Cold offline launch on a deep link.** Airplane mode, tap a `/actions/{id}` link from a previous notification. The same shell loads; the Door does not open, because nothing has been read.
@@ -2872,7 +2956,7 @@ Expected: the header comment, verbatim. `dist/sw.js` must be the file, not a red
 
 - [ ] **Step 6: Secret hygiene over every commit on the branch** — the checks from the operator's exposure runbook (`~/code/alfred-deploy/PWA-EXPOSURE-RUNBOOK.md`, §"Secret hygiene", outside this repo), run across `git rev-list origin/master..HEAD`, not just `HEAD`. A leak amended out of the tip still ships in history. They are not quoted here or anywhere in this repo: the patterns contain the literals they hunt for. The new files are the ones to look at hardest — `ORIGIN` in the test harness is `https://alfred.example.com` and the plan's `sw-harness.ts` keeps it that way.
 
-- [ ] **Step 7: Push and open the PR.** Body: what phase 4 adds (manifest pair, icon set, worker, kill switch, cold-offline gate); **the deviations table, first, because it is the most useful thing a reviewer can read**; the `vite-plugin-pwa` decision and its reasoning; an explicit note that the §6.4 install rail is phase 5's and why; the backlog file; and that the device checklist is unrun, with the splash-colour and kill-switch steps called out as the two that cannot be verified any other way.
+- [ ] **Step 7: Push and open the PR.** Body: what phase 4 adds (manifest pair, icon set, worker, kill switch, cold-offline gate); **the deviations table, first, because it is the most useful thing a reviewer can read**; the `vite-plugin-pwa` decision and its reasoning; an explicit note that the §6.4 install rail is phase 5's and why; the backlog file; and that the device checklist is unrun, with the launch-screen observation and the kill-switch round trip called out as the two that cannot be settled any other way — the first of them a measurement, because the plan's original claim that iOS composes a launch screen from the manifest was wrong (decision 11).
 
 ```bash
 git push -u origin feat/pwa-phase4-install
@@ -2887,7 +2971,7 @@ gh pr create --title "PWA phase 4: install, service worker and offline states" -
 
 **Spec coverage.** §8's phase-4 content, item by item: *manifest* → task 2; *icons* → task 1; *service worker* → tasks 3–8, with the kill switch in 11 and the page-side half in 9; *offline states* → task 12 (the cold launch) over the query-layer work phases 1–3 already shipped, which decision 5 explicitly does not reopen. §4.2 (raster icons, opaque, maskable) → task 1, tested at the byte level. §4.1 (secure context) → unchanged; HTTPS via NPM landed in phase 0. §4.9b (no `beforeinstallprompt` on iOS) → decision 6; the teaching rail is phase 5's by §8's own wording. §4.10 (iOS kills standalone PWAs) → the existing `onVisible` rehydration, now also driving `registration.update()` in task 9. §7's "Service worker policy" — *precache the app shell; cache-first for hashed assets; network-only for `/api/*` and both sockets* — is implemented exactly, with "network-only" strengthened to "never handled"; §7's `vite-plugin-pwa` recommendation is the one thing deviated from, argued in decision 2 and listed as deviation 1. §3.4's asset cache headers are already on `master` (`SpaCacheMiddleware`) and are confirmed in "Before you start" step 3 rather than re-done.
 
-**Known gaps, stated rather than hidden.** (a) The §6.4 six-step rail is not built — decision 6, deviation 2, backlog §1. (b) Web Push is phase 5's entirely; task 13 writes down what phase 4 hands it. (c) Two of the four copy strings in this phase are invented, because the handoff has none for an update prompt or a cold offline launch — deviations 3 and 4, each naming the handoff line it borrows its cadence from. (d) Nothing here is verified on a device; the two steps that *can only* be verified on one (the splash colour and the kill switch round trip) are called out in task 14 step 7 so the PR says so.
+**Known gaps, stated rather than hidden.** (a) The §6.4 six-step rail is not built — decision 6, deviation 2, backlog §1. (b) Web Push is phase 5's entirely; task 13 writes down what phase 4 hands it. (c) Two of the four copy strings in this phase are invented, because the handoff has none for an update prompt or a cold offline launch — deviations 3 and 4, each naming the handoff line it borrows its cadence from. (d) Nothing here is verified on a device; the two steps that *can only* be settled on one (what the launch screen actually does, and the kill-switch round trip) are called out in task 14 step 7 so the PR says so. The first is now an **observation** — see decision 11 — and on Android there is no device at all, which deviation 6b's reinstall cost depends on.
 
 **Placeholder scan.** Every code step carries real code. The two places a step says "read the file first" — `theme.test.ts`'s `beforeEach` in task 2 step 2, `main.test.ts`'s existing shape in task 9 step 6, and `AuthGate.test.tsx`'s `renderAuthGate` signature in task 12 step 5 — each give the code to write *and* the fallback if the existing shape differs, rather than deferring the decision. One thing the first draft got wrong and this review caught: task 3's `cache: "reload"` test originally asserted against a regex over the worker's own source, which is a test of how the file is *spelled* rather than of what it *does*, and it would have broken in task 4 the moment a third fetch site appeared. The harness records the request's cache mode instead (`Harness.reloaded`), and the assertion is `reloaded === fetched` — true at task 3, still true at task 4, and false the moment a fetch site drops the flag.
 

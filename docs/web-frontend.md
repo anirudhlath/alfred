@@ -18,8 +18,9 @@ Design source: `docs/design/2026-09-04-pwa-client-handoff/` (tokens, copy, and t
 Spec: `docs/superpowers/specs/2026-09-04-mobile-first-pwa-client-design.md`.
 Client-side working notes: `web/README.md`.
 
-Phases 1 to 3 of six. The service worker, icons, Web Push and the desktop composition
-are later phases — see "What phases 1 to 3 do not cover" at the end.
+Phases 1 to 3 of six, plus phase 4's icons and manifests. The service worker, Web Push
+and the desktop composition are later phases — see "What phases 1 to 3 do not cover" at
+the end.
 
 ---
 
@@ -48,7 +49,8 @@ command palette. The presence field is a `<canvas>`, the Door's fuse is a
 ```
 web/
   index.html       # viewport-fit=cover, interactive-widget=resizes-content,
-                   # one theme-color meta (applyTheme rewrites it), Apple standalone metas
+                   # one theme-color meta and one manifest link (applyTheme rewrites
+                   # both), the apple-touch-icon link, Apple standalone metas
   src/
     lib/           # No React: transport, formatters, physics, pure reducers
       api.ts             # api/post/put, ApiError{status,detail}; 401→expired, 403→denied
@@ -197,10 +199,8 @@ palette colour.
 | `--ease-rise`, `--ease-settle`, `--ease-sink` | The three easing curves: rise in, settle, leave |
 | `--app-height`, `--viewport-top` | The visual viewport's height and offset, written by `installViewportVars()` (below) |
 
-`ThemeProvider` writes `data-theme` on `<html>`, rewrites the single
-`<meta name="theme-color">` so Safari's chrome matches, and points
-`<link rel="manifest">` at that theme's manifest (`THEME_COLOR` and the two files are
-held together by `src/test/manifest.test.ts`). The choice is stored under
+`ThemeProvider` writes `data-theme` on `<html>` and rewrites the single
+`<meta name="theme-color">` so Safari's chrome matches. The choice is stored under
 `alfred.theme`; with nothing stored, the clock picks (dark at night).
 
 The eight stream hues are **not** tokens: the hue is data (`h = 30 + 45·i` over `STREAMS`),
@@ -1040,9 +1040,16 @@ fallback ever grows conditional handling.
   and 5. The icons and the manifests have landed (phase 4's first two tasks):
   `web/public/manifest.json` and `web/public/manifest-light.json` are identical but for
   `theme_color`/`background_color`, and `applyTheme` swaps the `<link rel="manifest">`
-  alongside the `theme-color` meta, so a light-hour install gets a light splash. System
-  has **no Reach card**: it would be a control that cannot work, which is the defect the
-  phase-2 placeholder tabs were.
+  alongside the `theme-color` meta. What that is worth is **not yet known**: a manifest is
+  consumed at install time, so at most it aligns one install with the theme in force at
+  Add to Home Screen — it never follows the theme afterwards — and on iOS it may be inert,
+  because WebKit reads at most one manifest per document load and the swap runs after
+  parsing. iOS composes its launch screen from `apple-touch-startup-image`, which this app
+  does not ship, and not from the manifest. Chromium observes the link; Chrome's WebAPK
+  update check also fingerprints those two colours, so the 07:00/19:00 boundary may cost a
+  silent reinstall a day. Reasoned, not measured — the phase-4 device checklist is the
+  only thing that settles it. System has **no Reach card**: it would be a control that
+  cannot work, which is the defect the phase-2 placeholder tabs were.
 - **Trigger editing, service restart and log download** — the three things the old SPA
   could do that no endpoint supports. Only the first is said out loud in the client: the
   Triggers footer reads `Nothing here edits a trigger — ask Alfred to change or remove

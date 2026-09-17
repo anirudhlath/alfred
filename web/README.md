@@ -103,10 +103,20 @@ Phase 3: the Workshop's other three benches, each a pure view over one hook call
   The standalone metas are already in `index.html`. The **icon set and the manifests have
   shipped** — the first two pieces of phase 4, and the whole of what `public/` has
   changed; see "The icons" below. There are two manifests, `manifest.json` and
-  `manifest-light.json`, identical but for `theme_color` and `background_color`, because a
-  manifest is a static file and the theme is the hour's: `applyTheme` swaps the
-  `<link rel="manifest">` alongside the `theme-color` meta, and iOS reads the manifest at
-  Add-to-Home-Screen time, so a light-hour install now gets a light splash.
+  `manifest-light.json`, identical but for `theme_color` and `background_color`, and
+  `applyTheme` swaps the `<link rel="manifest">` alongside the `theme-color` meta.
+  **Read that narrowly, because it is not yet known to fix anything on a phone.** A
+  manifest is consumed at *install* time, so the most this can do is align an install
+  with the theme in force at Add to Home Screen; it does not follow the theme afterwards,
+  and someone who installs at 22:00 has a dark launch screen at noon for ever. On iOS it
+  may do nothing at all: WebKit fetches at most one manifest per document load and has no
+  observer for a later `href` change, and the swap runs after parsing, so the manifest
+  iOS reads may always be the dark one `index.html` ships. iOS also builds its launch
+  screen from `apple-touch-startup-image` links, which this app does not ship (see the
+  phase-4 backlog) — not from the manifest. Chromium *does* observe the link, which is
+  where the value is; it is also where the cost is, since Chrome's WebAPK update check
+  fingerprints exactly those two colours. None of this is measured: the phase-4 device
+  checklist is the only thing that can settle it, and it is unrun.
 - **Four things the old SPA could do and this client cannot**, which is the whole of the
   remaining parity gap (spec §8's gate is *full capability parity with the old SPA*).
   Three of them have no endpoint to call: **creating, editing or deleting a trigger**

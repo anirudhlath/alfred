@@ -1,14 +1,49 @@
-import { describe, expect, it } from "vitest";
-import { THEME_COLOR } from "@/lib/theme";
-// The shipped bytes, not a re-description of them. `?raw` and not `node:fs`:
-// this file also imports `@/lib/theme`, which touches `document`, so it belongs
-// to the browser TS project — where there is no `node` in `types` and no `@/`
-// alias in the Node one. `index-html.test.ts` reads its subject the same way.
-import darkSource from "../../public/manifest.json?raw";
-import lightSource from "../../public/manifest-light.json?raw";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { applyTheme, type Theme } from "@/lib/theme";
+import { srgbHex, token } from "./contrast";
 
-const dark = JSON.parse(darkSource) as Record<string, unknown>;
-const light = JSON.parse(lightSource) as Record<string, unknown>;
+/**
+ * Every JSON file that is really in `web/public/`, keyed by the URL `mount_spa`
+ * serves it at. A glob rather than two `?raw` imports, because the URLs
+ * `applyTheme` hands the browser have to be checked against the directory and
+ * not against a copy of themselves: renaming `manifest-light.json` and fixing
+ * the one import that named it left the suite green while the installed app
+ * asked for a file the SPA fallback answers with `index.html` as 200
+ * `text/html` — a manifest that fails to parse, with a console warning nobody
+ * reads. Missing here throws at import, so the whole file goes red at once.
+ */
+const PUBLIC = new Map(
+  Object.entries(
+    import.meta.glob("../../public/*.json", { eager: true, query: "?raw", import: "default" }),
+  ).map(([path, source]) => [
+    `/${path.split("/").pop()}`,
+    JSON.parse(source as string) as Record<string, unknown>,
+  ]),
+);
+
+function served(url: string): Record<string, unknown> {
+  const parsed = PUBLIC.get(url);
+  if (parsed === undefined) {
+    throw new Error(
+      `web/public/ serves no JSON at ${url} — it has ${[...PUBLIC.keys()].join(", ")}`,
+    );
+  }
+  return parsed;
+}
+
+/**
+ * The ground colour, taken from `index.css` through `contrast.ts`'s tokens
+ * rather than restated. `contrast.test.ts` holds `TOKENS` to the stylesheet
+ * verbatim, so retuning `--bg` the sanctioned way fails here until the manifests
+ * are re-coloured too — `icons.test.ts:32` set the idiom one commit ago. The
+ * literals are the private `THEME_COLOR` record in `lib/theme.ts`, which is
+ * nothing but this pair spelled again for the `theme-color` meta; the last test
+ * below is what keeps the two spellings from parting.
+ */
+const ground = (theme: Theme) => srgbHex(token(theme, "bg"));
+
+const dark = served("/manifest.json");
+const light = served("/manifest-light.json");
 
 describe("the manifest", () => {
   it("is an installable standalone app with a stable identity", () => {
@@ -53,11 +88,11 @@ describe("the manifest", () => {
     ]);
   });
 
-  it("carries each theme's own ground", () => {
-    expect(dark.theme_color).toBe(THEME_COLOR.dark);
-    expect(dark.background_color).toBe(THEME_COLOR.dark);
-    expect(light.theme_color).toBe(THEME_COLOR.light);
-    expect(light.background_color).toBe(THEME_COLOR.light);
+  it("carries each theme's own ground, as index.css declares it", () => {
+    expect(dark.theme_color).toBe(ground("dark"));
+    expect(dark.background_color).toBe(ground("dark"));
+    expect(light.theme_color).toBe(ground("light"));
+    expect(light.background_color).toBe(ground("light"));
   });
 
   it("differs between the two files in nothing but those two colours", () => {
@@ -72,5 +107,36 @@ describe("the manifest", () => {
       return rest;
     };
     expect(strip(light)).toEqual(strip(dark));
+  });
+});
+
+describe("the URL applyTheme points the link at", () => {
+  beforeEach(() => {
+    document.head.innerHTML =
+      '<meta name="theme-color" content="#25221F">' +
+      '<link rel="manifest" href="/manifest.json">';
+  });
+
+  afterEach(() => {
+    document.head.innerHTML = "";
+    document.documentElement.removeAttribute("data-theme");
+  });
+
+  const themes: Theme[] = ["dark", "light"];
+
+  it.each(themes)("in the %s theme names a file that exists and carries that ground", (theme) => {
+    applyTheme(theme);
+    const href = document.querySelector('link[rel="manifest"]')?.getAttribute("href") ?? "";
+    expect(PUBLIC.has(href), `applyTheme("${theme}") points at ${href}, which is not in public/`).toBe(
+      true,
+    );
+    expect(served(href).background_color).toBe(ground(theme));
+    expect(served(href).theme_color).toBe(ground(theme));
+    // The meta and the manifest are the same fact told to two readers, and
+    // `lib/theme.ts` spells the colour a second time to tell it. This is the
+    // only thing holding that second spelling to the stylesheet.
+    expect(document.querySelector('meta[name="theme-color"]')?.getAttribute("content")).toBe(
+      ground(theme),
+    );
   });
 });
