@@ -656,8 +656,9 @@ describe("install, and the fonts", () => {
       ["/__shell-manifest", ...SHELL_ASSETS, SHELL_FONTS[1], "/index.html"].sort(),
     );
     // And the manifest records what was CACHED, not what was wanted. Listing a
-    // font that was declined is a name activate keeps a slot open for and task 7
-    // would look up and miss — the record has to be fact, not intent.
+    // font that was declined is a name activate keeps a slot open for and the
+    // asset branch would look up and miss — the record has to be fact, not
+    // intent.
     const listed = await worker.store.get(worker.cache)!.get(`${ORIGIN}/__shell-manifest`)!.clone().json();
     expect(listed).toEqual(["/index.html", ...SHELL_ASSETS, SHELL_FONTS[1]]);
   });
@@ -998,9 +999,9 @@ describe("activate", () => {
  * for that URL and why it exists. One table, driven twice: through `isRefused`
  * directly, where every row is a live assertion today, and through a dispatched
  * event, where a row can only fail once a branch exists that could have claimed
- * it. The navigate rows are that; the `cors` rows fall out of task 7's two
- * branches unhandled whatever the guard says, and the direct half is what pins
- * them. No row is given `navigate` it would not really arrive with.
+ * it. The navigate rows are that; the `cors` rows fall out of both branches
+ * unhandled whatever the guard says, and the direct half is what pins them. No
+ * row is given `navigate` it would not really arrive with.
  */
 const NEVER_ANSWERED: readonly (readonly [path: string, mode: string, why: string])[] = [
   ["/api/admin/overview", "cors", "the Room's own read; src/lib/api.ts calls fetch()"],
@@ -1117,8 +1118,8 @@ describe("what the worker refuses to touch", () => {
     // text/html (Starlette does not normalise dot segments, so the unroutable
     // path falls through to mount_spa) and row 2 is a 404 from the /assets
     // mount. Refusing them is not about today's routing — it is that the raw
-    // pathname of row 2 still begins "/assets/", the prefix task 7's asset
-    // branch reads, so a server that ever did normalise would have it cache a
+    // pathname of row 2 still begins "/assets/", the prefix the asset branch
+    // reads, so a server that ever did normalise would have it cache a
     // 401 as a hashed asset. The last row is the lone "." held to the same rule
     // and is what makes that arm of the `some` bite; without it a mutant that
     // drops it kills nothing.
@@ -1164,7 +1165,8 @@ describe("what the worker refuses to touch", () => {
     expect(
       refuses({ path: "/assets/index-CY0Sh5Q2.js", headers: { Range: "bytes=0-1023" } }),
     ).toBe(true);
-    // The same request without the header is the one task 7 serves from cache.
+    // The same request without the header is the one the asset branch serves
+    // from cache.
     expect(refuses({ path: "/assets/index-CY0Sh5Q2.js" })).toBe(false);
   });
 
@@ -1206,7 +1208,7 @@ describe("what the worker refuses to touch", () => {
   it("does not refuse credentials on our own host, which are still us", () => {
     // The other half of the same measurement: credentials are not part of an
     // origin, so this IS this origin and is treated as it. Nothing stores them
-    // either — task 7's asset branch keys the cache on the pathname, not the href.
+    // either — the asset branch keys the cache on the pathname, not the href.
     expect(refuses({ path: "https://user:pass@alfred.example.com/assets/index-CY0Sh5Q2.js" })).toBe(
       false,
     );
@@ -1277,9 +1279,9 @@ describe("what the worker refuses to touch", () => {
 describe("the fetch handler, and what it declines to answer", () => {
   // `undefined` means respondWith was never called. A row of the table can only
   // FAIL here once a branch exists that could have claimed it: the navigate rows
-  // are claimed by task 7's navigation branch, so those are live from the moment
-  // it lands, and the `cors` rows fall out of both its branches unhandled
-  // whatever the guard says. The direct block above is what pins those, and is
+  // are claimed by the navigation branch, so those have been live since it
+  // landed, and the `cors` rows fall out of both branches unhandled whatever
+  // the guard says. The direct block above is what pins those, and is
   // also the only place the must-NOT-refuse half can be said at all.
   it.each(NEVER_ANSWERED)("leaves %s (%s) to the network — %s", async (path, mode) => {
     const worker = shell();
@@ -1389,11 +1391,52 @@ const shellInCache = (worker: Harness): Response =>
   worker.store.get(worker.cache)!.get(`${ORIGIN}/index.html`)!;
 
 /**
+ * A deploy's `index.html`: the tags `vite build` really writes — `crossorigin`
+ * and all — naming whatever hashes that deploy has, with a marker in the body so
+ * one deploy can be told from another. A shell fixture that names nothing is a
+ * page the worker now refuses on purpose, which is what this exists to avoid
+ * writing by accident.
+ */
+const deployedHtml = (marker: string, assets: readonly string[] = SHELL_ASSETS): string =>
+  `<!doctype html><html lang="en"><head>` +
+  assets
+    .map((url) =>
+      url.endsWith(".css")
+        ? `<link rel="stylesheet" crossorigin href="${url}">`
+        : `<script type="module" crossorigin src="${url}"></script>`,
+    )
+    .join("") +
+  `</head><body><div id="root"></div><!--${marker}--></body></html>`;
+
+const deployed = (marker: string, assets: readonly string[] = SHELL_ASSETS): Response =>
+  html(deployedHtml(marker, assets));
+
+/** The hashes the NEXT deploy writes. Nothing here has them cached. */
+const NEXT_ASSETS = ["/assets/index-D4kq2mZa.js", "/assets/index-Cv8pLm1x.css"];
+
+/**
  * A real name from this build that these fixtures' stylesheet does not name, so
  * install never sees it — the shape of a font the install declined, or one a
  * later build splits out.
  */
 const LATE_FONT = "/assets/geist-mono-latin-500-normal-YINYabwD.woff2";
+
+/**
+ * The request a browser really makes for one of these. Measured in a browser
+ * against the real `dist`: every `/assets/*` request is `mode: "cors"` — the
+ * entry chunk `destination: "script"`, the stylesheet `"style"`, all eight woff2
+ * `"font"` — because `index.html` marks the module script and the stylesheet
+ * `crossorigin`. The harness default is `"no-cors"`, which no `/assets/*`
+ * request in this app has ever been, and a suite that never sends the real mode
+ * cannot see a dispatch keyed on the wrong one: `mode !== "no-cors"` in place of
+ * `mode === "navigate"` routes every chunk, stylesheet and typeface through
+ * `navigate()` and serves the HTML shell as a JavaScript module offline.
+ */
+const fromPage = (path: string, destination = "script"): RequestSpec => ({
+  path,
+  mode: "cors",
+  destination,
+});
 
 describe("navigations", () => {
   it("serves the live page when there is a network", async () => {
@@ -1402,7 +1445,7 @@ describe("navigations", () => {
     // something only an offline phone can see.
     const worker = shell();
     await worker.install();
-    worker.respond("/", html("<!doctype html><title>live</title>"));
+    worker.respond("/", deployed("live"));
     const response = await worker.request({ path: "/", mode: "navigate" });
     await expect(response!.text()).resolves.toContain("live");
   });
@@ -1410,7 +1453,7 @@ describe("navigations", () => {
   it("refreshes the cached shell from that answer", async () => {
     const worker = shell();
     await worker.install();
-    worker.respond("/", html("<!doctype html><title>live</title>"));
+    worker.respond("/", deployed("live"));
     const response = await worker.request({ path: "/", mode: "navigate" });
     // The page is read FIRST and the stored copy second, and that order is the
     // point. A worker that put the response itself instead of a clone passes
@@ -1422,34 +1465,191 @@ describe("navigations", () => {
     await expect(shellInCache(worker).clone().text()).resolves.toContain("live");
   });
 
-  it("does not overwrite the shell with a proxy's error page", async () => {
-    // `isShell` is `ok` AND text/html, and this is the half `ok` carries: a 502
-    // from a reverse proxy is a page of HTML, and one navigation through a
-    // restarting proxy would otherwise leave "Bad Gateway" as the app's offline
-    // face until the next successful launch.
+  it("does not overwrite the shell with an error page that carries the app's own HTML", async () => {
+    // The status half of the guard, and the fixture has to name hashed assets or
+    // the empty-manifest refusal below is what stops it and this proves nothing.
+    // It is the realistic shape too: nginx serving a stale cached copy of the
+    // app with `proxy_cache_use_stale` answers 502 with exactly this body.
+    // Stored, it would be the app's offline face until the next good launch.
     const worker = shell();
     await worker.install();
     worker.respond(
       "/",
-      new Response("<!doctype html><title>502 Bad Gateway</title>", {
+      new Response(deployedHtml("bad gateway"), {
         status: 502,
         headers: { "content-type": "text/html; charset=utf-8" },
       }),
     );
     const response = await worker.request({ path: "/", mode: "navigate" });
     expect(response!.status).toBe(502);
-    await expect(shellInCache(worker).clone().text()).resolves.toContain(ROOT_DIV);
+    await expect(shellInCache(worker).clone().text()).resolves.not.toContain("bad gateway");
   });
 
   it("does not cache a page that is not HTML", async () => {
-    // The other half: a captive portal answering 200 with its own content type,
-    // an error page from a proxy. Whatever it is, the next offline launch must
-    // not show it.
+    // The content-type half, and the only thing `isShell` buys over a bare
+    // `response.ok`. The body is the app's own HTML under the wrong type —
+    // a misconfigured proxy, a host answering with a template it will not admit
+    // is a page — because a fixture that names no asset is refused one guard
+    // later and would leave this one untested. A browser will not execute it as
+    // a document either, so caching it as the shell caches something no launch
+    // can render.
     const worker = shell();
     await worker.install();
-    worker.respond("/", js("captive portal"));
+    worker.respond("/", js(deployedHtml("wrong type")));
     await worker.request({ path: "/", mode: "navigate" });
+    await expect(shellInCache(worker).clone().text()).resolves.not.toContain("wrong type");
+  });
+
+  it("does not publish a page that names no hashed asset", async () => {
+    // The refusal `precache()` makes, mirrored on the only other path that ever
+    // writes a shell. A 200 `text/html` from this origin naming nothing hashed
+    // is not this app: the reverse proxy's own default page while a host is
+    // being edited is exactly that. install declines to start from one; without
+    // the mirror, the first navigation writes one straight over a good shell and
+    // every offline launch afterwards renders it.
+    const worker = shell();
+    await worker.install();
+    worker.respond("/", html("<!doctype html><title>proxy default page</title>"));
+    const response = await worker.request({ path: "/", mode: "navigate" });
+    // Served, because an online phone gets what the network said…
+    await expect(response!.text()).resolves.toContain("proxy default");
+    // …and not published, because the offline copy is not the network's to set.
     await expect(shellInCache(worker).clone().text()).resolves.toContain(ROOT_DIV);
+  });
+
+  it("publishes a new deploy's shell only once the assets it names are cached", async () => {
+    // `sw.js` is byte-identical across most deploys — VERSION is bumped by hand
+    // — so a deploy runs no install and no activate, and this is the only thing
+    // that ever updates the offline copy of the app.
+    const worker = shell();
+    await worker.install();
+    worker.respond("/", deployed("two", NEXT_ASSETS));
+    worker.respond(NEXT_ASSETS[0], js("console.log(2)"));
+    worker.respond(NEXT_ASSETS[1], css("body{color:blue}"));
+    await worker.request({ path: "/", mode: "navigate" });
+    await expect(shellInCache(worker).clone().text()).resolves.toContain("two");
+    expect(worker.keys()).toEqual(expect.arrayContaining(NEXT_ASSETS));
+  });
+
+  it("keeps the shell it has when the new deploy's assets cannot be fetched", async () => {
+    // The white-screen bug, and the reason the two are published together. The
+    // shell names hashes the cache does not hold, `asset()` propagates a network
+    // failure by design, and the next cold launch with no network is a blank
+    // page rather than the old app. Lose the network between the navigation and
+    // the page's own asset requests — a tunnel, a backgrounded app, a rollout
+    // mid-flight — and that is the state it stays in.
+    const worker = shell();
+    await worker.install();
+    worker.respond("/", deployed("two", NEXT_ASSETS));
+    // No routes for NEXT_ASSETS: the refresh's fetches reject.
+    const response = await worker.request({ path: "/", mode: "navigate" });
+    await expect(response!.text()).resolves.toContain("two");
+    await expect(shellInCache(worker).clone().text()).resolves.toContain(ROOT_DIV);
+    await expect(shellInCache(worker).clone().text()).resolves.not.toContain("two");
+  });
+
+  it("keeps the shell it has when a new deploy's asset comes back as something else", async () => {
+    // The same rule against the other failure: the /assets mount gone and
+    // mount_spa answering a hashed URL with index.html and a 200.
+    const worker = shell();
+    await worker.install();
+    worker.respond("/", deployed("two", NEXT_ASSETS));
+    worker.respond(NEXT_ASSETS[0], html("<!doctype html>"));
+    worker.respond(NEXT_ASSETS[1], css("body{color:blue}"));
+    await worker.request({ path: "/", mode: "navigate" });
+    await expect(shellInCache(worker).clone().text()).resolves.not.toContain("two");
+    expect(worker.keys()).not.toContain(NEXT_ASSETS[0]);
+  });
+
+  it("keeps the shell it has when a new deploy's asset cannot be stored", async () => {
+    // The storage axis crossing the consistency rule. A refresh that does not
+    // wait for each asset write before publishing the shell cannot know whether
+    // the write happened: the phone is full, the chunk is not there, and the
+    // shell naming it goes in anyway. That is the white screen again, reached
+    // through the failure the page never sees.
+    const worker = shell();
+    await worker.install();
+    worker.respond("/", deployed("two", NEXT_ASSETS));
+    worker.respond(NEXT_ASSETS[0], js("console.log(2)"));
+    worker.respond(NEXT_ASSETS[1], css("body{color:blue}"));
+    worker.refusePut(NEXT_ASSETS[0]);
+    const response = await worker.request({ path: "/", mode: "navigate" });
+    // The page still gets the live deploy…
+    await expect(response!.text()).resolves.toContain("two");
+    // …and the offline copy is still the one whose assets are all present.
+    await expect(shellInCache(worker).clone().text()).resolves.not.toContain("two");
+    expect(worker.keys()).not.toContain(NEXT_ASSETS[0]);
+  });
+
+  it("does not refetch an asset the refreshed shell names and the cache holds", async () => {
+    // A deploy that changes one chunk must not re-fetch the other, and the
+    // overlap with what the page is fetching for itself is already unavoidable.
+    const worker = shell();
+    await worker.install();
+    worker.respond("/", deployed("two", [SHELL_ASSETS[0], NEXT_ASSETS[1]]));
+    worker.respond(NEXT_ASSETS[1], css("body{color:blue}"));
+    const before = worker.fetched.length;
+    await worker.request({ path: "/", mode: "navigate" });
+    const during = worker.fetched.slice(before);
+    expect(during).toContain(NEXT_ASSETS[1]);
+    expect(during).not.toContain(SHELL_ASSETS[0]);
+  });
+
+  it("leaves the install's record alone when it refreshes the shell", async () => {
+    // A refresh that also wrote the shell under `/__shell-manifest` would turn
+    // `purge()` into a no-op: the record would stop being a list of pathnames,
+    // `Array.isArray` would refuse it, and every activate afterwards would keep
+    // everything — silently, with nothing rejecting.
+    const worker = shell();
+    await worker.install();
+    worker.respond("/", deployed("live"));
+    await worker.request({ path: "/", mode: "navigate" });
+    const record = await worker.store
+      .get(worker.cache)!
+      .get(`${ORIGIN}/__shell-manifest`)!
+      .clone()
+      .json();
+    expect(record).toEqual(["/index.html", ...SHELL_ASSETS]);
+  });
+
+  it("serves the live page when the cache write is refused", async () => {
+    // A phone that is full: `cache.put` rejects with QuotaExceededError, and an
+    // installed PWA on iOS is exactly the thing that meets it. Handled as a
+    // failed fetch — which is what one over-wide `catch` does — this answers a
+    // working network out of the cache: decision 8 exactly inverted, and the one
+    // rule that keeps a poisoned cache away from an online phone.
+    const worker = shell();
+    await worker.install();
+    worker.refusePut("/index.html");
+    worker.respond("/", deployed("live"));
+    const response = await worker.request({ path: "/", mode: "navigate" });
+    await expect(response!.text()).resolves.toContain("live");
+    // And the shell it could not replace is still whole.
+    await expect(shellInCache(worker).clone().text()).resolves.toContain(ROOT_DIV);
+  });
+
+  it("serves the live page when the write is refused and nothing is cached at all", async () => {
+    // The same failure on a phone with no shell to fall back to, which is where
+    // the inversion is loudest: a 200 from the network turned into `offline, and
+    // no shell cached`.
+    const worker = shell();
+    worker.refusePut("/index.html");
+    worker.respond("/", deployed("live"));
+    const response = await worker.request({ path: "/", mode: "navigate" });
+    await expect(response!.text()).resolves.toContain("live");
+  });
+
+  it("serves the live page when the cache cannot be opened at all", async () => {
+    // Safari drops the whole store under storage pressure and in some private
+    // modes. `caches.open()` outside the try meant a healthy network answered
+    // with the browser's network-error page — a worker actively making a working
+    // phone worse than no worker at all.
+    const worker = shell();
+    await worker.install();
+    worker.refuseOpen();
+    worker.respond("/", deployed("live"));
+    const response = await worker.request({ path: "/", mode: "navigate" });
+    await expect(response!.text()).resolves.toContain("live");
   });
 
   it("serves the cached shell when there is no network", async () => {
@@ -1460,11 +1660,73 @@ describe("navigations", () => {
     await expect(response!.text()).resolves.toContain(ROOT_DIV);
   });
 
+  it("serves the cached shell when the network accepts and never answers", async () => {
+    // A hang is indistinguishable from being offline, and the fallback for being
+    // offline is the cached shell. Without a deadline this waits for ever, and
+    // an installed PWA is where that is worst: a standalone window has no
+    // browser chrome to escape a hang with. It is also the arm a narrower
+    // `catch (e) { if (!(e instanceof TypeError)) throw e }` would drop — the
+    // abort arrives as a DOMException, not a TypeError.
+    const worker = shell();
+    await worker.install();
+    worker.hang("/");
+    const response = await worker.request({ path: "/", mode: "navigate" });
+    await expect(response!.text()).resolves.toContain(ROOT_DIV);
+  });
+
+  it("gives the navigation a deadline, and clears it when the page answers", async () => {
+    const worker = shell();
+    await worker.install();
+    worker.respond("/", deployed("live"));
+    const before = worker.deadlines.length;
+    await worker.request({ path: "/", mode: "navigate" });
+    expect(worker.deadlines.slice(before)).toContain(10000);
+    // A deadline left armed keeps the worker alive to do nothing, which is
+    // least welcome on a phone.
+    expect(worker.deadlinesCleared).toBe(worker.deadlines.length);
+  });
+
+  it("fails as offline when there is no network and no cache to open", async () => {
+    // Not as a storage error: a DOMException escaping from `caches.open()` here
+    // would reach the page as an unexplained failure rather than as the one
+    // thing that is true — there is nothing to serve.
+    const worker = shell();
+    await worker.install();
+    worker.refuseOpen();
+    await expect(worker.request({ path: "/", mode: "navigate" })).rejects.toThrow(
+      "offline, and no shell cached",
+    );
+  });
+
+  it("fails as offline when the cached shell cannot be read", async () => {
+    // The read half of the storage axis: the entry is there and the disk will
+    // not give it up. `offline, and no shell cached` is the honest answer —
+    // there is nothing to serve — and a DOMException escaping instead would
+    // reach the page as an unexplained failure.
+    const worker = shell();
+    await worker.install();
+    worker.refuseMatch("/index.html");
+    await expect(worker.request({ path: "/", mode: "navigate" })).rejects.toThrow(
+      "offline, and no shell cached",
+    );
+  });
+
   it("serves the cached shell for a deep link too", async () => {
     // /actions/{id} is a real cold-launch path: a notification tap lands there.
     const worker = shell();
     await worker.install();
     const response = await worker.request({ path: "/actions/a91f3c2e", mode: "navigate" });
+    await expect(response!.text()).resolves.toContain(ROOT_DIV);
+  });
+
+  it("serves the cached shell for /index.html itself", async () => {
+    // The one path that is both the cache key and a real URL a browser can be
+    // pointed at. A branch that skipped it — on the reasoning that the cache
+    // key is not a route — would answer the app's own address with a network
+    // error offline.
+    const worker = shell();
+    await worker.install();
+    const response = await worker.request({ path: "/index.html", mode: "navigate" });
     await expect(response!.text()).resolves.toContain(ROOT_DIV);
   });
 
@@ -1477,15 +1739,15 @@ describe("navigations", () => {
     ["/docs/foo", "a path under /docs/ that is the app, not Swagger"],
   ])("serves the cached shell offline for %s — %s", async (path) => {
     // The positive side of the refusal list, and it is only assertable now that
-    // a branch exists which could have claimed these: until this task, a
-    // wrongly-refused path and a correctly-unhandled one were the same
-    // `undefined`. Every one of these is 200 text/html on the live app — the
-    // app itself — so a refusal that widened to a bare prefix would hand an
-    // offline phone a browser error page instead of the Room.
+    // a branch exists which could have claimed these: before, a wrongly-refused
+    // path and a correctly-unhandled one were the same `undefined`. Every one of
+    // these is 200 text/html on the live app — the app itself — so a refusal
+    // that widened to a bare prefix would hand an offline phone a browser error
+    // page instead of the Room.
     //
     // /ws-telemetry is the exception and is here for the anchor rather than the
-    // cost: the server 404s it (spa.py's ("api/", "ws") prefixes), so offline
-    // it gets a shell the network would not have given it. That divergence is
+    // cost: the server 404s it (spa.py's ("api/", "ws") prefixes), so offline it
+    // gets a shell the network would not have given it. That divergence is
     // accepted — it is a fixture, not a route — and it is what carries the
     // `startsWith("/ws")` mutant.
     const worker = shell();
@@ -1496,47 +1758,76 @@ describe("navigations", () => {
 
   it("refreshes the shell from an online deep link, under the shell's own key", async () => {
     // One key, whatever path the navigation was for: / and /actions/{id} are
-    // served the same bytes by mount_spa, and the offline branch reads SHELL.
-    // A worker keyed on the request would cache a shell per deep link — each
-    // one pruned by the next activate, and none of them ever read.
+    // served the same bytes by mount_spa, and the offline branch reads SHELL. A
+    // worker keyed on the request would cache a shell per deep link — each one
+    // pruned by the next activate, and none of them ever read.
     const worker = shell();
     await worker.install();
-    worker.respond(
-      "/actions/a91f3c2e",
-      html(`<!doctype html><body>${ROOT_DIV}</div><!--deployed--></body>`),
-    );
+    worker.respond("/actions/a91f3c2e", deployed("deployed"));
     await worker.request({ path: "/actions/a91f3c2e", mode: "navigate" });
     expect(worker.keys()).not.toContain("/actions/a91f3c2e");
     await expect(shellInCache(worker).clone().text()).resolves.toContain("deployed");
   });
 
   it("fails a navigation with no network and nothing cached, rather than answering with nothing", async () => {
-    // A first launch that never reached a network: the worker is registered,
-    // the install never completed, and there is no shell to fall back to.
-    // Throwing gets the browser's own network-error page with a line in the
-    // console; resolving with undefined reaches the same page through a
-    // TypeError inside respondWith, saying nothing.
+    // A first launch that never reached a network: the worker is registered, the
+    // install never completed, and there is no shell to fall back to. Throwing
+    // gets the browser's own network-error page with a line in the console;
+    // resolving with undefined reaches the same page through a TypeError inside
+    // respondWith, saying nothing.
     const worker = shell();
     await expect(worker.request({ path: "/", mode: "navigate" })).rejects.toThrow(
       "offline, and no shell cached",
     );
   });
 
-  it("answers a navigation straight to an asset URL once", async () => {
+  it("answers a navigation straight to an asset URL network-first, and once", async () => {
     // Both branches match this one — mode "navigate" AND a pathname under
     // /assets/ — which is what a pasted asset link or devtools' "open in new
-    // tab" really produces. Without the early return respondWith is called
-    // twice: InvalidStateError in a browser, and the navigation dies with it.
-    // Here the harness throws on the second call, so this goes red.
+    // tab" really produces. Mode wins, and the cache and the network disagree
+    // here on purpose: someone who navigates to a hashed URL is asking what is
+    // deployed, and cache-first would answer with what used to be. The `return`
+    // is the other half — respondWith twice for one event is an
+    // InvalidStateError, and the harness throws on the second call.
     const worker = shell();
     await worker.install();
+    worker.respond("/assets/index-CY0Sh5Q2.js", js("console.log(2)"));
     const response = await worker.request({
       path: "/assets/index-CY0Sh5Q2.js",
       mode: "navigate",
     });
-    await expect(response!.text()).resolves.toBe("console.log(1)");
+    await expect(response!.text()).resolves.toBe("console.log(2)");
     // And the chunk did not become the shell: isShell refuses it.
     await expect(shellInCache(worker).clone().text()).resolves.toContain(ROOT_DIV);
+  });
+
+  it("hands the page's own request to the network, not a URL it rebuilt", async () => {
+    // A Request carries the page's mode, credentials and redirect mode.
+    // Re-fetching `request.url` instead turns `redirect: "manual"` into
+    // `"follow"` — the classic way a worker hands a navigation a redirected
+    // response it must not have, and invisible to every assertion about bodies.
+    const worker = shell();
+    await worker.install();
+    worker.respond("/", deployed("live"));
+    const before = worker.handed.length;
+    await worker.request({ path: "/", mode: "navigate" });
+    expect(typeof worker.handed[before]).not.toBe("string");
+    expect(worker.handed[before]).toMatchObject({ mode: "navigate", method: "GET" });
+  });
+
+  it("does not ask past the HTTP cache for the page's own navigation, only for the refresh", async () => {
+    const worker = shell();
+    await worker.install();
+    worker.respond("/", deployed("two", NEXT_ASSETS));
+    worker.respond(NEXT_ASSETS[0], js("console.log(2)"));
+    worker.respond(NEXT_ASSETS[1], css("body{color:blue}"));
+    await worker.request({ path: "/", mode: "navigate" });
+    // The navigation is the page's request, forwarded as it arrived: rewriting
+    // its cache mode is not this worker's to do.
+    expect(worker.reloaded).not.toContain("/");
+    // The refresh's own fetches do go past it, for the reason install's do — a
+    // deploy that just landed must not be read out of the HTTP cache.
+    expect(worker.reloaded).toEqual(expect.arrayContaining(NEXT_ASSETS));
   });
 });
 
@@ -1549,8 +1840,22 @@ describe("assets", () => {
     const worker = shell();
     await worker.install();
     const before = worker.fetched.length;
-    const response = await worker.request({ path: "/assets/index-CY0Sh5Q2.js" });
+    const response = await worker.request(fromPage("/assets/index-CY0Sh5Q2.js"));
     await expect(response!.text()).resolves.toBe("console.log(1)");
+    expect(worker.fetched.length).toBe(before);
+  });
+
+  it.each([
+    ["/assets/index-CY0Sh5Q2.js", "script"],
+    ["/assets/index-nhBuGG1b.css", "style"],
+    ["/assets/dm-sans-latin-standard-normal-Bf69Tn_J.woff2", "font"],
+  ])("serves %s to the real (cors, %s) request the page makes", async (path, destination) => {
+    // The three shapes a real launch produces, all of them `mode: "cors"`.
+    const worker = withFonts();
+    await worker.install();
+    const before = worker.fetched.length;
+    const response = await worker.request({ path, mode: "cors", destination });
+    expect(response).toBeDefined();
     expect(worker.fetched.length).toBe(before);
   });
 
@@ -1562,8 +1867,39 @@ describe("assets", () => {
     // goes red here rather than passing through the network quietly.
     const worker = shell();
     await worker.install();
-    const response = await worker.request({ path: "/assets/index-CY0Sh5Q2.js?v=2" });
+    const response = await worker.request(fromPage("/assets/index-CY0Sh5Q2.js?v=2"));
     await expect(response!.text()).resolves.toBe("console.log(1)");
+  });
+
+  it("serves a precached asset whose name carries an escape", async () => {
+    // The key is the RAW pathname, because that is what install stored. Decode
+    // it here and the lookup misses on every load, refetches, and leaves a
+    // second copy for the prune to collect.
+    //
+    // The escape is `%25` and not `%20` on purpose, and the difference is the
+    // whole reason this test is worth anything: a decoded space is re-encoded
+    // when the key is parsed back into a URL, so both spellings land on the same
+    // entry and a decoding worker passes. A decoded `%` does not — `new URL`
+    // leaves a lone `%` alone — so the two keys really are different. `%23` and
+    // `%2F` behave the same way, and the last of those is the traversal
+    // `isAssetUrl` already refuses. Vite writes none of them; `/assets` is a
+    // StaticFiles mount and is not only Vite's to fill.
+    const escaped = "/assets/a%25b-QNjW2pTd.js";
+    const worker = loadWorker(source);
+    worker.respond(
+      "/index.html",
+      html(
+        `<!doctype html><html lang="en"><head>` +
+          `<script type="module" crossorigin src="${escaped}"></script>` +
+          `</head><body><div id="root"></div></body></html>`,
+      ),
+    );
+    worker.respond(escaped, js("console.log(3)"));
+    await worker.install();
+    const before = worker.fetched.length;
+    const response = await worker.request(fromPage(escaped));
+    await expect(response!.text()).resolves.toBe("console.log(3)");
+    expect(worker.fetched.length).toBe(before);
   });
 
   it("fetches and stores an asset the precache missed", async () => {
@@ -1573,7 +1909,7 @@ describe("assets", () => {
     const worker = shell();
     await worker.install();
     worker.respond(LATE_FONT, font());
-    const response = await worker.request({ path: LATE_FONT });
+    const response = await worker.request(fromPage(LATE_FONT, "font"));
     // Served first, stored copy second, for the reason the navigation block
     // gives: a put of the response itself rather than a clone is invisible in
     // the other order and fatal in a browser.
@@ -1592,9 +1928,9 @@ describe("assets", () => {
     const worker = shell();
     await worker.install();
     worker.respond(`${LATE_FONT}?v=2`, font());
-    await worker.request({ path: `${LATE_FONT}?v=2` });
+    await worker.request(fromPage(`${LATE_FONT}?v=2`, "font"));
     const fetches = worker.fetched.length;
-    const response = await worker.request({ path: LATE_FONT });
+    const response = await worker.request(fromPage(LATE_FONT, "font"));
     await expect(response!.text()).resolves.toBe("woff2");
     expect(worker.fetched.length).toBe(fetches);
     expect(worker.keys()).toContain(LATE_FONT);
@@ -1608,7 +1944,7 @@ describe("assets", () => {
     const worker = shell();
     await worker.install();
     worker.respond("/assets/index-GONE.js", html("<!doctype html>"));
-    const response = await worker.request({ path: "/assets/index-GONE.js" });
+    const response = await worker.request(fromPage("/assets/index-GONE.js"));
     expect(response!.status).toBe(200);
     expect(worker.keys()).not.toContain("/assets/index-GONE.js");
   });
@@ -1616,14 +1952,81 @@ describe("assets", () => {
   it("does not store the 404 the /assets mount really answers with", async () => {
     // What the live app does today, measured: /assets/index-GONE.js is 404 with
     // `{"detail":"Not Found"}` from the StaticFiles mount — JSON, not HTML, so
-    // it is the `ok` half of isAsset that has to refuse it. Stored, it would
+    // it is the status half of the guard that has to refuse it. Stored, it would
     // pin a 404 under a hashed URL until the next activate.
     const worker = shell();
     await worker.install();
     worker.respond("/assets/index-GONE.js", notFound());
-    const response = await worker.request({ path: "/assets/index-GONE.js" });
+    const response = await worker.request(fromPage("/assets/index-GONE.js"));
     expect(response!.status).toBe(404);
     expect(worker.keys()).not.toContain("/assets/index-GONE.js");
+  });
+
+  it("serves a 206 without trying to store it", async () => {
+    // `response.ok` is 200–299, so a guard written on it reaches `cache.put`,
+    // which rejects a partial response outright — a TypeError out of a line that
+    // reads as though it cannot fail, on the one path where the page is waiting
+    // for the bytes. Nothing in this client sends a Range and `isRefused` turns
+    // away a request that carries one, so a 206 here is a server volunteering
+    // one: a disagreement to decline, not to store.
+    const worker = shell();
+    await worker.install();
+    worker.respond(
+      LATE_FONT,
+      new Response("part", { status: 206, headers: { "content-type": "font/woff2" } }),
+    );
+    const response = await worker.request(fromPage(LATE_FONT, "font"));
+    expect(response!.status).toBe(206);
+    expect(worker.keys()).not.toContain(LATE_FONT);
+  });
+
+  it("serves the bytes the network returned even when the cache write is refused", async () => {
+    // A phone that is full. The bytes are in hand and the network said 200, so a
+    // worker that turned a refused write into a failed request would be strictly
+    // worse than no worker: with none installed that chunk loads, with this one
+    // it would not.
+    const worker = shell();
+    await worker.install();
+    worker.refusePut(LATE_FONT);
+    worker.respond(LATE_FONT, font());
+    const response = await worker.request(fromPage(LATE_FONT, "font"));
+    await expect(response!.text()).resolves.toBe("woff2");
+    expect(worker.keys()).not.toContain(LATE_FONT);
+  });
+
+  it("serves an asset from the network when the cache cannot be opened", async () => {
+    // The same standard as the navigation: a worker that cannot use its cache
+    // behaves like no worker at all. Here the failure mode it replaces is a hard
+    // module-load error on a phone whose network is fine.
+    const worker = shell();
+    await worker.install();
+    worker.refuseOpen();
+    const response = await worker.request(fromPage("/assets/index-CY0Sh5Q2.js"));
+    await expect(response!.text()).resolves.toBe("console.log(1)");
+  });
+
+  it("does not store a 204, which has no body to store", async () => {
+    // `response.ok` is 200–299 here too: a 204 stored under a hashed URL is an
+    // empty chunk, and every launch afterwards loads a module with nothing in
+    // it. The Cache API is perfectly happy to store one, so only this guard
+    // stops it.
+    const worker = shell();
+    await worker.install();
+    worker.respond(LATE_FONT, new Response(null, { status: 204 }));
+    const response = await worker.request(fromPage(LATE_FONT, "font"));
+    expect(response!.status).toBe(204);
+    expect(worker.keys()).not.toContain(LATE_FONT);
+  });
+
+  it("goes to the network when the cached copy cannot be read", async () => {
+    // A read that fails is not a hit and not a reason to fail the request: the
+    // network still has the bytes.
+    const worker = shell();
+    await worker.install();
+    worker.refuseMatch("/assets/index-CY0Sh5Q2.js");
+    worker.respond("/assets/index-CY0Sh5Q2.js", js("console.log(1)"));
+    const response = await worker.request(fromPage("/assets/index-CY0Sh5Q2.js"));
+    await expect(response!.text()).resolves.toBe("console.log(1)");
   });
 
   it("fails an uncached asset with no network, rather than inventing one", async () => {
@@ -1631,7 +2034,41 @@ describe("assets", () => {
     // shell, under a .js URL — is the brick above by another door.
     const worker = shell();
     await worker.install();
-    await expect(worker.request({ path: "/assets/index-NEW.js" })).rejects.toThrow();
+    await expect(worker.request(fromPage("/assets/index-NEW.js"))).rejects.toThrow();
+  });
+
+  it("fails an asset the network never answers, rather than hanging on it", async () => {
+    // A hung asset fetch with a perfectly good cached shell is the worst shape
+    // this takes on an installed PWA: the shell paints, the standalone window
+    // sits blank, and there is no browser chrome to escape with.
+    const worker = shell();
+    await worker.install();
+    worker.hang("/assets/index-NEW.js");
+    const before = worker.deadlines.length;
+    await expect(worker.request(fromPage("/assets/index-NEW.js"))).rejects.toThrow();
+    expect(worker.deadlines.slice(before)).toContain(10000);
+  });
+
+  it("does not ask past the HTTP cache for a runtime asset", async () => {
+    // The bytes behind a hashed URL cannot have changed, so `cache: "reload"`
+    // here would spend a phone's bytes re-fetching what the HTTP cache already
+    // holds. install is the opposite case and asks for exactly that.
+    const worker = shell();
+    await worker.install();
+    worker.respond(LATE_FONT, font());
+    await worker.request(fromPage(LATE_FONT, "font"));
+    expect(worker.fetched).toContain(LATE_FONT);
+    expect(worker.reloaded).not.toContain(LATE_FONT);
+  });
+
+  it("hands the page's own request to the network, not a URL it rebuilt", async () => {
+    const worker = shell();
+    await worker.install();
+    worker.respond(LATE_FONT, font());
+    const before = worker.handed.length;
+    await worker.request(fromPage(LATE_FONT, "font"));
+    expect(typeof worker.handed[before]).not.toBe("string");
+    expect(worker.handed[before]).toMatchObject({ mode: "cors", destination: "font" });
   });
 
   it("leaves a path that merely contains /assets/ alone", async () => {
@@ -1640,6 +2077,6 @@ describe("assets", () => {
     // it carries no hash, so nothing about it may be cached cache-first.
     const worker = shell();
     await worker.install();
-    await expect(worker.request({ path: "/img/assets/logo.png" })).resolves.toBeUndefined();
+    await expect(worker.request(fromPage("/img/assets/logo.png"))).resolves.toBeUndefined();
   });
 });

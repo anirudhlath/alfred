@@ -129,8 +129,7 @@ Phase 3: the Workshop's other three benches, each a pure view over one hook call
 
 ## The service worker
 
-`public/sw.js` is hand-written — 156 lines of code under nearly three times as many of
-comment (427) — and
+`public/sw.js` is hand-written — 188 lines of code under 523 of comment, 2.8 to 1 — and
 shipped verbatim by Vite's `public/` copy: no `vite-plugin-pwa`, no Workbox, no generated
 precache manifest. The reasoning is in
 `docs/superpowers/plans/2026-09-16-pwa-phase4-install-and-offline.md`; the short version
@@ -149,12 +148,15 @@ because nothing that can run a service worker has needed one for years. All of i
 (the one constant at the top of `sw.js`; the tests read it from there rather than restating
 it, and this file names no version for the same reason).
 
-Three things about how it fetches. Everything goes out `cache: "reload"`, so a worker
-installing seconds after a deploy cannot precache the bytes that deploy replaced.
-Everything carries a 10-second `AbortSignal`, because `install` runs inside `waitUntil()`
-and one request that is accepted and never answered — a captive portal — would otherwise
-hang the install until the browser killed it, leaving the phone with no worker at all. And
-a missing *font* is survivable where a missing *chunk* is not: the app is legible in the
+Three things about how it fetches. Everything *install* asks for goes out
+`cache: "reload"`, so a worker installing seconds after a deploy cannot precache the bytes
+that deploy replaced — the runtime handlers deliberately do not, since a hashed asset
+cannot have changed and a navigation is the page's own request to make. Every network call
+in the file, install and runtime alike, carries a 10-second `AbortSignal`: `install` runs
+inside `waitUntil()`, so one request accepted and never answered would hang it until the
+browser gave up, leaving the phone with no worker at all, and the same hang on a navigation
+would leave a standalone window waiting for ever with no chrome to escape through. And a
+missing *font* is survivable where a missing *chunk* is not: the app is legible in the
 system stack, so the font loop declines and carries on while the asset loop throws.
 
 What may be cached is one function, `isAssetUrl`: same origin, under `/assets/`, no encoded
@@ -224,29 +226,64 @@ as a cache key, so a server that ever did normalise would have it cache a 401 as
 hashed chunk.
 
 **A navigation is network-first; an `/assets/` URL is cache-first.** Those are the two
-branches, and nothing else is answered at all. A navigation goes to the network and
-refreshes the cached shell from whatever comes back — under `/index.html`, whatever path
-was navigated to, because `mount_spa` serves `/` and `/actions/{id}` the same bytes and the
-offline branch reads one key. The refresh is gated on `isShell` rather than `response.ok`,
-because a captive portal answers 200 with its own page and a proxy answers 502 with an
-error page, and either one stored there is what every offline launch renders until the next
-online one. The cached shell is served on exactly one path — the fetch rejected, i.e. no
-network — and if there is no cached shell either, the navigation throws rather than
-resolving with nothing. Unlike `install`, a navigation carries no deadline: the one request
-whose freshness the user is watching must not be handed a stale shell at ten seconds, and
-the cost of that is the other end of it — a connection that is accepted and never answered
-gets the browser's own hang rather than the offline shell.
+branches, and nothing else is answered at all. A navigation goes to the network, and the
+cached shell is served on exactly one condition: that fetch did not answer. The deadline is
+part of that condition — a request that is accepted and never answered is indistinguishable
+from being offline, and an installed PWA is where that matters most, because a standalone
+window has no browser chrome to escape a hang with. If there is no cached shell either, the
+navigation throws rather than resolving with nothing.
+
+**A cache failure is not a network failure, and the difference is the whole of decision 8.**
+`cache.put` can reject — a phone that is full answers `QuotaExceededError`, and an installed
+PWA on iOS is exactly the thing that meets it — and `caches.open` can reject outright, which
+Safari does under storage pressure and in some private modes. None of that is allowed to
+reach the network verdict: every cache operation in both handlers is outside the `try` that
+decides "offline", each one is caught on its own, and a worker that cannot use its cache
+serves exactly what a browser with no worker would. Caught together with the fetch — which
+is one `catch` one line too wide — a failed *write* answers an online phone out of its
+cache, which is decision 8 exactly inverted.
+
+**The shell and the assets it names are published together, or not at all.** `sw.js` is
+byte-identical across most deploys (`VERSION` is bumped by hand), so a deploy usually runs
+no new install and no new activate: the refresh on a navigation is the only thing that ever
+updates the offline copy of the app. Writing the new HTML on its own would leave the cache
+holding a shell that names hashes it does not have — and since `asset()` propagates a
+network failure by design, the next cold launch with no network is a white screen rather
+than the old app. So the refresh fetches what the new HTML names, stores those first, and
+publishes the shell last; if any of it fails, the shell already there stays, whole. An
+offline copy that is self-consistent and one deploy old beats a newer one that cannot boot.
+It runs in `waitUntil()`, so the page is never blocked on it, and nothing it does can change
+what that navigation was served.
+
+Two refusals gate the refresh. `isShell` — 200 **and** `text/html` — is what stops an error
+page becoming the app's offline face: nginx serving a stale cached copy with
+`proxy_cache_use_stale` answers 502 with the app's own HTML, and a misconfigured host can
+answer 200 with the same bytes under the wrong content type. (Not a captive portal: over
+https it cannot intercept at all, and what it does answer is 200 `text/html`, which this
+accepts.) And a 200 HTML page that names **no** hashed asset is refused exactly as `install`
+refuses it — the reverse proxy's own default page while a host is being edited is that page,
+and one navigation through it would otherwise overwrite a good shell.
 
 An `/assets/` URL is cache-first because the filename carries a hash of the bytes, which is
-the same fact `SpaCacheMiddleware` serves them `immutable` for a year on. The cache is
-keyed on the **pathname** — install's spelling, so one file has one entry in the cache, in
-the record and in the prune, and a hashed name asked for with a query on the end is served
-the bytes already stored. A miss goes to the network and stores what comes back only if
-`isAsset` accepts it: `/assets` is a `StaticFiles` mount today and answers a removed hash
-with a JSON 404, but if that mount ever went, `mount_spa` would answer with `index.html`
-and a 200, and a page of HTML stored under a `.js` URL is how a PWA bricks itself. A
-network failure propagates — there is nothing honest to serve for an asset that was never
-cached and cannot be fetched.
+the same fact `SpaCacheMiddleware` serves them `immutable` for a year on. The cache is keyed
+on the **raw pathname** — install's spelling, so one file has one entry in the cache, in the
+record and in the prune; a hashed name asked for with a query on the end is served the bytes
+already stored, and decoding the key instead would miss on every load. A miss goes to the
+network, with the same deadline, and stores what comes back only if it is a 200 that is not
+HTML: `/assets` is a `StaticFiles` mount today and answers a removed hash with a JSON 404,
+but if that mount ever went, `mount_spa` would answer with `index.html` and a 200, and a page
+of HTML stored under a `.js` URL is how a PWA bricks itself. 200 rather than `response.ok`
+(200–299) is deliberate: a 206 is a partial body the Cache API rejects outright, and a 204
+would cache an empty chunk. A network failure propagates — there is nothing honest to serve
+for an asset that was never cached and cannot be fetched — but a *storage* failure does not:
+the bytes are in hand and the page gets them.
+
+The cost of cache-first with no expiry, written down because nothing else says it: an entry
+that is wrong stays wrong until something deletes it. There is no revalidation, and
+`purge()` only runs when a new worker activates, which only happens when `sw.js`'s own bytes
+change. What stands between that and a poisoned cache is upstream — a hashed name cannot be
+poisoned by a deploy, the store guard refuses what is not an asset, and the kill switch is
+the floor.
 
 **Nothing registers it yet** — `src/lib/sw.ts` is a later slice of phase 4. Until then it
 is inert bytes in `public/`.

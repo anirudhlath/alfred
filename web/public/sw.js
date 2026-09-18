@@ -33,29 +33,48 @@ const MANIFEST = "/__shell-manifest";
 /* The one path prefix this worker may store under, named rather than spelled
    inline because it is the whole of the refusal isAssetUrl makes. */
 const ASSETS = "/assets/";
-/* Every network call here gets a deadline, and that is a different guarantee
-   from the `.catch()` in the font loop. A catch covers a fetch that REJECTS; it
-   does nothing at all for one that never settles, which is exactly what a
-   captive portal does — it accepts the connection and answers nothing. precache
-   runs inside waitUntil(), so one hung request hangs the whole install until the
-   browser gives up on it, and the phone is left with no worker: the outcome the
-   font loop's catch exists to avoid, reached through the other door.
+/* Every network call here gets a deadline, install and runtime alike, and that
+   is a different guarantee from the `.catch()` in the font loop. A catch covers
+   a fetch that REJECTS; it does nothing at all for one that never settles,
+   which is what a black-holed route does — it accepts the connection and
+   answers nothing. precache runs inside waitUntil(), so one hung request hangs
+   the whole install until the browser gives up on it, and the phone is left
+   with no worker: the outcome the font loop's catch exists to avoid, reached
+   through the other door. A hung NAVIGATION is the same judgement one layer
+   out: a request that never answers is indistinguishable from being offline,
+   and the fallback for being offline is the cached shell. An installed PWA is
+   where that matters most — a standalone window has no browser chrome to
+   escape a hang with, so "wait forever" is not a state the user can leave.
 
    Per request, not per install, so a slow-but-progressing phone is not punished
    for being slow; the ceiling is this times the eleven requests a real build
    makes, and only the fonts' share of it is survivable. */
 const TIMEOUT_MS = 10000;
 
-/* The only way this file fetches anything.
-
-   `cache: "reload"` — the HTTP cache is the only thing that could hand a fresh
-   worker the bytes a deploy just replaced. */
-function fetchFresh(url) {
+/* The only way this file fetches anything, and the reason the paragraph above
+   can say "every". Takes what fetch() takes, so a handler can forward the
+   page's own Request — which carries its mode, its credentials and its redirect
+   mode; re-fetching `request.url` instead quietly turns `redirect: "manual"`
+   into `"follow"` and can hand the page a redirected response it must not
+   have. */
+function timed(input, init) {
   const controller = new self.AbortController();
   const deadline = self.setTimeout(() => controller.abort(), TIMEOUT_MS);
   return self
-    .fetch(url, { cache: "reload", signal: controller.signal })
+    .fetch(input, { ...init, signal: controller.signal })
     .finally(() => self.clearTimeout(deadline));
+}
+
+/* How install fetches, and only install.
+
+   `cache: "reload"` — the HTTP cache is the only thing that could hand a fresh
+   worker the bytes a deploy just replaced. The runtime handlers deliberately do
+   NOT ask for it: a hashed asset is immutable, so the HTTP cache is the right
+   answer there and reloading it would spend a phone's bytes re-fetching
+   something that cannot have changed; and a navigation is the page's own
+   request, which is not this worker's to rewrite. */
+function fetchFresh(url) {
+  return timed(url, { cache: "reload" });
 }
 
 /* The origin this worker was served from, and the only one it will ever touch.
@@ -177,22 +196,38 @@ function fontsInCss(css, base) {
 
 /* `/assets` is a StaticFiles MOUNT (core/channels/spa.py:39-40), not part of the
    SPA fallback, so a hashed file a deploy has removed comes back 404 with an
-   `application/json` body — `{"detail":"Not Found"}` — and it is `response.ok`
+   `application/json` body — `{"detail":"Not Found"}` — and it is the status half
    that catches it. tests/core/channels/test_spa.py:155-160 pins that 404 server
    side.
 
    The content-type half is defence in depth for the day that stops being true:
    if the mount is ever removed the fallback answers any unknown path with
-   index.html and a 200, and a proxy or a captive portal can answer 200 with a
-   page of its own at any time. Storing either under a .js URL is how a PWA
-   bricks itself, so both halves stay. */
+   index.html and a 200, and a reverse proxy — or anything else answering in
+   this origin's place — can serve a page of its own under a hashed URL at any
+   time. (Not a captive portal: this origin is https, where it cannot intercept
+   at all.) Storing either under a .js URL is how a PWA bricks itself, so both
+   halves stay. */
+/* 200 and not `response.ok`, which is 200–299. Two of the others are worth
+   naming. A 206 is a PARTIAL body, and the Cache API rejects a put of one
+   outright — a TypeError out of a line that reads as though it cannot fail, on
+   the one path (an asset the precache missed) where the page is waiting for the
+   answer. Nothing here sends a Range and isRefused turns away a request that
+   carries one, so a 206 means the server volunteered one; that is a
+   disagreement to decline, not to store. A 204 has no body at all and would
+   cache an empty chunk. Neither is reachable from this app today, and both are
+   one proxy away. */
+function isStored(response) {
+  return response.status === 200;
+}
+
 function isAsset(response) {
-  return response.ok && !(response.headers.get("content-type") || "").includes("text/html");
+  return isStored(response) && !(response.headers.get("content-type") || "").includes("text/html");
 }
 
 function isShell(response) {
-  return response.ok && (response.headers.get("content-type") || "").includes("text/html");
+  return isStored(response) && (response.headers.get("content-type") || "").includes("text/html");
 }
+
 
 async function precache() {
   const cache = await self.caches.open(CACHE);
@@ -505,52 +540,137 @@ function isRefused(request) {
   return isNeverAnswered(decoded);
 }
 
+/* Every cache read and every cache write the two runtime handlers make goes
+   through here, and `undefined` is a first-class answer: the CacheStorage is
+   unavailable, and this worker has nothing to offer that the browser could not
+   do better on its own.
+
+   It is not a theoretical failure. Safari drops the whole store under storage
+   pressure and in some private modes, and an installed PWA on iOS is evicted
+   whole rather than trimmed when the origin goes over budget. Before this was
+   caught, `caches.open()` sat outside the try in both handlers, so an origin
+   whose storage had gone answered a working network with the browser's
+   network-error page for a navigation and a hard module-load failure for a
+   chunk — a worker actively making a healthy phone worse. The standard for this
+   whole file is one line: a worker that cannot use its cache must behave like
+   no worker at all. */
+async function openCache() {
+  try {
+    return await self.caches.open(CACHE);
+  } catch {
+    return undefined;
+  }
+}
+
+/* One cached entry, or undefined for any reason at all — a miss, a store that
+   will not open, a read that fails. Every caller's next move is the same for
+   all three. */
+async function cached(key) {
+  const cache = await openCache();
+  if (!cache) return undefined;
+  return cache.match(key).catch(() => undefined);
+}
+
+/* Publishing a shell means publishing the assets it names, or it means
+   publishing a white screen.
+
+   sw.js is byte-identical across most deploys — VERSION is bumped by hand — so
+   a deploy runs no new install and no new activate: this function is the ONLY
+   thing that ever updates the offline copy of the app in between. Write the new
+   HTML on its own and the cache holds a shell naming hashes that are not in it;
+   asset() propagates a network failure by design, so the next cold launch with
+   no network is a blank page rather than the old app. Lose the network between
+   the navigation and the page's own asset requests — a tunnel, a backgrounded
+   app, a rollout that lands mid-flight — and that is the state it stays in.
+
+   So: fetch what the new HTML names, put those first, and publish the shell
+   last. If any of it fails the old shell stays, whole. An offline copy that is
+   self-consistent and one deploy old beats a newer one that cannot boot.
+
+   Runs in waitUntil() rather than before the response, so a deploy's first
+   navigation is not blocked on re-fetching the chunk the page is about to ask
+   for anyway. Nothing here can affect what the page was served: the caller
+   swallows every failure, which is the whole of the difference between a phone
+   that is full and a phone that is offline. Treating the first as the second is
+   how a failed write serves an ONLINE phone its cached shell — decision 8
+   inverted by a `catch` one line too wide.
+
+   What the runtime entries this writes cost: nothing that purge() does not
+   already account for. The record install wrote does not name them, so the next
+   activate takes them — and the next activate only ever follows a new install,
+   which has just precached and re-recorded the shell it is about to serve. The
+   shell and its assets are therefore never pruned apart. */
+async function refresh(response) {
+  /* isShell, and the two halves buy different things. The status half stops an
+     ERROR page becoming the app's offline face: nginx serving a stale cached
+     copy under `proxy_cache_use_stale` answers 502 with the app's own HTML, and
+     stored here that is what every offline launch renders until the next
+     successful one. The content-type half is the only thing this buys over a
+     bare `response.ok` — a 200 that is not HTML, which is a host answering with
+     something that is not a page at all.
+
+     Not, as this comment once said, a captive portal: a portal answers 200
+     text/html, which passes both halves, and over https it cannot intercept in
+     the first place. The refusal below is what turns its page away, because it
+     names no hashed asset. */
+  if (!isShell(response)) return;
+  const cache = await openCache();
+  if (!cache) return;
+
+  const urls = assetsInHtml(await response.clone().text());
+  /* The same refusal precache() makes, for the same reason and against the same
+     page: a 200 text/html from this origin that names no hashed asset is not
+     this app. The reverse proxy's default page while a host is being edited is
+     exactly that, and so is a dev server's index.html. install declines to
+     start from one; without this, the first navigation writes one straight over
+     a good shell, and every offline launch afterwards renders it. */
+  if (urls.length === 0) return;
+
+  for (const url of urls) {
+    /* Already there, whether install precached it or an earlier refresh did.
+       The overlap with what the page is fetching for itself is unavoidable —
+       both start from the same HTML — but a deploy that changes one chunk must
+       not re-fetch the other. */
+    if (await cache.match(url)) continue;
+    const named = await fetchFresh(url);
+    if (!isAsset(named)) return;
+    await cache.put(url, named);
+  }
+  await cache.put(SHELL, response);
+}
+
 /* A navigation is network-first, and this function is the whole of decision 8.
    Every online launch renders the deploy that is live right now, so a cache
    this worker has poisoned can only ever be seen by a phone with no network,
    and the browser's own update check on /sw.js runs whatever this cache holds —
-   which is what lets sw.kill.js land if this file has to be withdrawn. */
-async function navigate(request) {
-  const cache = await self.caches.open(CACHE);
+   which is what lets sw.kill.js land if this file has to be withdrawn.
+
+   "Online" is decided by the fetch and by nothing else. Every cache operation
+   below is outside that judgement: a store that will not open and a write that
+   is refused are not a network, and a handler that catches them together
+   answers a phone with a perfectly good network out of its own cache. */
+async function navigate(event) {
+  let response;
   try {
-    const response = await self.fetch(request);
-    /* Refresh the shell from every online navigation, so the offline copy is
-       never older than the last time this phone had a network. Under SHELL and
-       not under this navigation's own path: / and /actions/{id} are served the
-       same bytes (mount_spa's fallback), and the offline branch below reads one
-       key.
-
-       isShell, not response.ok: a captive portal answers 200 with its own page
-       and a proxy answers 502 with an error page, and either one stored here is
-       what every offline launch afterwards renders, until the next online one.
-
-       `.clone()` because a body is a stream that can be read once, and
-       respondWith is about to read this one. Storing the response itself passes
-       here and fails in a browser — the put consumes the body, the page is
-       handed a spent one, and the navigation fails with the cache correctly
-       written, which is the confusing half of that bug. */
-    if (isShell(response)) await cache.put(SHELL, response.clone());
-    return response;
+    response = await timed(event.request);
   } catch {
-    /* The only path on which a cached page is ever served: the fetch rejected,
-       which is what no network looks like from in here.
-
-       No deadline, unlike fetchFresh, and it is a trade rather than an
-       oversight. A navigation that is merely slow must not be handed a stale
-       shell at ten seconds — this is the one request whose freshness the user
-       is watching — so the cost is the other end of it: a black-holed
-       connection that accepts and never answers gets the browser's own hang and
-       its own timeout, not this fallback. install's deadline exists because a
-       hang there leaves the phone with no worker at all; a hang here leaves the
-       phone exactly where a worker-less browser would be. */
-    const cached = await cache.match(SHELL);
-    if (cached) return cached;
+    /* Rejected, or never answered at all — the deadline lands here as an
+       AbortError. The two are one thing from a phone: the page is not coming.
+       This is the only path on which a cached page is ever served. */
+    const shell = await cached(SHELL);
+    if (shell) return shell;
     /* Nothing fetched and nothing cached — a first launch that never got a
-       network. Throwing hands the browser its own network-error page. Resolving
-       with undefined would reach the same page through a TypeError inside
-       respondWith, with nothing in the console saying why. */
+       network, or one whose storage has gone. Throwing hands the browser its
+       own network-error page. Resolving with undefined would reach the same
+       page through a TypeError inside respondWith, saying nothing. */
     throw new Error("offline, and no shell cached");
   }
+  /* The clone is the copy that may be stored; the original is the page's, and
+     nothing below is allowed to touch it. Storing the response itself passes a
+     test written the wrong way round and fails in a browser: the put spends the
+     body the page is about to read. */
+  event.waitUntil(refresh(response.clone()).catch(() => {}));
+  return response;
 }
 
 /* Cache-first, and this is the only branch in this file that is. The filename
@@ -559,29 +679,43 @@ async function navigate(request) {
    (core/channels/spa.py; measured against the running app:
    `cache-control: public, max-age=31536000, immutable`). A deploy does not
    invalidate them, it stops naming them, and activate's prune is what collects
-   the ones no longer named. */
+   the ones no longer named.
+
+   The cost of cache-first with no expiry, written down because nothing else in
+   this file says it: an entry that is wrong is wrong until something deletes
+   it. There is no revalidation here and purge() only runs when a new worker
+   activates, which only happens when sw.js's own bytes change. The mitigations
+   are upstream — a hashed name cannot be poisoned by a deploy, isAsset refuses
+   what is not an asset, and the kill switch is the floor. */
 async function asset(request, pathname) {
-  const cache = await self.caches.open(CACHE);
   /* Keyed on the pathname, not the request, and both halves of that matter: it
      is the spelling precache() and MANIFEST use, so one URL has one entry here,
-     in the record and in the prune; and a hashed file asked for with a query
-     on the end is served the bytes already stored rather than fetched again
-     under a second key that activate would then delete. */
-  const cached = await cache.match(pathname);
-  if (cached) return cached;
-  const response = await self.fetch(request);
-  /* isAsset, not response.ok. /assets is a StaticFiles mount today, so a hash a
+     in the record and in the prune; and a hashed file asked for with a query on
+     the end is served the bytes already stored rather than fetched again under
+     a second key that activate would then delete. Raw, not decoded — the raw
+     pathname is what install stored. */
+  const stored = await cached(pathname);
+  if (stored) return stored;
+
+  const response = await timed(request);
+  /* Three things guard this put and they fail differently. isAsset refuses what
+     must not be stored: /assets is a StaticFiles mount today, so a hash a
      deploy has removed comes back 404 with a JSON body — but if that mount ever
      goes, mount_spa answers any unknown path with index.html and a 200, and a
-     proxy or a captive portal can answer 200 with a page of its own at any
-     time. Storing a page of HTML under a .js URL is how a PWA bricks itself:
-     every launch afterwards parses it as a module and dies before the first
-     paint, and the way back is the kill switch, not a reload. */
-  if (isAsset(response)) await cache.put(pathname, response.clone());
+     page of HTML stored under a .js URL is how a PWA bricks itself, since every
+     launch afterwards parses it as a module and dies before the first paint.
+     The open may have failed, which is not this request's problem. And the put
+     itself may be REFUSED — a phone that is full — which must cost the page
+     nothing at all: the bytes are in hand, the network said 200, and a worker
+     that turned that into a failed request would be strictly worse than no
+     worker. Nothing here is awaited for the page's sake, but the put is awaited
+     so that it is inside this handler's own lifetime rather than after it. */
+  const cache = await openCache();
+  if (cache && isAsset(response)) await cache.put(pathname, response.clone()).catch(() => {});
   /* A network failure propagates rather than being answered from somewhere
      else. There is nothing honest to serve for an asset that was never cached
      and cannot be fetched, and the obvious something-else — the shell, which is
-     what the fallback would hand back — is the brick above by another door. */
+     what a fallback would hand back — is the brick above by another door. */
   return response;
 }
 
@@ -592,13 +726,22 @@ self.addEventListener("fetch", (event) => {
   if (isRefused(event.request)) return;
   const url = new URL(event.request.url);
 
-  /* Mode first and prefix second, and the `return` between them is load-bearing
-     rather than tidy: a navigation straight to a hashed asset URL — a pasted
-     link, devtools' "open in new tab" — is both, and calling respondWith twice
-     for one event is an InvalidStateError that would take the navigation down
-     with it. */
+  /* Mode first, and it is a real decision rather than an order of convenience.
+     A navigation to a hashed asset URL — a pasted link, devtools' "open in new
+     tab" — matches both branches, and it must be answered network-first like
+     any other navigation: cache-first would serve a stale chunk to someone who
+     navigated to it precisely to see what is deployed. The `return` is the
+     other half: respondWith twice for one event is an InvalidStateError, and it
+     would take the navigation down with it.
+
+     The test for what arrives here with mode "navigate" is the browser's, not
+     this file's: every /assets/* request the real app makes is mode "cors",
+     because index.html marks the module script and the stylesheet
+     `crossorigin`. A branch keyed on anything but "navigate" — `!== "no-cors"`
+     was the mutant — routes every chunk, stylesheet and typeface through
+     navigate() and serves the HTML shell as a JavaScript module offline. */
   if (event.request.mode === "navigate") {
-    event.respondWith(navigate(event.request));
+    event.respondWith(navigate(event));
     return;
   }
 

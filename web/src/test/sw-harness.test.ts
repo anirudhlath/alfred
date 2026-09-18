@@ -45,6 +45,42 @@ describe("the fake scope's event semantics", () => {
     await expect(worker.install()).rejects.toThrow("first");
   });
 
+  it("waits on work a fetch event was extended with, including after an await", async () => {
+    // A FetchEvent is an ExtendableEvent, and the handler that needs it arms its
+    // `waitUntil` only once the network has answered — long after the listener
+    // returned, while `respondWith`'s own promise is still holding the event
+    // open. A harness that snapshotted the list when the listener returned would
+    // wait on nothing and read every cache before it was written.
+    const worker = loadWorker(`
+      self.addEventListener("fetch", (event) => {
+        event.respondWith((async () => {
+          const response = await self.fetch("/x");
+          event.waitUntil((async () => {
+            const cache = await self.caches.open("alfred-shell-v1");
+            await cache.put("/late", new Response("late"));
+          })());
+          return response;
+        })());
+      });
+    `);
+    worker.respond("/x", html("<!doctype html>"));
+    await worker.request({ path: "/x" });
+    expect(worker.keys("alfred-shell-v1")).toEqual(["/late"]);
+  });
+
+  it("surfaces a rejection that escapes a fetch event's waitUntil", async () => {
+    // A browser logs it and carries on serving, which is why a worker that lets
+    // one escape looks fine on a phone until the day it matters. Here it is a
+    // defect, so it is raised where a test can see it.
+    const worker = loadWorker(`
+      self.addEventListener("fetch", (event) => {
+        event.respondWith(Promise.resolve(new Response("served")));
+        event.waitUntil(Promise.reject(new Error("background")));
+      });
+    `);
+    await expect(worker.request({ path: "/x" })).rejects.toThrow("background");
+  });
+
   it("refuses a second respondWith for one fetch event", async () => {
     const worker = loadWorker(`
       self.addEventListener("fetch", (event) => {
@@ -117,6 +153,89 @@ describe("the fake CacheStorage", () => {
     worker.refuseDelete("alfred-gone");
     await expect(worker.activate()).rejects.toThrow(/storage error/);
     expect([...worker.store.keys()]).toEqual(["alfred-gone"]);
+  });
+
+  it("does not put until the promise it handed back has settled", async () => {
+    // The same reason deletes are modelled this way: a real put goes to disk,
+    // so a worker that does not await one has left the write outside its
+    // handler's lifetime, and the browser may stop the worker before it lands.
+    // A microtask would make the missing `await` invisible; a macrotask does
+    // not.
+    const worker = loadWorker(`
+      self.addEventListener("install", (event) => {
+        event.waitUntil((async () => {
+          const cache = await self.caches.open("alfred-shell-v1");
+          cache.put("/x", new Response("x"));
+        })());
+      });
+    `);
+    await worker.install();
+    expect(worker.keys("alfred-shell-v1")).toEqual([]);
+  });
+
+  it("can be told to refuse a put, which is what a phone that is full does", async () => {
+    // `QuotaExceededError`, and it is the axis a worker is least likely to be
+    // written for: a put is a disk write on a device whose storage the user does
+    // not manage. Without this seam, a handler that treats a failed WRITE as a
+    // failed FETCH — and so answers an online phone out of its cache — passes
+    // every test in the suite.
+    const worker = loadWorker(`
+      self.addEventListener("install", (event) => {
+        event.waitUntil((async () => {
+          const cache = await self.caches.open("alfred-shell-v1");
+          await cache.put("/x", new Response("x"));
+        })());
+      });
+    `);
+    worker.refusePut("/x");
+    await expect(worker.install()).rejects.toThrow(/storage error/);
+    expect(worker.keys("alfred-shell-v1")).toEqual([]);
+  });
+
+  it("rejects a put of a 206, as the Cache API does", async () => {
+    // `response.ok` is 200–299, so a worker that stores on `ok` alone reaches
+    // this — and in a browser it is a TypeError from a line that reads as though
+    // it cannot fail.
+    const worker = loadWorker(`
+      self.addEventListener("install", (event) => {
+        event.waitUntil((async () => {
+          const cache = await self.caches.open("alfred-shell-v1");
+          await cache.put("/x", new Response("part", { status: 206 }));
+        })());
+      });
+    `);
+    await expect(worker.install()).rejects.toThrow(/206/);
+  });
+
+  it("can be told to refuse to open at all, which is a store that is gone", async () => {
+    // Safari drops the whole CacheStorage under storage pressure and in some
+    // private modes. Without this, every `caches.open()` in the worker is
+    // assumed infallible, and a handler that opens outside its try answers a
+    // healthy network with a network error.
+    const worker = loadWorker(`
+      self.addEventListener("install", (event) => {
+        event.waitUntil(self.caches.open("alfred-shell-v1"));
+      });
+    `);
+    worker.refuseOpen();
+    await expect(worker.install()).rejects.toThrow(/storage error/);
+  });
+
+  it("can be told to refuse a match, which is the read half of the same failure", async () => {
+    // The disk, not the lookup. Without it, every `.catch` on a cache read is
+    // unreachable code, and a worker whose offline path rejects with a
+    // DOMException rather than falling back passes.
+    const worker = loadWorker(`
+      self.addEventListener("fetch", (event) => {
+        event.respondWith((async () => {
+          const cache = await self.caches.open("alfred-shell-v1");
+          return (await cache.match("/x")) || new Response("fell through");
+        })());
+      });
+    `);
+    worker.store.set("alfred-shell-v1", new Map([[`${ORIGIN}/x`, html("<!doctype html>")]]));
+    worker.refuseMatch("/x");
+    await expect(worker.request({ path: "/x" })).rejects.toThrow(/storage error/);
   });
 
   it("rejects a put of a response whose body has already been read", async () => {
@@ -288,5 +407,32 @@ describe("the seams the harness depends on", () => {
       headers: { Range: "bytes=0-1023" },
     });
     await expect(response!.text()).resolves.toBe("ranged");
+  });
+
+  it("gives a navigation the destination a browser gives it", async () => {
+    // A browser sets mode and destination together; a fixture that says one
+    // without the other is not a request any page makes. The app's own
+    // /assets/* requests are (cors, script|style|font), which is what the worker
+    // tests send.
+    expect(fetchRequest({ path: "/", mode: "navigate" }).destination).toBe("document");
+    expect(fetchRequest({ path: "/assets/x.js" }).destination).toBe("");
+    expect(fetchRequest({ path: "/assets/x.js", mode: "cors", destination: "script" })).toMatchObject(
+      { mode: "cors", destination: "script" },
+    );
+  });
+
+  it("records what self.fetch was handed, not merely which URL it named", async () => {
+    // Forwarding the Request is what keeps the page's mode, credentials and
+    // redirect mode; re-fetching `request.url` turns `redirect: "manual"` into
+    // `"follow"`, which no assertion about a body can see.
+    const worker = loadWorker(`
+      self.addEventListener("fetch", (event) => {
+        event.respondWith(self.fetch(event.request));
+      });
+    `);
+    worker.respond("/assets/x.js", html("<!doctype html>"));
+    await worker.request({ path: "/assets/x.js", mode: "cors", destination: "script" });
+    expect(worker.handed[0]).toMatchObject({ mode: "cors", destination: "script" });
+    expect(worker.fetched).toEqual(["/assets/x.js"]);
   });
 });

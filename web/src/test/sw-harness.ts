@@ -28,9 +28,14 @@ const settled = <T>(value: () => T): Promise<T> =>
     }, 0),
   );
 
-/** What a delete that has been programmed to fail rejects with. */
-const storageFailure = (): never => {
-  throw new DOMException("A storage error occurred.", "UnknownError");
+/**
+ * What a cache operation that has been programmed to fail rejects with. The
+ * name matters: a phone that is full rejects a `put` with `QuotaExceededError`,
+ * and an installed PWA on iOS is exactly the thing that meets it — the origin
+ * is evicted whole rather than trimmed when it goes over budget.
+ */
+const storageFailure = (name = "UnknownError"): never => {
+  throw new DOMException("A storage error occurred.", name);
 };
 
 /** Enough of `Cache` for this worker: open, match, put, keys, delete. */
@@ -40,11 +45,21 @@ class FakeCache {
   // `tsc -b` is the only one of lint/vitest/build that says so.
   readonly entries: Map<string, Response>;
   readonly refuses: (url: string) => boolean;
+  readonly refusesPut: (url: string) => boolean;
+  readonly refusesMatch: (url: string) => boolean;
   /** The origin a relative cache key resolves against — the worker's own. */
   readonly origin: string;
-  constructor(entries: Map<string, Response>, refuses: (url: string) => boolean, origin: string) {
+  constructor(
+    entries: Map<string, Response>,
+    refuses: (url: string) => boolean,
+    refusesPut: (url: string) => boolean,
+    refusesMatch: (url: string) => boolean,
+    origin: string,
+  ) {
     this.entries = entries;
     this.refuses = refuses;
+    this.refusesPut = refusesPut;
+    this.refusesMatch = refusesMatch;
     this.origin = origin;
   }
   /**
@@ -55,7 +70,13 @@ class FakeCache {
    * assertion about it after an activate reading a corpse.
    */
   match(key: string | { url: string }): Promise<Response | undefined> {
-    return Promise.resolve(this.entries.get(absolute(key, this.origin))?.clone());
+    const url = absolute(key, this.origin);
+    // A read can fail too, not only a write — the disk, not the lookup. Modelled
+    // because the alternative is a `.catch` on every match that no test can
+    // reach, and a worker whose offline path rejects with a DOMException instead
+    // of falling back is indistinguishable from one that does not.
+    if (this.refusesMatch(url)) return Promise.reject(new DOMException("A storage error occurred.", "UnknownError"));
+    return Promise.resolve(this.entries.get(url)?.clone());
   }
   put(key: string | { url: string }, response: Response): Promise<void> {
     // Real `Cache.put` rejects a Response whose body is already read or locked.
@@ -65,8 +86,24 @@ class FakeCache {
     if (response.bodyUsed || response.body?.locked) {
       return Promise.reject(new TypeError("Failed to execute 'put' on 'Cache': Response body is already used"));
     }
-    this.entries.set(absolute(key, this.origin), response);
-    return Promise.resolve();
+    // Real `Cache.put` rejects a 206 outright (the spec step is explicit about
+    // it: a partial body is not a cache entry). `response.ok` is 200–299, so a
+    // worker that stores on `ok` alone meets this, and it arrives as a TypeError
+    // from a line that looks like it cannot fail.
+    if (response.status === 206) {
+      return Promise.reject(
+        new TypeError("Failed to execute 'put' on 'Cache': Partial response (status code 206) is unsupported"),
+      );
+    }
+    const url = absolute(key, this.origin);
+    // Through `settled`, for the reason deletes are: a real put goes to disk, so
+    // a worker that does not await one has left it outside `waitUntil` and the
+    // browser is free to stop the worker before it lands. A microtask would make
+    // the missing `await` invisible; a macrotask does not.
+    return settled(() => {
+      if (this.refusesPut(url)) storageFailure("QuotaExceededError");
+      this.entries.set(url, response);
+    });
   }
   /** Real `Cache.keys()` answers Requests carrying absolute URLs. So does this. */
   keys(): Promise<{ url: string }[]> {
@@ -87,6 +124,15 @@ export interface FetchRequest {
   url: string;
   method: string;
   mode: string;
+  /**
+   * What the browser wants the bytes FOR — `"document"`, `"script"`, `"style"`,
+   * `"font"`, `""`. Carried because the fixtures are only honest with it: the
+   * real app's `/assets/*` requests are `mode: "cors"` (index.html marks both
+   * tags `crossorigin`), not the `"no-cors"` a hand-written spec defaults to,
+   * and a suite that never sends the real mode cannot see a branch that turns
+   * on it.
+   */
+  destination: string;
   /** Real `Headers`, so `get("range")` is as case-insensitive as a browser's. */
   headers: Headers;
 }
@@ -96,6 +142,8 @@ export interface RequestSpec {
   /** A path, or a whole URL when the point of the test is the URL's shape. */
   path: string;
   mode?: string;
+  /** Defaults to `"document"` for a navigation and `""` for everything else. */
+  destination?: string;
   method?: string;
   origin?: string;
   headers?: Record<string, string>;
@@ -109,6 +157,9 @@ export interface RequestSpec {
 export function fetchRequest({
   path,
   mode = "no-cors",
+  // A browser sets these together: every navigation is `destination: "document"`,
+  // so a fixture cannot say one without the other and stay real.
+  destination = mode === "navigate" ? "document" : "",
   method = "GET",
   origin = ORIGIN,
   headers = {},
@@ -116,7 +167,13 @@ export function fetchRequest({
   // `new URL(path, origin)` ignores the base for an absolute URL, which is what
   // lets a test pass `blob:…`, `data:…` or `//host/x` as `path` and get exactly
   // the URL a browser would have resolved.
-  return { url: new URL(path, origin).href, method, mode, headers: new Headers(headers) };
+  return {
+    url: new URL(path, origin).href,
+    method,
+    mode,
+    destination,
+    headers: new Headers(headers),
+  };
 }
 
 export interface Harness {
@@ -145,8 +202,36 @@ export interface Harness {
    * slash, which every URL has and no cache name here does.
    */
   refuseDelete(key: string): void;
+  /**
+   * Program a `Cache.put` to reject with `QuotaExceededError`, which is what a
+   * phone that is full really answers. A pathname, or a whole URL. This is the
+   * axis a service worker is least likely to be written for and most likely to
+   * meet: a `put` is not a network call, it is a disk write on a device whose
+   * storage the user does not manage, and a handler that treats a failed write
+   * as a failed fetch answers an online phone out of its cache.
+   */
+  refusePut(key: string): void;
+  /** Program a `Cache.match` to reject — the read half of the same axis. */
+  refuseMatch(key: string): void;
+  /**
+   * Program `caches.open()` itself to reject — the whole CacheStorage
+   * unavailable, which Safari does under storage pressure and in some private
+   * modes. A worker that cannot open its cache should behave like no worker at
+   * all; without this seam, every `caches.open` in the file is assumed
+   * infallible. With no argument, every open rejects.
+   */
+  refuseOpen(name?: string): void;
   /** Every pathname `self.fetch` was called with, in order. */
   fetched: string[];
+  /**
+   * What `self.fetch` was HANDED, in order — the `Request` a worker forwards,
+   * or the string one that rebuilt the URL passed. Forwarding matters: a
+   * Request carries the mode, the credentials and the redirect mode of the
+   * original, and re-fetching `request.url` silently turns `redirect: "manual"`
+   * into `"follow"`, which is the classic way a worker hands a page a redirected
+   * response it must not have.
+   */
+  handed: (string | { url: string })[];
   /** Of those, the ones asked for with `{ cache: "reload" }`. */
   reloaded: string[];
   /**
@@ -187,7 +272,13 @@ export interface Harness {
   inner: Partial<Record<Exposable, (request: FetchRequest) => boolean>>;
   install(): Promise<void>;
   activate(): Promise<void>;
-  /** `undefined` means the worker never called respondWith — i.e. left it to the network. */
+  /**
+   * `undefined` means the worker never called respondWith — i.e. left it to the
+   * network. Resolves only once everything the worker passed to the event's
+   * `waitUntil()` has settled, so a test can assert what the background half of
+   * a handler did; a rejection that escapes one is rethrown here rather than
+   * swallowed, because a browser only logs it and this is where it can be seen.
+   */
   request(spec: RequestSpec): Promise<Response | undefined>;
   message(data: unknown): Promise<void>;
   skipWaitingCalls: number;
@@ -292,6 +383,12 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
   const hangs = new Set<string>();
   /** Cache names and absolute entry hrefs whose deletion rejects. */
   const refusals = new Set<string>();
+  /** Absolute entry hrefs whose `put` rejects with QuotaExceededError. */
+  const putRefusals = new Set<string>();
+  /** Absolute entry hrefs whose `match` rejects. */
+  const matchRefusals = new Set<string>();
+  /** Cache names whose `open` rejects; `"*"` is every name. */
+  const openRefusals = new Set<string>();
   /** A list per type, not one handler: a real scope runs every listener it was given. */
   const listeners = new Map<string, ((event: unknown) => void)[]>();
   const harness: Partial<Harness> & {
@@ -299,7 +396,8 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     reloaded: string[];
     navigated: string[];
     deadlines: number[];
-  } = { fetched: [], reloaded: [], navigated: [], deadlines: [] };
+    handed: (string | { url: string })[];
+  } = { fetched: [], reloaded: [], navigated: [], deadlines: [], handed: [] };
   let deadlinesCleared = 0;
   const ownCache = cacheName(source);
   /** Named as a function so neither `cache` nor `keys()` has to reach for `this`. */
@@ -347,9 +445,18 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     },
     caches: {
       open: (name: string) => {
+        if (openRefusals.has("*") || openRefusals.has(name)) {
+          return settled(() => storageFailure());
+        }
         if (!store.has(name)) store.set(name, new Map());
         return Promise.resolve(
-          new FakeCache(store.get(name)!, (url: string) => refusals.has(url), origin),
+          new FakeCache(
+            store.get(name)!,
+            (url: string) => refusals.has(url),
+            (url: string) => putRefusals.has(url),
+            (url: string) => matchRefusals.has(url),
+            origin,
+          ),
         );
       },
       keys: () => Promise.resolve([...store.keys()]),
@@ -375,6 +482,9 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
       (input: string | { url: string }, init?: { cache?: string; signal?: AbortSignal }) => {
         const url = new URL(typeof input === "string" ? input : input.url, origin);
         harness.fetched.push(url.pathname);
+        // The input itself, not only its URL: forwarding the Request is what
+        // keeps the page's mode, credentials and redirect mode.
+        harness.handed.push(input);
         // Recorded rather than asserted on the source: `cache: "reload"` is the
         // only thing between a worker installing seconds after a deploy and a
         // precache of the bytes that deploy just replaced.
@@ -426,6 +536,7 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     reloaded: harness.reloaded,
     navigated: harness.navigated,
     deadlines: harness.deadlines,
+    handed: harness.handed,
     get deadlinesCleared() {
       return deadlinesCleared;
     },
@@ -436,6 +547,9 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     // absolute href.
     refuseDelete: (key) =>
       void refusals.add(key.includes("/") ? new URL(key, origin).href : key),
+    refusePut: (key) => void putRefusals.add(new URL(key, origin).href),
+    refuseMatch: (key) => void matchRefusals.add(new URL(key, origin).href),
+    refuseOpen: (name = "*") => void openRefusals.add(name),
     inner,
     install: () => extendable("install"),
     activate: () => extendable("activate"),
@@ -445,6 +559,12 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
       // instance's origin as the default, not the module's.
       const request = fetchRequest({ origin, ...spec });
       let answered: Promise<Response> | undefined;
+      // A FetchEvent is an ExtendableEvent: `waitUntil` is what keeps the worker
+      // alive for work that must outlive the response — the shell refresh is
+      // exactly that, and without this seam it would have to be awaited before
+      // the page is answered, which is a navigation blocked on a background
+      // fetch.
+      const extended: Promise<unknown>[] = [];
       for (const listener of listeners.get("fetch") ?? []) {
         listener({
           request,
@@ -453,11 +573,37 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
             if (answered) throw new Error("respondWith called twice for one fetch event");
             answered = p;
           },
+          waitUntil: (p: Promise<unknown>) => void extended.push(p),
         });
       }
-      // `undefined` is the meaningful answer: the worker declined to handle it
-      // and the browser goes to the network untouched.
-      return answered ? await answered : undefined;
+      let escaped: unknown;
+      // Drained in a loop rather than awaited once, because a handler may call
+      // `waitUntil` AFTER an await — the shell refresh is armed once the network
+      // has answered, long after the listener returned — and a real event is
+      // still extendable then, since `respondWith`'s own promise is holding it
+      // open. Snapshotting the array here instead would silently wait on
+      // nothing, and every assertion about background work would read the cache
+      // before it was written.
+      const drain = async () => {
+        while (extended.length) {
+          await Promise.all(extended.splice(0)).catch((error: unknown) => {
+            escaped ??= error;
+          });
+        }
+      };
+      let response: Response | undefined;
+      try {
+        // `undefined` is the meaningful answer: the worker declined to handle it
+        // and the browser goes to the network untouched.
+        response = answered ? await answered : undefined;
+      } finally {
+        await drain();
+      }
+      // A browser logs this and carries on serving. Here it is a defect: every
+      // background path in sw.js is supposed to swallow its own failures, and a
+      // rejection that reaches this line is one that does not.
+      if (escaped) throw escaped;
+      return response;
     },
     message: (data) => extendable("message", data),
     get skipWaitingCalls() {

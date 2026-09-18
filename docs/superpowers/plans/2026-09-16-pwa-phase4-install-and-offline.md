@@ -178,8 +178,12 @@ function isAsset(response: Response): boolean;   // ok && content-type is NOT te
 function isRefused(request): boolean;            // added in task 6 — the whole of rule 1, in one predicate
 async function precache(): Promise<void>;        // install
 async function purge(): Promise<void>;           // activate
-async function navigate(request): Promise<Response>;
+async function navigate(event): Promise<Response>;   // the EVENT, not the request — it needs waitUntil (corrected in task 7)
 async function asset(request, pathname: string): Promise<Response>;
+async function refresh(response): Promise<void>;  // added in task 7: publishes a shell only with its assets
+async function openCache(): Promise<Cache | undefined>;  // added in task 7: undefined = no usable CacheStorage
+async function cached(key): Promise<Response | undefined>;  // added in task 7: a miss and a read failure are one thing
+function timed(input, init): Promise<Response>;   // added in task 7: fetchFresh is this plus cache:"reload"
 
 // src/test/sw-harness.ts
 export interface FetchRequest { url: string; method: string; mode: string; headers: Headers }  // task 6
@@ -2357,7 +2361,7 @@ first two are the ones that change what gets written.)*
    line counts in that section go stale too: 156 lines of code / 427 of comment
    after this task, where the file says 128 / 323 (the comment half was already
    wrong at task 6 — measured 352 there).
-2. **Step 1's block ships as 23 tests, not 9.** Eight of the extra fourteen are
+2. **Step 1's block ships as 23 tests, not 9.** Seven of the extra fourteen are
    mutants step 5 would otherwise have let live (listed in 9 below); the six
    others are the positive half the task-6 correction below already asked for —
    an offline navigation to `/workshop`, `/ws-telemetry`, `/apifoo`, `/healthz`,
@@ -2377,11 +2381,14 @@ first two are the ones that change what gets written.)*
    `"https://alfred.example.com/index.html"`,** which are exactly the two things
    `worker.cache` and `ORIGIN` exist so that no test restates. As shipped it
    reads the store through a `shellInCache(worker)` helper built from both.
-5. **Step 2's expected failure is right for ten of the twenty-three and wrong for
-   the rest.** Measured by running the shipped block against task 6's `sw.js`:
-   21 fail — 10 on `Cannot read properties of undefined (reading 'text')`, 3 on
+5. **Step 2's expected failure is right for fifteen of the twenty-three and
+   wrong for the rest.** Measured by running the shipped block against task 6's
+   `sw.js`: 21 fail — **15** on `Cannot read properties of undefined (reading
+   'text')` (the offline table's six are among them, not beside them, which is
+   how the first count of this came to say "10 and 6" and still total 21), 3 on
    the same for `'status'`, 2 on `promise resolved "undefined" instead of
-   rejecting`, 6 on the offline table's `text()` — and **2 pass**, both
+   rejecting`, and 1 on `expected '<!doctype html>…' to contain 'deployed'` from
+   `refreshes the shell from an online deep link` — and **2 pass**, both
    negative: `does not cache a page that is not HTML` and `leaves a path that
    merely contains /assets/ alone`. A worker with no branch caches nothing and
    answers nothing, so those two are vacuous until this task lands, in the same
@@ -2390,34 +2397,157 @@ first two are the ones that change what gets written.)*
    bind.** The listener reads `event.request` throughout (task 6 left it that
    way), so the two branches are `event.request.mode` and
    `navigate(event.request)` / `asset(event.request, url.pathname)`.
-7. **`navigate()` has no deadline, and that is a decision rather than an
-   omission.** `fetchFresh`'s `TIMEOUT_MS` is not reused here: the one request
-   whose freshness the user is watching must not be handed a stale shell at ten
-   seconds. The cost is the other end of it — a connection accepted and never
-   answered gets the browser's own hang rather than the offline shell, where the
-   same hang inside `install` would have left the phone with no worker at all.
-   Written into the file, not only here.
+7. ~~**`navigate()` has no deadline, and that is a decision rather than an
+   omission.**~~ *(Reversed in the fix round. The argument was that the one
+   request whose freshness the user is watching must not be handed a stale shell
+   at ten seconds. Both reviewers landed on the same objection and it is right: a
+   request that is accepted and never answered is **indistinguishable from being
+   offline**, which is the judgement `fetchFresh` already makes at install, and
+   the real defect was the inconsistency. An installed PWA is the worst place for
+   a hang — a standalone window has no browser chrome to escape through — and
+   `asset()` had no deadline either, with no argument written down anywhere.
+   Both handlers now go through `timed()`; a navigation timeout is treated as
+   offline and falls back to the cached shell, and for an asset it only fails
+   faster. `TIMEOUT_MS` is unchanged.)*
 8. **Comments in `sw.js` and `sw.test.ts` that pointed forward at "task 7" are
-   now history** and were moved to the present tense in the same commit
-   (`isAssetUrl`'s cache-key note, `precache`'s declined-font note, `purge`'s
-   record note, and the dot-segment note).
-9. **Every mutant died, including the file as task 6 left it.** 22 mutants of the
-   two handlers and the branch dispatch, plus one moving `isRefused` after both
-   branches, plus `git show HEAD:web/public/sw.js` as a mutant of the whole task:
-   no survivors. The eight tests that exist only because of that pass: the 502
-   HTML page (`isShell` → `response.ok`), the navigation with nothing cached
-   (`if (cached) return cached; throw` → `return cached`), the navigation
-   straight to an asset URL (the `return` between the branches — the harness
-   throws on a second `respondWith`), the query'd read and the pathname-keyed
-   round trip (`cache.match(pathname)` → `match(request)`, `cache.put(pathname,
-   …)` → `put(request, …)`, and `url.pathname` → `url.href` at the call site),
-   the `/assets` mount's real JSON 404 (`isAsset` → `response.ok`), and
-   `/img/assets/logo.png` (`startsWith(ASSETS)` → `includes`).
+   now history** and were moved to the present tense (`isAssetUrl`'s cache-key
+   note, `precache`'s declined-font note, `purge`'s record note, and the
+   dot-segment note). *(Corrected in the fix round: this said "in the same
+   commit" and was false of half of it — the four in `sw.js` were moved, the six
+   in `sw.test.ts` were not, and the commit's diff to that file was 263
+   insertions and 0 deletions, which is the tell. All ten are present tense
+   now.)*
+9. **22 mutants of the two handlers and the branch dispatch, plus one moving
+   `isRefused` after both branches, plus `git show HEAD:web/public/sw.js` as a
+   mutant of the whole task.** *(Corrected in the fix round, twice over. The
+   claim "no survivors" was true only of that list: run against a list of ~50 it
+   is 17 survivors, and the ones that lived were the ones that mattered — see
+   the fix-round block below. And two attributions here were inverted:
+   `isShell` → `response.ok` is killed by `does not cache a page that is not
+   HTML` and by `answers a navigation straight to an asset URL once`, NOT by the
+   502 test, which passes either way because that fixture named no hashed asset;
+   `isAsset` → `response.ok` is killed by `refuses to store the SPA fallback
+   under an asset URL`, not by the 404 test. The list also said "the eight
+   tests" and named seven, which is where correction 2's arithmetic came from.)*
+   The seven: the navigation with nothing cached (`if (cached) return cached;
+   throw` → `return cached`), the navigation straight to an asset URL (the
+   `return` between the branches — the harness throws on a second
+   `respondWith`), the query'd read and the pathname-keyed round trip
+   (`cache.match(pathname)` → `match(request)`, `cache.put(pathname, …)` →
+   `put(request, …)`, and `url.pathname` → `url.href` at the call site), the
+   `/assets` mount's real JSON 404 (the status half of the store guard), the 502
+   page, and `/img/assets/logo.png` (`startsWith(ASSETS)` → `includes`).
+
+*(**Fix round**, after two reviews that converged. Measured against the deployed
+container on :8081 and against the real `dist`; the tests and the worker both
+moved, so read this block as the specification of what shipped.)*
+
+**The storage axis was the spine of it.** `cache.put` and `caches.open` can both
+fail on a phone — iOS evicts an installed PWA's origin whole rather than trimming
+it — and all three handlers treated every one of those failures as though the
+network had failed.
+
+1. **A failed cache write served the stale shell to an ONLINE phone.** The put sat
+   inside the try whose catch is the offline fallback. Measured with a put raising
+   `QuotaExceededError` on a working network: with a shell cached the navigation
+   answered the CACHED html and discarded the live deploy; with nothing cached it
+   threw `offline, and no shell cached` after a 200. Decision 8 exactly inverted,
+   and it falsified rule 2 of the file header, `navigate()`'s own header, the
+   catch comment, and the README. The sting the reviewer added is the reason the
+   test came first: the one-line fix (`.catch(() => {})`, the way `precache()` and
+   `purge()` already do it) **passed all 157 tests** — the suite could not tell
+   the fix from the bug.
+2. **A failed cache write turned a successful asset fetch into a network error.**
+   No guard at all on `asset()`'s put: `QuotaExceededError` rejected the handler
+   and the page got a failed request for bytes the network had returned 200 for.
+   With no worker installed that chunk loads; with that one it did not.
+3. **`caches.open()` was outside the try in both handlers.** A CacheStorage that
+   will not open rejected before any fetch was attempted, so an online phone got
+   the browser's network-error page for a navigation and a hard module-load
+   failure for an asset. Both handlers now open through `openCache()`, which
+   answers `undefined`, and every read goes through `cached()`, which catches.
+   The standard, written into the file: **a worker that cannot use its cache must
+   behave like no worker at all.**
+4. **The asset branch was never tested at the mode the real app uses.** Measured
+   in a browser against the real `dist`: every `/assets/*` request is
+   `mode: "cors"` — chunk `destination: "script"`, stylesheet `"style"`, all eight
+   woff2 `"font"` — because `index.html` marks both tags `crossorigin`. Every test
+   in the `assets` block used the harness default `"no-cors"`, so mutating the
+   dispatch to `mode !== "no-cors"` passed all 157 tests while, in a browser,
+   routing every chunk, stylesheet and typeface through `navigate()` — an offline
+   launch served the HTML shell as a JS module, the exact brick the file's
+   comments describe. The shipped code was right and the suite was blind.
+   `RequestSpec` now carries `destination` (a browser sets the two together), and
+   the asset fixtures send what the page really sends.
+5. **The shell refresh had no counterpart to `precache()`'s `urls.length === 0`
+   refusal.** The exact page install refuses — 200 `text/html` from this origin
+   naming no hashed asset, i.e. the reverse proxy's default page while a host is
+   being edited — was written straight in by the first navigation and rendered on
+   every offline launch afterwards. Mirrored now. The justification beside
+   `isShell` was wrong too and is rewritten: a **captive portal** cannot intercept
+   https at all, and what it does answer is 200 `text/html`, which `isShell`
+   accepts. Against `response.ok` the content-type half buys exactly one thing —
+   a 200 that is not HTML — and the status half buys the error page (nginx with
+   `proxy_cache_use_stale` answers 502 with the app's own HTML).
+6. **The shell was refreshed independently of the assets it names.** `sw.js` is
+   byte-identical across most deploys, so a deploy runs no new install and no new
+   activate: this refresh is the only thing that ever updates the offline copy.
+   Writing the new HTML alone left the cache holding a shell naming hashes it did
+   not have, and `asset()` propagates a network failure by design — so losing the
+   network before the page finished fetching (a tunnel, a backgrounded app, a
+   rollout mid-flight) made every offline cold launch a white screen. **Ruling:
+   publish a shell only once the assets it names are cached; if any of it fails,
+   keep the shell you have.** A self-consistent offline copy one deploy old beats
+   a newer one that cannot boot. It runs in `event.waitUntil()` so the page is
+   never blocked on it — **task 8's handshake builds on this**: what a waiting
+   worker takes over is a cache whose shell and assets already agree.
+7. **A 206 failed the asset outright.** `response.ok` is 200–299 and the real
+   `Cache.put` rejects a 206 with a TypeError nothing caught. The harness now
+   models both the 206 rejection and a programmable storage failure, and what that
+   exposed is fixed at the source: `isStored(response)` is `status === 200`, which
+   also declines a 204 that would have cached an empty chunk.
+8. **Two comments this task shipped were false.** "The only way this file fetches
+   anything" and "Every network call here gets a deadline" were both falsified by
+   the bare `self.fetch` the two handlers added. True again now: `timed(input,
+   init)` is that one way, and `fetchFresh` is `timed` plus `cache: "reload"` —
+   which the runtime handlers deliberately do not ask for, since a hashed asset
+   cannot have changed and a navigation is the page's own request.
+9. **The contract at the head of this plan says `async function navigate(request)`.**
+   It is `navigate(event)`: the handler needs `event.waitUntil` for 6, and reads
+   `event.request` for the fetch.
+10. **The harness grew five seams, all of them modelling a real failure:**
+    `refusePut` (QuotaExceededError), `refuseMatch`, `refuseOpen`, a `put` that
+    rejects a 206 and that lands on a macrotask like `delete` already did (so a
+    dropped `await` is visible), and `waitUntil` on fetch events — **drained in a
+    loop**, because a handler arms it after an await, when the listener has long
+    returned and `respondWith`'s promise is what still holds the event open.
+    `handed` records what `self.fetch` was given, so re-fetching `request.url`
+    instead of forwarding the Request (which silently turns `redirect: "manual"`
+    into `"follow"`) is visible.
+11. **Mutants: 63, no survivors, and each one run against a verified-green
+    baseline first** — the review's own first two runs were invalid, one on a
+    reporter vitest 4 does not have and one against a tree a crash had left
+    mutated, and both reported everything killed. The set covers `timed`,
+    `isStored`, `openCache`, `cached`, `refresh`, `navigate`, `asset` and the
+    dispatch, plus three whole-file mutants: the refusal moved after both
+    branches, task 6's `sw.js` (7c7343e), and **this task's own first commit
+    (8917bf3)**, which the new tests kill — the fixes above are covered, not
+    merely written. Two fixtures had to change to kill anything at all: the
+    error-page and wrong-content-type fixtures now NAME hashed assets (otherwise
+    the `urls.length === 0` refusal stops them and the `isShell` mutants live),
+    and the escaped-cache-key fixture uses `%25` rather than `%20`, because a
+    decoded space is re-encoded when the key is parsed back into a URL — both
+    spellings land on the same entry, so a decoding worker passed. `%25`, `%23`
+    and `%2F` do not round-trip; the last is the traversal `isAssetUrl` refuses.
+12. **Counts after the fix round: 75 files / 1 763 tests** — `sw.test.ts` 157 →
+    **186**, `sw-harness.test.ts` 21 → **30**, `sw-server-routes.test.ts` 7.
+    `sw.js` is 188 lines of code to 523 of comment.
 
 **Files:**
 - Modify: `web/public/sw.js`
 - Modify: `web/src/test/sw.test.ts`
 - Modify: `web/README.md` *(corrected in task 7: absent from this list — see 1 above)*
+- Modify: `web/src/test/sw-harness.ts`, `web/src/test/sw-harness.test.ts` *(added in the fix round: five new seams, item 10 above)*
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2589,7 +2719,7 @@ still falls through unanswered.)*
 npx vitest run src/test/sw.test.ts
 ```
 
-Expected: PASS, 45 tests *(corrected in task 3: 37 as planned; +8)* — including all thirteen of task 6's, which now have branches that could have broken them. *(Corrected in task 6: 51 of task 6's, of which the 13 in the second `describe` are the ones that were vacuous. All of them were already run green against a scratch transcription of this task's two handlers — see task 6's correction 7 — so a failure here is this task's code, not that block's.)* *(Corrected in task 7: measured, **157** in `sw.test.ts` — task 6's 134 plus this block's 23. `sw-harness.test.ts` (21) and `sw-server-routes.test.ts` (7) are untouched. Mutate before believing the green: the list is correction 9 at the head of this task.)*
+Expected: PASS, 45 tests *(corrected in task 3: 37 as planned; +8)* — including all thirteen of task 6's, which now have branches that could have broken them. *(Corrected in task 6: 51 of task 6's, of which the 13 in the second `describe` are the ones that were vacuous. All of them were already run green against a scratch transcription of this task's two handlers — see task 6's correction 7 — so a failure here is this task's code, not that block's.)* *(Corrected in task 7: measured, **157** in `sw.test.ts` — task 6's 134 plus this block's 23. `sw-harness.test.ts` (21) and `sw-server-routes.test.ts` (7) are untouched. Mutate before believing the green: the list is correction 9 at the head of this task.)* *(Corrected in the fix round: **186** in `sw.test.ts` and **30** in `sw-harness.test.ts`.)*
 
 - [ ] **Step 5: Commit**
 
@@ -2598,7 +2728,7 @@ git add web/public/sw.js web/src/test/sw.test.ts
 git commit -m "feat(web): network-first navigations, cache-first hashed assets"
 ```
 
-Counts after this task: **73 files / ~1 561 tests** *(corrected in task 7: measured, **75 files / 1 725 tests**. No new file — all three this task touches already existed — and the delta is +23 on task 6's 1 702, all of them in `sw.test.ts`.)*.
+Counts after this task: **73 files / ~1 561 tests** *(corrected in task 7: measured, **75 files / 1 725 tests**. No new file — all three this task touches already existed — and the delta is +23 on task 6's 1 702, all of them in `sw.test.ts`.)* *(corrected again in the fix round: **75 files / 1 763 tests**, +61 on task 6.)*.
 
 ---
 
@@ -2691,6 +2821,15 @@ Counts after this task: **73 files / ~1 564 tests**.
 The page's half. Four jobs: register in production and actively *unregister* in dev; notice a worker that has installed and is waiting; re-check on every return to the foreground; reload once when the new worker takes control.
 
 Two testability decisions, both in the signature rather than in a mock. `enabled` defaults to `import.meta.env.PROD` but is a parameter, so tests never stub env. `reload` is injected, because jsdom does not implement navigation and `window.location.reload()` throws there.
+
+*(Carried forward from task 7, measured on the deployed container: `GET /sw.js` returns
+**200 `text/html`**, 1385 bytes of `index.html`, because that image predates the worker and
+`mount_spa` answers any unknown path with the shell. Two consequences for this task. The
+registration should treat a `text/html` `/sw.js` as a **hard error** rather than a silent
+no-op — `navigator.serviceWorker.register()` fails on the MIME type and the rejection is the
+only signal that the deploy did not ship the file. And an installed worker cannot be
+withdrawn by deleting `sw.js`: the update check gets HTML, fails, and the old worker stays
+in charge, which is what task 11's kill switch is for.)*
 
 **Files:**
 - Create: `web/src/lib/sw.ts`, `web/src/lib/sw.test.ts`
@@ -3253,9 +3392,9 @@ Counts after this task: **76 files / ~1 583 tests**.
 
 ## Task 11: The kill switch
 
-A bad precache on an installed iOS PWA is very hard for a user to clear: there is no address bar, no developer tools, no "clear site data", and Settings › Safari › Clear History does not reliably reach a home-screen app's storage. The only remote lever is the bytes at `/sw.js`. So the kill switch is a **file**, checked in and tested, and the procedure is a copy.
+A bad precache on an installed iOS PWA is very hard for a user to clear: there is no address bar, no developer tools, no "clear site data", and Settings › Safari › Clear History does not reliably reach a home-screen app's storage. The only remote lever is the bytes at `/sw.js`. *(Carried forward from task 7: nothing else reaches a poisoned `/assets/` entry either. That branch is cache-first with no expiry and no revalidation, and `purge()` — the only thing that deletes an entry — runs on activate, which happens only when `sw.js`'s own bytes change. So a wrong entry stays wrong until either this file is edited or the switch below is thrown.)* So the kill switch is a **file**, checked in and tested, and the procedure is a copy.
 
-**It cannot be a deletion.** `mount_spa` (`core/channels/spa.py:42-49`) answers any unknown path with `index.html` and a 200, so deleting `web/public/sw.js` makes `/sw.js` serve a page of HTML. The browser's update check rejects it on MIME type, the update fails, and **the old worker stays installed and keeps serving its cache**. Deleting the file is the one action that looks like a fix and is not.
+**It cannot be a deletion.** `mount_spa` (`core/channels/spa.py:42-49`) answers any unknown path with `index.html` and a 200, so deleting `web/public/sw.js` makes `/sw.js` serve a page of HTML. The browser's update check rejects it on MIME type, the update fails, and **the old worker stays installed and keeps serving its cache**. Deleting the file is the one action that looks like a fix and is not. *(Measured in task 7's fix round, and it is not hypothetical today: `GET /sw.js` on the deployed container returns 200 `text/html` — 1385 bytes of `index.html` — because that image was built before this file existed. That is exactly the state a deletion would restore.)*
 
 **Files:**
 - Create: `web/public/sw.kill.js`, `web/src/test/sw-kill.test.ts`
