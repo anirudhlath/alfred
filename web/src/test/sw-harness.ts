@@ -166,9 +166,8 @@ export interface Harness {
   /**
    * The worker's own file-local functions, by the name the file declares them
    * under — `loadWorker(source, { expose: ["isRefused"] })` is what puts one
-   * here, and a
-   * name the file does not declare is a `ReferenceError` at load, which is the
-   * correct verdict for a test asking after something that is gone.
+   * here. A name the file does not declare is a `ReferenceError` at load, which
+   * is the correct verdict for a test asking after something that is gone.
    *
    * A classic worker exports nothing, so the only other way to reach a policy
    * function inside one is through whatever branch consults it. That is enough
@@ -177,8 +176,15 @@ export interface Harness {
    * outside "refused" and "not handled" are the same `undefined`. Same species
    * of reach as `cacheName()` below — one name read out of the shipped source,
    * red the moment the file renames it.
+   *
+   * Only `EXPOSABLE` names are allowed through, because this splices an
+   * identifier into the evaluated source and the argument above justifies
+   * exactly one of them. Reaching for `precache` or `purge` this way would be
+   * testing a worker through a door no browser has, when both already have
+   * branches that drive them; the allowlist is where that judgement lives
+   * rather than in a doc comment nothing enforces.
    */
-  inner: Record<string, (...args: never[]) => unknown>;
+  inner: Partial<Record<Exposable, (request: FetchRequest) => boolean>>;
   install(): Promise<void>;
   activate(): Promise<void>;
   /** `undefined` means the worker never called respondWith — i.e. left it to the network. */
@@ -235,10 +241,19 @@ const seal = (name: string): unknown => {
   return new Proxy(function sealed() {} as object, { get: complain, apply: complain });
 };
 
+/**
+ * The file-local names a test may reach into a worker for, and the whole list.
+ * Every one of them is a pure predicate over a request, which is what makes the
+ * single signature on `inner` honest; a name that is not one does not belong
+ * here, and neither does one that a dispatched event can already drive.
+ */
+export const EXPOSABLE = ["isRefused"] as const;
+export type Exposable = (typeof EXPOSABLE)[number];
+
 /** How a test asks for a worker that is not the default one. */
 export interface LoadOptions {
-  /** File-local names to hand back on `inner`; see that field. */
-  expose?: readonly string[];
+  /** File-local names to hand back on `inner`; see that field and `EXPOSABLE`. */
+  expose?: readonly Exposable[];
   /**
    * Where the worker is registered, `ORIGIN`'s root by default. The one thing
    * it changes that matters is the SCHEME: a worker is a secure context, which
@@ -247,9 +262,12 @@ export interface LoadOptions {
    * of any same-scheme guard is unexercisable and a worker that refused its own
    * origin on localhost would pass every test here.
    *
-   * It moves the whole instance — routes, cache keys, `client.url` — so a test
-   * using it passes `origin` to `fetchRequest` too, since that default is
-   * module-level and stays `ORIGIN`.
+   * It moves the whole instance — routes, cache keys, `client.url`, and the
+   * origin `request()` resolves a bare path against. A scoped worker sent a
+   * spec with no `origin` must get a SAME-origin request, or the test passes
+   * because the worker refused a cross-origin URL rather than for its own
+   * reason. The module-level `fetchRequest` default stays `ORIGIN`; only the
+   * instance knows better, so only the instance overrides it.
    */
   scope?: string;
 }
@@ -381,9 +399,14 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
   /* The tail is appended to the shipped bytes rather than woven into them, so
      the source that registered these listeners is still the source that ships.
      It runs last, after every declaration the file makes. */
+  for (const name of expose) {
+    // Not a type-level check alone: `expose` is data by the time it gets here,
+    // and this splices it into evaluated source.
+    if (!EXPOSABLE.includes(name)) throw new Error(`${name} is not an exposable worker internal`);
+  }
   const tail = expose.length ? `\n;return { ${expose.join(", ")} };` : "";
   const inner = (new Function("self", ...SEALED, source + tail)(scope, ...SEALED.map(seal)) ??
-    {}) as Record<string, (...args: never[]) => unknown>;
+    {}) as Harness["inner"];
 
   /** Runs every listener and waits on every promise each one extended with. */
   const extendable = async (type: string, data?: unknown) => {
@@ -418,8 +441,9 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     activate: () => extendable("activate"),
     async request(spec) {
       // The same builder the direct tests use, so a request dispatched through
-      // an event and one handed to `isRefused` cannot drift apart.
-      const request = fetchRequest(spec);
+      // an event and one handed to `isRefused` cannot drift apart — with this
+      // instance's origin as the default, not the module's.
+      const request = fetchRequest({ origin, ...spec });
       let answered: Promise<Response> | undefined;
       for (const listener of listeners.get("fetch") ?? []) {
         listener({

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { html, loadWorker, ORIGIN } from "./sw-harness";
+import { fetchRequest, html, loadWorker, ORIGIN } from "./sw-harness";
 
 // The harness is the only thing standing between "this worker's tests pass" and
 // "this worker works", and eight tasks' tests are written against it. Where it
@@ -218,8 +218,23 @@ describe("the seams the harness depends on", () => {
     // The only way into a classic worker's internals, and the whole of what
     // makes `isRefused` testable on the half that matters: the requests it must
     // NOT refuse, which are indistinguishable from unhandled ones from outside.
-    const worker = loadWorker("function isRefused() { return 42; }", { expose: ["isRefused"] });
-    expect(worker.inner.isRefused()).toBe(42);
+    const worker = loadWorker('function isRefused(request) { return request.method !== "GET"; }', {
+      expose: ["isRefused"],
+    });
+    expect(worker.inner.isRefused!(fetchRequest({ path: "/", method: "POST" }))).toBe(true);
+    expect(worker.inner.isRefused!(fetchRequest({ path: "/" }))).toBe(false);
+  });
+
+  it("refuses a name that is not on the allowlist", () => {
+    // `expose` splices an identifier into evaluated source, and the argument for
+    // reaching in at all is specific to `isRefused` — `precache` and `purge`
+    // both already have branches that drive them. The allowlist is where that
+    // judgement lives rather than in a doc comment nothing enforces.
+    expect(() =>
+      loadWorker('const VERSION = "v1";', {
+        expose: ["precache" as unknown as "isRefused"],
+      }),
+    ).toThrow(/not an exposable worker internal/);
   });
 
   it("evaluates the exposed worker's listeners exactly as an unexposed one's", async () => {
@@ -227,7 +242,7 @@ describe("the seams the harness depends on", () => {
     // the listeners has to still be the source that ships. A `return` that
     // landed anywhere but last would cut the file short and take them with it.
     const worker = loadWorker(
-      `function isRefused() { return true; }
+      `function isRefused(request) { return Boolean(request); }
        self.addEventListener("install", () => { self.caches.open("alfred-still-here"); });`,
       { expose: ["isRefused"] },
     );
@@ -241,6 +256,20 @@ describe("the seams the harness depends on", () => {
     expect(() => loadWorker('const VERSION = "v1";', { expose: ["isRefused"] })).toThrow(
       /isRefused is not defined/,
     );
+  });
+
+  it("resolves a scoped worker's bare path against its own origin", async () => {
+    // Otherwise a scoped test that forgets `origin` sends a CROSS-origin request
+    // and `resolves.toBeUndefined()` passes because the worker refused another
+    // origin, not for the reason the test names.
+    const worker = loadWorker(
+      `self.addEventListener("fetch", (event) => {
+         event.respondWith(Promise.resolve(new Response(event.request.url)));
+       });`,
+      { scope: "http://localhost:8081/" },
+    );
+    const response = await worker.request({ path: "/assets/x.js" });
+    await expect(response!.text()).resolves.toBe("http://localhost:8081/assets/x.js");
   });
 
   it("carries a request's headers to the worker, case-insensitively", async () => {

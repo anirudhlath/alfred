@@ -141,11 +141,12 @@ Identical to phases 1 to 3, repeated because they are load-bearing:
 | `web/src/test/contrast.ts` | Gains `srgbHex()`, so a file that cannot hold an `oklch()` restates no literal | 1 |
 | `web/src/test/manifest.test.ts` | Both manifests parsed, compared, held to `--bg` through `contrast.ts`, and checked against the files actually in `public/` *(corrected in task 2: "held to `THEME_COLOR`")* | 2 |
 | `web/index.html` | `apple-touch-icon` link; the manifest link, which `applyTheme` finds by `rel` *(corrected in task 2: this said the link "keeps its `id`" — it has never had one, and the swap selects on `link[rel="manifest"]`, so task 2 changes no markup at all)* | 1 |
-| `web/tsconfig.app.json`, `web/tsconfig.node.json` | `icons.test.ts` reads bytes, so it is checked by the Node project, not the browser one | 1 |
+| `web/tsconfig.app.json`, `web/tsconfig.node.json` | `icons.test.ts` reads bytes, so it is checked by the Node project, not the browser one — `sw-server-routes.test.ts` joins it in task 6 | 1, 6 |
 | `web/eslint.config.js` | A block for `public/*.js` with the service-worker globals | 3 |
 | `web/src/test/sw-harness.ts` | Fake `ServiceWorkerGlobalScope`, fake `CacheStorage`, event dispatch; from task 6 also `fetchRequest`, a settable scope, and `inner` for a file-local function | 3, 5, 6 |
 | `web/public/sw.js` | The worker: precache, purge, route, update handshake | 3–8 |
-| `web/src/test/sw.test.ts` | Every branch of the worker, through dispatched events | 3–8 |
+| `web/src/test/sw.test.ts` | Every branch of the worker, through dispatched events — and, from task 6, `isRefused` called directly, which is the only way to assert what it must *not* refuse | 3–8 |
+| `web/src/test/sw-server-routes.test.ts` | *(added in task 6's review round)* The worker's refusal list against the routes FastAPI and `mount_spa` really serve; red if `create_app` moves `docs_url` out from under it. Node project, like `icons.test.ts` | 6 |
 | `web/public/sw.kill.js` | The kill switch: unregister and drop every cache | 11 |
 | `web/src/test/sw-kill.test.ts` | The kill switch, through the same harness | 11 |
 | `web/src/lib/sw.ts` | Register, dev-unregister, update-on-visible, `onUpdateReady`, `applyUpdate` | 9 |
@@ -184,7 +185,9 @@ async function asset(request, pathname: string): Promise<Response>;
 export interface FetchRequest { url: string; method: string; mode: string; headers: Headers }  // task 6
 export interface RequestSpec { path: string; mode?; method?; origin?; headers? }               // task 6
 export function fetchRequest(spec: RequestSpec): FetchRequest;                                 // task 6
-export interface LoadOptions { expose?: readonly string[]; scope?: string }                    // task 6
+export const EXPOSABLE = ["isRefused"] as const;                                                // task 6
+export type Exposable = (typeof EXPOSABLE)[number];                                            // task 6
+export interface LoadOptions { expose?: readonly Exposable[]; scope?: string }                  // task 6
 export interface Harness {
   /** cache name → (absolute URL → Response). The whole of the fake CacheStorage. */
   store: Map<string, Map<string, Response>>;
@@ -207,7 +210,7 @@ export interface Harness {
   /** The worker's own file-local functions, by name. Added in task 6 — a classic
       worker exports nothing, and a refusal's must-NOT-refuse half is invisible
       through a dispatched event, where "refused" and "unhandled" are both undefined. */
-  inner: Record<string, (...args: never[]) => unknown>;
+  inner: Partial<Record<Exposable, (request: FetchRequest) => boolean>>;   // typed in task 6's review round; the `as` casts went with it
   install(): Promise<void>;
   activate(): Promise<void>;
   /** `undefined` means the worker never called respondWith — i.e. left it to the network. */
@@ -1895,6 +1898,9 @@ This is constraint 3 of the header comment and decision 3 of the plan, and it is
 - Modify: `web/public/sw.js`
 - Modify: `web/src/test/sw.test.ts`
 - Modify: `web/src/test/sw-harness.ts`, `web/src/test/sw-harness.test.ts` *(added in task 6 — see correction 2)*
+- Create: `web/src/test/sw-server-routes.test.ts` *(added in task 6's review round — see correction 10)*
+- Modify: `web/README.md` *(added in task 6 — the worker's section describes the refusal)*
+- Modify: `web/tsconfig.app.json`, `web/tsconfig.node.json` *(added in task 6's review round — the new test reads files off disk, so it belongs to the Node project, as `icons.test.ts` does)*
 
 > **Corrected in task 6, after attacking the draft guard with thirty mutants
 > across two subjects. The code fences below (steps 1 and 3) are the
@@ -1951,39 +1957,152 @@ This is constraint 3 of the header comment and decision 3 of the plan, and it is
 >      correction 6). Dot segments need no rule — `new URL` has already resolved
 >      `/assets/../api/x` into `/api/admin/overview`, which the tests assert
 >      rather than assume.
+>      *(Corrected in task 6's review round — see correction 9. This rule was one
+>      escape out of many and the whole path list was defeatable without it:
+>      `/%68ealth` returns the real health JSON, measured. It is gone, replaced
+>      by decoding the pathname the way uvicorn does before the list is applied
+>      at all, plus a dot-segment rule that covers `%2f` traversal as an
+>      instance. The last sentence was also wrong in the other direction — a dot
+>      segment DOES survive `new URL` when its separator is encoded.)*
 > 4. **`/ws` is anchored (`=== "/ws" || startsWith("/ws/")`), not a `/ws`
 >    prefix** — the same lesson task 4's review drew about `/assets/`, and the
 >    same reason: `<Route path="*">` makes every unknown path a navigation the
 >    SPA answers, so a guard that widens does not cache less, it hands a phone
 >    with no network a browser error page instead of the app.
+>    *(Corrected in task 6's review round: that reason is true of `/api/`,
+>    `/health` and `/docs`, and **false of `/ws`**. `mount_spa`'s
+>    `_NON_SPA_PREFIXES = ("api/", "ws")` makes every `/ws*` path a 404 — measured:
+>    `/ws-telemetry`, `/wsx` and `/ws` are all 404 `application/json` — so
+>    widening this one costs nothing a user could see. It stays anchored anyway,
+>    for the reason below it rather than the one written here: the server's
+>    prefix and the worker's are two lists that must not drift apart silently,
+>    and `sw-server-routes.test.ts` is what now says so. The fixture that carries
+>    the mutant is honest about this too.)*
 > 5. **The first fixture written for that was wrong, and only the mutation run
 >    said so.** `/workshop` was chosen as the path a `/ws` prefix would swallow.
 >    It does not begin `/ws` — w, o, r — so it killed nothing, and the prefix
 >    mutant survived a suite that had been written specifically to catch it. The
->    fixture is now `/ws-telemetry` (a plausible mistyping of the real socket,
->    and an ordinary path), `/workshop` stays beside it as the looser-guard case,
+>    fixture is now `/ws-telemetry` (a plausible mistyping of the real socket),
+>    `/workshop` stays beside it as the looser-guard case,
 >    and one test states both directions explicitly — the two sockets refused,
 >    three near-misses not — because each direction is invisible on its own.
+>    *(Corrected in task 6's review round: measured, `/workshop` is 200
+>    `text/html` — the app — and `/ws-telemetry` is a 404, so it is `/workshop`
+>    that carries the real cost of a widened guard and `/ws-telemetry` that
+>    carries only the mutant. Both are kept and the test now says which is
+>    which.)*
 > 6. **What task 7 inherits from this, and it is now two things.** Task 5 wrote
 >    down that the entry purge also reaches whatever task 7 runtime-caches; this
 >    adds that **task 7's `startsWith(ASSETS)` is safe only because `isRefused`
->    runs first**. It is what turns away the cross-origin URL, the `%2f` path and
->    the ranged GET before the pathname is ever trusted as a cache key. If the
->    refusal is ever moved after a branch, that branch needs `isAssetUrl`.
+>    runs first**. It is what turns away the cross-origin URL, the ranged GET and
+>    the dot-segment path before the pathname is ever trusted as a cache key. If
+>    the refusal is ever moved after a branch, that branch needs `isAssetUrl`.
+>    *(Corrected in task 6's review round: this said "the `%2f` path". That rule
+>    is gone — correction 9 — and the one that covers `/assets/..%2fapi/x` now is
+>    the dot-segment rule, which is what task 7 actually inherits.)*
 > 7. **Step 2's "run them again after task 7" was done here, not deferred.**
 >    Task 7's two handlers were transcribed into a scratch copy of the worker
->    (outside the repo) and the whole suite re-run against it: all 127 pass, and
->    six mutants of *that* subject die on the black-box block — including the two
->    that matter most, `the listener never consults the refusal` and `the refusal
->    runs after the navigation branch`. So the black-box half is a live
->    regression guard from the moment task 7 lands, which is what the plan
->    claimed and had no way to check.
+>    (outside the repo) and the whole suite re-run against it. So the black-box
+>    half is a live regression guard from the moment task 7 lands, which is what
+>    the plan claimed and had no way to check.
+>    *(Re-measured in task 6's review round against the rewritten predicate: 162
+>    pass under the overlay, and of eleven mutants run there, **eight** fail at
+>    least one test in the black-box block. The three that do not are the ones
+>    only a direct call can see — `no-dot-rule`, `decode-fail-permitted` and
+>    `api-prefix-no-slash` — and the last of those is the asymmetry itself: a
+>    mutant that only ever refuses MORE makes more requests fall through
+>    untouched, which is what every black-box row asserts. Numbers in step 4a.)*
 > 8. **The "AS SHIPPED TODAY" paragraph is gone, replaced by one line** ("Three
 >    rules, and everything in the file is under them"), because deleting it
 >    outright would also have deleted the sentence that frames the three rules as
 >    *policy* rather than as a description of the code. Rule 1 lost its "once
 >    there is a fetch handler" clause and now names `isRefused` as where it is
 >    decided.
+>
+> **Corrections 9-14 are from the review round, which measured against the live
+> app on :8081 rather than reasoning about it. Six of the eight findings were
+> things this task had asserted and not checked.**
+>
+> 9. **One percent-escape defeated the entire path list, and the `%2f` rule was
+>    one escape out of many.** Measured: `/%68ealth` and `/healt%68` both return
+>    the real health JSON, `/%61pi/admin/overview` and `/ap%69/admin/overview`
+>    both return the real API's 401. uvicorn `unquote()`s the whole path before
+>    Starlette routes it, so the string the worker reads and the string the
+>    server routes on are not the same string. **The list is now applied to the
+>    decoded pathname**, a pathname that cannot be decoded is refused rather than
+>    guessed at (`decodeURIComponent` throws where Python's `unquote` does not —
+>    `%zz`, a lone `%`, non-UTF-8 bytes — and a path the two read differently is
+>    exactly one not to answer from a cache), and a decoded form with a `.` or
+>    `..` segment is refused. The `%2f` special case is **deleted**, not kept: it
+>    is an instance of the dot-segment rule, and it also refused `/%2Fhealth`,
+>    which decodes to `//health` and is the app.
+> 10. **`/docs`, `/docs/oauth2-redirect`, `/redoc` and `/openapi.json` were
+>    missing, and three of them are `text/html` on this origin.** FastAPI serves
+>    them by default and `create_app` overrides none of the four kwargs, so a
+>    navigation to `/docs` would have passed `isShell()` and overwritten the
+>    cached shell — every offline launch afterwards rendering Swagger UI until
+>    the next online navigation. There is now a test for that exact sequence, and
+>    a new cross-language file, **`sw-server-routes.test.ts`**, which reads
+>    `web_server.py` and `spa.py` off disk and fails if `create_app` ever moves
+>    one of those URLs out from under the worker's list. It is in the **Node**
+>    project (`tsconfig.node.json`) for the reason `icons.test.ts` is: `?raw`
+>    cannot reach outside `web/`, which is Vite's `server.fs` boundary.
+>    They are **exact paths, not a `/docs/` prefix** — measured, `/docsx`,
+>    `/docs/foo`, `/redocx` and `/openapi.json/x` are all 200 `text/html`, the app.
+> 11. **Ten of the fourteen black-box rows could not fail.** `RequestSpec`
+>    defaulted `mode` to `"no-cors"`, so the `navigate` branch task 7 will add
+>    could never have claimed them and the row would have passed against any
+>    guard at all. Every row now carries the mode the browser really sends — API
+>    calls are `fetch`, so `cors`; `/health`, `/docs` and the sockets are reached
+>    by a human in the address bar, so `navigate` — and **the same table is
+>    driven through `isRefused` directly** in a block that is live today. The
+>    commit message claimed the black-box block was the regression guard; it is
+>    the direct block that is, and the plan says so here because the commit
+>    message is immutable.
+>    **Every path in that table is now a route that exists**, checked against the
+>    live app rather than invented: a real route answers 401 (or 200 for
+>    `/api/auth/status`) and a made-up one answers 404, which is how the check is
+>    made. The draft fence in step 1 called `/api/admin/streams/events` an event
+>    stream; there is no SSE anywhere in this repo — the Workshop polls
+>    `GET /api/admin/streams/{name}?count=50` (`core/channels/admin_api.py:394`)
+>    and the two sockets are real upgrades that never reach a `fetch` handler.
+>    The fixture is `user_requests`, which is what `src/App.test.tsx` mocks;
+>    `chat`, tried first, is not in `STREAM_CATALOG` and would have been the same
+>    mistake again.
+> 12. **Three smaller ones.** `harness.request()` built its URL against the
+>    module-level `ORIGIN` and not the instance's scope, so a scoped worker's
+>    bare path silently addressed the wrong origin; it now defaults to the
+>    instance origin. `expose` is fenced by an `EXPOSABLE` allowlist, so the seam
+>    reaches one named internal rather than any identifier in the file, and
+>    `Harness.inner` is typed, which removed the `as` casts at the call sites.
+>    The refusal literals are named `NEVER` / `NEVER_UNDER` and read by the
+>    cross-language test; note that the same list exists in
+>    `core/channels/spa.py` and in `web/vite.config.ts`'s dev proxy and the three
+>    **disagree** — deliberately not unified here, because the dev proxy's copy
+>    is a different question from the worker's.
+> 13. **Two claims in this plan and one in the README were false and are
+>    corrected above.** `/ws-telemetry` is not "an ordinary path" (correction 5),
+>    the `/ws` anchoring reason does not hold for `/ws` (correction 4), and
+>    `/%2e%2e%2fapi/x` does **not** reach the real API — measured, it is 200
+>    `text/html`, because Starlette does not normalise dot segments. The
+>    dot-segment rule is kept on the honest reason instead: the raw pathname of
+>    `/assets/..%2fapi/x` still begins `/assets/`, the prefix task 7 reads as a
+>    cache key, so a server that ever did normalise would have it cache a 401 as
+>    a hashed chunk.
+> 14. **The re-run found three survivors, and one of them was a redundant
+>    rule.** They are worth reading as three different failures. (a)
+>    `no-raw-term` — applying the list to the decoded form *and* the raw one:
+>    **no fixture can kill this, because none exists.** Every entry in both lists
+>    is escape-free and decoding rewrites nothing but escapes, so a raw pathname
+>    the list matches decodes to one it still matches; the raw term could refuse
+>    nothing the decoded one does not. It is deleted, and a test pins the reason
+>    so it is not added back. (b) `dot-only-dotdot` — the lone `.` arm had no
+>    fixture; `/%2e%2fapi/admin/overview` is now one. (c) `origin-prefix` —
+>    `url.origin.startsWith(scopeOrigin())` survived every origin row here,
+>    because a host that has ours as a *prefix* was not among them;
+>    `https://alfred.example.com.evil.invalid/` is now a fixture. Each is the
+>    thing this task was briefed to avoid — an anchor that happens to hold — and
+>    only mutation found them.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2111,7 +2230,7 @@ npx vitest run src/test/sw.test.ts
 npm run lint
 ```
 
-Expected: PASS, 36 tests *(corrected in task 3: 28 as planned; +8)* *(corrected in task 6: **108** in `sw.test.ts` — task 5's 57 plus this block's 51 — and `sw-harness.test.ts` moves 15 → 19. Then mutate: a green here is worth reading only after the mutants in step 4a have died.)*. ESLint silent.
+Expected: PASS, 36 tests *(corrected in task 3: 28 as planned; +8)* *(corrected in task 6: **108** in `sw.test.ts` — task 5's 57 plus this block's 51 — and `sw-harness.test.ts` moves 15 → 19. Then mutate: a green here is worth reading only after the mutants in step 4a have died.)* *(corrected again after review: **134** in `sw.test.ts` — task 5's 57 plus this block's 77 — `sw-harness.test.ts` 15 → 21, and a third file, `sw-server-routes.test.ts`, with 7. The review round added 26 in `sw.test.ts`, 2 in the harness's and all 7 of the new file's.)*. ESLint silent.
 
 - [ ] **Step 4a: Mutate the guard, both on its own and under task 7** *(added in task 6)*
 
@@ -2133,24 +2252,70 @@ killer: `/ws-telemetry`, and see correction 5 for the fixture that did not kill
 it); no `/ws` exact clause; no `/ws/` prefix clause; the whole path list dropped;
 refuses nothing; refuses everything; and the listener inverted.
 
+> **Corrected in task 6's review round.** Two things above do not survive a
+> re-run. The `%2f` mutants are gone with the rule (correction 9), and one
+> recorded result **did not reproduce even before that**: `no-%2f-check` kills 4
+> tests and **none of them are on the black-box block**, which has no
+> encoded-separator fixture at all. The other five overlay results were as
+> claimed. The re-run below replaces this table; it is against the rewritten
+> predicate, so the two are not comparable mutant for mutant.
+
+**Twenty-six against the rewritten predicate, all twenty-six killed.** No
+survivors, but only after three of them were fixed — see correction 14, which is
+the finding. The list, with the sole killer where there is one:
+
+| mutant | tests failing |
+|---|---|
+| `judge-raw-instead` (list applied to `url.pathname`, not `decoded`) | 8 |
+| `list-never-consulted` (`return false`) | 24 |
+| `no-dot-rule` | 3 |
+| `dot-only-dotdot` (drops the lone `.`) | 1 — *the fixture added by correction 14* |
+| `dot-only-dot` (drops `..`) | 3 |
+| `decode-fail-permitted` (falls back instead of refusing) | 3 |
+| `no-try-catch` (lets `decodeURIComponent` throw) | 3 |
+| `never-drop-health` / `-ws` / `-docs` / `-oauth2` / `-redoc` / `-openapi` | 4, 4, 3, 2, 2, 2 |
+| `docs-as-prefix` (`/docs/` in `NEVER_UNDER`) | 3 — incl. *does not refuse /docs/foo* |
+| `api-prefix-no-slash`, `ws-prefix-no-slash` | 4, 4 |
+| `startsWith-to-includes` | 1 — *does not refuse /assets/vendor/api/x.js* |
+| `never-exact-to-prefix` (`NEVER` matched as prefixes) | 5 |
+| `no-method-check`, `method-post-only` | 5, 4 |
+| `no-range-check` | 1 |
+| `no-protocol-check` | 1 — *refuses a blob: URL* |
+| `https-only` | 1 — *the `http://localhost` scope fixture* |
+| `no-origin-check` | 4 |
+| `origin-via-href` | 2 |
+| `origin-prefix` (`origin.startsWith(scopeOrigin())`) | 1 — *the fixture added by correction 14* |
+
+Three of the six FastAPI-route mutants are killed partly by
+`sw-server-routes.test.ts` rather than by a fixture, which is the point of that
+file: deleting `/docs` from the list fails *"still gets docs\_url from FastAPI's
+default"* as well as the fixture, so moving `docs_url` in `create_app` and
+deleting it here are the same failure.
+
+**Eleven re-run against task 7's shape**, transcribed into the scratch copy (see
+correction 7): all eleven killed overall, **eight of them failing at least one
+test on the black-box block** — `judge-raw-instead` (1: *leaves a percent-escaped
+API path alone, in navigation mode*), `never-drop-health` (1), `never-drop-docs`
+(2, including *does not write Swagger UI into the shell cache*), `never-drop-redoc`
+(1), `never-drop-openapi` (1), `no-method-check` (1), `no-range-check` (1) and
+`list-never-consulted` (10). The three that the black-box block does not see are
+recorded in correction 7 with the reason.
+
 Two are **equivalent** and are recorded so the next reader does not chase them:
 reading the header as `"Range"` rather than `"range"` (`Headers.get` is
 case-insensitive, which is the point of using a real one), and moving the
 protocol check below the origin check (a blob: URL's origin *is* ours, so it
 reaches the protocol check either way).
 
-One **survives by construction and is expected to**: a listener that never
-consults `isRefused`. Nothing else is in the handler yet, so both of its branches
-are externally identical — which is the whole reason the predicate is called
-directly above.
+One **survives by construction and is expected to** against the shipped worker: a
+listener that never consults `isRefused`. Nothing else is in the handler yet, so
+both of its branches are externally identical — which is the whole reason the
+predicate is called directly above. Under the task 7 overlay it dies on ten
+tests (`list-never-consulted` above).
 
-**Six more against task 7's shape**, transcribed into the scratch copy (see
-correction 7), all killed, and all of them on the black-box block: the listener
-never consulting the refusal (4 failing); the refusal running *after* the
-navigation branch (2); and no method / origin / `Range` / encoded-separator
-check. Restore the pristine file afterwards — note that a mutation script which
-copies its own "pristine" back will happily restore the *overlay* if that is what
-it was last pointed at.
+Restore the pristine file afterwards — note that a mutation script which copies
+its own "pristine" back will happily restore the *overlay* if that is what it was
+last pointed at.
 
 - [ ] **Step 5: Commit**
 
@@ -2169,7 +2334,10 @@ only the second `describe` is vacuous, so the message says which.)*
 Counts after this task: **73 files / ~1 552 tests** *(corrected in task 6:
 measured, **74 files / 1 667 tests**. No new file — all four this task touches
 already existed — and the delta is +55 on task 5's 1 612: 51 in `sw.test.ts` and
-4 in `sw-harness.test.ts`.)*
+4 in `sw-harness.test.ts`.)* *(corrected again after review: measured, **75 files
+/ 1 702 tests**. There IS a new file after all — `sw-server-routes.test.ts`, see
+correction 10 — and the delta on task 5's 1 612 is +90: 77 in `sw.test.ts`, 6 in
+`sw-harness.test.ts`, 7 in the new one.)*
 
 ---
 
@@ -2323,8 +2491,10 @@ below need is parsed after it — so the block below opens with `const url = new
 URL(event.request.url);`. And `startsWith("/assets/")` should be
 `startsWith(ASSETS)`, the constant task 3 named; it is safe as a bare prefix test
 **only because `isRefused` ran first** — that is what turns away a cross-origin
-URL, a `%2f` pathname and a ranged GET before the pathname is trusted as a cache
-key. Move the refusal after either branch and this needs `isAssetUrl` instead.
+URL, a ranged GET, and a pathname whose decoded form holds a dot segment, before
+the pathname is trusted as a cache key. That last one is the reason it is not
+merely tidy: `/assets/..%2fapi/x` begins `/assets/` to `startsWith` and is a
+traversal once decoded. Move the refusal after either branch and this needs `isAssetUrl` instead.
 One more thing task 7 owes: the paths task 6 pins as **not** refused become
 assertable here for the first time, so this task adds the positive side —
 `/ws-telemetry` and `/workshop` get the cached shell offline, `/manifest.json`

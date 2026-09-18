@@ -10,7 +10,6 @@ import {
   js,
   loadWorker,
   ORIGIN,
-  type FetchRequest,
   type Harness,
   type RequestSpec,
 } from "./sw-harness";
@@ -995,42 +994,59 @@ describe("activate", () => {
 });
 
 /**
+ * Every path this worker must never answer, with the mode the real client sends
+ * for that URL and why it exists. One table, driven twice: through `isRefused`
+ * directly, where every row is a live assertion today, and through a dispatched
+ * event, where a row can only fail once a branch exists that could have claimed
+ * it. The navigate rows are that; the `cors` rows fall out of task 7's two
+ * branches unhandled whatever the guard says, and the direct half is what pins
+ * them. No row is given `navigate` it would not really arrive with.
+ */
+const NEVER_ANSWERED: readonly (readonly [path: string, mode: string, why: string])[] = [
+  ["/api/admin/overview", "cors", "the Room's own read; src/lib/api.ts calls fetch()"],
+  ["/api/auth/status", "cors", "the gate read every launch begins with"],
+  ["/api/actions/pending", "cors", "the Door's poll"],
+  ["/api/actions/a91f3c2e", "cors", "a deep link's own read"],
+  [
+    "/api/admin/streams/user_requests?count=50",
+    "cors",
+    "a Workshop stream read — a polled REST GET with a query string, exactly as src/App.test.tsx mocks it; there is no SSE anywhere in this repo, and `chat` is not in STREAM_CATALOG either",
+  ],
+  ["/health", "navigate", "the iOS client's healthcheck; this client never fetches it, so only a human gets here"],
+  ["/ws", "navigate", "a WebSocket upgrade is not a fetch, so likewise"],
+  ["/ws/telemetry", "navigate", "likewise"],
+  ["/docs", "navigate", "FastAPI's Swagger UI — 200 text/html, and outside /api/"],
+  ["/docs/oauth2-redirect", "navigate", "HTML from the same source"],
+  ["/redoc", "navigate", "likewise"],
+  ["/openapi.json", "navigate", "not HTML, and not this app either"],
+];
+
+/**
  * `sw.js`'s own refusal, called directly.
  *
  * The worker is a classic script and exports nothing, so a policy function
  * inside it can otherwise only be tested through whatever branch consults it.
  * For this one that is not good enough twice over. There is no branch at all
- * until the navigation and asset handlers land — so every black-box assertion
- * below passes vacuously today. And the half of this guard that matters most,
- * the paths it must NOT refuse, stays invisible from outside even afterwards:
- * "refused" and "not handled" both come back as `undefined`, and a guard that
- * has quietly widened to swallow `/workshop` looks exactly like one that has
- * not. `loadWorker(source, ["isRefused"])` is the seam, and it goes red if the
- * file renames the function — the same reach `worker.cache` makes into VERSION.
+ * until the navigation and asset handlers land — so the dispatched half below
+ * can only fail from that point on. And the paths it must NOT refuse stay
+ * invisible from outside even afterwards: "refused" and "not handled" both come
+ * back as `undefined`, and a guard that has quietly widened looks exactly like
+ * one that has not. `loadWorker(source, { expose: ["isRefused"] })` is the seam,
+ * and it goes red if the file renames the function — the same reach
+ * `worker.cache` makes into VERSION.
  */
-const isRefused = loadWorker(source, { expose: ["isRefused"] }).inner.isRefused as (
-  request: FetchRequest,
-) => boolean;
+const isRefused = loadWorker(source, { expose: ["isRefused"] }).inner.isRefused!;
 
 const refuses = (spec: RequestSpec): boolean => isRefused(fetchRequest(spec));
 
 describe("what the worker refuses to touch", () => {
-  it.each([
-    "/api/admin/overview",
-    "/api/auth/status",
-    "/api/auth/login/begin",
-    "/api/admin/streams/events",
-    "/api/actions/a91f3c2e/confirm",
-    "/health",
-    "/ws",
-    "/ws/telemetry",
-  ])("refuses %s", (path) => {
+  it.each(NEVER_ANSWERED)("refuses %s (%s) — %s", (path, mode) => {
     // True means the fetch handler never calls respondWith for it, so no branch
     // downstream can store it, serve it, or see it at all — stronger than
     // "network-only". Decision 3: a cached API response is this client stating
     // a server fact it has not just read, with a half-life. A stale `alive`, a
     // stale `dnd: false`, no stamp, and no way for the reader to know.
-    expect(refuses({ path })).toBe(true);
+    expect(refuses({ path, mode })).toBe(true);
   });
 
   it.each([
@@ -1041,21 +1057,92 @@ describe("what the worker refuses to touch", () => {
     ["/apifoo", "an api-prefixed path that is not under /api/"],
     ["/assets/vendor/api/x.js", "a hashed asset with /api/ inside its path"],
     ["/healthz", "a health-prefixed path that is not /health"],
+    ["/docsx", "a docs-prefixed path FastAPI does not serve"],
+    ["/docs/foo", "a path under /docs/ that is the app, not Swagger"],
     ["/assets/index-CY0Sh5Q2.js", "the entry chunk"],
     ["/manifest.json", "a public file no branch answers, which is a different thing"],
     ["/__shell-manifest", "this worker's own record"],
   ])("does not refuse %s — %s", (path) => {
-    // Every one of these is a path some plausible widening of the guard swallows,
-    // and swallowing one is not a small thing: `<Route path="*">` makes every
-    // unknown path a navigation the SPA answers, so a refused path is a browser
-    // error page instead of the app on a phone with no network. None of the last
-    // five is a route today and that is not the point. `/ws-telemetry` is what a
-    // `startsWith("/ws")` guard takes; `/workshop` is what a guard looser than
-    // that takes, and it is here because it is the path that reads as if it were
-    // caught and is not — `/workshop` shares no prefix with `/ws` at all, which
-    // is measured rather than assumed, below. The three before them are the
-    // anchors on `/api/` and `/health`.
+    // Each is a path some plausible widening swallows. Measured against the live
+    // app on :8081: /apifoo, /healthz, /docsx, /docs/foo and /workshop are all
+    // 200 text/html — the app itself — so widening /api, /health or /docs to a
+    // bare prefix hands a phone with no network a browser error page instead of
+    // the app. /ws-telemetry is the exception and is here for the anchor rather
+    // than the cost: spa.py's ("api/", "ws") prefixes make every /ws* path a
+    // 404, so refusing it would cost nothing visible. It is still the fixture
+    // that carries the `startsWith("/ws")` mutant, which is what it is for.
     expect(refuses({ path })).toBe(false);
+  });
+
+  it.each([
+    ["/%68ealth", "/health"],
+    ["/healt%68", "/health"],
+    ["/%61pi/admin/overview", "/api/admin/overview"],
+    ["/ap%69/admin/overview", "/api/admin/overview"],
+    ["/api%2fadmin/overview", "/api/admin/overview"],
+    ["/%77s", "/ws"],
+    ["/ws%2ftelemetry", "/ws/telemetry"],
+    ["/%64ocs", "/docs"],
+  ])("refuses %s, which uvicorn routes as %s", (path) => {
+    // The single worst hole this guard has had. uvicorn unquote()s the whole
+    // path before Starlette routes it, so one percent-escape used to defeat the
+    // entire list. Every one of these was measured against the live app: the
+    // health rows return the real health JSON, the api rows the real 401, the ws
+    // rows the sockets' 404, and /%64ocs Swagger's own HTML.
+    expect(refuses({ path })).toBe(true);
+  });
+
+  it.each(["/%zz", "/%", "/%FF"])("refuses %s, which it cannot decode at all", (path) => {
+    // decodeURIComponent throws on all three; Python's unquote leaves the first
+    // two as literal text and replaces the third. That disagreement is the whole
+    // reason — a path this worker and the server read differently must not be
+    // answered out of a cache, and the thing it would be guessing with is the
+    // only offline copy of the app the phone has. The server answers /%zz with
+    // the shell, so the cost is one malformed URL that boots online only.
+    expect(refuses({ path })).toBe(true);
+  });
+
+  it.each([
+    ["/%2e%2e%2fapi/admin/overview", "decodes to /../api/admin/overview"],
+    ["/assets/..%2fapi/admin/overview", "decodes to /assets/../api/…"],
+    ["/x%2f..%2f..%2fhealth", "decodes to /x/../../health"],
+    ["/%2e%2fapi/admin/overview", "decodes to /./api/admin/overview"],
+  ])("refuses %s, which %s", (path) => {
+    // What replaced the %2f special case. `new URL` normalises /x/../api/y and
+    // even /%2e%2e/api/y down to /api/y before this runs — asserted below — but
+    // it does NOT normalise an encoded separator, so the decoded form is where
+    // the traversal is still visible.
+    //
+    // None of these reaches the API today, measured: rows 1 and 3 are 200
+    // text/html (Starlette does not normalise dot segments, so the unroutable
+    // path falls through to mount_spa) and row 2 is a 404 from the /assets
+    // mount. Refusing them is not about today's routing — it is that the raw
+    // pathname of row 2 still begins "/assets/", the prefix task 7's asset
+    // branch reads, so a server that ever did normalise would have it cache a
+    // 401 as a hashed asset. The last row is the lone "." held to the same rule
+    // and is what makes that arm of the `some` bite; without it a mutant that
+    // drops it kills nothing.
+    expect(refuses({ path })).toBe(true);
+  });
+
+  it("reads the pathname the URL parser has already normalised", () => {
+    // Why there is no rule for a plain dot segment: there is nothing left to
+    // catch by the time anything here looks.
+    expect(new URL("/assets/../api/admin/overview", ORIGIN).pathname).toBe("/api/admin/overview");
+    expect(new URL("/%2e%2e/api/admin/overview", ORIGIN).pathname).toBe("/api/admin/overview");
+    expect(refuses({ path: "/assets/../api/admin/overview" })).toBe(true);
+    expect(refuses({ path: "/%2e%2e/api/admin/overview" })).toBe(true);
+  });
+
+  it("judges the pathname and not the query", () => {
+    // A %2F in a query says nothing about which path the server routes to, and
+    // this worker drops the query from every cache key anyway. Refusing on it
+    // would turn an ordinary navigation into a browser error page offline.
+    expect(refuses({ path: "/?next=%2Fassets%2Fx" })).toBe(false);
+    // And an encoded separator in the path that decodes to something the server
+    // does NOT route specially is likewise ordinary: /%2Fhealth decodes to
+    // //health, which the live app answers with the shell, measured.
+    expect(refuses({ path: "/%2Fhealth" })).toBe(false);
   });
 
   it.each(["POST", "PUT", "PATCH", "DELETE", "HEAD"])("refuses a %s", (method) => {
@@ -1125,12 +1212,26 @@ describe("what the worker refuses to touch", () => {
     );
   });
 
-  it("refuses a traversal the URL parser has already normalised into /api/", () => {
-    // `/assets/../api/…` is not a path under /assets/ by the time anything reads
-    // it: `new URL` resolves the dot segments. Which is why the refusal is on the
-    // parsed pathname and not on the string the request carries.
-    expect(new URL("/assets/../api/admin/overview", ORIGIN).pathname).toBe("/api/admin/overview");
-    expect(refuses({ path: "/assets/../api/admin/overview" })).toBe(true);
+  it("refuses a host that merely begins with this origin", () => {
+    // What `startsWith` on the origin would swallow: a host can be registered
+    // with ours as a prefix, and a prefix test reads it as us. Equality is the
+    // only reading of "same origin" there is — and this is the fixture that
+    // says so, found by a mutant that survived every other origin row here.
+    const url = `${ORIGIN}.evil.invalid/assets/index-CY0Sh5Q2.js`;
+    expect(new URL(url).host).toBe("alfred.example.com.evil.invalid");
+    expect(refuses({ path: url })).toBe(true);
+  });
+
+  it("judges the decoded pathname alone, which loses nothing", () => {
+    // Why the raw pathname is not also tested against the lists, though it was
+    // at first: every entry in both lists is escape-free, and decoding rewrites
+    // nothing but escapes, so a raw pathname the lists match decodes to one
+    // they still match. A raw term could refuse nothing the decoded one does
+    // not — no fixture can distinguish them, and none should be written to try.
+    // The mutant that deleted it killed no test, which is what said so.
+    expect(decodeURIComponent("/api/admin/overview")).toBe("/api/admin/overview");
+    expect(decodeURIComponent("/api/%2e%2e").startsWith("/api/")).toBe(true);
+    expect(refuses({ path: "/api/admin/overview" })).toBe(true);
   });
 
   it("refuses the two socket paths and nothing that merely resembles them", () => {
@@ -1154,16 +1255,6 @@ describe("what the worker refuses to touch", () => {
     expect("/ws-telemetry".startsWith("/ws")).toBe(true);
   });
 
-  it("does not refuse an encoded separator that is only in the query", () => {
-    // The check reads the pathname, not the href. A `%2F` in a query says
-    // nothing about which path the server will route to, and this worker drops
-    // the query from every cache key anyway — refusing on it would turn an
-    // ordinary navigation into a browser error page on a phone with no network.
-    expect(refuses({ path: "/?next=%2Fassets%2Fx" })).toBe(false);
-    // The same characters in the pathname are the thing that is refused.
-    expect(refuses({ path: "/%2Fassets%2Fx" })).toBe(true);
-  });
-
   it("does not refuse its own origin when that origin is http://localhost", () => {
     // A worker is a secure context, which is https everywhere EXCEPT localhost —
     // and `npm run preview` serves a production build there, as does the
@@ -1171,12 +1262,9 @@ describe("what the worker refuses to touch", () => {
     // refuses every request on that origin, silently, and the only symptom is
     // that nothing is ever cached. The scope is what says which scheme is ours.
     const local = "http://localhost:8081";
+    const worker = loadWorker(source, { expose: ["isRefused"], scope: `${local}/` });
     const refusesAt = (path: string): boolean =>
-      (
-        loadWorker(source, { expose: ["isRefused"], scope: `${local}/` }).inner.isRefused as (
-          request: FetchRequest,
-        ) => boolean
-      )(fetchRequest({ path, origin: local }));
+      worker.inner.isRefused!(fetchRequest({ path, origin: local }));
     expect(refusesAt("/assets/index-CY0Sh5Q2.js")).toBe(false);
     // And the list still bites there, which is what says the scheme is the only
     // thing that moved.
@@ -1184,51 +1272,41 @@ describe("what the worker refuses to touch", () => {
     // The https origin is another origin from there, as it is to a browser.
     expect(refusesAt(`${ORIGIN}/assets/index-CY0Sh5Q2.js`)).toBe(true);
   });
-
-  it.each([
-    "/assets/..%2fapi/admin/overview",
-    "/assets/..%2Fapi/admin/overview",
-    "/api%2Fadmin/overview",
-  ])("refuses %s, which it and the server read differently", (path) => {
-    // The URL parser does not decode %2f, so this reads as a path under /assets/
-    // here; uvicorn decodes before routing, so it reads as a traversal there.
-    // None of the three is caught by the /api/ prefix — look at the second and
-    // third: their pathnames do not contain "/api/" at all. A worker that cannot
-    // agree with the server about which path it is holding must not answer it.
-    // `isAssetUrl` refuses the same shape at install time for the same reason,
-    // and this is what lets task 7's /assets/ branch key on a pathname it trusts.
-    expect(refuses({ path })).toBe(true);
-  });
 });
 
 describe("the fetch handler, and what it declines to answer", () => {
-  // `undefined` from `request()` means respondWith was never called. Until the
-  // navigation and asset branches land there is nothing else the handler could
-  // have done, so these pass vacuously today and are the regression guard from
-  // the moment those branches exist. The block above is what pins the refusal
-  // itself in the meantime — and it is the only place the must-NOT-refuse half
-  // can be said at all, because "refused" and "unhandled" are both `undefined`.
-  it.each([
-    "/api/admin/overview",
-    "/api/auth/status",
-    "/api/auth/login/begin",
-    "/api/admin/streams/events",
-    "/api/actions/a91f3c2e/confirm",
-    "/health",
-    "/ws",
-    "/ws/telemetry",
-  ])("leaves %s entirely to the network", async (path) => {
+  // `undefined` means respondWith was never called. A row of the table can only
+  // FAIL here once a branch exists that could have claimed it: the navigate rows
+  // are claimed by task 7's navigation branch, so those are live from the moment
+  // it lands, and the `cors` rows fall out of both its branches unhandled
+  // whatever the guard says. The direct block above is what pins those, and is
+  // also the only place the must-NOT-refuse half can be said at all.
+  it.each(NEVER_ANSWERED)("leaves %s (%s) to the network — %s", async (path, mode) => {
     const worker = shell();
     await worker.install();
-    await expect(worker.request({ path })).resolves.toBeUndefined();
+    await expect(worker.request({ path, mode })).resolves.toBeUndefined();
   });
 
   it("caches nothing when an API call goes past it", async () => {
     const worker = shell();
     await worker.install();
     const before = worker.keys();
-    await worker.request({ path: "/api/admin/overview" });
+    await worker.request({ path: "/api/admin/overview", mode: "cors" });
     expect(worker.keys()).toEqual(before);
+  });
+
+  it("does not write Swagger UI into the shell cache", async () => {
+    // The reproduction, end to end: /docs is 200 text/html and outside /api/, so
+    // a navigation branch that saw it would pass isShell() and overwrite the
+    // cached shell — and every offline launch afterwards would render Swagger
+    // until the next online navigation. The cache assertion is the one that
+    // matters; the undefined is how it is achieved.
+    const worker = shell();
+    await worker.install();
+    worker.respond("/docs", html("<!doctype html><title>Alfred Web Channel - Swagger UI</title>"));
+    await expect(worker.request({ path: "/docs", mode: "navigate" })).resolves.toBeUndefined();
+    const cached = worker.store.get(worker.cache)!.get(`${ORIGIN}/index.html`)!;
+    await expect(cached.clone().text()).resolves.toContain('<div id="root">');
   });
 
   it("leaves a navigation-mode request to an API path alone too", async () => {
@@ -1271,6 +1349,16 @@ describe("the fetch handler, and what it declines to answer", () => {
     await worker.install();
     await expect(
       worker.request({ path: "/assets/index-CY0Sh5Q2.js", origin: "https://example.invalid" }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("leaves a percent-escaped API path alone, in navigation mode", async () => {
+    // The live hole, dispatched rather than called: /%61pi/admin/overview
+    // returns the real API's 401 and a navigation branch would have cached it.
+    const worker = shell();
+    await worker.install();
+    await expect(
+      worker.request({ path: "/%61pi/admin/overview", mode: "navigate" }),
     ).resolves.toBeUndefined();
   });
 

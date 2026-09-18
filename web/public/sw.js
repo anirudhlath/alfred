@@ -364,6 +364,49 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(purge().then(() => self.clients.claim()));
 });
 
+/* The paths this worker never answers, named rather than spelled inline for the
+   reason ASSETS is named: this is the whole of rule 1, and a list that is read
+   is a list that can be checked against the server's.
+
+   Two match kinds, because the server has two. Exact, then "under", so that the
+   anchoring is visible rather than inferred from four inline `startsWith`es.
+
+   THE SAME LIST LIVES IN TWO OTHER PLACES AND NEITHER AGREES WITH THIS ONE.
+   core/channels/spa.py:24-25 has ("api/", "ws") as prefixes plus {"health"} —
+   which is what makes /ws-telemetry a 404 rather than an app path — and
+   web/vite.config.ts's dev proxy has /api, /health and /ws. Unifying the three
+   is not this file's job and is not attempted here.
+
+   The docs routes are in neither of those: they are FastAPI's own defaults, and
+   create_app() (core/channels/web_server.py:447) overrides none of them, which
+   src/test/sw-server-routes.test.ts pins. They matter because they are 200
+   text/html and outside /api/ — so without them one navigation to /docs writes
+   Swagger UI into the shell cache under isShell(), and every offline launch
+   renders Swagger until the next online navigation. /docs/oauth2-redirect is
+   listed too; it is HTML from the same source. /openapi.json is JSON rather than
+   HTML and is listed for the same reason the sockets are: it is not this app.
+
+   The anchoring is not uniform in what it buys, and one reason covering all of
+   it would be wrong. For /api/ and /health it is offline behaviour AND
+   correctness: <Route path="*"> plus mount_spa means /apifoo and /healthz are
+   really served the app (measured: 200 text/html), so widening either to a bare
+   prefix hands a phone with no network a browser error page instead of the app.
+   For /ws it buys only that the offline case stays coherent — spa.py's
+   _NON_SPA_PREFIXES is ("api/", "ws"), so every /ws* path 404s, /ws-telemetry
+   included (measured), and over-refusing one costs nothing an online phone can
+   see. Anchoring it is still right; it is simply not paid for by the same
+   argument, and /ws-telemetry is a fixture rather than a route.
+
+   /ws and /ws/telemetry cannot reach a fetch handler at all — a WebSocket
+   upgrade is not a fetch. They are named so nobody deletes a guard they think is
+   dead, and so nobody adds a caching branch they think is missing. */
+const NEVER = ["/health", "/ws", "/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"];
+const NEVER_UNDER = ["/api/", "/ws/"];
+
+function isNeverAnswered(pathname) {
+  return NEVER.includes(pathname) || NEVER_UNDER.some((prefix) => pathname.startsWith(prefix));
+}
+
 /* Rule 1 of the header, and the whole of it in one predicate, so that every
    branch the fetch handler grows is downstream of one refusal rather than
    beside a chain of early returns that the next branch is free to precede.
@@ -412,34 +455,53 @@ function isRefused(request) {
      https://user@this-host/assets/x is us and is not. */
   if (url.origin !== scopeOrigin()) return true;
 
-  /* An encoded separator is a pathname this worker and the server read
-     differently: /assets/..%2fapi/x is a path under /assets/ to the URL parser
-     and a traversal once uvicorn has decoded it. A worker that cannot agree with
-     the server about which path it is holding must not answer it. isAssetUrl
-     refuses the same shape at install time; this is that refusal at the other
-     door, and it is what lets the /assets/ branch key a cache on a pathname it
-     trusts. Dot segments need no rule: `new URL` has already resolved /assets/../
-     into whatever it really means, which is why this reads the parsed pathname
-     and never the string the request arrived with. */
-  if (/%2f/i.test(url.pathname)) return true;
+  /* The pathname the SERVER will route on, not the one the URL carries. uvicorn
+     unquote()s the whole path before Starlette sees it, so /%68ealth is /health
+     to the server and something else entirely to `startsWith`. Measured against
+     the live app: /%68ealth and /healt%68 both return the real health JSON, and
+     /%61pi/admin/overview and /ap%69/admin/overview both return the real API's
+     401. One escaped character defeated the entire list.
 
-  /* Anchored, all three, because <Route path="*"> makes every unknown path a
-     navigation the SPA answers — so a guard that widens does not merely cache
-     less, it hands a phone with no network a browser error page instead of the
-     app. /api/ and not /api, so /apifoo and /assets/vendor/api/x.js are ordinary
-     paths. /health exactly, so /healthz is. /ws exactly or under /ws/, and not a
-     "/ws" prefix, which would take /ws-telemetry — a plausible mistyping of the
-     socket, and an ordinary path — along with the two real ones.
+     Only the decoded form is judged, and adding the raw one back would be the
+     %2f mistake again: every entry in both lists is escape-free, and decoding
+     rewrites nothing but escapes, so a raw pathname the lists match decodes to
+     one they still match. A raw term could refuse nothing this one does not,
+     and no fixture can tell the two apart — which is how it was found, by a
+     mutant that deleted it and killed no test at all.
 
-     /ws and /ws/telemetry cannot reach a fetch handler at all — a WebSocket
-     upgrade is not a fetch. They are named so nobody deletes a guard they think
-     is dead, and so nobody adds a caching branch they think is missing. */
-  return (
-    url.pathname.startsWith("/api/") ||
-    url.pathname === "/health" ||
-    url.pathname === "/ws" ||
-    url.pathname.startsWith("/ws/")
-  );
+     A pathname that cannot be decoded at all is refused rather than guessed at:
+     decodeURIComponent throws on %zz, on a lone %, and on bytes that are not
+     UTF-8, while Python's unquote leaves the first two as literal text and
+     replaces the third. That is precisely a path this worker and the server do
+     not agree about, and the app it would be guessing with is the only offline
+     copy the phone has. (The server answers /%zz with the shell, so the cost is
+     one malformed URL that boots online only.)
+
+     Dot segments last, and not for the reason first written here. Measured on
+     the live app: /%2e%2e%2fapi/admin/overview is 200 text/html — the shell —
+     because Starlette does not normalise dot segments, so the unroutable path
+     falls through to mount_spa. It does not reach the API, and this rule does
+     not rest on that staying true. An ASGI server that DID normalise would
+     route /assets/..%2fapi/x to the real API while the raw pathname still
+     begins "/assets/", which is the prefix task 7's asset branch reads: a 401
+     cached as a hashed asset. Today that one is a 404 from the /assets mount.
+
+     `new URL` has already normalised /x/../api/y and /%2e%2e/api/y down to
+     /api/y before anything here reads them; only an encoded separator keeps a
+     dot segment alive this far. A lone "." is held to the same rule for the
+     same reason, and costs a shell for /%2e%2fapi/y, which is 200 text/html
+     today. The %2f special case this replaced is gone rather than kept beside
+     it: a rule with a general form must not sit next to an instance of itself,
+     and the instance also refused /%2Fhealth, which is the app. */
+  let decoded;
+  try {
+    decoded = decodeURIComponent(url.pathname);
+  } catch {
+    return true;
+  }
+  if (decoded.split("/").some((segment) => segment === "." || segment === "..")) return true;
+
+  return isNeverAnswered(decoded);
 }
 
 /* Judged before any branch, deliberately: a hand-typed API URL in the address

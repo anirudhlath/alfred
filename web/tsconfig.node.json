@@ -21,5 +21,5 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["vite.config.ts", "src/test/icons.test.ts"]
+  "include": ["vite.config.ts", "src/test/icons.test.ts", "src/test/sw-server-routes.test.ts"]
 }

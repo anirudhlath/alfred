@@ -129,7 +129,8 @@ Phase 3: the Workshop's other three benches, each a pure view over one hook call
 
 ## The service worker
 
-`public/sw.js` is hand-written — 105 lines of code under twice as many of comment — and
+`public/sw.js` is hand-written — 128 lines of code under two and a half times as many of
+comment (323) — and
 shipped verbatim by Vite's `public/` copy: no `vite-plugin-pwa`, no Workbox, no generated
 precache manifest. The reasoning is in
 `docs/superpowers/plans/2026-09-16-pwa-phase4-install-and-offline.md`; the short version
@@ -138,7 +139,7 @@ things a reviewer can *read in the shipped bytes*, and a negative requirement �
 worker never caches `/api`" — is one assertion against a hand-written file and an argument
 against a plugin's route table.
 
-**What it does today is install and activate.** It fetches `/index.html` past the
+**Install, activate, and a fetch handler that so far only refuses.** It fetches `/index.html` past the
 HTTP cache and takes the `/assets/…` URLs Vite wrote into it as the precache manifest —
 the entry chunk and the stylesheet. It then reads the **stylesheet** for the `url()` rules
 the HTML never mentions and takes the `.woff2` among them: 8 files, 139 436 of this build's
@@ -168,8 +169,8 @@ current cache, every entry the `/__shell-manifest` record does not name: asset U
 content-hashed, and `VERSION` is bumped by hand, so for every deploy that does *not* bump
 it this is the only thing that reaches what the previous build of the same file cached.
 Entries are compared on the full URL, not the pathname, so a cross-origin copy sharing a
-path with something precached goes too. It also reaches whatever a future `fetch` handler
-stores at runtime, which is intended: the record is what this build needs, a runtime entry
+path with something precached goes too. It also reaches whatever the `fetch` handler
+stores at runtime once it has a caching branch — it has none yet — which is intended: the record is what this build needs, a runtime entry
 is re-fetchable, and the alternative is a cache with no ceiling.
 
 **A record it cannot trust means keep everything.** All three shapes — absent, not a list,
@@ -186,17 +187,50 @@ served from a cache that is still being emptied underneath it. The one race left
 worker *installing* while this one activates: the entry keys are snapshotted before the
 record is read, which narrows it, and closing it would need a lock two workers do not have.
 
-It has no `fetch` handler, so every request still goes to the network untouched, and
-**nothing registers it yet** — `src/lib/sw.ts` is a later slice of phase 4. Until then it
+**The `fetch` handler is there, and so far it only declines.** `isRefused` is the whole of
+rule 1 in one predicate — every request this worker must never answer — and the handler
+consults it and does nothing else yet; the navigation and asset branches are a later slice.
+So every request still reaches the network untouched, by two different roads.
+
+What it refuses, and why each is not obvious. Anything but a `GET`, and anything carrying a
+`Range` — a ranged request asks for part of a body and a cache-first branch answers with a
+whole one. Any scheme that is not this origin's: a `blob:` URL's origin is the origin
+*inside* it, so it compares equal to ours and the origin test alone does not settle the
+question. Any other origin, compared on `url.origin` so that
+`https://<this-host>@evil.invalid/` reads as `evil.invalid` and `https://user@<this-host>/x`
+reads as us. And then the path list — `/api/`, `/health`, the two sockets, and FastAPI's
+own `/docs`, `/docs/oauth2-redirect`, `/redoc` and `/openapi.json`, which are live on this
+origin, outside `/api/`, and `text/html`: one navigation to `/docs` would otherwise write
+Swagger UI into the shell cache and every offline launch would render it.
+
+The list is applied to **the pathname decoded the way uvicorn decodes it**, and not to the
+raw one, because uvicorn `unquote()`s the whole path before Starlette routes it:
+`/%68ealth` is `/health` to the server, and one percent-escape used to walk straight past
+the guard. Only the decoded form, because every entry in the list is escape-free and
+decoding rewrites nothing but escapes — a raw pathname the list matches decodes to one it
+still matches, so a second test on the raw form could refuse nothing the first does not.
+
+A path that cannot be decoded at all is refused rather than guessed at, as is one whose
+decoded form contains a `.` or `..` segment. `new URL` normalises the plain forms long
+before this runs, but not `/%2e%2e%2fapi/x` — which does *not* reach the API, measured:
+Starlette does not normalise dot segments, so it falls through to `mount_spa` and answers
+200 `text/html`. The rule is there so that it never has to: the raw pathname of
+`/assets/..%2fapi/x` still begins `/assets/`, which is the prefix the asset branch will
+read as a cache key, so a server that ever did normalise would have it cache a 401 as a
+hashed chunk.
+
+**Nothing registers it yet** — `src/lib/sw.ts` is a later slice of phase 4. Until then it
 is inert bytes in `public/`.
 
 Three rules govern it, and they are restated at the top of the file itself:
 
-1. **It caches the app shell and nothing else.** `/api/*`, `/health` and the two sockets
-   are never fetched, never stored, and will never be passed to `respondWith()`. This
+1. **It caches the app shell and nothing else.** `/api/*`, `/health`, the two sockets and
+   FastAPI's docs routes are never fetched, never stored, and are never passed to
+   `respondWith()` — `isRefused` is where that is decided, once, for every branch. This
    client's whole design is that it never states a server fact it has not just read; a
    cached API response is that failure with a longer half-life.
-2. **Navigations will be network-first**, so a bad cache is invisible to an online phone
+2. **Navigations will be network-first** (the branch is a later slice), so a bad cache is
+   invisible to an online phone
    and the browser's own update check on `/sw.js` keeps running — which is what lets a
    kill switch land if this file ever has to be withdrawn.
 3. **Every global goes through `self.`**, which is the seam `src/test/sw-harness.ts`
