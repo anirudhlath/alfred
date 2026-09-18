@@ -47,6 +47,8 @@ class FakeCache {
   readonly refuses: (url: string) => boolean;
   readonly refusesPut: (url: string) => boolean;
   readonly refusesMatch: (url: string) => boolean;
+  /** Called with the absolute key of every `put`, before any of them can fail. */
+  readonly attempted: (url: string) => void;
   /** The origin a relative cache key resolves against — the worker's own. */
   readonly origin: string;
   constructor(
@@ -54,12 +56,14 @@ class FakeCache {
     refuses: (url: string) => boolean,
     refusesPut: (url: string) => boolean,
     refusesMatch: (url: string) => boolean,
+    attempted: (url: string) => void,
     origin: string,
   ) {
     this.entries = entries;
     this.refuses = refuses;
     this.refusesPut = refusesPut;
     this.refusesMatch = refusesMatch;
+    this.attempted = attempted;
     this.origin = origin;
   }
   /**
@@ -79,6 +83,10 @@ class FakeCache {
     return Promise.resolve(this.entries.get(url)?.clone());
   }
   put(key: string | { url: string }, response: Response): Promise<void> {
+    // Recorded first, and that ordering is the point: `puts` is what a test
+    // asserts a doomed write was never ATTEMPTED on, and a rejection recorded
+    // nowhere is indistinguishable from a call that never happened.
+    this.attempted(absolute(key, this.origin));
     // Real `Cache.put` rejects a Response whose body is already read or locked.
     // Without this the difference between `await shell.clone().text()` and
     // `await shell.text()` is invisible here and fatal in a browser: a worker
@@ -113,6 +121,18 @@ class FakeCache {
     const url = absolute(key, this.origin);
     return settled(() => (this.refuses(url) ? storageFailure() : this.entries.delete(url)));
   }
+}
+
+/**
+ * The init a worker passes `self.fetch` beside its input, or `undefined` for
+ * the one call in the file that passes none. Modelled because it is load
+ * bearing on the navigation path: `{ ...init, signal }` is a non-empty init,
+ * and a non-empty init rebuilds the Request — which demotes `mode: "navigate"`
+ * to `"same-origin"` and clears the reload- and history-navigation flags.
+ */
+export interface FetchInit {
+  cache?: string;
+  signal?: AbortSignal;
 }
 
 /**
@@ -157,8 +177,11 @@ export interface RequestSpec {
 export function fetchRequest({
   path,
   mode = "no-cors",
-  // A browser sets these together: every navigation is `destination: "document"`,
-  // so a fixture cannot say one without the other and stay real.
+  // A browser sets these together for a TOP-LEVEL navigation, so a fixture
+  // cannot say one without the other and stay real. Not for a nested one: a
+  // navigation inside an <iframe> is mode "navigate", destination "iframe", and
+  // <object>/<embed> are the same shape again — which is why this is only a
+  // default, and why a test can state the pair itself.
   destination = mode === "navigate" ? "document" : "",
   method = "GET",
   origin = ORIGIN,
@@ -189,9 +212,11 @@ export interface Harness {
   respond(pathname: string, response: Response): void;
   /**
    * Program `self.fetch` to accept the connection and never answer — a captive
-   * portal, a black-holed route. The only thing that can end it is the worker's
-   * own `AbortSignal`; a worker without one waits for ever, and the test that
-   * asked for this fails on vitest's timeout, which is the correct verdict.
+   * portal, a black-holed route. Two things can end the worker's wait on one: an
+   * `AbortSignal` it passed, which also ends the request; or a deadline it
+   * raced, which ends only the wait and leaves this promise pending for ever.
+   * A worker that does neither waits for ever itself, and the test that asked
+   * for this fails on vitest's timeout — which is the correct verdict.
    */
   hang(pathname: string): void;
   /**
@@ -232,6 +257,22 @@ export interface Harness {
    * response it must not have.
    */
   handed: (string | { url: string })[];
+  /**
+   * The init handed over with each of those, positionally — `undefined` where
+   * the worker passed none. A navigation must be forwarded with NO init at all:
+   * see `FetchInit`. Nothing else in this file can see that, because the input
+   * object is identical either way.
+   */
+  inits: (FetchInit | undefined)[];
+  /**
+   * The key of every `Cache.put` the worker ATTEMPTED, in order, whether it
+   * succeeded, was refused or was rejected by the Cache API itself. `keys()`
+   * answers what landed; this answers what was tried, and the difference is
+   * where a guard that declines a doomed write lives — a 206 put rejects with a
+   * TypeError, so "not stored" is true of a worker that never tried and of one
+   * that tried and swallowed the failure.
+   */
+  puts: string[];
   /** Of those, the ones asked for with `{ cache: "reload" }`. */
   reloaded: string[];
   /**
@@ -280,6 +321,22 @@ export interface Harness {
    * swallowed, because a browser only logs it and this is where it can be seen.
    */
   request(spec: RequestSpec): Promise<Response | undefined>;
+  /**
+   * The same dispatch, with the two halves kept apart: `responded` is the raw
+   * promise the worker passed `respondWith`, settling the moment the page has
+   * its answer, and `settled` resolves when everything passed to `waitUntil`
+   * has finished (rethrowing the first rejection that escaped one, as `request`
+   * does).
+   *
+   * `request` awaits both in order, which is what nearly every test wants and
+   * is precisely blind to the property this exists for: that the page is
+   * answered BEFORE the background work runs. `await waitUntil(refresh(…))`
+   * written as `await refresh(…)` passes every assertion `request` can make.
+   */
+  dispatch(spec: RequestSpec): {
+    responded: Promise<Response | undefined>;
+    settled: Promise<void>;
+  };
   message(data: unknown): Promise<void>;
   skipWaitingCalls: number;
   claimCalls: number;
@@ -397,7 +454,9 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     navigated: string[];
     deadlines: number[];
     handed: (string | { url: string })[];
-  } = { fetched: [], reloaded: [], navigated: [], deadlines: [], handed: [] };
+    inits: (FetchInit | undefined)[];
+    puts: string[];
+  } = { fetched: [], reloaded: [], navigated: [], deadlines: [], handed: [], inits: [], puts: [] };
   let deadlinesCleared = 0;
   const ownCache = cacheName(source);
   /** Named as a function so neither `cache` nor `keys()` has to reach for `this`. */
@@ -455,6 +514,8 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
             (url: string) => refusals.has(url),
             (url: string) => putRefusals.has(url),
             (url: string) => matchRefusals.has(url),
+            (url: string) =>
+              void harness.puts.push(url.startsWith(origin) ? new URL(url).pathname : url),
             origin,
           ),
         );
@@ -478,32 +539,37 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
       deadlinesCleared += 1;
       clearTimeout(id);
     },
-    fetch: vi.fn(
-      (input: string | { url: string }, init?: { cache?: string; signal?: AbortSignal }) => {
-        const url = new URL(typeof input === "string" ? input : input.url, origin);
-        harness.fetched.push(url.pathname);
-        // The input itself, not only its URL: forwarding the Request is what
-        // keeps the page's mode, credentials and redirect mode.
-        harness.handed.push(input);
-        // Recorded rather than asserted on the source: `cache: "reload"` is the
-        // only thing between a worker installing seconds after a deploy and a
-        // precache of the bytes that deploy just replaced.
-        if (init?.cache === "reload") harness.reloaded.push(url.pathname);
-        if (hangs.has(url.href)) {
-          // Answers nothing, ever. A worker that passed no signal is left
-          // hanging on purpose — that IS the bug being tested for.
-          return new Promise<Response>((_, reject) => {
-            init?.signal?.addEventListener("abort", () =>
-              reject(new DOMException("The user aborted a request.", "AbortError")),
-            );
-          });
-        }
-        const response = routes.get(url.href);
-        // No route programmed = no network. A real worker sees a TypeError here.
-        if (!response) return Promise.reject(new TypeError(`no route for ${url.href}`));
-        return Promise.resolve(response.clone());
-      },
-    ),
+    fetch: vi.fn((input: string | { url: string }, init?: FetchInit) => {
+      const url = new URL(typeof input === "string" ? input : input.url, origin);
+      harness.fetched.push(url.pathname);
+      // The input itself, not only its URL: forwarding the Request is what
+      // keeps the page's mode, credentials and redirect mode.
+      harness.handed.push(input);
+      // And the init beside it, because on a navigation the init is the whole
+      // story: any init that is not empty rebuilds the Request, and the Fetch
+      // Standard's constructor demotes a mode of "navigate" to "same-origin"
+      // and clears the reload- and history-navigation flags when it does.
+      // Recorded rather than inferred — `handed` cannot show it, since the
+      // object handed over is the same one either way.
+      harness.inits.push(init);
+      // Recorded rather than asserted on the source: `cache: "reload"` is the
+      // only thing between a worker installing seconds after a deploy and a
+      // precache of the bytes that deploy just replaced.
+      if (init?.cache === "reload") harness.reloaded.push(url.pathname);
+      if (hangs.has(url.href)) {
+        // Answers nothing, ever. A worker that passed no signal is left
+        // hanging on purpose — that IS the bug being tested for.
+        return new Promise<Response>((_, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("The user aborted a request.", "AbortError")),
+          );
+        });
+      }
+      const response = routes.get(url.href);
+      // No route programmed = no network. A real worker sees a TypeError here.
+      if (!response) return Promise.reject(new TypeError(`no route for ${url.href}`));
+      return Promise.resolve(response.clone());
+    }),
   };
 
   /* The tail is appended to the shipped bytes rather than woven into them, so
@@ -527,6 +593,67 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     await Promise.all(waited);
   };
 
+  /** See `Harness.dispatch`; shared so that `request` cannot drift from it. */
+  const dispatch: Harness["dispatch"] = (spec) => {
+    // The same builder the direct tests use, so a request dispatched through
+    // an event and one handed to `isRefused` cannot drift apart — with this
+    // instance's origin as the default, not the module's.
+    const request = fetchRequest({ origin, ...spec });
+    let answered: Promise<Response> | undefined;
+    // A FetchEvent is an ExtendableEvent: `waitUntil` is what keeps the worker
+    // alive for work that must outlive the response — the shell refresh is
+    // exactly that, and without this seam it would have to be awaited before
+    // the page is answered, which is a navigation blocked on a background
+    // fetch.
+    const extended: Promise<unknown>[] = [];
+    for (const listener of listeners.get("fetch") ?? []) {
+      listener({
+        request,
+        respondWith: (p: Promise<Response>) => {
+          // Real `respondWith` throws InvalidStateError on a second call.
+          if (answered) throw new Error("respondWith called twice for one fetch event");
+          answered = p;
+        },
+        waitUntil: (p: Promise<unknown>) => void extended.push(p),
+      });
+    }
+    let escaped: unknown;
+    // Drained in a loop rather than awaited once, because a handler may call
+    // `waitUntil` AFTER an await — the shell refresh is armed once the network
+    // has answered, long after the listener returned — and a real event is
+    // still extendable then, since `respondWith`'s own promise is holding it
+    // open. Snapshotting the array here instead would silently wait on
+    // nothing, and every assertion about background work would read the cache
+    // before it was written.
+    const drain = async () => {
+      while (extended.length) {
+        await Promise.all(extended.splice(0)).catch((error: unknown) => {
+          escaped ??= error;
+        });
+      }
+    };
+    // `undefined` is the meaningful answer: the worker declined to handle it
+    // and the browser goes to the network untouched.
+    const responded = answered ? answered.then((r) => r as Response | undefined) : Promise.resolve(undefined);
+    const settled = (async () => {
+      // The response's own rejection is the caller's to see on `responded`;
+      // swallowed here only so that awaiting `settled` is never the thing
+      // that reports it, and so that a caller awaiting `responded` first is
+      // not racing an unhandled rejection.
+      try {
+        await responded;
+      } catch {
+        /* reported through `responded` */
+      }
+      await drain();
+      // A browser logs this and carries on serving. Here it is a defect: every
+      // background path in sw.js is supposed to swallow its own failures, and a
+      // rejection that reaches this line is one that does not.
+      if (escaped) throw escaped;
+    })();
+    return { responded, settled };
+  };
+
   return {
     store,
     get cache() {
@@ -537,6 +664,8 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     navigated: harness.navigated,
     deadlines: harness.deadlines,
     handed: harness.handed,
+    inits: harness.inits,
+    puts: harness.puts,
     get deadlinesCleared() {
       return deadlinesCleared;
     },
@@ -553,56 +682,17 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     inner,
     install: () => extendable("install"),
     activate: () => extendable("activate"),
+    dispatch,
     async request(spec) {
-      // The same builder the direct tests use, so a request dispatched through
-      // an event and one handed to `isRefused` cannot drift apart — with this
-      // instance's origin as the default, not the module's.
-      const request = fetchRequest({ origin, ...spec });
-      let answered: Promise<Response> | undefined;
-      // A FetchEvent is an ExtendableEvent: `waitUntil` is what keeps the worker
-      // alive for work that must outlive the response — the shell refresh is
-      // exactly that, and without this seam it would have to be awaited before
-      // the page is answered, which is a navigation blocked on a background
-      // fetch.
-      const extended: Promise<unknown>[] = [];
-      for (const listener of listeners.get("fetch") ?? []) {
-        listener({
-          request,
-          respondWith: (p: Promise<Response>) => {
-            // Real `respondWith` throws InvalidStateError on a second call.
-            if (answered) throw new Error("respondWith called twice for one fetch event");
-            answered = p;
-          },
-          waitUntil: (p: Promise<unknown>) => void extended.push(p),
-        });
-      }
-      let escaped: unknown;
-      // Drained in a loop rather than awaited once, because a handler may call
-      // `waitUntil` AFTER an await — the shell refresh is armed once the network
-      // has answered, long after the listener returned — and a real event is
-      // still extendable then, since `respondWith`'s own promise is holding it
-      // open. Snapshotting the array here instead would silently wait on
-      // nothing, and every assertion about background work would read the cache
-      // before it was written.
-      const drain = async () => {
-        while (extended.length) {
-          await Promise.all(extended.splice(0)).catch((error: unknown) => {
-            escaped ??= error;
-          });
-        }
-      };
+      const { responded, settled } = dispatch(spec);
       let response: Response | undefined;
       try {
-        // `undefined` is the meaningful answer: the worker declined to handle it
-        // and the browser goes to the network untouched.
-        response = answered ? await answered : undefined;
+        response = await responded;
       } finally {
-        await drain();
+        // Awaited even when the response rejected, so that `waitUntil` work
+        // started before the failure still finishes inside the test.
+        await settled;
       }
-      // A browser logs this and carries on serving. Here it is a defect: every
-      // background path in sw.js is supposed to swallow its own failures, and a
-      // rejection that reaches this line is one that does not.
-      if (escaped) throw escaped;
       return response;
     },
     message: (data) => extendable("message", data),
@@ -629,3 +719,21 @@ export const js = body("text/javascript");
 export const css = body("text/css");
 export const font = () =>
   new Response("woff2", { status: 200, headers: { "content-type": "font/woff2" } });
+
+/**
+ * A response whose headers arrive and whose body never does. `fetch()` resolves
+ * on the headers, so this is what a route that stalls half way through a body
+ * looks like from inside a worker: a 200 in hand, `response.ok` true, and
+ * `await response.text()` pending for ever on a request that is already
+ * "finished". The stream is neither enqueued to nor closed, which is the state
+ * a connection that goes quiet mid-body leaves the reader in.
+ *
+ * Its own hazard, and the reason this is a factory: the promise a reader is
+ * left holding never settles, so anything that awaits one without a deadline
+ * hangs the test rather than failing it.
+ */
+export const stalled = (type = "text/html; charset=utf-8") =>
+  new Response(new ReadableStream({ start() {} }), {
+    status: 200,
+    headers: { "content-type": type },
+  });

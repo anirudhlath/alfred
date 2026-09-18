@@ -173,8 +173,9 @@ function isAssetUrl(url: string, base?: string): boolean;  // same-origin AND un
 function fetchFresh(url: string): Promise<Response>;      // cache:"reload" + a TIMEOUT_MS AbortSignal
 function assetsInHtml(html: string): string[];   // extracts wide, refuses through isAssetUrl
 function fontsInCss(css: string, base: string): string[];  // base = the stylesheet's own URL
-function isShell(response: Response): boolean;   // ok && content-type is text/html
-function isAsset(response: Response): boolean;   // ok && content-type is NOT text/html
+function isStored(response: Response): boolean;  // added in task 7: status === 200, NOT `ok` *(corrected in task 7's second fix round: the two below were spelled `ok &&` here and are `isStored &&` — `ok` is 200–299, and the other eight are not representations of the file asked for)*
+function isShell(response: Response): boolean;   // isStored && content-type is text/html
+function isAsset(response: Response): boolean;   // isStored && content-type is NOT text/html
 function isRefused(request): boolean;            // added in task 6 — the whole of rule 1, in one predicate
 async function precache(): Promise<void>;        // install
 async function purge(): Promise<void>;           // activate
@@ -183,7 +184,8 @@ async function asset(request, pathname: string): Promise<Response>;
 async function refresh(response): Promise<void>;  // added in task 7: publishes a shell only with its assets
 async function openCache(): Promise<Cache | undefined>;  // added in task 7: undefined = no usable CacheStorage
 async function cached(key): Promise<Response | undefined>;  // added in task 7: a miss and a read failure are one thing
-function timed(input, init): Promise<Response>;   // added in task 7: fetchFresh is this plus cache:"reload"
+function timed(input, init): Promise<Response>;   // added in task 7: an ABORTING deadline; fetchFresh is this plus cache:"reload"
+function deadlined(work): Promise<unknown>;      // added in task 7's second fix round: a RACING deadline, for the two calls that cannot take a signal — a navigation (a non-empty init would demote mode "navigate" to "same-origin") and a body read (nothing to abort)
 
 // src/test/sw-harness.ts
 export interface FetchRequest { url: string; method: string; mode: string; headers: Headers }  // task 6
@@ -203,8 +205,24 @@ export interface Harness {
   fetched: string[];
   /** Of those, the ones asked for with `{ cache: "reload" }`. */
   reloaded: string[];
-  /** Accept the connection and never answer; only the worker's own signal ends it. */
+  /** Accept the connection and never answer. Ended by the worker's own signal, or by a
+      deadline it raced — which ends the wait and leaves the request in flight. */
   hang(pathname: string): void;
+  /** Added in task 7's fix rounds — the storage axis, which no earlier task could reach.
+      A put that rejects with QuotaExceededError, a match that rejects, an open that
+      rejects outright (`"*"` = every name). */
+  refusePut(key: string): void;
+  refuseMatch(key: string): void;
+  refuseOpen(name?: string): void;
+  /** What `self.fetch` was handed, and the init beside it — `undefined` for the one call
+      that passes none. Added in task 7: forwarding the Request keeps the page's mode,
+      credentials, redirect mode and headers, and a non-empty init rebuilds it. */
+  handed: (string | { url: string })[];
+  inits: (FetchInit | undefined)[];
+  /** Every key a `Cache.put` was ATTEMPTED with, recorded before anything can refuse it.
+      `keys()` answers what landed; a doomed write declined and one attempted-and-caught
+      are the same there and different here. */
+  puts: string[];
   /** Make a delete reject: a cache NAME for caches.delete, a pathname for Cache.delete.
       Added in task 5 — the only way a test reaches a worker's per-delete catch. */
   refuseDelete(key: string): void;
@@ -217,8 +235,14 @@ export interface Harness {
   inner: Partial<Record<Exposable, (request: FetchRequest) => boolean>>;   // typed in task 6's review round; the `as` casts went with it
   install(): Promise<void>;
   activate(): Promise<void>;
-  /** `undefined` means the worker never called respondWith — i.e. left it to the network. */
+  /** `undefined` means the worker never called respondWith — i.e. left it to the network.
+      Resolves once everything passed to the event's `waitUntil()` has settled too. */
   request(spec: RequestSpec): Promise<Response | undefined>;
+  /** The same dispatch with the halves kept apart, added in task 7's second fix round:
+      `responded` settles when the page has its answer, `settled` when the background work
+      is done. `request` awaits both in order and is therefore blind to the one property
+      that separates `waitUntil(refresh(…))` from `await refresh(…)`. */
+  dispatch(spec: RequestSpec): { responded: Promise<Response | undefined>; settled: Promise<void> };
   message(data: unknown): Promise<void>;
   skipWaitingCalls: number;
   claimCalls: number;
@@ -233,6 +257,7 @@ export function html(body: string): Response;   // 200, content-type text/html
 export function js(body: string): Response;     // 200, content-type text/javascript
 export function css(body: string): Response;    // 200, content-type text/css
 export function font(): Response;               // 200, content-type font/woff2
+export function stalled(type?: string): Response;  // added in task 7's second fix round: 200, headers only, a body that never arrives
 
 // src/lib/sw.ts
 export const SW_URL = "/sw.js";
@@ -2408,7 +2433,11 @@ first two are the ones that change what gets written.)*
    `asset()` had no deadline either, with no argument written down anywhere.
    Both handlers now go through `timed()`; a navigation timeout is treated as
    offline and falls back to the cached shell, and for an asset it only fails
-   faster. `TIMEOUT_MS` is unchanged.)*
+   faster. `TIMEOUT_MS` is unchanged.)* *(corrected in the second fix round: the
+   navigation does NOT go through `timed()` — `timed` attaches a signal, and an
+   init demotes `mode: "navigate"`. It races the deadline instead, through
+   `deadlined`. The verdict above is unchanged; only the shape of the deadline
+   is.)*
 8. **Comments in `sw.js` and `sw.test.ts` that pointed forward at "task 7" are
    now history** and were moved to the present tense (`isAssetUrl`'s cache-key
    note, `precache`'s declined-font note, `purge`'s record note, and the
@@ -2512,6 +2541,11 @@ network had failed.
    init)` is that one way, and `fetchFresh` is `timed` plus `cache: "reload"` —
    which the runtime handlers deliberately do not ask for, since a hashed asset
    cannot have changed and a navigation is the page's own request.
+   *(corrected in the second fix round: "the only way this file fetches anything"
+   is false again and the sentence is gone from the file — `navigate()` calls
+   `self.fetch` directly, and must, for the reason in item 1 of the next block.
+   The deadline claim is true and now wider: the request AND the body read after
+   it.)*
 9. **The contract at the head of this plan says `async function navigate(request)`.**
    It is `navigate(event)`: the handler needs `event.waitUntil` for 6, and reads
    `event.request` for the fetch.
@@ -2541,7 +2575,100 @@ network had failed.
     and `%2F` do not round-trip; the last is the traversal `isAssetUrl` refuses.
 12. **Counts after the fix round: 75 files / 1 763 tests** — `sw.test.ts` 157 →
     **186**, `sw-harness.test.ts` 21 → **30**, `sw-server-routes.test.ts` 7.
-    `sw.js` is 188 lines of code to 523 of comment.
+    `sw.js` is 188 lines of code to 523 of comment. *(corrected in the second fix
+    round: **75 files / 1 779 tests** — `sw.test.ts` **198**, `sw-harness.test.ts`
+    **34** — and `sw.js` is **233 lines of code to 575 of comment**, 2.5 to 1.)*
+
+*(**Second fix round**, after the verification of `64723a5`. The nine findings
+above were confirmed fixed in behaviour; these are four problems the fix round
+itself introduced, one surviving mutant on the new code, and one claim that was
+still false. Read together with the block above.)*
+
+1. **The deadline was rewriting the page's own Request to get itself armed.**
+   `navigate()` fetched through `timed()`, which attaches an `AbortSignal` — and
+   a signal is an init, and **any init that is not empty makes `fetch()` rebuild
+   the Request**: the Fetch Standard's constructor sets a mode of `"navigate"` to
+   `"same-origin"` and clears the reload-navigation and history-navigation flags.
+   So every navigation this worker forwarded stopped being a navigation, a reload
+   stopped being a reload, and no test could see it, because `mode: "navigate"`
+   cannot be constructed outside a browser at all (undici: `invalid request mode
+   navigate`). **Ruling: a navigation gets its deadline by RACING** —
+   `deadlined(self.fetch(event.request))`, no init, the loser left in flight — and
+   the assets keep `timed()`/abort, where an init changes nothing (measured in
+   node: forwarding keeps mode, credentials, redirect mode and headers;
+   re-fetching `request.url` keeps none of them). The harness could not see this
+   either: `handed` records the input and never the init. It now records **both**,
+   and a test pins `inits[i] === undefined` for the navigation.
+2. **Rule 2 was false in three places** — the file header, `navigate()`'s header
+   and `README.md` — all of which said a poisoned cache is visible only to a phone
+   with "no network". The deadline is half of that condition: a phone that cannot
+   reach this origin inside ten seconds is served the cached shell too. All three
+   now say so.
+3. **`purge()` deleted the assets of the shell a refresh had just published.** The
+   keep-set was install's record alone, and a refresh writes a newer deploy's
+   chunks and its HTML, neither of which any record names. The shell survived (its
+   key is in the record) and its chunks did not: a cached page that boots to a
+   white screen, which is the failure this whole phase exists to prevent, arriving
+   from the inside. The keep-set is now **the record UNION what the cached shell
+   names**, read out of the cache; a shell that will not read is treated exactly
+   like a record that will not parse — keep everything. That also makes
+   `refresh()`'s "never pruned apart" true rather than aspirational.
+4. **Orphaned assets after a failed shell put are documented, not deleted.**
+   Assets-first ordering is what makes publication atomic (item 6 above), and its
+   cost is a phone that fills up between the chunks and the HTML: chunks in the
+   cache that no record and no cached shell names, unreachable by every branch in
+   the file. Bounded — what a shell names is the entry chunk and the stylesheet,
+   **482 kB in this build, measured** — and collected by the next activate.
+   Deleting them from `refresh()` would race a concurrent install writing the same
+   bytes, and "named by nothing" is only a settled fact at activate.
+5. **The surviving mutant: `event.waitUntil(refresh(…))` → `await refresh(…)`.**
+   It lived because `harness.request()` drains `waitUntil` before it returns, so a
+   handler that blocked the page on its background work passed every assertion the
+   harness could make. The harness now also exposes **`dispatch(spec)`**, which
+   hands back `responded` and `settled` separately, and the test asserts that
+   nothing is in the cache at the moment the page is answered. Deterministic
+   rather than timing-dependent: the fake's `put` lands on a macrotask and the
+   assertion runs in a microtask.
+6. **A 206 is now declined observably.** "Not stored" was true of a worker that
+   never tried and of one that tried and swallowed the TypeError. The harness
+   records every put ATTEMPT (`puts`), the 206 test asserts the put was never
+   attempted, and 201/202/203/205 are covered by a table — a 203 in particular
+   says a proxy has *transformed* the body, which is the one thing a
+   content-hashed URL promises has not happened.
+7. **The body reads are bounded, so "every network call gets a deadline" is true
+   rather than nearly true.** `fetch()` resolves on the HEADERS: a route that
+   answers 200 and then goes quiet leaves `await response.text()` pending for ever
+   on a request that looks finished — in `precache()` (twice) that holds the whole
+   install open inside `waitUntil`, and in `refresh()` it holds the navigation's
+   event open long after the page was served. All three go through `deadlined`
+   now, and the harness has a `stalled()` fixture (headers, and a body that never
+   arrives) to drive them. Note what that fixture costs a test that gets it wrong:
+   an unbounded read HANGS rather than failing.
+8. **One mutant found a real gap no review raised:** the dispatch keyed on
+   `destination === "document"` in place of `mode === "navigate"` passed the whole
+   suite. The two travel together for a top-level navigation and only for one — a
+   navigation inside an `<iframe>` is mode `"navigate"`, destination `"iframe"` —
+   so the destination key would drop every nested navigation out of the handler
+   unanswered, with no cached shell offline and no deadline on a hang. Test added;
+   the harness comment claiming a browser "sets these together" now says for which
+   navigations.
+9. **Mutants: 52 on the surface this task owns, 51 killed**, each applied to a
+   baseline asserted byte-for-byte clean and verified green first. The one
+   survivor is equivalent and stays: `refresh()`'s `openCache()` →
+   `self.caches.open(CACHE)` is unobservable, because the only caller wraps
+   `refresh` in `.catch(() => {})`, so "return early" and "throw" are the same
+   event — and that caller's catch is itself pinned (removing it kills five
+   tests). The guard is there so the function does not depend on its caller for
+   it. Plus the three whole-file mutants, all killed by the current suite: task
+   6's worker (`7c7343e`, 62 tests), this task's first commit (`8917bf3`, 33) and
+   **the first fix round's own worker (`64723a5`, 8)**.
+10. **A process note, because it nearly shipped.** `web/public/sw.js` is **not**
+    prettier-formatted — there is no prettier config in this repo — and running
+    `prettier --write` on it reflows the file to 80 columns, which breaks
+    `sw-server-routes.test.ts`: that file parses `NEVER` out of the shipped bytes
+    with a regex that a multi-line array defeats. `eslint` is the gate here. The
+    reflow was reverted hunk by hunk and the code-only diff verified against
+    `HEAD`.
 
 **Files:**
 - Modify: `web/public/sw.js`

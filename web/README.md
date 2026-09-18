@@ -129,7 +129,7 @@ Phase 3: the Workshop's other three benches, each a pure view over one hook call
 
 ## The service worker
 
-`public/sw.js` is hand-written — 188 lines of code under 523 of comment, 2.8 to 1 — and
+`public/sw.js` is hand-written — 233 lines of code under 575 of comment, 2.5 to 1 — and
 shipped verbatim by Vite's `public/` copy: no `vite-plugin-pwa`, no Workbox, no generated
 precache manifest. The reasoning is in
 `docs/superpowers/plans/2026-09-16-pwa-phase4-install-and-offline.md`; the short version
@@ -152,10 +152,18 @@ Three things about how it fetches. Everything *install* asks for goes out
 `cache: "reload"`, so a worker installing seconds after a deploy cannot precache the bytes
 that deploy replaced — the runtime handlers deliberately do not, since a hashed asset
 cannot have changed and a navigation is the page's own request to make. Every network call
-in the file, install and runtime alike, carries a 10-second `AbortSignal`: `install` runs
-inside `waitUntil()`, so one request accepted and never answered would hang it until the
-browser gave up, leaving the phone with no worker at all, and the same hang on a navigation
-would leave a standalone window waiting for ever with no chrome to escape through. And a
+in the file gets a 10-second deadline, install and runtime alike — and the **body read**
+that follows it does too, because `fetch()` resolves on the headers, so a route that
+answers 200 and then goes quiet leaves `await response.text()` pending for ever on a
+request that looks finished. `install` runs inside `waitUntil()`, so either hang would hold
+it open until the browser gave up, leaving the phone with no worker at all, and the same
+hang on a navigation would leave a standalone window waiting for ever with no chrome to
+escape through. The deadline comes in two shapes and the choice is forced: install and the
+asset branch **abort**, with a 10-second `AbortSignal`, which also cancels the request; a
+navigation **races**, because attaching a signal means passing a non-empty init, and a
+non-empty init makes `fetch()` rebuild the Request — which turns `mode: "navigate"` into
+`"same-origin"` and clears the reload- and history-navigation flags. Forwarding the page's
+navigation untouched is worth one fetch left in flight after the race. And a
 missing *font* is survivable where a missing *chunk* is not: the app is legible in the
 system stack, so the font loop declines and carries on while the asset loop throws.
 
@@ -175,6 +183,17 @@ path with something precached goes too. It also reaches whatever the `fetch` han
 stores at runtime — an asset cached on a cache-first miss is not in the record install
 wrote, so the next activate takes it. That is intended: the record is what this build
 needs, a runtime entry is re-fetchable, and the alternative is a cache with no ceiling.
+
+The keep-set is that record **union what the shell now in the cache names**, and the second
+half is not optional. A navigation's refresh publishes a newer deploy's chunks and then its
+HTML, and neither is in any record — so pruning on the record alone would delete the assets
+of the very page the next offline launch boots, while keeping the page itself, whose key is
+in the record. That is a shell that renders a white screen: the failure this whole file
+exists to prevent, arriving from the inside. It is read out of the cache rather than off
+the network, because the question at activate is what the entries on disk are *for*. The
+cost is one cycle of hysteresis — a shell that install has since replaced keeps a few dead
+chunks for one activate — and a shell that will not read is treated exactly like a record
+that will not parse: keep everything.
 
 **A record it cannot trust means keep everything.** All three shapes — absent, not a list,
 or not readable as JSON — are read the same way, because deleting on a record you cannot
@@ -227,11 +246,14 @@ hashed chunk.
 
 **A navigation is network-first; an `/assets/` URL is cache-first.** Those are the two
 branches, and nothing else is answered at all. A navigation goes to the network, and the
-cached shell is served on exactly one condition: that fetch did not answer. The deadline is
-part of that condition — a request that is accepted and never answered is indistinguishable
-from being offline, and an installed PWA is where that matters most, because a standalone
-window has no browser chrome to escape a hang with. If there is no cached shell either, the
-navigation throws rather than resolving with nothing.
+cached shell is served on exactly one condition: that fetch did not answer inside the
+deadline. The deadline is part of that condition — a request that is accepted and never
+answered is indistinguishable from being offline, and an installed PWA is where that
+matters most, because a standalone window has no browser chrome to escape a hang with. If
+there is no cached shell either, the navigation throws rather than resolving with nothing.
+The branch is keyed on `mode === "navigate"` and not on `destination === "document"`: those
+travel together for a top-level navigation and only for one, since a navigation inside an
+`<iframe>` is mode `"navigate"`, destination `"iframe"`.
 
 **A cache failure is not a network failure, and the difference is the whole of decision 8.**
 `cache.put` can reject — a phone that is full answers `QuotaExceededError`, and an installed
@@ -255,6 +277,15 @@ offline copy that is self-consistent and one deploy old beats a newer one that c
 It runs in `waitUntil()`, so the page is never blocked on it, and nothing it does can change
 what that navigation was served.
 
+What that ordering costs, written down because nothing else says it: a refresh that stops
+half way — a phone that fills up between the chunks and the HTML — leaves chunks in the
+cache that no record names and no cached shell names, unreachable by every branch in the
+file. They are bounded (what a shell names is the entry chunk and the stylesheet, 482 kB in
+this build) and they are collected by the next activate, which is the same collector every
+other runtime entry relies on. Nothing deletes them earlier on purpose: a refresh that
+deleted would be racing a concurrent install writing the same bytes, and "named by nothing"
+is only a settled fact at activate.
+
 Two refusals gate the refresh. `isShell` — 200 **and** `text/html` — is what stops an error
 page becoming the app's offline face: nginx serving a stale cached copy with
 `proxy_cache_use_stale` answers 502 with the app's own HTML, and a misconfigured host can
@@ -273,8 +304,13 @@ network, with the same deadline, and stores what comes back only if it is a 200 
 HTML: `/assets` is a `StaticFiles` mount today and answers a removed hash with a JSON 404,
 but if that mount ever went, `mount_spa` would answer with `index.html` and a 200, and a page
 of HTML stored under a `.js` URL is how a PWA bricks itself. 200 rather than `response.ok`
-(200–299) is deliberate: a 206 is a partial body the Cache API rejects outright, and a 204
-would cache an empty chunk. A network failure propagates — there is nothing honest to serve
+(200–299) is deliberate, because none of the other eight is a representation of the file
+that was asked for: a 204 or 205 has no body and would cache an empty chunk, a 203 says a
+proxy has *transformed* the body — the one thing a content hash promises has not happened —
+and a 206 is a partial body the Cache API rejects outright, as a `TypeError` from a line
+that reads as though it cannot fail. They are declined rather than attempted and caught:
+the `catch` on the put is there for the write this worker cannot see coming, a full disk,
+not as cover for one it can. A network failure propagates — there is nothing honest to serve
 for an asset that was never cached and cannot be fetched — but a *storage* failure does not:
 the bytes are in hand and the page gets them.
 
@@ -295,9 +331,10 @@ Three rules govern it, and they are restated at the top of the file itself:
    `respondWith()` — `isRefused` is where that is decided, once, for every branch. This
    client's whole design is that it never states a server fact it has not just read; a
    cached API response is that failure with a longer half-life.
-2. **Navigations are network-first**, so a bad cache is invisible to an online phone
-   and the browser's own update check on `/sw.js` keeps running — which is what lets a
-   kill switch land if this file ever has to be withdrawn.
+2. **Navigations are network-first**, so a cache this worker has poisoned is reachable
+   only by a phone that is offline or cannot reach this origin inside the deadline, never
+   by one whose network is working; and the browser's own update check on `/sw.js` keeps
+   running — which is what lets a kill switch land if this file ever has to be withdrawn.
 3. **Every global goes through `self.`**, which is the seam `src/test/sw-harness.ts`
    replaces to evaluate the shipped bytes in a fake `ServiceWorkerGlobalScope`. It is
    enforced by `no-restricted-globals` in `eslint.config.js`, not by convention:

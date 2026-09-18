@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fetchRequest, html, loadWorker, ORIGIN } from "./sw-harness";
+import { fetchRequest, html, js, loadWorker, ORIGIN, stalled } from "./sw-harness";
 
 // The harness is the only thing standing between "this worker's tests pass" and
 // "this worker works", and eight tasks' tests are written against it. Where it
@@ -434,5 +434,91 @@ describe("the seams the harness depends on", () => {
     await worker.request({ path: "/assets/x.js", mode: "cors", destination: "script" });
     expect(worker.handed[0]).toMatchObject({ mode: "cors", destination: "script" });
     expect(worker.fetched).toEqual(["/assets/x.js"]);
+  });
+
+  it("records the init beside it, including the absence of one", async () => {
+    // The half `handed` cannot show. A worker that forwards the Request AND
+    // attaches a signal has handed over the same object as one that forwards it
+    // untouched — but the non-empty init makes fetch() rebuild the Request, and
+    // the rebuild demotes `mode: "navigate"` to `"same-origin"` and clears the
+    // reload- and history-navigation flags. Nothing about the input records
+    // that; the init is the only witness.
+    const worker = loadWorker(`
+      self.addEventListener("fetch", (event) => {
+        if (event.request.mode === "navigate") { event.respondWith(self.fetch(event.request)); return; }
+        event.respondWith(self.fetch(event.request, { cache: "reload" }));
+      });
+    `);
+    worker.respond("/", html("<!doctype html>"));
+    worker.respond("/assets/x.js", js("1"));
+    await worker.request({ path: "/", mode: "navigate" });
+    await worker.request({ path: "/assets/x.js", mode: "cors", destination: "script" });
+    expect(worker.inits).toEqual([undefined, { cache: "reload" }]);
+  });
+
+  it("records a put that was attempted and failed, not only one that landed", async () => {
+    // `keys()` answers what is in the cache, which is the same for a worker
+    // that declined a doomed write and one that attempted it and swallowed the
+    // failure. Every attempt is recorded before anything can refuse it, which
+    // is what lets a test tell those two apart.
+    const worker = loadWorker(`
+      self.addEventListener("message", (event) => {
+        event.waitUntil((async () => {
+          const cache = await self.caches.open("c");
+          await cache.put("/a.js", new Response("a")).catch(() => {});
+          await cache.put("/b.js", new Response("b")).catch(() => {});
+        })());
+      });
+    `);
+    worker.refusePut("/b.js");
+    await worker.message(null);
+    expect(worker.puts).toEqual(["/a.js", "/b.js"]);
+    expect(worker.keys("c")).toEqual(["/a.js"]);
+  });
+
+  it("dispatches without draining the background half, which `request` cannot", async () => {
+    // `request()` awaits the response and then drains `waitUntil`, so a handler
+    // that awaited its background work before answering passes every assertion
+    // it can make. This is the seam that sees the difference: `responded`
+    // settles when the page has its answer, `settled` when the event is over.
+    const worker = loadWorker(`
+      self.addEventListener("fetch", (event) => {
+        event.respondWith((async () => {
+          const response = await self.fetch(event.request);
+          event.waitUntil((async () => {
+            const cache = await self.caches.open("c");
+            await cache.put("/late.js", new Response("late"));
+          })());
+          return response;
+        })());
+      });
+    `);
+    worker.respond("/assets/x.js", js("1"));
+    const { responded, settled } = worker.dispatch({ path: "/assets/x.js", mode: "cors" });
+    await expect((await responded)!.text()).resolves.toBe("1");
+    expect(worker.keys("c")).toEqual([]);
+    await settled;
+    expect(worker.keys("c")).toEqual(["/late.js"]);
+  });
+
+  it("answers a stalled route's headers and never its body", async () => {
+    // What a connection that goes quiet mid-body looks like from inside a
+    // worker: a 200 in hand, `ok` true, and a read that never settles. The
+    // fixture's own hazard, which is why nothing awaits one of these without a
+    // deadline — a test that did would hang rather than fail.
+    const worker = loadWorker(`
+      self.addEventListener("fetch", (event) => { event.respondWith(self.fetch(event.request)); });
+    `);
+    worker.respond("/", stalled());
+    const response = await worker.request({ path: "/", mode: "navigate" });
+    expect(response!.status).toBe(200);
+    expect(response!.headers.get("content-type")).toContain("text/html");
+    const read = response!.text();
+    // Not `resolves`/`rejects`: the assertion is that it does neither.
+    const outcome = await Promise.race([
+      read.then(() => "settled"),
+      new Promise((resolve) => setTimeout(() => resolve("pending"), 20)),
+    ]);
+    expect(outcome).toBe("pending");
   });
 });

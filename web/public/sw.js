@@ -12,8 +12,10 @@
       is that it never states a server fact it has not just read; a cached API
       response is that failure with a longer half-life.
    2. A navigation is network-first. The cached shell is served on exactly one
-      path — a phone with no network — so a bad cache is invisible to an online
-      phone, and the browser's own update check on /sw.js keeps running, which
+      condition — the network did not answer inside the deadline — so a cache
+      this worker has poisoned is reachable only by a phone that is offline or
+      cannot reach this origin in ten seconds, and never by one whose network is
+      working; and the browser's own update check on /sw.js keeps running, which
       is what lets sw.kill.js land if this file ever has to be withdrawn.
    3. Every global goes through `self.`. Valid in a worker, and the seam
       src/test/sw-harness.ts hangs a fake scope on. eslint.config.js's
@@ -33,12 +35,16 @@ const MANIFEST = "/__shell-manifest";
 /* The one path prefix this worker may store under, named rather than spelled
    inline because it is the whole of the refusal isAssetUrl makes. */
 const ASSETS = "/assets/";
-/* Every network call here gets a deadline, install and runtime alike, and that
-   is a different guarantee from the `.catch()` in the font loop. A catch covers
-   a fetch that REJECTS; it does nothing at all for one that never settles,
-   which is what a black-holed route does — it accepts the connection and
-   answers nothing. precache runs inside waitUntil(), so one hung request hangs
-   the whole install until the browser gives up on it, and the phone is left
+/* Every network call here gets a deadline — the request and the body read that
+   follows it alike, install and runtime both — and that is a different
+   guarantee from the `.catch()` in the font loop. A catch covers a fetch that
+   REJECTS; it does nothing at all for one that never settles, which is what a
+   black-holed route does: it accepts the connection and answers nothing. A body
+   is the same hazard one layer in, and easy to miss because the request looks
+   finished — fetch() resolves on the HEADERS, so a route that answers 200 and
+   then goes quiet leaves `await response.text()` pending for ever with nothing
+   left to reject. precache runs inside waitUntil(), so either hang holds the
+   whole install open until the browser gives up on it, and the phone is left
    with no worker: the outcome the font loop's catch exists to avoid, reached
    through the other door. A hung NAVIGATION is the same judgement one layer
    out: a request that never answers is indistinguishable from being offline,
@@ -46,17 +52,50 @@ const ASSETS = "/assets/";
    where that matters most — a standalone window has no browser chrome to
    escape a hang with, so "wait forever" is not a state the user can leave.
 
-   Per request, not per install, so a slow-but-progressing phone is not punished
+   Per call, not per install, so a slow-but-progressing phone is not punished
    for being slow; the ceiling is this times the eleven requests a real build
    makes, and only the fonts' share of it is survivable. */
 const TIMEOUT_MS = 10000;
 
-/* The only way this file fetches anything, and the reason the paragraph above
-   can say "every". Takes what fetch() takes, so a handler can forward the
-   page's own Request — which carries its mode, its credentials and its redirect
-   mode; re-fetching `request.url` instead quietly turns `redirect: "manual"`
-   into `"follow"` and can hand the page a redirected response it must not
-   have. */
+/* Two shapes of deadline, and which one a call gets is not a style choice.
+
+   This one RACES, leaving the work running and ignoring the loser. It is the
+   only shape available for a body read — there is nothing to abort — and it is
+   the required one for a navigation, for the reason written under `timed`. The
+   cost is a fetch that outlives the race, bounded by the browser's own network
+   timeout and by one per navigation; the alternative costs the page's Request,
+   which is worse. */
+function deadlined(work) {
+  let deadline;
+  const expiry = new Promise((_, reject) => {
+    deadline = self.setTimeout(() => reject(new Error("deadline exceeded")), TIMEOUT_MS);
+  });
+  /* Cleared on either outcome, which is also what keeps the loser quiet: an
+     expiry that never fires never rejects, and Promise.race has already
+     attached its own handler to a `work` that loses, so a late rejection from
+     the orphaned fetch is handled rather than unhandled. */
+  return Promise.race([work, expiry]).finally(() => self.clearTimeout(deadline));
+}
+
+/* This one ABORTS, so the request is really cancelled rather than orphaned, and
+   it is how install and the asset branch fetch. Takes what fetch() takes, so a
+   handler can forward the page's own Request — which carries its mode, its
+   credentials, its redirect mode and its headers; re-fetching `request.url`
+   instead quietly turns `redirect: "manual"` into `"follow"` and `credentials:
+   "omit"` into `"same-origin"` and drops the headers, and can hand the page a
+   redirected response it must not have. (Measured in node: `new Request(req, {
+   cache: "reload" })` keeps all four, `new Request(req.url, ...)` keeps none.)
+
+   Why a NAVIGATION cannot come through here. Any init that is not empty makes
+   fetch() rebuild the Request, and the Fetch Standard's constructor has three
+   steps that fire when it does: a mode of "navigate" becomes "same-origin", the
+   reload-navigation flag is unset, and the history-navigation flag is unset. So
+   the act of attaching a signal demotes the page's navigation to an ordinary
+   fetch — and the demotion is invisible from a test, because `mode: "navigate"`
+   cannot be constructed outside the browser's own navigation machinery at all
+   (undici throws `invalid request mode navigate`, which is why the harness's
+   requests are plain objects). navigate() therefore hands `self.fetch` the
+   event's Request and no init, and takes its deadline from `deadlined` above. */
 function timed(input, init) {
   const controller = new self.AbortController();
   const deadline = self.setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -207,15 +246,25 @@ function fontsInCss(css, base) {
    time. (Not a captive portal: this origin is https, where it cannot intercept
    at all.) Storing either under a .js URL is how a PWA bricks itself, so both
    halves stay. */
-/* 200 and not `response.ok`, which is 200–299. Two of the others are worth
-   naming. A 206 is a PARTIAL body, and the Cache API rejects a put of one
-   outright — a TypeError out of a line that reads as though it cannot fail, on
-   the one path (an asset the precache missed) where the page is waiting for the
-   answer. Nothing here sends a Range and isRefused turns away a request that
-   carries one, so a 206 means the server volunteered one; that is a
-   disagreement to decline, not to store. A 204 has no body at all and would
-   cache an empty chunk. Neither is reachable from this app today, and both are
-   one proxy away. */
+/* 200 and not `response.ok`, which is 200–299. None of the other eight is a
+   representation of the thing that was asked for, and they fail differently
+   enough to be worth naming. A 201, 202 or 203 answers about the request rather
+   than with the file — a 203 in particular says a proxy has TRANSFORMED the
+   body, which is the one thing a content-hashed URL promises has not happened.
+   A 204 or 205 has no body at all and would cache an empty chunk, and the Cache
+   API is perfectly happy to store one. A 206 is a PARTIAL body, which the Cache
+   API rejects a put of outright — a TypeError out of a line that reads as
+   though it cannot fail, on the one path (an asset the precache missed) where
+   the page is waiting for the answer; nothing here sends a Range and isRefused
+   turns away a request that carries one, so a 206 means the server volunteered
+   one, which is a disagreement to decline rather than to store.
+
+   Declined here rather than left to the `.catch()` on the put, which both
+   handlers now have: a write that cannot succeed is not attempted at all. The
+   catch is there for the write that fails on a phone this worker cannot inspect
+   — a full disk — not as cover for one this file can see coming. None of these
+   statuses is reachable from this app today, and every one of them is one proxy
+   away. */
 function isStored(response) {
   return response.status === 200;
 }
@@ -224,17 +273,20 @@ function isAsset(response) {
   return isStored(response) && !(response.headers.get("content-type") || "").includes("text/html");
 }
 
+
 function isShell(response) {
   return isStored(response) && (response.headers.get("content-type") || "").includes("text/html");
 }
-
 
 async function precache() {
   const cache = await self.caches.open(CACHE);
 
   const shell = await fetchFresh(SHELL);
   if (!isShell(shell)) throw new Error(`shell ${shell.status}`);
-  const urls = assetsInHtml(await shell.clone().text());
+  /* Deadlined like the fetch that produced it: fetch() resolves on the headers,
+     so a shell whose body never finishes arriving would hang install here, past
+     every deadline above, with the phone left on whatever worker it had. */
+  const urls = assetsInHtml(await deadlined(shell.clone().text()));
 
   /* A 200 page of text/html that names no hashed asset at all is not this app.
      Two that really answer that description: the reverse proxy's own default
@@ -267,7 +319,7 @@ async function precache() {
   for (let i = 0; i < urls.length; i += 1) {
     if (!urls[i].endsWith(".css")) continue;
     const base = new URL(urls[i], scopeOrigin()).href;
-    named.push(...fontsInCss(await responses[i].clone().text(), base));
+    named.push(...fontsInCss(await deadlined(responses[i].clone().text()), base));
   }
 
   /* One fetch, one put and one manifest entry per URL, whatever names it: a
@@ -385,6 +437,34 @@ async function purge() {
        of HTML is what the network would put under that key if anything ever
        fetched it. Uncaught, the rejection would take the claim down with it,
        AFTER the version purge above had already deleted the old world. */
+    return;
+  }
+
+  /* The union, and the second half of it is not optional. install's record says
+     what install fetched; the shell in the cache says what the phone will
+     actually render offline, and after a runtime refresh those are different
+     documents. refresh() writes a newer deploy's chunks and then its HTML, and
+     neither is in any record — so pruning on the record alone deletes the
+     assets of the very page the next offline launch boots, while keeping the
+     page itself (its key, /index.html, is in the record) and leaving a shell
+     that renders a blank screen. That is the failure this whole file exists to
+     prevent, arriving from the inside.
+
+     Read out of the cache, not off the network: this is activate, and the
+     question is what the entries on disk are for, not what the server is
+     serving now. The cost is one cycle of hysteresis — a shell that install has
+     since replaced keeps a few chunks alive for one activate, and the next one,
+     running against a record and a shell that finally agree, collects them. */
+  try {
+    const shell = await cache.match(SHELL);
+    /* Not cloned: Cache.match hands back a new Response every call, so this body
+       is this function's own. */
+    const named = shell ? assetsInHtml(await shell.text()) : [];
+    for (const url of named) keep.add(new URL(url, scopeOrigin()).href);
+  } catch {
+    /* The same reading as an unreadable record one paragraph up: a shell that
+       will not read is not a licence to guess at what it named. Keep
+       everything, and let the next install rewrite both. */
     return;
   }
 
@@ -595,11 +675,23 @@ async function cached(key) {
    how a failed write serves an ONLINE phone its cached shell — decision 8
    inverted by a `catch` one line too wide.
 
-   What the runtime entries this writes cost: nothing that purge() does not
-   already account for. The record install wrote does not name them, so the next
-   activate takes them — and the next activate only ever follows a new install,
-   which has just precached and re-recorded the shell it is about to serve. The
-   shell and its assets are therefore never pruned apart. */
+   What the runtime entries this writes cost, and why nothing here collects
+   them. purge() keeps the union of install's record and what the cached shell
+   NAMES, so a shell published here and the chunks it names are kept or dropped
+   together; they are never pruned apart. What that union does not cover is a
+   refresh that stopped in the middle: the order below is assets first and shell
+   last, so a phone that fills up part way through has written new chunks and
+   not the HTML that names them, and those are orphans — in no record, named by
+   no cached shell, and unreachable by every branch in this file, since the
+   asset branch only ever asks for what a page it has already served names.
+   Bounded, which is why they are tolerated: what this function fetches is what
+   the HTML NAMES — the entry chunk and the stylesheet, 482 kB across two files
+   in this build, measured — and they are held only until the next activate, the
+   same collector every other runtime entry here relies on. Deleting them from
+   this function instead would be the wrong trade twice over: a refresh that
+   deletes
+   is racing a concurrent install writing the same bytes, and the only moment
+   at which "named by nothing" is a settled fact is activate. */
 async function refresh(response) {
   /* isShell, and the two halves buy different things. The status half stops an
      ERROR page becoming the app's offline face: nginx serving a stale cached
@@ -617,7 +709,11 @@ async function refresh(response) {
   const cache = await openCache();
   if (!cache) return;
 
-  const urls = assetsInHtml(await response.clone().text());
+  /* Deadlined for the reason the fetch was: a 200 whose body stalls half way
+     leaves this pending for ever, and this one runs inside the navigation's own
+     waitUntil — the event stays open, holding the worker awake, for a page the
+     user was served ten seconds ago. */
+  const urls = assetsInHtml(await deadlined(response.clone().text()));
   /* The same refusal precache() makes, for the same reason and against the same
      page: a 200 text/html from this origin that names no hashed asset is not
      this app. The reverse proxy's default page while a host is being edited is
@@ -641,22 +737,31 @@ async function refresh(response) {
 
 /* A navigation is network-first, and this function is the whole of decision 8.
    Every online launch renders the deploy that is live right now, so a cache
-   this worker has poisoned can only ever be seen by a phone with no network,
-   and the browser's own update check on /sw.js runs whatever this cache holds —
-   which is what lets sw.kill.js land if this file has to be withdrawn.
+   this worker has poisoned can be seen only by a phone that is offline or
+   cannot reach this origin inside the deadline — never by one whose network is
+   working — and the browser's own update check on /sw.js runs whatever this
+   cache holds, which is what lets sw.kill.js land if this file has to be
+   withdrawn.
 
-   "Online" is decided by the fetch and by nothing else. Every cache operation
-   below is outside that judgement: a store that will not open and a write that
-   is refused are not a network, and a handler that catches them together
-   answers a phone with a perfectly good network out of its own cache. */
+   "Online" is decided by the fetch and the deadline on it, and by nothing else.
+   Every cache operation below is outside that judgement: a store that will not
+   open and a write that is refused are not a network, and a handler that
+   catches them together answers a phone with a perfectly good network out of
+   its own cache. */
 async function navigate(event) {
   let response;
   try {
-    response = await timed(event.request);
+    /* `self.fetch` directly, with the event's own Request and NO init: an init
+       would rebuild it and demote `mode: "navigate"` to "same-origin" — see
+       `timed`, which is why this one call does not use it. The deadline comes
+       from the race instead, and the price is that a fetch which loses the race
+       is left in flight rather than aborted. */
+    response = await deadlined(self.fetch(event.request));
   } catch {
-    /* Rejected, or never answered at all — the deadline lands here as an
-       AbortError. The two are one thing from a phone: the page is not coming.
-       This is the only path on which a cached page is ever served. */
+    /* Rejected, or never answered at all — the deadline lands here as its own
+       rejection, with the request still running behind it. The two are one
+       thing from a phone: the page is not coming. This is the only path on
+       which a cached page is ever served. */
     const shell = await cached(SHELL);
     if (shell) return shell;
     /* Nothing fetched and nothing cached — a first launch that never got a

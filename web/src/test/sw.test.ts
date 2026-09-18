@@ -10,6 +10,7 @@ import {
   js,
   loadWorker,
   ORIGIN,
+  stalled,
   type Harness,
   type RequestSpec,
 } from "./sw-harness";
@@ -685,12 +686,18 @@ describe("install, and the network that never answers", () => {
   it("gives every request a deadline", async () => {
     const worker = shell();
     await worker.install();
-    // One per fetch, the shell and the chunks included. A `.catch()` handles a
-    // fetch that rejects and does nothing at all for one that never settles, so
-    // this is the only thing standing between a captive portal and an install
-    // that hangs until the browser kills it.
-    expect(worker.deadlines).toEqual([10000, 10000, 10000]);
-    expect(worker.deadlines).toHaveLength(worker.fetched.length);
+    // One per fetch — the shell and both chunks — and one per body read, which
+    // is the half that is easy to miss: fetch() resolves on the HEADERS, so a
+    // route that answers 200 and then goes quiet leaves `await text()` pending
+    // for ever on a request that looks finished. A `.catch()` handles a fetch
+    // that rejects and does nothing at all for either hang, so these are the
+    // only thing standing between a captive portal and an install that waits
+    // until the browser kills it.
+    expect(worker.deadlines).toEqual([10000, 10000, 10000, 10000, 10000]);
+    // Three fetches; the two reads are the shell's HTML and the stylesheet the
+    // font URLs are scraped out of.
+    expect(worker.fetched).toHaveLength(3);
+    expect(worker.deadlines).toHaveLength(worker.fetched.length + 2);
     // And takes each one back down once its request is done. A deadline left
     // armed fires ten seconds later against nothing, holding the worker awake
     // to do it.
@@ -712,7 +719,9 @@ describe("install, and the network that never answers", () => {
     expect(worker.keys()).toEqual(
       ["/__shell-manifest", ...SHELL_ASSETS, SHELL_FONTS[1], "/index.html"].sort(),
     );
-    expect(worker.deadlines).toEqual([10000, 10000, 10000, 10000, 10000]);
+    // Five fetches — shell, two chunks, two fonts — and the two body reads.
+    expect(worker.fetched).toHaveLength(5);
+    expect(worker.deadlines).toEqual(Array<number>(7).fill(10000));
   });
 
   it("fails the install when it is an asset that never answers", async () => {
@@ -732,6 +741,35 @@ describe("install, and the network that never answers", () => {
     const worker = loadWorker(source);
     worker.hang("/index.html");
     await expect(worker.install()).rejects.toThrow();
+    expect(worker.keys()).toEqual([]);
+  });
+
+  it("fails the install when the shell answers and its body never arrives", async () => {
+    // The hang one layer in, and the one a deadline on the REQUEST does not
+    // reach: fetch() resolves on the headers, so this install holds a 200
+    // text/html whose `text()` never settles. Undeadlined it does not fail —
+    // it waits, inside waitUntil, until the browser gives up on the install and
+    // leaves the phone on whatever worker it had, which is the same outcome as
+    // the black hole above through a door the request's own deadline cannot
+    // see. A test for it hangs rather than failing, which is why the assertion
+    // is on the rejection.
+    const worker = loadWorker(source);
+    worker.respond("/index.html", stalled());
+    await expect(worker.install()).rejects.toThrow("deadline exceeded");
+    expect(worker.keys()).toEqual([]);
+  });
+
+  it("fails the install when it is the stylesheet's body that never arrives", async () => {
+    // The second read, and the one nothing else in this file would notice: the
+    // stylesheet is fetched, validated and then read again to scrape @font-face
+    // out of it. A shell whose CSS body never finishes is not installable — the
+    // bytes to cache are not all there — so this fails rather than installing a
+    // stylesheet that is half a file.
+    const worker = loadWorker(source);
+    worker.respond("/index.html", html(SHELL_HTML));
+    worker.respond("/assets/index-CY0Sh5Q2.js", js("console.log(1)"));
+    worker.respond("/assets/index-nhBuGG1b.css", stalled("text/css"));
+    await expect(worker.install()).rejects.toThrow("deadline exceeded");
     expect(worker.keys()).toEqual([]);
   });
 });
@@ -974,6 +1012,22 @@ describe("activate", () => {
     worker.store.get(worker.cache)!.set(at("/api/admin/overview"), js('{"dnd":false}'));
     await worker.activate();
     expect(worker.keys()).not.toContain("/api/admin/overview");
+  });
+
+  it("keeps everything when the cached shell cannot be read", async () => {
+    // The prune's keep-set is install's record UNION what the cached shell
+    // names, and the second half is a cache read, which can fail on its own —
+    // the disk, not the lookup. Read the record, fail to read the shell, prune
+    // anyway, and every runtime entry goes on the strength of half an answer.
+    // The reading is the same as for a record that will not parse: keep
+    // everything, and let the next install rewrite both.
+    const worker = shell();
+    await worker.install();
+    const orphan = "/assets/index-D4kq2mZa.js";
+    worker.store.get(worker.cache)!.set(at(orphan), js("console.log(2)"));
+    worker.refuseMatch("/index.html");
+    await worker.activate();
+    expect(worker.keys()).toContain(orphan);
   });
 
   it("deletes a cross-origin entry whose path matches one it keeps", async () => {
@@ -1829,6 +1883,123 @@ describe("navigations", () => {
     // deploy that just landed must not be read out of the HTTP cache.
     expect(worker.reloaded).toEqual(expect.arrayContaining(NEXT_ASSETS));
   });
+
+  it("answers a nested navigation too, which is keyed on the mode and not the destination", async () => {
+    // `mode: "navigate"` and `destination: "document"` travel together for a
+    // TOP-LEVEL navigation and only for one: a navigation inside an <iframe> is
+    // mode "navigate", destination "iframe", and <object>/<embed> are the same
+    // shape again. So the two are not interchangeable as the branch key, and
+    // the mode is the one the Fetch Standard ties to "this is a navigation".
+    // Keyed on the destination instead, a nested same-origin navigation falls
+    // out of the handler unanswered — no cached shell offline, and no deadline
+    // on a hang either, which is the whole of what this file is for.
+    const worker = shell();
+    await worker.install();
+    const nested = { path: "/panel", mode: "navigate", destination: "iframe" };
+    const response = await worker.request(nested);
+    await expect(response!.text()).resolves.toContain(ROOT_DIV);
+  });
+
+  it("gives the navigation a deadline without touching the request to do it", async () => {
+    // A deadline that ABORTS needs a signal; a signal is an init; and any init
+    // that is not empty makes fetch() rebuild the Request. The Fetch Standard's
+    // constructor then does three things to the rebuilt one: `mode: "navigate"`
+    // becomes `"same-origin"`, the reload-navigation flag is unset and the
+    // history-navigation flag is unset. A reload would stop being a reload, a
+    // back/forward navigation would stop being one, and the request would stop
+    // being a navigation at all — none of it visible in a body, and none of it
+    // constructible here, because undici refuses `mode: "navigate"` outright.
+    // So the navigation is fetched with no init and RACED against the deadline
+    // instead, and this is the assertion that says so.
+    const worker = shell();
+    await worker.install();
+    worker.respond("/", deployed("two", NEXT_ASSETS));
+    worker.respond(NEXT_ASSETS[0], js("console.log(2)"));
+    worker.respond(NEXT_ASSETS[1], css("body{color:blue}"));
+    const before = worker.handed.length;
+    // Its own snapshot: install arms more deadlines than it makes fetches, so
+    // the two indices are not interchangeable.
+    const armed = worker.deadlines.length;
+    await worker.request({ path: "/", mode: "navigate" });
+    expect(worker.fetched[before]).toBe("/");
+    expect(worker.inits[before]).toBeUndefined();
+    // The refresh's fetches are this worker's own requests rather than the
+    // page's, so they are aborted rather than raced, and they carry both halves.
+    const refreshed = worker.inits.slice(before + 1);
+    expect(refreshed).toHaveLength(2);
+    for (const init of refreshed) expect(init).toMatchObject({ cache: "reload" });
+    for (const init of refreshed) expect(init!.signal).toBeInstanceOf(AbortSignal);
+    // Raced or aborted, the deadline is armed and taken back down either way:
+    // one for the navigation, one for the body read of the page it answered
+    // with, one for each asset the refresh fetched.
+    expect(worker.deadlines.slice(armed)).toEqual(Array<number>(4).fill(10000));
+    expect(worker.deadlinesCleared).toBe(worker.deadlines.length);
+  });
+
+  it("answers the page before the refresh it started has written anything", async () => {
+    // The property `request()` cannot see, because it drains `waitUntil` before
+    // it returns: `waitUntil(refresh(…))` written as `await refresh(…)` passes
+    // every other assertion in this file and blocks the navigation on a
+    // background fetch of the chunks the page is about to ask for itself.
+    //
+    // Deterministic rather than timing-dependent: this fake's `put` lands in a
+    // MACROTASK, and the continuation of `await responded` is a microtask, so
+    // no put can have landed by the time these run unless the handler waited
+    // for it on purpose.
+    const worker = shell();
+    await worker.install();
+    worker.respond("/", deployed("two", NEXT_ASSETS));
+    worker.respond(NEXT_ASSETS[0], js("console.log(2)"));
+    worker.respond(NEXT_ASSETS[1], css("body{color:blue}"));
+    const { responded, settled } = worker.dispatch({ path: "/", mode: "navigate" });
+    const page = await responded;
+    await expect(page!.text()).resolves.toContain("two");
+    expect(worker.keys()).not.toContain(NEXT_ASSETS[0]);
+    await expect(shellInCache(worker).clone().text()).resolves.not.toContain("two");
+    // And it does finish, once the event's background half is let run.
+    await settled;
+    expect(worker.keys()).toEqual(expect.arrayContaining(NEXT_ASSETS));
+    await expect(shellInCache(worker).clone().text()).resolves.toContain("two");
+  });
+
+  it("keeps the assets of the shell it published through the next activate", async () => {
+    // The two halves of this file disagreeing about what the cache is for.
+    // install's record names the deploy install fetched; a refresh publishes a
+    // NEWER shell and the chunks it names, and neither is in any record. A
+    // purge that pruned on the record alone would delete those chunks and keep
+    // the shell — its key is in the record — leaving a cached page that boots
+    // to a blank screen offline, which is the failure the whole phase exists to
+    // prevent, arriving from the inside.
+    const worker = shell();
+    await worker.install();
+    worker.respond("/", deployed("two", NEXT_ASSETS));
+    worker.respond(NEXT_ASSETS[0], js("console.log(2)"));
+    worker.respond(NEXT_ASSETS[1], css("body{color:blue}"));
+    await worker.request({ path: "/", mode: "navigate" });
+    await worker.activate();
+    await expect(shellInCache(worker).clone().text()).resolves.toContain("two");
+    expect(worker.keys()).toEqual(expect.arrayContaining(NEXT_ASSETS));
+    // The record's own entries are kept too — this is a union, not a swap — so
+    // the worker that installed them can still be rolled back to.
+    expect(worker.keys()).toEqual(expect.arrayContaining([...SHELL_ASSETS]));
+  });
+
+  it("serves the page, and keeps the shell it has, when the new one stalls mid-body", async () => {
+    // fetch() resolves on the headers, so the refresh holds a 200 whose body
+    // never finishes arriving. Without a deadline on the READ, that `text()`
+    // never settles: the navigation's own waitUntil stays open, holding the
+    // worker awake for a page the user was served ten seconds ago, and this
+    // test would hang rather than fail.
+    const worker = shell();
+    await worker.install();
+    worker.respond("/", stalled());
+    const response = await worker.request({ path: "/", mode: "navigate" });
+    // The page is answered from the network regardless: the refresh is
+    // background work, and nothing it does can reach what was served.
+    expect(response!.status).toBe(200);
+    // And the shell that survives is the one install wrote.
+    await expect(shellInCache(worker).clone().text()).resolves.toContain(ROOT_DIV);
+  });
 });
 
 describe("assets", () => {
@@ -1978,6 +2149,38 @@ describe("assets", () => {
     const response = await worker.request(fromPage(LATE_FONT, "font"));
     expect(response!.status).toBe(206);
     expect(worker.keys()).not.toContain(LATE_FONT);
+    // Not stored is the weaker half: a handler that attempted the put and
+    // swallowed the TypeError would satisfy it too. The put is never ATTEMPTED,
+    // which is the difference between declining a write that cannot succeed and
+    // surviving one.
+    expect(worker.puts).not.toContain(LATE_FONT);
+  });
+
+  it.each([
+    [201, "created: a statement about the request, not the file"],
+    [202, "accepted: an answer that says the answer is not ready"],
+    [203, "transformed by a proxy — the one thing a content hash promises has not happened"],
+    [205, "reset, and null-bodied like a 204"],
+  ])("does not store a %i (%s)", async (status) => {
+    // `response.ok` is 200–299 and only one of those nine is a representation
+    // of the file that was asked for. Stored under a hashed URL, any of these
+    // is a module with nothing in it — or, for a 203, someone else's idea of
+    // what the bytes should have been — pinned until the next activate.
+    const worker = shell();
+    await worker.install();
+    worker.respond(
+      LATE_FONT,
+      // A 205 cannot carry a body at all: the Response constructor rejects one,
+      // as it does for a 204.
+      new Response(status === 205 ? null : "part", {
+        status,
+        headers: { "content-type": "font/woff2" },
+      }),
+    );
+    const response = await worker.request(fromPage(LATE_FONT, "font"));
+    expect(response!.status).toBe(status);
+    expect(worker.keys()).not.toContain(LATE_FONT);
+    expect(worker.puts).not.toContain(LATE_FONT);
   });
 
   it("serves the bytes the network returned even when the cache write is refused", async () => {
