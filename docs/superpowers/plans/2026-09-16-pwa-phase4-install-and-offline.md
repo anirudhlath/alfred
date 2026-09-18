@@ -157,7 +157,7 @@ Identical to phases 1 to 3, repeated because they are load-bearing:
 | `web/src/shell/useOnline.ts` | `navigator.onLine` plus its two events | 12 |
 | `web/src/gates/OfflineGate.tsx` | The cold-launch gate | 12 |
 | `web/src/gates/AuthGate.tsx` | Raise it when the auth read is paused rather than pending | 12 |
-| `web/README.md`, `docs/web-frontend.md`, `docs/backlog/low/pwa-phase4-followups.md`, `docs/superpowers/qa/2026-09-16-pwa-phase4-ios-checklist.md` | Docs, backlog, device QA | 13 |
+| `web/README.md`, `docs/web-frontend.md`, `docs/backlog/low/pwa-phase4-followups.md`, `docs/superpowers/qa/2026-09-16-pwa-phase4-ios-checklist.md` | Docs, backlog, device QA *(corrected in task 7: `web/README.md` is not a task-13 file. Its "The service worker" section has been rewritten in tasks 4, 5, 6 and 7, each in that task's own commit, because each one falsifies sentences of it — task 13 is the last pass over it, not the only one.)* | 4–7, 13 |
 
 ### The contract between tasks (names used exactly as spelled)
 
@@ -2345,9 +2345,79 @@ correction 10 — and the delta on task 5's 1 612 is +90: 77 in `sw.test.ts`, 6 
 
 Two branches. A navigation goes to the network first and falls back to the cached shell — decision 8, and the reason a bad cache can only ever be seen by an offline phone. An `/assets/*` URL is content-hashed and served `immutable` by `SpaCacheMiddleware`, so it is cache-first, with the network filling a miss.
 
+*(Corrected in task 7, from the branch that implemented it. Nine things, and the
+first two are the ones that change what gets written.)*
+
+1. **The `Files` list is one file short: `web/README.md`.** Every worker task
+   since task 3 has updated its "The service worker" section in the same commit,
+   and this task falsifies five sentences of it — "a fetch handler that so far
+   only refuses", "the navigation and asset branches are a later slice", "every
+   request still reaches the network untouched", "once it has a caching branch —
+   it has none yet", and rule 2's "Navigations **will be** network-first". The
+   line counts in that section go stale too: 156 lines of code / 427 of comment
+   after this task, where the file says 128 / 323 (the comment half was already
+   wrong at task 6 — measured 352 there).
+2. **Step 1's block ships as 23 tests, not 9.** Eight of the extra fourteen are
+   mutants step 5 would otherwise have let live (listed in 9 below); the six
+   others are the positive half the task-6 correction below already asked for —
+   an offline navigation to `/workshop`, `/ws-telemetry`, `/apifoo`, `/healthz`,
+   `/docsx` and `/docs/foo` gets the cached shell. Those six are the first
+   assertions in this file that can distinguish a wrongly-refused path from a
+   correctly-unhandled one; until a branch existed, both were `undefined`.
+3. **Two of the nine as written let a mutant live, and both for the same
+   reason.** `refreshes the cached shell from that answer` and `fetches and
+   stores an asset the precache missed` never read the response the worker
+   *served*, only the copy it stored — so a handler that did `cache.put(SHELL,
+   response)` instead of `response.clone()` passes both. In a browser that is a
+   navigation which fails with the cache correctly written: `put` spends the body
+   the page is about to read. Fixed by reading the served response FIRST and the
+   stored copy second, which leaves a spent object in the store and makes
+   `.clone()` on it throw.
+4. **The block spells out `"alfred-shell-v1"` and
+   `"https://alfred.example.com/index.html"`,** which are exactly the two things
+   `worker.cache` and `ORIGIN` exist so that no test restates. As shipped it
+   reads the store through a `shellInCache(worker)` helper built from both.
+5. **Step 2's expected failure is right for ten of the twenty-three and wrong for
+   the rest.** Measured by running the shipped block against task 6's `sw.js`:
+   21 fail — 10 on `Cannot read properties of undefined (reading 'text')`, 3 on
+   the same for `'status'`, 2 on `promise resolved "undefined" instead of
+   rejecting`, 6 on the offline table's `text()` — and **2 pass**, both
+   negative: `does not cache a page that is not HTML` and `leaves a path that
+   merely contains /assets/ alone`. A worker with no branch caches nothing and
+   answers nothing, so those two are vacuous until this task lands, in the same
+   way task 6's dispatched half was.
+6. **Step 3's listener snippet is written against a `request` the file does not
+   bind.** The listener reads `event.request` throughout (task 6 left it that
+   way), so the two branches are `event.request.mode` and
+   `navigate(event.request)` / `asset(event.request, url.pathname)`.
+7. **`navigate()` has no deadline, and that is a decision rather than an
+   omission.** `fetchFresh`'s `TIMEOUT_MS` is not reused here: the one request
+   whose freshness the user is watching must not be handed a stale shell at ten
+   seconds. The cost is the other end of it — a connection accepted and never
+   answered gets the browser's own hang rather than the offline shell, where the
+   same hang inside `install` would have left the phone with no worker at all.
+   Written into the file, not only here.
+8. **Comments in `sw.js` and `sw.test.ts` that pointed forward at "task 7" are
+   now history** and were moved to the present tense in the same commit
+   (`isAssetUrl`'s cache-key note, `precache`'s declined-font note, `purge`'s
+   record note, and the dot-segment note).
+9. **Every mutant died, including the file as task 6 left it.** 22 mutants of the
+   two handlers and the branch dispatch, plus one moving `isRefused` after both
+   branches, plus `git show HEAD:web/public/sw.js` as a mutant of the whole task:
+   no survivors. The eight tests that exist only because of that pass: the 502
+   HTML page (`isShell` → `response.ok`), the navigation with nothing cached
+   (`if (cached) return cached; throw` → `return cached`), the navigation
+   straight to an asset URL (the `return` between the branches — the harness
+   throws on a second `respondWith`), the query'd read and the pathname-keyed
+   round trip (`cache.match(pathname)` → `match(request)`, `cache.put(pathname,
+   …)` → `put(request, …)`, and `url.pathname` → `url.href` at the call site),
+   the `/assets` mount's real JSON 404 (`isAsset` → `response.ok`), and
+   `/img/assets/logo.png` (`startsWith(ASSETS)` → `includes`).
+
 **Files:**
 - Modify: `web/public/sw.js`
 - Modify: `web/src/test/sw.test.ts`
+- Modify: `web/README.md` *(corrected in task 7: absent from this list — see 1 above)*
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2519,7 +2589,7 @@ still falls through unanswered.)*
 npx vitest run src/test/sw.test.ts
 ```
 
-Expected: PASS, 45 tests *(corrected in task 3: 37 as planned; +8)* — including all thirteen of task 6's, which now have branches that could have broken them. *(Corrected in task 6: 51 of task 6's, of which the 13 in the second `describe` are the ones that were vacuous. All of them were already run green against a scratch transcription of this task's two handlers — see task 6's correction 7 — so a failure here is this task's code, not that block's.)*
+Expected: PASS, 45 tests *(corrected in task 3: 37 as planned; +8)* — including all thirteen of task 6's, which now have branches that could have broken them. *(Corrected in task 6: 51 of task 6's, of which the 13 in the second `describe` are the ones that were vacuous. All of them were already run green against a scratch transcription of this task's two handlers — see task 6's correction 7 — so a failure here is this task's code, not that block's.)* *(Corrected in task 7: measured, **157** in `sw.test.ts` — task 6's 134 plus this block's 23. `sw-harness.test.ts` (21) and `sw-server-routes.test.ts` (7) are untouched. Mutate before believing the green: the list is correction 9 at the head of this task.)*
 
 - [ ] **Step 5: Commit**
 
@@ -2528,7 +2598,7 @@ git add web/public/sw.js web/src/test/sw.test.ts
 git commit -m "feat(web): network-first navigations, cache-first hashed assets"
 ```
 
-Counts after this task: **73 files / ~1 561 tests**.
+Counts after this task: **73 files / ~1 561 tests** *(corrected in task 7: measured, **75 files / 1 725 tests**. No new file — all three this task touches already existed — and the delta is +23 on task 6's 1 702, all of them in `sw.test.ts`.)*.
 
 ---
 

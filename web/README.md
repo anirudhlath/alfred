@@ -129,8 +129,8 @@ Phase 3: the Workshop's other three benches, each a pure view over one hook call
 
 ## The service worker
 
-`public/sw.js` is hand-written — 128 lines of code under two and a half times as many of
-comment (323) — and
+`public/sw.js` is hand-written — 156 lines of code under nearly three times as many of
+comment (427) — and
 shipped verbatim by Vite's `public/` copy: no `vite-plugin-pwa`, no Workbox, no generated
 precache manifest. The reasoning is in
 `docs/superpowers/plans/2026-09-16-pwa-phase4-install-and-offline.md`; the short version
@@ -139,7 +139,7 @@ things a reviewer can *read in the shipped bytes*, and a negative requirement �
 worker never caches `/api`" — is one assertion against a hand-written file and an argument
 against a plugin's route table.
 
-**Install, activate, and a fetch handler that so far only refuses.** It fetches `/index.html` past the
+**Install, activate, and a fetch handler with two branches.** It fetches `/index.html` past the
 HTTP cache and takes the `/assets/…` URLs Vite wrote into it as the precache manifest —
 the entry chunk and the stylesheet. It then reads the **stylesheet** for the `url()` rules
 the HTML never mentions and takes the `.woff2` among them: 8 files, 139 436 of this build's
@@ -170,8 +170,9 @@ content-hashed, and `VERSION` is bumped by hand, so for every deploy that does *
 it this is the only thing that reaches what the previous build of the same file cached.
 Entries are compared on the full URL, not the pathname, so a cross-origin copy sharing a
 path with something precached goes too. It also reaches whatever the `fetch` handler
-stores at runtime once it has a caching branch — it has none yet — which is intended: the record is what this build needs, a runtime entry
-is re-fetchable, and the alternative is a cache with no ceiling.
+stores at runtime — an asset cached on a cache-first miss is not in the record install
+wrote, so the next activate takes it. That is intended: the record is what this build
+needs, a runtime entry is re-fetchable, and the alternative is a cache with no ceiling.
 
 **A record it cannot trust means keep everything.** All three shapes — absent, not a list,
 or not readable as JSON — are read the same way, because deleting on a record you cannot
@@ -187,10 +188,13 @@ served from a cache that is still being emptied underneath it. The one race left
 worker *installing* while this one activates: the entry keys are snapshotted before the
 record is read, which narrows it, and closing it would need a lock two workers do not have.
 
-**The `fetch` handler is there, and so far it only declines.** `isRefused` is the whole of
-rule 1 in one predicate — every request this worker must never answer — and the handler
-consults it and does nothing else yet; the navigation and asset branches are a later slice.
-So every request still reaches the network untouched, by two different roads.
+**The `fetch` handler refuses first and then branches twice.** `isRefused` is the whole of
+rule 1 in one predicate — every request this worker must never answer — and it runs before
+either branch, deliberately: a hand-typed API URL in the address bar arrives with mode
+`navigate`, and a navigation branch that ran first would cache whatever came back as this
+app's shell. Everything that is neither refused nor claimed by a branch — `/manifest.json`,
+`/icon.svg`, `/apple-touch-icon.png` — still reaches the network untouched, which is not
+the same thing as refused.
 
 What it refuses, and why each is not obvious. Anything but a `GET`, and anything carrying a
 `Range` — a ranged request asks for part of a body and a cache-first branch answers with a
@@ -215,9 +219,34 @@ decoded form contains a `.` or `..` segment. `new URL` normalises the plain form
 before this runs, but not `/%2e%2e%2fapi/x` — which does *not* reach the API, measured:
 Starlette does not normalise dot segments, so it falls through to `mount_spa` and answers
 200 `text/html`. The rule is there so that it never has to: the raw pathname of
-`/assets/..%2fapi/x` still begins `/assets/`, which is the prefix the asset branch will
-read as a cache key, so a server that ever did normalise would have it cache a 401 as a
+`/assets/..%2fapi/x` still begins `/assets/`, which is the prefix the asset branch reads
+as a cache key, so a server that ever did normalise would have it cache a 401 as a
 hashed chunk.
+
+**A navigation is network-first; an `/assets/` URL is cache-first.** Those are the two
+branches, and nothing else is answered at all. A navigation goes to the network and
+refreshes the cached shell from whatever comes back — under `/index.html`, whatever path
+was navigated to, because `mount_spa` serves `/` and `/actions/{id}` the same bytes and the
+offline branch reads one key. The refresh is gated on `isShell` rather than `response.ok`,
+because a captive portal answers 200 with its own page and a proxy answers 502 with an
+error page, and either one stored there is what every offline launch renders until the next
+online one. The cached shell is served on exactly one path — the fetch rejected, i.e. no
+network — and if there is no cached shell either, the navigation throws rather than
+resolving with nothing. Unlike `install`, a navigation carries no deadline: the one request
+whose freshness the user is watching must not be handed a stale shell at ten seconds, and
+the cost of that is the other end of it — a connection that is accepted and never answered
+gets the browser's own hang rather than the offline shell.
+
+An `/assets/` URL is cache-first because the filename carries a hash of the bytes, which is
+the same fact `SpaCacheMiddleware` serves them `immutable` for a year on. The cache is
+keyed on the **pathname** — install's spelling, so one file has one entry in the cache, in
+the record and in the prune, and a hashed name asked for with a query on the end is served
+the bytes already stored. A miss goes to the network and stores what comes back only if
+`isAsset` accepts it: `/assets` is a `StaticFiles` mount today and answers a removed hash
+with a JSON 404, but if that mount ever went, `mount_spa` would answer with `index.html`
+and a 200, and a page of HTML stored under a `.js` URL is how a PWA bricks itself. A
+network failure propagates — there is nothing honest to serve for an asset that was never
+cached and cannot be fetched.
 
 **Nothing registers it yet** — `src/lib/sw.ts` is a later slice of phase 4. Until then it
 is inert bytes in `public/`.
@@ -229,8 +258,7 @@ Three rules govern it, and they are restated at the top of the file itself:
    `respondWith()` — `isRefused` is where that is decided, once, for every branch. This
    client's whole design is that it never states a server fact it has not just read; a
    cached API response is that failure with a longer half-life.
-2. **Navigations will be network-first** (the branch is a later slice), so a bad cache is
-   invisible to an online phone
+2. **Navigations are network-first**, so a bad cache is invisible to an online phone
    and the browser's own update check on `/sw.js` keeps running — which is what lets a
    kill switch land if this file ever has to be withdrawn.
 3. **Every global goes through `self.`**, which is the seam `src/test/sw-harness.ts`

@@ -90,7 +90,7 @@ function scopeOrigin() {
    Known and accepted: the pathname is what survives, so a query or a fragment
    is dropped. Vite hashes into the filename and never writes either, and
    dropping them keeps one spelling of a cache key across the manifest, the
-   cache and task 7's lookup. */
+   cache and the asset branch's lookup. */
 function isAssetUrl(url, base) {
   try {
     const resolved = new URL(url, base || scopeOrigin());
@@ -250,8 +250,8 @@ async function precache() {
      the same way: no answer (the fetch rejects), no answer ever (the deadline
      fires, which arrives as a rejection too) and a wrong answer (a proxy's page
      under a .woff2 URL). Anything skipped is still picked up cache-first the
-     first time it is asked for — by the fetch handler task 7 adds; until then
-     it is simply absent. */
+     first time it is asked for — by the fetch handler's asset branch, which
+     stores what it fetched under the same pathname key. */
   const cached = [];
   for (const url of fonts) {
     const response = await fetchFresh(url).catch(() => null);
@@ -337,11 +337,12 @@ async function purge() {
        changes the record's shape (`{version, files}` is the obvious one). */
     if (!Array.isArray(record)) return;
     /* Absolute, because a cache key is. The record holds pathnames — one
-       spelling across the manifest, the cache and task 7's lookup — but
-       comparing on the pathname alone would keep a cross-origin entry that
-       merely shares one, and a poisoned CDN copy of the entry chunk is exactly
-       the thing this purge is the recovery from. Resolved against the scope for
-       the same reason isAssetUrl does: one notion of "us" in this file. */
+       spelling across the manifest, the cache and the asset branch's lookup
+       — but comparing on the pathname alone would keep a cross-origin entry
+       that merely shares one, and a poisoned CDN copy of the entry chunk is
+       exactly the thing this purge is the recovery from. Resolved against the
+       scope for the same reason isAssetUrl does: one notion of "us" in this
+       file. */
     keep = new Set([MANIFEST, ...record].map((path) => new URL(path, scopeOrigin()).href));
   } catch {
     /* A body that is not JSON. /__shell-manifest is not a real endpoint —
@@ -483,7 +484,7 @@ function isRefused(request) {
      falls through to mount_spa. It does not reach the API, and this rule does
      not rest on that staying true. An ASGI server that DID normalise would
      route /assets/..%2fapi/x to the real API while the raw pathname still
-     begins "/assets/", which is the prefix task 7's asset branch reads: a 401
+     begins "/assets/", which is the prefix the asset branch below reads: a 401
      cached as a hashed asset. Today that one is a 404 from the /assets mount.
 
      `new URL` has already normalised /x/../api/y and /%2e%2e/api/y down to
@@ -504,9 +505,116 @@ function isRefused(request) {
   return isNeverAnswered(decoded);
 }
 
+/* A navigation is network-first, and this function is the whole of decision 8.
+   Every online launch renders the deploy that is live right now, so a cache
+   this worker has poisoned can only ever be seen by a phone with no network,
+   and the browser's own update check on /sw.js runs whatever this cache holds —
+   which is what lets sw.kill.js land if this file has to be withdrawn. */
+async function navigate(request) {
+  const cache = await self.caches.open(CACHE);
+  try {
+    const response = await self.fetch(request);
+    /* Refresh the shell from every online navigation, so the offline copy is
+       never older than the last time this phone had a network. Under SHELL and
+       not under this navigation's own path: / and /actions/{id} are served the
+       same bytes (mount_spa's fallback), and the offline branch below reads one
+       key.
+
+       isShell, not response.ok: a captive portal answers 200 with its own page
+       and a proxy answers 502 with an error page, and either one stored here is
+       what every offline launch afterwards renders, until the next online one.
+
+       `.clone()` because a body is a stream that can be read once, and
+       respondWith is about to read this one. Storing the response itself passes
+       here and fails in a browser — the put consumes the body, the page is
+       handed a spent one, and the navigation fails with the cache correctly
+       written, which is the confusing half of that bug. */
+    if (isShell(response)) await cache.put(SHELL, response.clone());
+    return response;
+  } catch {
+    /* The only path on which a cached page is ever served: the fetch rejected,
+       which is what no network looks like from in here.
+
+       No deadline, unlike fetchFresh, and it is a trade rather than an
+       oversight. A navigation that is merely slow must not be handed a stale
+       shell at ten seconds — this is the one request whose freshness the user
+       is watching — so the cost is the other end of it: a black-holed
+       connection that accepts and never answers gets the browser's own hang and
+       its own timeout, not this fallback. install's deadline exists because a
+       hang there leaves the phone with no worker at all; a hang here leaves the
+       phone exactly where a worker-less browser would be. */
+    const cached = await cache.match(SHELL);
+    if (cached) return cached;
+    /* Nothing fetched and nothing cached — a first launch that never got a
+       network. Throwing hands the browser its own network-error page. Resolving
+       with undefined would reach the same page through a TypeError inside
+       respondWith, with nothing in the console saying why. */
+    throw new Error("offline, and no shell cached");
+  }
+}
+
+/* Cache-first, and this is the only branch in this file that is. The filename
+   carries a hash of the bytes, so the bytes behind one of these URLs never
+   change — the same fact SpaCacheMiddleware serves them on for a year
+   (core/channels/spa.py; measured against the running app:
+   `cache-control: public, max-age=31536000, immutable`). A deploy does not
+   invalidate them, it stops naming them, and activate's prune is what collects
+   the ones no longer named. */
+async function asset(request, pathname) {
+  const cache = await self.caches.open(CACHE);
+  /* Keyed on the pathname, not the request, and both halves of that matter: it
+     is the spelling precache() and MANIFEST use, so one URL has one entry here,
+     in the record and in the prune; and a hashed file asked for with a query
+     on the end is served the bytes already stored rather than fetched again
+     under a second key that activate would then delete. */
+  const cached = await cache.match(pathname);
+  if (cached) return cached;
+  const response = await self.fetch(request);
+  /* isAsset, not response.ok. /assets is a StaticFiles mount today, so a hash a
+     deploy has removed comes back 404 with a JSON body — but if that mount ever
+     goes, mount_spa answers any unknown path with index.html and a 200, and a
+     proxy or a captive portal can answer 200 with a page of its own at any
+     time. Storing a page of HTML under a .js URL is how a PWA bricks itself:
+     every launch afterwards parses it as a module and dies before the first
+     paint, and the way back is the kill switch, not a reload. */
+  if (isAsset(response)) await cache.put(pathname, response.clone());
+  /* A network failure propagates rather than being answered from somewhere
+     else. There is nothing honest to serve for an asset that was never cached
+     and cannot be fetched, and the obvious something-else — the shell, which is
+     what the fallback would hand back — is the brick above by another door. */
+  return response;
+}
+
 /* Judged before any branch, deliberately: a hand-typed API URL in the address
    bar arrives with mode "navigate", and a navigation branch that ran first
    would cache whatever came back as this app's shell. */
 self.addEventListener("fetch", (event) => {
   if (isRefused(event.request)) return;
+  const url = new URL(event.request.url);
+
+  /* Mode first and prefix second, and the `return` between them is load-bearing
+     rather than tidy: a navigation straight to a hashed asset URL — a pasted
+     link, devtools' "open in new tab" — is both, and calling respondWith twice
+     for one event is an InvalidStateError that would take the navigation down
+     with it. */
+  if (event.request.mode === "navigate") {
+    event.respondWith(navigate(event.request));
+    return;
+  }
+
+  /* A bare prefix test on a raw pathname, and it is safe ONLY because isRefused
+     has already run: that is what turned away a cross-origin URL, a ranged GET,
+     and a pathname whose decoded form holds a dot segment, before this trusts
+     the pathname as a cache key. `/assets/..%2fapi/x` begins with ASSETS as far
+     as startsWith is concerned and is a traversal once uvicorn has decoded it.
+     Move the refusal after this branch and this line needs isAssetUrl instead. */
+  if (url.pathname.startsWith(ASSETS)) {
+    event.respondWith(asset(event.request, url.pathname));
+  }
+
+  /* Everything else — /manifest.json, /icon.svg, /apple-touch-icon.png — falls
+     out of here unhandled, which is not the same thing as refused: the browser
+     fetches them exactly as it would with no worker installed. They are small,
+     they are read while the phone is online, and SpaCacheMiddleware's third
+     tier revalidates them on every load. */
 });
