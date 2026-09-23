@@ -1085,6 +1085,24 @@ describe("activate", () => {
     expect(worker.keys()).toContain(orphan);
   });
 
+  it("prunes on the record alone when there is no cached shell beside it", async () => {
+    // The other half of the union, and the one that is not the same reading as
+    // the test above. A shell that will not READ may name anything, so nothing
+    // can be pruned on its account; a shell that is simply ABSENT names
+    // nothing, the record is intact, and the union is the record. Keeping
+    // everything here instead keeps a dead build's chunks for no page at all.
+    // No path in this worker leaves a record with no shell — install writes the
+    // shell before the record, and nothing here deletes it — so, like the
+    // missing record above, it is the reading that is pinned.
+    const worker = shell();
+    await worker.install();
+    const entries = worker.store.get(worker.cache)!;
+    entries.delete(at("/index.html"));
+    entries.set(at("/assets/index-OLD.js"), js("old"));
+    await worker.activate();
+    expect(worker.keys()).toEqual(["/__shell-manifest", ...SHELL_ASSETS].sort());
+  });
+
   it("deletes a cross-origin entry whose path matches one it keeps", async () => {
     const worker = shell();
     await worker.install();
