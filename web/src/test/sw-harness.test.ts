@@ -98,6 +98,24 @@ describe("the fake scope's event semantics", () => {
     await expect(worker.dispatch({ path: "/x" }).settled).rejects.toThrow("background");
   });
 
+  it("still lets the background half finish when the response rejects", async () => {
+    // Reporting the response's rejection must not mean abandoning the event:
+    // work the handler handed to `waitUntil` before the failure is part of
+    // what the event did, and a test asserting on it right after the
+    // rejection must see it landed, not racing the next line.
+    const worker = loadWorker(`
+      self.addEventListener("fetch", (event) => {
+        event.waitUntil((async () => {
+          const cache = await self.caches.open("alfred-shell-v1");
+          await cache.put("/late", new Response("late"));
+        })());
+        event.respondWith(Promise.reject(new Error("response")));
+      });
+    `);
+    await expect(worker.request({ path: "/x" })).rejects.toThrow("response");
+    expect(worker.keys("alfred-shell-v1")).toEqual(["/late"]);
+  });
+
   it("refuses a second respondWith for one fetch event", async () => {
     const worker = loadWorker(`
       self.addEventListener("fetch", (event) => {
@@ -297,6 +315,25 @@ describe("the fake CacheStorage", () => {
     const stored = entries.get(`${ORIGIN}/x.js`)!;
     await expect(stored.clone().text()).resolves.toBe("console.log(1)");
     expect(stored.headers.get("content-type")).toBe("text/javascript");
+  });
+
+  it("stores a response with no body as one with no body, status and all", async () => {
+    // A 204 is a legal thing to put — only a 206 is refused — and a Response
+    // with that status cannot even be CONSTRUCTED with a body, empty or not.
+    // Modelled, so that a worker whose guard let one through is caught storing
+    // it rather than by a TypeError the fake invented.
+    const worker = loadWorker(`
+      self.addEventListener("install", (event) => {
+        event.waitUntil((async () => {
+          const cache = await self.caches.open("alfred-shell-v1");
+          await cache.put("/empty.js", new Response(null, { status: 204 }));
+        })());
+      });
+    `);
+    await worker.install();
+    const stored = worker.store.get("alfred-shell-v1")!.get(`${ORIGIN}/empty.js`)!;
+    expect(stored.status).toBe(204);
+    expect(stored.body).toBeNull();
   });
 
   it("never finishes a put whose body never finishes arriving", async () => {
