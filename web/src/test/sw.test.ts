@@ -302,6 +302,22 @@ describe("install", () => {
     await expect(shellInCache(worker).clone().text()).resolves.not.toContain("two");
     expect(worker.keys()).toEqual(expect.arrayContaining(SHELL_ASSETS));
   });
+
+  it("keeps the shell it had when it is a font's write that fails", async () => {
+    // "After everything it names" includes what it names through its
+    // stylesheet. A shell written before the fonts, with a font's write refused
+    // after it, leaves a new shell whose typefaces are not in the cache — not a
+    // white screen, but a new offline copy the install that wrote it did not
+    // finish.
+    const worker = withFonts();
+    await worker.install();
+    worker.respond("/index.html", deployed("two", NEXT_ASSETS));
+    worker.respond(NEXT_ASSETS[0], js("console.log(2)"));
+    worker.respond(NEXT_ASSETS[1], css(SHELL_CSS));
+    worker.refusePut(SHELL_FONTS[0]);
+    await expect(worker.install()).rejects.toThrow(/storage error/);
+    await expect(shellInCache(worker).clone().text()).resolves.not.toContain("two");
+  });
 });
 
 describe("install, and the fonts", () => {
