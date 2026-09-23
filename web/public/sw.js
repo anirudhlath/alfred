@@ -431,24 +431,33 @@ async function purge() {
     if (name !== CACHE) await self.caches.delete(name).catch(() => {});
   }
 
-  /* Within a version: every entry that is not in the manifest install just
-     wrote. Asset URLs are content-hashed, so a deploy's worth of them is dead
-     the moment a new worker activates — and VERSION is bumped by hand, so for
-     every deploy that does not bump it this is the ONLY thing that reaches what
-     the previous build of this same file cached. On iOS an origin over its
-     storage budget is evicted whole rather than trimmed.
+  /* Within a version: every entry that neither the record install just wrote
+     nor the shell now in the cache names — the union is spelled out below.
+     Asset URLs are content-hashed, so a deploy's worth of them is dead the
+     moment nothing names them — and VERSION is bumped by hand, so for every
+     deploy that does not bump it this is the ONLY thing that reaches what the
+     previous build of this same file cached. On iOS an origin over its storage
+     budget is evicted whole rather than trimmed.
 
      It also reaches, by the same rule, whatever the fetch handler stores at
-     runtime: an asset cached on a cache-first miss is not in the record install
-     wrote, so the next activate takes it. That is the intended reading — the
-     record is what this build needs, a runtime entry is re-fetchable, and the
-     alternative is a cache with no ceiling — but it is a decision the fetch
-     handler inherits rather than makes, so it is written down here.
+     runtime, and the rule cuts both ways there. An asset cached on a
+     cache-first miss is in no record, so it is kept only if the cached shell
+     names it — the chunks a refresh published with its shell are, which is
+     the point of the union — and anything else the next activate takes: a font
+     install declined and the page fetched later, a chunk a build splits out
+     and loads on demand. That is the intended reading — what the record and
+     the shell name is what the phone needs offline, any other runtime entry is
+     re-fetchable, and the alternative is a cache with no ceiling — but it is a
+     decision the fetch handler inherits rather than makes, so it is written
+     down here.
 
      Note the window this leaves: the new worker precaches into the cache the
-     old one is still serving from, so between install and activate the cached
-     shell is the new HTML. Its assets are already cached by then, and the only
-     reader of a cached shell is an offline navigation. */
+     old one is still serving from, so from the end of install to activate the
+     cached shell is the new HTML. Its assets are already cached by then —
+     install writes the shell after everything it names — and the only reader
+     of a cached shell is a navigation that did not get its answer from the
+     network: a phone that is offline, or that cannot reach this origin inside
+     the deadline. */
   const cache = await self.caches.open(CACHE);
   /* Snapshotted BEFORE the record is read, and the order is the whole point. A
      worker installing concurrently (the page re-checks for an update on every
@@ -733,8 +742,9 @@ async function cached(key) {
    the navigation and the page's own asset requests — a tunnel, a backgrounded
    app, a rollout that lands mid-flight — and that is the state it stays in.
 
-   So: fetch what the new HTML names, put those first, and publish the shell
-   last. If any of it fails the old shell stays, whole. An offline copy that is
+   So: fetch what the new HTML names, read each body whole, put those first,
+   and publish the shell last. If any of it fails — a body that stalls
+   included — the old shell stays, whole. An offline copy that is
    self-consistent and one deploy old beats a newer one that cannot boot.
 
    Runs in waitUntil() rather than before the response, so a deploy's first
@@ -751,17 +761,20 @@ async function cached(key) {
    together; they are never pruned apart. What that union does not cover is a
    refresh that stopped in the middle: the order below is assets first and shell
    last, so a phone that fills up part way through has written new chunks and
-   not the HTML that names them, and those are orphans — in no record, named by
-   no cached shell, and unreachable by every branch in this file, since the
-   asset branch only ever asks for what a page it has already served names.
-   Bounded, which is why they are tolerated: what this function fetches is what
-   the HTML NAMES — the entry chunk and the stylesheet, 482 kB across two files
-   in this build, measured — and they are held only until the next activate, the
-   same collector every other runtime entry here relies on. Deleting them from
-   this function instead would be the wrong trade twice over: a refresh that
-   deletes
-   is racing a concurrent install writing the same bytes, and the only moment
-   at which "named by nothing" is a settled fact is activate. */
+   not the HTML that names them, and those are orphans — in no record and named
+   by no cached shell. Not dead weight while they last: the asset branch serves
+   them, cache-first, to any page whose HTML names them, beginning with the
+   online page whose navigation started this refresh; and the next online
+   navigation to that deploy finds them cached and has only the HTML left to
+   publish. What they lack is a claim on the next activate, which collects
+   them. Bounded, which is why they are tolerated: what this function fetches
+   is what the HTML NAMES — the entry chunk and the stylesheet, 482 kB across
+   two files in this build, measured — and they are held only until that
+   activate, the same collector every other runtime entry here relies on.
+   Deleting them from this function instead would be the wrong trade twice
+   over: a refresh that deletes is racing a concurrent install writing the
+   same bytes, and the only moment at which "named by nothing" is a settled
+   fact is activate. */
 async function refresh(response) {
   /* isShell, and the two halves buy different things. The status half stops an
      ERROR page becoming the app's offline face: nginx serving a stale cached

@@ -1585,7 +1585,8 @@ describe("navigations", () => {
   it("serves the live page when there is a network", async () => {
     // Decision 8, and the whole of it: an online phone renders the deploy that
     // is live right now, never the cache. That is what makes a poisoned cache
-    // something only an offline phone can see.
+    // something only a phone that is offline, or cannot reach this origin
+    // inside the deadline, can see.
     const worker = shell();
     await worker.install();
     worker.respond("/", deployed("live"));

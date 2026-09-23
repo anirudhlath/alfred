@@ -180,12 +180,14 @@ function isRefused(request): boolean;            // added in task 6 — the whol
 async function precache(): Promise<void>;        // install
 async function purge(): Promise<void>;           // activate
 async function navigate(event): Promise<Response>;   // the EVENT, not the request — it needs waitUntil (corrected in task 7)
-async function asset(request, pathname: string): Promise<Response>;
+async function asset(event, pathname: string): Promise<Response>;   // the EVENT, not the request — it writes in waitUntil, beside the answer (corrected in task 7's third fix round: was `asset(request, pathname)`, and the put was awaited in front of the answer)
+async function store(pathname: string, response): Promise<void>;  // added in task 7's third fix round: the asset branch's write — open, whole(), put — every failure swallowed by its caller
 async function refresh(response): Promise<void>;  // added in task 7: publishes a shell only with its assets
 async function openCache(): Promise<Cache | undefined>;  // added in task 7: undefined = no usable CacheStorage
 async function cached(key): Promise<Response | undefined>;  // added in task 7: a miss and a read failure are one thing
 function timed(input, init): Promise<Response>;   // added in task 7: an ABORTING deadline; fetchFresh is this plus cache:"reload"
 function deadlined(work): Promise<unknown>;      // added in task 7's second fix round: a RACING deadline, for the two calls that cannot take a signal — a navigation (a non-empty init would demote mode "navigate" to "same-origin") and a body read (nothing to abort)
+function whole(response): Promise<Response>;     // added in task 7's third fix round: reads a CLONE to the end through deadlined(), resolves with the original — Cache.put reads the body it is handed to the end, so every network body is put through this first, and the tee leaves the original's bytes in memory for the put
 
 // src/test/sw-harness.ts
 export interface FetchRequest { url: string; method: string; mode: string; headers: Headers }  // task 6
@@ -236,7 +238,10 @@ export interface Harness {
   install(): Promise<void>;
   activate(): Promise<void>;
   /** `undefined` means the worker never called respondWith — i.e. left it to the network.
-      Resolves once everything passed to the event's `waitUntil()` has settled too. */
+      Resolves once everything passed to the event's `waitUntil()` has settled too.
+      (Corrected in task 7's third fix round: when the response itself rejects, that is
+      the rejection reported — a background one no longer replaces it; `dispatch().settled`
+      still reports that one.) */
   request(spec: RequestSpec): Promise<Response | undefined>;
   /** The same dispatch with the halves kept apart, added in task 7's second fix round:
       `responded` settles when the page has its answer, `settled` when the background work
@@ -257,7 +262,7 @@ export function html(body: string): Response;   // 200, content-type text/html
 export function js(body: string): Response;     // 200, content-type text/javascript
 export function css(body: string): Response;    // 200, content-type text/css
 export function font(): Response;               // 200, content-type font/woff2
-export function stalled(type?: string): Response;  // added in task 7's second fix round: 200, headers only, a body that never arrives
+export function stalled(type?: string): Response;  // added in task 7's second fix round: 200, headers only, a body that never arrives — and since task 7's third fix round it hangs a put too: the fake Cache.put reads the body to the end before it writes, as a real one does, and stores a rebuilt copy
 
 // src/lib/sw.ts
 export const SW_URL = "/sw.js";
@@ -2372,7 +2377,7 @@ correction 10 — and the delta on task 5's 1 612 is +90: 77 in `sw.test.ts`, 6 
 
 ## Task 7: Navigation and assets
 
-Two branches. A navigation goes to the network first and falls back to the cached shell — decision 8, and the reason a bad cache can only ever be seen by an offline phone. An `/assets/*` URL is content-hashed and served `immutable` by `SpaCacheMiddleware`, so it is cache-first, with the network filling a miss.
+Two branches. A navigation goes to the network first and falls back to the cached shell — decision 8, and the reason a bad cache can only ever be seen by an offline phone *(corrected in task 7's third fix round: by a phone that is offline or cannot reach this origin inside `TIMEOUT_MS` — the deadline is half of the condition, as the second fix round's item 2 says)*. An `/assets/*` URL is content-hashed and served `immutable` by `SpaCacheMiddleware`, so it is cache-first, with the network filling a miss.
 
 *(Corrected in task 7, from the branch that implemented it. Nine things, and the
 first two are the ones that change what gets written.)*
@@ -2578,6 +2583,14 @@ network had failed.
     `sw.js` is 188 lines of code to 523 of comment. *(corrected in the second fix
     round: **75 files / 1 779 tests** — `sw.test.ts` **198**, `sw-harness.test.ts`
     **34** — and `sw.js` is **233 lines of code to 575 of comment**, 2.5 to 1.)*
+    *(corrected in task 7's third fix round: neither line count reproduces, and the
+    second was not measured on the shipped bytes. Counted with acorn's tokenizer —
+    a line is code if any token touches it, comment if only a comment does, and a
+    blank line, inside a comment or not, is neither — `sw.js` at `eed3854` is
+    **202 lines of code to 576 of comment**, 2.85 to 1. The same count gives task
+    8's 205 / 587 at `294cc4f` exactly, and after this round it is **214 to 659**,
+    3.1 to 1; the README states the method beside the number. Test counts after
+    this round are in its item 8.)*
 
 *(**Second fix round**, after the verification of `64723a5`. The nine findings
 above were confirmed fixed in behaviour; these are four problems the fix round
@@ -2599,11 +2612,23 @@ still false. Read together with the block above.)*
    re-fetching `request.url` keeps none of them). The harness could not see this
    either: `handed` records the input and never the init. It now records **both**,
    and a test pins `inits[i] === undefined` for the navigation.
+   *(corrected in task 7's third fix round: "an init changes nothing" overstates it.
+   The Fetch Standard's rebuild also resets the referrer to "client" — the worker
+   itself — and, measured in headless Chromium, the asset branch's forwarded
+   requests arrive with `Referer: …/sw.js` where the page's own request named the
+   page. Harmless for a same-origin hashed file nothing on the server reads it
+   for, and the ruling stands; `timed`'s comment and the README now say it
+   rather than "nothing".)*
 2. **Rule 2 was false in three places** — the file header, `navigate()`'s header
    and `README.md` — all of which said a poisoned cache is visible only to a phone
    with "no network". The deadline is half of that condition: a phone that cannot
    reach this origin inside ten seconds is served the cached shell too. All three
-   now say so.
+   now say so. *(corrected in task 7's third fix round: five places, not three. The
+   first test in `sw.test.ts`'s navigations block said a poisoned cache is
+   "something only an offline phone can see", `purge()`'s window note in `sw.js`
+   said "the only reader of a cached shell is an offline navigation", and this
+   task's own opening line said "only ever be seen by an offline phone". All three
+   are corrected, the last in place.)*
 3. **`purge()` deleted the assets of the shell a refresh had just published.** The
    keep-set was install's record alone, and a refresh writes a newer deploy's
    chunks and its HTML, neither of which any record names. The shell survived (its
@@ -2621,6 +2646,12 @@ still false. Read together with the block above.)*
    **482 kB in this build, measured** — and collected by the next activate.
    Deleting them from `refresh()` would race a concurrent install writing the same
    bytes, and "named by nothing" is only a settled fact at activate.
+   *(corrected in task 7's third fix round: not "unreachable by every branch". The
+   asset branch serves them cache-first to any page whose HTML names them — the
+   online page whose navigation started the refresh first of all — and the next
+   online navigation to that deploy finds them cached and has only the HTML left
+   to publish. What they lack is a claim on the next activate. `sw.js` and the
+   README now say so.)*
 5. **The surviving mutant: `event.waitUntil(refresh(…))` → `await refresh(…)`.**
    It lived because `harness.request()` drains `waitUntil` before it returns, so a
    handler that blocked the page on its background work passed every assertion the
@@ -2643,7 +2674,13 @@ still false. Read together with the block above.)*
    event open long after the page was served. All three go through `deadlined`
    now, and the harness has a `stalled()` fixture (headers, and a body that never
    arrives) to drive them. Note what that fixture costs a test that gets it wrong:
-   an unbounded read HANGS rather than failing.
+   an unbounded read HANGS rather than failing. *(corrected in task 7's third fix
+   round: still only nearly true. `Cache.put` reads the body it is handed to the
+   end before it writes, so a put of a network response is a body read, and four
+   had no deadline — precache's chunk and font puts, `refresh()`'s asset puts, and
+   the asset branch's, which was awaited in front of the page's answer. The
+   harness could not see it: its fake put filed the Response away unread, so
+   `stalled()` never reached them. See the third fix round, items 1 and 2.)*
 8. **One mutant found a real gap no review raised:** the dispatch keyed on
    `destination === "document"` in place of `mode === "navigate"` passed the whole
    suite. The two travel together for a top-level navigation and only for one — a
@@ -2661,7 +2698,12 @@ still false. Read together with the block above.)*
    tests). The guard is there so the function does not depend on its caller for
    it. Plus the three whole-file mutants, all killed by the current suite: task
    6's worker (`7c7343e`, 62 tests), this task's first commit (`8917bf3`, 33) and
-   **the first fix round's own worker (`64723a5`, 8)**.
+   **the first fix round's own worker (`64723a5`, 8)**. *(corrected in task 7's
+   third fix round: not the only survivor. `purge()`'s `shell ? … : []` →
+   `if (!shell) return; …` also lived and was not on the list — the "record
+   present, shell absent" half of the union was untested. Confirmed alive at
+   `cc143d9` against a green, byte-identical baseline; killed now, third fix round
+   item 4.)*
 10. **A process note, because it nearly shipped.** `web/public/sw.js` is **not**
     prettier-formatted — there is no prettier config in this repo — and running
     `prettier --write` on it reflows the file to 80 columns, which breaks
@@ -2669,6 +2711,81 @@ still false. Read together with the block above.)*
     with a regex that a multi-line array defeats. `eslint` is the gate here. The
     reflow was reverted hunk by hunk and the code-only diff verified against
     `HEAD`.
+
+*(**Third fix round**, after the re-review of `eed3854`, landed on top of task 8's
+`294cc4f`. Nine findings — four Important, five Minor — plus one defect found
+while fixing the first of them. Read together with the two blocks above; the
+corrections to them are in place.)*
+
+1. **`Cache.put` is a body read, and four of them had no deadline.** A put reads
+   the body it is handed to the end before it writes, so a put of a network
+   response whose headers arrived and whose bytes stall waits for ever:
+   precache's chunk puts (the chunk's body is read by nothing else) and font
+   puts, `refresh()`'s asset puts, and the asset branch's put, which was awaited
+   in front of the page's answer. Measured in headless Chromium against a shell
+   naming a chunk whose body stalls: `294cc4f`'s worker was still `installing`
+   at 20 s, this round's goes `redundant` at 10 043 ms; a stalled runtime asset
+   got the page no headers after 15 s from `294cc4f` and a `200` in 1 ms from
+   this round. **Ruling: every network body is read whole, inside a deadline,
+   before it is put.** `whole(response)` reads a CLONE to the end through
+   `deadlined` and resolves with the original; `clone()` tees the stream, so the
+   original's bytes are then in memory and the put never touches the network.
+   Racing the put itself was rejected: a put takes no signal, and a raced put
+   stays in flight, free to land later in a cache that has decided against it.
+   The stylesheet's font scrape now reads from memory with no deadline of its
+   own — `whole` has bounded it. The asset branch writes **beside** the answer:
+   `asset(event, pathname)` hands `store()` to `event.waitUntil`, so the page
+   gets what the network gave it when it gave it. The install deadline tests
+   count one deadline per body now: 6 for a plain install, 9 with fonts.
+2. **The harness could not see it.** Its fake `Cache.put` filed the Response
+   away unread, so `stalled()` never reached a put. It now reads the body to the
+   end — spending it, as a real put does — and stores a rebuilt copy, a null
+   body staying null (a 204 cannot be constructed with one). The tests went in
+   first and were run against `294cc4f`'s worker with `--testTimeout=3000`: four
+   timed out (the chunk, the font, the refresh's asset, the asset branch) and
+   the page-before-write test failed on its assertion. Separately, `request()`
+   awaited the background half in a `finally`, so when both halves rejected the
+   background rejection replaced the response's; it now reports the response's
+   own and still drains the background first.
+3. **`precache()` wrote the shell FIRST — not raised by the review, found while
+   fixing 1.** With every body in memory the one way a put can still fail is
+   storage, and a new shell written first with a chunk refused after it left a
+   white screen in the cache the previous worker is still serving from, from an
+   install that failed. It now writes the chunks, then the fonts, then the
+   shell, then the record — the order `refresh()` publishes in, for the same
+   reason. Two tests: a second install whose chunk put is refused, and one whose
+   font put is refused, both leave the first shell.
+4. **The unlisted survivor:** `purge()`'s `shell ? … : []` → `if (!shell)
+   return;`. The "record present, shell absent" reading is pinned: an absent
+   shell names nothing and the record is intact, so the prune runs on the
+   record — unlike a shell that will not READ, which may name anything and so
+   keeps everything.
+5. **Prose that was false.** Rule 2's pre-reversal form in three more places
+   (the second block's item 2); `purge()`'s comment and the README saying every
+   entry the record does not name is pruned and that a runtime asset "the next
+   activate takes" — the union keeps any runtime entry the cached shell names;
+   the orphans called "unreachable by every branch" (the second block's item 4);
+   "an init changes nothing" (its item 1); and two leftovers of the reverted
+   prettier reflow in `sw.js`, a double blank line and a lone "deletes".
+6. **The line count** is measured with a tokenizer and the method is written
+   beside the number, in the README and in the first block's item 12.
+7. **Mutants: 29 on the code this round changed, 27 killed**, each applied to a
+   tree asserted byte-identical to its base commit and verified green first.
+   21 in `sw.js` (`whole`, the precache puts and their order, `refresh`'s put,
+   `asset`, `store`, the dispatch), 6 in the harness (the put's read, its
+   rebuilt head, `request()`'s rejection handling) and two whole files —
+   `294cc4f`'s `sw.js` (9 tests fail) and `294cc4f`'s harness (3). Two tests were
+   written before the run because two harness branches had no test through
+   them, and one after it, because the shell-before-fonts order survived. The
+   two survivors are equivalent for the reason the second block's item 9 gives
+   for `refresh()`: `store()`'s `if (!cache) return` dropped, and its
+   `openCache()` → `self.caches.open(CACHE)`, both turn "return early" into
+   "reject", and the only caller swallows every rejection — a catch that is
+   itself pinned (dropping it fails two tests).
+8. **Counts after this round: 75 files / 1 796 tests** — `sw.test.ts` **210**,
+   `sw-harness.test.ts` **39**, `sw-server-routes.test.ts` 7. Those include task
+   8's four in `sw.test.ts`, which landed between the rounds; this round added 8
+   to `sw.test.ts` and 5 to `sw-harness.test.ts`.
 
 **Files:**
 - Modify: `web/public/sw.js`
@@ -2846,7 +2963,7 @@ still falls through unanswered.)*
 npx vitest run src/test/sw.test.ts
 ```
 
-Expected: PASS, 45 tests *(corrected in task 3: 37 as planned; +8)* — including all thirteen of task 6's, which now have branches that could have broken them. *(Corrected in task 6: 51 of task 6's, of which the 13 in the second `describe` are the ones that were vacuous. All of them were already run green against a scratch transcription of this task's two handlers — see task 6's correction 7 — so a failure here is this task's code, not that block's.)* *(Corrected in task 7: measured, **157** in `sw.test.ts` — task 6's 134 plus this block's 23. `sw-harness.test.ts` (21) and `sw-server-routes.test.ts` (7) are untouched. Mutate before believing the green: the list is correction 9 at the head of this task.)* *(Corrected in the fix round: **186** in `sw.test.ts` and **30** in `sw-harness.test.ts`.)*
+Expected: PASS, 45 tests *(corrected in task 3: 37 as planned; +8)* — including all thirteen of task 6's, which now have branches that could have broken them. *(Corrected in task 6: 51 of task 6's, of which the 13 in the second `describe` are the ones that were vacuous. All of them were already run green against a scratch transcription of this task's two handlers — see task 6's correction 7 — so a failure here is this task's code, not that block's.)* *(Corrected in task 7: measured, **157** in `sw.test.ts` — task 6's 134 plus this block's 23. `sw-harness.test.ts` (21) and `sw-server-routes.test.ts` (7) are untouched. Mutate before believing the green: the list is correction 9 at the head of this task.)* *(Corrected in the fix round: **186** in `sw.test.ts` and **30** in `sw-harness.test.ts`.)* *(corrected in task 7's third fix round: the second fix round's **198** / **34** were never recorded here, and after the third it is **210** in `sw.test.ts` and **39** in `sw-harness.test.ts` — which includes task 8's four in `sw.test.ts`, landed between the two rounds.)*
 
 - [ ] **Step 5: Commit**
 
@@ -2855,7 +2972,7 @@ git add web/public/sw.js web/src/test/sw.test.ts
 git commit -m "feat(web): network-first navigations, cache-first hashed assets"
 ```
 
-Counts after this task: **73 files / ~1 561 tests** *(corrected in task 7: measured, **75 files / 1 725 tests**. No new file — all three this task touches already existed — and the delta is +23 on task 6's 1 702, all of them in `sw.test.ts`.)* *(corrected again in the fix round: **75 files / 1 763 tests**, +61 on task 6.)*.
+Counts after this task: **73 files / ~1 561 tests** *(corrected in task 7: measured, **75 files / 1 725 tests**. No new file — all three this task touches already existed — and the delta is +23 on task 6's 1 702, all of them in `sw.test.ts`.)* *(corrected again in the fix round: **75 files / 1 763 tests**, +61 on task 6.)* *(corrected in task 7's third fix round: the second fix round measured **75 files / 1 779** at `eed3854` and did not record it here; after the third it is **75 files / 1 796** — task 8's 1 783 plus this round's 13.)*.
 
 ---
 

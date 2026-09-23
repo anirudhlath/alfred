@@ -129,7 +129,9 @@ Phase 3: the Workshop's other three benches, each a pure view over one hook call
 
 ## The service worker
 
-`public/sw.js` is hand-written — 205 lines of code under 587 of comment, 2.9 to 1 — and
+`public/sw.js` is hand-written — 214 lines of code under 659 of comment, 3.1 to 1, counted
+with acorn's tokenizer (a line is code if any token touches it, comment if only a comment
+does, and a blank line, inside a comment or not, is neither) — and
 shipped verbatim by Vite's `public/` copy: no `vite-plugin-pwa`, no Workbox, no generated
 precache manifest. The reasoning is in
 `docs/superpowers/plans/2026-09-16-pwa-phase4-install-and-offline.md`; the short version
@@ -146,24 +148,37 @@ the HTML never mentions and takes the `.woff2` among them: 8 files, 139 436 of t
 because nothing that can run a service worker has needed one for years. All of it plus a
 `/__shell-manifest` record of what it actually cached goes into `alfred-shell-<VERSION>`
 (the one constant at the top of `sw.js`; the tests read it from there rather than restating
-it, and this file names no version for the same reason).
+it, and this file names no version for the same reason) — the assets first, then the shell
+that names them, then the record. That cache is the one the previous worker is still
+serving from, so an install that fails part way — a phone that fills up — must leave the
+old shell and its assets as they were, not a new shell naming a chunk it never stored.
 
 Three things about how it fetches. Everything *install* asks for goes out
 `cache: "reload"`, so a worker installing seconds after a deploy cannot precache the bytes
 that deploy replaced — the runtime handlers deliberately do not, since a hashed asset
 cannot have changed and a navigation is the page's own request to make. Every network call
-in the file gets a 10-second deadline, install and runtime alike — and the **body read**
+in the file gets a 10-second deadline, install and runtime alike — and every **body read**
 that follows it does too, because `fetch()` resolves on the headers, so a route that
 answers 200 and then goes quiet leaves `await response.text()` pending for ever on a
-request that looks finished. `install` runs inside `waitUntil()`, so either hang would hold
-it open until the browser gave up, leaving the phone with no worker at all, and the same
-hang on a navigation would leave a standalone window waiting for ever with no chrome to
-escape through. The deadline comes in two shapes and the choice is forced: install and the
-asset branch **abort**, with a 10-second `AbortSignal`, which also cancels the request; a
-navigation **races**, because attaching a signal means passing a non-empty init, and a
-non-empty init makes `fetch()` rebuild the Request — which turns `mode: "navigate"` into
-`"same-origin"` and clears the reload- and history-navigation flags. Forwarding the page's
-navigation untouched is worth one fetch left in flight after the race. And a
+request that looks finished. The body read easiest to miss is `Cache.put`'s own: a put
+reads what it is handed to the end before it writes, so every network body the worker
+stores goes through `whole()` first — a clone read to the end inside the deadline, which
+leaves the original's bytes in memory for the put. (Measured in headless Chromium, against
+a shell naming a chunk whose body stalls: without it the install was still `installing`
+at 20 seconds; with it the install fails at 10.) `install` runs inside `waitUntil()`, so
+any of these hangs would hold it open until the browser gave up, leaving the phone with no
+worker at all, and the same hang on a navigation would leave a standalone window waiting
+for ever with no chrome to escape through.
+
+The deadline comes in two shapes and the choice is forced. Install's requests and the
+asset branch's **abort**, with a 10-second `AbortSignal`, which also cancels the request. A
+body read **races**, because there is nothing to abort; so does a navigation, because
+attaching a signal means passing a non-empty init, and a non-empty init makes `fetch()`
+rebuild the Request — which turns `mode: "navigate"` into `"same-origin"` and clears the
+reload- and history-navigation flags. (The same rebuild resets the referrer to the worker:
+measured in Chromium, the asset branch's forwarded requests arrive with
+`Referer: …/sw.js`. Harmless for a same-origin hashed file; not nothing.) Forwarding the
+page's navigation untouched is worth one fetch left in flight after the race. And a
 missing *font* is survivable where a missing *chunk* is not: the app is legible in the
 system stack, so the font loop declines and carries on while the asset loop throws.
 
@@ -175,14 +190,17 @@ widen the cache.
 Every cache whose name is not the current one is deleted outright — no `alfred-` prefix
 filter, because anything this origin holds that is not the current cache is not ours to
 keep — so bumping `VERSION` takes the whole previous world with it. Then, inside the
-current cache, every entry the `/__shell-manifest` record does not name: asset URLs are
-content-hashed, and `VERSION` is bumped by hand, so for every deploy that does *not* bump
-it this is the only thing that reaches what the previous build of the same file cached.
-Entries are compared on the full URL, not the pathname, so a cross-origin copy sharing a
-path with something precached goes too. It also reaches whatever the `fetch` handler
-stores at runtime — an asset cached on a cache-first miss is not in the record install
-wrote, so the next activate takes it. That is intended: the record is what this build
-needs, a runtime entry is re-fetchable, and the alternative is a cache with no ceiling.
+current cache, every entry that neither the `/__shell-manifest` record nor the shell now in
+the cache names (the union is the next paragraph): asset URLs are content-hashed, and
+`VERSION` is bumped by hand, so for every deploy that does *not* bump it this is the only
+thing that reaches what the previous build of the same file cached. Entries are compared
+on the full URL, not the pathname, so a cross-origin copy sharing a path with something
+precached goes too. It also reaches whatever the `fetch` handler stores at runtime, by the
+same rule: an asset cached on a cache-first miss is in no record, so it stays only if the
+cached shell names it — the chunks a refresh published are — and the next activate takes
+anything else, such as a font install declined and the page fetched later. That is
+intended: what the record and the shell name is what the phone needs offline, any other
+runtime entry is re-fetchable, and the alternative is a cache with no ceiling.
 
 The keep-set is that record **union what the shell now in the cache names**, and the second
 half is not optional. A navigation's refresh publishes a newer deploy's chunks and then its
@@ -271,20 +289,24 @@ no new install and no new activate: the refresh on a navigation is the only thin
 updates the offline copy of the app. Writing the new HTML on its own would leave the cache
 holding a shell that names hashes it does not have — and since `asset()` propagates a
 network failure by design, the next cold launch with no network is a white screen rather
-than the old app. So the refresh fetches what the new HTML names, stores those first, and
-publishes the shell last; if any of it fails, the shell already there stays, whole. An
+than the old app. So the refresh fetches what the new HTML names, reads each body whole,
+stores those first, and publishes the shell last; if any of it fails — a body that stalls
+included — the shell already there stays, whole. An
 offline copy that is self-consistent and one deploy old beats a newer one that cannot boot.
 It runs in `waitUntil()`, so the page is never blocked on it, and nothing it does can change
 what that navigation was served.
 
 What that ordering costs, written down because nothing else says it: a refresh that stops
 half way — a phone that fills up between the chunks and the HTML — leaves chunks in the
-cache that no record names and no cached shell names, unreachable by every branch in the
-file. They are bounded (what a shell names is the entry chunk and the stylesheet, 482 kB in
-this build) and they are collected by the next activate, which is the same collector every
-other runtime entry relies on. Nothing deletes them earlier on purpose: a refresh that
-deleted would be racing a concurrent install writing the same bytes, and "named by nothing"
-is only a settled fact at activate.
+cache that no record names and no cached shell names. They are not dead weight while they
+last: the asset branch serves them cache-first to any page whose HTML names them, starting
+with the online page whose navigation began the refresh, and the next online navigation to
+that deploy finds them cached and has only the HTML left to publish. What they lack is a
+claim on the next activate. They are bounded (what a shell names is the entry chunk and the
+stylesheet, 482 kB in this build) and they are collected by that activate, which is the
+same collector every other runtime entry relies on. Nothing deletes them earlier on
+purpose: a refresh that deleted would be racing a concurrent install writing the same
+bytes, and "named by nothing" is only a settled fact at activate.
 
 Two refusals gate the refresh. `isShell` — 200 **and** `text/html` — is what stops an error
 page becoming the app's offline face: nginx serving a stale cached copy with
@@ -312,7 +334,12 @@ that reads as though it cannot fail. They are declined rather than attempted and
 the `catch` on the put is there for the write this worker cannot see coming, a full disk,
 not as cover for one it can. A network failure propagates — there is nothing honest to serve
 for an asset that was never cached and cannot be fetched — but a *storage* failure does not:
-the bytes are in hand and the page gets them.
+the bytes are in hand and the page gets them. The write runs **beside** the answer, in
+`waitUntil()`, not in front of it: the put reads its copy of the body to the end, so awaited
+first it held the page's response — headers and all — for as long as the body took, and for
+ever on one that stalled (measured in Chromium against a stalled chunk: awaited, the page
+had no headers after 15 seconds; beside the answer, it has them in a millisecond). The page
+gets exactly what the network gave it, when it gave it.
 
 The cost of cache-first with no expiry, written down because nothing else says it: an entry
 that is wrong stays wrong until something deletes it. There is no revalidation, and
