@@ -35,7 +35,7 @@ const MANIFEST = "/__shell-manifest";
 /* The one path prefix this worker may store under, named rather than spelled
    inline because it is the whole of the refusal isAssetUrl makes. */
 const ASSETS = "/assets/";
-/* Every network call here gets a deadline — the request and every read of the
+/* Every network call here gets a deadline — the request and every wait on the
    body that follows it alike, install and runtime both — and that is a
    different guarantee from the `.catch()` in the font loop. A catch covers a
    fetch that REJECTS; it does nothing at all for one that never settles, which
@@ -45,8 +45,8 @@ const ASSETS = "/assets/";
    answers 200 and then goes quiet leaves `await response.text()` pending for
    ever with nothing left to reject. And Cache.put is a body read too, the
    easiest of all to miss: it reads what it is handed to the end before it
-   writes, which is why every network body this file stores goes through
-   `whole` first. precache runs inside waitUntil(), so any of these hangs holds
+   writes, which is why every network body this file stores or reads goes
+   through `whole` first. precache runs inside waitUntil(), so any of these hangs holds
    the whole install open until the browser gives up on it, and the phone is
    left with no worker: the outcome the font loop's catch exists to avoid,
    reached through the other door. A hung NAVIGATION is the same judgement one
@@ -56,19 +56,33 @@ const ASSETS = "/assets/";
    chrome to escape a hang with, so "wait forever" is not a state the user can
    leave.
 
-   Per call, not per install, so a slow-but-progressing phone is not punished
-   for being slow; the ceiling is this times the eleven requests a real build
-   makes, and only the fonts' share of it is survivable. */
+   Per WAIT, not per call and not per install: a request has this long to
+   answer, and each piece of its body this long to follow the last. So a stall
+   is noticed this long after the last byte, wherever it happens, and a phone on
+   a slow link that is still working is waited for as long as it keeps working.
+   There is no ceiling on an install whose bytes keep coming, and that is
+   deliberate: a ceiling is a total, and a total of ten seconds on the body is
+   what failed this build's 414 kB entry chunk at 32 KiB/s, 12.6 s of steady
+   progress, at 10.0 s — measured in Chromium, on a first visit, and on every
+   visit after it, since a failed install leaves no worker and the next load
+   starts the whole precache over. The only ceiling is the browser's own:
+   measured in Chromium, an install whose chunk sent a byte every five seconds
+   and never finished went redundant at 300 s.
+   What a stall costs is this, once: in the shell or a chunk it fails the
+   install there and then, and in a font it costs that font and the install
+   carries on. */
 const TIMEOUT_MS = 10000;
 
 /* Two shapes of deadline, and which one a call gets is not a style choice.
 
-   This one RACES, leaving the work running and ignoring the loser. It is the
-   only shape available for a body read — there is nothing to abort — and it is
-   the required one for a navigation, for the reason written under `timed`. The
-   cost is a fetch that outlives the race, bounded by the browser's own network
-   timeout and by one per navigation; the alternative costs the page's Request,
-   which is worse. */
+   This one RACES, and it is for the two waits a signal cannot end. A
+   navigation is one: it cannot be given a signal at all, for the reason
+   written under `timed`, so the loser is a fetch left running behind the race —
+   bounded by the browser's own network timeout and by one per navigation; the
+   alternative costs the page's Request, which is worse. The other is each read
+   of a body, one race per piece, inside `whole` — and there the loser is not
+   left running: `whole` cancels what it was reading the moment a race is lost,
+   and why that and not an abort is written beside it. */
 function deadlined(work) {
   let deadline;
   const expiry = new Promise((_, reject) => {
@@ -77,12 +91,13 @@ function deadlined(work) {
   /* Cleared on either outcome, which is also what keeps the loser quiet: an
      expiry that never fires never rejects, and Promise.race has already
      attached its own handler to a `work` that loses, so a late rejection from
-     the orphaned fetch is handled rather than unhandled. */
+     whatever lost is handled rather than unhandled. */
   return Promise.race([work, expiry]).finally(() => self.clearTimeout(deadline));
 }
 
-/* Resolves with `response` once every byte of its body is here, inside the
-   deadline — the precondition for handing a network response to Cache.put.
+/* Resolves with `response` once every byte of its body is here, no piece of it
+   having taken longer than the deadline to follow the last — the precondition
+   for handing a network response to Cache.put, and for reading one at all.
 
    A put reads the body it is given to the END before it writes anything, so a
    put of a network response is a body read in everything but name, and one
@@ -92,25 +107,62 @@ function deadlined(work) {
    bounded. A put takes no signal, and racing the put itself would leave it in
    flight, free to land later in a cache that has since decided against it.
 
-   So a CLONE is read to the end, raced, and the original is what gets put.
-   clone() tees the stream, and the branch nobody has read yet is handed every
-   chunk the other one pulls: once the clone is whole, so is the original, in
-   memory, and the put that reads it never touches the network. The price is
-   the body held twice while that happens — 414 kB for this build's entry
-   chunk — and, when the race is lost, a read left running behind it, as a
-   raced navigation leaves its fetch. */
-function whole(response) {
-  return deadlined(response.clone().arrayBuffer()).then(() => response);
+   So a CLONE is read to the end and the original is what gets put. clone()
+   tees the stream, and the branch nobody has read yet is handed every chunk
+   the other one pulls: once the clone is whole, so is the original, in memory,
+   and the put that reads it never touches the network. The price is the body
+   held twice while that happens — 414 kB for this build's entry chunk.
+
+   The deadline is on each READ, not on the body, and that is the whole of the
+   difference between a stall and a slow link. One deadline over the whole
+   body, as this once had, cannot tell them apart: it failed a 414 kB chunk
+   arriving steadily at 32 KiB/s (see TIMEOUT_MS). And every read, the first
+   included — a body that never sends a byte is a stall too — through to the
+   one that finds the end: a body that sends some and then stops is a stall
+   as well, and a read of one piece would have called it whole and handed the
+   put a stream that never finishes.
+
+   A read that loses its race is CANCELLED, not left running: the clone's
+   reader and the original's body, both, which is every branch of the stream
+   this function holds. Not awaited, because a branch's cancel settles only once
+   its twin is cancelled too, and nothing here needs to wait for the network to
+   be let go. Cancelled, and not aborted: aborting `timed`'s controller after
+   the headers would release the read as well, by erroring the body — but it
+   errors EVERY branch of it, and the request behind `response` is not always
+   the worker's. Every caller hands this a copy only the worker reads, and
+   twice the request behind that copy is the PAGE's: the asset branch's write,
+   and a refresh's read of the HTML its navigation was served (which has no
+   controller to abort in the first place). An abort there would end the
+   page's own read of the same bytes — the write reaching the page, which is
+   the one thing the asset branch is shaped to prevent. A cancel stops at the
+   tee: it reaches the network only when nothing else is reading, so it lets go
+   of install's and refresh()'s own fetches, and never of the page's. */
+async function whole(response) {
+  const reader = response.clone().body.getReader();
+  try {
+    for (;;) {
+      const { done } = await deadlined(reader.read());
+      if (done) return response;
+    }
+  } catch (error) {
+    reader.cancel(error).catch(() => {});
+    response.body.cancel(error).catch(() => {});
+    throw error;
+  }
 }
 
 /* This one ABORTS, so the request is really cancelled rather than orphaned, and
-   it is how install and the asset branch fetch. Takes what fetch() takes, so a
-   handler can forward the page's own Request — which carries its mode, its
-   credentials, its redirect mode and its headers; re-fetching `request.url`
-   instead quietly turns `redirect: "manual"` into `"follow"` and `credentials:
-   "omit"` into `"same-origin"` and drops the headers, and can hand the page a
-   redirected response it must not have. (Measured in node: `new Request(req, {
-   cache: "reload" })` keeps all four, `new Request(req.url, ...)` keeps none.)
+   it is how install and the asset branch fetch. It bounds the wait for the
+   headers and is cleared when they arrive; the body after them is `whole`'s,
+   a deadline per piece.
+
+   Takes what fetch() takes, so a handler can forward the page's own Request —
+   which carries its mode, its credentials, its redirect mode and its headers;
+   re-fetching `request.url` instead quietly turns `redirect: "manual"` into
+   `"follow"` and `credentials: "omit"` into `"same-origin"` and drops the
+   headers, and can hand the page a redirected response it must not have.
+   (Measured in node: `new Request(req, { cache: "reload" })` keeps all four,
+   `new Request(req.url, ...)` keeps none.)
 
    Keeps those four, and not everything. Any init that is not empty makes
    fetch() rebuild the Request, and the Fetch Standard's constructor resets a
@@ -316,10 +368,11 @@ async function precache() {
 
   const shell = await fetchFresh(SHELL);
   if (!isShell(shell)) throw new Error(`shell ${shell.status}`);
-  /* Deadlined like the fetch that produced it: fetch() resolves on the headers,
-     so a shell whose body never finishes arriving would hang install here, past
-     every deadline above, with the phone left on whatever worker it had. */
-  const urls = assetsInHtml(await deadlined(shell.clone().text()));
+  /* Read `whole` like every body stored below, before any of it is read for
+     what it names: fetch() resolves on the headers, so a shell whose body never
+     finishes arriving would hang install here, past every deadline above, with
+     the phone left on whatever worker it had. Then read again, from memory. */
+  const urls = assetsInHtml(await (await whole(shell)).clone().text());
 
   /* A 200 page of text/html that names no hashed asset at all is not this app.
      Two that really answer that description: the reverse proxy's own default
@@ -353,8 +406,8 @@ async function precache() {
      that measurement.)
 
      Read with no deadline of its own, and that is not an oversight: `whole`
-     has already read this body to the end inside one, so every byte of it is
-     in memory and there is nothing left to wait on. */
+     has already read this body to the end, every piece of it inside one, so
+     every byte of it is in memory and there is nothing left to wait on. */
   const named = [];
   for (let i = 0; i < urls.length; i += 1) {
     if (!urls[i].endsWith(".css")) continue;
@@ -404,8 +457,16 @@ async function precache() {
   for (let i = 0; i < urls.length; i += 1) await cache.put(urls[i], responses[i]);
   for (const [url, response] of cached) await cache.put(url, response);
   await cache.put(SHELL, shell);
-  /* The fonts are listed too: activate prunes everything this record does not
-     name, so a font cached but unlisted is deleted before it is ever served. */
+  /* The record last of all, once the shell's write has landed: a record is
+     this install's claim to have FINISHED. activate prunes by it, and the
+     activate that reads it need not be this worker's — a worker already
+     waiting when this install fails stays waiting, and runs the same purge
+     over this same cache when the page posts SKIP_WAITING. Written before a
+     shell that is then refused, the record would outlive the install that
+     wrote it, and that purge would delete the fonts of the shell still there,
+     which only the record they came in with names. The fonts are listed for
+     the same reason the rest is: activate prunes everything this record does
+     not name, so a font cached but unlisted is deleted before it is served. */
   await cache.put(
     MANIFEST,
     new Response(JSON.stringify([SHELL, ...urls, ...cached.map(([url]) => url)])),
@@ -794,11 +855,13 @@ async function refresh(response) {
   const cache = await openCache();
   if (!cache) return;
 
-  /* Deadlined for the reason the fetch was: a 200 whose body stalls half way
-     leaves this pending for ever, and this one runs inside the navigation's own
-     waitUntil — the event stays open, holding the worker awake, for a page the
-     user was served ten seconds ago. */
-  const urls = assetsInHtml(await deadlined(response.clone().text()));
+  /* `whole` for the reason the fetch had a deadline: a 200 whose body stalls
+     half way leaves this pending for ever, and this one runs inside the
+     navigation's own waitUntil — the event stays open, holding the worker
+     awake, for a page the user was served ten seconds ago. A copy the page
+     holds the other half of, so a stall here cancels this copy and leaves the
+     page's read alone. */
+  const urls = assetsInHtml(await (await whole(response)).clone().text());
   /* The same refusal precache() makes, for the same reason and against the same
      page: a 200 text/html from this origin that names no hashed asset is not
      this app. The reverse proxy's default page while a host is being edited is

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fetchRequest, html, js, loadWorker, ORIGIN, stalled } from "./sw-harness";
+import { broken, fetchRequest, html, js, loadWorker, ORIGIN, stalled } from "./sw-harness";
 
 // The harness is the only thing standing between "this worker's tests pass" and
 // "this worker works", and eight tasks' tests are written against it. Where it
@@ -667,24 +667,175 @@ describe("the seams the harness depends on", () => {
     expect(worker.keys("c")).toEqual(["/late.js"]);
   });
 
-  it("answers a stalled route's headers and never its body", async () => {
+  it("answers a stalled route's headers and the first of its body, and never the end", async () => {
     // What a connection that goes quiet mid-body looks like from inside a
-    // worker: a 200 in hand, `ok` true, and a read that never settles. The
-    // fixture's own hazard, which is why nothing awaits one of these without a
-    // deadline — a test that did would hang rather than fail.
+    // worker: a 200 in hand, `ok` true, one read answered and the next never.
+    // The first piece is the point — a worker that read one piece and called
+    // the body done could not be told apart from one that read to the end
+    // while this sent nothing. The fixture's own hazard, which is why nothing
+    // awaits one of these without a deadline: a test that did would hang
+    // rather than fail.
     const worker = loadWorker(`
       self.addEventListener("fetch", (event) => { event.respondWith(self.fetch(event.request)); });
     `);
-    worker.respond("/", stalled());
+    worker.respond("/", stalled(undefined, "<!doctype html>"));
     const response = await worker.request({ path: "/", mode: "navigate" });
     expect(response!.status).toBe(200);
     expect(response!.headers.get("content-type")).toContain("text/html");
-    const read = response!.text();
+    const reader = response!.body!.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe("<!doctype html>");
     // Not `resolves`/`rejects`: the assertion is that it does neither.
     const outcome = await Promise.race([
-      read.then(() => "settled"),
+      reader.read().then(() => "settled"),
       new Promise((resolve) => setTimeout(() => resolve("pending"), 20)),
     ]);
     expect(outcome).toBe("pending");
+  });
+
+  it("sends some of a stalled body by default, and none when told to", async () => {
+    // Two stalls, and a worker has to survive both: the silent one is what a
+    // deadline armed only once the first piece lands never ends.
+    const first = (response: Response) =>
+      Promise.race([
+        response.body!.getReader().read().then(({ value }) => new TextDecoder().decode(value)),
+        new Promise((resolve) => setTimeout(() => resolve("pending"), 20)),
+      ]);
+    await expect(first(stalled())).resolves.not.toBe("pending");
+    await expect(first(stalled(undefined, ""))).resolves.toBe("pending");
+  });
+});
+
+describe("the fake clock", () => {
+  /** Arms two timers on the worker's own `self.setTimeout` and records the order they fire in. */
+  const racer = (first: number, second: number) =>
+    loadWorker(`
+      self.addEventListener("install", (event) => {
+        const fired = [];
+        event.waitUntil(new Promise((resolve) => {
+          self.setTimeout(() => fired.push("first"), ${first});
+          self.setTimeout(() => fired.push("second"), ${second});
+          self.setTimeout(async () => {
+            const cache = await self.caches.open("order");
+            await cache.put("/" + fired.join(","), new Response(""));
+            resolve();
+          }, 60000);
+        }));
+      });
+    `);
+
+  it("fires what falls due first, not what was armed first, and moves to it", async () => {
+    // The order is the whole of what this clock is for. A deadline armed for
+    // 10 000 ms against a body piece due at 9 000 must lose, and one against a
+    // piece due at 10 080 must win; a clock that fired every timer on the next
+    // macrotask, as this one once did, fired them in the order they were armed
+    // and could not tell a stall from a slow link.
+    const worker = racer(10000, 9000);
+    await worker.install();
+    expect(worker.keys("order")).toEqual(["/second,first"]);
+    expect(worker.now).toBe(60000);
+  });
+
+  it("fires two that fall due together in the order they were armed", async () => {
+    const worker = racer(5000, 5000);
+    await worker.install();
+    expect(worker.keys("order")).toEqual(["/first,second"]);
+  });
+
+  it("does not fire a timer that was cleared", async () => {
+    const worker = loadWorker(`
+      self.addEventListener("install", (event) => {
+        event.waitUntil(new Promise((resolve) => {
+          const doomed = self.setTimeout(() => self.caches.open("fired"), 10);
+          self.clearTimeout(doomed);
+          self.setTimeout(resolve, 20);
+        }));
+      });
+    `);
+    await worker.install();
+    expect([...worker.store.keys()]).toEqual([]);
+    expect(worker.deadlinesCleared).toBe(1);
+  });
+});
+
+describe("the fake network", () => {
+  /** Fetches `/x` at install and puts it, which reads the body to the end. */
+  const reader = `
+    self.addEventListener("install", (event) => {
+      event.waitUntil((async () => {
+        const cache = await self.caches.open("c");
+        await cache.put("/x", await self.fetch("/x"));
+      })());
+    });
+  `;
+
+  it("trickles a body a piece at a time on the clock, from the moment it is fetched", async () => {
+    // Fetched ten seconds after it was made, and nothing sent before that:
+    // three pieces 4 s apart and then the end put the finished read at 22 s.
+    // A body that started when it was made would have had a piece waiting.
+    const worker = loadWorker(`
+      self.addEventListener("install", (event) => {
+        event.waitUntil((async () => {
+          await new Promise((resolve) => self.setTimeout(resolve, 10000));
+          const cache = await self.caches.open("c");
+          await cache.put("/x", await self.fetch("/x"));
+        })());
+      });
+    `);
+    worker.respond("/x", worker.trickle("text/plain", ["a", "b", "c"], { every: 4000 }));
+    await worker.install();
+    expect(worker.now).toBe(10000 + 3 * 4000);
+    // Every piece, in order.
+    await expect(worker.store.get("c")!.get(`${ORIGIN}/x`)!.clone().text()).resolves.toBe("abc");
+  });
+
+  it("stops a trickle after its last piece when told to stall", async () => {
+    const worker = loadWorker(reader);
+    worker.respond("/x", worker.trickle("text/plain", ["a", "b"], { every: 4000, stall: true }));
+    const outcome = await Promise.race([
+      worker.install().then(() => "settled"),
+      new Promise((resolve) => setTimeout(() => resolve("pending"), 20)),
+    ]);
+    expect(outcome).toBe("pending");
+    expect(worker.now).toBe(8000);
+  });
+
+  it("breaks a body off after its first piece, and refuses a cancel of it after that", async () => {
+    // A connection reset, which ENDS a read where a stall never does — and an
+    // errored stream rejects a cancel as well, which is the rejection a worker
+    // giving up on one has to handle.
+    const reader = broken(undefined, "<!doctype html>").body!.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe("<!doctype html>");
+    await expect(reader.read()).rejects.toThrow("network error");
+    await expect(reader.cancel()).rejects.toThrow("network error");
+  });
+
+  it("records a body the worker let go of, as a browser tears the request down", async () => {
+    // Every branch cancelled — here the only one — is what releases a request.
+    const worker = loadWorker(`
+      self.addEventListener("install", (event) => {
+        event.waitUntil(self.fetch("/x").then((response) => response.body.cancel()));
+      });
+    `);
+    worker.respond("/x", stalled());
+    await worker.install();
+    expect(worker.released).toEqual(["/x"]);
+  });
+
+  it("does not record one somebody else is still reading", async () => {
+    // A cancel stops at a tee while another branch is live. This is the
+    // property that separates a worker giving up on its COPY of a page's
+    // response from one that takes the page's read down with it.
+    // Not returned: a cancel of one branch settles only once its twin is
+    // cancelled too, and here the twin is the one being kept.
+    const worker = loadWorker(`
+      self.addEventListener("install", (event) => {
+        event.waitUntil(self.fetch("/x").then((response) => {
+          response.clone().body.cancel();
+        }));
+      });
+    `);
+    worker.respond("/x", stalled());
+    await worker.install();
+    expect(worker.released).toEqual([]);
   });
 });

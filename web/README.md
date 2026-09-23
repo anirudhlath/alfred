@@ -129,7 +129,7 @@ Phase 3: the Workshop's other three benches, each a pure view over one hook call
 
 ## The service worker
 
-`public/sw.js` is hand-written — 214 lines of code under 661 of comment, 3.1 to 1, counted
+`public/sw.js` is hand-written — 224 lines of code under 711 of comment, 3.2 to 1, counted
 with acorn's tokenizer (a line is code if any token touches it, comment if only a comment
 does, and a blank line, inside a comment or not, is neither) — and
 shipped verbatim by Vite's `public/` copy: no `vite-plugin-pwa`, no Workbox, no generated
@@ -149,38 +149,61 @@ because nothing that can run a service worker has needed one for years. All of i
 `/__shell-manifest` record of what it actually cached goes into `alfred-shell-<VERSION>`
 (the one constant at the top of `sw.js`; the tests read it from there rather than restating
 it, and this file names no version for the same reason) — the assets first, then the shell
-that names them, then the record. That cache is the one the previous worker is still
-serving from, so an install that fails part way — a phone that fills up — must leave the
-old shell and its assets as they were, not a new shell naming a chunk it never stored.
+that names them, then the record, each write finished before the next starts. That cache is
+the one the previous worker is still serving from, so an install that fails part way — a
+phone that fills up — must leave the old shell and its assets as they were, not a new shell
+naming a chunk it never stored. The record goes last because it is the install's claim to
+have finished: activate prunes by it, and the activate that reads it may be an older worker's
+still waiting behind the active one, so a record written before a shell that is then refused
+would have that activate delete the fonts of the shell that is still there.
 
 Three things about how it fetches. Everything *install* asks for goes out
 `cache: "reload"`, so a worker installing seconds after a deploy cannot precache the bytes
 that deploy replaced — the runtime handlers deliberately do not, since a hashed asset
 cannot have changed and a navigation is the page's own request to make. Every network call
-in the file gets a 10-second deadline, install and runtime alike — and every **body read**
-that follows it does too, because `fetch()` resolves on the headers, so a route that
+in the file gets a 10-second deadline, install and runtime alike — and every **wait on the
+body** that follows it does too, because `fetch()` resolves on the headers, so a route that
 answers 200 and then goes quiet leaves `await response.text()` pending for ever on a
 request that looks finished. The body read easiest to miss is `Cache.put`'s own: a put
 reads what it is handed to the end before it writes, so every network body the worker
-stores goes through `whole()` first — a clone read to the end inside the deadline, which
-leaves the original's bytes in memory for the put. (Measured in headless Chromium, against
-a shell naming a chunk whose body stalls: without it the install was still `installing`
-at 20 seconds; with it the install fails at 10.) `install` runs inside `waitUntil()`, so
-any of these hangs would hold it open until the browser gave up, leaving the phone with no
-worker at all, and the same hang on a navigation would leave a standalone window waiting
-for ever with no chrome to escape through.
+stores or reads goes through `whole()` first — a clone read to the end, which leaves the
+original's bytes in memory for the put. (Measured in headless Chromium, against a shell
+naming a chunk whose body stalls: without it the install was still `installing` at 20
+seconds; with it the install fails at 10.) `install` runs inside `waitUntil()`, so any of
+these hangs would hold it open until the browser gave up, leaving the phone with no worker
+at all, and the same hang on a navigation would leave a standalone window waiting for ever
+with no chrome to escape through.
+
+The deadline on a body is per **piece**, not per body: each read gets ten seconds to bring
+the next piece, the first and the one that finds the end included. So a stall is noticed
+ten seconds after the last byte, wherever it happens, and a slow link that keeps delivering
+is waited for as long as it keeps delivering. One deadline over the whole body cannot tell
+those apart — measured in headless Chromium, this build's 414 kB entry chunk arriving
+steadily at 32 KiB/s takes 12.6 seconds, and a ten-second deadline on the whole body failed
+that install at 10.0 on a first visit and on every visit after it, since a failed install
+leaves no worker; per piece, it activates at 12.6. There is no ceiling on an install whose
+bytes keep arriving, deliberately, beyond the browser's own: Chromium made an install whose
+chunk sent a byte every five seconds redundant at 300 seconds. What a stall costs is ten
+seconds: in the shell or a chunk it fails the install there and then, and in a font it
+costs that font.
 
 The deadline comes in two shapes and the choice is forced. Install's requests and the
-asset branch's **abort**, with a 10-second `AbortSignal`, which also cancels the request. A
-body read **races**, because there is nothing to abort; so does a navigation, because
-attaching a signal means passing a non-empty init, and a non-empty init makes `fetch()`
-rebuild the Request — which turns `mode: "navigate"` into `"same-origin"` and clears the
-reload- and history-navigation flags. (The same rebuild resets the referrer to the worker:
-measured in Chromium, the asset branch's forwarded requests arrive with
-`Referer: …/sw.js`. Harmless for a same-origin hashed file; not nothing.) Forwarding the
-page's navigation untouched is worth one fetch left in flight after the race. And a
-missing *font* is survivable where a missing *chunk* is not: the app is legible in the
-system stack, so the font loop declines and carries on while the asset loop throws.
+asset branch's **abort**, with a 10-second `AbortSignal` on the wait for the headers, which
+also cancels the request. A navigation **races**, because attaching a signal means passing
+a non-empty init, and a non-empty init makes `fetch()` rebuild the Request — which turns
+`mode: "navigate"` into `"same-origin"` and clears the reload- and history-navigation
+flags. (The same rebuild resets the referrer to the worker: measured in Chromium, the asset
+branch's forwarded requests arrive with `Referer: …/sw.js`. Harmless for a same-origin
+hashed file; not nothing.) Forwarding the page's navigation untouched is worth one fetch
+left in flight after the race. Each read of a body races too, and there the loser is not
+left in flight: `whole()` **cancels** what it was reading — the clone and the original,
+every branch of the body the worker holds. Not an abort, although aborting the request's
+controller would release the read as well: an abort errors *every* branch of the body, and
+in the asset branch and a navigation's refresh the page is reading the other one. A cancel
+stops at the tee, so it lets go of install's and the refresh's own fetches and never of the
+page's. And a missing *font* is survivable where a missing *chunk* is not: the app is
+legible in the system stack, so the font loop declines and carries on while the asset loop
+throws.
 
 What may be cached is one function, `isAssetUrl`: same origin, under `/assets/`, no encoded
 separator. The extraction either side of it is deliberately wide so that widening it cannot

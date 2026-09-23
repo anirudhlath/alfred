@@ -300,12 +300,51 @@ export interface Harness {
   /** Of those, the ones asked for with `{ cache: "reload" }`. */
   reloaded: string[];
   /**
-   * The delay, in ms, of every deadline the worker armed, in order. Fired at
-   * 0 ms here regardless — a routed response resolves in a microtask and clears
-   * its timer long before the macrotask runs, so only a hung fetch ever sees
-   * one — but the requested value is recorded so a test can pin it.
+   * The delay, in ms, of every deadline the worker armed, in order. Armed on
+   * the harness's clock (`now`), so they fire in the order they fall due
+   * against everything else on it — a `trickle()` body's pieces included —
+   * without a test ever waiting ten real seconds for one.
    */
   deadlines: number[];
+  /**
+   * The harness's clock: virtual ms since the worker loaded. It does not tick
+   * with the wall clock. Whenever something is armed on it, it jumps straight
+   * to whatever falls due first and fires that, one timer per macrotask, so
+   * every microtask a fired timer sets off — a read resolving, a deadline
+   * cleared, the next one armed — has run before the clock moves again.
+   *
+   * The ORDER is what is real, and it is the whole difference between a stall
+   * and a slow link: a deadline armed at 0 for 10 000 ms fires after a body
+   * piece due at 9 000 and before one due at 10 080. A clock that fired every
+   * deadline on the next macrotask, as this one once did, could not tell a body
+   * that keeps arriving from one that has stopped.
+   */
+  readonly now: number;
+  /**
+   * A 200 whose headers arrive at once and whose body arrives a piece at a
+   * time on the harness's clock: each of `pieces` `every` ms after the one
+   * before, starting when it is fetched. Then the end — or, with `stall`, never
+   * anything again, which is a body that made progress and then stopped.
+   *
+   * On the harness rather than beside `stalled()`, because it needs this
+   * instance's clock. `every` under a worker's deadline and `pieces × every`
+   * over it is a slow link that is still working, which is the case a deadline
+   * on the whole body cuts off.
+   */
+  trickle(type: string, pieces: readonly string[], timing: { every: number; stall?: boolean }): Response;
+  /**
+   * The pathname of every response whose body the worker let go of before its
+   * end — every branch of it cancelled, which a browser answers by tearing the
+   * request down. Recorded per fetch, so a pathname fetched twice and released
+   * once is here once.
+   *
+   * A cancel reaches the network only when nobody else holds a branch of the
+   * body, and that is the point of recording it: a worker reading a copy of a
+   * response the PAGE is also reading can cancel its copy and must not release
+   * the page's, while one reading its own fetch should release it rather than
+   * leave a stalled connection open behind a decision it has already made.
+   */
+  released: string[];
   /**
    * How many of those the worker cleared. A deadline left armed still fires
    * ten seconds later, against a request that finished long ago: harmless in
@@ -502,8 +541,78 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     handed: (string | { url: string })[];
     inits: (FetchInit | undefined)[];
     puts: string[];
-  } = { fetched: [], reloaded: [], navigated: [], deadlines: [], handed: [], inits: [], puts: [] };
+    released: string[];
+  } = {
+    fetched: [],
+    reloaded: [],
+    navigated: [],
+    deadlines: [],
+    handed: [],
+    inits: [],
+    puts: [],
+    released: [],
+  };
   let deadlinesCleared = 0;
+
+  /* The clock `Harness.now` describes. One real macrotask per timer fired, and
+     the earliest due first — insertion order breaking a tie, so two armed for
+     the same moment fire in the order they were armed, as a real event loop's
+     do. */
+  let now = 0;
+  let nextTimer = 1;
+  const timers = new Map<number, { due: number; fire: () => void }>();
+  let ticking = false;
+  const tick = () => {
+    ticking = false;
+    let next: [number, { due: number; fire: () => void }] | undefined;
+    for (const entry of timers) if (!next || entry[1].due < next[1].due) next = entry;
+    if (!next) return;
+    timers.delete(next[0]);
+    now = next[1].due;
+    try {
+      next[1].fire();
+    } finally {
+      if (timers.size) wake();
+    }
+  };
+  const wake = () => {
+    if (ticking) return;
+    ticking = true;
+    setTimeout(tick, 0);
+  };
+  const after = (ms: number, fire: () => void): number => {
+    const id = nextTimer++;
+    timers.set(id, { due: now + ms, fire });
+    wake();
+    return id;
+  };
+
+  /**
+   * What `self.fetch` hands back: the route's response behind a body of its
+   * own, standing for this one request's connection — chunk for chunk what the
+   * route sends. Cancelling it, which a worker does by cancelling every branch
+   * of the body it holds, is what a browser answers by tearing the request
+   * down, and it is recorded in `released`. Observed here and not at the route,
+   * because the route keeps a branch of its own so that it can answer again,
+   * and a cancel never gets past a branch somebody still holds.
+   */
+  const connection = (served: Response, pathname: string): Response => {
+    if (!served.body) return served;
+    const reader = served.body.getReader();
+    return new Response(
+      new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          const { done, value } = await reader.read();
+          if (done) controller.close();
+          else controller.enqueue(value);
+        },
+        cancel() {
+          harness.released.push(pathname);
+        },
+      }),
+      { status: served.status, statusText: served.statusText, headers: served.headers },
+    );
+  };
   const ownCache = cacheName(source);
   /** Named as a function so neither `cache` nor `keys()` has to reach for `this`. */
   const cacheOrThrow = (): string => {
@@ -583,17 +692,18 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     // Real, so the worker's own AbortController semantics are exercised rather
     // than a model of them.
     AbortController,
-    // The requested delay is recorded and the timer is armed at 0 ms: a routed
-    // response settles in a microtask, which runs before any macrotask, so a
-    // healthy fetch always clears its deadline first and only a hung one ever
-    // reaches the abort. That keeps the deadline testable without a real wait.
+    // Recorded, and armed on the harness's clock rather than the wall's: a
+    // routed response settles in microtasks, before the clock can move, so a
+    // healthy fetch always clears its deadline first and only a hung one — or
+    // a body that goes quiet for longer than the deadline — ever reaches it.
+    // That keeps a ten-second deadline testable without a ten-second wait.
     setTimeout: (fn: () => void, ms: number) => {
       harness.deadlines.push(ms);
-      return setTimeout(fn, 0);
+      return after(ms, fn);
     },
-    clearTimeout: (id: ReturnType<typeof setTimeout>) => {
+    clearTimeout: (id: number) => {
       deadlinesCleared += 1;
-      clearTimeout(id);
+      timers.delete(id);
     },
     fetch: vi.fn((input: string | { url: string }, init?: FetchInit) => {
       const url = new URL(typeof input === "string" ? input : input.url, origin);
@@ -624,7 +734,7 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
       const response = routes.get(url.href);
       // No route programmed = no network. A real worker sees a TypeError here.
       if (!response) return Promise.reject(new TypeError(`no route for ${url.href}`));
-      return Promise.resolve(response.clone());
+      return Promise.resolve(connection(response.clone(), url.pathname));
     }),
   };
 
@@ -725,6 +835,39 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     get deadlinesCleared() {
       return deadlinesCleared;
     },
+    get now() {
+      return now;
+    },
+    released: harness.released,
+    trickle: (type, pieces, { every, stall = false }) => {
+      const encoder = new TextEncoder();
+      let next = 0;
+      return new Response(
+        new ReadableStream<Uint8Array>(
+          {
+            // Pulled, not pushed: a piece is sent `every` ms after the reader
+            // asked for more, the way a slow link delivers. Nothing is asked
+            // for until the response is fetched, so the clock starts there.
+            pull(controller) {
+              if (next === pieces.length) {
+                if (!stall) return controller.close();
+                // Asked for more and never answering: a promise that never
+                // settles means this is never pulled again, and nothing ends it.
+                return new Promise<void>(() => {});
+              }
+              return new Promise<void>((resolve) => {
+                after(every, () => {
+                  controller.enqueue(encoder.encode(pieces[next++]));
+                  resolve();
+                });
+              });
+            },
+          },
+          { highWaterMark: 0 },
+        ),
+        { status: 200, headers: { "content-type": type } },
+      );
+    },
     respond: (pathname, response) => void routes.set(new URL(pathname, origin).href, response),
     hang: (pathname) => void hangs.add(new URL(pathname, origin).href),
     // A cache name has no slash and a URL always does, which is the whole of
@@ -787,19 +930,51 @@ export const font = () =>
   new Response("woff2", { status: 200, headers: { "content-type": "font/woff2" } });
 
 /**
- * A response whose headers arrive and whose body never does. `fetch()` resolves
- * on the headers, so this is what a route that stalls half way through a body
- * looks like from inside a worker: a 200 in hand, `response.ok` true, and
- * `await response.text()` pending for ever on a request that is already
- * "finished". The stream is neither enqueued to nor closed, which is the state
- * a connection that goes quiet mid-body leaves the reader in.
+ * A response whose headers arrive, then `sent`, and then nothing. `fetch()`
+ * resolves on the headers, so this is what a route that stalls half way
+ * through a body looks like from inside a worker: a 200 in hand, `response.ok`
+ * true, the first read answered, and `await response.text()` pending for ever
+ * on a request that is already "finished". The stream is never closed, which
+ * is the state a connection that goes quiet mid-body leaves the reader in.
+ *
+ * Some bytes by default, and that is the half that matters. A body that never
+ * sends one is caught by any deadline on its FIRST read, so a worker that read
+ * one piece and called the body done passed every test written against the
+ * silent version — and in Chromium, against a chunk that sends some bytes and
+ * stalls, that worker's install was still `installing` at 30 s. `sent = ""` is the
+ * silent version, still worth a test of its own: it is the one a deadline
+ * armed only once the first piece has arrived never ends.
  *
  * Its own hazard, and the reason this is a factory: the promise a reader is
  * left holding never settles, so anything that awaits one without a deadline
  * hangs the test rather than failing it.
  */
-export const stalled = (type = "text/html; charset=utf-8") =>
-  new Response(new ReadableStream({ start() {} }), {
-    status: 200,
-    headers: { "content-type": type },
-  });
+export const stalled = (type = "text/html; charset=utf-8", sent = "the first of it") =>
+  new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        if (sent) controller.enqueue(new TextEncoder().encode(sent));
+      },
+    }),
+    { status: 200, headers: { "content-type": type } },
+  );
+
+/**
+ * A response whose headers arrive, then `sent`, and then an error: a connection
+ * reset half way through a body. Unlike a stall it ENDS — the read after the
+ * bytes rejects — and a stream that has errored rejects a cancel too, so a
+ * worker that gives up on one by cancelling it has a second rejection to
+ * handle, and one it leaves unhandled is logged by a browser and raised here.
+ */
+export const broken = (type = "text/html; charset=utf-8", sent = "the first of it") => {
+  let pulls = 0;
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pulls++) controller.error(new TypeError("network error"));
+        else controller.enqueue(new TextEncoder().encode(sent));
+      },
+    }),
+    { status: 200, headers: { "content-type": type } },
+  );
+};

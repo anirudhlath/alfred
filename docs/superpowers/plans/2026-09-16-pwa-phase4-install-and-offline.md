@@ -185,9 +185,9 @@ async function store(pathname: string, response): Promise<void>;  // added in ta
 async function refresh(response): Promise<void>;  // added in task 7: publishes a shell only with its assets
 async function openCache(): Promise<Cache | undefined>;  // added in task 7: undefined = no usable CacheStorage
 async function cached(key): Promise<Response | undefined>;  // added in task 7: a miss and a read failure are one thing
-function timed(input, init): Promise<Response>;   // added in task 7: an ABORTING deadline; fetchFresh is this plus cache:"reload"
-function deadlined(work): Promise<unknown>;      // added in task 7's second fix round: a RACING deadline, for the two calls that cannot take a signal — a navigation (a non-empty init would demote mode "navigate" to "same-origin") and a body read (nothing to abort)
-function whole(response): Promise<Response>;     // added in task 7's third fix round: reads a CLONE to the end through deadlined(), resolves with the original — Cache.put reads the body it is handed to the end, so every network body is put through this first, and the tee leaves the original's bytes in memory for the put
+function timed(input, init): Promise<Response>;   // added in task 7: an ABORTING deadline; fetchFresh is this plus cache:"reload" *(corrected in task 7's fourth fix round: on the wait for the HEADERS — it is cleared when they arrive, and the body after them is whole()'s)*
+function deadlined(work): Promise<unknown>;      // added in task 7's second fix round: a RACING deadline, for the two calls that cannot take a signal — a navigation (a non-empty init would demote mode "navigate" to "same-origin") and a body read (nothing to abort) *(corrected in task 7's fourth fix round: "nothing to abort" is false — every body whole() reads comes from a request, and aborting its controller after the headers errors the body, which would release a stalled read. The body read races because an abort errors EVERY branch of the body, and in the asset branch and a navigation's refresh the page is reading one of them. It races one piece at a time, inside whole(), and the loser is cancelled there rather than left running)*
+function whole(response): Promise<Response>;     // added in task 7's third fix round: reads a CLONE to the end through deadlined(), resolves with the original — Cache.put reads the body it is handed to the end, so every network body is put through this first, and the tee leaves the original's bytes in memory for the put *(corrected in task 7's fourth fix round: a deadline per READ, not one over the body — a stall is ten seconds with no new piece, and a slow link that keeps delivering is waited for however long it takes; one total deadline failed a 414 kB chunk at 32 KiB/s at 10.0 s in Chromium. A lost race cancels the clone's reader and the original's body, which releases the request when no one else holds a branch of it. The shell's and a refreshed page's HTML are read through it too, so every network body the worker stores or reads is)*
 
 // src/test/sw-harness.ts
 export interface FetchRequest { url: string; method: string; mode: string; headers: Headers }  // task 6
@@ -231,6 +231,15 @@ export interface Harness {
   /** The delay of every deadline the worker armed, and how many it cleared. */
   deadlines: number[];
   deadlinesCleared: number;
+  /** Added in task 7's fourth fix round. The harness's clock — virtual ms since load; every
+      timer fires in the order it falls due, one per macrotask, without a real wait — and a
+      200 whose body arrives a piece at a time on it, `every` ms apart, ending or stalling.
+      A clock that fired every deadline on the next macrotask could not tell a stall from a
+      slow link. `released` is every fetched body the worker let go of before its end —
+      every branch cancelled — which a cancel reaches only when nobody else holds a branch. */
+  readonly now: number;
+  trickle(type: string, pieces: readonly string[], timing: { every: number; stall?: boolean }): Response;
+  released: string[];
   /** The worker's own file-local functions, by name. Added in task 6 — a classic
       worker exports nothing, and a refusal's must-NOT-refuse half is invisible
       through a dispatched event, where "refused" and "unhandled" are both undefined. */
@@ -262,7 +271,7 @@ export function html(body: string): Response;   // 200, content-type text/html
 export function js(body: string): Response;     // 200, content-type text/javascript
 export function css(body: string): Response;    // 200, content-type text/css
 export function font(): Response;               // 200, content-type font/woff2
-export function stalled(type?: string): Response;  // added in task 7's second fix round: 200, headers only, a body that never arrives — and since task 7's third fix round it hangs a put too: the fake Cache.put reads the body to the end before it writes, as a real one does, and stores a rebuilt copy
+export function stalled(type?: string, sent?: string): Response;  // added in task 7's second fix round: 200, headers only, a body that never arrives — and since task 7's third fix round it hangs a put too: the fake Cache.put reads the body to the end before it writes, as a real one does, and stores a rebuilt copy *(corrected in task 7's fourth fix round: it now sends `sent` — some bytes, by default — before it goes quiet. A body that never sends one is caught by a deadline on the first read, so a worker that read one piece and called the body done passed every test; `sent = ""` is the silent stall, still tested beside it)*
 
 // src/lib/sw.ts
 export const SW_URL = "/sw.js";
@@ -2684,6 +2693,13 @@ still false. Read together with the block above.)*
    the asset branch's, which was awaited in front of the page's answer. The
    harness could not see it: its fake put filed the Response away unread, so
    `stalled()` never reached them. See the third fix round, items 1 and 2.)*
+   *(corrected in task 7's fourth fix round: and not through `deadlined` any more.
+   One deadline over a whole `.text()` is a total, and a total cannot tell a stall
+   from a slow link; the shell's and the refreshed page's HTML are read through
+   `whole` now, a deadline per piece. And `stalled()` is no longer "a body that
+   never arrives": by default it sends some bytes first, because the silent
+   version let a worker that read one piece and called the body whole pass every
+   test. See the fourth fix round, items A and D.)*
 8. **One mutant found a real gap no review raised:** the dispatch keyed on
    `destination === "document"` in place of `mode === "navigate"` passed the whole
    suite. The two travel together for a top-level navigation and only for one — a
@@ -2740,6 +2756,14 @@ corrections to them are in place.)*
    `asset(event, pathname)` hands `store()` to `event.waitUntil`, so the page
    gets what the network gave it when it gave it. The install deadline tests
    count one deadline per body now: 6 for a plain install, 9 with fonts.
+   *(corrected in task 7's fourth fix round: "through `deadlined`" was ONE
+   deadline over the whole body, and that is a total — it failed this build's
+   414 kB entry chunk arriving steadily at 32 KiB/s at 10.0 s in Chromium, where
+   the steady download takes 12.6 s. The deadline is per read now, and a lost
+   race cancels what it was reading. The counts are one per fetch and one per
+   read, and a harness body is one piece and an end, so: **9** for a plain
+   install and **13** for the install with a hung font — "9 with fonts" was that
+   test, not a plain install with fonts. See the fourth fix round, items A–D.)*
 2. **The harness could not see it.** Its fake `Cache.put` filed the Response
    away unread, so `stalled()` never reached a put. It now reads the body to the
    end — spending it, as a real put does — and stores a rebuilt copy, a null
@@ -2789,6 +2813,98 @@ corrections to them are in place.)*
    `sw-harness.test.ts` **39**, `sw-server-routes.test.ts` 7. Those include task
    8's four in `sw.test.ts`, which landed between the rounds; this round added 8
    to `sw.test.ts` and 5 to `sw-harness.test.ts`.
+
+*(**Fourth fix round**, after the re-review of `51e8a96`, landed on top of task
+9's `359a491`. Five findings — two Important, three Minor — lettered as the
+review lettered them. Read together with the three blocks above; the corrections
+to them, and to the contract block, are in place.)*
+
+A. **One deadline over the whole body killed downloads that were working.**
+   `whole` raced a single `deadlined` against reading the clone to the end, so
+   it limited the body's TOTAL time, and a total cannot tell a stall from a slow
+   link. Measured in headless Chromium, this build's 414 141-byte entry chunk
+   arriving steadily at 32 KiB/s: `359a491`'s worker went `redundant` at
+   10 043 ms, on a first visit and on every visit after it, since a failed
+   install leaves no worker. **Ruling: the deadline is per READ.** `whole` reads
+   the clone a piece at a time, each read raced through `deadlined` — the first
+   read and the one that finds the end included — so a stall is noticed ten
+   seconds after the last byte, wherever it happens, and a link that keeps
+   delivering is waited for as long as it delivers. The same chunk now
+   activates at 12 641 ms; a chunk sending 8 KiB at 0, 4 and 8 s and then
+   nothing goes `redundant` at 18 047 ms, where `359a491`'s gave up at 10 045.
+   The shell's HTML in `precache()` and the page's in `refresh()` were read
+   under one `deadlined(….text())`, the same total, and now go through `whole`
+   and are re-read from memory. There is no ceiling on an install whose bytes
+   keep coming; the browser's is the backstop, and Chromium's was measured —
+   an install whose chunk sent one byte every five seconds went `redundant` at
+   300 002 ms. The harness got a clock to test it with (item F).
+B. **"There is nothing to abort" was false** (README, `deadlined`'s comment, the
+   contract block). Every body `whole` reads came from a request, and aborting
+   its controller after the headers errors the body, which would release a
+   stalled read. Chosen instead: a lost race CANCELS the clone's reader and the
+   original's body, every branch the worker holds, without awaiting either — a
+   branch's cancel settles only once its twin is cancelled too (probed in node),
+   so awaiting the first deadlocks. Not an abort, because an abort errors EVERY
+   branch of the body (measured in Chromium: the other branch's read rejected
+   `AbortError`), and twice the request behind the copy `whole` gets is the
+   page's: the asset branch's write, and a refresh's read of its navigation's
+   HTML, which has no controller anyway. A cancel stops at the tee. Measured in
+   Chromium on a refresh whose new chunk stalls: the refresh's own fetch (the
+   one carrying `Cache-Control: no-cache`, from `cache: "reload"`) was closed by
+   the worker at 10.04 s, and the page's own request for the same chunk stayed
+   open until the browser closed at 25 s; `359a491` held both until then. On a
+   stalled font the worker now closes the connection at 10.04 s, where
+   `359a491` left it open until the browser closed.
+C. **"Eleven requests" was a ceiling that no longer exists.** `TIMEOUT_MS`'s
+   comment derived a worst case from a deadline per call; with a deadline per
+   wait there is no such number, and the comment now says what a stall costs —
+   ten seconds, once — and names the browser's limit as the only ceiling.
+D. **`stalled()` never sent a byte, so N4 lived.** A body that sends nothing is
+   caught by a deadline on the first read, so `whole` → one deadlined read,
+   called whole (N4), passed every test at `359a491` (260 green, confirmed on a
+   byte-identical baseline). In Chromium, against a chunk that sends 16 bytes
+   and stalls, N4's install was still `installing` at 30 s. `stalled(type,
+   sent)` now sends `sent` — some bytes by default — and every stall test runs
+   both ways (`STALLS`: after some of it, before any of it). N4 now fails 14
+   tests. A `broken()` fixture — some bytes, then an error — pins that a
+   cancel's rejection on an errored stream is handled.
+E. **The record's order was unpinned.** N1 (record written before the shell)
+   and N2 (the shell's put not awaited) both passed at `359a491`. It matters: a
+   worker already waiting when an install fails stays waiting, and its
+   activate — after SKIP_WAITING — prunes by whatever record is in the cache; a
+   record written before a shell that is then refused names a deploy the cache
+   never finished taking, and that purge deletes the fonts of the shell still
+   there. Test: a second install whose shell put is refused rejects, leaves the
+   first record byte for byte, and a following activate leaves every key it
+   found. N1 fails 1 test, N2 2.
+F. **The harness.** A virtual clock: the scope's timers are armed on it and fire
+   in order of due time, one per real macrotask, insertion order breaking ties
+   — `now` reads it. `trickle(type, pieces, { every, stall })` is a body pulled
+   a piece at a time on that clock, from the moment it is fetched. Every fetched
+   body sits behind a `connection` whose cancel is recorded in `released`, the
+   fake's stand-in for a browser tearing the request down; a cancel stops at a
+   branch somebody still holds, so a body the page reads is never released.
+   The deadline counts are one per fetch and one per read: 9 for a plain
+   install, 5 + 4 × 2 with a hung font, 1 + 2 + 2 × 3 for a navigation that
+   refreshes.
+G. **Tests first.** Against `359a491`'s `sw.js` the new tests failed 16 of 288
+   (every slow-body test, the deadline counts, the pause, and the release
+   tests); green at 288 once `whole` changed, 292 with the `broken()` tests.
+H. **Mutants: 34 on this round's code and harness, all killed**, each applied to
+   a tree asserted byte-identical to its base and verified green first: 12 in
+   `whole` (a total deadline, N4, the first read undeadlined, no deadline, each
+   cancel dropped, each cancel's catch dropped, the throw dropped, reading the
+   original, awaiting the cancels), 6 on the shell's and page's reads, N1, N2,
+   `359a491`'s whole `sw.js` (16 fail), and 13 in the harness (the clock's due
+   order, `now`, clear, ties, re-wake, the round-3 zero-delay timers, `released`,
+   the connection, the trickle's high-water mark and stall, `stalled()`'s two
+   defaults, `broken()`). The two catch-dropped mutants fail no test and still
+   fail the run: `broken()`'s errored stream rejects the cancel, and vitest
+   reports the unhandled `TypeError: network error`.
+I. **Counts after this round: 76 files / 1 858 tests** — `sw.test.ts` **233**,
+   `sw-harness.test.ts` **52**, `sw-server-routes.test.ts` 7; +32 on the 1 826
+   task 9 left at `359a491`. `sw.js` is **224 lines of code to 711 of
+   comment**, 3.2 to 1, by the acorn count.
 
 **Files:**
 - Modify: `web/public/sw.js`
@@ -2966,7 +3082,7 @@ still falls through unanswered.)*
 npx vitest run src/test/sw.test.ts
 ```
 
-Expected: PASS, 45 tests *(corrected in task 3: 37 as planned; +8)* — including all thirteen of task 6's, which now have branches that could have broken them. *(Corrected in task 6: 51 of task 6's, of which the 13 in the second `describe` are the ones that were vacuous. All of them were already run green against a scratch transcription of this task's two handlers — see task 6's correction 7 — so a failure here is this task's code, not that block's.)* *(Corrected in task 7: measured, **157** in `sw.test.ts` — task 6's 134 plus this block's 23. `sw-harness.test.ts` (21) and `sw-server-routes.test.ts` (7) are untouched. Mutate before believing the green: the list is correction 9 at the head of this task.)* *(Corrected in the fix round: **186** in `sw.test.ts` and **30** in `sw-harness.test.ts`.)* *(corrected in task 7's third fix round: the second fix round's **198** / **34** were never recorded here, and after the third it is **210** in `sw.test.ts` and **39** in `sw-harness.test.ts` — which includes task 8's four in `sw.test.ts`, landed between the two rounds.)*
+Expected: PASS, 45 tests *(corrected in task 3: 37 as planned; +8)* — including all thirteen of task 6's, which now have branches that could have broken them. *(Corrected in task 6: 51 of task 6's, of which the 13 in the second `describe` are the ones that were vacuous. All of them were already run green against a scratch transcription of this task's two handlers — see task 6's correction 7 — so a failure here is this task's code, not that block's.)* *(Corrected in task 7: measured, **157** in `sw.test.ts` — task 6's 134 plus this block's 23. `sw-harness.test.ts` (21) and `sw-server-routes.test.ts` (7) are untouched. Mutate before believing the green: the list is correction 9 at the head of this task.)* *(Corrected in the fix round: **186** in `sw.test.ts` and **30** in `sw-harness.test.ts`.)* *(corrected in task 7's third fix round: the second fix round's **198** / **34** were never recorded here, and after the third it is **210** in `sw.test.ts` and **39** in `sw-harness.test.ts` — which includes task 8's four in `sw.test.ts`, landed between the two rounds.)* *(corrected in task 7's fourth fix round: **233** in `sw.test.ts` and **52** in `sw-harness.test.ts` — task 8's fix round had taken the second to 43.)*
 
 - [ ] **Step 5: Commit**
 
@@ -2975,7 +3091,7 @@ git add web/public/sw.js web/src/test/sw.test.ts
 git commit -m "feat(web): network-first navigations, cache-first hashed assets"
 ```
 
-Counts after this task: **73 files / ~1 561 tests** *(corrected in task 7: measured, **75 files / 1 725 tests**. No new file — all three this task touches already existed — and the delta is +23 on task 6's 1 702, all of them in `sw.test.ts`.)* *(corrected again in the fix round: **75 files / 1 763 tests**, +61 on task 6.)* *(corrected in task 7's third fix round: the second fix round measured **75 files / 1 779** at `eed3854` and did not record it here; after the third it is **75 files / 1 796** — task 8's 1 783 plus this round's 13.)*.
+Counts after this task: **73 files / ~1 561 tests** *(corrected in task 7: measured, **75 files / 1 725 tests**. No new file — all three this task touches already existed — and the delta is +23 on task 6's 1 702, all of them in `sw.test.ts`.)* *(corrected again in the fix round: **75 files / 1 763 tests**, +61 on task 6.)* *(corrected in task 7's third fix round: the second fix round measured **75 files / 1 779** at `eed3854` and did not record it here; after the third it is **75 files / 1 796** — task 8's 1 783 plus this round's 13.)* *(corrected in task 7's fourth fix round: **76 files / 1 858** — +32 on the 1 826 task 9 left at `359a491`, 23 in `sw.test.ts` and 9 in `sw-harness.test.ts`.)*.
 
 ---
 
