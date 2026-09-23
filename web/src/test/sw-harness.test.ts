@@ -448,6 +448,114 @@ describe("the fake registration", () => {
     await worker.activate();
     expect(worker.keys("probe")).toEqual(["/activate-activating", "/install-activated"]);
   });
+
+  /**
+   * Writes the registration's three slots — installing, waiting, active, each a
+   * state or "null" — at install, at activate and on any message, as
+   * `/<when>/<installing>/<waiting>/<active>/<every worker installed so far>`.
+   * A message is a look taken once an event has settled. "fail" makes the next
+   * install or activate reject.
+   */
+  const slots = `
+    let failing = false;
+    const installed = [];
+    const state = (worker) => (worker === null ? "null" : String(worker && worker.state));
+    const seen = async (when, fail) => {
+      const { installing, waiting, active } = self.registration;
+      const cache = await self.caches.open("slots");
+      const all = installed.map(state).join(",");
+      await cache.put("/" + [when, state(installing), state(waiting), state(active), all].join("/"), new Response(""));
+      if (fail) throw new Error("refused");
+    };
+    const next = () => {
+      const fail = failing;
+      failing = false;
+      return fail;
+    };
+    self.addEventListener("install", (event) => {
+      installed.push(self.registration.installing);
+      event.waitUntil(seen("install", next()));
+    });
+    self.addEventListener("activate", (event) => event.waitUntil(seen("activate", next())));
+    self.addEventListener("message", (event) => {
+      if (event.data === "fail") failing = true;
+      else event.waitUntil(seen(event.data, false));
+    });
+  `;
+
+  it("has nothing installing and nothing waiting before an install", async () => {
+    // Empty slots are null, as a real registration's are, and not undefined:
+    // `=== null` must read the same here as on a phone.
+    const worker = loadWorker(slots);
+    await worker.message("before");
+    expect(worker.keys("slots")).toEqual(["/before/null/null/null/"]);
+  });
+
+  it("has the worker installing, and nothing waiting, while its install runs", async () => {
+    // In a browser `installing` is never empty during install, so a worker
+    // that asks it anything gets an answer. Left undefined, a fake passed
+    // `if (self.registration.installing) self.skipWaiting()`, which takes over
+    // on every update.
+    const first = loadWorker(slots);
+    await first.install();
+    expect(first.keys("slots")).toEqual(["/install/installing/null/null/installing"]);
+    const update = loadWorker(slots, { update: true });
+    await update.install();
+    expect(update.keys("slots")).toEqual(["/install/installing/null/activated/installing"]);
+  });
+
+  it("moves the worker to waiting once its install has succeeded", async () => {
+    // Out of `installing` and into `waiting`, in state "installed", behind the
+    // older worker that is still active: the worker the page's update prompt
+    // is about, and the one SKIP_WAITING reaches.
+    const worker = loadWorker(slots, { update: true });
+    await worker.install();
+    await worker.message("after");
+    expect(worker.keys("slots")).toContain("/after/null/installed/activated/installed");
+  });
+
+  it("makes a worker whose install failed redundant, and leaves the one waiting before it", async () => {
+    const worker = loadWorker(slots, { update: true });
+    await worker.install();
+    await worker.message("fail");
+    await expect(worker.install()).rejects.toThrow("refused");
+    await worker.message("after");
+    expect(worker.keys("slots")).toContain("/after/null/installed/activated/installed,redundant");
+  });
+
+  it("makes a waiting worker redundant when a newer one installs over it", async () => {
+    const worker = loadWorker(slots, { update: true });
+    await worker.install();
+    await worker.install();
+    await worker.message("after");
+    expect(worker.keys("slots")).toContain("/after/null/installed/activated/redundant,installed");
+  });
+
+  it("activates the waiting worker, and leaves nothing waiting", async () => {
+    // "activating" while the event runs, "activated" once everything it
+    // extended with has settled — the state a page reads off
+    // `registration.active` once the handshake is over.
+    const worker = loadWorker(slots, { update: true });
+    await worker.install();
+    await worker.activate();
+    await worker.message("after");
+    expect(worker.keys("slots")).toEqual([
+      "/activate/null/null/activating/activating",
+      "/after/null/null/activated/activated",
+      "/install/installing/null/activated/installing",
+    ]);
+  });
+
+  it("marks the worker activated even when the work activate extended with rejected", async () => {
+    // A browser does not undo an activation: the worker is active, and
+    // "activated", whatever its waitUntil did.
+    const worker = loadWorker(slots, { update: true });
+    await worker.install();
+    await worker.message("fail");
+    await expect(worker.activate()).rejects.toThrow("refused");
+    await worker.message("after");
+    expect(worker.keys("slots")).toContain("/after/null/null/activated/activated");
+  });
 });
 
 describe("the fake lifecycle calls", () => {

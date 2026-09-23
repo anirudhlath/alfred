@@ -374,7 +374,24 @@ export interface Harness {
    * rather than in a doc comment nothing enforces.
    */
   inner: Partial<Record<Exposable, (request: FetchRequest) => boolean>>;
+  /**
+   * Fires install as a browser does, moving this worker through the
+   * registration's slots on the way: `installing` while the event runs, then
+   * `waiting` in state "installed" once everything it extended with has
+   * resolved — replacing, and making "redundant", any worker already waiting —
+   * or, when that rejects, out of every slot in state "redundant", leaving
+   * whatever was waiting before it where it was. Each call is a new worker, as
+   * each install is in a browser.
+   */
   install(): Promise<void>;
+  /**
+   * Fires activate for the worker that is waiting — or, when none is, for one
+   * that has just been installed off-stage, since a test that only exercises
+   * activate needs no install in front of it. Before the event it leaves
+   * `waiting` for `active` in state "activating", and once everything it
+   * extended with has settled it is "activated", whether that work resolved or
+   * not: a browser does not undo an activation whose waitUntil rejected.
+   */
   activate(): Promise<void>;
   /**
    * `undefined` means the worker never called respondWith — i.e. left it to the
@@ -487,7 +504,8 @@ export interface LoadOptions {
    * Install over an OLDER worker that is already active — a deploy that changed
    * the worker's bytes, rather than a phone meeting the app for the first time.
    * What it changes is `self.registration.active`: null on a first install, the
-   * older worker on an update. It is the only case decision 7 is about. A first
+   * older worker on an update, and in both cases this worker once it activates.
+   * It is the only case decision 7 is about. A first
    * install has nothing to wait behind, so a `skipWaiting()` there changes
    * nothing, and a worker that skips waiting exactly when there is someone to
    * take over from passes every test that only ever installs first.
@@ -496,13 +514,18 @@ export interface LoadOptions {
 }
 
 /**
- * The slice of a `ServiceWorker` the fake registration hands out. `active` is
- * the only one of the registration's three slots that is modelled; `installing`
- * and `waiting` are absent, and nothing any worker here reads needs them.
+ * The slice of a `ServiceWorker` the fake registration hands out, in each of
+ * its three slots — `installing`, `waiting` and `active` — every one of them
+ * null when empty, never undefined, as a real registration's are. A worker that
+ * reads a slot the fake left out would read undefined, pass here, and do
+ * something else on a phone: `if (self.registration.installing)
+ * self.skipWaiting()` in install passed every handshake test that way, and in a
+ * browser it takes over on every update. `state` moves as a browser moves it;
+ * the object is the same one from slot to slot, as it is in a browser.
  */
 interface FakeServiceWorker {
   scriptURL: string;
-  state: "activating" | "activated";
+  state: "installing" | "installed" | "activating" | "activated" | "redundant";
 }
 
 /**
@@ -637,6 +660,9 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     },
     registration: {
       scope: scopeUrl,
+      // Empty until `install()` below puts a worker in it.
+      installing: null as FakeServiceWorker | null,
+      waiting: null as FakeServiceWorker | null,
       // The worker the registration serves pages with while this one installs:
       // an older one on an update, nothing on a first install. `activate()`
       // below replaces it with this worker, as a browser does before it fires
@@ -879,10 +905,36 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     refuseMatch: (key) => void matchRefusals.add(new URL(key, origin).href),
     refuseOpen: (name = "*") => void openRefusals.add(name),
     inner,
-    install: () => extendable("install"),
-    activate: () => {
-      scope.registration.active = { scriptURL: `${origin}/sw.js`, state: "activating" };
-      return extendable("activate");
+    install: async () => {
+      const { registration } = scope;
+      const installing: FakeServiceWorker = { scriptURL: `${origin}/sw.js`, state: "installing" };
+      registration.installing = installing;
+      try {
+        await extendable("install");
+      } catch (error) {
+        registration.installing = null;
+        installing.state = "redundant";
+        throw error;
+      }
+      registration.installing = null;
+      if (registration.waiting) registration.waiting.state = "redundant";
+      registration.waiting = installing;
+      installing.state = "installed";
+    },
+    activate: async () => {
+      const { registration } = scope;
+      const activating: FakeServiceWorker = registration.waiting ?? {
+        scriptURL: `${origin}/sw.js`,
+        state: "installed",
+      };
+      registration.waiting = null;
+      registration.active = activating;
+      activating.state = "activating";
+      try {
+        await extendable("activate");
+      } finally {
+        activating.state = "activated";
+      }
     },
     dispatch,
     async request(spec) {
