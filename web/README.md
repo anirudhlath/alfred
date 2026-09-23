@@ -129,7 +129,7 @@ Phase 3: the Workshop's other three benches, each a pure view over one hook call
 
 ## The service worker
 
-`public/sw.js` is hand-written — 233 lines of code under 575 of comment, 2.5 to 1 — and
+`public/sw.js` is hand-written — 205 lines of code under 587 of comment, 2.9 to 1 — and
 shipped verbatim by Vite's `public/` copy: no `vite-plugin-pwa`, no Workbox, no generated
 precache manifest. The reasoning is in
 `docs/superpowers/plans/2026-09-16-pwa-phase4-install-and-offline.md`; the short version
@@ -138,7 +138,7 @@ things a reviewer can *read in the shipped bytes*, and a negative requirement �
 worker never caches `/api`" — is one assertion against a hand-written file and an argument
 against a plugin's route table.
 
-**Install, activate, and a fetch handler with two branches.** It fetches `/index.html` past the
+**Install, activate, a fetch handler with two branches, and one message.** It fetches `/index.html` past the
 HTTP cache and takes the `/assets/…` URLs Vite wrote into it as the precache manifest —
 the entry chunk and the stylesheet. It then reads the **stylesheet** for the `url()` rules
 the HTML never mentions and takes the `.woff2` among them: 8 files, 139 436 of this build's
@@ -320,6 +320,17 @@ that is wrong stays wrong until something deletes it. There is no revalidation, 
 change. What stands between that and a poisoned cache is upstream — a hashed name cannot be
 poisoned by a deploy, the store guard refuses what is not an asset, and the kill switch is
 the floor.
+
+**A new worker waits, and one message takes it over.** `install` never calls
+`skipWaiting()`, so a changed `sw.js` installs, precaches and then waits for every page the
+old worker controls to close, rather than activating under someone mid-conversation —
+activate prunes the cache down to the new build and then claims every open page. The one way it
+activates sooner is the one message it takes, `{ type: "SKIP_WAITING" }`, which the page's
+`applyUpdate()` (`src/lib/sw.ts`, a later slice) posts when the user asks. Anything else
+posted to it is ignored, and a `null` or `undefined` one does not throw. What this carries
+is a change to `sw.js` itself, not a deploy: `VERSION` is bumped by hand and the file is
+byte-identical across most deploys, so most deploys install nothing, leave nothing waiting,
+and are taken at the next navigation by the network-first branch.
 
 **Nothing registers it yet** — `src/lib/sw.ts` is a later slice of phase 4. Until then it
 is inert bytes in `public/`.

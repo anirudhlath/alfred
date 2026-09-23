@@ -2866,6 +2866,7 @@ Decision 7: a new worker waits, and the user takes it. The worker's half is two 
 **Files:**
 - Modify: `web/public/sw.js`
 - Modify: `web/src/test/sw.test.ts`
+- Modify: `web/README.md` *(corrected in task 8: missing here. Its service-worker section names the worker's handlers and counts its lines, and this listener changes both.)*
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2897,13 +2898,15 @@ describe("the update handshake", () => {
 });
 ```
 
+*(corrected in task 8: a fourth test ships beside these three — `ignores a message with no data at all`, the same shape with `await worker.message(undefined)` — because the mutant `event.data !== null &&` survived all three. null is the one value that guard handles, and `postMessage(undefined)` delivers exactly the value it throws on. The third test also gained a comment naming the guard each of its messages catches.)*
+
 - [ ] **Step 2: Run them and read the failure**
 
 ```bash
 npx vitest run src/test/sw.test.ts -t "handshake"
 ```
 
-Expected: the first passes (there is no `skipWaiting` call yet), the second fails on `expected 0 to be 1`.
+Expected: the first passes (there is no `skipWaiting` call yet), the second fails on `expected 0 to be 1`. *(corrected in task 8: the third passes too — with no listener at all, every message is already ignored — so only a mutant can show it failing; and vitest spells the failure `expected +0 to be 1`.)*
 
 - [ ] **Step 3: Add the message listener**
 
@@ -2911,11 +2914,22 @@ Expected: the first passes (there is no `skipWaiting` call yet), the second fail
 self.addEventListener("message", (event) => {
   /* The only message this worker takes, and the only way it ever activates
      early. Its counterpart is applyUpdate() in src/lib/sw.ts; between them they
-     are what makes a new build reachable on an installed iOS PWA without
-     deleting the icon and adding it again. */
+     are how a CHANGED sw.js reaches an installed app that is still open, which
+     otherwise waits for every page the old worker controls to close — and an
+     installed PWA is resumed rather than reloaded, so that can take weeks.
+
+     A changed sw.js, and not a new build. VERSION is bumped by hand and this
+     file is byte-identical across most deploys, so most deploys install
+     nothing and leave nothing waiting: they are taken at the next navigation,
+     by navigate(), and never pass through here.
+
+     `event.data &&` first, because a page can post null and `.type` read off
+     it is a TypeError inside the listener. Anything else is ignored. */
   if (event.data && event.data.type === "SKIP_WAITING") self.skipWaiting();
 });
 ```
+
+*(corrected in task 8: the comment said the pair "are what makes a new build reachable on an installed iOS PWA without deleting the icon and adding it again". A new build does not come through here. As `refresh()`'s header in the shipped file says, sw.js is byte-identical across most deploys, so a deploy installs nothing, nothing waits, and `navigate()` serves the new build at the next navigation whether or not this listener exists. What the handshake delivers is a changed sw.js, to a page that is still open. "Without deleting the icon" is a claim about iOS that nothing here can measure, so the shipped comment does not make it. The code line is unchanged.)*
 
 - [ ] **Step 4: Run green**
 
@@ -2924,13 +2938,13 @@ npx vitest run src/test/sw.test.ts
 npm run lint && npm run build
 ```
 
-Expected: PASS, 48 tests *(corrected in task 3: 40 as planned; +8)*. ESLint silent, build clean, and `web/dist/sw.js` now exists:
+Expected: PASS, 48 tests *(corrected in task 3: 40 as planned; +8)* *(corrected in task 8: measured, **202**. The file held 198 at `eed3854`, after tasks 4–7 and their fix rounds, and this task adds 4.)*. ESLint silent, build clean, and `web/dist/sw.js` now exists *(corrected in task 8: it has existed since task 3 — `public/` is copied into `dist/` byte for byte on every build (measured: `cmp dist/sw.js public/sw.js` is silent) — so this checks that it still does, not that it has arrived)*:
 
 ```bash
 ls -l dist/sw.js dist/manifest.json dist/manifest-light.json dist/apple-touch-icon.png
 ```
 
-Expected: all four present, and **no `dist/favicon.svg` or `dist/icons.svg`**. If `dist/` still holds them, it is a stale build directory — `rm -rf dist && npm run build`.
+Expected: all four present, and **no `dist/favicon.svg` or `dist/icons.svg`**. If `dist/` still holds them, it is a stale build directory — `rm -rf dist && npm run build`. *(corrected in task 8: it cannot be a stale directory. `vite build` empties `dist/` before it writes — `emptyOutDir` is on by default for an `outDir` inside the root, and `vite.config.ts` does not override it. Measured: with `favicon.svg`, `icons.svg` and a probe file planted in `dist/`, `npm run build` left none of the three. So after a build that succeeded, either file can only have come from `public/`, which task 1 (`cdb075d`) emptied of both, and `rm -rf dist` is never the fix. The one way to see a stale `dist/` is a build that failed at `tsc -b`, before Vite ran, and that build is not clean.)*
 
 - [ ] **Step 5: Commit**
 
@@ -2939,7 +2953,9 @@ git add web/public/sw.js web/src/test/sw.test.ts
 git commit -m "feat(web): a waiting worker takes over only when the page asks"
 ```
 
-Counts after this task: **73 files / ~1 564 tests**.
+*(corrected in task 8: `git add` takes `web/README.md` and this plan as well — the plan's corrections ride in the same commit, as every earlier task's have.)*
+
+Counts after this task: **73 files / ~1 564 tests** *(corrected in task 8: measured, **75 files / 1 783 tests**. No new file — both files this task touches already existed — and the delta is +4 on the 1 779 that task 7's second fix round left at `eed3854`, all of them in `sw.test.ts`.)*.
 
 ---
 

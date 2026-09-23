@@ -480,6 +480,23 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(purge().then(() => self.clients.claim()));
 });
 
+self.addEventListener("message", (event) => {
+  /* The only message this worker takes, and the only way it ever activates
+     early. Its counterpart is applyUpdate() in src/lib/sw.ts; between them they
+     are how a CHANGED sw.js reaches an installed app that is still open, which
+     otherwise waits for every page the old worker controls to close — and an
+     installed PWA is resumed rather than reloaded, so that can take weeks.
+
+     A changed sw.js, and not a new build. VERSION is bumped by hand and this
+     file is byte-identical across most deploys, so most deploys install
+     nothing and leave nothing waiting: they are taken at the next navigation,
+     by navigate(), and never pass through here.
+
+     `event.data &&` first, because a page can post null and `.type` read off
+     it is a TypeError inside the listener. Anything else is ignored. */
+  if (event.data && event.data.type === "SKIP_WAITING") self.skipWaiting();
+});
+
 /* The paths this worker never answers, named rather than spelled inline for the
    reason ASSETS is named: this is the whole of rule 1, and a list that is read
    is a list that can be checked against the server's.

@@ -2283,3 +2283,45 @@ describe("assets", () => {
     await expect(worker.request(fromPage("/img/assets/logo.png"))).resolves.toBeUndefined();
   });
 });
+
+describe("the update handshake", () => {
+  it("does not take over on install", async () => {
+    const worker = shell();
+    await worker.install();
+    // A build that swaps itself under a running conversation loses whatever was
+    // on screen. The new worker waits until the user asks for it.
+    expect(worker.skipWaitingCalls).toBe(0);
+  });
+
+  it("takes over when the page asks", async () => {
+    const worker = shell();
+    await worker.install();
+    await worker.message({ type: "SKIP_WAITING" });
+    expect(worker.skipWaitingCalls).toBe(1);
+  });
+
+  it("ignores every other message", async () => {
+    // Three ways to get the guard wrong, one message each: another envelope (a
+    // guard that never reads the type), the type as a bare string (one that
+    // reads `event.data` rather than the envelope), and null, which is what
+    // `postMessage(null)` delivers. Reading `.type` off null is a TypeError
+    // inside the listener; the harness runs listeners synchronously, so that
+    // arrives here as a rejected `message()` rather than as a browser's log line.
+    const worker = shell();
+    await worker.install();
+    await worker.message({ type: "PING" });
+    await worker.message("SKIP_WAITING");
+    await worker.message(null);
+    expect(worker.skipWaitingCalls).toBe(0);
+  });
+
+  it("ignores a message with no data at all", async () => {
+    // `postMessage(undefined)` delivers exactly that, and it is the value null
+    // cannot stand in for: a guard tightened to `event.data !== null` passes
+    // every message above and reads `.type` off this one.
+    const worker = shell();
+    await worker.install();
+    await worker.message(undefined);
+    expect(worker.skipWaitingCalls).toBe(0);
+  });
+});
