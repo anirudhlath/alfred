@@ -35,22 +35,26 @@ const MANIFEST = "/__shell-manifest";
 /* The one path prefix this worker may store under, named rather than spelled
    inline because it is the whole of the refusal isAssetUrl makes. */
 const ASSETS = "/assets/";
-/* Every network call here gets a deadline — the request and the body read that
-   follows it alike, install and runtime both — and that is a different
-   guarantee from the `.catch()` in the font loop. A catch covers a fetch that
-   REJECTS; it does nothing at all for one that never settles, which is what a
-   black-holed route does: it accepts the connection and answers nothing. A body
-   is the same hazard one layer in, and easy to miss because the request looks
-   finished — fetch() resolves on the HEADERS, so a route that answers 200 and
-   then goes quiet leaves `await response.text()` pending for ever with nothing
-   left to reject. precache runs inside waitUntil(), so either hang holds the
-   whole install open until the browser gives up on it, and the phone is left
-   with no worker: the outcome the font loop's catch exists to avoid, reached
-   through the other door. A hung NAVIGATION is the same judgement one layer
-   out: a request that never answers is indistinguishable from being offline,
-   and the fallback for being offline is the cached shell. An installed PWA is
-   where that matters most — a standalone window has no browser chrome to
-   escape a hang with, so "wait forever" is not a state the user can leave.
+/* Every network call here gets a deadline — the request and every read of the
+   body that follows it alike, install and runtime both — and that is a
+   different guarantee from the `.catch()` in the font loop. A catch covers a
+   fetch that REJECTS; it does nothing at all for one that never settles, which
+   is what a black-holed route does: it accepts the connection and answers
+   nothing. A body is the same hazard one layer in, and easy to miss because the
+   request looks finished — fetch() resolves on the HEADERS, so a route that
+   answers 200 and then goes quiet leaves `await response.text()` pending for
+   ever with nothing left to reject. And Cache.put is a body read too, the
+   easiest of all to miss: it reads what it is handed to the end before it
+   writes, which is why every network body this file stores goes through
+   `whole` first. precache runs inside waitUntil(), so any of these hangs holds
+   the whole install open until the browser gives up on it, and the phone is
+   left with no worker: the outcome the font loop's catch exists to avoid,
+   reached through the other door. A hung NAVIGATION is the same judgement one
+   layer out: a request that never answers is indistinguishable from being
+   offline, and the fallback for being offline is the cached shell. An
+   installed PWA is where that matters most — a standalone window has no browser
+   chrome to escape a hang with, so "wait forever" is not a state the user can
+   leave.
 
    Per call, not per install, so a slow-but-progressing phone is not punished
    for being slow; the ceiling is this times the eleven requests a real build
@@ -77,6 +81,28 @@ function deadlined(work) {
   return Promise.race([work, expiry]).finally(() => self.clearTimeout(deadline));
 }
 
+/* Resolves with `response` once every byte of its body is here, inside the
+   deadline — the precondition for handing a network response to Cache.put.
+
+   A put reads the body it is given to the END before it writes anything, so a
+   put of a network response is a body read in everything but name, and one
+   whose headers arrived and whose bytes stall leaves the put pending for ever.
+   Not hypothetical: measured in Chromium, a shell naming a chunk whose body
+   stalled held the install "installing" for minutes, on a put nothing had
+   bounded. A put takes no signal, and racing the put itself would leave it in
+   flight, free to land later in a cache that has since decided against it.
+
+   So a CLONE is read to the end, raced, and the original is what gets put.
+   clone() tees the stream, and the branch nobody has read yet is handed every
+   chunk the other one pulls: once the clone is whole, so is the original, in
+   memory, and the put that reads it never touches the network. The price is
+   the body held twice while that happens — 414 kB for this build's entry
+   chunk — and, when the race is lost, a read left running behind it, as a
+   raced navigation leaves its fetch. */
+function whole(response) {
+  return deadlined(response.clone().arrayBuffer()).then(() => response);
+}
+
 /* This one ABORTS, so the request is really cancelled rather than orphaned, and
    it is how install and the asset branch fetch. Takes what fetch() takes, so a
    handler can forward the page's own Request — which carries its mode, its
@@ -86,9 +112,17 @@ function deadlined(work) {
    redirected response it must not have. (Measured in node: `new Request(req, {
    cache: "reload" })` keeps all four, `new Request(req.url, ...)` keeps none.)
 
-   Why a NAVIGATION cannot come through here. Any init that is not empty makes
-   fetch() rebuild the Request, and the Fetch Standard's constructor has three
-   steps that fire when it does: a mode of "navigate" becomes "same-origin", the
+   Keeps those four, and not everything. Any init that is not empty makes
+   fetch() rebuild the Request, and the Fetch Standard's constructor resets a
+   handful of things when it does. For an asset the one that shows is the
+   referrer, reset to "client" — the worker itself: measured in Chromium, a
+   fetch that went through here arrives with `Referer: …/sw.js` where the page's
+   own request named the page. Harmless for a same-origin hashed file nothing
+   on the server reads it for; not harmless everywhere, which is the next
+   paragraph.
+
+   Why a NAVIGATION cannot come through here. Three more of those resets fire on
+   the same rebuild: a mode of "navigate" becomes "same-origin", the
    reload-navigation flag is unset, and the history-navigation flag is unset. So
    the act of attaching a signal demotes the page's navigation to an ordinary
    fetch — and the demotion is invisible from a test, because `mode: "navigate"`
@@ -273,7 +307,6 @@ function isAsset(response) {
   return isStored(response) && !(response.headers.get("content-type") || "").includes("text/html");
 }
 
-
 function isShell(response) {
   return isStored(response) && (response.headers.get("content-type") || "").includes("text/html");
 }
@@ -303,9 +336,12 @@ async function precache() {
     /* Throwing aborts the install, which is the right answer: a half-precached
        shell boots to a blank screen offline, and a worker that never installs
        leaves the previous one — or no worker at all — in charge. A deadline
-       that fires here arrives as a rejection and lands in the same place. */
+       that fires here arrives as a rejection and lands in the same place,
+       whether it is the request's or the body's: `whole` is what makes a body
+       that never finishes part of this check rather than a put that never
+       returns, three paragraphs down, after the writing has started. */
     if (!isAsset(response)) throw new Error(`${url} ${response.status}`);
-    responses.push(response);
+    responses.push(await whole(response));
   }
 
   /* The stylesheet only. A bundle is not a list of what the app needs offline:
@@ -314,12 +350,16 @@ async function precache() {
      with no return. (This build's chunk does contain the text `url(` twice, but
      both are a zero-argument method of that name in the WebSocket client, so
      the regex captures nothing from it — the rule stands on its own, not on
-     that measurement.) */
+     that measurement.)
+
+     Read with no deadline of its own, and that is not an oversight: `whole`
+     has already read this body to the end inside one, so every byte of it is
+     in memory and there is nothing left to wait on. */
   const named = [];
   for (let i = 0; i < urls.length; i += 1) {
     if (!urls[i].endsWith(".css")) continue;
     const base = new URL(urls[i], scopeOrigin()).href;
-    named.push(...fontsInCss(await deadlined(responses[i].clone().text()), base));
+    named.push(...fontsInCss(await responses[i].clone().text(), base));
   }
 
   /* One fetch, one put and one manifest entry per URL, whatever names it: a
@@ -333,24 +373,37 @@ async function precache() {
   /* Unlike a missing chunk above, a missing font does NOT fail the install. The
      app is legible in the system stack, and an install aborted over a typeface
      leaves the phone with no worker at all — the worse of the two, and one that
-     only sw.js's own bytes changing would undo. All three failures are declined
+     only sw.js's own bytes changing would undo. All four failures are declined
      the same way: no answer (the fetch rejects), no answer ever (the deadline
-     fires, which arrives as a rejection too) and a wrong answer (a proxy's page
-     under a .woff2 URL). Anything skipped is still picked up cache-first the
-     first time it is asked for — by the fetch handler's asset branch, which
-     stores what it fetched under the same pathname key. */
+     fires, which arrives as a rejection too), a wrong answer (a proxy's page
+     under a .woff2 URL) and an answer that never finishes (a body that stalls,
+     which `whole` turns into the same rejection). Anything skipped is still
+     picked up cache-first the first time it is asked for — by the fetch
+     handler's asset branch, which stores what it fetched under the same
+     pathname key. */
   const cached = [];
   for (const url of fonts) {
-    const response = await fetchFresh(url).catch(() => null);
-    if (response && isAsset(response)) cached.push([url, response]);
+    const response = await fetchFresh(url)
+      .then((fetched) => (isAsset(fetched) ? whole(fetched) : null))
+      .catch(() => null);
+    if (response) cached.push([url, response]);
   }
 
-  /* Nothing is written until everything has been validated, so a shell that
-     fails on its second asset leaves the previous worker's cache untouched
-     rather than half replaced. */
-  await cache.put(SHELL, shell);
+  /* Nothing is written until everything has been validated — every body
+     included, which is what `whole` is for — so a shell that fails on its
+     second asset leaves the previous worker's cache untouched rather than half
+     replaced. That cache is the one the previous worker is still serving from,
+     and it is why the shell goes in LAST, after everything it names, the order
+     refresh() publishes in and for the same reason: every body is in memory by
+     now, so the one way a put can still fail is storage — a phone that fills up
+     part way through — and a new shell written first and its chunk refused
+     after it is a white screen offline, left in the live cache by an install
+     that failed. This way round a failure part way leaves the shell that was
+     there and the assets it names; the new entries written before it are
+     named by nothing, and the next activate collects them. */
   for (let i = 0; i < urls.length; i += 1) await cache.put(urls[i], responses[i]);
   for (const [url, response] of cached) await cache.put(url, response);
+  await cache.put(SHELL, shell);
   /* The fonts are listed too: activate prunes everything this record does not
      name, so a font cached but unlisted is deleted before it is ever served. */
   await cache.put(
@@ -747,7 +800,12 @@ async function refresh(response) {
     if (await cache.match(url)) continue;
     const named = await fetchFresh(url);
     if (!isAsset(named)) return;
-    await cache.put(url, named);
+    /* `whole` for the reason precache() has it: the put reads this body to the
+       end, and a chunk whose bytes stall would hold the put — and with it this
+       navigation's waitUntil — open for ever, with the shell never published.
+       A deadline arrives as a rejection, which the caller swallows, and the
+       shell that is there stays. */
+    await cache.put(url, await whole(named));
   }
   await cache.put(SHELL, response);
 }
@@ -809,7 +867,7 @@ async function navigate(event) {
    activates, which only happens when sw.js's own bytes change. The mitigations
    are upstream — a hashed name cannot be poisoned by a deploy, isAsset refuses
    what is not an asset, and the kill switch is the floor. */
-async function asset(request, pathname) {
+async function asset(event, pathname) {
   /* Keyed on the pathname, not the request, and both halves of that matter: it
      is the spelling precache() and MANIFEST use, so one URL has one entry here,
      in the record and in the prune; and a hashed file asked for with a query on
@@ -819,26 +877,42 @@ async function asset(request, pathname) {
   const stored = await cached(pathname);
   if (stored) return stored;
 
-  const response = await timed(request);
-  /* Three things guard this put and they fail differently. isAsset refuses what
-     must not be stored: /assets is a StaticFiles mount today, so a hash a
-     deploy has removed comes back 404 with a JSON body — but if that mount ever
-     goes, mount_spa answers any unknown path with index.html and a 200, and a
-     page of HTML stored under a .js URL is how a PWA bricks itself, since every
-     launch afterwards parses it as a module and dies before the first paint.
-     The open may have failed, which is not this request's problem. And the put
-     itself may be REFUSED — a phone that is full — which must cost the page
-     nothing at all: the bytes are in hand, the network said 200, and a worker
-     that turned that into a failed request would be strictly worse than no
-     worker. Nothing here is awaited for the page's sake, but the put is awaited
-     so that it is inside this handler's own lifetime rather than after it. */
-  const cache = await openCache();
-  if (cache && isAsset(response)) await cache.put(pathname, response.clone()).catch(() => {});
+  const response = await timed(event.request);
+  /* isAsset refuses what must not be stored: /assets is a StaticFiles mount
+     today, so a hash a deploy has removed comes back 404 with a JSON body — but
+     if that mount ever goes, mount_spa answers any unknown path with index.html
+     and a 200, and a page of HTML stored under a .js URL is how a PWA bricks
+     itself, since every launch afterwards parses it as a module and dies before
+     the first paint.
+
+     What passes it is written BESIDE the answer, in waitUntil, not in front of
+     it. The put reads its copy of the body to the end, so awaited here it held
+     the page's own response — headers and all — for as long as the body took,
+     and for ever on one that stalled: strictly worse than no worker, where the
+     page at least has the headers and whatever bytes came. Now the page gets
+     exactly what the network gave it, when the network gave it, and nothing
+     the write does can reach it. The clone is taken here, before the page has
+     read a byte of the original, because a clone of a body already read is a
+     TypeError. */
+  if (isAsset(response)) event.waitUntil(store(pathname, response.clone()).catch(() => {}));
   /* A network failure propagates rather than being answered from somewhere
      else. There is nothing honest to serve for an asset that was never cached
      and cannot be fetched, and the obvious something-else — the shell, which is
      what a fallback would hand back — is the brick above by another door. */
   return response;
+}
+
+/* The asset branch's write, with every failure it can meet swallowed by its
+   caller, and each for the same reason: none of them is the page's problem.
+   The open may fail — no usable CacheStorage. The body may never finish, which
+   `whole` bounds. And the put itself may be REFUSED — a phone that is full —
+   which must cost the page nothing at all: the bytes are in hand, the network
+   said 200, and a worker that turned that into a failed request would be
+   strictly worse than no worker. */
+async function store(pathname, response) {
+  const cache = await openCache();
+  if (!cache) return;
+  await cache.put(pathname, await whole(response));
 }
 
 /* Judged before any branch, deliberately: a hand-typed API URL in the address
@@ -874,7 +948,7 @@ self.addEventListener("fetch", (event) => {
      as startsWith is concerned and is a traversal once uvicorn has decoded it.
      Move the refusal after this branch and this line needs isAssetUrl instead. */
   if (url.pathname.startsWith(ASSETS)) {
-    event.respondWith(asset(event.request, url.pathname));
+    event.respondWith(asset(event, url.pathname));
   }
 
   /* Everything else — /manifest.json, /icon.svg, /apple-touch-icon.png — falls

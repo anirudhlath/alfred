@@ -282,6 +282,26 @@ describe("install", () => {
     await expect(worker.install()).rejects.toThrow();
     expect(worker.keys()).toEqual([]);
   });
+
+  it("keeps the shell it had when a write fails part way through", async () => {
+    // A second install writes into the cache the previous worker is still
+    // serving from. Every body is in memory before the first write, so the one
+    // way a write can still fail is storage — a phone that fills up part way
+    // through — and with the shell written first, a failure after it left that
+    // worker's offline launch a new shell naming a chunk the cache does not
+    // hold: a white screen, from an install that did not even succeed. The
+    // shell goes in last, as refresh() publishes it, so the one that stays is
+    // the one whose assets are all there.
+    const worker = shell();
+    await worker.install();
+    worker.respond("/index.html", deployed("two", NEXT_ASSETS));
+    worker.respond(NEXT_ASSETS[0], js("console.log(2)"));
+    worker.respond(NEXT_ASSETS[1], css("body{color:blue}"));
+    worker.refusePut(NEXT_ASSETS[1]);
+    await expect(worker.install()).rejects.toThrow(/storage error/);
+    await expect(shellInCache(worker).clone().text()).resolves.not.toContain("two");
+    expect(worker.keys()).toEqual(expect.arrayContaining(SHELL_ASSETS));
+  });
 });
 
 describe("install, and the fonts", () => {
@@ -686,18 +706,20 @@ describe("install, and the network that never answers", () => {
   it("gives every request a deadline", async () => {
     const worker = shell();
     await worker.install();
-    // One per fetch — the shell and both chunks — and one per body read, which
-    // is the half that is easy to miss: fetch() resolves on the HEADERS, so a
+    // One per fetch — the shell and both chunks — and one per body, which is
+    // the half that is easy to miss: fetch() resolves on the HEADERS, so a
     // route that answers 200 and then goes quiet leaves `await text()` pending
-    // for ever on a request that looks finished. A `.catch()` handles a fetch
-    // that rejects and does nothing at all for either hang, so these are the
-    // only thing standing between a captive portal and an install that waits
-    // until the browser kills it.
-    expect(worker.deadlines).toEqual([10000, 10000, 10000, 10000, 10000]);
-    // Three fetches; the two reads are the shell's HTML and the stylesheet the
-    // font URLs are scraped out of.
+    // for ever on a request that looks finished — and `Cache.put` is a read of
+    // the body too, which is why the chunk the worker never reads itself gets
+    // one. A `.catch()` handles a fetch that rejects and does nothing at all
+    // for any of these hangs, so they are the only thing standing between a
+    // captive portal and an install that waits until the browser kills it.
+    expect(worker.deadlines).toEqual(Array<number>(6).fill(10000));
+    // Three fetches and three bodies: the shell's HTML, and each asset read
+    // whole before it is put (the stylesheet's font scrape then reads from
+    // memory, with nothing left to wait on).
     expect(worker.fetched).toHaveLength(3);
-    expect(worker.deadlines).toHaveLength(worker.fetched.length + 2);
+    expect(worker.deadlines).toHaveLength(worker.fetched.length * 2);
     // And takes each one back down once its request is done. A deadline left
     // armed fires ten seconds later against nothing, holding the worker awake
     // to do it.
@@ -719,9 +741,11 @@ describe("install, and the network that never answers", () => {
     expect(worker.keys()).toEqual(
       ["/__shell-manifest", ...SHELL_ASSETS, SHELL_FONTS[1], "/index.html"].sort(),
     );
-    // Five fetches — shell, two chunks, two fonts — and the two body reads.
+    // Five fetches — shell, two chunks, two fonts — and four bodies: the
+    // shell's, both chunks', and the font that answered. The one that hung
+    // never had a body to read.
     expect(worker.fetched).toHaveLength(5);
-    expect(worker.deadlines).toEqual(Array<number>(7).fill(10000));
+    expect(worker.deadlines).toEqual(Array<number>(9).fill(10000));
   });
 
   it("fails the install when it is an asset that never answers", async () => {
@@ -771,6 +795,37 @@ describe("install, and the network that never answers", () => {
     worker.respond("/assets/index-nhBuGG1b.css", stalled("text/css"));
     await expect(worker.install()).rejects.toThrow("deadline exceeded");
     expect(worker.keys()).toEqual([]);
+  });
+
+  it("fails the install when it is the entry chunk's body that never arrives", async () => {
+    // The body nothing in this file reads — except `Cache.put`, which reads
+    // every body it is handed to the end before it writes. So a put of a
+    // network response is a body read, and without a deadline of its own this
+    // one waits for ever: measured in Chromium, a shell naming a chunk whose
+    // headers arrive and whose bytes stall left the install "installing" for
+    // minutes. It fails here, before a single write — the shell included, since
+    // a new shell naming a chunk the cache does not hold is a white screen
+    // offline, in the cache the previous worker is still serving from.
+    const worker = loadWorker(source);
+    worker.respond("/index.html", html(SHELL_HTML));
+    worker.respond("/assets/index-CY0Sh5Q2.js", stalled("text/javascript"));
+    worker.respond("/assets/index-nhBuGG1b.css", css(SHELL_CSS));
+    await expect(worker.install()).rejects.toThrow("deadline exceeded");
+    expect(worker.keys()).toEqual([]);
+    expect(worker.puts).toEqual([]);
+  });
+
+  it("installs without a font whose body never arrives", async () => {
+    // The same hang on the loop that is allowed to lose things: a typeface
+    // whose bytes stall is declined like one that never answers, and the
+    // install carries on without it rather than waiting on its put for ever.
+    const worker = withFonts();
+    worker.respond(SHELL_FONTS[0], stalled("font/woff2"));
+    await worker.install();
+    expect(worker.keys()).toEqual(
+      ["/__shell-manifest", ...SHELL_ASSETS, SHELL_FONTS[1], "/index.html"].sort(),
+    );
+    expect(worker.puts).not.toContain(SHELL_FONTS[0]);
   });
 });
 
@@ -1931,8 +1986,9 @@ describe("navigations", () => {
     for (const init of refreshed) expect(init!.signal).toBeInstanceOf(AbortSignal);
     // Raced or aborted, the deadline is armed and taken back down either way:
     // one for the navigation, one for the body read of the page it answered
-    // with, one for each asset the refresh fetched.
-    expect(worker.deadlines.slice(armed)).toEqual(Array<number>(4).fill(10000));
+    // with, and two for each asset the refresh fetched — the request, and the
+    // body read whole before it is put.
+    expect(worker.deadlines.slice(armed)).toEqual(Array<number>(6).fill(10000));
     expect(worker.deadlinesCleared).toBe(worker.deadlines.length);
   });
 
@@ -1999,6 +2055,24 @@ describe("navigations", () => {
     expect(response!.status).toBe(200);
     // And the shell that survives is the one install wrote.
     await expect(shellInCache(worker).clone().text()).resolves.toContain(ROOT_DIV);
+  });
+
+  it("serves the page, and keeps the shell it has, when a new deploy's asset stalls mid-body", async () => {
+    // The refresh's own fetches, and the put that reads their bodies. A chunk
+    // whose headers arrive and whose bytes do not leaves that put pending for
+    // ever — inside the navigation's waitUntil, holding the worker awake for a
+    // page served long ago, and with the shell never published. Declined like
+    // any other asset the refresh cannot get whole: the shell that is there
+    // stays. `request()` drains waitUntil, so an unbounded put hangs this test.
+    const worker = shell();
+    await worker.install();
+    worker.respond("/", deployed("two", NEXT_ASSETS));
+    worker.respond(NEXT_ASSETS[0], stalled("text/javascript"));
+    worker.respond(NEXT_ASSETS[1], css("body{color:blue}"));
+    const response = await worker.request({ path: "/", mode: "navigate" });
+    await expect(response!.text()).resolves.toContain("two");
+    await expect(shellInCache(worker).clone().text()).resolves.not.toContain("two");
+    expect(worker.puts).not.toContain(NEXT_ASSETS[0]);
   });
 });
 
@@ -2195,6 +2269,39 @@ describe("assets", () => {
     const response = await worker.request(fromPage(LATE_FONT, "font"));
     await expect(response!.text()).resolves.toBe("woff2");
     expect(worker.keys()).not.toContain(LATE_FONT);
+  });
+
+  it("serves an asset whose body stalls without holding the page for the write", async () => {
+    // The put reads the body to the end, and this body never ends. Awaited
+    // before the page is answered, that put held the page's own response —
+    // headers and all — for as long as the stall lasted: strictly worse than no
+    // worker, where the page at least gets the headers and whatever bytes came.
+    // The page gets exactly what the network gave it, and the write, bounded,
+    // runs beside it.
+    const worker = shell();
+    await worker.install();
+    worker.respond(LATE_FONT, stalled("font/woff2"));
+    const response = await worker.request(fromPage(LATE_FONT, "font"));
+    expect(response!.status).toBe(200);
+    expect(worker.keys()).not.toContain(LATE_FONT);
+    expect(worker.puts).not.toContain(LATE_FONT);
+  });
+
+  it("answers the page before the write it started has landed", async () => {
+    // The write is the worker's business and the page is not made to wait for
+    // it: a put awaited before the answer passes every assertion `request()`
+    // can make, because `request()` drains waitUntil first. Deterministic for
+    // the reason the navigation's twin is — the fake's put lands on a
+    // macrotask and this reads on a microtask.
+    const worker = shell();
+    await worker.install();
+    worker.respond(LATE_FONT, font());
+    const { responded, settled } = worker.dispatch(fromPage(LATE_FONT, "font"));
+    await expect((await responded)!.text()).resolves.toBe("woff2");
+    expect(worker.keys()).not.toContain(LATE_FONT);
+    // And it does land, once the event's background half is let run.
+    await settled;
+    expect(worker.keys()).toContain(LATE_FONT);
   });
 
   it("serves an asset from the network when the cache cannot be opened", async () => {

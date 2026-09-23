@@ -272,6 +272,58 @@ describe("the fake CacheStorage", () => {
     worker.respond("/x", html("<!doctype html>"));
     await expect(worker.install()).rejects.toThrow(/body is already used/);
   });
+
+  it("reads the body it is handed to the end, and spends it, as a real put does", async () => {
+    // Real Cache.put reads the response's body to completion and only then
+    // writes, so the Response a worker hands it is spent afterwards — which is
+    // why a handler that puts the page's own response instead of a clone breaks
+    // the page. A fake that filed the object away unread got both halves wrong.
+    const worker = loadWorker(`
+      self.addEventListener("install", (event) => {
+        event.waitUntil((async () => {
+          const cache = await self.caches.open("alfred-shell-v1");
+          const response = await self.fetch("/x.js");
+          await cache.put("/x.js", response);
+          await cache.put("/spent", new Response(String(response.bodyUsed)));
+        })());
+      });
+    `);
+    worker.respond("/x.js", js("console.log(1)"));
+    await worker.install();
+    const entries = worker.store.get("alfred-shell-v1")!;
+    await expect(entries.get(`${ORIGIN}/spent`)!.clone().text()).resolves.toBe("true");
+    // And what it stored is the bytes and the headers, readable as often as a
+    // test likes.
+    const stored = entries.get(`${ORIGIN}/x.js`)!;
+    await expect(stored.clone().text()).resolves.toBe("console.log(1)");
+    expect(stored.headers.get("content-type")).toBe("text/javascript");
+  });
+
+  it("never finishes a put whose body never finishes arriving", async () => {
+    // The other half of reading the body: a put of a network response is a
+    // BODY READ, with every hazard of one. fetch() resolves on the headers, so a
+    // route that stalls mid-body hands the worker a 200 whose put waits for
+    // ever — measured in Chromium, an install left "installing" for minutes on
+    // exactly this. A fake that stored the object unread made that put look
+    // instant, and four puts in sw.js took a network body with no deadline.
+    const worker = loadWorker(`
+      self.addEventListener("install", (event) => {
+        event.waitUntil((async () => {
+          const cache = await self.caches.open("alfred-shell-v1");
+          await cache.put("/x.js", await self.fetch("/x.js"));
+        })());
+      });
+    `);
+    worker.respond("/x.js", stalled("text/javascript"));
+    // Not `resolves`/`rejects`: the assertion is that it does neither.
+    const outcome = await Promise.race([
+      worker.install().then(() => "settled"),
+      new Promise((resolve) => setTimeout(() => resolve("pending"), 20)),
+    ]);
+    expect(outcome).toBe("pending");
+    expect(worker.puts).toEqual(["/x.js"]);
+    expect(worker.keys("alfred-shell-v1")).toEqual([]);
+  });
 });
 
 describe("the fake Clients", () => {

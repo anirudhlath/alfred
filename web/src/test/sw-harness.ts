@@ -104,14 +104,38 @@ class FakeCache {
       );
     }
     const url = absolute(key, this.origin);
-    // Through `settled`, for the reason deletes are: a real put goes to disk, so
-    // a worker that does not await one has left it outside `waitUntil` and the
-    // browser is free to stop the worker before it lands. A microtask would make
-    // the missing `await` invisible; a macrotask does not.
-    return settled(() => {
-      if (this.refusesPut(url)) storageFailure("QuotaExceededError");
-      this.entries.set(url, response);
-    });
+    // Real `Cache.put` reads the body to the END before it writes anything, and
+    // this does too, which has two consequences a worker must be tested
+    // against. The Response handed over is spent afterwards — a handler that
+    // puts the page's own response instead of a clone breaks the page. And a
+    // put of a NETWORK response is a body read with every hazard of one: a body
+    // whose headers arrived and whose bytes stall leaves the put pending for
+    // ever, exactly as `await response.text()` would be. Filing the object away
+    // unread, as this once did, made that put look instant — and four puts in
+    // sw.js took a network body with no deadline, which a real Chromium held an
+    // install open on for minutes.
+    //
+    // What is stored is the bytes and the head rebuilt into a new Response, as
+    // a real cache stores a copy rather than the object; a null body stays null,
+    // since a 204 or 205 cannot be constructed with one.
+    const read = response.body ? response.arrayBuffer() : Promise.resolve(null);
+    // Through `settled` once the body is in, for the reason deletes are: a real
+    // put goes to disk, so a worker that does not await one has left it outside
+    // `waitUntil` and the browser is free to stop the worker before it lands. A
+    // microtask would make the missing `await` invisible; a macrotask does not.
+    return read.then((bytes) =>
+      settled(() => {
+        if (this.refusesPut(url)) storageFailure("QuotaExceededError");
+        this.entries.set(
+          url,
+          new Response(bytes, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: response.headers,
+          }),
+        );
+      }),
+    );
   }
   /** Real `Cache.keys()` answers Requests carrying absolute URLs. So does this. */
   keys(): Promise<{ url: string }[]> {
