@@ -318,7 +318,9 @@ export interface Harness {
    * network. Resolves only once everything the worker passed to the event's
    * `waitUntil()` has settled, so a test can assert what the background half of
    * a handler did; a rejection that escapes one is rethrown here rather than
-   * swallowed, because a browser only logs it and this is where it can be seen.
+   * swallowed, because a browser only logs it and this is where it can be seen —
+   * unless the response itself rejected, in which case that is the rejection
+   * reported: it is the answer the page got, and the one a test is asking about.
    */
   request(spec: RequestSpec): Promise<Response | undefined>;
   /**
@@ -688,11 +690,18 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
       let response: Response | undefined;
       try {
         response = await responded;
-      } finally {
+      } catch (error) {
         // Awaited even when the response rejected, so that `waitUntil` work
-        // started before the failure still finishes inside the test.
-        await settled;
+        // started before the failure still finishes inside the test — but not
+        // allowed to REPLACE the failure. A `finally` that awaited `settled`
+        // did exactly that: a background rejection overwrote the response's
+        // own, so a test pinning a navigation's error could be failed or
+        // satisfied by unrelated background work. `dispatch().settled` still
+        // reports the background half, for a test that wants it.
+        await settled.catch(() => {});
+        throw error;
       }
+      await settled;
       return response;
     },
     message: (data) => extendable("message", data),

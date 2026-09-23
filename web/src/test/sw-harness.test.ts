@@ -81,6 +81,23 @@ describe("the fake scope's event semantics", () => {
     await expect(worker.request({ path: "/x" })).rejects.toThrow("background");
   });
 
+  it("reports the response's own rejection, not one from unrelated background work", async () => {
+    // Both halves fail, and only one of them is what the test asked about. A
+    // test that pins a navigation's error — "offline, and no shell cached" — is
+    // about the answer the PAGE got; letting a background rejection replace it
+    // means that test can be failed, or satisfied, by work that has nothing to
+    // do with the page. The background one is still `dispatch().settled`'s to
+    // report, for a test that wants it.
+    const worker = loadWorker(`
+      self.addEventListener("fetch", (event) => {
+        event.respondWith(Promise.reject(new Error("response")));
+        event.waitUntil(Promise.reject(new Error("background")));
+      });
+    `);
+    await expect(worker.request({ path: "/x" })).rejects.toThrow("response");
+    await expect(worker.dispatch({ path: "/x" }).settled).rejects.toThrow("background");
+  });
+
   it("refuses a second respondWith for one fetch event", async () => {
     const worker = loadWorker(`
       self.addEventListener("fetch", (event) => {
