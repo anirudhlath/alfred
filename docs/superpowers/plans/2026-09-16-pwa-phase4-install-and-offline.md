@@ -273,6 +273,9 @@ export interface SwOptions {
   reload?: () => void;
 }
 /** Returns the uninstaller for the foreground update check. */
+// corrected in task 9: resolves to the uninstaller for everything the install attached — the foreground
+// check, `controllerchange`, `updatefound`, every `statechange` — which also forgets its waiting worker;
+// and rejects when `register()` does, for the caller to report.
 export function installServiceWorker(options?: SwOptions): Promise<() => void>;
 export function onUpdateReady(fn: (ready: boolean) => void): () => void;
 export function applyUpdate(): void;
@@ -3097,6 +3100,8 @@ only signal that the deploy did not ship the file. And an installed worker canno
 withdrawn by deleting `sw.js`: the update check gets HTML, fails, and the old worker stays
 in charge, which is what task 11's kill switch is for.)*
 
+*(corrected in task 9: half of this holds. `register()` fetches /sw.js only when the origin has no registration for that script URL; with one, it resolves at once without fetching — measured in Chromium 154: a page whose worker is installed, with /sw.js switched to `text/html`, gets `register()` resolved. So the rejection is the only signal on a phone with no worker yet, and on a phone that already has one the same `SecurityError` surfaces from the foreground `registration.update()` instead. The shipped `installServiceWorker` lets the `register()` rejection propagate and main.tsx reports it with `console.error("service worker setup failed", error)`, the house's idiom (`lib/auth-events.ts`, `shell/ErrorBoundary.tsx`); the foreground check `console.warn`s a failure while `navigator.onLine` and says nothing offline, where one on every foreground is expected. Re-measured at task 9 against the deployed container: `GET localhost:8081/sw.js` is still 200 `text/html`, 1385 bytes, and `navigator.serviceWorker.register("/sw.js")` on that origin rejects with `SecurityError: … The script has an unsupported MIME type ('text/html').`)*
+
 **Files:**
 - Create: `web/src/lib/sw.ts`, `web/src/lib/sw.test.ts`
 - Modify: `web/src/main.tsx`, `web/src/main.test.ts`
@@ -3268,6 +3273,8 @@ describe("applyUpdate", () => {
 });
 ```
 
+*(corrected in task 9: two of these tests are wrong against the module in step 3, and step 4's claim that they tolerate its module-level `waiting` is false. `waiting` is set and never cleared, so by "says nothing on a first install" it still holds the worker two tests earlier left behind, and `toEqual([false])` fails — measured, brief tests against brief module: `expected [ true ] to deeply equal [ false ]`, 1 failed / 10 passed (there are 11 tests here, not 12). "does nothing when nothing is waiting" passes against the same leaked worker without testing anything, and "reloads once" leaves the module-level `reloaded` set, so a later test expecting no reload passes vacuously. The fix is in the module (the step 3 correction), and the shipped tests assert on what their own install announced: a `watch()` helper subscribes *after* the test's install, so its first entry is what that install derived, and every install and subscription is undone in `afterEach`. The fakes are `EventTarget`s rather than maps holding one listener per type — a listener added twice or never removed is invisible to a map — and the registration's `update` is a plain method, not a `vi.fn`: a `vi.fn` attaches a handler to every promise it returns (to record how it settled), which hides exactly the unhandled rejection the offline test is for. The visibility test's comment and title are restated per the step 3 correction. The shipped file has 25 tests: these eleven, plus a rejected `register()`, an update check failing offline and online, a worker already installing at registration, withdrawal on `activating`, supersession in both event orders, re-derivation across two installs, uninstall forgetting and going deaf, no announcement of an unchanged answer, unsubscribe, one post per waiting worker, no reload on a first worker's claim, and no reload once uninstalled.)*
+
 - [ ] **Step 2: Run it and read the failure**
 
 ```bash
@@ -3386,6 +3393,18 @@ export async function installServiceWorker(options: SwOptions = {}): Promise<() 
 }
 ```
 
+*(corrected in task 9: five things in this module are false in a browser, three of its comments among them.*
+
+*1. **The comments overstate it.** sw.js is byte-identical across most deploys, so most deploys install no worker: an open app takes a new build at its next navigation, which sw.js answers network-first. "Without this it could run for weeks on the build it was installed with" and "the only other way to move an installed PWA onto a new build is to delete the icon" are false. The foreground `update()` is how a *changed sw.js* — a policy change, the kill switch — reaches an app that stays open, and `applyUpdate` is how it takes over without waiting for every controlled page to close; `onUpdateReady` announces a changed sw.js, not a new build. The shipped comments say that.*
+
+*2. **`waiting` is never cleared.** The shipped module forgets the waiting worker when it stops being the waiting one — a `statechange` to `activating` or `redundant`, checked by identity, because the old and new workers' events arrive separately (Chromium 154 delivers the old one's `redundant` first) — every `installServiceWorker` starts it from `null`, and the uninstaller detaches every listener the install attached and clears it. `setWaiting` announces only a change. `reloaded` became a per-install `reloading`.*
+
+*3. **It reloads every first visit.** sw.js's `activate` calls `clients.claim()`, and a claim fires `controllerchange` on a page that had no controller. Measured in Chromium 154 against the real sw.js: with this module a first visit reloads itself as soon as the precache lands (sessionStorage load count 2) — under someone registering a passkey, perhaps. The shipped listener reloads only a page that already had a controller (load count 1).*
+
+*4. **`void registration.update()` raises an unhandled rejection on every foreground without a network.** Measured in Chromium: `unhandledrejection` with `TypeError: Failed to update a ServiceWorker … An unknown error occurred when fetching the script.` The shipped check catches it: silent while `navigator.onLine` is false, `console.warn` otherwise, because on a phone that already has a worker that rejection is the only page-visible sign /sw.js stopped being JavaScript.*
+
+*5. **A worker already installing when `register()` resolves is never tracked** — the browser's own navigation-time check can start it before `updatefound` has a listener. The shipped module tracks `registration.installing` too.)*
+
 - [ ] **Step 4: Run it green**
 
 ```bash
@@ -3393,6 +3412,8 @@ npx vitest run src/lib/sw.test.ts
 ```
 
 Expected: PASS, 12 tests. If they leak into each other, the module-level `waiting` is why: it is deliberate — it mirrors `ConnectionProvider`'s singletons, which are one per module load and so one per app — and the tests are written to tolerate it by calling their own `stop()` and asserting on `seen.at(-1)` rather than on the whole array. Do not reach for `vi.resetModules()`; it would give each test its own copy of the module and stop testing the singleton that ships.
+
+*(corrected in task 9: 25 tests, and the paragraph above is false — see the step 1 and step 3 corrections. The state is made safe in the module's semantics rather than tolerated by the tests, and there is still no `vi.resetModules()`.)*
 
 - [ ] **Step 5: Wire it into `web/src/main.tsx`**
 
@@ -3406,6 +3427,8 @@ void installServiceWorker();
 ```
 
 with `import { installServiceWorker } from "@/lib/sw";` at the top.
+
+*(corrected in task 9: shipped as `installServiceWorker().catch((error: unknown) => { console.error("service worker setup failed", error); });`. `void` would drop the `register()` rejection the carry-forward note calls the only signal of an undeployed sw.js, as an unhandled rejection. And the comment's reason is not what the placement does: `render()` only schedules React's work, so this line runs before the first paint, not after it. It costs the paint nothing either way — `register()` returns at once, and the fetch and the precache run off the main thread — and the shipped comment says that instead.)*
 
 - [ ] **Step 6: Extend `web/src/main.test.ts`**
 
@@ -3434,6 +3457,8 @@ Read the file first for how it currently asserts on `main.tsx`'s side effects, a
 
 If `main.test.ts` already imports `main.tsx` for real, follow its existing pattern instead of reading the source, and assert that `navigator.serviceWorker.register` was called.
 
+*(corrected in task 9: `main.test.ts` imports `main.tsx` for real, so the shipped test follows that pattern: `@/lib/sw` is mocked beside `@/lib/audio` and `@/lib/viewport`, and the test asserts `installServiceWorker` was called exactly once, with no options, after `render` by `invocationCallOrder` — then rejects it with a MIME-type `SecurityError` and waits for the `console.error`. The mock returns a pending promise the test rejects itself: main.tsx runs once per module load, and a rejection created at import time would settle in whichever test happened to import it first.)*
+
 - [ ] **Step 7: Run green and commit**
 
 ```bash
@@ -3444,6 +3469,8 @@ git commit -m "feat(web): register the worker, and notice the build waiting behi
 ```
 
 Counts after this task: **74 files / ~1 577 tests**.
+
+*(corrected in task 9: measured, **76 files / 1 826 tests** — from 75 / 1 800 at `29959b1`: `sw.test.ts` is new with 25 tests and `main.test.ts` gains one.)*
 
 ---
 
@@ -4126,7 +4153,7 @@ npm run lint && npx vitest run && npm run build
 
 Expected: eslint silent, **~79 test files / ~1 596 tests passing**, build clean. The counts are a guide — a task that needed more tests is fine; a task with fewer than its section said has a skipped test.
 
-- [ ] **Step 2: Run the suite three times.** Module-level state in `lib/sw.ts` (`waiting`, `reloaded`) and the `defineProperty` on `navigator` are exactly where order-dependent failures live.
+- [ ] **Step 2: Run the suite three times.** Module-level state in `lib/sw.ts` (`waiting`, `reloaded`) and the `defineProperty` on `navigator` are exactly where order-dependent failures live. *(corrected in task 9: `reloaded` is per install now — `reloading`, inside `installServiceWorker` — so the module-level state is `waiting` and the subscriber set, and every install re-derives `waiting`; that is what keeps it from leaking between tests. Task 9 ran its two files under `--sequence.shuffle` with six seeds, all green.)*
 
 ```bash
 for i in 1 2 3; do npx vitest run 2>&1 | tail -3; done
@@ -4150,7 +4177,7 @@ Expected: the header comment, verbatim. `dist/sw.js` must be the file, not a red
   1. In `sw.js`, delete the `/api/` clause from the refusal guard. **Task 6 must fail.** If it does not, the single most important property of this phase is untested.
   2. In `sw.js`'s `asset()`, replace `isAsset(response)` with `response.ok`. **Task 7's "refuses to store the SPA fallback" must fail** — that guard is the difference between a deploy and a brick.
   3. In `sw.js`'s install, add `self.skipWaiting()`. **Task 8's first test must fail.**
-  4. In `lib/sw.ts`, drop the `reloaded` guard. **Task 9's "reloads once" must fail.**
+  4. In `lib/sw.ts`, drop the `reloaded` guard. **Task 9's "reloads once" must fail.** *(corrected in task 9: the guard is `if (reloading) return;` now; measured, dropping it fails "reloads once when the new worker takes control".)*
 
 - [ ] **Step 5: Self-review the diff.** `git diff origin/master --stat`, then read it. Look for: a colour that is not a token; a new token missing from `src/test/contrast.ts` (there should be none — this phase adds no pair); an invented status word; `.t-meta` on a sentence a reader must trust; a `console.log`; a `TODO`; a bare global inside either worker (every one must go through `self.`); a top padding written as a literal instead of `calc(env(safe-area-inset-top, 0px) + Npx)`; and any caching branch that could reach `/api`.
 
