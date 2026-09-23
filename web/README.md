@@ -129,7 +129,7 @@ Phase 3: the Workshop's other three benches, each a pure view over one hook call
 
 ## The service worker
 
-`public/sw.js` is hand-written — 214 lines of code under 659 of comment, 3.1 to 1, counted
+`public/sw.js` is hand-written — 214 lines of code under 661 of comment, 3.1 to 1, counted
 with acorn's tokenizer (a line is code if any token touches it, comment if only a comment
 does, and a blank line, inside a comment or not, is neither) — and
 shipped verbatim by Vite's `public/` copy: no `vite-plugin-pwa`, no Workbox, no generated

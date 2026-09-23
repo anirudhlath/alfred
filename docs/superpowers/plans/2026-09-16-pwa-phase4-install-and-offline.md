@@ -195,7 +195,7 @@ export interface RequestSpec { path: string; mode?; method?; origin?; headers? }
 export function fetchRequest(spec: RequestSpec): FetchRequest;                                 // task 6
 export const EXPOSABLE = ["isRefused"] as const;                                                // task 6
 export type Exposable = (typeof EXPOSABLE)[number];                                            // task 6
-export interface LoadOptions { expose?: readonly Exposable[]; scope?: string }                  // task 6
+export interface LoadOptions { expose?: readonly Exposable[]; scope?: string; update?: boolean }  // task 6; `update` added in task 8's fix round: install over an OLDER active worker (`self.registration.active` is null without it, as on a first install, and becomes the activating worker at `activate()`). The fake `skipWaiting()` returns a resolved Promise from the same round, as the real one does
 export interface Harness {
   /** cache name → (absolute URL → Response). The whole of the fake CacheStorage. */
   store: Map<string, Map<string, Response>>;
@@ -2983,29 +2983,33 @@ Decision 7: a new worker waits, and the user takes it. The worker's half is two 
 **Files:**
 - Modify: `web/public/sw.js`
 - Modify: `web/src/test/sw.test.ts`
-- Modify: `web/README.md` *(corrected in task 8: missing here. Its service-worker section names the worker's handlers and counts its lines, and this listener changes both.)*
+- Modify: `web/README.md` *(corrected in task 8: missing here. Its service-worker section names the worker's handlers and counts its lines, and this listener changes both. The count fell from 233 to 205 at `294cc4f` because 233 was mis-measured, not because code went: the one correction that says so is task 7's item 12. By the same acorn count, task 8's fix round leaves `sw.js` at 214 lines of code to 661 of comment.)*
+- Modify: `web/src/test/sw-harness.ts`, `web/src/test/sw-harness.test.ts` *(corrected in task 8's fix round: also missing. With no older worker the fake could only ever run a first install, where a `skipWaiting()` changes nothing, so `if (self.registration.active) self.skipWaiting()` passed all four handshake tests. `LoadOptions.update` models the older active worker and is pinned in the harness's own tests.)*
 
 - [ ] **Step 1: Write the failing tests**
 
 ```ts
 describe("the update handshake", () => {
+  const update = (): Harness => shell({ update: true });
+
   it("does not take over on install", async () => {
-    const worker = shell();
+    const worker = update();
     await worker.install();
-    // A build that swaps itself under a running conversation loses whatever was
-    // on screen. The new worker waits until the user asks for it.
+    // A changed sw.js that took over by itself would do it under a running
+    // conversation and lose whatever was on screen. The new worker waits until
+    // the user asks for it.
     expect(worker.skipWaitingCalls).toBe(0);
   });
 
   it("takes over when the page asks", async () => {
-    const worker = shell();
+    const worker = update();
     await worker.install();
     await worker.message({ type: "SKIP_WAITING" });
     expect(worker.skipWaitingCalls).toBe(1);
   });
 
   it("ignores every other message", async () => {
-    const worker = shell();
+    const worker = update();
     await worker.install();
     await worker.message({ type: "PING" });
     await worker.message("SKIP_WAITING");
@@ -3015,7 +3019,7 @@ describe("the update handshake", () => {
 });
 ```
 
-*(corrected in task 8: a fourth test ships beside these three — `ignores a message with no data at all`, the same shape with `await worker.message(undefined)` — because the mutant `event.data !== null &&` survived all three. null is the one value that guard handles, and `postMessage(undefined)` delivers exactly the value it throws on. The third test also gained a comment naming the guard each of its messages catches.)*
+*(corrected in task 8: a fourth test ships beside these three — `ignores a message with no data at all`, the same shape with `await worker.message(undefined)` — because the mutant `event.data !== null &&` survived all three. null is the one value that guard handles, and `postMessage(undefined)` delivers exactly the value it throws on. The third test also gained a comment naming the guard each of its messages catches.)* *(corrected in task 8's fix round, in the code above: the tests used `shell()`, a first install, and the first test's comment said "a build that swaps itself". Every handshake test now installs over an older active worker (`shell({ update: true })`), because a waiting worker exists only as an update, and it is the only install on which a skip would do harm. Against the first-install tests, `if (self.registration.active) self.skipWaiting()` survived; against these it fails all four. The comment now says "a changed sw.js", which is what takes over (R1): a new build arrives by `navigate()` and never waits.)*
 
 - [ ] **Step 2: Run them and read the failure**
 
@@ -3031,9 +3035,11 @@ Expected: the first passes (there is no `skipWaiting` call yet), the second fail
 self.addEventListener("message", (event) => {
   /* The only message this worker takes, and the only way it ever activates
      early. Its counterpart is applyUpdate() in src/lib/sw.ts; between them they
-     are how a CHANGED sw.js reaches an installed app that is still open, which
-     otherwise waits for every page the old worker controls to close — and an
-     installed PWA is resumed rather than reloaded, so that can take weeks.
+     are how a CHANGED sw.js reaches an installed app that is still open.
+     Without them the new worker waits for every page the old worker controls
+     to close, and a reload does not count: the old page stays until the new
+     one's response has arrived, so the two overlap and the old worker never
+     runs out of pages.
 
      A changed sw.js, and not a new build. VERSION is bumped by hand and this
      file is byte-identical across most deploys, so most deploys install
@@ -3046,7 +3052,7 @@ self.addEventListener("message", (event) => {
 });
 ```
 
-*(corrected in task 8: the comment said the pair "are what makes a new build reachable on an installed iOS PWA without deleting the icon and adding it again". A new build does not come through here. As `refresh()`'s header in the shipped file says, sw.js is byte-identical across most deploys, so a deploy installs nothing, nothing waits, and `navigate()` serves the new build at the next navigation whether or not this listener exists. What the handshake delivers is a changed sw.js, to a page that is still open. "Without deleting the icon" is a claim about iOS that nothing here can measure, so the shipped comment does not make it. The code line is unchanged.)*
+*(corrected in task 8: the comment said the pair "are what makes a new build reachable on an installed iOS PWA without deleting the icon and adding it again". A new build does not come through here. As `refresh()`'s header in the shipped file says, sw.js is byte-identical across most deploys, so a deploy installs nothing, nothing waits, and `navigate()` serves the new build at the next navigation whether or not this listener exists. What the handshake delivers is a changed sw.js, to a page that is still open. "Without deleting the icon" is a claim about iOS that nothing here can measure, so the shipped comment does not make it. The code line is unchanged.)* *(corrected in task 8's fix round: the first correction said "an installed PWA is resumed rather than reloaded, so that can take weeks". That implies a reload would let the new worker in, and it would not: the old page stays until the new one's response arrives, so the old worker never runs out of pages. "Weeks" was never measured. The comment above now says only what the lifecycle guarantees.)*
 
 - [ ] **Step 4: Run green**
 
@@ -3072,7 +3078,7 @@ git commit -m "feat(web): a waiting worker takes over only when the page asks"
 
 *(corrected in task 8: `git add` takes `web/README.md` and this plan as well — the plan's corrections ride in the same commit, as every earlier task's have.)*
 
-Counts after this task: **73 files / ~1 564 tests** *(corrected in task 8: measured, **75 files / 1 783 tests**. No new file — both files this task touches already existed — and the delta is +4 on the 1 779 that task 7's second fix round left at `eed3854`, all of them in `sw.test.ts`.)*.
+Counts after this task: **73 files / ~1 564 tests** *(corrected in task 8: measured, **75 files / 1 783 tests**. No new file — both files this task touches already existed — and the delta is +4 on the 1 779 that task 7's second fix round left at `eed3854`, all of them in `sw.test.ts`.)* *(corrected again in task 8's fix round: **75 files / 1 800 tests**. That is +4 on the 1 796 task 7's third fix round left at `51e8a96`, all of them in `sw-harness.test.ts` (39 → 43), with `sw.test.ts` still at 210.)*.
 
 ---
 

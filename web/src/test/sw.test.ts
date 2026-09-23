@@ -12,6 +12,7 @@ import {
   ORIGIN,
   stalled,
   type Harness,
+  type LoadOptions,
   type RequestSpec,
 } from "./sw-harness";
 
@@ -45,8 +46,8 @@ const SHELL_FONTS = [
 /** One of the ten `.woff` fallbacks this build emits beside the `.woff2`. */
 const WOFF_FALLBACK = "/assets/geist-mono-latin-400-normal-B2yvC1Cq.woff";
 
-function shell(): Harness {
-  const worker = loadWorker(source);
+function shell(options: LoadOptions = {}): Harness {
+  const worker = loadWorker(source, options);
   worker.respond("/index.html", html(SHELL_HTML));
   worker.respond("/assets/index-CY0Sh5Q2.js", js("console.log(1)"));
   worker.respond("/assets/index-nhBuGG1b.css", css("body{color:red}"));
@@ -2427,16 +2428,26 @@ describe("assets", () => {
 });
 
 describe("the update handshake", () => {
+  /**
+   * Every worker here installs over an older one that is still active: a
+   * changed sw.js arriving at a phone that already runs the app, which is the
+   * only way a worker ever ends up waiting. A first install has nothing to wait
+   * behind, so it cannot tell a worker that never skips waiting from one that
+   * skips exactly when there is someone to take over from.
+   */
+  const update = (): Harness => shell({ update: true });
+
   it("does not take over on install", async () => {
-    const worker = shell();
+    const worker = update();
     await worker.install();
-    // A build that swaps itself under a running conversation loses whatever was
-    // on screen. The new worker waits until the user asks for it.
+    // A changed sw.js that took over by itself would do it under a running
+    // conversation and lose whatever was on screen. The new worker waits until
+    // the user asks for it.
     expect(worker.skipWaitingCalls).toBe(0);
   });
 
   it("takes over when the page asks", async () => {
-    const worker = shell();
+    const worker = update();
     await worker.install();
     await worker.message({ type: "SKIP_WAITING" });
     expect(worker.skipWaitingCalls).toBe(1);
@@ -2449,7 +2460,7 @@ describe("the update handshake", () => {
     // `postMessage(null)` delivers. Reading `.type` off null is a TypeError
     // inside the listener; the harness runs listeners synchronously, so that
     // arrives here as a rejected `message()` rather than as a browser's log line.
-    const worker = shell();
+    const worker = update();
     await worker.install();
     await worker.message({ type: "PING" });
     await worker.message("SKIP_WAITING");
@@ -2461,7 +2472,7 @@ describe("the update handshake", () => {
     // `postMessage(undefined)` delivers exactly that, and it is the value null
     // cannot stand in for: a guard tightened to `event.data !== null` passes
     // every message above and reads `.type` off this one.
-    const worker = shell();
+    const worker = update();
     await worker.install();
     await worker.message(undefined);
     expect(worker.skipWaitingCalls).toBe(0);

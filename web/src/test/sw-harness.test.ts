@@ -406,6 +406,66 @@ describe("the fake Clients", () => {
   });
 });
 
+describe("the fake registration", () => {
+  /**
+   * Writes what `self.registration.active` looked like at install and at
+   * activate into a cache of its own, as `/<event>-<state>`, because a cache
+   * key is the one thing a worker can leave behind that a test can read.
+   */
+  const probe = `
+    const seen = async (event) => {
+      const active = self.registration.active;
+      const cache = await self.caches.open("probe");
+      await cache.put("/" + event + "-" + (active === null ? "null" : active.state), new Response(""));
+    };
+    self.addEventListener("install", (event) => event.waitUntil(seen("install")));
+    self.addEventListener("activate", (event) => event.waitUntil(seen("activate")));
+  `;
+
+  it("has no active worker on a first install, as a browser's does not", async () => {
+    // null, not undefined: that is what a real registration holds, and a
+    // worker comparing against one must not pass here and fail on a phone.
+    const worker = loadWorker(probe);
+    await worker.install();
+    expect(worker.keys("probe")).toEqual(["/install-null"]);
+  });
+
+  it("has the older worker active while an update installs", async () => {
+    // Decision 7's case, and the one a first install cannot reach: a worker
+    // that skips waiting only when there is someone to take over from is
+    // invisible to a suite that never installs over anything.
+    const worker = loadWorker(probe, { update: true });
+    await worker.install();
+    expect(worker.keys("probe")).toEqual(["/install-activated"]);
+  });
+
+  it("makes the activating worker the active one, whatever was there before", async () => {
+    // By the time the activate event fires, the registration's active worker
+    // IS the one activating. A fake that still answered with the older worker
+    // would describe a registration no browser has.
+    const worker = loadWorker(probe, { update: true });
+    await worker.install();
+    await worker.activate();
+    expect(worker.keys("probe")).toEqual(["/activate-activating", "/install-activated"]);
+  });
+});
+
+describe("the fake lifecycle calls", () => {
+  it("hands back a promise from skipWaiting, as the real one does", async () => {
+    // A worker that chains on it — `skipWaiting().then(…)` inside waitUntil is
+    // the common shape — works in a browser; a fake returning undefined would
+    // fail it with a TypeError that has nothing to do with the worker.
+    const worker = loadWorker(`
+      self.addEventListener("install", (event) => {
+        event.waitUntil(self.skipWaiting().then(() => self.caches.open("after")));
+      });
+    `);
+    await worker.install();
+    expect(worker.skipWaitingCalls).toBe(1);
+    expect([...worker.store.keys()]).toEqual(["after"]);
+  });
+});
+
 describe("the seams the harness depends on", () => {
   it("refuses a global reached bare rather than letting it hit Node's", async () => {
     // `self.` is a convention only because this enforces it. Node's own fetch

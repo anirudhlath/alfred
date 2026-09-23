@@ -545,9 +545,11 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("message", (event) => {
   /* The only message this worker takes, and the only way it ever activates
      early. Its counterpart is applyUpdate() in src/lib/sw.ts; between them they
-     are how a CHANGED sw.js reaches an installed app that is still open, which
-     otherwise waits for every page the old worker controls to close — and an
-     installed PWA is resumed rather than reloaded, so that can take weeks.
+     are how a CHANGED sw.js reaches an installed app that is still open.
+     Without them the new worker waits for every page the old worker controls
+     to close, and a reload does not count: the old page stays until the new
+     one's response has arrived, so the two overlap and the old worker never
+     runs out of pages.
 
      A changed sw.js, and not a new build. VERSION is bumped by hand and this
      file is byte-identical across most deploys, so most deploys install

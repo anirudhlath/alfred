@@ -444,6 +444,26 @@ export interface LoadOptions {
    * instance knows better, so only the instance overrides it.
    */
   scope?: string;
+  /**
+   * Install over an OLDER worker that is already active — a deploy that changed
+   * the worker's bytes, rather than a phone meeting the app for the first time.
+   * What it changes is `self.registration.active`: null on a first install, the
+   * older worker on an update. It is the only case decision 7 is about. A first
+   * install has nothing to wait behind, so a `skipWaiting()` there changes
+   * nothing, and a worker that skips waiting exactly when there is someone to
+   * take over from passes every test that only ever installs first.
+   */
+  update?: boolean;
+}
+
+/**
+ * The slice of a `ServiceWorker` the fake registration hands out. `active` is
+ * the only one of the registration's three slots that is modelled; `installing`
+ * and `waiting` are absent, and nothing any worker here reads needs them.
+ */
+interface FakeServiceWorker {
+  scriptURL: string;
+  state: "activating" | "activated";
 }
 
 /**
@@ -456,7 +476,7 @@ export interface LoadOptions {
  *
  */
 export function loadWorker(source: string, options: LoadOptions = {}): Harness {
-  const { expose = [], scope: scopeUrl = `${ORIGIN}/` } = options;
+  const { expose = [], scope: scopeUrl = `${ORIGIN}/`, update = false } = options;
   /** This instance's notion of "us" — `ORIGIN` unless a test moved the scope. */
   const origin = new URL(scopeUrl).origin;
   const store = new Map<string, Map<string, Response>>();
@@ -508,13 +528,23 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     },
     registration: {
       scope: scopeUrl,
+      // The worker the registration serves pages with while this one installs:
+      // an older one on an update, nothing on a first install. `activate()`
+      // below replaces it with this worker, as a browser does before it fires
+      // the activate event.
+      active: (update
+        ? { scriptURL: `${origin}/sw.js`, state: "activated" }
+        : null) as FakeServiceWorker | null,
       unregister: () => {
         unregisterCalls += 1;
         return Promise.resolve(true);
       },
     },
+    // A promise, as the real one returns: a worker that chains on it would
+    // otherwise fail here with a TypeError it would never meet on a phone.
     skipWaiting: () => {
       skipWaitingCalls += 1;
+      return Promise.resolve();
     },
     clients: {
       claim: () => {
@@ -707,7 +737,10 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     refuseOpen: (name = "*") => void openRefusals.add(name),
     inner,
     install: () => extendable("install"),
-    activate: () => extendable("activate"),
+    activate: () => {
+      scope.registration.active = { scriptURL: `${origin}/sw.js`, state: "activating" };
+      return extendable("activate");
+    },
     dispatch,
     async request(spec) {
       const { responded, settled } = dispatch(spec);
