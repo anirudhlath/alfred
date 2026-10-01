@@ -143,11 +143,11 @@ Identical to phases 1 to 3, repeated because they are load-bearing:
 | `web/index.html` | `apple-touch-icon` link; the manifest link, which `applyTheme` finds by `rel` *(corrected in task 2: this said the link "keeps its `id`" — it has never had one, and the swap selects on `link[rel="manifest"]`, so task 2 changes no markup at all)* | 1 |
 | `web/tsconfig.app.json`, `web/tsconfig.node.json` | `icons.test.ts` reads bytes, so it is checked by the Node project, not the browser one — `sw-server-routes.test.ts` joins it in task 6 | 1, 6 |
 | `web/eslint.config.js` | A block for `public/*.js` with the service-worker globals | 3 |
-| `web/src/test/sw-harness.ts` | Fake `ServiceWorkerGlobalScope`, fake `CacheStorage`, event dispatch; from task 6 also `fetchRequest`, a settable scope, and `inner` for a file-local function | 3, 5, 6 |
+| `web/src/test/sw-harness.ts` | Fake `ServiceWorkerGlobalScope`, fake `CacheStorage`, event dispatch; from task 6 also `fetchRequest`, a settable scope, and `inner` for a file-local function *(corrected in task 11: and from task 11 the open pages — which worker controls each, moved by activation and by `claim()` as a browser moves them — with `refuseNavigate()` and `unregistered`; `sw-harness.test.ts` changes with it)* | 3, 5, 6, 11 |
 | `web/public/sw.js` | The worker: precache, purge, route, update handshake | 3–8 |
 | `web/src/test/sw.test.ts` | Every branch of the worker, through dispatched events — and, from task 6, `isRefused` called directly, which is the only way to assert what it must *not* refuse | 3–8 |
 | `web/src/test/sw-server-routes.test.ts` | *(added in task 6's review round)* The worker's refusal list against the routes FastAPI and `mount_spa` really serve; red if `create_app` moves `docs_url` out from under it. Node project, like `icons.test.ts` | 6 |
-| `web/public/sw.kill.js` | The kill switch: unregister and drop every cache | 11 |
+| `web/public/sw.kill.js` | The kill switch: unregister and drop every cache *(corrected in task 11: and reload the pages the old worker was serving — only those, and with no `claim()`; see the task)* | 11 |
 | `web/src/test/sw-kill.test.ts` | The kill switch, through the same harness | 11 |
 | `web/src/lib/sw.ts` | Register, dev-unregister, update-on-visible, `onUpdateReady`, `applyUpdate` | 9 |
 | `web/src/main.tsx` | Call `installServiceWorker()` after the render | 9 |
@@ -157,7 +157,7 @@ Identical to phases 1 to 3, repeated because they are load-bearing:
 | `web/src/shell/useOnline.ts` | `navigator.onLine` plus its two events | 12 |
 | `web/src/gates/OfflineGate.tsx` | The cold-launch gate | 12 |
 | `web/src/gates/AuthGate.tsx` | Raise it when the auth read is paused rather than pending | 12 |
-| `web/README.md`, `docs/web-frontend.md`, `docs/backlog/low/pwa-phase4-followups.md`, `docs/superpowers/qa/2026-09-16-pwa-phase4-ios-checklist.md` | Docs, backlog, device QA *(corrected in task 7: `web/README.md` is not a task-13 file. Its "The service worker" section has been rewritten in tasks 4, 5, 6 and 7, each in that task's own commit, because each one falsifies sentences of it — task 13 is the last pass over it, not the only one.)* | 4–7, 13 |
+| `web/README.md`, `docs/web-frontend.md`, `docs/backlog/low/pwa-phase4-followups.md`, `docs/superpowers/qa/2026-09-16-pwa-phase4-ios-checklist.md` | Docs, backlog, device QA *(corrected in task 7: `web/README.md` is not a task-13 file. Its "The service worker" section has been rewritten in tasks 4, 5, 6 and 7, each in that task's own commit, because each one falsifies sentences of it — task 13 is the last pass over it, not the only one.)* *(corrected in task 11: and tasks 8 to 11 since, each in its own commit, for the same reason.)* | 4–11, 13 |
 
 ### The contract between tasks (names used exactly as spelled)
 
@@ -935,7 +935,13 @@ Two jsdom facts that shape the harness, both worth knowing before you write it:
 >    `clients.matchAll()` ignored its options and always answered one window client (task 11
 >    would have passed without `includeUncontrolled` or a prior `claim()`), and fetch routes
 >    keyed on pathname so cross-origin collapsed onto same-origin. All fixed, and each fix
->    is pinned by a test in that file.
+>    is pinned by a test in that file. *(corrected in task 11: the `matchAll()` fix modelled
+>    the opposite mistake. It answered nothing until a `claim()`, when inside `activate` a
+>    real one already lists every page the previous worker controlled — activation hands
+>    them over before the event — and never the page that registered the worker. So the
+>    parenthesis has it backwards: a `claim()` before the `matchAll()` is what made task
+>    11's worker, as planned, reload for ever. The fake now tracks which worker controls
+>    each open page — see task 11.)*
 > 6. **The harness reads the cache name from the worker's own `VERSION`** and exposes it as
 >    `worker.cache`. Three copies of `alfred-shell-v1` across two files meant a `VERSION`
 >    bump — the thing task 5's purge exists for — turned assertions vacuous or broke them
@@ -3996,8 +4002,12 @@ A bad precache on an installed iOS PWA is very hard for a user to clear: there i
 
 **It cannot be a deletion.** `mount_spa` (`core/channels/spa.py:42-49`) answers any unknown path with `index.html` and a 200, so deleting `web/public/sw.js` makes `/sw.js` serve a page of HTML. The browser's update check rejects it on MIME type, the update fails, and **the old worker stays installed and keeps serving its cache**. Deleting the file is the one action that looks like a fix and is not. *(Measured in task 7's fix round, and it is not hypothetical today: `GET /sw.js` on the deployed container returns 200 `text/html` — 1385 bytes of `index.html` — because that image was built before this file existed. That is exactly the state a deletion would restore.)*
 
+*(corrected in task 11: **and it must not reload the page that registered it.** This section did not say so, and step 3's worker does exactly that, for ever. While the switch is at `/sw.js`, every page load registers it again — `main.tsx` registers `/sw.js` on every load, and the registration the last copy dropped is gone, so each load installs a fresh copy in a new one. Step 3's worker claims the open pages, which takes that page too, and reloads everything `matchAll()` then lists, and the reload registers the switch again. Measured in Chromium 153 against a production build: 659 fetches of `/sw.js` and 658 requests for the page in the 8 s after the swap. What it must reload is the pages the previous worker was serving, and only those. The spec's Activate algorithm hands every one of them to the activating worker before `activate` fires, so a `matchAll()` with no options lists exactly them, and never a page nothing controls. The shipped worker lists them first and never calls `claim()`; step 3's correction has the rest.)*
+
 **Files:**
 - Create: `web/public/sw.kill.js`, `web/src/test/sw-kill.test.ts`
+- Modify: `web/src/test/sw-harness.ts`, `web/src/test/sw-harness.test.ts` *(corrected in task 11: not listed. The fake `Clients` answered `matchAll()` with nothing until a `claim()` and with one root page after it, so it could not tell a page the old worker was serving from the page that registered the switch — the one difference between a switch that stops and one that never does — and step 3's worker passed step 1 while reloading for ever. It now tracks which worker controls each open page: `clients` in `LoadOptions` lists them, each controlled by the older worker or by none; activation hands this worker the older one's pages before `activate` fires, `claim()` takes the rest, `matchAll()` lists only this worker's unless asked for `includeUncontrolled`, and `navigate()` rejects for a page this worker does not control. It also gains `refuseNavigate()`, for a page whose `navigate()` rejects although it is controlled, and `unregistered`, which turns true when an `unregister()` has finished rather than when it was called.)*
+- Modify: `web/README.md` *(corrected in task 11: not listed. Its service-worker section named every test file but this task's, and said nothing about how to fire the switch.)*
 
 - [ ] **Step 1: Write the failing test**
 
@@ -4062,6 +4072,8 @@ describe("the kill switch", () => {
 });
 ```
 
+*(corrected in task 11: the shipped file has 13 tests, and two of these five are wrong. `claims the open pages before it goes, then reloads them` pins the loop — the claim is what takes the page that registered the switch, and reloading that page registers it again. It ships as `never claims a page`, beside three that tell the two kinds of page apart, which the old fake could not do: `reloads a page the old worker was serving, once`, `never reloads the page that registered it` and `reloads only the stale page when a fresh one is open beside it`. `killer()` restated `alfred-shell-v1`; the shipped one reads that name out of `sw.js`'s own `VERSION` (`loadWorker(shipped).cache`), seeds a third cache that no build of Alfred names as well, and takes the open pages as an argument — `STALE` by default (an update over the shipped worker, with one page it was serving) or `FRESH` (a first install, with only the page that registered it). The cache and unregister tests run under both. Added as well: `carries on past a page that will not navigate`, `carries on past a cache that will not go` and `has finished unregistering before it reloads anything`.)*
+
 - [ ] **Step 2: Run it and read the failure**
 
 ```bash
@@ -4069,6 +4081,8 @@ npx vitest run src/test/sw-kill.test.ts
 ```
 
 Expected: FAIL — `Failed to resolve import "../../public/sw.kill.js?raw"`.
+
+*(corrected in task 11: it does — `Error: Failed to resolve import "../../public/sw.kill.js?raw" from "src/test/sw-kill.test.ts". Does the file exist?` — but a missing file shows nothing about the tests. Against step 3's worker as written, 5 of the 13 shipped tests fail: `never reloads the page that registered it` (`expected [ 'https://alfred.example.com/' ] to deeply equal []`), `reloads only the stale page when a fresh one is open beside it`, `never claims a page` (`expected 1 to be +0`), and both carries-on tests, whose rejections — the refused navigation's `TypeError`, the refused delete's `UnknownError` — reach `waitUntil` uncaught. Before the harness changed, its new tests failed 5 of 7 against the old fake, `refuseNavigate` as `not a function`.)*
 
 - [ ] **Step 3: Write `web/public/sw.kill.js`**
 
@@ -4126,6 +4140,29 @@ self.addEventListener("activate", (event) => {
 /* No fetch handler at all. Nothing this worker controls is served from storage. */
 ```
 
+*(corrected in task 11: this worker reloads for ever — see the paragraph above the file list — and two more things in it are wrong. The shipped `activate` is*
+
+```js
+const stale = await self.clients.matchAll();
+for (const name of await self.caches.keys()) await self.caches.delete(name).catch(() => {});
+await self.registration.unregister();
+await Promise.all(stale.map((client) => client.navigate(client.url).catch(() => {})));
+```
+
+*with a comment over each line saying why. Every figure below is from Chromium 153 driving a production build behind a server that answers as `mount_spa` does, with no DevTools session on the worker.*
+
+*1. **The pages are listed first, with no options, and nothing is claimed.** The default `matchAll()` lists exactly the pages the old worker was serving, because activation handed them over before the event; a `claim()` adds only pages nothing controls. Step 3's order made 659 fetches of `/sw.js` in 8 s. The shipped worker reloads each stale page once, after which the origin is quiet for the remaining ~39 s of a 40 s window, with no registration and no cache left. With the `claim()` moved after the listing it reloads nothing extra, but it leaves the pages it took controlled by a worker on its way out, and a later `register('/sw.js')` from one of them revives the registration instead of making a new one: with two tabs open, that run ended with the switch still installed and controlling both. The comment "Claim before unregistering: a client still controlled by the previous worker would keep being served from a cache that no longer exists" was wrong twice — once this worker activates, no page is the previous worker's, and this worker has no fetch handler, so nothing it controls is served from storage.*
+
+*2. **Each delete is caught.** One cache that would not go rejected the whole `waitUntil`, and took the unregistration and the reloads with it.*
+
+*3. **The reloads run together, each caught on its own.** Chromium rejects `navigate()` — `TypeError: Cannot navigate to URL` — for a page whose own reload is under way, even as the worker's navigation replaces it: activation fires `controllerchange` at the page and `src/lib/sw.ts` reloads it. With the worker's URL marked, the only request for the page was the worker's, and its promise rejected all the same. A closed page rejects too. Awaited one by one and uncaught, the first rejection cost every later page its reload.*
+
+*One thing it had right, for a reason it did not give, and which is now pinned: **the unregistration is awaited before any reload.** A navigation that starts while the registration exists is matched to it, and Chromium holds it until the worker has activated — which waits on the navigation. Measured with the reloads started before the unregistration had finished, moved first or with the `await` dropped: a page with nothing else to reload it was never reloaded, and the switch stayed `activating`; and the app's page, which `src/lib/sw.ts` was reloading anyway, revived the registration with its own `register('/sw.js')`.*
+
+*Measured, and left alone: once the switch has run, `src/lib/sw.ts`'s foreground `registration.update()` rejects — `InvalidStateError: Failed to update a ServiceWorker for scope (…) with script ('Unknown'): The object is in an invalid state.` — and logs its `console.warn` on every return to the foreground, without a request, for as long as the page lives on the registration the switch dropped.*
+
+*The header gains WHY IT STOPS; HOW TO FIRE IT is unchanged, and `core/channels/spa.py:42-49` is still the catch-all, re-measured.)*
+
 - [ ] **Step 4: Run green**
 
 ```bash
@@ -4135,6 +4172,8 @@ npm run lint
 
 Expected: PASS, 5 tests. ESLint silent.
 
+*(corrected in task 11: 13 tests, and `sw-harness.test.ts` moves 60 → 67. ESLint silent. `sw.kill.js` is also Prettier-clean at width 100, the setting `src/lib/sw.ts` passes — the repo has no Prettier config, and CI runs only ESLint. `npm run build` copies it to `dist/sw.kill.js` byte for byte, beside an unchanged `dist/sw.js`.)*
+
 - [ ] **Step 5: Commit**
 
 ```bash
@@ -4142,7 +4181,9 @@ git add web/public/sw.kill.js web/src/test/sw-kill.test.ts
 git commit -m "feat(web): a kill switch that unregisters and drops every cache"
 ```
 
-Counts after this task: **77 files / ~1 588 tests**.
+*(corrected in task 11: two commits. The harness goes first, on its own — `test(web): model which worker controls each open page, and when an unregister is done`, with `sw-harness.ts` and `sw-harness.test.ts` — and then this one, whose `git add` takes `web/README.md` and this plan as well.)*
+
+Counts after this task: **77 files / ~1 588 tests** *(corrected in task 11: measured, **79 files / 1 921 tests**. The base, ee2dcb6, measured 78 files / 1 901; task 11 adds one file, `sw-kill.test.ts` with 13 tests, and seven tests in `sw-harness.test.ts`.)*.
 
 ---
 

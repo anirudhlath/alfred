@@ -447,11 +447,19 @@ all is refused**: a reverse proxy's default page and the dev server's own `index
 both 200 `text/html`, and either would install cleanly as the shell and then stay, because
 `install` only re-runs when `sw.js`'s own bytes change.
 
+**The kill switch is `public/sw.kill.js`**, a worker that ships in every build and that
+nothing registers. Copied over `public/sw.js` and deployed, it is the one remote way to empty
+an installed phone: every installed copy takes it at its next update check, drops every cache
+on the origin, unregisters, and reloads each page the old worker was serving, once. Its header
+is the procedure, and says why deleting `sw.js` instead changes nothing and why the switch
+reloads only those pages — the page that registered it, reloaded, would register it again.
+
 The tests are `src/test/sw.test.ts` (the worker, driven event by event),
+`src/test/sw-kill.test.ts` (the kill switch, through the same fake scope),
 `src/test/sw-harness.test.ts` (the fake scope itself — it has to model `ExtendableEvent`,
-`Cache.put` and `Clients.matchAll` closely enough that a test passing here means a worker
-that runs on a phone) and `src/lib/sw.test.ts` (the page's side, against a fake
-`navigator.serviceWorker`).
+`Cache.put`, `Clients.matchAll` and which worker controls each open page closely enough that
+a test passing here means a worker that runs on a phone) and `src/lib/sw.test.ts` (the page's
+side, against a fake `navigator.serviceWorker`).
 
 ## Things worth knowing before you change something
 
