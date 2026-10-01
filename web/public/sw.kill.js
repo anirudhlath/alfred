@@ -66,10 +66,13 @@ self.addEventListener("activate", (event) => {
          which is the second chance at a cache an earlier copy could not
          delete — is cleared as soon as unregister() resolves, and Chromium
          stops this worker there: with the unregistration moved first, such a
-         copy left every cache it found. Caught per delete: one cache that
-         will not go must not keep the others, the unregistration or the
-         reloads. */
-      for (const name of await self.caches.keys()) await self.caches.delete(name).catch(() => {});
+         copy left every cache it found. And every failure caught: a
+         CacheStorage that will not list its caches — Safari's, when its
+         storage is unavailable — or one cache that will not go must cost
+         neither the other caches, the unregistration nor the reloads. With
+         nothing listed nothing is deleted, and the next copy tries again. */
+      const names = await self.caches.keys().catch(() => []);
+      for (const name of names) await self.caches.delete(name).catch(() => {});
       /* Awaited, and before any reload. A navigation that starts while the
          registration exists is matched to it, and Chromium holds it until
          this worker has activated, which waits on this function. Measured

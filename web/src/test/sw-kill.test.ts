@@ -188,6 +188,21 @@ describe("the kill switch", () => {
     expect(worker.navigated).toEqual([`${ORIGIN}/`]);
   });
 
+  it("carries on past a CacheStorage that will not list its caches", async () => {
+    // Safari rejects CacheStorage calls when its storage is unavailable. A
+    // switch stopped at the listing would neither unregister nor reload: it
+    // would stay installed, with no fetch handler, and no fresh copy would ever
+    // come to try again. With nothing listed nothing is deleted; the copy the
+    // next load installs tries again.
+    const worker = killer();
+    worker.refuseKeys();
+    await worker.install();
+    await expect(worker.activate()).resolves.toBeUndefined();
+    expect(worker.unregisterCalls).toBe(1);
+    expect(worker.navigated).toEqual([`${ORIGIN}/`]);
+    expect([...worker.store.keys()]).toEqual([SHELL, "alfred-shell-v0", "workbox-precache-v2"]);
+  });
+
   it("has finished unregistering before it reloads anything", async () => {
     // Finished, not merely asked. A navigation that starts while the
     // registration still exists is matched to it, and Chromium holds it until
