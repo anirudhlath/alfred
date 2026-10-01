@@ -149,7 +149,11 @@ describe("installServiceWorker", () => {
   });
 
   it("does nothing at all where there is no service worker", async () => {
+    // Not even to the caches: they are a separate API, so a browser can have
+    // them without service workers, and this runs on every load.
     await expect(installServiceWorker({ enabled: true })).resolves.toBeTypeOf("function");
+    expect(caches.keys).not.toHaveBeenCalled();
+    expect(caches.delete).not.toHaveBeenCalled();
   });
 
   it("fails loudly when the worker cannot be registered", async () => {
@@ -173,7 +177,17 @@ describe("installServiceWorker", () => {
     expect(reload).not.toHaveBeenCalled();
   });
 
-  it("attaches nothing once a later install has replaced it mid-registration", async () => {
+  it.each<[string, () => Promise<unknown>]>([
+    [
+      "a later install",
+      async () => {
+        registry({ controller: {} });
+        await install();
+      },
+    ],
+    // A dev install owns nothing once it is done, but it replaces all the same.
+    ["a dev install", () => installServiceWorker({ enabled: false })],
+  ])("attaches nothing once %s has replaced it mid-registration", async (_by, replace) => {
     const first = registry({ controller: {} });
     let registered: (registration: FakeRegistration) => void = () => {};
     first.container.register.mockReturnValue(
@@ -182,8 +196,7 @@ describe("installServiceWorker", () => {
       }),
     );
     const replaced = installServiceWorker({ enabled: true });
-    registry({ controller: {} });
-    await install();
+    await replace();
     const seen = watch();
     const late = new FakeWorker("installing");
     first.registration.installing = late;

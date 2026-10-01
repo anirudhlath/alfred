@@ -419,7 +419,8 @@ and with a `console.warn` online. A worker that reaches `installed` behind an ex
 controller is announced through `onUpdateReady()` (nothing subscribes yet; the Room's note
 is a later slice), and the page reloads once when the new worker takes control — but not
 when a first worker claims a page that had none, which `activate`'s `clients.claim()` does on
-every first visit. There is one install per page: a second replaces the first.
+every first visit. There is one install per page: a second replaces the first, a dev one
+included, and the first attaches nothing more, even if it was still inside `register()`.
 
 Three rules govern it, and they are restated at the top of the file itself:
 
