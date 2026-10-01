@@ -129,7 +129,7 @@ Phase 3: the Workshop's other three benches, each a pure view over one hook call
 
 ## The service worker
 
-`public/sw.js` is hand-written — 224 lines of code under 711 of comment, 3.2 to 1, counted
+`public/sw.js` is hand-written — 253 lines of code under 766 of comment, 3.0 to 1, counted
 with acorn's tokenizer (a line is code if any token touches it, comment if only a comment
 does, and a blank line, inside a comment or not, is neither) — and
 shipped verbatim by Vite's `public/` copy: no `vite-plugin-pwa`, no Workbox, no generated
@@ -167,25 +167,38 @@ answers 200 and then goes quiet leaves `await response.text()` pending for ever 
 request that looks finished. The body read easiest to miss is `Cache.put`'s own: a put
 reads what it is handed to the end before it writes, so every network body the worker
 stores or reads goes through `whole()` first — a clone read to the end, which leaves the
-original's bytes in memory for the put. (Measured in headless Chromium, against a shell
-naming a chunk whose body stalls: without it the install was still `installing` at 20
-seconds; with it the install fails at 10.) `install` runs inside `waitUntil()`, so any of
-these hangs would hold it open until the browser gave up, leaving the phone with no worker
-at all, and the same hang on a navigation would leave a standalone window waiting for ever
-with no chrome to escape through.
+original's bytes in memory for the put. (Measured in headless Chromium with no DevTools
+attached to the worker — DevTools keeps an inspected worker alive, so a lifetime measured
+under it, as Playwright measures, is not a phone's — against a shell naming a chunk whose
+body stalls: without it the install sat `installing` until the browser's own limit on the
+event failed it at 300 seconds; with it the install fails at 10.) `install` runs inside
+`waitUntil()`, so any of these hangs would hold it open until the browser gave up, leaving
+the phone with no worker at all, and the same hang on a navigation would leave a standalone
+window waiting for ever with no chrome to escape through.
 
 The deadline on a body is per **piece**, not per body: each read gets ten seconds to bring
 the next piece, the first and the one that finds the end included. So a stall is noticed
 ten seconds after the last byte, wherever it happens, and a slow link that keeps delivering
-is waited for as long as it keeps delivering. One deadline over the whole body cannot tell
-those apart — measured in headless Chromium, this build's 414 kB entry chunk arriving
-steadily at 32 KiB/s takes 12.6 seconds, and a ten-second deadline on the whole body failed
-that install at 10.0 on a first visit and on every visit after it, since a failed install
-leaves no worker; per piece, it activates at 12.6. There is no ceiling on an install whose
-bytes keep arriving, deliberately, beyond the browser's own: Chromium made an install whose
-chunk sent a byte every five seconds redundant at 300 seconds. What a stall costs is ten
-seconds: in the shell or a chunk it fails the install there and then, and in a font it
-costs that font.
+is waited for while it keeps delivering. One deadline of that length over the whole body
+cannot tell those apart — measured in headless Chromium, this build's 414 kB entry chunk
+arriving steadily at 32 KiB/s takes 12.6 seconds, and a ten-second deadline on the whole
+body failed that install at 10.0 on a first visit and on every visit after it, since a
+failed install leaves no worker; per piece, it activates at 12.6.
+
+Over the pieces there is one **ceiling** on the whole body, `CEILING_MS`: two minutes from
+its headers, because a limit on silence never ends a body that is never silent. Measured in
+Chromium with no DevTools attached, a chunk sending a byte every five seconds held an
+install `installing` until the browser failed it at 300 seconds, and the same chunk named by
+a new deploy held the navigation's refresh, and its connection, for 309 seconds after the
+page was served; with the ceiling, the install fails and the refresh lets go at 120. Two
+minutes is generous on purpose: the entry chunk, about 415 kB, reaches it only below
+3.5 kB/s — about 28 kbit/s, a GPRS-class link, on which the page's own load of that chunk
+takes as long — and it ends well inside the browser's 300. It is per body, so an event whose
+every body crawled could still meet the browser's limit first. What a stall costs is ten
+seconds, and a body still arriving at the ceiling costs the same things: in the shell or a
+chunk it fails the install, in a font it costs that font, in a refresh the shell already
+there stays — and the page's own copy of a response is never cut, since what the worker
+gives up is its copy.
 
 The deadline comes in two shapes and the choice is forced. Install's requests and the
 asset branch's **abort**, with a 10-second `AbortSignal` on the wait for the headers, which
@@ -195,13 +208,20 @@ a non-empty init, and a non-empty init makes `fetch()` rebuild the Request — w
 flags. (The same rebuild resets the referrer to the worker: measured in Chromium, the asset
 branch's forwarded requests arrive with `Referer: …/sw.js`. Harmless for a same-origin
 hashed file; not nothing.) Forwarding the page's navigation untouched is worth one fetch
-left in flight after the race. Each read of a body races too, and there the loser is not
-left in flight: `whole()` **cancels** what it was reading — the clone and the original,
-every branch of the body the worker holds. Not an abort, although aborting the request's
-controller would release the read as well: an abort errors *every* branch of the body, and
-in the asset branch and a navigation's refresh the page is reading the other one. A cancel
-stops at the tee, so it lets go of install's and the refresh's own fetches and never of the
-page's. And a missing *font* is survivable where a missing *chunk* is not: the app is
+left in flight after the race. Each read of a body races too, and so does the body as a
+whole against the ceiling, and there the loser is not left in flight: `whole()` **cancels**
+what it was reading — the clone and the original, every branch of the body the worker
+holds. Not an abort, although aborting the request's controller would release the read as
+well: an abort errors *every* branch of the body, and in the asset branch and a
+navigation's refresh the page is reading the other one. A cancel stops at the tee, so it
+lets go of install's and the refresh's own fetches and never of the page's. A response the
+worker turns down on its headers — a shell that is not HTML, a page of HTML under a hashed
+URL — is cancelled unread the same way, through `release()`, and so is a copy of the page's
+response that the refresh or the asset branch's write turns down before reading it: a body
+nobody reads and nobody cancels keeps its request open. Measured in Chromium with no
+DevTools attached, a font and a deploy's chunk turned down unread each held their
+connection until the browser stopped the idle worker 30 seconds later; released, they close
+at once. And a missing *font* is survivable where a missing *chunk* is not: the app is
 legible in the system stack, so the font loop declines and carries on while the asset loop
 throws.
 
@@ -313,8 +333,8 @@ updates the offline copy of the app. Writing the new HTML on its own would leave
 holding a shell that names hashes it does not have — and since `asset()` propagates a
 network failure by design, the next cold launch with no network is a white screen rather
 than the old app. So the refresh fetches what the new HTML names, reads each body whole,
-stores those first, and publishes the shell last; if any of it fails — a body that stalls
-included — the shell already there stays, whole. An
+stores those first, and publishes the shell last; if any of it fails — a body that stalls,
+or is still arriving at the ceiling, included — the shell already there stays, whole. An
 offline copy that is self-consistent and one deploy old beats a newer one that cannot boot.
 It runs in `waitUntil()`, so the page is never blocked on it, and nothing it does can change
 what that navigation was served.
@@ -360,9 +380,10 @@ for an asset that was never cached and cannot be fetched — but a *storage* fai
 the bytes are in hand and the page gets them. The write runs **beside** the answer, in
 `waitUntil()`, not in front of it: the put reads its copy of the body to the end, so awaited
 first it held the page's response — headers and all — for as long as the body took, and for
-ever on one that stalled (measured in Chromium against a stalled chunk: awaited, the page
-had no headers after 15 seconds; beside the answer, it has them in a millisecond). The page
-gets exactly what the network gave it, when it gave it.
+ever on one that stalled (measured in Chromium with no DevTools attached to the worker,
+against a stalled chunk: awaited, the page had no headers 15 seconds in; beside the answer,
+it had a 200 and the first bytes 42 ms after asking). The page gets exactly what the network
+gave it, when it gave it.
 
 The cost of cache-first with no expiry, written down because nothing else says it: an entry
 that is wrong stays wrong until something deletes it. There is no revalidation, and

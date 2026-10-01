@@ -186,8 +186,10 @@ async function refresh(response): Promise<void>;  // added in task 7: publishes 
 async function openCache(): Promise<Cache | undefined>;  // added in task 7: undefined = no usable CacheStorage
 async function cached(key): Promise<Response | undefined>;  // added in task 7: a miss and a read failure are one thing
 function timed(input, init): Promise<Response>;   // added in task 7: an ABORTING deadline; fetchFresh is this plus cache:"reload" *(corrected in task 7's fourth fix round: on the wait for the HEADERS — it is cleared when they arrive, and the body after them is whole()'s)*
-function deadlined(work): Promise<unknown>;      // added in task 7's second fix round: a RACING deadline, for the two calls that cannot take a signal — a navigation (a non-empty init would demote mode "navigate" to "same-origin") and a body read (nothing to abort) *(corrected in task 7's fourth fix round: "nothing to abort" is false — every body whole() reads comes from a request, and aborting its controller after the headers errors the body, which would release a stalled read. The body read races because an abort errors EVERY branch of the body, and in the asset branch and a navigation's refresh the page is reading one of them. It races one piece at a time, inside whole(), and the loser is cancelled there rather than left running)*
-function whole(response): Promise<Response>;     // added in task 7's third fix round: reads a CLONE to the end through deadlined(), resolves with the original — Cache.put reads the body it is handed to the end, so every network body is put through this first, and the tee leaves the original's bytes in memory for the put *(corrected in task 7's fourth fix round: a deadline per READ, not one over the body — a stall is ten seconds with no new piece, and a slow link that keeps delivering is waited for however long it takes; one total deadline failed a 414 kB chunk at 32 KiB/s at 10.0 s in Chromium. A lost race cancels the clone's reader and the original's body, which releases the request when no one else holds a branch of it. The shell's and a refreshed page's HTML are read through it too, so every network body the worker stores or reads is)*
+function deadlined(work, ms = TIMEOUT_MS): Promise<unknown>;      // added in task 7's second fix round: a RACING deadline, for the two calls that cannot take a signal — a navigation (a non-empty init would demote mode "navigate" to "same-origin") and a body read (nothing to abort) *(corrected in task 7's fourth fix round: "nothing to abort" is false — every body whole() reads comes from a request, and aborting its controller after the headers errors the body, which would release a stalled read. The body read races because an abort errors EVERY branch of the body, and in the asset branch and a navigation's refresh the page is reading one of them. It races one piece at a time, inside whole(), and the loser is cancelled there rather than left running)* *(corrected in task 7's fifth fix round: was `deadlined(work)` — the length is a parameter now, defaulting to TIMEOUT_MS, and whole() also races all of a body's reads against CEILING_MS with it)*
+function whole(response): Promise<Response>;     // added in task 7's third fix round: reads a CLONE to the end through deadlined(), resolves with the original — Cache.put reads the body it is handed to the end, so every network body is put through this first, and the tee leaves the original's bytes in memory for the put *(corrected in task 7's fourth fix round: a deadline per READ, not one over the body — a stall is ten seconds with no new piece, and a slow link that keeps delivering is waited for however long it takes; one total deadline failed a 414 kB chunk at 32 KiB/s at 10.0 s in Chromium. A lost race cancels the clone's reader and the original's body, which releases the request when no one else holds a branch of it. The shell's and a refreshed page's HTML are read through it too, so every network body the worker stores or reads is)* *(corrected in task 7's fifth fix round: and a CEILING over all of those reads, CEILING_MS from the headers. A deadline on silence never ends a body that is never silent: measured in Chromium with no DevTools attached to the worker, a new deploy's chunk sending a byte every five seconds held a refresh's read, the navigation's event and the connection for 309 s, and the same chunk held an install "installing" until the browser failed it at 300 s. A body that loses either race is given up the same way — the reader cancelled, the original's body through release() — and the same rejection is thrown)*
+const CEILING_MS = 120000;                       // added in task 7's fifth fix round: whole()'s ceiling on a body, from its headers to its end. Two minutes: the entry chunk, about 415 kB, reaches it only below 3.5 kB/s (about 28 kbit/s), and it ends well inside the browser's own 300 s limit on an event. Per body, not per event
+function release(response): void;                // added in task 7's fifth fix round: cancels a body unread — not awaited, its rejection swallowed, a null body skipped. Every response turned down on its headers goes through it (precache's shell, chunk and font; refresh()'s asset), so does every copy of the page's response turned down unread (refresh()'s when it is not a shell or there is no cache, store()'s when there is no cache), and so does whole()'s give-up. Measured in Chromium with no DevTools attached, a font and a deploy's chunk turned down unread held their connections until the browser stopped the idle worker, 30 s later; released, they close at once
 
 // src/test/sw-harness.ts
 export interface FetchRequest { url: string; method: string; mode: string; headers: Headers }  // task 6
@@ -236,7 +238,12 @@ export interface Harness {
       200 whose body arrives a piece at a time on it, `every` ms apart, ending or stalling.
       A clock that fired every deadline on the next macrotask could not tell a stall from a
       slow link. `released` is every fetched body the worker let go of before its end —
-      every branch cancelled — which a cancel reaches only when nobody else holds a branch. */
+      every branch cancelled — which a cancel reaches only when nobody else holds a branch.
+      *(corrected in task 7's fifth fix round: the fake network also honours an ABORT past
+      the headers now, as a real fetch does — aborting the signal the worker passed errors
+      the body, every branch of it, the page's included. Before, the abort reached only a
+      fetch still waiting for its headers, so a deadline left armed past them was visible
+      in the deadline counts and nowhere else.)* */
   readonly now: number;
   trickle(type: string, pieces: readonly string[], timing: { every: number; stall?: boolean }): Response;
   released: string[];
@@ -2748,7 +2755,15 @@ corrections to them are in place.)*
    naming a chunk whose body stalls: `294cc4f`'s worker was still `installing`
    at 20 s, this round's goes `redundant` at 10 043 ms; a stalled runtime asset
    got the page no headers after 15 s from `294cc4f` and a `200` in 1 ms from
-   this round. **Ruling: every network body is read whole, inside a deadline,
+   this round. *(corrected in task 7's fifth fix round: those figures were taken
+   under Playwright, which attaches DevTools to the worker, and Chromium never
+   stops an inspected worker — so "still `installing` at 20 s" is the inspected
+   worker's lifetime, not a phone's. Measured again with no DevTools attached:
+   `294cc4f`'s install sat `installing` until the browser's own limit on the
+   event failed it, `redundant` at 300 002 ms, and the fifth round's bytes go
+   `redundant` at 10 084 ms; the stalled runtime asset still got the page no
+   headers 15 s in from `294cc4f`, and from the fifth round's bytes a `200` and
+   its first bytes 42 ms after asking.)* **Ruling: every network body is read whole, inside a deadline,
    before it is put.** `whole(response)` reads a CLONE to the end through
    `deadlined` and resolves with the original; `clone()` tees the stream, so the
    original's bytes are then in memory and the put never touches the network.
@@ -2840,7 +2855,14 @@ A. **One deadline over the whole body killed downloads that were working.**
    and are re-read from memory. There is no ceiling on an install whose bytes
    keep coming; the browser's is the backstop, and Chromium's was measured —
    an install whose chunk sent one byte every five seconds went `redundant` at
-   300 002 ms. The harness got a clock to test it with (item F).
+   300 002 ms. *(corrected in task 7's fifth fix round: there is one now,
+   `CEILING_MS`, two minutes on each body from its headers. "No ceiling"
+   reached past install: refresh() reads its own fetches inside the
+   navigation's waitUntil, and a new deploy's chunk sending a byte every five
+   seconds held that event and its connection for 309 s, measured with no
+   DevTools attached to the worker. The 300 002 ms figure stands with none
+   attached; with the ceiling the same install goes `redundant` at
+   120 043 ms. See the fifth fix round, item 1.)* The harness got a clock to test it with (item F).
 B. **"There is nothing to abort" was false** (README, `deadlined`'s comment, the
    contract block). Every body `whole` reads came from a request, and aborting
    its controller after the headers errors the body, which would release a
@@ -2857,16 +2879,30 @@ B. **"There is nothing to abort" was false** (README, `deadlined`'s comment, the
    the worker at 10.04 s, and the page's own request for the same chunk stayed
    open until the browser closed at 25 s; `359a491` held both until then. On a
    stalled font the worker now closes the connection at 10.04 s, where
-   `359a491` left it open until the browser closed.
+   `359a491` left it open until the browser closed. *(corrected in task 7's
+   fifth fix round: measured under Playwright, which attaches DevTools to the
+   worker, and an inspected worker is never stopped for being idle. With no
+   DevTools attached: on the refresh, `359a491` still held both connections
+   until the browser closed, at 100 s, and the page's own is the page's to keep
+   with this worker too — the refresh's closes at 10.04 s; on the font,
+   `359a491`'s connection closed at 40.02 s — when the browser stopped the idle
+   worker, 30 s after its deadline fired — and not when the browser closed,
+   while this worker closes it at 10.04 s.)*
 C. **"Eleven requests" was a ceiling that no longer exists.** `TIMEOUT_MS`'s
    comment derived a worst case from a deadline per call; with a deadline per
    wait there is no such number, and the comment now says what a stall costs —
    ten seconds, once — and names the browser's limit as the only ceiling.
+   *(corrected in task 7's fifth fix round: it is no longer the only one —
+   `CEILING_MS` bounds each body at two minutes; see the fifth fix round, item
+   1.)*
 D. **`stalled()` never sent a byte, so N4 lived.** A body that sends nothing is
    caught by a deadline on the first read, so `whole` → one deadlined read,
    called whole (N4), passed every test at `359a491` (260 green, confirmed on a
    byte-identical baseline). In Chromium, against a chunk that sends 16 bytes
-   and stalls, N4's install was still `installing` at 30 s. `stalled(type,
+   and stalls, N4's install was still `installing` at 30 s. *(corrected in task
+   7's fifth fix round: under Playwright, which attaches DevTools to the
+   worker. With none attached, N4's install stayed `installing` until the
+   browser's own limit on the event failed it, `redundant` at 300 001 ms.)* `stalled(type,
    sent)` now sends `sent` — some bytes by default — and every stall test runs
    both ways (`STALLS`: after some of it, before any of it). N4 now fails 14
    tests. A `broken()` fixture — some bytes, then an error — pins that a
@@ -2889,7 +2925,10 @@ F. **The harness.** A virtual clock: the scope's timers are armed on it and fire
    branch somebody still holds, so a body the page reads is never released.
    The deadline counts are one per fetch and one per read: 9 for a plain
    install, 5 + 4 × 2 with a hung font, 1 + 2 + 2 × 3 for a navigation that
-   refreshes.
+   refreshes. *(corrected in task 7's fifth fix round: and one ceiling per
+   body — 9 + 3, 13 + 4 and 9 + 3, compared in ascending order — and the
+   connection now honours an abort past the headers, erroring the body; see
+   the fifth fix round, item 3.)*
 G. **Tests first.** Against `359a491`'s `sw.js` the new tests failed 16 of 288
    (every slow-body test, the deadline counts, the pause, and the release
    tests); green at 288 once `whole` changed, 292 with the `broken()` tests.
@@ -2908,6 +2947,100 @@ I. **Counts after this round: 76 files / 1 858 tests** — `sw.test.ts` **233**,
    `sw-harness.test.ts` **52**, `sw-server-routes.test.ts` 7; +32 on the 1 826
    task 9 left at `359a491`. `sw.js` is **224 lines of code to 711 of
    comment**, 3.2 to 1, by the acorn count.
+
+*(**Fifth fix round** — the last — after the re-review of `ae40020`, landed on
+top of task 9's first fix round, `ea8ab8a`. Five findings, all Minor, numbered
+as the review numbered them. Read together with the blocks above; the
+corrections to them, and to the contract block, are in place. Every lifetime
+below was measured in headless Chromium driven over raw CDP attached to the PAGE
+only, so no DevTools session was attached to the worker.)*
+
+1. **Nothing bounded a body's whole time, and that reached past install.**
+   refresh() reads its own fetches through `whole` inside the navigation's
+   waitUntil, and a limit on silence never ends a body that is never silent:
+   a new deploy's chunk sending a byte every five seconds held the refresh, the
+   navigation's event and the connection for 309 s at `ae40020`, against 40 s
+   at `359a491` (the review's figure), whose total deadline cut it at ten
+   seconds and left the connection to the idle worker's stop. "A ceiling is a total, and a total of
+   ten seconds failed" argued against a ten-second total, not a generous one.
+   **Ruling: a generous ceiling, `CEILING_MS` = 120 s on each body from its
+   headers**, raced in `whole` over all its reads — `deadlined(work, ms)` takes
+   the length now. The justification is written beside the constant: the entry
+   chunk, about 415 kB (415 489 bytes in this build), reaches it only below
+   3.5 kB/s, about 28 kbit/s sustained, a GPRS-class link on which the page's
+   own load of that chunk takes as long; and it ends well inside the browser's
+   300 s, so a body that will not finish is ended, released and rejected by
+   this file rather than torn down by the browser. Per body, not per event —
+   said in the file too. A body still arriving at the ceiling is given up as a
+   stall is: the install fails for the shell or a chunk, a font is skipped, a
+   refresh keeps its shell, the worker's own connection is released, and a
+   copy of the page's response is given up without touching the page's read.
+   Measured: an install whose chunk sends a byte every five seconds goes
+   `redundant` at 120 043 ms (300 002 at `ae40020`), and the refresh lets the
+   trickling chunk go at 120.0 s (309.37 s at `ae40020`); a slow link still
+   completes — 414 141 bytes at 32 KiB/s, `activated` at 12 688 ms.
+2. **Lifetimes measured under Playwright were an inspected worker's.**
+   Playwright attaches DevTools to service workers, and Chromium never stops
+   an inspected worker for being idle. Every committed claim that rested on
+   such a measurement is restated from a run with none attached: in `sw.js`
+   (`whole`, and the browser's 300 s, now under `CEILING_MS`), the harness
+   (`Cache.put`'s comment, `stalled()`), `sw-harness.test.ts`, `sw.test.ts`, the
+   README, and above — the third round's item 1 and the fourth's A, B, C and
+   D, corrected in place. Remeasured with none attached: a put nothing bounded
+   held `294cc4f`'s install `installing` until the browser failed it at
+   300 002 ms, not "for minutes" or "at 20 s"; N4's at 300 001 ms, not "at
+   30 s"; `359a491`'s stalled font connection closed at 40.02 s, when the idle
+   worker was stopped — not "until the browser closed"; `359a491` did hold both
+   of a refresh's connections until the browser closed. The deadline timings
+   (10.0 s, 12.6 s, 18 s) are not lifetimes and stand.
+3. **The fake network let an abort stop at the headers.** Aborting a fetch's
+   signal after its headers errors the body, every branch of it through a tee,
+   and the fake ignored the signal once the headers were out — so `timed`'s
+   deadline left armed past them (C8) was caught by three deadline counts and
+   by no assertion on the page's copy. `connection()` now errors the body when
+   the signal the worker passed is aborted, the page's branch included; a
+   harness test pins it (RED: `expected 'pending' to be 'AbortError'`), and the
+   slow-asset test says which of its assertions is the one that reaches the
+   request's own deadline. C8 now fails 29 tests on this round's final tree,
+   the page's copy among them (23 at this item's own commit).
+   Not modelled, and said in the harness: an abort once the last byte is in.
+4. **The stall tests could not see the page held.** On the harness's clock a
+   hold costs no time, so a handler that answered the page only once its write
+   or its refresh gave up passed every stall test. Each stall test and the
+   slow asset now dispatch, read `now` the moment the page has its answer, and
+   again when the background work settles. The page-waits mutants were each
+   killed by one test before (the "answers … before" twins), and on this
+   round's final tree by five (the asset branch's) and six (the navigation's)
+   — the ceiling's tests read the clock at the answer too.
+5. **A response turned down was neither read nor cancelled.** precache's
+   shell, chunk and font declines and refresh()'s declined asset dropped the
+   response with its body open: measured, a font and a deploy's chunk turned
+   down unread held their connections until the browser stopped the idle
+   worker 30 s later. `release(response)` cancels a body unread — not awaited,
+   its rejection swallowed, a null body skipped — and every decline goes through
+   it, as do the copies of the page's response that refresh() and `store()` turn
+   down unread (which kept the request open after the page let go of its own),
+   and `whole`'s give-up. Measured: both now close at once. Eight tests, a
+   204 shell among them for the null-body guard.
+6. **Tests first.** Each behaviour change was RED before GREEN: the harness
+   test (1 failed), the eight release tests (7 failed against `db5afe8`; the
+   204 pins a guard and passes either way), and the ceiling tests (9 failed
+   against `98a8582`, the three deadline counts among them). The clock
+   assertions are tests of behaviour already right, and their RED is the
+   page-waits mutants surviving every stall test before them.
+7. **Mutants: 24, all killed**, each applied to a tree asserted byte-identical
+   to its base and verified green first: C8 and three in the harness's abort
+   model; the two page-waits; eleven on `release` — each call site dropped,
+   its catch, its null guard, `whole`'s use of it, and `release` doing
+   nothing; and seven on the ceiling — `98a8582`'s whole `sw.js`, the ceiling
+   dropped, ten seconds, 300 seconds, `deadlined` ignoring its length, the
+   length forgotten, and the ceiling on the first read only. The dropped catch
+   fails no test and still fails the run, on `broken()`'s unhandled
+   `TypeError: network error`.
+8. **Counts after this round: 76 files / 1 886 tests** — `sw.test.ts` **247**,
+   `sw-harness.test.ts` **60**, `sw-server-routes.test.ts` 7; +15 on the 1 871
+   at `ea8ab8a`, 14 in `sw.test.ts` and 1 in `sw-harness.test.ts`. `sw.js` is
+   **253 lines of code to 766 of comment**, 3.0 to 1, by the acorn count.
 
 **Files:**
 - Modify: `web/public/sw.js`
@@ -3085,7 +3218,7 @@ still falls through unanswered.)*
 npx vitest run src/test/sw.test.ts
 ```
 
-Expected: PASS, 45 tests *(corrected in task 3: 37 as planned; +8)* — including all thirteen of task 6's, which now have branches that could have broken them. *(Corrected in task 6: 51 of task 6's, of which the 13 in the second `describe` are the ones that were vacuous. All of them were already run green against a scratch transcription of this task's two handlers — see task 6's correction 7 — so a failure here is this task's code, not that block's.)* *(Corrected in task 7: measured, **157** in `sw.test.ts` — task 6's 134 plus this block's 23. `sw-harness.test.ts` (21) and `sw-server-routes.test.ts` (7) are untouched. Mutate before believing the green: the list is correction 9 at the head of this task.)* *(Corrected in the fix round: **186** in `sw.test.ts` and **30** in `sw-harness.test.ts`.)* *(corrected in task 7's third fix round: the second fix round's **198** / **34** were never recorded here, and after the third it is **210** in `sw.test.ts` and **39** in `sw-harness.test.ts` — which includes task 8's four in `sw.test.ts`, landed between the two rounds.)* *(corrected in task 7's fourth fix round: **233** in `sw.test.ts` and **52** in `sw-harness.test.ts` — task 8's fix round had taken the second to 43.)*
+Expected: PASS, 45 tests *(corrected in task 3: 37 as planned; +8)* — including all thirteen of task 6's, which now have branches that could have broken them. *(Corrected in task 6: 51 of task 6's, of which the 13 in the second `describe` are the ones that were vacuous. All of them were already run green against a scratch transcription of this task's two handlers — see task 6's correction 7 — so a failure here is this task's code, not that block's.)* *(Corrected in task 7: measured, **157** in `sw.test.ts` — task 6's 134 plus this block's 23. `sw-harness.test.ts` (21) and `sw-server-routes.test.ts` (7) are untouched. Mutate before believing the green: the list is correction 9 at the head of this task.)* *(Corrected in the fix round: **186** in `sw.test.ts` and **30** in `sw-harness.test.ts`.)* *(corrected in task 7's third fix round: the second fix round's **198** / **34** were never recorded here, and after the third it is **210** in `sw.test.ts` and **39** in `sw-harness.test.ts` — which includes task 8's four in `sw.test.ts`, landed between the two rounds.)* *(corrected in task 7's fourth fix round: **233** in `sw.test.ts` and **52** in `sw-harness.test.ts` — task 8's fix round had taken the second to 43.)* *(corrected in task 7's fifth fix round: **247** in `sw.test.ts` and **60** in `sw-harness.test.ts` — task 8's second fix round had taken the second to 59.)*
 
 - [ ] **Step 5: Commit**
 
@@ -3094,7 +3227,7 @@ git add web/public/sw.js web/src/test/sw.test.ts
 git commit -m "feat(web): network-first navigations, cache-first hashed assets"
 ```
 
-Counts after this task: **73 files / ~1 561 tests** *(corrected in task 7: measured, **75 files / 1 725 tests**. No new file — all three this task touches already existed — and the delta is +23 on task 6's 1 702, all of them in `sw.test.ts`.)* *(corrected again in the fix round: **75 files / 1 763 tests**, +61 on task 6.)* *(corrected in task 7's third fix round: the second fix round measured **75 files / 1 779** at `eed3854` and did not record it here; after the third it is **75 files / 1 796** — task 8's 1 783 plus this round's 13.)* *(corrected in task 7's fourth fix round: **76 files / 1 858** — +32 on the 1 826 task 9 left at `359a491`, 23 in `sw.test.ts` and 9 in `sw-harness.test.ts`.)*.
+Counts after this task: **73 files / ~1 561 tests** *(corrected in task 7: measured, **75 files / 1 725 tests**. No new file — all three this task touches already existed — and the delta is +23 on task 6's 1 702, all of them in `sw.test.ts`.)* *(corrected again in the fix round: **75 files / 1 763 tests**, +61 on task 6.)* *(corrected in task 7's third fix round: the second fix round measured **75 files / 1 779** at `eed3854` and did not record it here; after the third it is **75 files / 1 796** — task 8's 1 783 plus this round's 13.)* *(corrected in task 7's fourth fix round: **76 files / 1 858** — +32 on the 1 826 task 9 left at `359a491`, 23 in `sw.test.ts` and 9 in `sw-harness.test.ts`.)* *(corrected in task 7's fifth fix round: **76 files / 1 886** — +15 on the 1 871 at `ea8ab8a`, 14 in `sw.test.ts` and 1 in `sw-harness.test.ts`.)*.
 
 ---
 

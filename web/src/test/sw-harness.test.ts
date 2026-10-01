@@ -340,9 +340,11 @@ describe("the fake CacheStorage", () => {
     // The other half of reading the body: a put of a network response is a
     // BODY READ, with every hazard of one. fetch() resolves on the headers, so a
     // route that stalls mid-body hands the worker a 200 whose put waits for
-    // ever — measured in Chromium, an install left "installing" for minutes on
-    // exactly this. A fake that stored the object unread made that put look
-    // instant, and four puts in sw.js took a network body with no deadline.
+    // ever — measured in Chromium with no DevTools attached to the worker, an
+    // install left "installing" on exactly this until the browser's own limit
+    // on the event failed it, at 300 s. A fake that stored the object unread
+    // made that put look instant, and four puts in sw.js took a network body
+    // with no deadline.
     const worker = loadWorker(`
       self.addEventListener("install", (event) => {
         event.waitUntil((async () => {

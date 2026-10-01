@@ -898,7 +898,9 @@ describe("install, and the network that never answers", () => {
     await worker.install();
     expect(worker.released).toEqual([SHELL_FONTS[0]]);
     expect(worker.puts).not.toContain(SHELL_FONTS[0]);
-    expect(worker.keys()).toEqual(["/__shell-manifest", ...SHELL_ASSETS, SHELL_FONTS[1], "/index.html"].sort());
+    expect(worker.keys()).toEqual(
+      ["/__shell-manifest", ...SHELL_ASSETS, SHELL_FONTS[1], "/index.html"].sort(),
+    );
   });
 
   it.each([
@@ -1034,11 +1036,13 @@ describe("install, and the network that never answers", () => {
     // The body nothing in this file reads — except `Cache.put`, which reads
     // every body it is handed to the end before it writes. So a put of a
     // network response is a body read, and without a deadline of its own this
-    // one waits for ever: measured in Chromium, a shell naming a chunk whose
-    // headers arrive and whose bytes stall left the install "installing" for
-    // minutes. It fails here, before a single write — the shell included, since
-    // a new shell naming a chunk the cache does not hold is a white screen
-    // offline, in the cache the previous worker is still serving from.
+    // one waits for ever: measured in Chromium with no DevTools attached to the
+    // worker, a shell naming a chunk whose headers arrive and whose bytes stall
+    // left the install "installing" until the browser's own limit on the event
+    // failed it, at 300 s. It fails here, before a single write — the shell
+    // included, since a new shell naming a chunk the cache does not hold is a
+    // white screen offline, in the cache the previous worker is still serving
+    // from.
     const worker = loadWorker(source);
     worker.respond("/index.html", html(SHELL_HTML));
     worker.respond("/assets/index-CY0Sh5Q2.js", stalled("text/javascript", sent));

@@ -112,8 +112,9 @@ class FakeCache {
     // whose headers arrived and whose bytes stall leaves the put pending for
     // ever, exactly as `await response.text()` would be. Filing the object away
     // unread, as this once did, made that put look instant — and four puts in
-    // sw.js took a network body with no deadline, which a real Chromium held an
-    // install open on for minutes.
+    // sw.js took a network body with no deadline, which a real Chromium, with no
+    // DevTools attached to the worker, held an install open on until its own
+    // limit on the event failed it, at 300 s.
     //
     // What is stored is the bytes and the head rebuilt into a new Response, as
     // a real cache stores a copy rather than the object; a null body stays null,
@@ -1014,10 +1015,11 @@ export const font = () =>
  * Some bytes by default, and that is the half that matters. A body that never
  * sends one is caught by any deadline on its FIRST read, so a worker that read
  * one piece and called the body done passed every test written against the
- * silent version — and in Chromium, against a chunk that sends some bytes and
- * stalls, that worker's install was still `installing` at 30 s. `sent = ""` is the
- * silent version, still worth a test of its own: it is the one a deadline
- * armed only once the first piece has arrived never ends.
+ * silent version — and in Chromium with no DevTools attached to the worker,
+ * against a chunk that sends some bytes and stalls, that worker's install stayed
+ * `installing` until the browser's own limit on the event failed it, at 300 s.
+ * `sent = ""` is the silent version, still worth a test of its own: it is the
+ * one a deadline armed only once the first piece has arrived never ends.
  *
  * Its own hazard, and the reason this is a factory: the promise a reader is
  * left holding never settles, so anything that awaits one without a deadline
