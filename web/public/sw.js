@@ -59,19 +59,43 @@ const ASSETS = "/assets/";
    Per WAIT, not per call and not per install: a request has this long to
    answer, and each piece of its body this long to follow the last. So a stall
    is noticed this long after the last byte, wherever it happens, and a phone on
-   a slow link that is still working is waited for as long as it keeps working.
-   There is no ceiling on an install whose bytes keep coming, and that is
-   deliberate: a ceiling is a total, and a total of ten seconds on the body is
-   what failed this build's 414 kB entry chunk at 32 KiB/s, 12.6 s of steady
-   progress, at 10.0 s — measured in Chromium, on a first visit, and on every
-   visit after it, since a failed install leaves no worker and the next load
-   starts the whole precache over. The only ceiling is the browser's own:
-   measured in Chromium, an install whose chunk sent a byte every five seconds
-   and never finished went redundant at 300 s.
+   a slow link that is still working is waited for while it keeps working — up
+   to CEILING_MS, below, which no working link reaches. A total of THIS length
+   on the body is what failed this build's 414 kB entry chunk at 32 KiB/s,
+   12.6 s of steady progress, at 10.0 s — measured in Chromium, on a first
+   visit, and on every visit after it, since a failed install leaves no worker
+   and the next load starts the whole precache over.
    What a stall costs is this, once: in the shell or a chunk it fails the
    install there and then, and in a font it costs that font and the install
    carries on. */
 const TIMEOUT_MS = 10000;
+
+/* And a ceiling on each body as a whole, from its headers to its last byte,
+   because a limit on silence never ends a body that is never silent: a link
+   that sends a byte every few seconds is never quiet for ten. Measured in
+   Chromium with no DevTools attached to the worker (DevTools keeps an
+   inspected worker alive, so a lifetime measured under it is not a phone's),
+   a chunk sending a byte every five seconds held an install "installing"
+   until the browser's own limit on the event failed it, at 300 s; and as a
+   new deploy's chunk, read by refresh() inside a navigation's waitUntil, it
+   held its connection open, and the navigation's event with it, for 309 s
+   after the page had been served.
+
+   Two minutes, and generous on purpose. The largest body this worker reads is
+   the entry chunk, about 415 kB, and it reaches the ceiling only on a link
+   slower than 3.5 kB/s — about 28 kbit/s, sustained from the first byte to
+   the last: a GPRS-class link, on which the page's own load of that chunk
+   takes two minutes as well. Anything faster finishes inside it. And it ends
+   well inside the browser's 300 s, so a body that will not finish is let go
+   here — released, and turned into the same rejection a stall is — rather
+   than held until the browser tears the event down. It is per body, not per
+   event, and an event reads its bodies one after another, so an event whose
+   every body crawled could still meet the browser's limit first. What it
+   costs, on a link that slow: the install fails, as it does on a stall, and a
+   refresh keeps the shell it has. That phone loses a new offline copy and
+   never a page: a copy of the page's own response is the worker's to give up,
+   and the page reads its own to the end, as it would with no worker at all. */
+const CEILING_MS = 120000;
 
 /* Two shapes of deadline, and which one a call gets is not a style choice.
 
@@ -79,14 +103,15 @@ const TIMEOUT_MS = 10000;
    navigation is one: it cannot be given a signal at all, for the reason
    written under `timed`, so the loser is a fetch left running behind the race —
    bounded by the browser's own network timeout and by one per navigation; the
-   alternative costs the page's Request, which is worse. The other is each read
-   of a body, one race per piece, inside `whole` — and there the loser is not
-   left running: `whole` cancels what it was reading the moment a race is lost,
-   and why that and not an abort is written beside it. */
-function deadlined(work) {
+   alternative costs the page's Request, which is worse. The other is the
+   reading of a body, inside `whole`: one race per piece, and one over all of
+   them with CEILING_MS for its length — and there the loser is not left
+   running: `whole` cancels what it was reading the moment a race is lost, and
+   why that and not an abort is written beside it. */
+function deadlined(work, ms = TIMEOUT_MS) {
   let deadline;
   const expiry = new Promise((_, reject) => {
-    deadline = self.setTimeout(() => reject(new Error("deadline exceeded")), TIMEOUT_MS);
+    deadline = self.setTimeout(() => reject(new Error("deadline exceeded")), ms);
   });
   /* Cleared on either outcome, which is also what keeps the loser quiet: an
      expiry that never fires never rejects, and Promise.race has already
@@ -116,16 +141,19 @@ function release(response) {
 }
 
 /* Resolves with `response` once every byte of its body is here, no piece of it
-   having taken longer than the deadline to follow the last — the precondition
-   for handing a network response to Cache.put, and for reading one at all.
+   having taken longer than the deadline to follow the last and the whole of it
+   inside the ceiling — the precondition for handing a network response to
+   Cache.put, and for reading one at all.
 
    A put reads the body it is given to the END before it writes anything, so a
    put of a network response is a body read in everything but name, and one
    whose headers arrived and whose bytes stall leaves the put pending for ever.
-   Not hypothetical: measured in Chromium, a shell naming a chunk whose body
-   stalled held the install "installing" for minutes, on a put nothing had
-   bounded. A put takes no signal, and racing the put itself would leave it in
-   flight, free to land later in a cache that has since decided against it.
+   Not hypothetical: measured in Chromium with no DevTools attached to the
+   worker, a shell naming a chunk whose body stalled held the install
+   "installing" on a put nothing had bounded, until the browser's own limit on
+   the event failed it at 300 s. A put takes no signal, and racing the put
+   itself would leave it in flight, free to land later in a cache that has
+   since decided against it.
 
    So a CLONE is read to the end and the original is what gets put. clone()
    tees the stream, and the branch nobody has read yet is handed every chunk
@@ -140,30 +168,36 @@ function release(response) {
    included — a body that never sends a byte is a stall too — through to the
    one that finds the end: a body that sends some and then stops is a stall
    as well, and a read of one piece would have called it whole and handed the
-   put a stream that never finishes.
+   put a stream that never finishes. Over all the reads is the ceiling, armed
+   when this starts — the headers are in by then — which no working link
+   reaches and a body still trickling at the end of it does (see CEILING_MS).
 
-   A read that loses its race is CANCELLED, not left running: the clone's
-   reader and the original's body, both, which is every branch of the stream
-   this function holds. Not awaited, because a branch's cancel settles only once
-   its twin is cancelled too, and nothing here needs to wait for the network to
-   be let go. Cancelled, and not aborted: aborting `timed`'s controller after
-   the headers would release the read as well, by erroring the body — but it
-   errors EVERY branch of it, and the request behind `response` is not always
-   the worker's. Every caller hands this a copy only the worker reads, and
-   twice the request behind that copy is the PAGE's: the asset branch's write,
-   and a refresh's read of the HTML its navigation was served (which has no
-   controller to abort in the first place). An abort there would end the
-   page's own read of the same bytes — the write reaching the page, which is
-   the one thing the asset branch is shaped to prevent. A cancel stops at the
-   tee: it reaches the network only when nothing else is reading, so it lets go
-   of install's and refresh()'s own fetches, and never of the page's. */
+   A body that loses either race is CANCELLED, not left running: the clone's
+   reader, and the original's body through `release`, which is every branch of
+   the stream this function holds. Not awaited, because a branch's cancel
+   settles only once its twin is cancelled too, and nothing here needs to wait
+   for the network to be let go. Cancelled, and not aborted: aborting `timed`'s
+   controller after the headers would release the read as well, by erroring
+   the body — but it errors EVERY branch of it, and the request behind
+   `response` is not always the worker's. Every caller hands this a copy only
+   the worker reads, and twice the request behind that copy is the PAGE's: the
+   asset branch's write, and a refresh's read of the HTML its navigation was
+   served (which has no controller to abort in the first place). An abort there
+   would end the page's own read of the same bytes — the write reaching the
+   page, which is the one thing the asset branch is shaped to prevent. A cancel
+   stops at the tee: it reaches the network only when nothing else is reading,
+   so it lets go of install's and refresh()'s own fetches, and never of the
+   page's. */
 async function whole(response) {
   const reader = response.clone().body.getReader();
-  try {
+  const end = async () => {
     for (;;) {
       const { done } = await deadlined(reader.read());
       if (done) return response;
     }
+  };
+  try {
+    return await deadlined(end(), CEILING_MS);
   } catch (error) {
     reader.cancel(error).catch(() => {});
     release(response);
@@ -457,8 +491,9 @@ async function precache() {
      only sw.js's own bytes changing would undo. All four failures are declined
      the same way: no answer (the fetch rejects), no answer ever (the deadline
      fires, which arrives as a rejection too), a wrong answer (a proxy's page
-     under a .woff2 URL) and an answer that never finishes (a body that stalls,
-     which `whole` turns into the same rejection). Anything skipped is still
+     under a .woff2 URL, released unread) and an answer that never finishes (a
+     body that stalls, or is still trickling at the ceiling, which `whole` turns
+     into the same rejection). Anything skipped is still
      picked up cache-first the first time it is asked for — by the fetch
      handler's asset branch, which stores what it fetched under the same
      pathname key. */
@@ -900,9 +935,10 @@ async function refresh(response) {
   /* `whole` for the reason the fetch had a deadline: a 200 whose body stalls
      half way leaves this pending for ever, and this one runs inside the
      navigation's own waitUntil — the event stays open, holding the worker
-     awake, for a page the user was served ten seconds ago. A copy the page
-     holds the other half of, so a stall here cancels this copy and leaves the
-     page's read alone. */
+     awake, for a page the user was served long ago. With `whole` that is ten
+     seconds of silence at most, and two minutes in all for a body that keeps
+     trickling (CEILING_MS). A copy the page holds the other half of, so giving
+     up here cancels this copy and leaves the page's read alone. */
   const urls = assetsInHtml(await (await whole(response)).clone().text());
   /* The same refusal precache() makes, for the same reason and against the same
      page: a 200 text/html from this origin that names no hashed asset is not
@@ -927,8 +963,10 @@ async function refresh(response) {
     }
     /* `whole` for the reason precache() has it: the put reads this body to the
        end, and a chunk whose bytes stall would hold the put — and with it this
-       navigation's waitUntil — open for ever, with the shell never published.
-       A deadline arrives as a rejection, which the caller swallows, and the
+       navigation's waitUntil — open for ever, with the shell never published;
+       one whose bytes trickle, for as long as the browser let the event live
+       (309 s, measured — see CEILING_MS). A deadline or the ceiling arrives as
+       a rejection, which the caller swallows, the connection is let go, and the
        shell that is there stays. */
     await cache.put(url, await whole(named));
   }

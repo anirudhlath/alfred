@@ -92,6 +92,24 @@ const STALLS = [
 ] as const;
 
 /**
+ * The ceiling `whole` puts on a body, from its headers to its end: sw.js's
+ * CEILING_MS, restated rather than read, as the ten-second deadline is.
+ */
+const CEILING = 120000;
+
+/**
+ * A body that never goes quiet and never ends: a byte every seven seconds, for
+ * nine minutes. Never silent for ten seconds, so the deadline on silence never
+ * fires on it, and only the ceiling ends it — at a time no piece falls due on,
+ * so which of the two fires first is never a tie.
+ */
+const unending = (worker: Harness, type: string): Response =>
+  worker.trickle(type, Array<string>(80).fill("x"), { every: 7000 });
+
+/** A list of deadlines in ascending order: how many of each, not when each was armed. */
+const ascending = (deadlines: readonly number[]): number[] => [...deadlines].sort((a, b) => a - b);
+
+/**
  * `"pending"` if `read` has neither resolved nor rejected once a few real
  * macrotasks have run — which, after a request has settled, is a read nothing
  * is still feeding and nothing has ended. Not a statement about how long
@@ -798,9 +816,15 @@ describe("install, and the network that never answers", () => {
     // Per read and not per body, because a deadline on the whole body cannot
     // tell a stall from a slow link. This harness sends each of these bodies in
     // one piece, so that is two reads apiece — the piece, and the end — and
-    // three fetches and three bodies make nine. The stylesheet's font scrape
-    // then reads from memory, with nothing left to wait on.
-    expect(worker.deadlines).toEqual(Array<number>(9).fill(10000));
+    // three fetches and three bodies make nine. Each body has a ceiling as
+    // well, two minutes from its headers to its end, which no working link
+    // reaches and a body still trickling at the end of it does. The
+    // stylesheet's font scrape then reads from memory, with nothing left to
+    // wait on.
+    expect(ascending(worker.deadlines)).toEqual([
+      ...Array<number>(9).fill(10000),
+      ...Array<number>(3).fill(CEILING),
+    ]);
     // And takes each one back down once what it was guarding is done. A
     // deadline left armed fires ten seconds later against nothing, holding the
     // worker awake to do it.
@@ -844,6 +868,37 @@ describe("install, and the network that never answers", () => {
     worker.respond(SHELL_ASSETS[1], css("body{color:red}"));
     await expect(worker.install()).rejects.toThrow("deadline exceeded");
     expect(worker.now).toBe(3 * 4000 + 10000);
+  });
+
+  it.each([
+    ["the shell", "/index.html", "text/html; charset=utf-8"],
+    ["the entry chunk", SHELL_ASSETS[0], "text/javascript"],
+  ])("fails the install two minutes after %s's headers, however steadily it is still arriving", async (_name, path, type) => {
+    // A limit on silence never ends a body that is never silent. Measured in
+    // Chromium with no DevTools attached, a chunk sending a byte every five
+    // seconds held the install "installing" until the browser's own limit on
+    // the event failed it, at 300 s. The ceiling ends it at two minutes, the
+    // way a stall is ended, and lets the connection go.
+    const worker = withFonts();
+    worker.respond(path, unending(worker, type));
+    await expect(worker.install()).rejects.toThrow("deadline exceeded");
+    expect(worker.now).toBe(CEILING);
+    expect(worker.released).toEqual([path]);
+    expect(worker.puts).toEqual([]);
+  });
+
+  it("installs without a font still arriving two minutes after its headers", async () => {
+    // The same ceiling on the loop that is allowed to lose things: the font is
+    // let go and the install carries on. Not asserted: the clock once the
+    // install is done, which runs on past the ceiling while the rest is
+    // written. A worker with no ceiling fails this on what it stores — the
+    // font, whole, nine minutes in.
+    const worker = withFonts();
+    worker.respond(SHELL_FONTS[0], unending(worker, "font/woff2"));
+    await worker.install();
+    expect(worker.released).toEqual([SHELL_FONTS[0]]);
+    expect(worker.puts).not.toContain(SHELL_FONTS[0]);
+    expect(worker.keys()).toEqual(["/__shell-manifest", ...SHELL_ASSETS, SHELL_FONTS[1], "/index.html"].sort());
   });
 
   it.each([
@@ -917,10 +972,13 @@ describe("install, and the network that never answers", () => {
       ["/__shell-manifest", ...SHELL_ASSETS, SHELL_FONTS[1], "/index.html"].sort(),
     );
     // Five fetches — shell, two chunks, two fonts — and four bodies at two
-    // reads apiece: the shell's, both chunks', and the font that answered. The
-    // one that hung never had a body to read.
+    // reads and one ceiling apiece: the shell's, both chunks', and the font
+    // that answered. The one that hung never had a body to read.
     expect(worker.fetched).toHaveLength(5);
-    expect(worker.deadlines).toEqual(Array<number>(5 + 4 * 2).fill(10000));
+    expect(ascending(worker.deadlines)).toEqual([
+      ...Array<number>(5 + 4 * 2).fill(10000),
+      ...Array<number>(4).fill(CEILING),
+    ]);
   });
 
   it("fails the install when it is an asset that never answers", async () => {
@@ -2210,8 +2268,11 @@ describe("navigations", () => {
     // one for the navigation, and one for each read of the page's body it
     // answered with — two, the piece and the end — and for each asset the
     // refresh fetched, the request and the two reads of the body that is read
-    // whole before it is put.
-    expect(worker.deadlines.slice(armed)).toEqual(Array<number>(1 + 2 + 2 * 3).fill(10000));
+    // whole before it is put. And a ceiling on each of those three bodies.
+    expect(ascending(worker.deadlines.slice(armed))).toEqual([
+      ...Array<number>(1 + 2 + 2 * 3).fill(10000),
+      ...Array<number>(3).fill(CEILING),
+    ]);
     expect(worker.deadlinesCleared).toBe(worker.deadlines.length);
   });
 
@@ -2322,6 +2383,48 @@ describe("navigations", () => {
     expect(worker.puts).not.toContain(NEXT_ASSETS[0]);
     // That fetch is the refresh's own, so giving up on it lets it go.
     expect(worker.released).toEqual([NEXT_ASSETS[0]]);
+  });
+
+  it("lets go of a new deploy's asset two minutes after its headers, however steadily it is still arriving", async () => {
+    // refresh() reads its own fetches inside the navigation's waitUntil, and a
+    // chunk that never goes quiet is never cut by the deadline on silence.
+    // Measured in Chromium with no DevTools attached, one sending a byte every
+    // five seconds held the connection open, and the worker awake for it, for
+    // 309 s, until the browser's own limit on the event. The ceiling lets go of
+    // it at two minutes, and the shell that is there stays.
+    const worker = shell();
+    await worker.install();
+    worker.respond("/", deployed("two", NEXT_ASSETS));
+    worker.respond(NEXT_ASSETS[0], unending(worker, "text/javascript"));
+    worker.respond(NEXT_ASSETS[1], css("body{color:blue}"));
+    const start = worker.now;
+    const { responded, settled } = worker.dispatch({ path: "/", mode: "navigate" });
+    await responded;
+    expect(worker.now).toBe(start);
+    await settled;
+    expect(worker.now).toBe(start + CEILING);
+    await expect(shellInCache(worker).clone().text()).resolves.not.toContain("two");
+    expect(worker.puts).not.toContain(NEXT_ASSETS[0]);
+    expect(worker.released).toEqual([NEXT_ASSETS[0]]);
+  });
+
+  it("gives up its copy of a page still arriving two minutes on, and leaves the page its own", async () => {
+    // The refresh's read of the page's body, under the same ceiling. It is a
+    // copy, so giving up on it cancels only the copy: the shell that is there
+    // stays, and the page reads on past the ceiling to the last byte, as it
+    // would with no worker installed.
+    const worker = shell();
+    await worker.install();
+    worker.respond("/", unending(worker, "text/html; charset=utf-8"));
+    const start = worker.now;
+    const { responded, settled } = worker.dispatch({ path: "/", mode: "navigate" });
+    const response = await responded;
+    await settled;
+    expect(worker.now).toBe(start + CEILING);
+    await expect(shellInCache(worker).clone().text()).resolves.toContain(ROOT_DIV);
+    expect(worker.released).toEqual([]);
+    await expect(response!.text()).resolves.toBe("x".repeat(80));
+    expect(worker.now).toBeGreaterThan(start + CEILING);
   });
 
   it("lets go of a new deploy's asset it turns down unread", async () => {
@@ -2617,6 +2720,25 @@ describe("assets", () => {
     // errored it — the write reaching the page by the one door left.
     expect(worker.released).toEqual([]);
     await expect(pending(response!.text())).resolves.toBe("pending");
+  });
+
+  it("gives up the write's copy of an asset still arriving two minutes on, and leaves the page its own", async () => {
+    // The write is bounded like every other read of a body, and what it gives
+    // up is its own copy: the page's read runs on past the ceiling to the last
+    // byte, exactly as it would with no worker installed.
+    const worker = shell();
+    await worker.install();
+    worker.respond(LATE_FONT, unending(worker, "font/woff2"));
+    const start = worker.now;
+    const { responded, settled } = worker.dispatch(fromPage(LATE_FONT, "font"));
+    const response = await responded;
+    expect(worker.now).toBe(start);
+    await settled;
+    expect(worker.now).toBe(start + CEILING);
+    expect(worker.puts).not.toContain(LATE_FONT);
+    expect(worker.released).toEqual([]);
+    await expect(response!.text()).resolves.toBe("x".repeat(80));
+    expect(worker.now).toBeGreaterThan(start + CEILING);
   });
 
   it("lets go of its copy of an asset it has no cache to store in, so the page alone holds the connection", async () => {
