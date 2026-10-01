@@ -618,23 +618,45 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
    * down, and it is recorded in `released`. Observed here and not at the route,
    * because the route keeps a branch of its own so that it can answer again,
    * and a cancel never gets past a branch somebody still holds.
+   *
+   * An ABORT of the signal the worker passed reaches past the headers too: it
+   * errors a body still arriving, and every branch of it with it, since every
+   * branch is fed from this one. That is what a real fetch does — the Fetch
+   * Standard's abort steps error the response's body, and in Chromium the
+   * other branch's read rejected `AbortError` (task 7's fourth fix round) — and
+   * it is the difference between the two ways a worker can give up on a body:
+   * a cancel stops at a branch somebody else holds, an abort does not. Not
+   * modelled: an abort once the last byte is in, which the Fetch Standard
+   * would still let error a branch that has not read it yet. No worker here
+   * can reach that — `timed` clears its deadline when the headers arrive — and
+   * nothing has measured it.
    */
-  const connection = (served: Response, pathname: string): Response => {
+  const connection = (served: Response, pathname: string, signal?: AbortSignal): Response => {
     if (!served.body) return served;
     const reader = served.body.getReader();
-    return new Response(
-      new ReadableStream<Uint8Array>({
-        async pull(controller) {
-          const { done, value } = await reader.read();
-          if (done) controller.close();
-          else controller.enqueue(value);
-        },
-        cancel() {
-          harness.released.push(pathname);
-        },
-      }),
-      { status: served.status, statusText: served.statusText, headers: served.headers },
+    let source!: ReadableStreamDefaultController<Uint8Array>;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        source = controller;
+      },
+      async pull(controller) {
+        const { done, value } = await reader.read();
+        if (done) controller.close();
+        else controller.enqueue(value);
+      },
+      cancel() {
+        harness.released.push(pathname);
+      },
+    });
+    // A no-op on a body that has already ended, as erroring a closed stream is.
+    signal?.addEventListener("abort", () =>
+      source.error(new DOMException("The user aborted a request.", "AbortError")),
     );
+    return new Response(body, {
+      status: served.status,
+      statusText: served.statusText,
+      headers: served.headers,
+    });
   };
   const ownCache = cacheName(source);
   /** Named as a function so neither `cache` nor `keys()` has to reach for `this`. */
@@ -760,7 +782,7 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
       const response = routes.get(url.href);
       // No route programmed = no network. A real worker sees a TypeError here.
       if (!response) return Promise.reject(new TypeError(`no route for ${url.href}`));
-      return Promise.resolve(connection(response.clone(), url.pathname));
+      return Promise.resolve(connection(response.clone(), url.pathname, init?.signal));
     }),
   };
 

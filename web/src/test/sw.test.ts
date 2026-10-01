@@ -2543,6 +2543,11 @@ describe("assets", () => {
     await worker.install();
     worker.respond(LATE_FONT, worker.trickle("font/woff2", split("woff2".repeat(4), 10), { every: 1260 }));
     const response = await worker.request(fromPage(LATE_FONT, "font"));
+    // The PAGE's copy, whole, and this is the assertion that reaches the
+    // request's own deadline. That one is on the headers alone and taken down
+    // when they arrive; left armed past them, it fires at ten seconds with this
+    // body still arriving, and an abort errors every branch of a body — the
+    // page's along with the write's — where a cancel would stop at the tee.
     await expect(response!.text()).resolves.toBe("woff2".repeat(4));
     expect(worker.now).toBeGreaterThanOrEqual(12600);
     expect(worker.keys()).toContain(LATE_FONT);

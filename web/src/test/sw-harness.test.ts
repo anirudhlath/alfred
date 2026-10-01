@@ -946,4 +946,43 @@ describe("the fake network", () => {
     await worker.install();
     expect(worker.released).toEqual([]);
   });
+
+  it("errors a body still arriving, every branch of it, when its request is aborted after the headers", async () => {
+    // A real fetch's abort does not stop at the headers: the Fetch Standard's
+    // abort steps error the response's body, and in Chromium that reaches every
+    // branch of it — measured in task 7's fourth fix round, where aborting after
+    // the headers made the other branch's read reject with AbortError. It is
+    // the whole reason a worker reading its copy of the PAGE's response cancels
+    // that copy and never aborts the request: the abort would end the page's
+    // read with its own. A harness that let a signal go quiet once the headers
+    // were in could not tell the two apart, and passed a worker whose request
+    // deadline was left armed past them.
+    const worker = loadWorker(`
+      self.addEventListener("fetch", (event) => {
+        const controller = new self.AbortController();
+        event.respondWith(self.fetch(event.request, { signal: controller.signal }).then((response) => {
+          const copy = response.clone();
+          event.waitUntil(copy.text().catch((error) => self.caches.open("copy: " + error.name)));
+          controller.abort();
+          return response;
+        }));
+      });
+    `);
+    /** How a read ended: the name of what it rejected with, or "pending" if it has not. */
+    const ending = (read: Promise<unknown>) =>
+      Promise.race([
+        read.then(
+          () => "resolved",
+          (error: Error) => error.name,
+        ),
+        new Promise((resolve) => setTimeout(() => resolve("pending"), 20)),
+      ]);
+    worker.respond("/x", stalled());
+    const { responded, settled } = worker.dispatch({ path: "/x" });
+    // The page's branch…
+    await expect(ending((await responded)!.text())).resolves.toBe("AbortError");
+    // …and the worker's, whose read ending is what lets the event finish.
+    await expect(ending(settled)).resolves.toBe("resolved");
+    expect([...worker.store.keys()]).toEqual(["copy: AbortError"]);
+  });
 });
