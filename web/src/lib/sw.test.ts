@@ -161,6 +161,40 @@ describe("installServiceWorker", () => {
     await expect(installServiceWorker({ enabled: true })).rejects.toBe(refused);
   });
 
+  it("leaves nothing listening when the worker cannot be registered", async () => {
+    // A rejection hands the caller no uninstaller, so whatever the install had
+    // attached by then has to come off on the way out.
+    const reload = vi.fn();
+    const refused = mimeRefusal();
+    const { container } = registry({ controller: {} });
+    container.register.mockRejectedValue(refused);
+    await expect(installServiceWorker({ enabled: true, reload })).rejects.toBe(refused);
+    container.control({});
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it("attaches nothing once a later install has replaced it mid-registration", async () => {
+    const first = registry({ controller: {} });
+    let registered: (registration: FakeRegistration) => void = () => {};
+    first.container.register.mockReturnValue(
+      new Promise<FakeRegistration>((resolve) => {
+        registered = resolve;
+      }),
+    );
+    const replaced = installServiceWorker({ enabled: true });
+    registry({ controller: {} });
+    await install();
+    const seen = watch();
+    const late = new FakeWorker("installing");
+    first.registration.installing = late;
+    registered(first.registration);
+    cleanups.push(await replaced);
+    late.settle("installed");
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(seen).toEqual([false]);
+    expect(first.registration.updates).toBe(0);
+  });
+
   it("asks for a changed worker every time the app comes back", async () => {
     const { registration } = registry();
     await install();
@@ -297,8 +331,9 @@ describe("onUpdateReady", () => {
   });
 
   it("forgets a worker an earlier install saw waiting", async () => {
-    // State is derived by each install from its own registration, never
-    // inherited — the earlier install is deliberately not stopped first.
+    // A later install replaces an earlier one, and the earlier one's waiting
+    // worker goes with it: it belonged to a registration the later install has
+    // not looked at. The earlier install is deliberately not stopped first.
     const earlier = new FakeWorker("installed");
     registry({ waiting: earlier, controller: {} });
     await install();
@@ -308,6 +343,47 @@ describe("onUpdateReady", () => {
     applyUpdate();
     expect(seen).toEqual([true, false]);
     expect(earlier.postMessage).not.toHaveBeenCalled();
+  });
+
+  it("hears nothing more from an install a later one replaced", async () => {
+    // One install per page: a second takes the first one's listeners off rather
+    // than running beside it, so the earlier registration cannot set the answer
+    // the later install owns.
+    const earlier = registry({ controller: {} });
+    await install();
+    registry({ controller: {} });
+    await install();
+    const seen = watch();
+    const late = new FakeWorker("installing");
+    earlier.registration.found(late);
+    late.settle("installed");
+    expect(seen).toEqual([false]);
+  });
+
+  it("replaces the current install even when the new one only unregisters", async () => {
+    // Every install replaces the one before it, whatever it goes on to do; in
+    // dev that is unregistering every worker, the waiting one included.
+    const waiting = new FakeWorker("installed");
+    registry({ waiting, controller: {} });
+    await install();
+    const seen = watch();
+    await installServiceWorker({ enabled: false });
+    applyUpdate();
+    expect(seen).toEqual([true, false]);
+    expect(waiting.postMessage).not.toHaveBeenCalled();
+  });
+
+  it("lets a replaced install's uninstaller leave the current one's worker alone", async () => {
+    registry({ controller: {} });
+    const replaced = await install();
+    const waiting = new FakeWorker("installed");
+    registry({ waiting, controller: {} });
+    await install();
+    const seen = watch();
+    replaced();
+    applyUpdate();
+    expect(seen).toEqual([true]);
+    expect(waiting.postMessage).toHaveBeenCalledOnce();
   });
 
   it("forgets the waiting worker once uninstalled, and hears nothing after", async () => {
@@ -385,6 +461,17 @@ describe("applyUpdate", () => {
     // Twice, because Safari fires it again after the reload starts. A second
     // reload is a reload loop, which is the classic way to brick a PWA.
     expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("reloads once for a takeover, however many times it was installed", async () => {
+    // The once is per page, not per install: a second install replaces the
+    // first, so there is only ever one listener to hear the takeover.
+    const reload = vi.fn();
+    const { container } = registry({ controller: {} });
+    await install({ reload });
+    await install({ reload });
+    container.control({});
+    expect(reload).toHaveBeenCalledOnce();
   });
 
   it("does not reload when the first worker claims the page", async () => {

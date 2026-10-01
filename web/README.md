@@ -102,7 +102,7 @@ Phase 3: the Workshop's other three benches, each a pure view over one hook call
 - **Install and Reach gates, and Web Push** — the rest of phase 4, and phase 5.
   The standalone metas are already in `index.html`. The **icon set, the manifests and a
   service worker have shipped** — see "The icons" below, and "The service worker".
-  Nothing registers the worker yet, so it is inert bytes in `public/` until it is. There are two manifests, `manifest.json` and
+  A production build registers the worker from `main.tsx` (`src/lib/sw.ts`); `npm run dev` unregisters it instead. There are two manifests, `manifest.json` and
   `manifest-light.json`, identical but for `theme_color` and `background_color`, and
   `applyTheme` swaps the `<link rel="manifest">` alongside the `theme-color` meta.
   **Read that narrowly, because it is not yet known to fix anything on a phone.** A
@@ -376,14 +376,29 @@ the floor.
 old worker controls to close, rather than activating under someone mid-conversation —
 activate prunes the cache down to the new build and then claims every open page. The one way it
 activates sooner is the one message it takes, `{ type: "SKIP_WAITING" }`, which the page's
-`applyUpdate()` (`src/lib/sw.ts`, a later slice) posts when the user asks. Anything else
-posted to it is ignored, and a `null` or `undefined` one does not throw. What this carries
+`applyUpdate()` in `src/lib/sw.ts` posts. Nothing calls it yet: the Room's update note, a later
+slice, is what will, when the user asks. Anything else posted to it is ignored, and a
+`null` or `undefined` one does not throw. What this carries
 is a change to `sw.js` itself, not a deploy: `VERSION` is bumped by hand and the file is
 byte-identical across most deploys, so most deploys install nothing, leave nothing waiting,
 and are taken at the next navigation by the network-first branch.
 
-**Nothing registers it yet** — `src/lib/sw.ts` is a later slice of phase 4. Until then it
-is inert bytes in `public/`.
+**`src/lib/sw.ts` registers it**, from one `installServiceWorker()` call in `main.tsx` after
+the app is handed to React. In a production build that registers `/sw.js` at the root; in dev
+it unregisters every worker and deletes every cache instead, because a worker left behind by
+`npm run preview` outlives the preview server and would serve `npm run dev` a stale shell on
+the same origin. A `register()` that rejects — `/sw.js` answered with `index.html` by
+`mount_spa`, which is what a deploy without the file looks like — is reported with
+`console.error`, and on a phone with no worker yet it is the only sign. A phone that already
+has one gets no rejection there, since `register()` answers at once without fetching; it
+hears the same refusal from the check `installServiceWorker` runs on every return to the
+foreground (`registration.update()` — an installed PWA is brought back rather than
+relaunched, and the browser itself only checks at a navigation), which fails quietly offline
+and with a `console.warn` online. A worker that reaches `installed` behind an existing
+controller is announced through `onUpdateReady()` (nothing subscribes yet; the Room's note
+is a later slice), and the page reloads once when the new worker takes control — but not
+when a first worker claims a page that had none, which `activate`'s `clients.claim()` does on
+every first visit. There is one install per page: a second replaces the first.
 
 Three rules govern it, and they are restated at the top of the file itself:
 
@@ -409,10 +424,11 @@ all is refused**: a reverse proxy's default page and the dev server's own `index
 both 200 `text/html`, and either would install cleanly as the shell and then stay, because
 `install` only re-runs when `sw.js`'s own bytes change.
 
-The tests are `src/test/sw.test.ts` (the worker, driven event by event) and
+The tests are `src/test/sw.test.ts` (the worker, driven event by event),
 `src/test/sw-harness.test.ts` (the fake scope itself — it has to model `ExtendableEvent`,
 `Cache.put` and `Clients.matchAll` closely enough that a test passing here means a worker
-that runs on a phone).
+that runs on a phone) and `src/lib/sw.test.ts` (the page's side, against a fake
+`navigator.serviceWorker`).
 
 ## Things worth knowing before you change something
 

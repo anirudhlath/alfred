@@ -21,12 +21,21 @@ type Listener = (ready: boolean) => void;
 const listeners = new Set<Listener>();
 
 /**
- * The worker the live install has seen reach "installed" behind a controller
- * and not yet seen leave it. Every `installServiceWorker` starts it from
- * nothing, its uninstaller clears it, and a worker that moves on — taking over,
- * or made redundant by a newer one — is dropped the moment it does.
+ * The worker the current install has seen reach "installed" behind a controller
+ * and not yet seen leave it. It belongs to that install: a worker that moves on
+ * — taking over, or made redundant by a newer one — is dropped the moment it
+ * does, and the current install's uninstaller drops it too.
  */
 let waiting: ServiceWorker | null = null;
+
+/**
+ * The uninstaller of the install made last: the current one. One install per
+ * page — main.tsx makes exactly one, and a second replaces the first rather than
+ * running beside it. Two side by side would each hear every event: one takeover
+ * would reload twice, and the earlier registration could set or clear the answer
+ * the later one owns.
+ */
+let current: (() => void) | null = null;
 
 /**
  * Tell every subscriber, if the answer changed. A worker can be tracked twice —
@@ -79,8 +88,11 @@ export async function unregisterAll(): Promise<void> {
 
 /**
  * Install the app shell's worker and watch for its successor. Resolves to the
- * uninstaller, which detaches everything this install attached and forgets its
- * waiting worker.
+ * uninstaller, which detaches everything this install attached and, unless a
+ * later install has replaced this one, forgets its waiting worker. A later
+ * install runs this one's uninstaller before it starts, which leaves this one
+ * owning nothing: calling its uninstaller afterwards changes nothing the current
+ * install holds.
  *
  * Rejects when `register()` does, and the caller must report it: a /sw.js that
  * comes back as HTML — `mount_spa` answers any unknown path with index.html — is
@@ -95,17 +107,28 @@ export async function unregisterAll(): Promise<void> {
  */
 export async function installServiceWorker(options: SwOptions = {}): Promise<() => void> {
   const { enabled = import.meta.env.PROD, reload = () => window.location.reload() } = options;
-  // Derived by this install, never inherited: whatever an earlier install saw
-  // waiting belonged to a registration this one has not looked at yet.
-  setWaiting(null);
-  if (!("serviceWorker" in navigator)) return () => {};
-  if (!enabled) {
+  // Replace, never inherit: the earlier install's listeners come off, and what
+  // it saw waiting goes with it — that belonged to a registration this one has
+  // not looked at yet.
+  current?.();
+  // Dev registers nothing and clears what is there; a browser with no service
+  // worker has nothing to clear, and unregisterAll leaves it untouched.
+  if (!enabled || !("serviceWorker" in navigator)) {
     await unregisterAll();
     return () => {};
   }
 
   const container = navigator.serviceWorker;
   const detach: (() => void)[] = [];
+  const stop = () => {
+    for (const off of detach.splice(0)) off();
+    // A replaced install owns nothing any more. Clearing the answer here would
+    // hide a worker the current install still holds, and that is still waiting.
+    if (current !== stop) return;
+    // Nothing is listening to it any more, so nothing would hear it leave.
+    setWaiting(null);
+  };
+  current = stop;
   const listen = (target: EventTarget, type: string, fn: () => void) => {
     target.addEventListener(type, fn);
     detach.push(() => target.removeEventListener(type, fn));
@@ -130,7 +153,18 @@ export async function installServiceWorker(options: SwOptions = {}): Promise<() 
     reload();
   });
 
-  const registration = await container.register(SW_URL);
+  let registration: ServiceWorkerRegistration;
+  try {
+    registration = await container.register(SW_URL);
+  } catch (error) {
+    // The caller gets this rejection rather than an uninstaller, so whatever was
+    // attached above comes off here.
+    stop();
+    throw error;
+  }
+  // Replaced while it was registering: a later install owns the page now, and
+  // this one's listeners are already off. Attach nothing more.
+  if (current !== stop) return stop;
 
   const track = (incoming: ServiceWorker | null) => {
     if (!incoming) return;
@@ -173,9 +207,5 @@ export async function installServiceWorker(options: SwOptions = {}): Promise<() 
     }),
   );
 
-  return () => {
-    for (const off of detach.splice(0)) off();
-    // Nothing is listening to it any more, so nothing would hear it leave.
-    setWaiting(null);
-  };
+  return stop;
 }
