@@ -88,13 +88,16 @@ describe("UpdateNote", () => {
 
   it("gives the reload a full-size hit area", () => {
     // 13 px text is not a 44 px target. A negative-inset pseudo-element is the
-    // house pattern for growing one (EventRow, Switch): a fixed 20 px box and
-    // 12 px past either edge make 44, where the bare 18.2 px line box would make
-    // 42.2, and 8 px either side takes the 42 px word to 58. `relative` anchors
-    // the inset to the button — without it, the nearest positioned ancestor is
-    // the Room's header, and the whole header would tap. `-my-px` keeps the
-    // 20 px box from setting the row's height: its margin box is 18 px, under
-    // the sentence's 18.2, so a one-line pill stays OfflineNote's 34.2 px, not 36.
+    // house pattern for growing one (EventRow, Switch): a fixed 20 px box, 17 px
+    // above it and 7 px below make 44, where the bare 18.2 px line box would make
+    // 42.2, and 8 px either side takes the 42 px word to 58. Lopsided on purpose:
+    // with no row under the note, the Timeline paints over everything below the
+    // pill, so the 7 px stop inside it and the 17 px reach into the gap above.
+    // `relative` anchors the inset to the button — without it, the nearest
+    // positioned ancestor is the Room's header, and the whole header would tap.
+    // `-my-px` keeps the 20 px box from setting the row's height: its margin box
+    // is 18 px, under the sentence's 18.2, so a one-line pill stays OfflineNote's
+    // 34.2 px, not 36.
     render(<UpdateNote ready onReload={() => {}} />);
     expect(screen.getByRole("button", { name: "Reload" }).className.split(" ")).toEqual(
       expect.arrayContaining([
@@ -103,7 +106,8 @@ describe("UpdateNote", () => {
         "-my-px",
         "after:absolute",
         "after:-inset-x-2",
-        "after:-inset-y-3",
+        "after:-top-[17px]",
+        "after:-bottom-[7px]",
         "after:content-['']",
       ]),
     );

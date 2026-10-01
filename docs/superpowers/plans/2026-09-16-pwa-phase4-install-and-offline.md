@@ -3787,13 +3787,16 @@ describe("UpdateNote", () => {
 
   it("gives the reload a full-size hit area", () => {
     // 13 px text is not a 44 px target. A negative-inset pseudo-element is the
-    // house pattern for growing one (EventRow, Switch): a fixed 20 px box and
-    // 12 px past either edge make 44, where the bare 18.2 px line box would make
-    // 42.2, and 8 px either side takes the 42 px word to 58. `relative` anchors
-    // the inset to the button — without it, the nearest positioned ancestor is
-    // the Room's header, and the whole header would tap. `-my-px` keeps the
-    // 20 px box from setting the row's height: its margin box is 18 px, under
-    // the sentence's 18.2, so a one-line pill stays OfflineNote's 34.2 px, not 36.
+    // house pattern for growing one (EventRow, Switch): a fixed 20 px box, 17 px
+    // above it and 7 px below make 44, where the bare 18.2 px line box would make
+    // 42.2, and 8 px either side takes the 42 px word to 58. Lopsided on purpose:
+    // with no row under the note, the Timeline paints over everything below the
+    // pill, so the 7 px stop inside it and the 17 px reach into the gap above.
+    // `relative` anchors the inset to the button — without it, the nearest
+    // positioned ancestor is the Room's header, and the whole header would tap.
+    // `-my-px` keeps the 20 px box from setting the row's height: its margin box
+    // is 18 px, under the sentence's 18.2, so a one-line pill stays OfflineNote's
+    // 34.2 px, not 36.
     render(<UpdateNote ready onReload={() => {}} />);
     expect(screen.getByRole("button", { name: "Reload" }).className.split(" ")).toEqual(
       expect.arrayContaining([
@@ -3802,7 +3805,8 @@ describe("UpdateNote", () => {
         "-my-px",
         "after:absolute",
         "after:-inset-x-2",
-        "after:-inset-y-3",
+        "after:-top-[17px]",
+        "after:-bottom-[7px]",
         "after:content-['']",
       ]),
     );
@@ -3918,10 +3922,18 @@ export interface UpdateNoteProps {
  * `sr-only`, for the reason `OfflineNote` does.
  *
  * `Reload` is 13 px text, 42 px wide. Its box is fixed at 20 px tall, and its
- * `::after` reaches 12 px past the top and bottom and 8 px past each side: 44 by
- * 58 to tap. On its bare 18.2 px line box the same inset would make 42.2. Its
+ * `::after` reaches 17 px above it, 7 px below and 8 px past each side: 44 by 58
+ * to tap. On its bare 18.2 px line box the same reach would make 42.2. Its
  * `-my-px` lays that box out at 18 px, under the sentence's 18.2, so a one-line
  * pill is as tall as `OfflineNote`'s rather than 1.8 px taller.
+ *
+ * The target is lopsided because nothing under the pill is safe to reach into.
+ * With no row below the note, the header ends at the pill, and the Timeline — a
+ * later `relative z-[1]` sibling — paints over the header and takes every tap
+ * past that edge. So the 7 px end just inside the pill, whose bottom edge is
+ * 7.1 px under the box on one line, and the 17 px find the rest in the 12 px gap
+ * above: 9.9 px past the pill, about 2 px short of the row above. Wrapped onto
+ * two lines it reaches 0.8 px above the pill; onto three, not past it at all.
  */
 export function UpdateNote({ ready, onReload }: UpdateNoteProps) {
   return (
@@ -3945,7 +3957,7 @@ export function UpdateNote({ ready, onReload }: UpdateNoteProps) {
           <button
             type="button"
             onClick={onReload}
-            className="relative -my-px ml-auto h-5 shrink-0 font-medium after:absolute after:-inset-x-2 after:-inset-y-3 after:content-['']"
+            className="relative -my-px ml-auto h-5 shrink-0 font-medium after:absolute after:-inset-x-2 after:-top-[17px] after:-bottom-[7px] after:content-['']"
             style={{ color: "var(--accent-text)" }}
           >
             Reload
@@ -3957,7 +3969,7 @@ export function UpdateNote({ ready, onReload }: UpdateNoteProps) {
 }
 ```
 
-*(corrected in task 10: two things. The docstring opened "A newer build has installed and is waiting" and called the note "the whole of the 'update without reinstalling' path on an installed iOS PWA" — both false under R1, restated above. And the button had no `h-5`, so its box was its 18.2 px line box and `after:-inset-y-3` made a 42.2 px target against the Conventions' ≥44. Measured in headless Chromium with DM Sans loaded: 18.19 px box and 42.19 px target as planned; 20 and 44 with `h-5`, and the 42 px word 58 wide. On a phone the sentence wraps to two or three lines and the target stays inside the pill. On one line, in a wide window, `h-5` alone made the pill 36 px against `OfflineNote`'s 34.19, because the 20 px box was the row's tallest item (review of task 10, round 1); `-my-px` lays the box out at 18 px, under the sentence's 18.19 line, so both one-line pills are 34.19 again — wrapped pills were already equal, 52.38 on two lines and 70.56 on three — while the box stays 20 px and the target 44 by 58. Measured at 320, 390, 768 and 1024 px with both notes showing. On one line the target reaches 4.9 px past the pill into the 12 px gap above it (`mt-2` and the header's `gap-1`), 7.1 px short of the row there, and, with the quiet row under it, into the same gap below; no point of either row reaches Reload. With no row under it, the header ends at the pill, and the Timeline — a later `relative z-[1]` sibling, so painted over the header — takes those last 4.9 px: 39.1 px of the 44 reach Reload there (40.0 before `-my-px`). That one is open; fix round 1 of the task-10 report measures it. The dot's sentence and the last paragraph are new.)*
+*(corrected in task 10: two things. The docstring opened "A newer build has installed and is waiting" and called the note "the whole of the 'update without reinstalling' path on an installed iOS PWA" — both false under R1, restated above. And the button had no `h-5`, so its box was its 18.2 px line box and `after:-inset-y-3` made a 42.2 px target against the Conventions' ≥44. Measured in headless Chromium with DM Sans loaded: 18.19 px box and 42.19 px target as planned; 20 and 44 with `h-5`, and the 42 px word 58 wide. On a phone the sentence wraps to two or three lines, where that symmetric target stayed inside the pill. On one line, in a wide window, `h-5` alone made the pill 36 px against `OfflineNote`'s 34.19, because the 20 px box was the row's tallest item (review of task 10, round 1); `-my-px` lays the box out at 18 px, under the sentence's 18.19 line, so both one-line pills are 34.19 again — wrapped pills were already equal, 52.38 on two lines and 70.56 on three — while the box stays 20 px. And the target is lopsided: `after:-inset-y-3` became `after:-top-[17px] after:-bottom-[7px]` (fix round 1, ruled option B). With no row under the note, the header ends at the pill, and the Timeline — a later `relative z-[1]` sibling, so painted over the header — took every tap below that edge: on one line, the last 4.9 px of the symmetric target, leaving 39.1 px of the 44 to Reload (40.0 before `-my-px`). Now the 7 px end 0.09 px inside the pill on one line and the 17 px reach 9.9 px into the 12 px gap above it (`mt-2` and the header's `gap-1`), 2.1 px short of the row there; wrapped, 0.8 px past the pill on two lines and not past it on three. Measured in Chromium with the Timeline on the page, at 320, 390, 768 and 1024 px, the quiet row on and off, `OfflineNote` showing and idle: every point of the 44 px column under Reload, at its centre and both edges, reaches Reload, and no point of a row above or below it does. Each point is read with two `elementFromPoint` queries, because one tests the 1 px square below and to the right of its point and reports a box from 1 px early. The dot's sentence and the last two paragraphs are new.)*
 
 - [ ] **Step 6: Mount it in the Room**
 
