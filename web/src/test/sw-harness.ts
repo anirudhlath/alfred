@@ -271,6 +271,17 @@ export interface Harness {
    * infallible. With no argument, every open rejects.
    */
   refuseOpen(name?: string): void;
+  /**
+   * Program a page's `navigate()` to reject although the worker controls it,
+   * with a TypeError, and record no navigation for it. A path, as `clients`
+   * names the page. A page that has closed rejects; so, in Chromium, does one
+   * whose own reload is under way — even as the worker's navigation replaces
+   * that reload ("Cannot navigate to URL", measured in task 11). Not a corner
+   * case for a worker that navigates on activate: activation fires
+   * `controllerchange` at every page it hands over, and `src/lib/sw.ts`
+   * answers that by reloading.
+   */
+  refuseNavigate(path: string): void;
   /** Every pathname `self.fetch` was called with, in order. */
   fetched: string[];
   /**
@@ -424,6 +435,19 @@ export interface Harness {
   skipWaitingCalls: number;
   claimCalls: number;
   unregisterCalls: number;
+  /**
+   * Whether an `unregister()` has FINISHED, which is not when it was called: a
+   * real one is a job the browser runs, and its promise settles once the
+   * registration is gone. Until then the registration is still there. A
+   * navigation can be matched to it — and in Chromium one matched to a worker
+   * that is still activating waits for it — and a `register()` of its script
+   * revives it rather than making a new one.
+   */
+  unregistered: boolean;
+  /**
+   * The absolute URL of every navigation a page was sent on by `navigate()`, in
+   * order — one that started, so never one that rejected.
+   */
   navigated: string[];
   /** Everything currently in CACHE, as pathnames, sorted. */
   keys(name?: string): string[];
@@ -512,6 +536,47 @@ export interface LoadOptions {
    * take over from passes every test that only ever installs first.
    */
   update?: boolean;
+  /**
+   * The pages open in the worker's scope — its window clients. By default one
+   * page at the root that no worker controls: the page that registered this
+   * worker on a first install, which is the one page every install has.
+   */
+  clients?: readonly ClientSpec[];
+}
+
+/**
+ * An open page, as a test describes it. Which worker controls it is the whole
+ * of what a worker can tell about a page, and it moves as a browser moves it:
+ *
+ * - `controlled`: the older worker — `update` — controls it. The page was
+ *   loaded while the previous build's worker was active, and is served by it.
+ *   The spec's Activate algorithm re-points every such page at the activating
+ *   worker, and fires `controllerchange` at it, BEFORE it dispatches
+ *   `activate`. So inside that event these pages are already this worker's:
+ *   `matchAll()` lists them and `navigate()` works on them, with no claim().
+ * - otherwise no worker controls it — the page that registered this worker,
+ *   or one loaded past the workers. `matchAll()` lists it only with
+ *   `includeUncontrolled`, or once `claim()` has taken it, and `navigate()`
+ *   rejects for it until then.
+ *
+ * Not modelled: a page controlled by a worker of some other registration —
+ * from this worker it is indistinguishable from an uncontrolled one, so it
+ * would add a name and no behaviour; the document a navigation brings in,
+ * which `navigated` records the URL of and nothing more; and a claim() made
+ * after the worker's own unregister(), which in Chromium took nothing and
+ * never settled.
+ */
+export interface ClientSpec {
+  /** Where the page is: a path, resolved against the instance's origin. */
+  path: string;
+  /** Controlled by the older worker. Needs `update`: a first install has none. */
+  controlled?: boolean;
+}
+
+/** An open page as the fake `Clients` tracks it: where it is, and who controls it. */
+interface OpenPage {
+  url: string;
+  controller: "older" | "this" | null;
 }
 
 /**
@@ -539,9 +604,21 @@ interface FakeServiceWorker {
  *
  */
 export function loadWorker(source: string, options: LoadOptions = {}): Harness {
-  const { expose = [], scope: scopeUrl = `${ORIGIN}/`, update = false } = options;
+  const { expose = [], scope: scopeUrl = `${ORIGIN}/`, update = false, clients = [{ path: "/" }] } = options;
   /** This instance's notion of "us" — `ORIGIN` unless a test moved the scope. */
   const origin = new URL(scopeUrl).origin;
+  /**
+   * The open pages and who controls each: the older worker, this one, or none.
+   * See `ClientSpec` for how that moves.
+   */
+  const pages = clients.map(({ path, controlled = false }): OpenPage => {
+    if (controlled && !update) {
+      throw new Error(`${path} cannot be controlled by an older worker on a first install; pass update: true`);
+    }
+    return { url: new URL(path, origin).href, controller: controlled ? "older" : null };
+  });
+  /** Absolute page hrefs whose `navigate()` rejects although this worker controls them. */
+  const navigateRefusals = new Set<string>();
   const store = new Map<string, Map<string, Response>>();
   /** Keyed by absolute href, not pathname: a cross-origin URL is a different route. */
   const routes = new Map<string, Response>();
@@ -668,14 +745,29 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
   let skipWaitingCalls = 0;
   let claimCalls = 0;
   let unregisterCalls = 0;
+  let unregistered = false;
 
-  const client = {
-    url: `${origin}/`,
+  /**
+   * A `WindowClient` over one page, as `matchAll()` hands one out: a new
+   * object every call, as a browser's are. `navigate()` is refused for a page
+   * this worker does not control, as the spec's is, and for one
+   * `refuseNavigate()` names; a navigation that starts is recorded at the
+   * call, which is when a browser sets it going.
+   */
+  const windowClient = (page: OpenPage) => ({
+    url: page.url,
     navigate: (url: string) => {
-      harness.navigated.push(url);
+      const refused =
+        page.controller !== "this"
+          ? "this worker does not control the page"
+          : navigateRefusals.has(page.url)
+            ? "the page is closing or already reloading"
+            : undefined;
+      if (refused) return Promise.reject(new TypeError(`Failed to navigate ${page.url}: ${refused}`));
+      harness.navigated.push(new URL(url, origin).href);
       return Promise.resolve();
     },
-  };
+  });
 
   const scope = {
     addEventListener(type: string, fn: (event: unknown) => void) {
@@ -693,9 +785,13 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
       active: (update
         ? { scriptURL: `${origin}/sw.js`, state: "activated" }
         : null) as FakeServiceWorker | null,
+      // Counted at the call, done a macrotask later: see `Harness.unregistered`.
       unregister: () => {
         unregisterCalls += 1;
-        return Promise.resolve(true);
+        return settled(() => {
+          unregistered = true;
+          return true;
+        });
       },
     },
     // A promise, as the real one returns: a worker that chains on it would
@@ -705,16 +801,24 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
       return Promise.resolve();
     },
     clients: {
+      // Takes every open page in scope, the ones no worker controlled
+      // included, and fires `controllerchange` at each in a browser.
       claim: () => {
         claimCalls += 1;
+        for (const page of pages) page.controller = "this";
         return Promise.resolve();
       },
-      // A real `matchAll()` sees only the clients this worker CONTROLS, so an
-      // activating worker gets an empty list until it has claimed them or asks
-      // for `includeUncontrolled`. Modelled, because "then it reloads the open
-      // pages" is a step that silently does nothing if the order is wrong.
+      // A real `matchAll()` sees only the clients this worker CONTROLS unless
+      // asked for `includeUncontrolled`. Inside activate that is exactly the
+      // pages the older worker controlled — activation re-pointed them, see
+      // `activate` below — and never a page no worker controlled: the pair a
+      // worker that reloads "the open pages" must tell apart, because the page
+      // that registered it is one of the open pages, and reloading that one
+      // registers it again.
       matchAll: (options?: { includeUncontrolled?: boolean }) =>
-        Promise.resolve(options?.includeUncontrolled || claimCalls > 0 ? [client] : []),
+        Promise.resolve(
+          pages.filter((page) => options?.includeUncontrolled || page.controller === "this").map(windowClient),
+        ),
     },
     caches: {
       open: (name: string) => {
@@ -927,6 +1031,7 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     refusePut: (key) => void putRefusals.add(new URL(key, origin).href),
     refuseMatch: (key) => void matchRefusals.add(new URL(key, origin).href),
     refuseOpen: (name = "*") => void openRefusals.add(name),
+    refuseNavigate: (path) => void navigateRefusals.add(new URL(path, origin).href),
     inner,
     install: async () => {
       const { registration } = scope;
@@ -953,6 +1058,9 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
       registration.waiting = null;
       registration.active = activating;
       activating.state = "activating";
+      // Before the event, as the spec's Activate algorithm does it: every page
+      // the older worker controlled is this worker's now.
+      for (const page of pages) if (page.controller === "older") page.controller = "this";
       try {
         await extendable("activate");
       } finally {
@@ -988,6 +1096,9 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     },
     get unregisterCalls() {
       return unregisterCalls;
+    },
+    get unregistered() {
+      return unregistered;
     },
     keys(name = cacheOrThrow()) {
       return [...(store.get(name)?.keys() ?? [])].map((url) => new URL(url).pathname).sort();

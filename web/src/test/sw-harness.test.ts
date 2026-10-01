@@ -366,45 +366,123 @@ describe("the fake CacheStorage", () => {
 });
 
 describe("the fake Clients", () => {
-  const claimer = (before: boolean) =>
-    loadWorker(`
-      self.addEventListener("activate", (event) => {
-        event.waitUntil((async () => {
-          ${before ? "await self.clients.claim();" : ""}
-          for (const client of await self.clients.matchAll({ type: "window" })) {
-            await client.navigate(client.url);
-          }
-        })());
-      });
-    `);
+  /**
+   * In activate: claims first when asked to, then navigates every page that
+   * `matchAll(<matchAll>)` answers, and writes how each one went into a cache
+   * of its own as `/<outcome><page>` — "navigated", or the name of what the
+   * navigation rejected with — because a cache key is the one thing a worker
+   * can leave behind that a test can read.
+   */
+  const navigating = ({ claims = false, matchAll = "" } = {}) => `
+    self.addEventListener("activate", (event) => {
+      event.waitUntil((async () => {
+        ${claims ? "await self.clients.claim();" : ""}
+        const probe = await self.caches.open("probe");
+        for (const client of await self.clients.matchAll(${matchAll})) {
+          const outcome = await client.navigate(client.url).then(() => "navigated", (error) => error.name);
+          await probe.put("/" + outcome + new URL(client.url).pathname, new Response(""));
+        }
+      })());
+    });
+  `;
 
-  it("shows no client to a worker that has not claimed one", async () => {
-    // matchAll() sees only the clients this worker CONTROLS. A kill switch that
-    // reloads the open pages before claiming them reloads nothing at all, and
-    // a harness that always answers one client would call that a pass.
-    const worker = claimer(false);
+  it("hands the activating worker the pages the older one controlled, before the event", async () => {
+    // The spec's Activate algorithm re-points every client using the
+    // registration at the new worker — and fires `controllerchange` at it —
+    // BEFORE it dispatches `activate`. So the pages the previous build was
+    // serving are this worker's, and in matchAll(), with no claim() at all.
+    // A fake that hid them until a claim described the opposite of a browser,
+    // and it is the fake the kill switch's reload loop was written against.
+    const worker = loadWorker(navigating(), { update: true, clients: [{ path: "/", controlled: true }] });
     await worker.activate();
+    expect(worker.keys("probe")).toEqual(["/navigated/"]);
+    expect(worker.navigated).toEqual([`${ORIGIN}/`]);
+  });
+
+  it("leaves those pages with the older worker while this one is only installing", async () => {
+    // The re-pointing is activation's, not install's: an installing worker
+    // controls nothing, and a page the older worker serves is still its page
+    // until this one activates — for as long as it waits, on an update.
+    const worker = loadWorker(
+      `self.addEventListener("install", (event) => {
+        event.waitUntil((async () => {
+          const probe = await self.caches.open("probe");
+          await probe.put("/listed/" + (await self.clients.matchAll()).length, new Response(""));
+        })());
+      });`,
+      { update: true, clients: [{ path: "/", controlled: true }] },
+    );
+    await worker.install();
+    expect(worker.keys("probe")).toEqual(["/listed/0"]);
+  });
+
+  it("shows a page that nothing controlled to no worker that has not claimed it", async () => {
+    // The default page: the one that registered this worker on a first
+    // install, which no worker has ever served. matchAll() lists only the
+    // clients this worker CONTROLS, so it is not there.
+    const worker = loadWorker(navigating());
+    await worker.activate();
+    expect(worker.keys("probe")).toEqual([]);
     expect(worker.navigated).toEqual([]);
   });
 
   it("shows it once the worker has claimed", async () => {
-    const worker = claimer(true);
+    const worker = loadWorker(navigating({ claims: true }));
     await worker.activate();
     expect(worker.navigated).toEqual([`${ORIGIN}/`]);
   });
 
-  it("shows it without a claim when asked for uncontrolled clients", async () => {
-    const worker = loadWorker(`
-      self.addEventListener("activate", (event) => {
-        event.waitUntil((async () => {
-          for (const client of await self.clients.matchAll({ includeUncontrolled: true })) {
-            await client.navigate(client.url);
-          }
-        })());
-      });
-    `);
+  it("tells a page the older worker controlled from one beside it that it did not", async () => {
+    const worker = loadWorker(navigating(), {
+      update: true,
+      clients: [{ path: "/fresh" }, { path: "/stale", controlled: true }],
+    });
     await worker.activate();
-    expect(worker.navigated).toEqual([`${ORIGIN}/`]);
+    expect(worker.navigated).toEqual([`${ORIGIN}/stale`]);
+  });
+
+  it("records where navigate() sent a page, not where the page was", async () => {
+    // Every other test here sends a page to its own URL. A fake that wrote down
+    // the page's URL instead would pass a worker that sent every page to the
+    // root for one that reloads each where it is.
+    const worker = loadWorker(
+      `self.addEventListener("activate", (event) => {
+        event.waitUntil((async () => {
+          for (const client of await self.clients.matchAll()) await client.navigate("/elsewhere");
+        })());
+      });`,
+      { update: true, clients: [{ path: "/actions/7", controlled: true }] },
+    );
+    await worker.activate();
+    expect(worker.navigated).toEqual([`${ORIGIN}/elsewhere`]);
+  });
+
+  it("lists an uncontrolled page when asked to, and still will not navigate it", async () => {
+    // `includeUncontrolled` widens what matchAll() shows, not what the worker
+    // may do: navigate() on a page this worker does not control rejects with a
+    // TypeError, at the call.
+    const worker = loadWorker(navigating({ matchAll: "{ includeUncontrolled: true }" }));
+    await worker.activate();
+    expect(worker.keys("probe")).toEqual(["/TypeError/"]);
+    expect(worker.navigated).toEqual([]);
+  });
+
+  it("rejects navigate() for a controlled page that is closing or already reloading", async () => {
+    // Controlled, and listed, and refused all the same. src/lib/sw.ts reloads
+    // a page when its controller changes, and Chromium rejects navigate() for
+    // a page whose own reload is under way — even as the worker's navigation
+    // replaces it. A page that has closed rejects too.
+    const worker = loadWorker(navigating(), { update: true, clients: [{ path: "/", controlled: true }] });
+    worker.refuseNavigate("/");
+    await worker.activate();
+    expect(worker.keys("probe")).toEqual(["/TypeError/"]);
+    expect(worker.navigated).toEqual([]);
+  });
+
+  it("refuses a page controlled by an older worker when there is no older worker", () => {
+    // A first install has nothing before it to have controlled anything. A
+    // fixture that said otherwise would describe a phone no test should pass on.
+    expect(() => loadWorker("", { clients: [{ path: "/", controlled: true }] })).toThrow(/update: true/);
   });
 });
 
@@ -423,6 +501,19 @@ describe("the fake registration", () => {
     self.addEventListener("install", (event) => event.waitUntil(seen("install")));
     self.addEventListener("activate", (event) => event.waitUntil(seen("activate")));
   `;
+
+  it("finishes an unregister() when its promise settles, not when it is called", async () => {
+    // A real one is a job the browser runs, and until it has run the
+    // registration is still there to match a navigation against. A fake that
+    // was done at the call could not tell a worker that waits for it from one
+    // that navigates the moment it has asked.
+    const worker = loadWorker(`self.addEventListener("message", () => { self.registration.unregister(); });`);
+    await worker.message("go");
+    expect(worker.unregisterCalls).toBe(1);
+    expect(worker.unregistered).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(worker.unregistered).toBe(true);
+  });
 
   it("has no active worker on a first install, as a browser's does not", async () => {
     // null, not undefined: that is what a real registration holds, and a
