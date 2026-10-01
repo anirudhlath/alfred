@@ -95,6 +95,26 @@ function deadlined(work) {
   return Promise.race([work, expiry]).finally(() => self.clearTimeout(deadline));
 }
 
+/* Lets go of a response this file has decided against, by cancelling its body
+   unread. A body nobody reads and nobody cancels is not finished with: the
+   request behind it stays open, and the connection with it, for as long as the
+   server keeps sending, and for ever on one that stalls, with nothing left in
+   this file to end it. Measured in Chromium with no DevTools attached to the
+   worker (DevTools keeps an inspected worker alive), a font and a deploy's
+   chunk turned down unread each held their connection until the browser
+   stopped the idle worker, 30 s on.
+
+   So every response turned down on its headers comes through here, and so does
+   every copy of one that is turned down unread or that `whole` gives up on. A
+   cancel stops at a tee (see `whole`): released here, a copy of the PAGE's
+   response frees only the worker's branch, and the request ends when the page
+   is done with its own. Not awaited — nothing here waits for the network to
+   let go — and its rejection swallowed: cancelling a body that has already
+   errored rejects with that error, which whoever met it first has handled. */
+function release(response) {
+  if (response.body) response.body.cancel().catch(() => {});
+}
+
 /* Resolves with `response` once every byte of its body is here, no piece of it
    having taken longer than the deadline to follow the last — the precondition
    for handing a network response to Cache.put, and for reading one at all.
@@ -146,7 +166,7 @@ async function whole(response) {
     }
   } catch (error) {
     reader.cancel(error).catch(() => {});
-    response.body.cancel(error).catch(() => {});
+    release(response);
     throw error;
   }
 }
@@ -367,7 +387,10 @@ async function precache() {
   const cache = await self.caches.open(CACHE);
 
   const shell = await fetchFresh(SHELL);
-  if (!isShell(shell)) throw new Error(`shell ${shell.status}`);
+  if (!isShell(shell)) {
+    release(shell);
+    throw new Error(`shell ${shell.status}`);
+  }
   /* Read `whole` like every body stored below, before any of it is read for
      what it names: fetch() resolves on the headers, so a shell whose body never
      finishes arriving would hang install here, past every deadline above, with
@@ -392,8 +415,13 @@ async function precache() {
        that fires here arrives as a rejection and lands in the same place,
        whether it is the request's or the body's: `whole` is what makes a body
        that never finishes part of this check rather than a put that never
-       returns, three paragraphs down, after the writing has started. */
-    if (!isAsset(response)) throw new Error(`${url} ${response.status}`);
+       returns, three paragraphs down, after the writing has started. A
+       response turned down here is released first, as every one this file
+       turns down is (see `release`). */
+    if (!isAsset(response)) {
+      release(response);
+      throw new Error(`${url} ${response.status}`);
+    }
     responses.push(await whole(response));
   }
 
@@ -437,7 +465,11 @@ async function precache() {
   const cached = [];
   for (const url of fonts) {
     const response = await fetchFresh(url)
-      .then((fetched) => (isAsset(fetched) ? whole(fetched) : null))
+      .then((fetched) => {
+        if (isAsset(fetched)) return whole(fetched);
+        release(fetched);
+        return null;
+      })
       .catch(() => null);
     if (response) cached.push([url, response]);
   }
@@ -850,10 +882,20 @@ async function refresh(response) {
      Not, as this comment once said, a captive portal: a portal answers 200
      text/html, which passes both halves, and over https it cannot intercept in
      the first place. The refusal below is what turns its page away, because it
-     names no hashed asset. */
-  if (!isShell(response)) return;
+     names no hashed asset.
+
+     Either way out, before a byte of it is read, the copy is released: it is a
+     branch of the body the page is reading, and one left alone keeps the
+     request open after the page has let go of its own (see `release`). */
+  if (!isShell(response)) {
+    release(response);
+    return;
+  }
   const cache = await openCache();
-  if (!cache) return;
+  if (!cache) {
+    release(response);
+    return;
+  }
 
   /* `whole` for the reason the fetch had a deadline: a 200 whose body stalls
      half way leaves this pending for ever, and this one runs inside the
@@ -877,7 +919,12 @@ async function refresh(response) {
        not re-fetch the other. */
     if (await cache.match(url)) continue;
     const named = await fetchFresh(url);
-    if (!isAsset(named)) return;
+    /* Turned down on its headers, and this fetch is the refresh's own: nothing
+       else will ever read this body or end it. */
+    if (!isAsset(named)) {
+      release(named);
+      return;
+    }
     /* `whole` for the reason precache() has it: the put reads this body to the
        end, and a chunk whose bytes stall would hold the put — and with it this
        navigation's waitUntil — open for ever, with the shell never published.
@@ -982,14 +1029,18 @@ async function asset(event, pathname) {
 
 /* The asset branch's write, with every failure it can meet swallowed by its
    caller, and each for the same reason: none of them is the page's problem.
-   The open may fail — no usable CacheStorage. The body may never finish, which
-   `whole` bounds. And the put itself may be REFUSED — a phone that is full —
-   which must cost the page nothing at all: the bytes are in hand, the network
-   said 200, and a worker that turned that into a failed request would be
-   strictly worse than no worker. */
+   The open may fail — no usable CacheStorage — and the copy is released
+   unread, as refresh() releases its own (see `release`). The body may never
+   finish, which `whole` bounds. And the put itself may be REFUSED — a phone
+   that is full — which must cost the page nothing at all: the bytes are in
+   hand, the network said 200, and a worker that turned that into a failed
+   request would be strictly worse than no worker. */
 async function store(pathname, response) {
   const cache = await openCache();
-  if (!cache) return;
+  if (!cache) {
+    release(response);
+    return;
+  }
   await cache.put(pathname, await whole(response));
 }
 

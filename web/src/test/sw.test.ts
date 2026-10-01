@@ -865,6 +865,36 @@ describe("install, and the network that never answers", () => {
     expect(worker.released).toEqual([path]);
   });
 
+  it.each([
+    ["the shell", "/index.html", "application/json"],
+    ["the entry chunk", SHELL_ASSETS[0], undefined],
+    ["a font", SHELL_FONTS[0], undefined],
+  ])("lets go of the connection when it turns %s down unread", async (_name, path, type) => {
+    // The other way a worker is finished with a body: it has refused the
+    // response on its headers — a page that is not HTML where the shell should
+    // be, a page of HTML under a hashed URL — and wants none of it. Read by
+    // nothing and cancelled by nothing, that body holds its connection open
+    // for as long as the server keeps it coming, and for ever on one that
+    // stalls: the decision is made and the request outlives it. Measured in
+    // Chromium with nothing inspecting the worker, a font turned down this way
+    // held its connection until the worker was stopped for being idle, 30 s on.
+    // The shell and the chunk fail the install and the font is skipped; all
+    // three are released before anything else happens.
+    const worker = withFonts();
+    worker.respond(path, stalled(type));
+    await worker.install().catch(() => {});
+    expect(worker.released).toEqual([path]);
+  });
+
+  it("turns down a shell with no body at all for what it is, its status", async () => {
+    // A 204 has nothing to let go of, and the letting go must not trip over
+    // that on its way to the install's real reason for failing.
+    const worker = withFonts();
+    worker.respond("/index.html", new Response(null, { status: 204 }));
+    await expect(worker.install()).rejects.toThrow("shell 204");
+    expect(worker.released).toEqual([]);
+  });
+
   it("lets go of nothing on an install that went well", async () => {
     const worker = withFonts();
     await worker.install();
@@ -2294,6 +2324,46 @@ describe("navigations", () => {
     expect(worker.released).toEqual([NEXT_ASSETS[0]]);
   });
 
+  it("lets go of a new deploy's asset it turns down unread", async () => {
+    // A page of HTML under a hashed URL the new deploy names — what this
+    // origin's SPA fallback answers for a file it does not have. refresh()
+    // turns it down on its headers, and that fetch is its own: nothing else
+    // will ever read the body or end it, so the refresh does. Measured in
+    // Chromium with nothing inspecting the worker, one left alone held its
+    // connection until the worker was stopped for being idle, 30 s on.
+    const worker = shell();
+    await worker.install();
+    worker.respond("/", deployed("two", NEXT_ASSETS));
+    worker.respond(NEXT_ASSETS[0], stalled());
+    worker.respond(NEXT_ASSETS[1], css("body{color:blue}"));
+    await worker.request({ path: "/", mode: "navigate" });
+    await expect(shellInCache(worker).clone().text()).resolves.not.toContain("two");
+    expect(worker.released).toEqual([NEXT_ASSETS[0]]);
+  });
+
+  it.each([
+    ["it is not HTML", false],
+    ["there is no cache to keep it in", true],
+  ])("lets go of its copy of the page when %s, so the page alone holds the connection", async (_why, unopenable) => {
+    // The refresh's copy of what the page is reading, turned down before a
+    // byte of it is read. A copy nobody reads and nobody cancels keeps the
+    // connection open after the page has let go of its own — a request is torn
+    // down only once every branch of its body is done with — and for as long as
+    // the copy lives, the bytes the page reads are queued in it as well.
+    const worker = shell();
+    await worker.install();
+    worker.respond("/", stalled(unopenable ? undefined : "application/json"));
+    if (unopenable) worker.refuseOpen();
+    const response = await worker.request({ path: "/", mode: "navigate" });
+    // The page's to keep while it reads...
+    expect(worker.released).toEqual([]);
+    // ...and gone the moment it stops, with nothing of the worker's left
+    // holding it. The page's cancel itself waits on the copy: left alone, the
+    // copy would keep it pending.
+    await expect(pending(response!.body!.cancel())).resolves.toBe("settled");
+    expect(worker.released).toEqual(["/"]);
+  });
+
   it.each([
     ["its page", "/"],
     ["a chunk its page names", NEXT_ASSETS[0]],
@@ -2547,6 +2617,20 @@ describe("assets", () => {
     // errored it — the write reaching the page by the one door left.
     expect(worker.released).toEqual([]);
     await expect(pending(response!.text())).resolves.toBe("pending");
+  });
+
+  it("lets go of its copy of an asset it has no cache to store in, so the page alone holds the connection", async () => {
+    // The write's copy, turned down before a byte of it is read: the store will
+    // not open. The navigation's twin above says why the copy is cancelled
+    // rather than dropped.
+    const worker = shell();
+    await worker.install();
+    worker.refuseOpen();
+    worker.respond(LATE_FONT, stalled("font/woff2"));
+    const response = await worker.request(fromPage(LATE_FONT, "font"));
+    expect(worker.released).toEqual([]);
+    await expect(pending(response!.body!.cancel())).resolves.toBe("settled");
+    expect(worker.released).toEqual([LATE_FONT]);
   });
 
   it("hands the page an asset whose body breaks off just as it broke, and stores nothing", async () => {
