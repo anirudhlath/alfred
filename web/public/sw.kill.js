@@ -61,8 +61,14 @@ self.addEventListener("activate", (event) => {
          with two pages open and the claim put after this line, the run ended
          with this worker still installed. */
       const stale = await self.clients.matchAll();
-      /* Caught per delete: one cache that will not go must not keep the
-         others, the unregistration or the reloads. */
+      /* Every cache, and all of them before the unregistration, never after.
+         A registration no page is using — the copy each later load installs,
+         which is the second chance at a cache an earlier copy could not
+         delete — is cleared as soon as unregister() resolves, and Chromium
+         stops this worker there: with the unregistration moved first, such a
+         copy left every cache it found. Caught per delete: one cache that
+         will not go must not keep the others, the unregistration or the
+         reloads. */
       for (const name of await self.caches.keys()) await self.caches.delete(name).catch(() => {});
       /* Awaited, and before any reload. A navigation that starts while the
          registration exists is matched to it, and Chromium holds it until

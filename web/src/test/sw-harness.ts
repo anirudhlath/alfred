@@ -575,9 +575,14 @@ export interface LoadOptions {
  * Not modelled: a page controlled by a worker of some other registration —
  * from this worker it is indistinguishable from an uncontrolled one, so it
  * would add a name and no behaviour; the document a navigation brings in,
- * which `navigated` records the URL of and nothing more; and a claim() made
+ * which `navigated` records the URL of and nothing more; a claim() made
  * after the worker's own unregister(), which in Chromium took nothing and
- * never settled.
+ * never settled; and the stop that follows an unregister() of a registration
+ * no page is using. Chromium clears that registration as soon as the
+ * unregister() resolves and stops the worker there, so nothing after the
+ * `await` runs; here the worker carries on. sw-kill.test.ts pins what that
+ * would cost instead: every cache deleted before the unregistration is asked
+ * for.
  */
 export interface ClientSpec {
   /** Where the page is: a path, resolved against the instance's origin. */
