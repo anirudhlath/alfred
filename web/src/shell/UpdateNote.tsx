@@ -32,7 +32,9 @@ export interface UpdateNoteProps {
  *
  * `Reload` is 13 px text, 42 px wide. Its box is fixed at 20 px tall, and its
  * `::after` reaches 12 px past the top and bottom and 8 px past each side: 44 by
- * 58 to tap. On its bare 18.2 px line box the same inset would make 42.2.
+ * 58 to tap. On its bare 18.2 px line box the same inset would make 42.2. Its
+ * `-my-px` lays that box out at 18 px, under the sentence's 18.2, so a one-line
+ * pill is as tall as `OfflineNote`'s rather than 1.8 px taller.
  */
 export function UpdateNote({ ready, onReload }: UpdateNoteProps) {
   return (
@@ -56,7 +58,7 @@ export function UpdateNote({ ready, onReload }: UpdateNoteProps) {
           <button
             type="button"
             onClick={onReload}
-            className="relative ml-auto h-5 shrink-0 font-medium after:absolute after:-inset-x-2 after:-inset-y-3 after:content-['']"
+            className="relative -my-px ml-auto h-5 shrink-0 font-medium after:absolute after:-inset-x-2 after:-inset-y-3 after:content-['']"
             style={{ color: "var(--accent-text)" }}
           >
             Reload

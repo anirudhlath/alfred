@@ -3791,12 +3791,15 @@ describe("UpdateNote", () => {
     // 12 px past either edge make 44, where the bare 18.2 px line box would make
     // 42.2, and 8 px either side takes the 42 px word to 58. `relative` anchors
     // the inset to the button — without it, the nearest positioned ancestor is
-    // the Room's header, and the whole header would tap.
+    // the Room's header, and the whole header would tap. `-my-px` keeps the
+    // 20 px box from setting the row's height: its margin box is 18 px, under
+    // the sentence's 18.2, so a one-line pill stays OfflineNote's 34.2 px, not 36.
     render(<UpdateNote ready onReload={() => {}} />);
     expect(screen.getByRole("button", { name: "Reload" }).className.split(" ")).toEqual(
       expect.arrayContaining([
         "relative",
         "h-5",
+        "-my-px",
         "after:absolute",
         "after:-inset-x-2",
         "after:-inset-y-3",
@@ -3807,7 +3810,7 @@ describe("UpdateNote", () => {
 });
 ```
 
-*(corrected in task 10: the third test's comment said "a new build is news", which R1 makes false — most deploys leave no worker waiting. The last test cited `docs/web-frontend.md` for the pattern, which says nothing about it — it is this plan's Conventions, and EventRow, TriggersBench and Switch — and held only `toContain("after:-inset-y-3")`, a substring that `-inset-y-3.5` also passes. Worse, the inset it held fell short: on the button's bare 18.2 px line box it makes a 42.2 px target, measured in Chromium, against the Conventions' ≥44. Step 5's button gains `h-5`, and the test holds every class the 44 depends on; without `relative`, Chromium sends a tap on the headline to Reload. The shipped file also has `type="button"` and `sr-only` assertions in the second and third tests, and four more: "fills the region that was already there, and lets it be seen" (a note left `sr-only` once filled, or live only while empty, passed everything above), "wears the pill of the note it sits under" (held to `OfflineNote`'s classes and background rather than restated values), "asks in the accent: the word in --accent-text, the dot in --accent", and "sets the word apart: a weight above the sentence, at the end of the line".)*
+*(corrected in task 10: the third test's comment said "a new build is news", which R1 makes false — most deploys leave no worker waiting. The last test cited `docs/web-frontend.md` for the pattern, which says nothing about it — it is this plan's Conventions, and EventRow, TriggersBench and Switch — and held only `toContain("after:-inset-y-3")`, a substring that `-inset-y-3.5` also passes. Worse, the inset it held fell short: on the button's bare 18.2 px line box it makes a 42.2 px target, measured in Chromium, against the Conventions' ≥44. Step 5's button gains `h-5`, and the test holds every class the 44 depends on, plus the `-my-px` that keeps a one-line pill at `OfflineNote`'s height (step 5); without `relative`, Chromium sends a tap on the headline to Reload. The shipped file also has `type="button"` and `sr-only` assertions in the second and third tests, and four more: "fills the region that was already there, and lets it be seen" (a note left `sr-only` once filled, or live only while empty, passed everything above), "wears the pill of the note it sits under" (held to `OfflineNote`'s classes and background rather than restated values — classes, not heights, which jsdom cannot lay out), "asks in the accent: the word in --accent-text, the dot in --accent", and "sets the word apart: a weight above the sentence, at the end of the line".)*
 
 - [ ] **Step 2: Write the failing test for the subscription**
 
@@ -3916,7 +3919,9 @@ export interface UpdateNoteProps {
  *
  * `Reload` is 13 px text, 42 px wide. Its box is fixed at 20 px tall, and its
  * `::after` reaches 12 px past the top and bottom and 8 px past each side: 44 by
- * 58 to tap. On its bare 18.2 px line box the same inset would make 42.2.
+ * 58 to tap. On its bare 18.2 px line box the same inset would make 42.2. Its
+ * `-my-px` lays that box out at 18 px, under the sentence's 18.2, so a one-line
+ * pill is as tall as `OfflineNote`'s rather than 1.8 px taller.
  */
 export function UpdateNote({ ready, onReload }: UpdateNoteProps) {
   return (
@@ -3940,7 +3945,7 @@ export function UpdateNote({ ready, onReload }: UpdateNoteProps) {
           <button
             type="button"
             onClick={onReload}
-            className="relative ml-auto h-5 shrink-0 font-medium after:absolute after:-inset-x-2 after:-inset-y-3 after:content-['']"
+            className="relative -my-px ml-auto h-5 shrink-0 font-medium after:absolute after:-inset-x-2 after:-inset-y-3 after:content-['']"
             style={{ color: "var(--accent-text)" }}
           >
             Reload
@@ -3952,7 +3957,7 @@ export function UpdateNote({ ready, onReload }: UpdateNoteProps) {
 }
 ```
 
-*(corrected in task 10: two things. The docstring opened "A newer build has installed and is waiting" and called the note "the whole of the 'update without reinstalling' path on an installed iOS PWA" — both false under R1, restated above. And the button had no `h-5`, so its box was its 18.2 px line box and `after:-inset-y-3` made a 42.2 px target against the Conventions' ≥44. Measured in headless Chromium with DM Sans loaded: 18.19 px box and 42.19 px target as planned; 20 and 44 with `h-5`, and the 42 px word 58 wide. On a phone the sentence wraps to two or three lines and the target stays inside the pill; on one line, in a wide window, it reaches 4 px past the pill into the header's gap and no further. The dot's sentence and the last paragraph are new.)*
+*(corrected in task 10: two things. The docstring opened "A newer build has installed and is waiting" and called the note "the whole of the 'update without reinstalling' path on an installed iOS PWA" — both false under R1, restated above. And the button had no `h-5`, so its box was its 18.2 px line box and `after:-inset-y-3` made a 42.2 px target against the Conventions' ≥44. Measured in headless Chromium with DM Sans loaded: 18.19 px box and 42.19 px target as planned; 20 and 44 with `h-5`, and the 42 px word 58 wide. On a phone the sentence wraps to two or three lines and the target stays inside the pill. On one line, in a wide window, `h-5` alone made the pill 36 px against `OfflineNote`'s 34.19, because the 20 px box was the row's tallest item (review of task 10, round 1); `-my-px` lays the box out at 18 px, under the sentence's 18.19 line, so both one-line pills are 34.19 again — wrapped pills were already equal, 52.38 on two lines and 70.56 on three — while the box stays 20 px and the target 44 by 58. Measured at 320, 390, 768 and 1024 px with both notes showing. On one line the target reaches 4.9 px past the pill into the 12 px gap above it (`mt-2` and the header's `gap-1`), 7.1 px short of the row there, and, with the quiet row under it, into the same gap below; no point of either row reaches Reload. With no row under it, the header ends at the pill, and the Timeline — a later `relative z-[1]` sibling, so painted over the header — takes those last 4.9 px: 39.1 px of the 44 reach Reload there (40.0 before `-my-px`). That one is open; fix round 1 of the task-10 report measures it. The dot's sentence and the last paragraph are new.)*
 
 - [ ] **Step 6: Mount it in the Room**
 

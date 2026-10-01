@@ -54,7 +54,10 @@ describe("UpdateNote", () => {
 
   it("wears the pill of the note it sits under", () => {
     // "The same 13 px surface-pill idiom" as OfflineNote's, held to that note
-    // rather than to restated values, so the two cannot drift apart.
+    // rather than to restated values, so the two cannot drift apart. These are
+    // classes, not heights: jsdom lays nothing out. On one line the pill is as
+    // tall as its tallest item, and the hit-area test below holds the class
+    // that keeps that item the sentence rather than the Reload box.
     render(
       <>
         <OfflineNote online={false} reconnecting={false} lastTrueAt={null} />
@@ -89,12 +92,15 @@ describe("UpdateNote", () => {
     // 12 px past either edge make 44, where the bare 18.2 px line box would make
     // 42.2, and 8 px either side takes the 42 px word to 58. `relative` anchors
     // the inset to the button — without it, the nearest positioned ancestor is
-    // the Room's header, and the whole header would tap.
+    // the Room's header, and the whole header would tap. `-my-px` keeps the
+    // 20 px box from setting the row's height: its margin box is 18 px, under
+    // the sentence's 18.2, so a one-line pill stays OfflineNote's 34.2 px, not 36.
     render(<UpdateNote ready onReload={() => {}} />);
     expect(screen.getByRole("button", { name: "Reload" }).className.split(" ")).toEqual(
       expect.arrayContaining([
         "relative",
         "h-5",
+        "-my-px",
         "after:absolute",
         "after:-inset-x-2",
         "after:-inset-y-3",
