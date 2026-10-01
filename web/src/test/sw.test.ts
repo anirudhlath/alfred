@@ -2242,7 +2242,16 @@ describe("navigations", () => {
     const worker = shell();
     await worker.install();
     worker.respond("/", stalled(undefined, sent));
-    const response = await worker.request({ path: "/", mode: "navigate" });
+    const start = worker.now;
+    const { responded, settled } = worker.dispatch({ path: "/", mode: "navigate" });
+    const response = await responded;
+    // Answered with the clock where it was. On this clock a hold costs no
+    // time, so the clock is the only witness that the page did not wait for the
+    // refresh: a handler that did would answer at ten seconds, when the
+    // refresh's read gives up — and pass every assertion below.
+    expect(worker.now).toBe(start);
+    await settled;
+    expect(worker.now).toBe(start + 10000);
     // The page is answered from the network regardless: the refresh is
     // background work, and nothing it does can reach what was served.
     expect(response!.status).toBe(200);
@@ -2269,7 +2278,15 @@ describe("navigations", () => {
     worker.respond("/", deployed("two", NEXT_ASSETS));
     worker.respond(NEXT_ASSETS[0], stalled("text/javascript", sent));
     worker.respond(NEXT_ASSETS[1], css("body{color:blue}"));
-    const response = await worker.request({ path: "/", mode: "navigate" });
+    const start = worker.now;
+    const { responded, settled } = worker.dispatch({ path: "/", mode: "navigate" });
+    const response = await responded;
+    // Answered before anything the refresh armed has fired, and the refresh
+    // let go ten seconds later — see the stall above for why the clock is the
+    // assertion that sees a page held for it.
+    expect(worker.now).toBe(start);
+    await settled;
+    expect(worker.now).toBe(start + 10000);
     await expect(response!.text()).resolves.toContain("two");
     await expect(shellInCache(worker).clone().text()).resolves.not.toContain("two");
     expect(worker.puts).not.toContain(NEXT_ASSETS[0]);
@@ -2510,7 +2527,16 @@ describe("assets", () => {
     const worker = shell();
     await worker.install();
     worker.respond(LATE_FONT, stalled("font/woff2", sent));
-    const response = await worker.request(fromPage(LATE_FONT, "font"));
+    const start = worker.now;
+    const { responded, settled } = worker.dispatch(fromPage(LATE_FONT, "font"));
+    const response = await responded;
+    // "Without holding the page" is a statement about TIME, and on this clock a
+    // hold takes none: a handler that waited for the write would pass every
+    // other line here, answering at ten seconds, once the write gave up. So the
+    // clock is read the moment the page has its answer, and it has not moved.
+    expect(worker.now).toBe(start);
+    await settled;
+    expect(worker.now).toBe(start + 10000);
     expect(response!.status).toBe(200);
     expect(worker.keys()).not.toContain(LATE_FONT);
     expect(worker.puts).not.toContain(LATE_FONT);
@@ -2542,7 +2568,12 @@ describe("assets", () => {
     const worker = shell();
     await worker.install();
     worker.respond(LATE_FONT, worker.trickle("font/woff2", split("woff2".repeat(4), 10), { every: 1260 }));
-    const response = await worker.request(fromPage(LATE_FONT, "font"));
+    const start = worker.now;
+    const { responded, settled } = worker.dispatch(fromPage(LATE_FONT, "font"));
+    const response = await responded;
+    // The page has its headers at once, not once the write has the whole body.
+    expect(worker.now).toBe(start);
+    await settled;
     // The PAGE's copy, whole, and this is the assertion that reaches the
     // request's own deadline. That one is on the headers alone and taken down
     // when they arrive; left armed past them, it fires at ten seconds with this
