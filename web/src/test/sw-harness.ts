@@ -272,6 +272,12 @@ export interface Harness {
    */
   refuseOpen(name?: string): void;
   /**
+   * Program `caches.keys()` to reject — the listing half of the same store that
+   * is gone. The kill switch lists every cache before it deletes one, so this is
+   * the first thing such a store does to it.
+   */
+  refuseKeys(): void;
+  /**
    * Program a page's `navigate()` to reject although the worker controls it,
    * with a TypeError, and record no navigation for it. A path, as `clients`
    * names the page. A page that has closed rejects; so, in Chromium, does one
@@ -449,6 +455,13 @@ export interface Harness {
    * order — one that started, so never one that rejected.
    */
   navigated: string[];
+  /**
+   * The URL of every page whose `navigate()` was refused, in order — one this
+   * worker does not control, or one `refuseNavigate()` names. A refused
+   * navigation starts nothing, so `navigated` reads the same for a worker that
+   * never asks about a page and one that asks and is told no; this does not.
+   */
+  refusedNavigations: string[];
   /** Everything currently in CACHE, as pathnames, sorted. */
   keys(name?: string): string[];
 }
@@ -632,12 +645,15 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
   const matchRefusals = new Set<string>();
   /** Cache names whose `open` rejects; `"*"` is every name. */
   const openRefusals = new Set<string>();
+  /** Whether `caches.keys()` rejects. */
+  let keysRefused = false;
   /** A list per type, not one handler: a real scope runs every listener it was given. */
   const listeners = new Map<string, ((event: unknown) => void)[]>();
   const harness: Partial<Harness> & {
     fetched: string[];
     reloaded: string[];
     navigated: string[];
+    refusedNavigations: string[];
     deadlines: number[];
     handed: (string | { url: string })[];
     inits: (FetchInit | undefined)[];
@@ -647,6 +663,7 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     fetched: [],
     reloaded: [],
     navigated: [],
+    refusedNavigations: [],
     deadlines: [],
     handed: [],
     inits: [],
@@ -751,8 +768,9 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
    * A `WindowClient` over one page, as `matchAll()` hands one out: a new
    * object every call, as a browser's are. `navigate()` is refused for a page
    * this worker does not control, as the spec's is, and for one
-   * `refuseNavigate()` names; a navigation that starts is recorded at the
-   * call, which is when a browser sets it going.
+   * `refuseNavigate()` names, and the page is recorded in `refusedNavigations`;
+   * a navigation that starts is recorded in `navigated` at the call, which is
+   * when a browser sets it going.
    */
   const windowClient = (page: OpenPage) => ({
     url: page.url,
@@ -763,7 +781,10 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
           : navigateRefusals.has(page.url)
             ? "the page is closing or already reloading"
             : undefined;
-      if (refused) return Promise.reject(new TypeError(`Failed to navigate ${page.url}: ${refused}`));
+      if (refused) {
+        harness.refusedNavigations.push(page.url);
+        return Promise.reject(new TypeError(`Failed to navigate ${page.url}: ${refused}`));
+      }
       harness.navigated.push(new URL(url, origin).href);
       return Promise.resolve();
     },
@@ -838,7 +859,7 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
           ),
         );
       },
-      keys: () => Promise.resolve([...store.keys()]),
+      keys: () => (keysRefused ? settled(() => storageFailure()) : Promise.resolve([...store.keys()])),
       delete: (name: string) =>
         settled(() => (refusals.has(name) ? storageFailure() : store.delete(name))),
     },
@@ -981,6 +1002,7 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     fetched: harness.fetched,
     reloaded: harness.reloaded,
     navigated: harness.navigated,
+    refusedNavigations: harness.refusedNavigations,
     deadlines: harness.deadlines,
     handed: harness.handed,
     inits: harness.inits,
@@ -1031,6 +1053,7 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     refusePut: (key) => void putRefusals.add(new URL(key, origin).href),
     refuseMatch: (key) => void matchRefusals.add(new URL(key, origin).href),
     refuseOpen: (name = "*") => void openRefusals.add(name),
+    refuseKeys: () => void (keysRefused = true),
     refuseNavigate: (path) => void navigateRefusals.add(new URL(path, origin).href),
     inner,
     install: async () => {

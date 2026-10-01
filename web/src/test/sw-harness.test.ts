@@ -256,6 +256,20 @@ describe("the fake CacheStorage", () => {
     await expect(worker.install()).rejects.toThrow(/storage error/);
   });
 
+  it("can be told to refuse to list its caches, the other half of a store that is gone", async () => {
+    // A store Safari has dropped refuses `keys()` as well as `open()`, and the
+    // kill switch lists the caches before it deletes them. Without this, a
+    // switch whose listing is uncaught — which then neither unregisters nor
+    // reloads, and stays installed with nothing to bring a fresh copy — passes.
+    const worker = loadWorker(`
+      self.addEventListener("activate", (event) => {
+        event.waitUntil(self.caches.keys());
+      });
+    `);
+    worker.refuseKeys();
+    await expect(worker.activate()).rejects.toThrow(/storage error/);
+  });
+
   it("can be told to refuse a match, which is the read half of the same failure", async () => {
     // The disk, not the lookup. Without it, every `.catch` on a cache read is
     // unreachable code, and a worker whose offline path rejects with a
@@ -477,6 +491,31 @@ describe("the fake Clients", () => {
     await worker.activate();
     expect(worker.keys("probe")).toEqual(["/TypeError/"]);
     expect(worker.navigated).toEqual([]);
+  });
+
+  it("records the page each refused navigate() was for, which `navigated` cannot show", async () => {
+    // A refused navigation starts nothing, so `navigated` reads the same for a
+    // worker that never asks about a page and one that asks and is told no —
+    // and for a page this worker does not control, that refusal is a browser's
+    // check, the only thing then between the kill switch and its loop. The
+    // page, not where it was sent: each is sent elsewhere here, so they differ.
+    const worker = loadWorker(
+      `self.addEventListener("activate", (event) => {
+        event.waitUntil((async () => {
+          for (const client of await self.clients.matchAll({ includeUncontrolled: true })) {
+            await client.navigate("/elsewhere").catch(() => {});
+          }
+        })());
+      });`,
+      {
+        update: true,
+        clients: [{ path: "/fresh" }, { path: "/gone", controlled: true }, { path: "/stale", controlled: true }],
+      },
+    );
+    worker.refuseNavigate("/gone");
+    await worker.activate();
+    expect(worker.refusedNavigations).toEqual([`${ORIGIN}/fresh`, `${ORIGIN}/gone`]);
+    expect(worker.navigated).toEqual([`${ORIGIN}/elsewhere`]);
   });
 
   it("refuses a page controlled by an older worker when there is no older worker", () => {
