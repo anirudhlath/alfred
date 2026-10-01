@@ -12,6 +12,7 @@ import {
   yesterdayRequestPage,
 } from "@/test/fixtures";
 import { PresenceSignal } from "@/lib/presence-signal";
+import * as sw from "@/lib/sw";
 import { THEME_KEY } from "@/lib/theme";
 import type { SocketStatus } from "@/lib/ws";
 import App from "./App";
@@ -345,6 +346,40 @@ describe("App", () => {
     expect(
       await within(sheet).findByText("The council moved collection to Friday."),
     ).toBeInTheDocument();
+  });
+
+  it("offers a worker that installs behind the open Room, and takes it on the tap", async () => {
+    // Quiet as well, so the header carries every row the note can sit among.
+    routes["/api/admin/overview"] = {
+      ...overviewFixture,
+      dnd: { active: true, until: "2026-09-07T09:30:00" },
+    };
+    let announce: (ready: boolean) => void = () => {};
+    vi.spyOn(sw, "onUpdateReady").mockImplementation((fn) => {
+      announce = fn;
+      fn(false);
+      return () => {};
+    });
+    const apply = vi.spyOn(sw, "applyUpdate").mockImplementation(() => {});
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: /^Quiet until / })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reload" })).not.toBeInTheDocument();
+
+    // A changed sw.js finishes installing behind the running worker.
+    act(() => announce(true));
+    const note = screen.getByText(
+      "A newer Alfred is waiting. Nothing is lost; I pick up where we left off.",
+    );
+    // Directly under OfflineNote, the header's other live region, and over the
+    // quiet row.
+    const region = note.closest('[role="status"]');
+    expect(region?.previousElementSibling).toHaveAttribute("role", "status");
+    expect(region?.nextElementSibling).toBe(
+      screen.getByRole("button", { name: /^Do-not-disturb until / }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+    expect(apply).toHaveBeenCalledOnce();
   });
 
   it("greets a house on its first day, and keeps up with the clock", async () => {

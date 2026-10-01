@@ -3733,10 +3733,14 @@ The handoff has no update copy — no scene, no gate variant, no row type (devia
 
 It lives in the Room's header, under `OfflineNote`, in the same 13 px surface-pill idiom. A gate covers it, and that is accepted: the gates are transient, an update is not urgent, and a build that cannot get past a gate is a kill-switch case (task 11), not an update case.
 
+*(corrected in task 10, per ruling R1: the note does not announce a deploy. A worker waits only when `/sw.js`'s own bytes change, and `sw.js` is byte-identical across most deploys, so most install no worker; an open app takes them at its next navigation, through the worker's network-first `navigate()`. Steps 4 and 5 said "a newer build" and called the note "the whole of the 'update without reinstalling' path on an installed iOS PWA" — both false under R1, and both restated below as shipped.)*
+
 **Files:**
 - Create: `web/src/shell/UpdateNote.tsx`, `web/src/shell/UpdateNote.test.tsx`
 - Create: `web/src/shell/useUpdateReady.ts`, `web/src/shell/useUpdateReady.test.tsx`
 - Modify: `web/src/room/Room.tsx`
+- Modify: `web/src/App.test.tsx` *(corrected in task 10: not listed, and nothing held step 6's wiring — dropping the element, a no-op `onReload`, `ready` wired to either constant, or the element moved out of place all passed the suite. The Room has no test file of its own; its behaviour is tested here)*
+- Modify: `web/README.md` *(corrected in task 10: not listed. Two sentences of "The service worker" said nothing calls `applyUpdate()` and nothing subscribes to `onUpdateReady()` yet, which this task makes false — the reason every task before it on this branch edited it too)*
 
 - [ ] **Step 1: Write the failing tests for the view**
 
@@ -3767,7 +3771,7 @@ describe("UpdateNote", () => {
 
   it("stays mounted and empty while there is nothing to say", () => {
     // Same reason OfflineNote does: VoiceOver can miss a live region that is
-    // inserted with its text already in it, and a new build is news.
+    // inserted with its text already in it, and a waiting worker is news.
     const { container } = render(<UpdateNote ready={false} onReload={() => {}} />);
     const region = container.querySelector('[role="status"]');
     expect(region).toBeInTheDocument();
@@ -3776,13 +3780,28 @@ describe("UpdateNote", () => {
   });
 
   it("gives the reload a full-size hit area", () => {
-    // 13px text is not a 44px target. The negative-inset pseudo-element is the
-    // house pattern for growing one (docs/web-frontend.md).
+    // 13 px text is not a 44 px target. A negative-inset pseudo-element is the
+    // house pattern for growing one (EventRow, Switch): a fixed 20 px box and
+    // 12 px past either edge make 44, where the bare 18.2 px line box would make
+    // 42.2, and 8 px either side takes the 42 px word to 58. `relative` anchors
+    // the inset to the button — without it, the nearest positioned ancestor is
+    // the Room's header, and the whole header would tap.
     render(<UpdateNote ready onReload={() => {}} />);
-    expect(screen.getByRole("button", { name: "Reload" }).className).toContain("after:-inset-y-3");
+    expect(screen.getByRole("button", { name: "Reload" }).className.split(" ")).toEqual(
+      expect.arrayContaining([
+        "relative",
+        "h-5",
+        "after:absolute",
+        "after:-inset-x-2",
+        "after:-inset-y-3",
+        "after:content-['']",
+      ]),
+    );
   });
 });
 ```
+
+*(corrected in task 10: the third test's comment said "a new build is news", which R1 makes false — most deploys leave no worker waiting. The last test cited `docs/web-frontend.md` for the pattern, which says nothing about it — it is this plan's Conventions, and EventRow, TriggersBench and Switch — and held only `toContain("after:-inset-y-3")`, a substring that `-inset-y-3.5` also passes. Worse, the inset it held fell short: on the button's bare 18.2 px line box it makes a 42.2 px target, measured in Chromium, against the Conventions' ≥44. Step 5's button gains `h-5`, and the test holds every class the 44 depends on; without `relative`, Chromium sends a tap on the headline to Reload. The shipped file also has `type="button"` and `sr-only` assertions in the second and third tests, and four more: "fills the region that was already there, and lets it be seen" (a note left `sr-only` once filled, or live only while empty, passed everything above), "wears the pill of the note it sits under" (held to `OfflineNote`'s classes and background rather than restated values), "asks in the accent: the word in --accent-text, the dot in --accent", and "sets the word apart: a weight above the sentence, at the end of the line".)*
 
 - [ ] **Step 2: Write the failing test for the subscription**
 
@@ -3818,6 +3837,8 @@ describe("useUpdateReady", () => {
 });
 ```
 
+*(corrected in task 10: `vi.spyOn` on the `@/lib/sw` namespace does work under this Vitest 4.1 setup — probed before the tests were written, including that a module importing `onUpdateReady` by name sees the spy — and `restoreMocks: true` in `vite.config.ts` takes it off after each test. But these two tests, run alone against mutants, let three through: a hook that keeps only the first answer, one that resubscribes on every render, and one that starts at `true` — which would show the note on every mount until the effect ran. The shipped file adds "follows every answer after that", "subscribes once, however often it renders" (the Room re-renders every second of a Door's fuse) and "says no on its first render, and the answer after it" — the order the note's live region needs, see step 4.)*
+
 - [ ] **Step 3: Run both and read the failures**
 
 ```bash
@@ -3832,13 +3853,25 @@ Expected: FAIL — neither module resolves.
 import { useEffect, useState } from "react";
 import { onUpdateReady } from "@/lib/sw";
 
-/** Whether a newer build has installed and is waiting for permission to take over. */
+/**
+ * Whether a changed `/sw.js` has installed behind the running worker and is
+ * waiting for permission to take over. Not whether a deploy has happened: most
+ * leave `/sw.js` as it was and install nothing (`onUpdateReady`).
+ *
+ * State and an effect rather than `useSyncExternalStore`, because `lib/sw.ts`
+ * offers a subscription that answers at once, not a snapshot to read during
+ * render. The first render therefore says no even with a worker already
+ * waiting, and the answer arrives a commit later — so `UpdateNote`'s live
+ * region is in the page, empty, before its words are.
+ */
 export function useUpdateReady(): boolean {
   const [ready, setReady] = useState(false);
   useEffect(() => onUpdateReady(setReady), []);
   return ready;
 }
 ```
+
+*(corrected in task 10: the docstring said "Whether a newer build has installed", which R1 makes false — what waits is a changed worker. The code is as planned. It passes eslint-plugin-react-hooks v7: `set-state-in-effect` flags a setter **called** in an effect's body, and this hands the setter to the subscription, the shape the rule's own message asks for — probed against a control that calls `setReady` directly, which the rule rejects. `useSyncExternalStore` was the alternative and is not used: `lib/sw.ts` offers no snapshot to read in render, task 10 does not change it, and a snapshot read in render would put the note's words into its live region on the same commit that inserts it.)*
 
 - [ ] **Step 5: Write `web/src/shell/UpdateNote.tsx`**
 
@@ -3849,10 +3882,17 @@ export interface UpdateNoteProps {
 }
 
 /**
- * A newer build has installed and is waiting. Decision 7: it does not take over
- * by itself, because a swap under a running conversation loses what is on
- * screen — so this is the switch, and it is the whole of the "update without
- * reinstalling" path on an installed iOS PWA.
+ * A changed `/sw.js` has installed behind the running worker and is waiting.
+ * Decision 7: it does not take over by itself, because a swap under a running
+ * conversation loses what is on screen — so this is the switch. Left alone, the
+ * new worker waits until every page the old one controls has closed, and an
+ * installed PWA can stay open for days.
+ *
+ * It is not how a deploy arrives. `/sw.js` is byte-identical across most
+ * deploys, so most install no worker and never reach this note: an open app
+ * takes them at its next navigation, which sw.js answers network-first. That is
+ * how an installed iOS PWA gets a new build without reinstalling; this note is
+ * how it gets a new worker without waiting.
  *
  * The handoff has no copy for this: no scene, no gate variant, no row type. The
  * sentence is invented, and its second clause is the handoff's own, verbatim
@@ -3860,10 +3900,17 @@ export interface UpdateNoteProps {
  *
  * `--accent`, not `--green`: phase 3's rule is that accent is a decision waiting
  * on the world, and green is only `alive` and `applied`. An update waiting on
- * the user is exactly the first of those.
+ * the user is exactly the first of those. The dot is decorative — hidden from
+ * assistive tech, beside a sentence that says all it means — which is what lets
+ * the raw accent sit on the card at 2.17:1 in light, where a dot that carried
+ * state on its own would take `--accent-text`.
  *
  * The live region stays mounted while there is nothing to say, empty and
  * `sr-only`, for the reason `OfflineNote` does.
+ *
+ * `Reload` is 13 px text, 42 px wide. Its box is fixed at 20 px tall, and its
+ * `::after` reaches 12 px past the top and bottom and 8 px past each side: 44 by
+ * 58 to tap. On its bare 18.2 px line box the same inset would make 42.2.
  */
 export function UpdateNote({ ready, onReload }: UpdateNoteProps) {
   return (
@@ -3887,7 +3934,7 @@ export function UpdateNote({ ready, onReload }: UpdateNoteProps) {
           <button
             type="button"
             onClick={onReload}
-            className="relative ml-auto shrink-0 font-medium after:absolute after:-inset-x-2 after:-inset-y-3 after:content-['']"
+            className="relative ml-auto h-5 shrink-0 font-medium after:absolute after:-inset-x-2 after:-inset-y-3 after:content-['']"
             style={{ color: "var(--accent-text)" }}
           >
             Reload
@@ -3898,6 +3945,8 @@ export function UpdateNote({ ready, onReload }: UpdateNoteProps) {
   );
 }
 ```
+
+*(corrected in task 10: two things. The docstring opened "A newer build has installed and is waiting" and called the note "the whole of the 'update without reinstalling' path on an installed iOS PWA" — both false under R1, restated above. And the button had no `h-5`, so its box was its 18.2 px line box and `after:-inset-y-3` made a 42.2 px target against the Conventions' ≥44. Measured in headless Chromium with DM Sans loaded: 18.19 px box and 42.19 px target as planned; 20 and 44 with `h-5`, and the 42 px word 58 wide. On a phone the sentence wraps to two or three lines and the target stays inside the pill; on one line, in a wide window, it reaches 4 px past the pill into the header's gap and no further. The dot's sentence and the last paragraph are new.)*
 
 - [ ] **Step 6: Mount it in the Room**
 
@@ -3921,6 +3970,8 @@ and the element directly under `<OfflineNote … />` in the header:
         <UpdateNote ready={updateReady} onReload={applyUpdate} />
 ```
 
+*(corrected in task 10: this step had no test, and every way of getting it wrong passed — see the file list. `web/src/App.test.tsx` gains "offers a worker that installs behind the open Room, and takes it on the tap": with do-not-disturb on, so the header carries every row, it spies `onUpdateReady` and `applyUpdate` on the module namespace, finds no `Reload` until the spied subscription says a worker is waiting, then holds the note directly under `OfflineNote` (the header's other live region) and over the quiet row, and clicks it through to `applyUpdate`.)*
+
 - [ ] **Step 7: Run green and commit**
 
 ```bash
@@ -3928,11 +3979,14 @@ npx vitest run src/shell/UpdateNote.test.tsx src/shell/useUpdateReady.test.tsx
 npx vitest run
 npm run lint && npm run build
 git add web/src/shell/UpdateNote.tsx web/src/shell/UpdateNote.test.tsx \
-        web/src/shell/useUpdateReady.ts web/src/shell/useUpdateReady.test.tsx web/src/room/Room.tsx
-git commit -m "feat(web): the Room offers the build that is waiting behind it"
+        web/src/shell/useUpdateReady.ts web/src/shell/useUpdateReady.test.tsx web/src/room/Room.tsx \
+        web/src/App.test.tsx web/README.md docs/superpowers/plans/2026-09-16-pwa-phase4-install-and-offline.md
+git commit -m "feat(web): the Room offers the worker that is waiting behind it"
 ```
 
-Counts after this task: **76 files / ~1 583 tests**.
+*(corrected in task 10: the list lacked the App test, the README and this plan, and the subject said "the build that is waiting", which R1 makes false — what waits is a worker.)*
+
+Counts after this task: **78 files / 1 901 tests** *(corrected in task 10: this said 76 / ~1 583. The base this task started from, d48c948, measured 76 files / 1 887 tests; task 10 adds two files and fourteen tests — eight in `UpdateNote.test.tsx`, five in `useUpdateReady.test.tsx` and one in `App.test.tsx`.)*.
 
 ---
 

@@ -397,9 +397,9 @@ the floor.
 old worker controls to close, rather than activating under someone mid-conversation —
 activate prunes the cache down to the new build and then claims every open page. The one way it
 activates sooner is the one message it takes, `{ type: "SKIP_WAITING" }`, which the page's
-`applyUpdate()` in `src/lib/sw.ts` posts. Nothing calls it yet: the Room's update note, a later
-slice, is what will, when the user asks. Anything else posted to it is ignored, and a
-`null` or `undefined` one does not throw. What this carries
+`applyUpdate()` in `src/lib/sw.ts` posts when the user taps `Reload` on the Room's update note
+(`src/shell/UpdateNote.tsx`), the note that shows while a worker waits. Anything else posted
+to it is ignored, and a `null` or `undefined` one does not throw. What this carries
 is a change to `sw.js` itself, not a deploy: `VERSION` is bumped by hand and the file is
 byte-identical across most deploys, so most deploys install nothing, leave nothing waiting,
 and are taken at the next navigation by the network-first branch.
@@ -416,11 +416,12 @@ hears the same refusal from the check `installServiceWorker` runs on every retur
 foreground (`registration.update()` — an installed PWA is brought back rather than
 relaunched, and the browser itself only checks at a navigation), which fails quietly offline
 and with a `console.warn` online. A worker that reaches `installed` behind an existing
-controller is announced through `onUpdateReady()` (nothing subscribes yet; the Room's note
-is a later slice), and the page reloads once when the new worker takes control — but not
-when a first worker claims a page that had none, which `activate`'s `clients.claim()` does on
-every first visit. There is one install per page: a second replaces the first, a dev one
-included, and the first attaches nothing more, even if it was still inside `register()`.
+controller is announced through `onUpdateReady()`, which the Room's update note subscribes
+to (`src/shell/useUpdateReady.ts`), and the page reloads once when the new worker takes
+control — but not when a first worker claims a page that had none, which `activate`'s
+`clients.claim()` does on every first visit. There is one install per page: a second
+replaces the first, a dev one included, and the first attaches nothing more, even if it was
+still inside `register()`.
 
 Three rules govern it, and they are restated at the top of the file itself:
 
