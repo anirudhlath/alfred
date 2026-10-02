@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deferredFixture } from "@/test/fixtures";
@@ -88,8 +88,9 @@ describe("HeldBackSheet", () => {
 
     await user.click(drain);
 
-    // Held, so it cannot be double-queued; announced, so a screen reader
-    // hears the outcome — the label alone does not change on a failure.
+    // Held — busy while the POST was out, `Queued` now — so it cannot be
+    // double-queued; announced, so a screen reader hears the outcome — the
+    // label alone does not change on a failure.
     expect(await screen.findByRole("button", { name: "Queued" })).toHaveAttribute(
       "aria-disabled",
       "true",
@@ -119,6 +120,47 @@ describe("HeldBackSheet", () => {
     expect(queued.className).not.toMatch(/opacity/);
 
     await user.click(queued);
+    expect(calls.filter((call) => call.method === "POST")).toHaveLength(1);
+  });
+
+  it("holds the drain from the press, not from the answer: a second press in flight sends nothing", async () => {
+    // `Queued` comes with the answer. Until then the button is busy, and held
+    // the same way, so a second press cannot queue a second drain.
+    const pending: { answer?: () => void } = {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        calls.push({ url, method: init?.method ?? "GET" });
+        if (url === "/api/admin/notifications/deferred")
+          return new Response(JSON.stringify(deferredFixture), { status: 200 });
+        if (url === "/api/admin/notifications/drain") {
+          await new Promise<void>((resolve) => (pending.answer = resolve));
+          return new Response('{"status":"queued"}', { status: 200 });
+        }
+        return new Response("{}", { status: 404 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderSheet();
+    const drain = await screen.findByRole("button", { name: "Drain queue now" });
+
+    await user.click(drain);
+
+    expect(drain).toHaveAttribute("aria-disabled", "true");
+    expect(drain).toHaveAttribute("aria-busy", "true");
+    expect(drain).not.toBeDisabled();
+    expect(drain).toHaveStyle({ color: "var(--fg2)" });
+    expect(drain).toHaveFocus();
+
+    await user.click(drain);
+    expect(calls.filter((call) => call.method === "POST")).toHaveLength(1);
+
+    await act(async () => pending.answer?.());
+
+    const queued = screen.getByRole("button", { name: "Queued" });
+    expect(queued).toHaveAttribute("aria-disabled", "true");
+    expect(queued).not.toHaveAttribute("aria-busy");
     expect(calls.filter((call) => call.method === "POST")).toHaveLength(1);
   });
 

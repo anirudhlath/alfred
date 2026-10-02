@@ -123,8 +123,9 @@ describe("contrast ratios", () => {
     it(`${theme}: a gate's body, and its held button, read on the page`, () => {
       // Every gate's body copy is --fg2 on --bg, and so is a held secondary
       // action's label (`Gate`'s `waiting` or `disabled`) and the Held back
-      // sheet's `Queued` on that sheet's --bg: dimmed from --fg by token, never
-      // by opacity. A label, so AA's 4.5:1 is the bar.
+      // sheet's held drain on that sheet's --bg (busy while its POST is out,
+      // then `Queued`): dimmed from --fg by token, never by opacity. A label,
+      // so AA's 4.5:1 is the bar.
       expect(contrast(token(theme, "fg2"), token(theme, "bg"))).toBeGreaterThanOrEqual(4.5);
     });
 

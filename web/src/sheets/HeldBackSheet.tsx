@@ -19,6 +19,7 @@ export interface HeldBackSheetProps {
 
 export function HeldBackSheet({ open, onClose }: HeldBackSheetProps) {
   const [queuedAt, setQueuedAt] = useState<string | null>(null);
+  const [draining, setDraining] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // One visit, one drain. The sheet stays mounted while closed (only the read
@@ -26,7 +27,8 @@ export function HeldBackSheet({ open, onClose }: HeldBackSheetProps) {
   // there on the next — over a note about a refresh that has long since
   // happened, and with no way to try again. Adjusted during render, as
   // `usePresence` does, and on the opening edge rather than the closing one so
-  // the leave animation does not flash the idle button back.
+  // the leave animation does not flash the idle button back. A drain still in
+  // flight is not forgotten: it holds the button until it is answered.
   const [wasOpen, setWasOpen] = useState(open);
   if (open !== wasOpen) {
     setWasOpen(open);
@@ -46,14 +48,19 @@ export function HeldBackSheet({ open, onClose }: HeldBackSheetProps) {
   const notifications = deferred.data?.notifications ?? [];
 
   async function drain(): Promise<void> {
+    setDraining(true);
     setError(null);
     try {
       await post("/api/admin/notifications/drain");
       setQueuedAt(hhmm(new Date()));
     } catch (caught) {
       setError(failureText(caught));
+    } finally {
+      setDraining(false);
     }
   }
+
+  const held = draining || queuedAt !== null;
 
   return (
     <Sheet open={open} title="Held back" onClose={onClose}>
@@ -97,22 +104,24 @@ export function HeldBackSheet({ open, onClose }: HeldBackSheetProps) {
 
       {notifications.length > 0 ? (
         <>
-          {/* Held once queued, so a drain cannot be queued twice — by
-              `aria-disabled` and a press that does nothing, never `disabled`:
-              the press that queues the drain is the one that turns this into
-              `Queued`, and a native `disabled` would throw focus to <body> from
-              under it. Dimmed to `--fg2` on the sheet's `--bg`, a pair measured
-              in `test/contrast.test.ts`, never by opacity. */}
+          {/* Held from the press on, so a drain cannot be queued twice: busy
+              while its POST is out (`aria-busy`), `Queued` once it is answered.
+              Held by `aria-disabled` and a press that does nothing, never
+              `disabled`: the press that starts the drain is the one that holds
+              the button, and a native `disabled` would throw focus to <body>
+              from under it. Dimmed to `--fg2` on the sheet's `--bg`, a pair
+              measured in `test/contrast.test.ts`, never by opacity. */}
           <button
             type="button"
             onClick={() => {
-              if (queuedAt === null) void drain();
+              if (!held) void drain();
             }}
-            aria-disabled={queuedAt !== null ? true : undefined}
+            aria-disabled={held ? true : undefined}
+            aria-busy={draining ? true : undefined}
             className="mt-1.5 h-[50px] rounded-[25px] border bg-transparent text-[15px] font-medium"
             style={{
               borderColor: "var(--line)",
-              color: queuedAt !== null ? "var(--fg2)" : "var(--fg)",
+              color: held ? "var(--fg2)" : "var(--fg)",
             }}
           >
             {queuedAt ? "Queued" : "Drain queue now"}
