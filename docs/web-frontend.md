@@ -315,7 +315,7 @@ reaches setup and sign-in:
 | Nothing read, online, and no such read has failed yet | The presence field, no copy | Nothing yet |
 | `registered: false` | `SetupGate` — passkey → home-service credentials → attention set | Nothing yet |
 | `registered: true, authenticated: false` | `SignInGate` — passkey | Nothing yet |
-| `authEvents` emitted `expired` (any HTTP 401 but the status read's and a passkey attempt's) | `ExpiredGate` | The last-known Room |
+| `authEvents` emitted `expired` (any HTTP 401 but the status read's and a passkey attempt's, or either socket closing with 4001 — see "Reconnect / backoff / 4001" below) | `ExpiredGate` | The last-known Room |
 | `authEvents` emitted `denied` (any HTTP 403 but the status read's) | `DeniedGate` | Whatever is on screen |
 
 **A read that has not landed is never read as an answer.** The first three rows key on
@@ -373,7 +373,8 @@ While the phone says it is offline, every failure shows `OfflineGate` instead. O
 house has answered, a failed read keeps that answer and the screen with it, and neither
 its 401 nor its 403 raises anything. A session that really lapses still says so: the
 next status read answers `authenticated: false`, which routes to `SignInGate`, and a 401
-on any other request but a passkey attempt raises `ExpiredGate` over the Room. Likewise
+on any other request but a passkey attempt, or either socket closing with 4001, raises
+`ExpiredGate` over the Room. Likewise
 `DeniedGate` rises for every 403 but the status read's: a network-gated route's refusal
 is the house's own, over these gates as over the Room. It also rises for a proxy's 403
 on any other route, which it should not (`docs/backlog/low/pwa-phase4-followups.md`,
@@ -861,8 +862,11 @@ does, every time the app is backgrounded long enough.
 
 - Initial connect: emits `"connecting"` status.
 - On successful open: resets attempt counter, emits `"online"`.
-- On close with code **4001**: emits `"unauthorized"` and stops — no retry. The socket is
-  reopened by `ConnectionProvider` after a successful sign-in, not by a backoff timer.
+- On close with code **4001**: emits `"unauthorized"` and stops — no retry.
+  `ConnectionProvider` turns `"unauthorized"` from either socket into an `expired` event
+  on `authEvents`: the same news as an HTTP 401, and the same gate (`ExpiredGate`, "The
+  gates" above). The socket is reopened by `ConnectionProvider` after a successful
+  sign-in, not by a backoff timer.
 - On other close: exponential backoff starting at 500ms, doubling per attempt, capped
   at 8 seconds. Emits `"reconnecting"` for the first two failures and `"offline"` from
   the third (`OFFLINE_AFTER_ATTEMPTS`), or at once while `navigator.onLine` is false —
