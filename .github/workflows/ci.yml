@@ -39,6 +39,24 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run test
+      # The suite again, with the kill switch fired in place: what the commit that
+      # fires it will meet. That commit exists to reach phones through this job,
+      # so every test that reads the worker's bytes has to stand down when sw.js
+      # is sw.kill.js, and sw.test.ts's guard can check that only file by file.
+      # This checks the property itself. `git checkout` puts sw.js back whether
+      # the run passed or not, and a failure to put it back fails the job, so the
+      # build and every step after it see the real worker. On a tree that is
+      # already fired the copy changes nothing and this is the same run twice.
+      # `--reporter=default`, because the reporter GitHub Actions gets otherwise
+      # posts each stand-down's warning that the kill switch is fired, on every
+      # run of a tree where it is not.
+      - name: Test with the kill switch fired
+        run: |
+          cp public/sw.kill.js public/sw.js
+          status=0
+          npm run test -- --reporter=default || status=$?
+          git checkout -- public/sw.js
+          exit "$status"
       - run: npm run build
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

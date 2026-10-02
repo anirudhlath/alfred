@@ -63,12 +63,12 @@ const SOURCES: Record<string, string> = {
 };
 
 /**
- * A string literal that ends in `public/sw.js`, with or without a query: the
- * shape of every way a file here takes the worker's bytes — an import of it
- * `?raw` or `?url&inline`, or its path handed to `readFileSync`. A comment
- * that only names the file is not one.
+ * A string literal — in any of the three quotes — that ends in `public/sw.js`,
+ * with or without a query: the shape of every way a file here takes the
+ * worker's bytes — an import of it `?raw` or `?url&inline`, or its path handed
+ * to `readFileSync`. A comment that only names the file is not one.
  */
-const LOADS_THE_WORKER = /["'][^"'\n]*public\/sw\.js(?:\?[^"'\n]*)?["']/;
+const LOADS_THE_WORKER = /["'`][^"'`\n]*public\/sw\.js(?:\?[^"'`\n]*)?["'`]/;
 
 // The kill switch has to get through CI to its deploy, so every test that reads
 // the worker's bytes must stand down on a fired tree. One that did not —
@@ -86,6 +86,24 @@ it("finds every file that reads the worker's bytes standing down when the switch
   for (const path of loaders) {
     expect(SOURCES[path], path).toMatch(/^const FIRED = /m);
     expect(SOURCES[path], path).toMatch(/\.skipIf\(FIRED\)/);
+  }
+});
+
+// What that guard counts as a load: the worker's path in any of the three
+// quotes — a template literal is how a path joined onto a root is usually
+// written — and never a comment that only names the file. It checks per file,
+// and a path built from pieces gets past it; what tests the property itself is
+// the web job's run of this suite on a fired copy (.github/workflows/ci.yml).
+it("counts the worker's path in any quote as a load, and a mention as none", () => {
+  for (const load of [
+    'import source from "../../public/sw.js?raw";',
+    "readFileSync('public/sw.js', 'utf8');",
+    "readFileSync(`${root}/public/sw.js`, 'utf8');",
+  ]) {
+    expect(LOADS_THE_WORKER.test(load), load).toBe(true);
+  }
+  for (const mention of ["// web/public/sw.js is the worker", " * see public/sw.js, rule 3"]) {
+    expect(LOADS_THE_WORKER.test(mention), mention).toBe(false);
   }
 });
 
