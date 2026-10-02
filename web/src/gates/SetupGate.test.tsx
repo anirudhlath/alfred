@@ -508,3 +508,59 @@ describe("SetupGate — step 2, the attention set", () => {
     expect(onDone).not.toHaveBeenCalled();
   });
 });
+
+describe("SetupGate — from one step to the next by keyboard", () => {
+  // Measured in Chromium before this: the Enter that registered the passkey left
+  // focus on the button, which was now `Continue`; a second Enter PUT the
+  // defaults with an empty token, and a third finished setup.
+
+  it("takes the press that registers the passkey to the next step's title, where Enter does nothing", async () => {
+    const user = userEvent.setup();
+    stubApi(HAPPY);
+    const { onDone } = renderSetup();
+    const create = screen.getByRole("button", { name: "Create passkey with Face ID" });
+    create.focus();
+
+    await user.keyboard("{Enter}");
+    const title = await screen.findByRole("heading", { name: "Registered." });
+    await screen.findByLabelText("Access Token");
+
+    // The heading, so a screen reader says where the press went.
+    expect(title).toHaveFocus();
+    // And a new step is new controls. A screen reader's cursor is not DOM focus:
+    // left on a node the next step reused, it would sit on `Continue` without
+    // having moved.
+    expect(screen.getByRole("button", { name: "Continue" })).not.toBe(create);
+
+    await user.keyboard("{Enter}");
+    await user.keyboard("{Enter}");
+
+    expect(calls.filter((call) => call.method === "PUT")).toEqual([]);
+    expect(screen.getByRole("heading", { name: "Registered." })).toHaveFocus();
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it("takes the press that stores the credentials to the last step's title, where Enter does not finish", async () => {
+    const user = userEvent.setup();
+    stubApi(HAPPY);
+    const { onDone } = renderSetup();
+    await register(user);
+    await user.type(await screen.findByLabelText("Access Token"), "llat-abc123");
+    screen.getByRole("button", { name: "Continue" }).focus();
+
+    await user.keyboard("{Enter}");
+    const title = await screen.findByRole("heading", { name: "What may the reflex touch?" });
+    // Finish answers presses once the list is read; wait for that, or the Enter
+    // below would prove nothing.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Finish" })).not.toHaveAttribute("aria-disabled"),
+    );
+
+    expect(title).toHaveFocus();
+
+    await user.keyboard("{Enter}");
+
+    expect(onDone).not.toHaveBeenCalled();
+    expect(calls.filter((call) => call.method === "PUT")).toHaveLength(1);
+  });
+});

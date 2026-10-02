@@ -204,9 +204,17 @@ export function SetupGate({ onDone }: SetupGateProps) {
     setAllowed((current) => ({ ...current, [domain]: !(current[domain] ?? startsAllowed(row)) }));
   }
 
+  // Each step is keyed. All three render a `Gate` in the same place, and
+  // unkeyed React reuses one step's buttons for the next: the Enter that
+  // registered the passkey stayed on the button, now `Continue`, and two more
+  // stored an empty token and finished setup on the defaults (measured in
+  // Chromium). A new step is new controls. The key alone would drop the
+  // pressed button's focus on `<body>`, so the new step's title takes it
+  // (`focusTitle`).
   if (step === 0) {
     return (
       <Gate
+        key="passkey"
         kicker={`first run · ${hostname}`}
         title={`Good ${partOfDay(hour)}. I am Alfred.`}
         body="This device will hold the only key to the house. There is no password anywhere; a passkey on this phone, unlocked by Face ID, is how you get in."
@@ -221,8 +229,10 @@ export function SetupGate({ onDone }: SetupGateProps) {
   if (step === 1) {
     return (
       <Gate
+        key="house"
         kicker="first run · 1 of 3 done"
         title="Registered."
+        focusTitle
         body="Now the house. Paste a long-lived Home Assistant token; I will read state and, later, act on the devices you allow."
         primary={{
           label: "Continue",
@@ -299,8 +309,10 @@ export function SetupGate({ onDone }: SetupGateProps) {
 
   return (
     <Gate
+      key="reflex"
       kicker="first run · 2 of 3 done"
       title="What may the reflex touch?"
+      focusTitle
       body="The small local model reacts in under half a second. It is only allowed low-risk devices you list here. Locks, alarms and the garage are never on this list; those always come to you."
       primary={{
         label: "Finish",

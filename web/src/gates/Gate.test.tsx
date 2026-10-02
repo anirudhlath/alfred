@@ -58,6 +58,22 @@ describe("Gate", () => {
     expect(screen.getByText("k")).not.toHaveClass("t-meta");
   });
 
+  it("takes focus to its title on mount when asked, and only then", () => {
+    // For a gate that takes another's place under the hand that pressed (setup's
+    // later steps): the heading a screen reader then reads, not a control.
+    const { unmount } = render(<Gate kicker="k" title="Registered." />);
+    const plain = screen.getByRole("heading", { name: "Registered." });
+    expect(plain).not.toHaveFocus();
+    expect(plain).not.toHaveAttribute("tabindex");
+    unmount();
+
+    render(<Gate kicker="k" title="Registered." focusTitle />);
+    const title = screen.getByRole("heading", { name: "Registered." });
+    expect(title).toHaveFocus();
+    // Focusable from script only: not a stop in the Tab order.
+    expect(title).toHaveAttribute("tabindex", "-1");
+  });
+
   it("renders the dot field, hidden from assistive tech", () => {
     const { container } = render(<Gate kicker="k" title="t" />);
     const field = container.querySelector(".gate-field");

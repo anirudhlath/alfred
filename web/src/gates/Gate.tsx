@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { GateField } from "@/gates/GateField";
 
 /*
@@ -56,6 +56,14 @@ export interface GateProps {
    */
   strongKicker?: boolean;
   title: string;
+  /**
+   * Move focus to the title when the gate mounts. For a gate that takes the
+   * place of another under the hand that pressed — setup's later steps — so
+   * the press lands on a heading that says where it went, which a screen
+   * reader then reads, and not on whatever control now stands where the
+   * pressed one was. The title is focusable from script only (`tabIndex` -1).
+   */
+  focusTitle?: boolean;
   body?: string;
   /** A step list, a credential form — anything between the body and the footer. */
   children?: ReactNode;
@@ -72,12 +80,18 @@ export function Gate({
   kicker,
   strongKicker = false,
   title,
+  focusTitle = false,
   body,
   children,
   primary,
   secondary,
   foot,
 }: GateProps) {
+  const heading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (focusTitle) heading.current?.focus();
+  }, [focusTitle]);
+
   const primaryUnavailable = primary?.disabled === true;
   const primaryHeld = primaryUnavailable || primary?.busy === true;
   const secondaryHeld = secondary?.disabled === true || secondary?.waiting === true;
@@ -107,7 +121,15 @@ export function Gate({
       <div className="relative flex flex-1 flex-col overflow-y-auto px-7 pb-3">
         <div className="mt-auto flex flex-col gap-3">
           <div className={strongKicker ? "t-meta-strong" : "t-meta"}>{kicker}</div>
-          <h1 className="t-gate">{title}</h1>
+          {/* No ring on the title when it takes focus, as on the Layer and the
+              Sheet that take it the same way: it is a place, not a control. */}
+          <h1
+            ref={heading}
+            tabIndex={focusTitle ? -1 : undefined}
+            className="t-gate outline-none"
+          >
+            {title}
+          </h1>
           {body ? (
             <p className="t-body" style={{ color: "var(--fg2)" }}>
               {body}
