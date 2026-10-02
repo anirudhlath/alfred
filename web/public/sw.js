@@ -26,9 +26,11 @@
 const VERSION = "v1";
 const CACHE = `alfred-shell-${VERSION}`;
 const SHELL = "/index.html";
-/* Where install records what it precached so activate can drop everything else
-   without re-reading index.html. A worker can be killed between the two events,
-   so this cannot be a variable. The app never asks for it: it is not a
+/* Where install records what it precached — the shell, the files it names and
+   the fonts install cached for it — so that a collection knows what install's
+   deploy needs without fetching anything. A worker can be killed between
+   install and activate, and a collection reads the record long after both, so
+   this cannot be a variable. The app never asks for it: it is not a
    navigation and not under /assets/, the only two things this worker's routing
    will ever answer. */
 const MANIFEST = "/__shell-manifest";
@@ -348,9 +350,9 @@ function assetsInHtml(html) {
    thing to buy with an `i`.
 
    Then a pathname, as assetsInHtml returns: it is what goes into MANIFEST, and
-   activate prunes by comparing that record against the cache's own keys, so a
-   font recorded with the stylesheet's spacing still on it is a font the next
-   activate deletes.
+   a collection prunes by comparing that record against the cache's own keys,
+   so a font recorded with the stylesheet's spacing still on it is a font the
+   next collection deletes.
 
    `.woff2` last, and it is a narrower question than the others — about
    browsers, not about what may be stored. @fontsource ships a `.woff` beside
@@ -484,8 +486,8 @@ async function precache() {
      single src: list can name a file twice, two stylesheets can name the same
      subset, and a <link rel="preload" as="font"> would have taken it in the
      asset pass already. Task 3 holds the same property over the HTML for the
-     same reason — a manifest listing something twice is what activate prunes
-     against. */
+     same reason — a manifest listing something twice is what a collection
+     prunes against. */
   const fonts = [...new Set(named)].filter((url) => !urls.includes(url));
 
   /* Unlike a missing chunk above, a missing font does NOT fail the install. The
@@ -499,7 +501,8 @@ async function precache() {
      into the same rejection). Anything skipped is still
      picked up cache-first the first time it is asked for — by the fetch
      handler's asset branch, which stores what it fetched under the same
-     pathname key. */
+     pathname key — and kept until the next collection, which takes what
+     neither the record nor the cached shell names (see `collect`). */
   const cached = [];
   for (const url of fonts) {
     const response = await fetchFresh(url)
@@ -523,20 +526,22 @@ async function precache() {
      after it is a white screen offline, left in the live cache by an install
      that failed. This way round a failure part way leaves the shell that was
      there and the assets it names; the new entries written before it are
-     named by nothing, and the next activate collects them. */
+     named by nothing, and the next collection takes them. */
   for (let i = 0; i < urls.length; i += 1) await cache.put(urls[i], responses[i]);
   for (const [url, response] of cached) await cache.put(url, response);
   await cache.put(SHELL, shell);
   /* The record last of all, once the shell's write has landed: a record is
-     this install's claim to have FINISHED. activate prunes by it, and the
-     activate that reads it need not be this worker's — a worker already
-     waiting when this install fails stays waiting, and runs the same purge
-     over this same cache when the page posts SKIP_WAITING. Written before a
-     shell that is then refused, the record would outlive the install that
-     wrote it, and that purge would delete the fonts of the shell still there,
-     which only the record they came in with names. The fonts are listed for
-     the same reason the rest is: activate prunes everything this record does
-     not name, so a font cached but unlisted is deleted before it is served. */
+     this install's claim to have FINISHED. Every collection prunes by it, and
+     the worker that reads it need not be this one — the active worker collects
+     after each refresh, and a worker already waiting when this install fails
+     stays waiting, and runs the same purge over this same cache when the page
+     posts SKIP_WAITING. Written before a shell that is then refused, the record
+     would outlive the install that wrote it, and the next collection would
+     delete the fonts of the shell still there, which only the record they came
+     in with names. The fonts are listed for the same reason the rest is: a
+     collection takes what neither this record nor the cached shell names, and
+     a shell names no font, so a font cached but unlisted is deleted before it
+     is served. */
   await cache.put(
     MANIFEST,
     new Response(JSON.stringify([SHELL, ...urls, ...cached.map(([url]) => url)])),
@@ -547,8 +552,10 @@ self.addEventListener("install", (event) => {
   event.waitUntil(precache());
 });
 
-/* The recovery path from a bad cache, and the one place stale bytes are ever
-   deleted. Two purges, because there are two ways they accumulate. */
+/* The recovery path from a bad cache, run at activate. Two purges, because
+   there are two ways stale bytes accumulate: between versions, which only this
+   reaches, and within one, which `collect` reaches here and after every
+   refresh() that publishes a shell. */
 async function purge() {
   /* Between versions: bump VERSION and the next activate takes the whole
      previous world with it. The `alfred-` prefix is not filtered on — anything
@@ -557,39 +564,50 @@ async function purge() {
      Awaited, not fired off: an unawaited delete is outside waitUntil, and the
      browser may stop the worker with the cache still there. Caught per delete,
      too: this is the recovery path from a bad cache, and one transient failure
-     must not cost the caches after it, the entry purge below, or the claim. */
+     must not cost the caches after it, the collection below, or the claim. */
   for (const name of await self.caches.keys()) {
     if (name !== CACHE) await self.caches.delete(name).catch(() => {});
   }
+  await collect(await self.caches.open(CACHE));
+}
 
-  /* Within a version: every entry that neither the record install just wrote
-     nor the shell now in the cache names — the union is spelled out below.
-     Asset URLs are content-hashed, so a deploy's worth of them is dead the
-     moment nothing names them — and VERSION is bumped by hand, so for every
-     deploy that does not bump it this is the ONLY thing that reaches what the
-     previous build of this same file cached. On iOS an origin over its storage
-     budget is evicted whole rather than trimmed.
+/* Within a version: every entry that neither install's record nor the shell
+   now in the cache names — the union is spelled out below. Asset URLs are
+   content-hashed, so a deploy's worth of them is dead the moment nothing names
+   them — and VERSION is bumped by hand, so for every deploy that does not bump
+   it this is the ONLY thing that reaches what an earlier deploy left here. On
+   iOS an origin over its storage budget is evicted whole rather than trimmed.
 
-     It also reaches, by the same rule, whatever the fetch handler stores at
-     runtime, and the rule cuts both ways there. An asset cached on a
-     cache-first miss is in no record, so it is kept only if the cached shell
-     names it — the chunks a refresh published with its shell are, which is
-     the point of the union — and anything else the next activate takes: a font
-     install declined and the page fetched later, a chunk a build splits out
-     and loads on demand. That is the intended reading — what the record and
-     the shell name is what the phone needs offline, any other runtime entry is
-     re-fetchable, and the alternative is a cache with no ceiling — but it is a
-     decision the fetch handler inherits rather than makes, so it is written
-     down here.
+   Run by purge() at activate, and by refresh() once it has published a shell
+   while no worker is installing. Activate alone was not enough: an ordinary
+   deploy changes no byte of this file, so it installs nothing and activates
+   nothing, and each refresh() left the shell it replaced, and that shell's
+   files, named by nothing until sw.js next changed. Measured in Chromium
+   against the real server, the cache grew by an entry chunk and a stylesheet
+   on every web deploy, with no limit. Now each collection leaves two deploys
+   at most: the record's, and the one the cached shell names.
 
-     Note the window this leaves: the new worker precaches into the cache the
-     old one is still serving from, so from the end of install to activate the
-     cached shell is the new HTML. Its assets are already cached by then —
-     install writes the shell after everything it names — and the only reader
-     of a cached shell is a navigation that did not get its answer from the
-     network: a phone that is offline, or that cannot reach this origin inside
-     the deadline. */
-  const cache = await self.caches.open(CACHE);
+   It also reaches, by the same rule, whatever the fetch handler stores at
+   runtime, and the rule cuts both ways there. An asset cached on a cache-first
+   miss is in no record, so it is kept only if the cached shell names it — the
+   chunks a refresh published with its shell are, which is the point of the
+   union — and anything else the next collection takes, which is usually the
+   next online navigation's: a font install declined and the page fetched
+   later, a font only a newer deploy's stylesheet names, a chunk a build splits
+   out and loads on demand. That is the intended reading — what the record and
+   the shell name is what the phone needs offline, any other runtime entry is
+   re-fetchable, and the alternative is a cache with no ceiling — but it is a
+   decision the fetch handler inherits rather than makes, so it is written down
+   here.
+
+   Note the window an install leaves: the new worker precaches into the cache
+   the old one is still serving from, so from the end of install to activate
+   the cached shell is the new HTML. Its assets are already cached by then —
+   install writes the shell after everything it names — and the only reader of
+   a cached shell is a navigation that did not get its answer from the network:
+   a phone that is offline, or that cannot reach this origin inside the
+   deadline. */
+async function collect(cache) {
   /* Snapshotted BEFORE the record is read, and the order is the whole point. A
      worker installing concurrently (the page re-checks for an update on every
      return to the foreground) writes its entries first and its record last. Read
@@ -598,7 +616,9 @@ async function purge() {
      refetches. This way round, an install that completes between the two reads
      is read from its own record, and entries written after the snapshot are not
      in it to delete. It narrows the race; it does not close it. Closing it needs
-     a lock two workers can share, which a service worker does not have. */
+     a lock two workers can share, which a service worker does not have; what
+     refresh() has instead is a look at the registration first (see the end of
+     refresh()). */
   const entries = await cache.keys();
 
   /* Three ways the record can be untrustworthy — absent, wrong shape, or
@@ -620,7 +640,7 @@ async function purge() {
        spelling across the manifest, the cache and the asset branch's lookup
        — but comparing on the pathname alone would keep a cross-origin entry
        that merely shares one, and a poisoned CDN copy of the entry chunk is
-       exactly the thing this purge is the recovery from. Resolved against the
+       exactly the thing purge() is the recovery from. Resolved against the
        scope for the same reason isAssetUrl does: one notion of "us" in this
        file. */
     keep = new Set([MANIFEST, ...record].map((path) => new URL(path, scopeOrigin()).href));
@@ -628,8 +648,8 @@ async function purge() {
     /* A body that is not JSON. /__shell-manifest is not a real endpoint —
        mount_spa answers any unknown path with index.html and a 200 — so a page
        of HTML is what the network would put under that key if anything ever
-       fetched it. Uncaught, the rejection would take the claim down with it,
-       AFTER the version purge above had already deleted the old world. */
+       fetched it. Uncaught at activate, the rejection would take the claim
+       down with it, AFTER purge() had already deleted the old world. */
     return;
   }
 
@@ -643,11 +663,12 @@ async function purge() {
      that renders a blank screen. That is the failure this whole file exists to
      prevent, arriving from the inside.
 
-     Read out of the cache, not off the network: this is activate, and the
-     question is what the entries on disk are for, not what the server is
-     serving now. The cost is one cycle of hysteresis — a shell that install has
-     since replaced keeps a few chunks alive for one activate, and the next one,
-     running against a record and a shell that finally agree, collects them. */
+     Read out of the cache, not off the network: the question is what the
+     entries on disk are for, not what the server is serving now — and after a
+     refresh, the shell read back is the one it has just published. The cost is
+     the record's deploy, kept beside the latest for as long as install's record
+     stands, which is until sw.js next changes: two deploys at most, and one
+     when the record and the shell agree. */
   try {
     const shell = await cache.match(SHELL);
     /* Not cloned: Cache.match hands back a new Response every call, so this body
@@ -888,26 +909,23 @@ async function cached(key) {
    how a failed write serves an ONLINE phone its cached shell — decision 8
    inverted by a `catch` one line too wide.
 
-   What the runtime entries this writes cost, and why nothing here collects
-   them. purge() keeps the union of install's record and what the cached shell
-   NAMES, so a shell published here and the chunks it names are kept or dropped
-   together; they are never pruned apart. What that union does not cover is a
-   refresh that stopped in the middle: the order below is assets first and shell
-   last, so a phone that fills up part way through has written new chunks and
-   not the HTML that names them, and those are orphans — in no record and named
-   by no cached shell. Not dead weight while they last: the asset branch serves
-   them, cache-first, to any page whose HTML names them, beginning with the
-   online page whose navigation started this refresh; and the next online
-   navigation to that deploy finds them cached and has only the HTML left to
-   publish. What they lack is a claim on the next activate, which collects
-   them. Bounded, which is why they are tolerated: what this function fetches
-   is what the HTML NAMES — the entry chunk and the stylesheet, 482 kB across
-   two files in this build, measured — and they are held only until that
-   activate, the same collector every other runtime entry here relies on.
-   Deleting them from this function instead would be the wrong trade twice
-   over: a refresh that deletes is racing a concurrent install writing the
-   same bytes, and the only moment at which "named by nothing" is a settled
-   fact is activate. */
+   What the entries this writes cost, and what collects them. collect() keeps
+   the union of install's record and what the cached shell NAMES, so a shell
+   published here and the chunks it names are kept or dropped together; they
+   are never pruned apart. Once this has published its shell, the one it
+   replaced names nothing, and the collection at the end of this function takes
+   that shell's chunks unless the record names them. A refresh that stops in
+   the middle publishes nothing and collects nothing: the order below is assets
+   first and shell last, so a phone that fills up part way through has written
+   new chunks and not the HTML that names them, and those are orphans — in no
+   record and named by no cached shell. Not dead weight while they last: the
+   asset branch serves them, cache-first, to any page whose HTML names them,
+   beginning with the online page whose navigation started this refresh; and
+   the next online navigation to that deploy finds them cached and has only
+   the HTML left to publish. The next collection keeps them if the shell it
+   finds names them and takes them if not, so nothing this writes outlives it
+   unnamed: what this function fetches is what the HTML NAMES — the entry
+   chunk and the stylesheet — and a collection leaves two deploys at most. */
 async function refresh(response) {
   /* isShell, and the two halves buy different things. The status half stops an
      ERROR page becoming the app's offline face: nginx serving a stale cached
@@ -974,7 +992,25 @@ async function refresh(response) {
     await cache.put(url, await whole(named));
   }
   await cache.put(SHELL, response);
+  /* Then the collection, now that the shell this replaced names nothing — but
+     not while a worker is installing. A changed sw.js precaches into this same
+     cache, the files its shell names first and its record last, and until the
+     record lands those files are named by nothing: collected now, they would
+     go from under an install that fetched them once and will not again, and
+     the shell it publishes would name files that are gone. A worker installed
+     and waiting writes nothing, and no other refresh in this worker is part
+     way through its writes, because navigate() runs them one at a time. What
+     is left is an install that starts after this look, writes its files before
+     collect() lists the cache and its record after collect() reads the record:
+     the race purge() narrows, narrowed here by the same order (see
+     `collect`). */
+  if (!self.registration.installing) await collect(cache);
 }
+
+/* The refresh this worker is running, or ran last, with every one queued
+   before it: see the end of navigate(). A worker stopped and started again
+   begins with nothing queued, as it begins with nothing running. */
+let refreshing = Promise.resolve();
 
 /* A navigation is network-first, and this function is the whole of decision 8.
    Every online launch renders the deploy that is live right now, so a cache
@@ -1025,8 +1061,17 @@ async function navigate(event) {
   /* The clone is the copy that may be stored; the original is the page's, and
      nothing below is allowed to touch it. Storing the response itself passes a
      test written the wrong way round and fails in a browser: the put spends the
-     body the page is about to read. */
-  event.waitUntil(refresh(response.clone()).catch(() => {}));
+     body the page is about to read.
+
+     Queued behind the refresh before it, never run beside it: side by side, the
+     later one collects what the earlier has written and not yet named, and the
+     earlier can then publish its older shell over the later's, naming files
+     that are gone. The copy waits its turn unread, holding what the page reads
+     until then — one HTML document. Each refresh's failure is swallowed where
+     it joins the queue, so one that fails does not stop those behind it. */
+  const copy = response.clone();
+  refreshing = refreshing.then(() => refresh(copy)).catch(() => {});
+  event.waitUntil(refreshing);
   return response;
 }
 
@@ -1035,22 +1080,24 @@ async function navigate(event) {
    change — the same fact SpaCacheMiddleware serves them on for a year
    (core/channels/spa.py; measured against the running app:
    `cache-control: public, max-age=31536000, immutable`). A deploy does not
-   invalidate them, it stops naming them, and activate's prune is what collects
-   the ones no longer named.
+   invalidate them, it stops naming them, and collect() is what takes the ones
+   no longer named — after the refresh that stops naming them, or at the next
+   activate.
 
    The cost of cache-first with no expiry, written down because nothing else in
    this file says it: an entry that is wrong is wrong until something deletes
-   it. There is no revalidation here and purge() only runs when a new worker
-   activates, which only happens when sw.js's own bytes change. The mitigations
-   are upstream — a hashed name cannot be poisoned by a deploy, isAsset refuses
-   what is not an asset, and the kill switch is the floor. */
+   it. There is no revalidation here, and collect() takes only what neither
+   install's record nor the cached shell names, so a wrong entry stays for as
+   long as either of them names it. The mitigations are upstream — a hashed
+   name cannot be poisoned by a deploy, isAsset refuses what is not an asset,
+   and the kill switch is the floor. */
 async function asset(event, pathname) {
   /* Keyed on the pathname, not the request, and both halves of that matter: it
      is the spelling precache() and MANIFEST use, so one URL has one entry here,
      in the record and in the prune; and a hashed file asked for with a query on
      the end is served the bytes already stored rather than fetched again under
-     a second key that activate would then delete. Raw, not decoded — the raw
-     pathname is what install stored. */
+     a second key that the next collection would then delete. Raw, not
+     decoded — the raw pathname is what install stored. */
   const stored = await cached(pathname);
   if (stored) return stored;
 

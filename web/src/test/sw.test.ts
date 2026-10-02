@@ -172,12 +172,14 @@ const pending = (read: Promise<unknown>): Promise<string> =>
   ]);
 
 /**
- * Real macrotasks until the harness's clock has reached `time`, and one more
- * after it, so that whatever the timer due then set off has run. For a timer
- * nothing awaits — one a test can see only the consequences of.
+ * Real macrotasks until `done` says so, and one more after it, so that whatever
+ * got there has finished what it set off. For work nothing awaits — a timer
+ * due on the harness's clock, an install part way through its writes — that a
+ * test can see only the consequences of. Gives up after a hundred, and the
+ * assertion after it is what fails.
  */
-const reach = async (worker: Harness, time: number): Promise<void> => {
-  for (let i = 0; i < 100 && worker.now < time; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+const until = async (done: () => boolean): Promise<void> => {
+  for (let i = 0; i < 100 && !done(); i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
   await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
@@ -1857,6 +1859,29 @@ const deployed = (marker: string, assets: readonly string[] = SHELL_ASSETS): Res
 /** The hashes the NEXT deploy writes. Nothing here has them cached. */
 const NEXT_ASSETS = ["/assets/index-D4kq2mZa.js", "/assets/index-Cv8pLm1x.css"];
 
+/** The two files deploy `n` of a run of them writes — the shape of NEXT_ASSETS. */
+const deployAssets = (n: number): string[] => [`/assets/index-D${n}q2mZa.js`, `/assets/index-C${n}8pLm1x.css`];
+
+/** Route deploy `n`: its page at `/`, and the two files it names. */
+const routeDeploy = (worker: Harness, n: number): string[] => {
+  const assets = deployAssets(n);
+  worker.respond("/", deployed(`deploy ${n}`, assets));
+  worker.respond(assets[0], js(`console.log(${n})`));
+  worker.respond(assets[1], css(`body{order:${n}}`));
+  return assets;
+};
+
+/**
+ * What the cached shell names that the cache does not hold — the files an
+ * offline launch of it would fail to load. Empty is the property every
+ * collection must keep.
+ */
+const missing = async (worker: Harness): Promise<string[]> => {
+  const page = await shellInCache(worker).clone().text();
+  const named = [...page.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)].map((match) => match[1]);
+  return named.filter((path) => !worker.keys().includes(path));
+};
+
 /** A typeface the next deploy's stylesheet names and this one's does not. */
 const NEXT_FONT = "/assets/dm-sans-latin-standard-normal-Q7rT2vXk.woff2";
 const NEXT_CSS = `@font-face{font-family:DM Sans Variable;font-display:swap;src:url(${NEXT_FONT})format("woff2-variations")}`;
@@ -2144,7 +2169,7 @@ describe.skipIf(FIRED)("navigations", () => {
     expect(worker.now).toBe(start + 10000);
     expect(worker.released).toEqual([]);
     await expect(response!.text()).resolves.toContain(ROOT_DIV);
-    await reach(worker, start + 12000);
+    await until(() => worker.now >= start + 12000);
     expect(worker.released).toEqual(["/"]);
   });
 
@@ -2407,6 +2432,102 @@ describe.skipIf(FIRED)("navigations", () => {
     // The record's own entries are kept too — this is a union, not a swap — so
     // the worker that installed them can still be rolled back to.
     expect(worker.keys()).toEqual(expect.arrayContaining([...SHELL_ASSETS]));
+  });
+
+  it("holds two deploys at most, however many deploys it refreshes to", async () => {
+    // An ordinary deploy changes no byte of sw.js, so it installs nothing and
+    // activates nothing: refresh() is what takes a phone to it, publishing the
+    // new shell and the two files it names. The shell it replaced, and that
+    // shell's files, are then named by nothing. Collected only at activate —
+    // which waits on sw.js's own bytes — they stayed: measured in Chromium
+    // against the real server, the cache grew by an entry chunk and a
+    // stylesheet on every web deploy, with no limit. Collected after each
+    // refresh, it holds install's record and deploy, and the latest deploy.
+    const worker = shell();
+    await worker.install();
+    await worker.activate();
+    const counts: number[] = [];
+    for (let n = 1; n <= 10; n += 1) {
+      routeDeploy(worker, n);
+      await worker.request({ path: "/", mode: "navigate" });
+      counts.push(worker.keys().length);
+    }
+    expect(counts).toEqual(Array<number>(10).fill(6));
+    expect(worker.keys()).toEqual(
+      ["/__shell-manifest", "/index.html", ...SHELL_ASSETS, ...deployAssets(10)].sort(),
+    );
+    await expect(shellInCache(worker).clone().text()).resolves.toContain("deploy 10");
+  });
+
+  it("collects nothing while a worker is installing into the same cache", async () => {
+    // A changed sw.js installs into the cache this worker serves from, writing
+    // the files its shell names first and its record last, so until the record
+    // lands those files are named by nothing. A refresh that collected then
+    // would delete them under the install, which has fetched them once and
+    // will not again, and the shell it then writes would name files that are
+    // not there: a white screen offline.
+    const worker = shell();
+    await worker.install();
+    await worker.activate();
+    worker.respond("/index.html", deployed("the update", NEXT_ASSETS));
+    worker.respond(NEXT_ASSETS[0], js("console.log(2)"));
+    worker.respond(NEXT_ASSETS[1], css("body{color:blue}"));
+    const letGo = worker.holdPut(NEXT_ASSETS[1]);
+    const installing = worker.install();
+    await until(() => worker.puts.includes(NEXT_ASSETS[1]));
+    expect(worker.keys()).toContain(NEXT_ASSETS[0]);
+    // A navigation lands mid-install, on a deploy newer still.
+    routeDeploy(worker, 3);
+    await worker.request({ path: "/", mode: "navigate" });
+    await expect(shellInCache(worker).clone().text()).resolves.toContain("deploy 3");
+    expect(worker.keys()).toContain(NEXT_ASSETS[0]);
+    letGo();
+    await installing;
+    await expect(shellInCache(worker).clone().text()).resolves.toContain("the update");
+    await expect(missing(worker)).resolves.toEqual([]);
+    // Once nothing is installing, the next refresh collects what neither the
+    // new record nor the shell it publishes names.
+    await worker.request({ path: "/", mode: "navigate" });
+    expect(worker.keys()).toEqual(
+      ["/__shell-manifest", "/index.html", ...NEXT_ASSETS, ...deployAssets(3)].sort(),
+    );
+  });
+
+  it("refreshes one navigation at a time, so a slow refresh is not collected under", async () => {
+    // Two navigations close together, the first refresh still reading a slow
+    // stylesheet when the second has published its shell. Run side by side,
+    // the second collects the first's chunk — named by nothing yet — and the
+    // first then publishes the older shell over the newer, naming a file that
+    // is gone. One at a time, the later deploy is the one left, whole.
+    const worker = shell();
+    await worker.install();
+    await worker.activate();
+    const first = routeDeploy(worker, 1);
+    worker.respond(first[1], worker.trickle("text/css", split("body{order:1}", 10), { every: 1260 }));
+    const one = worker.dispatch({ path: "/", mode: "navigate" });
+    routeDeploy(worker, 2);
+    const two = worker.dispatch({ path: "/", mode: "navigate" });
+    await Promise.all([one.settled, two.settled]);
+    await expect(shellInCache(worker).clone().text()).resolves.toContain("deploy 2");
+    await expect(missing(worker)).resolves.toEqual([]);
+    expect(worker.keys()).toEqual(
+      ["/__shell-manifest", "/index.html", ...SHELL_ASSETS, ...deployAssets(2)].sort(),
+    );
+  });
+
+  it("still refreshes after a refresh that failed", async () => {
+    // One at a time is a queue, and a queue that stops at its first failure
+    // stops the offline copy moving for as long as this worker lives: every
+    // refresh after it waiting on one that will never succeed.
+    const worker = shell();
+    await worker.install();
+    await worker.activate();
+    worker.respond("/", deployed("unfetchable", NEXT_ASSETS));
+    await worker.request({ path: "/", mode: "navigate" });
+    await expect(shellInCache(worker).clone().text()).resolves.not.toContain("unfetchable");
+    routeDeploy(worker, 2);
+    await worker.request({ path: "/", mode: "navigate" });
+    await expect(shellInCache(worker).clone().text()).resolves.toContain("deploy 2");
   });
 
   it.each(STALLS)("serves the page, and keeps the shell it has, when the new one stalls %s", async (_when, sent) => {
