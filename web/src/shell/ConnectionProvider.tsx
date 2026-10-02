@@ -14,8 +14,9 @@ const telemetry = new TelemetrySocket();
 
 /**
  * Make sure both sockets are live. `connect()` reopens a closed socket, replaces
- * one that has gone quiet and leaves a healthy one alone, so this is safe on
- * every return to the foreground — and necessary after every sign-in: the server
+ * one that has gone quiet, leaves a healthy one alone and cancels a retry still
+ * waiting out its backoff, so this is safe on every return to the foreground and
+ * whenever the signal comes back — and necessary after every sign-in: the server
  * closes both sockets with 4001 while there is no session, and a 4001 is never
  * retried.
  */
@@ -146,6 +147,15 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       for (const queryKey of REHYDRATE_KEYS) void queryClient.invalidateQueries({ queryKey });
     });
 
+    // The signal is back: try now, not at the end of the backoff wait. Every try
+    // made without a signal failed and doubled that wait, toward its eight-second
+    // cap (ws.ts), and on a launch with no network the offline gate clears on
+    // this same event — so the Room could open saying `No connection to the
+    // house …` and holding every send for up to eight seconds after the house
+    // had answered. `connect()` cancels the retry it replaces, so this starts no
+    // second retry chain.
+    window.addEventListener("online", reconnect);
+
     return () => {
       // The singletons outlive this mount; leave nothing of it on them. The
       // `close()` calls below still produce a close event each, and it must not
@@ -157,6 +167,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       stopWarning();
       stopTrue();
       stopVisible();
+      window.removeEventListener("online", reconnect);
       chat.close();
       telemetry.close();
       chatOnline = false;
