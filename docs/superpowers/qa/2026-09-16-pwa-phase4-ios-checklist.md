@@ -32,12 +32,13 @@ inset in standalone mode) still hold, and nothing here re-measures them.
       **A**, an ordinary change you can see on the Room and on the offline gate alike,
       with `web/public/sw.js` untouched: the frame "An ordinary deploy (A)" spells out,
       one rule added at the end of `web/src/index.css`. Not a colour token:
-      `contrast.test.ts` holds the tokens to their restatement in `src/test/contrast.ts`,
-      `icons.test.ts` pins `--bg` and `--accent` to the icon, and `manifest.test.ts` pins
-      `--bg` to the manifests, so a token edit fails `ci-ok` unless those move in the same
-      pull request. And **B**, one byte of `web/public/sw.js` changed — a comment is
-      enough. B installs a new worker on every phone that has the app, which is the point
-      of it. Two later steps each need one more byte change of the same kind
+      `contrast.test.ts` holds the tokens to their restatement in
+      `web/src/test/contrast.ts`, `icons.test.ts` pins `--bg` and `--accent` to the icon,
+      and `manifest.test.ts` pins `--bg` to the manifests, so a token edit fails `ci-ok`
+      unless those move in the same pull request. And **B**, one byte of `web/public/sw.js`
+      changed — a comment is enough. B installs a new worker on every phone that has the
+      app, which is the point of it. Two later steps each need one more byte change of the
+      same kind
 - [ ] Any earlier home-screen copy of Alfred deleted, so the install below is a first
       install
 - [ ] You can stop the house and start it again
@@ -158,22 +159,24 @@ lets every tap through:
 
 `#root` is already `position: fixed` in that file, and that makes it the frame's
 containing block: the frame sits on `#root`'s edges, not the viewport's, and nothing needs
-`position: relative`, which on `#root` would undo the `fixed`. The Workshop, the sheets,
-the Door and the gates that rise over a running app are drawn into `<body>` over `#root`,
-so they cover the frame, and the steps look for it on the Room and the offline gate only.
-In Chromium it shows on all four edges of the Room, the offline gate and the unanswered
-gate, and taps still reach `Try again` and the Room's buttons; nobody has looked at it on
-a phone yet.
+`position: relative`, which on `#root` would undo the `fixed`. The Workshop, the Door and
+the gates that rise over a running app are drawn into `<body>` over `#root` and hide the
+frame, and a sheet's scrim only dims it, so the steps look for it only on the screen a
+launch comes up on: the Room, or the gate shown in its place. In Chromium it shows on all
+four edges of the Room, the offline gate and the unanswered gate, it frames the sign-in
+gate too, and taps still reach `Try again` and the Room's buttons; nobody has looked at
+it on a phone yet.
 
 - [ ] With the app open on the Room, ship A. Switch away and back. **No** note appears:
       `sw.js` did not change, so no worker is waiting. Expected, not a defect
 - [ ] Kill the app and open it online. **Pass:** the frame runs round the edges of the
-      Room. **Fail:** no frame
-- [ ] Airplane mode, kill the app, open it. **Pass:** the offline gate inside the frame,
-      because the online launch above copied A for offline use — or, if that launch could
-      not copy all of A, the gate as it was before A, whole, with no frame. Record which
-      you saw. **Fail:** anything else — iOS's own offline page, a blank screen, or the
-      gate without its own type and palette
+      Room, or of the sign-in gate if the session has lapsed. **Fail:** no frame
+- [ ] Airplane mode, kill the app, open it. **Pass:** the gate "A cold launch with no
+      network" showed — the offline gate, or the unanswered gate if iOS reported online —
+      inside the frame, because the online launch above copied A for offline use; or, if
+      that launch could not copy all of A, that gate as it was before A, whole, with no
+      frame. Record which you saw. **Fail:** anything else — iOS's own offline page, a
+      blank screen, or a gate without its own type and palette
 - [ ] Revert A, through a pull request of its own, and let it deploy. Kill the app and
       open it online. **Pass:** the frame is gone. **Fail:** it is still there
 
@@ -196,7 +199,9 @@ a phone yet.
       note, switch away and back and give it a minute more. A note on that switch is a
       **fail**: the launch ran on the old worker and never noticed the new one, which is
       the iOS failure this step exists to catch. No note on that switch either is a
-      **pass**: the new worker took over at launch
+      **pass** on the phone's evidence: the new worker took over at launch. A new worker
+      left waiting with no note looks the same here, and only the last section's reading
+      tells the two apart
 
 ## The kill switch
 
@@ -266,9 +271,10 @@ caches.keys()
 A worker is listed under Develop › the phone, beside the app, only while it runs, as it
 does right after a launch; its inspector has a Console, Sources and Network. Everything
 this section says about Safari is documented, not measured (webkit.org, "Enabling Web
-Inspector"; web.dev's PWA course, "Tools and debug"): none of it has been tried on an
-iPhone, the two reads included. Where a step below cannot be read as written, record what
-Safari offered instead.
+Inspector"; Apple's iPhone User Guide, "Customize your Safari settings on iPhone", for the
+Settings › Apps › Safari path; web.dev's PWA course, "Tools and debug"): none of it has
+been tried on an iPhone, the two reads included. Where a step below cannot be read as
+written, record what Safari offered instead.
 
 - [ ] After the install: the registration read gives `https://alfred.example.com/`,
       `activated`, `undefined`, `undefined`. The cache read gives one cache,
@@ -277,14 +283,15 @@ Safari offered instead.
       `/__shell-manifest`
 - [ ] After B, before `Reload`: `activated`, then `installed` — the old worker active and
       the new one waiting
-- [ ] The killed-app launch in B. As the app opens, open its worker under Develop › the
-      phone and leave that inspector open. A minute later, before switching away, read
-      the registration. A worker waiting (`installed`, third) is a **pass** with the note
-      showing and a **fail** without it. A worker still installing (`installing`, last):
-      wait, then read again. Nothing waiting or installing: there is one worker, the one
-      you opened, and its source settles it. The word that step added is a **pass**: the
-      new worker took over at launch. No word is a **fail**: the old worker is active with
-      nothing waiting
+- [ ] The killed-app launch in B. As the app opens, open each worker listed under
+      Develop › the phone (two if the new one is already installing) and leave the
+      inspectors open. A minute later, before switching away, read the registration. A
+      worker waiting (`installed`, third) is a **pass** with the note showing and a
+      **fail** without it. A worker still installing (`installing`, last): wait, then read
+      again. Nothing waiting or installing: the active worker is the one still listed, and
+      its source settles it; if none is listed, record that. The word that step added is
+      a **pass**: the new worker took over at launch. No word is a **fail**: the old worker
+      is active with nothing waiting
 - [ ] After the kill switch, a few seconds after opening the app online and before the
       revert: the registration read gives `undefined` and the cache read `[]` — no
       registration and no cache
@@ -307,7 +314,8 @@ Safari offered instead.
 - [ ] The update note appeared only when a changed `sw.js` was waiting, never after an
       ordinary deploy
 - [ ] A cold launch with no network showed no row, no vital and no stamp at all — only the
-      offline gate. Nothing the house said is ever kept by the worker
+      offline gate (or the unanswered gate, where iOS reported online). Nothing the house
+      said is ever kept by the worker
 
 ---
 
