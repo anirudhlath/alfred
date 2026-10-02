@@ -86,18 +86,19 @@ export interface Triggers {
   /** The list read is in flight. */
   loading: boolean;
   /**
-   * The list has been read at least once, well or badly — the flag `useMemory`
-   * and `useSystem`'s sections each carry, for the same reason and by the same
-   * derivation. `loading` cannot stand in for it: react-query's default
-   * `networkMode: "online"` **pauses** a read only once its `onlineManager` has
-   * heard the phone go offline, and a paused query is not fetching, holds no
-   * data and raises no error. (On a launch that began offline the read runs and
-   * fails instead; either way nothing has been read, which is what this flag
-   * says.) Without this flag the bench opens on a phone with no signal by
-   * asserting `No triggers yet.` about a house it has never asked — a claim
-   * about the server made from no evidence, which spec §5.2 forbids.
-   * `dataUpdatedAt` and not `isSuccess`, because the question is "has this ever
-   * been read", not "did the last attempt succeed".
+   * A read of the list has landed at least once: `dataUpdatedAt !== 0`, so a
+   * first read that fails leaves it false and no later failure takes it back.
+   * It is the flag `useMemory` and `useSystem`'s sections each carry, for the
+   * same reason and by the same derivation. `loading` cannot stand in for it:
+   * react-query's default `networkMode: "online"` **pauses** a read only once
+   * its `onlineManager` has heard the phone go offline, and a paused query is
+   * not fetching, holds no data and raises no error. (On a launch that began
+   * offline the read runs and fails instead; either way nothing has landed,
+   * which is what this flag says.) Without this flag the bench opens on a
+   * phone with no signal by asserting `No triggers yet.` about a house it has
+   * never asked — a claim about the server made from no evidence, which spec
+   * §5.2 forbids. `dataUpdatedAt` and not `isSuccess`, because the question is
+   * "has a read ever landed", not "did the last attempt succeed".
    */
   read: boolean;
   /** Why the list read failed, if it did. Null while the bench is not showing. */

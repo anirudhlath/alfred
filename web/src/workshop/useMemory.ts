@@ -96,13 +96,15 @@ export interface Memory {
   /** A read is in flight. */
   loading: boolean;
   /**
-   * The showing tab's own read has landed at least once, well or badly — the
-   * flag `useSystem`'s sections each carry, for the same reason. Without it an
-   * empty list cannot be told from one nobody has been told about yet, and the
-   * bench opens by asserting `No episodic memories yet.` about a store it has
-   * not read: a claim about the server made from no evidence, which spec §5.2
-   * forbids. `dataUpdatedAt` and not `isSuccess`, because the question is "has
-   * this ever been read", not "did the last attempt succeed".
+   * The showing tab's own read has landed at least once: that tab's
+   * `dataUpdatedAt !== 0`, so a first read that fails leaves it false and no
+   * later failure takes it back. It is the flag `useSystem`'s sections each
+   * carry, for the same reason. Without it an empty list cannot be told from
+   * one nobody has been told about yet, and the bench opens by asserting
+   * `No episodic memories yet.` about a store it has not read: a claim about
+   * the server made from no evidence, which spec §5.2 forbids. `dataUpdatedAt`
+   * and not `isSuccess`, because the question is "has a read ever landed", not
+   * "did the last attempt succeed".
    */
   read: boolean;
   /** Why the showing tab's read failed, if it did. Null while the bench is not showing. */
