@@ -1410,9 +1410,11 @@ describe("useSystem", () => {
     const { result } = await openBench();
     const landed = result.current.readAt;
 
-    // The server takes the connection and never answers. There is no timeout
-    // anywhere in this tree, so nothing fails, nothing pauses, and the last
-    // answer sits in the cache looking exactly like a fresh one.
+    // The server takes the connection and never answers. `api()` sets no
+    // timeout and the worker never sees `/api/` (of the reads, only the auth
+    // status has a deadline, `STATUS_DEADLINE_MS`), so nothing fails, nothing
+    // pauses, and the last answer sits in the cache looking exactly like a
+    // fresh one.
     hold("GET", OVERVIEW);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(STALE_AFTER_MS + 1_000);

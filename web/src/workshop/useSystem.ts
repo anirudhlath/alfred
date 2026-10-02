@@ -48,11 +48,15 @@ const STALE_MS = 30_000;
  * nothing is arriving.
  *
  * This is what `error === null` cannot tell us. react-query's default
- * `networkMode: "online"` **pauses** a query with no network rather than
- * failing it — `fetchStatus` becomes `"paused"`, the data is retained and the
- * error stays null — and a server that accepts the socket and never answers
- * leaves the request in flight for ever, because nothing in this tree sets a
- * timeout. Both look exactly like a healthy bench until a clock says otherwise.
+ * `networkMode: "online"` **pauses** a read only once its `onlineManager` has
+ * heard the phone go offline — `fetchStatus` becomes `"paused"`, the data is
+ * retained and the error stays null — and on a launch that began offline the
+ * read runs and fails instead. A server that accepts the socket and never
+ * answers leaves the request in flight for ever: `api()` sets no timeout and
+ * the worker never sees `/api/`; of the reads, only the auth status has a
+ * deadline (`STATUS_DEADLINE_MS`). A paused read and a hung one both look
+ * exactly like a healthy bench; either way nothing fresh is held, which is what
+ * this clock reads.
  */
 export const STALE_AFTER_MS = OVERVIEW_POLL_MS * 2;
 
@@ -435,8 +439,12 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
     enabled &&
     readAt !== null &&
     !aged &&
-    // Paused is react-query's word for "there is no network to try on". It
-    // keeps the data and raises no error, so nothing else here would notice.
+    // Paused is react-query's word for "there is no network to try on", and it
+    // says it only once its `onlineManager` has heard the phone go offline; on a
+    // launch that began offline the read runs and fails instead, which
+    // `readAt !== null` and `aged` above already answer for — nothing has
+    // landed, or nothing has landed lately. A paused read keeps the data and
+    // raises no error, so nothing else here would notice.
     overviewQuery.fetchStatus !== "paused";
 
   // None of the five carries a `refetchInterval`. A session list, a passkey, an
@@ -532,8 +540,10 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
           if (!fresh()) return;
           // Busy tracks *this write*, and nothing else. It clears the moment the
           // write answers — tying it to the read below would leave the switch
-          // spinning for ever on a request that has no timeout anywhere in this
-          // tree, which is a worse lie than a switch that has not moved yet.
+          // spinning for ever on a request with no timeout (`api()` sets none
+          // and the worker never sees `/api/`; of the reads, only the auth
+          // status has a deadline, `STATUS_DEADLINE_MS`), which is a worse lie
+          // than a switch that has not moved yet.
           setSettingDnd(false);
           // The route wrote (or deleted) the Redis key before it answered, so
           // the overview read behind it reports the new position. The switch
@@ -634,9 +644,11 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
         ...current,
         [name]: { saving: true, savedAt: null, error: null, gated: false },
       }));
-      // Nothing in this tree sets a fetch timeout, and a socket the house
-      // accepts and never answers would leave this row reading `Testing…` and
-      // refusing every press until the Workshop is closed. `done` is what makes
+      // `api()` sets no timeout and the worker never sees `/api/`; the
+      // auth-status read's deadline (`STATUS_DEADLINE_MS`) is that read's alone.
+      // Without this timer, a socket the house accepts and never answers would
+      // leave this row reading `Testing…` and refusing every press until the
+      // Workshop is closed. `done` is what makes
       // the timer and the answer mutually exclusive: whichever arrives first
       // settles the row, and the loser writes nothing.
       const leave = new AbortController();
