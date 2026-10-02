@@ -121,10 +121,24 @@ describe("contrast ratios", () => {
     });
 
     it(`${theme}: a gate's body, and its held button, read on the page`, () => {
-      // Every gate's body copy is --fg2 on --bg, and so is a secondary action's
-      // label while its request is in flight (`Gate`'s `waiting`): dimmed from
-      // --fg by token, never by opacity. A label, so AA's 4.5:1 is the bar.
+      // Every gate's body copy is --fg2 on --bg, and so is a held secondary
+      // action's label (`Gate`'s `waiting` or `disabled`) and the Held back
+      // sheet's `Queued` on that sheet's --bg: dimmed from --fg by token, never
+      // by opacity. A label, so AA's 4.5:1 is the bar.
       expect(contrast(token(theme, "fg2"), token(theme, "bg"))).toBeGreaterThanOrEqual(4.5);
+    });
+
+    it(`${theme}: a gate's unavailable primary still reads, and can still be found`, () => {
+      // The handoff draws no unavailable state for a gate's buttons, so `Gate`'s
+      // is the house's own: an --fg2 label on a --surface fill, edged with an
+      // inset 1 px --muted line. The label is text, so 4.5:1.
+      expect(contrast(token(theme, "fg2"), token(theme, "surface"))).toBeGreaterThanOrEqual(4.5);
+      // The edge is the control's outermost pixel, so it is the boundary 1.4.11
+      // asks 3:1 of against the page.
+      expect(contrast(token(theme, "muted"), token(theme, "bg"))).toBeGreaterThanOrEqual(3);
+      // And it is there because the fill is no boundary at all: --surface is
+      // 1.13:1 off --bg in dark and 1.08:1 in light.
+      expect(contrast(token(theme, "surface"), token(theme, "bg"))).toBeLessThan(1.2);
     });
 
     it(`${theme}: a filled dark control carries its own label`, () => {
@@ -318,8 +332,8 @@ describe("contrast ratios", () => {
     // The switch's ON track against the card, which is why the boundary is the
     // inset `--muted` edge drawn over it rather than the track fill itself.
     expect(contrast(token("light", "accent"), token("light", "surface"))).toBeLessThan(3);
-    // A gate's held button, if it were dimmed to `--muted` on the page: 3.46:1,
-    // under AA for its 15 px label, so `waiting` dims to `--fg2` instead.
+    // A gate's held secondary, if it were dimmed to `--muted` on the page:
+    // 3.46:1, under AA for its 15 px label, so it dims to `--fg2` instead.
     expect(contrast(token("light", "muted"), token("light", "bg"))).toBeLessThan(4.5);
   });
 

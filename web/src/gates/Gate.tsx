@@ -1,20 +1,39 @@
 import type { ReactNode } from "react";
 import { GateField } from "@/gates/GateField";
 
+/*
+ * Neither button is ever given a native `disabled`. A held button is
+ * `aria-disabled`, its press does nothing (the click handler checks, because
+ * `aria-disabled` stops no event), and it is dimmed by token, never by opacity
+ * (`docs/web-frontend.md`, "The rules this phase's reviews kept enforcing").
+ * `disabled` would throw focus to `<body>` from under the finger that just
+ * pressed the button, and every primary a gate passes here goes busy on its
+ * own press.
+ */
+
 export interface GateAction {
   label: string;
   onClick: () => void;
+  /**
+   * The action cannot be taken yet: a credential form with no fields, a list
+   * still being read. The handoff draws no state for this, so the house's is a
+   * `--surface` fill with an `--fg2` label and an inset 1 px `--muted` edge —
+   * `--surface` alone is barely a step off the page, and the edge is what still
+   * shows where the button is. All three pairs are in `test/contrast.test.ts`.
+   */
   disabled?: boolean;
+  /**
+   * Its request is in flight. `aria-busy` as well, and still ink on paper: a
+   * busy button is answering the press it took, not unavailable.
+   */
   busy?: boolean;
 }
 
 export interface GateSecondaryAction extends Omit<GateAction, "busy"> {
   /**
-   * Its request is in flight: `aria-disabled` and `aria-busy`, a press that does
-   * nothing, and the label dimmed by token — to `--fg2`, the gate body's own
-   * colour, which still reads as text on the page (`test/contrast.test.ts`).
-   * Not `disabled`, which would throw focus to `<body>` from under the finger
-   * that just pressed it (as `ActivityBench`'s older-entries button says).
+   * Its request is in flight: `aria-busy` on top of the hold `disabled` gives.
+   * Either way the label dims to `--fg2`, the gate body's own colour, which
+   * still reads as text on the page (`test/contrast.test.ts`).
    */
   waiting?: boolean;
 }
@@ -51,6 +70,10 @@ export function Gate({
   secondary,
   foot,
 }: GateProps) {
+  const primaryUnavailable = primary?.disabled === true;
+  const primaryHeld = primaryUnavailable || primary?.busy === true;
+  const secondaryHeld = secondary?.disabled === true || secondary?.waiting === true;
+
   return (
     <div
       className="relative flex flex-1 flex-col overflow-hidden"
@@ -93,11 +116,22 @@ export function Gate({
         {primary ? (
           <button
             type="button"
-            onClick={primary.onClick}
-            disabled={primary.disabled === true || primary.busy === true}
-            aria-busy={primary.busy === true}
-            className="h-14 rounded-[28px] border-0 text-[16px] font-medium disabled:opacity-60"
-            style={{ background: "var(--ink)", color: "var(--paper)" }}
+            onClick={() => {
+              // `aria-disabled` does not stop the event, so this does.
+              if (!primaryHeld) primary.onClick();
+            }}
+            aria-disabled={primaryHeld ? true : undefined}
+            aria-busy={primary.busy === true ? true : undefined}
+            className="h-14 rounded-[28px] border-0 text-[16px] font-medium"
+            style={
+              primaryUnavailable
+                ? {
+                    background: "var(--surface)",
+                    color: "var(--fg2)",
+                    boxShadow: "inset 0 0 0 1px var(--muted)",
+                  }
+                : { background: "var(--ink)", color: "var(--paper)" }
+            }
           >
             {primary.label}
           </button>
@@ -107,14 +141,12 @@ export function Gate({
           <button
             type="button"
             onClick={() => {
-              // `aria-disabled` does not stop the event, so this does.
-              if (secondary.waiting !== true) secondary.onClick();
+              if (!secondaryHeld) secondary.onClick();
             }}
-            disabled={secondary.disabled === true}
-            aria-disabled={secondary.waiting === true ? true : undefined}
+            aria-disabled={secondaryHeld ? true : undefined}
             aria-busy={secondary.waiting === true ? true : undefined}
-            className="h-[50px] rounded-[25px] border-0 bg-transparent text-[15px] font-medium disabled:opacity-60"
-            style={{ color: secondary.waiting === true ? "var(--fg2)" : "var(--fg)" }}
+            className="h-[50px] rounded-[25px] border-0 bg-transparent text-[15px] font-medium"
+            style={{ color: secondaryHeld ? "var(--fg2)" : "var(--fg)" }}
           >
             {secondary.label}
           </button>

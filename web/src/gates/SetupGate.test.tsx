@@ -131,11 +131,12 @@ describe("SetupGate — step 0, the passkey", () => {
     registerPasskeyMock.mockRejectedValue(new ApiError(403, NETWORK_GATE_DETAIL));
     renderSetup();
 
-    await user.click(screen.getByRole("button", { name: "Create passkey with Face ID" }));
+    const create = screen.getByRole("button", { name: "Create passkey with Face ID" });
+    await user.click(create);
 
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Create passkey with Face ID" })).toBeEnabled(),
-    );
+    // Released, not merely enabled: the button is never natively disabled (Gate.tsx).
+    await waitFor(() => expect(create).not.toHaveAttribute("aria-busy"));
+    expect(create).not.toHaveAttribute("aria-disabled");
     expect(screen.getByRole("heading", { name: "Good evening. I am Alfred." })).toBeInTheDocument();
     expect(screen.queryByText(NETWORK_GATE_DETAIL)).toBeNull();
   });
@@ -239,7 +240,15 @@ describe("SetupGate — step 1, Home Assistant", () => {
     await register(user);
 
     expect(await screen.findByText("Keyring locked")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+    const next = screen.getByRole("button", { name: "Continue" });
+    expect(next).toHaveAttribute("aria-disabled", "true");
+    // Unavailable, not busy: nothing is in flight.
+    expect(next).not.toHaveAttribute("aria-busy");
+
+    await user.click(next);
+
+    expect(calls.filter((call) => call.method === "PUT")).toEqual([]);
+    expect(screen.getByRole("heading", { name: "Registered." })).toBeInTheDocument();
   });
 
   it("holds Do this later while the credentials are being written", async () => {
@@ -249,10 +258,20 @@ describe("SetupGate — step 1, Home Assistant", () => {
     await register(user);
     await screen.findByLabelText("Access Token");
 
-    await user.click(screen.getByRole("button", { name: "Continue" }));
+    const next = screen.getByRole("button", { name: "Continue" });
+    await user.click(next);
 
-    expect(screen.getByRole("button", { name: "Do this later" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+    expect(next).toHaveAttribute("aria-disabled", "true");
+    expect(next).toHaveAttribute("aria-busy", "true");
+    expect(next).toHaveFocus();
+    const later = screen.getByRole("button", { name: "Do this later" });
+    expect(later).toHaveAttribute("aria-disabled", "true");
+
+    await user.click(later);
+    await user.click(next);
+
+    expect(screen.getByRole("heading", { name: "Registered." })).toBeInTheDocument();
+    expect(calls.filter((call) => call.method === "PUT")).toHaveLength(1);
   });
 
   it("skips the write entirely on Do this later", async () => {

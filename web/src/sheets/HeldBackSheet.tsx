@@ -97,12 +97,23 @@ export function HeldBackSheet({ open, onClose }: HeldBackSheetProps) {
 
       {notifications.length > 0 ? (
         <>
+          {/* Held once queued, so a drain cannot be queued twice — by
+              `aria-disabled` and a press that does nothing, never `disabled`:
+              the press that queues the drain is the one that turns this into
+              `Queued`, and a native `disabled` would throw focus to <body> from
+              under it. Dimmed to `--fg2` on the sheet's `--bg`, a pair measured
+              in `test/contrast.test.ts`, never by opacity. */}
           <button
             type="button"
-            onClick={() => void drain()}
-            disabled={queuedAt !== null}
-            className="mt-1.5 h-[50px] rounded-[25px] border bg-transparent text-[15px] font-medium disabled:opacity-60"
-            style={{ borderColor: "var(--line)", color: "var(--fg)" }}
+            onClick={() => {
+              if (queuedAt === null) void drain();
+            }}
+            aria-disabled={queuedAt !== null ? true : undefined}
+            className="mt-1.5 h-[50px] rounded-[25px] border bg-transparent text-[15px] font-medium"
+            style={{
+              borderColor: "var(--line)",
+              color: queuedAt !== null ? "var(--fg2)" : "var(--fg)",
+            }}
           >
             {queuedAt ? "Queued" : "Drain queue now"}
           </button>
