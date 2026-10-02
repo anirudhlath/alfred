@@ -168,7 +168,9 @@ def test_entry_point_is_never_cached(tmp_path: Path) -> None:
 
 def test_unhashed_public_files_revalidate(tmp_path: Path) -> None:
     """Vite copies web/public/ through unhashed, so those cannot be immutable — but
-    no-store would re-download them every load; no-cache lets a 304 skip the bytes."""
+    no-store would re-download them every load; no-cache at least revalidates.
+    mount_spa's FileResponse answers that revalidation 200, not 304
+    (SpaCacheMiddleware's docstring in spa.py says why)."""
     assert _cached_app(tmp_path).get("/manifest.json").headers["cache-control"] == _NO_CACHE
 
 

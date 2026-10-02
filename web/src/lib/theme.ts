@@ -33,16 +33,15 @@ export function applyTheme(theme: Theme): void {
   document.querySelector('meta[name="theme-color"]')?.setAttribute("content", THEME_COLOR[theme]);
   // A manifest is a static file and the theme is the hour's, so there are two
   // of them and the link points at whichever is true now. Read this narrowly: a
-  // manifest is consumed at *install* time, so at best this aligns the installed
-  // app with the theme in force at Add to Home Screen. It never follows the
-  // theme afterwards — whoever installs at 22:00 keeps a dark launch screen at
-  // noon for ever — and on iOS it may do nothing at all: WebKit fetches at most
-  // one manifest per document load, and this runs after parsing (main.tsx is a
-  // deferred module), with no observer to re-read the href. Chromium does
-  // observe it, which is where the value is, and where the cost is too: its
-  // WebAPK update check fingerprints these two colours, so crossing 07:00 or
-  // 19:00 can schedule a silent reinstall. Unverified on a device either way —
-  // docs/superpowers/qa/ holds the checklist that would settle it.
+  // manifest is consumed at *install* time, so on iOS the most this can do is
+  // align one install with the theme in force at that moment — and it may do
+  // nothing at all: WebKit fetches at most one manifest per document load, and
+  // this runs after parsing (main.tsx is a deferred module), with no observer to
+  // re-read the href. Chromium re-reads it at its update check, which is where
+  // the value is, and where the cost is too: that check fingerprints these two
+  // colours, so crossing 07:00 or 19:00 can schedule a silent WebAPK reinstall.
+  // Unverified on a device either way — docs/superpowers/qa/ holds the
+  // checklist that would settle it.
   document.querySelector('link[rel="manifest"]')?.setAttribute("href", MANIFEST[theme]);
 }
 
