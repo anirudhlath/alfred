@@ -210,7 +210,9 @@ export function SetupGate({ onDone }: SetupGateProps) {
   // stored an empty token and finished setup on the defaults (measured in
   // Chromium). A new step is new controls. The key alone would drop the
   // pressed button's focus on `<body>`, so the new step's title takes it
-  // (`focusTitle`).
+  // (`focusTitle`). Its foot is a new status region too, whose first text (the
+  // step's caveat, or a 502's sentence carried forward) a screen reader may not
+  // speak; the title is described by it, so the move reads both.
   if (step === 0) {
     return (
       <Gate

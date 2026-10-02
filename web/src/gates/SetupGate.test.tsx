@@ -563,4 +563,32 @@ describe("SetupGate — from one step to the next by keyboard", () => {
     expect(onDone).not.toHaveBeenCalled();
     expect(calls.filter((call) => call.method === "PUT")).toHaveLength(1);
   });
+
+  it("reads each step's title with what its foot says: the caveat, then a 502's sentence", async () => {
+    // Keyed, a step's foot is a new status region, whose first text a screen
+    // reader may not speak; the title the press lands on is described by it.
+    const user = userEvent.setup();
+    const sentence =
+      "Credentials stored, but push to home-service failed: connection refused. They will be re-pushed when the service re-registers.";
+    stubApi({
+      ...HAPPY,
+      "PUT /api/integrations/home-service/credentials": { status: 502, body: { detail: sentence } },
+    });
+    renderSetup();
+    screen.getByRole("button", { name: "Create passkey with Face ID" }).focus();
+
+    await user.keyboard("{Enter}");
+    const registered = await screen.findByRole("heading", { name: "Registered." });
+
+    expect(registered).toHaveFocus();
+    expect(registered).toHaveAccessibleDescription("Stored encrypted at rest on your hardware.");
+
+    await user.type(await screen.findByLabelText("Access Token"), "llat-abc123");
+    screen.getByRole("button", { name: "Continue" }).focus();
+    await user.keyboard("{Enter}");
+    const reflex = await screen.findByRole("heading", { name: "What may the reflex touch?" });
+
+    expect(reflex).toHaveFocus();
+    expect(reflex).toHaveAccessibleDescription(sentence);
+  });
 });

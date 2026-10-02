@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useId, useRef, type ReactNode } from "react";
 import { GateField } from "@/gates/GateField";
 
 /*
@@ -66,7 +66,10 @@ export interface GateProps {
    * place of another under the hand that pressed — setup's later steps — so
    * the press lands on a heading that says where it went, which a screen
    * reader then reads, and not on whatever control now stands where the
-   * pressed one was. The title is focusable from script only (`tabIndex` -1).
+   * pressed one was. The title is focusable from script only (`tabIndex` -1),
+   * and described by the foot (`aria-describedby`), so the move reads both: a
+   * gate mounted in another's place has a new status region, and a region's
+   * first text is not reliably spoken. An empty foot describes nothing.
    */
   focusTitle?: boolean;
   body?: string;
@@ -76,7 +79,8 @@ export interface GateProps {
   secondary?: GateSecondaryAction;
   /**
    * Rendered as a status region: the gates put their errors and caveats here,
-   * and a change to it must be spoken, not just painted.
+   * and a change to it must be spoken, not just painted. On a gate that
+   * focuses its title, it describes the title too (see `focusTitle`).
    */
   foot?: string;
 }
@@ -96,6 +100,11 @@ export function Gate({
   useEffect(() => {
     if (focusTitle) heading.current?.focus();
   }, [focusTitle]);
+  const base = useId();
+  const footId = `${base}-foot`;
+  // Only a title the gate focuses is described (see `focusTitle`), and only by
+  // a foot that is there: an empty foot renders no region to point at.
+  const describedBy = focusTitle && foot ? footId : undefined;
 
   const primaryHeld = primary?.disabled === true || primary?.busy === true;
   const secondaryHeld = secondary?.disabled === true || secondary?.waiting === true;
@@ -130,6 +139,7 @@ export function Gate({
           <h1
             ref={heading}
             tabIndex={focusTitle ? -1 : undefined}
+            aria-describedby={describedBy}
             className="t-gate outline-none"
           >
             {title}
@@ -187,7 +197,7 @@ export function Gate({
         ) : null}
 
         {foot ? (
-          <div role="status" className="t-meta text-center">
+          <div id={footId} role="status" className="t-meta text-center">
             {foot}
           </div>
         ) : null}

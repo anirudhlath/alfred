@@ -74,6 +74,45 @@ describe("Gate", () => {
     expect(title).toHaveAttribute("tabindex", "-1");
   });
 
+  it("has the title it focuses described by its foot, so the move reads both", () => {
+    // A gate mounted in another's place has a new status region, and a region's
+    // first text is not reliably spoken: the title the focus lands on carries it.
+    render(
+      <Gate
+        kicker="k"
+        title="What may the reflex touch?"
+        focusTitle
+        foot="Credentials stored, but push to home-service failed."
+      />,
+    );
+    const title = screen.getByRole("heading", { name: "What may the reflex touch?" });
+
+    expect(title).toHaveFocus();
+    // The status region itself, not a copy of its words: a change to the foot
+    // is the description's change too.
+    expect(title).toHaveAttribute("aria-describedby", screen.getByRole("status").id);
+    expect(title).toHaveAccessibleDescription(
+      "Credentials stored, but push to home-service failed.",
+    );
+  });
+
+  it("adds no description for an empty foot, or to a title it does not focus", () => {
+    // Setup's last step carries a 502's sentence forward, and the house can send
+    // one without words.
+    const { unmount } = render(
+      <Gate kicker="k" title="What may the reflex touch?" focusTitle foot="" />,
+    );
+    const bare = screen.getByRole("heading", { name: "What may the reflex touch?" });
+    expect(bare).not.toHaveAttribute("aria-describedby");
+    expect(bare).toHaveAccessibleDescription("");
+    unmount();
+
+    render(<Gate kicker="k" title="Welcome back, sir." foot="Passkey · this phone" />);
+    expect(screen.getByRole("heading", { name: "Welcome back, sir." })).not.toHaveAttribute(
+      "aria-describedby",
+    );
+  });
+
   it("renders the dot field, hidden from assistive tech", () => {
     const { container } = render(<Gate kicker="k" title="t" />);
     const field = container.querySelector(".gate-field");
