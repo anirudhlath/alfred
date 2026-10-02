@@ -374,13 +374,12 @@ house has answered, a failed read keeps that answer and the screen with it, and 
 its 401 nor its 403 raises anything. A session that really lapses still says so: the
 next status read answers `authenticated: false`, which routes to `SignInGate`, and a 401
 on any other request but a passkey attempt, or either socket closing with 4001, raises
-`ExpiredGate` over the Room. Likewise
-`DeniedGate` rises for every 403 but the status read's: a network-gated route's refusal
-is the house's own, over these gates as over the Room. It also rises for a proxy's 403
-on any other route, which it should not (`docs/backlog/low/pwa-phase4-followups.md`,
-§14). If the status route ever gains a network gate, or sends a 401 of its own, that
-status becomes the house's answer, and `api()`'s exemption (`isStatusRead`, `lib/api.ts`)
-has to be revisited.
+`ExpiredGate` over the Room. Likewise `DeniedGate` rises for every 403 but the status
+read's: a network-gated route's refusal is the house's own, over these gates as over the
+Room. It also rises for a proxy's 403 on any other route, which it should not
+(`docs/backlog/low/pwa-phase4-followups.md`, §14). If the status route ever gains a
+network gate, or sends a 401 of its own, that status becomes the house's answer, and
+`api()`'s exemption (`isStatusRead`, `lib/api.ts`) has to be revisited.
 
 **401 and 403 never redirect.** `api()` emits on `authEvents` (`lib/auth-events.ts`) and
 the gate rises *over* whatever is on screen, so a lapsed session never blanks the state
@@ -865,8 +864,8 @@ does, every time the app is backgrounded long enough.
 - On close with code **4001**: emits `"unauthorized"` and stops — no retry.
   `ConnectionProvider` turns `"unauthorized"` from either socket into an `expired` event
   on `authEvents`: the same news as an HTTP 401, and the same gate (`ExpiredGate`, "The
-  gates" above). The socket is reopened by `ConnectionProvider` after a successful
-  sign-in, not by a backoff timer.
+  gates" above). The socket is reopened by `ConnectionProvider` after a successful sign-in
+  and on every return to the foreground (`reconnect()`), never by a backoff timer.
 - On other close: exponential backoff starting at 500ms, doubling per attempt, capped
   at 8 seconds. Emits `"reconnecting"` for the first two failures and `"offline"` from
   the third (`OFFLINE_AFTER_ATTEMPTS`), or at once while `navigator.onLine` is false —

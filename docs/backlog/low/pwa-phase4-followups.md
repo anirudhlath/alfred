@@ -8,8 +8,10 @@ found while being built and reviewed. The architecture they refer to is
 
 Every claim in §1 to §13 was re-checked against the tree at `c49e66d`, and every byte
 figure names that commit; §14 and §15 came out of task 12b's review round and were checked
-at `13648ec`. Where the plan's task 13 list turned out to be wrong, this file says what the
-code does, not what the plan expected; "Where the plan was stale" at the end is the index.
+at `13648ec`, except the fixtures check in §14's acceptance, added in that task's third
+fix round and checked at `2489885`. Where the plan's task 13 list turned out to be wrong,
+this file says what the code does, not what the plan expected; "Where the plan was stale"
+at the end is the index.
 
 One cost runs under several entries, so it is stated once here: **any byte change to
 `web/public/sw.js` — a comment included — installs a new worker on every phone** at its
@@ -288,7 +290,10 @@ one of two ways:
 - **By the body.** The 403's `detail` starts with
   `Access restricted to trusted networks`. That is the house's own sentence, so the
   client keeps one string in step with `require_trusted_network`, and a route that gains
-  or loses the gate needs no change. A test on each side pins the prefix.
+  or loses the gate needs no change. A test on each side pins the prefix. The client's
+  test reads `core/channels/web_server.py`, as `sw-server-routes.test.ts` does, and
+  checks the prefix and both `NETWORK_GATE_DETAIL*` fixtures (`web/src/test/fixtures.ts`)
+  against `require_trusted_network`'s sentences.
 - **By the route.** An allowlist of the seven routes above, by method and path. There is
   nothing to parse. But the list has to follow every route that gains or loses the gate,
   and a proxy's 403 on one of those seven routes is still announced.

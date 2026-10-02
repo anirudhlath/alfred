@@ -70,9 +70,10 @@ export const AUTH_STATUS_PATH = "/api/auth/status";
  * Unannounced, it is a failed read like any other: `AuthGate`, the only
  * listener, shows the unanswered gate while nothing has been read, and keeps
  * the last answer once something has. A session that really lapses still says
- * so: the status answers `authenticated: false`, and every other read's 401 is
- * announced. If the route ever gains a network gate, or sends a 401 of its own,
- * that status becomes the house's answer: revisit this then.
+ * so: the status answers `authenticated: false`, every other read's 401 is
+ * announced, and so is a socket's 4001 close (`ConnectionProvider`). If the
+ * route ever gains a network gate, or sends a 401 of its own, that status
+ * becomes the house's answer: revisit this then.
  */
 const isStatusRead = (path: string): boolean => path === AUTH_STATUS_PATH;
 

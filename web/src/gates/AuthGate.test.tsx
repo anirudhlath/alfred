@@ -375,7 +375,7 @@ describe("AuthGate routing", () => {
     // The route answers "not authenticated" with a 200, never a 401, so its 401
     // is not the house saying the session lapsed, nor news of the network: a
     // failed refetch, as above. A lapse the house does see arrives as that 200,
-    // or as another read's 401.
+    // as another read's 401, or as a socket's 4001 close.
     const { client } = renderGate();
     await screen.findByText("the room");
     const denials = watchFor("Not from here.");
