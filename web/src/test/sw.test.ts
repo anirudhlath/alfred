@@ -6,6 +6,9 @@ import source from "../../public/sw.js?raw";
 import shippedBytes from "../../public/sw.js?url&inline";
 import killSwitchBytes from "../../public/sw.kill.js?url&inline";
 import killSwitchSource from "../../public/sw.kill.js?raw";
+// This file's own text, for the guard on every file that reads the worker.
+import ownSource from "./sw.test.ts?raw";
+import { STATUS_DEADLINE_MS } from "../lib/auth";
 import {
   broken,
   css,
@@ -47,6 +50,42 @@ it("hands FIRED each file's own bytes: a base64 data: URL that decodes to that f
     const bytes = Uint8Array.from(atob(url.slice(url.indexOf(",") + 1)), (c) => c.charCodeAt(0));
     // `ignoreBOM` keeps a byte-order mark, as `?raw` does.
     expect(new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes), file).toBe(text);
+  }
+});
+
+/**
+ * Every source file under src/, as text: read, and none of it run. This one
+ * too, which the glob alone leaves out — Vite never globs a file into itself.
+ */
+const SOURCES: Record<string, string> = {
+  ...import.meta.glob<string>("/src/**/*.{ts,tsx}", { query: "?raw", import: "default", eager: true }),
+  "/src/test/sw.test.ts": ownSource,
+};
+
+/**
+ * A string literal that ends in `public/sw.js`, with or without a query: the
+ * shape of every way a file here takes the worker's bytes — an import of it
+ * `?raw` or `?url&inline`, or its path handed to `readFileSync`. A comment
+ * that only names the file is not one.
+ */
+const LOADS_THE_WORKER = /["'][^"'\n]*public\/sw\.js(?:\?[^"'\n]*)?["']/;
+
+// The kill switch has to get through CI to its deploy, so every test that reads
+// the worker's bytes must stand down on a fired tree. One that did not —
+// auth.test.ts reading TIMEOUT_MS out of the worker — turned `ci-ok` red on the
+// one commit that exists to unbrick phones. Keyed on what loads the bytes, not
+// on what mentions the file: lib/auth.ts names it in a comment and reads
+// nothing. Runs in either tree, because it is about the files that test the
+// worker and not about the worker.
+it("finds every file that reads the worker's bytes standing down when the switch is fired", () => {
+  const loaders = Object.keys(SOURCES).filter((path) => LOADS_THE_WORKER.test(SOURCES[path]));
+  // Not vacuous: the two files that test the worker are found by the same rule.
+  expect(loaders).toEqual(
+    expect.arrayContaining(["/src/test/sw.test.ts", "/src/test/sw-server-routes.test.ts"]),
+  );
+  for (const path of loaders) {
+    expect(SOURCES[path], path).toMatch(/^const FIRED = /m);
+    expect(SOURCES[path], path).toMatch(/\.skipIf\(FIRED\)/);
   }
 });
 
@@ -2189,6 +2228,20 @@ describe.skipIf(FIRED)("navigations", () => {
     // A deadline left armed keeps the worker alive to do nothing, which is
     // least welcome on a phone.
     expect(worker.deadlinesCleared).toBe(worker.deadlines.length);
+  });
+
+  it("gives a navigation as long as the page gives the house to answer", () => {
+    // The worker serves the cached shell once TIMEOUT_MS passes with no answer
+    // from the network, and lib/auth.ts calls the house silent once
+    // STATUS_DEADLINE_MS does. The page and the worker agree on when the house
+    // is "not answering": shorter on the page, and a slow but working link is
+    // called silent; longer, and a launch that will get no answer sits on the
+    // field for nothing. Read here, among the tests of the worker, so that it
+    // stands down with them when the kill switch is fired: the switch has no
+    // TIMEOUT_MS to read.
+    const match = /^const TIMEOUT_MS = (\d+);$/m.exec(source);
+    expect(match).not.toBeNull();
+    expect(STATUS_DEADLINE_MS).toBe(Number(match?.[1]));
   });
 
   it("fails as offline when there is no network and no cache to open", async () => {

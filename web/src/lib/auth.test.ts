@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import workerSource from "../../public/sw.js?raw";
 import { ApiError, timedOut } from "./api";
 import {
   DEVICE_KEY,
@@ -97,16 +96,6 @@ describe("fetchAuthStatus", () => {
       vi.stubGlobal("fetch", answering(body, init));
       await expect(fetchAuthStatus(new AbortController().signal)).rejects.toThrow();
     }
-  });
-
-  it("gives the house as long to answer as the worker gives a navigation", () => {
-    // public/sw.js serves the cached shell once TIMEOUT_MS passes with no answer
-    // from the network. The page and the worker agree on when the house is "not
-    // answering": shorter, and a slow but working link is called silent; longer,
-    // and a launch that will get no answer sits on the field for nothing.
-    const match = /^const TIMEOUT_MS = (\d+);$/m.exec(workerSource);
-    expect(match).not.toBeNull();
-    expect(STATUS_DEADLINE_MS).toBe(Number(match?.[1]));
   });
 
   it("gives up at the deadline, and says it was the deadline", async () => {
