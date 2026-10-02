@@ -453,6 +453,10 @@ an installed phone: every installed copy takes it at its next update check, drop
 on the origin, unregisters, and reloads each page the old worker was serving, once. Its header
 is the procedure, and says why deleting `sw.js` instead changes nothing and why the switch
 reloads only those pages — the page that registered it, reloaded, would register it again.
+Fire it as a commit of its own. While `sw.js` is `sw.kill.js` byte for byte, and only then,
+`sw.test.ts` and `sw-server-routes.test.ts` stand down, each with one passing test that says
+the switch is fired (a warning on the run in GitHub Actions), so CI passes and the merge
+deploys it. Afterwards, revert that commit.
 
 The tests are `src/test/sw.test.ts` (the worker, driven event by event),
 `src/test/sw-kill.test.ts` (the kill switch, through the same fake scope),

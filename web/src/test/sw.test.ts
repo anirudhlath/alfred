@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 // The shipped bytes, not a TypeScript copy of them — same reason
 // index-html.test.ts reads the shipped index.html.
 import source from "../../public/sw.js?raw";
+// The same file and the kill switch, each as its exact bytes: see FIRED.
+import shippedBytes from "../../public/sw.js?url&inline";
+import killSwitchBytes from "../../public/sw.kill.js?url&inline";
 import {
   broken,
   css,
@@ -16,6 +19,32 @@ import {
   type LoadOptions,
   type RequestSpec,
 } from "./sw-harness";
+
+/**
+ * Whether the kill switch is fired: sw.js a byte-for-byte copy of sw.kill.js,
+ * which is what that file's HOW TO FIRE IT leaves. Nothing here is then about a
+ * worker that ships — this file tests the one the copy took out — so every
+ * suite below stands down and the one test that runs says why, and the firing
+ * commit gets through CI to the deploy it exists for. Exact bytes and nothing
+ * looser, so that no other edit to sw.js, however close to the switch, stands
+ * these tests down: `?url&inline` hands each file over as its bytes, base64'd,
+ * where `?raw` would hand over decoded text.
+ */
+const FIRED = shippedBytes === killSwitchBytes;
+
+if (FIRED) {
+  it("stands down: web/public/sw.js is the kill switch, fired — sw.kill.js byte for byte", async ({
+    annotate,
+  }) => {
+    expect(shippedBytes).toBe(killSwitchBytes);
+    // A passing test's name is not in CI's log, and a skipped count says
+    // nothing of why. In GitHub Actions this is a warning on the run itself.
+    await annotate(
+      "The kill switch is fired: web/public/sw.js is sw.kill.js byte for byte, so sw.test.ts's tests of the real worker stand down until the firing commit is reverted.",
+      "warning",
+    );
+  });
+}
 
 /** What `vite build` really emits: one module script, one stylesheet. */
 const SHELL_HTML = `<!doctype html><html lang="en"><head>
@@ -131,7 +160,7 @@ const notFound = () =>
     headers: { "content-type": "application/json" },
   });
 
-describe("install", () => {
+describe.skipIf(FIRED)("install", () => {
   it("caches the shell and every asset index.html names", async () => {
     const worker = shell();
     await worker.install();
@@ -401,7 +430,7 @@ describe("install", () => {
   });
 });
 
-describe("install, and the fonts", () => {
+describe.skipIf(FIRED)("install, and the fonts", () => {
   const cached = ["/__shell-manifest", ...SHELL_ASSETS, ...SHELL_FONTS, "/index.html"].sort();
 
   it("follows the stylesheet to the woff2 files the HTML never names", async () => {
@@ -799,7 +828,7 @@ describe("install, and the fonts", () => {
   });
 });
 
-describe("install, and the network that never answers", () => {
+describe.skipIf(FIRED)("install, and the network that never answers", () => {
   it("gives every request a deadline, and every wait on a body another", async () => {
     const worker = shell();
     await worker.install();
@@ -1086,7 +1115,7 @@ describe("install, and the network that never answers", () => {
   });
 });
 
-describe("activate", () => {
+describe.skipIf(FIRED)("activate", () => {
   /** The absolute key a cache entry is really stored under. */
   const at = (path: string, origin = ORIGIN) => `${origin}${path}`;
 
@@ -1418,13 +1447,15 @@ const NEVER_ANSWERED: readonly (readonly [path: string, mode: string, why: strin
  * back as `undefined`, and a guard that has quietly widened looks exactly like
  * one that has not. `loadWorker(source, { expose: ["isRefused"] })` is the seam,
  * and it goes red if the file renames the function — the same reach
- * `worker.cache` makes into VERSION.
+ * `worker.cache` makes into VERSION. Reached on each call rather than once as
+ * this file loads: in the fired tree sw.js is the kill switch, which has no
+ * `isRefused`, and a throw at load would fail the file before its suites could
+ * stand down (see FIRED).
  */
-const isRefused = loadWorker(source, { expose: ["isRefused"] }).inner.isRefused!;
+const refuses = (spec: RequestSpec): boolean =>
+  loadWorker(source, { expose: ["isRefused"] }).inner.isRefused!(fetchRequest(spec));
 
-const refuses = (spec: RequestSpec): boolean => isRefused(fetchRequest(spec));
-
-describe("what the worker refuses to touch", () => {
+describe.skipIf(FIRED)("what the worker refuses to touch", () => {
   it.each(NEVER_ANSWERED)("refuses %s (%s) — %s", (path, mode) => {
     // True means the fetch handler never calls respondWith for it, so no branch
     // downstream can store it, serve it, or see it at all — stronger than
@@ -1660,7 +1691,7 @@ describe("what the worker refuses to touch", () => {
   });
 });
 
-describe("the fetch handler, and what it declines to answer", () => {
+describe.skipIf(FIRED)("the fetch handler, and what it declines to answer", () => {
   // `undefined` means respondWith was never called. A row of the table can only
   // FAIL here once a branch exists that could have claimed it: the navigate rows
   // are claimed by the navigation branch, so those have been live since it
@@ -1830,7 +1861,7 @@ const fromPage = (path: string, destination = "script"): RequestSpec => ({
   destination,
 });
 
-describe("navigations", () => {
+describe.skipIf(FIRED)("navigations", () => {
   it("serves the live page when there is a network", async () => {
     // Decision 8, and the whole of it: an online phone renders the deploy that
     // is live right now, never the cache. That is what makes a poisoned cache
@@ -2499,7 +2530,7 @@ describe("navigations", () => {
   });
 });
 
-describe("assets", () => {
+describe.skipIf(FIRED)("assets", () => {
   it("serves a hashed asset from the cache without touching the network", async () => {
     // Cache-first, and this is the only branch that is: the filename carries a
     // hash of the bytes, which is the same fact SpaCacheMiddleware serves these
@@ -2898,7 +2929,7 @@ describe("assets", () => {
   });
 });
 
-describe("the update handshake", () => {
+describe.skipIf(FIRED)("the update handshake", () => {
   /**
    * Every worker here installs over an older one that is still active: a
    * changed sw.js arriving at a phone that already runs the app, which is the

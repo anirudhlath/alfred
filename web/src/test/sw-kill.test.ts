@@ -1,15 +1,6 @@
 import { describe, expect, it } from "vitest";
 import source from "../../public/sw.kill.js?raw";
-import shipped from "../../public/sw.js?raw";
 import { type LoadOptions, loadWorker, ORIGIN } from "./sw-harness";
-
-/**
- * The cache the shipped sw.js writes, read out of its own `VERSION` as
- * `worker.cache` reads it. This worker declares no version, so it has no
- * `cache` of its own to ask, and a name restated here would go on passing
- * after a bump had moved the real one.
- */
-const SHELL = loadWorker(shipped).cache;
 
 /**
  * The case the switch exists for: it arrives as an update over the shipped
@@ -32,13 +23,19 @@ const BESIDE: LoadOptions = {
 };
 
 /**
- * A phone with Alfred installed: the shell the shipped worker cached, a cache
- * an older build left behind, and one that no build of Alfred names. Every
- * cache on the origin goes, not only the ones the switch would recognise.
+ * A phone with Alfred installed: the shell a build cached, a cache an older
+ * build left behind, and one that no build of Alfred names. Every cache on the
+ * origin goes, not only the ones the switch would recognise, so the names are
+ * literals: the switch keys on none of them, and none can drift. Reading the
+ * shell's out of sw.js, as this once did, bought nothing and failed this file
+ * in the one tree where sw.js is this worker — the tree that fires it.
  */
 function killer(options: LoadOptions = STALE) {
   const worker = loadWorker(source, options);
-  worker.store.set(SHELL, new Map([[`${ORIGIN}/index.html`, new Response("<!doctype html>")]]));
+  worker.store.set(
+    "alfred-shell-v1",
+    new Map([[`${ORIGIN}/index.html`, new Response("<!doctype html>")]]),
+  );
   worker.store.set("alfred-shell-v0", new Map());
   worker.store.set("workbox-precache-v2", new Map());
   return worker;
@@ -200,7 +197,11 @@ describe("the kill switch", () => {
     await expect(worker.activate()).resolves.toBeUndefined();
     expect(worker.unregisterCalls).toBe(1);
     expect(worker.navigated).toEqual([`${ORIGIN}/`]);
-    expect([...worker.store.keys()]).toEqual([SHELL, "alfred-shell-v0", "workbox-precache-v2"]);
+    expect([...worker.store.keys()]).toEqual([
+      "alfred-shell-v1",
+      "alfred-shell-v0",
+      "workbox-precache-v2",
+    ]);
   });
 
   it("has finished unregistering before it reloads anything", async () => {

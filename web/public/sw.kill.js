@@ -7,11 +7,16 @@
 
    HOW TO FIRE IT
        cp web/public/sw.kill.js web/public/sw.js
-   then rebuild and deploy. A real copy over sw.js — not a redirect, not a
-   symlink, not an import. Every installed copy of Alfred takes this worker on
-   its next update check (the browser runs one on every navigation, and
-   src/lib/sw.ts runs one on every return to the foreground), drops every cache,
-   unregisters itself, and leaves a plain web page that still works.
+   then commit that alone and ship it as any change ships: CI passes it, and
+   merging it deploys it. A real copy over sw.js — not a redirect, not a
+   symlink, not an import — and an exact one: while sw.js is this file byte
+   for byte, and only then, the real worker's tests stand down
+   (src/test/sw.test.ts and src/test/sw-server-routes.test.ts), each file
+   with one passing test that says so. Every installed copy of Alfred takes
+   this worker on its next update check (the browser runs one on every
+   navigation, and src/lib/sw.ts runs one on every return to the foreground),
+   drops every cache, unregisters itself, and leaves a plain web page that
+   still works.
 
    WHY DELETING /sw.js DOES NOT WORK
    mount_spa (core/channels/spa.py:42-49) answers any unknown path with index.html
@@ -39,8 +44,8 @@
    icon and add it again. Nothing is lost; the session and the conversation are
    on the server.
 
-   AFTERWARDS: restore sw.js from git, ship the fix, and let phones re-register
-   on their next launch.
+   AFTERWARDS: revert the firing commit, ship the fix, and let phones
+   re-register on their next launch.
 */
 self.addEventListener("install", () => {
   /* The opposite of sw.js, deliberately. This worker exists for the case where
