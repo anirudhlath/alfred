@@ -596,13 +596,14 @@ async function purge() {
   await collect(await self.caches.open(CACHE));
 }
 
-/* Within a version: every entry that neither install's record nor the shell
-   now in the cache names, itself or through its stylesheet — the union is
-   spelled out below. Asset URLs are content-hashed, so a deploy's worth of
-   them is dead the moment nothing names them — and VERSION is bumped by hand,
-   so for every deploy that does not bump it this is the ONLY thing that
-   reaches what an earlier deploy left here. On iOS an origin over its storage
-   budget is evicted whole rather than trimmed.
+/* Within a version: every entry that none of install's record, the shell now
+   in the cache and the shell this worker last served from it names, itself or
+   through its stylesheet — the union is spelled out below, and the last of the
+   three at the end of this comment. Asset URLs are content-hashed, so a
+   deploy's worth of them is dead the moment nothing names them — and VERSION
+   is bumped by hand, so for every deploy that does not bump it this is the
+   ONLY thing that reaches what an earlier deploy left here. On iOS an origin
+   over its storage budget is evicted whole rather than trimmed.
 
    Run by purge() at activate, and by refresh() once it has published a shell
    while no worker is installing. Activate alone was not enough: an ordinary
@@ -610,18 +611,20 @@ async function purge() {
    nothing, and each refresh() left the shell it replaced, and that shell's
    files, named by nothing until sw.js next changed. Measured in Chromium
    against the real server, the cache grew by an entry chunk and a stylesheet
-   on every web deploy, with no limit. Now each collection leaves two deploys
-   at most: the record's, and the one the cached shell names. Between two
-   collections there can be more, for a while. refresh() collects nothing
-   while a worker is installing, and the install writes its own deploy beside
-   whatever is there: on an ordinary update, whose refresh publishes the
-   deploy being installed, that is three at most, and each other deploy a
-   refresh publishes before the install ends adds one. A refresh that stops
-   part way leaves what it wrote to the next collection too (see `refresh`).
+   on every web deploy, with no limit. Now each collection leaves three
+   deploys at most: the record's, the cached shell's, and the one this worker
+   last served from the cache — two until it serves one from there, and fewer
+   where they coincide. Between two collections there can be more, for a
+   while. refresh() collects nothing while a worker is installing, and the
+   install writes its own deploy beside whatever is there: on an ordinary
+   update, whose refresh publishes the deploy being installed, that is one
+   more than the last collection left, and each other deploy a refresh
+   publishes before the install ends adds one. A refresh that stops part way
+   leaves what it wrote to the next collection too (see `refresh`).
 
    It also reaches, by the same rule, whatever the fetch handler stores at
    runtime, and the rule cuts both ways there. An asset cached on a cache-first
-   miss is in no record, so it is kept only if the cached shell names it — the
+   miss is in no record, so it is kept only if a shell it keeps names it — the
    chunks a refresh published with its shell are, which is the point of the
    union, and so is any font that shell's stylesheet names, whoever cached it
    — and anything else the next collection takes, which is usually the next
@@ -638,7 +641,19 @@ async function purge() {
    install writes the shell after everything it names — and the only reader of
    a cached shell is a navigation that did not get its answer from the network:
    a phone that is offline, or that cannot reach this origin inside the
-   deadline. */
+   deadline.
+
+   And the window a launch leaves, which is why there is a third. A page
+   served the cached shell asks for the files it names a moment later, and a
+   refresh that publishes a newer shell in that moment collects on the record
+   and the shell it published — neither of which names that page's files,
+   unless the record's deploy is the one it was served — and with no network
+   the page cannot then load its own entry chunk. So navigate() records what
+   a shell it serves from the cache names, and a collection keeps that too,
+   with the fonts its stylesheet names (see `served`). One shell's worth, the
+   last. A worker stopped and started again begins with none, and the
+   collection at activate runs in a worker that has served no page, so it
+   keeps none. */
 async function collect(cache) {
   /* Snapshotted BEFORE the record is read, and the order is the whole point. A
      worker installing concurrently (the page re-checks for an update on every
@@ -700,31 +715,36 @@ async function collect(cache) {
      refresh, the shell read back is the one it has just published. The cost is
      the record's deploy, kept beside the latest for as long as install's record
      stands, which is until sw.js next changes: two deploys at most, and one
-     when the record and the shell agree. */
+     when the record and the shell agree. A third is the shell this worker last
+     served from the cache, kept the same way (see `served`). */
   try {
     const shell = await cache.match(SHELL);
     /* Not cloned: Cache.match hands back a new Response every call, so this body
-       is this function's own. */
-    const named = shell ? assetsInHtml(await shell.text()) : [];
-    /* And the fonts its stylesheet names, read out of the cache the way install
-       read them off the network. A deploy that changes a font's hash publishes
-       a stylesheet naming the new file, and the page fetches that through the
-       asset branch: no record names it, and the shell names only the
-       stylesheet. Kept on those two alone, it went at the next collection, and
-       until sw.js next changed an offline launch had it only if the browser's
-       HTTP cache still did: measured in Chromium with that cache emptied, the
-       face failed to load. A stylesheet that is not in the cache names
-       nothing, as a missing shell does; one that will not read is caught below
-       with it. */
+       is this function's own. And with it what the shell last served from the
+       cache names: a page booted from that one may be asking for its files
+       right now. */
+    const named = [...(shell ? assetsInHtml(await shell.text()) : []), ...(await served)];
+    /* And the fonts their stylesheets name, read out of the cache the way
+       install read them off the network. A deploy that changes a font's hash
+       publishes a stylesheet naming the new file, and the page fetches that
+       through the asset branch: no record names it, and the shell names only
+       the stylesheet. Kept on those two alone, it went at the next collection,
+       and until sw.js next changed an offline launch had it only if the
+       browser's HTTP cache still did: measured in Chromium with that cache
+       emptied, the face failed to load. A stylesheet that is not in the cache
+       names nothing, as a missing shell does; one that will not read is caught
+       below with it. */
     const fonts = await fontsNamedBy(named, async (url) => {
       const stylesheet = await cache.match(url);
       return stylesheet ? stylesheet.text() : "";
     });
     for (const url of [...named, ...fonts]) keep.add(new URL(url, scopeOrigin()).href);
   } catch {
-    /* The same reading as an unreadable record one paragraph up: a shell, or a
-       stylesheet it names, that will not read is not a licence to guess at
-       what it named. Keep everything, and let the next install rewrite both. */
+    /* The same reading as an unreadable record one paragraph up: a shell,
+       cached or last served, or a stylesheet it names, that will not read is
+       not a licence to guess at what it named. Keep everything, and let the
+       next install rewrite the cache's — and the next launch from the cache,
+       or a worker started again, the one last served. */
     return;
   }
 
@@ -972,7 +992,8 @@ async function cached(key) {
    HTML left to publish. The next collection keeps them if the shell it finds
    names them and takes them if not, so nothing this writes outlives it
    unnamed: what this function fetches is what the HTML NAMES — the entry chunk
-   and the stylesheet — and a collection leaves two deploys at most. */
+   and the stylesheet — and a collection leaves three deploys at most, the
+   third only while this worker holds a shell it served from the cache. */
 async function refresh(response) {
   /* isShell, and the two halves buy different things. The status half stops an
      ERROR page becoming the app's offline face: nginx serving a stale cached
@@ -1059,6 +1080,17 @@ async function refresh(response) {
    begins with nothing queued, as it begins with nothing running. */
 let refreshing = Promise.resolve();
 
+/* What the shell navigate() last served from the cache names, which every
+   collection keeps beside the record and the cached shell (see `collect`). A
+   promise of the names, because they are read out of the body: it is set in
+   the turn the match answers, before the page has been handed that shell,
+   and a collection that comes to it while the names are still being read
+   waits for them. A read that fails leaves it rejected, and a collection that
+   meets that keeps everything, as it does for any shell it cannot read. One
+   shell's worth, the last served; a worker stopped and started again begins
+   with none, as it begins with nothing queued. */
+let served = Promise.resolve([]);
+
 /* A navigation is network-first, and this function is the whole of decision 8.
    Every online launch renders the deploy that is live right now, so a cache
    this worker has poisoned can be seen only by a phone that is offline or
@@ -1098,7 +1130,14 @@ async function navigate(event) {
        already swallows it: one that fails late is nobody's to report. */
     fetching.then(release, () => {});
     const shell = await cached(SHELL);
-    if (shell) return shell;
+    if (shell) {
+      /* Recorded before the page has it: see `served`. Read from a copy, as
+         refresh() reads one — the body is the page's. The `catch` only marks a
+         read that fails as handled; a collection still meets the rejection. */
+      served = shell.clone().text().then(assetsInHtml);
+      served.catch(() => {});
+      return shell;
+    }
     /* Nothing fetched and nothing cached — a first launch that never got a
        network, or one whose storage has gone. Throwing hands the browser its
        own network-error page. Resolving with undefined would reach the same
@@ -1133,11 +1172,12 @@ async function navigate(event) {
 
    The cost of cache-first with no expiry, written down because nothing else in
    this file says it: an entry that is wrong is wrong until something deletes
-   it. There is no revalidation here, and collect() takes only what neither
-   install's record nor the cached shell names, the fonts its stylesheet names
-   included, so a wrong entry stays for as long as either of them names it. The
-   mitigations are upstream — a hashed name cannot be poisoned by a deploy,
-   isAsset refuses what is not an asset, and the kill switch is the floor. */
+   it. There is no revalidation here, and collect() takes only what none of
+   install's record, the cached shell and the shell last served from the cache
+   names, the fonts their stylesheets name included, so a wrong entry stays for
+   as long as any of them names it. The mitigations are upstream — a hashed
+   name cannot be poisoned by a deploy, isAsset refuses what is not an asset,
+   and the kill switch is the floor. */
 async function asset(event, pathname) {
   /* Keyed on the pathname, not the request, and both halves of that matter: it
      is the spelling precache() and MANIFEST use, so one URL has one entry here,

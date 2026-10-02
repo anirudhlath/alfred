@@ -2602,6 +2602,86 @@ describe.skipIf(FIRED)("navigations", () => {
     );
   });
 
+  it("keeps the files of a shell it served from the cache, through a refresh that publishes another", async () => {
+    // A launch with no network is served the cached shell, and its page asks
+    // for the files that shell names a moment later. A refresh that publishes
+    // a newer shell in that moment, and collects on the record and the shell
+    // it published, takes them — the record names install's deploy, not this
+    // one — and the page, with no network, cannot load its own entry chunk.
+    const worker = shell();
+    await worker.install();
+    await worker.activate();
+    const first = routeDeploy(worker, 1);
+    await worker.request({ path: "/", mode: "navigate" });
+    // Deploy 2's refresh, stopped with its files written and its shell not yet.
+    routeDeploy(worker, 2);
+    const letGo = worker.holdPut("/index.html");
+    const two = worker.dispatch({ path: "/", mode: "navigate" });
+    await two.responded;
+    await until(() => worker.puts.filter((key) => key === "/index.html").length === 3);
+    // A launch with no network — no route answers it — is served deploy 1's
+    // shell, and deploy 1's files no longer answer from the network either.
+    for (const url of first) worker.hang(url);
+    const launch = await worker.request({ path: "/activity", mode: "navigate" });
+    await expect(launch!.text()).resolves.toContain("deploy 1");
+    // Deploy 2's shell lands and its refresh collects; then the page asks for
+    // the files its own shell names.
+    letGo();
+    await two.settled;
+    await expect(shellInCache(worker).clone().text()).resolves.toContain("deploy 2");
+    expect(worker.keys()).toEqual(
+      ["/__shell-manifest", "/index.html", ...SHELL_ASSETS, ...first, ...deployAssets(2)].sort(),
+    );
+    const [chunk, stylesheet] = first;
+    expect((await worker.request(fromPage(chunk)))!.status).toBe(200);
+    expect((await worker.request(fromPage(stylesheet, "style")))!.status).toBe(200);
+  });
+
+  it("remembers one shell it served from the cache, the last, and the fonts its stylesheet names", async () => {
+    // Kept until a later launch from the cache replaces it, or the worker
+    // stops: one shell's worth, so a collection leaves three deploys at most.
+    // And its stylesheet's fonts with it, which that page asks for as it asks
+    // for its chunk.
+    const worker = withFonts();
+    await worker.install();
+    await worker.activate();
+    const typefaces = [
+      "/assets/dm-sans-latin-standard-normal-R1kq7Lmw.woff2",
+      "/assets/dm-sans-latin-standard-normal-T3vw9Npz.woff2",
+      "/assets/dm-sans-latin-standard-normal-W6mx4Hqc.woff2",
+    ];
+    const deploy = (n: number): string[] => {
+      const assets = deployAssets(n);
+      worker.respond("/", deployed(`deploy ${n}`, assets));
+      worker.respond(assets[0], js(`console.log(${n})`));
+      worker.respond(
+        assets[1],
+        css(`@font-face{font-family:DM Sans Variable;src:url(${typefaces[n - 1]})format("woff2-variations")}`),
+      );
+      worker.respond(typefaces[n - 1], font());
+      return assets;
+    };
+    const record = ["/__shell-manifest", "/index.html", ...SHELL_ASSETS, ...SHELL_FONTS];
+    // No route answers /activity: a launch with no network, from the cache.
+    const launch = async () => (await worker.request({ path: "/activity", mode: "navigate" }))!.text();
+    const first = deploy(1);
+    await worker.request({ path: "/", mode: "navigate" });
+    await worker.request(fromPage(typefaces[0], "font"));
+    await expect(launch()).resolves.toContain("deploy 1");
+    // The next online navigation publishes deploy 2 and collects, and what
+    // that launch was served stays.
+    const second = deploy(2);
+    await worker.request({ path: "/", mode: "navigate" });
+    await worker.request(fromPage(typefaces[1], "font"));
+    expect(worker.keys()).toEqual([...record, ...first, typefaces[0], ...second, typefaces[1]].sort());
+    // A launch served deploy 2's shell replaces deploy 1's, and the next
+    // collection takes deploy 1's files.
+    await expect(launch()).resolves.toContain("deploy 2");
+    const third = deploy(3);
+    await worker.request({ path: "/", mode: "navigate" });
+    expect(worker.keys()).toEqual([...record, ...second, typefaces[1], ...third].sort());
+  });
+
   it("refreshes one navigation at a time, so a slow refresh is not collected under", async () => {
     // Two navigations close together, the first refresh still reading a slow
     // stylesheet when the second has published its shell. Run side by side,
