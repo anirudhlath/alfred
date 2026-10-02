@@ -208,6 +208,29 @@ describe("the fake CacheStorage", () => {
     expect(worker.keys("alfred-shell-v1")).toEqual([]);
   });
 
+  it("can be told to hold a put, read and not landed, until the test lets it go", async () => {
+    // A slow disk: the one wait in a write that nothing in a worker bounds, and
+    // how a test stops an install part way through its writes. Everything the
+    // install does after that put waits with it, as it would on a phone.
+    const worker = loadWorker(`
+      self.addEventListener("install", (event) => {
+        event.waitUntil((async () => {
+          const cache = await self.caches.open("alfred-shell-v1");
+          await cache.put("/x", new Response("x"));
+          await cache.put("/y", new Response("y"));
+        })());
+      });
+    `);
+    const release = worker.holdPut("/x");
+    const installing = worker.install();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(worker.puts).toEqual(["/x"]);
+    expect(worker.keys("alfred-shell-v1")).toEqual([]);
+    release();
+    await installing;
+    expect(worker.keys("alfred-shell-v1")).toEqual(["/x", "/y"]);
+  });
+
   it("can be told to refuse a put, which is what a phone that is full does", async () => {
     // `QuotaExceededError`, and it is the axis a worker is least likely to be
     // written for: a put is a disk write on a device whose storage the user does
@@ -1037,6 +1060,62 @@ describe("the fake network", () => {
     ]);
     expect(outcome).toBe("pending");
     expect(worker.now).toBe(8000);
+  });
+
+  it("answers a late route on the clock, as late as it was told", async () => {
+    // The answer a deadline stopped waiting for, arriving anyway: the headers
+    // twelve seconds after the request, and the body as the route sends it.
+    const worker = loadWorker(reader);
+    worker.respond("/x", js("x"));
+    worker.late("/x", 12000);
+    await worker.install();
+    expect(worker.now).toBe(12000);
+    await expect(worker.store.get("c")!.get(`${ORIGIN}/x`)!.clone().text()).resolves.toBe("x");
+  });
+
+  it("fails a late route that has no answer, as late as it was told", async () => {
+    const worker = loadWorker(`
+      self.addEventListener("install", (event) => {
+        event.waitUntil(self.fetch("/x").catch((error) => self.caches.open(error.name)));
+      });
+    `);
+    worker.late("/x", 12000);
+    await worker.install();
+    expect(worker.now).toBe(12000);
+    expect([...worker.store.keys()]).toEqual(["TypeError"]);
+  });
+
+  it("ends a late request the worker aborts, and leaves nothing of it on the clock", async () => {
+    const worker = loadWorker(`
+      self.addEventListener("install", (event) => {
+        const controller = new self.AbortController();
+        self.setTimeout(() => controller.abort(), 10000);
+        event.waitUntil(
+          self.fetch("/x", { signal: controller.signal }).catch((error) => self.caches.open(error.name)),
+        );
+      });
+    `);
+    worker.respond("/x", js("x"));
+    worker.late("/x", 12000);
+    await worker.install();
+    expect(worker.now).toBe(10000);
+    expect([...worker.store.keys()]).toEqual(["AbortError"]);
+    // The answer due at twelve seconds went with the request.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(worker.now).toBe(10000);
+  });
+
+  it("records a late body let go of, through the same connection as any other", async () => {
+    const worker = loadWorker(`
+      self.addEventListener("install", (event) => {
+        event.waitUntil(self.fetch("/x").then((response) => response.body.cancel()));
+      });
+    `);
+    worker.respond("/x", stalled());
+    worker.late("/x", 12000);
+    await worker.install();
+    expect(worker.now).toBe(12000);
+    expect(worker.released).toEqual(["/x"]);
   });
 
   it("breaks a body off after its first piece, and refuses a cancel of it after that", async () => {

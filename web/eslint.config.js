@@ -22,8 +22,9 @@ export default defineConfig([
   {
     // The service workers in public/. Not TypeScript — they are shipped verbatim
     // by Vite's public/ copy, are loaded as classic (non-module) workers, and
-    // are evaluated in tests with `new Function("self", source)`, which refuses
-    // import/export. `sourceType: 'script'` is what keeps all three honest.
+    // are evaluated in tests with `new Function("self", ...SEALED, source)`,
+    // which refuses import/export. `sourceType: 'script'` is what keeps all
+    // three honest.
     files: ['public/*.js'],
     extends: [js.configs.recommended],
     languageOptions: {

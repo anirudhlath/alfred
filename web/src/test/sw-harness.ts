@@ -51,6 +51,8 @@ class FakeCache {
   readonly attempted: (url: string) => void;
   /** The origin a relative cache key resolves against — the worker's own. */
   readonly origin: string;
+  /** What a `put` of this absolute key waits on before it lands, if a test is holding it. */
+  readonly held: (url: string) => Promise<void> | undefined;
   constructor(
     entries: Map<string, Response>,
     refuses: (url: string) => boolean,
@@ -58,6 +60,7 @@ class FakeCache {
     refusesMatch: (url: string) => boolean,
     attempted: (url: string) => void,
     origin: string,
+    held: (url: string) => Promise<void> | undefined,
   ) {
     this.entries = entries;
     this.refuses = refuses;
@@ -65,6 +68,7 @@ class FakeCache {
     this.refusesMatch = refusesMatch;
     this.attempted = attempted;
     this.origin = origin;
+    this.held = held;
   }
   /**
    * Real `Cache.match` constructs a NEW Response every call, so reading one
@@ -124,19 +128,25 @@ class FakeCache {
     // put goes to disk, so a worker that does not await one has left it outside
     // `waitUntil` and the browser is free to stop the worker before it lands. A
     // microtask would make the missing `await` invisible; a macrotask does not.
-    return read.then((bytes) =>
-      settled(() => {
-        if (this.refusesPut(url)) storageFailure("QuotaExceededError");
-        this.entries.set(
-          url,
-          new Response(bytes, {
-            status: response.status,
-            statusText: response.statusText,
-            headers: response.headers,
-          }),
-        );
-      }),
-    );
+    return read.then((bytes) => {
+      const land = () =>
+        settled(() => {
+          if (this.refusesPut(url)) storageFailure("QuotaExceededError");
+          this.entries.set(
+            url,
+            new Response(bytes, {
+              status: response.status,
+              statusText: response.statusText,
+              headers: response.headers,
+            }),
+          );
+        });
+      // A write `holdPut` is holding waits here, read and not yet landed. Only
+      // then: chained through a promise that is already resolved, every other
+      // put would land a microtask later than it does.
+      const hold = this.held(url);
+      return hold ? hold.then(land) : land();
+    });
   }
   /** Real `Cache.keys()` answers Requests carrying absolute URLs. So does this. */
   keys(): Promise<{ url: string }[]> {
@@ -245,6 +255,18 @@ export interface Harness {
    */
   hang(pathname: string): void;
   /**
+   * Program `self.fetch` to answer `pathname` as its route says — or to fail,
+   * with no route — only `ms` after it is asked, on the harness's clock: an
+   * answer that comes late rather than never. What it shows is the request a
+   * worker has stopped waiting for. A deadline that wins a race ends the WAIT,
+   * not the request, and what the worker does when the answer turns up after
+   * all is visible only if one does: the response comes through the same
+   * connection every other answer does, so a body let go of is in `released`.
+   * An abort of the signal the worker passed ends the request first, as it
+   * ends a hung one.
+   */
+  late(pathname: string, ms: number): void;
+  /**
    * Program a delete to reject, which is the one failure a real `CacheStorage`
    * produces that this fake otherwise cannot — and therefore the only way a
    * test can reach a worker's per-delete `catch`. A cache NAME for
@@ -263,6 +285,15 @@ export interface Harness {
   refusePut(key: string): void;
   /** Program a `Cache.match` to reject — the read half of the same axis. */
   refuseMatch(key: string): void;
+  /**
+   * Hold every `Cache.put` of `key` — a pathname, or a whole URL — once its body
+   * is read and before it lands, until the function this hands back is called:
+   * a slow disk, the one wait in a write that no deadline of the worker's
+   * bounds. It is how a test stops an install part way through its writes, with
+   * the worker still in `registration.installing`, and watches what the rest of
+   * the worker does to the same cache in the meantime.
+   */
+  holdPut(key: string): () => void;
   /**
    * Program `caches.open()` itself to reject — the whole CacheStorage
    * unavailable, which Safari does under storage pressure and in some private
@@ -616,10 +647,11 @@ interface FakeServiceWorker {
  * Evaluate a service worker's shipped source against a fake global scope and
  * hand back the levers a test needs.
  *
- * `new Function("self", source)` is the whole trick: the worker reaches every
- * global through `self.`, so one object is the entire world it can see. Nothing
- * here is mocked at the module boundary — these tests run the bytes that ship.
- *
+ * `new Function("self", ...SEALED, source)` is the whole trick: the worker
+ * reaches every global through `self.`, so one object is the entire world it
+ * can see — and SEALED shadows the bare globals, so a worker that reaches past
+ * `self.` meets a refusal rather than Node's real one. Nothing here is mocked at
+ * the module boundary — these tests run the bytes that ship.
  */
 export function loadWorker(source: string, options: LoadOptions = {}): Harness {
   const { expose = [], scope: scopeUrl = `${ORIGIN}/`, update = false, clients = [{ path: "/" }] } = options;
@@ -642,6 +674,10 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
   const routes = new Map<string, Response>();
   /** Absolute hrefs that accept the connection and answer nothing. */
   const hangs = new Set<string>();
+  /** Absolute hrefs that answer, or fail, this many ms after they are asked. */
+  const lates = new Map<string, number>();
+  /** Absolute entry hrefs whose `put` waits, read and not landed, until a test lets it go. */
+  const putHolds = new Map<string, Promise<void>>();
   /** Cache names and absolute entry hrefs whose deletion rejects. */
   const refusals = new Set<string>();
   /** Absolute entry hrefs whose `put` rejects with QuotaExceededError. */
@@ -861,6 +897,7 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
             (url: string) =>
               void harness.puts.push(url.startsWith(origin) ? new URL(url).pathname : url),
             origin,
+            (url: string) => putHolds.get(url),
           ),
         );
       },
@@ -911,6 +948,23 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
         });
       }
       const response = routes.get(url.href);
+      const delay = lates.get(url.href);
+      if (delay !== undefined) {
+        // The same answer or the same failure, `delay` ms from now — unless the
+        // worker's signal ends the request first.
+        const copy = response?.clone();
+        return new Promise<Response>((resolve, reject) => {
+          const timer = after(delay, () =>
+            copy
+              ? resolve(connection(copy, url.pathname, init?.signal))
+              : reject(new TypeError(`no route for ${url.href}`)),
+          );
+          init?.signal?.addEventListener("abort", () => {
+            timers.delete(timer);
+            reject(new DOMException("The user aborted a request.", "AbortError"));
+          });
+        });
+      }
       // No route programmed = no network. A real worker sees a TypeError here.
       if (!response) return Promise.reject(new TypeError(`no route for ${url.href}`));
       return Promise.resolve(connection(response.clone(), url.pathname, init?.signal));
@@ -1050,6 +1104,16 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     },
     respond: (pathname, response) => void routes.set(new URL(pathname, origin).href, response),
     hang: (pathname) => void hangs.add(new URL(pathname, origin).href),
+    late: (pathname, ms) => void lates.set(new URL(pathname, origin).href, ms),
+    holdPut: (key) => {
+      const href = new URL(key, origin).href;
+      let release!: () => void;
+      putHolds.set(href, new Promise<void>((resolve) => (release = resolve)));
+      return () => {
+        putHolds.delete(href);
+        release();
+      };
+    },
     // A cache name has no slash and a URL always does, which is the whole of
     // the distinction: `caches.delete` is given the raw name, `Cache.delete` an
     // absolute href.
