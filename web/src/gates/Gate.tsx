@@ -29,11 +29,19 @@ export interface GateAction {
   busy?: boolean;
 }
 
-export interface GateSecondaryAction extends Omit<GateAction, "busy"> {
+export interface GateSecondaryAction extends Omit<GateAction, "busy" | "disabled"> {
   /**
-   * Its request is in flight: `aria-busy` on top of the hold `disabled` gives.
-   * Either way the label dims to `--fg2`, the gate body's own colour, which
-   * still reads as text on the page (`test/contrast.test.ts`).
+   * It cannot be taken now: setup's `Do this later` while the credential write
+   * is in flight. Held as `waiting` holds it — `aria-disabled`, a press that
+   * does nothing, the label at `--fg2` — but without `aria-busy`, since nothing
+   * of this action's own is in flight. No fill and no edge: this is a text
+   * button, not the primary's unavailable state.
+   */
+  disabled?: boolean;
+  /**
+   * Its request is in flight: held as `disabled` holds it, with `aria-busy` as
+   * well. The label dims to `--fg2`, the gate body's own colour, which still
+   * reads as text on the page (`test/contrast.test.ts`).
    */
   waiting?: boolean;
 }
