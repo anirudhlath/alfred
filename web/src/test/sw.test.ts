@@ -482,10 +482,10 @@ describe.skipIf(FIRED)("install", () => {
     // waiting when this install fails stays waiting, and when the page posts
     // SKIP_WAITING it runs the same purge over this same cache. Written before
     // a shell that is then refused, the new record outlives the install that
-    // wrote it, and that purge prunes by a deploy the cache never finished
-    // taking: the fonts of the shell that IS there go, since only the record
-    // they came in with named them. And a shell write that is not awaited lets
-    // the install succeed with its shell refused.
+    // wrote it, and that purge keeps by a deploy the cache never finished
+    // taking: everything the failed install wrote stays, named by a record for
+    // a shell that is not there. And a shell write that is not awaited lets the
+    // install succeed with its shell refused.
     const worker = withFonts();
     await worker.install();
     const before = worker.keys();
@@ -1462,6 +1462,33 @@ describe.skipIf(FIRED)("activate", () => {
     entries.set(at("/assets/index-OLD.js"), js("old"));
     await worker.activate();
     expect(worker.keys()).toEqual(["/__shell-manifest", ...SHELL_ASSETS].sort());
+  });
+
+  it("keeps everything when a stylesheet the cached shell names cannot be read", async () => {
+    // The keep-set takes in the typefaces the cached shell's stylesheets name,
+    // which is a third cache read. A stylesheet that will not read may name any
+    // typeface, so it gets the same reading as a shell that will not: keep
+    // everything.
+    const worker = withFonts();
+    await worker.install();
+    const orphan = "/assets/geist-mono-latin-500-normal-YINYabwD.woff2";
+    worker.store.get(worker.cache)!.set(at(orphan), font());
+    worker.refuseMatch(SHELL_ASSETS[1]);
+    await worker.activate();
+    expect(worker.keys()).toContain(orphan);
+  });
+
+  it("prunes as usual when a stylesheet the cached shell names is not in the cache", async () => {
+    // And the other half, as for the shell: a stylesheet that is simply absent
+    // names nothing. No path in this worker leaves a cached shell without its
+    // stylesheet, so it is the reading that is pinned.
+    const worker = withFonts();
+    await worker.install();
+    const entries = worker.store.get(worker.cache)!;
+    entries.delete(at(SHELL_ASSETS[1]));
+    entries.set(at("/assets/index-OLD.js"), js("old"));
+    await worker.activate();
+    expect(worker.keys()).not.toContain("/assets/index-OLD.js");
   });
 
   it("deletes a cross-origin entry whose path matches one it keeps", async () => {
@@ -2592,6 +2619,54 @@ describe.skipIf(FIRED)("navigations", () => {
     routeDeploy(worker, 2);
     await worker.request({ path: "/", mode: "navigate" });
     await expect(shellInCache(worker).clone().text()).resolves.toContain("deploy 2");
+  });
+
+  it("keeps the fonts the cached shell's stylesheet names, and collects a superseded deploy's", async () => {
+    // A deploy that changes a typeface's hash publishes a stylesheet naming the
+    // new file, and the page fetches it through the asset branch: no record
+    // names it, and the shell names only the stylesheet. Kept on those two
+    // alone, it went at the next refresh's collection, and every offline
+    // launch after it rendered in the system stack until sw.js next changed.
+    const worker = withFonts();
+    await worker.install();
+    await worker.activate();
+    const typefaces = [
+      "/assets/dm-sans-latin-standard-normal-R1kq7Lmw.woff2",
+      "/assets/dm-sans-latin-standard-normal-T3vw9Npz.woff2",
+    ];
+    const deploy = (n: number, typeface: string) => {
+      const assets = deployAssets(n);
+      worker.respond("/", deployed(`deploy ${n}`, assets));
+      worker.respond(assets[0], js(`console.log(${n})`));
+      worker.respond(
+        assets[1],
+        css(`@font-face{font-family:DM Sans Variable;src:url(${typeface})format("woff2-variations")}`),
+      );
+      worker.respond(typeface, font());
+    };
+    // Deploy 1 changes the typeface, and the page asks for it.
+    deploy(1, typefaces[0]);
+    await worker.request({ path: "/", mode: "navigate" });
+    await worker.request(fromPage(typefaces[0], "font"));
+    // Deploy 2 changes the chunk and the stylesheet, and its stylesheet still
+    // names deploy 1's typeface.
+    deploy(2, typefaces[0]);
+    await worker.request({ path: "/", mode: "navigate" });
+    expect(worker.keys()).toContain(typefaces[0]);
+    // Deploy 3 changes the typeface again, so deploy 1's is named by nothing.
+    deploy(3, typefaces[1]);
+    await worker.request({ path: "/", mode: "navigate" });
+    await worker.request(fromPage(typefaces[1], "font"));
+    expect(worker.keys()).toEqual(
+      [
+        "/__shell-manifest",
+        "/index.html",
+        ...SHELL_ASSETS,
+        ...SHELL_FONTS,
+        ...deployAssets(3),
+        typefaces[1],
+      ].sort(),
+    );
   });
 
   it.each(STALLS)("serves the page, and keeps the shell it has, when the new one stalls %s", async (_when, sent) => {
