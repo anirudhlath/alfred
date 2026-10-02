@@ -74,7 +74,8 @@ web/
       auth.ts            # fetchAuthStatus (STATUS_DEADLINE_MS, the payload check),
                          # DEVICE_KEY, rememberDevice, deviceFootLine
       sw.ts              # installServiceWorker, onUpdateReady, applyUpdate, unregisterAll —
-                         # the page's half of the service worker
+                         # the page's half of the service worker; unregisterAll takes a
+                         # `stopped` check, so a later install stops a dev clean-up
       webauthn.ts        # registerPasskey(), loginPasskey(), sessionChannel()
       ws.ts              # ReconnectingSocket — backoff, code-4001 gate, ping keepalive
       chat-socket.ts     # ChatSocket over /ws (channel "web_pwa", timezone, session_id)
@@ -377,7 +378,7 @@ on any other request but a passkey attempt, or either socket closing with 4001, 
 `ExpiredGate` over the Room. Likewise `DeniedGate` rises for every 403 but the status
 read's: a network-gated route's refusal is the house's own, over these gates as over the
 Room. It also rises for a proxy's 403 on any other route, which it should not
-(`docs/backlog/low/pwa-phase4-followups.md`, §14). If the status route ever gains a
+(`docs/backlog/low/pwa-phase4-followups.md`, §13). If the status route ever gains a
 network gate, or sends a 401 of its own, that status becomes the house's answer, and
 `api()`'s exemption (`isStatusRead`, `lib/api.ts`) has to be revisited.
 
@@ -394,6 +395,19 @@ Expired gate says so.
 The copy region inside `Gate` scrolls: the shell is a fixed height (constraint §4.4), so
 an inner `mt-auto` column keeps short copy bottom-aligned while setup's tall credential
 step scrolls instead of clipping.
+
+**A gate's buttons are never natively `disabled`.** A primary that is unavailable or busy
+is held with `aria-disabled` and a press that does nothing, and keeps the focus: a native
+`disabled` threw it to `<body>` the moment `Sign in with Face ID` or
+`Create passkey with Face ID` was pressed (measured in Chromium, by pointer and by
+keyboard). Unavailable and busy are painted alike, an `--fg2` label on a `--surface` fill
+with an inset 1 px `--muted` edge, and a busy one adds `aria-busy`. The edge is there
+because `--surface` is only 1.13:1 off `--bg` in dark and 1.08:1 in light;
+`contrast.test.ts` measures all three pairs in both themes. A held secondary —
+unavailable, or waiting on its request, which adds `aria-busy` — is `--fg2` on the page.
+The handoff draws no unavailable or busy state for a gate's buttons, so this style is
+invented, and the plan's deviation 13 puts it to the owner. When setup advances a step,
+the focus moves to the new step's title.
 
 ---
 
@@ -427,7 +441,11 @@ Everything on screen is one timeline.
   ("WebSocket Protocols" below).
 - **Composer and hold-to-talk** — text queues under `alfred.unsent` while the house is
   unreachable and retries in order on the next socket open; holding records through
-  `MediaRecorder` with a one-second floor.
+  `MediaRecorder` with a one-second floor. A message still being typed is kept for the
+  tab under `alfred.draft` (`sessionStorage`), so a reload — the update note's `Reload`
+  above all — does not take it; it goes when it is sent or emptied. A lapsed session and
+  `Sign out on this device` leave it, as they leave `alfred.unsent`, by design: the house
+  has one principal, and the draft shows only after a passkey sign-in.
 - **Held-back sheet** — the DND row's `{n} held ›` opens `["deferred"]` and can drain it.
 
 Nothing in the Room polls except the overview (30 s). The telemetry socket starts at `$`
@@ -668,8 +686,8 @@ the Workshop is `--green-text`. There is no red.
 Five findings came back often enough across the review rounds to be house style now.
 The first two govern **anything a reader must read to trust the screen** — a state word, a
 value, a label, a control — and not decoration that already carries a text equivalent.
-Two of the five have a live counterexample in the tree; each is named under its own rule
-rather than left for the next reviewer to find.
+Two of the five have live counterexamples in the tree, all of them older than the rules;
+each is named under its own rule rather than left for the next reviewer to find.
 
 - **Dim by token, never by `opacity`.** A spent one-shot, an offline health grid and an
   ended session all recede by swapping to `--fg2`/`--muted`, not by an alpha. A
@@ -681,16 +699,27 @@ rather than left for the next reviewer to find.
   drew — but the label is what a screen reader gets, and a low-vision sighted reader gets
   the bars. At `0.7` over `--accent` they composited to 1.67:1 on `--bg` in light. They
   dim by token now (`--muted`, with `--accent-text` for the newest), and both pairs are
-  measured in `src/test/contrast.test.ts` like every other one.
+  measured in `src/test/contrast.test.ts` like every other one. Four dims older than the
+  rule are left, and none is measured: the Door's offline track (`SlideToConfirm.tsx:149`,
+  `0.5`), a tombstone (`Tombstone.tsx:13`, `.8`), an unsent bubble (`YouBubble.tsx:15`,
+  `.6`) and `All streams` (next rule, `.4`). The last three are the handoff's own values,
+  so dimming them by token is a deviation the owner signs off; all four are filed in
+  `docs/backlog/low/pwa-phase4-followups.md` §15.
 - **`aria-disabled` plus a no-op handler, never `disabled`.** A control that disables
   itself under the finger that just pressed it throws focus to `<body>` mid-action, and
   where the control is described by the note the press produced — a switch and its
   `queued …` line — a real `disabled` leaves a screen reader with nothing at all about
-  the request it just sent. The handler checks the flag itself and returns. One control
-  predates both rules and breaks both at once — Activity's `All streams` button is a real
-  `disabled` carrying `opacity: 0.4` (`ActivityBench.tsx:245-251`), phase-2 code this
-  phase did not reopen. Filed rather than fixed here
-  (`docs/backlog/low/pwa-phase3-followups.md` §21).
+  the request it just sent. The handler checks the flag itself and returns. The gates'
+  buttons and the held-back sheet's drain button keep it since phase 4's final fix wave,
+  the drain held while its request is in flight and once it reads `Queued`: a held one is
+  `aria-disabled`, keeps the focus of the finger or key that pressed it, and dims by token
+  ("The gates" has the style), and a gate's button held on its request adds `aria-busy`.
+  Two controls predate the rule and still break it. Activity's `All streams`
+  button breaks both rules at once — a real `disabled` carrying `opacity: 0.4`
+  (`ActivityBench.tsx:245-251`), phase-2 code phase 3 did not reopen, filed rather than
+  fixed (`docs/backlog/low/pwa-phase3-followups.md` §21). And the composer's
+  `Hold to talk` is a real `disabled` while the house is unreachable
+  (`HoldToTalk.tsx:117`), phase-1 code.
 - **Never say the house is empty before the server has answered.** An empty list has
   three possible meanings and they are different news: the read was refused
   (`Routines could not be read.`), the read has not landed
@@ -708,9 +737,9 @@ rather than left for the next reviewer to find.
   signal — the only way a bench meets one, since nothing past the gates is reachable before
   the house has answered. A launch that begins offline fires no such event and pauses
   nothing, and that case is the gates' ("The gates" above). All three benches carry the
-  same `read` flag for it (`useMemory.ts:241-246`, `useSystem.ts:881-905`,
-  `useTriggers.ts`), and a bench that has not read says **nothing** rather than guessing
-  which of the three it is.
+  same `read` flag for it (`useMemory.ts:256-261`, `useSystem.ts:928-952`,
+  `useTriggers.ts:305`), and a bench that has not read says **nothing** rather than
+  guessing which of the three it is.
 - **Never let a client-set mark outlive its evidence.** A `Pending` lives exactly
   `REREAD_MS` (60 s), after which the list itself is the evidence; `useSystem` prunes
   its `ended` and `saves` marks against the records still in the last read, so a mark
@@ -757,6 +786,7 @@ DoorProvider → Routes`. `DoorProvider` sits inside `AuthGate` so nothing reads
 |---|---|
 | TanStack Query | `["auth-status"]`, `["overview"]`, `["integrations"]`, `["attention"]`, `["room-history"]`, `["deferred"]`, `["pending-actions"]`, `["trace", stream, id]` (the Why sheet — `staleTime` of the join window, not the app's 10 s); and the benches' own: `["memory", "episodic", "browse"]`, `["memory", "episodic", "search", query]`, `["memory", "semantic" \| "routines" \| "scratchpad"]`, `["triggers"]`, `["system", "sessions" \| "credentials" \| "integrations" \| "attention"]`, `["system", "integration-status", name]`. Each bench's keys sit under one prefix, which is how `REHYDRATE_KEYS` (`ConnectionProvider.tsx`) reaches all of them with `["memory"]`, `["triggers"]` and `["system"]` |
 | `localStorage` | `alfred.theme`, `alfred.device`, `alfred.unsent`, `alfred.session`, `alfred.session-at` — every key is `alfred.<noun>`, `alfred.session-at` the one compound noun |
+| `sessionStorage` | `alfred.draft` — the composer's half-typed message, kept for the tab: it survives a reload, the update note's `Reload` included, and is removed when it is sent or emptied. Storage that refuses costs the draft and never the message. A queued message is `alfred.unsent`'s, in `localStorage`, because it must outlive the tab and a draft need not. Like `alfred.unsent` and `alfred.session`, it survives a lapsed session and `Sign out on this device`, by design: the house has one principal, and the draft shows only after a passkey sign-in |
 | Cache Storage | `alfred-shell-<VERSION>`, the service worker's: `/index.html`, the hashed `/assets/*` it names, the `.woff2` fonts its stylesheet names, and `/__shell-manifest`, the worker's record of the precache. Nothing the house said is ever in it ("The service worker") |
 
 ---
@@ -864,13 +894,21 @@ does, every time the app is backgrounded long enough.
 - On close with code **4001**: emits `"unauthorized"` and stops — no retry.
   `ConnectionProvider` turns `"unauthorized"` from either socket into an `expired` event
   on `authEvents`: the same news as an HTTP 401, and the same gate (`ExpiredGate`, "The
-  gates" above). The socket is reopened by `ConnectionProvider` after a successful sign-in
-  and on every return to the foreground (`reconnect()`), never by a backoff timer.
+  gates" above). The socket is reopened by `ConnectionProvider`'s `reconnect()` — on
+  mount, after a successful sign-in, on every return to the foreground and on the
+  window's `online` event — never by a backoff timer.
 - On other close: exponential backoff starting at 500ms, doubling per attempt, capped
   at 8 seconds. Emits `"reconnecting"` for the first two failures and `"offline"` from
   the third (`OFFLINE_AFTER_ATTEMPTS`), or at once while `navigator.onLine` is false —
   and keeps retrying either way; the next open makes it `"online"` again. The Room
   says `Reconnecting…` for the one and `Unreachable.` for the other.
+- `connect()` cancels a retry still waiting out its backoff before it tries, so none of
+  `reconnect()`'s callers starts a second retry chain, and none lets a stale retry reopen
+  a socket the server has just closed with 4001. The `online` event leans on it: after a
+  launch with no network, the offline gate and the sockets both answer that event, so
+  the Room's `No connection to the house …` note clears as the chat socket opens — well
+  under a second after `online` (0.16 to 0.58 s over two runs in Chromium), where it
+  waited out up to 8 s of backoff before.
 - `ChatSocket.onopen` clears `firstMessageSent` and the previous connection's assigned
   id, so a live stored id is offered again on the next connection. `ws.ts` calls
   `onopen()` **before** `onstatus("online")` on purpose: `useRoom` flushes the unsent
@@ -1153,7 +1191,7 @@ untouched:
 
 | Response | Header | Why |
 | --- | --- | --- |
-| `/assets/*`, status < 400 | `public, max-age=31536000, immutable` | Content-hashed, so the bytes behind a URL never change. Errors are excluded — a pinned 404 has no URL to bust it. |
+| `/assets/*`, status < 400, not `text/html` | `public, max-age=31536000, immutable` | Content-hashed, so the bytes behind a URL never change. Errors are excluded — a pinned 404 has no URL to bust it — and so is `text/html`, which falls to the next row: it is `mount_spa`'s fallback answering for a file that is not there, as it does for every `/assets/*` path when the build has no `assets/` directory to mount (phase 4's final fix wave, ruling R31). |
 | `text/html` | `no-cache, no-store, must-revalidate` | `index.html` and every SPA-fallback route: never stored, so a deploy is picked up on the next load. |
 | everything else | `no-cache, must-revalidate` | Unhashed `web/public/` files (`/icon.svg`, `/apple-touch-icon.png`, `/icon-192.png`, `/icon-512.png`, `/manifest.json`, `/manifest-light.json`, `/sw.js`, `/sw.kill.js`): revalidated on every load. |
 
@@ -1220,34 +1258,61 @@ a `GET`, carries a `Range`, has another scheme or origin, will not decode, or ha
 segment is refused too. `src/test/sw-server-routes.test.ts` reads both lists out of
 `sw.js` and holds them against what the server declares: FastAPI's four docs routes,
 which `create_app` leaves at their defaults, and the paths `mount_spa` keeps out of its
-fallback (`_NON_SPA_PREFIXES`, `_NON_SPA_PATHS`). It also checks that nothing the server
-answers with the app itself is refused. Moving a docs route, or changing either of
-`mount_spa`'s lists, fails it.
+fallback (`_NON_SPA_PREFIXES`, `_NON_SPA_PATHS`). It also checks six paths the server
+answers with the app itself — `/`, `/workshop` and four near-misses of the refused ones
+(`/apifoo`, `/healthz`, `/docsx`, `/docs/foo`) — and fails if any is refused. Moving a
+docs route, or changing either of `mount_spa`'s lists, fails it.
 
 ### The four events
 
 | Event | What it does |
 |---|---|
-| `install` | Fetches `/index.html` past the HTTP cache (`cache: "reload"`) and refuses it unless it is a 200 `text/html` that names at least one `/assets/` URL. Fetches each asset it names, the entry chunk and the stylesheet; any failure fails the install. Reads the stylesheet for its `.woff2` URLs and fetches those, skipping a font that fails rather than failing the install. Writes the assets, then the fonts, then the shell, then the record of what it cached at `/__shell-manifest` — the record last, because it is the install's claim to have finished. **Never calls `skipWaiting()`.** |
-| `activate` | Deletes every other cache on the origin. Then, inside its own, deletes every entry that neither the record nor the shell now in the cache names, and then calls `clients.claim()`. |
+| `install` | Fetches `/index.html` past the HTTP cache (`cache: "reload"`) — the one fetch in the worker that asks past it, since `/index.html` is the one URL a deploy rewrites under the same name — and refuses it unless it is a 200 `text/html` that names at least one `/assets/` URL. Fetches each asset it names, the entry chunk and the stylesheet, through the HTTP cache: a hashed URL's bytes cannot change, and `SpaCacheMiddleware` marks an `/assets/` answer `immutable` only below 400 and never when it is `text/html`, so a missing file — a `no-cache` 404, or the app's own page where no `/assets` mount exists — is nothing the HTTP cache can pin. Any failure fails the install. Reads the stylesheet for its `.woff2` URLs and fetches those the same way, skipping a font that fails rather than failing the install. Writes the assets, then the fonts, then the shell, then the record of what it cached at `/__shell-manifest` — the record last, because it is the install's claim to have finished. Measured in Chromium, a first install makes one fetch past the HTTP cache, 1 728 bytes, where asking past it for everything made 11 and 628 111, and it no longer downloads again the entry chunk and stylesheet the page has just loaded. **Never calls `skipWaiting()`.** |
+| `activate` | Deletes every other cache on the origin. Then collects its own: deletes every entry that neither the record nor the shell now in the cache names, itself or through its stylesheet, and then calls `clients.claim()`. A navigation's refresh runs the same collection once it has published a shell. |
 | `fetch` | `isRefused` first. A navigation is network-first, and an `/assets/` URL is cache-first. Everything else (the manifests, the icons) is left to the network untouched. |
 | `message` | `{ type: "SKIP_WAITING" }` calls `skipWaiting()`. Nothing else is acted on. |
 
-Two things about `activate` are not obvious from the code:
+Three things about `activate` and its collection are not obvious from the code:
 
 - **`caches` is scoped to the origin, not to the worker.** "Every other cache" means every
   cache that any code on this hostname owns. So the purge assumes the origin is Alfred's
   alone, since a second app or worker scope behind the same hostname would lose its caches
-  on every activate. Nor is a cache safe inside `alfred-shell-<VERSION>`: the entry purge
-  keeps only what the record or the cached shell names (next). What that asks of phase 5
-  is `docs/backlog/low/pwa-phase4-followups.md` §1.
+  on every activate. Nor is a cache safe inside `alfred-shell-<VERSION>`: a collection
+  keeps only what the record or the cached shell names, its stylesheet's fonts included
+  (next), and one runs after most online navigations. What that asks of phase 5 is
+  `docs/backlog/low/pwa-phase4-followups.md` §1.
 - **A record it cannot trust means keep everything.** A record that is absent, is not a
   list, or will not read is treated the same way, because deleting on a record you cannot
   read is guessing, and what it guesses with is the only offline copy of the app. The
-  keep-set is the record **and** what the cached shell names, because a navigation's
-  refresh publishes a newer deploy's chunks and shell that no record names. Each delete is
-  caught on its own, so one storage failure costs neither the deletes behind it nor the
-  claim.
+  keep-set is the record **and** what the cached shell names **and** the fonts that
+  shell's stylesheet names. The second because a navigation's refresh publishes a newer
+  deploy's chunks and shell that no record names; the third because a deploy that changes
+  a font's hash publishes a stylesheet naming fonts only the page fetches. The collection
+  reads each stylesheet the shell names back out of the cache with install's own
+  extraction: one that will not read means keep everything, as a shell that will not read
+  does, and one that is not in the cache names nothing. Each delete is caught on its own,
+  so one storage failure costs neither the deletes behind it nor the claim.
+- **A collection runs after every refresh too, and leaves two deploys, or three.** An
+  ordinary deploy changes no byte of `sw.js`, so it installs and activates nothing; with
+  activate the only collection, the cache grew by an entry chunk and a stylesheet on every
+  deploy (measured in Chromium: 14, 16, 18 and 20 keys over four). `refresh()` therefore
+  runs `collect()` once it has published a shell. Refreshes run one at a time, a failed
+  one not stopping the queue, though one that never settles — a cache write or read that
+  never resolves — holds it until the browser stops the worker. Each collection leaves
+  the record's deploy and the cached shell's, one when they agree: 14 keys after each of
+  the same four deploys. It also keeps what the shell this worker last served from the
+  cache names, because a launch served one deploy's cached shell while a refresh
+  publishes the next would otherwise lose that shell's chunk in the moment before the
+  page asks for it. That is a third deploy at most, and only while the worker runs: it
+  remembers one such shell, and none once it is stopped and started again. A refresh
+  collects nothing while a worker is installing, since that install's files are named by
+  nothing until its record lands; the install writes its deploy beside what is there, so
+  on an ordinary update, whose refresh publishes the deploy being installed, the deploy
+  that refresh replaced stays for a while too — three deploys, where nothing was served
+  from the cache — and so does each further deploy a refresh publishes before the install
+  ends. The next collection takes the extra. The race with an install is narrowed, not
+  closed: the refresh looks at the registration first, and every collection snapshots the
+  cache's keys before it reads the record.
 
 ```mermaid
 flowchart TD
@@ -1256,8 +1321,8 @@ flowchart TD
     R -->|no| M{"mode navigate?"}
     M -->|yes| NET["the network, raced against TIMEOUT_MS"]
     NET -->|answered, any status| LIVE["the network's response"]
-    LIVE -.->|waitUntil| REF["refresh: a 200 text/html shell that names assets —<br/>its missing assets first, then the shell"]
-    NET -->|rejected, or no answer in time| HAS{"/index.html cached?"}
+    LIVE -.->|waitUntil| REF["refresh, one at a time: a 200 text/html shell that names assets —<br/>its missing assets first, then the shell,<br/>then a collection, unless a worker is installing"]
+    NET -->|rejected, or no answer in time —<br/>a late answer is released at its headers| HAS{"/index.html cached?"}
     HAS -->|yes| SHELL["the cached shell"]
     HAS -->|no| FAIL["a network error"]
     M -->|no| A{"under /assets/?"}
@@ -1275,6 +1340,13 @@ slow link that keeps delivering is waited for. Over that, each body has `CEILING
 that is never silent. Every network body the worker stores or reads goes through `whole()`
 first, since `Cache.put` reads its body to the end before it writes, and a body the worker
 turns down is released (cancelled unread) rather than left holding its connection.
+
+A navigation's own fetch cannot be aborted, because an init would demote its
+`mode: "navigate"`, so the deadline only races it. When the cached shell wins, the fetch
+that lost is left in flight until its headers arrive and is then released unread.
+Measured in Chromium with no DevTools on the worker, a navigation answered at 12 s held
+its connection 28 s past its headers before that release, and none at all after it. A
+request still waiting for its headers is left for the browser to end.
 
 A navigation answered with an error is still answered: a 502 or a 500 is passed through
 to the page, and the cached shell is served only when the fetch rejects or does not answer
@@ -1303,9 +1375,10 @@ storage is full serves what a browser with no worker would.
 
 `VERSION` is the one constant at the top of `sw.js`, and the cache is
 `alfred-shell-<VERSION>`. Bump it when the **policy** changes in a way the old cache must
-not survive, and not on a deploy: asset URLs are content-hashed, and activate's prune
-(the record plus what the cached shell names) is what clears an old build out of the
-current cache. The tests read `VERSION` from `sw.js` rather than restating it. The kill
+not survive, and not on a deploy: asset URLs are content-hashed, and each collection,
+after every refresh that publishes a shell and at activate (the record plus what the
+cached shell names, its stylesheet's fonts included), is what clears an old build out of
+the current cache. The tests read `VERSION` from `sw.js` rather than restating it. The kill
 switch's tests name `alfred-shell-v1` literally, because the switch deletes every cache,
 whatever its name.
 
@@ -1320,7 +1393,8 @@ Two different things arrive, and only one of them is an "update" to the worker:
   byte for byte the same. No worker installs, nothing waits, and no note appears. An open
   app takes the deploy at its next navigation, because navigations are network-first, and
   that navigation's refresh updates the offline copy in the background, assets first and
-  shell last. A refresh that fails part way leaves the old shell whole.
+  shell last, and then collects what neither the record nor the new shell names (above).
+  A refresh that fails part way leaves the old shell whole.
 - **A changed `sw.js`** installs a new worker at the next update check. The browser runs
   one at every navigation, and `lib/sw.ts` runs one on every return to the foreground
   (`registration.update()` from `onVisible`), because an installed PWA is brought back
@@ -1345,9 +1419,10 @@ sequenceDiagram
     B-->>P: statechange to installed
     P->>P: UpdateNote — A newer Alfred is waiting.
     P->>N: SKIP_WAITING, when the user taps Reload
-    N->>N: activate — purge, then clients.claim()
-    B-->>P: controllerchange
+    B-->>P: controllerchange — activation hands the page to N
     P->>P: reload, once
+    N->>N: activate — purge, then clients.claim()
+    Note over B,N: the reload's navigation waits for activate to settle, and N serves it
 ```
 
 The page's half, `lib/sw.ts`, is called once from `main.tsx` (`installServiceWorker()`),
@@ -1369,7 +1444,9 @@ after the app is handed to React:
 - **`onUpdateReady()`** announces a worker that reaches `installed` behind an existing
   controller. `useUpdateReady` subscribes to it, and `UpdateNote` shows
   `A newer Alfred is waiting. Nothing is lost; I pick up where we left off.` with a
-  `Reload` text button. `applyUpdate()` posts `SKIP_WAITING`.
+  `Reload` text button. `applyUpdate()` posts `SKIP_WAITING`. "Nothing is lost" covers an
+  unsent draft too: the Composer keeps it in `sessionStorage` (`alfred.draft`), so the
+  reload puts it back in the field ("Client state keys" says what else it outlives).
 - **It reloads once when a new worker takes over**, and never when the first worker claims
   a page that had none, which `activate`'s `clients.claim()` does on every first visit.
   That page came from the network moments ago and has nothing newer to reload into.
@@ -1378,7 +1455,7 @@ A reload does not take a waiting worker: the old page stays until the new one's 
 arrives, so the two overlap and the old worker never runs out of pages. The tap is the
 only way in, short of closing every page the old worker controls. The note sits in the
 Room's header only (`Room.tsx:123-124`, under `OfflineNote`), and every check downloads all
-of `sw.js` — 64 324 bytes at `c49e66d` — because `mount_spa` never answers a revalidation
+of `sw.js` — 71 119 bytes at `0972685` — because `mount_spa` never answers a revalidation
 with a 304 and the check has no minimum interval. Both are filed
 (`docs/backlog/low/pwa-phase4-followups.md` §2 and §3).
 
@@ -1403,9 +1480,19 @@ from would never stop. The file's header has the measurements.
 1. `cp web/public/sw.kill.js web/public/sw.js`, and commit that alone. A real copy — not a
    redirect, a symlink or an import.
 2. Open a pull request and let `ci-ok` pass it. While `sw.js` is `sw.kill.js` byte for
-   byte, and only then, `src/test/sw.test.ts` and `src/test/sw-server-routes.test.ts` stand
-   down, each running one passing test that says the switch is fired (a warning on the run
-   in GitHub Actions).
+   byte, and only then, every test that reads the worker's bytes stands down: the two
+   files that do, `src/test/sw.test.ts` and `src/test/sw-server-routes.test.ts`, each run
+   one passing test that says the switch is fired (a warning on the run in GitHub
+   Actions). CI keeps that true before anyone needs it: every run of the web job also
+   runs the whole suite on a fired copy of the tree, `sw.kill.js` copied over `sw.js`, so
+   a test that would fail the firing commit fails the pull request that adds it. Beside
+   it, a test that runs in either tree (`sw.test.ts:80`) fails if any file under `src/`
+   loads `public/sw.js` without its own `const FIRED =` and `.skipIf(FIRED)`. That one
+   checks per file, not per block; a block in one of those files that stops standing down
+   is the fired run's to catch. `src/lib/auth.test.ts` no longer reads `sw.js`:
+   its check that the worker's `TIMEOUT_MS` equals the page's `STATUS_DEADLINE_MS` is in
+   `sw.test.ts`'s `navigations` block (`sw.test.ts:2260`). Measured on a fired tree at
+   `0972685`: 0 failed, 1 752 passed and 263 skipped, and the two warnings.
 3. Merge it; merging deploys it. Every installed copy takes it at its next update check —
    a navigation, or a return to the foreground.
 4. Afterwards, **revert the firing commit** (a pull request of its own), and ship the fix.
@@ -1450,11 +1537,18 @@ Two facts about the environment shape the harness. Requests are plain objects, b
 undici's `Request` refuses `mode: "navigate"`. And `Response` is Node's global, since jsdom
 implements no fetch.
 
+Time is the harness's own clock, so a test says when things happen. `hang(pathname)`
+never answers. `late(pathname, ms)` answers, or fails, `ms` after it is asked: the request
+a worker has stopped waiting for, and what the worker does when the answer turns up after
+all. `holdPut(key)` holds a `Cache.put` after its body is read and before it lands, which
+is how a test stops an install part way through its writes and watches what a refresh
+does to the same cache meanwhile.
+
 | File | Covers |
 |---|---|
 | `src/test/sw.test.ts` | The worker, event by event |
 | `src/test/sw-kill.test.ts` | The kill switch, in the same fake scope |
-| `src/test/sw-harness.test.ts` | The fake scope itself: `ExtendableEvent`, `Cache.put`, `Clients.matchAll`, and which worker controls each open page |
+| `src/test/sw-harness.test.ts` | The fake scope itself: `ExtendableEvent`, `Cache.put`, `Clients.matchAll`, which worker controls each open page, the clock, and the late answers and held puts (`late`, `holdPut`) |
 | `src/test/sw-server-routes.test.ts` | `NEVER` and `NEVER_UNDER` against the routes `create_app` and `mount_spa` declare |
 | `src/lib/sw.test.ts` | The page's half, against a fake `navigator.serviceWorker` |
 | `src/test/manifest.test.ts`, `src/test/icons.test.ts`, `src/test/index-html.test.ts` | The manifest pair, the icon pixels, the links and metas |
@@ -1538,7 +1632,7 @@ regenerated from a different drawing fails rather than ships.
 - **Trigger editing, service restart and log download** — the three things the old SPA
   could do that no endpoint supports. Only the first is said out loud in the client: the
   Triggers footer reads `Nothing here edits a trigger — ask Alfred to change or remove
-  one.` (`TriggersBench.tsx:160-161`). Restart and log download are absent without comment,
+  one.` (`TriggersBench.tsx:190`). Restart and log download are absent without comment,
   because System has no ops section for a sentence to sit in. `docs/backlog/low/pwa-phase3-followups.md`
   §7 and §10 name the routes each would need.
 - **Telemetry `status`/`error` frames** (`redis_error`, `invalid JSON`) still reach only

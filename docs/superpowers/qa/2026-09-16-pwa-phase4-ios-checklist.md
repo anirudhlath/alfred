@@ -97,7 +97,10 @@ Nothing here can fail. Why the manifests may have no part in what iOS shows is
       it is the finding
 - [ ] Turn Airplane mode off with the app still open. The gate clears itself with no tap:
       the field for a moment, then the Room — or the sign-in gate, if the session has
-      lapsed
+      lapsed. On the Room, the `No connection to the house …` note goes within a second or
+      so, because both sockets reconnect on the same `online` event; in Chromium it went in
+      well under a second, where it used to wait out up to 8 s of backoff. Record how long
+      it stayed
 - [ ] **A deep link, offline.** iOS opens no link into a home-screen app, and a Safari tab
       has a worker of its own, so this runs in Safari. Open `https://alfred.example.com` in
       a Safari tab once, online, then wait a minute, so the tab's worker finishes copying
@@ -187,7 +190,9 @@ it on a phone yet.
       and `Reload`
 - [ ] Open the Workshop: the note is not there, because it lives in the Room's header
       (`docs/backlog/low/pwa-phase4-followups.md` §3). Back in the Room it is still there
-- [ ] Tap `Reload`. The page reloads **once** and does not loop, and the note is gone
+- [ ] Type a few words in the composer and do not send them. Tap `Reload`. The page
+      reloads **once** and does not loop, the note is gone, and the words are still in the
+      field
 - [ ] **With the app killed.** Kill the app, then ship another byte change to `sw.js` —
       a word added to a comment, so the last section can find it. With a Mac, read that
       section's item for this launch before you open the app. Wait until any browser shows
