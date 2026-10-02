@@ -901,19 +901,34 @@ describe("AuthGate when the house does not answer", () => {
     expect(statusReads() - before).toBe(1);
   });
 
-  it("does not ask on a foreground while the offline gate is up", async () => {
-    // With no connection a request can only fail the way the read already did
-    // (deviation 5); the offline gate asks again once there is a signal.
+  it("a foreground while the offline gate is up keeps the gate", async () => {
+    // A launch that began offline never told react-query's `onlineManager`, so
+    // a real foreground asks again: the `visibilitychange` reaches react-query's
+    // focus refetch, which reads and retries once (two reads, measured in
+    // Chromium). With no connection both can only fail the way the first read
+    // did (deviation 5), and the offline gate must hold through them — the same
+    // gate, not one re-raised after a frame of another.
     launchOffline();
     const { client } = renderGate(appClient());
     await waitFor(() => expect(client.getQueryState(["auth-status"])?.status).toBe("error"));
+    const gate = screen.getByRole("heading", { name: "No way to the house." });
+    const unanswered = watchFor(UNANSWERED);
+    const signIn = watchForSignIn();
     const before = statusReads();
 
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    act(() => void document.dispatchEvent(new Event("visibilitychange", { bubbles: true })));
     act(() => void window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })));
+    await waitFor(() => expect(client.getQueryState(["auth-status"])?.fetchStatus).toBe("idle"));
     await tick();
 
-    expect(screen.getByRole("heading", { name: "No way to the house." })).toBeInTheDocument();
-    expect(statusReads() - before).toBe(0);
+    // It did ask — so the hold below was held through a live read — and asked
+    // no more than the read and its one retry.
+    expect(statusReads() - before).toBeGreaterThanOrEqual(1);
+    expect(statusReads() - before).toBeLessThanOrEqual(2);
+    expect(screen.getByRole("heading", { name: "No way to the house." })).toBe(gate);
+    expect(unanswered()).toBe(0);
+    expect(signIn()).toBe(0);
   });
 
   it("does not ask on a foreground once the house has answered", async () => {
