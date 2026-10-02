@@ -370,9 +370,10 @@ function assetsInHtml(html) {
 
    `.woff2` last, and it is a narrower question than the others — about
    browsers, not about what may be stored. @fontsource ships a `.woff` beside
-   six of these faces and for four more it is the only file (10 in all, 80 944 of
-   this build's 220 380 font bytes), and everything that can run a service worker
-   has supported woff2 for years: a `.woff` is dead weight ALWAYS, whoever is
+   six of these faces, and for four more it is the only file, because Vite
+   inlined their `.woff2` into the stylesheet (10 in all, 80 944 of this
+   build's 220 380 font bytes). Everything that can run a service worker has
+   supported woff2 for years: a `.woff` is dead weight ALWAYS, whoever is
    reading. `endsWith`, not `includes`, so a `x.woff2.br` sidecar from a
    pre-compressing proxy is not mistaken for a typeface.
 
