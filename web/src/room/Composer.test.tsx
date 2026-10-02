@@ -159,6 +159,29 @@ describe("Composer", () => {
     expect(screen.getByLabelText("Message Alfred")).toHaveValue("");
   });
 
+  it("drops the older draft when a newer one is refused, so a reload brings back nothing rather than half", async () => {
+    // A quota the longer text no longer fits. The refused write would leave the
+    // last draft that did fit for the next mount to bring back as if current.
+    const store = new Map<string, string>();
+    vi.stubGlobal("sessionStorage", {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        if (value.length > 12) throw new DOMException("full", "QuotaExceededError");
+        store.set(key, value);
+      },
+      removeItem: (key: string) => void store.delete(key),
+    });
+    const user = userEvent.setup();
+    const { unmount } = render(<Composer online onSend={() => {}} hold={null} />);
+    await user.type(screen.getByLabelText("Message Alfred"), "turn off the porch light at nine");
+    expect(store.has("alfred.draft")).toBe(false);
+
+    unmount();
+    render(<Composer online onSend={() => {}} hold={null} />);
+
+    expect(screen.getByLabelText("Message Alfred")).toHaveValue("");
+  });
+
   it("still takes a message when the page cannot keep one", async () => {
     // Private mode, or a full quota: the draft lives for this mount only. The
     // global itself is replaced — the `sessionStorage` a test sees here is not

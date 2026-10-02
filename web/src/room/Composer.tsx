@@ -24,7 +24,15 @@ function keepDraft(draft: string): void {
     if (draft) sessionStorage.setItem(DRAFT_KEY, draft);
     else sessionStorage.removeItem(DRAFT_KEY);
   } catch {
-    // Private mode or a full quota. The draft lives in this mount only.
+    // Private mode or a full quota. The refused write would leave the last
+    // draft that fitted behind, for a reload to bring back as though it were
+    // this one, so that goes too and the draft lives in this mount only. If
+    // the removal is refused as well, there is nothing more to try.
+    try {
+      sessionStorage.removeItem(DRAFT_KEY);
+    } catch {
+      // As above: nothing more to try.
+    }
   }
 }
 
