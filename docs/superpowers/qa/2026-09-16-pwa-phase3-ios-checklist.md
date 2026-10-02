@@ -241,8 +241,9 @@ So on those two benches the correct behaviour under an outage is that **nothing 
 at all**, and only the Workshop header says the house went away.
 
 Three steps below need a bench whose **first ever read of this session happens offline**.
-Do not force-quit into Airplane mode to get there — the sign-in check pauses too and the
-app never leaves its opening field. The manoeuvre is: **launch online, let the Room paint,
+Do not force-quit into Airplane mode to get there — a launch with no network cannot ask
+who you are, so it stops at the offline gate (`No way to the house.`, phase 4) and never
+reaches the Workshop. The manoeuvre is: **launch online, let the Room paint,
 then turn Airplane mode on and open the Workshop.** A bench only reads when it is first
 shown, so everything you have not visited yet is still unread.
 

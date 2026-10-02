@@ -1,8 +1,10 @@
 # Alfred — web client
 
 The phone-first PWA that replaced the Mission Control SPA. One screen (the Room),
-one interrupt (the Door), four identity gates over the top of them — and, under
-the Room, the Workshop, where the house's streams are read as they happen.
+one interrupt (the Door), four identity gates over the top of them and two for a
+launch the house has not answered yet — and, under the Room, the Workshop, where the
+house's streams are read as they happen. A hand-written service worker keeps the app
+shell on the phone, so it opens with no network.
 
 Design: `docs/design/2026-09-04-pwa-client-handoff/` (tokens, copy and the
 `Alfred.dc.html` prototype the presence field and slide maths were ported from).
@@ -23,16 +25,29 @@ that order, then serves the built `dist/` to `tests/core/channels/test_spa_ci.py
 ## Layout
 
 ```
+public/         unhashed, copied into dist/ byte for byte:
+  sw.js                 the service worker ("The service worker" below)
+  sw.kill.js            the kill switch; nothing registers it until it is
+                        copied over sw.js
+  manifest.json         the manifest in the dark theme's colours
+  manifest-light.json   the same in the light theme's; applyTheme swaps them
+  icon.svg              the mark, as paths: the PNGs' source, and the favicon
+  apple-touch-icon.png  180x180, opaque: the iOS home-screen tile
+  icon-192.png          the manifests' small raster icon
+  icon-512.png          the large one, which is also the maskable
 src/lib/        no React: api, sockets, formatters, the presence physics,
                 the action reducer, the slide maths, audio and recording,
                 the stream catalogue (streams.ts), the feed reducer (feed.ts),
-                the causal thread (trace.ts) — and one module per bench:
+                the causal thread (trace.ts), the page's half of the service
+                worker (sw.ts) — and one module per bench:
                 memory.ts (the three-shape episodic adapter), triggers.ts
                 (kinds and meta lines), system.ts (sessions, credentials,
                 pairing, integrations, attention, the health cells)
-src/shell/      providers, the two surfaces everything rises on, and the
-                ErrorBoundary the Workshop wraps its panel in
-src/gates/      setup, sign-in, expired, denied — and the router between them
+src/shell/      providers, the two surfaces everything rises on, the
+                ErrorBoundary the Workshop wraps its panel in, the update
+                note (UpdateNote.tsx, useUpdateReady.ts) and useOnline.ts
+src/gates/      setup, sign-in, expired, denied, offline and unanswered — and
+                the router between them
 src/room/       the one screen: presence field, headline, timeline, composer,
                 and the handle into the Workshop (WorkshopHandle.tsx)
 src/door/       the approval interrupt: banner, fuse, slide, deep link
@@ -44,7 +59,10 @@ src/workshop/   the Workshop layer: the bench switcher (BenchSwitcher.tsx,
                 SystemBench + SystemSections/IntegrationRow/useSystem,
                 over the shared SystemFrame.tsx and Switch.tsx
 src/sheets/     the held-back queue and `Why Alfred did that`
-src/test/       jsdom setup, shared fixtures, and the contrast restatement
+src/test/       jsdom setup, shared fixtures, the contrast restatement, the
+                fake service-worker scope (sw-harness.ts), and the tests of
+                what lives outside src/: the workers, manifests, icons and
+                index.html
 ```
 
 Tests live beside their source (`lib/history.ts` → `lib/history.test.ts`).
@@ -67,7 +85,7 @@ Tests live beside their source (`lib/history.ts` → `lib/history.test.ts`).
   (`Confirmed · queued`, `Applied`, `Expired`, `Answered`), set in the layer's own type,
   ink on paper. Do not invent new words for system state.
 
-## What phases 1 to 3 cover
+## What phases 1 to 4 cover
 
 Phase 1: shell, theme and viewport; the four identity gates; the Room (presence
 field, headline, status line, offline note, DND row and the held-back sheet, the
@@ -97,26 +115,31 @@ Phase 3: the Workshop's other three benches, each a pure view over one hook call
   and the reflex attention set. Web Push (the Reach card) lands with phase 5; the card
   is deliberately absent rather than inert.
 
+Phase 4: the app installs and opens with no network.
+
+- **The icon set and the manifest pair** — see "The icons and the manifests" below.
+- **The service worker and its kill switch** — see "The service worker" below. A
+  production build registers the worker from `main.tsx` (`src/lib/sw.ts`), and
+  `npm run dev` unregisters it instead.
+- **The update note** — `A newer Alfred is waiting. Nothing is lost; I pick up where we
+  left off.` and `Reload`, in the Room's header, while a changed `sw.js` waits.
+- **Two gates for a launch that has read nothing.** `OfflineGate` (`No way to the
+  house.`) shows while the phone says it is offline, and `UnansweredGate` (`The house is
+  not answering.`, with `Try again`) shows when the phone is online and the house gave
+  no answer. Sign-in and setup follow only the house's own answer (see
+  `docs/web-frontend.md`, "The gates").
+
 ## What it does not
 
-- **Install and Reach gates, and Web Push** — the rest of phase 4, and phase 5.
-  The standalone metas are already in `index.html`. The **icon set, the manifests and a
-  service worker have shipped** — see "The icons" below, and "The service worker".
-  A production build registers the worker from `main.tsx` (`src/lib/sw.ts`); `npm run dev` unregisters it instead. There are two manifests, `manifest.json` and
-  `manifest-light.json`, identical but for `theme_color` and `background_color`, and
-  `applyTheme` swaps the `<link rel="manifest">` alongside the `theme-color` meta.
-  **Read that narrowly, because it is not yet known to fix anything on a phone.** A
-  manifest is consumed at *install* time, so the most this can do is align an install
-  with the theme in force at Add to Home Screen; it does not follow the theme afterwards,
-  and someone who installs at 22:00 has a dark launch screen at noon for ever. On iOS it
-  may do nothing at all: WebKit fetches at most one manifest per document load and has no
-  observer for a later `href` change, and the swap runs after parsing, so the manifest
-  iOS reads may always be the dark one `index.html` ships. iOS also builds its launch
-  screen from `apple-touch-startup-image` links, which this app does not ship (see the
-  phase-4 backlog) — not from the manifest. Chromium *does* observe the link, which is
-  where the value is; it is also where the cost is, since Chrome's WebAPK update check
-  fingerprints exactly those two colours. None of this is measured: the phase-4 device
-  checklist is the only thing that can settle it, and it is unrun.
+- **Web Push, and the install rail that leads to it** — phase 5. The standalone metas
+  are in `index.html` and the gesture the rail teaches already installs a correct app,
+  but there is no `install` gate, no `standalone` gate, no home-screen prompt row and no
+  System › Reach card: the rail's every step exists to reach *Allow in iOS*, and steps
+  with nothing behind them would be controls that pretend. Phase 5 owes all four (the
+  handoff's copy for them is final), plus VAPID, the push adapter, the registration, and
+  the worker's `push` and `notificationclick` handlers — and any cache it wants goes
+  inside `alfred-shell-<VERSION>` or into `purge()`'s keep-list, or the next activate
+  deletes it. Filed as `docs/backlog/low/pwa-phase4-followups.md` §1.
 - **Four things the old SPA could do and this client cannot**, which is the whole of the
   remaining parity gap (spec §8's gate is *full capability parity with the old SPA*).
   Three of them have no endpoint to call: **creating, editing or deleting a trigger**
@@ -129,10 +152,10 @@ Phase 3: the Workshop's other three benches, each a pure view over one hook call
 
 ## The service worker
 
-`public/sw.js` is hand-written — 253 lines of code under 766 of comment, 3.0 to 1, counted
-with acorn's tokenizer (a line is code if any token touches it, comment if only a comment
-does, and a blank line, inside a comment or not, is neither) — and
-shipped verbatim by Vite's `public/` copy: no `vite-plugin-pwa`, no Workbox, no generated
+`public/sw.js` is hand-written — 253 lines of code under 766 of comment at `c49e66d`, 3.0
+to 1, counted with acorn's tokenizer (a line is code if any token touches it, comment if
+only a comment does, and a blank line, inside a comment or not, is neither) — and shipped
+verbatim by Vite's `public/` copy: no `vite-plugin-pwa`, no Workbox, no generated
 precache manifest. The reasoning is in
 `docs/superpowers/plans/2026-09-16-pwa-phase4-install-and-offline.md`; the short version
 is that a versioned cache, an explicit purge and a documented kill switch all have to be
@@ -143,9 +166,10 @@ against a plugin's route table.
 **Install, activate, a fetch handler with two branches, and one message.** It fetches `/index.html` past the
 HTTP cache and takes the `/assets/…` URLs Vite wrote into it as the precache manifest —
 the entry chunk and the stylesheet. It then reads the **stylesheet** for the `url()` rules
-the HTML never mentions and takes the `.woff2` among them: 8 files, 139 436 of this build's
-220 380 font bytes. The 10 `.woff` fallbacks `@fontsource` ships beside them are skipped,
-because nothing that can run a service worker has needed one for years. All of it plus a
+the HTML never mentions and takes the `.woff2` among them: 8 files, 139 436 of the
+220 380 font bytes the build emits (measured at `c49e66d`). The 10 `.woff` fallbacks
+`@fontsource` ships beside them are skipped, because nothing that can run a service
+worker has needed one for years. All of it plus a
 `/__shell-manifest` record of what it actually cached goes into `alfred-shell-<VERSION>`
 (the one constant at the top of `sw.js`; the tests read it from there rather than restating
 it, and this file names no version for the same reason) — the assets first, then the shell
@@ -180,10 +204,10 @@ The deadline on a body is per **piece**, not per body: each read gets ten second
 the next piece, the first and the one that finds the end included. So a stall is noticed
 ten seconds after the last byte, wherever it happens, and a slow link that keeps delivering
 is waited for while it keeps delivering. One deadline of that length over the whole body
-cannot tell those apart — measured in headless Chromium, this build's 414 kB entry chunk
-arriving steadily at 32 KiB/s takes 12.6 seconds, and a ten-second deadline on the whole
-body failed that install at 10.0 on a first visit and on every visit after it, since a
-failed install leaves no worker; per piece, it activates at 12.6.
+cannot tell those apart — measured in headless Chromium at `6dabc43`, that build's 414 kB
+entry chunk arriving steadily at 32 KiB/s takes 12.6 seconds, and a ten-second deadline on
+the whole body failed that install at 10.0 on a first visit and on every visit after it,
+since a failed install leaves no worker; per piece, it activates at 12.6.
 
 Over the pieces there is one **ceiling** on the whole body, `CEILING_MS`: two minutes from
 its headers, because a limit on silence never ends a body that is never silent. Measured in
@@ -191,9 +215,9 @@ Chromium with no DevTools attached, a chunk sending a byte every five seconds he
 install `installing` until the browser failed it at 300 seconds, and the same chunk named by
 a new deploy held the navigation's refresh, and its connection, for 309 seconds after the
 page was served; with the ceiling, the install fails and the refresh lets go at 120. Two
-minutes is generous on purpose: the entry chunk, about 415 kB, reaches it only below
-3.5 kB/s — about 28 kbit/s, a GPRS-class link, on which the page's own load of that chunk
-takes as long — and it ends well inside the browser's 300. It is per body, so an event whose
+minutes is generous on purpose: the entry chunk, 418 537 bytes at `c49e66d`, reaches it
+only below 3.5 kB/s — about 28 kbit/s, a GPRS-class link, on which the page's own load of
+that chunk takes as long — and it ends well inside the browser's 300. It is per body, so an event whose
 every body crawled could still meet the browser's limit first. What a stall costs is ten
 seconds, and a body still arriving at the ceiling costs the same things: in the shell or a
 chunk it fails the install, in a font it costs that font, in a refresh the shell already
@@ -346,7 +370,7 @@ last: the asset branch serves them cache-first to any page whose HTML names them
 with the online page whose navigation began the refresh, and the next online navigation to
 that deploy finds them cached and has only the HTML left to publish. What they lack is a
 claim on the next activate. They are bounded (what a shell names is the entry chunk and the
-stylesheet, 482 kB in this build) and they are collected by that activate, which is the
+stylesheet, 486 880 bytes at `c49e66d`) and they are collected by that activate, which is the
 same collector every other runtime entry relies on. Nothing deletes them earlier on
 purpose: a refresh that deleted would be racing a concurrent install writing the same
 bytes, and "named by nothing" is only a settled fact at activate.
@@ -453,44 +477,96 @@ an installed phone: every installed copy takes it at its next update check, drop
 on the origin, unregisters, and reloads each page the old worker was serving, once. Its header
 is the procedure, and says why deleting `sw.js` instead changes nothing and why the switch
 reloads only those pages — the page that registered it, reloaded, would register it again.
-Fire it as a commit of its own. While `sw.js` is `sw.kill.js` byte for byte, and only then,
-`sw.test.ts` and `sw-server-routes.test.ts` stand down, each with one passing test that says
-the switch is fired (a warning on the run in GitHub Actions), so CI passes and the merge
-deploys it. Afterwards, revert that commit.
+Fire it as a commit of its own — `cp web/public/sw.kill.js web/public/sw.js`, committed
+alone, through a pull request like any other. While `sw.js` is `sw.kill.js` byte for byte,
+and only then, `sw.test.ts` and `sw-server-routes.test.ts` stand down, each with one passing
+test that says the switch is fired (a warning on the run in GitHub Actions), so CI passes
+and the merge deploys it. Afterwards, revert that commit. Two things follow from the fired
+tree. `sw-server-routes.test.ts`'s checks of `core/channels/spa.py` and `web_server.py`
+stand down with the rest, so a server-route change merged while the switch is deployed is
+first checked on the revert pull request, and fails there. And every page loaded while
+the switch is deployed ends up holding a registration that no longer exists: while the
+phone is online, each of its returns to the foreground logs one `InvalidStateError` as
+`service worker update check failed`, one per open page, for as long as the page lives —
+after the revert too, until it is relaunched. Nothing shows on screen, and those pages take
+the restored worker only at their next launch (`docs/backlog/low/pwa-phase4-followups.md`
+§12).
 
 The tests are `src/test/sw.test.ts` (the worker, driven event by event),
 `src/test/sw-kill.test.ts` (the kill switch, through the same fake scope),
 `src/test/sw-harness.test.ts` (the fake scope itself — it has to model `ExtendableEvent`,
 `Cache.put`, `Clients.matchAll` and which worker controls each open page closely enough that
-a test passing here means a worker that runs on a phone) and `src/lib/sw.test.ts` (the page's
-side, against a fake `navigator.serviceWorker`).
+a test passing here means a worker that runs on a phone), `src/test/sw-server-routes.test.ts`
+(the `NEVER` and `NEVER_UNDER` lists, read out of `sw.js` and held against the routes
+`create_app` and `mount_spa` declare) and `src/lib/sw.test.ts` (the page's side, against a fake `navigator.serviceWorker`).
+That `sw-server-routes.test.ts` reads the lists with a regular expression and `JSON.parse`
+is why `sw.js` is not run through a formatter: a trailing comma added to either array
+breaks the parse.
+
+## The icons and the manifests
+
+`public/icon.svg` is the source — the handoff's home-screen mark (`Alfred.dc.html:530`), a
+capital `A` drawn as two stroked paths on a full-bleed square — and the three PNGs beside
+it are rendered from it once and committed. It is geometry rather than `<text>` because a
+`<text>` icon renders in whatever font the rasteriser has, and
+`@fontsource-variable/dm-sans` ships `woff2` only, which neither `rsvg-convert` nor `resvg`
+can load. It is full-bleed rather than rounded because iOS applies its own mask and
+composites transparency on a home-screen tile as **black**, so the PNGs must carry no alpha
+at all (spec §4.2). And `icon-512.png` is both `any` and `maskable`: the drawing's furthest
+inked pixel is 170.5 px from the centre of the 512 canvas, inside the maskable safe
+circle's 204.8 px radius, so one file is correct with a mask and without one.
+
+### Regenerating the icons
+
+The icons are checked-in bytes, not a build step. Nothing in the build, the container
+image or CI rasterises anything — the container's `webbuild` stage is unchanged — so these
+are needed only by whoever changes the drawing:
+
+```bash
+cd web
+rsvg-convert -w 180 -h 180 -b '#25221F' public/icon.svg -o public/apple-touch-icon.png
+rsvg-convert -w 192 -h 192 -b '#25221F' public/icon.svg -o public/icon-192.png
+rsvg-convert -w 512 -h 512 -b '#25221F' public/icon.svg -o public/icon-512.png
+```
+
+`-b` is what forces the opaque background. ImageMagick is a working substitute:
+
+```bash
+cd web
+magick -background '#25221F' -density 1024 public/icon.svg -resize 180x180 -alpha remove -alpha off public/apple-touch-icon.png
+magick -background '#25221F' -density 1024 public/icon.svg -resize 192x192 -alpha remove -alpha off public/icon-192.png
+magick -background '#25221F' -density 1024 public/icon.svg -resize 512x512 -alpha remove -alpha off public/icon-512.png
+```
+
+If either tool leaves an alpha channel in place, rewrite the file without one, for example
+`magick public/icon-192.png -alpha off PNG24:public/icon-192.png`. `src/test/icons.test.ts`
+decodes the committed PNGs and checks the pixels — the two colours and their census, the
+mark's reach against the maskable safe circle, and a scan down the middle that reads apex,
+counter, crossbar, feet — so a regenerated icon that came from a different drawing fails
+rather than ships. Both colours come from `--bg` and `--accent` via `contrast.ts`, so
+retuning the palette fails that test until the icon is redrawn and re-rendered.
+
+### The manifests
+
+There are two, `manifest.json` and `manifest-light.json`, identical but for `theme_color`
+and `background_color` (`#25221F` in the first, `#F6F3EE` in the second), and `applyTheme`
+swaps the `<link rel="manifest">` alongside the `theme-color` meta; `src/test/manifest.test.ts`
+holds them to that. **Read that narrowly, because it is not yet known to fix anything on a
+phone.** A manifest is consumed at *install* time, so the most this can do is align an
+install with the theme in force at Add to Home Screen; it does not follow the theme
+afterwards, and someone who installs at 22:00 has a dark launch screen at noon for ever.
+On iOS it may do nothing at all: WebKit fetches at most one manifest per document load and
+has no observer for a later `href` change, and the swap runs after parsing, so the
+manifest iOS reads may always be the dark one `index.html` ships. iOS also builds its
+launch screen from `apple-touch-startup-image` links, which this app does not ship
+(`docs/backlog/low/pwa-phase4-followups.md` §6) — not from the manifest. Chromium *does*
+observe the link, which is where the value is; it is also where the cost is, since Chrome's
+WebAPK update check fingerprints exactly those two colours, and crossing 07:00 or 19:00
+may schedule a silent reinstall about once a day. None of this is measured: the phase-4
+device checklist is the only thing that can settle it, and it is unrun.
 
 ## Things worth knowing before you change something
 
-- **The icons are checked-in bytes, not a build step.** `public/icon.svg` is the
-  source — the handoff's home-screen mark (`Alfred.dc.html:530`), a capital `A` drawn as
-  two stroked paths on a full-bleed square — and the three PNGs beside it are rendered
-  from it once and committed. Nothing in the build, the container image or CI rasterises
-  anything, so `rsvg-convert` is needed only by whoever changes the drawing:
-
-  ```bash
-  cd web
-  rsvg-convert -w 180 -h 180 -b '#25221F' public/icon.svg -o public/apple-touch-icon.png
-  rsvg-convert -w 192 -h 192 -b '#25221F' public/icon.svg -o public/icon-192.png
-  rsvg-convert -w 512 -h 512 -b '#25221F' public/icon.svg -o public/icon-512.png
-  ```
-
-  `-b` is what forces an opaque background: iOS composites transparency on a home-screen
-  tile as **black**, so the PNGs must carry no alpha (spec §4.2), which is also why the
-  square is full-bleed rather than rounded — iOS applies its own mask. ImageMagick is a
-  working substitute (`magick -background '#25221F' -density 1024 … -alpha remove -alpha off`);
-  if either tool leaves the alpha channel in place, `magick in.png -alpha off PNG24:out.png`
-  strips it. `src/test/icons.test.ts` decodes the committed PNGs and checks the pixels —
-  the two colours and their census, the mark's reach against the maskable safe circle, and
-  a scan down the middle that reads apex, counter, crossbar, feet — so a regenerated icon
-  that came from a different drawing fails rather than ships. Both colours come from
-  `--bg` and `--accent` via `contrast.ts`, so retuning the palette fails that test until
-  the icon is redrawn and re-rendered.
 - `--app-height` and `--viewport-top` are the visual viewport's height and offset,
   written by `installViewportVars()`. `100vh` is wrong in Safari; do not reach for it,
   and do not try to compute a keyboard inset by subtracting the two viewports from

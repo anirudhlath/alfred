@@ -8,19 +8,22 @@ phase 1 rewrite). It is a single-page application built and served by the Alfred
 channels process on port 8081.
 
 It has **one screen** (the Room), **one interrupt** (the Door), and **four identity
-gates** that rise over both — and, under the Room, the **Workshop**, where the house's
-eight Redis streams are read as they happen. There is no navigation: a notification tap
-deep-links to the approval it names, the Workshop is a layer rather than a route, and
-everything else is one merged timeline.
+gates** that rise over both, with two more that say why the identity read has not been
+answered yet — and, under the Room, the **Workshop**, where the house's eight Redis
+streams are read as they happen. There is no navigation: a notification tap deep-links
+to the approval it names, the Workshop is a layer rather than a route, and everything
+else is one merged timeline. A hand-written service worker keeps the app shell on the
+phone, so the app opens with no network at all, and never keeps anything the house said.
 
 Design source: `docs/design/2026-09-04-pwa-client-handoff/` (tokens, copy, and the
 `Alfred.dc.html` prototype the presence field and the slide maths were ported from).
 Spec: `docs/superpowers/specs/2026-09-04-mobile-first-pwa-client-design.md`.
 Client-side working notes: `web/README.md`.
 
-Phases 1 to 3 of six, plus phase 4's icons and manifests. The service worker, Web Push
-and the desktop composition are later phases — see "What phases 1 to 3 do not cover" at
-the end.
+Phases 1 to 4 of six: phase 4 is the icon set, the manifest pair, the service worker and
+its kill switch, and the gates for a launch that has read nothing. Web Push, the install
+rail that leads to it, and the desktop composition are later phases — see "What phases 1
+to 4 do not cover" at the end.
 
 ---
 
@@ -37,9 +40,10 @@ the end.
 | Testing | Vitest + Testing Library (jsdom) | Vitest 4.x, `@testing-library/react` 16.x, `jest-dom` 6.x |
 | Lint | ESLint | 10.x |
 | Fonts | DM Sans Variable (sans), Geist Mono (mono) |
+| Service worker | Hand-written `public/sw.js` | — (no `vite-plugin-pwa`, no Workbox) |
 
 No component library, no icon package, no markdown renderer, no toast library, no
-command palette. The presence field is a `<canvas>`, the Door's fuse is a
+command palette, no service-worker library. The presence field is a `<canvas>`, the Door's fuse is a
 `conic-gradient`, and slide-to-confirm is four pointer handlers and a keyboard path.
 
 ---
@@ -51,11 +55,24 @@ web/
   index.html       # viewport-fit=cover, interactive-widget=resizes-content,
                    # one theme-color meta and one manifest link (applyTheme rewrites
                    # both), the apple-touch-icon link, Apple standalone metas
+  public/          # Unhashed; copied into dist/ byte for byte ("The service worker")
+    sw.js                # The service worker: precache, purge, route, SKIP_WAITING
+    sw.kill.js           # The kill switch — nothing registers it until it is copied over sw.js
+    manifest.json        # The manifest in the dark theme's colours
+    manifest-light.json  # The same in the light theme's; applyTheme swaps the link
+    icon.svg             # The mark, drawn as paths: the PNGs' source, and the favicon
+    apple-touch-icon.png # 180x180, opaque — the iOS home-screen tile
+    icon-192.png         # The manifest's small raster icon
+    icon-512.png         # The manifest's large one, which is also its maskable
   src/
     lib/           # No React: transport, formatters, physics, pure reducers
-      api.ts             # api/post/put, ApiError{status,detail}; 401→expired, 403→denied
+      api.ts             # api/post/put, ApiError{status,detail}; 401→expired, 403→denied;
+                         # timedOut() — whether a request failed on its deadline
       auth-events.ts     # authEvents.on/emit — the emitter api() announces gates on
-      auth.ts            # fetchAuthStatus, DEVICE_KEY, rememberDevice, deviceFootLine
+      auth.ts            # fetchAuthStatus (STATUS_DEADLINE_MS, the payload check),
+                         # DEVICE_KEY, rememberDevice, deviceFootLine
+      sw.ts              # installServiceWorker, onUpdateReady, applyUpdate, unregisterAll —
+                         # the page's half of the service worker
       webauthn.ts        # registerPasskey(), loginPasskey(), sessionChannel()
       ws.ts              # ReconnectingSocket — backoff, code-4001 gate, ping keepalive
       chat-socket.ts     # ChatSocket over /ws (channel "web_pwa", timezone, session_id)
@@ -88,7 +105,7 @@ web/
                          # sessionMeta/credentialMeta/serviceNote/spendNote, the
                          # health cells, and every read and write the System bench makes
     shell/         # Providers, and the two surfaces everything rises on
-      QueryProvider.tsx      # QueryClient defaults
+      QueryProvider.tsx      # QUERY_DEFAULTS: one retry, none for a 4xx or a deadline
       ErrorBoundary.tsx      # The Workshop's; a bench that throws costs the layer
       ThemeProvider.tsx      # useTheme(); writes data-theme and the theme-color meta
       ThemeToggle.tsx        # 44x44 half-filled circle
@@ -97,15 +114,20 @@ web/
       Layer.tsx              # Portal + rise in/out + focus trap + inert + level
                              # (workshop z-10 · layer z-30 · gate z-40)
       Sheet.tsx              # Bottom sheet + scrim + explicit Done + Escape
+      UpdateNote.tsx         # "A newer Alfred is waiting." + Reload, in the Room's header
+      useUpdateReady.ts      # Whether a changed sw.js is waiting (onUpdateReady)
+      useOnline.ts           # navigator.onLine and its two events — explains, never gates
     gates/         # Identity, over whatever is on screen
-      AuthGate.tsx     # Which gate, over what
-      Gate.tsx         # kicker / title / body / children / footer
-      GateField.tsx    # 220px dot field, drifting slowly
-      StepList.tsx     # 48px rows, 22px ring; progress and toggle variants
-      SetupGate.tsx    # First run: passkey → home-service credentials → attention set
-      SignInGate.tsx   # Passkey sign-in
-      ExpiredGate.tsx  # 401
-      DeniedGate.tsx   # 403
+      AuthGate.tsx       # Which gate, over what
+      Gate.tsx           # kicker / title / body / children / footer
+      GateField.tsx      # 220px dot field, drifting slowly
+      StepList.tsx       # 48px rows, 22px ring; progress and toggle variants
+      SetupGate.tsx      # First run: passkey → home-service credentials → attention set
+      SignInGate.tsx     # Passkey sign-in
+      ExpiredGate.tsx    # 401
+      DeniedGate.tsx     # 403
+      OfflineGate.tsx    # Nothing read, and the phone says it is offline
+      UnansweredGate.tsx # Nothing read, the phone online, and the house did not answer
     room/          # The one screen
       Room.tsx           # Composes all of it
       PresenceField.tsx  # 393x190 canvas; the ported presence()
@@ -161,15 +183,19 @@ web/
       setup.ts      # jsdom stubs: matchMedia, ResizeObserver, visualViewport, PointerEvent
       fixtures.ts   # Shared fixtures: overview, streams, deferred, pending actions
       contrast.ts   # WCAG ratios over the palette, restated from index.css
+      sw-harness.ts # A fake ServiceWorkerGlobalScope the shipped workers are run in
     index.css     # Tailwind import, fonts, tokens per [data-theme], @theme inline,
                   # the type scale, keyframes, safe areas, the fuse arc and its masks
-    main.tsx      # installViewportVars() → installAudioUnlock() → createRoot
+    main.tsx      # installViewportVars() → installAudioUnlock() → createRoot →
+                  # installServiceWorker()
     App.tsx       # Providers and the three routes
 ```
 
 Tests live beside their source (`lib/history.ts` → `lib/history.test.ts`). One test file
 may cover a small family that ships together (`Layer.test.tsx` covers `Sheet`,
-`Headline.test.tsx` covers `OfflineNote` and `DndRow`).
+`Headline.test.tsx` covers `OfflineNote` and `DndRow`). The files outside `src/` — the
+two workers, the manifests, the icons and `index.html` — are tested from `src/test/`,
+which has no `src`-side neighbour to put them beside.
 
 ---
 
@@ -245,7 +271,9 @@ Workshop's status line adds the handoff's `live · N ev/s`, `paused · N new` an
 `last true HH:MM · not live`; the rest arrived with the phase-3 benches —
 `hot / cold` and `candidate · active · dormant · archived` on Memory,
 `takes effect within 60 s` on Triggers, `unknown since HH:MM` on System's health stamp.
-The one exception to mono-and-lower-case is
+Phase 4 adds no word: the unanswered gate's kicker says `unknown since --:--`, where
+`--:--` is the stamp for a value never known, as the System bench writes one — a time
+would claim the value was known at that moment. The one exception to mono-and-lower-case is
 the Door's phase pill (`Confirmed · queued`, `Applied`, `Expired`, `Answered`), set in
 the inverted layer's own type. Do not invent new words — the vocabulary is the contract
 the spec's honesty rules (§5.2) are written against.
@@ -274,14 +302,50 @@ prototype draws it: the count is the evidence for the mark.
 
 ## The gates
 
-`AuthGate` reads `GET /api/auth/status` (`["auth-status"]`) and decides what rises:
+`AuthGate` reads `GET /api/auth/status` (`["auth-status"]`) and decides what rises. The
+first three rows are a launch that has read nothing yet; only the house's own answer
+reaches setup and sign-in:
 
 | Condition | Gate | Over |
 |---|---|---|
+| Nothing read, and the phone says it is offline | `OfflineGate` — `No way to the house.`, no button | Nothing yet |
+| Nothing read, online, and a read asked with a signal has failed | `UnansweredGate` — `The house is not answering.` + `Try again` | Nothing yet |
+| Nothing read, online, and no such read has failed yet | The presence field, no copy | Nothing yet |
 | `registered: false` | `SetupGate` — passkey → home-service credentials → attention set | Nothing yet |
 | `registered: true, authenticated: false` | `SignInGate` — passkey | Nothing yet |
 | `authEvents` emitted `expired` (any HTTP 401) | `ExpiredGate` | The last-known Room |
-| `authEvents` emitted `denied` (any HTTP 403) | `DeniedGate` | The last-known Room |
+| `authEvents` emitted `denied` (any HTTP 403) | `DeniedGate` | Whatever is on screen |
+
+**A read that has not landed is never read as an answer.** The first three rows key on
+`data === undefined`, never on a request being in flight, and they say which of the
+meanings the silence has — the rule phase 3 wrote for the benches ("The rules this
+phase's reviews kept enforcing" below), one layer lower down:
+
+- **`OfflineGate`** keys on `useOnline()`, which is `navigator.onLine` read through
+  `useSyncExternalStore`, at any stage of the read: in flight, between its two tries, or
+  failed. The flag explains a read and never gates one. The request still goes out, and
+  if the phone is wrong about being offline the read lands and the gate gives way. It
+  has no button. react-query's `onlineManager` starts online and changes only on the
+  window's `online` and `offline` events — it never reads the flag — so a launch that
+  begins offline is not paused: its read fails at once, and a retry while the phone has
+  no connection could only fail the same way. When the `online` event fires, `AuthGate`
+  asks again itself and shows the field while it does. Seeding `onlineManager` from the
+  flag would make the flag gate every request in the app, so it is deliberately not done.
+- **`UnansweredGate`** is a phone with a network and no answer from the house: no route
+  to it, no answer before the deadline, a proxy's 5xx, a captive portal's page, or the
+  house failing to read its own store. `fetchAuthStatus` (`lib/auth.ts`) gives the read
+  a deadline of `STATUS_DEADLINE_MS`, 10 s — the service worker's navigation deadline —
+  and rejects a 200 that is not the status payload, and `QUERY_DEFAULTS` never retries a
+  read that ran out of time. The route answers 200 with both booleans or 500 and sends no
+  4xx of its own, so no failure of this read is the house saying who you are, and none
+  of them reaches sign-in or setup. `Try again` is held (`aria-disabled` and `aria-busy`)
+  while a read is in flight, and the gate stays up meanwhile instead of dropping to the
+  field; `AuthGate` also asks again on each return to the foreground. Its kicker is
+  `{hostname} · unknown since --:--`, the closed vocabulary's stamp for a value never
+  known. On a house that hangs rather than refuses, it rises about 20 s after the tap:
+  the worker's navigation deadline, then the read's.
+
+A 403 still raises `DeniedGate`, over these gates as over the Room.
 
 **401 and 403 never redirect.** `api()` emits on `authEvents` (`lib/auth-events.ts`) and
 the gate rises *over* whatever is on screen, so a lapsed session never blanks the state
@@ -604,7 +668,11 @@ rather than left for the next reviewer to find.
   because react-query's default `networkMode: "online"` **pauses** a read with no network
   rather than failing it — a paused query is not fetching, holds no data and raises no
   error, so a bench reached for the first time on a phone with no signal looks exactly like
-  one that asked and was told the house is empty. All three benches carry the same `read`
+  one that asked and was told the house is empty. That pause needs react-query to have
+  heard the window's `offline` event, which it does when a signed-in phone loses its
+  signal — the only way a bench meets one, since nothing past the gates is reachable before
+  the house has answered. A launch that begins offline fires no such event and pauses
+  nothing, and that case is the gates' ("The gates" above). All three benches carry the same `read`
   flag for it (`useMemory.ts:241-246`, `useSystem.ts:881-905`, `useTriggers.ts`), and a
   bench that has not read says **nothing** rather than guessing which of the three it is.
 - **Never let a client-set mark outlive its evidence.** A `Pending` lives exactly
@@ -653,6 +721,7 @@ DoorProvider → Routes`. `DoorProvider` sits inside `AuthGate` so nothing reads
 |---|---|
 | TanStack Query | `["auth-status"]`, `["overview"]`, `["integrations"]`, `["attention"]`, `["room-history"]`, `["deferred"]`, `["pending-actions"]`, `["trace", stream, id]` (the Why sheet — `staleTime` of the join window, not the app's 10 s); and the benches' own: `["memory", "episodic", "browse"]`, `["memory", "episodic", "search", query]`, `["memory", "semantic" \| "routines" \| "scratchpad"]`, `["triggers"]`, `["system", "sessions" \| "credentials" \| "integrations" \| "attention"]`, `["system", "integration-status", name]`. Each bench's keys sit under one prefix, which is how `REHYDRATE_KEYS` (`ConnectionProvider.tsx`) reaches all of them with `["memory"]`, `["triggers"]` and `["system"]` |
 | `localStorage` | `alfred.theme`, `alfred.device`, `alfred.unsent`, `alfred.session`, `alfred.session-at` — every key is `alfred.<noun>`, `alfred.session-at` the one compound noun |
+| Cache Storage | `alfred-shell-v1` (the service worker's, `alfred-shell-<VERSION>`): `/index.html`, the hashed `/assets/*` it names, the `.woff2` fonts its stylesheet names, and `/__shell-manifest`, the worker's record of the precache. Nothing the house said is ever in it ("The service worker") |
 
 ---
 
@@ -841,11 +910,13 @@ graph TD
             Conn[useConnection<br/>online · chatStatus · lastTrueAt]
         end
 
-        AuthGate[AuthGate<br/>setup · sign-in · expired · denied]
+        AuthGate[AuthGate<br/>offline · unanswered · setup · sign-in · expired · denied]
+        SwPage[lib/sw.ts<br/>register · update on foreground · SKIP_WAITING]
+        Load["a launch or a reload<br/>the document and its assets"]
 
         subgraph Room
             Presence[PresenceField<br/>PresenceSignal]
-            Head[Headline · StatusLine · OfflineNote · DndRow]
+            Head[Headline · StatusLine · OfflineNote · UpdateNote · DndRow]
             TL[Timeline<br/>useRoom + useRoomHistory]
             Comp[Composer · HoldToTalk]
             Sheet[HeldBackSheet]
@@ -864,15 +935,26 @@ graph TD
         end
     end
 
+    subgraph SWG["Service worker · web/public/sw.js"]
+        SW[fetch · install · activate · message]
+        ShellCache[("alfred-shell-v1<br/>index.html · /assets/* · woff2")]
+    end
+
     subgraph "Alfred :8081"
         WS_CHAT["/ws chat"]
         WS_TEL["/ws/telemetry<br/>Door: home_action_results<br/>Workshop: all eight"]
         REST["/api/admin/* · /api/actions/* · /api/auth/*"]
+        SPA["mount_spa<br/>index.html · /assets/* · /sw.js"]
     end
 
     ChatSock -->|WebSocket| WS_CHAT
     TelSock  -->|WebSocket| WS_TEL
-    QC       -->|REST fetch| REST
+    QC       -->|REST fetch, never answered by the worker| REST
+    Load     -->|navigation · /assets/*| SW
+    SW       -->|navigation network-first · /assets/* cache-first| SPA
+    SW       --- ShellCache
+    SwPage   -->|register · update · SKIP_WAITING| SW
+    SwPage   -->|a changed sw.js is waiting| Head
 
     ChatSock --> Conn
     TelSock  --> Conn
@@ -909,12 +991,18 @@ Spec §4 lists twelve. The automated half lives in `web/src`
 `--app-height` / `--viewport-top`, `audio.test.ts` for the single unlocked context,
 `recorder.test.ts` for codec negotiation, `lifecycle.test.ts` and
 `ConnectionProvider.test.tsx` for rehydration, `Layer.test.tsx` and `DoorLayer.test.tsx`
-for explicit dismissal, `PresenceField.test.tsx` for reduce-motion). The half that needs
-a real phone is `docs/superpowers/qa/2026-09-07-pwa-phase1-ios-checklist.md`, with
+for explicit dismissal, `PresenceField.test.tsx` for reduce-motion). Phase 4 added
+`icons.test.ts` and `manifest.test.ts` for §4.2's icons and manifest, `sw.test.ts`,
+`sw-kill.test.ts` and `lib/sw.test.ts` for the worker, and `useOnline.test.tsx`, `OfflineGate.test.tsx`,
+`UnansweredGate.test.tsx` and `AuthGate.test.tsx` for a cold launch that has read
+nothing (§4.10). The half that needs a real phone is
+`docs/superpowers/qa/2026-09-07-pwa-phase1-ios-checklist.md`, with
 `2026-09-10-pwa-phase2-ios-checklist.md` beside it for the Workshop and the Activity
-bench and `2026-09-16-pwa-phase3-ios-checklist.md` for the other three — the last of
-which carries the questions jsdom cannot answer at all, such as whether VoiceOver
-re-announces an `aria-atomic` region whose sibling text changed.
+bench, `2026-09-16-pwa-phase3-ios-checklist.md` for the other three — which carries the
+questions jsdom cannot answer at all, such as whether VoiceOver re-announces an
+`aria-atomic` region whose sibling text changed — and
+`2026-09-16-pwa-phase4-ios-checklist.md` for the install, the offline launch, the update
+and the kill switch, none of which jsdom can run at all.
 
 Two of them bite hardest:
 
@@ -990,6 +1078,11 @@ cd web && npm run build   # outputs to web/dist/
      which raise a real 404. A REST or WebSocket client hitting a renamed endpoint —
      the iOS AlfredKit client, say — must get a 404, not 200 and a page of HTML.
 
+`/sw.js` is one of the real files the catch-all returns, copied into `dist/` from
+`web/public/`. The fallback is also why it must never be deleted: without the file,
+`/sw.js` answers `index.html` with a 200, the browser refuses the update on its MIME type,
+and every phone keeps the worker it has ("The kill switch" below).
+
 If `web/dist/` is absent (dev mode), `mount_spa` is a no-op — the dev Vite server handles
 the SPA.
 
@@ -1023,33 +1116,385 @@ untouched:
 | --- | --- | --- |
 | `/assets/*`, status < 400 | `public, max-age=31536000, immutable` | Content-hashed, so the bytes behind a URL never change. Errors are excluded — a pinned 404 has no URL to bust it. |
 | `text/html` | `no-cache, no-store, must-revalidate` | `index.html` and every SPA-fallback route: never stored, so a deploy is picked up on the next load. |
-| everything else | `no-cache, must-revalidate` | Unhashed `web/public/` files (`/icon.svg`, `/apple-touch-icon.png`, `/icon-192.png`, `/icon-512.png`, `/manifest.json`, `/manifest-light.json`): revalidated on every load. |
+| everything else | `no-cache, must-revalidate` | Unhashed `web/public/` files (`/icon.svg`, `/apple-touch-icon.png`, `/icon-192.png`, `/icon-512.png`, `/manifest.json`, `/manifest-light.json`, `/sw.js`, `/sw.kill.js`): revalidated on every load. |
 
 Tier 3 does not save bandwidth today. `mount_spa`'s fallback serves those files through a
 bare `FileResponse`, which ignores `If-None-Match`/`If-Modified-Since` — only
 `StaticFiles.get_response` honours conditional requests — so a revalidation returns 200
 with the full body, not a 304. `no-cache, must-revalidate` is still the correct header:
 it is what a caching proxy in front of Alfred needs, and the 304 arrives for free if the
-fallback ever grows conditional handling.
+fallback ever grows conditional handling. The file that pays for it most is `/sw.js`: the
+service worker's update check fetches it on every return to the foreground, whole each
+time ("How an update arrives" below).
 
 ---
 
-## What phases 1 to 3 do not cover
+## The service worker
 
-- **Install, standalone and Reach gates, the service worker and Web Push** — phases 4
-  and 5. The icons and the manifests have landed (phase 4's first two tasks):
-  `web/public/manifest.json` and `web/public/manifest-light.json` are identical but for
-  `theme_color`/`background_color`, and `applyTheme` swaps the `<link rel="manifest">`
-  alongside the `theme-color` meta. What that is worth is **not yet known**: a manifest is
-  consumed at install time, so at most it aligns one install with the theme in force at
-  Add to Home Screen — it never follows the theme afterwards — and on iOS it may be inert,
-  because WebKit reads at most one manifest per document load and the swap runs after
-  parsing. iOS composes its launch screen from `apple-touch-startup-image`, which this app
-  does not ship, and not from the manifest. Chromium observes the link; Chrome's WebAPK
-  update check also fingerprints those two colours, so the 07:00/19:00 boundary may cost a
-  silent reinstall a day. Reasoned, not measured — the phase-4 device checklist is the
-  only thing that settles it. System has **no Reach card**: it would be a control that
-  cannot work, which is the defect the phase-2 placeholder tabs were.
+Phase 4's offline story is the **app shell** — the app opening at all, with no network —
+and never the data. `web/public/sw.js` keeps one copy of the shell on the phone, and
+`web/src/lib/sw.ts` is the page's half. This section is the architecture.
+`web/README.md`, "The service worker", walks the file mechanism by mechanism with the
+measurements behind each one, and the plan
+(`docs/superpowers/plans/2026-09-16-pwa-phase4-install-and-offline.md`, decisions 2 to 11)
+has the reasoning.
+
+### Why it is hand-written
+
+Not `vite-plugin-pwa`, and not Workbox (spec §7 named the plugin; the plan's deviation 1
+records the change):
+
+- **Vite's `index.html` already is the precache manifest.** The build writes the hashed
+  entry chunk and stylesheet into it, and install reads them back out. There is nothing
+  to generate.
+- **The policy has to be readable in review.** A versioned cache, an explicit purge and a
+  kill switch are things a reviewer should read in the shipped bytes, not infer from a
+  plugin's configuration.
+- **Every behaviour is pinned by a test.** The shipped file runs inside a fake
+  `ServiceWorkerGlobalScope` and is driven event by event ("How it is tested" below). A
+  generated worker can only be tested by testing Workbox.
+- **The load-bearing requirement is a negative one.** "This worker never answers
+  `/api/*`" is one assertion against a hand-written file, and an argument against a
+  plugin's route table.
+
+The cost is the plugin's conveniences: no automatic precache on rebuild, no runtime-caching
+recipes and no background sync. None of them is wanted here, because nothing the house
+says is ever cached (next).
+
+### The one rule
+
+**It caches the app shell and nothing else.** `/api/*`, `/health`, `/ws`, `/ws/*` and
+FastAPI's own `/docs`, `/docs/oauth2-redirect`, `/redoc` and `/openapi.json` are never
+passed to `respondWith()`. That is stronger than network-only: the worker never sees those
+responses, so no branch can store one even by accident, and no later edit to a caching
+branch can reach them. The reason is the client's whole design — it never states a server
+fact it has not just read — and **a cached API response is the client stating a server
+fact it has not just read, with a longer half-life**: a stale `alive`, a stale
+`dnd: false`, a stale trigger state, served with no stamp and no way for the reader to
+know. There is no query-cache persistence for the same reason (plan decision 4).
+
+`isRefused` decides it once, for every request, before either branch runs: a hand-typed
+API URL arrives as a navigation, and a navigation branch that ran first would cache the
+answer as the app's shell. The path list is `NEVER` and `NEVER_UNDER` at the top of the
+routing code, applied to the path decoded the way uvicorn decodes it. Anything that is not
+a `GET`, carries a `Range`, has another scheme or origin, will not decode, or has a dot
+segment is refused too. `src/test/sw-server-routes.test.ts` reads both lists out of
+`sw.js` and holds them against what the server declares: FastAPI's four docs routes,
+which `create_app` leaves at their defaults, and the paths `mount_spa` keeps out of its
+fallback (`_NON_SPA_PREFIXES`, `_NON_SPA_PATHS`). It also checks that nothing the server
+answers with the app itself is refused. Moving a docs route, or changing either of
+`mount_spa`'s lists, fails it.
+
+### The four events
+
+| Event | What it does |
+|---|---|
+| `install` | Fetches `/index.html` past the HTTP cache (`cache: "reload"`) and refuses it unless it is a 200 `text/html` that names at least one `/assets/` URL. Fetches each asset it names, the entry chunk and the stylesheet; any failure fails the install. Reads the stylesheet for its `.woff2` URLs and fetches those, skipping a font that fails rather than failing the install. Writes the assets, then the fonts, then the shell, then the record of what it cached at `/__shell-manifest` — the record last, because it is the install's claim to have finished. **Never calls `skipWaiting()`.** |
+| `activate` | Deletes every other cache on the origin. Then, inside its own, deletes every entry that neither the record nor the shell now in the cache names, and then calls `clients.claim()`. |
+| `fetch` | `isRefused` first. A navigation is network-first, and an `/assets/` URL is cache-first. Everything else (the manifests, the icons) is left to the network untouched. |
+| `message` | `{ type: "SKIP_WAITING" }` calls `skipWaiting()`. Nothing else is acted on. |
+
+Two things about `activate` are not obvious from the code:
+
+- **`caches` is scoped to the origin, not to the worker.** "Every other cache" means every
+  cache that any code on this hostname owns. So the purge assumes the origin is Alfred's
+  alone, since a second app or worker scope behind the same hostname would lose its caches
+  on every activate. Any cache phase 5 wants for itself has to live inside
+  `alfred-shell-<VERSION>` or be named in a keep-list in `purge()`, or it is dropped
+  between deploys by a line written a phase earlier.
+- **A record it cannot trust means keep everything.** A record that is absent, is not a
+  list, or will not read is treated the same way, because deleting on a record you cannot
+  read is guessing, and what it guesses with is the only offline copy of the app. The
+  keep-set is the record **and** what the cached shell names, because a navigation's
+  refresh publishes a newer deploy's chunks and shell that no record names. Each delete is
+  caught on its own, so one storage failure costs neither the deletes behind it nor the
+  claim.
+
+```mermaid
+flowchart TD
+    F["fetch event"] --> R{"isRefused?<br/>non-GET · Range · another scheme or origin<br/>undecodable · dot segment<br/>/api/ · /health · /ws · /ws/ · FastAPI docs"}
+    R -->|yes| X["respondWith never called:<br/>the browser fetches it as if there were no worker"]
+    R -->|no| M{"mode navigate?"}
+    M -->|yes| NET["the network, raced against TIMEOUT_MS"]
+    NET -->|answered, any status| LIVE["the network's response"]
+    LIVE -.->|waitUntil| REF["refresh: a 200 text/html shell that names assets —<br/>its missing assets first, then the shell"]
+    NET -->|rejected, or no answer in time| HAS{"/index.html cached?"}
+    HAS -->|yes| SHELL["the cached shell"]
+    HAS -->|no| FAIL["a network error"]
+    M -->|no| A{"under /assets/?"}
+    A -->|no| X
+    A -->|yes| HIT{"cached under the raw pathname?"}
+    HIT -->|yes| CACHED["the cached bytes"]
+    HIT -->|no| GET["the network, with the same deadline"]
+    GET -.->|waitUntil, only a 200 that is not HTML| STORE["stored beside the answer"]
+```
+
+**Deadlines are per wait.** A request has `TIMEOUT_MS` (10 s) to answer, and each piece of
+its body 10 s to follow the last, so a stall is noticed 10 s after the last byte while a
+slow link that keeps delivering is waited for. Over that, each body has `CEILING_MS`
+(120 s) from its headers to its last byte, because a limit on silence never ends a body
+that is never silent. Every network body the worker stores or reads goes through `whole()`
+first, since `Cache.put` reads its body to the end before it writes, and a body the worker
+turns down is released (cancelled unread) rather than left holding its connection.
+
+A navigation answered with an error is still answered: a 502 or a 500 is passed through
+to the page, and the cached shell is served only when the fetch rejects or does not answer
+inside the deadline (plan decision 8). A cache failure is never read as a network failure.
+Every cache operation is outside the `try` that decides "offline", so a worker whose
+storage is full serves what a browser with no worker would.
+
+### The two things a 200 does not mean
+
+- **A 200 is not the file that was asked for.** `mount_spa`'s fallback answers any unknown
+  path with `index.html` and a 200, so the worker decides on status **and** content type.
+  It stores under `/assets/` only a 200 that is not `text/html` (`isAsset`): `/assets` is
+  a `StaticFiles` mount today and answers a removed hash with a JSON 404, but a page of
+  HTML stored under a `.js` URL is how a PWA bricks itself, so the guard does not rely on
+  the mount. It accepts a shell only as a 200 `text/html` (`isShell`). The status half
+  stops an error page becoming the app's offline face — nginx's `proxy_cache_use_stale`
+  answers 502 with the app's own HTML — and the content-type half stops a 200 that is not
+  HTML.
+- **A 200 `text/html` is not proof that the page is the app.** Install and the
+  navigation's refresh both refuse a page that names no hashed `/assets/` URL. A reverse
+  proxy's default page, the dev server's own `index.html` and a captive portal's page are
+  all 200 `text/html`, and any of them would otherwise be kept as the shell and stay. Over
+  https a portal cannot intercept at all; this is the check that catches one that can.
+
+### How the cache is versioned
+
+`VERSION` (`"v1"`) is the one constant at the top of `sw.js`, and the cache is
+`alfred-shell-<VERSION>`. Bump it when the **policy** changes in a way the old cache must
+not survive, and not on a deploy: asset URLs are content-hashed, and activate's prune
+(the record plus what the cached shell names) is what clears an old build out of the
+current cache. The tests read `VERSION` from `sw.js` rather than restating it. The kill
+switch's tests name `alfred-shell-v1` literally, because the switch deletes every cache,
+whatever its name.
+
+A bump is a byte change to `sw.js`, and so is any edit at all, a comment included. Every
+one of them installs a new worker on every phone at its next update check (next).
+
+### How an update arrives
+
+Two different things arrive, and only one of them is an "update" to the worker:
+
+- **An ordinary deploy** changes `index.html` and the hashed assets, and leaves `sw.js`
+  byte for byte the same. No worker installs, nothing waits, and no note appears. An open
+  app takes the deploy at its next navigation, because navigations are network-first, and
+  that navigation's refresh updates the offline copy in the background, assets first and
+  shell last. A refresh that fails part way leaves the old shell whole.
+- **A changed `sw.js`** installs a new worker at the next update check. The browser runs
+  one at every navigation, and `lib/sw.ts` runs one on every return to the foreground
+  (`registration.update()` from `onVisible`), because an installed PWA is brought back
+  rather than relaunched and could otherwise stay on one worker for weeks. The new worker
+  precaches and then waits, because a worker that swapped itself in would do it under a
+  running conversation. The Room offers it, and one tap takes it.
+
+```mermaid
+sequenceDiagram
+    participant P as Page (lib/sw.ts)
+    participant B as Browser
+    participant N as New worker
+    participant S as Alfred :8081
+    P->>B: registration.update(), on a return to the foreground
+    B->>S: GET /sw.js
+    S-->>B: bytes that differ from the installed worker's
+    B->>N: install
+    N->>S: /index.html, its /assets/, the stylesheet's woff2
+    N-->>B: installed, and waiting
+    Note over B: the old worker still serves every open page
+    B-->>P: updatefound, then statechange to installed
+    P->>P: UpdateNote — A newer Alfred is waiting.
+    P->>N: SKIP_WAITING, when the user taps Reload
+    N->>N: activate — purge, then clients.claim()
+    B-->>P: controllerchange
+    P->>P: reload, once
+```
+
+The page's half, `lib/sw.ts`, is called once from `main.tsx` (`installServiceWorker()`),
+after the app is handed to React:
+
+- **In a production build** it registers `/sw.js` at the root. **In dev** it unregisters
+  every worker and deletes every cache instead, because a worker left behind by
+  `npm run preview` outlives the preview server and would serve `npm run dev` a stale
+  shell on the same origin.
+- **A `register()` that rejects** is reported by `main.tsx` with
+  `console.error("service worker setup failed", error)`. That is what a deploy without
+  `/sw.js` looks like (`mount_spa` answers it with `index.html`), and on a phone with no
+  worker yet it is the only sign. A phone that already has a worker hears it from the
+  foreground check instead, which logs
+  `console.warn("service worker update check failed", error)` while `navigator.onLine` is
+  true and stays quiet offline. So an online phone that cannot reach the house — a
+  tailnet that is down, a house restarting — logs one warning per foreground. That is
+  expected, not a fault.
+- **`onUpdateReady()`** announces a worker that reaches `installed` behind an existing
+  controller. `useUpdateReady` subscribes to it, and `UpdateNote` shows
+  `A newer Alfred is waiting. Nothing is lost; I pick up where we left off.` with a
+  `Reload` text button. `applyUpdate()` posts `SKIP_WAITING`.
+- **It reloads once when a new worker takes over**, and never when the first worker claims
+  a page that had none, which `activate`'s `clients.claim()` does on every first visit.
+  That page came from the network moments ago and has nothing newer to reload into.
+
+A reload does not take a waiting worker: the old page stays until the new one's response
+arrives, so the two overlap and the old worker never runs out of pages. The tap is the
+only way in, short of closing every page the old worker controls. The note sits in the
+Room's header only (`Room.tsx:123-124`, under `OfflineNote`), and every check downloads all
+of `sw.js` — 64 324 bytes at `c49e66d` — because `mount_spa` never answers a revalidation
+with a 304 and the check has no minimum interval. Both are filed
+(`docs/backlog/low/pwa-phase4-followups.md` §2 and §3).
+
+### The kill switch
+
+`web/public/sw.kill.js` ships in every build, and nothing registers it. Copied over
+`sw.js`, it is the one remote way to empty an installed phone. A bad precache on an
+installed iOS PWA is otherwise very hard to clear: there is no address bar, no developer
+tools and no reliable "clear site data" for a home-screen app.
+
+What it does: `install` calls `skipWaiting()`, the opposite of `sw.js` on purpose, since
+the case it exists for is an app nobody can drive. `activate` first lists the pages it
+controls, with a default `matchAll()` — which are the pages the old worker controlled.
+It then deletes every cache, each delete caught on its own, then awaits its own
+unregistration, and only then reloads each listed page once. It never claims and has no
+fetch handler. It reloads only those pages because while these bytes are at `/sw.js`,
+every page load registers a fresh copy; a copy that reloaded the load it was registered
+from would never stop. The file's header has the measurements.
+
+**Firing it:**
+
+1. `cp web/public/sw.kill.js web/public/sw.js`, and commit that alone. A real copy — not a
+   redirect, a symlink or an import.
+2. Open a pull request and let `ci-ok` pass it. While `sw.js` is `sw.kill.js` byte for
+   byte, and only then, `src/test/sw.test.ts` and `src/test/sw-server-routes.test.ts` stand
+   down, each running one passing test that says the switch is fired (a warning on the run
+   in GitHub Actions).
+3. Merge it; merging deploys it. Every installed copy takes it at its next update check —
+   a navigation, or a return to the foreground.
+4. Afterwards, **revert the firing commit** (a pull request of its own), and ship the fix.
+   Phones register the restored worker at their next launch.
+
+On the fired tree, `sw-server-routes.test.ts`'s checks of `core/channels/spa.py` and
+`web_server.py` stand down with the worker's tests. A server-route change merged while the
+switch is deployed is therefore not checked against the worker's list until the revert,
+and fails first on the revert pull request.
+
+**Deleting `sw.js` does not work, and must never be tried.** `mount_spa` answers any
+unknown path with `index.html` and a 200, so the browser's update check fetches a page of
+HTML, refuses it on its MIME type, and leaves the old worker installed and still serving its
+cache.
+
+**What it leaves behind.** Every page loaded while the switch is deployed, the pages it
+reloaded included, ends up holding a registration that no longer exists: each copy of the
+switch unregisters itself, the copy that page registered too. While the phone is online,
+each of that page's returns to the foreground logs one `InvalidStateError` as
+`service worker update check failed` — one per open page, for as long as the page lives,
+and after the revert too, until it is relaunched. Nothing is visible on screen. Those
+pages take the restored worker only at their next launch (filed:
+`docs/backlog/low/pwa-phase4-followups.md` §12).
+
+**The last resort**, for a phone that is bricked and has no network to take the switch
+over: delete the home-screen icon and add it again. Nothing the house holds is lost — the
+conversation is on the server and the passkey is the phone's — though the new install may
+have to sign in again.
+
+### How it is tested
+
+`src/test/sw-harness.ts` builds a fake `ServiceWorkerGlobalScope` and evaluates the shipped
+bytes of `public/sw.js` and `public/sw.kill.js` in it with
+`new Function("self", ...SEALED, source)`. The worker reaches every global through
+`self.`, which is the fake scope. The bare globals a worker must not use are passed as
+parameters too, each sealed behind a `Proxy` that throws, so a bare `caches` or `fetch`
+fails the test instead of reaching jsdom or Node. The convention is enforced in source as
+well: `no-restricted-globals` in `web/eslint.config.js` rejects a bare global at lint
+time, which `globals.serviceworker` would otherwise allow.
+
+Two facts about the environment shape the harness. Requests are plain objects, because
+undici's `Request` refuses `mode: "navigate"`. And `Response` is Node's global, since jsdom
+implements no fetch.
+
+| File | Covers |
+|---|---|
+| `src/test/sw.test.ts` | The worker, event by event |
+| `src/test/sw-kill.test.ts` | The kill switch, in the same fake scope |
+| `src/test/sw-harness.test.ts` | The fake scope itself: `ExtendableEvent`, `Cache.put`, `Clients.matchAll`, and which worker controls each open page |
+| `src/test/sw-server-routes.test.ts` | `NEVER` and `NEVER_UNDER` against the routes `create_app` and `mount_spa` declare |
+| `src/lib/sw.test.ts` | The page's half, against a fake `navigator.serviceWorker` |
+| `src/test/manifest.test.ts`, `src/test/icons.test.ts`, `src/test/index-html.test.ts` | The manifest pair, the icon pixels, the links and metas |
+
+Two things are not tested here. Nothing checks that the built `dist/sw.js` exists and is
+served as JavaScript (`docs/backlog/low/pwa-phase4-followups.md` §10). And none of it is
+WebKit: what Safari does with any of
+it is the phase-4 device checklist's
+(`docs/superpowers/qa/2026-09-16-pwa-phase4-ios-checklist.md`).
+
+### The manifest pair
+
+`public/manifest.json` and `public/manifest-light.json` are identical — `id: "/"`, `name`
+and `short_name` `Alfred`, `display: standalone`, `orientation: portrait`, the three icons
+— except for `theme_color` and `background_color`. Those are `#25221F` in the first and
+`#F6F3EE` in the second. `applyTheme` swaps the `<link rel="manifest">` alongside the
+`theme-color` meta it already rewrites, and `manifest.test.ts` keeps the two files a
+faithful copy of each other.
+
+Read that narrowly, because it is not known to fix anything on a phone:
+
+- **A manifest is consumed at install time**, so the most the swap can do is align one
+  install with the theme in force at that moment. It does not follow the theme afterwards.
+- **On iOS it may be inert.** WebKit fetches at most one manifest per document load and
+  has no observer for a later `href` change, and the swap runs after parsing, so the
+  manifest iOS reads may always be the dark one `index.html` ships. And iOS takes its
+  launch screen from `apple-touch-startup-image`, which this app does not ship (plan
+  decision 11), not from the manifest at all.
+- **Chromium observes the link, and that is where the value and the cost both are.**
+  Chrome's WebAPK update check fingerprints both colours, so crossing 07:00 or 19:00
+  presents a manifest that disagrees with the installed app, which may schedule a silent
+  reinstall about once a day. That is reasoned from Chrome's documented fingerprint, not
+  measured.
+
+### The icons
+
+Four checked-in files, generated once from one drawing. No build step, no CI step, and the
+container's `webbuild` stage is unchanged:
+
+| File | Size | Used by |
+|---|---|---|
+| `public/icon.svg` | any | The source of the three PNGs, the favicon, and the manifests' `any` vector icon |
+| `public/apple-touch-icon.png` | 180x180 | iOS's home-screen tile. iOS ignores SVG there, and ignores the manifests' icons outright |
+| `public/icon-192.png` | 192x192 | The manifests, `any` |
+| `public/icon-512.png` | 512x512 | The manifests, `any maskable` |
+
+- **The mark is geometry, not `<text>`** — the handoff's `A` (`Alfred.dc.html:530`) drawn
+  as two stroked paths. A `<text>` icon renders in whatever font the rasteriser has, and
+  `@fontsource-variable/dm-sans` ships `woff2` only, which neither `rsvg-convert` nor
+  `resvg` can load.
+- **It is full-bleed, with no radius.** iOS applies its own mask and composites
+  transparency as black, so a rounded square puts black slivers in the tile's corners. The
+  PNGs carry no alpha channel at all (spec §4.2).
+- **One 512 PNG is both `any` and `maskable`.** The furthest inked pixel of the drawing is
+  170.5 px from the centre of the 512 canvas, inside the maskable safe circle's 204.8 px
+  radius, so the same art is safe under a mask and correct without one.
+
+The regeneration commands are in `web/README.md`, "Regenerating the icons".
+`src/test/icons.test.ts` decodes the committed PNGs and checks their pixels, so an icon
+regenerated from a different drawing fails rather than ships.
+
+---
+
+## What phases 1 to 4 do not cover
+
+- **Web Push, and the six-step install rail that leads to it** — phase 5. Phase 4 landed
+  the icons, the manifest pair, the service worker and its kill switch ("The service
+  worker" above). The rail did not land, and it is not missing by accident: spec §8 puts
+  the "install-and-enable sequence" in phase 5 with Web Push, and every step of it exists
+  to reach the last one, allowing notifications on iOS. Shipping the first four steps with
+  nothing behind them would be a control that pretends, the defect the phase-2 placeholder
+  tabs were (plan decision 6). So there is **no `install` gate, no `standalone` gate, no
+  home-screen prompt row and no System › Reach card**. The handoff's copy is final for all
+  four (`Alfred.dc.html:669`, `:670`, `:751` and `:385-397`). What phase 4 hands phase 5
+  is an app the rail's gesture installs correctly, and a worker to add `push` and
+  `notificationclick` handlers to — on one condition, that any cache of its own lives
+  inside `alfred-shell-<VERSION>` or in `purge()`'s keep-list
+  (`docs/backlog/low/pwa-phase4-followups.md` §1).
+- **Anything iOS does with the manifests or the launch screen** is unmeasured: the
+  phase-4 device checklist is the only thing that settles it, and it is unrun.
 - **Trigger editing, service restart and log download** — the three things the old SPA
   could do that no endpoint supports. Only the first is said out loud in the client: the
   Triggers footer reads `Nothing here edits a trigger — ask Alfred to change or remove
@@ -1062,5 +1507,6 @@ fallback ever grows conditional handling.
 - **Desktop** — phase 6. The client is phone-first and there is no wide composition.
 
 Open follow-ups: `docs/backlog/low/pwa-phase1-followups.md`,
-`docs/backlog/low/pwa-phase2-followups.md` and
-`docs/backlog/low/pwa-phase3-followups.md`.
+`docs/backlog/low/pwa-phase2-followups.md`,
+`docs/backlog/low/pwa-phase3-followups.md` and
+`docs/backlog/low/pwa-phase4-followups.md`.
