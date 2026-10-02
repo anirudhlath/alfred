@@ -67,7 +67,7 @@ web/
   src/
     lib/           # No React: transport, formatters, physics, pure reducers
       api.ts             # api/post/put, ApiError{status,detail}; 401→expired, 403→denied
-                         # (never for the status read's 403: no network gate guards it);
+                         # (not for the status read, whose route sends neither);
                          # timedOut() — whether a request failed on its deadline
       auth-events.ts     # authEvents.on/emit — the emitter api() announces gates on
       auth.ts            # fetchAuthStatus (STATUS_DEADLINE_MS, the payload check),
@@ -314,7 +314,7 @@ reaches setup and sign-in:
 | Nothing read, online, and no such read has failed yet | The presence field, no copy | Nothing yet |
 | `registered: false` | `SetupGate` — passkey → home-service credentials → attention set | Nothing yet |
 | `registered: true, authenticated: false` | `SignInGate` — passkey | Nothing yet |
-| `authEvents` emitted `expired` (any HTTP 401) | `ExpiredGate` | The last-known Room |
+| `authEvents` emitted `expired` (any HTTP 401 but the status read's and a passkey attempt's) | `ExpiredGate` | The last-known Room |
 | `authEvents` emitted `denied` (any HTTP 403 but the status read's) | `DeniedGate` | Whatever is on screen |
 
 **A read that has not landed is never read as an answer.** The first three rows key on
@@ -361,25 +361,29 @@ outcome shows:
 | 500 | The house, its credential store failing; or a proxy | Once | `UnansweredGate` |
 | 502, 503, 504 | A proxy | Once | `UnansweredGate` |
 | 403 | A proxy or a WAF (a Cloudflare challenge, say); never the house | No | `UnansweredGate` alone: `api()` does not announce this route's 403, so no `DeniedGate` |
-| 401 | A proxy; never the house | No | `UnansweredGate`: `api()` announces `expired`, and `AuthGate` drops it at once, since no session was read to have lapsed |
+| 401 | A proxy; never the house | No | `UnansweredGate` alone: `api()` does not announce this route's 401, so no `ExpiredGate` |
 | Any other 4xx | Not the house | No | `UnansweredGate` |
 | `TypeError` (refused, no DNS, no route) | The network | Once | `UnansweredGate` |
 | The deadline, `STATUS_DEADLINE_MS` | The client | No | `UnansweredGate` |
 
 While the phone says it is offline, every failure shows `OfflineGate` instead. Once the
-house has answered, a failed read keeps that answer and the screen with it: its 403
-raises nothing, and its 401 still raises `ExpiredGate`, as a 401 does on every route but
-the passkey attempts. So `DeniedGate` rises for every 403 but the status read's — a
-network-gated route's refusal is the house's own, over these gates as over the Room. If
-the status route ever gains a network gate, its 403 becomes the house's answer, and
-`api()`'s exemption (`isStatusRead`, `lib/api.ts`) has to be revisited.
+house has answered, a failed read keeps that answer and the screen with it, and neither
+its 401 nor its 403 raises anything. A session that really lapses still says so: the
+next status read answers `authenticated: false`, which routes to `SignInGate`, and a 401
+on any other request but a passkey attempt raises `ExpiredGate` over the Room. Likewise
+`DeniedGate` rises for every 403 but the status read's: a network-gated route's refusal
+is the house's own, over these gates as over the Room. It also rises for a proxy's 403
+on any other route, which it should not (`docs/backlog/low/pwa-phase4-followups.md`,
+§14). If the status route ever gains a network gate, or sends a 401 of its own, that
+status becomes the house's answer, and `api()`'s exemption (`isStatusRead`, `lib/api.ts`)
+has to be revisited.
 
 **401 and 403 never redirect.** `api()` emits on `authEvents` (`lib/auth-events.ts`) and
 the gate rises *over* whatever is on screen, so a lapsed session never blanks the state
 the user was looking at (spec §5.2). A rejected passkey assertion is a 401 too, and is
 excluded: `/api/auth/login/*` and `/api/auth/register/*` show the failure in the gate
-that asked rather than raising a second one. The status read's 403 is excluded too, for
-the reason above.
+that asked rather than raising a second one. The status read's 401 and 403 are excluded
+too, for the reason above.
 
 The session TTL is 8 hours, a hard cap from login with no sliding renewal, and the
 Expired gate says so.
