@@ -310,6 +310,59 @@ describe("the fake CacheStorage", () => {
     await expect(worker.request({ path: "/x" })).rejects.toThrow(/storage error/);
   });
 
+  it("can be told to hold the body of the next match, its head answered, until the test lets it go", async () => {
+    // The read half of a slow disk: the match answers, so the worker has the
+    // entry in hand, and reading it — a clone's read included — waits. Once:
+    // the next match of the same key reads as any other, which is how a test
+    // holds one reader's copy of an entry while another reader goes on.
+    const worker = loadWorker(`
+      self.addEventListener("install", (event) => {
+        event.waitUntil((async () => {
+          const cache = await self.caches.open("alfred-shell-v1");
+          await cache.put("/x", new Response("x"));
+          const held = await cache.match("/x");
+          await cache.put("/status", new Response(String(held.status)));
+          const reading = held.clone().text().then((text) => cache.put("/held", new Response(text)));
+          await cache.put("/after", new Response(await (await cache.match("/x")).text()));
+          await reading;
+        })());
+      });
+    `);
+    const release = worker.holdRead("/x");
+    const installing = worker.install();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(worker.keys("alfred-shell-v1")).toEqual(["/after", "/status", "/x"]);
+    release();
+    await installing;
+    const entries = worker.store.get("alfred-shell-v1")!;
+    await expect(entries.get(`${ORIGIN}/status`)!.clone().text()).resolves.toBe("200");
+    await expect(entries.get(`${ORIGIN}/held`)!.clone().text()).resolves.toBe("x");
+    await expect(entries.get(`${ORIGIN}/after`)!.clone().text()).resolves.toBe("x");
+  });
+
+  it("can be told to fail the body of the next match when it is read, once", async () => {
+    // The entry found and the disk failing to hand it over: the match answers
+    // and the read rejects. Without it, what a worker does with a cached body
+    // that will not read is code no test can reach.
+    const worker = loadWorker(`
+      self.addEventListener("install", (event) => {
+        event.waitUntil((async () => {
+          const cache = await self.caches.open("alfred-shell-v1");
+          await cache.put("/x", new Response("x"));
+          const found = await cache.match("/x");
+          const outcome = await found.clone().text().then(() => "read", (error) => error.name);
+          await cache.put("/outcome", new Response(String(found.status) + " " + outcome));
+          await cache.put("/after", new Response(await (await cache.match("/x")).text()));
+        })());
+      });
+    `);
+    worker.refuseRead("/x");
+    await worker.install();
+    const entries = worker.store.get("alfred-shell-v1")!;
+    await expect(entries.get(`${ORIGIN}/outcome`)!.clone().text()).resolves.toBe("200 UnknownError");
+    await expect(entries.get(`${ORIGIN}/after`)!.clone().text()).resolves.toBe("x");
+  });
+
   it("rejects a put of a response whose body has already been read", async () => {
     // Real Cache.put does. Without this, `await shell.text()` in place of
     // `await shell.clone().text()` is invisible here and fatal in a browser:

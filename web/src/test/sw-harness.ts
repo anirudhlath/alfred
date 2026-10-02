@@ -38,6 +38,32 @@ const storageFailure = (name = "UnknownError"): never => {
   throw new DOMException("A storage error occurred.", name);
 };
 
+/**
+ * `response` with its body behind `gate`: the head as it is, and every read of
+ * the body waiting until `gate()` settles — failing with its rejection, if it
+ * rejects. A clone's read waits with it, since every branch of a clone is fed
+ * from this one body. What `holdRead` and `refuseRead` hand a match back.
+ */
+const gated = (response: Response, gate: () => Promise<void>): Response => {
+  if (!response.body) return response;
+  const reader = response.body.getReader();
+  return new Response(
+    new ReadableStream<Uint8Array>(
+      {
+        async pull(controller) {
+          await gate();
+          const { done, value } = await reader.read();
+          if (done) controller.close();
+          else controller.enqueue(value);
+        },
+      },
+      // Pulled only when something reads, as a disk is asked only then.
+      { highWaterMark: 0 },
+    ),
+    { status: response.status, statusText: response.statusText, headers: response.headers },
+  );
+};
+
 /** Enough of `Cache` for this worker: open, match, put, keys, delete. */
 class FakeCache {
   // Declared and assigned rather than a `readonly` constructor parameter:
@@ -53,6 +79,8 @@ class FakeCache {
   readonly origin: string;
   /** What a `put` of this absolute key waits on before it lands, if a test is holding it. */
   readonly held: (url: string) => Promise<void> | undefined;
+  /** The copy a match of this absolute key hands back: the one given, or it behind a gate. */
+  readonly reads: (url: string, found: Response) => Response;
   constructor(
     entries: Map<string, Response>,
     refuses: (url: string) => boolean,
@@ -61,6 +89,7 @@ class FakeCache {
     attempted: (url: string) => void,
     origin: string,
     held: (url: string) => Promise<void> | undefined,
+    reads: (url: string, found: Response) => Response,
   ) {
     this.entries = entries;
     this.refuses = refuses;
@@ -69,6 +98,7 @@ class FakeCache {
     this.attempted = attempted;
     this.origin = origin;
     this.held = held;
+    this.reads = reads;
   }
   /**
    * Real `Cache.match` constructs a NEW Response every call, so reading one
@@ -84,7 +114,8 @@ class FakeCache {
     // reach, and a worker whose offline path rejects with a DOMException instead
     // of falling back is indistinguishable from one that does not.
     if (this.refusesMatch(url)) return Promise.reject(new DOMException("A storage error occurred.", "UnknownError"));
-    return Promise.resolve(this.entries.get(url)?.clone());
+    const found = this.entries.get(url)?.clone();
+    return Promise.resolve(found && this.reads(url, found));
   }
   put(key: string | { url: string }, response: Response): Promise<void> {
     // Recorded first, and that ordering is the point: `puts` is what a test
@@ -294,6 +325,25 @@ export interface Harness {
    * the worker does to the same cache in the meantime.
    */
   holdPut(key: string): () => void;
+  /**
+   * Hold the body of the next response `Cache.match` finds for `key` — a
+   * pathname, or a whole URL — until the function this hands back is called.
+   * The match answers at once, head and all, and every read of the body waits,
+   * a clone's included. The read half of `holdPut`'s slow disk, and how a test
+   * stops a worker between having an entry in hand and knowing what is in it.
+   * Once, which is the point: the match after that one reads as any other, so
+   * one reader's copy of an entry can be held while another reader of the same
+   * key goes on — a launch's read of the cached shell, say, while a collection
+   * reads the shell a refresh has published since.
+   */
+  holdRead(key: string): () => void;
+  /**
+   * Make the body of the next response `Cache.match` finds for `key` fail when
+   * it is read, with the storage error a refused match rejects with: the entry
+   * found, and the disk failing to hand it over. Once, as `holdRead` is, and
+   * for the same reason.
+   */
+  refuseRead(key: string): void;
   /**
    * Program `caches.open()` itself to reject — the whole CacheStorage
    * unavailable, which Safari does under storage pressure and in some private
@@ -687,6 +737,22 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
   const putRefusals = new Set<string>();
   /** Absolute entry hrefs whose `match` rejects. */
   const matchRefusals = new Set<string>();
+  /** Absolute entry hrefs whose next match hands back a body held until a test lets it go. */
+  const readHolds = new Map<string, Promise<void>>();
+  /** Absolute entry hrefs whose next match hands back a body that fails when read. */
+  const readRefusals = new Set<string>();
+  /** One `holdRead` or `refuseRead` is spent by the match that finds the entry. */
+  const reads = (url: string, found: Response): Response => {
+    const hold = readHolds.get(url);
+    if (hold) {
+      readHolds.delete(url);
+      return gated(found, () => hold);
+    }
+    if (readRefusals.delete(url)) {
+      return gated(found, () => Promise.reject(new DOMException("A storage error occurred.", "UnknownError")));
+    }
+    return found;
+  };
   /** Cache names whose `open` rejects; `"*"` is every name. */
   const openRefusals = new Set<string>();
   /** Whether `caches.keys()` rejects. */
@@ -901,6 +967,7 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
               void harness.puts.push(url.startsWith(origin) ? new URL(url).pathname : url),
             origin,
             (url: string) => putHolds.get(url),
+            reads,
           ),
         );
       },
@@ -1125,6 +1192,16 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
       void refusals.add(key.includes("/") ? new URL(key, origin).href : key),
     refusePut: (key) => void putRefusals.add(new URL(key, origin).href),
     refuseMatch: (key) => void matchRefusals.add(new URL(key, origin).href),
+    holdRead: (key) => {
+      const href = new URL(key, origin).href;
+      let release!: () => void;
+      readHolds.set(href, new Promise<void>((resolve) => (release = resolve)));
+      return () => {
+        readHolds.delete(href);
+        release();
+      };
+    },
+    refuseRead: (key) => void readRefusals.add(new URL(key, origin).href),
     refuseOpen: (name = "*") => void openRefusals.add(name),
     refuseKeys: () => void (keysRefused = true),
     refuseNavigate: (path) => void navigateRefusals.add(new URL(path, origin).href),

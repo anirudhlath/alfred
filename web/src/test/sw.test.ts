@@ -2682,6 +2682,72 @@ describe.skipIf(FIRED)("navigations", () => {
     expect(worker.keys()).toEqual([...record, ...second, typefaces[1], ...third].sort());
   });
 
+  it("keeps the files of a shell it served from the cache while that shell is still being read", async () => {
+    // What a launch was served is recorded when the match answers, not once
+    // its body has been read, and a collection that comes to it in between
+    // waits for the names. Recorded only once read, they are not there for
+    // that collection, which takes the files the page is about to ask for.
+    const worker = shell();
+    await worker.install();
+    await worker.activate();
+    const first = routeDeploy(worker, 1);
+    await worker.request({ path: "/", mode: "navigate" });
+    // A launch with no network — no route answers it — is served deploy 1's
+    // shell, and the disk is slow to hand over its body.
+    const letGo = worker.holdRead("/index.html");
+    const launch = await worker.request({ path: "/activity", mode: "navigate" });
+    for (const url of first) worker.hang(url);
+    // Deploy 2's refresh publishes its shell and collects meanwhile, given
+    // every chance to take deploy 1's files while the read is held.
+    routeDeploy(worker, 2);
+    const two = worker.dispatch({ path: "/", mode: "navigate" });
+    await two.responded;
+    await until(() => !worker.keys().includes(first[0]));
+    letGo();
+    await two.settled;
+    await expect(launch!.text()).resolves.toContain("deploy 1");
+    expect(worker.keys()).toEqual(
+      ["/__shell-manifest", "/index.html", ...SHELL_ASSETS, ...first, ...deployAssets(2)].sort(),
+    );
+    const [chunk, stylesheet] = first;
+    expect((await worker.request(fromPage(chunk)))!.status).toBe(200);
+    expect((await worker.request(fromPage(stylesheet, "style")))!.status).toBe(200);
+  });
+
+  it("keeps everything while the shell it last served will not read, until a launch replaces it", async () => {
+    // Which files that page will ask for is unknown, and a collection does not
+    // guess at what a shell it cannot read named: it keeps everything, as it
+    // does for any shell it cannot read. Not for ever — the next launch from
+    // the cache replaces what was served, and the collection after it takes
+    // what nothing names again.
+    const worker = shell();
+    await worker.install();
+    await worker.activate();
+    const first = routeDeploy(worker, 1);
+    await worker.request({ path: "/", mode: "navigate" });
+    // A file nothing names, which any collection that reads its shells takes.
+    worker.respond(LATE_FONT, font());
+    await worker.request(fromPage(LATE_FONT, "font"));
+    // A launch with no network is served deploy 1's shell, and the disk fails
+    // to hand over its body.
+    worker.refuseRead("/index.html");
+    await worker.request({ path: "/activity", mode: "navigate" });
+    const second = routeDeploy(worker, 2);
+    await worker.request({ path: "/", mode: "navigate" });
+    expect(worker.keys()).toEqual(
+      ["/__shell-manifest", "/index.html", ...SHELL_ASSETS, ...first, LATE_FONT, ...second].sort(),
+    );
+    // A launch served a shell that reads, and the next collection takes the
+    // rest.
+    const launch = await worker.request({ path: "/activity", mode: "navigate" });
+    await expect(launch!.text()).resolves.toContain("deploy 2");
+    const third = routeDeploy(worker, 3);
+    await worker.request({ path: "/", mode: "navigate" });
+    expect(worker.keys()).toEqual(
+      ["/__shell-manifest", "/index.html", ...SHELL_ASSETS, ...second, ...third].sort(),
+    );
+  });
+
   it("refreshes one navigation at a time, so a slow refresh is not collected under", async () => {
     // Two navigations close together, the first refresh still reading a slow
     // stylesheet when the second has published its shell. Run side by side,
