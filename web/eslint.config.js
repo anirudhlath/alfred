@@ -33,11 +33,14 @@ export default defineConfig([
       sourceType: 'script',
     },
     rules: {
-      // Rule 3 of sw.js's header: every global goes through `self.`, because
-      // that object is the entire world src/test/sw-harness.ts can replace.
-      // `no-undef` cannot enforce it — `globals.serviceworker` makes every one
-      // of these *defined*, so a single bare `caches.open(…)` would lint clean
-      // and quietly escape the fake scope. This is the only thing that says so.
+      // Rule 3 of sw.js's header: these ten globals go through `self.`,
+      // because that object is the entire world src/test/sw-harness.ts can
+      // replace. The language's own globals, and URL and Response, are reached
+      // bare and run for real in the tests; none of them reaches outside the
+      // worker. `no-undef` cannot enforce it — `globals.serviceworker` makes
+      // every one of these *defined*, so a single bare `caches.open(…)` would
+      // lint clean and quietly escape the fake scope. This is the only thing
+      // that says so.
       'no-restricted-globals': [
         'error',
         // Kept in step with SEALED in src/test/sw-harness.ts, which shadows the

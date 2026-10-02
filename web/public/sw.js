@@ -17,10 +17,15 @@
       cannot reach this origin in ten seconds, and never by one whose network is
       working; and the browser's own update check on /sw.js keeps running, which
       is what lets sw.kill.js land if this file ever has to be withdrawn.
-   3. Every global goes through `self.`. Valid in a worker, and the seam
-      src/test/sw-harness.ts hangs a fake scope on. eslint.config.js's
-      `no-restricted-globals` block is what enforces it; without that rule
-      `globals.serviceworker` makes a bare `caches` or `fetch` perfectly legal.
+   3. Ten globals go through `self.`: fetch, caches, clients, registration,
+      location, setTimeout, clearTimeout, AbortController, addEventListener
+      and skipWaiting. Valid in a worker, and the seam src/test/sw-harness.ts
+      hangs a fake scope on. eslint.config.js's `no-restricted-globals` block
+      is what enforces it; without that rule `globals.serviceworker` makes a
+      bare `caches` or `fetch` perfectly legal. The language's own globals —
+      Promise, JSON, Set, Array, Error, decodeURIComponent, undefined — and
+      URL and Response are reached bare: none of them reaches outside the
+      worker, and the tests run the real ones.
 */
 
 const VERSION = "v1";
@@ -630,10 +635,13 @@ async function purge() {
    — and anything else the next collection takes, which is usually the next
    online navigation's: a font only a superseded stylesheet names, a chunk a
    build splits out and loads on demand. That is the intended reading — what
-   the record and the shell name is what the phone needs offline, any other
-   runtime entry is re-fetchable, and the alternative is a cache with no
-   ceiling — but it is a decision the fetch handler inherits rather than
-   makes, so it is written down here.
+   the record and the shells name is what the phone needs offline, any other
+   runtime entry is re-fetchable online, and the alternative is a cache with
+   no ceiling — but it is a decision the fetch handler inherits rather than
+   makes, so it is written down here. Online is the condition: a chunk loaded
+   on demand is named by no HTML, so once a collection has taken it an
+   offline launch cannot load it. This build splits none out, and one that
+   does must add its lazy chunks to what a collection keeps.
 
    Note the window an install leaves: the new worker precaches into the cache
    the old one is still serving from, so from the end of install to activate
@@ -1153,8 +1161,24 @@ async function navigate(event) {
      later one collects what the earlier has written and not yet named, and the
      earlier can then publish its older shell over the later's, naming files
      that are gone. The copy waits its turn unread, holding what the page reads
-     until then — one HTML document. Each refresh's failure is swallowed where
-     it joins the queue, so one that fails does not stop those behind it. */
+     until then — one HTML document for each navigation in the queue. Each
+     refresh's failure is swallowed where it joins the queue, so one that fails
+     does not stop those behind it.
+
+     One that never settles stops them all: each navigation after it is served
+     as usual and keeps its event open, and no refresh behind it fetches a
+     thing. The network cannot do that — every fetch a refresh makes has a
+     deadline, and every body it reads `whole`'s ceilings — so it takes a cache
+     operation that never settles: a put, a match, a read of a cached body. It
+     lasts until the browser stops the worker over an event held open too long
+     — 309 s after the page was served, measured (see CEILING_MS) — and the
+     worker started again begins with nothing queued. Measured in the harness,
+     one refresh's shell put held and 29 navigations to newer deploys behind
+     it: all 30 events stayed open and no refresh behind it fetched; let go,
+     they ran in order to the latest deploy and left two deploys in the cache.
+     No timeout on the chain, and on purpose: a refresh given up on is still
+     running, and the next would run beside it — the hazard this queue exists
+     for. */
   const copy = response.clone();
   refreshing = refreshing.then(() => refresh(copy)).catch(() => {});
   event.waitUntil(refreshing);

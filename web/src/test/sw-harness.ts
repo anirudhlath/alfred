@@ -535,7 +535,7 @@ const SEALED = [
 
 const seal = (name: string): unknown => {
   const complain = (): never => {
-    throw new Error(`${name} was reached bare; every global in a worker goes through self.`);
+    throw new Error(`${name} was reached bare; a worker reaches it through self.${name}.`);
   };
   return new Proxy(function sealed() {} as object, { get: complain, apply: complain });
 };
@@ -648,9 +648,12 @@ interface FakeServiceWorker {
  * hand back the levers a test needs.
  *
  * `new Function("self", ...SEALED, source)` is the whole trick: the worker
- * reaches every global through `self.`, so one object is the entire world it
- * can see — and SEALED shadows the bare globals, so a worker that reaches past
- * `self.` meets a refusal rather than Node's real one. Nothing here is mocked at
+ * reaches the ten globals in SEALED — its network, storage, clients, timers
+ * and events among them — only through `self.`, so one object is all of the
+ * scope it can see; and SEALED shadows those ten bare, so a worker that
+ * reaches past `self.` meets a refusal rather than Node's real one. What it
+ * reaches bare is the language's own globals, and URL and Response: Node's
+ * real ones, which reach nothing outside the worker. Nothing here is mocked at
  * the module boundary — these tests run the bytes that ship.
  */
 export function loadWorker(source: string, options: LoadOptions = {}): Harness {
