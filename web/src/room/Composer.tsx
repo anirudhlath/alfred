@@ -1,5 +1,33 @@
 import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 
+/**
+ * The half-typed message, kept for the page's session so that a reload does not
+ * take it — the update note's `Reload` above all, whose "Nothing is lost; I pick
+ * up where we left off." would otherwise be false for whatever was in the field.
+ * `sessionStorage`, not `localStorage` like `alfred.unsent`: a queued message has
+ * been sent as far as the reader is concerned and must survive a cold launch, a
+ * draft has not and need not outlive the tab.
+ */
+const DRAFT_KEY = "alfred.draft";
+
+function readDraft(): string {
+  try {
+    return sessionStorage.getItem(DRAFT_KEY) ?? "";
+  } catch {
+    // Unavailable storage loses the draft across a reload, never the app.
+    return "";
+  }
+}
+
+function keepDraft(draft: string): void {
+  try {
+    if (draft) sessionStorage.setItem(DRAFT_KEY, draft);
+    else sessionStorage.removeItem(DRAFT_KEY);
+  } catch {
+    // Private mode or a full quota. The draft lives in this mount only.
+  }
+}
+
 export interface ComposerProps {
   online: boolean;
   onSend: (text: string) => void;
@@ -14,8 +42,13 @@ export interface ComposerProps {
  * house is unreachable is queued and retried, and a dead input would hide that.
  */
 export function Composer({ online, onSend, hold, handle }: ComposerProps) {
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(readDraft);
   const field = useRef<HTMLInputElement>(null);
+
+  function changeDraft(next: string): void {
+    setDraft(next);
+    keepDraft(next);
+  }
   /**
    * The field's own focus, not a measured keyboard. The shell is already the
    * visible band (lib/viewport.ts), so nothing here has to *position* around
@@ -32,7 +65,7 @@ export function Composer({ online, onSend, hold, handle }: ComposerProps) {
     const text = draft.trim();
     if (!text) return;
     onSend(text);
-    setDraft("");
+    changeDraft("");
     // The send button and the hold slot share one DOM node, so a click on
     // "Send" would otherwise leave focus on "hold to talk" — and drop the
     // keyboard. The next message starts in the field, like the last one did.
@@ -60,7 +93,7 @@ export function Composer({ online, onSend, hold, handle }: ComposerProps) {
         <input
           ref={field}
           value={draft}
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => changeDraft(event.target.value)}
           onKeyDown={onKeyDown}
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}

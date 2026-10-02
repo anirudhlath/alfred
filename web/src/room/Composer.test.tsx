@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Composer } from "./Composer";
 
 /** What a tap on the field does. `.focus()` is what fires React's `onFocus`. */
@@ -9,6 +9,13 @@ function focusField(): HTMLElement {
   act(() => field.focus());
   return field;
 }
+
+// A draft typed in one test and never sent is kept for the page, which every
+// test in this file shares. The real store first: one test replaces it.
+afterEach(() => {
+  vi.unstubAllGlobals();
+  sessionStorage.clear();
+});
 
 describe("Composer", () => {
   it("invites a message and offers the hold slot while empty", () => {
@@ -118,6 +125,64 @@ describe("Composer", () => {
     // Not disabled: the queue is the point. `useRoom` marks it unsent and retries.
     expect(field).toBeEnabled();
     expect(onSend).toHaveBeenCalledWith("Turn the hall light off");
+  });
+
+  it("keeps a half-typed message across a reload", async () => {
+    // The update note promises "Nothing is lost; I pick up where we left off."
+    // and its Reload is a page load: the field remounts with nothing in React.
+    const user = userEvent.setup();
+    const { unmount } = render(<Composer online onSend={() => {}} hold={null} />);
+    await user.type(screen.getByLabelText("Message Alfred"), "turn off the porch light at");
+    expect(sessionStorage.getItem("alfred.draft")).toBe("turn off the porch light at");
+
+    unmount();
+    render(<Composer online onSend={() => {}} hold={null} />);
+
+    expect(screen.getByLabelText("Message Alfred")).toHaveValue("turn off the porch light at");
+    expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
+  });
+
+  it("lets the draft go once it is sent, or emptied by hand", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(<Composer online onSend={() => {}} hold={null} />);
+    const field = screen.getByLabelText("Message Alfred");
+
+    await user.type(field, "Anything tomorrow?{Enter}");
+    expect(sessionStorage.getItem("alfred.draft")).toBeNull();
+
+    await user.type(field, "never mind");
+    await user.clear(field);
+    expect(sessionStorage.getItem("alfred.draft")).toBeNull();
+
+    unmount();
+    render(<Composer online onSend={() => {}} hold={null} />);
+    expect(screen.getByLabelText("Message Alfred")).toHaveValue("");
+  });
+
+  it("still takes a message when the page cannot keep one", async () => {
+    // Private mode, or a full quota: the draft lives for this mount only. The
+    // global itself is replaced — the `sessionStorage` a test sees here is not
+    // an instance of the global `Storage`, so a spy on its prototype reaches
+    // nothing.
+    const refuse = (name: string) => () => {
+      throw new DOMException("refused", name);
+    };
+    vi.stubGlobal("sessionStorage", {
+      getItem: refuse("SecurityError"),
+      setItem: refuse("QuotaExceededError"),
+      removeItem: refuse("SecurityError"),
+    });
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    render(<Composer online onSend={onSend} hold={null} />);
+    const field = screen.getByLabelText("Message Alfred");
+
+    await user.type(field, "Turn the hall light off");
+    expect(field).toHaveValue("Turn the hall light off");
+    await user.keyboard("{Enter}");
+
+    expect(onSend).toHaveBeenCalledWith("Turn the hall light off");
+    expect(field).toHaveValue("");
   });
 
   it("keeps the home-indicator inset while the field is idle", () => {
