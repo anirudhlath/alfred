@@ -30,7 +30,7 @@ import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, post } from "@/lib/api";
+import { api, ApiError, post } from "@/lib/api";
 import { authEvents } from "@/lib/auth-events";
 import { DEVICE_KEY } from "@/lib/auth";
 import { hhmm } from "@/lib/format";
@@ -61,6 +61,8 @@ let statusHeld = false;
 let statusReply: (() => Response) | null = null;
 /** When set, the house's network gate refuses this phone: registration answers 403. */
 let offNetwork = false;
+/** When set, the house's session gate finds no session: the sessions read answers 401. */
+let sessionLapsed = false;
 /** Reads the test is holding in flight, each waiting for `answerHeld`. */
 const held: Array<() => void> = [];
 /** Disconnected after each test; see `watchFor`. */
@@ -98,6 +100,9 @@ function stubFetch(): void {
         return new Response('{"detail":"Request from untrusted network 192.168.1.24"}', {
           status: 403,
         });
+      }
+      if (sessionLapsed && url === "/api/auth/sessions") {
+        return new Response('{"detail":"Authentication required"}', { status: 401 });
       }
       if (url === "/api/integrations") return new Response("[]", { status: 200 });
       if (url === "/api/admin/attention") return new Response('{"domains":[]}', { status: 200 });
@@ -143,6 +148,7 @@ beforeEach(() => {
   statusHeld = false;
   statusReply = null;
   offNetwork = false;
+  sessionLapsed = false;
   held.length = 0;
   socketConnects.length = 0;
   loginPasskeyMock.mockReset().mockResolvedValue(undefined);
@@ -359,6 +365,23 @@ describe("AuthGate routing", () => {
     expect(denials()).toBe(0);
   });
 
+  it("keeps the room, with no lapsed-session gate, when a background read of the status meets a 401", async () => {
+    // The route answers "not authenticated" with a 200, never a 401, so its 401
+    // is not the house saying the session lapsed: a failed refetch, as above. A
+    // lapse the house does see arrives as that 200, or as another read's 401.
+    const { client } = renderGate();
+    await screen.findByText("the room");
+    const lapses = watchFor("Your session lapsed.");
+
+    statusReply = () => new Response('{"detail":"Unauthorized"}', { status: 401 });
+    await act(() => client.invalidateQueries({ queryKey: ["auth-status"] }));
+    await waitFor(() => expect(client.getQueryState(["auth-status"])?.status).toBe("error"));
+    await tick();
+
+    expect(screen.getByText("the room")).toBeInTheDocument();
+    expect(lapses()).toBe(0);
+  });
+
   it("signs in with the passkey and reveals the room", async () => {
     const user = userEvent.setup();
     status = { registered: true, authenticated: false };
@@ -493,6 +516,22 @@ describe("AuthGate events", () => {
     await act(() => post("/api/auth/register/begin", {}).catch(() => undefined));
 
     expect(await screen.findByRole("heading", { name: "Not from here." })).toBeInTheDocument();
+  });
+
+  it("raises the lapsed-session gate for a 401 from a session-gated read, as api() announces it", async () => {
+    // The other half of the status read's exemption for its 401 (in "AuthGate
+    // routing"): the house's session gate sends this one, so the session has
+    // really lapsed — and the gate rises over the room, which stays beneath it.
+    sessionLapsed = true;
+    renderGate();
+    await screen.findByText("the room");
+
+    await act(() => api("/api/auth/sessions").catch(() => undefined));
+
+    expect(
+      await screen.findByRole("heading", { name: "Your session lapsed." }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("the room")).toBeInTheDocument();
   });
 });
 
@@ -751,8 +790,9 @@ describe("AuthGate when the house does not answer", () => {
   });
 
   it("raises no lapsed-session gate for a 401, and claims no session", async () => {
-    // `api()` announces a 401 as a lapsed session; with nothing ever read there
-    // is no session to have lapsed, and the gate drops the news at once.
+    // Never the house's on this route either (see above): it answers "not
+    // authenticated" with a 200. `api()` does not announce this 401 as a lapsed
+    // session, and with nothing read there was no session to lapse.
     statusReply = () => new Response('{"detail":"Unauthorized"}', { status: 401 });
     const signIns = watchForSignIn();
     renderGate(appClient());

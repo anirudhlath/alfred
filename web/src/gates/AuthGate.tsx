@@ -64,8 +64,8 @@ export function AuthGate({ children }: { children: ReactNode }) {
   // online has failed: the house did not answer. No such failure is the house
   // saying who you are: `fetchAuthStatus` lets only its 200 through, and
   // `auth_status` (core/identity/auth_routes.py) sends no 4xx of its own — a
-  // 401 or 403 there is a proxy's, and `api()` does not announce that 403 (the
-  // full mapping is in docs/web-frontend.md, "The gates"). So it routes here,
+  // 401 or 403 there is a proxy's, and `api()` announces neither (the full
+  // mapping is in docs/web-frontend.md, "The gates"). So it routes here,
   // never to sign-in or setup. The gate stays up while the next read is asked,
   // its button held, rather than dropping to the field each time.
   const unanswered = unread && online && errorUpdateCount > 0 && !reasking;
@@ -153,8 +153,9 @@ export function AuthGate({ children }: { children: ReactNode }) {
   // The two event gates sit outside the routing: `denied` means "not from this
   // network", which is as true on the setup and sign-in gates as in the room —
   // and setup swallows its 403s on the promise that this gate has already said
-  // it. `api()` announces it for every 403 but the status read's: that route has
-  // no network gate, so its 403 never means this.
+  // it. `api()` announces neither event for the status read: its route has no
+  // network gate and answers a signed-out session with a 200, so its 401 or 403
+  // never means either.
   return (
     <>
       {body}

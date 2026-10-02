@@ -61,15 +61,18 @@ const isPasskeyAttempt = (path: string): boolean =>
 export const AUTH_STATUS_PATH = "/api/auth/status";
 
 /**
- * The status read is the one request the house's network gate never refuses:
- * its route has none (`auth_status`, core/identity/auth_routes.py, on a router
- * with no dependencies). So a 403 there came from something in front of the
- * house — a proxy, a WAF, a Cloudflare challenge — and the denied gate's "not
- * from here" would be a claim nobody made. Unannounced, it is a failed read
- * like any other: `AuthGate`, the only listener, shows the unanswered gate
- * while nothing has been read, and keeps the last answer once something has.
- * If the route ever gains a network gate, its 403 becomes the house's answer:
- * revisit this then.
+ * The status read is the one request neither gate event can be the house's
+ * answer to. Its route (`auth_status`, core/identity/auth_routes.py, on a router
+ * with no dependencies) has no network gate, so it sends no 403, and it answers
+ * a signed-out session with a 200, so it sends no 401. Either status came from
+ * something in front of the house — a proxy, a WAF, a Cloudflare challenge —
+ * and "not from here" or "your session lapsed" would be a claim nobody made.
+ * Unannounced, it is a failed read like any other: `AuthGate`, the only
+ * listener, shows the unanswered gate while nothing has been read, and keeps
+ * the last answer once something has. A session that really lapses still says
+ * so: the status answers `authenticated: false`, and every other read's 401 is
+ * announced. If the route ever gains a network gate, or sends a 401 of its own,
+ * that status becomes the house's answer: revisit this then.
  */
 const isStatusRead = (path: string): boolean => path === AUTH_STATUS_PATH;
 
@@ -83,8 +86,11 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     const detail = await readDetail(resp);
     // Announce, never navigate: the gate rises over whatever is on screen, so the
     // last-known state stays visible behind it (spec §5.2, "live is not last-known").
-    if (resp.status === 401 && !isPasskeyAttempt(path)) authEvents.emit("expired");
-    if (resp.status === 403 && !isStatusRead(path)) authEvents.emit("denied");
+    // Never for the status read, whose route sends neither status itself.
+    if (!isStatusRead(path)) {
+      if (resp.status === 401 && !isPasskeyAttempt(path)) authEvents.emit("expired");
+      if (resp.status === 403) authEvents.emit("denied");
+    }
     throw new ApiError(resp.status, detail || resp.statusText);
   }
 

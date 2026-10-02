@@ -129,12 +129,24 @@ describe("api", () => {
     expect(denied).toHaveBeenCalledTimes(1);
   });
 
-  it("still announces a 401 on the status read: only its 403 is exempt", async () => {
+  it("does not announce a lapsed session for the status read, which sends no 401 of its own", async () => {
+    // `auth_status` answers "not authenticated" with a 200, never a 401, so its
+    // 401 comes from something in front of the house too.
     const expired = vi.fn();
     listen("expired", expired);
     stubFetch(401, { detail: "Unauthorized" });
 
     await expect(api("/api/auth/status")).rejects.toMatchObject({ status: 401 });
+
+    expect(expired).not.toHaveBeenCalled();
+  });
+
+  it("still announces a 401 from its session-gated neighbours under /api/auth/", async () => {
+    const expired = vi.fn();
+    listen("expired", expired);
+    stubFetch(401, { detail: "Authentication required" });
+
+    await expect(api("/api/auth/sessions")).rejects.toMatchObject({ status: 401 });
 
     expect(expired).toHaveBeenCalledTimes(1);
   });
