@@ -100,8 +100,9 @@ describe("Gate", () => {
 
   it("holds the primary while busy and says so, without taking it out of reach", async () => {
     // `aria-disabled` and a press that does nothing, never `disabled` — see the
-    // secondary's test below. Still ink on paper: a busy button is answering
-    // the press it took, not unavailable.
+    // secondary's test below. Painted as an unavailable primary is: busy looking
+    // like idle left Sign in, which has no secondary, with nothing to show the
+    // press was taken. `aria-busy` is what tells the two holds apart.
     const user = userEvent.setup();
     const onClick = vi.fn();
     render(<Gate kicker="k" title="t" primary={{ label: "Continue", onClick, busy: true }} />);
@@ -110,7 +111,12 @@ describe("Gate", () => {
     expect(button).toHaveAttribute("aria-disabled", "true");
     expect(button).toHaveAttribute("aria-busy", "true");
     expect(button).not.toBeDisabled();
-    expect(button).toHaveStyle({ background: "var(--ink)", color: "var(--paper)" });
+    expect(button).toHaveStyle({
+      background: "var(--surface)",
+      color: "var(--fg2)",
+      boxShadow: "inset 0 0 0 1px var(--muted)",
+    });
+    expect(button.className).not.toMatch(/opacity/);
     await user.click(button);
     expect(onClick).not.toHaveBeenCalled();
   });

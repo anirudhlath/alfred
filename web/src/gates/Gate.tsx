@@ -5,10 +5,12 @@ import { GateField } from "@/gates/GateField";
  * Neither button is ever given a native `disabled`. A held button is
  * `aria-disabled`, its press does nothing (the click handler checks, because
  * `aria-disabled` stops no event), and it is dimmed by token, never by opacity
- * (`docs/web-frontend.md`, "The rules this phase's reviews kept enforcing").
- * `disabled` would throw focus to `<body>` from under the finger that just
- * pressed the button, and every primary a gate passes here goes busy on its
- * own press.
+ * (`docs/web-frontend.md`, "The rules this phase's reviews kept enforcing"):
+ * a held primary, busy or unavailable, takes one look — a `--surface` fill, an
+ * `--fg2` label and an inset `--muted` edge — and only `aria-busy` tells the
+ * two apart; a held secondary dims its label to `--fg2`. `disabled` would
+ * throw focus to `<body>` from under the finger that just pressed the button,
+ * and every primary a gate passes here goes busy on its own press.
  */
 
 export interface GateAction {
@@ -23,8 +25,11 @@ export interface GateAction {
    */
   disabled?: boolean;
   /**
-   * Its request is in flight. `aria-busy` as well, and still ink on paper: a
-   * busy button is answering the press it took, not unavailable.
+   * Its request is in flight: held, and painted as `disabled` paints it. The
+   * change of look is what shows the press was taken — Sign in and Expired
+   * have no secondary to say so, and setup's credential write has no deadline
+   * — and the handoff draws no busy state to use instead. `aria-busy` as well,
+   * which is what tells assistive tech busy from unavailable.
    */
   busy?: boolean;
 }
@@ -35,7 +40,7 @@ export interface GateSecondaryAction extends Omit<GateAction, "busy" | "disabled
    * is in flight. Held as `waiting` holds it — `aria-disabled`, a press that
    * does nothing, the label at `--fg2` — but without `aria-busy`, since nothing
    * of this action's own is in flight. No fill and no edge: this is a text
-   * button, not the primary's unavailable state.
+   * button, and those belong to a held primary.
    */
   disabled?: boolean;
   /**
@@ -92,8 +97,7 @@ export function Gate({
     if (focusTitle) heading.current?.focus();
   }, [focusTitle]);
 
-  const primaryUnavailable = primary?.disabled === true;
-  const primaryHeld = primaryUnavailable || primary?.busy === true;
+  const primaryHeld = primary?.disabled === true || primary?.busy === true;
   const secondaryHeld = secondary?.disabled === true || secondary?.waiting === true;
 
   return (
@@ -154,7 +158,7 @@ export function Gate({
             aria-busy={primary.busy === true ? true : undefined}
             className="h-14 rounded-[28px] border-0 text-[16px] font-medium"
             style={
-              primaryUnavailable
+              primaryHeld
                 ? {
                     background: "var(--surface)",
                     color: "var(--fg2)",

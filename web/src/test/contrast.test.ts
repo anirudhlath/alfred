@@ -128,10 +128,11 @@ describe("contrast ratios", () => {
       expect(contrast(token(theme, "fg2"), token(theme, "bg"))).toBeGreaterThanOrEqual(4.5);
     });
 
-    it(`${theme}: a gate's unavailable primary still reads, and can still be found`, () => {
-      // The handoff draws no unavailable state for a gate's buttons, so `Gate`'s
-      // is the house's own: an --fg2 label on a --surface fill, edged with an
-      // inset 1 px --muted line. The label is text, so 4.5:1.
+    it(`${theme}: a gate's held primary still reads, and can still be found`, () => {
+      // The handoff draws no unavailable or busy state for a gate's buttons, so
+      // `Gate`'s is the house's own, one look for both: an --fg2 label on a
+      // --surface fill, edged with an inset 1 px --muted line. The label is
+      // text, so 4.5:1.
       expect(contrast(token(theme, "fg2"), token(theme, "surface"))).toBeGreaterThanOrEqual(4.5);
       // The edge is the control's outermost pixel, so it is the boundary 1.4.11
       // asks 3:1 of against the page.
