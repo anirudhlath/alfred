@@ -6,10 +6,10 @@ decisions it took knowingly, and what the worker, the update note and the two ne
 found while being built and reviewed. The architecture they refer to is
 `docs/web-frontend.md`, "The service worker" and "The gates".
 
-Every claim below was re-checked against the tree at `c49e66d`, and every byte figure
-names that commit. Where the plan's task 13 list turned out to be wrong, this file says
-what the code does, not what the plan expected; "Where the plan was stale" at the end is
-the index.
+Every claim in §1 to §13 was re-checked against the tree at `c49e66d`, and every byte
+figure names that commit; §14 and §15 came out of task 12b's review round and were checked
+at `13648ec`. Where the plan's task 13 list turned out to be wrong, this file says what the
+code does, not what the plan expected; "Where the plan was stale" at the end is the index.
 
 One cost runs under several entries, so it is stated once here: **any byte change to
 `web/public/sw.js` — a comment included — installs a new worker on every phone** at its
@@ -236,6 +236,103 @@ check is "below 3.5 kB/s" either way), and `web/README.md` dates its own figures
 
 **Acceptance:** reworded to name the build they were measured on — and only alongside a
 real change to `sw.js`, never as a change of its own (see the top of this file).
+
+## 14. A proxy's 403 still raises the denied gate on every route but the status read
+
+`api()` (`web/src/lib/api.ts`) announces `denied` for every 403, and has since phase 1
+(`a630156`). Rulings R17 and R18 exempted one route, the status read, because no 403 or 401
+there is ever the house's. The Room's reads are no different: none of them sits behind the
+network gate either. So mid-session, a Cloudflare challenge served as a 403 on every
+`/api/*` raises `DeniedGate` over the Room. Its "not from here" is wrong: the house refused
+nothing, and the phone's network is not the problem.
+
+Measured in Chromium (headless shell 153) on the task-12b rig, built from `13648ec`. With
+the Room up, every `/api/*` was made to answer a challenge-shaped 403: the header
+`cf-mitigated: challenge`, and a "Just a moment..." page. A return to the foreground then
+raised `DeniedGate` over the Room 5 ms later. It came from the Room's own reads: the
+overview, the four stream reads and the pending actions. The status read met the same 403
+in that refetch, and R17 exempts it.
+
+In `core/` the house sends a 403 from two places, and only two:
+
+- **The network gate.** `require_trusted_network` (`core/channels/web_server.py:241-267`)
+  answers `{"detail": "Access restricted to trusted networks"}` for a peer that is not an
+  IP address. For an untrusted IP address the detail is
+  `Access restricted to trusted networks: <ip> is not trusted.`, and an authenticated
+  caller gets a sentence of guidance after it. The gate guards seven routes:
+  - Five through `_CREDENTIAL_GATES` (`web_server.py:441`, the network gate before the
+    session gate):
+    - `PUT` and `DELETE /api/integrations/{name}/credentials` (`:660-662`, `:680-682`);
+    - `POST /api/voice/enroll` (`:896-898`);
+    - `POST` and `DELETE /api/devices/register` (`:915-917`, `:935-937`).
+  - Two through `_registration_gate` (`core/identity/auth_routes.py:420-445`), when no
+    pairing code is presented: `POST /api/auth/register/begin` (`:453-457`) and
+    `POST /api/auth/register/complete` (`:497-500`).
+- **The pairing check.** `_registration_gate` itself answers
+  `{"detail": "Invalid or expired pairing code"}` (`_PAIRING_INVALID_DETAIL`,
+  `auth_routes.py:67`, raised at `:440` and `:442`) for a malformed or wrong
+  `X-Pairing-Code`. That refusal is the house's own, but it says nothing about the
+  network. The PWA sends no `X-Pairing-Code` today, so this 403 cannot arrive yet.
+
+**Acceptance:** `api()` announces `denied` only for the network gate's own 403, decided in
+one of two ways:
+
+- **By the body.** The 403's `detail` starts with
+  `Access restricted to trusted networks`. That is the house's own sentence, so the
+  client keeps one string in step with `require_trusted_network`, and a route that gains
+  or loses the gate needs no change. A test on each side pins the prefix.
+- **By the route.** An allowlist of the seven routes above, by method and path. There is
+  nothing to parse. But the list has to follow every route that gains or loses the gate,
+  and a proxy's 403 on one of those seven routes is still announced.
+
+Either way, two things follow:
+
+- `SetupGate` returns without a word on any 403 (`web/src/gates/SetupGate.tsx:144-146`,
+  `:162`, `:194`), on the promise that the denied gate has already said it. It must
+  swallow only the 403s `api()` announced, or a proxy's 403 there says nothing at all.
+- The pairing-code 403 gets a decision on what it shows, before any client sends the
+  header.
+
+Tests: `api.test.ts` pins both halves — the network gate's 403 announced, and a
+challenge's 403 on a Room read not announced. `AuthGate.test.tsx` shows that a background
+Room read meeting a challenge raises no denied gate. The mid-session challenge above is
+re-measured in Chromium, and shows the Room with no denied gate.
+
+## 15. `Try again` cannot get past a Cloudflare challenge
+
+**Unmeasured.** This is reasoned from the code and from Cloudflare's documentation. No
+device has met a challenge. The task-12b rig's challenge reproduces only the response's
+shape, not a challenge's script or the clearance cookie a solved challenge leaves.
+
+Cloudflare documents that a challenge page carries `cf-mitigated: challenge`, whatever its
+type. It also documents that the mechanism "fails when the browser expects a non-HTML
+response, such as an AJAX or XHR (fetch) request": a challenge is solved by a page the
+browser renders. Every way the unanswered gate asks again is a `fetch()` of
+`/api/auth/status`: its `Try again`, its re-ask on each return to the foreground, and
+react-query's own refetches. Each one meets the same challenge, so the gate stays up for as
+long as the challenge stands. Its button keeps working and changes nothing.
+
+Only a navigation shows the challenge. The worker's `navigate()`
+(`web/public/sw.js:989-1017`) passes any answer through, and serves the cached shell only
+when the fetch rejects or runs out of time. So the challenge page reaches the screen, and
+once it is solved it reloads the app with the clearance cookie set. On iOS, in the
+installed app, that navigation is a cold launch: coming back through the app switcher
+resumes the page where it was, and a home-screen app has no reload control. Mid-session,
+the same challenge raises `DeniedGate` over the Room (§14). Dismissing it leaves the Room,
+whose next read raises it again.
+
+**Acceptance:** first, the measurement. Force a challenge on the app's hostname, behind the
+real proxy (a WAF custom rule with the Managed Challenge action, say). Then record on the
+device what `Try again` does, what a return to the foreground does, and what a cold launch
+shows, as a step in the phase-4 device checklist. If `Try again` cannot pass the challenge:
+
+- `ApiError` keeps the response's `cf-mitigated` header.
+- When the status read's failure carries `cf-mitigated: challenge`, the unanswered gate's
+  `Try again` reloads the page (`location.reload()`) instead of asking again. The browser
+  then renders the challenge, and returns to the app cleared.
+- Tests in `AuthGate.test.tsx` pin the reload, and a Chromium measurement shows it.
+
+Any copy that names the challenge is the owner's to sign off.
 
 ---
 
