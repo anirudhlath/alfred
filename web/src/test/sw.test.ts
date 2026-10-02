@@ -812,9 +812,9 @@ describe.skipIf(FIRED)("install, and the fonts", () => {
     // text `url(` twice, but both are a zero-argument method of that name in the
     // WebSocket client and the regex captures neither — so the rule rests on
     // what a bundle IS, not on that: any library that injects styles at runtime
-    // carries @font-face rules inside it, and reading 414 kB into a string to
-    // find out costs the install and returns nothing. The planted rule below is
-    // the shape that would be taken.
+    // carries @font-face rules inside it, and reading the entry chunk into a
+    // string to find out costs the install and returns nothing. The planted
+    // rule below is the shape that would be taken.
     worker.respond(
       "/assets/index-CY0Sh5Q2.js",
       js('const s="@font-face{src:url(/assets/ghost-D3adB33f.woff2)}";'),
@@ -902,11 +902,11 @@ describe.skipIf(FIRED)("install, and the network that never answers", () => {
     ["the stylesheet", SHELL_ASSETS[1], "text/css", SHELL_CSS],
     ["a font", SHELL_FONTS[0], "font/woff2", "woff2".repeat(4)],
   ])("installs %s arriving slowly, for as long as it keeps arriving", async (_name, path, type, body) => {
-    // Measured in Chromium: this build's 414 kB entry chunk at 32 KiB/s is
-    // 12.6 s of steady progress, and a deadline on the whole body failed that
-    // install at 10.0 s — on a first visit, and on every visit after it, since
-    // a failed install leaves no worker and the next load starts the precache
-    // again. A deadline is for a stall, and this is not one: ten pieces 1.26 s
+    // Measured in Chromium: the 414 kB entry chunk of `6dabc43`'s build at
+    // 32 KiB/s is 12.6 s of steady progress, and a deadline on the whole body
+    // failed that install at 10.0 s — on a first visit, and on every visit
+    // after it, since a failed install leaves no worker and the next load
+    // starts the precache again. A deadline is for a stall, and this is not one: ten pieces 1.26 s
     // apart, every one of them inside the deadline and the body as a whole
     // well past it.
     const worker = withFonts();

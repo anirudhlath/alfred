@@ -62,11 +62,11 @@ const ASSETS = "/assets/";
    answer, and each piece of its body this long to follow the last. So a stall
    is noticed this long after the last byte, wherever it happens, and a phone on
    a slow link that is still working is waited for while it keeps working — up
-   to CEILING_MS, below, which no working link reaches. A total of THIS length
-   on the body is what failed this build's 414 kB entry chunk at 32 KiB/s,
-   12.6 s of steady progress, at 10.0 s — measured in Chromium, on a first
-   visit, and on every visit after it, since a failed install leaves no worker
-   and the next load starts the whole precache over.
+   to CEILING_MS, below, which only a GPRS-class link reaches. A total of THIS
+   length on the body is what failed the 414 kB entry chunk of `6dabc43`'s
+   build at 32 KiB/s, 12.6 s of steady progress, at 10.0 s — measured in
+   Chromium, on a first visit, and on every visit after it, since a failed
+   install leaves no worker and the next load starts the whole precache over.
    What a stall costs is this, once: in the shell or a chunk it fails the
    install there and then, and in a font it costs that font and the install
    carries on. */
@@ -84,19 +84,22 @@ const TIMEOUT_MS = 10000;
    after the page had been served.
 
    Two minutes, and generous on purpose. The largest body this worker reads is
-   the entry chunk, about 415 kB, and it reaches the ceiling only on a link
-   slower than 3.5 kB/s — about 28 kbit/s, sustained from the first byte to
-   the last: a GPRS-class link, on which the page's own load of that chunk
-   takes two minutes as well. Anything faster finishes inside it. And it ends
+   the entry chunk, and it reaches the ceiling only on a link slower than
+   3.5 kB/s — about 28 kbit/s, sustained from the first byte to the last: a
+   GPRS-class link, on which the page's own load of that chunk takes two
+   minutes as well. Anything faster finishes inside it. And it ends
    well inside the browser's 300 s, so a body that will not finish is let go
    here — released, and turned into the same rejection a stall is — rather
    than held until the browser tears the event down. It is per body, not per
-   event, and an event reads its bodies one after another, so an event whose
-   every body crawled could still meet the browser's limit first. What it
-   costs, on a link that slow: the install fails, as it does on a stall, and a
-   refresh keeps the shell it has. That phone loses a new offline copy and
-   never a page: a copy of the page's own response is the worker's to give up,
-   and the page reads its own to the end, as it would with no worker at all. */
+   event, and an event reads its bodies one after another, so three bodies that
+   each run near the ceiling outlast the browser's 300 s. Install is where it
+   bites: a font cut at the ceiling is skipped rather than failing the install,
+   so three fonts trickling to the ceiling take 360 s and the browser fails the
+   install at 300. What it costs, on a link that slow: the install fails, as it
+   does on a stall, and a refresh keeps the shell it has. That phone loses a
+   new offline copy and never a page: a copy of the page's own response is the
+   worker's to give up, and the page reads its own to the end, as it would with
+   no worker at all. */
 const CEILING_MS = 120000;
 
 /* Two shapes of deadline, and which one a call gets is not a style choice.
@@ -164,18 +167,18 @@ function release(response) {
    tees the stream, and the branch nobody has read yet is handed every chunk
    the other one pulls: once the clone is whole, so is the original, in memory,
    and the put that reads it never touches the network. The price is the body
-   held twice while that happens — 414 kB for this build's entry chunk.
+   held twice while that happens — the entry chunk's, at most.
 
    The deadline is on each READ, not on the body, and that is the whole of the
    difference between a stall and a slow link. One deadline over the whole
-   body, as this once had, cannot tell them apart: it failed a 414 kB chunk
+   body, as this once had, cannot tell them apart: it failed that 414 kB chunk
    arriving steadily at 32 KiB/s (see TIMEOUT_MS). And every read, the first
    included — a body that never sends a byte is a stall too — through to the
    one that finds the end: a body that sends some and then stops is a stall
    as well, and a read of one piece would have called it whole and handed the
    put a stream that never finishes. Over all the reads is the ceiling, armed
-   when this starts — the headers are in by then — which no working link
-   reaches and a body still trickling at the end of it does (see CEILING_MS).
+   when this starts — the headers are in by then — which only a GPRS-class
+   link reaches (see CEILING_MS).
 
    A body that loses either race is CANCELLED, not left running: the clone's
    reader, and the original's body through `release`, which is every branch of
@@ -367,7 +370,7 @@ function assetsInHtml(html) {
 
    `.woff2` last, and it is a narrower question than the others — about
    browsers, not about what may be stored. @fontsource ships a `.woff` beside
-   four of these faces and for six more it is the only file (10 in all, 80 944 of
+   six of these faces and for four more it is the only file (10 in all, 80 944 of
    this build's 220 380 font bytes), and everything that can run a service worker
    has supported woff2 for years: a `.woff` is dead weight ALWAYS, whoever is
    reading. `endsWith`, not `includes`, so a `x.woff2.br` sidecar from a
@@ -477,11 +480,11 @@ async function precache() {
 
   /* The stylesheet only. A bundle is not a list of what the app needs offline:
      any library that injects styles carries @font-face rules inside it, and
-     reading 414 kB of minified JavaScript into a string to regex it is a cost
-     with no return. (This build's chunk does contain the text `url(` twice, but
-     both are a zero-argument method of that name in the WebSocket client, so
-     the regex captures nothing from it — the rule stands on its own, not on
-     that measurement.)
+     reading the entry chunk's minified JavaScript into a string to regex it is
+     a cost with no return. (This build's chunk does contain the text `url(`
+     twice, but both are a zero-argument method of that name in the WebSocket
+     client, so the regex captures nothing from it — the rule stands on its
+     own, not on that measurement.)
 
      Read with no deadline of its own, and that is not an oversight: `whole`
      has already read this body to the end, every piece of it inside one, so
