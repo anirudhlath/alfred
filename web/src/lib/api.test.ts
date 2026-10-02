@@ -107,6 +107,38 @@ describe("api", () => {
     expect(denied).toHaveBeenCalledTimes(1);
   });
 
+  it("does not announce a refused network for the status read, which no network gate guards", async () => {
+    // `auth_status` (core/identity/auth_routes.py) has no network gate, so its
+    // 403 comes from something in front of the house, never from the house.
+    const denied = vi.fn();
+    listen("denied", denied);
+    stubFetch(403, { detail: "Forbidden" });
+
+    await expect(api("/api/auth/status")).rejects.toMatchObject({ status: 403 });
+
+    expect(denied).not.toHaveBeenCalled();
+  });
+
+  it("still announces a 403 from its network-gated neighbours under /api/auth/", async () => {
+    const denied = vi.fn();
+    listen("denied", denied);
+    stubFetch(403, { detail: "Request from untrusted network 192.168.1.24" });
+
+    await expect(post("/api/auth/register/begin", {})).rejects.toMatchObject({ status: 403 });
+
+    expect(denied).toHaveBeenCalledTimes(1);
+  });
+
+  it("still announces a 401 on the status read: only its 403 is exempt", async () => {
+    const expired = vi.fn();
+    listen("expired", expired);
+    stubFetch(401, { detail: "Unauthorized" });
+
+    await expect(api("/api/auth/status")).rejects.toMatchObject({ status: 401 });
+
+    expect(expired).toHaveBeenCalledTimes(1);
+  });
+
   it("does not announce anything for other failures", async () => {
     const expired = vi.fn();
     const denied = vi.fn();

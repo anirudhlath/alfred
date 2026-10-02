@@ -30,7 +30,7 @@ import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError } from "@/lib/api";
+import { ApiError, post } from "@/lib/api";
 import { authEvents } from "@/lib/auth-events";
 import { DEVICE_KEY } from "@/lib/auth";
 import { hhmm } from "@/lib/format";
@@ -59,6 +59,8 @@ let statusUnreachable = false;
 let statusHeld = false;
 /** When set, something other than the house answers the status read, with this. */
 let statusReply: (() => Response) | null = null;
+/** When set, the house's network gate refuses this phone: registration answers 403. */
+let offNetwork = false;
 /** Reads the test is holding in flight, each waiting for `answerHeld`. */
 const held: Array<() => void> = [];
 /** Disconnected after each test; see `watchFor`. */
@@ -91,6 +93,11 @@ function stubFetch(): void {
         if (statusReply) return statusReply();
         if (statusDown) return new Response("Internal Server Error", { status: 500 });
         return new Response(JSON.stringify(status), { status: 200 });
+      }
+      if (offNetwork && url.startsWith("/api/auth/register/")) {
+        return new Response('{"detail":"Request from untrusted network 192.168.1.24"}', {
+          status: 403,
+        });
       }
       if (url === "/api/integrations") return new Response("[]", { status: 200 });
       if (url === "/api/admin/attention") return new Response('{"domains":[]}', { status: 200 });
@@ -135,6 +142,7 @@ beforeEach(() => {
   statusUnreachable = false;
   statusHeld = false;
   statusReply = null;
+  offNetwork = false;
   held.length = 0;
   socketConnects.length = 0;
   loginPasskeyMock.mockReset().mockResolvedValue(undefined);
@@ -312,7 +320,8 @@ describe("AuthGate routing", () => {
     // The house's own 500: its credential store failed, so it could not say
     // who you are. Mounting the room would show an empty house as the truth,
     // and the sign-in gate would say "signed out", which the house never said.
-    // Nothing but the house's 200 reaches either; see the next describe.
+    // Nothing but the house's 200 reaches either; see "AuthGate when the house
+    // does not answer" below.
     statusDown = true;
     renderGate();
     expect(await screen.findByRole("heading", { name: UNANSWERED })).toBeInTheDocument();
@@ -332,6 +341,22 @@ describe("AuthGate routing", () => {
     await act(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
     expect(screen.getByText("the room")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Welcome back, sir." })).toBeNull();
+  });
+
+  it("keeps the room, with no denied gate, when a background read of the status meets a 403", async () => {
+    // No network gate guards the status read, so its 403 is not the house
+    // refusing this network: a failed refetch, which keeps the last answer.
+    const { client } = renderGate();
+    await screen.findByText("the room");
+    const denials = watchFor("Not from here.");
+
+    statusReply = () => new Response('{"detail":"Forbidden"}', { status: 403 });
+    await act(() => client.invalidateQueries({ queryKey: ["auth-status"] }));
+    await waitFor(() => expect(client.getQueryState(["auth-status"])?.status).toBe("error"));
+    await tick();
+
+    expect(screen.getByText("the room")).toBeInTheDocument();
+    expect(denials()).toBe(0);
   });
 
   it("signs in with the passkey and reveals the room", async () => {
@@ -455,6 +480,19 @@ describe("AuthGate events", () => {
       expect(screen.queryByRole("heading", { name: "Not from here." })).toBeNull(),
     );
     expect(screen.getByText("the room")).toBeInTheDocument();
+  });
+
+  it("raises the denied gate for a 403 from a network-gated route, as api() announces it", async () => {
+    // The other half of the status read's exemption (its 403, in "AuthGate when
+    // the house does not answer"): registration is network-gated, so its 403 is
+    // the house's own refusal of this network.
+    offNetwork = true;
+    renderGate();
+    await screen.findByText("the room");
+
+    await act(() => post("/api/auth/register/begin", {}).catch(() => undefined));
+
+    expect(await screen.findByRole("heading", { name: "Not from here." })).toBeInTheDocument();
   });
 });
 
@@ -690,16 +728,24 @@ describe("AuthGate when the house does not answer", () => {
     expect(signIns()).toBe(0);
   });
 
-  it("keeps the denied path for a 403, over a gate that claims no session", async () => {
-    // Never the house's on this route (see above), so a proxy's refusal. `api()`
-    // announces it as it announces every 403, and the denied gate rises; the
-    // gate beneath it says what is true of the session, which is nothing.
-    statusReply = () => new Response('{"detail":"Forbidden"}', { status: 403 });
+  it("shows the unanswered gate alone for a 403, which this route never sends", async () => {
+    // Never the house's on this route (see above): no network gate guards it,
+    // so the 403 came from something in front of the house — here a Cloudflare
+    // challenge, which a fetch cannot pass. The denied gate's "not from here"
+    // would be a claim nobody made, so `api()` does not announce this one; a
+    // network-gated route's 403 still raises it (see "AuthGate events").
+    statusReply = () =>
+      new Response("<!DOCTYPE html><title>Just a moment...</title>", {
+        status: 403,
+        headers: { "Content-Type": "text/html", "cf-mitigated": "challenge" },
+      });
+    const denials = watchFor("Not from here.");
     const signIns = watchForSignIn();
     renderGate(appClient());
 
-    expect(await screen.findByRole("heading", { name: "Not from here." })).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: UNANSWERED })).toBeInTheDocument();
+    await tick();
+    expect(denials()).toBe(0);
     expect(statusReads()).toBe(1); // a 4xx is never retried
     expect(signIns()).toBe(0);
   });

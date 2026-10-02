@@ -9,10 +9,11 @@ export interface UnansweredGateProps {
 
 /**
  * The phone is online and the house did not answer "who is this?": no route
- * to it, no answer before the deadline, a proxy's 5xx, a captive portal's page,
- * or the house failing to read its own store. None of those says whether you
- * are signed in, so this gate does not either — the sign-in gate's
- * `signed out` would be a claim nobody made.
+ * to it, no answer before the deadline, a proxy's 5xx or 4xx (the route sends
+ * no 4xx of its own; docs/web-frontend.md, "The gates", maps every status), a
+ * captive portal's page, or the house failing to read its own store. None of
+ * those says whether you are signed in, so this gate does not either — the
+ * sign-in gate's `signed out` would be a claim nobody made.
  *
  * Invented, and shaped on `OfflineGate` and `DeniedGate`, as the offline gate
  * was; the plan's deviation 12 carries the copy for the owner. The kicker's

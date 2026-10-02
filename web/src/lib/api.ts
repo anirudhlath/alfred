@@ -57,6 +57,22 @@ async function readDetail(resp: Response): Promise<string> {
 const isPasskeyAttempt = (path: string): boolean =>
   path.startsWith("/api/auth/login/") || path.startsWith("/api/auth/register/");
 
+/** The house's answer to "who is this?" — read by `fetchAuthStatus` (./auth.ts). */
+export const AUTH_STATUS_PATH = "/api/auth/status";
+
+/**
+ * The status read is the one request the house's network gate never refuses:
+ * its route has none (`auth_status`, core/identity/auth_routes.py, on a router
+ * with no dependencies). So a 403 there came from something in front of the
+ * house — a proxy, a WAF, a Cloudflare challenge — and the denied gate's "not
+ * from here" would be a claim nobody made. Unannounced, it is a failed read
+ * like any other: `AuthGate`, the only listener, shows the unanswered gate
+ * while nothing has been read, and keeps the last answer once something has.
+ * If the route ever gains a network gate, its 403 becomes the house's answer:
+ * revisit this then.
+ */
+const isStatusRead = (path: string): boolean => path === AUTH_STATUS_PATH;
+
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(path, {
     ...init,
@@ -68,7 +84,7 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     // Announce, never navigate: the gate rises over whatever is on screen, so the
     // last-known state stays visible behind it (spec §5.2, "live is not last-known").
     if (resp.status === 401 && !isPasskeyAttempt(path)) authEvents.emit("expired");
-    if (resp.status === 403) authEvents.emit("denied");
+    if (resp.status === 403 && !isStatusRead(path)) authEvents.emit("denied");
     throw new ApiError(resp.status, detail || resp.statusText);
   }
 

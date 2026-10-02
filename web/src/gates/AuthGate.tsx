@@ -20,7 +20,8 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const { lastTrueAt, reconnect } = useConnection();
   const { data, isFetching, errorUpdateCount, refetch } = useQuery({
     queryKey: ["auth-status"],
-    // The signal lets the read's deadline and react-query's cancel share it.
+    // react-query's AbortSignal goes into the read, so its cancel and the read's
+    // own deadline stop the same request.
     queryFn: ({ signal }) => fetchAuthStatus(signal),
   });
   const online = useOnline();
@@ -44,27 +45,29 @@ export function AuthGate({ children }: { children: ReactNode }) {
 
   // The signal is back and no read since has failed. Until one has, the read's
   // last error is the offline one, and the gate below would blame the house for
-  // it the moment the phone reconnects, before the house had been asked with a
-  // signal — so the field shows, and the read is asked again. react-query asks
-  // by itself only if its onlineManager heard the phone go offline, and on a
-  // launch that began offline it never did: it starts online and listens for
-  // events, and none had fired. Keyed on the count rather than on a fetch being
-  // under way, because React can render the `online` event before react-query
-  // has started anything — and on that launch react-query starts nothing at
-  // all. With nothing read, `refetch()` joins a read already under way rather
-  // than cancelling it, so when react-query does ask as well, the two are one
-  // request.
+  // it the moment the phone reconnects, before the house had been asked with
+  // the phone online — so the field shows, and the read is asked again.
+  // react-query asks by itself only if its onlineManager heard the phone go
+  // offline, and on a launch that began offline it never did: it starts online
+  // and listens for events, and none had fired. Keyed on the count rather than
+  // on a fetch being under way, because React can render the `online` event
+  // before react-query has started anything — and on that launch react-query
+  // starts nothing at all. With nothing read, `refetch()` joins a read already
+  // under way rather than cancelling it, so when react-query does ask as well,
+  // the two are one request.
   const reasking = unread && online && failedOffline === errorUpdateCount;
   useEffect(() => {
     if (reasking) void refetch();
   }, [reasking, refetch]);
 
-  // The phone is online, nothing has landed, and a read asked with a signal has
-  // failed: the house did not answer. No such failure is the house saying who
-  // you are — `fetchAuthStatus` lets only its 200 through, and the route sends
-  // no 4xx of its own (see `UnansweredGate`) — so it routes here, never to
-  // sign-in or setup. The gate stays up while the next read is asked, its
-  // button held, rather than dropping to the field each time.
+  // The phone is online, nothing has landed, and a read asked while it was
+  // online has failed: the house did not answer. No such failure is the house
+  // saying who you are: `fetchAuthStatus` lets only its 200 through, and
+  // `auth_status` (core/identity/auth_routes.py) sends no 4xx of its own — a
+  // 401 or 403 there is a proxy's, and `api()` does not announce that 403 (the
+  // full mapping is in docs/web-frontend.md, "The gates"). So it routes here,
+  // never to sign-in or setup. The gate stays up while the next read is asked,
+  // its button held, rather than dropping to the field each time.
   const unanswered = unread && online && errorUpdateCount > 0 && !reasking;
   // Asked again on each return to the foreground. Events, never a timer; with
   // nothing read, `refetch()` joins a read already under way, so this and
@@ -149,7 +152,9 @@ export function AuthGate({ children }: { children: ReactNode }) {
 
   // The two event gates sit outside the routing: `denied` means "not from this
   // network", which is as true on the setup and sign-in gates as in the room —
-  // and setup swallows its 403s on the promise that this gate has already said it.
+  // and setup swallows its 403s on the promise that this gate has already said
+  // it. `api()` announces it for every 403 but the status read's: that route has
+  // no network gate, so its 403 never means this.
   return (
     <>
       {body}

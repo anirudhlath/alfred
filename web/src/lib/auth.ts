@@ -1,4 +1,4 @@
-import { api, errorText } from "./api";
+import { api, AUTH_STATUS_PATH, errorText } from "./api";
 import { dayMonth } from "./format";
 import type { AuthStatus } from "./types";
 
@@ -60,11 +60,11 @@ export async function fetchAuthStatus(signal: AbortSignal): Promise<AuthStatus> 
   const deadline = AbortSignal.timeout(STATUS_DEADLINE_MS);
   let status: unknown;
   try {
-    status = await api<unknown>("/api/auth/status", { signal: either(signal, deadline) });
+    status = await api<unknown>(AUTH_STATUS_PATH, { signal: either(signal, deadline) });
   } catch (error) {
     // Name the deadline, whatever fetch rejected with: an engine without abort
-    // reasons rejects with a plain AbortError, and the retry policy and the
-    // gate tell a deadline from a cancel by this.
+    // reasons rejects with a plain AbortError, and the retry policy
+    // (`QUERY_DEFAULTS`, through `timedOut`) knows a deadline only by its name.
     throw deadline.aborted ? deadline.reason : error;
   }
   if (!isAuthStatus(status)) throw new Error("The reply was not the house's status.");
