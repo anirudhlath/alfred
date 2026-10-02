@@ -52,6 +52,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `domains/home/home_agent.py` — routes actions to home-service
 - `evals/` — eval runner, scenarios, inference backends (`python -m evals`)
 - `web/` — Vite + React 19 phone-first PWA client: one screen (the Room), one interrupt (the Door), four identity gates (src/lib, src/shell, src/gates, src/room, src/door, src/workshop, src/sheets; npm run dev|build|test|lint) — built `web/dist/` is served by the web channel. See `docs/web-frontend.md`
+- `web/public/sw.js` + `web/public/sw.kill.js` — the hand-written service worker (app shell only: never `/api/*`, `/health` or the sockets) and its kill switch. See `docs/web-frontend.md`, "The service worker"
 - `docs/superpowers/specs/` — approved design specs
 - `docs/superpowers/plans/` — implementation plans
 - `docs/backlog/` — priority subdirs (highest/high/medium/low/lowest) with individual ticket files
@@ -276,6 +277,7 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - SPA catch-all (`mount_spa`) MUST register in the FastAPI lifespan AFTER the auth router — routes added during lifespan register after `create_app` routes, so an early mount would shadow `/api/auth/*`. Tests don't catch this because `web/dist/` doesn't exist in CI (mount is a no-op).
 - Backend `GET /health` is the service healthcheck consumed by the iOS AlfredKit client — `core/channels/spa.py` keeps it out of the SPA catch-all (`_NON_SPA_PATHS`, alongside the `api/` and `ws` prefixes), so the client must never claim a route at `/health` or under those prefixes.
 - `web/dist/` must be built (`npm run build`) for the runner to serve the SPA; `npm run dev` (Vite) proxies `/api/*`, `/health`, `/ws*` to :8081 instead.
+- Never delete `web/public/sw.js`: `mount_spa` answers `/sw.js` with index.html, the browser refuses the update on its MIME type, and every phone keeps its old worker. To unbrick phones, fire the kill switch (`cp web/public/sw.kill.js web/public/sw.js`, committed alone; revert that commit afterwards). `sw.js` is not prettier-formatted — `web/src/test/sw-server-routes.test.ts` regex-parses its `NEVER` arrays. Any byte change to it, a comment included, installs a new worker on every phone
 - Admin trigger mutations (fire/enable) go through `ACTIONS_STREAM` → triggers process (consumer group `triggers-internal`) — NEVER write `alfred:triggers` directly from other processes; `TriggerStore` keeps Redis + YAML in sync. Internal action handlers live in `core/triggers/__main__.py` and `core/conscious/__main__.py` (`run_librarian`).
 - `TriggerFired.fired_by` records provenance (admin vs engine fires) — set it when publishing a fire.
 - Use `EpisodicMemory.recall(..., update_stats=False)` for non-mutating reads (admin search) — the default `True` persists retrieval stats (HSET per recall).
