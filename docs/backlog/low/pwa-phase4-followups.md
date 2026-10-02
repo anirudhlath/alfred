@@ -6,12 +6,16 @@ decisions it took knowingly, and what the worker, the update note and the two ne
 found while being built and reviewed. The architecture they refer to is
 `docs/web-frontend.md`, "The service worker" and "The gates".
 
-Every claim in §1 to §13 was re-checked against the tree at `c49e66d`, and every byte
-figure names that commit; §14 and §15 came out of task 12b's review round and were checked
-at `13648ec`, except the fixtures check in §14's acceptance, added in that task's third
-fix round and checked at `2489885`. Where the plan's task 13 list turned out to be wrong,
-this file says what the code does, not what the plan expected; "Where the plan was stale"
-at the end is the index.
+Every claim in §1 to §12 was re-checked against the tree at `c49e66d`, and every byte
+figure names the commit it was measured at; §13 and §14 came out of task 12b's review
+round and were checked at `13648ec`, except the fixtures check in §13's acceptance, added
+in that task's third fix round and checked at `2489885`. The branch's final fix wave
+changed the worker under §1, §2, §5 and §14, which were re-checked at `0972685`, its last
+change to the code; filed §15 and §16; and closed the entry that was §13, `sw.js`'s
+comments quoting byte figures from an earlier build, by rewording them before the first
+deploy.
+Where the plan's task 13 list turned out to be wrong, this file says what the code does,
+not what the plan expected; "Where the plan was stale" at the end is the index.
 
 One cost runs under several entries, so it is stated once here: **any byte change to
 `web/public/sw.js` — a comment included — installs a new worker on every phone** at its
@@ -37,28 +41,31 @@ set, `display: standalone`, the standalone metas in `index.html` — and a worke
 `push` and `notificationclick` handlers to go into. Phase 5 also owes VAPID, the push
 adapter and the subscription's registration.
 
-One condition comes with the worker, and it fails silently: `purge()` keeps nothing it
+One condition comes with the worker, and it fails silently: the worker keeps nothing it
 was not written to keep, and no keep-list exists. `activate` deletes every cache on the
 origin that is not `alfred-shell-<VERSION>` (`caches` is scoped to the origin, not the
-worker). Inside that cache it deletes every entry that neither install's record nor the
-cached shell names; `src/test/sw.test.ts` pins that with "deletes an API response nothing
-should ever have cached". So a cache of phase 5's own — notification media, a send
-outbox — goes at the next activate, whether it has a name of its own or lives inside
-`alfred-shell-<VERSION>`, through code written a phase earlier, with nothing in the
-failure to point at it. Activate runs whenever `sw.js`'s bytes change, phase 5's own
-change included, and never for an ordinary deploy. IndexedDB is outside both purges.
+worker). Inside that cache, every collection deletes every entry that neither install's
+record nor the cached shell names, itself or through its stylesheet;
+`src/test/sw.test.ts` pins that with "deletes an API response nothing should ever have
+cached". A collection runs at activate, which is whenever `sw.js`'s bytes change, phase
+5's own change included, and after every refresh that publishes a shell, which is most
+online navigations. So a cache of phase 5's own — notification media, a send outbox —
+goes through code written a phase earlier, with nothing in the failure to point at it:
+at the next activate if it has a name of its own, and at the next collection, usually
+the next online navigation's, if it lives inside `alfred-shell-<VERSION>`. IndexedDB is
+outside both.
 
 **Acceptance:** phase 5 builds the four surfaces from the handoff's copy as it stands,
-and either stores nothing in Cache Storage, or adds a keep-list to `purge()` — for its
-cache's name, and for its entries if it shares the shell cache — with a test in
-`src/test/sw.test.ts` that its cache survives an activate.
+and either stores nothing in Cache Storage, or adds a keep-list — to `purge()` for its
+cache's name, and to `collect()` for its entries if it shares the shell cache — with a
+test in `src/test/sw.test.ts` that its cache survives an activate and a refresh.
 
 ## 2. The foreground update check has no floor, and downloads all of `sw.js` each time
 
-`installServiceWorker` (`web/src/lib/sw.ts:206-215`) calls `registration.update()` on
+`installServiceWorker` (`web/src/lib/sw.ts:225-234`) calls `registration.update()` on
 every return to the foreground, with no minimum interval. An app switched to and from ten
-times a minute checks ten times. Each check is a full download. `sw.js` is 64 324 bytes
-at `c49e66d` (22 888 gzipped, and nothing in the house compresses it — a reverse proxy
+times a minute checks ten times. Each check is a full download. `sw.js` is 71 119 bytes
+at `0972685` (24 898 gzipped, and nothing in the house compresses it — a reverse proxy
 may), and `mount_spa` answers the revalidation with a 200 and the whole body because
 `FileResponse` ignores `If-None-Match` and `If-Modified-Since` (`docs/web-frontend.md`,
 "Build / Serve / Container").
@@ -101,27 +108,30 @@ of the deploy the online app is already on.
 that is more machinery than a self-consistent window is worth. Revisit if an offline
 launch is ever reported booting a build the online app is not on, in a way that matters.
 
-## 5. Two ways fonts drop out of the offline copy
+## 5. `refresh()` does not follow a new stylesheet to its fonts
 
-- **A font install declined is runtime-cached and then pruned.** Install skips a font that
-  fails rather than failing the install. The page later fetches it through the asset
-  branch, which caches it — but it is in no record, and a shell names only the entry
-  chunk and the stylesheet, so the next activate deletes it. The cost is one re-download
-  after each activate, and activate runs only when `sw.js`'s bytes change, not on every
-  deploy.
-- **`refresh()` does not follow the stylesheet to its fonts.** It stores what the new
-  shell names and then the shell, so a deploy that changes a font's hash (an
-  `@fontsource` bump) publishes a stylesheet naming fonts `refresh()` never fetched. The
-  online page covers most of that gap: the asset branch stores any 200 that is not HTML
-  (`isAsset`), so every face the page renders online after the deploy is cached at
-  runtime. Offline, the only faces lost are those no online page has rendered since the
-  deploy. They fall back to the system stack — legible, and wrong — and only until the
-  next install records them.
+`refresh()` stores what the new shell names and then the shell, so a deploy that changes
+a font's hash (an `@fontsource` bump) publishes a stylesheet naming fonts `refresh()`
+never fetched. The online page covers most of that gap: the asset branch stores any 200
+that is not HTML (`isAsset`), so every face the page renders online after the deploy is
+cached at runtime, and every collection keeps it for as long as the cached shell's
+stylesheet names it. Offline, the only faces lost are those no online page has rendered
+since the deploy — another subset, or another weight. They fall back to the system stack
+— legible, and wrong — and only until the next install records them. Measured in
+Chromium after a deploy that renamed all eight `.woff2`: the page fetched the two faces
+it rendered, the next deploy's collection kept both, and with the server down and the
+HTTP cache emptied both loaded offline; the other six were never fetched.
+
+This entry used to name a second way, and it is closed. A font install declined is
+fetched later by the page through the asset branch, which caches it, and no record names
+it; the next activate used to delete it, costing a re-download after each activate. Since
+the final fix wave (ruling R27) every collection reads each stylesheet the cached shell
+names back out of the cache and keeps the fonts it names, so that font stays for as long
+as the stylesheet names it.
 
 **Acceptance:** `refresh()` follows the stylesheet's `.woff2` URLs as install does,
-declining rather than failing on a font, and install writes into the record any font
-already cached at runtime — each with a test in `src/test/sw.test.ts`. Both are changes
-to `sw.js`, so batch them (see the top of this file).
+declining rather than failing on a font, with a test in `src/test/sw.test.ts`. It is a
+change to `sw.js`, so batch it (see the top of this file).
 
 ## 6. No `apple-touch-startup-image`, and nobody has looked at what iOS shows
 
@@ -237,17 +247,7 @@ install logic that took several review rounds to get right.
 Chromium and device measurements of both cases: the switch still deployed, and the switch
 reverted.
 
-## 13. `sw.js`'s comments quote byte figures from an earlier build
-
-The comments at `web/public/sw.js:64`, `:85`, `:162`, `:166`, `:464` and `:901` say "this
-build's 414 kB", "about 415 kB" and "482 kB". At `c49e66d` the entry chunk is 418 537 bytes
-and the two files a shell names come to 486 880. The arguments still hold (the ceiling
-check is "below 3.5 kB/s" either way), and `web/README.md` dates its own figures instead.
-
-**Acceptance:** reworded to name the build they were measured on — and only alongside a
-real change to `sw.js`, never as a change of its own (see the top of this file).
-
-## 14. A proxy's 403 still raises the denied gate on every route but the status read
+## 13. A proxy's 403 still raises the denied gate on every route but the status read
 
 `api()` (`web/src/lib/api.ts`) announces `denied` for every 403, and has since phase 1
 (`a630156`). Rulings R17 and R18 exempted one route, the status read, because no 403 or 401
@@ -311,7 +311,7 @@ challenge's 403 on a Room read not announced. `AuthGate.test.tsx` shows that a b
 Room read meeting a challenge raises no denied gate. The mid-session challenge above is
 re-measured in Chromium, and shows the Room with no denied gate.
 
-## 15. `Try again` cannot get past a Cloudflare challenge
+## 14. `Try again` cannot get past a Cloudflare challenge
 
 **Unmeasured.** This is reasoned from the code and from Cloudflare's documentation. No
 device has met a challenge. The task-12b rig's challenge reproduces only the response's
@@ -326,12 +326,12 @@ react-query's own refetches. Each one meets the same challenge, so the gate stay
 long as the challenge stands. Its button keeps working and changes nothing.
 
 Only a navigation shows the challenge. The worker's `navigate()`
-(`web/public/sw.js:989-1017`) passes any answer through, and serves the cached shell only
+(`web/public/sw.js:1073-1121`) passes any answer through, and serves the cached shell only
 when the fetch rejects or runs out of time. So the challenge page reaches the screen, and
 once it is solved it reloads the app with the clearance cookie set. On iOS, in the
 installed app, that navigation is a cold launch: coming back through the app switcher
 resumes the page where it was, and a home-screen app has no reload control. Mid-session,
-the same challenge raises `DeniedGate` over the Room (§14). Dismissing it leaves the Room,
+the same challenge raises `DeniedGate` over the Room (§13). Dismissing it leaves the Room,
 whose next read raises it again.
 
 **Acceptance:** first, the measurement. Force a challenge on the app's hostname, behind the
@@ -346,6 +346,67 @@ shows, as a step in the phase-4 device checklist. If `Try again` cannot pass the
 - Tests in `AuthGate.test.tsx` pin the reload, and a Chromium measurement shows it.
 
 Any copy that names the challenge is the owner's to sign off.
+
+## 15. Four places still dim by `opacity`
+
+`docs/web-frontend.md`, "The rules this phase's reviews kept enforcing", makes **dim by
+token, never by `opacity`** house style, and the phase-4 plan's decision 1 inherits it.
+Its reason is that a composited opacity is invisible to `src/test/contrast.ts`. Four
+places in `web/src` break it, all of them older than the rule, and `contrast.test.ts`
+measures none of them. Handoff paths are under
+`docs/design/2026-09-04-pwa-client-handoff/`.
+
+- **The Door's offline track** (`web/src/door/SlideToConfirm.tsx:149`):
+  `opacity: disabled ? 0.5 : 1`, phase 1 (`a630156`). The handoff names the state and
+  gives no value: "disabled/greyed" (`README.md:172`,
+  `Alfred Design System.dc.html:159`). The `0.5` is the phase-1b plan's own
+  (`docs/superpowers/plans/2026-09-07-pwa-phase1b-room-and-door.md:8757`).
+- **A tombstone** (`web/src/room/rows/Tombstone.tsx:13`): `opacity-80`, phase 1. The
+  handoff specifies it: "opacity .8" (`README.md:142`, `Alfred.dc.html:89`).
+- **An unsent bubble** (`web/src/room/rows/YouBubble.tsx:15`):
+  `opacity: unsent ? 0.6 : 1`, over the bubble's text and its
+  `not sent · will retry when connected` line, phase 1. The handoff specifies it:
+  "Unsent (offline): opacity .6" (`README.md:139`; `Alfred.dc.html:728`, `:756`).
+- **`All streams`** (`web/src/workshop/ActivityBench.tsx:250`):
+  `opacity: activity.solo === null ? 0.4 : 1`, phase 2. The handoff specifies it:
+  "opacity .4 when no filter" (`README.md:182`). Already filed, with the button's
+  `disabled`, as `docs/backlog/low/pwa-phase3-followups.md` §21, which called it the one
+  place in the tree that breaks the rule.
+
+Every other `opacity` in `web/src` is motion or a reset, which the rule does not cover:
+`index.css`'s `fade`, `fade-out` and `breathe` keyframes, the slide hint's travel fade,
+and the `opacity: 1` reset in `index.css`. All four above are inside the rule's scope,
+which is anything a reader must read to trust the screen: a tombstone's struck title and
+its `expired … · not done` meta are state words, the unsent bubble's line says what
+became of a message, and the track and `All streams` are controls.
+
+The fixes do not cost the same. The track's `0.5` is an implementer's value for
+"greyed", so dimming it by token needs no deviation. The other three are the handoff's
+own values, so dimming any of them by token is a deviation from the handoff, with its
+own deviation row and the owner's sign-off, as phase 3's spent one-shot was for the
+handoff's `.55`.
+
+**Acceptance:** the track dims by token, with its pair restated in `src/test/contrast.ts`
+and measured in `contrast.test.ts`. For the tombstone, the unsent bubble and
+`All streams`, the owner rules on each, and each one dimmed by token gets a deviation row
+and a measured pair. `All streams`' `disabled` stays §21's.
+
+## 16. A code-split build would lose its lazy chunks offline
+
+A collection keeps what install's record names, what the cached shell names, and the
+fonts that shell's stylesheet names, and deletes every other runtime entry on the premise
+that it can be fetched again. That holds only online. A chunk the app loads with a
+dynamic `import()` is named by none of the three — the shell's HTML names the entry chunk
+and the stylesheet, and the record holds what install fetched from it — so the asset
+branch would cache it on first use and the next collection, usually the next online
+navigation's, would delete it; offline, the view behind it would then fail to load. Vite
+emits no lazy chunk today: the build is one entry chunk and one stylesheet, and nothing
+in `web/src` calls `import()`.
+
+**Acceptance:** before the first dynamic `import()` lands, the worker learns the lazy
+chunks a build emits, and install, `refresh()` and the keep-set treat them as they treat
+the stylesheet's fonts, with a test in `src/test/sw.test.ts` that a lazy chunk survives a
+collection. It is a change to `sw.js`, so batch it (see the top of this file).
 
 ---
 
@@ -362,15 +423,18 @@ the plan in place, marked *(corrected in task 13)*; this is the index.
    every check (§2).
 3. **Item 4's "a window of seconds".** The window lasts as long as the new worker waits,
    which can be days (§4).
-4. **Item 5's "one re-download per deploy".** It is per activate, which is per change to
-   `sw.js`; and `refresh()` misses fonts a second way (§5).
+4. **Item 5's "one re-download per deploy".** It was per activate, which is per change to
+   `sw.js`, and since the final fix wave it is once: a declined font is fetched on first
+   use and kept for as long as the cached shell's stylesheet names it. `refresh()` still
+   misses the fonts a newer stylesheet names until the page asks for them (§5).
 5. **Item 8's captive portal on `SignInGate`.** Replaced by the unanswered gate (§9).
 6. **The docs step's captive portal as the reason for `isShell`.** Over https a portal
    cannot intercept, and a portal's page is 200 `text/html`, which `isShell` accepts. It is
    refused because it names no hashed asset. `isShell` stops an error page carrying the
    app's HTML, and a 200 that is not HTML.
 7. **The docs step's keep-set "the sentinel".** It is the record **and** what the cached
-   shell names, or a refresh's newer shell would lose its assets.
+   shell names, or a refresh's newer shell would lose its assets — and since the final
+   fix wave the fonts that shell's stylesheet names as well.
 8. **The kill switch's "rebuild, deploy" and "restore `sw.js`".** It is fired by committing
    the copy alone through a normal pull request, and undone by reverting that commit.
 9. **The manifest pair's "on iOS it is `background_color` this really fixes".** Corrected
@@ -381,6 +445,8 @@ the plan in place, marked *(corrected in task 13)*; this is the index.
 11. **The checklist's deep link "from a previous notification".** iOS opens no link into a
     home-screen app, so the step runs in a Safari tab.
 12. **Decision 6 and the docs step: a phase-5 cache kept by living inside
-    `alfred-shell-<VERSION>`.** The entry purge deletes every entry there that neither the
-    record nor the cached shell names, so living there keeps nothing; and the loss comes
-    at the next activate, not between deploys (§1).
+    `alfred-shell-<VERSION>`.** Every collection deletes every entry there that neither
+    the record nor the cached shell names, so living there keeps nothing. The loss comes
+    at the next activate for a cache with a name of its own, and since the final fix wave
+    at the next collection for an entry inside the shell cache: usually the next online
+    navigation's (§1).

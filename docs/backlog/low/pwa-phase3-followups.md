@@ -420,7 +420,12 @@ pass weighs most heavily — rather than significance and recall count alone.
 
 `docs/web-frontend.md` states both rules absolutely and phase 3's own code keeps them, so
 the one place in the tree that does not is named here rather than left for the next
-reviewer to rediscover.
+reviewer to rediscover. *(Corrected in phase 4's final fix wave: not the one place. Three
+phase-1 places dim by `opacity` as well — the Door's offline track, a tombstone and an
+unsent bubble — and none is measured either. All four dims are filed together in
+`docs/backlog/low/pwa-phase4-followups.md` §15, which says what fixing each costs: the
+handoff specifies `.4` for this one, so dimming it by token is a deviation the owner
+signs off. Its `disabled` stays here.)*
 
 **Activity's `All streams` button breaks both** (`web/src/workshop/ActivityBench.tsx:245-251`):
 `disabled={activity.solo === null}` with `style={{ opacity: activity.solo === null ? 0.4 : 1 }}`.
