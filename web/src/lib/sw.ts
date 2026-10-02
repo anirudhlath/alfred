@@ -34,8 +34,9 @@ let waiting: ServiceWorker | null = null;
  * first rather than running beside it. Two side by side would each hear every
  * event: one takeover would reload twice, and the earlier registration could set
  * or clear the answer the later one owns. An install stops owning the page when
- * it is uninstalled, replaced or refused; a dev install, or one with no service
- * worker, never owns it, though it still replaces the one that did.
+ * it is uninstalled, replaced or refused. A dev install, or one with no service
+ * worker, owns it only while it clears up, so that a later install can stop the
+ * clearing: run on, it would unregister the later one's registration.
  */
 let current: (() => void) | null = null;
 
@@ -77,15 +78,20 @@ export function applyUpdate(): void {
   waiting?.postMessage({ type: "SKIP_WAITING" });
 }
 
-/** Drop every worker and every cache this origin holds. What dev does instead of registering. */
-export async function unregisterAll(): Promise<void> {
+/**
+ * Drop every worker and every cache this origin holds. What dev does instead of
+ * registering. `stopped` is asked after every wait: once it says yes, nothing
+ * more is unregistered or deleted.
+ */
+export async function unregisterAll(stopped: () => boolean = () => false): Promise<void> {
   if (!("serviceWorker" in navigator)) return;
   const registrations = await navigator.serviceWorker.getRegistrations();
+  if (stopped()) return;
   await Promise.all(registrations.map((registration) => registration.unregister()));
-  if ("caches" in globalThis) {
-    const names = await caches.keys();
-    await Promise.all(names.map((name) => caches.delete(name)));
-  }
+  if (stopped() || !("caches" in globalThis)) return;
+  const names = await caches.keys();
+  if (stopped()) return;
+  await Promise.all(names.map((name) => caches.delete(name)));
 }
 
 /**
@@ -106,7 +112,8 @@ export async function unregisterAll(): Promise<void> {
  *
  * In dev this *unregisters* instead: a worker left behind by `npm run preview`
  * outlives the preview server, and `npm run dev` on the same origin then serves
- * a stale shell and fights HMR.
+ * a stale shell and fights HMR. A later install replaces a dev one too, and
+ * stops its clearing where it stands: nothing more is unregistered or deleted.
  */
 export async function installServiceWorker(options: SwOptions = {}): Promise<() => void> {
   const { enabled = import.meta.env.PROD, reload = () => window.location.reload() } = options;
@@ -115,9 +122,21 @@ export async function installServiceWorker(options: SwOptions = {}): Promise<() 
   // not looked at yet.
   current?.();
   // Dev registers nothing and clears what is there; a browser with no service
-  // worker has nothing to clear, and unregisterAll leaves it untouched.
+  // worker has nothing to clear, and unregisterAll leaves it untouched. It owns
+  // the page while it clears, so that a later install can stop it, and gives the
+  // page up when the clearing ends, unless a later install has taken it.
   if (!enabled || !("serviceWorker" in navigator)) {
-    await unregisterAll();
+    let stopped = false;
+    const stopDev = () => {
+      stopped = true;
+      if (current === stopDev) current = null;
+    };
+    current = stopDev;
+    try {
+      await unregisterAll(() => stopped);
+    } finally {
+      stopDev();
+    }
     return () => {};
   }
 
@@ -169,8 +188,8 @@ export async function installServiceWorker(options: SwOptions = {}): Promise<() 
     throw error;
   }
   // Replaced while it was registering, by any later install — a dev one, which
-  // owns nothing, included — so this one's listeners are already off. Attach
-  // nothing more.
+  // owns the page only while it clears up, included — so this one's listeners
+  // are already off. Attach nothing more.
   if (current !== stop) return stop;
 
   const track = (incoming: ServiceWorker | null) => {

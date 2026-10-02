@@ -208,6 +208,64 @@ describe("installServiceWorker", () => {
     expect(first.registration.updates).toBe(0);
   });
 
+  it("stops a dev install's clearing up when a later install replaces it", async () => {
+    // Every install replaces the one before it, and a dev install is no exception
+    // while it clears up. Replaced before the browser has answered it, it stops
+    // where it stands; run on, it unregistered the later install's registration
+    // and deleted the cache that install's worker fills.
+    const { registration, container } = registry({ controller: {} });
+    const dev = installServiceWorker({ enabled: false });
+    await install();
+    await dev;
+    expect(container.register).toHaveBeenCalledOnce();
+    expect(registration.unregister).not.toHaveBeenCalled();
+    expect(caches.keys).not.toHaveBeenCalled();
+    expect(caches.delete).not.toHaveBeenCalled();
+    // And once it stops, the page is still the later install's: the next install
+    // replaces that one rather than running beside it.
+    const next = registry({ controller: {} });
+    await install();
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(registration.updates).toBe(0);
+    expect(next.registration.updates).toBe(1);
+  });
+
+  it.each<[string, (fakes: ReturnType<typeof registry>, held: Promise<void>) => void, number]>([
+    [
+      "unregistering",
+      ({ registration }, held) => {
+        registration.unregister.mockReturnValueOnce(held.then(() => true));
+      },
+      0,
+    ],
+    [
+      "asking for the cache names",
+      (_fakes, held) => {
+        vi.mocked(caches.keys).mockReturnValueOnce(held.then(() => ["alfred-shell-v1"]));
+      },
+      1,
+    ],
+  ])("stops a dev install's clearing up when replaced while %s", async (_wait, hold, asked) => {
+    // The later waits. What the dev install did before it was replaced stands,
+    // and nothing follows it.
+    const fakes = registry({ controller: {} });
+    let release: () => void = () => {};
+    hold(
+      fakes,
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const dev = installServiceWorker({ enabled: false });
+    await flush();
+    await install();
+    release();
+    await dev;
+    expect(fakes.registration.unregister).toHaveBeenCalledOnce();
+    expect(caches.keys).toHaveBeenCalledTimes(asked);
+    expect(caches.delete).not.toHaveBeenCalled();
+  });
+
   it("asks for a changed worker every time the app comes back", async () => {
     const { registration } = registry();
     await install();
