@@ -6,8 +6,10 @@ import { GateField } from "@/gates/GateField";
 import { OfflineGate } from "@/gates/OfflineGate";
 import { SetupGate } from "@/gates/SetupGate";
 import { SignInGate } from "@/gates/SignInGate";
+import { UnansweredGate } from "@/gates/UnansweredGate";
 import { fetchAuthStatus } from "@/lib/auth";
 import { authEvents } from "@/lib/auth-events";
+import { onVisible } from "@/lib/lifecycle";
 import type { AuthStatus } from "@/lib/types";
 import { useConnection } from "@/shell/ConnectionProvider";
 import { Layer } from "@/shell/Layer";
@@ -16,9 +18,10 @@ import { useOnline } from "@/shell/useOnline";
 export function AuthGate({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const { lastTrueAt, reconnect } = useConnection();
-  const { data, isPending, errorUpdateCount, refetch } = useQuery({
+  const { data, isFetching, errorUpdateCount, refetch } = useQuery({
     queryKey: ["auth-status"],
-    queryFn: fetchAuthStatus,
+    // The signal lets the read's deadline and react-query's cancel share it.
+    queryFn: ({ signal }) => fetchAuthStatus(signal),
   });
   const online = useOnline();
 
@@ -40,20 +43,36 @@ export function AuthGate({ children }: { children: ReactNode }) {
   if (showOffline && failedOffline !== errorUpdateCount) setFailedOffline(errorUpdateCount);
 
   // The signal is back and no read since has failed. Until one has, the read's
-  // last error is the offline one, and the fail-closed branch would turn it into
-  // "signed out" the moment the phone reconnects — so the field shows, and the
-  // read is asked again. react-query asks by itself only if its onlineManager
-  // heard the phone go offline, and on a launch that began offline it never
-  // did: it starts online and listens for events, and none had fired. Keyed on
-  // the count rather than on a fetch being under way, because React can render
-  // the `online` event before react-query has started anything — and on that
-  // launch react-query starts nothing at all. With nothing read, `refetch()`
-  // joins a read already under way rather than cancelling it, so when
-  // react-query does ask as well, the two are one request.
+  // last error is the offline one, and the gate below would blame the house for
+  // it the moment the phone reconnects, before the house had been asked with a
+  // signal — so the field shows, and the read is asked again. react-query asks
+  // by itself only if its onlineManager heard the phone go offline, and on a
+  // launch that began offline it never did: it starts online and listens for
+  // events, and none had fired. Keyed on the count rather than on a fetch being
+  // under way, because React can render the `online` event before react-query
+  // has started anything — and on that launch react-query starts nothing at
+  // all. With nothing read, `refetch()` joins a read already under way rather
+  // than cancelling it, so when react-query does ask as well, the two are one
+  // request.
   const reasking = unread && online && failedOffline === errorUpdateCount;
   useEffect(() => {
     if (reasking) void refetch();
   }, [reasking, refetch]);
+
+  // The phone is online, nothing has landed, and a read asked with a signal has
+  // failed: the house did not answer. No such failure is the house saying who
+  // you are — `fetchAuthStatus` lets only its 200 through, and the route sends
+  // no 4xx of its own (see `UnansweredGate`) — so it routes here, never to
+  // sign-in or setup. The gate stays up while the next read is asked, its
+  // button held, rather than dropping to the field each time.
+  const unanswered = unread && online && errorUpdateCount > 0 && !reasking;
+  // Asked again on each return to the foreground. Events, never a timer; with
+  // nothing read, `refetch()` joins a read already under way, so this and
+  // react-query's own focus refetch are one request.
+  useEffect(() => {
+    if (!unanswered) return;
+    return onVisible(() => void refetch());
+  }, [unanswered, refetch]);
 
   const needsSetup = data !== undefined && !data.registered;
 
@@ -82,15 +101,16 @@ export function AuthGate({ children }: { children: ReactNode }) {
     // stage the read is at — in flight, between its two tries, failed, or (once
     // react-query has heard an `offline` event) paused. On a launch that began
     // offline it is not paused (see `useOnline`): it runs and fails, and without
-    // this the fail-closed branch below would say "signed out" about a session
-    // nobody could ask after. Keyed on `data`, not on the request, which still
-    // goes out; if the phone is wrong about being offline, the read lands and
-    // this gives way.
+    // this the next gate would blame the house for the phone's own silence.
+    // Keyed on `data`, not on the request, which still goes out; if the phone is
+    // wrong about being offline, the read lands and this gives way.
     body = <OfflineGate />;
-  } else if (isPending || reasking) {
+  } else if (unanswered) {
+    body = <UnansweredGate asking={isFetching} onTryAgain={() => void refetch()} />;
+  } else if (unread) {
     // Nothing true to say yet. The field, and no copy. With a network, a read
-    // that has not landed is in flight or about to be, and a word about the
-    // connection would be a guess.
+    // that has not landed and has not failed is in flight or about to be, and
+    // a word about the connection would be a guess.
     body = (
       <div
         className="relative flex flex-1 flex-col"
@@ -116,10 +136,12 @@ export function AuthGate({ children }: { children: ReactNode }) {
       />
     );
   } else if (!authenticated) {
-    // Fail closed: a first read that errors leaves `data` undefined, and mounting
-    // the room with unknown auth state would show an empty house as if it were
-    // the truth. A failed *refetch* keeps the last good data, and the room with
-    // it — a session that has really lapsed arrives as the `expired` event.
+    // The house's own answer, and only that: every branch above holds while
+    // `data` is undefined, so a read that never landed reaches neither this nor
+    // setup (it fails closed to the gates above, and never to the room, which
+    // would show an empty house as if it were the truth). A failed *refetch*
+    // keeps the last good data, and the room with it — a session that has
+    // really lapsed arrives as the `expired` event.
     body = <SignInGate onSignedIn={refetchEverything} />;
   } else {
     body = children;

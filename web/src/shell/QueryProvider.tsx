@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider, type DefaultOptions } from "@tanstack/react-query";
-import { ApiError } from "@/lib/api";
+import { ApiError, timedOut } from "@/lib/api";
 
 /**
  * The app's query policy, exported so a test can build a client that behaves
@@ -12,9 +12,11 @@ import { ApiError } from "@/lib/api";
 export const QUERY_DEFAULTS: DefaultOptions = {
   queries: {
     // One retry, and never for a 4xx: a 401, 403 or 404 is an answer, not a
-    // failure to reach the house, and repeating it only doubles the noise.
+    // failure to reach the house, and repeating it only doubles the noise. Nor
+    // for a read that ran out of time (the auth read's deadline): it has already
+    // waited longer than a retry is worth, and a second would double the wait.
     retry: (failureCount, error) =>
-      !(error instanceof ApiError && error.status < 500) && failureCount < 1,
+      !(error instanceof ApiError && error.status < 500) && !timedOut(error) && failureCount < 1,
     staleTime: 10_000,
     refetchOnWindowFocus: true,
   },

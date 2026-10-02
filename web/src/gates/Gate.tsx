@@ -8,13 +8,24 @@ export interface GateAction {
   busy?: boolean;
 }
 
+export interface GateSecondaryAction extends Omit<GateAction, "busy"> {
+  /**
+   * Its request is in flight: `aria-disabled` and `aria-busy`, a press that does
+   * nothing, and the label dimmed by token — to `--fg2`, the gate body's own
+   * colour, which still reads as text on the page (`test/contrast.test.ts`).
+   * Not `disabled`, which would throw focus to `<body>` from under the finger
+   * that just pressed it (as `ActivityBench`'s older-entries button says).
+   */
+  waiting?: boolean;
+}
+
 export interface GateProps {
   kicker: string;
   /**
    * Set the kicker in `.t-meta-strong` rather than `.t-meta`: for a gate whose
    * kicker a reader must be able to take on its own to trust the screen
-   * (index.css says where that line is drawn). The offline gate's is the one so
-   * far — it is the line that says which silence this is.
+   * (index.css says where that line is drawn). The offline gate's and the
+   * unanswered gate's, so far — each is the line that says which silence this is.
    */
   strongKicker?: boolean;
   title: string;
@@ -22,7 +33,7 @@ export interface GateProps {
   /** A step list, a credential form — anything between the body and the footer. */
   children?: ReactNode;
   primary?: GateAction;
-  secondary?: Omit<GateAction, "busy">;
+  secondary?: GateSecondaryAction;
   /**
    * Rendered as a status region: the gates put their errors and caveats here,
    * and a change to it must be spoken, not just painted.
@@ -95,10 +106,15 @@ export function Gate({
         {secondary ? (
           <button
             type="button"
-            onClick={secondary.onClick}
+            onClick={() => {
+              // `aria-disabled` does not stop the event, so this does.
+              if (secondary.waiting !== true) secondary.onClick();
+            }}
             disabled={secondary.disabled === true}
+            aria-disabled={secondary.waiting === true ? true : undefined}
+            aria-busy={secondary.waiting === true ? true : undefined}
             className="h-[50px] rounded-[25px] border-0 bg-transparent text-[15px] font-medium disabled:opacity-60"
-            style={{ color: "var(--fg)" }}
+            style={{ color: secondary.waiting === true ? "var(--fg2)" : "var(--fg)" }}
           >
             {secondary.label}
           </button>

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api, ApiError, post, put } from "./api";
+import { api, ApiError, post, put, timedOut } from "./api";
 import { authEvents, type AuthEventKind } from "./auth-events";
 
 // `authEvents` is a module singleton: unsubscribe in cleanup, not in the test
@@ -143,5 +143,27 @@ describe("post / put", () => {
     const init = mock.mock.calls[0][1] as RequestInit;
     expect(init.method).toBe("PUT");
     expect(init.body).toBe('{"url":"http://192.168.1.10:8123"}');
+  });
+});
+
+describe("timedOut", () => {
+  it("knows a deadline's abort by its name, in whichever realm it was made", async () => {
+    // `AbortSignal.timeout` aborts with a DOMException named "TimeoutError". It
+    // is not always this realm's DOMException (here it is Node's, and fails
+    // `instanceof DOMException`), so the name is the test that holds everywhere.
+    const deadline = AbortSignal.timeout(1);
+    await new Promise((resolve) => deadline.addEventListener("abort", resolve, { once: true }));
+    expect(timedOut(deadline.reason)).toBe(true);
+    expect(timedOut(new DOMException("signal timed out", "TimeoutError"))).toBe(true);
+  });
+
+  it("is false for every other failure, a gateway's timeout included", () => {
+    // A 504 is an answer, from a proxy: it came back in time.
+    expect(timedOut(new ApiError(504, "Gateway Time-out"))).toBe(false);
+    expect(timedOut(new DOMException("signal is aborted without reason", "AbortError"))).toBe(false);
+    expect(timedOut(new TypeError("Failed to fetch"))).toBe(false);
+    expect(timedOut("TimeoutError")).toBe(false);
+    expect(timedOut(null)).toBe(false);
+    expect(timedOut(undefined)).toBe(false);
   });
 });

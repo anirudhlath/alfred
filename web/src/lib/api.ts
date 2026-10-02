@@ -21,6 +21,17 @@ export function errorText(error: unknown): string {
   return error instanceof Error ? error.message : "Something went wrong.";
 }
 
+/**
+ * Whether a request failed because its deadline ran out (`AbortSignal.timeout`).
+ * By name, not `instanceof DOMException`: the reason is a DOMException from the
+ * realm that made the signal, which need not be the page's.
+ */
+export function timedOut(error: unknown): boolean {
+  return (
+    typeof error === "object" && error !== null && "name" in error && error.name === "TimeoutError"
+  );
+}
+
 async function readDetail(resp: Response): Promise<string> {
   const text = await resp.text();
   try {

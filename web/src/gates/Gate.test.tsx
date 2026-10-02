@@ -95,6 +95,33 @@ describe("Gate", () => {
     expect(screen.getByRole("button", { name: "Do this later" })).toBeDisabled();
   });
 
+  it("holds the secondary while its request is in flight, without taking it out of reach", async () => {
+    // `aria-disabled` and a press that does nothing, never `disabled`: a control
+    // that disables itself under the finger that pressed it throws focus to
+    // <body> mid-action. Dimmed by a token, never by opacity.
+    const user = userEvent.setup();
+    const onClick = vi.fn();
+    const { rerender } = render(
+      <Gate kicker="k" title="t" secondary={{ label: "Try again", onClick, waiting: true }} />,
+    );
+    const button = screen.getByRole("button", { name: "Try again" });
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    expect(button).toHaveAttribute("aria-busy", "true");
+    expect(button).not.toBeDisabled();
+    expect(button).toHaveStyle({ color: "var(--fg2)" });
+    await user.click(button);
+    expect(onClick).not.toHaveBeenCalled();
+
+    rerender(
+      <Gate kicker="k" title="t" secondary={{ label: "Try again", onClick, waiting: false }} />,
+    );
+    expect(button).not.toHaveAttribute("aria-disabled");
+    expect(button).not.toHaveAttribute("aria-busy");
+    expect(button).toHaveStyle({ color: "var(--fg)" });
+    await user.click(button);
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
   it("speaks the foot line: it is a status region", () => {
     const { rerender } = render(<Gate kicker="k" title="t" foot="Stored encrypted at rest." />);
     expect(screen.getByRole("status")).toHaveTextContent("Stored encrypted at rest.");

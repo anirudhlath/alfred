@@ -120,6 +120,13 @@ describe("contrast ratios", () => {
       );
     });
 
+    it(`${theme}: a gate's body, and its held button, read on the page`, () => {
+      // Every gate's body copy is --fg2 on --bg, and so is a secondary action's
+      // label while its request is in flight (`Gate`'s `waiting`): dimmed from
+      // --fg by token, never by opacity. A label, so AA's 4.5:1 is the bar.
+      expect(contrast(token(theme, "fg2"), token(theme, "bg"))).toBeGreaterThanOrEqual(4.5);
+    });
+
     it(`${theme}: a filled dark control carries its own label`, () => {
       // --ink filled with --paper on it: the Memory bench's chosen sub-tab pill
       // (handoff §6) and the Activity bench's Pause button. The two tokens swap
@@ -311,6 +318,9 @@ describe("contrast ratios", () => {
     // The switch's ON track against the card, which is why the boundary is the
     // inset `--muted` edge drawn over it rather than the track fill itself.
     expect(contrast(token("light", "accent"), token("light", "surface"))).toBeLessThan(3);
+    // A gate's held button, if it were dimmed to `--muted` on the page: 3.46:1,
+    // under AA for its 15 px label, so `waiting` dims to `--fg2` instead.
+    expect(contrast(token("light", "muted"), token("light", "bg"))).toBeLessThan(4.5);
   });
 
   it("styles ::placeholder rather than leaving it to preflight", () => {
