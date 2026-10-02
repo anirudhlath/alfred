@@ -96,6 +96,11 @@ measurement `docs/backlog/low/pwa-phase4-followups.md` §6 is waiting for.
 
 ## Online, and the house does not answer
 
+Every answer the status read can get, and the gate each one shows, is mapped in
+`docs/web-frontend.md` ("The gates"). These steps cover the ones a phone can produce by
+itself; a proxy's 4xx or 5xx to the read is mapped there and pinned in
+`web/src/gates/AuthGate.test.tsx`, not here.
+
 - [ ] Join the dead hotspot, kill the app and open it. You see the presence field and then
       `The house is not answering.`, with `Try again`. It may take a second or so on a
       network that refuses at once, and about twenty seconds on one that hangs. **Never**

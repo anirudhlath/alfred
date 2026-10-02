@@ -580,7 +580,10 @@ device checklist is the only thing that can settle it, and it is unrun.
 - A 200 from `POST /api/actions/{id}/confirm` means **queued**. `applied` comes
   only from the `home_action_results` telemetry stream.
 - 401 and 403 raise a gate over whatever is on screen; they never redirect. The
-  last-known Room stays visible behind them.
+  last-known Room stays visible behind them. A 403 on `GET /api/auth/status` is the
+  exception: no network gate guards that route, so the 403 is a proxy's and `api()` does
+  not announce it — a launch that meets one shows the unanswered gate, and a signed-in
+  phone keeps its screen (`docs/web-frontend.md`, "The gates").
 - The Workshop keeps time by the Redis entry id (`idMs` in `lib/streams.ts`), never
   by `event.timestamp` — the id is the server's clock and has a zone; the ISO stamp
   has neither. The Room still reads `timestamp`, as it always has.

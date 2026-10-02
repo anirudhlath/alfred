@@ -66,7 +66,8 @@ web/
     icon-512.png         # The manifest's large one, which is also its maskable
   src/
     lib/           # No React: transport, formatters, physics, pure reducers
-      api.ts             # api/post/put, ApiError{status,detail}; 401→expired, 403→denied;
+      api.ts             # api/post/put, ApiError{status,detail}; 401→expired, 403→denied
+                         # (never for the status read's 403: no network gate guards it);
                          # timedOut() — whether a request failed on its deadline
       auth-events.ts     # authEvents.on/emit — the emitter api() announces gates on
       auth.ts            # fetchAuthStatus (STATUS_DEADLINE_MS, the payload check),
@@ -309,12 +310,12 @@ reaches setup and sign-in:
 | Condition | Gate | Over |
 |---|---|---|
 | Nothing read, and the phone says it is offline | `OfflineGate` — `No way to the house.`, no button | Nothing yet |
-| Nothing read, online, and a read asked with a signal has failed | `UnansweredGate` — `The house is not answering.` + `Try again` | Nothing yet |
+| Nothing read, online, and a read asked while online has failed | `UnansweredGate` — `The house is not answering.` + `Try again` | Nothing yet |
 | Nothing read, online, and no such read has failed yet | The presence field, no copy | Nothing yet |
 | `registered: false` | `SetupGate` — passkey → home-service credentials → attention set | Nothing yet |
 | `registered: true, authenticated: false` | `SignInGate` — passkey | Nothing yet |
 | `authEvents` emitted `expired` (any HTTP 401) | `ExpiredGate` | The last-known Room |
-| `authEvents` emitted `denied` (any HTTP 403) | `DeniedGate` | Whatever is on screen |
+| `authEvents` emitted `denied` (any HTTP 403 but the status read's) | `DeniedGate` | Whatever is on screen |
 
 **A read that has not landed is never read as an answer.** The first three rows key on
 `data === undefined`, never on a request being in flight, and they say which of the
@@ -332,26 +333,53 @@ phase's reviews kept enforcing" below), one layer lower down:
   asks again itself and shows the field while it does. Seeding `onlineManager` from the
   flag would make the flag gate every request in the app, so it is deliberately not done.
 - **`UnansweredGate`** is a phone with a network and no answer from the house: no route
-  to it, no answer before the deadline, a proxy's 5xx, a captive portal's page, or the
-  house failing to read its own store. `fetchAuthStatus` (`lib/auth.ts`) gives the read
-  a deadline of `STATUS_DEADLINE_MS`, 10 s — the service worker's navigation deadline —
-  and rejects a 200 that is not the status payload, and `QUERY_DEFAULTS` never retries a
-  read that ran out of time. The route answers 200 with both booleans or 500 and sends no
-  4xx of its own, so no failure of this read is the house saying who you are, and none
-  of them reaches sign-in or setup. `Try again` is held (`aria-disabled` and `aria-busy`)
-  while a read is in flight, and the gate stays up meanwhile instead of dropping to the
-  field; `AuthGate` also asks again on each return to the foreground. Its kicker is
+  to it, no answer before the deadline, a proxy's 5xx or 4xx, a captive portal's page,
+  or the house failing to read its own store. `fetchAuthStatus` (`lib/auth.ts`) gives
+  the read a deadline of `STATUS_DEADLINE_MS`, 10 s — the service worker's navigation
+  deadline — and rejects a 200 that is not the status payload, and `QUERY_DEFAULTS`
+  never retries a read that ran out of time. The route answers 200 with both booleans
+  or 500 and sends no 4xx of its own, so no failure of this read is the house saying who
+  you are, and none of them reaches sign-in or setup (the table below maps every one).
+  `Try again` is held (`aria-disabled` and `aria-busy`) while a read is in flight, and
+  the gate stays up meanwhile instead of dropping to the field; `AuthGate` also asks
+  again on each return to the foreground. Its kicker is
   `{hostname} · unknown since --:--`, the closed vocabulary's stamp for a value never
   known. On a house that hangs rather than refuses, it rises about 20 s after the tap:
   the worker's navigation deadline, then the read's.
 
-A 403 still raises `DeniedGate`, over these gates as over the Room.
+**Every answer the status read can get.** `auth_status` (`core/identity/auth_routes.py`)
+answers 200 with both booleans, or Starlette's plain-text 500 when its credential store
+fails. Its router has no dependencies, no network gate guards it, and
+`AuthCookieMiddleware` turns a failed session lookup into "not authenticated" rather than
+an error — so no 4xx is ever the house's answer here. While nothing has been read, each
+outcome shows:
+
+| Outcome | Who can send it | Retried | Shows |
+|---|---|---|---|
+| 200 with `registered` and `authenticated`, both booleans | The house | — | `SetupGate`, `SignInGate` or the Room, from the answer |
+| 200 without them (a captive portal's page, someone else's JSON, `null`), or 204 | Not the house | Once | `UnansweredGate` — `fetchAuthStatus` rejects it |
+| 500 | The house, its credential store failing; or a proxy | Once | `UnansweredGate` |
+| 502, 503, 504 | A proxy | Once | `UnansweredGate` |
+| 403 | A proxy or a WAF (a Cloudflare challenge, say); never the house | No | `UnansweredGate` alone: `api()` does not announce this route's 403, so no `DeniedGate` |
+| 401 | A proxy; never the house | No | `UnansweredGate`: `api()` announces `expired`, and `AuthGate` drops it at once, since no session was read to have lapsed |
+| Any other 4xx | Not the house | No | `UnansweredGate` |
+| `TypeError` (refused, no DNS, no route) | The network | Once | `UnansweredGate` |
+| The deadline, `STATUS_DEADLINE_MS` | The client | No | `UnansweredGate` |
+
+While the phone says it is offline, every failure shows `OfflineGate` instead. Once the
+house has answered, a failed read keeps that answer and the screen with it: its 403
+raises nothing, and its 401 still raises `ExpiredGate`, as a 401 does on every route but
+the passkey attempts. So `DeniedGate` rises for every 403 but the status read's — a
+network-gated route's refusal is the house's own, over these gates as over the Room. If
+the status route ever gains a network gate, its 403 becomes the house's answer, and
+`api()`'s exemption (`isStatusRead`, `lib/api.ts`) has to be revisited.
 
 **401 and 403 never redirect.** `api()` emits on `authEvents` (`lib/auth-events.ts`) and
 the gate rises *over* whatever is on screen, so a lapsed session never blanks the state
 the user was looking at (spec §5.2). A rejected passkey assertion is a 401 too, and is
 excluded: `/api/auth/login/*` and `/api/auth/register/*` show the failure in the gate
-that asked rather than raising a second one.
+that asked rather than raising a second one. The status read's 403 is excluded too, for
+the reason above.
 
 The session TTL is 8 hours, a hard cap from login with no sliding renewal, and the
 Expired gate says so.
