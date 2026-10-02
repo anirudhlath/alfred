@@ -52,7 +52,7 @@
 | 2 | §6.4 install rail | six-step rail, `install` + `standalone` gates, copy final at `Alfred.dc.html:669`/`:670` | **not built here** | Decision 6 — spec §8 puts "install-and-enable sequence" in phase 5, and four of six steps with nothing behind them is a control that pretends. |
 | 3 | Update prompt | **nothing** — the handoff has no update, reload or new-version copy at all, and no `updatefound` scene | invented: `A newer Alfred is waiting. Nothing is lost; I pick up where we left off.` + a `Reload` text button | An update path the user can trigger without reinstalling is a hard requirement. The second clause is the handoff's own, verbatim from the install gate's foot (`Alfred.dc.html:669`). |
 | 4 | Cold offline launch | **nothing** — the handoff's offline scenes are all *a running app that lost its socket*, never a launch with no network | invented: kicker `offline · nothing read yet`, title `No way to the house.`, body `This phone has no connection, so I cannot ask the house who you are. Nothing is lost; I pick up where we left off as soon as there is a signal.` | Phase 3's rule: never say the house is empty before the server has answered, and say *which* of the three meanings the silence has. Modelled line for line on the 403 gate (`DeniedGate.tsx`), whose shape the handoff did fix. |
-| 5 | Cold offline gate | — | **no retry button** | With `navigator.onLine === false`, react-query pauses; a `Try again` would queue a paused fetch and show nothing. The gate clears itself when the `online` event fires, which is the same event react-query resumes on. A button that pretends is worse than no button. |
+| 5 | Cold offline gate | — | **no retry button** | With `navigator.onLine === false`, react-query pauses; a `Try again` would queue a paused fetch and show nothing. The gate clears itself when the `online` event fires, which is the same event react-query resumes on. A button that pretends is worse than no button. *(Corrected in task 12: react-query does not pause this read, and does not resume it either. query-core 5.101.4's `onlineManager` starts online and changes only on the window's `online`/`offline` events — it never reads `navigator.onLine` — and a launch that begins offline fires neither. So the read runs, fails at once with a TypeError, is retried once about a second later, and errors; and when the signal returns, the `online` event changes nothing for a manager that never went offline, so nothing asks again — measured in Chromium at `a1013f9`: no status read in the 5 s after `online`. A `Try again` would therefore send a real request, but while the phone has no connection it can only fail the way the read already did and leave the gate exactly as it was; and `AuthGate` itself asks again on the `online` event, showing the field until that read lands. The decision stands, for that reason: the button could only ever pretend.)* |
 | 6 | `manifest.theme_color` | one static file, currently the dark token in both themes — a phase-1 defect deferred here, noted in `web/README.md` | **two manifests**, `/manifest.json` (dark) and `/manifest-light.json` (light); `applyTheme()` swaps the `<link rel="manifest">` alongside the `theme-color` meta it already rewrites | A manifest is static and the theme is the hour's, so the link points at whichever is true now. *(Corrected in task 2, which found the original claim — "iOS reads the manifest at Add to Home Screen time … it is `background_color`, the launch screen, that this actually fixes" — to be wrong twice over. **A manifest is consumed at install time**, so the most this can ever do is align one install with the theme in force at that moment: it does not follow the theme afterwards, and an install at 22:00 keeps its launch screen at noon for ever. **And on iOS it may do nothing at all** — WebKit fetches at most one manifest per document load and has no observer for a later `href` change, while `main.tsx` is a deferred module, so the swap lands after parsing; the manifest iOS reads may always be the dark one `index.html` ships. iOS's launch screen comes from `apple-touch-startup-image` regardless (decision 11). What is left standing is Chromium, which does observe the link — and the one measured-by-reasoning cost below.)* |
 | 6b | — | — | **Chrome may reinstall the WebAPK about once a day** | A consequence of shipping two manifests, not a choice, and new in task 2. Chrome re-reads an observed manifest and its WebAPK update check fingerprints `name`, `short_name`, `start_url`, `scope`, `display`, `orientation`, `theme_color` and `background_color` — and the last two are exactly what differs between the pair. Crossing 07:00 or 19:00 therefore presents a manifest that disagrees with the installed app, which is the condition that schedules an update. Throttled, that is roughly one silent reinstall a day. **Reasoned from Chrome's documented fingerprint, not measured** — there is no Android device in this project and no Android line on any checklist. `id: "/"` is identical in both files, so nothing is orphaned either way. |
 | 7 | Icon mark | `Alfred.dc.html:530`: letter `A`, `oklch(0.78 0.12 45)`, `500 30px 'DM Sans'`, on `#25221F` | the same mark drawn as two `<path>` strokes, not `<text>` | A `<text>` icon renders with whatever font the *rasteriser* has. `@fontsource-variable/dm-sans` ships `woff2` only, which neither `rsvg-convert` nor `resvg` can load, and the current `icon.svg` asks for Georgia — so today's icon is already whatever serif the machine had. Geometry renders identically everywhere. |
@@ -4210,16 +4210,21 @@ Counts after this task: **77 files / ~1 588 tests** *(corrected in task 11: meas
 
 The hole, found by reading `AuthGate` rather than by guessing: `useQuery(["auth-status"])` runs under react-query's default `networkMode: "online"`, which **pauses** a query when `navigator.onLine` is false. A paused query is not fetching, holds no data and raises no error, so `isPending` stays true — and `AuthGate`'s pending branch renders the presence field *and no copy*, for ever.
 
+*(corrected in task 12: the premise is false under the installed query-core 5.101.4, and the hole is a different one. `onlineManager` starts `#online = true` and flips only on window `online`/`offline` events; nothing in query-core reads `navigator.onLine`. A launch that begins offline fires no event, so the read is **not** paused: `/api/*` never reaches `respondWith`, the fetch rejects at once with a TypeError, `QUERY_DEFAULTS` retries once about a second later, the query errors, and `AuthGate`'s fail-closed branch shows `SignInGate` — "signed out" on a phone with no network. Measured at `a1013f9` in Chromium (headless shell 153), three runs: the field from ~35 ms, `SignInGate` from 1 039–1 043 ms; and after `online`, no further status read in 5 s, so `SignInGate` stayed. Ruling R14.)*
+
 That is the exact defect phase 3 named as house style — *never say the house is empty before the server has answered, and say which of the three meanings the silence has* — one layer lower down. Phase 4 says it.
 
 `navigator.onLine` is used for one thing only: to explain a read that **has not landed**. It is never used to claim the house is reachable and never to gate a request. Note that this makes it consistent by construction: when `onLine` is true but there is no route to the house, the query *runs and fails*, `isPending` goes false, and `AuthGate` falls through to its existing fail-closed `SignInGate` branch. The offline gate is reachable only in the state where react-query is paused, which is the state it describes.
 
-Deviation 5: **no retry button.** With `onLine` false a retry queues a paused fetch and shows nothing. The gate clears itself when the `online` event fires — the same event react-query resumes on.
+*(corrected in task 12: not by construction. react-query does not read the flag, and on a launch that began offline the query runs and fails while `onLine` is false, so a gate tied to "paused" or to `isPending` gives way to `SignInGate` the moment the read errors. The gate keys instead on the read not having landed (`data === undefined`) and `useOnline()` being false, at any stage of the read — in flight, between its two tries, or failed. The flag still explains a read and never gates one: the read goes out regardless, and if the phone is wrong about being offline it lands and the gate gives way. `onlineManager` is deliberately not seeded from the flag, which would make it gate every request in the app. The sentence about `onLine` true with no route to the house stands, and what `SignInGate` then says is measured in the task 12 report.)*
+
+Deviation 5: **no retry button.** With `onLine` false a retry queues a paused fetch and shows nothing. The gate clears itself when the `online` event fires — the same event react-query resumes on. *(corrected in task 12: react-query neither pauses nor resumes here; the true reason is in deviation 5's row. On `online` it is `AuthGate` that asks again, showing the field until that read lands.)*
 
 **Files:**
 - Create: `web/src/shell/useOnline.ts`, `web/src/shell/useOnline.test.tsx`
 - Create: `web/src/gates/OfflineGate.tsx`, `web/src/gates/OfflineGate.test.tsx`
 - Modify: `web/src/gates/AuthGate.tsx`, `web/src/gates/AuthGate.test.tsx`
+- *(corrected in task 12: also Modify `web/src/gates/Gate.tsx`, `web/src/gates/Gate.test.tsx`. The conventions put `OfflineGate`'s meta in `.t-meta-strong`, and its kicker is rendered by `Gate` in `.t-meta`, so `Gate` gains an optional `strongKicker` prop, default off; every other gate is unchanged.)*
 
 - [ ] **Step 1: Write the failing tests for `useOnline`**
 
@@ -4311,6 +4316,8 @@ export function useOnline(): boolean {
 }
 ```
 
+*(corrected in task 12, steps 1–2: the docstring's second paragraph is false — react-query does not read the flag, which is the whole of R14 — and is rewritten to say so. The hook ships as `useSyncExternalStore(subscribe, () => navigator.onLine)` rather than state set from the events: it re-reads the flag when it subscribes, so an event fired between the first render and the subscription is not lost, and a test holds it to that (a parent's layout effect fires `offline` in exactly that gap; the version above stays `online`). The tests flip the flag before dispatching each event, as a browser does. The unmount test now asserts each listener is removed with the function it was added with; the one above asserted only that nothing threw, which no mutant can fail.)*
+
 - [ ] **Step 3: Write the failing test for the gate**
 
 `web/src/gates/OfflineGate.test.tsx`:
@@ -4370,6 +4377,8 @@ export function OfflineGate() {
 }
 ```
 
+*(corrected in task 12, steps 3–4: the gate passes `strongKicker`, and a third test holds its kicker to `.t-meta-strong` and off `.t-meta`, per the conventions. The no-button reason in the test and the docstring is rewritten: a `Try again` would send a real request, which while the phone has no connection can only fail the way the read already did; and `AuthGate` asks again by itself on `online`. The copy is unchanged and verbatim.)*
+
 - [ ] **Step 5: Write the failing test for `AuthGate`**
 
 Add to `web/src/gates/AuthGate.test.tsx`, in the shape the file already uses for its other cases:
@@ -4397,6 +4406,8 @@ Add to `web/src/gates/AuthGate.test.tsx`, in the shape the file already uses for
 ```
 
 Match `renderAuthGate`'s real signature from the top of that file; if it takes a `fetchAuthStatus` spy rather than an options object, use a never-resolving promise there instead.
+
+*(corrected in task 12: there is no `renderAuthGate`; the file's helper is `renderGate()`, now taking an optional client. More to the point, the first test above fakes "paused" with a never-resolving promise, so it passes against code that fails in a browser. Shipped instead (ruling R14), in a `describe("AuthGate with no network")` of eight: a client on `QUERY_DEFAULTS` with only the backoff zeroed, a status read that rejects with a TypeError, `navigator.onLine` false, and real `online`/`offline` window events reaching react-query's real `onlineManager`, reset after each test. The offline launch shows `OfflineGate` from the first render through the failure and the retry, never mounts `SignInGate` (a `MutationObserver` counts every sign-in heading added), and sends both attempts; the merely-slow read shows the bare field (kept); on `online` the field shows at once, then the room, with no sign-in frame and exactly one more read — `act` is synchronous, so React renders the event before react-query has started anything; a read that fails with the signal back falls back to `SignInGate`, as an online launch does; an `offline` event over a failed read, and back, does the same as the launch; and the room, a signed-out answer, and a read that landed while the flag said offline are all left alone by the gate.)*
 
 - [ ] **Step 6: Wire it into `web/src/gates/AuthGate.tsx`**
 
@@ -4436,6 +4447,8 @@ and replace the `isPending` branch:
   } else if (needsSetup || setupActive) {
 ```
 
+*(corrected in task 12: this is the condition R14 replaces. Under it the offline launch shows `OfflineGate` only until the read errors, about a second, and then `SignInGate`. Shipped: an `OfflineGate` branch on `data === undefined && !online` (`showOffline`), ahead of the field. Then, because nothing re-asks on `online` for a launch that began offline, and because React can render that event before any refetch has started, two more pieces: a latch, `failedOffline`, holding the read's `errorUpdateCount` while the offline gate is up; and `reasking` (nothing read, online, no failure since the latch), which shows the field instead of the fail-closed `SignInGate` and drives an effect that calls `refetch()`. With nothing read, `refetch()` joins a read already under way rather than cancelling it, so when react-query refetches by itself as well — it heard an `offline` event — the two are one request. The comments state the mechanism.)*
+
 - [ ] **Step 7: Run green and commit**
 
 ```bash
@@ -4448,7 +4461,9 @@ git add web/src/shell/useOnline.ts web/src/shell/useOnline.test.tsx \
 git commit -m "feat(web): a cold launch with no network says so, instead of nothing"
 ```
 
-Counts after this task: **79 files / ~1 596 tests**.
+*(corrected in task 12: `git add` also takes `web/src/gates/Gate.tsx`, `web/src/gates/Gate.test.tsx` and this plan, and the message is `feat(web): a cold launch with no network says so, instead of saying signed out` — the launch never showed nothing; it showed the sign-in gate.)*
+
+Counts after this task: **79 files / ~1 596 tests** *(corrected in task 12: measured, **81 files / 1 946 tests**. The base `a1013f9` measured 79 / 1 929; task 12 adds two files, `useOnline.test.tsx` with 5 tests and `OfflineGate.test.tsx` with 3, one test in `Gate.test.tsx` and eight in `AuthGate.test.tsx`.)*.
 
 ---
 

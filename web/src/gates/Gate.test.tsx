@@ -24,6 +24,15 @@ describe("Gate", () => {
     ).toBeInTheDocument();
   });
 
+  it("sets the kicker in .t-meta unless the gate asks for the strong meta", () => {
+    const { rerender } = render(<Gate kicker="k" title="t" />);
+    expect(screen.getByText("k")).toHaveClass("t-meta");
+
+    rerender(<Gate kicker="k" title="t" strongKicker />);
+    expect(screen.getByText("k")).toHaveClass("t-meta-strong");
+    expect(screen.getByText("k")).not.toHaveClass("t-meta");
+  });
+
   it("renders the dot field, hidden from assistive tech", () => {
     const { container } = render(<Gate kicker="k" title="t" />);
     const field = container.querySelector(".gate-field");

@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { DeniedGate } from "@/gates/DeniedGate";
 import { ExpiredGate } from "@/gates/ExpiredGate";
 import { GateField } from "@/gates/GateField";
+import { OfflineGate } from "@/gates/OfflineGate";
 import { SetupGate } from "@/gates/SetupGate";
 import { SignInGate } from "@/gates/SignInGate";
 import { fetchAuthStatus } from "@/lib/auth";
@@ -10,21 +11,49 @@ import { authEvents } from "@/lib/auth-events";
 import type { AuthStatus } from "@/lib/types";
 import { useConnection } from "@/shell/ConnectionProvider";
 import { Layer } from "@/shell/Layer";
+import { useOnline } from "@/shell/useOnline";
 
 export function AuthGate({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const { lastTrueAt, reconnect } = useConnection();
-  const { data, isPending } = useQuery({
+  const { data, isPending, errorUpdateCount, refetch } = useQuery({
     queryKey: ["auth-status"],
     queryFn: fetchAuthStatus,
   });
+  const online = useOnline();
 
   const [setupActive, setSetupActive] = useState(false);
   const [expired, setExpired] = useState(false);
   const [denied, setDenied] = useState(false);
+  const [failedOffline, setFailedOffline] = useState<number | null>(null);
 
   useEffect(() => authEvents.on("expired", () => setExpired(true)), []);
   useEffect(() => authEvents.on("denied", () => setDenied(true)), []);
+
+  // Nothing has landed — not the session, not even whether there is a house.
+  const unread = data === undefined;
+  // The offline gate's condition. See the branch below.
+  const showOffline = unread && !online;
+
+  // How many times the read had failed while the offline gate was up: failures
+  // it has already answered for. Set during render, like the setup latch below.
+  if (showOffline && failedOffline !== errorUpdateCount) setFailedOffline(errorUpdateCount);
+
+  // The signal is back and no read since has failed. Until one has, the read's
+  // last error is the offline one, and the fail-closed branch would turn it into
+  // "signed out" the moment the phone reconnects — so the field shows, and the
+  // read is asked again. react-query asks by itself only if its onlineManager
+  // heard the phone go offline, and on a launch that began offline it never
+  // did: it starts online and listens for events, and none had fired. Keyed on
+  // the count rather than on a fetch being under way, because React can render
+  // the `online` event before react-query has started anything — and on that
+  // launch react-query starts nothing at all. With nothing read, `refetch()`
+  // joins a read already under way rather than cancelling it, so when
+  // react-query does ask as well, the two are one request.
+  const reasking = unread && online && failedOffline === errorUpdateCount;
+  useEffect(() => {
+    if (reasking) void refetch();
+  }, [reasking, refetch]);
 
   const needsSetup = data !== undefined && !data.registered;
 
@@ -48,8 +77,20 @@ export function AuthGate({ children }: { children: ReactNode }) {
   }, [queryClient, reconnect]);
 
   let body: ReactNode;
-  if (isPending) {
-    // Nothing true to say yet. The field, and no copy.
+  if (showOffline) {
+    // The phone says it has no network and nothing has landed: say so, whatever
+    // stage the read is at — in flight, between its two tries, failed, or (once
+    // react-query has heard an `offline` event) paused. On a launch that began
+    // offline it is not paused (see `useOnline`): it runs and fails, and without
+    // this the fail-closed branch below would say "signed out" about a session
+    // nobody could ask after. Keyed on `data`, not on the request, which still
+    // goes out; if the phone is wrong about being offline, the read lands and
+    // this gives way.
+    body = <OfflineGate />;
+  } else if (isPending || reasking) {
+    // Nothing true to say yet. The field, and no copy. With a network, a read
+    // that has not landed is in flight or about to be, and a word about the
+    // connection would be a guess.
     body = (
       <div
         className="relative flex flex-1 flex-col"

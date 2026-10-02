@@ -10,6 +10,13 @@ export interface GateAction {
 
 export interface GateProps {
   kicker: string;
+  /**
+   * Set the kicker in `.t-meta-strong` rather than `.t-meta`: for a gate whose
+   * kicker a reader must be able to take on its own to trust the screen
+   * (index.css says where that line is drawn). The offline gate's is the one so
+   * far — it is the line that says which silence this is.
+   */
+  strongKicker?: boolean;
   title: string;
   body?: string;
   /** A step list, a credential form — anything between the body and the footer. */
@@ -23,7 +30,16 @@ export interface GateProps {
   foot?: string;
 }
 
-export function Gate({ kicker, title, body, children, primary, secondary, foot }: GateProps) {
+export function Gate({
+  kicker,
+  strongKicker = false,
+  title,
+  body,
+  children,
+  primary,
+  secondary,
+  foot,
+}: GateProps) {
   return (
     <div
       className="relative flex flex-1 flex-col overflow-hidden"
@@ -48,7 +64,7 @@ export function Gate({ kicker, title, body, children, primary, secondary, foot }
           still sits on the bottom. */}
       <div className="relative flex flex-1 flex-col overflow-y-auto px-7 pb-3">
         <div className="mt-auto flex flex-col gap-3">
-          <div className="t-meta">{kicker}</div>
+          <div className={strongKicker ? "t-meta-strong" : "t-meta"}>{kicker}</div>
           <h1 className="t-gate">{title}</h1>
           {body ? (
             <p className="t-body" style={{ color: "var(--fg2)" }}>
