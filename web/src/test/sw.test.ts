@@ -5,6 +5,7 @@ import source from "../../public/sw.js?raw";
 // The same file and the kill switch, each as its exact bytes: see FIRED.
 import shippedBytes from "../../public/sw.js?url&inline";
 import killSwitchBytes from "../../public/sw.kill.js?url&inline";
+import killSwitchSource from "../../public/sw.kill.js?raw";
 import {
   broken,
   css,
@@ -24,13 +25,30 @@ import {
  * Whether the kill switch is fired: sw.js a byte-for-byte copy of sw.kill.js,
  * which is what that file's HOW TO FIRE IT leaves. Nothing here is then about a
  * worker that ships — this file tests the one the copy took out — so every
- * suite below stands down and the one test that runs says why, and the firing
+ * suite below stands down, the test under `if (FIRED)` says why, and the firing
  * commit gets through CI to the deploy it exists for. Exact bytes and nothing
  * looser, so that no other edit to sw.js, however close to the switch, stands
  * these tests down: `?url&inline` hands each file over as its bytes, base64'd,
  * where `?raw` would hand over decoded text.
  */
 const FIRED = shippedBytes === killSwitchBytes;
+
+// That each import is its file's bytes is the toolchain's doing, not this
+// file's, and Vite and Vitest are devDependencies a minor bump can change. Two
+// equal values would stand every suite below down in a tree that is not fired;
+// two URL paths, which is what `?url` alone gives, would never stand them down,
+// and a fired tree would fail them. So this runs in either tree.
+it("hands FIRED each file's own bytes: a base64 data: URL that decodes to that file", () => {
+  for (const [file, url, text] of [
+    ["sw.js", shippedBytes, source],
+    ["sw.kill.js", killSwitchBytes, killSwitchSource],
+  ]) {
+    expect(url, file).toMatch(/^data:[^,]*;base64,/);
+    const bytes = Uint8Array.from(atob(url.slice(url.indexOf(",") + 1)), (c) => c.charCodeAt(0));
+    // `ignoreBOM` keeps a byte-order mark, as `?raw` does.
+    expect(new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes), file).toBe(text);
+  }
+});
 
 if (FIRED) {
   it("stands down: web/public/sw.js is the kill switch, fired — sw.kill.js byte for byte", async ({
