@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/api";
 import { defaultDeviceName, DEVICE_KEY } from "@/lib/auth";
 import { hhmm } from "@/lib/format";
-import { attentionFixture, integrationsFixture } from "@/test/fixtures";
+import { attentionFixture, integrationsFixture, NETWORK_GATE_DETAIL } from "@/test/fixtures";
 import { SetupGate } from "./SetupGate";
 
 const { registerPasskeyMock } = vi.hoisted(() => ({ registerPasskeyMock: vi.fn() }));
@@ -128,7 +128,7 @@ describe("SetupGate — step 0, the passkey", () => {
   it("leaves a 403 to the Denied gate: no error line, no advance", async () => {
     const user = userEvent.setup();
     stubApi(HAPPY);
-    registerPasskeyMock.mockRejectedValue(new ApiError(403, "Request from untrusted network"));
+    registerPasskeyMock.mockRejectedValue(new ApiError(403, NETWORK_GATE_DETAIL));
     renderSetup();
 
     await user.click(screen.getByRole("button", { name: "Create passkey with Face ID" }));
@@ -137,7 +137,7 @@ describe("SetupGate — step 0, the passkey", () => {
       expect(screen.getByRole("button", { name: "Create passkey with Face ID" })).toBeEnabled(),
     );
     expect(screen.getByRole("heading", { name: "Good evening. I am Alfred." })).toBeInTheDocument();
-    expect(screen.queryByText("Request from untrusted network")).toBeNull();
+    expect(screen.queryByText(NETWORK_GATE_DETAIL)).toBeNull();
   });
 
   it("reports a cancelled Face ID in its own words, not WebKit's", async () => {

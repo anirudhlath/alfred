@@ -15,6 +15,7 @@ import {
   authSession,
   credential,
   integration,
+  NETWORK_GATE_DETAIL_SIGNED_IN,
   overviewFixture,
 } from "@/test/fixtures";
 import { OVERVIEW_POLL_MS } from "@/room/useOverview";
@@ -845,7 +846,7 @@ describe("useSystem", () => {
     const denied = listen("denied");
     answer("PUT", credentialsPath("weather"), {
       status: 403,
-      body: { detail: "Network 203.0.113.9 is not trusted" },
+      body: { detail: NETWORK_GATE_DETAIL_SIGNED_IN },
     });
     const { result } = await openBench();
 
@@ -853,7 +854,7 @@ describe("useSystem", () => {
 
     await waitFor(() =>
       expect(result.current.integrations.saves["weather"]?.error).toBe(
-        "Network 203.0.113.9 is not trusted",
+        NETWORK_GATE_DETAIL_SIGNED_IN,
       ),
     );
     expect(result.current.integrations.saves["weather"]?.gated).toBe(true);
@@ -891,7 +892,7 @@ describe("useSystem", () => {
 
     await releaseNext("PUT", credentialsPath("weather"), {
       status: 403,
-      body: { detail: "Network 203.0.113.9 is not trusted" },
+      body: { detail: NETWORK_GATE_DETAIL_SIGNED_IN },
     });
     await releaseNext("PUT", credentialsPath("weather"));
 

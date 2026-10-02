@@ -36,6 +36,7 @@ import { DEVICE_KEY } from "@/lib/auth";
 import { hhmm } from "@/lib/format";
 import type { AuthStatus } from "@/lib/types";
 import { QUERY_DEFAULTS } from "@/shell/QueryProvider";
+import { NETWORK_GATE_DETAIL, NETWORK_GATE_DETAIL_SIGNED_IN } from "@/test/fixtures";
 import { AuthGate } from "./AuthGate";
 
 const { loginPasskeyMock, registerPasskeyMock } = vi.hoisted(() => ({
@@ -59,7 +60,10 @@ let statusUnreachable = false;
 let statusHeld = false;
 /** When set, something other than the house answers the status read, with this. */
 let statusReply: (() => Response) | null = null;
-/** When set, the house's network gate refuses this phone: registration answers 403. */
+/**
+ * When set, the house's network gate refuses this phone: registration answers
+ * 403, in the house's words — with the guidance it adds for a signed-in session.
+ */
 let offNetwork = false;
 /** When set, the house's session gate finds no session: the sessions read answers 401. */
 let sessionLapsed = false;
@@ -97,9 +101,8 @@ function stubFetch(): void {
         return new Response(JSON.stringify(status), { status: 200 });
       }
       if (offNetwork && url.startsWith("/api/auth/register/")) {
-        return new Response('{"detail":"Request from untrusted network 192.168.1.24"}', {
-          status: 403,
-        });
+        const detail = status.authenticated ? NETWORK_GATE_DETAIL_SIGNED_IN : NETWORK_GATE_DETAIL;
+        return new Response(JSON.stringify({ detail }), { status: 403 });
       }
       if (sessionLapsed && url === "/api/auth/sessions") {
         return new Response('{"detail":"Authentication required"}', { status: 401 });
@@ -279,7 +282,7 @@ describe("AuthGate routing", () => {
     // What `api()` does with a 403: says so on the bus, then throws.
     registerPasskeyMock.mockImplementation(async () => {
       authEvents.emit("denied");
-      throw new ApiError(403, "Not from here");
+      throw new ApiError(403, NETWORK_GATE_DETAIL);
     });
     renderGate();
     await screen.findByRole("heading", { name: "Good evening. I am Alfred." });
@@ -293,7 +296,7 @@ describe("AuthGate routing", () => {
     );
     // Setup is still where it was, and did not repeat the news in its foot line.
     expect(screen.getByRole("heading", { name: "Good evening. I am Alfred." })).toBeInTheDocument();
-    expect(screen.queryByText("Not from here")).toBeNull();
+    expect(screen.queryByText(NETWORK_GATE_DETAIL)).toBeNull();
   });
 
   it("sends a registered but signed-out device to sign-in", async () => {
@@ -349,12 +352,14 @@ describe("AuthGate routing", () => {
     expect(screen.queryByRole("heading", { name: "Welcome back, sir." })).toBeNull();
   });
 
-  it("keeps the room, with no denied gate, when a background read of the status meets a 403", async () => {
+  it("keeps the room, under neither event gate, when a background read of the status meets a 403", async () => {
     // No network gate guards the status read, so its 403 is not the house
-    // refusing this network: a failed refetch, which keeps the last answer.
+    // refusing this network, nor news of the session: a failed refetch, which
+    // keeps the last answer.
     const { client } = renderGate();
     await screen.findByText("the room");
     const denials = watchFor("Not from here.");
+    const lapses = watchFor("Your session lapsed.");
 
     statusReply = () => new Response('{"detail":"Forbidden"}', { status: 403 });
     await act(() => client.invalidateQueries({ queryKey: ["auth-status"] }));
@@ -363,14 +368,17 @@ describe("AuthGate routing", () => {
 
     expect(screen.getByText("the room")).toBeInTheDocument();
     expect(denials()).toBe(0);
+    expect(lapses()).toBe(0);
   });
 
-  it("keeps the room, with no lapsed-session gate, when a background read of the status meets a 401", async () => {
+  it("keeps the room, under neither event gate, when a background read of the status meets a 401", async () => {
     // The route answers "not authenticated" with a 200, never a 401, so its 401
-    // is not the house saying the session lapsed: a failed refetch, as above. A
-    // lapse the house does see arrives as that 200, or as another read's 401.
+    // is not the house saying the session lapsed, nor news of the network: a
+    // failed refetch, as above. A lapse the house does see arrives as that 200,
+    // or as another read's 401.
     const { client } = renderGate();
     await screen.findByText("the room");
+    const denials = watchFor("Not from here.");
     const lapses = watchFor("Your session lapsed.");
 
     statusReply = () => new Response('{"detail":"Unauthorized"}', { status: 401 });
@@ -379,6 +387,7 @@ describe("AuthGate routing", () => {
     await tick();
 
     expect(screen.getByText("the room")).toBeInTheDocument();
+    expect(denials()).toBe(0);
     expect(lapses()).toBe(0);
   });
 
@@ -789,16 +798,21 @@ describe("AuthGate when the house does not answer", () => {
     expect(signIns()).toBe(0);
   });
 
-  it("raises no lapsed-session gate for a 401, and claims no session", async () => {
+  it("shows the unanswered gate alone for a 401, and claims no session", async () => {
     // Never the house's on this route either (see above): it answers "not
-    // authenticated" with a 200. `api()` does not announce this 401 as a lapsed
-    // session, and with nothing read there was no session to lapse.
+    // authenticated" with a 200. `api()` announces this 401 neither as a lapsed
+    // session nor as a refused network, and with nothing read there was no
+    // session to lapse.
     statusReply = () => new Response('{"detail":"Unauthorized"}', { status: 401 });
+    const lapses = watchFor("Your session lapsed.");
+    const denials = watchFor("Not from here.");
     const signIns = watchForSignIn();
     renderGate(appClient());
 
     expect(await screen.findByRole("heading", { name: UNANSWERED })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Your session lapsed." })).toBeNull();
+    await tick();
+    expect(lapses()).toBe(0);
+    expect(denials()).toBe(0);
     expect(statusReads()).toBe(1);
     expect(signIns()).toBe(0);
   });

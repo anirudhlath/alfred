@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { NETWORK_GATE_DETAIL } from "@/test/fixtures";
 import { api, ApiError, post, put, timedOut } from "./api";
 import { authEvents, type AuthEventKind } from "./auth-events";
 
@@ -100,44 +101,52 @@ describe("api", () => {
   it("announces a refused network on 403 and still throws", async () => {
     const denied = vi.fn();
     listen("denied", denied);
-    stubFetch(403, { detail: "Request from untrusted network 192.168.1.24" });
+    stubFetch(403, { detail: NETWORK_GATE_DETAIL });
 
     await expect(api("/x")).rejects.toMatchObject({ status: 403 });
 
     expect(denied).toHaveBeenCalledTimes(1);
   });
 
-  it("does not announce a refused network for the status read, which no network gate guards", async () => {
+  it("announces neither event for the status read's 403, which no network gate guards", async () => {
     // `auth_status` (core/identity/auth_routes.py) has no network gate, so its
-    // 403 comes from something in front of the house, never from the house.
+    // 403 comes from something in front of the house, never from the house —
+    // and it is no news about the session either.
     const denied = vi.fn();
+    const expired = vi.fn();
     listen("denied", denied);
+    listen("expired", expired);
     stubFetch(403, { detail: "Forbidden" });
 
     await expect(api("/api/auth/status")).rejects.toMatchObject({ status: 403 });
 
     expect(denied).not.toHaveBeenCalled();
+    expect(expired).not.toHaveBeenCalled();
   });
 
   it("still announces a 403 from its network-gated neighbours under /api/auth/", async () => {
     const denied = vi.fn();
     listen("denied", denied);
-    stubFetch(403, { detail: "Request from untrusted network 192.168.1.24" });
+    stubFetch(403, { detail: NETWORK_GATE_DETAIL });
 
     await expect(post("/api/auth/register/begin", {})).rejects.toMatchObject({ status: 403 });
 
     expect(denied).toHaveBeenCalledTimes(1);
   });
 
-  it("does not announce a lapsed session for the status read, which sends no 401 of its own", async () => {
+  it("announces neither event for the status read's 401, which the route never sends", async () => {
     // `auth_status` answers "not authenticated" with a 200, never a 401, so its
-    // 401 comes from something in front of the house too.
+    // 401 comes from something in front of the house too — and it is no news
+    // about the network either.
+    const denied = vi.fn();
     const expired = vi.fn();
+    listen("denied", denied);
     listen("expired", expired);
     stubFetch(401, { detail: "Unauthorized" });
 
     await expect(api("/api/auth/status")).rejects.toMatchObject({ status: 401 });
 
+    expect(denied).not.toHaveBeenCalled();
     expect(expired).not.toHaveBeenCalled();
   });
 
@@ -147,6 +156,18 @@ describe("api", () => {
     stubFetch(401, { detail: "Authentication required" });
 
     await expect(api("/api/auth/sessions")).rejects.toMatchObject({ status: 401 });
+
+    expect(expired).toHaveBeenCalledTimes(1);
+  });
+
+  it("still announces a 401 from another read whose path ends in /status: the exemption is one path", async () => {
+    // The integration probe (`fetchIntegrationStatus`, lib/system.ts) is
+    // session-gated, so its 401 is the house's own: the session has lapsed.
+    const expired = vi.fn();
+    listen("expired", expired);
+    stubFetch(401, { detail: "Authentication required" });
+
+    await expect(api("/api/integrations/weather/status")).rejects.toMatchObject({ status: 401 });
 
     expect(expired).toHaveBeenCalledTimes(1);
   });
