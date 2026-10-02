@@ -336,7 +336,7 @@ phase's reviews kept enforcing" below), one layer lower down:
 - **`UnansweredGate`** is a phone with a network and no answer from the house: no route
   to it, no answer before the deadline, a proxy's 5xx or 4xx to the read, a captive
   portal's page, or the house failing to read its own store. Not a house stopped behind
-  the proxy: its 502 answers the navigation first, so the app never boots to ask
+  the proxy: the proxy's 502 answers the navigation first, so the app never boots to ask
   (`docs/backlog/low/pwa-phase4-followups.md` §8). `fetchAuthStatus` (`lib/auth.ts`) gives
   the read a deadline of `STATUS_DEADLINE_MS`, 10 s — the service worker's navigation
   deadline — and rejects a 200 that is not the status payload, and `QUERY_DEFAULTS`
@@ -1476,8 +1476,9 @@ faithful copy of each other.
 
 Read that narrowly, because it is not known to fix anything on a phone:
 
-- **A manifest is consumed at install time**, so the most the swap can do is align one
-  install with the theme in force at that moment. It does not follow the theme afterwards.
+- **A manifest is consumed at install time**, so on iOS the most the swap can do is align
+  one install with the theme in force at that moment; Chromium re-reads it at its update
+  check (the last bullet).
 - **On iOS it may be inert.** WebKit fetches at most one manifest per document load and
   has no observer for a later `href` change, and the swap runs after parsing, so the
   manifest iOS reads may always be the dark one `index.html` ships. And iOS takes its

@@ -29,17 +29,15 @@ inset in standalone mode) still hold, and nothing here re-measures them.
 
 - [ ] The build deployed is the one under test (`git log -1` on the deploy host)
 - [ ] Two more changes ready to ship during the run, each through its own pull request:
-      **A**, an ordinary change you can see on every screen, online and on the offline
-      gate alike, with `web/public/sw.js` untouched — a rule added at the end of
-      `src/index.css` will do, such as
-      `#root { outline: 4px solid var(--accent); outline-offset: -4px; }`. Not a colour
-      token: `contrast.test.ts` holds the tokens to their restatement in
-      `src/test/contrast.ts`, `icons.test.ts` pins `--bg` and `--accent` to the icon, and
-      `manifest.test.ts` pins `--bg` to the manifests, so a token edit fails `ci-ok`
-      unless those move in the same pull request. And **B**, one byte of
-      `web/public/sw.js` changed — a comment is enough. B installs a new worker on every
-      phone that has the app, which is the point of it. Two later steps each need one more
-      byte change of the same kind
+      **A**, an ordinary change you can see on the Room and on the offline gate alike,
+      with `web/public/sw.js` untouched: the frame "An ordinary deploy (A)" spells out,
+      one rule added at the end of `web/src/index.css`. Not a colour token:
+      `contrast.test.ts` holds the tokens to their restatement in `src/test/contrast.ts`,
+      `icons.test.ts` pins `--bg` and `--accent` to the icon, and `manifest.test.ts` pins
+      `--bg` to the manifests, so a token edit fails `ci-ok` unless those move in the same
+      pull request. And **B**, one byte of `web/public/sw.js` changed — a comment is
+      enough. B installs a new worker on every phone that has the app, which is the point
+      of it. Two later steps each need one more byte change of the same kind
 - [ ] Any earlier home-screen copy of Alfred deleted, so the install below is a first
       install
 - [ ] You can stop the house and start it again
@@ -143,15 +141,41 @@ itself; a proxy's 4xx or 5xx to the read is mapped there and pinned in
 
 ## An ordinary deploy (A)
 
+A is one rule, added at the end of `web/src/index.css`. It draws a 4px frame in the
+accent colour along the four edges of whatever `#root` holds, over everything in it, and
+lets every tap through:
+
+```css
+#root::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 4px solid var(--accent);
+  pointer-events: none;
+  z-index: 2147483647;
+}
+```
+
+`#root` is already `position: fixed` in that file, and that makes it the frame's
+containing block: the frame sits on `#root`'s edges, not the viewport's, and nothing needs
+`position: relative`, which on `#root` would undo the `fixed`. The Workshop, the sheets,
+the Door and the gates that rise over a running app are drawn into `<body>` over `#root`,
+so they cover the frame, and the steps look for it on the Room and the offline gate only.
+In Chromium it shows on all four edges of the Room, the offline gate and the unanswered
+gate, and taps still reach `Try again` and the Room's buttons; nobody has looked at it on
+a phone yet.
+
 - [ ] With the app open on the Room, ship A. Switch away and back. **No** note appears:
       `sw.js` did not change, so no worker is waiting. Expected, not a defect
-- [ ] Kill the app and open it online: A's visible change is there
-- [ ] Airplane mode, kill the app, open it: the offline gate shows A's change, because the
-      online launch above copied A for offline use. If that launch could not copy all of
-      A, the gate shows the previous build instead, whole — which also passes. Record
-      which you saw
+- [ ] Kill the app and open it online. **Pass:** the frame runs round the edges of the
+      Room. **Fail:** no frame
+- [ ] Airplane mode, kill the app, open it. **Pass:** the offline gate inside the frame,
+      because the online launch above copied A for offline use — or, if that launch could
+      not copy all of A, the gate as it was before A, whole, with no frame. Record which
+      you saw. **Fail:** anything else — iOS's own offline page, a blank screen, or the
+      gate without its own type and palette
 - [ ] Revert A, through a pull request of its own, and let it deploy. Kill the app and
-      open it online: A's change is gone
+      open it online. **Pass:** the frame is gone. **Fail:** it is still there
 
 ## A changed `sw.js` (B)
 
@@ -162,10 +186,14 @@ itself; a proxy's 4xx or 5xx to the read is mapped there and pinned in
       (`docs/backlog/low/pwa-phase4-followups.md` §3). Back in the Room it is still there
 - [ ] Tap `Reload`. The page reloads **once** and does not loop, and the note is gone
 - [ ] **With the app killed.** Kill the app, then ship another byte change to `sw.js` —
-      a word added to a comment, so the last section can find it. Once it has deployed,
-      open the app from the tile and give it ten seconds. The note now is a **pass**: the
-      new worker is waiting. With no note, switch away and back (with a Mac, take the last
-      section's reading first) and give it ten seconds more. A note on that switch is a
+      a word added to a comment, so the last section can find it. With a Mac, read that
+      section's item for this launch before you open the app. Wait until any browser shows
+      the word in `https://alfred.example.com/sw.js`: until then the house may still serve
+      the old one, and no verdict in this step means anything. Then open the app from the
+      tile. It must come up on the Room, signed in, with no `No connection` note (sign in
+      first if a gate shows), because the Room is the only place the note appears; then
+      give it a minute. The note now is a **pass**: the new worker is waiting. With no
+      note, switch away and back and give it a minute more. A note on that switch is a
       **fail**: the launch ran on the old worker and never noticed the new one, which is
       the iOS failure this step exists to catch. No note on that switch either is a
       **pass**: the new worker took over at launch
@@ -211,20 +239,57 @@ The procedure is `docs/web-frontend.md`, "The kill switch", step for step.
 
 Phase 3's checklist keeps to what the phone shows. This section breaks that rule on
 purpose, because a worker's registration and its cache are invisible on the phone.
-Turn on Settings › Safari › Advanced › Web Inspector on the phone, connect it to the Mac,
-then Safari › Develop › the phone › the Alfred home-screen app.
+Turn on Web Inspector on the phone, under Settings › Apps › Safari › Advanced (Settings ›
+Safari › Advanced before iOS 18), and on the Mac, Safari › Settings › Advanced › Show
+features for web developers. Connect the phone, then Safari › Develop › the phone › the
+Alfred home-screen app.
 
-- [ ] After the install: one registration, scope `/`, active. Cache Storage holds
-      `alfred-shell-v1` with `/index.html`, two files under `/assets/` (the entry chunk
-      and the stylesheet), eight `.woff2` files and `/__shell-manifest`
-- [ ] After B, before `Reload`: one active worker and one waiting
-- [ ] Ten seconds after the killed-app launch in B, before switching away: open the active
-      worker's source and look for the word that step added. **Pass:** the new worker is
-      active and none is waiting, or the old one is active with the new one waiting and
-      the note showing. **Fail:** the old worker is active with nothing waiting
-- [ ] After the kill switch: no registration, and nothing in Cache Storage
-- [ ] After the revert and one online launch: one registration again, and `alfred-shell-v1`
-      filled as it was after the install
+Safari shows neither a worker's state nor Cache Storage, so read both in that app's
+Console. Paste each read whole. The first logs the registration's scope and the states of
+its active, waiting and installing workers, `undefined` for each one it lacks, or a lone
+`undefined` if there is no registration; the second logs each cache with the paths it
+holds:
+
+```js
+navigator.serviceWorker.getRegistration()
+  .then((r) => r && [r.scope, r.active?.state, r.waiting?.state, r.installing?.state])
+  .then(console.log)
+```
+
+```js
+caches.keys()
+  .then((ks) => Promise.all(ks.map(async (k) => [k,
+    (await (await caches.open(k)).keys()).map((q) => new URL(q.url).pathname)])))
+  .then(console.log)
+```
+
+A worker is listed under Develop › the phone, beside the app, only while it runs, as it
+does right after a launch; its inspector has a Console, Sources and Network. Everything
+this section says about Safari is documented, not measured (webkit.org, "Enabling Web
+Inspector"; web.dev's PWA course, "Tools and debug"): none of it has been tried on an
+iPhone, the two reads included. Where a step below cannot be read as written, record what
+Safari offered instead.
+
+- [ ] After the install: the registration read gives `https://alfred.example.com/`,
+      `activated`, `undefined`, `undefined`. The cache read gives one cache,
+      `alfred-shell-<VERSION>` (`VERSION` at the top of `sw.js`), holding `/index.html`,
+      the entry chunk and the stylesheet under `/assets/`, eight `.woff2` files and
+      `/__shell-manifest`
+- [ ] After B, before `Reload`: `activated`, then `installed` — the old worker active and
+      the new one waiting
+- [ ] The killed-app launch in B. As the app opens, open its worker under Develop › the
+      phone and leave that inspector open. A minute later, before switching away, read
+      the registration. A worker waiting (`installed`, third) is a **pass** with the note
+      showing and a **fail** without it. A worker still installing (`installing`, last):
+      wait, then read again. Nothing waiting or installing: there is one worker, the one
+      you opened, and its source settles it. The word that step added is a **pass**: the
+      new worker took over at launch. No word is a **fail**: the old worker is active with
+      nothing waiting
+- [ ] After the kill switch, a few seconds after opening the app online and before the
+      revert: the registration read gives `undefined` and the cache read `[]` — no
+      registration and no cache
+- [ ] After the revert and one online launch: `activated` again with nothing waiting or
+      installing, and the cache read as it was after the install
 - [ ] Console noise that is expected, not a fault: with the phone online and the house
       unreachable, one `service worker update check failed` warning per return to the
       foreground; and after the kill switch, the `InvalidStateError` warnings under the

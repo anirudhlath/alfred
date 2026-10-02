@@ -474,18 +474,11 @@ both 200 `text/html`, and either would install cleanly as the shell and then sta
 nothing registers. Copied over `public/sw.js` and deployed, it is the one remote way to
 empty an installed phone: every installed copy takes it at its next update check, drops
 every cache on the origin, unregisters, and reloads each page the old worker was serving,
-once. Its header is the procedure, and says why deleting `sw.js` instead changes nothing
+once. Its header gives the command, and says why deleting `sw.js` instead changes nothing
 and why the switch reloads only those pages — the page that registered it, reloaded, would
-register it again. To fire it, run `cp web/public/sw.kill.js web/public/sw.js`, commit
-that alone, and send it through a pull request like any other. While `sw.js` is
-`sw.kill.js` byte for byte, and only then, `sw.test.ts` and `sw-server-routes.test.ts`
-stand down, each with one passing test that says the switch is fired (a warning on the run
-in GitHub Actions), so CI passes and the merge deploys it. Afterwards, revert that commit.
-On the fired tree `sw-server-routes.test.ts`'s checks of `core/channels/spa.py` and
-`web_server.py` stand down with the rest, so a server-route change merged while the switch
-is deployed is first checked on the revert pull request, and fails there. What the switch
-leaves behind on the pages that lived through it is `docs/web-frontend.md`, "The kill
-switch".
+register it again. Firing it, undoing it, what CI does on the fired tree, and what the
+switch leaves behind on the pages that lived through it: `docs/web-frontend.md`, "The
+kill switch".
 
 The tests are `src/test/sw.test.ts` (the worker, driven event by event),
 `src/test/sw-kill.test.ts` (the kill switch, through the same fake scope),
