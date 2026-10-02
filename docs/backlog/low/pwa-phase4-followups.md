@@ -35,16 +35,21 @@ set, `display: standalone`, the standalone metas in `index.html` — and a worke
 `push` and `notificationclick` handlers to go into. Phase 5 also owes VAPID, the push
 adapter and the subscription's registration.
 
-One condition comes with the worker, and it fails silently. `activate` deletes every
-cache on the origin that is not `alfred-shell-<VERSION>`, and `caches` is scoped to the
-origin, not the worker. So any cache phase 5 wants for itself — notification media, a
-send outbox — has to live inside `alfred-shell-<VERSION>` or be named in a keep-list in
-`purge()`. Otherwise the next activate drops it, through a line written a phase earlier,
-with nothing in the failure to point at it.
+One condition comes with the worker, and it fails silently: `purge()` keeps nothing it
+was not written to keep, and no keep-list exists. `activate` deletes every cache on the
+origin that is not `alfred-shell-<VERSION>` (`caches` is scoped to the origin, not the
+worker). Inside that cache it deletes every entry that neither install's record nor the
+cached shell names; `src/test/sw.test.ts` pins that with "deletes an API response nothing
+should ever have cached". So a cache of phase 5's own — notification media, a send
+outbox — goes at the next activate, whether it has a name of its own or lives inside
+`alfred-shell-<VERSION>`, through code written a phase earlier, with nothing in the
+failure to point at it. Activate runs whenever `sw.js`'s bytes change, phase 5's own
+change included, and never for an ordinary deploy. IndexedDB is outside both purges.
 
 **Acceptance:** phase 5 builds the four surfaces from the handoff's copy as it stands,
-and either stores nothing in Cache Storage or adds a keep-list to `purge()` with a test
-in `src/test/sw.test.ts` proving its cache survives an activate.
+and either stores nothing in Cache Storage, or adds a keep-list to `purge()` — for its
+cache's name, and for its entries if it shares the shell cache — with a test in
+`src/test/sw.test.ts` that its cache survives an activate.
 
 ## 2. The foreground update check has no floor, and downloads all of `sw.js` each time
 
@@ -103,10 +108,13 @@ launch is ever reported booting a build the online app is not on, in a way that 
   after each activate, and activate runs only when `sw.js`'s bytes change, not on every
   deploy.
 - **`refresh()` does not follow the stylesheet to its fonts.** It stores what the new
-  shell names and then the shell. A deploy that changes a font's hash (an `@fontsource`
-  bump) leaves the offline copy with a stylesheet naming fonts it does not hold. Offline,
-  those faces fall back to the system stack — legible, and wrong — until the next install
-  precaches them.
+  shell names and then the shell, so a deploy that changes a font's hash (an
+  `@fontsource` bump) publishes a stylesheet naming fonts `refresh()` never fetched. The
+  online page covers most of that gap: the asset branch stores any 200 that is not HTML
+  (`isAsset`), so every face the page renders online after the deploy is cached at
+  runtime. Offline, the only faces lost are those no online page has rendered since the
+  deploy. They fall back to the system stack — legible, and wrong — and only until the
+  next install records them.
 
 **Acceptance:** `refresh()` follows the stylesheet's `.woff2` URLs as install does,
 declining rather than failing on a font, and install writes into the record any font
@@ -115,14 +123,15 @@ to `sw.js`, so batch them (see the top of this file).
 
 ## 6. No `apple-touch-startup-image`, and nobody has looked at what iOS shows
 
-Decision 11. `apple-touch-startup-image` is the only launch-screen mechanism iOS has, and
-iOS ignores the manifest's icons outright; the per-device media-query matrix it needs is a
-dozen checked-in PNGs that go stale with every new iPhone size. So the first step is an
-observation, not a fix: install the app in each theme and write down what the launch
-screen is — the icon on a plain ground, a white flash, a stretched screenshot. The phase-4
-device checklist has the step. Only then is the matrix worth pricing against a launch
-screen nobody minds. The two manifests are unaffected either way: they are Chromium's, and
-`background_color` is what Android composes from.
+Decision 11. What iOS builds its launch screen from, and why the manifests have no part in
+it, is `docs/web-frontend.md`, "The manifest pair". Shipping `apple-touch-startup-image`
+means a per-device media-query matrix: a dozen checked-in PNGs that go stale with every
+new iPhone size. So the first step is an observation, not a fix: install the app in each
+theme and write down what the launch screen is — the icon on a plain ground, a white
+flash, a stretched screenshot. The phase-4 device checklist has the step. Only then is the
+matrix worth pricing against a launch screen nobody minds. The two manifests are
+unaffected either way: they are Chromium's, and `background_color` is what Android
+composes from.
 
 **Acceptance:** the checklist's launch-screen observation is recorded here; then either a
 decision not to ship the matrix, or the matrix with a test pinning every size it claims.
@@ -211,11 +220,10 @@ describe the new build.
 
 ## 12. A page that lived through the kill switch never re-registers
 
-After the kill switch, every page loaded while it was deployed holds a registration that
-no longer exists, and `registration.update()` on each return to the foreground rejects
-with `InvalidStateError`. That costs one `console.warn` per foreground per open page while
-online, and nothing on screen. But such a page takes the restored worker only at its next
-launch, and an installed PWA can stay open for days.
+A page loaded while the kill switch was deployed holds a registration that no longer
+exists, so its foreground `registration.update()` rejects with `InvalidStateError`, and
+it takes the restored worker only at its next launch — and an installed PWA can stay open
+for days. What it logs meanwhile is `docs/web-frontend.md`, "The kill switch".
 
 The fix is for `lib/sw.ts` to register again when the foreground `update()` rejects with
 `InvalidStateError`, so an open page takes the restored worker at its next foreground. It
@@ -367,3 +375,7 @@ the plan in place, marked *(corrected in task 13)*; this is the index.
     tester has to change `sw.js`'s bytes to see it.
 11. **The checklist's deep link "from a previous notification".** iOS opens no link into a
     home-screen app, so the step runs in a Safari tab.
+12. **Decision 6 and the docs step: a phase-5 cache kept by living inside
+    `alfred-shell-<VERSION>`.** The entry purge deletes every entry there that neither the
+    record nor the cached shell names, so living there keeps nothing; and the loss comes
+    at the next activate, not between deploys (§1).

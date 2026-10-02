@@ -43,8 +43,9 @@ to 4 do not cover" at the end.
 | Service worker | Hand-written `public/sw.js` | — (no `vite-plugin-pwa`, no Workbox) |
 
 No component library, no icon package, no markdown renderer, no toast library, no
-command palette, no service-worker library. The presence field is a `<canvas>`, the Door's fuse is a
-`conic-gradient`, and slide-to-confirm is four pointer handlers and a keyboard path.
+command palette, no service-worker library. The presence field is a `<canvas>`, the
+Door's fuse is a `conic-gradient`, and slide-to-confirm is four pointer handlers and a
+keyboard path.
 
 ---
 
@@ -333,8 +334,10 @@ phase's reviews kept enforcing" below), one layer lower down:
   asks again itself and shows the field while it does. Seeding `onlineManager` from the
   flag would make the flag gate every request in the app, so it is deliberately not done.
 - **`UnansweredGate`** is a phone with a network and no answer from the house: no route
-  to it, no answer before the deadline, a proxy's 5xx or 4xx, a captive portal's page,
-  or the house failing to read its own store. `fetchAuthStatus` (`lib/auth.ts`) gives
+  to it, no answer before the deadline, a proxy's 5xx or 4xx to the read, a captive
+  portal's page, or the house failing to read its own store. Not a house stopped behind
+  the proxy: its 502 answers the navigation first, so the app never boots to ask
+  (`docs/backlog/low/pwa-phase4-followups.md` §8). `fetchAuthStatus` (`lib/auth.ts`) gives
   the read a deadline of `STATUS_DEADLINE_MS`, 10 s — the service worker's navigation
   deadline — and rejects a 200 that is not the status payload, and `QUERY_DEFAULTS`
   never retries a read that ran out of time. The route answers 200 with both booleans
@@ -704,9 +707,10 @@ rather than left for the next reviewer to find.
   heard the window's `offline` event, which it does when a signed-in phone loses its
   signal — the only way a bench meets one, since nothing past the gates is reachable before
   the house has answered. A launch that begins offline fires no such event and pauses
-  nothing, and that case is the gates' ("The gates" above). All three benches carry the same `read`
-  flag for it (`useMemory.ts:241-246`, `useSystem.ts:881-905`, `useTriggers.ts`), and a
-  bench that has not read says **nothing** rather than guessing which of the three it is.
+  nothing, and that case is the gates' ("The gates" above). All three benches carry the
+  same `read` flag for it (`useMemory.ts:241-246`, `useSystem.ts:881-905`,
+  `useTriggers.ts`), and a bench that has not read says **nothing** rather than guessing
+  which of the three it is.
 - **Never let a client-set mark outlive its evidence.** A `Pending` lives exactly
   `REREAD_MS` (60 s), after which the list itself is the evidence; `useSystem` prunes
   its `ended` and `saves` marks against the records still in the last read, so a mark
@@ -753,7 +757,7 @@ DoorProvider → Routes`. `DoorProvider` sits inside `AuthGate` so nothing reads
 |---|---|
 | TanStack Query | `["auth-status"]`, `["overview"]`, `["integrations"]`, `["attention"]`, `["room-history"]`, `["deferred"]`, `["pending-actions"]`, `["trace", stream, id]` (the Why sheet — `staleTime` of the join window, not the app's 10 s); and the benches' own: `["memory", "episodic", "browse"]`, `["memory", "episodic", "search", query]`, `["memory", "semantic" \| "routines" \| "scratchpad"]`, `["triggers"]`, `["system", "sessions" \| "credentials" \| "integrations" \| "attention"]`, `["system", "integration-status", name]`. Each bench's keys sit under one prefix, which is how `REHYDRATE_KEYS` (`ConnectionProvider.tsx`) reaches all of them with `["memory"]`, `["triggers"]` and `["system"]` |
 | `localStorage` | `alfred.theme`, `alfred.device`, `alfred.unsent`, `alfred.session`, `alfred.session-at` — every key is `alfred.<noun>`, `alfred.session-at` the one compound noun |
-| Cache Storage | `alfred-shell-v1` (the service worker's, `alfred-shell-<VERSION>`): `/index.html`, the hashed `/assets/*` it names, the `.woff2` fonts its stylesheet names, and `/__shell-manifest`, the worker's record of the precache. Nothing the house said is ever in it ("The service worker") |
+| Cache Storage | `alfred-shell-<VERSION>`, the service worker's: `/index.html`, the hashed `/assets/*` it names, the `.woff2` fonts its stylesheet names, and `/__shell-manifest`, the worker's record of the precache. Nothing the house said is ever in it ("The service worker") |
 
 ---
 
@@ -969,7 +973,7 @@ graph TD
 
     subgraph SWG["Service worker · web/public/sw.js"]
         SW[fetch · install · activate · message]
-        ShellCache[("alfred-shell-v1<br/>index.html · /assets/* · woff2")]
+        ShellCache[("alfred-shell-#lt;VERSION#gt;<br/>index.html · /assets/* · woff2")]
     end
 
     subgraph "Alfred :8081"
@@ -1025,9 +1029,9 @@ Spec §4 lists twelve. The automated half lives in `web/src`
 `ConnectionProvider.test.tsx` for rehydration, `Layer.test.tsx` and `DoorLayer.test.tsx`
 for explicit dismissal, `PresenceField.test.tsx` for reduce-motion). Phase 4 added
 `icons.test.ts` and `manifest.test.ts` for §4.2's icons and manifest, `sw.test.ts`,
-`sw-kill.test.ts` and `lib/sw.test.ts` for the worker, and `useOnline.test.tsx`, `OfflineGate.test.tsx`,
-`UnansweredGate.test.tsx` and `AuthGate.test.tsx` for a cold launch that has read
-nothing (§4.10). The half that needs a real phone is
+`sw-kill.test.ts` and `lib/sw.test.ts` for the worker, and `useOnline.test.tsx`,
+`OfflineGate.test.tsx`, `UnansweredGate.test.tsx` and `AuthGate.test.tsx` for a cold
+launch that has read nothing (§4.10). The half that needs a real phone is
 `docs/superpowers/qa/2026-09-07-pwa-phase1-ios-checklist.md`, with
 `2026-09-10-pwa-phase2-ios-checklist.md` beside it for the Workshop and the Activity
 bench, `2026-09-16-pwa-phase3-ios-checklist.md` for the other three — which carries the
@@ -1231,9 +1235,9 @@ Two things about `activate` are not obvious from the code:
 - **`caches` is scoped to the origin, not to the worker.** "Every other cache" means every
   cache that any code on this hostname owns. So the purge assumes the origin is Alfred's
   alone, since a second app or worker scope behind the same hostname would lose its caches
-  on every activate. Any cache phase 5 wants for itself has to live inside
-  `alfred-shell-<VERSION>` or be named in a keep-list in `purge()`, or it is dropped
-  between deploys by a line written a phase earlier.
+  on every activate. Nor is a cache safe inside `alfred-shell-<VERSION>`: the entry purge
+  keeps only what the record or the cached shell names (next). What that asks of phase 5
+  is `docs/backlog/low/pwa-phase4-followups.md` §1.
 - **A record it cannot trust means keep everything.** A record that is absent, is not a
   list, or will not read is treated the same way, because deleting on a record you cannot
   read is guessing, and what it guesses with is the only offline copy of the app. The
@@ -1294,7 +1298,7 @@ storage is full serves what a browser with no worker would.
 
 ### How the cache is versioned
 
-`VERSION` (`"v1"`) is the one constant at the top of `sw.js`, and the cache is
+`VERSION` is the one constant at the top of `sw.js`, and the cache is
 `alfred-shell-<VERSION>`. Bump it when the **policy** changes in a way the old cache must
 not survive, and not on a deploy: asset URLs are content-hashed, and activate's prune
 (the record plus what the cached shell names) is what clears an old build out of the
@@ -1330,11 +1334,12 @@ sequenceDiagram
     P->>B: registration.update(), on a return to the foreground
     B->>S: GET /sw.js
     S-->>B: bytes that differ from the installed worker's
+    B-->>P: updatefound
     B->>N: install
     N->>S: /index.html, its /assets/, the stylesheet's woff2
     N-->>B: installed, and waiting
     Note over B: the old worker still serves every open page
-    B-->>P: updatefound, then statechange to installed
+    B-->>P: statechange to installed
     P->>P: UpdateNote — A newer Alfred is waiting.
     P->>N: SKIP_WAITING, when the user taps Reload
     N->>N: activate — purge, then clients.claim()
@@ -1453,8 +1458,7 @@ implements no fetch.
 
 Two things are not tested here. Nothing checks that the built `dist/sw.js` exists and is
 served as JavaScript (`docs/backlog/low/pwa-phase4-followups.md` §10). And none of it is
-WebKit: what Safari does with any of
-it is the phase-4 device checklist's
+WebKit: what Safari does with any of it is the phase-4 device checklist's
 (`docs/superpowers/qa/2026-09-16-pwa-phase4-ios-checklist.md`).
 
 ### The manifest pair
@@ -1474,7 +1478,8 @@ Read that narrowly, because it is not known to fix anything on a phone:
   has no observer for a later `href` change, and the swap runs after parsing, so the
   manifest iOS reads may always be the dark one `index.html` ships. And iOS takes its
   launch screen from `apple-touch-startup-image`, which this app does not ship (plan
-  decision 11), not from the manifest at all.
+  decision 11), not from the manifest at all. Nobody has yet looked at what it shows
+  instead (`docs/backlog/low/pwa-phase4-followups.md` §6).
 - **Chromium observes the link, and that is where the value and the cost both are.**
   Chrome's WebAPK update check fingerprints both colours, so crossing 07:00 or 19:00
   presents a manifest that disagrees with the installed app, which may schedule a silent
@@ -1522,8 +1527,7 @@ regenerated from a different drawing fails rather than ships.
   home-screen prompt row and no System › Reach card**. The handoff's copy is final for all
   four (`Alfred.dc.html:669`, `:670`, `:751` and `:385-397`). What phase 4 hands phase 5
   is an app the rail's gesture installs correctly, and a worker to add `push` and
-  `notificationclick` handlers to — on one condition, that any cache of its own lives
-  inside `alfred-shell-<VERSION>` or in `purge()`'s keep-list
+  `notificationclick` handlers to, with a condition on any cache of phase 5's own
   (`docs/backlog/low/pwa-phase4-followups.md` §1).
 - **Anything iOS does with the manifests or the launch screen** is unmeasured: the
   phase-4 device checklist is the only thing that settles it, and it is unrun.

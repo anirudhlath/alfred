@@ -137,9 +137,8 @@ Phase 4: the app installs and opens with no network.
   System › Reach card: the rail's every step exists to reach *Allow in iOS*, and steps
   with nothing behind them would be controls that pretend. Phase 5 owes all four (the
   handoff's copy for them is final), plus VAPID, the push adapter, the registration, and
-  the worker's `push` and `notificationclick` handlers — and any cache it wants goes
-  inside `alfred-shell-<VERSION>` or into `purge()`'s keep-list, or the next activate
-  deletes it. Filed as `docs/backlog/low/pwa-phase4-followups.md` §1.
+  the worker's `push` and `notificationclick` handlers, with a condition on any cache of
+  its own. Filed, condition and all, as `docs/backlog/low/pwa-phase4-followups.md` §1.
 - **Four things the old SPA could do and this client cannot**, which is the whole of the
   remaining parity gap (spec §8's gate is *full capability parity with the old SPA*).
   Three of them have no endpoint to call: **creating, editing or deleting a trigger**
@@ -163,22 +162,22 @@ things a reviewer can *read in the shipped bytes*, and a negative requirement �
 worker never caches `/api`" — is one assertion against a hand-written file and an argument
 against a plugin's route table.
 
-**Install, activate, a fetch handler with two branches, and one message.** It fetches `/index.html` past the
-HTTP cache and takes the `/assets/…` URLs Vite wrote into it as the precache manifest —
-the entry chunk and the stylesheet. It then reads the **stylesheet** for the `url()` rules
-the HTML never mentions and takes the `.woff2` among them: 8 files, 139 436 of the
-220 380 font bytes the build emits (measured at `c49e66d`). The 10 `.woff` fallbacks
-`@fontsource` ships beside them are skipped, because nothing that can run a service
-worker has needed one for years. All of it plus a
-`/__shell-manifest` record of what it actually cached goes into `alfred-shell-<VERSION>`
-(the one constant at the top of `sw.js`; the tests read it from there rather than restating
-it, and this file names no version for the same reason) — the assets first, then the shell
-that names them, then the record, each write finished before the next starts. That cache is
-the one the previous worker is still serving from, so an install that fails part way — a
-phone that fills up — must leave the old shell and its assets as they were, not a new shell
-naming a chunk it never stored. The record goes last because it is the install's claim to
-have finished: activate prunes by it, and the activate that reads it may be an older worker's
-still waiting behind the active one, so a record written before a shell that is then refused
+**Install, activate, a fetch handler with two branches, and one message.** It fetches
+`/index.html` past the HTTP cache and takes the `/assets/…` URLs Vite wrote into it as the
+precache manifest — the entry chunk and the stylesheet. It then reads the **stylesheet**
+for the `url()` rules the HTML never mentions and takes the `.woff2` among them: 8 files,
+139 436 of the 220 380 font bytes the build emits (measured at `c49e66d`). The 10 `.woff`
+fallbacks `@fontsource` ships beside them are skipped, because nothing that can run a
+service worker has needed one for years. All of it plus a `/__shell-manifest` record of
+what it actually cached goes into `alfred-shell-<VERSION>` (the one constant at the top of
+`sw.js`; the tests read it from there rather than restating it, and this file names no
+version for the same reason) — the assets first, then the shell that names them, then the
+record, each write finished before the next starts. That cache is the one the previous
+worker is still serving from, so an install that fails part way — a phone that fills up —
+must leave the old shell and its assets as they were, not a new shell naming a chunk it
+never stored. The record goes last because it is the install's claim to have finished:
+activate prunes by it, and the activate that reads it may be an older worker's still
+waiting behind the active one, so a record written before a shell that is then refused
 would have that activate delete the fonts of the shell that is still there.
 
 Three things about how it fetches. Everything *install* asks for goes out
@@ -217,12 +216,12 @@ a new deploy held the navigation's refresh, and its connection, for 309 seconds 
 page was served; with the ceiling, the install fails and the refresh lets go at 120. Two
 minutes is generous on purpose: the entry chunk, 418 537 bytes at `c49e66d`, reaches it
 only below 3.5 kB/s — about 28 kbit/s, a GPRS-class link, on which the page's own load of
-that chunk takes as long — and it ends well inside the browser's 300. It is per body, so an event whose
-every body crawled could still meet the browser's limit first. What a stall costs is ten
-seconds, and a body still arriving at the ceiling costs the same things: in the shell or a
-chunk it fails the install, in a font it costs that font, in a refresh the shell already
-there stays — and the page's own copy of a response is never cut, since what the worker
-gives up is its copy.
+that chunk takes as long — and it ends well inside the browser's 300. It is per body, so
+an event whose every body crawled could still meet the browser's limit first. What a
+stall costs is ten seconds, and a body still arriving at the ceiling costs the same
+things: in the shell or a chunk it fails the install, in a font it costs that font, in a
+refresh the shell already there stays — and the page's own copy of a response is never
+cut, since what the worker gives up is its copy.
 
 The deadline comes in two shapes and the choice is forced. Install's requests and the
 asset branch's **abort**, with a 10-second `AbortSignal` on the wait for the headers, which
@@ -370,8 +369,8 @@ last: the asset branch serves them cache-first to any page whose HTML names them
 with the online page whose navigation began the refresh, and the next online navigation to
 that deploy finds them cached and has only the HTML left to publish. What they lack is a
 claim on the next activate. They are bounded (what a shell names is the entry chunk and the
-stylesheet, 486 880 bytes at `c49e66d`) and they are collected by that activate, which is the
-same collector every other runtime entry relies on. Nothing deletes them earlier on
+stylesheet, 486 880 bytes at `c49e66d`) and they are collected by that activate, which is
+the same collector every other runtime entry relies on. Nothing deletes them earlier on
 purpose: a refresh that deleted would be racing a concurrent install writing the same
 bytes, and "named by nothing" is only a settled fact at activate.
 
@@ -472,49 +471,41 @@ both 200 `text/html`, and either would install cleanly as the shell and then sta
 `install` only re-runs when `sw.js`'s own bytes change.
 
 **The kill switch is `public/sw.kill.js`**, a worker that ships in every build and that
-nothing registers. Copied over `public/sw.js` and deployed, it is the one remote way to empty
-an installed phone: every installed copy takes it at its next update check, drops every cache
-on the origin, unregisters, and reloads each page the old worker was serving, once. Its header
-is the procedure, and says why deleting `sw.js` instead changes nothing and why the switch
-reloads only those pages — the page that registered it, reloaded, would register it again.
-Fire it as a commit of its own — `cp web/public/sw.kill.js web/public/sw.js`, committed
-alone, through a pull request like any other. While `sw.js` is `sw.kill.js` byte for byte,
-and only then, `sw.test.ts` and `sw-server-routes.test.ts` stand down, each with one passing
-test that says the switch is fired (a warning on the run in GitHub Actions), so CI passes
-and the merge deploys it. Afterwards, revert that commit. Two things follow from the fired
-tree. `sw-server-routes.test.ts`'s checks of `core/channels/spa.py` and `web_server.py`
-stand down with the rest, so a server-route change merged while the switch is deployed is
-first checked on the revert pull request, and fails there. And every page loaded while
-the switch is deployed ends up holding a registration that no longer exists: while the
-phone is online, each of its returns to the foreground logs one `InvalidStateError` as
-`service worker update check failed`, one per open page, for as long as the page lives —
-after the revert too, until it is relaunched. Nothing shows on screen, and those pages take
-the restored worker only at their next launch (`docs/backlog/low/pwa-phase4-followups.md`
-§12).
+nothing registers. Copied over `public/sw.js` and deployed, it is the one remote way to
+empty an installed phone: every installed copy takes it at its next update check, drops
+every cache on the origin, unregisters, and reloads each page the old worker was serving,
+once. Its header is the procedure, and says why deleting `sw.js` instead changes nothing
+and why the switch reloads only those pages — the page that registered it, reloaded, would
+register it again. To fire it, run `cp web/public/sw.kill.js web/public/sw.js`, commit
+that alone, and send it through a pull request like any other. While `sw.js` is
+`sw.kill.js` byte for byte, and only then, `sw.test.ts` and `sw-server-routes.test.ts`
+stand down, each with one passing test that says the switch is fired (a warning on the run
+in GitHub Actions), so CI passes and the merge deploys it. Afterwards, revert that commit.
+On the fired tree `sw-server-routes.test.ts`'s checks of `core/channels/spa.py` and
+`web_server.py` stand down with the rest, so a server-route change merged while the switch
+is deployed is first checked on the revert pull request, and fails there. What the switch
+leaves behind on the pages that lived through it is `docs/web-frontend.md`, "The kill
+switch".
 
 The tests are `src/test/sw.test.ts` (the worker, driven event by event),
 `src/test/sw-kill.test.ts` (the kill switch, through the same fake scope),
 `src/test/sw-harness.test.ts` (the fake scope itself — it has to model `ExtendableEvent`,
-`Cache.put`, `Clients.matchAll` and which worker controls each open page closely enough that
-a test passing here means a worker that runs on a phone), `src/test/sw-server-routes.test.ts`
-(the `NEVER` and `NEVER_UNDER` lists, read out of `sw.js` and held against the routes
-`create_app` and `mount_spa` declare) and `src/lib/sw.test.ts` (the page's side, against a fake `navigator.serviceWorker`).
-That `sw-server-routes.test.ts` reads the lists with a regular expression and `JSON.parse`
-is why `sw.js` is not run through a formatter: a trailing comma added to either array
-breaks the parse.
+`Cache.put`, `Clients.matchAll` and which worker controls each open page closely enough
+that a test passing here means a worker that runs on a phone),
+`src/test/sw-server-routes.test.ts` (the `NEVER` and `NEVER_UNDER` lists, read out of
+`sw.js` and held against the routes `create_app` and `mount_spa` declare) and
+`src/lib/sw.test.ts` (the page's side, against a fake `navigator.serviceWorker`). That
+`sw-server-routes.test.ts` reads the lists with a regular expression and `JSON.parse` is
+why `sw.js` is not run through a formatter: a trailing comma added to either array breaks
+the parse.
 
 ## The icons and the manifests
 
-`public/icon.svg` is the source — the handoff's home-screen mark (`Alfred.dc.html:530`), a
-capital `A` drawn as two stroked paths on a full-bleed square — and the three PNGs beside
-it are rendered from it once and committed. It is geometry rather than `<text>` because a
-`<text>` icon renders in whatever font the rasteriser has, and
-`@fontsource-variable/dm-sans` ships `woff2` only, which neither `rsvg-convert` nor `resvg`
-can load. It is full-bleed rather than rounded because iOS applies its own mask and
-composites transparency on a home-screen tile as **black**, so the PNGs must carry no alpha
-at all (spec §4.2). And `icon-512.png` is both `any` and `maskable`: the drawing's furthest
-inked pixel is 170.5 px from the centre of the 512 canvas, inside the maskable safe
-circle's 204.8 px radius, so one file is correct with a mask and without one.
+`public/icon.svg` is the source — the handoff's home-screen mark (`Alfred.dc.html:530`) —
+and the three PNGs beside it are rendered from it once and committed. Why the mark is
+paths rather than `<text>`, why it is full-bleed and the PNGs carry no alpha, and why one
+512 PNG serves as both `any` and `maskable` are in `docs/web-frontend.md`, "The icons";
+how to make them again is below.
 
 ### Regenerating the icons
 
@@ -550,20 +541,10 @@ retuning the palette fails that test until the icon is redrawn and re-rendered.
 
 There are two, `manifest.json` and `manifest-light.json`, identical but for `theme_color`
 and `background_color` (`#25221F` in the first, `#F6F3EE` in the second), and `applyTheme`
-swaps the `<link rel="manifest">` alongside the `theme-color` meta; `src/test/manifest.test.ts`
-holds them to that. **Read that narrowly, because it is not yet known to fix anything on a
-phone.** A manifest is consumed at *install* time, so the most this can do is align an
-install with the theme in force at Add to Home Screen; it does not follow the theme
-afterwards, and someone who installs at 22:00 has a dark launch screen at noon for ever.
-On iOS it may do nothing at all: WebKit fetches at most one manifest per document load and
-has no observer for a later `href` change, and the swap runs after parsing, so the
-manifest iOS reads may always be the dark one `index.html` ships. iOS also builds its
-launch screen from `apple-touch-startup-image` links, which this app does not ship
-(`docs/backlog/low/pwa-phase4-followups.md` §6) — not from the manifest. Chromium *does*
-observe the link, which is where the value is; it is also where the cost is, since Chrome's
-WebAPK update check fingerprints exactly those two colours, and crossing 07:00 or 19:00
-may schedule a silent reinstall about once a day. None of this is measured: the phase-4
-device checklist is the only thing that can settle it, and it is unrun.
+swaps the `<link rel="manifest">` alongside the `theme-color` meta;
+`src/test/manifest.test.ts` holds them to that. **Read that narrowly, because it is not
+yet known to fix anything on a phone**: `docs/web-frontend.md`, "The manifest pair", says
+why, platform by platform, and the phase-4 device checklist is what will settle it.
 
 ## Things worth knowing before you change something
 

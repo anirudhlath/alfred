@@ -17,9 +17,10 @@ version and date at the bottom.
 
 **Every step down to the kill switch can be answered by looking at the phone**, as in
 phase 3. What the worker holds — its registration and its cache — cannot be seen on the
-phone at all, so the steps infer it from what an offline launch does. The one section
-that needs a Mac, "With Web Inspector", is at the end and optional; it settles what the
-inference cannot.
+phone at all, so the steps infer it from what an offline launch does. Two things need a
+Mac, and both are optional: the throttled install, because Settings › Developer appears
+only on a phone paired with Xcode, and "With Web Inspector", at the end, which settles
+what the inference cannot.
 
 The phase-3 checklist's two measured facts (the viewport readings and the safe-area
 inset in standalone mode) still hold, and nothing here re-measures them.
@@ -28,8 +29,14 @@ inset in standalone mode) still hold, and nothing here re-measures them.
 
 - [ ] The build deployed is the one under test (`git log -1` on the deploy host)
 - [ ] Two more changes ready to ship during the run, each through its own pull request:
-      **A**, an ordinary change with something visible on the offline gate (a colour
-      token, say) and `web/public/sw.js` untouched; and **B**, one byte of
+      **A**, an ordinary change you can see on every screen, online and on the offline
+      gate alike, with `web/public/sw.js` untouched — a rule added at the end of
+      `src/index.css` will do, such as
+      `#root { outline: 4px solid var(--accent); outline-offset: -4px; }`. Not a colour
+      token: `contrast.test.ts` holds the tokens to their restatement in
+      `src/test/contrast.ts`, `icons.test.ts` pins `--bg` and `--accent` to the icon, and
+      `manifest.test.ts` pins `--bg` to the manifests, so a token edit fails `ci-ok`
+      unless those move in the same pull request. And **B**, one byte of
       `web/public/sw.js` changed — a comment is enough. B installs a new worker on every
       phone that has the app, which is the point of it. Two later steps each need one more
       byte change of the same kind
@@ -37,9 +44,12 @@ inset in standalone mode) still hold, and nothing here re-measures them.
       install
 - [ ] You can stop the house and start it again
 - [ ] Airplane mode, and a Wi-Fi network that reaches nothing: a second phone's hotspot
-      with that phone's mobile data off
-- [ ] Optional: Settings › Developer › Network Link Conditioner, if the Developer menu is
-      available, for the throttled install
+      with that phone's mobile data off. On it, this phone's own mobile data must be off
+      too, or iOS sends the traffic over mobile data instead, the house answers, and the
+      step fails for the wrong reason
+- [ ] Optional, for the throttled install: Settings › Developer › Network Link
+      Conditioner. The Developer menu appears only once the phone has been paired with
+      Xcode on a Mac
 - [ ] Optional: a Mac with Safari's Web Inspector, for the last section
 
 ## Install
@@ -52,17 +62,18 @@ inset in standalone mode) still hold, and nothing here re-measures them.
       worker claims it, which is a defect. Chromium fires `controllerchange` once there and
       the app ignores that one; if Safari fires it twice, the second would reload. Record
       what you saw either way
-- [ ] **A throttled install.** Delete the app and set Network Link Conditioner to "3G" (or
-      "Very Bad Network"). Add the app again and open it, and leave it on the Room for two
-      minutes. Then Airplane mode, kill the app and open it from the tile: it **paints**.
-      Record whether it did, then set the conditioner back. This is the only measurement
-      of WebKit under the worker's per-read deadline and any install time limit
+- [ ] **A throttled install** (optional: it needs the Developer menu). Delete the app and
+      set Network Link Conditioner to "3G" (or "Very Bad Network"). Add the app again and
+      open it, and leave it on the Room for two minutes. Then Airplane mode, kill the app
+      and open it from the tile: it **paints**. Record whether it did, then set the
+      conditioner back. This is the only measurement of WebKit under the worker's
+      per-read deadline and any install time limit
 
 ## The launch screen — an observation, not an assertion
 
-iOS builds a launch screen from `apple-touch-startup-image`, which this app does not
-ship, and may never read the swapped manifest at all. So nothing here can fail; it is the
-measurement `docs/backlog/low/pwa-phase4-followups.md` §6 is waiting for.
+Nothing here can fail. Why the manifests may have no part in what iOS shows is
+`docs/web-frontend.md`, "The manifest pair"; this section is the measurement
+`docs/backlog/low/pwa-phase4-followups.md` §6 is waiting for.
 
 - [ ] Install during daylight with the light theme active, kill the app, open it from the
       tile, and **record what you see** before the app paints: the colour of the screen,
@@ -90,9 +101,10 @@ measurement `docs/backlog/low/pwa-phase4-followups.md` §6 is waiting for.
       lapsed
 - [ ] **A deep link, offline.** iOS opens no link into a home-screen app, and a Safari tab
       has a worker of its own, so this runs in Safari. Open `https://alfred.example.com` in
-      a Safari tab once, online, and let it load. Then Airplane mode, and open
-      `https://alfred.example.com/actions/<any id>` in a new tab. The same shell loads with
-      the offline gate, and the Door does not open, because nothing has been read
+      a Safari tab once, online, then wait a minute, so the tab's worker finishes copying
+      the app. Then Airplane mode, and open `https://alfred.example.com/actions/<any id>`
+      in a new tab. The same shell loads with the offline gate, and the Door does not
+      open, because nothing has been read
 
 ## Online, and the house does not answer
 
@@ -101,15 +113,17 @@ Every answer the status read can get, and the gate each one shows, is mapped in
 itself; a proxy's 4xx or 5xx to the read is mapped there and pinned in
 `web/src/gates/AuthGate.test.tsx`, not here.
 
-- [ ] Join the dead hotspot, kill the app and open it. You see the presence field and then
-      `The house is not answering.`, with `Try again`. It may take a second or so on a
-      network that refuses at once, and about twenty seconds on one that hangs. **Never**
-      the sign-in gate's `signed out`, and never `No way to the house.`
+- [ ] Turn this phone's mobile data off and join the dead hotspot, then kill the app and
+      open it. You see the presence field and then `The house is not answering.`, with
+      `Try again`. It may take a second or so on a network that refuses at once, and about
+      twenty seconds on one that hangs. **Never** the sign-in gate's `signed out`, and
+      never `No way to the house.`
 - [ ] Tap `Try again` with the hotspot still dead. The button dims while it asks and the
       gate stays up; it never drops back to the bare field
 - [ ] Switch away and back: it asks again by itself, and the button dims for a moment
-- [ ] Rejoin a network that reaches the house and tap `Try again`. The gate gives way to the
-      Room, or to the sign-in gate if the session has lapsed
+- [ ] Rejoin a network that reaches the house, turn mobile data back on, and tap
+      `Try again`. The gate gives way to the Room, or to the sign-in gate if the session
+      has lapsed
 - [ ] **The house stopped, behind the reverse proxy.** Stop the house, kill the app, and
       open it. Record what appears. The predicted result is the proxy's own error page,
       because the network answered and the app never boots, so the unanswered gate cannot
@@ -136,6 +150,8 @@ itself; a proxy's 4xx or 5xx to the read is mapped there and pinned in
       online launch above copied A for offline use. If that launch could not copy all of
       A, the gate shows the previous build instead, whole — which also passes. Record
       which you saw
+- [ ] Revert A, through a pull request of its own, and let it deploy. Kill the app and
+      open it online: A's change is gone
 
 ## A changed `sw.js` (B)
 
@@ -145,10 +161,14 @@ itself; a proxy's 4xx or 5xx to the read is mapped there and pinned in
 - [ ] Open the Workshop: the note is not there, because it lives in the Room's header
       (`docs/backlog/low/pwa-phase4-followups.md` §3). Back in the Room it is still there
 - [ ] Tap `Reload`. The page reloads **once** and does not loop, and the note is gone
-- [ ] **With the app killed.** Ship another byte change to `sw.js`, then open the app from
-      the tile. Either there is no note, because the new worker took over at launch, or the
-      note is offered, because it is waiting. Both pass. Which one it was is recorded in
-      the last section, if you have a Mac
+- [ ] **With the app killed.** Kill the app, then ship another byte change to `sw.js` —
+      a word added to a comment, so the last section can find it. Once it has deployed,
+      open the app from the tile and give it ten seconds. The note now is a **pass**: the
+      new worker is waiting. With no note, switch away and back (with a Mac, take the last
+      section's reading first) and give it ten seconds more. A note on that switch is a
+      **fail**: the launch ran on the old worker and never noticed the new one, which is
+      the iOS failure this step exists to catch. No note on that switch either is a
+      **pass**: the new worker took over at launch
 
 ## The kill switch
 
@@ -164,11 +184,13 @@ The procedure is `docs/web-frontend.md`, "The kill switch", step for step.
       what you saw. A shell that still paints means the switch did not take. The predicted
       worst case is the switch still installed with no fetch handler and no caches, which
       looks the same as success here; the last section tells them apart
-- [ ] Online again, open the app: it works as a plain web page — the Room, signed in
+- [ ] Online again, open the app: it works as a plain web page — the Room, signed in, or
+      the sign-in gate if the session has lapsed
 - [ ] **Revert the firing commit**, through a pull request of its own, and let it deploy.
       Kill the app, open it online, and leave it on the Room for a minute. Then Airplane
-      mode, kill it, and open it: it **paints again**. That proves the restored worker registered. Do not skip this step:
-      it is the one that proves the switch is reversible
+      mode, kill it, and open it: it **paints again**. That proves the restored worker
+      registered. Do not skip this step: it is the one that proves the switch is
+      reversible
 
 ## The keyboard, again
 
@@ -189,22 +211,25 @@ The procedure is `docs/web-frontend.md`, "The kill switch", step for step.
 
 Phase 3's checklist keeps to what the phone shows. This section breaks that rule on
 purpose, because a worker's registration and its cache are invisible on the phone.
-Connect the phone, then Safari › Develop › the phone › the Alfred home-screen app.
+Turn on Settings › Safari › Advanced › Web Inspector on the phone, connect it to the Mac,
+then Safari › Develop › the phone › the Alfred home-screen app.
 
 - [ ] After the install: one registration, scope `/`, active. Cache Storage holds
       `alfred-shell-v1` with `/index.html`, two files under `/assets/` (the entry chunk
       and the stylesheet), eight `.woff2` files and `/__shell-manifest`
 - [ ] After B, before `Reload`: one active worker and one waiting
-- [ ] After a byte change shipped with the app killed and then opened: which worker is
-      active, and whether one is waiting
+- [ ] Ten seconds after the killed-app launch in B, before switching away: open the active
+      worker's source and look for the word that step added. **Pass:** the new worker is
+      active and none is waiting, or the old one is active with the new one waiting and
+      the note showing. **Fail:** the old worker is active with nothing waiting
 - [ ] After the kill switch: no registration, and nothing in Cache Storage
 - [ ] After the revert and one online launch: one registration again, and `alfred-shell-v1`
       filled as it was after the install
 - [ ] Console noise that is expected, not a fault: with the phone online and the house
       unreachable, one `service worker update check failed` warning per return to the
-      foreground. After the kill switch, every page loaded while it was deployed logs one
-      `InvalidStateError` under the same message per return to the foreground, for as long
-      as the page lives — after the revert too, until it is relaunched
+      foreground; and after the kill switch, the `InvalidStateError` warnings under the
+      same message that `docs/web-frontend.md` describes ("The kill switch", What it
+      leaves behind)
 - [ ] Nothing else from the worker on the console
 
 ## Nothing lies
