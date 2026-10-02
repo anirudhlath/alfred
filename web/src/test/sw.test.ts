@@ -235,14 +235,19 @@ describe.skipIf(FIRED)("install", () => {
     expect(worker.fetched).toEqual(["/index.html", ...SHELL_ASSETS]);
   });
 
-  it("asks past the HTTP cache for every one of them", async () => {
+  it("asks past the HTTP cache for the HTML, and for nothing it names", async () => {
     const worker = shell();
     await worker.install();
-    // Without `cache: "reload"`, a worker installing seconds after a deploy can
-    // precache the bytes that deploy just replaced, and serve them until the
-    // next one. Every install fetch, not merely the HTML — spelled out rather
-    // than compared against `fetched`, which two empty lists would also satisfy.
-    expect(worker.reloaded).toEqual(["/index.html", ...SHELL_ASSETS]);
+    // /index.html is the one URL a deploy rewrites under the same name, so it
+    // is the one an HTTP cache could answer with the deploy before; without
+    // `cache: "reload"`, a worker installing seconds after a deploy could
+    // precache that and serve it until the next one. A hashed file's bytes
+    // cannot differ from what the HTTP cache holds under its name, and asking
+    // past it for one re-downloaded, on every first install, the chunk and
+    // stylesheet the page had fetched a moment before. Spelled out rather than
+    // compared against `fetched`, which two empty lists would also satisfy.
+    expect(worker.fetched).toEqual(["/index.html", ...SHELL_ASSETS]);
+    expect(worker.reloaded).toEqual(["/index.html"]);
   });
 
   it("precaches nothing that is not a same-origin /assets/ path", async () => {
@@ -482,12 +487,13 @@ describe.skipIf(FIRED)("install, and the fonts", () => {
     }
   });
 
-  it("asks past the HTTP cache for the fonts too", async () => {
+  it("leaves the fonts to the HTTP cache, as it leaves the chunks", async () => {
     const worker = withFonts();
     await worker.install();
-    // Same reason as the shell and the chunks: a worker installing seconds
-    // after a deploy must not precache the bytes that deploy replaced.
-    expect(worker.reloaded).toEqual(["/index.html", ...SHELL_ASSETS, ...SHELL_FONTS]);
+    // Hashed like the chunks, and for the same reason not asked for past the
+    // HTTP cache: their names change when their bytes do. Only the HTML is.
+    expect(worker.fetched).toEqual(expect.arrayContaining(SHELL_FONTS));
+    expect(worker.reloaded).toEqual(["/index.html"]);
   });
 
   it("records the fonts in the manifest, so activate does not prune them", async () => {
@@ -2314,19 +2320,22 @@ describe.skipIf(FIRED)("navigations", () => {
     expect(worker.handed[before]).toMatchObject({ mode: "navigate", method: "GET" });
   });
 
-  it("does not ask past the HTTP cache for the page's own navigation, only for the refresh", async () => {
+  it("asks past the HTTP cache for nothing on a navigation, the page's or the refresh's", async () => {
     const worker = shell();
     await worker.install();
     worker.respond("/", deployed("two", NEXT_ASSETS));
     worker.respond(NEXT_ASSETS[0], js("console.log(2)"));
     worker.respond(NEXT_ASSETS[1], css("body{color:blue}"));
+    const before = worker.fetched.length;
+    const reloads = worker.reloaded.length;
     await worker.request({ path: "/", mode: "navigate" });
+    expect(worker.fetched.slice(before)).toEqual(["/", ...NEXT_ASSETS]);
     // The navigation is the page's request, forwarded as it arrived: rewriting
-    // its cache mode is not this worker's to do.
-    expect(worker.reloaded).not.toContain("/");
-    // The refresh's own fetches do go past it, for the reason install's do — a
-    // deploy that just landed must not be read out of the HTTP cache.
-    expect(worker.reloaded).toEqual(expect.arrayContaining(NEXT_ASSETS));
+    // its cache mode is not this worker's to do. And what the refresh fetches
+    // is the files the new page names, hashed — the HTTP cache can only hold
+    // the same bytes under those names, and often does, since the page fetches
+    // them too.
+    expect(worker.reloaded.slice(reloads)).toEqual([]);
   });
 
   it("answers a nested navigation too, which is keyed on the mode and not the destination", async () => {
@@ -2369,10 +2378,12 @@ describe.skipIf(FIRED)("navigations", () => {
     expect(worker.fetched[before]).toBe("/");
     expect(worker.inits[before]).toBeUndefined();
     // The refresh's fetches are this worker's own requests rather than the
-    // page's, so they are aborted rather than raced, and they carry both halves.
+    // page's, so they are aborted rather than raced: a signal, and nothing
+    // else. No `cache: "reload"` — a hashed file's bytes cannot have changed
+    // under its name.
     const refreshed = worker.inits.slice(before + 1);
     expect(refreshed).toHaveLength(2);
-    for (const init of refreshed) expect(init).toMatchObject({ cache: "reload" });
+    for (const init of refreshed) expect(Object.keys(init!)).toEqual(["signal"]);
     for (const init of refreshed) expect(init!.signal).toBeInstanceOf(AbortSignal);
     // Raced or aborted, the deadline is armed and taken back down either way:
     // one for the navigation, and one for each read of the page's body it
@@ -3071,7 +3082,9 @@ describe.skipIf(FIRED)("assets", () => {
   it("does not ask past the HTTP cache for a runtime asset", async () => {
     // The bytes behind a hashed URL cannot have changed, so `cache: "reload"`
     // here would spend a phone's bytes re-fetching what the HTTP cache already
-    // holds. install is the opposite case and asks for exactly that.
+    // holds. install and refresh() leave every hashed file to it the same way;
+    // the one thing either asks past it for is the HTML, which a deploy
+    // rewrites under the same name.
     const worker = shell();
     await worker.install();
     worker.respond(LATE_FONT, font());

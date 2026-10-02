@@ -936,7 +936,8 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
       harness.inits.push(init);
       // Recorded rather than asserted on the source: `cache: "reload"` is the
       // only thing between a worker installing seconds after a deploy and a
-      // precache of the bytes that deploy just replaced.
+      // precache of the HTML that deploy just replaced — and, asked for a
+      // hashed file, a re-download of bytes the HTTP cache already holds.
       if (init?.cache === "reload") harness.reloaded.push(url.pathname);
       if (hangs.has(url.href)) {
         // Answers nothing, ever. A worker that passed no signal is left

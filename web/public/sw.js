@@ -211,9 +211,9 @@ async function whole(response) {
 }
 
 /* This one ABORTS, so the request is really cancelled rather than orphaned, and
-   it is how install and the asset branch fetch. It bounds the wait for the
-   headers and is cleared when they arrive; the body after them is `whole`'s,
-   a deadline per piece.
+   every fetch here but a navigation goes through it: install's, refresh()'s
+   and the asset branch's. It bounds the wait for the headers and is cleared
+   when they arrive; the body after them is `whole`'s, a deadline per piece.
 
    Takes what fetch() takes, so a handler can forward the page's own Request —
    which carries its mode, its credentials, its redirect mode and its headers;
@@ -249,14 +249,25 @@ function timed(input, init) {
     .finally(() => self.clearTimeout(deadline));
 }
 
-/* How install fetches, and only install.
+/* How install fetches the HTML, and the one fetch in this file that asks past
+   the HTTP cache.
 
-   `cache: "reload"` — the HTTP cache is the only thing that could hand a fresh
-   worker the bytes a deploy just replaced. The runtime handlers deliberately do
-   NOT ask for it: a hashed asset is immutable, so the HTTP cache is the right
-   answer there and reloading it would spend a phone's bytes re-fetching
-   something that cannot have changed; and a navigation is the page's own
-   request, which is not this worker's to rewrite. */
+   `cache: "reload"`, because /index.html is the one URL a deploy rewrites
+   under the same name, so it is the one an HTTP cache could answer with the
+   deploy before. SpaCacheMiddleware serves it `no-store`
+   (core/channels/spa.py), so no browser cache should hold it; this is for
+   whatever sits between the phone and the server and does not honour that.
+
+   Everything else install and refresh() fetch is a content-hashed /assets/
+   file, and goes through `timed` alone. Its bytes cannot differ from what the
+   HTTP cache holds under its name, and the middleware marks one `immutable`
+   only when it did not error — a missing one is a 404 marked `no-cache` — so
+   nothing can pin a wrong body under a hashed name. Asking past the HTTP cache
+   for them, as this once did, re-downloaded on every phone's first install
+   the entry chunk and the stylesheet the page had fetched a moment before
+   (measured in Chromium). The runtime handlers ask past it for nothing either:
+   the asset branch for the same reason, and a navigation because it is the
+   page's own request, which is not this worker's to rewrite. */
 function fetchFresh(url) {
   return timed(url, { cache: "reload" });
 }
@@ -447,7 +458,7 @@ async function precache() {
 
   const responses = [];
   for (const url of urls) {
-    const response = await fetchFresh(url);
+    const response = await timed(url);
     /* Throwing aborts the install, which is the right answer: a half-precached
        shell boots to a blank screen offline, and a worker that never installs
        leaves the previous one — or no worker at all — in charge. A deadline
@@ -505,7 +516,7 @@ async function precache() {
      neither the record nor the cached shell names (see `collect`). */
   const cached = [];
   for (const url of fonts) {
-    const response = await fetchFresh(url)
+    const response = await timed(url)
       .then((fetched) => {
         if (isAsset(fetched)) return whole(fetched);
         release(fetched);
@@ -975,7 +986,7 @@ async function refresh(response) {
        both start from the same HTML — but a deploy that changes one chunk must
        not re-fetch the other. */
     if (await cache.match(url)) continue;
-    const named = await fetchFresh(url);
+    const named = await timed(url);
     /* Turned down on its headers, and this fetch is the refresh's own: nothing
        else will ever read this body or end it. */
     if (!isAsset(named)) {
