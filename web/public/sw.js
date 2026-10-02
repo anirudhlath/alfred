@@ -264,13 +264,15 @@ function timed(input, init) {
    Everything else install and refresh() fetch is a content-hashed /assets/
    file, and goes through `timed` alone. Its bytes cannot differ from what the
    HTTP cache holds under its name, and the middleware marks one `immutable`
-   only when it did not error — a missing one is a 404 marked `no-cache` — so
-   nothing can pin a wrong body under a hashed name. Asking past the HTTP cache
-   for them, as this once did, re-downloaded on every phone's first install
-   the entry chunk and the stylesheet the page had fetched a moment before
-   (measured in Chromium). The runtime handlers ask past it for nothing either:
-   the asset branch for the same reason, and a navigation because it is the
-   page's own request, which is not this worker's to rewrite. */
+   only when it did not error and is not HTML — a missing one is a 404 marked
+   `no-cache`, and with no /assets mount at all the fallback's index.html is
+   marked `no-store` — so nothing can pin a wrong body under a hashed name.
+   Asking past the HTTP cache for them, as this once did, re-downloaded on
+   every phone's first install the entry chunk and the stylesheet the page had
+   fetched a moment before (measured in Chromium). The runtime handlers ask
+   past it for nothing either: the asset branch for the same reason, and a
+   navigation because it is the page's own request, which is not this
+   worker's to rewrite. */
 function fetchFresh(url) {
   return timed(url, { cache: "reload" });
 }
