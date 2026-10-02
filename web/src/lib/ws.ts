@@ -115,6 +115,14 @@ export class ReconnectingSocket {
     ) {
       return;
     }
+    // This try replaces any retry still waiting out its backoff. Left armed, that
+    // retry fires after this socket has been decided: it reopens one the server
+    // has just closed with 4001 (which is never retried), or it runs a second
+    // retry chain beside the one this try's own close will start.
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.stopped = false;
     this.onstatus(this.attempts === 0 ? "connecting" : this.retryStatus());
     const ws = new WebSocket(this.url());
