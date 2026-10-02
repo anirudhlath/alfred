@@ -171,6 +171,16 @@ const pending = (read: Promise<unknown>): Promise<string> =>
     new Promise<string>((resolve) => setTimeout(() => resolve("pending"), 20)),
   ]);
 
+/**
+ * Real macrotasks until the harness's clock has reached `time`, and one more
+ * after it, so that whatever the timer due then set off has run. For a timer
+ * nothing awaits — one a test can see only the consequences of.
+ */
+const reach = async (worker: Harness, time: number): Promise<void> => {
+  for (let i = 0; i < 100 && worker.now < time; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+};
+
 /** A 404 from the /assets StaticFiles mount: JSON, not the SPA's HTML fallback. */
 const notFound = () =>
   new Response('{"detail":"Not Found"}', {
@@ -2114,6 +2124,28 @@ describe.skipIf(FIRED)("navigations", () => {
     worker.hang("/");
     const response = await worker.request({ path: "/", mode: "navigate" });
     await expect(response!.text()).resolves.toContain(ROOT_DIV);
+  });
+
+  it("lets go of the answer that comes after the shell was served, the moment it comes", async () => {
+    // The deadline ends the WAIT on a navigation, not the request: a navigation
+    // can carry no signal (see "gives the navigation a deadline without
+    // touching the request to do it"), so the fetch that lost the race carries
+    // on behind it. Here its headers come two seconds after the shell was
+    // served, and a body nobody reads and nobody cancels holds its connection
+    // for as long as the server keeps it open — measured in Chromium with no
+    // DevTools attached to the worker, 28 s after the headers, until the
+    // browser stopped the idle worker.
+    const worker = shell();
+    await worker.install();
+    worker.respond("/", stalled());
+    worker.late("/", 12000);
+    const start = worker.now;
+    const response = await worker.request({ path: "/", mode: "navigate" });
+    expect(worker.now).toBe(start + 10000);
+    expect(worker.released).toEqual([]);
+    await expect(response!.text()).resolves.toContain(ROOT_DIV);
+    await reach(worker, start + 12000);
+    expect(worker.released).toEqual(["/"]);
   });
 
   it("gives the navigation a deadline, and clears it when the page answers", async () => {

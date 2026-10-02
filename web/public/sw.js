@@ -101,9 +101,11 @@ const CEILING_MS = 120000;
 
    This one RACES, and it is for the two waits a signal cannot end. A
    navigation is one: it cannot be given a signal at all, for the reason
-   written under `timed`, so the loser is a fetch left running behind the race —
-   bounded by the browser's own network timeout and by one per navigation; the
-   alternative costs the page's Request, which is worse. The other is the
+   written under `timed`, so the loser is a fetch left running behind the race,
+   one per navigation — released the moment its headers arrive (see
+   navigate()); what outlives the race is a request still awaiting headers,
+   bounded by the browser's own network timeout. The alternative costs the
+   page's Request, which is worse. The other is the
    reading of a body, inside `whole`: one race per piece, and one over all of
    them with CEILING_MS for its length — and there the loser is not left
    running: `whole` cancels what it was reading the moment a race is lost, and
@@ -129,7 +131,8 @@ function deadlined(work, ms = TIMEOUT_MS) {
    chunk turned down unread each held their connection until the browser
    stopped the idle worker, 30 s on.
 
-   So every response turned down on its headers comes through here, and so does
+   So every response turned down on its headers comes through here — and so
+   does a navigation's that arrives after the shell was served — and so does
    every copy of one that is turned down unread or that `whole` gives up on. A
    cancel stops at a tee (see `whole`): released here, a copy of the PAGE's
    response frees only the worker's branch, and the request ends when the page
@@ -987,19 +990,30 @@ async function refresh(response) {
    catches them together answers a phone with a perfectly good network out of
    its own cache. */
 async function navigate(event) {
+  /* `self.fetch` directly, with the event's own Request and NO init: an init
+     would rebuild it and demote `mode: "navigate"` to "same-origin" — see
+     `timed`, which is why this one call does not use it. The deadline comes
+     from the race instead, and the price is that a fetch which loses the race
+     is left in flight rather than aborted, until its headers arrive. */
+  const fetching = self.fetch(event.request);
   let response;
   try {
-    /* `self.fetch` directly, with the event's own Request and NO init: an init
-       would rebuild it and demote `mode: "navigate"` to "same-origin" — see
-       `timed`, which is why this one call does not use it. The deadline comes
-       from the race instead, and the price is that a fetch which loses the race
-       is left in flight rather than aborted. */
-    response = await deadlined(self.fetch(event.request));
+    response = await deadlined(fetching);
   } catch {
     /* Rejected, or never answered at all — the deadline lands here as its own
        rejection, with the request still running behind it. The two are one
        thing from a phone: the page is not coming. This is the only path on
-       which a cached page is ever served. */
+       which a cached page is ever served.
+
+       And the answer that comes after all is turned down unread, the moment its
+       headers arrive: the page has its shell, and a body nobody reads and
+       nobody cancels holds its connection for as long as the server keeps it
+       open. Measured in Chromium with no DevTools attached to the worker, a
+       navigation answered at 12 s held its connection 28 s past its headers,
+       until the browser stopped the idle worker. A request still waiting for
+       headers is the browser's to end. Its rejection is swallowed, as the race
+       already swallows it: one that fails late is nobody's to report. */
+    fetching.then(release, () => {});
     const shell = await cached(SHELL);
     if (shell) return shell;
     /* Nothing fetched and nothing cached — a first launch that never got a
