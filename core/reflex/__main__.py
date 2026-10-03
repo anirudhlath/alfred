@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 STREAM = HOME_STATE_STREAM
 GROUP = "reflex-engine"
 CONSUMER = "worker-1"
-# One PEL recovery pass per minute at the loop's 5s block.
+# One PEL recovery pass per minute at the 5s block — shared by both consumer loops.
 _PEL_RECLAIM_EVERY = 12
 RESULT_STREAM = HOME_ACTION_RESULTS_STREAM
 
@@ -60,8 +60,6 @@ _shutdown = asyncio.Event()
 
 EVENTS_GROUP = "reflex-trigger-fired"
 EVENTS_CONSUMER = "worker-1"
-# One PEL recovery pass per minute at the loop's 5s block.
-_PEL_RECLAIM_EVERY = 12
 
 
 def _handle_signal() -> None:
@@ -76,18 +74,27 @@ async def _handle_trigger_fired(
     redis: AioRedis,
     publisher: NotificationPublisher,
 ) -> None:
-    """Handle a single TriggerFired event — notify + optional SLM reasoning."""
+    """Handle a single TriggerFired event — notify + optional SLM reasoning.
+
+    Returning normally means "ACK this entry". That covers entries that are not
+    ours (no ``event`` field, another event type on the shared stream) and
+    entries that can never parse — retrying cannot fix a malformed payload, and
+    left pending it would be reclaimed for eternity. Only a failure while
+    *acting* on a valid TriggerFired propagates, leaving the entry pending for
+    the reclaim pass in ``_consume_trigger_fired``.
+    """
     raw_event = entry_data.get("event") or entry_data.get(b"event")
     if raw_event is None:
         return
 
-    event_str = decode_stream_value(raw_event)
-    parsed = json.loads(event_str)
-
-    if parsed.get("event_type") != "trigger_fired":
+    try:
+        parsed = json.loads(decode_stream_value(raw_event))
+        if not isinstance(parsed, dict) or parsed.get("event_type") != "trigger_fired":
+            return
+        trigger_event = TriggerFired.model_validate(parsed)
+    except Exception as e:
+        logger.error("Unparseable trigger_fired event — dropping: %s", e)
         return
-
-    trigger_event = TriggerFired.model_validate(parsed)
 
     # Path A: Immediate notification (DND-aware via dispatcher)
     urgency = Urgency(trigger_event.urgency)
@@ -126,6 +133,7 @@ async def _consume_trigger_fired(
     """Second event loop — TriggerFired events from alfred:events."""
     await ensure_consumer_group(redis, EVENTS_STREAM, EVENTS_GROUP)
 
+    pel_counter = 0
     while not _shutdown.is_set():
         entries = await read_group(
             redis,
@@ -135,23 +143,48 @@ async def _consume_trigger_fired(
             count=10,
             block=5000,
         )
-        for _stream_key, stream_entries in entries:
-            for entry_id, entry_data in stream_entries:
-                try:
-                    await _handle_trigger_fired(
-                        entry_data,
-                        engine,
-                        agent,
-                        redis,
-                        publisher,
-                    )
-                    await redis.xack(EVENTS_STREAM, EVENTS_GROUP, entry_id)
-                except Exception as e:
-                    logger.error(
-                        "Error processing trigger_fired %s: %s — will retry",
-                        entry_id,
-                        e,
-                    )
+        batch = [pair for _stream_key, stream_entries in entries for pair in stream_entries]
+
+        # XREADGROUP '>' only ever delivers NEW messages, so a TriggerFired left
+        # un-ACKed by a failed handler is never redelivered on its own — without
+        # this the reminder is lost and its PEL slot leaks. reclaim_replayable,
+        # NOT reclaim_stale: a TriggerFired is an instruction to act, and acting
+        # on an hours-old one drives the system from history. Its 5-minute window
+        # also caps an entry that fails deterministically at a handful of
+        # redeliveries (one per pass) before it is ACK-dropped, so unlike the
+        # Memory Ingestor — which reclaims with no age limit — this loop needs
+        # no delivery-attempt counter to keep the head of the PEL draining.
+        pel_counter += 1
+        if pel_counter >= _PEL_RECLAIM_EVERY:
+            pel_counter = 0
+            batch.extend(
+                await reclaim_replayable(
+                    redis,
+                    EVENTS_STREAM,
+                    EVENTS_GROUP,
+                    EVENTS_CONSUMER,
+                    now_ms=int(time.time() * 1000),
+                )
+            )
+
+        for entry_id, entry_data in batch:
+            try:
+                await _handle_trigger_fired(
+                    entry_data,
+                    engine,
+                    agent,
+                    redis,
+                    publisher,
+                )
+                # ACK only on success — a failure stays pending for the reclaim
+                # pass above to pick back up.
+                await redis.xack(EVENTS_STREAM, EVENTS_GROUP, entry_id)
+            except Exception as e:
+                logger.error(
+                    "Error processing trigger_fired %s: %s — will retry",
+                    entry_id,
+                    e,
+                )
 
 
 async def flush_telemetry_periodically(config: AlfredConfig, interval: float = 30.0) -> None:
