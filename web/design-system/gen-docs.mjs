@@ -134,7 +134,7 @@ function selfContainedDts(name) {
     seen.add(key);
     const body = extract(readFileSync(file, "utf8"), n);
     if (!body) continue;
-    extra.push(body.replace(/^export declare /, "export ").replace(/^export /, "export "));
+    extra.push(body.replace(/^export declare /, "export "));
     queue.push(...localImports(body, file));
     // Names the body mentions: declared beside it, or imported into its file.
     const fileText = readFileSync(file, "utf8");
@@ -372,7 +372,8 @@ for (const [group, names] of Object.entries(GROUPS)) {
 
 // guidelines
 mkdirSync(path.join(OUT, "guidelines"), { recursive: true });
-const esc = (s) => s.replace(/\|/g, "\\|");
+// Markdown table cells: escape backslashes first, then the pipes that would split a cell.
+const esc = (s) => s.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
 writeFileSync(
   path.join(OUT, "guidelines", "colour.md"),
   [
