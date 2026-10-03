@@ -1,6 +1,6 @@
 # Alfred — Product Requirements Document
 
-**Status:** Living document. Capability statuses current as of **2026-09-16**.
+**Status:** Living document. Capability statuses current as of **2026-10-03**.
 **Maintenance rule:** any PR that adds or changes a user-facing capability updates the
 relevant row(s) in the [Capability Catalog](#4-capability-catalog) in the same branch.
 
@@ -92,6 +92,7 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 | Sensor-driven triggers on live home state (verified end-to-end) | Shipped | PR #22 |
 | Sub-5-second reminder firing (scheduled wakeups replacing polling) | In review | PR #27 |
 | Client-timezone awareness (reminders in your timezone, wherever you are) | In review | PR #27 |
+| Relative reminders ("in 20 minutes") timed by the server clock — Alfred asks for a delay (`run_in_seconds`) and never does the clock arithmetic itself | In branch | `docs/trigger-engine.md`, issue #62 |
 | Proactive notifications with urgency levels, DND windows, deferred delivery | Shipped | `docs/notifications.md` |
 | Delivery to Signal, web (with spoken announcement when urgent), and iOS push | Shipped | `docs/notifications.md` |
 | Reflex "attention set" — Alfred tunes which entities wake the fast mind, and can retune itself (`attention_*` tools); readable and editable over `GET`/`PUT /api/admin/attention`, and on the phone from the Workshop's System bench › Reflex (which carries the status of the Workshop row in §4.1) | Shipped | PR #235 |

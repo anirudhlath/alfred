@@ -195,3 +195,76 @@ def test_normalize_without_run_at_is_noop() -> None:
     cls = TriggerRegistry.get("time")
     conditions = {"cron": "0 7 * * *"}
     assert cls.normalize_conditions(conditions, "America/Denver") == conditions
+
+
+# --- run_in_seconds: relative delays resolved server-side ---
+
+# A zone without DST, so the expected offset does not depend on the date the suite runs.
+_IST = timedelta(hours=5, minutes=30)
+
+
+@pytest.mark.parametrize("delay", [5, 0.5, 1200])
+def test_normalize_run_in_seconds_resolves_to_aware_run_at(delay: float) -> None:
+    cls = TriggerRegistry.get("time")
+    before = datetime.now(UTC)
+    out = cls.normalize_conditions({"run_in_seconds": delay}, "Asia/Kolkata")
+    after = datetime.now(UTC)
+
+    assert "run_in_seconds" not in out
+    run_at = datetime.fromisoformat(out["run_at"])
+    assert run_at.utcoffset() == _IST  # the user's zone, so it reads back as local time
+    assert before + timedelta(seconds=delay) <= run_at <= after + timedelta(seconds=delay)
+
+
+def test_resolved_run_in_seconds_builds_a_trigger_that_fires_on_time() -> None:
+    cls = TriggerRegistry.get("time")
+    conditions = cls.normalize_conditions({"run_in_seconds": 5}, "Asia/Kolkata")
+    trigger = _make_time_trigger(conditions=conditions)
+    due = trigger.conditions.run_at
+
+    assert trigger.next_fire_time(_ctx(due)) == due
+    assert trigger.evaluate(_ctx(due - timedelta(milliseconds=1))) is False
+    assert trigger.evaluate(_ctx(due)) is True
+    assert "run_in_seconds" not in trigger.model_dump(mode="json")["conditions"]
+
+
+@pytest.mark.parametrize(
+    "conditions",
+    [
+        {"cron": "0 7 * * *", "run_at": "2026-07-16T15:00:00+00:00"},
+        {"cron": "0 7 * * *", "run_in_seconds": 5},
+        {"run_at": "2026-07-16T15:00:00+00:00", "run_in_seconds": 5},
+        {"cron": "0 7 * * *", "run_at": "2026-07-16T15:00:00+00:00", "run_in_seconds": 5},
+    ],
+)
+def test_normalize_rejects_more_than_one_schedule_field(conditions: dict[str, Any]) -> None:
+    cls = TriggerRegistry.get("time")
+    with pytest.raises(ValueError, match="only one of cron, run_at, run_in_seconds"):
+        cls.normalize_conditions(conditions, "UTC")
+
+
+def test_normalize_ignores_explicit_nulls_when_counting_fields() -> None:
+    cls = TriggerRegistry.get("time")
+    out = cls.normalize_conditions({"cron": None, "run_at": None, "run_in_seconds": 5}, "UTC")
+    assert out["cron"] is None
+    assert datetime.fromisoformat(out["run_at"]) > datetime.now(UTC)
+
+
+@pytest.mark.parametrize("delay", [0, -5, float("inf"), "soon"])
+def test_normalize_rejects_invalid_run_in_seconds(delay: object) -> None:
+    cls = TriggerRegistry.get("time")
+    with pytest.raises(ValueError, match="run_in_seconds"):
+        cls.normalize_conditions({"run_in_seconds": delay}, "UTC")
+
+
+def test_unresolved_run_in_seconds_refused_at_construction() -> None:
+    """A delay that skipped normalize_conditions has no due time and would never fire."""
+    with pytest.raises(ValueError, match="must be resolved to run_at"):
+        _make_time_trigger(conditions={"run_in_seconds": 5})
+
+
+def test_stored_cron_and_run_at_together_still_load() -> None:
+    """The one-field rule is a tool-boundary check: rows stored before it keep loading."""
+    target = datetime(2026, 3, 10, 15, 0, 0, tzinfo=UTC)
+    trigger = _make_time_trigger(conditions={"cron": "0 7 * * *", "run_at": target.isoformat()})
+    assert trigger.next_fire_time(_ctx(target)) == target
