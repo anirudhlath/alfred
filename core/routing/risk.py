@@ -33,12 +33,24 @@ async def tool_risk(redis: AioRedis, target_service: str, tool_name: str) -> str
     if raw is None:
         return UNKNOWN_RISK
     try:
-        manifest: dict[str, Any] = json.loads(decode_stream_value(raw))
+        manifest: Any = json.loads(decode_stream_value(raw))
     except json.JSONDecodeError:
         logger.warning("Invalid manifest JSON for service '{}' — risk unknown", target_service)
         return UNKNOWN_RISK
-    for feature in manifest.get("features", []):
-        for tool in feature.get("tools", []):
+    if not isinstance(manifest, dict):
+        logger.warning("Non-object manifest JSON for service '{}' — risk unknown", target_service)
+        return UNKNOWN_RISK
+    # Wrong-shape entries are skipped, never trusted: a well-formed declaration still
+    # answers (stray garbage must not hide a "critical" tag), anything else is unknown.
+    for feature in _dicts(manifest.get("features")):
+        for tool in _dicts(feature.get("tools")):
             if tool.get("name") == tool_name:
                 return str(tool.get("risk", DEFAULT_RISK))
     return UNKNOWN_RISK
+
+
+def _dicts(value: object) -> list[dict[str, Any]]:
+    """The dict items of ``value`` when it is a list, else none — the manifest shape guard."""
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
