@@ -74,8 +74,8 @@ configurable in `AlfredConfig` (default `1.0`)"*. The formula was designed for a
 `migrated == 0` — they are "spared" cases and pass for the wrong reason, as does the one that
 takes the default (`:701`). The migration test at `:613` even carries the comment *"pressure ≈
 1.0 - 0.2 - 0.02 - 0.0 = 0.78 > threshold=0.5"*: the arithmetic that proves the ceiling is
-written down in the suite, and only the production default was never compared against it. `D4` was
-closed as complete (#77).
+written down in the suite, and only the production default was never compared against it. `D4` is
+recorded as `docs/backlog/medium/d4-librarian-decay-processing.md` — **COMPLETED**.
 
 **Why it matters now.** Passive observation
 (`docs/superpowers/specs/2026-09-03-passive-observation-design.md`) begins writing ~200–300
@@ -125,5 +125,6 @@ the same branch, so it has also never run in production.
   design, including the behaviour table that requires `threshold < 1.0`.
 - `docs/superpowers/specs/2026-09-03-passive-observation-design.md` — Risks, "Volume growth";
   relies on this mitigation.
-- #77 (D4) — closed as built; this ticket is what makes it fire.
+- `docs/backlog/medium/d4-librarian-decay-processing.md` — marked COMPLETED; update or close it
+  when this lands.
 - `docs/backlog/high/reflex-events-group-pel-reclaim.md` — the other finding from the same review.
