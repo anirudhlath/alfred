@@ -17,11 +17,12 @@ warning, never a hard failure, so ``doctor`` is safe to run anywhere.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from dotenv import dotenv_values
+
+from alfredctl.redact import redact_userinfo
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -65,25 +66,6 @@ def _host_side(url: str) -> str:
     return url.replace("host.docker.internal", "localhost").replace(
         "host.containers.internal", "localhost"
     )
-
-
-# Authority-only: userinfo is everything between the start of the authority and the
-# last "@" before the path, so an @ inside a path is left alone and this cannot raise
-# the way urlsplit can on a malformed authority. Two details earn their keep:
-# ``[^/]*@`` is greedy to the *last* @ because httpx delimits there too (a password may
-# contain one), and the scheme is optional because a schemeless host still reaches the
-# output — httpx rejects it, and the rejection detail quotes the URL back.
-_USERINFO_RE = re.compile(r"^([a-zA-Z][\w+.-]*://|//)?[^/]*@")
-
-
-def _redact_userinfo(url: str) -> str:
-    """Hide any ``user:password@`` before a URL is printed.
-
-    Doctor output is pasted into issues and chat, and EMBEDDING_HOST / HA_HOST /
-    OLLAMA_HOST can carry basic-auth credentials. Display only — the request itself is
-    still made with the URL as configured.
-    """
-    return _USERINFO_RE.sub(r"\1***@", url)
 
 
 def _probe(url: str, headers: dict[str, str] | None = None) -> tuple[bool, str]:
@@ -150,7 +132,7 @@ def _probe_embedding_dim(
     import httpx
 
     url = _host_side(f"{host.rstrip('/')}/v1/embeddings")
-    shown = _redact_userinfo(url)
+    shown = redact_userinfo(url)
     key = api_key.strip()
     headers = {"Authorization": f"Bearer {key}"} if key else {}
     body = {"model": model, "input": "alfredctl doctor probe"}
@@ -229,10 +211,10 @@ def _check_reflex(env: dict[str, str], online: bool) -> DoctorCheck:
             ok, detail = _probe(f"{host.rstrip('/')}/v1/models")
             status: Status = "pass" if ok else "warn"
             return DoctorCheck(
-                "reflex (System 1)", status, f"openai backend {_redact_userinfo(host)} ({detail})"
+                "reflex (System 1)", status, f"openai backend {redact_userinfo(host)} ({detail})"
             )
         return DoctorCheck(
-            "reflex (System 1)", "pass", f"openai backend {_redact_userinfo(host)}, model={model}"
+            "reflex (System 1)", "pass", f"openai backend {redact_userinfo(host)}, model={model}"
         )
     host = env.get("OLLAMA_HOST", "http://localhost:11434").strip()
     if online:
@@ -241,10 +223,10 @@ def _check_reflex(env: dict[str, str], online: bool) -> DoctorCheck:
             return DoctorCheck(
                 "reflex (System 1)",
                 "warn",
-                f"Ollama at {_redact_userinfo(host)} unreachable: {detail}",
+                f"Ollama at {redact_userinfo(host)} unreachable: {detail}",
             )
         return DoctorCheck("reflex (System 1)", "pass", f"Ollama reachable ({detail})")
-    return DoctorCheck("reflex (System 1)", "pass", f"ollama backend {_redact_userinfo(host)}")
+    return DoctorCheck("reflex (System 1)", "pass", f"ollama backend {redact_userinfo(host)}")
 
 
 def _check_home_assistant(env: dict[str, str], online: bool) -> DoctorCheck:
@@ -262,7 +244,7 @@ def _check_home_assistant(env: dict[str, str], online: bool) -> DoctorCheck:
         )
         if not ok:
             return DoctorCheck(
-                "home assistant", "warn", f"token set but {_redact_userinfo(host)} probe: {detail}"
+                "home assistant", "warn", f"token set but {redact_userinfo(host)} probe: {detail}"
             )
         return DoctorCheck("home assistant", "pass", f"reachable ({detail})")
     return DoctorCheck("home assistant", "pass", "token set")
@@ -340,7 +322,7 @@ def _check_embeddings(env: dict[str, str], online: bool) -> DoctorCheck:
     if backend == "openai":
         # Gating is irrelevant on this path — the server holds the weights, not us.
         # Redacted for display only; the probe below still uses the configured host.
-        where = f"via {_redact_userinfo(host)} (timeout {timeout:g}s)"
+        where = f"via {redact_userinfo(host)} (timeout {timeout:g}s)"
         if not online:
             return DoctorCheck("memory embeddings", status, f"model={model} {where}, {note}")
         served, verdict, detail = _probe_embedding_dim(
@@ -355,7 +337,7 @@ def _check_embeddings(env: dict[str, str], online: bool) -> DoctorCheck:
             return DoctorCheck(
                 "memory embeddings",
                 "fail",
-                f"{_redact_userinfo(host)} emits {served} dims for {model} but the index is "
+                f"{redact_userinfo(host)} emits {served} dims for {model} but the index is "
                 f"built at {dim} — "
                 f"the vector store refuses to start on the mismatch",
             )

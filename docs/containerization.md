@@ -272,6 +272,13 @@ uv run alfredctl <command> [options]
 | `urls` | `--runtime`, `--port INT` | Prints the reachable URL without starting/stopping anything |
 | `smoke` | `--runtime`, `--keep`, `--attach`, `--name TEXT` (requires `--attach`), `--hf-cache PATH`, `--timeout FLOAT` (default 300s), `--deep` | Boots `seed` mode (unless `--attach`, which checks an already-running container instead), runs the check suite below, tears down unless `--keep`/`--attach`; exits non-zero on any failure. `--deep` adds an end-to-end System 2 round-trip check. `--name` overrides which container is checked (default `alfred-<branch>`) |
 
+`build`, `up`, `down` and `smoke` print each runtime command before running it
+(`$ docker run --detach --name alfred-<branch> …`), so a run can be replayed by hand. The
+echoed line is redacted (`alfredctl/redact.py`, the same helper `doctor` uses): every
+`-e KEY=value` prints as `-e KEY=***` whatever the key, and a URL's credentials print as
+`***@host`. Flags, volumes, container name and image are shown as they are; fill the
+values back in to replay. The command the runtime receives is never altered.
+
 ### Worktree/branch isolation
 
 The image tag and container name derive from the current branch:
