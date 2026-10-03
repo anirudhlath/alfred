@@ -163,10 +163,6 @@ and never re-download gigabytes on teardown:
   `alfredctl` can pass a `HF_TOKEN` through from your host environment. With
   `EMBEDDING_BACKEND=openai` no embedding weights are downloaded into the container at
   all — the external server holds the model, and `HF_TOKEN` is irrelevant to embeddings.
-  See
-  [`docs/backlog/high/embedding-model-gated-first-run.md`](backlog/high/embedding-model-gated-first-run.md)
-  (that ticket also tracks evaluating a non-gated default, which would remove this
-  friction entirely).
 - `HF_HUB_OFFLINE` is **not** forced — models must be reachable on first boot; once the
   cache is warm, subsequent boots are offline-capable.
 
