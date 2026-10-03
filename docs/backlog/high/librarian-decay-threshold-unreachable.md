@@ -127,5 +127,4 @@ the same branch, so it has also never run in production.
   relies on this mitigation.
 - `docs/backlog/medium/d4-librarian-decay-processing.md` — marked COMPLETED; update or close it
   when this lands.
-- Issue #204 (reflex's TriggerFired loop never reclaimed its PEL) — the other finding from the
-  same review; fixed in `core/reflex/__main__.py`.
+- `docs/backlog/high/reflex-events-group-pel-reclaim.md` — the other finding from the same review.
