@@ -735,7 +735,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
             # urljoin is inside the try: a malformed endpoint ("http://[::1")
             # raises ValueError here, and httpx.InvalidURL is not an HTTPError.
             resp = await app.state.http.get(urljoin(endpoint, "/health"))
-            payload: dict[str, Any] = resp.json()
+            payload: Any = resp.json()
         except (httpx.HTTPError, httpx.InvalidURL, ValueError) as exc:
             return {
                 "name": name,
@@ -752,6 +752,15 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
                 "name": name,
                 "healthy": False,
                 "detail": {"error": f"{type(exc).__name__}: {exc}"},
+                "latency_ms": _elapsed_ms(started),
+            }
+        # Valid JSON need not be an object (`123`, `["ok"]`) — a service-written
+        # body degrades to unhealthy rather than an AttributeError and a 500.
+        if not isinstance(payload, dict):
+            return {
+                "name": name,
+                "healthy": False,
+                "detail": {"error": f"/health body is not a JSON object: {type(payload).__name__}"},
                 "latency_ms": _elapsed_ms(started),
             }
         return {

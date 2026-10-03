@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -131,3 +132,29 @@ async def test_get_services_returns_registered_services() -> None:
     services = registry.get_registered_services(tools)
 
     assert services == {"home-service"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_manifest", [b"123", b"[]", b'["ok"]', b'"text"', b"true", b"null"])
+async def test_get_tools_non_object_manifest_skipped(
+    bad_manifest: bytes, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Valid JSON that isn't an object is skipped with a WARNING naming the entry.
+
+    ``json.loads`` accepts it, so the ``JSONDecodeError`` guard never fires, and
+    ``.get`` on an int/list used to raise — taking down discovery for every service.
+    """
+    mock_redis = AsyncMock()
+    mock_redis.hgetall.return_value = {
+        b"bad-service": bad_manifest,
+        b"good-service": _make_manifest("good-service", [LIGHTING_FEATURE]).encode(),
+    }
+
+    with caplog.at_level(logging.WARNING, logger="core.reflex.tool_registry"):
+        tools = await ToolRegistry(mock_redis).get_tools()
+
+    assert [t.name for t in tools] == ["lighting.dim_lights", "lighting.turn_off_lights"]
+    assert all(t.target_service == "good-service" for t in tools)
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "bad-service" in warnings[0].getMessage()
