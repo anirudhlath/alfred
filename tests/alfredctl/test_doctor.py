@@ -376,29 +376,6 @@ def test_check_reports_a_proven_wrong_host_as_fail(monkeypatch: pytest.MonkeyPat
     assert "serves no embeddings route" in check.detail
 
 
-@pytest.mark.parametrize(
-    ("raw", "shown"),
-    [
-        ("http://user:pw@vllm.example:8001", "http://***@vllm.example:8001"),
-        ("https://tok@embed.example/v1", "https://***@embed.example/v1"),
-        # A password containing @: httpx reads the *last* @ as the delimiter, so
-        # stopping at the first one leaves the tail of the password on screen.
-        ("http://user:p@ss@vllm.example:8001", "http://***@vllm.example:8001"),
-        # No scheme at all: httpx rejects it, but doctor still prints it in the
-        # UnsupportedProtocol detail, so it has to be redacted before it gets there.
-        ("user:pw@vllm.example:8001", "***@vllm.example:8001"),
-        ("//user:pw@vllm.example:8001", "//***@vllm.example:8001"),
-        # No userinfo, and an @ that belongs to the path: all left alone.
-        ("http://vllm.example:8001", "http://vllm.example:8001"),
-        ("http://vllm.example/models/a@b", "http://vllm.example/models/a@b"),
-        ("vllm.example:8001/models/p@th", "vllm.example:8001/models/p@th"),
-        ("", ""),
-    ],
-)
-def test_redact_userinfo(raw: str, shown: str) -> None:
-    assert doctor._redact_userinfo(raw) == shown
-
-
 def test_embedding_host_credentials_are_not_echoed(tmp_path: Path) -> None:
     """Operators paste doctor output into issues; basic-auth in a host must not ride along."""
     env = _write_env(

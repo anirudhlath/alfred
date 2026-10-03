@@ -19,6 +19,7 @@ from alfredctl import doctor as doctor_mod
 from alfredctl import launch, staging
 from alfredctl import runtime as rt
 from alfredctl import smoke as smoke_mod
+from alfredctl.redact import redact_command
 
 _STATUS_STYLE = {"pass": "green", "warn": "yellow", "fail": "red"}
 _STATUS_GLYPH = {"pass": "✓", "warn": "!", "fail": "✗"}
@@ -32,7 +33,11 @@ RuntimeOpt = Annotated[
 
 
 def _run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[bytes]:
-    console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
+    # Echoed so a run can be reproduced by hand, but `up` passes the whole merged env as
+    # `-e KEY=value`: every .env secret and the secrets passphrase. Redacted here rather
+    # than at a call site so `build`, `smoke` and the next caller are covered too, and
+    # escaped because a path is not markup. Display only: `cmd` runs exactly as given.
+    console.print(f"[dim]$ {escape(' '.join(redact_command(cmd)))}[/dim]")
     return subprocess.run(cmd, check=check)
 
 

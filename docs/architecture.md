@@ -862,6 +862,10 @@ At-least-once is only real if the loop reclaims its own pending-entries list: `X
 delivers *new* messages only, so an entry left un-ACKed by a failure is never redelivered on its
 own. The Memory Ingestor (`memory-ingestor` on `alfred:reflex:observations`) reclaims every ~60s
 via `reclaim_stale()` and caps redeliveries at 5 — see 3.7.1 and the rule in `CLAUDE.md`.
+Both Reflex loops (`reflex-engine` on `alfred:home:state_changed`, `reflex-trigger-fired` on
+`alfred:events`) and the Conscious Engine reclaim on the same cadence via `reclaim_replayable()`,
+which ACK-drops anything older than 5 minutes rather than act on it — that age limit is also what
+bounds their redeliveries. All of them ACK a payload that can never parse.
 
 ## 6. Configuration
 
