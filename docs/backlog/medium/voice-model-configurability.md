@@ -27,7 +27,7 @@ configurability audit.
       `WHISPER_COMPUTE_TYPE`, `PIPER_VOICE` (and a considered decision on
       exposing prosody knobs vs keeping curated defaults).
 - [ ] Piper model cache moves out of the package tree to the unified data
-      dir (see unified-data-dir ticket) or an explicit cache dir var.
+      dir (see `shared.config.data_path()`, #96) or an explicit cache dir var.
 - [ ] Model cache locations documented in `.env.example` + getting-started
       (how to redirect HF caches; disk-space expectations per model choice).
 - [ ] Auto-download behavior preserved (user preference: never require

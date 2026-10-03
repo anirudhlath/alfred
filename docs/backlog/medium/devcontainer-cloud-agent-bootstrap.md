@@ -23,8 +23,7 @@ doc/link cleanups; the provisioning shape itself is done.
 - ✅ `.devcontainer/post-create.sh`: installs `uv`, runs `uv venv --python 3.13 && uv
   sync --all-extras`, then `(cd web && npm ci)` — matches the target
   `postCreateCommand` shape exactly, and prints the `HF_HUB_OFFLINE=1` reminder for test
-  runs (gated embedding default — see
-  [`embedding-model-gated-first-run`](../high/embedding-model-gated-first-run.md)).
+  runs (written while the embedding default was gated; it has been ungated since #59).
 - ✅ **Stale assumption fixed:** the original text suggested reusing "the existing prod
   `docker-compose.yml` service definitions" for the devcontainer's redis/mosquitto
   services. That's no longer possible or desirable — Part 2 containerization replaced
