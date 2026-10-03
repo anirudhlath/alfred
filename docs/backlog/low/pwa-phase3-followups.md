@@ -397,11 +397,17 @@ row (the only `delete()` calls in `core/memory/episodic/memory.py:162`, `:170` t
 hot store). The client now marks hot rows below `DECAY_FLOOR` that have never been
 recalled, which is the population the pass targets.
 
-**What is still not true.** That pass has never run. `pressure` is bounded above by 1.0
+**Update (2026-10-03, #201):** the threshold is now `0.2`, wired from config at both call
+sites, and decay runs even when the scratchpad is empty. Pressure tops out at
+`1 - 2 × significance`, so the pass can reach exactly the rows below significance 0.4:
+`DECAY_FLOOR = 0.4` already matches. What remains below is whether the mark should consult
+age. The original note follows.
+
+**What was still not true.** That pass had never run. `pressure` is bounded above by 1.0
 and `decay_migration_threshold` defaults to exactly 1.0, so the comparison is never true —
 no episodic entry has ever been migrated out of hot storage, and none will at the shipped
 defaults. That is filed in full, with the arithmetic, at
-`docs/backlog/high/librarian-decay-threshold-unreachable.md`; this entry exists only to
+#201; this entry exists only to
 record what it costs the *client*, which that ticket does not mention: while the threshold
 stands, `decaying` names a standing rather than anything in motion. A reader who leaves a
 marked row alone for a month will find it exactly where it was.
@@ -410,7 +416,7 @@ Nothing on the client can fix that, and nothing on the client should pretend to 
 alternative is dropping a word the design asked for because the server has a bug that is
 already filed against it.
 
-**Acceptance:** `librarian-decay-threshold-unreachable.md` lands (a reachable threshold,
+**Acceptance:** #201 lands (a reachable threshold, done 2026-10-03,
 wired through from config at both production call sites). Then re-check this bench against
 it: whether `DECAY_FLOOR = 0.4` still picks out roughly what the corrected threshold
 sweeps, and whether the mark should consult age — which the row does carry, and which the

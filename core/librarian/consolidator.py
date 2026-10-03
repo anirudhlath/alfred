@@ -30,6 +30,7 @@ from core.memory.schemas import (
     RoutineStep,
     SignificanceScore,
 )
+from shared.config import DEFAULT_DECAY_MIGRATION_THRESHOLD
 from shared.streams import LIBRARIAN_QUEUE, LIBRARIAN_STATUS_KEY
 
 if TYPE_CHECKING:
@@ -63,6 +64,34 @@ class ConflictItem(BaseModel):
 
 _DEFAULT_PREFERENCES_DIR = str(_preferences_dir())
 _DEFAULT_PROFILE_DIR = str(_profile_dir())
+
+
+def migration_pressure(
+    age_days: float,
+    significance: float,
+    retrieval_count: int,
+    days_since_last_retrieved: float,
+) -> float:
+    """How strongly an episodic entry is pushed from hot to cold storage.
+
+    Age pushes; significance, recent retrieval and frequent retrieval resist::
+
+        age_factor          = min(age_days / 30, 1)
+        retrieval_recency   = exp(-days_since_last_retrieved / 7)
+        retrieval_frequency = min(log2(retrieval_count + 1) / 5, 1)
+        pressure = age_factor - 2*significance - 1.5*recency - frequency
+
+    Never above 1.0: ``age_factor`` caps at 1.0 and every other term only subtracts (in
+    floating point a very old, never-retrieved entry reaches exactly 1.0), so a
+    migration threshold must sit below 1.0 to ever fire
+    (``DEFAULT_DECAY_MIGRATION_THRESHOLD``).
+    """
+    from math import exp, log2
+
+    age_factor = min(age_days / 30.0, 1.0)
+    retrieval_recency = exp(-days_since_last_retrieved / 7.0)
+    retrieval_frequency = min(log2(retrieval_count + 1) / 5.0, 1.0)
+    return age_factor - significance * 2.0 - retrieval_recency * 1.5 - retrieval_frequency * 1.0
 
 
 def _group_by_entity_date(
@@ -149,7 +178,7 @@ class Librarian:
         claude_model: str = "openrouter/anthropic/claude-sonnet-4",
         conflict_min_observations: int = 5,
         conflict_min_days: int = 14,
-        decay_migration_threshold: float = 1.0,
+        decay_migration_threshold: float = DEFAULT_DECAY_MIGRATION_THRESHOLD,
         pattern_min_occurrences: int = 3,
         pattern_min_days: int = 7,
         pattern_confidence_threshold: float = 0.6,
@@ -626,33 +655,19 @@ class Librarian:
 
     async def _apply_decay(
         self,
-        decay_migration_threshold: float = 1.0,
+        decay_migration_threshold: float = DEFAULT_DECAY_MIGRATION_THRESHOLD,
         search_query: str = "general context memory event",
         search_limit: int = 500,
     ) -> int:
         """Migrate old low-significance hot entries to cold storage.
 
-        Uses a subtractive formula where significance and retrieval
-        activity resist the migration pressure from age:
-
-            age_factor = min(days_old / 30.0, 1.0)
-            retrieval_recency = exp(-days_since_last_retrieved / 7.0)
-            retrieval_frequency = min(log2(count + 1) / 5.0, 1.0)
-
-            pressure = (
-                age_factor
-                - significance * 2.0
-                - retrieval_recency * 1.5
-                - retrieval_frequency * 1.0
-            )
-
-        Entries with pressure > decay_migration_threshold are migrated to cold.
+        Entries whose ``migration_pressure()`` exceeds ``decay_migration_threshold``
+        are migrated to cold. The pressure never exceeds 1.0, so the threshold must sit
+        below it.
         Related entries (same entity + same day) are compressed into a single
         summary before migration.
         Returns the number of entries migrated.
         """
-        from math import exp, log2
-
         try:
             results = await self._context_index.search_text(
                 query=search_query,
@@ -685,15 +700,8 @@ class Librarian:
             else:
                 days_since_last_retrieved = age_days
 
-            age_factor = min(age_days / 30.0, 1.0)
-            retrieval_recency = exp(-days_since_last_retrieved / 7.0)
-            retrieval_frequency = min(log2(retrieval_count + 1) / 5.0, 1.0)
-
-            pressure = (
-                age_factor
-                - significance * 2.0
-                - retrieval_recency * 1.5
-                - retrieval_frequency * 1.0
+            pressure = migration_pressure(
+                age_days, significance, retrieval_count, days_since_last_retrieved
             )
 
             if pressure > decay_migration_threshold:
@@ -1053,9 +1061,19 @@ class Librarian:
         # 1. Drain scratchpad
         lines = await self._drain_scratchpad()
         if not lines:
-            logger.info("Scratchpad empty — nothing to consolidate")
+            # Decay reads the hot store, not the scratchpad: passive observations reach
+            # episodic memory without ever passing through the queue, so a house nobody
+            # has spoken to still fills hot storage and still needs it emptied.
+            archived = await self._apply_decay(
+                decay_migration_threshold=self._decay_migration_threshold,
+            )
+            logger.info("Scratchpad empty — decay only; archived %d", archived)
             await self._record_run(0)
-            return {"entries_processed": 0, "routines_reindexed": routines_reindexed}
+            return {
+                "entries_processed": 0,
+                "routines_reindexed": routines_reindexed,
+                "archived": archived,
+            }
 
         logger.info("Draining %d scratchpad entries", len(lines))
 

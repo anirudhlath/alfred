@@ -58,10 +58,9 @@ evidence rather than on plumbing**:
   events in the measured window — if the episodic tab turns out to be 200 lines a
   day of `media_player.macbook_pro`, the fix is `OBSERVATION_DEBOUNCE_SECONDS` or
   the attention set, not a second LLM pass over noise.
-- **`docs/backlog/high/librarian-decay-threshold-unreachable.md`.** Nothing has
-  ever migrated out of hot storage, so the volume this ticket now depends on also
-  accumulates without an eviction path. Worth resolving before adding a consumer
-  that reads the whole window each cycle.
+- ~~Cold migration never fired~~: resolved by #201 (threshold `0.2`, decay runs on
+  empty-scratchpad cycles). Each pass still considers only the 500 hot entries nearest
+  a fixed query, which a consumer reading the whole window should know.
 
 What D33 still needs beyond that is unchanged: the `InsightSpec` model, the LLM
 pass (extended or second — question 2 below), `type="insight"` indexing in
@@ -97,5 +96,4 @@ considered and rejected.
 - Passive observation (spec `2026-09-03-passive-observation-design.md`) — hard
   prerequisite, **satisfied** on branch `feat/passive-observation`; the
   consolidation window now fills at ~200–300 entries/day
-- `docs/backlog/high/librarian-decay-threshold-unreachable.md` — cold migration
-  has never fired, so that window only grows
+- #201 (closed) — cold migration now fires; the hot window is bounded by decay

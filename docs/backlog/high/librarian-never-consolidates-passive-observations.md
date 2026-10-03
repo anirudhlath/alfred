@@ -50,8 +50,9 @@ consolidator has **zero** references to `recall(`; it touches `_episodic_memory`
 
 - [ ] A Librarian cycle detects patterns over passive observations without requiring a
       user conversation to have happened first.
-- [ ] Decay / cold migration runs on a cycle where the scratchpad is empty but episodic
-      memory is not — the two inputs are decoupled.
+- [x] Decay / cold migration runs on a cycle where the scratchpad is empty but episodic
+      memory is not — the two inputs are decoupled. (Done with #201: `consolidate()`
+      runs `_apply_decay` before its empty-scratchpad return.)
 - [ ] `docs/architecture.md` §3.7.1 either describes the implemented input or is
       corrected; the claim that pattern detection reads episodic entries must be true or
       removed.
@@ -60,9 +61,10 @@ consolidator has **zero** references to `recall(`; it touches `_episodic_memory`
 
 ## Notes
 
-Related but distinct: `docs/backlog/high/librarian-decay-threshold-unreachable.md` shows
-the decay *formula* can never exceed its threshold. This ticket is upstream of that — the
-decay pass is not reached at all. Fixing either alone leaves cold migration dead.
+Related but distinct: #201 (closed) showed the decay *formula* could never exceed its
+threshold. This ticket is upstream of that — the
+decay pass was not reached at all; that half is now fixed with #201, and pattern
+detection over observations is what remains here.
 
 Decide deliberately whether the Librarian should read episodic memory directly or whether
 the ingestor should also fan out to the queue. The second is a smaller change but

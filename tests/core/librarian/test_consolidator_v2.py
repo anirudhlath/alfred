@@ -12,9 +12,15 @@ if TYPE_CHECKING:
 
 import pytest
 
-from core.librarian.consolidator import ConflictItem, Librarian, _group_by_entity_date
+from core.librarian.consolidator import (
+    ConflictItem,
+    Librarian,
+    _group_by_entity_date,
+    migration_pressure,
+)
 from core.memory.schemas import EpisodicEntry, SignificanceScore
 from core.memory.vector_store import ContextMetadata, SearchResult
+from shared.config import DEFAULT_DECAY_MIGRATION_THRESHOLD, AlfredConfig
 
 _UTC = datetime.UTC
 _TS = datetime.datetime(2026, 3, 19, tzinfo=_UTC)
@@ -650,13 +656,13 @@ async def test_apply_decay_spares_frequently_retrieved_entries() -> None:
     librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
 
     # Entry: 30 days old, low sig=0.1, but retrieval_count=100
-    # pressure = 30 * 0.9 * (1/101) ≈ 0.267 < threshold=1.0 → spared
+    # pressure = 1.0 - 0.2 - 0.02 - 1.0 ≈ -0.22, under the production default → spared
     old_ts = datetime.datetime.now(datetime.UTC).timestamp() - (30 * 86400)
     popular_entry = _make_search_result("popular-1", old_ts, significance=0.1, retrieval_count=100)
 
     context_index.search_text = AsyncMock(return_value=[popular_entry])
 
-    migrated = await librarian._apply_decay(decay_migration_threshold=1.0)
+    migrated = await librarian._apply_decay()
 
     assert migrated == 0
     episodic_memory.copy_to_cold_and_remove.assert_not_awaited()
@@ -681,7 +687,9 @@ async def test_apply_decay_skips_non_episodic_entries() -> None:
 
     context_index.search_text = AsyncMock(return_value=[semantic_entry, routine_entry])
 
-    migrated = await librarian._apply_decay(decay_migration_threshold=1.0)
+    # At the production default these would migrate (pressure ≈ 0.78) if they were
+    # episodic, so only the type filter keeps them.
+    migrated = await librarian._apply_decay()
 
     assert migrated == 0
     episodic_memory.copy_to_cold_and_remove.assert_not_awaited()
@@ -741,10 +749,113 @@ async def test_apply_decay_skips_zero_timestamp_entries() -> None:
 
     context_index.search_text = AsyncMock(return_value=[zero_ts_entry])
 
-    migrated = await librarian._apply_decay(decay_migration_threshold=1.0)
+    # Read as an epoch timestamp it would be ~56 years old and migrate at the default,
+    # so only the zero-timestamp guard keeps it.
+    migrated = await librarian._apply_decay()
 
     assert migrated == 0
     episodic_memory.copy_to_cold_and_remove.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Decay threshold: reachable by construction (#201)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("age_days", [0.0, 1.0, 30.0, 365.0, 36_500.0])
+@pytest.mark.parametrize("significance", [0.0, 0.1, 0.5, 1.0])
+@pytest.mark.parametrize("retrieval_count", [0, 1, 10, 10_000])
+@pytest.mark.parametrize("days_since_last_retrieved", [0.0, 7.0, 365.0, 36_500.0])
+def test_migration_pressure_never_exceeds_one(
+    age_days: float, significance: float, retrieval_count: int, days_since_last_retrieved: float
+) -> None:
+    """Age caps at 1.0 and every other term only subtracts, so `> 1.0` can never fire.
+
+    Exactly 1.0 is reachable in floating point: a year-old, never-retrieved entry's
+    recency term is ~1e-23 and rounds away.
+    """
+    pressure = migration_pressure(
+        age_days, significance, retrieval_count, days_since_last_retrieved
+    )
+    assert pressure <= 1.0
+
+
+def test_default_threshold_is_reachable_and_shared() -> None:
+    assert DEFAULT_DECAY_MIGRATION_THRESHOLD < 1.0
+    assert AlfredConfig().decay_migration_threshold == DEFAULT_DECAY_MIGRATION_THRESHOLD
+
+
+@pytest.mark.parametrize(
+    ("age_days", "significance", "retrieval_count", "days_since", "migrates"),
+    [
+        # The D4 design's behaviour table (2026-04-16-d3-d4-pattern-detection-decay-design.md)
+        (30.0, 0.1, 0, 30.0, True),  # low significance, never retrieved: ~0.78
+        (30.0, 0.8, 0, 30.0, False),  # high significance: ~-0.6
+        (7.0, 0.1, 3, 1.0, False),  # retrieved yesterday: deeply negative
+        (60.0, 0.3, 1, 30.0, False),  # the borderline row: ~0.18, just under
+    ],
+)
+def test_default_threshold_matches_the_design_table(
+    age_days: float, significance: float, retrieval_count: int, days_since: float, migrates: bool
+) -> None:
+    pressure = migration_pressure(age_days, significance, retrieval_count, days_since)
+    assert (pressure > DEFAULT_DECAY_MIGRATION_THRESHOLD) is migrates
+
+
+@pytest.mark.asyncio
+async def test_apply_decay_default_migrates_old_unimportant_entry() -> None:
+    """With no threshold passed, an old, zero-significance, never-read entry leaves hot storage."""
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+
+    old_ts = datetime.datetime.now(datetime.UTC).timestamp() - (45 * 86400)
+    entry = _make_search_result("stale-1", old_ts, significance=0.0, retrieval_count=0)
+    context_index.search_text = AsyncMock(return_value=[entry])
+
+    assert await librarian._apply_decay() == 1
+    episodic_memory.copy_to_cold_and_remove.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("significance", [0.355, 0.105])
+async def test_apply_decay_default_sweeps_passive_observations(significance: float) -> None:
+    """Passive observations score 0.355 on a first sighting and ~0.105 once novelty is spent.
+
+    Both must leave hot storage once old and unread: they are the volume decay exists for.
+    """
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+
+    old_ts = datetime.datetime.now(datetime.UTC).timestamp() - (45 * 86400)
+    entry = _make_search_result("obs-1", old_ts, significance=significance, retrieval_count=0)
+    entry.metadata.source = "observation"
+    context_index.search_text = AsyncMock(return_value=[entry])
+
+    assert await librarian._apply_decay() == 1
+
+
+@pytest.mark.asyncio
+async def test_consolidate_runs_decay_on_empty_scratchpad() -> None:
+    """Decay reads the hot store, so an empty scratchpad must not skip it (#202)."""
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    librarian = _make_librarian(
+        api_key="", episodic_memory=episodic_memory, context_index=context_index
+    )
+    librarian._redis.lrange.return_value = []
+    librarian._redis.rename.side_effect = Exception("no such key")
+
+    old_ts = datetime.datetime.now(datetime.UTC).timestamp() - (45 * 86400)
+    entry = _make_search_result("stale-1", old_ts, significance=0.0, retrieval_count=0)
+    context_index.search_text = AsyncMock(return_value=[entry])
+
+    result = await librarian.consolidate()
+
+    assert result["entries_processed"] == 0
+    assert result["archived"] == 1
+    episodic_memory.copy_to_cold_and_remove.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

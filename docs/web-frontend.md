@@ -260,10 +260,11 @@ coin more.
 > pass migrates into cold storage; it is never said of a cold row, because decay is what
 > puts a row there and nothing removes one afterwards. It marks a standing, not a schedule:
 > the client cannot compute the pass's own pressure formula, which also weighs age and
-> retrieval recency against a threshold no endpoint reports — and that threshold is
-> currently unreachable, so nothing migrates at all today
-> (`docs/backlog/high/librarian-decay-threshold-unreachable.md`,
-> `docs/backlog/low/pwa-phase3-followups.md` §20).
+> retrieval recency against a threshold no endpoint reports. That threshold is 0.2
+> (`DEFAULT_DECAY_MIGRATION_THRESHOLD`, #201), and pressure tops out at
+> `1 - 2 × significance`, so 0.4 is exactly the significance below which the pass can
+> ever reach a row: `DECAY_FLOOR` and the server agree
+> (`docs/backlog/low/pwa-phase3-followups.md` §20).
 
 It is drawn after the store rather than instead of the recall count, exactly as the
 prototype draws it: the count is the evidence for the mark.

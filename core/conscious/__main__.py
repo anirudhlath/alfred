@@ -317,6 +317,15 @@ async def run(config: AlfredConfig) -> None:
                 context_index=context_index,
                 claude_api_key=config.claude_api_key,
                 claude_model=config.claude_model,
+                conflict_min_observations=config.conflict_min_observations,
+                conflict_min_days=config.conflict_min_days,
+                decay_migration_threshold=config.decay_migration_threshold,
+                pattern_min_occurrences=config.pattern_min_occurrences,
+                pattern_min_days=config.pattern_min_days,
+                pattern_confidence_threshold=config.pattern_confidence_threshold,
+                routine_decay_per_cycle=config.routine_decay_per_cycle,
+                routine_archive_threshold=config.routine_archive_threshold,
+                routine_suggestion_cooldown_hours=config.routine_suggestion_cooldown_hours,
             )
             librarian_scheduler = LibrarianScheduler(
                 librarian=librarian,
