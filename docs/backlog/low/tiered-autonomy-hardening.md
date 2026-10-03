@@ -60,7 +60,17 @@ key the cooldown on `(domain, entity_id)` instead. Also add a regression test fo
 inverse case that's currently untested: "cooldown allows fire again after the window
 elapses" (today's tests cover suppression within the window, not recovery after it).
 
-### 5. `tool_risk()` wrong-shape-but-valid JSON could raise
+### 5. `tool_risk()` wrong-shape-but-valid JSON could raise — RESOLVED
+**Resolved on `fix/non-object-json-guards`.** A non-object manifest now reads `"unknown"`
+(logged), and a `features`/`tools` value that is not a list, or an entry in one that is
+not a dict, is skipped; a well-formed declaration beside the garbage still answers, so
+stray junk cannot hide a `"critical"` tag from the confirmation gate. **Deliberate
+deviation from the wording below:** the degraded answer is `"unknown"`, not `"benign"` —
+since #187 the documented default for an unparseable manifest is `"unknown"` (fail
+closed, `docs/autonomy.md`), and `"benign"` would hand reflex autonomy to a tool the
+registry cannot vouch for. Pinned by `test_wrong_shape_manifest_does_not_raise` in
+`tests/core/routing/test_risk.py`.
+
 `core/routing/risk.py` `tool_risk()` parses the tool manifest JSON from
 `alfred:tool_registry` to find a tool's declared risk. Valid JSON with an unexpected
 shape (e.g. `tools` present but not a list, or a tool entry that isn't a dict) is not
