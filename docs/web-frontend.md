@@ -950,6 +950,7 @@ npm run lint          # ESLint
 npm test              # Vitest (jsdom)
 npm run build         # tsc -b && vite build → web/dist/
 npm run preview       # serve web/dist/ locally
+npm run design-sync   # regenerate the claude.ai/design system → design-system/out/ (docs/design-system.md)
 ```
 
 The type check lives in `build` (`tsc -b`), not in `lint`. CI runs `lint`, `test` and

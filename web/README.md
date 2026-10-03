@@ -16,6 +16,7 @@ Spec: `docs/superpowers/specs/2026-09-04-mobile-first-pwa-client-design.md`.
 | `npm run build` | `tsc -b` then `vite build` → `web/dist/`, which the web channel serves |
 | `npm test` | Vitest, once |
 | `npm run lint` | ESLint over `web/` |
+| `npm run design-sync` | Regenerate the claude.ai/design system from these components → `design-system/out/` (see `docs/design-system.md`) |
 
 The type check lives in `build`, not `lint`. CI runs `lint`, `test` and `build`, in
 that order, then serves the built `dist/` to `tests/core/channels/test_spa_ci.py`.
