@@ -52,6 +52,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `domains/home/home_agent.py` — routes actions to home-service
 - `evals/` — eval runner, scenarios, inference backends (`python -m evals`)
 - `web/` — Vite + React 19 phone-first PWA client: one screen (the Room), one interrupt (the Door), four identity gates (src/lib, src/shell, src/gates, src/room, src/door, src/workshop, src/sheets; npm run dev|build|test|lint) — built `web/dist/` is served by the web channel. See `docs/web-frontend.md`
+- `web/design-system/` — generator for the claude.ai/design "Alfred Design System": bundles the real `web/src` components, type-checks the preview stories against their props, generates props/docs/tokens from tsc and `index.css`, and render-checks every card in Chromium (`cd web && npm run design-sync` → `web/design-system/out/`, gitignored). See `docs/design-system.md`
 - `docs/superpowers/specs/` — approved design specs
 - `docs/superpowers/plans/` — implementation plans
 - `docs/backlog/` — priority subdirs (highest/high/medium/low/lowest) with individual ticket files
