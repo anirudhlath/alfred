@@ -396,7 +396,11 @@ Request body:
 {"active": true, "until": "2026-06-11T22:00:00Z", "reason": "sleeping"}
 ```
 
-- `active: false` — deletes `alfred:memory:dnd` immediately.
+- `active: false` — deletes `alfred:memory:dnd` immediately and, if that removed a live key,
+  queues a drain of the held-back queue: the same `drain_deferred_notifications` action as
+  [Drain](#drain-post-apiadminnotificationsdrain) below, executed by the conscious process.
+  The response is still `{"active": false}` — it does not wait for the drain. A clear when
+  DND was already off queues nothing.
 - `active: true` — writes `{"active": true, "until": ..., "reason": ..., "source": "manual"}`
   to `alfred:memory:dnd`. `until` and `reason` are optional.
 
@@ -591,7 +595,7 @@ cleanly before the handler returns.
 
 | Control | Mechanism | Who executes |
 |---|---|---|
-| DND set/clear | Direct `SET`/`DEL alfred:memory:dnd` | Admin API (channels process) |
+| DND set/clear | Direct `SET`/`DEL alfred:memory:dnd`; a clear that removed the key also `XADD alfred:actions` (`drain_deferred_notifications`) | Admin API (channels process); the drain by the Conscious process `_INTERNAL_HANDLERS` |
 | Trigger `enabled` toggle | `XADD alfred:actions` (`set_trigger_enabled`, `target_service=trigger-engine`) | Triggers process (`triggers-internal` consumer → `TriggerStore.save`) |
 | Session delete | `DEL alfred:sessions:{id}` | Admin API (channels process) |
 | Drain deferred notifications | `XADD alfred:actions` (`drain_deferred_notifications`) | Conscious process `_INTERNAL_HANDLERS` |

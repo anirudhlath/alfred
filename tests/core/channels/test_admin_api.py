@@ -734,7 +734,7 @@ def test_devices_list_truncates_the_token_on_corrupt_metadata() -> None:
 def test_dnd_set_and_clear() -> None:
     r = _overview_redis()
     r.set = AsyncMock()
-    r.delete = AsyncMock()
+    r.delete = AsyncMock(return_value=1)
     client = make_admin_client(r)
 
     resp = client.post("/api/admin/dnd", json={"active": True, "reason": "focus"})
@@ -751,6 +751,64 @@ def test_dnd_set_and_clear() -> None:
     resp = client.post("/api/admin/dnd", json={"active": False})
     assert resp.json() == {"active": False}
     r.delete.assert_awaited_once_with("alfred:memory:dnd")
+
+
+def _drain_requests(r: AsyncMock) -> list[dict[str, Any]]:
+    """Every `drain_deferred_notifications` action the admin API put on `alfred:actions`."""
+    actions = [
+        json.loads(call.args[1]["event"])
+        for call in r.xadd.await_args_list
+        if call.args[0] == "alfred:actions"
+    ]
+    return [a for a in actions if a["tool_name"] == "drain_deferred_notifications"]
+
+
+def test_dnd_clear_asks_the_conscious_process_to_drain_once() -> None:
+    """Clearing DND hands the held-back queue to its owner — once, and only after the delete.
+
+    The drain runs in the conscious process (`NotificationDispatcher.drain_deferred`); the
+    web process only queues it, the same way the expiry trigger and `/notifications/drain` do.
+    """
+    r = _overview_redis()
+    order: list[str] = []
+    r.delete = AsyncMock(side_effect=lambda *_: order.append("delete") or 1)
+    r.xadd = AsyncMock(side_effect=lambda *_: order.append("xadd"))
+    client = make_admin_client(r)
+
+    assert client.post("/api/admin/dnd", json={"active": False}).json() == {"active": False}
+
+    drains = _drain_requests(r)
+    assert len(drains) == 1
+    assert drains[0]["target_service"] == "conscious-engine"
+    assert drains[0]["source"] == "admin-api"
+    # DND is gone before the drain is asked for, or the drain could race a live key.
+    assert order == ["delete", "xadd"]
+
+
+def test_dnd_clear_when_not_set_requests_no_drain() -> None:
+    """A clear that cleared nothing is no transition, and must not flush a held queue."""
+    r = _overview_redis()
+    r.delete = AsyncMock(return_value=0)
+    r.xadd = AsyncMock()
+    client = make_admin_client(r)
+
+    assert client.post("/api/admin/dnd", json={"active": False}).json() == {"active": False}
+
+    assert _drain_requests(r) == []
+
+
+@pytest.mark.parametrize("until", [None, "2026-06-12T08:00:00+00:00"])
+def test_dnd_set_requests_no_drain(until: str | None) -> None:
+    """Turning quiet on (timed or not) holds the queue; it never asks for a drain."""
+    r = _overview_redis()
+    r.set = AsyncMock()
+    r.xadd = AsyncMock()
+    client = make_admin_client(r)
+
+    resp = client.post("/api/admin/dnd", json={"active": True, "until": until})
+
+    assert resp.status_code == 200
+    r.xadd.assert_not_awaited()
 
 
 def test_drain_and_librarian_publish_actions() -> None:
