@@ -57,9 +57,16 @@ class ToolRegistry:
             )
 
             try:
-                manifest: dict[str, Any] = json.loads(manifest_str)
+                manifest: Any = json.loads(manifest_str)
             except json.JSONDecodeError:
                 logger.error("Invalid JSON in registry for service '%s'", service_name)
+                continue
+            # Same guard as service_credentials._parse_manifest: valid JSON need not be
+            # an object, and one bad entry must not take down every service's tools.
+            if not isinstance(manifest, dict):
+                logger.warning(
+                    "Non-object JSON in registry for service '%s' — skipped", service_name
+                )
                 continue
 
             # Parse features

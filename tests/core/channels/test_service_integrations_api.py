@@ -530,6 +530,22 @@ def test_status_unexpected_probe_error_is_unhealthy_not_500(
     assert isinstance(data["latency_ms"], float)
 
 
+@pytest.mark.parametrize("body", [123, ["ok"], "ok", True])
+def test_status_non_object_health_body_is_unhealthy_not_500(
+    body: Any, service_client: TestClient, service_handler: _ServiceHttpHandler
+) -> None:
+    """A 200 whose /health body is valid JSON but not an object parses fine (no
+    ValueError), then crashed `.get` with an AttributeError — a 500 for one
+    misbehaving service. It reads as unhealthy instead."""
+    service_handler.health = body
+    resp = service_client.get("/api/integrations/home-service/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["healthy"] is False
+    assert data["detail"] == {"error": f"/health body is not a JSON object: {type(body).__name__}"}
+    assert isinstance(data["latency_ms"], float)
+
+
 def test_status_times_the_adapter_probe_not_its_construction(
     monkeypatch: pytest.MonkeyPatch,
     service_handler: _ServiceHttpHandler,

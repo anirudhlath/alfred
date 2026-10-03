@@ -23,9 +23,8 @@ updates still wait for a human (or an `@claude` review).
   required status checks on the default branch
   ([harden-github-actions-and-ci](harden-github-actions-and-ci.md)) — auto-merge without
   required checks merges untested updates instantly. Do not land this ticket first.
-- CI must actually exercise the dependency surface for green to mean anything —
-  [ci-frontend-gates-and-concurrency](../high/ci-frontend-gates-and-concurrency.md) closes
-  the npm blind spot.
+- CI must actually exercise the dependency surface for green to mean anything — the `web`
+  job (lint, test, build) closed the npm blind spot (#195).
 - Policy suggestion: auto-merge `version-update:semver-patch` for all deps and
   `semver-minor` for dev-dependency groups only; never auto-merge major bumps or anything
   in the auth/crypto path (cryptography, pyjwt, webauthn) — those get a comment tagging
