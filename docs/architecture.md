@@ -463,7 +463,7 @@ Alfred's memory is biologically-inspired with three layers:
 
 **Episodic Memory** (`core/memory/episodic/`):
 
-Two-tier storage: Redis for hot (recent) entries, SQLite for cold archive. Entries are `EpisodicEntry` models with timestamps, source, content, and importance scores. Embeddings are computed via the configured embedding backend (see [3.7.2](#372-embedding-backends)) for semantic search. A `DecayScheduler` handles time-based importance decay.
+Two-tier storage: Redis for hot (recent) entries, SQLite for cold archive. Entries are `EpisodicEntry` models with timestamps, source, content, and importance scores. Embeddings are computed via the configured embedding backend (see [3.7.2](#372-embedding-backends)) for semantic search; hot KNN is exact (`HYBRID_POLICY ADHOC_BF`), cold tables measure cosine. The Librarian's decay pass (`Librarian._apply_decay`) moves episodic entries from hot to cold by migration pressure (age against significance, recency and retrieval frequency): it selects its candidates by metadata, compresses related entries by entity and day, and copies each with the vectors hot already holds. Deliberate recall (`memory_recall_memories` → `ContextIndexManager.recall()`) searches both tiers; involuntary recall searches hot only. Measured by the memory-decay eval (`docs/evals-memory.md`).
 
 **Semantic Memory** (`core/memory/profile/`, `core/memory/preferences/`):
 

@@ -230,7 +230,7 @@ Query parameters: `q` (optional search string), `limit` (default 30, clamped to 
 
 **Without `?q`** (recent listing):
 
-- Hot store: scans `ctx:*` keys (RediSearch HNSW prefix), retains only entries where
+- Hot store: scans `ctx:*` keys (the hot index's key prefix), retains only entries where
   `type == "episodic"`. The `CONTEXT_PREFIX` keyspace is shared — it also holds
   `type="semantic"` and `type="routine"` entries that are filtered out here.
 - Cold store: queries `episodic_entries` table in `core/memory/episodic_cold.db` ordered

@@ -1,6 +1,6 @@
 # Alfred — Product Requirements Document
 
-**Status:** Living document. Capability statuses current as of **2026-09-16**.
+**Status:** Living document. Capability statuses current as of **2026-10-03**.
 **Maintenance rule:** any PR that adds or changes a user-facing capability updates the
 relevant row(s) in the [Capability Catalog](#4-capability-catalog) in the same branch.
 
@@ -106,7 +106,8 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 | Episodic memory: significant events recorded with hot (fast) and cold (archival) tiers | Shipped | spec `2026-03-24-phase3-memory-completion-design.md` |
 | Semantic memory: preferences and profile as human-readable documents | Shipped | same |
 | Procedural memory: routines with a full lifecycle (detected → confirmed → decayed) | Shipped | same |
-| Nightly librarian consolidation: conflict resolution, pattern detection, contextual decay | Shipped | same |
+| Nightly librarian consolidation: conflict resolution, pattern detection | Shipped | same |
+| Contextual decay: routine memories move to the cold archive while important and recently recalled ones stay hot, and deliberate recall still reaches the archive | In review | PR #247, `research/experiments/EXP-006-memory-decay.md` |
 | Two-stage recall: automatic context assembly + deliberate memory search during reasoning | Shipped | same |
 | Significance scoring (a heuristic amygdala deciding what is worth remembering) | Shipped | same |
 | Passive observation: home state changes the reflex sees but chooses not to act on are still remembered | In review | spec `2026-09-03-passive-observation-design.md` |

@@ -65,7 +65,7 @@ flowchart TD
         PASS --> POL[DecayPolicy.run_pass]
         POL --> AD[Librarian._apply_decay now=...<br/>pressure filter, entity+date grouping,<br/>compression, copy_to_cold_and_remove]
         AD -->|candidates| SRC{candidate source}
-        SRC -->|no_decay / branch| SEARCH[RecordingIndex<br/>real search_text]
+        SRC -->|no_decay / branch| SEARCH[RecordingIndex<br/>real select by metadata]
         SRC -->|oracle| SCAN[ScanAllHotIndex<br/>SCAN every hot hash]
         AD --> COLD[(cold: SqliteVecStore)]
         LOOP --> DAY[end of day: SCAN hot<br/>exact pressure, stuck streaks, sizes]
@@ -74,7 +74,7 @@ flowchart TD
     end
 
     PROBE --> P1[involuntary: search_text<br/>limit 10, floor 0.5]
-    PROBE --> P2[memory_recall_memories<br/>via a read-only view]
+    PROBE --> P2[memory_recall_memories<br/>hot + cold, via a read-only view]
     PROBE --> P3[EpisodicMemory.recall<br/>hot + cold, no stat writes]
     PROBE --> P4[exact brute-force KNN<br/>over the hot store's own vectors]
     PROBE --> P5[cold store alone<br/>sqlite-vec KNN]
@@ -134,8 +134,8 @@ only in the candidate source and the threshold:
 
 | Policy | Candidates | Threshold | Answers |
 |---|---|---|---|
-| `no_decay` | real search | 1.0 (master) | What master does: no pressure exceeds 1.0, so nothing moves |
-| `branch` | real search (`"general context memory event"`, limit 500) | 0.2 | What this branch does |
+| `no_decay` | real selection — none at 1.0 | 1.0 (master) | What master does: no pressure exceeds 1.0, so nothing moves (and the pass makes no query) |
+| `branch` | real `select()` by metadata (`decay_candidate_ranges`) | 0.2 | What this branch does |
 | `oracle` | every hot hash, by SCAN | 0.2 | Is the **formula** good, if selection were perfect? |
 
 **Adding a fix.** A fix that changes `_apply_decay` itself shows up under `branch`
@@ -154,24 +154,24 @@ Measured at each checkpoint (default days 30, 45, 60):
 | Exact-search hit@10 | Target in the top 10 of a brute-force cosine ranking over the hot store's own vectors, above the floor — what a perfect KNN would return |
 | Hit@10 at floor 0 | The same real search with `min_similarity=0.0` — separates "under the threshold" from "ranked too low" |
 | Noise in top-10 | Mean `routine`/`reflex` entries in what involuntary recall returned |
-| Deliberate reachability | For targets no longer hot: found by `memory_recall_memories` (hot only today), by `EpisodicMemory.recall` (hot + cold, the spec's path), and by the cold store searched alone — which separates "the archive does not hold it" from "the merge with hot results buried it". A compression summary containing the target counts. **The bar is pending a product decision**; the spec (§6.2, §7.4) says archived memories stay reachable, so that is the default |
+| Deliberate reachability | For targets no longer hot: found by `memory_recall_memories` (`ContextIndexManager.recall`, hot + the cold archive), by `EpisodicMemory.recall` (hot + cold), and by the cold store searched alone — which separates "the archive does not hold it" from "the merge with hot results buried it". A compression summary containing the target counts. The bar is the spec's (§6.2, §7.4): archived memories stay reachable |
 | Kept | Share of `significant` / `recalled` memories still hot |
 | Forgotten | Hot episodic size over time; share of `routine`+`reflex` memories older than 14 days that left hot |
 | Stuck | Hot memories whose exact pressure (at the configured threshold, for every policy) has been above it at ≥2 consecutive daily checks (≥24 passes) or ≥8 (≥7 days) |
-| Unpickable | Eligible hot memories whose stored vectors are both at negative cosine to the decay query — `min_similarity=0.0` can never return them |
-| HNSW misses | Targets the exact ranking puts in the top 10 that the real query did not return — for the filtered involuntary query and the unfiltered (`*`) tool query |
+| Unselected | Eligible hot memories the decay pass's own `select()` would not return — zero unless the metadata ranges stop covering the pressure formula |
+| Search misses | Targets the exact ranking puts in the top 10 that the real query did not return — for the filtered involuntary query and the unfiltered tool query. Zero since hot KNN became exact (`HYBRID_POLICY ADHOC_BF`); EXP-006 measured 73–90% under the HNSW walk |
 | Cost | Wall time and `embed()` calls per decay pass; embeds per migrated memory; summed embed time per pass (a pass embeds concurrently, so this can exceed its wall time) |
 
 ## Determinism
 
 Seeded timeline, deterministic ids (`obs-DD-NNNN`, `rfx-…`, `sig-NN`, `rec-NN`,
-`det-NN`), fixed write order. Two 60-day runs with the same seed agreed on every
-number except the ones the **unfiltered** KNN query produces — `memory_recall_memories`
-hits (T), `EpisodicMemory.recall` hits on hot targets (R) and the tool's HNSW-miss
-rate — which moved by one or two targets per checkpoint: RediSearch does not build
-the same HNSW graph twice, and that query is the one the graph's duplicates defeat.
-The filtered involuntary query, migrations, sizes and every decay metric came out
-identical. Wall-clock fields always differ (`wall_ms`, `embed_ms`, `wall_seconds`,
+`det-NN`), fixed write order. Before hot searches became exact, two 60-day runs with
+the same seed agreed on every number except the ones the **unfiltered** KNN query
+produced — `memory_recall_memories` hits (T), `EpisodicMemory.recall` hits on hot
+targets (R) and the tool's miss rate — which moved by one or two targets per
+checkpoint, because RediSearch does not build the same HNSW graph twice. Exact KNN
+takes the graph out of every query; the filtered involuntary query, migrations, sizes
+and every decay metric were identical even then. Wall-clock fields always differ (`wall_ms`, `embed_ms`, `wall_seconds`,
 `decay_embed_seconds`, `run_id`, `timestamp`); compression summary ids are `uuid4`
 but are never compared.
 
