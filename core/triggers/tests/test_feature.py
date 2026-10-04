@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path  # noqa: TC003
 from typing import Any
@@ -11,7 +12,7 @@ import pytest
 
 from core.triggers.registry import TriggerRegistry
 from core.triggers.store import TriggerStore
-from shared.streams import USER_TIMEZONE_KEY
+from shared.streams import EVENTS_STREAM, USER_TIMEZONE_KEY
 
 
 @pytest.fixture(autouse=True)
@@ -312,3 +313,108 @@ async def test_update_trigger_localizes_naive_run_at(fake_redis: Any, snapshot_d
     assert isinstance(stored, TimeTrigger)
     run_at = stored.conditions.run_at
     assert run_at is not None and run_at.utcoffset() == timedelta(hours=-6)
+
+
+# --- run_in_seconds: the model asks for a delay, the server does the clock arithmetic ---
+
+
+def _events(fake_redis: Any, event_type: str) -> list[dict[str, Any]]:
+    events = [json.loads(e["event"]) for e in fake_redis.streams.get(EVENTS_STREAM, [])]
+    return [e for e in events if e["event_type"] == event_type]
+
+
+def test_dynamic_description_offers_run_in_seconds() -> None:
+    from core.triggers.feature import TriggerFeature, TriggerFeatureContext
+
+    f = TriggerFeature(ctx=TriggerFeatureContext(store=AsyncMock(spec_set=TriggerStore)))
+    create_tool = next(t for t in f.get_tools() if "create_trigger" in t.name)
+    assert "run_in_seconds" in create_tool.description
+    assert "PREFER this over run_at" in create_tool.description
+
+
+@pytest.mark.asyncio
+async def test_create_trigger_run_in_seconds_stores_aware_run_at_and_fires(
+    fake_redis: Any, snapshot_dir: Path
+) -> None:
+    """The LLM tool call {"run_in_seconds": 5} lands as an aware run_at ~now+5s, and the
+    scheduler arms its alarm for exactly that instant."""
+    from core.triggers.engine import TriggerEngine
+    from core.triggers.feature import TriggerFeature, TriggerFeatureContext
+    from core.triggers.types.time import TimeTrigger
+
+    fake_redis.kv[USER_TIMEZONE_KEY] = "Asia/Kolkata"  # no DST: a date-independent offset
+    store = TriggerStore(redis=fake_redis, snapshot_dir=snapshot_dir)
+    feature = TriggerFeature(TriggerFeatureContext(store=store, redis=fake_redis))
+    before = datetime.now(UTC)
+    result = await feature.create_trigger(
+        name="tea", trigger_type="time", conditions={"run_in_seconds": 5}, one_shot=True
+    )
+    after = datetime.now(UTC)
+
+    assert "error" not in result
+    assert "run_in_seconds" not in result["conditions"]
+    stored = await store.get(result["trigger_id"])
+    assert isinstance(stored, TimeTrigger)
+    run_at = stored.conditions.run_at
+    assert run_at is not None
+    assert run_at.utcoffset() == timedelta(hours=5, minutes=30)
+    assert before + timedelta(seconds=5) <= run_at <= after + timedelta(seconds=5)
+    # The bus sees the resolved form too, never the relative input.
+    (created,) = _events(fake_redis, "trigger_created")
+    assert "run_in_seconds" not in created["conditions"]
+    assert datetime.fromisoformat(created["conditions"]["run_at"]) == run_at
+
+    engine = TriggerEngine(store=store, redis=fake_redis)
+    assert await engine.next_wakeup(after) == run_at
+    await engine.evaluate_tick(run_at - timedelta(milliseconds=1))
+    assert _events(fake_redis, "trigger_fired") == []
+    await engine.evaluate_tick(run_at)
+    (fired,) = _events(fake_redis, "trigger_fired")
+    assert fired["trigger_id"] == result["trigger_id"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "conditions",
+    [
+        {"run_at": "2026-07-16T15:00:00+00:00", "run_in_seconds": 5},
+        {"cron": "0 7 * * *", "run_in_seconds": 5},
+        {"cron": "0 7 * * *", "run_at": "2026-07-16T15:00:00+00:00"},
+    ],
+)
+async def test_create_trigger_rejects_two_schedule_fields(
+    mock_store: AsyncMock, conditions: dict[str, Any]
+) -> None:
+    from core.triggers.feature import TriggerFeature, TriggerFeatureContext
+
+    f = TriggerFeature(ctx=TriggerFeatureContext(store=mock_store))
+    result = await f.create_trigger(name="ambiguous", trigger_type="time", conditions=conditions)
+    assert "only one of cron, run_at, run_in_seconds" in result["error"]
+    mock_store.save.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_trigger_run_in_seconds_reschedules_from_now(
+    fake_redis: Any, snapshot_dir: Path
+) -> None:
+    from core.triggers.feature import TriggerFeature, TriggerFeatureContext
+    from core.triggers.types.time import TimeTrigger
+
+    store = TriggerStore(redis=fake_redis, snapshot_dir=snapshot_dir)
+    feature = TriggerFeature(TriggerFeatureContext(store=store, redis=fake_redis))
+    created = await feature.create_trigger(
+        name="stretch", trigger_type="time", conditions={"cron": "0 7 * * *"}
+    )
+    before = datetime.now(UTC)
+    updated = await feature.update_trigger(
+        trigger_id=created["trigger_id"], conditions={"run_in_seconds": 600}
+    )
+    after = datetime.now(UTC)
+
+    assert "error" not in updated
+    stored = await store.get(created["trigger_id"])
+    assert isinstance(stored, TimeTrigger)
+    assert stored.conditions.cron is None
+    run_at = stored.conditions.run_at
+    assert run_at is not None
+    assert before + timedelta(seconds=600) <= run_at <= after + timedelta(seconds=600)

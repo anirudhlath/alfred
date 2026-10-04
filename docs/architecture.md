@@ -432,7 +432,7 @@ The Trigger Engine enables proactive behavior -- actions that fire based on time
 - **`TriggerEngine`** -- dual evaluation loops (scheduled wakeup on `next_fire_time()` + event listener) with deterministic fire logic.
 - **`TriggerFeature`** -- `BaseFeature` subclass exposing CRUD tools with dynamic descriptions.
 
-**Trigger types:** `time` (cron/datetime), `sensor` (entity/state/attribute match), `composite` (N-of-M child conditions).
+**Trigger types:** `time` (cron/datetime, or a relative `run_in_seconds` delay resolved to a datetime at creation), `sensor` (entity/state/attribute match), `composite` (N-of-M child conditions).
 
 **Fire logic:** If `trigger.action` is set, publishes `ActionRequest` to `alfred:actions`. If `None`, publishes `TriggerFired` to `alfred:events` for the Reflex Engine to handle.
 

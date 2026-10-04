@@ -180,19 +180,39 @@ Read-only context passed to `evaluate()`. Contains the current time and optional
 
 **File:** `core/triggers/types/time.py`
 
-Fires on a cron schedule or at a specific datetime.
+Fires on a cron schedule, at a specific datetime, or after a relative delay.
 
 **Conditions:**
 
-| Field    | Type              | Required | Description                                           |
-|----------|-------------------|----------|-------------------------------------------------------|
-| `cron`   | `str \| None`     | No       | Cron expression (e.g. `"0 22 * * *"` for 10pm daily) |
-| `run_at` | `datetime \| None`| No       | Specific UTC datetime to fire at                      |
+| Field            | Type               | Required | Description                                           |
+|------------------|--------------------|----------|-------------------------------------------------------|
+| `cron`           | `str \| None`      | No       | Cron expression (e.g. `"0 22 * * *"` for 10pm daily), in the user's local timezone |
+| `run_at`         | `datetime \| None` | No       | Absolute due time for a wall-clock request ("at 3pm"), ISO-8601 with UTC offset |
+| `run_in_seconds` | `float \| None`    | No       | Relative delay from now ("in 20 minutes" → `1200`). Input-only: resolved to `run_at` at creation and never stored |
 
-At least one of `cron` or `run_at` must be set. The evaluate logic:
+A tool call gives at most one schedule field. `TimeTrigger.normalize_conditions()` runs at the tool
+boundary (`create_trigger` and `update_trigger`, before validation) and:
+
+- rejects a call that supplies two or more of `cron`, `run_at`, `run_in_seconds` (explicit `null`s
+  don't count) -- `create_trigger` returns `{"error": "Invalid conditions for type 'time': Give only
+  one of cron, run_at, run_in_seconds (got ...)"}`;
+- resolves `run_in_seconds` (positive and finite) against the **server clock**:
+  `run_at = now_utc + run_in_seconds`, stored aware in the user's timezone (`shared/usertime.py`) so
+  it reads back as their wall-clock time. The LLM never does clock arithmetic for a relative
+  request -- the personality prompt tells it to prefer `run_in_seconds` for "in N
+  seconds/minutes/hours" and `run_at` with an offset for absolute times. On `update_trigger` the
+  delay counts from the update, not from the old `run_at`;
+- localizes a naive `run_at` to the user's timezone.
+
+The one-field rule lives at the tool boundary, not on `Conditions`, so rows stored before it (a
+`cron` and a `run_at` together, where `run_at` wins) keep loading. A trigger constructed with an
+unresolved `run_in_seconds` (e.g. a composite child, whose conditions are not normalized) is
+refused at construction rather than stored as one that never fires.
+
+The evaluate logic:
 
 - **Cron:** `next_fire_time()` computes the next boundary strictly after `last_fired or created_at` (anchored in the user's local timezone, see `TriggerContext.tz`) via `croniter`; `evaluate()` fires once `now` reaches that boundary. A late wakeup (e.g. after downtime) fires exactly once and then re-anchors on the new `last_fired` -- no missed or duplicate fires, and no fixed polling window.
-- **run_at:** fires when `now >= run_at` and the trigger hasn't fired since `run_at`. Naive datetimes are treated as UTC.
+- **run_at:** fires when `now >= run_at` and the trigger hasn't fired since `run_at`. A naive datetime that reaches the model without going through the tool boundary (legacy rows) is treated as UTC.
 
 **Example:**
 ```json
@@ -418,8 +438,8 @@ Exposes trigger management as `BaseFeature` tools, making them discoverable by t
 
 ### Validation
 
-- `create_trigger`: validates `trigger_type` against the registry, validates `action` via `ActionPayload`, validates `conditions` by instantiating the trigger (Pydantic validation on the `Conditions` model).
-- `update_trigger`: uses `store.get()` for O(1) point lookup, validates new conditions through the type's `Conditions` model, validates action through `ActionPayload`.
+- `create_trigger`: validates `trigger_type` against the registry, validates `action` via `ActionPayload`, normalizes `conditions` via the type's `normalize_conditions()` (for `time`: one schedule field, `run_in_seconds` → `run_at`, naive `run_at` localized), then validates them by instantiating the trigger (Pydantic validation on the `Conditions` model).
+- `update_trigger`: uses `store.get()` for O(1) point lookup, normalizes new conditions the same way, validates them through the type's `Conditions` model, validates action through `ActionPayload`.
 - On success, `create_trigger` publishes a `TriggerCreated` event to `alfred:events`.
 
 ---
