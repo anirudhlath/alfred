@@ -1,0 +1,10 @@
+run_id,timestamp,embedding_model,policy,day,involuntary_hits,probes,open_hits,migrated_targets,tool_reach_hits,recall_reach_hits,cold_reach_hits,kept_significant,significant,kept_recalled,recalled,hot_episodic,noise_older_14d_gone,noise_older_14d,stuck_1d,stuck_7d,migrated_total,mean_pass_ms,decay_embed_calls
+2026-10-04T012806_memory-google--embeddinggemma-300m,2026-10-04T01:28:06.055469+00:00,google/embeddinggemma-300m,no_decay,30,19,25,21,0,0,0,0,17,17,5,5,6656,0,3580,2746,1357,0,52.0,1440
+2026-10-04T012806_memory-google--embeddinggemma-300m,2026-10-04T01:28:06.055469+00:00,google/embeddinggemma-300m,no_decay,45,22,30,25,0,0,0,0,24,24,5,5,9975,0,6847,6041,4715,0,52.0,1440
+2026-10-04T012806_memory-google--embeddinggemma-300m,2026-10-04T01:28:06.055469+00:00,google/embeddinggemma-300m,no_decay,60,25,33,28,0,0,0,0,30,30,5,5,13316,0,10163,9355,7988,0,52.0,1440
+2026-10-04T012806_memory-google--embeddinggemma-300m,2026-10-04T01:28:06.055469+00:00,google/embeddinggemma-300m,branch,30,19,25,21,0,0,0,0,17,17,5,5,6605,51,3580,2699,1336,166,57.4,1788
+2026-10-04T012806_memory-google--embeddinggemma-300m,2026-10-04T01:28:06.055469+00:00,google/embeddinggemma-300m,branch,45,22,30,25,0,0,0,0,24,24,5,5,9862,113,6847,5934,4631,166,57.4,1788
+2026-10-04T012806_memory-google--embeddinggemma-300m,2026-10-04T01:28:06.055469+00:00,google/embeddinggemma-300m,branch,60,25,33,28,0,0,0,0,30,30,5,5,13150,166,10163,9193,7848,166,57.4,1788
+2026-10-04T012806_memory-google--embeddinggemma-300m,2026-10-04T01:28:06.055469+00:00,google/embeddinggemma-300m,oracle,30,19,25,20,3,0,0,0,17,17,5,5,3693,2960,3580,0,0,9585,841.5,24614
+2026-10-04T012806_memory-google--embeddinggemma-300m,2026-10-04T01:28:06.055469+00:00,google/embeddinggemma-300m,oracle,45,19,30,21,6,0,0,3,24,24,5,5,3725,6244,6847,0,0,9585,841.5,24614
+2026-10-04T012806_memory-google--embeddinggemma-300m,2026-10-04T01:28:06.055469+00:00,google/embeddinggemma-300m,oracle,60,22,33,24,8,0,0,4,30,30,5,5,3731,9577,10163,0,0,9585,841.5,24614
