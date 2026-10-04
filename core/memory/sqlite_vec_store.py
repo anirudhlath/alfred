@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -25,6 +26,15 @@ _MIGRATION_V2_PATH = Path(__file__).parent / "episodic" / "migrations" / "v2.sql
 # The vec0 virtual tables built by _migrate_v2. Both carry the embedding width in
 # their DDL, so both have to be checked (see _verify_vec_dim).
 _VEC_TABLES = ("vec_episodic_content", "vec_episodic_semantic")
+
+# v3 rebuilt the vec0 tables to measure cosine distance (see _migrate_v3).
+_SCHEMA_VERSION = 3
+# vec0 measures L2 unless told otherwise, and search() reads ``1 - distance`` as cosine
+# similarity — the hot store's scale, which EpisodicMemory.recall merges with this one.
+_VEC_METRIC = "distance_metric=cosine"
+# Seconds between attempts to switch a contended file to WAL (see _enable_wal).
+_WAL_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6, 3.2)
+_VEC_COSINE_RE = re.compile(r"\bdistance_metric\s*=\s*cosine\b", re.IGNORECASE)
 
 # The declared width of the ``embedding`` column, read back out of the DDL sqlite
 # stores verbatim in sqlite_master. Anchored to the column name because vec0
@@ -50,6 +60,29 @@ def _pack(embedding: list[float]) -> bytes:
     return struct.pack(f"<{n}f", *embedding)
 
 
+async def _enable_wal(db: aiosqlite.Connection) -> None:
+    """Switch the file to WAL, retrying while another connection holds it.
+
+    Only a file not yet in WAL contends: the switch takes an exclusive lock, and on a
+    first boot every service makes it at once. SQLite answers that race with
+    "database is locked" straight away — it skips the busy handler where waiting
+    could deadlock — and its documented remedy is to try again.
+    """
+    for delay in (*_WAL_RETRY_DELAYS, None):
+        try:
+            await db.execute("PRAGMA journal_mode=WAL")
+            return
+        except sqlite3.OperationalError as exc:
+            if delay is None or "locked" not in str(exc):
+                raise
+            await asyncio.sleep(delay)
+
+
+def _vec_table_ddl(table: str, dim: int, *, if_not_exists: bool = False) -> str:
+    guard = "IF NOT EXISTS " if if_not_exists else ""
+    return f"CREATE VIRTUAL TABLE {guard}{table} USING vec0(embedding float[{dim}] {_VEC_METRIC})"
+
+
 class SqliteVecStore(VectorStore):
     """VectorStore backed by SQLite with sqlite-vec KNN search.
 
@@ -61,10 +94,11 @@ class SqliteVecStore(VectorStore):
     ``add``/``delete``/``exists``/``count`` still work, but ``search`` falls
     back to a full-table sequential scan (slower but correct).
 
-    Schema migration from v1 → v2 happens automatically on first connection
-    via ``_ensure_schema()``.  If the database already contains rows the data
+    Schema migration from v1 → v2 → v3 happens automatically on first connection
+    via ``_ensure_schema()``.  If the database already contains rows the v2 data
     migration step embeds each existing summary so the vec0 tables are
-    consistent from the start.
+    consistent from the start; v3 rebuilds L2 vec0 tables as cosine, copying every
+    vector.
 
     A vec0 table built at a different embedding width is the one case that is
     deliberately *not* graceful (see ``_verify_vec_dim``): it is latched and
@@ -98,7 +132,11 @@ class SqliteVecStore(VectorStore):
         if self._db is not None:
             return self._db
         db = await aiosqlite.connect(self._db_path)
-        await db.execute("PRAGMA journal_mode=WAL")
+        try:
+            await _enable_wal(db)
+        except BaseException:
+            await db.close()
+            raise
         # Other Alfred processes share this file — wait out their write
         # transactions instead of failing fast with "database is locked".
         await db.execute("PRAGMA busy_timeout=10000")
@@ -120,7 +158,7 @@ class SqliteVecStore(VectorStore):
         return db
 
     async def _ensure_schema(self) -> None:
-        """Run schema migrations up to v2 if needed.
+        """Run schema migrations up to v3 if needed.
 
         A proven dimension mismatch is latched and re-raised without touching the
         database again: every ``add``/``search``/``count`` reaches here via
@@ -144,11 +182,13 @@ class SqliteVecStore(VectorStore):
         # Fast path: already migrated and clean — stay read-only. Multiple
         # processes share this file and warm concurrently at startup while the
         # librarian may hold write transactions; taking write locks here
-        # produced "database is locked" warmup failures.
+        # produced "database is locked" warmup failures. v3 is the vec0 tables'
+        # version, which a process without the extension can neither build nor need.
+        current = _SCHEMA_VERSION if self._vec_ready else 2
         try:
             cursor = await db.execute("SELECT COUNT(*), MAX(version) FROM schema_version")
             row = await cursor.fetchone()
-            if row is not None and row[0] == 1 and row[1] is not None and row[1] >= 2:
+            if row is not None and row[0] == 1 and row[1] is not None and row[1] >= current:
                 self._schema_ready = True
                 return
         except sqlite3.OperationalError:
@@ -180,6 +220,9 @@ class SqliteVecStore(VectorStore):
                 row = await cursor.fetchone()
                 if row is None or row[0] is None or row[0] < 2:
                     raise
+
+        if self._vec_ready:
+            await self._migrate_v3(db)
 
         self._schema_ready = True
 
@@ -316,12 +359,8 @@ class SqliteVecStore(VectorStore):
 
         # vec0 virtual tables (only if extension loaded)
         if self._vec_ready:
-            await db.executescript(
-                f"CREATE VIRTUAL TABLE IF NOT EXISTS vec_episodic_semantic "
-                f"USING vec0(embedding float[{self._dim}]);\n"
-                f"CREATE VIRTUAL TABLE IF NOT EXISTS vec_episodic_content "
-                f"USING vec0(embedding float[{self._dim}]);"
-            )
+            for table in _VEC_TABLES:
+                await db.execute(_vec_table_ddl(table, self._dim, if_not_exists=True))
 
         await db.execute("UPDATE schema_version SET version = 2 WHERE version = 1")
         await db.commit()
@@ -378,6 +417,59 @@ class SqliteVecStore(VectorStore):
 
         await db.commit()
         logger.info("Data migration complete: %d entries embedded", len(rows))
+
+    async def _migrate_v3(self, db: aiosqlite.Connection) -> None:
+        """Rebuild the vec0 tables to measure cosine distance, keeping every vector.
+
+        Until v3 they were created without a distance metric, so vec0 measured L2 and
+        ``1 - distance`` — read everywhere as cosine similarity — was neither cosine
+        nor bounded: a vector of length 3 pointing exactly at the query scored -1,
+        and recall merged those scores with the hot store's real cosine ones. Cold
+        is the last stop, so the copy runs in one write transaction and a failure
+        rolls back to the L2 tables whole. The version and each table's DDL are read
+        again inside it: every service opens this file at startup, and only the
+        first to take the write lock should rebuild.
+        """
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = await db.execute("SELECT MAX(version) FROM schema_version")
+            row = await cursor.fetchone()
+            if row is None or row[0] is None or row[0] < _SCHEMA_VERSION:
+                for table in _VEC_TABLES:
+                    await self._rebuild_as_cosine(db, table)
+                await db.execute("UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,))
+                logger.info("Applied schema migration v2 → v3 (cosine vec0 tables)")
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
+
+    async def _rebuild_as_cosine(self, db: aiosqlite.Connection, table: str) -> None:
+        """Make ``table`` a cosine vec0 table; inside ``_migrate_v3``'s transaction.
+
+        vec0 cannot rename a table (its shadow tables keep the old name), so the
+        vectors go through a TEMP table and back under the original name.
+        """
+        cursor = await db.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+        )
+        row = await cursor.fetchone()
+        if row is None or not row[0]:
+            # A process without the extension migrated this file to v2 and could
+            # not build the tables.
+            await db.execute(_vec_table_ddl(table, self._dim))
+            return
+        if _VEC_COSINE_RE.search(row[0]):
+            return
+        copy = f"{table}_v3_copy"
+        await db.execute(f"CREATE TEMP TABLE {copy}(rowid INTEGER PRIMARY KEY, embedding BLOB)")
+        await db.execute(f"INSERT INTO temp.{copy} SELECT rowid, embedding FROM {table}")
+        await db.execute(f"DROP TABLE {table}")
+        await db.execute(_vec_table_ddl(table, self._dim))
+        await db.execute(
+            f"INSERT INTO {table}(rowid, embedding) SELECT rowid, embedding FROM temp.{copy}"
+        )
+        await db.execute(f"DROP TABLE temp.{copy}")
 
     async def _get_db(self) -> aiosqlite.Connection:
         """Return initialized database connection, running migrations first."""
@@ -496,11 +588,12 @@ class SqliteVecStore(VectorStore):
             await _query_table("vec_episodic_semantic"),
         )
 
-        # Merge: keep max similarity per rowid (vec0 distance = 0 identical, ≥0)
+        # Merge: keep max similarity per rowid (cosine distance: 0 identical,
+        # 1 orthogonal, 2 opposite — so similarity runs from 1 down to -1)
         rowid_score: dict[int, float] = {}
         for rowid, distance in (*content_hits, *semantic_hits):
             similarity = 1.0 - distance
-            if similarity > rowid_score.get(rowid, -1.0):
+            if rowid not in rowid_score or similarity > rowid_score[rowid]:
                 rowid_score[rowid] = similarity
 
         if not rowid_score:
