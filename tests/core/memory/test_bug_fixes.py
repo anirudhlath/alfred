@@ -143,6 +143,7 @@ async def test_copy_to_cold_writes_before_delete() -> None:
     from core.memory.vector_store import ContextMetadata, SearchResult
 
     hot = AsyncMock()
+    hot.embeddings = AsyncMock(return_value=([0.1, 0.2, 0.3, 0.4], [0.4, 0.3, 0.2, 0.1]))
     cold = AsyncMock()
     embedder = AsyncMock()
     embedder.embed = AsyncMock(return_value=[0.1, 0.2, 0.3, 0.4])

@@ -97,3 +97,16 @@ async def test_a_search_finds_a_distinct_memory_among_thousands_of_duplicates(
     results = await store.search(query, limit=10)
 
     assert "target" in [r.id for r in results]
+
+
+async def test_embeddings_returns_what_add_stored(store: RedisVectorStore) -> None:
+    rng = np.random.default_rng(3)
+    content, semantic = _unit(rng), _unit(rng)
+    await store.add("m1", "c", "k", content, semantic, _meta(timestamp=1.0, significance=0.1))
+
+    stored = await store.embeddings("m1")
+
+    assert stored is not None
+    assert stored[0] == pytest.approx(content, abs=1e-6)
+    assert stored[1] == pytest.approx(semantic, abs=1e-6)
+    assert await store.embeddings("absent") is None

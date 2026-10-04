@@ -36,12 +36,18 @@ SELECT_PAGE_SIZE = 1000
 # A filter every entry passes — add() always writes a timestamp (0 for sections and
 # routines). search() needs one to force brute-force KNN.
 _EVERY_ENTRY = "@timestamp:[-inf +inf]"
+_FLOAT32_BYTES = 4
 
 
 def _pack_floats(values: list[float]) -> bytes:
     """Pack a list of float32 values into bytes (little-endian)."""
     n = len(values)
     return struct.pack(f"<{n}f", *values)
+
+
+def _unpack_floats(blob: bytes) -> list[float]:
+    """The inverse of ``_pack_floats``."""
+    return list(struct.unpack(f"<{len(blob) // _FLOAT32_BYTES}f", blob))
 
 
 class RedisVectorStore(VectorStore):
@@ -384,6 +390,18 @@ class RedisVectorStore(VectorStore):
             if len(documents) < page_size:
                 return selected
             offset += page_size
+
+    async def embeddings(self, id: str) -> tuple[list[float], list[float]] | None:  # noqa: A002
+        """Both stored vectors, or ``None`` for a missing, partial or other-width entry."""
+        content, semantic = await self._redis.hmget(
+            f"{CONTEXT_PREFIX}{id}", ["embedding_content", "embedding_semantic"]
+        )
+        if not (isinstance(content, bytes) and isinstance(semantic, bytes)):
+            return None
+        width = self._dim * _FLOAT32_BYTES
+        if len(content) != width or len(semantic) != width:
+            return None
+        return _unpack_floats(content), _unpack_floats(semantic)
 
     async def delete(self, id: str) -> None:  # noqa: A002
         key = f"{CONTEXT_PREFIX}{id}"

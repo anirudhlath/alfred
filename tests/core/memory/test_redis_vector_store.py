@@ -592,3 +592,36 @@ async def test_select_queries_numeric_ranges_with_open_bounds(
         "@timestamp:[(0.0 +inf] @significance:[-inf (0.4]",
     ]
     assert "__score" not in args
+
+
+# ---------------------------------------------------------------------------
+# embeddings tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_embeddings_reads_both_stored_vectors(
+    store: RedisVectorStore, mock_redis: AsyncMock
+) -> None:
+    content, semantic = [0.5, 0.25, 0.0, -1.0], [1.0, 2.0, 3.0, 4.0]
+    mock_redis.hmget = AsyncMock(return_value=[_pack_floats(content), _pack_floats(semantic)])
+
+    assert await store.embeddings("m1") == (content, semantic)
+    mock_redis.hmget.assert_awaited_once_with("ctx:m1", ["embedding_content", "embedding_semantic"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stored",
+    [
+        [None, None],  # no such entry
+        [_pack_floats([0.1, 0.2, 0.3, 0.4]), None],  # a partial hash
+        [_pack_floats([0.1, 0.2]), _pack_floats([0.1, 0.2])],  # written at another width
+    ],
+)
+async def test_embeddings_hands_back_nothing_it_cannot_vouch_for(
+    store: RedisVectorStore, mock_redis: AsyncMock, stored: list[bytes | None]
+) -> None:
+    mock_redis.hmget = AsyncMock(return_value=stored)
+
+    assert await store.embeddings("m1") is None

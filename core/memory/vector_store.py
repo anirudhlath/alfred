@@ -74,6 +74,14 @@ class VectorStore(ABC):
         """
         raise NotImplementedError(f"{type(self).__name__} cannot select by metadata")
 
+    async def embeddings(self, id: str) -> tuple[list[float], list[float]] | None:  # noqa: A002
+        """The (content, semantic key) vectors stored for ``id``, as ``add`` received them.
+
+        ``None`` when the entry is absent or the store cannot hand its vectors back —
+        callers then embed the text themselves.
+        """
+        return None
+
     @abstractmethod
     async def delete(self, id: str) -> None: ...  # noqa: A002
 
