@@ -16,10 +16,11 @@ from core.librarian.consolidator import (
     ConflictItem,
     Librarian,
     _group_by_entity_date,
+    decay_candidate_ranges,
     migration_pressure,
 )
 from core.memory.schemas import EpisodicEntry, SignificanceScore
-from core.memory.vector_store import ContextMetadata, SearchResult
+from core.memory.vector_store import ContextMetadata, Range, SearchResult
 from shared.config import DEFAULT_DECAY_MIGRATION_THRESHOLD, AlfredConfig
 
 _UTC = datetime.UTC
@@ -614,7 +615,7 @@ async def test_apply_decay_migrates_old_low_significance_entries() -> None:
     old_ts = datetime.datetime.now(datetime.UTC).timestamp() - (30 * 86400)
     old_entry = _make_search_result("old-entry-1", old_ts, significance=0.1, retrieval_count=0)
 
-    context_index.search_text = AsyncMock(return_value=[old_entry])
+    context_index.select = AsyncMock(return_value=[old_entry])
 
     migrated = await librarian._apply_decay(decay_migration_threshold=0.5)
 
@@ -632,15 +633,15 @@ async def test_apply_decay_spares_high_significance_entries() -> None:
     librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
 
     # Entry: 30 days old, high significance=0.95, retrieval_count=0
-    # pressure = 30 * (1-0.95) * 1.0 = 30 * 0.05 = 1.5 but threshold=5.0 → spared
+    # pressure ≈ 1.0 - 1.9 - 0.02 ≈ -0.92, far under the production default → spared
     old_ts = datetime.datetime.now(datetime.UTC).timestamp() - (30 * 86400)
     important_entry = _make_search_result(
         "important-1", old_ts, significance=0.95, retrieval_count=0
     )
 
-    context_index.search_text = AsyncMock(return_value=[important_entry])
+    context_index.select = AsyncMock(return_value=[important_entry])
 
-    migrated = await librarian._apply_decay(decay_migration_threshold=5.0)
+    migrated = await librarian._apply_decay()
 
     assert migrated == 0
     episodic_memory.copy_to_cold_and_remove.assert_not_awaited()
@@ -660,7 +661,7 @@ async def test_apply_decay_spares_frequently_retrieved_entries() -> None:
     old_ts = datetime.datetime.now(datetime.UTC).timestamp() - (30 * 86400)
     popular_entry = _make_search_result("popular-1", old_ts, significance=0.1, retrieval_count=100)
 
-    context_index.search_text = AsyncMock(return_value=[popular_entry])
+    context_index.select = AsyncMock(return_value=[popular_entry])
 
     migrated = await librarian._apply_decay()
 
@@ -685,7 +686,7 @@ async def test_apply_decay_skips_non_episodic_entries() -> None:
         "rout-1", old_ts, significance=0.1, retrieval_count=0, entry_type="routine"
     )
 
-    context_index.search_text = AsyncMock(return_value=[semantic_entry, routine_entry])
+    context_index.select = AsyncMock(return_value=[semantic_entry, routine_entry])
 
     # At the production default these would migrate (pressure ≈ 0.78) if they were
     # episodic, so only the type filter keeps them.
@@ -704,7 +705,7 @@ async def test_apply_decay_handles_search_failure_gracefully() -> None:
 
     librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
 
-    context_index.search_text = AsyncMock(side_effect=Exception("search failed"))
+    context_index.select = AsyncMock(side_effect=Exception("search failed"))
 
     migrated = await librarian._apply_decay()
 
@@ -725,7 +726,7 @@ async def test_apply_decay_migration_error_continues_for_other_entries() -> None
     entry1 = _make_search_result("entry-1", old_ts, significance=0.1, retrieval_count=0)
     entry2 = _make_search_result("entry-2", old_ts, significance=0.1, retrieval_count=0)
 
-    context_index.search_text = AsyncMock(return_value=[entry1, entry2])
+    context_index.select = AsyncMock(return_value=[entry1, entry2])
 
     # First migration fails, second succeeds
     episodic_memory.copy_to_cold_and_remove.side_effect = [Exception("migrate failed"), None]
@@ -747,7 +748,7 @@ async def test_apply_decay_skips_zero_timestamp_entries() -> None:
 
     zero_ts_entry = _make_search_result("zero-ts", 0.0, significance=0.0, retrieval_count=0)
 
-    context_index.search_text = AsyncMock(return_value=[zero_ts_entry])
+    context_index.select = AsyncMock(return_value=[zero_ts_entry])
 
     # Read as an epoch timestamp it would be ~56 years old and migrate at the default,
     # so only the zero-timestamp guard keeps it.
@@ -770,7 +771,7 @@ async def test_apply_decay_reads_pressure_at_the_injected_now() -> None:
 
     written = datetime.datetime.now(datetime.UTC)
     entry = _make_search_result("fresh", written.timestamp(), significance=0.1, retrieval_count=0)
-    context_index.search_text = AsyncMock(return_value=[entry])
+    context_index.select = AsyncMock(return_value=[entry])
 
     assert await librarian._apply_decay() == 0
     episodic_memory.copy_to_cold_and_remove.assert_not_awaited()
@@ -804,10 +805,70 @@ async def test_apply_decay_measures_retrieval_recency_from_the_injected_now() ->
             )
         }
     )
-    context_index.search_text = AsyncMock(return_value=[recalled])
+    context_index.select = AsyncMock(return_value=[recalled])
 
     assert await librarian._apply_decay(now=now) == 0
     episodic_memory.copy_to_cold_and_remove.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Decay candidates: selected by metadata, so none is missed (EXP-006)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("threshold", "max_significance"), [(0.2, 0.4), (0.5, 0.25), (-10.0, 5.5)])
+async def test_apply_decay_selects_candidates_by_metadata(
+    threshold: float, max_significance: float
+) -> None:
+    """Every timestamped entry below the one significance that can still reach the threshold.
+
+    The pass used to take the nearest hits to a placeholder query, which saw ~19 entries of
+    thousands, most of them sections, routines and young memories.
+    """
+    context_index = AsyncMock()
+    context_index.select = AsyncMock(return_value=[])
+    librarian = _make_librarian(episodic_memory=AsyncMock(), context_index=context_index)
+
+    await librarian._apply_decay(decay_migration_threshold=threshold)
+
+    context_index.select.assert_awaited_once_with(
+        {"timestamp": Range(above=0.0), "significance": Range(below=max_significance)}
+    )
+    context_index.search_text.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apply_decay_never_queries_when_nothing_can_reach_the_threshold() -> None:
+    """Pressure never exceeds 1.0, so master's threshold of 1.0 has nothing to look for."""
+    context_index = AsyncMock()
+    librarian = _make_librarian(episodic_memory=AsyncMock(), context_index=context_index)
+
+    assert await librarian._apply_decay(decay_migration_threshold=1.0) == 0
+    context_index.select.assert_not_awaited()
+
+
+@pytest.mark.parametrize("threshold", [-1.0, 0.0, 0.2, 0.5, 0.99])
+@pytest.mark.parametrize("significance", [-0.5, 0.0, 0.105, 0.355, 0.39, 0.4, 0.6, 1.0])
+@pytest.mark.parametrize("age_days", [0.5, 6.0, 17.0, 30.0, 400.0])
+@pytest.mark.parametrize(("retrieval_count", "days_since"), [(0, None), (2, 1.0), (40, 20.0)])
+def test_selection_never_excludes_an_entry_decay_would_move(
+    threshold: float,
+    significance: float,
+    age_days: float,
+    retrieval_count: int,
+    days_since: float | None,
+) -> None:
+    pressure = migration_pressure(
+        age_days, significance, retrieval_count, age_days if days_since is None else days_since
+    )
+    ranges = decay_candidate_ranges(threshold)
+    if pressure <= threshold:
+        return
+    assert ranges is not None
+    below = ranges["significance"].below
+    assert below is not None
+    assert significance < below
 
 
 # ---------------------------------------------------------------------------
@@ -864,7 +925,7 @@ async def test_apply_decay_default_migrates_old_unimportant_entry() -> None:
 
     old_ts = datetime.datetime.now(datetime.UTC).timestamp() - (45 * 86400)
     entry = _make_search_result("stale-1", old_ts, significance=0.0, retrieval_count=0)
-    context_index.search_text = AsyncMock(return_value=[entry])
+    context_index.select = AsyncMock(return_value=[entry])
 
     assert await librarian._apply_decay() == 1
     episodic_memory.copy_to_cold_and_remove.assert_awaited_once()
@@ -884,7 +945,7 @@ async def test_apply_decay_default_sweeps_passive_observations(significance: flo
     old_ts = datetime.datetime.now(datetime.UTC).timestamp() - (45 * 86400)
     entry = _make_search_result("obs-1", old_ts, significance=significance, retrieval_count=0)
     entry.metadata.source = "observation"
-    context_index.search_text = AsyncMock(return_value=[entry])
+    context_index.select = AsyncMock(return_value=[entry])
 
     assert await librarian._apply_decay() == 1
 
@@ -902,7 +963,7 @@ async def test_consolidate_runs_decay_on_empty_scratchpad() -> None:
 
     old_ts = datetime.datetime.now(datetime.UTC).timestamp() - (45 * 86400)
     entry = _make_search_result("stale-1", old_ts, significance=0.0, retrieval_count=0)
-    context_index.search_text = AsyncMock(return_value=[entry])
+    context_index.select = AsyncMock(return_value=[entry])
 
     result = await librarian.consolidate()
 
@@ -1266,7 +1327,7 @@ async def test_consolidate_includes_pattern_detection_in_result() -> None:
     """consolidate() result should include patterns_detected and lifecycle_updates keys."""
     context_index = AsyncMock()
     context_index.reindex_semantic_files = AsyncMock()
-    context_index.search_text = AsyncMock(return_value=[])
+    context_index.select = AsyncMock(return_value=[])
 
     from unittest.mock import MagicMock
 
@@ -1558,7 +1619,7 @@ async def test_decay_high_significance_resists_migration() -> None:
     """Entry with high significance should NOT be migrated even if old."""
     episodic_memory = AsyncMock()
     context_index = AsyncMock()
-    context_index.search_text = AsyncMock(
+    context_index.select = AsyncMock(
         return_value=[_make_decay_search_result(significance=0.8, age_days=30)]
     )
 
@@ -1573,7 +1634,7 @@ async def test_decay_old_low_significance_migrates() -> None:
     """Old entry with low significance and no retrievals should be migrated."""
     episodic_memory = AsyncMock()
     context_index = AsyncMock()
-    context_index.search_text = AsyncMock(
+    context_index.select = AsyncMock(
         return_value=[_make_decay_search_result(significance=0.1, age_days=30)]
     )
 
@@ -1588,7 +1649,7 @@ async def test_decay_recently_retrieved_resists_migration() -> None:
     """Entry retrieved yesterday should resist migration due to recency."""
     episodic_memory = AsyncMock()
     context_index = AsyncMock()
-    context_index.search_text = AsyncMock(
+    context_index.select = AsyncMock(
         return_value=[
             _make_decay_search_result(
                 significance=0.1,
@@ -1609,7 +1670,7 @@ async def test_decay_frequently_retrieved_resists_migration() -> None:
     """Entry with high retrieval count should resist migration."""
     episodic_memory = AsyncMock()
     context_index = AsyncMock()
-    context_index.search_text = AsyncMock(
+    context_index.select = AsyncMock(
         return_value=[
             _make_decay_search_result(
                 significance=0.1,
@@ -1631,7 +1692,7 @@ async def test_decay_last_retrieved_zero_fallback_to_age() -> None:
     episodic_memory = AsyncMock()
     context_index = AsyncMock()
     # Old entry, low significance, last_retrieved=0.0 (default/never)
-    context_index.search_text = AsyncMock(
+    context_index.select = AsyncMock(
         return_value=[_make_decay_search_result(significance=0.1, age_days=60)]
     )
 
@@ -1720,7 +1781,7 @@ async def test_compression_creates_summary_and_marks_originals() -> None:
 
     episodic_memory = AsyncMock()
     context_index = AsyncMock()
-    context_index.search_text = AsyncMock(return_value=results)
+    context_index.select = AsyncMock(return_value=results)
 
     librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
 
@@ -1752,7 +1813,7 @@ async def test_compression_single_entry_no_llm_call() -> None:
 
     episodic_memory = AsyncMock()
     context_index = AsyncMock()
-    context_index.search_text = AsyncMock(return_value=[result])
+    context_index.select = AsyncMock(return_value=[result])
 
     librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
 
@@ -1986,7 +2047,7 @@ async def test_compression_fallback_concatenation_when_no_api_key() -> None:
 
     episodic_memory = AsyncMock()
     context_index = AsyncMock()
-    context_index.search_text = AsyncMock(return_value=results)
+    context_index.select = AsyncMock(return_value=results)
 
     # No API key → no LLM call, fallback to concatenation
     librarian = _make_librarian(

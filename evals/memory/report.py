@@ -22,9 +22,9 @@ class CheckpointSummary:
     involuntary_by_category: dict[Category, Ratio]
     exact: Ratio
     open: Ratio
-    # Targets a perfect search would have returned that the real HNSW search did not.
-    ann_miss_involuntary: Ratio
-    ann_miss_tool: Ratio
+    # Targets an exact ranking puts in the top 10 that the real search did not return.
+    knn_miss_involuntary: Ratio
+    knn_miss_tool: Ratio
     mean_noise: float
     migrated_targets: int
     tool_reach: Ratio
@@ -36,7 +36,7 @@ class CheckpointSummary:
     noise_gone: Ratio
     stuck_1d: int
     stuck_7d: int
-    eligible_unpickable: Ratio
+    eligible_unselected: Ratio
 
 
 def _ratio(outcomes: list[ProbeOutcome], hit: str) -> Ratio:
@@ -57,11 +57,11 @@ def summarize(policy: PolicyResult, point: Checkpoint) -> CheckpointSummary:
         },
         exact=_ratio(probes, "exact_hit"),
         open=_ratio(probes, "open_hit"),
-        ann_miss_involuntary=Ratio(
+        knn_miss_involuntary=Ratio(
             hits=sum(1 for o in probes if o.exact_hit and not o.involuntary_hit),
             n=sum(1 for o in probes if o.exact_hit),
         ),
-        ann_miss_tool=Ratio(
+        knn_miss_tool=Ratio(
             hits=sum(1 for o in in_top10 if not o.tool_hit),
             n=len(in_top10),
         ),
@@ -78,7 +78,7 @@ def summarize(policy: PolicyResult, point: Checkpoint) -> CheckpointSummary:
         ),
         stuck_1d=point.snapshot.stuck_1d,
         stuck_7d=point.snapshot.stuck_7d,
-        eligible_unpickable=point.eligible_unpickable,
+        eligible_unselected=point.eligible_unselected,
     )
 
 
@@ -155,7 +155,7 @@ def format_run(run: MemoryEvalRun) -> str:
 
     lines += [
         "",
-        "## Deliberate recall of targets that left hot (pending decision: spec says reachable)",
+        "## Deliberate recall of targets that left hot",
         "",
         "The cold store searched alone says whether the archive holds the answer; "
         "`EpisodicMemory.recall` says whether it survives the merge with hot results.",
@@ -177,12 +177,12 @@ def format_run(run: MemoryEvalRun) -> str:
 
     lines += [
         "",
-        "## Approximate search (HNSW) misses",
+        "## Search misses",
         "",
         "Targets an exact brute-force KNN over the hot store ranks in the top 10 (and, for "
         "involuntary, above the floor) that the real RediSearch query did not return.",
         "",
-        "| policy | day | involuntary (filtered KNN) | memory_recall_memories (`*` KNN) | "
+        "| policy | day | involuntary (filtered KNN) | memory_recall_memories (unfiltered) | "
         "distinct contents / semantic keys in hot |",
         "|---|---|---|---|---|",
     ]
@@ -190,8 +190,8 @@ def format_run(run: MemoryEvalRun) -> str:
         for point in policy.checkpoints:
             row = summaries[(policy.name, point.day)]
             lines.append(
-                f"| {policy.name} | {point.day} | {_pct(row.ann_miss_involuntary)} | "
-                f"{_pct(row.ann_miss_tool)} | {point.snapshot.hot_distinct_content} / "
+                f"| {policy.name} | {point.day} | {_pct(row.knn_miss_involuntary)} | "
+                f"{_pct(row.knn_miss_tool)} | {point.snapshot.hot_distinct_content} / "
                 f"{point.snapshot.hot_distinct_semantic_keys} of "
                 f"{point.snapshot.hot_episodic} |"
             )
@@ -201,7 +201,7 @@ def format_run(run: MemoryEvalRun) -> str:
         "## Selection and cost per pass",
         "",
         "| policy | passes | migrated | candidates/pass (mean, max) | eligible seen/pass | "
-        "unmovable slots | eligible but unpickable (final) | pass ms (mean, p95) | "
+        "unmovable slots | eligible but unselected (final) | pass ms (mean, p95) | "
         "embeds/pass | embeds/migrated | embed ms/pass (summed) |",
         "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
@@ -226,7 +226,7 @@ def _cost_row(policy: PolicyResult) -> str:
     slots = sum(candidates)
     unmovable = slots - sum(p.candidates_eligible for p in passes)
     walls = [p.wall_ms for p in passes]
-    final = policy.checkpoints[-1].eligible_unpickable if policy.checkpoints else Ratio(hits=0, n=0)
+    final = policy.checkpoints[-1].eligible_unselected if policy.checkpoints else Ratio(hits=0, n=0)
     unmovable_share = f"{unmovable / slots:.0%}" if slots else "n/a"
     per_migrated = f"{policy.decay_embed_calls / migrated:.2f}" if migrated else "n/a"
     return (

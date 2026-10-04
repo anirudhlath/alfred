@@ -18,11 +18,11 @@ from evals.memory.env import scan_hot
 from evals.memory.metrics import is_eligible
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
     from datetime import datetime
 
     from core.memory.embedding_provider import EmbeddingProvider
-    from core.memory.vector_store import SearchResult, VectorStore
+    from core.memory.vector_store import Range, SearchResult, VectorStore
     from evals.memory.env import SimEnv
     from shared.types import AioRedis
 
@@ -76,45 +76,23 @@ class RecordingIndex(ContextIndexManager):
         super().__init__(store, embedder)
         self.last = []
 
-    async def search_text(
-        self,
-        query: str,
-        limit: int = 10,
-        min_similarity: float = 0.0,
-        include_compressed: bool = False,
-        *,
-        update_stats: bool = False,
-    ) -> list[SearchResult]:
-        self.last = await super().search_text(
-            query,
-            limit=limit,
-            min_similarity=min_similarity,
-            include_compressed=include_compressed,
-            update_stats=update_stats,
-        )
+    async def select(self, where: Mapping[str, Range]) -> list[SearchResult]:
+        self.last = await super().select(where)
         return self.last
 
 
 class ScanAllHotIndex(RecordingIndex):
     """Hands the decay pass every hot entry, found by SCAN — eval-only.
 
-    The query, limit and similarity floor are ignored on purpose: this is what
-    "selection is perfect" means, so whatever still goes wrong is the formula's.
+    The ranges are ignored on purpose: this is what "selection is perfect" means, so
+    whatever still goes wrong is the formula's.
     """
 
     def __init__(self, store: VectorStore, embedder: EmbeddingProvider, redis: AioRedis) -> None:
         super().__init__(store, embedder)
         self._redis = redis
 
-    async def search_text(
-        self,
-        query: str,
-        limit: int = 10,
-        min_similarity: float = 0.0,
-        include_compressed: bool = False,
-        *,
-        update_stats: bool = False,
-    ) -> list[SearchResult]:
+    async def select(self, where: Mapping[str, Range]) -> list[SearchResult]:
         self.last = await scan_hot(self._redis)
         return self.last
 
@@ -168,8 +146,8 @@ class NoDecay(LibrarianDecay):
 class BranchDecay(LibrarianDecay):
     name = "branch"
     summary = (
-        "this branch's _apply_decay: candidates by similarity to a placeholder phrase, "
-        "threshold 0.2"
+        "this branch's _apply_decay: candidates selected by metadata ranges that cover "
+        "every memory the formula could move, threshold 0.2"
     )
 
 

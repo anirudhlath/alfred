@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from core.memory.vector_store import ContextMetadata, SearchResult
+from core.memory.vector_store import ContextMetadata, Range, SearchResult
 from evals.memory.policies import (
     MASTER_THRESHOLD,
     POLICIES,
@@ -62,7 +62,7 @@ def test_no_decay_runs_master_threshold_whatever_is_configured() -> None:
     assert policy.threshold == MASTER_THRESHOLD == 1.0
 
 
-def test_oracle_selects_by_scan_and_branch_by_search() -> None:
+def test_oracle_selects_by_scan_and_branch_by_metadata() -> None:
     env = _env(AsyncMock())
     assert isinstance(OracleDecay(env, 0.2)._index, ScanAllHotIndex)
     branch_index = BranchDecay(env, 0.2)._index
@@ -86,23 +86,24 @@ async def test_a_pass_reports_what_selection_handed_the_pressure_filter() -> Non
     assert stats.candidates_eligible == 1
 
 
-async def test_recording_index_keeps_the_real_search_results() -> None:
+async def test_recording_index_keeps_the_real_selection() -> None:
     store = AsyncMock()
-    store.search = AsyncMock(return_value=[_result("a", 30.0)])
+    store.select = AsyncMock(return_value=[_result("a", 30.0)])
     index = RecordingIndex(store, HashEmbedder())
+    where = {"significance": Range(below=0.4)}
 
-    results = await index.search_text("general context memory event", limit=500)
+    results = await index.select(where)
 
     assert [r.id for r in results] == [r.id for r in index.last] == ["a"]
-    assert store.search.await_args.kwargs["limit"] == 500
+    store.select.assert_awaited_once_with(where)
 
 
-async def test_scan_index_ignores_query_limit_and_floor() -> None:
+async def test_scan_index_ignores_the_ranges() -> None:
     redis = FakeRedis(
         {f"ctx:m{i}": {"type": "episodic", "timestamp": 1.0, "content": f"m{i}"} for i in range(25)}
     )
     index = ScanAllHotIndex(AsyncMock(), HashEmbedder(), redis)  # type: ignore[arg-type]
 
-    results = await index.search_text("anything", limit=1, min_similarity=0.99)
+    results = await index.select({"significance": Range(below=-100.0)})
 
     assert len(results) == 25

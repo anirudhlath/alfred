@@ -144,8 +144,8 @@ def _run() -> MemoryEvalRun:
         kept_significant=Ratio(hits=0, n=1),
         kept_recalled=Ratio(hits=0, n=0),
         snapshot=snapshot,
-        eligible_unpickable=Ratio(hits=0, n=1),
-        stuck_unpickable=Ratio(hits=0, n=1),
+        eligible_unselected=Ratio(hits=0, n=1),
+        stuck_unselected=Ratio(hits=0, n=1),
         retrievals_applied=0,
         retrievals_lost=0,
     )
@@ -193,7 +193,7 @@ def test_report_renders_every_section() -> None:
         "## Headline",
         "## Involuntary hit@10 by target",
         "## Deliberate recall of targets that left hot",
-        "## Approximate search (HNSW) misses",
+        "## Search misses",
         "## Selection and cost per pass",
         "## Every probe on day 2",
     ):
@@ -231,12 +231,11 @@ async def test_twenty_days_against_real_redisearch() -> None:
 
     migrated = {p.name: sum(p.migrated for p in p.passes) for p in run.policies}
     assert migrated["no_decay"] == 0
-    assert migrated["oracle"] > migrated["branch"] > 0
+    # The branch selects by metadata ranges that cover the pressure formula, so it moves
+    # exactly what handing the pass the whole store does.
+    assert migrated["oracle"] == migrated["branch"] > 0
     for policy in run.policies:
         assert len(policy.passes) == days * 24
         assert [c.day for c in policy.checkpoints] == [days]
         assert policy.checkpoints[0].probes
-        # Problem 1: FT.SEARCH without LIMIT returns RediSearch's default 10 per
-        # vector field, so a search-selected pass never sees more than 20.
-        if policy.name != "oracle":
-            assert max(p.candidates for p in policy.passes) <= 20
+        assert policy.checkpoints[0].eligible_unselected.hits == 0

@@ -40,7 +40,7 @@ class DaySnapshot(BaseModel):
     day: int
     hot_episodic: int
     hot_by_category: dict[str, int]
-    # Identical texts embed to identical vectors, which degrade HNSW navigation.
+    # Identical texts embed to identical vectors, which trap an HNSW graph walk.
     hot_distinct_content: int
     hot_distinct_semantic_keys: int
     cold_entries: int
@@ -92,10 +92,10 @@ class Checkpoint(BaseModel):
     kept_significant: Ratio
     kept_recalled: Ratio
     snapshot: DaySnapshot
-    # Problem 2: hot memories at negative cosine to the decay pass's placeholder query,
-    # which its min_similarity=0.0 floor can therefore never return.
-    eligible_unpickable: Ratio
-    stuck_unpickable: Ratio
+    # Eligible hot memories the decay pass's candidate selection would not return — zero
+    # unless the metadata ranges stop covering the pressure formula.
+    eligible_unselected: Ratio
+    stuck_unselected: Ratio
     retrievals_applied: int
     retrievals_lost: int
 

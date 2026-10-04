@@ -30,6 +30,7 @@ from core.memory.schemas import (
     RoutineStep,
     SignificanceScore,
 )
+from core.memory.vector_store import Range
 from shared.config import DEFAULT_DECAY_MIGRATION_THRESHOLD
 from shared.streams import LIBRARIAN_QUEUE, LIBRARIAN_STATUS_KEY
 
@@ -65,6 +66,11 @@ class ConflictItem(BaseModel):
 _DEFAULT_PREFERENCES_DIR = str(_preferences_dir())
 _DEFAULT_PROFILE_DIR = str(_profile_dir())
 
+# migration_pressure()'s ceiling: its age factor caps here and every other term subtracts.
+MAX_MIGRATION_PRESSURE = 1.0
+# How strongly significance resists migration in migration_pressure().
+SIGNIFICANCE_WEIGHT = 2.0
+
 
 def migration_pressure(
     age_days: float,
@@ -88,10 +94,32 @@ def migration_pressure(
     """
     from math import exp, log2
 
-    age_factor = min(age_days / 30.0, 1.0)
+    age_factor = min(age_days / 30.0, MAX_MIGRATION_PRESSURE)
     retrieval_recency = exp(-days_since_last_retrieved / 7.0)
     retrieval_frequency = min(log2(retrieval_count + 1) / 5.0, 1.0)
-    return age_factor - significance * 2.0 - retrieval_recency * 1.5 - retrieval_frequency * 1.0
+    return (
+        age_factor
+        - significance * SIGNIFICANCE_WEIGHT
+        - retrieval_recency * 1.5
+        - retrieval_frequency * 1.0
+    )
+
+
+def decay_candidate_ranges(threshold: float) -> dict[str, Range] | None:
+    """Metadata ranges that hold every entry whose pressure can exceed ``threshold``.
+
+    ``age_factor`` is at most 1 and the recency and frequency terms only subtract, so
+    ``pressure > threshold`` needs ``significance < (1 - threshold) / 2`` — whatever the
+    entry's age or retrievals, and whatever its significance's sign. Entries without a
+    timestamp (semantic sections, routines) are never decayed. ``None`` when no entry can
+    exceed the threshold at all.
+    """
+    if threshold >= MAX_MIGRATION_PRESSURE:
+        return None
+    return {
+        "timestamp": Range(above=0.0),
+        "significance": Range(below=(MAX_MIGRATION_PRESSURE - threshold) / SIGNIFICANCE_WEIGHT),
+    }
 
 
 def _group_by_entity_date(
@@ -656,8 +684,6 @@ class Librarian:
     async def _apply_decay(
         self,
         decay_migration_threshold: float = DEFAULT_DECAY_MIGRATION_THRESHOLD,
-        search_query: str = "general context memory event",
-        search_limit: int = 500,
         now: datetime | None = None,
     ) -> int:
         """Migrate old low-significance hot entries to cold storage.
@@ -665,18 +691,19 @@ class Librarian:
         Entries whose ``migration_pressure()`` exceeds ``decay_migration_threshold``
         are migrated to cold. The pressure never exceeds 1.0, so the threshold must sit
         below it.
+        Candidates are every hot entry ``decay_candidate_ranges()`` admits, selected by
+        metadata — not the nearest hits to a query, which once saw ~19 of thousands.
         Related entries (same entity + same day) are compressed into a single
         summary before migration.
         ``now`` defaults to the wall clock; the memory eval (``evals/memory``) passes a
         simulated one so it can replay weeks of decay in minutes.
         Returns the number of entries migrated.
         """
+        ranges = decay_candidate_ranges(decay_migration_threshold)
+        if ranges is None:
+            return 0
         try:
-            results = await self._context_index.search_text(
-                query=search_query,
-                limit=search_limit,
-                min_similarity=0.0,
-            )
+            results = await self._context_index.select(ranges)
         except Exception as exc:
             logger.warning("Decay: failed to retrieve hot entries: %s", exc)
             return 0

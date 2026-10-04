@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import inspect
 import json
 from collections import Counter
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from core.conscious.memory_tools import dispatch_memory_tool
-from core.librarian.consolidator import Librarian, migration_pressure
+from core.librarian.consolidator import decay_candidate_ranges, migration_pressure
 from evals.memory.dataset import NOISE, Category
 from evals.memory.env import StoredVectors, scan_hot, stored_vectors
 from evals.memory.models import Checkpoint, DaySnapshot, ProbeOutcome, Ratio
@@ -21,11 +20,6 @@ if TYPE_CHECKING:
     from evals.memory.dataset import Dataset, SimMemory
     from evals.memory.env import SimEnv
 
-# The decay pass picks its candidates by similarity to this phrase. Read from the
-# signature so the eval measures whatever the Librarian actually uses.
-DECAY_SEARCH_QUERY: str = (
-    inspect.signature(Librarian._apply_decay).parameters["search_query"].default
-)
 # memory_recall_memories' own default (core/conscious/memory_tools.py).
 TOOL_DEFAULT_LIMIT = 10
 # The source _compress_and_migrate stamps on the summary it writes to cold.
@@ -115,7 +109,7 @@ async def probe(
     """Ask one question every way Alfred can answer it, plus an exact brute-force ranking.
 
     The exact ranking scores the question against every vector in the hot store, so it
-    says what a perfect KNN would have returned — RediSearch's HNSW is approximate.
+    says what a perfect KNN would have returned, so it checks the real search's ranking.
     """
     config = env.config
     query = await env.embedder.embed(question)
@@ -237,15 +231,15 @@ async def checkpoint(
     now_ts = now.timestamp()
     eligible = sorted(r.id for r in hot if is_eligible(r, now_ts, threshold))
     stuck = set(tracker.stuck(STUCK_1D_CHECKS))
-    unpickable = await _unpickable(env, eligible)
+    unselected = await _unselected(env, eligible, threshold)
     return Checkpoint(
         day=snapshot.day,
         probes=outcomes,
         kept_significant=_kept(dataset, Category.SIGNIFICANT, now, in_hot),
         kept_recalled=_kept(dataset, Category.RECALLED, now, in_hot),
         snapshot=snapshot,
-        eligible_unpickable=Ratio(hits=len(unpickable), n=len(eligible)),
-        stuck_unpickable=Ratio(hits=len(unpickable & stuck), n=len(stuck)),
+        eligible_unselected=Ratio(hits=len(unselected), n=len(eligible)),
+        stuck_unselected=Ratio(hits=len(unselected & stuck), n=len(stuck)),
         retrievals_applied=retrievals["applied"],
         retrievals_lost=retrievals["lost"],
     )
@@ -256,14 +250,10 @@ def _kept(dataset: Dataset, category: Category, now: datetime, in_hot: set[str])
     return Ratio(hits=sum(1 for m in written if m in in_hot), n=len(written))
 
 
-async def _unpickable(env: SimEnv, ids: list[str]) -> set[str]:
-    """Memories whose stored vectors both sit at negative cosine to the decay query.
-
-    RediSearch scores cosine as ``1 - distance`` = cosine similarity, and the decay
-    pass searches with ``min_similarity=0.0``, so these can never be returned to it.
-    """
-    if not ids:
-        return set()
-    vectors = await stored_vectors(env.redis, ids)
-    scores = vectors.similarity(await env.embedder.embed(DECAY_SEARCH_QUERY))
-    return {memory_id for memory_id, score in zip(vectors.ids, scores, strict=True) if score < 0}
+async def _unselected(env: SimEnv, eligible: list[str], threshold: float) -> set[str]:
+    """Eligible memories the decay pass's own candidate selection would not return."""
+    ranges = decay_candidate_ranges(threshold)
+    if ranges is None:
+        return set(eligible)
+    selected = {r.id for r in await env.context_index.select(ranges)}
+    return set(eligible) - selected

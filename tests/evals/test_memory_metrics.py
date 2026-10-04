@@ -13,7 +13,6 @@ from core.memory.vector_store import ContextMetadata, SearchResult
 from evals.memory.env import StoredVectors
 from evals.memory.metrics import (
     COMPRESSED_SOURCE,
-    DECAY_SEARCH_QUERY,
     EligibilityTracker,
     _exact_rank,
     decay_pressure,
@@ -37,10 +36,6 @@ def _meta(**overrides: object) -> ContextMetadata:
     }
     fields.update(overrides)
     return ContextMetadata.model_validate(fields)
-
-
-def test_decay_search_query_is_read_from_the_librarian() -> None:
-    assert DECAY_SEARCH_QUERY == "general context memory event"
 
 
 def test_never_retrieved_entries_use_their_age_for_recency() -> None:
@@ -76,7 +71,7 @@ async def test_decay_pressure_agrees_with_apply_decay() -> None:
     ]
     episodic_memory = AsyncMock()
     context_index = AsyncMock()
-    context_index.search_text = AsyncMock(return_value=results)
+    context_index.select = AsyncMock(return_value=results)
     librarian = Librarian(
         redis=AsyncMock(),
         episodic_memory=episodic_memory,
