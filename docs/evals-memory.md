@@ -18,8 +18,9 @@ uv run python -m evals memory show <run-id>   # re-print a saved run's tables
 ```
 
 The run needs Docker (or `--redis-url` pointing at an **empty** Redis 8 / Redis
-Stack you started yourself) and the `memory` extra. Experiment log:
-`research/experiments/EXP-006-memory-decay.md`.
+Stack you started yourself) and the `memory` extra. Experiment logs:
+`research/experiments/EXP-006-memory-decay.md` (the problems it found) and
+`research/experiments/EXP-007-memory-decay-fixed.md` (after the fixes).
 
 ## Why decay exists
 
