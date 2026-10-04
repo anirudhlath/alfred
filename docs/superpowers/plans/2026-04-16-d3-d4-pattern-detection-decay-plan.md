@@ -1604,8 +1604,8 @@ git commit -m "feat(d3): add confidence decay on ignored suggestions, archive at
 ### Task 9: Create backlog and QA items
 
 **Files:**
-- Create: `docs/backlog/medium/actionable-notification-responses.md`
-- Create: `docs/backlog/high/apns-credential-setup.md`
+- Create: [#64](https://github.com/anirudhlath/alfred/issues/64)
+- Create: [#54](https://github.com/anirudhlath/alfred/issues/54)
 - Create: `docs/qa-backlog/routine-suggestion-push-notification-ios.md`
 - Create: `docs/qa-backlog/routine-suggestion-tap-to-respond.md`
 - Create: `docs/qa-backlog/notification-delivery-backgrounded-ios.md`
@@ -1613,7 +1613,7 @@ git commit -m "feat(d3): add confidence decay on ignored suggestions, archive at
 
 - [ ] **Step 1: Create backlog — actionable notification responses**
 
-Create `docs/backlog/medium/actionable-notification-responses.md`:
+Create [#64](https://github.com/anirudhlath/alfred/issues/64):
 
 ```markdown
 # Actionable Notification Responses
@@ -1634,7 +1634,7 @@ Currently, routine suggestions via notifications are text-only. Users must open 
 
 - [ ] **Step 2: Create backlog — APNs credential setup**
 
-Create `docs/backlog/high/apns-credential-setup.md`:
+Create [#54](https://github.com/anirudhlath/alfred/issues/54):
 
 ```markdown
 # APNs Credential Setup and E2E Testing
@@ -1784,12 +1784,12 @@ git commit -m "docs(d3): add backlog and QA items for routine notifications and 
 ### Task 10: Update stale backlog tickets
 
 **Files:**
-- Modify: `docs/backlog/medium/d3-librarian-pattern-detection.md`
-- Modify: `docs/backlog/medium/d4-librarian-decay-processing.md`
+- Modify: [#72](https://github.com/anirudhlath/alfred/issues/72)
+- Modify: [#77](https://github.com/anirudhlath/alfred/issues/77)
 
 - [ ] **Step 1: Update D3 backlog ticket**
 
-Replace `docs/backlog/medium/d3-librarian-pattern-detection.md` with:
+Replace [#72](https://github.com/anirudhlath/alfred/issues/72) with:
 
 ```markdown
 # D3: Librarian Pattern Detection — COMPLETED
@@ -1811,7 +1811,7 @@ Implemented in D3+D4 PR. See spec: `docs/superpowers/specs/2026-04-16-d3-d4-patt
 
 - [ ] **Step 2: Update D4 backlog ticket**
 
-Replace `docs/backlog/medium/d4-librarian-decay-processing.md` with:
+Replace [#77](https://github.com/anirudhlath/alfred/issues/77) with:
 
 ```markdown
 # D4: Librarian Decay Processing — COMPLETED

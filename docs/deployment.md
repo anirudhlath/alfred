@@ -508,7 +508,7 @@ The rollout tool lives in `alfred-satellite` (`dev/deploy_satellites.py`) and de
 A Pi that answers mDNS but is missing from `satellites.yaml` is still deployed to, with a
 warning. So is one in the file that does not answer mDNS. Both sources exist because the
 file is authoritative today while discovery earns trust; retiring the file is
-`docs/backlog/medium/satellite-mdns-only-inventory.md`.
+[#230](https://github.com/anirudhlath/alfred/issues/230).
 
 ### When a deploy fails
 
@@ -527,4 +527,4 @@ file is authoritative today while discovery earns trust; retiring the file is
 
 A failed alfred deploy's outage floor is roughly 10–12 minutes even in the best case: up to
 300s of `/health` polling before the rollback starts, then up to another 300s verifying the
-rollback. Tracked as `docs/backlog/medium/deploy-outage-floor-timeout.md`.
+rollback. Tracked as [#223](https://github.com/anirudhlath/alfred/issues/223).

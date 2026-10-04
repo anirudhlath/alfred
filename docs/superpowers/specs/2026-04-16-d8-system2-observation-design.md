@@ -180,5 +180,5 @@ Existing test fixtures cover the memory side: `mock_embedder`, `mock_vector_stor
 | `core/memory/__init__.py` | Export ingestor if needed |
 | `runner/__main__.py` | Add Memory Ingestor as background task |
 | `core/librarian/consolidator.py` | Add Reflex pattern analysis to consolidation prompt |
-| `docs/backlog/medium/d8-system2-observation-system1.md` | Update or close |
+| [#79](https://github.com/anirudhlath/alfred/issues/79) | Update or close |
 | `docs/backlog/*/reflex-input-generalization.md` | New backlog ticket for generalizing Reflex inputs |

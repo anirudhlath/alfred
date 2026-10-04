@@ -31,6 +31,6 @@
 ## Notes
 - This is the core System 2 ↔ System 1 feedback loop — the main user-visible benefit of D8
 - The quality of recall depends on the embedding model (Gemma-300M via sentence-transformers) and the semantic key built by `_build_semantic_key()` in `core/memory/ingestor.py`
-- If the embedding model is not warmed up at startup, the first few vector searches may be slow — this is a known limitation tracked in the backlog
+- If the embedding model is not warmed up at startup, the first few vector searches may be slow — `core/warmup.py` loads it in the background at service startup, so only the first moments after a boot are affected
 - Test with both `origin: state_change` and `origin: trigger_fired` observations to verify both paths surface correctly in conversation
 - Edge case: ask about a reflex action that failed (`result.status != "ok"`) — verify Alfred reports the failure rather than fabricating a success

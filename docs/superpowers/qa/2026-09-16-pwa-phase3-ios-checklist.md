@@ -64,7 +64,7 @@ top of it:
 - [ ] Leave a bench and come back: Memory's sub-tab and search results, Triggers' kind
       chip and open row, and any queued note are all still there. The Activity list is
       back at the top with the row still expanded — that is known and filed
-      (`docs/backlog/low/pwa-phase3-followups.md` §15), not a defect to raise again
+      ([#258](https://github.com/anirudhlath/alfred/issues/258) §15), not a defect to raise again
 - [ ] Type into a credential field on System, switch to Memory and back: the field is
       **empty**. A half-typed secret must not survive the trip
 
@@ -84,7 +84,7 @@ top of it:
       `HH:MM <day> · significance 0.34 · never recalled · hot · decaying`. A cold row never
       carries it, however lightly it is weighed. Worth knowing while you look: nothing is
       actually being swept today, because the Librarian's threshold is unreachable
-      (`docs/backlog/high/librarian-decay-threshold-unreachable.md`), so a marked row will
+      ([#201](https://github.com/anirudhlath/alfred/issues/201)), so a marked row will
       still be there tomorrow. That is the server's, not the bench's
 - [ ] Tap the search field. **The layer must not zoom.** The page does not scale, the
       header stays put, and nothing is clipped off the top of the screen

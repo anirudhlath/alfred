@@ -132,7 +132,7 @@ behavior:
 **Honest gap:** `seed` mode does not yet load dummy fixture data (a sample HA snapshot,
 sample user, sample memories) — it currently behaves identically to `ephemeral`. Fixture
 loading is deferred; see
-[`docs/backlog/medium/seed-mode-fixtures-pack.md`](backlog/medium/seed-mode-fixtures-pack.md).
+[#233](https://github.com/anirudhlath/alfred/issues/233).
 `alfredctl smoke` uses `--mode seed` purely because it needs a throwaway `/data`, not
 because fixtures exist yet.
 
@@ -198,7 +198,7 @@ instead of raising — that path is for throwaway dev only, never a real deploym
 
 Storing the generated passphrase as a plaintext file next to your data dir is a known
 trade-off, not the end state — see
-[`docs/backlog/low/secrets-passphrase-host-keychain.md`](backlog/low/secrets-passphrase-host-keychain.md).
+[#213](https://github.com/anirudhlath/alfred/issues/213).
 
 ## 7. Trusted networks
 
@@ -509,7 +509,7 @@ the proxy's address belongs in `FORWARDED_ALLOW_IPS`, never in
 
 - `seed` mode fixture loading (dummy HA snapshot, sample user, sample memories) — Section 4
 - Publishing prebuilt multi-arch images to a registry (build-from-source only today) —
-  [`docs/backlog/low/registry-publish-images.md`](backlog/low/registry-publish-images.md)
+  [#211](https://github.com/anirudhlath/alfred/issues/211)
 - Host-keychain-backed secrets passphrase instead of a plaintext file — Section 6,
-  [`docs/backlog/low/secrets-passphrase-host-keychain.md`](backlog/low/secrets-passphrase-host-keychain.md)
-- CPU-only PyTorch index to shrink the image — [`docs/backlog/medium/cpu-only-torch-index.md`](backlog/medium/cpu-only-torch-index.md)
+  [#213](https://github.com/anirudhlath/alfred/issues/213)
+- CPU-only PyTorch index to shrink the image — [#220](https://github.com/anirudhlath/alfred/issues/220)

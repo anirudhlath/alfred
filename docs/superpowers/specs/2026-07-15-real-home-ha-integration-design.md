@@ -262,7 +262,7 @@ live HA data joins the QA backlog.
 
 - Update `docs/home-service.md` (or create), `docs/architecture.md` diagrams,
   and both repos' CLAUDE.md operational notes.
-- Closes: `docs/backlog/low/d19-context-provider-option-c-entities.md`.
+- Closes: [#113](https://github.com/anirudhlath/alfred/issues/113).
 - Depends on: sensor-trigger stream fix (PR #22, already merged).
 - Retires: HA-side MQTT state automation (dev `home-assistant` repo keeps
   working but is no longer load-bearing for ingest).

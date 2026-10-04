@@ -323,9 +323,9 @@ QA-backlog items (per the workspace convention, deleted once verified):
 
 | Ticket | Why deferred |
 |---|---|
-| `docs/backlog/low/registry-publish-images.md` (**exists on `master`** — extend to cover the CD path: build and push on a GitHub runner, pull a digest on the box) | Building on the runner works and needs no registry auth |
-| `docs/backlog/medium/deploy-env-from-github-secrets.md` (**new**) — render `.env` from repo secrets instead of a hand-managed file | A pre-placed file is the smallest thing that works; rotation via SSH is tolerable for now |
-| `docs/backlog/medium/satellite-mdns-only-inventory.md` (**new**) — retire `satellites.yaml` once discovery is trusted | Discovery must prove itself against a known-good inventory first |
+| [#211](https://github.com/anirudhlath/alfred/issues/211) (**exists on `master`** — extend to cover the CD path: build and push on a GitHub runner, pull a digest on the box) | Building on the runner works and needs no registry auth |
+| [#222](https://github.com/anirudhlath/alfred/issues/222) (**new**) — render `.env` from repo secrets instead of a hand-managed file | A pre-placed file is the smallest thing that works; rotation via SSH is tolerable for now |
+| [#230](https://github.com/anirudhlath/alfred/issues/230) (**new**) — retire `satellites.yaml` once discovery is trusted | Discovery must prove itself against a known-good inventory first |
 
 ## 12 · Build sequence
 

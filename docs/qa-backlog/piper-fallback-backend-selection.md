@@ -56,6 +56,6 @@
 - Distinguish "ImportError" (optional dependency missing → silent fallback, by design) from
   "runtime failure" (dependency present, construction raised → loud fallback with a named
   culprit) — this ticket is specifically about the latter, the more regression-prone path.
-- Per `docs/backlog/low/tts-runtime-failure-backoff.md`, a *persistently* broken Kokoro
+- Per [#214](https://github.com/anirudhlath/alfred/issues/214), a *persistently* broken Kokoro
   currently retries full construction on every request (no backoff/negative-cache yet) — that's
   a known, already-filed limitation, not a new bug to report here.

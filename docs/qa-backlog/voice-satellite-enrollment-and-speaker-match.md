@@ -49,7 +49,7 @@
 ## Notes
 - **There is no enrollment UI in PWA phase 1.** The Settings page that carried the Voice
   Enrollment card was removed in the hard cut; `docs/voice-satellites.md` and
-  `docs/backlog/low/pwa-phase1-followups.md` §5 both record that the Workshop reinstates it in
+  [#256](https://github.com/anirudhlath/alfred/issues/256) §5 both record that the Workshop reinstates it in
   phase 2. The client's own microphone path (`web/src/room/HoldToTalk.tsx`) records for chat
   only and never posts to `/api/voice/enroll`.
 - This case exercises what automated tests cannot reach: the cosine-similarity behaviour of
@@ -59,7 +59,7 @@
 - Enroll under `identity: "sir"` — there is no path yet for enrolling additional household
   members under other names; a recognized
   non-"sir" voiceprint would currently be downgraded to guest regardless of match confidence
-  (tracked in `docs/backlog/low/satellite-multi-user-voice-identity.md`) — step 9 above is
+  (tracked in [#129](https://github.com/anirudhlath/alfred/issues/129)) — step 9 above is
   expected to show `local_claim`/guest-adjacent behavior, not a crash
 - If the ECAPA model hasn't been downloaded yet, first use will trigger an auto-download to
   `data/models/spkrec-ecapa-voxceleb` — expect a delay on the very first enrollment/identify

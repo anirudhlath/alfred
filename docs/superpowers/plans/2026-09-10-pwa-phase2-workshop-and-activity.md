@@ -127,7 +127,7 @@ Identical to phase 1, repeated because they are load-bearing:
 | `web/src/sheets/WhySheet.tsx` | `Why Alfred did that`: intro, column of nodes, footnote | 9 |
 | `web/src/room/WorkshopHandle.tsx` | The handle under the composer | 10 |
 | `web/src/room/Composer.tsx`, `room/rows/ActRow.tsx`, `room/Timeline.tsx`, `lib/history.ts`, `room/Room.tsx` | the handle slot; `why?` on reflex act rows; mount Workshop + WhySheet | 10 |
-| `web/README.md`, `docs/web-frontend.md`, `docs/backlog/low/pwa-phase2-followups.md`, `docs/superpowers/qa/2026-09-10-pwa-phase2-ios-checklist.md` | Docs, backlog, QA | 11 |
+| `web/README.md`, `docs/web-frontend.md`, [#257](https://github.com/anirudhlath/alfred/issues/257), `docs/superpowers/qa/2026-09-10-pwa-phase2-ios-checklist.md` | Docs, backlog, QA | 11 |
 
 ### The contract between tasks (names used exactly as spelled)
 
@@ -4151,8 +4151,8 @@ git commit -m "feat(web): the Room's handle, why? on reflex rows, Workshop and W
 No code. The two working-notes documents still say phase 1 is all there is; the phase-1 backlog carries two items this phase resolves or inherits; and the manual QA half of spec §7 needs a phase-2 script.
 
 **Files:**
-- Modify: `web/README.md`, `docs/web-frontend.md`, `docs/backlog/low/pwa-phase1-followups.md`
-- Create: `docs/backlog/low/pwa-phase2-followups.md`, `docs/superpowers/qa/2026-09-10-pwa-phase2-ios-checklist.md`
+- Modify: `web/README.md`, `docs/web-frontend.md`, [#256](https://github.com/anirudhlath/alfred/issues/256)
+- Create: [#257](https://github.com/anirudhlath/alfred/issues/257), `docs/superpowers/qa/2026-09-10-pwa-phase2-ios-checklist.md`
 
 - [ ] **Step 1: `web/README.md`**
 
@@ -4395,7 +4395,7 @@ Open follow-ups: `docs/backlog/low/pwa-phase1-followups.md` and
 
 - [ ] **Step 3: The backlog — phase 1's items this phase touches, and phase 2's own**
 
-In `docs/backlog/low/pwa-phase1-followups.md`:
+In [#256](https://github.com/anirudhlath/alfred/issues/256):
 
 §3 — append to the paragraph: `Phase 2 added a third copy, ` `STREAMS` ` in ` `web/src/lib/streams.ts` `, and the chip order, monograms and hues hang off it; the acceptance stands.`
 
@@ -4411,7 +4411,7 @@ on purpose: `MAX_PER_STREAM = 400` per stream, 3 200 rows at the worst, and no
 
 §9 — append: `**Phase 2:** the Activity bench shows them — ` `notifications` ` is one of the eight streams, paged as far back as ` `↑ older` ` goes. Push (phase 5) is still the only thing that would *tell* you.`
 
-Create `docs/backlog/low/pwa-phase2-followups.md`:
+Create [#257](https://github.com/anirudhlath/alfred/issues/257):
 
 ```markdown
 # PWA phase 2 follow-ups

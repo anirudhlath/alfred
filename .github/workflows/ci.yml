@@ -123,7 +123,7 @@ jobs:
             exit 1
           fi
 
-  # A merge that only touches documentation (README tweak, a backlog ticket) carries no
+  # A merge that only touches documentation (README tweak, a spec edit) carries no
   # runtime change, so rebuilding the fat image and restarting the live container is pure
   # cost — it disrupts the user's home automation for zero effect. This job decides whether
   # the current push is docs-only.

@@ -25,8 +25,8 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 
 - **No hardcoded tool/service lists** — tools, agents, and services auto-register at runtime via the SDK tool registry; the Reflex Engine prompt must be built dynamically from the registry, not from hardcoded strings
 - **SOLID + DRY** — favor abstraction and single sources of truth; constants over literals, registries over enums
-- **No polling** — never use periodic polling when an event-driven or callback approach is available. Prefer Redis pub/sub, triggers, callbacks, or blocking reads over timed loops. If polling is truly unavoidable, add it to the performance backlog for future replacement.
-- **Document new features** — when implementing a new concept, feature, or subsystem, always create a corresponding `docs/<feature>.md` with architecture overview, mermaid diagrams, data models, and operational details (see `docs/sdk.md`, `docs/event-bus.md`, `docs/architecture.md` for the expected level of detail). Update `docs/architecture.md` to include the new component in system-level diagrams. Track deferred work in `docs/backlog/`.
+- **No polling** — never use periodic polling when an event-driven or callback approach is available. Prefer Redis pub/sub, triggers, callbacks, or blocking reads over timed loops. If polling is truly unavoidable, file an issue to replace it (see Tickets).
+- **Document new features** — when implementing a new concept, feature, or subsystem, always create a corresponding `docs/<feature>.md` with architecture overview, mermaid diagrams, data models, and operational details (see `docs/sdk.md`, `docs/event-bus.md`, `docs/architecture.md` for the expected level of detail). Update `docs/architecture.md` to include the new component in system-level diagrams. Track deferred work as GitHub issues (see Tickets).
 - **Keep the PRD current** — `docs/PRD.md` is the public product source of truth. Any PR that adds or changes a user-facing capability updates the relevant Capability Catalog row(s) (status + reference) in the same branch, and bumps the "statuses current as of" date.
 
 ## Tech Stack
@@ -55,7 +55,6 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `web/design-system/` — generator for the claude.ai/design "Alfred Design System": bundles the real `web/src` components, type-checks the preview stories against their props, generates props/docs/tokens from tsc and `index.css`, and render-checks every card in Chromium (`cd web && npm run design-sync` → `web/design-system/out/`, gitignored). See `docs/design-system.md`
 - `docs/superpowers/specs/` — approved design specs
 - `docs/superpowers/plans/` — implementation plans
-- `docs/backlog/` — priority subdirs (highest/high/medium/low/lowest) with individual ticket files
 - `core/memory/episodic/memory.py` — `EpisodicMemory` (unified hot+cold vector search)
 - `core/memory/embedding_provider.py` — `EmbeddingProvider` ABC (with concrete `warmup()`/`aclose()` defaults) + `SentenceTransformerProvider`
 - `core/memory/openai_embedding_provider.py` — `OpenAICompatEmbeddingProvider` (HTTP `/v1/embeddings`; vLLM needs `--runner pooling`)
@@ -139,6 +138,16 @@ cd web && npm run lint && npm run test && npm run build   # build emits web/dist
 - GitHub-dispatched agents exist: commenting `@claude <task>` on an issue/PR (write-access
   users only) runs an agent via Actions; every human PR gets an automatic Claude review
   (once the Claude GitHub App + OAuth token are configured).
+
+## Tickets
+
+- Every ticket is a GitHub issue on `anirudhlath/alfred`. There is no file backlog: `docs/backlog/` is retired and gitignored, so never recreate it. Deferred work, review findings left out of a PR, and follow-ups all become issues.
+- File with `gh issue create --title "…" --body-file … --label "priority: medium"`, or the GitHub MCP `issue_write` tool where `gh` isn't available (cloud sessions). Search open issues first (`gh issue list --search …` / MCP `search_issues`) and extend an existing issue rather than filing a duplicate.
+- Labels: exactly one `priority: highest|high|medium|low|lowest`; `epic: <name>` when it belongs to one (`epic: alpha-release`, `epic: github-chores`); `agent-ready` when it is scoped tightly enough to hand to `@claude` as-is. The issue templates add `bug`/`enhancement`.
+- Body: Summary, Context, Acceptance Criteria (checkboxes). Cite code by repo path and other tickets as `#N`; a relative file link does not resolve inside an issue.
+- Repo files cite tickets as `#N` too: `issue #N` in code comments, a full `https://github.com/anirudhlath/alfred/issues/N` link in Markdown (GitHub does not autolink `#N` in committed files).
+- A PR that finishes an issue says `Closes #N`; a PR that changes a ticket's scope edits the issue in the same change.
+- **Sensitive work never goes in a public issue — the repo is public.** Live exposures, unpatched vulnerabilities and personal data (addresses, IPs, names) go in a private security advisory (`https://github.com/anirudhlath/alfred/security/advisories/new`, the same route `.github/ISSUE_TEMPLATE/config.yml` gives reporters).
 
 ## Running the System
 
