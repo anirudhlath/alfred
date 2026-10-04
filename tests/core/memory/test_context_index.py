@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from core.memory.context_index import ContextIndexManager
-from core.memory.vector_store import ContextMetadata, SearchResult
+from core.memory.vector_store import ContextMetadata, Range, SearchResult
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -271,6 +271,18 @@ async def test_remove_delegates_to_store_delete(
 ) -> None:
     await manager.remove("ep:001")
     mock_vector_store.delete.assert_awaited_once_with("ep:001")
+
+
+@pytest.mark.asyncio
+async def test_select_delegates_to_the_store(
+    manager: ContextIndexManager,
+    mock_vector_store: AsyncMock,
+) -> None:
+    where = {"significance": Range(below=0.4)}
+    mock_vector_store.select.return_value = [_make_result()]
+
+    assert await manager.select(where) == [_make_result()]
+    mock_vector_store.select.assert_awaited_once_with(where)
 
 
 # ---------------------------------------------------------------------------

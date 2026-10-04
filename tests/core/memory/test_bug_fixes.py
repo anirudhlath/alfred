@@ -52,16 +52,35 @@ def test_redis_vector_store_default_dim_matches_config() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _returned_fields(args: tuple[object, ...]) -> tuple[int, list[object]]:
+    """The declared RETURN count and the names that follow it, up to the next keyword."""
+    at = args.index("RETURN")
+    names: list[object] = []
+    for arg in args[at + 2 :]:
+        if arg in {"SORTBY", "LIMIT", "PARAMS", "DIALECT"}:
+            break
+        names.append(arg)
+    return int(str(args[at + 1])), names
+
+
 @pytest.mark.asyncio
 async def test_ft_search_return_count_matches_fields() -> None:
-    """The RETURN count in FT.SEARCH must match the number of field names."""
-    import inspect
+    """Every FT.SEARCH declares exactly as many RETURN fields as it names."""
+    from core.memory.redis_vector_store import RedisVectorStore
+    from core.memory.vector_store import Range
 
-    from core.memory import redis_vector_store
+    redis = AsyncMock()
+    redis.execute_command = AsyncMock(return_value=[0])
+    store = RedisVectorStore(redis=redis, dim=4)
 
-    source = inspect.getsource(redis_vector_store)
-    # RETURN 11 means 11 field names follow before SORTBY
-    assert '"11"' in source, "RETURN count should be 11 to match 11 field names"
+    await store.search([0.1, 0.2, 0.3, 0.4], limit=3)
+    await store.select({"significance": Range(below=0.4)})
+
+    searches = [c.args for c in redis.execute_command.call_args_list if c.args[0] == "FT.SEARCH"]
+    assert len(searches) == 3  # two KNN fields + one selection page
+    for args in searches:
+        count, names = _returned_fields(args)
+        assert count == len(names), args
 
 
 # ---------------------------------------------------------------------------
@@ -72,19 +91,15 @@ async def test_ft_search_return_count_matches_fields() -> None:
 @pytest.mark.asyncio
 async def test_compressed_field_is_tag_type() -> None:
     """compressed must be TAG (not TEXT) for filter syntax to work."""
-    import inspect
+    from core.memory.redis_vector_store import RedisVectorStore
 
-    from core.memory import redis_vector_store
+    redis = AsyncMock()
+    redis.execute_command = AsyncMock()
+    await RedisVectorStore(redis=redis, dim=4).ensure_index()
 
-    source = inspect.getsource(redis_vector_store)
-    lines = source.split("\n")
-    for i, line in enumerate(lines):
-        if '"compressed"' in line:
-            next_line = lines[i + 1] if i + 1 < len(lines) else ""
-            assert '"TAG"' in next_line, f"compressed field should be TAG, got: {next_line}"
-            break
-    else:
-        pytest.fail("compressed field not found in schema")
+    create = redis.execute_command.call_args_list[0].args
+    assert create[0] == "FT.CREATE"
+    assert create[create.index("compressed") + 1] == "TAG"
 
 
 # ---------------------------------------------------------------------------

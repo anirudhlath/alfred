@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from core.memory.redis_vector_store import RedisVectorStore, _pack_floats
-from core.memory.vector_store import ContextMetadata
+from core.memory.vector_store import ContextMetadata, Range
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -258,6 +258,44 @@ async def test_search_issues_two_knn_queries(
     assert mock_redis.execute_command.call_count == 2
     for call in mock_redis.execute_command.call_args_list:
         assert call[0][0] == "FT.SEARCH"
+
+
+@pytest.mark.asyncio
+async def test_search_asks_redisearch_for_the_whole_limit(
+    store: RedisVectorStore, mock_redis: AsyncMock
+) -> None:
+    """FT.SEARCH returns 10 documents unless told otherwise, whatever K the KNN asks for."""
+    store._index_ready = True
+    mock_redis.execute_command.return_value = [0]
+
+    await store.search(query_embedding=[0.1, 0.2, 0.3, 0.4], limit=50)
+
+    for call in mock_redis.execute_command.call_args_list:
+        args = list(call[0])
+        assert args[args.index("LIMIT") + 1 : args.index("LIMIT") + 3] == ["0", "50"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("filters", "prefilter"),
+    [(None, "(@timestamp:[-inf +inf])"), ({"compressed": ""}, "((-@compressed:{yes}))")],
+)
+async def test_search_scores_every_entry_instead_of_walking_the_graph(
+    store: RedisVectorStore,
+    mock_redis: AsyncMock,
+    filters: dict[str, str | float | int] | None,
+    prefilter: str,
+) -> None:
+    """Exact KNN: duplicate observation vectors trap HNSW's walk (see the live test)."""
+    store._index_ready = True
+    mock_redis.execute_command.return_value = [0]
+
+    await store.search(query_embedding=[0.1, 0.2, 0.3, 0.4], limit=5, filters=filters)
+
+    for call in mock_redis.execute_command.call_args_list:
+        knn = call[0][2]
+        assert knn.startswith(f"{prefilter}=>[KNN 5 @embedding_")
+        assert "HYBRID_POLICY ADHOC_BF" in knn
 
 
 @pytest.mark.asyncio
@@ -530,3 +568,27 @@ async def test_dimension_mismatch_is_latched_not_reprobed() -> None:
             metadata=_meta(),
         )
     assert redis.commands == ["FT.CREATE", "FT.INFO"]
+
+
+# ---------------------------------------------------------------------------
+# select — by metadata, no vector
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_select_queries_numeric_ranges_with_open_bounds(
+    store: RedisVectorStore, mock_redis: AsyncMock
+) -> None:
+    store._index_ready = True
+    mock_redis.execute_command.return_value = [0]
+
+    results = await store.select({"timestamp": Range(above=0.0), "significance": Range(below=0.4)})
+
+    assert results == []
+    args = list(mock_redis.execute_command.call_args[0])
+    assert args[:3] == [
+        "FT.SEARCH",
+        "idx:context",
+        "@timestamp:[(0.0 +inf] @significance:[-inf (0.4]",
+    ]
+    assert "__score" not in args

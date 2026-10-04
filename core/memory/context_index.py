@@ -7,10 +7,11 @@ import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from pathlib import Path
 
     from core.memory.embedding_provider import EmbeddingProvider
-    from core.memory.vector_store import VectorStore
+    from core.memory.vector_store import Range, VectorStore
 
 from core.memory.vector_store import ContextMetadata, SearchResult, record_retrievals
 
@@ -165,6 +166,10 @@ class ContextIndexManager:
         if update_stats and results:
             await record_retrievals(self._store, results)
         return results
+
+    async def select(self, where: Mapping[str, Range]) -> list[SearchResult]:
+        """Entries chosen by metadata ranges, not similarity — see ``VectorStore.select``."""
+        return await self._store.select(where)
 
     async def remove(self, id: str) -> None:  # noqa: A002
         """Remove an entry from the index."""
