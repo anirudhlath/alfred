@@ -11,6 +11,11 @@ needs no LLM.
 CUDA_VISIBLE_DEVICES="" EMBEDDING_MODEL=google/embeddinggemma-300m \
   uv run python -m evals memory run --research-csv research/data/memory-decay.csv
 
+# Any OpenAI-compatible embedding server instead (vLLM --runner pooling), e.g. bge-m3
+# on a GPU — about twice as fast end to end
+EMBEDDING_BACKEND=openai EMBEDDING_HOST=http://localhost:8001 EMBEDDING_MODEL=BAAI/bge-m3 \
+  uv run python -m evals memory run --research-csv research/data/memory-decay.csv
+
 uv run python -m evals memory run --policy branch --policy oracle --days 30
 uv run python -m evals memory policies        # what is registered
 uv run python -m evals memory runs            # saved runs (evals/runs/memory/, gitignored)
@@ -20,7 +25,8 @@ uv run python -m evals memory show <run-id>   # re-print a saved run's tables
 The run needs Docker (or `--redis-url` pointing at an **empty** Redis 8 / Redis
 Stack you started yourself) and the `memory` extra. Experiment logs:
 `research/experiments/EXP-006-memory-decay.md` (the problems it found) and
-`research/experiments/EXP-007-memory-decay-fixed.md` (after the fixes).
+`research/experiments/EXP-007-memory-decay-fixed.md` (after the fixes) and
+`research/experiments/EXP-008-memory-decay-bge-m3.md` (bge-m3 on a GPU).
 
 ## Why decay exists
 
@@ -205,7 +211,11 @@ but are never compared.
 - **Use the deployment's embedding model.** Similarity scales differ by model, and
   involuntary recall's 0.5 floor is absolute. The deployment runs
   `google/embeddinggemma-300m`; a fresh clone defaults to `all-MiniLM-L6-v2`.
-- **Run it on CPU** (`CUDA_VISIBLE_DEVICES=""`) on a box whose GPU serves vLLM.
+- **Don't load a second model onto a GPU that serves vLLM.** Run the in-process model
+  on CPU (`CUDA_VISIBLE_DEVICES=""`), or point `EMBEDDING_BACKEND=openai` at an
+  embedding model vLLM already serves. The second is fast enough to show what
+  in-process CPU embedding hides: a backlog pass that starts thousands of migrations
+  at once (EXP-008).
 - **The tests** run without Redis or a model. The end-to-end test against a real
   container is opt-in: `ALFRED_MEMORY_EVAL_DOCKER=1 uv run pytest
   tests/evals/test_memory_runner.py`.

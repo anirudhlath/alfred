@@ -149,6 +149,11 @@ compression groups are larger and the archive ends at 10,667 entries instead of
 run, and recall matched it: involuntary 22/33, the tool 28/33, departed targets 5/8 by
 the tool, by `EpisodicMemory.recall` and by the cold store alone.
 
+This pass started all 9,357 migrations at once. With bge-m3 on the GPU that exhausted
+the Redis connection pool; [EXP-008](EXP-008-memory-decay-bge-m3.md) has the failure
+and the fix (at most 8 at a time). Re-measured here with the fix (run
+`2026-10-04T062923`): 145 s, every number above unchanged, no warnings.
+
 ## Analysis
 
 **H1 is supported.** The branch moves the same 9,585 memories as the oracle and ends
