@@ -159,7 +159,7 @@ Measured at each checkpoint (default days 30, 45, 60):
 | Forgotten | Hot episodic size over time; share of `routine`+`reflex` memories older than 14 days that left hot |
 | Stuck | Hot memories whose exact pressure (at the configured threshold, for every policy) has been above it at ≥2 consecutive daily checks (≥24 passes) or ≥8 (≥7 days) |
 | Unselected | Eligible hot memories the decay pass's own `select()` would not return — zero unless the metadata ranges stop covering the pressure formula |
-| Search misses | Targets the exact ranking puts in the top 10 that the real query did not return — for the filtered involuntary query and the unfiltered tool query. Zero since hot KNN became exact (`HYBRID_POLICY ADHOC_BF`); EXP-006 measured 73–90% under the HNSW walk |
+| Search misses | Targets the exact ranking puts in the top 10 that the real query did not return — for the filtered involuntary query and the unfiltered tool query. Hot KNN is exact (`HYBRID_POLICY ADHOC_BF`; EXP-006 measured 73–90% misses under the HNSW walk), so what remains is ties — the exact rank does not count entries scoring the same as the target against it, and passive observations share semantic keys by the hundred — and, for the tool, cold results outranking a hot target in the merge |
 | Cost | Wall time and `embed()` calls per decay pass; embeds per migrated memory; summed embed time per pass (a pass embeds concurrently, so this can exceed its wall time) |
 
 ## Determinism

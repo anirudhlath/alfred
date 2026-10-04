@@ -180,7 +180,10 @@ def format_run(run: MemoryEvalRun) -> str:
         "## Search misses",
         "",
         "Targets an exact brute-force KNN over the hot store ranks in the top 10 (and, for "
-        "involuntary, above the floor) that the real RediSearch query did not return.",
+        "involuntary, above the floor) that the real RediSearch query did not return. Hot "
+        "search is exact, so a miss here is a tie — the target's best vector shared with "
+        "other entries, which the exact rank does not count against it — or, for the tool, "
+        "cold results outranking a hot target in the merge.",
         "",
         "| policy | day | involuntary (filtered KNN) | memory_recall_memories (unfiltered) | "
         "distinct contents / semantic keys in hot |",
