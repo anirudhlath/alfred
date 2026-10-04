@@ -2867,15 +2867,15 @@ Expected: `1`.
 Per §11 — tickets, not TODOs.
 
 **Files:**
-- Modify: `docs/backlog/low/registry-publish-images.md`
-- Create: `docs/backlog/medium/deploy-env-from-github-secrets.md`
-- Create: `docs/backlog/medium/satellite-mdns-only-inventory.md`
+- Modify: [#211](https://github.com/anirudhlath/alfred/issues/211)
+- Create: [#222](https://github.com/anirudhlath/alfred/issues/222)
+- Create: [#230](https://github.com/anirudhlath/alfred/issues/230)
 
 Work on the Task 21 branch (`docs/cd-local-runner`).
 
 - [ ] **Step 1: Extend the registry ticket**
 
-Append to `docs/backlog/low/registry-publish-images.md`:
+Append to [#211](https://github.com/anirudhlath/alfred/issues/211):
 
 ```markdown
 ## Also covers the CD path (added 2026-08-18)
@@ -2894,7 +2894,7 @@ than a local image id. See `docs/superpowers/specs/2026-08-18-cd-local-runner-de
 
 - [ ] **Step 2: Create the `.env`-from-secrets ticket**
 
-Create `docs/backlog/medium/deploy-env-from-github-secrets.md`:
+Create [#222](https://github.com/anirudhlath/alfred/issues/222):
 
 ```markdown
 # Render the Deploy `.env` from GitHub Secrets
@@ -2933,7 +2933,7 @@ an SSH session, and would leave the box holding no long-lived plaintext credenti
 
 - [ ] **Step 3: Create the mDNS-only ticket**
 
-Create `docs/backlog/medium/satellite-mdns-only-inventory.md`:
+Create [#230](https://github.com/anirudhlath/alfred/issues/230):
 
 ```markdown
 # Retire `satellites.yaml` in Favour of mDNS Discovery

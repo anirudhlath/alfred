@@ -192,7 +192,7 @@ function WorkshopPanel({ onClose, onWhy, onHeld }: WorkshopPanelProps) {
    * outlives its form is the thing that decision exists to prevent. The
    * scroll position goes with them, which is a cost rather than a choice —
    * measured and backlogged as item 15 of the phase 3 plan, which task 11
-   * files as `docs/backlog/low/pwa-phase3-followups.md`.
+   * files as issue #258.
    *
    * A `switch` rather than a lookup object because it is the shape TypeScript
    * checks: `Bench` is a closed union of four, and a fifth member would fail to

@@ -112,7 +112,7 @@ Phase 3: the Workshop's other three benches, each a pure view over one hook call
   so out loud), **restarting a service**, and **downloading logs**. The fourth has an
   endpoint and no UI: **removing a passkey** — `DELETE /api/auth/credentials/{id}` exists
   and refuses the last one, but taking away the passkey in your hand needs a confirmation
-  design first. Filed as `docs/backlog/low/pwa-phase3-followups.md` §7, §10 and §11.
+  design first. Filed as [#258](https://github.com/anirudhlath/alfred/issues/258) §7, §10 and §11.
 - **Desktop** — phase 6.
 
 ## Things worth knowing before you change something

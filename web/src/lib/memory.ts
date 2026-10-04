@@ -32,7 +32,7 @@ export interface EpisodicRow {
    *
    * Hot rows keep it: `retrieval_count` and `last_retrieved` are real fields in
    * the Redis hash, written by `record_retrievals()`.
-   * (`docs/backlog/low/pwa-phase3-followups.md` §16 is what would let cold rows
+   * (issue #258 §16 is what would let cold rows
    * report recalls again.)
    */
   recalled: number | null;
@@ -99,7 +99,7 @@ export const ROUTINE_STAGES = [
  * 0.4 rather than a rounder number for two converging reasons. The handoff's own
  * decaying row scores **0.34** (`Alfred.dc.html:684`) and its plain-`hot` rows
  * score 0.62 and 0.71, so the boundary sits between them. And
- * `docs/backlog/high/librarian-decay-threshold-unreachable.md` records that
+ * issue #201 records that
  * passive observations score between 0.105 and 0.355 overall and "should be the
  * first thing a working threshold sweeps out" — 0.4 covers that whole band.
  *
@@ -220,8 +220,8 @@ export function toEpisodicRow(raw: Record<string, unknown>, index: number): Epis
     //
     // Today the pass never actually fires: its threshold is unreachable at the
     // shipped defaults, so nothing has ever migrated
-    // (`docs/backlog/high/librarian-decay-threshold-unreachable.md`, and
-    // `docs/backlog/low/pwa-phase3-followups.md` §20 for what that costs this
+    // (issue #201, and
+    // issue #258 §20 for what that costs this
     // word). The mark still describes the row correctly; it is the sweep that is
     // broken, and it is filed.
     decaying: !cold && significance !== null && significance < DECAY_FLOOR && recalled === 0,
