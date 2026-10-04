@@ -5,7 +5,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastapi.routing import APIRoute
+from fastapi.routing import APIRoute, iter_route_contexts
 from fastapi.testclient import TestClient
 
 import core.channels.admin_api as admin_api
@@ -61,17 +61,19 @@ def test_admin_reads_and_controls_need_only_a_session() -> None:
 
     # Structural half: no admin route may carry a network gate, and every one must
     # carry the session gate. Asserting on the route table (rather than overriding a
-    # dependency) catches a gate re-added under a different callable.
+    # dependency) catches a gate re-added under a different callable. app.routes keeps
+    # included routers nested, so flatten it; each context carries the prefixed path and
+    # the dependencies in effect, including any added at include_router().
     admin_routes = [
-        route
-        for route in client.app.routes  # type: ignore[attr-defined]
-        if isinstance(route, APIRoute) and route.path.startswith("/api/admin")
+        ctx
+        for ctx in iter_route_contexts(client.app.routes)  # type: ignore[attr-defined]
+        if isinstance(ctx.original_route, APIRoute) and (ctx.path or "").startswith("/api/admin")
     ]
     assert admin_routes, "no admin routes registered"
-    for route in admin_routes:
-        deps = [d.call for d in route.dependant.dependencies]
-        assert require_authenticated in deps, route.path
-        assert require_trusted_network not in deps, route.path
+    for ctx in admin_routes:
+        deps = [d.call for d in ctx.dependant.dependencies]
+        assert require_authenticated in deps, ctx.path
+        assert require_trusted_network not in deps, ctx.path
 
     # Behavioural half: a read and a control both succeed on a session alone.
     assert client.get("/api/admin/overview").status_code == 200
