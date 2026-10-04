@@ -7,10 +7,11 @@ import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from pathlib import Path
 
     from core.memory.embedding_provider import EmbeddingProvider
-    from core.memory.vector_store import VectorStore
+    from core.memory.vector_store import Range, VectorStore
 
 from core.memory.vector_store import ContextMetadata, SearchResult, record_retrievals
 
@@ -28,10 +29,15 @@ class ContextIndexManager:
         store: VectorStore,
         embedder: EmbeddingProvider,
         semantic_dirs: list[Path] | None = None,
+        *,
+        archive: VectorStore | None = None,
     ) -> None:
         self._store = store
         self._embedder = embedder
         self._semantic_dirs = semantic_dirs or []
+        # Where decay moves episodic memories (the cold store) — searched only by
+        # deliberate recall.
+        self._archive = archive
 
     async def index_episodic(
         self,
@@ -165,6 +171,37 @@ class ContextIndexManager:
         if update_stats and results:
             await record_retrievals(self._store, results)
         return results
+
+    async def recall(self, query: str, limit: int = 10) -> list[SearchResult]:
+        """Deliberate recall: the whole hot index plus the archive, best ``limit`` by score.
+
+        Compressed entries are included, and the hot hits returned are recorded as
+        retrieved — deliberate recall is what the decay pass counts as using a memory.
+        Without the archive, nothing decay had moved out of hot could be recalled.
+
+        The two searches are gathered without ``return_exceptions``, as
+        ``EpisodicMemory.recall`` does: an archive failure fails the recall instead of
+        quietly answering from hot alone, which would read as "no such memory".
+        """
+        query_embedding = await self._embedder.embed(query)
+        searches = [self._store.search(query_embedding=query_embedding, limit=limit, filters=None)]
+        if self._archive is not None:
+            searches.append(self._archive.search(query_embedding=query_embedding, limit=limit))
+        hot, *archived = await asyncio.gather(*searches)
+        # id -> (best result, whether it is the hot copy)
+        best: dict[str, tuple[SearchResult, bool]] = {r.id: (r, True) for r in hot}
+        for result in (r for results in archived for r in results):
+            if result.id not in best or result.score > best[result.id][0].score:
+                best[result.id] = (result, False)
+        merged = sorted(best.values(), key=lambda pair: pair[0].score, reverse=True)[:limit]
+        hot_hits = [result for result, in_hot in merged if in_hot]
+        if hot_hits:
+            await record_retrievals(self._store, hot_hits)
+        return [result for result, _ in merged]
+
+    async def select(self, where: Mapping[str, Range]) -> list[SearchResult]:
+        """Entries chosen by metadata ranges, not similarity — see ``VectorStore.select``."""
+        return await self._store.select(where)
 
     async def remove(self, id: str) -> None:  # noqa: A002
         """Remove an entry from the index."""

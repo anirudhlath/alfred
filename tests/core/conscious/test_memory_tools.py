@@ -58,7 +58,7 @@ class TestDispatchMemoryTool:
     @pytest.mark.asyncio
     async def test_recall_memories_basic(self) -> None:
         context_index = AsyncMock()
-        context_index.search_text.return_value = [
+        context_index.recall.return_value = [
             _make_search_result("Sir prefers dim lighting", type_="semantic", score=0.9),
         ]
 
@@ -77,12 +77,12 @@ class TestDispatchMemoryTool:
         assert result["memories"][0]["type"] == "semantic"
         assert result["memories"][0]["score"] == 0.9
 
-        context_index.search_text.assert_called_once()
+        context_index.recall.assert_awaited_once_with("lighting preferences", limit=10)
 
     @pytest.mark.asyncio
     async def test_recall_memories_filter_by_type(self) -> None:
         context_index = AsyncMock()
-        context_index.search_text.return_value = [
+        context_index.recall.return_value = [
             _make_search_result("episodic entry", type_="episodic"),
             _make_search_result("semantic entry", type_="semantic"),
         ]
@@ -107,7 +107,7 @@ class TestDispatchMemoryTool:
         recent_ts = now - 86400 * 1  # 1 day ago
 
         context_index = AsyncMock()
-        context_index.search_text.return_value = [
+        context_index.recall.return_value = [
             _make_search_result("old entry", timestamp=old_ts),
             _make_search_result("recent entry", timestamp=recent_ts),
         ]

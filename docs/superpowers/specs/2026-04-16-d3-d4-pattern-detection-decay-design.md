@@ -124,7 +124,11 @@ Entries written before the stats fix will have `last_retrieved=0.0`. Treat `days
 
 ### Configuration
 
-`decay_migration_threshold` remains configurable in `AlfredConfig` (default `1.0`). The subtractive formula means the threshold can be lowered for more aggressive decay.
+`decay_migration_threshold` remains configurable in `AlfredConfig` (default `1.0`).
+
+> **As built (2026-10-03, #201):** the default is `0.2` (`DEFAULT_DECAY_MIGRATION_THRESHOLD`).
+> Pressure can never exceed `1.0`, so `1.0` never fired; `0.2` is read off the table above
+> (row 1 migrates, the borderline row 4 at ~0.18 stays). The subtractive formula means the threshold can be lowered for more aggressive decay.
 
 ---
 

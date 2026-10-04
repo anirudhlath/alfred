@@ -50,7 +50,7 @@ async def test_reensure_schema_keeps_single_version_row(tmp_path: Path) -> None:
     row = await cursor.fetchone()
     assert row is not None
     count, version = row
-    assert (count, version) == (1, 2)
+    assert (count, version) == (1, 3)
     await second.close()
 
 

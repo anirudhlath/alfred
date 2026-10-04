@@ -40,6 +40,15 @@ def data_mode() -> str:
     return os.getenv("ALFRED_DATA_MODE", "persistent")
 
 
+# Cold-migration threshold for the Librarian's decay pass. Migration pressure is
+# ``age - 2*significance - 1.5*recency - frequency`` and can never exceed 1.0 (age caps at
+# 1.0; every other term only subtracts, and recency is strictly positive), so the old
+# default of 1.0 meant nothing ever left hot storage. 0.2 is read off the D4 design's own
+# behaviour table: a 30-day, significance-0.1, never-retrieved entry (pressure ~0.78)
+# migrates, and a 60-day, significance-0.3 entry retrieved once a month ago (~0.18) is
+# the borderline case that stays. Entries with significance >= 0.4 never migrate.
+DEFAULT_DECAY_MIGRATION_THRESHOLD = 0.2
+
 # Default embedding model: ungated so a fresh clone works with no HF token or license
 # acceptance. Known models map to their output dimension so ``EMBEDDING_DIM`` stays in
 # sync automatically — the vector index dimension must match the model, or search breaks.
@@ -264,7 +273,7 @@ class AlfredConfig:
     significance_weight_emotional: float = 0.15
 
     # Memory: Decay
-    decay_migration_threshold: float = 1.0
+    decay_migration_threshold: float = DEFAULT_DECAY_MIGRATION_THRESHOLD
 
     # Memory: Involuntary recall
     involuntary_recall_limit: int = 10

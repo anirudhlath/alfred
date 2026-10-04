@@ -11,9 +11,32 @@ from core.memory.vector_store import ContextMetadata, SearchResult, VectorStore
 from shared.streams import CONTEXT_INDEX, CONTEXT_PREFIX
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from core.memory.vector_store import Range
     from shared.types import AioRedis
 
 logger = logging.getLogger(__name__)
+
+# Every hash field a search or select hands back (vectors stay in Redis).
+_METADATA_FIELDS = (
+    "content",
+    "semantic_key",
+    "type",
+    "source",
+    "entities",
+    "timestamp",
+    "significance",
+    "retrieval_count",
+    "last_retrieved",
+    "compressed",
+)
+# Documents per FT.SEARCH page when selecting by metadata.
+SELECT_PAGE_SIZE = 1000
+# A filter every entry passes — add() always writes a timestamp (0 for sections and
+# routines). search() needs one to force brute-force KNN.
+_EVERY_ENTRY = "@timestamp:[-inf +inf]"
+_FLOAT32_BYTES = 4
 
 
 def _pack_floats(values: list[float]) -> bytes:
@@ -22,13 +45,19 @@ def _pack_floats(values: list[float]) -> bytes:
     return struct.pack(f"<{n}f", *values)
 
 
+def _unpack_floats(blob: bytes) -> list[float]:
+    """The inverse of ``_pack_floats``."""
+    return list(struct.unpack(f"<{len(blob) // _FLOAT32_BYTES}f", blob))
+
+
 class RedisVectorStore(VectorStore):
-    """VectorStore backed by RediSearch HNSW vector index.
+    """VectorStore backed by a RediSearch vector index.
 
     Uses two vector fields (``embedding_content`` and ``embedding_semantic``) so
     that both lexical similarity and semantic key similarity contribute to search
     results.  ``search()`` fires two parallel KNN queries and merges results by
-    taking the max score per id.
+    taking the max score per id. The fields are indexed HNSW, but every query
+    scores exhaustively (``HYBRID_POLICY ADHOC_BF`` — see ``search()``).
 
     Index creation is deferred to the first operation via ``ensure_index()``.
     If RediSearch is unavailable the store degrades gracefully — ``add`` and
@@ -253,8 +282,15 @@ class RedisVectorStore(VectorStore):
 
         query_bytes = _pack_floats(query_embedding)
 
-        # Build optional pre-filter expression
-        filter_expr = "*"
+        # Build the pre-filter expression. KNN runs as ADHOC_BF — every entry the filter
+        # admits is scored, not just the ones HNSW's greedy walk reaches. Passive
+        # observation writes the same state change, and so the same vector, hundreds of
+        # times, and the walk gets trapped among the copies: on a 60-day store it found 4
+        # of 29 targets an exact search ranks top-10, and 14 even at EF_RUNTIME 1000,
+        # while ADHOC_BF found 28 (EXP-006) at ~7 ms for both fields over 13k entries.
+        # ADHOC_BF needs a filter, so an unfiltered search filters on a field every
+        # entry carries.
+        filter_expr = _EVERY_ENTRY
         if filters:
             parts: list[str] = []
             for field, value in filters.items():
@@ -270,7 +306,9 @@ class RedisVectorStore(VectorStore):
             filter_expr = " ".join(parts)
 
         async def _knn(field: str) -> list[SearchResult]:
-            knn_query = f"({filter_expr})=>[KNN {limit} @{field} $vec AS __score]"
+            knn_query = (
+                f"({filter_expr})=>[KNN {limit} @{field} $vec HYBRID_POLICY ADHOC_BF AS __score]"
+            )
             try:
                 raw = await self._redis.execute_command(  # type: ignore[no-untyped-call]
                     "FT.SEARCH",
@@ -281,20 +319,15 @@ class RedisVectorStore(VectorStore):
                     "vec",
                     query_bytes,
                     "RETURN",
-                    "11",
-                    "content",
-                    "semantic_key",
-                    "type",
-                    "source",
-                    "entities",
-                    "timestamp",
-                    "significance",
-                    "retrieval_count",
-                    "last_retrieved",
-                    "compressed",
+                    str(len(_METADATA_FIELDS) + 1),
+                    *_METADATA_FIELDS,
                     "__score",
                     "SORTBY",
                     "__score",
+                    # Without LIMIT, FT.SEARCH returns 10 documents whatever K is.
+                    "LIMIT",
+                    "0",
+                    str(limit),
                     "DIALECT",
                     "2",
                 )
@@ -318,6 +351,57 @@ class RedisVectorStore(VectorStore):
 
         # Sort descending by score and cap at limit
         return sorted(merged.values(), key=lambda r: r.score, reverse=True)[:limit]
+
+    async def select(
+        self, where: Mapping[str, Range], *, page_size: int = SELECT_PAGE_SIZE
+    ) -> list[SearchResult]:
+        """Every entry inside all of ``where``'s numeric ranges, paged ``page_size`` at a time.
+
+        A metadata-only FT.SEARCH, so no similarity decides what is left out. Collects
+        every page before returning: callers delete what they select (decay), and
+        deleting between pages would shift the offsets.
+        """
+        if not self._index_ready:
+            await self.ensure_index()
+        if not self._index_ready:
+            return []
+        query = " ".join(
+            f"@{field}:[{_open_bound(r.above, '-inf')} {_open_bound(r.below, '+inf')}]"
+            for field, r in where.items()
+        )
+        selected: list[SearchResult] = []
+        offset = 0
+        while True:
+            raw = await self._redis.execute_command(  # type: ignore[no-untyped-call]
+                "FT.SEARCH",
+                CONTEXT_INDEX,
+                query or "*",
+                "RETURN",
+                str(len(_METADATA_FIELDS)),
+                *_METADATA_FIELDS,
+                "LIMIT",
+                str(offset),
+                str(page_size),
+                "DIALECT",
+                "2",
+            )
+            documents = _ft_documents(raw)
+            selected.extend(_search_result(key, fields, score=0.0) for key, fields in documents)
+            if len(documents) < page_size:
+                return selected
+            offset += page_size
+
+    async def embeddings(self, id: str) -> tuple[list[float], list[float]] | None:  # noqa: A002
+        """Both stored vectors, or ``None`` for a missing, partial or other-width entry."""
+        content, semantic = await self._redis.hmget(
+            f"{CONTEXT_PREFIX}{id}", ["embedding_content", "embedding_semantic"]
+        )
+        if not (isinstance(content, bytes) and isinstance(semantic, bytes)):
+            return None
+        width = self._dim * _FLOAT32_BYTES
+        if len(content) != width or len(semantic) != width:
+            return None
+        return _unpack_floats(content), _unpack_floats(semantic)
 
     async def delete(self, id: str) -> None:  # noqa: A002
         key = f"{CONTEXT_PREFIX}{id}"
@@ -435,33 +519,40 @@ def _parse_ft_results(raw: object, min_similarity: float) -> list[SearchResult]:
 
         if score < min_similarity:
             continue
-
-        doc_id = doc_key
-        # Strip the CONTEXT_PREFIX to get the bare id
-        if doc_id.startswith(CONTEXT_PREFIX):
-            doc_id = doc_id[len(CONTEXT_PREFIX) :]
-
-        metadata = ContextMetadata(
-            type=fields.get("type", ""),
-            source=fields.get("source", ""),
-            entities=fields.get("entities", ""),
-            timestamp=float(fields.get("timestamp", 0)),
-            significance=float(fields.get("significance", 0)),
-            retrieval_count=int(fields.get("retrieval_count", 0)),
-            last_retrieved=float(fields.get("last_retrieved", 0)),
-            compressed=fields.get("compressed", ""),
-        )
-        results.append(
-            SearchResult(
-                id=doc_id,
-                score=score,
-                content=fields.get("content", ""),
-                semantic_key=fields.get("semantic_key", ""),
-                metadata=metadata,
-            )
-        )
+        results.append(_search_result(doc_key, fields, score))
 
     return results
+
+
+def _search_result(doc_key: str, fields: dict[str, str], score: float) -> SearchResult:
+    """One document's returned fields as a SearchResult, keyed by its bare id."""
+    doc_id = doc_key
+    # Strip the CONTEXT_PREFIX to get the bare id
+    if doc_id.startswith(CONTEXT_PREFIX):
+        doc_id = doc_id[len(CONTEXT_PREFIX) :]
+
+    metadata = ContextMetadata(
+        type=fields.get("type", ""),
+        source=fields.get("source", ""),
+        entities=fields.get("entities", ""),
+        timestamp=float(fields.get("timestamp", 0)),
+        significance=float(fields.get("significance", 0)),
+        retrieval_count=int(fields.get("retrieval_count", 0)),
+        last_retrieved=float(fields.get("last_retrieved", 0)),
+        compressed=fields.get("compressed", ""),
+    )
+    return SearchResult(
+        id=doc_id,
+        score=score,
+        content=fields.get("content", ""),
+        semantic_key=fields.get("semantic_key", ""),
+        metadata=metadata,
+    )
+
+
+def _open_bound(value: float | None, unbounded: str) -> str:
+    """One side of a RediSearch numeric range: exclusive, or infinite when unset."""
+    return unbounded if value is None else f"({value}"
 
 
 def _parse_ft_info(raw: object) -> dict[str, object]:

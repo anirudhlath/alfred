@@ -464,6 +464,51 @@ async def test_migrate_to_cold_does_not_touch_cold_store(
 
 
 # ---------------------------------------------------------------------------
+# copy_to_cold_and_remove() tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_copy_to_cold_moves_the_vectors_hot_already_holds(
+    episodic_memory: EpisodicMemory,
+    mock_hot_store: AsyncMock,
+    mock_cold_store: AsyncMock,
+    mock_embedder: AsyncMock,
+) -> None:
+    """The same model embedded the same text on the way in — embedding it again buys
+    nothing and costs two model calls per migrated memory."""
+    content, semantic = [1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]
+    mock_hot_store.embeddings = AsyncMock(return_value=(content, semantic))
+    result = _make_search_result(id="m1")
+
+    await episodic_memory.copy_to_cold_and_remove(result)
+
+    mock_hot_store.embeddings.assert_awaited_once_with("m1")
+    mock_embedder.embed.assert_not_awaited()
+    added = mock_cold_store.add.await_args.kwargs
+    assert (added["embedding_content"], added["embedding_semantic"]) == (content, semantic)
+    mock_hot_store.delete.assert_awaited_once_with("m1")
+
+
+@pytest.mark.asyncio
+async def test_copy_to_cold_embeds_when_hot_cannot_hand_its_vectors_back(
+    episodic_memory: EpisodicMemory,
+    mock_hot_store: AsyncMock,
+    mock_cold_store: AsyncMock,
+    mock_embedder: AsyncMock,
+) -> None:
+    mock_hot_store.embeddings = AsyncMock(return_value=None)
+    result = _make_search_result(id="m1", content="the door opened", semantic_key="door")
+
+    await episodic_memory.copy_to_cold_and_remove(result)
+
+    assert [c.args[0] for c in mock_embedder.embed.await_args_list] == ["the door opened", "door"]
+    added = mock_cold_store.add.await_args.kwargs
+    assert added["embedding_content"] == added["embedding_semantic"] == [0.1, 0.2, 0.3, 0.4]
+    mock_hot_store.delete.assert_awaited_once_with("m1")
+
+
+# ---------------------------------------------------------------------------
 # recall() retrieval stats persistence tests
 # ---------------------------------------------------------------------------
 

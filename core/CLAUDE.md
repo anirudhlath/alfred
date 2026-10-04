@@ -20,10 +20,10 @@ Episodic + semantic + procedural, biologically inspired.
 - `openai_embedding_provider.py` — `OpenAICompatEmbeddingProvider`: `/v1/embeddings` over HTTP (vLLM `--runner pooling`), verifies the served width on every response
 - `embedding_backend.py` — `build_embedding_provider(config)`: the `EMBEDDING_BACKEND` seam (registry keyed by backend name); services call this, never a concrete provider
 - `vector_store.py` — VectorStore ABC with dual-embedding search (content + semantic key) + `update_metadata()` for retrieval stats
-- `redis_vector_store.py` — Hot store (RediSearch HNSW), uses CONTEXT_INDEX/CONTEXT_PREFIX; latches a proven dimension mismatch against the existing index and raises from `add`/`search`/`count` — `delete`/`exists`/`update_metadata` skip `ensure_index()` and keep working
-- `sqlite_vec_store.py` — Cold store (sqlite-vec), with v1→v2 migration; the same dimension latch, raised from every operation that opens the file (they all reach `_ensure_schema()` via `_get_db()`). **Cold is the last stop** — `copy_to_cold_and_remove()` deletes the hot copy once it has written here, so deleting this file discards archived memories permanently, with no re-embed path to rebuild them
+- `redis_vector_store.py` — Hot store (RediSearch; exact `ADHOC_BF` KNN, metadata `select()`, stored vectors via `embeddings()`), uses CONTEXT_INDEX/CONTEXT_PREFIX; latches a proven dimension mismatch against the existing index and raises from `add`/`search`/`count` — `delete`/`exists`/`update_metadata` skip `ensure_index()` and keep working
+- `sqlite_vec_store.py` — Cold store (sqlite-vec, cosine `vec0` tables), with v1→v2→v3 migrations (v3 rebuilds pre-v3 L2 tables as cosine, keeping every vector); the same dimension latch, raised from every operation that opens the file (they all reach `_ensure_schema()` via `_get_db()`). **Cold is the last stop** — `copy_to_cold_and_remove()` deletes the hot copy once it has written here, so deleting this file discards archived memories permanently, with no re-embed path to rebuild them
 - `significance.py` — SignificanceScorer: 4 dims (safety/novelty/personal/emotional)
-- `context_index.py` — ContextIndexManager: unified search across all memory types, owns RedisVectorStore
+- `context_index.py` — ContextIndexManager: unified search across all memory types, owns RedisVectorStore; `recall()` (deliberate recall) adds the cold archive, `select()` hands the decay pass its candidates
 - `episodic/memory.py` — EpisodicMemory: hot+cold unified interface; `recall()` gathers hot and cold with `return_exceptions=False` **on purpose** (see Gotchas)
 - `schemas.py` — Memory-specific Pydantic models
 - `routines/patterns.py` — `match_trigger_pattern()`: shared by engine + librarian
@@ -94,7 +94,7 @@ Agentic tool-use loop with parallel execution (`asyncio.gather`).
 - `scheduler.py` — Periodic scheduler wired into conscious process (1hr default, `LIBRARIAN_INTERVAL_SECONDS` env var)
 - Scratchpad drain: atomic RENAME prevents race; processing key survives crashes for recovery
 - Conflict resolution: requires >=5 observations over >=14 days to contradict existing preference
-- Decay formula is subtractive: `age_factor - significance*2 - recency*1.5 - frequency*1.0` — high significance/recency/frequency resists cold migration
+- Decay formula is subtractive: `age_factor - significance*2 - recency*1.5 - frequency*1.0` — high significance/recency/frequency resists cold migration. Candidates come from `select()` by metadata ranges (`decay_candidate_ranges()`), never from a similarity search
 - Compression at cold migration: groups entries by entity+date, LLM summarization, writes summary to cold, marks originals `compressed="yes"`
 - Routine indexing: detected routines indexed into `idx:context` on detection, removed on archive
 

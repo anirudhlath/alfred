@@ -231,6 +231,13 @@ After ~7 days of real data, open the Memory page and judge:
   > storage today. Tracked in
   > [#201](https://github.com/anirudhlath/alfred/issues/201); that ticket must
   > close before this risk can be called mitigated.
+
+  > **As-built note (2026-10-03, #201).** Fixed: `DEFAULT_DECAY_MIGRATION_THRESHOLD`
+  > is `0.2` (`shared/config.py`), wired through at both Librarian call sites, and
+  > decay now runs on cycles where the scratchpad is empty. An unread observation
+  > (significance 0.105–0.355) migrates once its pressure passes 0.2: after roughly
+  > two to five weeks. One limit remains: each pass considers only the 500 hot
+  > entries nearest a fixed query, not the whole store.
 - **Attention set drift.** 87 entities today, seeded lazily from
   `attention_seed.yaml`. It grows on first sight of any entity in a seeded domain,
   so observation volume grows with it. `attention_remove` is sticky and available.

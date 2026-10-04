@@ -217,6 +217,7 @@ graph TB
         EvalsCtx["Context Fixtures"]
         EvalsConscious["System 2 Evals<br/>DeepEval metrics"]
         EvalsRegression["Regression Mode<br/>Mocked Ollama"]
+        EvalsMemory["Memory-Decay Eval<br/>throwaway Redis + simulated clock"]
     end
 
     subgraph "Research Vault"
@@ -323,6 +324,7 @@ graph TB
     EvalsCLI -->|flush CSV| CSV
     EvalsConscious -->|custom metrics| EvalsCLI
     EvalsRegression -->|mocked Ollama| EvalsCLI
+    EvalsMemory -->|real decay + recall, simulated clock| EvalsCLI
 ```
 
 ### 3.1 Event Bus: MQTT Bridge + Redis Streams
@@ -461,7 +463,7 @@ Alfred's memory is biologically-inspired with three layers:
 
 **Episodic Memory** (`core/memory/episodic/`):
 
-Two-tier storage: Redis for hot (recent) entries, SQLite for cold archive. Entries are `EpisodicEntry` models with timestamps, source, content, and importance scores. Embeddings are computed via the configured embedding backend (see [3.7.2](#372-embedding-backends)) for semantic search. A `DecayScheduler` handles time-based importance decay.
+Two-tier storage: Redis for hot (recent) entries, SQLite for cold archive. Entries are `EpisodicEntry` models with timestamps, source, content, and importance scores. Embeddings are computed via the configured embedding backend (see [3.7.2](#372-embedding-backends)) for semantic search; hot KNN is exact (`HYBRID_POLICY ADHOC_BF`), cold tables measure cosine. The Librarian's decay pass (`Librarian._apply_decay`) moves episodic entries from hot to cold by migration pressure (age against significance, recency and retrieval frequency): it selects its candidates by metadata, compresses related entries by entity and day, and copies each with the vectors hot already holds. Deliberate recall (`memory_recall_memories` → `ContextIndexManager.recall()`) searches both tiers; involuntary recall searches hot only. Measured by the memory-decay eval (`docs/evals-memory.md`).
 
 **Semantic Memory** (`core/memory/profile/`, `core/memory/preferences/`):
 
@@ -751,6 +753,10 @@ YAML scenarios in `evals/conscious/scenarios/` define user requests + expected b
 **Good Morning Demo** (`evals/e2e/demo_good_morning.py`):
 
 End-to-end script that publishes a `UserRequest` to Redis, waits for an `AlfredResponse`, and scores it with all custom metrics. Exercises every Phase 3 component. Run via `python -m evals demo`.
+
+**Memory-Decay Eval** (`evals/memory/`):
+
+Replays weeks of a simulated house against the real memory stack (RediSearch in a throwaway container, sqlite-vec, the configured embedding model, the real write path and `Librarian._apply_decay` on a simulated clock) and compares decay policies by what recall returns. No LLM. Run via `python -m evals memory run`; see `docs/evals-memory.md`.
 
 **Other capabilities:**
 

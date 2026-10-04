@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
 
 
 class ContextMetadata(BaseModel):
@@ -36,6 +36,13 @@ class SearchResult(BaseModel):
     metadata: ContextMetadata
 
 
+class Range(BaseModel):
+    """An open interval on a numeric metadata field; ``None`` leaves that side unbounded."""
+
+    above: float | None = None
+    below: float | None = None
+
+
 class VectorStore(ABC):
     """Abstract vector storage with similarity search."""
 
@@ -58,6 +65,22 @@ class VectorStore(ABC):
         filters: dict[str, str | float | int] | None = None,
         min_similarity: float = 0.0,
     ) -> list[SearchResult]: ...
+
+    async def select(self, where: Mapping[str, Range]) -> list[SearchResult]:
+        """Every entry whose numeric metadata lies inside all of ``where``'s ranges.
+
+        Chosen by metadata rather than similarity, so nothing that matches is left out;
+        scores are 0. Only stores something scans by metadata implement it.
+        """
+        raise NotImplementedError(f"{type(self).__name__} cannot select by metadata")
+
+    async def embeddings(self, id: str) -> tuple[list[float], list[float]] | None:  # noqa: A002
+        """The (content, semantic key) vectors stored for ``id``, as ``add`` received them.
+
+        ``None`` when the entry is absent or the store cannot hand its vectors back —
+        callers then embed the text themselves.
+        """
+        return None
 
     @abstractmethod
     async def delete(self, id: str) -> None: ...  # noqa: A002

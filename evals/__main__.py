@@ -14,6 +14,7 @@ from evals.compare import compare_runs
 from evals.conscious.runner import run_conscious_evals
 from evals.inference import BACKENDS
 from evals.loader import load_scenario, load_scenarios
+from evals.memory.cli import add_memory_parser, run_memory_command
 from evals.models import EvalRun, Scenario, Verdict
 from evals.pipeline import EvalContext, run_scenario
 from evals.report import format_aggregate, format_comparison, format_run, latency_stats
@@ -80,6 +81,9 @@ def _parse_args() -> argparse.Namespace:
     cap_parser.add_argument(
         "--output", default="default.json", help="Output fixture filename in evals/contexts/"
     )
+
+    # memory
+    add_memory_parser(sub)
 
     return parser.parse_args()
 
@@ -330,6 +334,8 @@ def main() -> None:
             _cmd_compare(args)
         case "capture-context":
             asyncio.run(_cmd_capture_context(args))
+        case "memory":
+            run_memory_command(args)
 
 
 if __name__ == "__main__":

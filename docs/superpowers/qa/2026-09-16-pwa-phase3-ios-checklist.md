@@ -82,10 +82,9 @@ top of it:
 - [ ] **`decaying` appears only on `hot` rows**, drawn after the store and *after* the
       recall count, not instead of it:
       `HH:MM <day> · significance 0.34 · never recalled · hot · decaying`. A cold row never
-      carries it, however lightly it is weighed. Worth knowing while you look: nothing is
-      actually being swept today, because the Librarian's threshold is unreachable
-      ([#201](https://github.com/anirudhlath/alfred/issues/201)), so a marked row will
-      still be there tomorrow. That is the server's, not the bench's
+      carries it, however lightly it is weighed. Worth knowing while you look: the
+      Librarian's threshold was unreachable until [#201](https://github.com/anirudhlath/alfred/issues/201), so on a server older than
+      that a marked row will still be there tomorrow. That is the server's, not the bench's
 - [ ] Tap the search field. **The layer must not zoom.** The page does not scale, the
       header stays put, and nothing is clipped off the top of the screen
 - [ ] With the keyboard up at 360 px: the field and the `model:` pill are both fully on

@@ -142,15 +142,20 @@ class EpisodicMemory:
         return episodic_results
 
     async def copy_to_cold_and_remove(self, search_result: SearchResult) -> None:
-        """Re-embed, write to cold, then delete from hot.
+        """Write to cold with the vectors hot holds, then delete from hot.
 
         Accepts a ``SearchResult`` (from a context index search) that contains
         the content and metadata needed to reconstruct the entry in cold storage.
+        The hot store's own vectors are reused — the same text was embedded on the way
+        in — and the text is embedded again only when hot cannot hand them back.
         """
-        content_emb, key_emb = await asyncio.gather(
-            self._embedder.embed(search_result.content),
-            self._embedder.embed(search_result.semantic_key or search_result.content),
-        )
+        stored = await self._hot.embeddings(search_result.id)
+        if stored is None:
+            stored = await asyncio.gather(
+                self._embedder.embed(search_result.content),
+                self._embedder.embed(search_result.semantic_key or search_result.content),
+            )
+        content_emb, key_emb = stored
         await self._cold.add(
             id=search_result.id,
             content=search_result.content,

@@ -30,6 +30,8 @@ from core.memory.schemas import (
     RoutineStep,
     SignificanceScore,
 )
+from core.memory.vector_store import Range
+from shared.config import DEFAULT_DECAY_MIGRATION_THRESHOLD
 from shared.streams import LIBRARIAN_QUEUE, LIBRARIAN_STATUS_KEY
 
 if TYPE_CHECKING:
@@ -64,17 +66,83 @@ class ConflictItem(BaseModel):
 _DEFAULT_PREFERENCES_DIR = str(_preferences_dir())
 _DEFAULT_PROFILE_DIR = str(_profile_dir())
 
+# migration_pressure()'s ceiling: its age factor caps here and every other term subtracts.
+MAX_MIGRATION_PRESSURE = 1.0
+# How strongly significance resists migration in migration_pressure().
+SIGNIFICANCE_WEIGHT = 2.0
+# Migrations (single entries or compressed groups) one decay pass runs at once. Each
+# holds a hot-store Redis connection while it moves, and that pool is the service's
+# own: redis-py caps it at 100 and raises "Too many connections" past that rather than
+# waiting. The first pass after deploy moves the whole backlog — thousands at once
+# without this cap, which failed most of them (EXP-008).
+DECAY_MIGRATION_CONCURRENCY = 8
+
+
+def migration_pressure(
+    age_days: float,
+    significance: float,
+    retrieval_count: int,
+    days_since_last_retrieved: float,
+) -> float:
+    """How strongly an episodic entry is pushed from hot to cold storage.
+
+    Age pushes; significance, recent retrieval and frequent retrieval resist::
+
+        age_factor          = min(age_days / 30, 1)
+        retrieval_recency   = exp(-days_since_last_retrieved / 7)
+        retrieval_frequency = min(log2(retrieval_count + 1) / 5, 1)
+        pressure = age_factor - 2*significance - 1.5*recency - frequency
+
+    Never above 1.0: ``age_factor`` caps at 1.0 and every other term only subtracts (in
+    floating point a very old, never-retrieved entry reaches exactly 1.0), so a
+    migration threshold must sit below 1.0 to ever fire
+    (``DEFAULT_DECAY_MIGRATION_THRESHOLD``).
+    """
+    from math import exp, log2
+
+    age_factor = min(age_days / 30.0, MAX_MIGRATION_PRESSURE)
+    retrieval_recency = exp(-days_since_last_retrieved / 7.0)
+    retrieval_frequency = min(log2(retrieval_count + 1) / 5.0, 1.0)
+    return (
+        age_factor
+        - significance * SIGNIFICANCE_WEIGHT
+        - retrieval_recency * 1.5
+        - retrieval_frequency * 1.0
+    )
+
+
+def decay_candidate_ranges(threshold: float) -> dict[str, Range] | None:
+    """Metadata ranges that hold every entry whose pressure can exceed ``threshold``.
+
+    ``age_factor`` is at most 1 and the recency and frequency terms only subtract, so
+    ``pressure > threshold`` needs ``significance < (1 - threshold) / 2`` — whatever the
+    entry's age or retrievals, and whatever its significance's sign. Entries without a
+    timestamp (semantic sections, routines) are never decayed. ``None`` when no entry can
+    exceed the threshold at all.
+    """
+    if threshold >= MAX_MIGRATION_PRESSURE:
+        return None
+    return {
+        "timestamp": Range(above=0.0),
+        "significance": Range(below=(MAX_MIGRATION_PRESSURE - threshold) / SIGNIFICANCE_WEIGHT),
+    }
+
 
 def _group_by_entity_date(
     results: list[SearchResult],
 ) -> tuple[list[list[SearchResult]], list[SearchResult]]:
-    """Group decayed entries by (shared_entity, date) for compression."""
+    """Group decayed entries by (shared_entity, date) for compression.
+
+    An entry naming several entities joins the first of their buckets that already
+    exists, so entries are taken oldest first (then by id): the grouping is a function
+    of the entries, not of the order the decay pass happened to find them in.
+    """
     from collections import defaultdict
 
     buckets: dict[tuple[str, str], list[SearchResult]] = defaultdict(list)
     ungrouped: list[SearchResult] = []
 
-    for result in results:
+    for result in sorted(results, key=lambda r: (r.metadata.timestamp, r.id)):
         entities_str = result.metadata.entities
         if not entities_str:
             ungrouped.append(result)
@@ -149,7 +217,7 @@ class Librarian:
         claude_model: str = "openrouter/anthropic/claude-sonnet-4",
         conflict_min_observations: int = 5,
         conflict_min_days: int = 14,
-        decay_migration_threshold: float = 1.0,
+        decay_migration_threshold: float = DEFAULT_DECAY_MIGRATION_THRESHOLD,
         pattern_min_occurrences: int = 3,
         pattern_min_days: int = 7,
         pattern_confidence_threshold: float = 0.6,
@@ -514,16 +582,35 @@ class Librarian:
         return 0
 
     async def _compress_and_migrate(self, group: list[SearchResult]) -> int:
-        """Compress a group of related entries into a summary, then migrate originals.
+        """Migrate a group of related entries, then write one summary of those that moved.
 
-        Calls LLM to generate a summary + semantic_key for the group. Falls back
-        to concatenation if LLM fails or no API key. Writes summary to cold store
-        directly (not via EpisodicMemory to avoid re-embedding), then migrates
-        originals with compressed="yes" marker.
+        Originals move first, with a compressed="yes" marker. One that fails stays hot
+        and is grouped again on the next pass, so the summary covers only the ones that
+        moved — summarising it now would summarise it twice. Calls LLM to generate a
+        summary + semantic_key; falls back to concatenation if LLM fails or no API key.
+        Writes the summary to cold store directly (not via EpisodicMemory). A summary
+        that fails to write loses nothing: the originals are in cold with their own
+        vectors.
 
         Returns the number of original entries migrated.
         """
         from core.memory.vector_store import ContextMetadata
+
+        moved: list[SearchResult] = []
+        for result in group:
+            try:
+                marked = result.model_copy(
+                    update={"metadata": result.metadata.model_copy(update={"compressed": "yes"})}
+                )
+                await self._episodic_memory.copy_to_cold_and_remove(marked)
+                moved.append(result)
+            except Exception as exc:
+                logger.warning(
+                    "Compression: failed to migrate original entry %s: %s", result.id, exc
+                )
+        if not moved:
+            return 0
+        group = moved
 
         lines = [f"- [{r.id}] {r.content}" for r in group]
         group_text = "\n".join(lines)
@@ -606,64 +693,37 @@ class Librarian:
             )
         except Exception as exc:
             logger.warning("Compression: failed to write summary entry: %s", exc)
-            # Still migrate originals even if summary write fails
 
-        # Migrate all originals with compressed marker
-        migrated = 0
-        for result in group:
-            try:
-                marked = result.model_copy(
-                    update={"metadata": result.metadata.model_copy(update={"compressed": "yes"})}
-                )
-                await self._episodic_memory.copy_to_cold_and_remove(marked)
-                migrated += 1
-            except Exception as exc:
-                logger.warning(
-                    "Compression: failed to migrate original entry %s: %s", result.id, exc
-                )
-
-        return migrated
+        return len(moved)
 
     async def _apply_decay(
         self,
-        decay_migration_threshold: float = 1.0,
-        search_query: str = "general context memory event",
-        search_limit: int = 500,
+        decay_migration_threshold: float = DEFAULT_DECAY_MIGRATION_THRESHOLD,
+        now: datetime | None = None,
     ) -> int:
         """Migrate old low-significance hot entries to cold storage.
 
-        Uses a subtractive formula where significance and retrieval
-        activity resist the migration pressure from age:
-
-            age_factor = min(days_old / 30.0, 1.0)
-            retrieval_recency = exp(-days_since_last_retrieved / 7.0)
-            retrieval_frequency = min(log2(count + 1) / 5.0, 1.0)
-
-            pressure = (
-                age_factor
-                - significance * 2.0
-                - retrieval_recency * 1.5
-                - retrieval_frequency * 1.0
-            )
-
-        Entries with pressure > decay_migration_threshold are migrated to cold.
+        Entries whose ``migration_pressure()`` exceeds ``decay_migration_threshold``
+        are migrated to cold. The pressure never exceeds 1.0, so the threshold must sit
+        below it.
+        Candidates are every hot entry ``decay_candidate_ranges()`` admits, selected by
+        metadata — not the nearest hits to a query, which once saw ~19 of thousands.
         Related entries (same entity + same day) are compressed into a single
         summary before migration.
+        ``now`` defaults to the wall clock; the memory eval (``evals/memory``) passes a
+        simulated one so it can replay weeks of decay in minutes.
         Returns the number of entries migrated.
         """
-        from math import exp, log2
-
+        ranges = decay_candidate_ranges(decay_migration_threshold)
+        if ranges is None:
+            return 0
         try:
-            results = await self._context_index.search_text(
-                query=search_query,
-                limit=search_limit,
-                min_similarity=0.0,
-            )
+            results = await self._context_index.select(ranges)
         except Exception as exc:
             logger.warning("Decay: failed to retrieve hot entries: %s", exc)
             return 0
 
-        now = datetime.now(UTC).timestamp()
+        now_ts = (now or datetime.now(UTC)).timestamp()
         to_migrate: list[SearchResult] = []
 
         for result in results:
@@ -674,26 +734,19 @@ class Librarian:
             if timestamp <= 0:
                 continue
 
-            age_days = (now - timestamp) / 86400.0
+            age_days = (now_ts - timestamp) / 86400.0
             significance = result.metadata.significance
             retrieval_count = result.metadata.retrieval_count
             last_retrieved = result.metadata.last_retrieved
 
             # Fallback: if last_retrieved was never set, assume never retrieved
             if last_retrieved > 0:
-                days_since_last_retrieved = (now - last_retrieved) / 86400.0
+                days_since_last_retrieved = (now_ts - last_retrieved) / 86400.0
             else:
                 days_since_last_retrieved = age_days
 
-            age_factor = min(age_days / 30.0, 1.0)
-            retrieval_recency = exp(-days_since_last_retrieved / 7.0)
-            retrieval_frequency = min(log2(retrieval_count + 1) / 5.0, 1.0)
-
-            pressure = (
-                age_factor
-                - significance * 2.0
-                - retrieval_recency * 1.5
-                - retrieval_frequency * 1.0
+            pressure = migration_pressure(
+                age_days, significance, retrieval_count, days_since_last_retrieved
             )
 
             if pressure > decay_migration_threshold:
@@ -712,21 +765,25 @@ class Librarian:
         # Group related entries for compression
         groups, ungrouped = _group_by_entity_date(to_migrate)
 
-        # Compress groups and migrate ungrouped in parallel
+        # Compress groups and migrate ungrouped in parallel, a bounded number at a time
+        slots = asyncio.Semaphore(DECAY_MIGRATION_CONCURRENCY)
+
         async def _migrate_single(result: SearchResult) -> int:
-            try:
-                await self._episodic_memory.copy_to_cold_and_remove(result)
-                return 1
-            except Exception as exc:
-                logger.warning("Decay: failed to migrate entry %s: %s", result.id, exc)
-                return 0
+            async with slots:
+                try:
+                    await self._episodic_memory.copy_to_cold_and_remove(result)
+                    return 1
+                except Exception as exc:
+                    logger.warning("Decay: failed to migrate entry %s: %s", result.id, exc)
+                    return 0
 
         async def _compress_group(group: list[SearchResult]) -> int:
-            try:
-                return await self._compress_and_migrate(group)
-            except Exception as exc:
-                logger.warning("Decay: compression failed for group: %s", exc)
-                return 0
+            async with slots:
+                try:
+                    return await self._compress_and_migrate(group)
+                except Exception as exc:
+                    logger.warning("Decay: compression failed for group: %s", exc)
+                    return 0
 
         migration_counts = await asyncio.gather(
             *(_compress_group(g) for g in groups),
@@ -1053,9 +1110,19 @@ class Librarian:
         # 1. Drain scratchpad
         lines = await self._drain_scratchpad()
         if not lines:
-            logger.info("Scratchpad empty — nothing to consolidate")
+            # Decay reads the hot store, not the scratchpad: passive observations reach
+            # episodic memory without ever passing through the queue, so a house nobody
+            # has spoken to still fills hot storage and still needs it emptied.
+            archived = await self._apply_decay(
+                decay_migration_threshold=self._decay_migration_threshold,
+            )
+            logger.info("Scratchpad empty — decay only; archived %d", archived)
             await self._record_run(0)
-            return {"entries_processed": 0, "routines_reindexed": routines_reindexed}
+            return {
+                "entries_processed": 0,
+                "routines_reindexed": routines_reindexed,
+                "archived": archived,
+            }
 
         logger.info("Draining %d scratchpad entries", len(lines))
 

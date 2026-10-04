@@ -2,6 +2,8 @@
 
 Scenario-based evaluation framework for the Reflex Engine — tests SLM output against predefined YAML scenarios, captures full inference traces, and supports run-over-run comparison.
 
+The memory-decay eval (`python -m evals memory`) shares this CLI but not the scenario machinery — see `docs/evals-memory.md`.
+
 ## Overview
 
 The Evals Runner measures how reliably the Reflex Engine's SLM produces correct actions for known events. Each scenario defines an event, the expected action (or no action), and optionally a captured context fixture from live Home Assistant state. The runner scores each response as pass/partial/fail, saves full traces, and supports aggregate reporting across multiple runs to measure consistency.

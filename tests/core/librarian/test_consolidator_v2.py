@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime
+import itertools
 import json
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -12,9 +14,16 @@ if TYPE_CHECKING:
 
 import pytest
 
-from core.librarian.consolidator import ConflictItem, Librarian, _group_by_entity_date
+from core.librarian.consolidator import (
+    ConflictItem,
+    Librarian,
+    _group_by_entity_date,
+    decay_candidate_ranges,
+    migration_pressure,
+)
 from core.memory.schemas import EpisodicEntry, SignificanceScore
-from core.memory.vector_store import ContextMetadata, SearchResult
+from core.memory.vector_store import ContextMetadata, Range, SearchResult
+from shared.config import DEFAULT_DECAY_MIGRATION_THRESHOLD, AlfredConfig
 
 _UTC = datetime.UTC
 _TS = datetime.datetime(2026, 3, 19, tzinfo=_UTC)
@@ -608,7 +617,7 @@ async def test_apply_decay_migrates_old_low_significance_entries() -> None:
     old_ts = datetime.datetime.now(datetime.UTC).timestamp() - (30 * 86400)
     old_entry = _make_search_result("old-entry-1", old_ts, significance=0.1, retrieval_count=0)
 
-    context_index.search_text = AsyncMock(return_value=[old_entry])
+    context_index.select = AsyncMock(return_value=[old_entry])
 
     migrated = await librarian._apply_decay(decay_migration_threshold=0.5)
 
@@ -626,15 +635,15 @@ async def test_apply_decay_spares_high_significance_entries() -> None:
     librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
 
     # Entry: 30 days old, high significance=0.95, retrieval_count=0
-    # pressure = 30 * (1-0.95) * 1.0 = 30 * 0.05 = 1.5 but threshold=5.0 → spared
+    # pressure ≈ 1.0 - 1.9 - 0.02 ≈ -0.92, far under the production default → spared
     old_ts = datetime.datetime.now(datetime.UTC).timestamp() - (30 * 86400)
     important_entry = _make_search_result(
         "important-1", old_ts, significance=0.95, retrieval_count=0
     )
 
-    context_index.search_text = AsyncMock(return_value=[important_entry])
+    context_index.select = AsyncMock(return_value=[important_entry])
 
-    migrated = await librarian._apply_decay(decay_migration_threshold=5.0)
+    migrated = await librarian._apply_decay()
 
     assert migrated == 0
     episodic_memory.copy_to_cold_and_remove.assert_not_awaited()
@@ -650,13 +659,13 @@ async def test_apply_decay_spares_frequently_retrieved_entries() -> None:
     librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
 
     # Entry: 30 days old, low sig=0.1, but retrieval_count=100
-    # pressure = 30 * 0.9 * (1/101) ≈ 0.267 < threshold=1.0 → spared
+    # pressure = 1.0 - 0.2 - 0.02 - 1.0 ≈ -0.22, under the production default → spared
     old_ts = datetime.datetime.now(datetime.UTC).timestamp() - (30 * 86400)
     popular_entry = _make_search_result("popular-1", old_ts, significance=0.1, retrieval_count=100)
 
-    context_index.search_text = AsyncMock(return_value=[popular_entry])
+    context_index.select = AsyncMock(return_value=[popular_entry])
 
-    migrated = await librarian._apply_decay(decay_migration_threshold=1.0)
+    migrated = await librarian._apply_decay()
 
     assert migrated == 0
     episodic_memory.copy_to_cold_and_remove.assert_not_awaited()
@@ -679,9 +688,11 @@ async def test_apply_decay_skips_non_episodic_entries() -> None:
         "rout-1", old_ts, significance=0.1, retrieval_count=0, entry_type="routine"
     )
 
-    context_index.search_text = AsyncMock(return_value=[semantic_entry, routine_entry])
+    context_index.select = AsyncMock(return_value=[semantic_entry, routine_entry])
 
-    migrated = await librarian._apply_decay(decay_migration_threshold=1.0)
+    # At the production default these would migrate (pressure ≈ 0.78) if they were
+    # episodic, so only the type filter keeps them.
+    migrated = await librarian._apply_decay()
 
     assert migrated == 0
     episodic_memory.copy_to_cold_and_remove.assert_not_awaited()
@@ -696,7 +707,7 @@ async def test_apply_decay_handles_search_failure_gracefully() -> None:
 
     librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
 
-    context_index.search_text = AsyncMock(side_effect=Exception("search failed"))
+    context_index.select = AsyncMock(side_effect=Exception("search failed"))
 
     migrated = await librarian._apply_decay()
 
@@ -717,7 +728,7 @@ async def test_apply_decay_migration_error_continues_for_other_entries() -> None
     entry1 = _make_search_result("entry-1", old_ts, significance=0.1, retrieval_count=0)
     entry2 = _make_search_result("entry-2", old_ts, significance=0.1, retrieval_count=0)
 
-    context_index.search_text = AsyncMock(return_value=[entry1, entry2])
+    context_index.select = AsyncMock(return_value=[entry1, entry2])
 
     # First migration fails, second succeeds
     episodic_memory.copy_to_cold_and_remove.side_effect = [Exception("migrate failed"), None]
@@ -739,12 +750,228 @@ async def test_apply_decay_skips_zero_timestamp_entries() -> None:
 
     zero_ts_entry = _make_search_result("zero-ts", 0.0, significance=0.0, retrieval_count=0)
 
-    context_index.search_text = AsyncMock(return_value=[zero_ts_entry])
+    context_index.select = AsyncMock(return_value=[zero_ts_entry])
 
-    migrated = await librarian._apply_decay(decay_migration_threshold=1.0)
+    # Read as an epoch timestamp it would be ~56 years old and migrate at the default,
+    # so only the zero-timestamp guard keeps it.
+    migrated = await librarian._apply_decay()
 
     assert migrated == 0
     episodic_memory.copy_to_cold_and_remove.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apply_decay_reads_pressure_at_the_injected_now() -> None:
+    """``now`` is the clock seam the memory eval simulates time through.
+
+    The entry is written "today" by the wall clock, so at the real now it is far below
+    the threshold; at an injected now 30 days later it is the design table's ~0.78 row.
+    """
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+
+    written = datetime.datetime.now(datetime.UTC)
+    entry = _make_search_result("fresh", written.timestamp(), significance=0.1, retrieval_count=0)
+    context_index.select = AsyncMock(return_value=[entry])
+
+    assert await librarian._apply_decay() == 0
+    episodic_memory.copy_to_cold_and_remove.assert_not_awaited()
+
+    later = written + datetime.timedelta(days=30)
+    assert await librarian._apply_decay(now=later) == 1
+    episodic_memory.copy_to_cold_and_remove.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_apply_decay_measures_retrieval_recency_from_the_injected_now() -> None:
+    """A retrieval stamped at the simulated time resists migration at that time."""
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+
+    now = datetime.datetime(2026, 3, 1, tzinfo=datetime.UTC)
+    old = _make_search_result(
+        "recalled",
+        (now - datetime.timedelta(days=30)).timestamp(),
+        significance=0.1,
+        retrieval_count=0,
+    )
+    recalled = old.model_copy(
+        update={
+            "metadata": old.metadata.model_copy(
+                update={
+                    "retrieval_count": 3,
+                    "last_retrieved": (now - datetime.timedelta(hours=2)).timestamp(),
+                }
+            )
+        }
+    )
+    context_index.select = AsyncMock(return_value=[recalled])
+
+    assert await librarian._apply_decay(now=now) == 0
+    episodic_memory.copy_to_cold_and_remove.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Decay candidates: selected by metadata, so none is missed (EXP-006)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("threshold", "max_significance"), [(0.2, 0.4), (0.5, 0.25), (-10.0, 5.5)])
+async def test_apply_decay_selects_candidates_by_metadata(
+    threshold: float, max_significance: float
+) -> None:
+    """Every timestamped entry below the one significance that can still reach the threshold.
+
+    The pass used to take the nearest hits to a placeholder query, which saw ~19 entries of
+    thousands, most of them sections, routines and young memories.
+    """
+    context_index = AsyncMock()
+    context_index.select = AsyncMock(return_value=[])
+    librarian = _make_librarian(episodic_memory=AsyncMock(), context_index=context_index)
+
+    await librarian._apply_decay(decay_migration_threshold=threshold)
+
+    context_index.select.assert_awaited_once_with(
+        {"timestamp": Range(above=0.0), "significance": Range(below=max_significance)}
+    )
+    context_index.search_text.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apply_decay_never_queries_when_nothing_can_reach_the_threshold() -> None:
+    """Pressure never exceeds 1.0, so master's threshold of 1.0 has nothing to look for."""
+    context_index = AsyncMock()
+    librarian = _make_librarian(episodic_memory=AsyncMock(), context_index=context_index)
+
+    assert await librarian._apply_decay(decay_migration_threshold=1.0) == 0
+    context_index.select.assert_not_awaited()
+
+
+@pytest.mark.parametrize("threshold", [-1.0, 0.0, 0.2, 0.5, 0.99])
+@pytest.mark.parametrize("significance", [-0.5, 0.0, 0.105, 0.355, 0.39, 0.4, 0.6, 1.0])
+@pytest.mark.parametrize("age_days", [0.5, 6.0, 17.0, 30.0, 400.0])
+@pytest.mark.parametrize(("retrieval_count", "days_since"), [(0, None), (2, 1.0), (40, 20.0)])
+def test_selection_never_excludes_an_entry_decay_would_move(
+    threshold: float,
+    significance: float,
+    age_days: float,
+    retrieval_count: int,
+    days_since: float | None,
+) -> None:
+    pressure = migration_pressure(
+        age_days, significance, retrieval_count, age_days if days_since is None else days_since
+    )
+    ranges = decay_candidate_ranges(threshold)
+    if pressure <= threshold:
+        return
+    assert ranges is not None
+    below = ranges["significance"].below
+    assert below is not None
+    assert significance < below
+
+
+# ---------------------------------------------------------------------------
+# Decay threshold: reachable by construction (#201)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("age_days", [0.0, 1.0, 30.0, 365.0, 36_500.0])
+@pytest.mark.parametrize("significance", [0.0, 0.1, 0.5, 1.0])
+@pytest.mark.parametrize("retrieval_count", [0, 1, 10, 10_000])
+@pytest.mark.parametrize("days_since_last_retrieved", [0.0, 7.0, 365.0, 36_500.0])
+def test_migration_pressure_never_exceeds_one(
+    age_days: float, significance: float, retrieval_count: int, days_since_last_retrieved: float
+) -> None:
+    """Age caps at 1.0 and every other term only subtracts, so `> 1.0` can never fire.
+
+    Exactly 1.0 is reachable in floating point: a year-old, never-retrieved entry's
+    recency term is ~1e-23 and rounds away.
+    """
+    pressure = migration_pressure(
+        age_days, significance, retrieval_count, days_since_last_retrieved
+    )
+    assert pressure <= 1.0
+
+
+def test_default_threshold_is_reachable_and_shared() -> None:
+    assert DEFAULT_DECAY_MIGRATION_THRESHOLD < 1.0
+    assert AlfredConfig().decay_migration_threshold == DEFAULT_DECAY_MIGRATION_THRESHOLD
+
+
+@pytest.mark.parametrize(
+    ("age_days", "significance", "retrieval_count", "days_since", "migrates"),
+    [
+        # The D4 design's behaviour table (2026-04-16-d3-d4-pattern-detection-decay-design.md)
+        (30.0, 0.1, 0, 30.0, True),  # low significance, never retrieved: ~0.78
+        (30.0, 0.8, 0, 30.0, False),  # high significance: ~-0.6
+        (7.0, 0.1, 3, 1.0, False),  # retrieved yesterday: deeply negative
+        (60.0, 0.3, 1, 30.0, False),  # the borderline row: ~0.18, just under
+    ],
+)
+def test_default_threshold_matches_the_design_table(
+    age_days: float, significance: float, retrieval_count: int, days_since: float, migrates: bool
+) -> None:
+    pressure = migration_pressure(age_days, significance, retrieval_count, days_since)
+    assert (pressure > DEFAULT_DECAY_MIGRATION_THRESHOLD) is migrates
+
+
+@pytest.mark.asyncio
+async def test_apply_decay_default_migrates_old_unimportant_entry() -> None:
+    """With no threshold passed, an old, zero-significance, never-read entry leaves hot storage."""
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+
+    old_ts = datetime.datetime.now(datetime.UTC).timestamp() - (45 * 86400)
+    entry = _make_search_result("stale-1", old_ts, significance=0.0, retrieval_count=0)
+    context_index.select = AsyncMock(return_value=[entry])
+
+    assert await librarian._apply_decay() == 1
+    episodic_memory.copy_to_cold_and_remove.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("significance", [0.355, 0.105])
+async def test_apply_decay_default_sweeps_passive_observations(significance: float) -> None:
+    """Passive observations score 0.355 on a first sighting and ~0.105 once novelty is spent.
+
+    Both must leave hot storage once old and unread: they are the volume decay exists for.
+    """
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+
+    old_ts = datetime.datetime.now(datetime.UTC).timestamp() - (45 * 86400)
+    entry = _make_search_result("obs-1", old_ts, significance=significance, retrieval_count=0)
+    entry.metadata.source = "observation"
+    context_index.select = AsyncMock(return_value=[entry])
+
+    assert await librarian._apply_decay() == 1
+
+
+@pytest.mark.asyncio
+async def test_consolidate_runs_decay_on_empty_scratchpad() -> None:
+    """Decay reads the hot store, so an empty scratchpad must not skip it (#202)."""
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    librarian = _make_librarian(
+        api_key="", episodic_memory=episodic_memory, context_index=context_index
+    )
+    librarian._redis.lrange.return_value = []
+    librarian._redis.rename.side_effect = Exception("no such key")
+
+    old_ts = datetime.datetime.now(datetime.UTC).timestamp() - (45 * 86400)
+    entry = _make_search_result("stale-1", old_ts, significance=0.0, retrieval_count=0)
+    context_index.select = AsyncMock(return_value=[entry])
+
+    result = await librarian.consolidate()
+
+    assert result["entries_processed"] == 0
+    assert result["archived"] == 1
+    episodic_memory.copy_to_cold_and_remove.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -1102,7 +1329,7 @@ async def test_consolidate_includes_pattern_detection_in_result() -> None:
     """consolidate() result should include patterns_detected and lifecycle_updates keys."""
     context_index = AsyncMock()
     context_index.reindex_semantic_files = AsyncMock()
-    context_index.search_text = AsyncMock(return_value=[])
+    context_index.select = AsyncMock(return_value=[])
 
     from unittest.mock import MagicMock
 
@@ -1394,7 +1621,7 @@ async def test_decay_high_significance_resists_migration() -> None:
     """Entry with high significance should NOT be migrated even if old."""
     episodic_memory = AsyncMock()
     context_index = AsyncMock()
-    context_index.search_text = AsyncMock(
+    context_index.select = AsyncMock(
         return_value=[_make_decay_search_result(significance=0.8, age_days=30)]
     )
 
@@ -1409,7 +1636,7 @@ async def test_decay_old_low_significance_migrates() -> None:
     """Old entry with low significance and no retrievals should be migrated."""
     episodic_memory = AsyncMock()
     context_index = AsyncMock()
-    context_index.search_text = AsyncMock(
+    context_index.select = AsyncMock(
         return_value=[_make_decay_search_result(significance=0.1, age_days=30)]
     )
 
@@ -1424,7 +1651,7 @@ async def test_decay_recently_retrieved_resists_migration() -> None:
     """Entry retrieved yesterday should resist migration due to recency."""
     episodic_memory = AsyncMock()
     context_index = AsyncMock()
-    context_index.search_text = AsyncMock(
+    context_index.select = AsyncMock(
         return_value=[
             _make_decay_search_result(
                 significance=0.1,
@@ -1445,7 +1672,7 @@ async def test_decay_frequently_retrieved_resists_migration() -> None:
     """Entry with high retrieval count should resist migration."""
     episodic_memory = AsyncMock()
     context_index = AsyncMock()
-    context_index.search_text = AsyncMock(
+    context_index.select = AsyncMock(
         return_value=[
             _make_decay_search_result(
                 significance=0.1,
@@ -1467,7 +1694,7 @@ async def test_decay_last_retrieved_zero_fallback_to_age() -> None:
     episodic_memory = AsyncMock()
     context_index = AsyncMock()
     # Old entry, low significance, last_retrieved=0.0 (default/never)
-    context_index.search_text = AsyncMock(
+    context_index.select = AsyncMock(
         return_value=[_make_decay_search_result(significance=0.1, age_days=60)]
     )
 
@@ -1501,6 +1728,24 @@ def test_group_by_entity_date_no_entities_ungrouped() -> None:
     groups, ungrouped = _group_by_entity_date([result])
     assert len(groups) == 0
     assert len(ungrouped) == 1
+
+
+@pytest.mark.parametrize("order", list(itertools.permutations(range(3))))
+def test_group_by_entity_date_does_not_depend_on_candidate_order(
+    order: tuple[int, ...],
+) -> None:
+    """A memory naming two entities joins whichever of their buckets exists first, so the
+    grouping must not depend on how the pass happened to find its candidates."""
+    entries = []
+    for entry_id, entities in (("both", "light.a,light.b"), ("b", "light.b"), ("a", "light.a")):
+        entry = _make_decay_search_result(entry_id=entry_id, age_days=31, significance=0.05)
+        entry.metadata.entities = entities
+        entries.append(entry)
+
+    groups, ungrouped = _group_by_entity_date([entries[i] for i in order])
+
+    assert sorted(sorted(r.id for r in group) for group in groups) == [["a", "both"]]
+    assert [r.id for r in ungrouped] == ["b"]
 
 
 def test_group_by_entity_date_different_days_separate() -> None:
@@ -1556,7 +1801,7 @@ async def test_compression_creates_summary_and_marks_originals() -> None:
 
     episodic_memory = AsyncMock()
     context_index = AsyncMock()
-    context_index.search_text = AsyncMock(return_value=results)
+    context_index.select = AsyncMock(return_value=results)
 
     librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
 
@@ -1588,7 +1833,7 @@ async def test_compression_single_entry_no_llm_call() -> None:
 
     episodic_memory = AsyncMock()
     context_index = AsyncMock()
-    context_index.search_text = AsyncMock(return_value=[result])
+    context_index.select = AsyncMock(return_value=[result])
 
     librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
 
@@ -1822,7 +2067,7 @@ async def test_compression_fallback_concatenation_when_no_api_key() -> None:
 
     episodic_memory = AsyncMock()
     context_index = AsyncMock()
-    context_index.search_text = AsyncMock(return_value=results)
+    context_index.select = AsyncMock(return_value=results)
 
     # No API key → no LLM call, fallback to concatenation
     librarian = _make_librarian(
@@ -1836,6 +2081,96 @@ async def test_compression_fallback_concatenation_when_no_api_key() -> None:
 
     mock_llm.assert_not_called()
     assert episodic_memory.copy_to_cold_and_remove.await_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_apply_decay_bounds_concurrent_migrations() -> None:
+    """A backlog pass moves thousands of memories. Started all at once they exhausted the
+    shared Redis pool — redis-py raises "Too many connections" past 100 — so most failed,
+    and every other user of that pool failed with them."""
+    in_flight = peak = 0
+
+    async def migrate(_result: SearchResult) -> None:
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0)
+        in_flight -= 1
+
+    singles = []
+    for i in range(100):
+        entry = _make_decay_search_result(entry_id=f"single-{i}", age_days=31, significance=0.05)
+        entry.metadata.entities = ""
+        singles.append(entry)
+    grouped = []
+    for i in range(40):
+        for half in ("a", "b"):
+            entry = _make_decay_search_result(
+                entry_id=f"group-{i}-{half}", age_days=31, significance=0.05
+            )
+            entry.metadata.entities = f"light.l{i}"
+            grouped.append(entry)
+
+    episodic_memory = AsyncMock()
+    episodic_memory.copy_to_cold_and_remove.side_effect = migrate
+    context_index = AsyncMock()
+    context_index.select = AsyncMock(return_value=singles + grouped)
+    librarian = _make_librarian(
+        api_key="", episodic_memory=episodic_memory, context_index=context_index
+    )
+
+    with patch("core.librarian.consolidator.DECAY_MIGRATION_CONCURRENCY", 4, create=True):
+        migrated = await librarian._apply_decay()
+
+    assert migrated == 180
+    assert 1 < peak <= 4
+
+
+def _kitchen_group(*contents: str) -> list[SearchResult]:
+    group = []
+    for i, content in enumerate(contents):
+        entry = _make_decay_search_result(entry_id=f"k{i}", age_days=31, significance=0.05)
+        entry.content = content
+        group.append(entry)
+    return group
+
+
+@pytest.mark.asyncio
+async def test_compression_summarises_only_the_originals_that_moved() -> None:
+    """An original that fails to move stays hot and is grouped again on the next pass, so
+    a summary written for it now would be written twice."""
+    group = _kitchen_group("kitchen light on", "kitchen light off", "kitchen light dimmed")
+
+    async def migrate(result: SearchResult) -> None:
+        if result.id == "k1":
+            raise ConnectionError("Too many connections")
+
+    episodic_memory = AsyncMock()
+    episodic_memory.copy_to_cold_and_remove.side_effect = migrate
+    librarian = _make_librarian(api_key="", episodic_memory=episodic_memory)
+
+    migrated = await librarian._compress_and_migrate(group)
+
+    assert migrated == 2
+    librarian._cold_store.add.assert_awaited_once()
+    summary = librarian._cold_store.add.await_args.kwargs["content"]
+    assert "kitchen light on" in summary
+    assert "kitchen light dimmed" in summary
+    assert "kitchen light off" not in summary
+
+
+@pytest.mark.asyncio
+async def test_compression_writes_no_summary_when_no_original_moved() -> None:
+    episodic_memory = AsyncMock()
+    episodic_memory.copy_to_cold_and_remove.side_effect = ConnectionError("Too many connections")
+    librarian = _make_librarian(api_key="", episodic_memory=episodic_memory)
+
+    migrated = await librarian._compress_and_migrate(
+        _kitchen_group("kitchen light on", "kitchen light off")
+    )
+
+    assert migrated == 0
+    librarian._cold_store.add.assert_not_awaited()
 
 
 @pytest.mark.asyncio
