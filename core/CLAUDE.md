@@ -9,7 +9,7 @@ Fast event → action loop via local SLM (Ollama).
 - `engine.py` — SLM inference with dynamic tool prompt + TriggerFired reasoning
 - `tool_registry.py` — Reads tool manifests from Redis `alfred:tool_registry`
 - `runner.py` — Event loop orchestration + `ensure_consumer_group()` + `publish_observation()` utilities
-- `availability.py` — `bridge_availability()`: drops transitions into `unavailable`/`unknown` and bridges a return from them (or from no state) to one `last → new` change, or drops it as a blip (hash `alfred:reflex:last_known_state`, per-entry decisions under `alfred:reflex:returned:`, both keyed on the stream entry ID); runs before the attention gate, replay-safe
+- `availability.py` — `bridge_availability()`: drops transitions into `unavailable`/`unknown` and bridges a return from them (or from no state) to one `last → new` change, or drops it as a blip (hash `alfred:reflex:last_known_state`, one field per entity, ordered by stream entry ID; decisions under `alfred:reflex:returned:{entry_id}`); runs before the attention gate, replay-safe
 - `__main__.py` — Two consumer loops: (1) `HOME_STATE_STREAM` for StateChanged, (2) `EVENTS_STREAM` for TriggerFired (group `reflex-trigger-fired`)
 - TriggerFired handling: Path A (notification) fires first, Path B (SLM reasoning) is isolated — SLM failures never block notification delivery
 

@@ -299,6 +299,20 @@ async def test_a_late_replay_does_not_roll_the_known_state_back() -> None:
 
 
 @pytest.mark.asyncio
+async def test_entries_in_the_same_millisecond_keep_their_order() -> None:
+    """``ms-seq`` sorts by both parts as numbers: as strings, ``-10`` would sort before ``-9``."""
+    redis = await _seeded("off")
+    ms = next(_ENTRY_MS)
+    turned_on, on_entry = _event("off", "on"), f"{ms}-9".encode()
+
+    assert await _bridge(redis, turned_on, on_entry) is turned_on
+    assert await _bridge(redis, _event("on", "off"), f"{ms}-10".encode()) is not None
+    assert await _bridge(redis, turned_on, on_entry) is turned_on  # a late replay
+
+    assert await _bridge(redis, _event("unavailable", "off")) is None
+
+
+@pytest.mark.asyncio
 async def test_a_replay_retries_a_write_the_first_delivery_lost() -> None:
     """Otherwise the next return is compared against the state before this one."""
     redis = await _seeded("off")
