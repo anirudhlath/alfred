@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import itertools
 import json
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1726,6 +1727,24 @@ def test_group_by_entity_date_no_entities_ungrouped() -> None:
     groups, ungrouped = _group_by_entity_date([result])
     assert len(groups) == 0
     assert len(ungrouped) == 1
+
+
+@pytest.mark.parametrize("order", list(itertools.permutations(range(3))))
+def test_group_by_entity_date_does_not_depend_on_candidate_order(
+    order: tuple[int, ...],
+) -> None:
+    """A memory naming two entities joins whichever of their buckets exists first, so the
+    grouping must not depend on how the pass happened to find its candidates."""
+    entries = []
+    for entry_id, entities in (("both", "light.a,light.b"), ("b", "light.b"), ("a", "light.a")):
+        entry = _make_decay_search_result(entry_id=entry_id, age_days=31, significance=0.05)
+        entry.metadata.entities = entities
+        entries.append(entry)
+
+    groups, ungrouped = _group_by_entity_date([entries[i] for i in order])
+
+    assert sorted(sorted(r.id for r in group) for group in groups) == [["a", "both"]]
+    assert [r.id for r in ungrouped] == ["b"]
 
 
 def test_group_by_entity_date_different_days_separate() -> None:

@@ -125,13 +125,18 @@ def decay_candidate_ranges(threshold: float) -> dict[str, Range] | None:
 def _group_by_entity_date(
     results: list[SearchResult],
 ) -> tuple[list[list[SearchResult]], list[SearchResult]]:
-    """Group decayed entries by (shared_entity, date) for compression."""
+    """Group decayed entries by (shared_entity, date) for compression.
+
+    An entry naming several entities joins the first of their buckets that already
+    exists, so entries are taken oldest first (then by id): the grouping is a function
+    of the entries, not of the order the decay pass happened to find them in.
+    """
     from collections import defaultdict
 
     buckets: dict[tuple[str, str], list[SearchResult]] = defaultdict(list)
     ungrouped: list[SearchResult] = []
 
-    for result in results:
+    for result in sorted(results, key=lambda r: (r.metadata.timestamp, r.id)):
         entities_str = result.metadata.entities
         if not entities_str:
             ungrouped.append(result)
