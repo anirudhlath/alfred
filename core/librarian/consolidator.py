@@ -658,6 +658,7 @@ class Librarian:
         decay_migration_threshold: float = DEFAULT_DECAY_MIGRATION_THRESHOLD,
         search_query: str = "general context memory event",
         search_limit: int = 500,
+        now: datetime | None = None,
     ) -> int:
         """Migrate old low-significance hot entries to cold storage.
 
@@ -666,6 +667,8 @@ class Librarian:
         below it.
         Related entries (same entity + same day) are compressed into a single
         summary before migration.
+        ``now`` defaults to the wall clock; the memory eval (``evals/memory``) passes a
+        simulated one so it can replay weeks of decay in minutes.
         Returns the number of entries migrated.
         """
         try:
@@ -678,7 +681,7 @@ class Librarian:
             logger.warning("Decay: failed to retrieve hot entries: %s", exc)
             return 0
 
-        now = datetime.now(UTC).timestamp()
+        now_ts = (now or datetime.now(UTC)).timestamp()
         to_migrate: list[SearchResult] = []
 
         for result in results:
@@ -689,14 +692,14 @@ class Librarian:
             if timestamp <= 0:
                 continue
 
-            age_days = (now - timestamp) / 86400.0
+            age_days = (now_ts - timestamp) / 86400.0
             significance = result.metadata.significance
             retrieval_count = result.metadata.retrieval_count
             last_retrieved = result.metadata.last_retrieved
 
             # Fallback: if last_retrieved was never set, assume never retrieved
             if last_retrieved > 0:
-                days_since_last_retrieved = (now - last_retrieved) / 86400.0
+                days_since_last_retrieved = (now_ts - last_retrieved) / 86400.0
             else:
                 days_since_last_retrieved = age_days
 

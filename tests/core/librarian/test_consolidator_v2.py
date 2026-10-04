@@ -757,6 +757,59 @@ async def test_apply_decay_skips_zero_timestamp_entries() -> None:
     episodic_memory.copy_to_cold_and_remove.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_apply_decay_reads_pressure_at_the_injected_now() -> None:
+    """``now`` is the clock seam the memory eval simulates time through.
+
+    The entry is written "today" by the wall clock, so at the real now it is far below
+    the threshold; at an injected now 30 days later it is the design table's ~0.78 row.
+    """
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+
+    written = datetime.datetime.now(datetime.UTC)
+    entry = _make_search_result("fresh", written.timestamp(), significance=0.1, retrieval_count=0)
+    context_index.search_text = AsyncMock(return_value=[entry])
+
+    assert await librarian._apply_decay() == 0
+    episodic_memory.copy_to_cold_and_remove.assert_not_awaited()
+
+    later = written + datetime.timedelta(days=30)
+    assert await librarian._apply_decay(now=later) == 1
+    episodic_memory.copy_to_cold_and_remove.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_apply_decay_measures_retrieval_recency_from_the_injected_now() -> None:
+    """A retrieval stamped at the simulated time resists migration at that time."""
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+
+    now = datetime.datetime(2026, 3, 1, tzinfo=datetime.UTC)
+    old = _make_search_result(
+        "recalled",
+        (now - datetime.timedelta(days=30)).timestamp(),
+        significance=0.1,
+        retrieval_count=0,
+    )
+    recalled = old.model_copy(
+        update={
+            "metadata": old.metadata.model_copy(
+                update={
+                    "retrieval_count": 3,
+                    "last_retrieved": (now - datetime.timedelta(hours=2)).timestamp(),
+                }
+            )
+        }
+    )
+    context_index.search_text = AsyncMock(return_value=[recalled])
+
+    assert await librarian._apply_decay(now=now) == 0
+    episodic_memory.copy_to_cold_and_remove.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # Decay threshold: reachable by construction (#201)
 # ---------------------------------------------------------------------------
