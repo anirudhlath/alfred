@@ -175,6 +175,14 @@ const entityList = (value: unknown): string[] => {
 const text = (value: unknown): string => (typeof value === "string" ? value : "");
 
 /**
+ * `[observation] Sat 2026-10-03 17:39 — ` → `[observation] `. The Memory Ingestor
+ * stamps observation and reflex text with the event's local time
+ * (`core/memory/ingestor.py`, `_stamp`), and a row already prints `at`.
+ */
+const LEADING_STAMP = /^(\[[^\]]+\]) [A-Z][a-z]{2} \d{4}-\d{2}-\d{2} \d{2}:\d{2} — /;
+const unstamped = (value: string): string => value.replace(LEADING_STAMP, "$1 ");
+
+/**
  * The one place the three episodic shapes become one row. `index` is the row's
  * position in the response, used as a key only for hot browse rows: the server
  * `HGETALL`s them with the Redis key discarded, so they carry no id at all. The
@@ -195,7 +203,7 @@ export function toEpisodicRow(raw: Record<string, unknown>, index: number): Epis
     id,
     store,
     // `summary` on cold and search rows, `content` on hot ones.
-    text: text(raw.summary) || text(raw.content),
+    text: unstamped(text(raw.summary) || text(raw.content)),
     at: time(raw.timestamp),
     significance,
     recalled,

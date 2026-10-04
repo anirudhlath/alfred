@@ -66,11 +66,12 @@ SALIENT_ATTRIBUTES = ("media_title", "brightness", "temperature", "friendly_name
 
 
 def _event_time(obs: ReflexObservation) -> datetime:
-    """When HA saw the change, not when the observation was built.
+    """When the triggering event happened, not when the observation was built.
 
     The observation is minted after Reflex inference, and a redelivered one is
-    ingested later still. ``trigger_event["timestamp"]`` is the event model's own:
-    an ISO string off the wire, a datetime from an in-process ``model_dump()``.
+    ingested later still. ``trigger_event["timestamp"]`` is the event model's own —
+    for a state change, stamped by home-service as it forwards HA's event. It is an
+    ISO string off the wire and a datetime from an in-process ``model_dump()``.
     Anything else falls back to the observation's time.
     """
     raw = obs.trigger_event.get("timestamp")

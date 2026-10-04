@@ -14,7 +14,7 @@ from bus.schemas.events import ReflexObservation
 if TYPE_CHECKING:
     from core.memory.schemas import EpisodicEntry
 
-# When HA saw the change. Midnight UTC is still Saturday evening in Los Angeles, so the
+# When the state change happened. Midnight UTC is still Saturday evening in Los Angeles, so the
 # zone visibly decides the day.
 EVENT_AT = datetime(2026, 10, 4, 0, 39, tzinfo=UTC)
 UTC_ZONE = ZoneInfo("UTC")
@@ -402,7 +402,7 @@ async def test_the_text_says_when_it_happened_in_the_users_zone(
 async def test_the_time_is_the_ha_events_not_the_observations(
     scorer: AsyncMock, passive_scorer: AsyncMock
 ) -> None:
-    """The observation is built after Reflex inference — HA saw the change first."""
+    """The observation is built after Reflex inference — the event came first."""
     from core.memory.ingestor import ingest_observation
 
     obs = _passive("light.kitchen", "off", "on").model_copy(

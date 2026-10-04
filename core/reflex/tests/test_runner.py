@@ -122,6 +122,7 @@ async def test_process_stream_entry_no_action_records_an_observation() -> None:
         source="home-service",
         domain="home",
         entity_id="sensor.temperature",
+        old_state="22.0",
         new_state="22.5",
     )
 
@@ -211,6 +212,7 @@ async def test_process_stream_entry_handles_bytes_keys() -> None:
         source="home-service",
         domain="home",
         entity_id="sensor.temperature",
+        old_state="22.0",
         new_state="22.5",
     )
 

@@ -14,7 +14,7 @@ The Reflex Engine (System 1) is the fast-path SLM that processes events.
 - Builds system prompt dynamically from registered tool metadata
 - Validates SLM-returned target_service against registered services
 - Records what it saw and did on `alfred:reflex:observations`; the Memory Ingestor writes episodic memory. It never writes the scratchpad
-- `unavailable`/`unknown` never reach the SLM — `core/reflex/availability.py` drops or bridges them before the attention gate
+- On the state-change path, `unavailable`/`unknown` (and a missing old state) never reach the SLM — `core/reflex/availability.py` drops or bridges them before the attention gate. TriggerFired events are not bridged: triggers read the raw stream
 - Target latency: sub-500ms event → action
 - All inference calls MUST use @track_latency and @track_tokens decorators
 - Never call the cloud LLM (System 2) from the reflex path

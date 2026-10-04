@@ -151,9 +151,10 @@ async def process_stream_entry(
 
     Raises on retriable errors (e.g., Ollama down) so the caller can choose not
     to ACK the message. Returns False — and is ACKed by the caller — for
-    malformed events, attention-gated events, and events the engine chose not
-    to act on. That last branch is not a no-op: it records a debounced passive
-    observation, best-effort, so a failed write never blocks the ACK.
+    malformed events, availability blips (``core/reflex/availability.py``),
+    attention-gated events, and events the engine chose not to act on. That
+    last branch is not a no-op: it records a debounced passive observation,
+    best-effort, so a failed write never blocks the ACK.
     """
     raw_event = entry_data.get("event") or entry_data.get(b"event")
     if raw_event is None:

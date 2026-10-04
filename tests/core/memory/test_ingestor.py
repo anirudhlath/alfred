@@ -70,7 +70,7 @@ async def test_ingest_observation_writes_to_episodic() -> None:
 
 @pytest.mark.asyncio
 async def test_reflex_actions_say_when_they_happened() -> None:
-    """Stamped like passive observations: the HA event's local time, not the write's."""
+    """Stamped like passive observations: the event's local time, not the write's."""
     from core.memory.ingestor import ingest_observation
 
     event_at = datetime(2026, 10, 4, 0, 39, tzinfo=UTC)

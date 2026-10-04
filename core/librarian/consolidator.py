@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
 
@@ -33,6 +34,7 @@ from core.memory.schemas import (
 from core.memory.vector_store import Range
 from shared.config import DEFAULT_DECAY_MIGRATION_THRESHOLD
 from shared.streams import LIBRARIAN_QUEUE, LIBRARIAN_STATUS_KEY
+from shared.usertime import get_user_timezone
 
 if TYPE_CHECKING:
     from core.memory.context_index import ContextIndexManager
@@ -821,8 +823,16 @@ class Librarian:
         if not window_entries:
             return []
 
+        # Local time: a routine's trigger_pattern is matched in the user's zone
+        # (match_trigger_pattern), and observation text carries local time too.
+        try:
+            tz_name = await get_user_timezone(self._redis)
+        except Exception as exc:
+            logger.warning("Pattern detection skipped, user timezone unreadable: %s", exc)
+            return []
+        tz = ZoneInfo(tz_name)
         summaries = "\n".join(
-            f"- [{e.id}] {e.timestamp.strftime('%Y-%m-%dT%H:%M')} {e.summary}"
+            f"- [{e.id}] {e.timestamp.astimezone(tz).strftime('%a %Y-%m-%d %H:%M')} {e.summary}"
             for e in window_entries
         )
 
@@ -831,6 +841,8 @@ class Librarian:
             "Given episodic memory entries, identify repeated behavioural patterns. "
             f"Only report patterns with at least {self._pattern_min_occurrences} occurrences "
             f"spread over at least {self._pattern_min_days} different days. "
+            f"Entry times are local ({tz_name}); give trigger_pattern times in that "
+            "same local time."
             "\n\n"
             "PAY SPECIAL ATTENTION to entries with source 'reflex' — these are automatic "
             "System 1 (Reflex Engine) actions taken without conscious reasoning. Look for:\n"
@@ -928,8 +940,6 @@ class Librarian:
         routines = self._routines.list_all()
         now = datetime.now(UTC)
         updated = 0
-
-        from shared.usertime import get_user_timezone
 
         tz_name = await get_user_timezone(self._redis)
 

@@ -201,3 +201,91 @@ async def test_detect_patterns_includes_reflex_analysis_prompt() -> None:
     # The prompt should specifically mention reflex/System 1 pattern analysis
     system_prompt = captured_prompt["system"].lower()
     assert "reflex" in system_prompt or "system 1" in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_detect_patterns_shows_entry_times_in_the_users_zone() -> None:
+    """A routine's ``trigger_pattern`` is matched in the user's zone, so the times the
+    model reads it from must be local too — and must agree with the local time that
+    observation text now carries."""
+    from datetime import UTC, datetime, timedelta
+    from typing import Any
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from zoneinfo import ZoneInfo
+
+    from core.librarian.consolidator import Librarian
+    from core.memory.schemas import EpisodicEntry, SignificanceScore
+
+    at = datetime.now(UTC).replace(second=0, microsecond=0) - timedelta(days=1)
+    entry = EpisodicEntry(
+        id="ep-1",
+        timestamp=at,
+        source="observation",
+        summary="[observation] light.kitchen: off → on",
+        entities=["light.kitchen"],
+        significance=SignificanceScore(overall=0.2),
+    )
+    redis = AsyncMock()
+    redis.get = AsyncMock(return_value=b"America/Los_Angeles")
+    routines = MagicMock()
+    routines.list_all.return_value = []
+    librarian = Librarian(
+        redis=redis,
+        episodic_memory=AsyncMock(),
+        routine_store=routines,
+        significance_scorer=AsyncMock(),
+        context_index=AsyncMock(),
+        claude_api_key="test-key",
+    )
+
+    captured: dict[str, str] = {}
+
+    async def mock_completion(**kwargs: Any) -> Any:
+        captured["system"] = kwargs["messages"][0]["content"]
+        captured["user"] = kwargs["messages"][1]["content"]
+        result = MagicMock()
+        result.choices = [MagicMock()]
+        result.choices[0].message.content = "[]"
+        return result
+
+    with patch("litellm.acompletion", side_effect=mock_completion):
+        await librarian._detect_patterns([entry])
+
+    local = at.astimezone(ZoneInfo("America/Los_Angeles")).strftime("%a %Y-%m-%d %H:%M")
+    assert captured["user"] == f"- [ep-1] {local} [observation] light.kitchen: off → on"
+    assert "America/Los_Angeles" in captured["system"]
+
+
+@pytest.mark.asyncio
+async def test_detect_patterns_skips_when_the_users_zone_is_unreadable() -> None:
+    """Falls back to no patterns, as on any other error, rather than guessing UTC."""
+    from datetime import UTC, datetime, timedelta
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from core.librarian.consolidator import Librarian
+    from core.memory.schemas import EpisodicEntry, SignificanceScore
+
+    entry = EpisodicEntry(
+        id="ep-1",
+        timestamp=datetime.now(UTC) - timedelta(days=1),
+        source="observation",
+        summary="[observation] light.kitchen: off → on",
+        entities=["light.kitchen"],
+        significance=SignificanceScore(overall=0.2),
+    )
+    redis = AsyncMock()
+    redis.get = AsyncMock(side_effect=ConnectionError("connection reset"))
+    routines = MagicMock()
+    routines.list_all.return_value = []
+    librarian = Librarian(
+        redis=redis,
+        episodic_memory=AsyncMock(),
+        routine_store=routines,
+        significance_scorer=AsyncMock(),
+        context_index=AsyncMock(),
+        claude_api_key="test-key",
+    )
+
+    with patch("litellm.acompletion") as completion:
+        assert await librarian._detect_patterns([entry]) == []
+    completion.assert_not_called()

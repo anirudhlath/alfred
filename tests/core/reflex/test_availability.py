@@ -12,6 +12,7 @@ the hash, so the tests hold whatever the stored shape is.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
@@ -25,9 +26,12 @@ if TYPE_CHECKING:
     from core.reflex.attention import AttentionSet
 
 ENTITY = "media_player.shield"
+T0 = datetime(2026, 10, 4, 18, 0, tzinfo=UTC)
 
 
-def _event(old: str | None, new: str, entity_id: str = ENTITY) -> StateChangedEvent:
+def _event(
+    old: str | None, new: str, entity_id: str = ENTITY, at: datetime | None = None
+) -> StateChangedEvent:
     return StateChangedEvent(
         source="home-service",
         domain="home",
@@ -35,24 +39,36 @@ def _event(old: str | None, new: str, entity_id: str = ENTITY) -> StateChangedEv
         old_state=old,
         new_state=new,
         attributes={"friendly_name": "Shield"},
+        **({"timestamp": at} if at is not None else {}),
     )
 
 
 def _with_hash(redis: AsyncMock) -> AsyncMock:
-    """Back HGET/HSET with a dict. HGET hands back bytes, as the production pool does."""
-    store: dict[str, dict[str, str]] = {}
+    """Back HGET/HSET and GET/SET with dicts, handing back bytes as the production pool does."""
+    hashes: dict[str, dict[str, str]] = {}
+    strings: dict[str, str] = {}
 
     async def _hget(key: str, field: str) -> bytes | None:
-        value = store.get(key, {}).get(field)
+        value = hashes.get(key, {}).get(field)
         return None if value is None else value.encode()
 
     async def _hset(key: str, field: str, value: str) -> int:
-        store.setdefault(key, {})[field] = value
+        hashes.setdefault(key, {})[field] = value
         return 1
 
-    redis.hashes = store
+    async def _get(key: str) -> bytes | None:
+        value = strings.get(key)
+        return None if value is None else value.encode()
+
+    async def _set(key: str, value: str, **_kwargs: object) -> bool:
+        strings[key] = value
+        return True
+
+    redis.hashes = hashes
     redis.hget = AsyncMock(side_effect=_hget)
     redis.hset = AsyncMock(side_effect=_hset)
+    redis.get = AsyncMock(side_effect=_get)
+    redis.set = AsyncMock(side_effect=_set)
     return redis
 
 
@@ -65,7 +81,7 @@ async def _bridge(redis: AsyncMock, event: StateChangedEvent) -> StateChangedEve
 async def _seeded(state: str, redis: AsyncMock | None = None) -> AsyncMock:
     """A hash that has seen ENTITY settle in ``state`` through a real change."""
     redis = _with_hash(redis if redis is not None else AsyncMock())
-    assert await _bridge(redis, _event(None, state)) is not None
+    assert await _bridge(redis, _event("on" if state == "off" else "off", state)) is not None
     return redis
 
 
@@ -127,6 +143,23 @@ async def test_unknown_is_treated_like_unavailable(old: str, new: str) -> None:
 
 
 @pytest.mark.asyncio
+async def test_no_old_state_is_treated_like_unavailable() -> None:
+    """HA re-adds every entity after a restart as ``None → state``: a return, not a change."""
+    redis = await _seeded("off")
+
+    assert await _bridge(redis, _event(None, "off")) is None
+    assert _transition(await _bridge(redis, _event(None, "on"))) == ("off", "on")
+
+
+@pytest.mark.asyncio
+async def test_no_old_state_with_nothing_known_is_dropped_but_remembered() -> None:
+    redis = _with_hash(AsyncMock())
+
+    assert await _bridge(redis, _event(None, "on")) is None
+    assert _transition(await _bridge(redis, _event("unavailable", "off"))) == ("on", "off")
+
+
+@pytest.mark.asyncio
 async def test_unknown_to_unavailable_is_dropped_and_forgets_nothing() -> None:
     redis = await _seeded("on")
 
@@ -135,10 +168,9 @@ async def test_unknown_to_unavailable_is_dropped_and_forgets_nothing() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("old", ["off", None])
-async def test_a_real_change_passes_unchanged_and_is_remembered(old: str | None) -> None:
+async def test_a_real_change_passes_unchanged_and_is_remembered() -> None:
     redis = _with_hash(AsyncMock())
-    event = _event(old, "on")
+    event = _event("off", "on")
 
     assert await _bridge(redis, event) is event
     assert _transition(await _bridge(redis, _event("unavailable", "off"))) == ("on", "off")
@@ -204,6 +236,47 @@ async def test_a_redelivered_blip_stays_a_blip() -> None:
 
     assert await _bridge(redis, event) is None
     assert await _bridge(redis, event) is None
+
+
+@pytest.mark.asyncio
+async def test_a_return_replayed_after_a_newer_event_is_bridged_again() -> None:
+    """Media players send attribute-only updates every few seconds, so something
+    usually lands between a failed delivery and its replay."""
+    redis = await _seeded("off")
+    returned = _event("unavailable", "on", at=T0)
+
+    assert _transition(await _bridge(redis, returned)) == ("off", "on")
+    # A new title on the same entity, while the return waits for the reclaim pass.
+    assert await _bridge(redis, _event("on", "on", at=T0 + timedelta(seconds=2))) is not None
+    assert _transition(await _bridge(redis, returned)) == ("off", "on")
+
+
+@pytest.mark.asyncio
+async def test_a_blip_replayed_after_a_newer_event_stays_a_blip() -> None:
+    redis = await _seeded("off")
+    blip = _event("unavailable", "off", at=T0)
+
+    assert await _bridge(redis, blip) is None
+    assert await _bridge(redis, _event("off", "on", at=T0 + timedelta(seconds=2))) is not None
+    assert await _bridge(redis, blip) is None
+
+
+@pytest.mark.asyncio
+async def test_a_late_replay_does_not_roll_the_known_state_back() -> None:
+    """off → on failed downstream, on → off went through, then off → on is replayed.
+
+    The light is off. Were the replay to record "on", the next blip back as "off"
+    would be stored and sent to the model as a turn-off that never happened.
+    """
+    redis = await _seeded("off")
+    turned_on = _event("off", "on", at=T0)
+    turned_off = _event("on", "off", at=T0 + timedelta(seconds=30))
+
+    assert await _bridge(redis, turned_on) is turned_on
+    assert await _bridge(redis, turned_off) is turned_off
+    assert await _bridge(redis, turned_on) is turned_on  # the replay still goes on
+
+    assert await _bridge(redis, _event("unavailable", "off", at=T0 + timedelta(minutes=5))) is None
 
 
 @pytest.mark.asyncio
