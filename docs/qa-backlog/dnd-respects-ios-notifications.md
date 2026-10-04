@@ -12,7 +12,9 @@
 1. Enable DND in Alfred (via Redis key or during a calendar meeting)
 2. Trigger a NORMAL or INFORMATIONAL notification
 3. Check that no push notification is delivered
-4. Disable DND
+4. Disable DND: for manual DND, from the web app (System › Quiet switch, or
+   `POST /api/admin/dnd` with `active: false`) — a raw `redis-cli DEL` of the key skips the
+   drain; for calendar DND, let the meeting end
 5. Verify deferred notifications are drained and delivered
 
 ## Expected Result

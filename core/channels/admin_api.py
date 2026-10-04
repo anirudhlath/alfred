@@ -607,8 +607,15 @@ def create_admin_router() -> APIRouter:
     async def set_dnd(request: Request, body: DndRequest) -> dict[str, Any]:
         r = _redis(request)
         if not body.active:
-            await r.delete(DND_STATE_KEY)
-            logger.info("Admin cleared DND")
+            # Clearing quiet is when the held-back queue is due. The drain belongs to
+            # the conscious process (`NotificationDispatcher.drain_deferred`), so ask it
+            # over ACTIONS_STREAM as the expiry trigger and `/notifications/drain` do.
+            # Only on a real transition: a clear that removed nothing ended no quiet.
+            if await r.delete(DND_STATE_KEY):
+                await _publish_internal_action(r, "drain_deferred_notifications")
+                logger.info("Admin cleared DND; queued deferred-notification drain")
+            else:
+                logger.info("Admin cleared DND (was not set)")
             return {"active": False}
         state: dict[str, Any] = {
             "active": True,

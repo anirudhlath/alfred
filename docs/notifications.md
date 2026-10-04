@@ -17,7 +17,7 @@ graph TD
     DND -->|No or Urgent| STREAM[Redis Stream<br/>alfred:notifications:dispatch]
     STREAM --> CG1[conscious-delivery group<br/>→ SignalAdapter]
     STREAM --> CG2[channels-delivery group<br/>→ WebSocket + Voice]
-    DEFER -->|DND expires trigger| DRAIN[drain_deferred]
+    DEFER -->|DND expiry trigger<br/>or DND cleared| DRAIN[drain_deferred]
     DRAIN --> STREAM
 ```
 
@@ -107,10 +107,10 @@ session), never a registration.
 
 - **Manual DND with expiry**: Notifications deferred to Redis list. One-shot time trigger
   created at expiry time to drain deferred notifications.
-- **Manual DND without expiry**: Stays active until manually cleared. Deferred notifications
-  remain queued — they drain only when a subsequent DND-with-expiry triggers a drain, or the
-  system restarts and DND is no longer active. Future improvement: Redis keyspace notification
-  on DND key deletion to trigger immediate drain.
+- **Manual DND without expiry**: Stays active until manually cleared, and nothing drains the
+  queue while it is on (short of an explicit `POST /api/admin/notifications/drain`).
+- **Clearing manual DND** (`POST /api/admin/dnd` with `active: false`, timed or not): drains
+  the queue straight away — see [Drain on clear](#drain-on-clear).
 - **Calendar DND**: Active during meetings. Drain trigger created at meeting end time.
 - **URGENT notifications**: Always delivered immediately, regardless of DND.
 
@@ -128,5 +128,22 @@ When DND defers a notification and knows when DND expires, the dispatcher create
 an idempotent one-shot `TimeTrigger` with ID `drain-deferred-{timestamp}`. When
 the trigger fires, it posts an `ActionRequest(tool_name="drain_deferred_notifications",
 target_service="conscious-engine")` to `ACTIONS_STREAM`. The conscious engine's
-internal action consumer picks this up and calls `dispatcher.drain_deferred()`
-to re-dispatch all queued notifications.
+internal action consumer picks this up and calls `dispatcher.drain_deferred()`,
+which publishes every queued notification to the dispatch stream. It does not re-check DND:
+whatever asks for a drain is saying the queue is due.
+
+## Drain on clear
+
+Clearing manual DND from the web app (`POST /api/admin/dnd` with `active: false`) deletes
+`alfred:memory:dnd` and, when that delete removed a live key, publishes the same
+`drain_deferred_notifications` action to `ACTIONS_STREAM`. The drain therefore runs where it
+always does — in the conscious process, through its internal action consumer — never in the
+channels process that served the request. A clear that found no key (DND was already off)
+requests no drain.
+
+This is what makes an indefinite DND recoverable: before, deleting the key left the queue to
+wait for some later expiry-based drain, which an indefinite DND never schedules. No Redis
+keyspace notification is involved — the one code path that clears DND on request asks for
+the drain itself. The lazy clean-up `DNDChecker` does when it finds an expired `until` does
+not ask: an expiring DND is drained by the one-shot trigger above, at the moment it names. A
+key deleted out of band (`redis-cli DEL`) bypasses this, so use the drain endpoint afterwards.
