@@ -51,6 +51,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `sdk/` — publishable alfred-sdk package (BaseFeature, @tool, AlfredClient)
 - `domains/home/home_agent.py` — routes actions to home-service
 - `evals/` — eval runner, scenarios, inference backends (`python -m evals`)
+- `evals/memory/` — memory-decay eval: simulated house on a throwaway Redis, decay policies compared by recall (`python -m evals memory run`; `docs/evals-memory.md`)
 - `web/` — Vite + React 19 phone-first PWA client: one screen (the Room), one interrupt (the Door), four identity gates (src/lib, src/shell, src/gates, src/room, src/door, src/workshop, src/sheets; npm run dev|build|test|lint) — built `web/dist/` is served by the web channel. See `docs/web-frontend.md`
 - `docs/superpowers/specs/` — approved design specs
 - `docs/superpowers/plans/` — implementation plans
