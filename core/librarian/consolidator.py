@@ -70,6 +70,12 @@ _DEFAULT_PROFILE_DIR = str(_profile_dir())
 MAX_MIGRATION_PRESSURE = 1.0
 # How strongly significance resists migration in migration_pressure().
 SIGNIFICANCE_WEIGHT = 2.0
+# Migrations (single entries or compressed groups) one decay pass runs at once. Each
+# holds a hot-store Redis connection while it moves, and that pool is the service's
+# own: redis-py caps it at 100 and raises "Too many connections" past that rather than
+# waiting. The first pass after deploy moves the whole backlog — thousands at once
+# without this cap, which failed most of them (EXP-008).
+DECAY_MIGRATION_CONCURRENCY = 8
 
 
 def migration_pressure(
@@ -576,16 +582,35 @@ class Librarian:
         return 0
 
     async def _compress_and_migrate(self, group: list[SearchResult]) -> int:
-        """Compress a group of related entries into a summary, then migrate originals.
+        """Migrate a group of related entries, then write one summary of those that moved.
 
-        Calls LLM to generate a summary + semantic_key for the group. Falls back
-        to concatenation if LLM fails or no API key. Writes summary to cold store
-        directly (not via EpisodicMemory to avoid re-embedding), then migrates
-        originals with compressed="yes" marker.
+        Originals move first, with a compressed="yes" marker. One that fails stays hot
+        and is grouped again on the next pass, so the summary covers only the ones that
+        moved — summarising it now would summarise it twice. Calls LLM to generate a
+        summary + semantic_key; falls back to concatenation if LLM fails or no API key.
+        Writes the summary to cold store directly (not via EpisodicMemory). A summary
+        that fails to write loses nothing: the originals are in cold with their own
+        vectors.
 
         Returns the number of original entries migrated.
         """
         from core.memory.vector_store import ContextMetadata
+
+        moved: list[SearchResult] = []
+        for result in group:
+            try:
+                marked = result.model_copy(
+                    update={"metadata": result.metadata.model_copy(update={"compressed": "yes"})}
+                )
+                await self._episodic_memory.copy_to_cold_and_remove(marked)
+                moved.append(result)
+            except Exception as exc:
+                logger.warning(
+                    "Compression: failed to migrate original entry %s: %s", result.id, exc
+                )
+        if not moved:
+            return 0
+        group = moved
 
         lines = [f"- [{r.id}] {r.content}" for r in group]
         group_text = "\n".join(lines)
@@ -668,23 +693,8 @@ class Librarian:
             )
         except Exception as exc:
             logger.warning("Compression: failed to write summary entry: %s", exc)
-            # Still migrate originals even if summary write fails
 
-        # Migrate all originals with compressed marker
-        migrated = 0
-        for result in group:
-            try:
-                marked = result.model_copy(
-                    update={"metadata": result.metadata.model_copy(update={"compressed": "yes"})}
-                )
-                await self._episodic_memory.copy_to_cold_and_remove(marked)
-                migrated += 1
-            except Exception as exc:
-                logger.warning(
-                    "Compression: failed to migrate original entry %s: %s", result.id, exc
-                )
-
-        return migrated
+        return len(moved)
 
     async def _apply_decay(
         self,
@@ -755,21 +765,25 @@ class Librarian:
         # Group related entries for compression
         groups, ungrouped = _group_by_entity_date(to_migrate)
 
-        # Compress groups and migrate ungrouped in parallel
+        # Compress groups and migrate ungrouped in parallel, a bounded number at a time
+        slots = asyncio.Semaphore(DECAY_MIGRATION_CONCURRENCY)
+
         async def _migrate_single(result: SearchResult) -> int:
-            try:
-                await self._episodic_memory.copy_to_cold_and_remove(result)
-                return 1
-            except Exception as exc:
-                logger.warning("Decay: failed to migrate entry %s: %s", result.id, exc)
-                return 0
+            async with slots:
+                try:
+                    await self._episodic_memory.copy_to_cold_and_remove(result)
+                    return 1
+                except Exception as exc:
+                    logger.warning("Decay: failed to migrate entry %s: %s", result.id, exc)
+                    return 0
 
         async def _compress_group(group: list[SearchResult]) -> int:
-            try:
-                return await self._compress_and_migrate(group)
-            except Exception as exc:
-                logger.warning("Decay: compression failed for group: %s", exc)
-                return 0
+            async with slots:
+                try:
+                    return await self._compress_and_migrate(group)
+                except Exception as exc:
+                    logger.warning("Decay: compression failed for group: %s", exc)
+                    return 0
 
         migration_counts = await asyncio.gather(
             *(_compress_group(g) for g in groups),

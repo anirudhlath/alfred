@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import itertools
 import json
@@ -2080,6 +2081,96 @@ async def test_compression_fallback_concatenation_when_no_api_key() -> None:
 
     mock_llm.assert_not_called()
     assert episodic_memory.copy_to_cold_and_remove.await_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_apply_decay_bounds_concurrent_migrations() -> None:
+    """A backlog pass moves thousands of memories. Started all at once they exhausted the
+    shared Redis pool — redis-py raises "Too many connections" past 100 — so most failed,
+    and every other user of that pool failed with them."""
+    in_flight = peak = 0
+
+    async def migrate(_result: SearchResult) -> None:
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0)
+        in_flight -= 1
+
+    singles = []
+    for i in range(100):
+        entry = _make_decay_search_result(entry_id=f"single-{i}", age_days=31, significance=0.05)
+        entry.metadata.entities = ""
+        singles.append(entry)
+    grouped = []
+    for i in range(40):
+        for half in ("a", "b"):
+            entry = _make_decay_search_result(
+                entry_id=f"group-{i}-{half}", age_days=31, significance=0.05
+            )
+            entry.metadata.entities = f"light.l{i}"
+            grouped.append(entry)
+
+    episodic_memory = AsyncMock()
+    episodic_memory.copy_to_cold_and_remove.side_effect = migrate
+    context_index = AsyncMock()
+    context_index.select = AsyncMock(return_value=singles + grouped)
+    librarian = _make_librarian(
+        api_key="", episodic_memory=episodic_memory, context_index=context_index
+    )
+
+    with patch("core.librarian.consolidator.DECAY_MIGRATION_CONCURRENCY", 4, create=True):
+        migrated = await librarian._apply_decay()
+
+    assert migrated == 180
+    assert 1 < peak <= 4
+
+
+def _kitchen_group(*contents: str) -> list[SearchResult]:
+    group = []
+    for i, content in enumerate(contents):
+        entry = _make_decay_search_result(entry_id=f"k{i}", age_days=31, significance=0.05)
+        entry.content = content
+        group.append(entry)
+    return group
+
+
+@pytest.mark.asyncio
+async def test_compression_summarises_only_the_originals_that_moved() -> None:
+    """An original that fails to move stays hot and is grouped again on the next pass, so
+    a summary written for it now would be written twice."""
+    group = _kitchen_group("kitchen light on", "kitchen light off", "kitchen light dimmed")
+
+    async def migrate(result: SearchResult) -> None:
+        if result.id == "k1":
+            raise ConnectionError("Too many connections")
+
+    episodic_memory = AsyncMock()
+    episodic_memory.copy_to_cold_and_remove.side_effect = migrate
+    librarian = _make_librarian(api_key="", episodic_memory=episodic_memory)
+
+    migrated = await librarian._compress_and_migrate(group)
+
+    assert migrated == 2
+    librarian._cold_store.add.assert_awaited_once()
+    summary = librarian._cold_store.add.await_args.kwargs["content"]
+    assert "kitchen light on" in summary
+    assert "kitchen light dimmed" in summary
+    assert "kitchen light off" not in summary
+
+
+@pytest.mark.asyncio
+async def test_compression_writes_no_summary_when_no_original_moved() -> None:
+    episodic_memory = AsyncMock()
+    episodic_memory.copy_to_cold_and_remove.side_effect = ConnectionError("Too many connections")
+    librarian = _make_librarian(api_key="", episodic_memory=episodic_memory)
+
+    migrated = await librarian._compress_and_migrate(
+        _kitchen_group("kitchen light on", "kitchen light off")
+    )
+
+    assert migrated == 0
+    librarian._cold_store.add.assert_not_awaited()
 
 
 @pytest.mark.asyncio
