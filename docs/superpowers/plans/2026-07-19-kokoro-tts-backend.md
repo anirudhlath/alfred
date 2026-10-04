@@ -1133,7 +1133,7 @@ git commit -m "docs(voice): document ABC TTS backend + Kokoro default"
 
 ## Task 11: MLX Mac-adapter fast-follow backlog ticket
 
-**Files:** Create `docs/backlog/medium/kokoro-mlx-mac-adapter.md`.
+**Files:** Create [#227](https://github.com/anirudhlath/alfred/issues/227).
 
 - [ ] **Step 1: Write the ticket**
 

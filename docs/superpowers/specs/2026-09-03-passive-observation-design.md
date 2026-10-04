@@ -229,7 +229,7 @@ After ~7 days of real data, open the Memory page and judge:
   > `decay_migration_threshold` defaults to exactly `1.0`, so `pressure > threshold`
   > is never true and cold migration cannot fire at all. Nothing ages out of hot
   > storage today. Tracked in
-  > `docs/backlog/high/librarian-decay-threshold-unreachable.md`; that ticket must
+  > [#201](https://github.com/anirudhlath/alfred/issues/201); that ticket must
   > close before this risk can be called mitigated.
 
   > **As-built note (2026-10-03, #201).** Fixed: `DEFAULT_DECAY_MIGRATION_THRESHOLD`

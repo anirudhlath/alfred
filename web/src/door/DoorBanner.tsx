@@ -46,7 +46,7 @@ export function DoorBanner({ tracked, now, onOpen }: DoorBannerProps) {
           (1.77 dark, 2.82 light on ink). What is left to separate `Open` from
           the tool name above it is position, size and weight — no colour. An
           `--accent-on-ink` token would settle it, and is tracked with
-          `FuseRing` in `docs/backlog/low/pwa-phase2-followups.md` §8 rather
+          `FuseRing` in issue #257 §8 rather
           than invented here. */}
       <div className="text-[13px] font-medium">Open</div>
     </button>

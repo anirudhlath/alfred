@@ -10980,7 +10980,7 @@ Task 1 deleted the modules these files describe. Before the final commit of this
 - `docs/web-frontend.md` — rewrite for the phase 1 client (shell, gates, Room, Door; the file/route layout from this plan's File Structure; how to run/test), replacing the `AlfredProvider`/`AppShell`/`IconRail`/`TelemetryRail`/`CommandPalette`/`ChatPage` material and the six-route table. Drop the "superseded" banner Task 1 added at the top.
 - `CLAUDE.md` — fix the `web/` line (~54) that lists `src/shell, src/chat, src/pages`, and the `web/src/pages/SettingsPage.tsx … IntegrationCard` reference (~99), to match the new layout.
 - `docs/autonomy.md` (~102) — it points at the deleted `web/src/lib/notifications.ts`; point it at what now handles notification events in the client (the Door via `DoorProvider`/`actions.ts`, and the timeline's act rows).
-- Backlog tickets made moot by the hard cut: `docs/backlog/low/web-frontend-followups.md`, `docs/backlog/low/voice-enrollment-card-polish.md`, `docs/backlog/low/lan-only-writes-affordance.md`, `docs/backlog/medium/web-activity-virtualized-list.md` — delete each one whose subject no longer exists; if any item in them still applies to the new client, move that item into a short note in `docs/backlog/low/pwa-phase1-followups.md` instead.
+- Backlog tickets made moot by the hard cut: [#139](https://github.com/anirudhlath/alfred/issues/139), [#137](https://github.com/anirudhlath/alfred/issues/137), `docs/backlog/low/lan-only-writes-affordance.md`, [#99](https://github.com/anirudhlath/alfred/issues/99) — delete each one whose subject no longer exists; if any item in them still applies to the new client, move that item into a short note in [#256](https://github.com/anirudhlath/alfred/issues/256) instead.
 
 Commit as `docs: retire the Mission Control frontend docs for the PWA client`.
 
@@ -11022,7 +11022,7 @@ five themed commits on top of Task 28:
 - `docs: match the docs to the client as shipped` — `web/README.md`, `docs/web-frontend.md`
   (versions, module lists, the real `Containerfile`, the telemetry protocol, the offline
   rule, the vocabulary), `docs/deployment.md` (the client pings, idle drops are not
-  expected), `docs/backlog/low/pwa-phase1-followups.md` (§5 corrected, §7 added: no
+  expected), [#256](https://github.com/anirudhlath/alfred/issues/256) (§5 corrected, §7 added: no
   sign-out and no System page in phase 1), `core/channels/spa.py` docstring, `CLAUDE.md`
   `/health` line, the QA checklist and `web-passkey-flows.md`.
 

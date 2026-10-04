@@ -16,6 +16,7 @@ Spec: `docs/superpowers/specs/2026-09-04-mobile-first-pwa-client-design.md`.
 | `npm run build` | `tsc -b` then `vite build` → `web/dist/`, which the web channel serves |
 | `npm test` | Vitest, once |
 | `npm run lint` | ESLint over `web/` |
+| `npm run design-sync` | Regenerate the claude.ai/design system from these components → `design-system/out/` (see `docs/design-system.md`) |
 
 The type check lives in `build`, not `lint`. CI runs `lint`, `test` and `build`, in
 that order, then serves the built `dist/` to `tests/core/channels/test_spa_ci.py`.
@@ -111,7 +112,7 @@ Phase 3: the Workshop's other three benches, each a pure view over one hook call
   so out loud), **restarting a service**, and **downloading logs**. The fourth has an
   endpoint and no UI: **removing a passkey** — `DELETE /api/auth/credentials/{id}` exists
   and refuses the last one, but taking away the passkey in your hand needs a confirmation
-  design first. Filed as `docs/backlog/low/pwa-phase3-followups.md` §7, §10 and §11.
+  design first. Filed as [#258](https://github.com/anirudhlath/alfred/issues/258) §7, §10 and §11.
 - **Desktop** — phase 6.
 
 ## Things worth knowing before you change something

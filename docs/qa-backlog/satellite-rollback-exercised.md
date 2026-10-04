@@ -67,7 +67,7 @@ handled it correctly on the first and only time it has been exercised for real.
 
 - A rollback that itself fails partway (e.g. the `mv .prev` step failing) — not yet seen.
 - `_rollback()` does not restore `/etc/systemd/system/*.service` — tracked separately in
-  `docs/backlog/medium/satellite-rollback-unit-files.md`, and not exercised by either
+  [#231](https://github.com/anirudhlath/alfred/issues/231), and not exercised by either
   incident above (neither involved a bad unit file).
 - The offline-Pi partial-fleet scenario — see `docs/qa-backlog/satellite-deploy-with-offline-pi.md`,
   still pending.

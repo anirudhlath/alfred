@@ -153,7 +153,6 @@ If no context is available (reader returns `""`), the section is omitted entirel
 
 ## Deferred Work
 
-See `docs/backlog/context-provider.md`:
+- **Option C entities** — automations, scripts, input_booleans (entities the SLM should know about but aren't tools) — [#113](https://github.com/anirudhlath/alfred/issues/113)
 
-- **Agent-scoped context visibility** — replace hardcoded `home-service` key with multi-service scan (`SCAN alfred:context:*`)
-- **Option C entities** — automations, scripts, input_booleans (entities the SLM should know about but aren't tools)
+The multi-service scan that once sat here shipped: `core/reflex/context_reader.py` aggregates every `alfred:context:*` key.

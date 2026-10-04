@@ -92,6 +92,7 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 | Sensor-driven triggers on live home state (verified end-to-end) | Shipped | PR #22 |
 | Sub-5-second reminder firing (scheduled wakeups replacing polling) | In review | PR #27 |
 | Client-timezone awareness (reminders in your timezone, wherever you are) | In review | PR #27 |
+| Relative reminders ("in 20 minutes") timed by the server clock — Alfred asks for a delay (`run_in_seconds`) and never does the clock arithmetic itself | In review | PR #252 |
 | Proactive notifications with urgency levels, DND windows, deferred delivery | Shipped | `docs/notifications.md` |
 | Delivery to Signal, web (with spoken announcement when urgent), and iOS push | Shipped | `docs/notifications.md` |
 | Reflex "attention set" — Alfred tunes which entities wake the fast mind, and can retune itself (`attention_*` tools); readable and editable over `GET`/`PUT /api/admin/attention`, and on the phone from the Workshop's System bench › Reflex (which carries the status of the Workshop row in §4.1) | Shipped | PR #235 |
@@ -149,7 +150,7 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 |---|---|---|
 | Passkey (WebAuthn) login: biometric sign-in, no passwords stored | Shipped | `docs/webauthn.md` |
 | Trusted-network gating for credential-equivalent operations, with a 5-minute pairing code minted by a signed-in device — on the phone, from the Workshop's System bench › Devices & identity — as the alternative for passkey registration only | Shipped | PR #235 |
-| Session and passkey management: list/end sessions, log out everywhere, remove a passkey (never the last). The phone's System bench lists and ends sessions, signs out of the device in hand and lists passkeys; **removal is API-only** until there is a confirmation design for taking away the passkey you are holding | Shipped | PR #235, `docs/backlog/low/pwa-phase3-followups.md` §11 |
+| Session and passkey management: list/end sessions, log out everywhere, remove a passkey (never the last). The phone's System bench lists and ends sessions, signs out of the device in hand and lists passkeys; **removal is API-only** until there is a confirmation design for taking away the passkey you are holding | Shipped | PR #235, [#258](https://github.com/anirudhlath/alfred/issues/258) §11 |
 | Identity confidence levels per channel (Signal-verified vs local claim) | Shipped | `docs/architecture.md` |
 | Guest access choices captured at onboarding (which controls guests may use) | Shipped | onboarding wizard |
 | Guest boundary enforcement via tiered autonomy | Planned | HA integration spec, Plan 3 |
@@ -164,7 +165,7 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 |---|---|---|
 | Unified runner: one process supervises all services, restarts crashes, hot-reloads code | Shipped | `docs/architecture.md` |
 | Admin API: live telemetry socket, stream pages, trigger management, overview | Shipped | `docs/admin-api.md` |
-| …surfaced on the phone: telemetry and stream inspection in the Workshop's Activity bench, memory and trigger management on its Memory and Triggers benches, and health, sessions, services and identity on System. No service restart or log download — neither has a route | In branch | `docs/web-frontend.md`, `docs/backlog/low/pwa-phase3-followups.md` |
+| …surfaced on the phone: telemetry and stream inspection in the Workshop's Activity bench, memory and trigger management on its Memory and Triggers benches, and health, sessions, services and identity on System. No service restart or log download — neither has a route | In branch | `docs/web-frontend.md`, [#258](https://github.com/anirudhlath/alfred/issues/258) |
 | Eval harness: regression + live modes, custom judgment metrics, run comparison | Shipped | `docs/evals-runner.md` |
 | Model warmup at startup (no cold-start latency on first request) | Shipped | spec `2026-04-16-startup-warmup-design.md` |
 | Self-describing health for external services, surfaced on the phone in the Workshop's System bench › Connected services — a state word, a dot and the credential form built from the service's own schema (the Mission Control *Settings* screen this row used to name is gone) | In review | PR #28, `docs/web-frontend.md` |
@@ -262,4 +263,4 @@ SDK, and this document are for.
 | Triggers | `docs/trigger-engine.md`, `docs/notifications.md` |
 | Original & expanded vision | `docs/superpowers/specs/2026-03-10-project-alfred-design.md`, `…2026-03-19-alfred-expanded-vision-design.md` |
 | Every feature's design history | `docs/superpowers/specs/` |
-| Deferred work | `docs/backlog/` (priority tiers) |
+| Deferred work | [GitHub Issues](https://github.com/anirudhlath/alfred/issues) (`priority: *` labels) |

@@ -261,10 +261,9 @@ coin more.
 > puts a row there and nothing removes one afterwards. It marks a standing, not a schedule:
 > the client cannot compute the pass's own pressure formula, which also weighs age and
 > retrieval recency against a threshold no endpoint reports. That threshold is 0.2
-> (`DEFAULT_DECAY_MIGRATION_THRESHOLD`, #201), and pressure tops out at
+> (`DEFAULT_DECAY_MIGRATION_THRESHOLD`, [#201](https://github.com/anirudhlath/alfred/issues/201)), and pressure tops out at
 > `1 - 2 × significance`, so 0.4 is exactly the significance below which the pass can
-> ever reach a row: `DECAY_FLOOR` and the server agree
-> (`docs/backlog/low/pwa-phase3-followups.md` §20).
+> ever reach a row: `DECAY_FLOOR` and the server agree ([#258](https://github.com/anirudhlath/alfred/issues/258) §20).
 
 It is drawn after the store rather than instead of the recall count, exactly as the
 prototype draws it: the count is the evidence for the mark.
@@ -395,7 +394,7 @@ deeper: the depth the user paged to is a floor the cap never rolls back. Past it
 oldest fall off the bottom and the cursor moves up to match, so nothing becomes
 unreachable. Older mode is exempt from the cap by design, so a paged stream grows without
 a ceiling — the virtualization ticket carries the cost
-(`docs/backlog/low/pwa-phase2-followups.md` §1).
+([#257](https://github.com/anirudhlath/alfred/issues/257) §1).
 
 The hook's `loaded` says the head read *settled*, however it settled; `streamLoaded` says
 it per stream. Both are needed to say what an empty list means without inventing
@@ -433,7 +432,7 @@ offers it on are `WHY_STREAMS` in `ActivityBench.tsx`: both have a cause the ser
 — an observation's `trigger_event`, and a reply's `actions_taken` naming the tool an
 action ran. The reply is spec §5.1's own conversation turn ("correlate one conversation
 turn with the system activity it caused"); the Room's Alfred bubbles do not offer it yet
-(`docs/backlog/low/pwa-phase2-followups.md` §11). Notifications and triggers are left out
+([#257](https://github.com/anirudhlath/alfred/issues/257) §11). Notifications and triggers are left out
 because they have no such id, and a pill that always produced a dashed-only column would
 be noise. `lib/trace.ts` reads one
 page of 100 from every stream up to ten minutes after the observation
@@ -467,7 +466,7 @@ involved". The query's `staleTime` is the join window itself: the
 window has closed behind a thread by the time that much has passed, so re-asking the
 same row does not re-read eight streams. The sheet never says "not caused by" — the
 client cannot prove that. A server-side correlation id is the follow-up (spec §7,
-`docs/backlog/low/pwa-phase2-followups.md`).
+[#257](https://github.com/anirudhlath/alfred/issues/257)).
 
 ---
 
@@ -498,7 +497,7 @@ Quiet card's record of which expiry chip you last pressed and the `applied` note
 from it (`asked` in `SystemBench.tsx`), an unfolded semantic card (`MemoryBench.tsx`), and
 the pairing code, which `useSystem` clears the moment the bench stops showing — a six-digit secret left standing on a screen nobody is watching is
 the thing that decision exists to prevent. The list's scroll position goes with them,
-which is a cost rather than a choice (`docs/backlog/low/pwa-phase3-followups.md` §15).
+which is a cost rather than a choice ([#258](https://github.com/anirudhlath/alfred/issues/258) §15).
 
 **The `enabled` gate.** `useMemory(enabled)`, `useTriggers(enabled)` and
 `useSystem(enabled, onHeld)` each take `bench === "…"` from the panel and hand it to
@@ -537,7 +536,7 @@ increments — always exactly 1, whatever the row's history. So `recalled` is `n
 every cold row and the meta line drops the clause, the way it drops a significance the
 server did not send. Absent, not zero: `never recalled` would be a claim about the house
 drawn from a missing column. What the server would have to change is
-`docs/backlog/low/pwa-phase3-followups.md` §16. The same evidence moved `decaying` onto
+[#258](https://github.com/anirudhlath/alfred/issues/258) §16. The same evidence moved `decaying` onto
 **hot** rows, where both the handoff and the Librarian's decay pass put it (the
 vocabulary entry above says what it means). Numeric parsing runs before `Date.parse`, or
 an epoch string silently becomes the year 1758.
@@ -590,7 +589,7 @@ rather than left for the next reviewer to find.
   predates both rules and breaks both at once — Activity's `All streams` button is a real
   `disabled` carrying `opacity: 0.4` (`ActivityBench.tsx:245-251`), phase-2 code this
   phase did not reopen. Filed rather than fixed here
-  (`docs/backlog/low/pwa-phase3-followups.md` §21).
+  ([#258](https://github.com/anirudhlath/alfred/issues/258) §21).
 - **Never say the house is empty before the server has answered.** An empty list has
   three possible meanings and they are different news: the read was refused
   (`Routines could not be read.`), the read has not landed
@@ -951,6 +950,7 @@ npm run lint          # ESLint
 npm test              # Vitest (jsdom)
 npm run build         # tsc -b && vite build → web/dist/
 npm run preview       # serve web/dist/ locally
+npm run design-sync   # regenerate the claude.ai/design system → design-system/out/ (docs/design-system.md)
 ```
 
 The type check lives in `build` (`tsc -b`), not in `lint`. CI runs `lint`, `test` and
@@ -1045,13 +1045,13 @@ fallback ever grows conditional handling.
   could do that no endpoint supports. Only the first is said out loud in the client: the
   Triggers footer reads `Nothing here edits a trigger — ask Alfred to change or remove
   one.` (`TriggersBench.tsx:160-161`). Restart and log download are absent without comment,
-  because System has no ops section for a sentence to sit in. `docs/backlog/low/pwa-phase3-followups.md`
+  because System has no ops section for a sentence to sit in. [#258](https://github.com/anirudhlath/alfred/issues/258)
   §7 and §10 name the routes each would need.
 - **Telemetry `status`/`error` frames** (`redis_error`, `invalid JSON`) still reach only
   the console, rate-limited by `WARN_EVERY_MS`. The System bench reports the *reads* that
   failed, not the socket's own frames.
 - **Desktop** — phase 6. The client is phone-first and there is no wide composition.
 
-Open follow-ups: `docs/backlog/low/pwa-phase1-followups.md`,
-`docs/backlog/low/pwa-phase2-followups.md` and
-`docs/backlog/low/pwa-phase3-followups.md`.
+Open follow-ups: [#256](https://github.com/anirudhlath/alfred/issues/256),
+[#257](https://github.com/anirudhlath/alfred/issues/257) and
+[#258](https://github.com/anirudhlath/alfred/issues/258).

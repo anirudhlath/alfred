@@ -70,7 +70,7 @@ mypy is strict with the pydantic plugin; line length is 100. New tests go under 
 | `docs/admin-api.md` | Modify (lines 23–43) | Auth model: session only |
 | `docs/webauthn.md` | Modify (lines 14, 50, 55) | 8 h TTL; RP ID is the hostname; gate wording |
 | `CLAUDE.md` | Modify (lines 78, 101, 282) | Project gotchas: gate layout + session TTL |
-| `docs/backlog/low/web-asset-cache-headers.md` | Delete | Done by Task 5 |
+| [#138](https://github.com/anirudhlath/alfred/issues/138) | Delete | Done by Task 5 |
 
 ---
 
@@ -678,7 +678,7 @@ Vite hashes every file under `/assets/`; `index.html` (and every SPA-fallback ro
 - Modify: `core/channels/spa.py` (append)
 - Modify: `core/channels/web_server.py:21, 825-832`
 - Modify: `tests/core/channels/test_spa.py` (append)
-- Delete: `docs/backlog/low/web-asset-cache-headers.md`
+- Delete: [#138](https://github.com/anirudhlath/alfred/issues/138)
 
 - [ ] **Step 1: Write the failing tests**
 

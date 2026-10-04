@@ -21,4 +21,4 @@
 - Routine state transitions to "active"
 
 ## Notes
-- Until actionable notifications are implemented (backlog item), this is the only way to respond
+- Until actionable notifications are implemented ([#64](https://github.com/anirudhlath/alfred/issues/64)), this is the only way to respond

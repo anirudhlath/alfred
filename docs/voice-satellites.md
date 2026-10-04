@@ -203,7 +203,7 @@ bytes.
 `core/channels/web_server.py`) takes 3 recorded samples of the identity speaking. **There is
 no client surface for it in PWA phase 1** — the Settings page that carried the Voice
 Enrollment card was removed in the hard cut, and the Workshop that reinstates one is phase 2
-(`docs/backlog/low/pwa-phase1-followups.md` §5). Until then the endpoint is driven directly.
+([#256](https://github.com/anirudhlath/alfred/issues/256) §5). Until then the endpoint is driven directly.
 The handler decodes each sample to 16kHz PCM
 (`core/voice/audio.decode_to_pcm16k`) and calls `SpeakerID.enroll(identity, samples)`, which
 embeds each sample, averages them, L2-normalizes, and writes to the Redis hash.
@@ -324,7 +324,7 @@ raise, which propagates out of `SatellitePipeline.__call__` into
 plays its error earcon. If Redis is up but nothing ever publishes a matching
 `AlfredResponse` (e.g. the Conscious Engine is down), `publish_and_wait()`'s 60s timeout
 returns a canned apology response instead, which is spoken normally via TTS like any other
-reply. Broader Redis-down recovery is a separate backlog item, not satellite-specific.
+reply. Broader Redis-down recovery is [#68](https://github.com/anirudhlath/alfred/issues/68), not satellite-specific.
 
 **Dev-mode fake satellite (no hardware):** run `wyoming-satellite` directly on the MacBook
 against its built-in mic, point `config/satellites.yaml` at `127.0.0.1`, and start the
