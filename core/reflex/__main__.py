@@ -275,6 +275,7 @@ async def run(config: AlfredConfig) -> None:
             for entry_id, entry_data in batch:
                 try:
                     await process_stream_entry(
+                        entry_id=entry_id,
                         entry_data=entry_data,
                         engine=engine,
                         agent=router,

@@ -1,4 +1,4 @@
-"""Availability bridging — `unavailable`/`unknown` carry no information.
+"""Availability bridging — `unavailable`, `unknown` and no state carry no information.
 
 A device dropping off the network and coming back is not something that happened
 at home. The bridge compares the state an entity comes back in with the last real
@@ -6,32 +6,38 @@ state it had: the same state is a blip and is dropped, a different one is a sing
 real change. It runs before the attention gate, so a blip costs no inference and
 starts no cooldown.
 
-What the bridge remembers is checked through what it does next, never by reading
-the hash, so the tests hold whatever the stored shape is.
+What the bridge remembers is checked through what it does next, not by reading
+what it stored, so the tests hold whatever the stored shape is. The two exceptions
+plant corrupt values on purpose.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+import itertools
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
 import pytest
 
 from bus.schemas.events import ReflexObservation, StateChangedEvent
-from shared.streams import LAST_KNOWN_STATE_KEY
+from shared.streams import AVAILABILITY_DECISION_PREFIX, LAST_KNOWN_STATE_KEY
 from tests.helpers import attention_redis
 
 if TYPE_CHECKING:
     from core.reflex.attention import AttentionSet
 
 ENTITY = "media_player.shield"
-T0 = datetime(2026, 10, 4, 18, 0, tzinfo=UTC)
+
+# Stream entry IDs in arrival order, as Redis assigns them. A test takes one per
+# delivery, and passes the same one again to replay it.
+_ENTRY_MS = itertools.count(1_759_600_000_000)
 
 
-def _event(
-    old: str | None, new: str, entity_id: str = ENTITY, at: datetime | None = None
-) -> StateChangedEvent:
+def _next_entry() -> bytes:
+    return f"{next(_ENTRY_MS)}-0".encode()
+
+
+def _event(old: str | None, new: str, entity_id: str = ENTITY) -> StateChangedEvent:
     return StateChangedEvent(
         source="home-service",
         domain="home",
@@ -39,7 +45,6 @@ def _event(
         old_state=old,
         new_state=new,
         attributes={"friendly_name": "Shield"},
-        **({"timestamp": at} if at is not None else {}),
     )
 
 
@@ -65,6 +70,7 @@ def _with_hash(redis: AsyncMock) -> AsyncMock:
         return True
 
     redis.hashes = hashes
+    redis.strings = strings
     redis.hget = AsyncMock(side_effect=_hget)
     redis.hset = AsyncMock(side_effect=_hset)
     redis.get = AsyncMock(side_effect=_get)
@@ -72,10 +78,12 @@ def _with_hash(redis: AsyncMock) -> AsyncMock:
     return redis
 
 
-async def _bridge(redis: AsyncMock, event: StateChangedEvent) -> StateChangedEvent | None:
+async def _bridge(
+    redis: AsyncMock, event: StateChangedEvent, entry: bytes | None = None
+) -> StateChangedEvent | None:
     from core.reflex.availability import bridge_availability
 
-    return await bridge_availability(redis, event)
+    return await bridge_availability(redis, event, entry if entry is not None else _next_entry())
 
 
 async def _seeded(state: str, redis: AsyncMock | None = None) -> AsyncMock:
@@ -118,7 +126,7 @@ async def test_coming_back_in_a_different_state_is_one_change() -> None:
     bridged = await _bridge(redis, event)
 
     assert _transition(bridged) == ("off", "on")
-    # The rest of the event — and above all its timestamp — is the HA event's own.
+    # The rest of the event — and above all its timestamp — is the event's own.
     assert bridged is not None
     assert bridged.model_dump(exclude={"old_state"}) == event.model_dump(exclude={"old_state"})
     # And "on" is now the state to compare the next return against.
@@ -177,6 +185,16 @@ async def test_a_real_change_passes_unchanged_and_is_remembered() -> None:
 
 
 @pytest.mark.asyncio
+async def test_an_empty_string_is_a_state_like_any_other() -> None:
+    """An ``input_text`` can be ``""``; leaving it is a change, on every delivery."""
+    redis = await _seeded("")
+    returned, entry = _event("unavailable", "hello"), _next_entry()
+
+    assert _transition(await _bridge(redis, returned, entry)) == ("", "hello")
+    assert _transition(await _bridge(redis, returned, entry)) == ("", "hello")
+
+
+@pytest.mark.asyncio
 async def test_an_unreadable_stored_state_counts_as_unknown() -> None:
     redis = _with_hash(AsyncMock())
     redis.hashes[LAST_KNOWN_STATE_KEY] = {ENTITY: "not json {"}
@@ -215,27 +233,28 @@ async def test_a_failed_lookup_drops_a_return_from_unavailable() -> None:
 # Redelivery
 #
 # The runner ACKs only on success, and its reclaim pass replays what failed (the
-# model down, a tool call raising). The bridge has already recorded the event by
-# then, so a replay must not be compared against the event's own state.
+# model down, a tool call raising) under the same stream entry ID. By then the
+# bridge has recorded the event, and newer events for the entity have often moved
+# its state on, so a replay must not be decided against either.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_a_redelivered_return_is_bridged_again() -> None:
     redis = await _seeded("off")
-    event = _event("unavailable", "on")
+    returned, entry = _event("unavailable", "on"), _next_entry()
 
-    assert _transition(await _bridge(redis, event)) == ("off", "on")
-    assert _transition(await _bridge(redis, event)) == ("off", "on")
+    assert _transition(await _bridge(redis, returned, entry)) == ("off", "on")
+    assert _transition(await _bridge(redis, returned, entry)) == ("off", "on")
 
 
 @pytest.mark.asyncio
 async def test_a_redelivered_blip_stays_a_blip() -> None:
     redis = await _seeded("off")
-    event = _event("unavailable", "off")
+    blip, entry = _event("unavailable", "off"), _next_entry()
 
-    assert await _bridge(redis, event) is None
-    assert await _bridge(redis, event) is None
+    assert await _bridge(redis, blip, entry) is None
+    assert await _bridge(redis, blip, entry) is None
 
 
 @pytest.mark.asyncio
@@ -243,22 +262,22 @@ async def test_a_return_replayed_after_a_newer_event_is_bridged_again() -> None:
     """Media players send attribute-only updates every few seconds, so something
     usually lands between a failed delivery and its replay."""
     redis = await _seeded("off")
-    returned = _event("unavailable", "on", at=T0)
+    returned, entry = _event("unavailable", "on"), _next_entry()
 
-    assert _transition(await _bridge(redis, returned)) == ("off", "on")
+    assert _transition(await _bridge(redis, returned, entry)) == ("off", "on")
     # A new title on the same entity, while the return waits for the reclaim pass.
-    assert await _bridge(redis, _event("on", "on", at=T0 + timedelta(seconds=2))) is not None
-    assert _transition(await _bridge(redis, returned)) == ("off", "on")
+    assert await _bridge(redis, _event("on", "on")) is not None
+    assert _transition(await _bridge(redis, returned, entry)) == ("off", "on")
 
 
 @pytest.mark.asyncio
 async def test_a_blip_replayed_after_a_newer_event_stays_a_blip() -> None:
     redis = await _seeded("off")
-    blip = _event("unavailable", "off", at=T0)
+    blip, entry = _event("unavailable", "off"), _next_entry()
 
-    assert await _bridge(redis, blip) is None
-    assert await _bridge(redis, _event("off", "on", at=T0 + timedelta(seconds=2))) is not None
-    assert await _bridge(redis, blip) is None
+    assert await _bridge(redis, blip, entry) is None
+    assert await _bridge(redis, _event("off", "on")) is not None
+    assert await _bridge(redis, blip, entry) is None
 
 
 @pytest.mark.asyncio
@@ -269,24 +288,48 @@ async def test_a_late_replay_does_not_roll_the_known_state_back() -> None:
     would be stored and sent to the model as a turn-off that never happened.
     """
     redis = await _seeded("off")
-    turned_on = _event("off", "on", at=T0)
-    turned_off = _event("on", "off", at=T0 + timedelta(seconds=30))
+    turned_on, on_entry = _event("off", "on"), _next_entry()
+    turned_off = _event("on", "off")
 
-    assert await _bridge(redis, turned_on) is turned_on
+    assert await _bridge(redis, turned_on, on_entry) is turned_on
     assert await _bridge(redis, turned_off) is turned_off
-    assert await _bridge(redis, turned_on) is turned_on  # the replay still goes on
+    assert await _bridge(redis, turned_on, on_entry) is turned_on  # the replay still goes on
 
-    assert await _bridge(redis, _event("unavailable", "off", at=T0 + timedelta(minutes=5))) is None
+    assert await _bridge(redis, _event("unavailable", "off")) is None
 
 
 @pytest.mark.asyncio
-async def test_only_the_same_event_is_treated_as_a_replay() -> None:
+async def test_a_replay_retries_a_write_the_first_delivery_lost() -> None:
+    """Otherwise the next return is compared against the state before this one."""
+    redis = await _seeded("off")
+    save = redis.hset.side_effect
+    returned, entry = _event("unavailable", "on"), _next_entry()
+
+    redis.hset.side_effect = RuntimeError("OOM command not allowed")
+    assert _transition(await _bridge(redis, returned, entry)) == ("off", "on")
+    redis.hset.side_effect = save
+    assert _transition(await _bridge(redis, returned, entry)) == ("off", "on")
+
+    assert await _bridge(redis, _event("unavailable", "on")) is None
+
+
+@pytest.mark.asyncio
+async def test_only_the_same_delivery_is_treated_as_a_replay() -> None:
     """A fresh return in the state the last one left is a blip, not a second change."""
     redis = await _seeded("off")
 
     assert _transition(await _bridge(redis, _event("unavailable", "on"))) == ("off", "on")
     assert await _bridge(redis, _event("on", "unavailable")) is None
     assert await _bridge(redis, _event("unavailable", "on")) is None
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_decision_is_a_blip() -> None:
+    redis = await _seeded("off")
+    entry = _next_entry()
+    redis.strings[f"{AVAILABILITY_DECISION_PREFIX}{entry.decode()}"] = "not json {"
+
+    assert await _bridge(redis, _event("unavailable", "on"), entry) is None
 
 
 # ---------------------------------------------------------------------------
@@ -303,10 +346,12 @@ async def _process(
     event: StateChangedEvent,
     engine: AsyncMock,
     attention: AttentionSet | None = None,
+    entry: bytes | None = None,
 ) -> bool:
     from core.reflex.runner import process_stream_entry
 
     return await process_stream_entry(
+        entry_id=entry if entry is not None else _next_entry(),
         entry_data=_entry(event),
         engine=engine,
         agent=AsyncMock(),
@@ -346,16 +391,18 @@ async def test_a_bridged_change_reaches_the_model_and_memory_as_one_change() -> 
 async def test_a_bridged_change_survives_a_failed_inference() -> None:
     """Left un-ACKed when the model is down, it must reach the model on the replay."""
     redis = await _seeded("off")
-    entry = _event("unavailable", "on")
+    returned, entry = _event("unavailable", "on"), _next_entry()
     engine = AsyncMock()
-    engine.process_event = AsyncMock(side_effect=[ConnectionError("model down"), None])
+    engine.process_event = AsyncMock(side_effect=[ConnectionError("model down"), None, None])
 
     with pytest.raises(ConnectionError):
-        await _process(redis, entry, engine)
-    await _process(redis, entry, engine)
+        await _process(redis, returned, engine, entry=entry)
+    await _process(redis, _event("on", "on"), engine)  # an update lands in between
+    await _process(redis, returned, engine, entry=entry)
 
     assert [_transition(c.args[0]) for c in engine.process_event.await_args_list] == [
         ("off", "on"),
+        ("on", "on"),
         ("off", "on"),
     ]
 

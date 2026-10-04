@@ -51,11 +51,12 @@ INGEST_ATTEMPTS_KEY = "alfred:memory:ingest:attempts"
 # what keeps episodic memory readable.
 OBSERVED_ENTITY_PREFIX = "alfred:observer:seen:"
 
-# Last real state per entity (hash field -> JSON {state, at}), never
-# `unavailable`/`unknown`. The Reflex runner compares an entity coming back against
-# it, so a device that drops off the network and returns unchanged is not recorded
-# as two changes. Plus, per returning event (+ event_id -> the state it came back
-# from, "" for a blip; short TTL), the decision a replay of that event reuses.
+# Last real state per entity (hash field -> JSON {state, entry}: the state and the
+# stream entry ID that set it), never `unavailable`/`unknown`. The Reflex runner
+# compares an entity coming back against it, so a device that drops off the network
+# and returns unchanged is not recorded as two changes. Plus, per returning entry
+# (+ entry ID -> JSON {left}: the state it came back from, null for a blip; short
+# TTL), the decision a replay of that entry reuses.
 LAST_KNOWN_STATE_KEY = "alfred:reflex:last_known_state"
 AVAILABILITY_DECISION_PREFIX = "alfred:reflex:returned:"
 

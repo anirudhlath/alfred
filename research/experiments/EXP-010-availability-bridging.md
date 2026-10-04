@@ -28,11 +28,35 @@ about that rate, and no flaky device dominates the hot store.
 ## Method
 
 1. **Offline replay (H1, H2).** HA's recorder history for the 77 attention-set entities
-   that changed state over 82.3 days was turned into 46,911 consecutive
-   `(old_state, new_state)` transitions with their timestamps. Each transition was fed,
-   in time order, through the production `bridge_availability` with an in-memory Redis
-   double. The replay counted what passed, what was bridged, and whether anything that
-   passed still had `unavailable`, `unknown` or no state on either side.
+   that changed state over 82.3 days was exported as 46,911 consecutive transitions, one
+   CSV row each (`ts_utc, entity_id, old_state, new_state`). The export is private home
+   data and is not in the repo. Each row was fed, in time order, through the production
+   `bridge_availability` with an in-memory Redis double and a synthesized stream entry ID.
+   The replay counted what passed, what was bridged, and whether anything that passed
+   still had `unavailable`, `unknown` or no state on either side. It was run against the
+   bridge as merged, the replay-safe version keyed on stream entry IDs; the first,
+   simpler version gave identical counts. The harness:
+
+   ```python
+   class FakeRedis:  # HGET/HSET/GET/SET over dicts, bytes out like the real pool
+       def __init__(self): self.h, self.s = {}, {}
+       async def hget(self, _k, f): return None if f not in self.h else self.h[f].encode()
+       async def hset(self, _k, f, v): self.h[f] = v
+       async def get(self, k): return None if k not in self.s else self.s[k].encode()
+       async def set(self, k, v, **_kw): self.s[k] = v
+
+   redis = FakeRedis()
+   for i, row in enumerate(sorted(csv.DictReader(open(path)), key=itemgetter("ts_utc"))):
+       event = StateChangedEvent(
+           source="home-service", domain="home", entity_id=row["entity_id"],
+           old_state=row["old_state"] or None, new_state=row["new_state"],
+           timestamp=datetime.fromisoformat(row["ts_utc"]),
+       )
+       entry_id = f"{int(event.timestamp.timestamp() * 1000)}-{i}"
+       passed = await bridge_availability(redis, event, entry_id)
+       # count: passed is None (dropped), passed is not event (bridged), and whether
+       # passed.old_state or passed.new_state is unavailable/unknown/None (leaked)
+   ```
 2. **Production (H3).** One week after the merge deploys, count passive observations per
    day in the hot store, and the largest share any single entity holds. Post the numbers
    on #265.
@@ -69,7 +93,9 @@ later slice in #265.
 Two behaviours are not exercised by the replay, so unit tests cover them
 (`tests/core/reflex/test_availability.py`):
 
-- Redelivery. The runner ACKs only on success, and the replay has no failures.
+- Redelivery. The runner ACKs only on success, and the replay has no failures. Replays
+  are keyed on the stream entry ID, so a return is decided once, and a late replay
+  cannot roll the known state back.
 - `None → state` returns. HA re-adds every entity this way after a restart, but the
   recorder export has no such rows.
 

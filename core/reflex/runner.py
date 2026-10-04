@@ -139,6 +139,7 @@ async def ensure_consumer_group(
 
 
 async def process_stream_entry(
+    entry_id: bytes | str,
     entry_data: Mapping[str | bytes, str | bytes],
     engine: ReflexEngine,
     agent: DomainAgent,
@@ -172,7 +173,7 @@ async def process_stream_entry(
     # Availability bridge — a device dropping off the network and coming back is
     # not a change. Ahead of the gate, so a blip costs no inference and does not
     # start the cooldown that would swallow a real change right behind it.
-    bridged = await bridge_availability(redis, event)
+    bridged = await bridge_availability(redis, event, entry_id)
     if bridged is None:
         return False
     event = bridged

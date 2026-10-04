@@ -156,6 +156,7 @@ async def test_no_action_path_publishes_an_observation() -> None:
     redis.set = AsyncMock(return_value=True)
 
     took_action = await process_stream_entry(
+        entry_id=b"1-0",
         entry_data=_entry(_event()),
         engine=engine,
         agent=agent,
@@ -183,6 +184,7 @@ async def test_debounced_no_action_publishes_nothing() -> None:
     redis.set = AsyncMock(return_value=None)  # inside the window
 
     took_action = await process_stream_entry(
+        entry_id=b"1-0",
         entry_data=_entry(_event()),
         engine=engine,
         agent=AsyncMock(),
@@ -207,6 +209,7 @@ async def test_attention_gated_event_is_not_observed() -> None:
     attention.should_fire = AsyncMock(return_value=False)
 
     took_action = await process_stream_entry(
+        entry_id=b"1-0",
         entry_data=_entry(_event()),
         engine=engine,
         agent=AsyncMock(),
@@ -248,6 +251,7 @@ async def test_action_path_observation_is_unchanged() -> None:
     redis = AsyncMock()
 
     took_action = await process_stream_entry(
+        entry_id=b"1-0",
         entry_data=_entry(_event()),
         engine=engine,
         agent=agent,
@@ -437,6 +441,7 @@ async def test_a_failed_observation_write_does_not_block_the_ack() -> None:
     )
 
     took_action = await process_stream_entry(
+        entry_id=b"1-0",
         entry_data=_entry(_event()),
         engine=engine,
         agent=AsyncMock(),
@@ -459,6 +464,7 @@ async def test_a_failed_debounce_write_does_not_block_the_ack() -> None:
     redis.set = AsyncMock(side_effect=Exception("OOM command not allowed"))
 
     took_action = await process_stream_entry(
+        entry_id=b"1-0",
         entry_data=_entry(_event()),
         engine=engine,
         agent=AsyncMock(),
@@ -498,6 +504,7 @@ async def test_the_action_path_still_propagates_write_failures() -> None:
 
     with pytest.raises(ConnectionError):
         await process_stream_entry(
+            entry_id=b"1-0",
             entry_data=_entry(_event()),
             engine=engine,
             agent=agent,
