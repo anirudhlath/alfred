@@ -309,7 +309,7 @@ def open_env(
         cold=cold,
         episodic=EpisodicMemory(hot=hot, cold=cold, embedder=embedder),
         context_index=ContextIndexManager(hot, embedder, semantic_dirs=[preferences, profile]),
-        recall_view=ContextIndexManager(recall_view_store, embedder),
+        recall_view=ContextIndexManager(recall_view_store, embedder, archive=cold),
         recall_view_store=recall_view_store,
         context_reader=ContextReader(redis),
         scorer=SignificanceScorer(redis=redis, config=config),

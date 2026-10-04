@@ -187,6 +187,7 @@ async def run(config: AlfredConfig) -> None:
                 preferences_dir(),
                 profile_dir(),
             ],
+            archive=cold_store,  # memory_recall_memories reaches what decay moved
         )
         significance_scorer = SignificanceScorer(redis=r, config=config)
         log.info(

@@ -87,12 +87,8 @@ async def _recall_memories(
     query: str = params.get("query", "")
     limit: int = params.get("limit", 10)
 
-    results = await context_index.search_text(
-        query=query,
-        limit=limit,
-        include_compressed=True,  # Deliberate recall includes compressed
-        update_stats=True,  # Deliberate recall counts as using the memory
-    )
+    # Hot and the cold archive, compressed entries included; counts as using the memory.
+    results = await context_index.recall(query, limit=limit)
 
     # Filter by type if specified
     types: list[str] | None = params.get("types")

@@ -163,7 +163,11 @@ async def probe(
         open_hit=target.id in open_ids,
         open_rank=_rank(open_ids, target.id),
         target_score=target_score,
-        tool_hit=any(m["content"] == target_content for m in tool_reply["memories"]),
+        # The tool returns no ids, so the target's own text stands in for its id.
+        tool_hit=any(
+            names_target(target_content, target_content, m["content"], m["source"], m["content"])
+            for m in tool_reply["memories"]
+        ),
         recall_hit=any(
             names_target(target.id, target_content, r.entry.id, r.entry.source, r.entry.summary)
             for r in recalled
