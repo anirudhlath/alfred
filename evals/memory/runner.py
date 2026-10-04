@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 from core.memory.ingestor import ingest_observation
 from core.memory.schemas import EpisodicEntry, SignificanceScore
@@ -31,11 +32,16 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# The simulated clock runs in UTC (``SIM_START``), so the stamps in stored text do too.
+_SIM_ZONE = ZoneInfo("UTC")
+
 
 async def write_memory(env: SimEnv, memory: SimMemory) -> None:
     """The production write path: the Memory Ingestor, or the Librarian's episodic write."""
     if memory.observation is not None:
-        await ingest_observation(memory.observation, env.episodic, env.scorer, env.passive_scorer)
+        await ingest_observation(
+            memory.observation, env.episodic, env.scorer, env.passive_scorer, tz=_SIM_ZONE
+        )
         return
     entry = EpisodicEntry(
         id=memory.id,

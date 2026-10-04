@@ -83,6 +83,8 @@ sequenceDiagram
     MQTT->>Bridge: Deliver message
     Bridge->>Redis: XADD alfred:home:state_changed
     Redis->>Runner: XREADGROUP (consumer group)
+    Runner->>Redis: HSET alfred:reflex:last_known_state (HGET first on a return)
+    Note over Runner: unavailable/unknown → no information: dropped here,<br/>or bridged to one last → new change
     Runner->>Engine: process_event(StateChangedEvent)
     Engine->>Engine: Load preferences + build tool prompt
     Engine->>Ollama: POST /api/chat (prompt + event + tools)
@@ -96,7 +98,6 @@ sequenceDiagram
         Svc-->>Agent: JSON-RPC response
         Agent-->>Runner: ActionResult
         Runner->>Redis: XADD alfred:home:action_results
-        Runner->>Redis: LPUSH alfred:scratchpad:queue
         Runner->>Redis: XADD alfred:reflex:observations (action + result)
     else No action — passive observation
         Runner->>Redis: SET alfred:observer:seen:{entity_id} NX EX 300
@@ -111,6 +112,7 @@ sequenceDiagram
 
 **Key behaviors:**
 
+- `unavailable` and `unknown` carry no information. Before the attention gate, `bridge_availability()` (`core/reflex/availability.py`) drops any transition into either, and compares an entity coming back with its last real state in `alfred:reflex:last_known_state`: the same state is a blip and is dropped, a different one goes on as a single `last → new` change (`off → unavailable → on` is `off → on`). Running ahead of the gate means a blip costs no inference and does not start the gate's 5 s cooldown, which would swallow a real change right behind it. A return with no known state (first sight, or a fresh hash) is dropped. A failed lookup drops the return; a failed write only logs. Each record also keeps the event that set it and the state before it, so an entry the runner replays after a failure (it ACKs only on success) is bridged the same way the second time instead of being compared with its own state.
 - If Ollama is down, `process_event` raises an exception. The Runner does NOT ACK the message, so Redis redelivers it on the next `XREADGROUP` cycle.
 - If the SLM returns `{"action": "none"}`, no action is dispatched and the message is ACKed normally — but the event is no longer forgotten. `observe_passively()` (`core/reflex/runner.py`) publishes a `ReflexObservation` with `action=None` to `alfred:reflex:observations`, debounced per entity by a `SET NX EX` on `alfred:observer:seen:{entity_id}` (`OBSERVATION_DEBOUNCE_SECONDS`, default 300). The write is best-effort and wrapped in its own `try` — a failure is logged and the message is still ACKed, because a passive observation is bookkeeping for an event the engine has already finished handling, and propagating would feed every no-action event back into a fresh SLM inference on the next reclaim pass. See 3.7.1 and [the design spec](superpowers/specs/2026-09-03-passive-observation-design.md).
 - The SLM response is validated: `target_service` must match a registered service in the tool registry. Unknown services are rejected.
@@ -498,8 +500,17 @@ group). It handles **two** shapes of observation:
 
 | `obs.action` | `EpisodicEntry.source` | Summary | Frequency key used for novelty |
 |---|---|---|---|
-| an `ActionRequest` | `"reflex"` | `[reflex:{origin}] {tool_name}({params}) → {status}` | `alfred:entity:freq` |
-| `None` (passive) | `"observation"` | `[observation] {entity}: {old} → {new} (key=value, …)` | `alfred:entity:freq:observed` |
+| an `ActionRequest` | `"reflex"` | `[reflex:{origin}] {when} — {tool_name}({params}) → {status}` | `alfred:entity:freq` |
+| `None` (passive) | `"observation"` | `[observation] {when} — {entity}: {old} → {new} (key=value, …)` | `alfred:entity:freq:observed` |
+
+`{when}` is the HA event's local weekday, date and time (`Sat 2026-10-03 18:39`), read
+from `trigger_event["timestamp"]` in the user's zone (`get_user_timezone`, read per
+entry) — not the time the observation was built, which is after Reflex inference. The
+entry's `timestamp` is that event time too; the observation's own is the fallback when the
+trigger event carries none. Without it a lamp that turns off every evening was the same
+text, with the same embedding, every evening. The semantic keys stay time-free, so a
+time-free query still matches them at the recall floor calibrated for them. `tz` is a
+required argument of `ingest_observation`, for the same reason `passive_scorer` is.
 
 **Passive observations** are the no-action path described in [Section 2](#2-event-pipeline):
 the Reflex Engine saw the event, considered it, and did nothing. Before this existed the
@@ -845,6 +856,7 @@ All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `
 | `alfred:reflex:observations` | Stream | `ReflexObservation` feed — reflex actions *and* passive observations, drained by the `memory-ingestor` group |
 | `alfred:entity:freq` | Sorted Set | Entity sighting counts behind the novelty dimension of `SignificanceScorer` (novelty = `1/count`) |
 | `alfred:entity:freq:observed` | Sorted Set | The same counts for **passive** observations only — a separate population, so ~200–300 entries/day cannot flatten novelty for real reflex actions |
+| `alfred:reflex:last_known_state` | Hash | Entity ID → JSON `{state, event_id, before}`: its last real state (never `unavailable`/`unknown`), the event that set it and the state before that, for the Reflex runner's availability bridge (`core/reflex/availability.py`) |
 | `alfred:observer:seen:{entity_id}` | String | Per-entity passive-observation debounce (`SET NX EX`, TTL `OBSERVATION_DEBOUNCE_SECONDS`, default 300); present means "already recorded this entity recently, skip" |
 | `alfred:memory:ingest:attempts` | Hash | Stream-entry ID → delivery count for the Memory Ingestor; at 5 the entry is ACK-dropped so a deterministically-failing entry cannot starve the PEL (TTL 3600s, crash-safety net only) |
 | `alfred:identity:voiceprint` | Hash | Voiceprint embeddings for identity |

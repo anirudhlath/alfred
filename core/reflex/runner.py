@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 import redis.asyncio as aioredis
 
 from bus.schemas.events import ReflexObservation, StateChangedEvent
+from core.reflex.availability import bridge_availability
 from shared.streams import OBSERVED_ENTITY_PREFIX, decode_stream_value
 from shared.types import AioRedis as AioRedis  # noqa: TC001  # re-export for backward compat
 
@@ -166,6 +167,14 @@ async def process_stream_entry(
     except Exception as e:
         logger.error("Failed to parse event: %s — %s", e, event_str[:200])
         return False
+
+    # Availability bridge — a device dropping off the network and coming back is
+    # not a change. Ahead of the gate, so a blip costs no inference and does not
+    # start the cooldown that would swallow a real change right behind it.
+    bridged = await bridge_availability(redis, event)
+    if bridged is None:
+        return False
+    event = bridged
 
     # Attention gate — only attention-set members on real transitions reach
     # the SLM. Gated events stay fully visible to triggers and context

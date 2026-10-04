@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -55,7 +57,7 @@ async def test_ingest_observation_writes_to_episodic() -> None:
 
     obs = _make_observation()
 
-    await ingest_observation(obs, mock_episodic, mock_scorer, AsyncMock())
+    await ingest_observation(obs, mock_episodic, mock_scorer, AsyncMock(), tz=ZoneInfo("UTC"))
 
     mock_episodic.write.assert_called_once()
     entry: EpisodicEntry = mock_episodic.write.call_args.args[0]
@@ -64,6 +66,28 @@ async def test_ingest_observation_writes_to_episodic() -> None:
     assert "light.hallway" in entry.entities
     assert entry.entities == ["light.hallway"]
     mock_scorer.score.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_reflex_actions_say_when_they_happened() -> None:
+    """Stamped like passive observations: the HA event's local time, not the write's."""
+    from core.memory.ingestor import ingest_observation
+
+    event_at = datetime(2026, 10, 4, 0, 39, tzinfo=UTC)
+    obs = _make_observation().model_copy(update={"timestamp": event_at + timedelta(minutes=2)})
+    obs.trigger_event["timestamp"] = event_at.isoformat()
+    mock_episodic = AsyncMock()
+
+    await ingest_observation(
+        obs, mock_episodic, AsyncMock(), AsyncMock(), tz=ZoneInfo("America/Los_Angeles")
+    )
+
+    entry: EpisodicEntry = mock_episodic.write.call_args.args[0]
+    assert entry.timestamp == event_at
+    assert entry.summary.startswith(
+        "[reflex:state_change] Sat 2026-10-03 17:39 — smart_home.turn_on(entity_id=light.hallway)"
+    )
+    assert entry.semantic_key == "Reflex state_change action: smart_home.turn_on on light.hallway"
 
 
 @pytest.mark.asyncio
@@ -79,7 +103,7 @@ async def test_ingest_observation_includes_decision_context() -> None:
 
     obs = _make_observation(decision_context="Motion detected at night, turning on hallway light")
 
-    await ingest_observation(obs, mock_episodic, mock_scorer, AsyncMock())
+    await ingest_observation(obs, mock_episodic, mock_scorer, AsyncMock(), tz=ZoneInfo("UTC"))
 
     entry: EpisodicEntry = mock_episodic.write.call_args.args[0]
     assert "Motion detected at night" in entry.summary
@@ -98,7 +122,7 @@ async def test_ingest_observation_trigger_fired_origin() -> None:
 
     obs = _make_observation(origin="trigger_fired")
 
-    await ingest_observation(obs, mock_episodic, mock_scorer, AsyncMock())
+    await ingest_observation(obs, mock_episodic, mock_scorer, AsyncMock(), tz=ZoneInfo("UTC"))
 
     entry: EpisodicEntry = mock_episodic.write.call_args.args[0]
     assert entry.source == "reflex"
@@ -118,7 +142,7 @@ async def test_ingest_observation_extracts_entities() -> None:
 
     obs = _make_observation(entity_id="light.kitchen")
 
-    await ingest_observation(obs, mock_episodic, mock_scorer, AsyncMock())
+    await ingest_observation(obs, mock_episodic, mock_scorer, AsyncMock(), tz=ZoneInfo("UTC"))
 
     entry: EpisodicEntry = mock_episodic.write.call_args.args[0]
     assert "light.kitchen" in entry.entities

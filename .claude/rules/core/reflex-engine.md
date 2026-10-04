@@ -13,7 +13,8 @@ The Reflex Engine (System 1) is the fast-path SLM that processes events.
 - Reads tools from ToolRegistry (Redis `alfred:tool_registry`) — NEVER hardcode tool names
 - Builds system prompt dynamically from registered tool metadata
 - Validates SLM-returned target_service against registered services
-- Appends observations to scratchpad via Redis List (never direct file write)
+- Records what it saw and did on `alfred:reflex:observations`; the Memory Ingestor writes episodic memory. It never writes the scratchpad
+- `unavailable`/`unknown` never reach the SLM — `core/reflex/availability.py` drops or bridges them before the attention gate
 - Target latency: sub-500ms event → action
 - All inference calls MUST use @track_latency and @track_tokens decorators
 - Never call the cloud LLM (System 2) from the reflex path

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -11,6 +13,12 @@ from bus.schemas.events import ReflexObservation
 
 if TYPE_CHECKING:
     from core.memory.schemas import EpisodicEntry
+
+# When HA saw the change. Midnight UTC is still Saturday evening in Los Angeles, so the
+# zone visibly decides the day.
+EVENT_AT = datetime(2026, 10, 4, 0, 39, tzinfo=UTC)
+UTC_ZONE = ZoneInfo("UTC")
+STAMP = "Sun 2026-10-04 00:39"
 
 
 def _passive(
@@ -27,6 +35,8 @@ def _passive(
             "old_state": old_state,
             "new_state": new_state,
             "attributes": attributes if attributes is not None else {},
+            # As it arrives off the stream: the event model's own ISO timestamp.
+            "timestamp": EVENT_AT.isoformat(),
         },
     )
 
@@ -58,7 +68,7 @@ async def test_passive_observation_uses_the_observation_source(
     from core.memory.ingestor import ingest_observation
 
     episodic = AsyncMock()
-    await ingest_observation(_passive(), episodic, scorer, passive_scorer)
+    await ingest_observation(_passive(), episodic, scorer, passive_scorer, tz=UTC_ZONE)
 
     entry: EpisodicEntry = episodic.write.call_args.args[0]
     assert entry.source == "observation"
@@ -72,12 +82,16 @@ async def test_summary_describes_the_transition(
 
     episodic = AsyncMock()
     await ingest_observation(
-        _passive(attributes={"media_title": "Harry Potter"}), episodic, scorer, passive_scorer
+        _passive(attributes={"media_title": "Harry Potter"}),
+        episodic,
+        scorer,
+        passive_scorer,
+        tz=UTC_ZONE,
     )
 
     entry: EpisodicEntry = episodic.write.call_args.args[0]
     assert entry.summary == (
-        "[observation] media_player.living_room_apple_tv: "
+        f"[observation] {STAMP} — media_player.living_room_apple_tv: "
         "paused → playing (media_title=Harry Potter)"
     )
 
@@ -90,11 +104,15 @@ async def test_summary_without_salient_attributes(
 
     episodic = AsyncMock()
     await ingest_observation(
-        _passive("binary_sensor.front_door", "off", "on"), episodic, scorer, passive_scorer
+        _passive("binary_sensor.front_door", "off", "on"),
+        episodic,
+        scorer,
+        passive_scorer,
+        tz=UTC_ZONE,
     )
 
     entry: EpisodicEntry = episodic.write.call_args.args[0]
-    assert entry.summary == "[observation] binary_sensor.front_door: off → on"
+    assert entry.summary == f"[observation] {STAMP} — binary_sensor.front_door: off → on"
 
 
 @pytest.mark.asyncio
@@ -119,11 +137,13 @@ async def test_salient_attributes_are_folded_in_declared_order(
         episodic,
         scorer,
         passive_scorer,
+        tz=UTC_ZONE,
     )
 
     entry: EpisodicEntry = episodic.write.call_args.args[0]
     assert entry.summary == (
-        "[observation] light.kitchen: off → on (brightness=178, friendly_name=Kitchen Light)"
+        f"[observation] {STAMP} — light.kitchen: off → on "
+        "(brightness=178, friendly_name=Kitchen Light)"
     )
     assert "ignored" not in entry.summary
 
@@ -141,10 +161,11 @@ async def test_a_zero_valued_attribute_is_still_rendered(
         episodic,
         scorer,
         passive_scorer,
+        tz=UTC_ZONE,
     )
 
     entry: EpisodicEntry = episodic.write.call_args.args[0]
-    assert entry.summary == "[observation] light.kitchen: on → off (brightness=0)"
+    assert entry.summary == f"[observation] {STAMP} — light.kitchen: on → off (brightness=0)"
 
 
 @pytest.mark.asyncio
@@ -165,10 +186,11 @@ async def test_non_mapping_attributes_do_not_crash_the_ingest(
         episodic,
         scorer,
         passive_scorer,
+        tz=UTC_ZONE,
     )
 
     entry: EpisodicEntry = episodic.write.call_args.args[0]
-    assert entry.summary == "[observation] light.kitchen: off → on"
+    assert entry.summary == f"[observation] {STAMP} — light.kitchen: off → on"
 
 
 @pytest.mark.asyncio
@@ -186,12 +208,17 @@ async def test_a_falsy_state_is_not_rewritten_as_unknown(
     obs = ReflexObservation(
         source="reflex-engine",
         origin="state_change",
-        trigger_event={"entity_id": "sensor.power", "old_state": 0, "new_state": 42},
+        trigger_event={
+            "entity_id": "sensor.power",
+            "old_state": 0,
+            "new_state": 42,
+            "timestamp": EVENT_AT.isoformat(),
+        },
     )
-    await ingest_observation(obs, episodic, scorer, passive_scorer)
+    await ingest_observation(obs, episodic, scorer, passive_scorer, tz=UTC_ZONE)
 
     entry: EpisodicEntry = episodic.write.call_args.args[0]
-    assert entry.summary == "[observation] sensor.power: 0 → 42"
+    assert entry.summary == f"[observation] {STAMP} — sensor.power: 0 → 42"
 
 
 @pytest.mark.asyncio
@@ -205,12 +232,16 @@ async def test_missing_old_state_is_rendered_as_unknown(
     obs = ReflexObservation(
         source="reflex-engine",
         origin="state_change",
-        trigger_event={"entity_id": "sensor.new_device", "new_state": "22.5"},
+        trigger_event={
+            "entity_id": "sensor.new_device",
+            "new_state": "22.5",
+            "timestamp": EVENT_AT.isoformat(),
+        },
     )
-    await ingest_observation(obs, episodic, scorer, passive_scorer)
+    await ingest_observation(obs, episodic, scorer, passive_scorer, tz=UTC_ZONE)
 
     entry: EpisodicEntry = episodic.write.call_args.args[0]
-    assert entry.summary == "[observation] sensor.new_device: unknown → 22.5"
+    assert entry.summary == f"[observation] {STAMP} — sensor.new_device: unknown → 22.5"
 
 
 @pytest.mark.asyncio
@@ -220,7 +251,9 @@ async def test_entities_come_from_the_trigger_event(
     from core.memory.ingestor import ingest_observation
 
     episodic = AsyncMock()
-    await ingest_observation(_passive("light.hallway"), episodic, scorer, passive_scorer)
+    await ingest_observation(
+        _passive("light.hallway"), episodic, scorer, passive_scorer, tz=UTC_ZONE
+    )
 
     entry: EpisodicEntry = episodic.write.call_args.args[0]
     assert entry.entities == ["light.hallway"]
@@ -232,7 +265,7 @@ async def test_semantic_key_is_searchable(scorer: AsyncMock, passive_scorer: Asy
 
     episodic = AsyncMock()
     await ingest_observation(
-        _passive("light.hallway", "off", "on"), episodic, scorer, passive_scorer
+        _passive("light.hallway", "off", "on"), episodic, scorer, passive_scorer, tz=UTC_ZONE
     )
 
     entry: EpisodicEntry = episodic.write.call_args.args[0]
@@ -248,7 +281,7 @@ async def test_the_entry_is_keyed_by_the_stable_observation_id(
 
     episodic = AsyncMock()
     obs = _passive()
-    await ingest_observation(obs, episodic, scorer, passive_scorer)
+    await ingest_observation(obs, episodic, scorer, passive_scorer, tz=UTC_ZONE)
 
     entry: EpisodicEntry = episodic.write.call_args.args[0]
     assert entry.id == obs.observation_id
@@ -278,10 +311,10 @@ async def test_reprocessing_an_observation_does_not_create_a_second_entry(
     # Round-trip through the wire the way a redelivered stream entry does.
     raw = _passive().model_dump_json()
     await ingest_observation(
-        ReflexObservation.model_validate_json(raw), episodic, scorer, passive_scorer
+        ReflexObservation.model_validate_json(raw), episodic, scorer, passive_scorer, tz=UTC_ZONE
     )
     await ingest_observation(
-        ReflexObservation.model_validate_json(raw), episodic, scorer, passive_scorer
+        ReflexObservation.model_validate_json(raw), episodic, scorer, passive_scorer, tz=UTC_ZONE
     )
 
     assert episodic.write.await_count == 2
@@ -296,7 +329,7 @@ async def test_passive_scorer_is_used_when_supplied(
     from core.memory.ingestor import ingest_observation
 
     episodic = AsyncMock()
-    await ingest_observation(_passive(), episodic, scorer, passive_scorer)
+    await ingest_observation(_passive(), episodic, scorer, passive_scorer, tz=UTC_ZONE)
 
     passive_scorer.score.assert_awaited_once()
     scorer.score.assert_not_awaited()
@@ -330,13 +363,183 @@ async def test_action_observations_still_use_the_default_scorer(
     )
 
     episodic = AsyncMock()
-    await ingest_observation(obs, episodic, scorer, passive_scorer)
+    await ingest_observation(obs, episodic, scorer, passive_scorer, tz=UTC_ZONE)
 
     entry: EpisodicEntry = episodic.write.call_args.args[0]
     assert entry.source == "reflex"
     assert "home.light_turn_on" in entry.summary
     scorer.score.assert_awaited_once()
     passive_scorer.score.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# When it happened
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_text_says_when_it_happened_in_the_users_zone(
+    scorer: AsyncMock, passive_scorer: AsyncMock
+) -> None:
+    """Local weekday, date and time. Without them a lamp that turns off every evening
+    is stored as the same text, with the same embedding, every evening."""
+    from core.memory.ingestor import ingest_observation
+
+    episodic = AsyncMock()
+    await ingest_observation(
+        _passive("light.kitchen", "off", "on"),
+        episodic,
+        scorer,
+        passive_scorer,
+        tz=ZoneInfo("America/Los_Angeles"),
+    )
+
+    entry: EpisodicEntry = episodic.write.call_args.args[0]
+    assert entry.summary == "[observation] Sat 2026-10-03 17:39 — light.kitchen: off → on"
+
+
+@pytest.mark.asyncio
+async def test_the_time_is_the_ha_events_not_the_observations(
+    scorer: AsyncMock, passive_scorer: AsyncMock
+) -> None:
+    """The observation is built after Reflex inference — HA saw the change first."""
+    from core.memory.ingestor import ingest_observation
+
+    obs = _passive("light.kitchen", "off", "on").model_copy(
+        update={"timestamp": EVENT_AT + timedelta(seconds=90)}
+    )
+    episodic = AsyncMock()
+    await ingest_observation(obs, episodic, scorer, passive_scorer, tz=UTC_ZONE)
+
+    entry: EpisodicEntry = episodic.write.call_args.args[0]
+    assert entry.timestamp == EVENT_AT
+    assert entry.summary == f"[observation] {STAMP} — light.kitchen: off → on"
+
+
+@pytest.mark.asyncio
+async def test_an_in_process_event_dump_carries_a_datetime(
+    scorer: AsyncMock, passive_scorer: AsyncMock
+) -> None:
+    """``event.model_dump()`` holds a datetime until the observation crosses the wire."""
+    from bus.schemas.events import StateChangedEvent
+    from core.memory.ingestor import ingest_observation
+
+    event = StateChangedEvent(
+        source="home-service",
+        domain="home",
+        entity_id="light.kitchen",
+        old_state="off",
+        new_state="on",
+        timestamp=EVENT_AT,
+    )
+    obs = ReflexObservation(
+        source="reflex-engine",
+        origin="state_change",
+        trigger_event=event.model_dump(),
+        timestamp=EVENT_AT + timedelta(minutes=5),
+    )
+    episodic = AsyncMock()
+    await ingest_observation(obs, episodic, scorer, passive_scorer, tz=UTC_ZONE)
+
+    entry: EpisodicEntry = episodic.write.call_args.args[0]
+    assert entry.timestamp == EVENT_AT
+    assert entry.summary == f"[observation] {STAMP} — light.kitchen: off → on"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw", [None, "not a time", 1759538340])
+async def test_without_a_usable_event_time_the_observations_own_is_used(
+    raw: object, scorer: AsyncMock, passive_scorer: AsyncMock
+) -> None:
+    from core.memory.ingestor import ingest_observation
+
+    trigger_event: dict[str, object] = {
+        "entity_id": "light.kitchen",
+        "old_state": "off",
+        "new_state": "on",
+    }
+    if raw is not None:
+        trigger_event["timestamp"] = raw
+    obs = ReflexObservation(
+        source="reflex-engine",
+        origin="state_change",
+        trigger_event=trigger_event,
+        timestamp=EVENT_AT,
+    )
+    episodic = AsyncMock()
+    await ingest_observation(obs, episodic, scorer, passive_scorer, tz=UTC_ZONE)
+
+    entry: EpisodicEntry = episodic.write.call_args.args[0]
+    assert entry.timestamp == EVENT_AT
+    assert entry.summary == f"[observation] {STAMP} — light.kitchen: off → on"
+
+
+@pytest.mark.asyncio
+async def test_a_naive_event_time_is_read_as_utc(
+    scorer: AsyncMock, passive_scorer: AsyncMock
+) -> None:
+    from core.memory.ingestor import ingest_observation
+
+    obs = _passive("light.kitchen", "off", "on")
+    obs.trigger_event["timestamp"] = EVENT_AT.replace(tzinfo=None).isoformat()
+    episodic = AsyncMock()
+    await ingest_observation(
+        obs, episodic, scorer, passive_scorer, tz=ZoneInfo("America/Los_Angeles")
+    )
+
+    entry: EpisodicEntry = episodic.write.call_args.args[0]
+    assert entry.timestamp == EVENT_AT
+    assert entry.summary.startswith("[observation] Sat 2026-10-03 17:39 — ")
+
+
+def test_the_timezone_has_no_silent_default() -> None:
+    """A UTC default would stamp every observation hours off in any other zone, and
+    nothing would raise — the same trap as the passive-scorer contract below."""
+    import inspect
+
+    from core.memory import ingestor
+
+    param = inspect.signature(ingestor.ingest_observation).parameters["tz"]
+    assert param.default is inspect.Parameter.empty
+
+
+@pytest.mark.asyncio
+async def test_the_ingest_loop_stamps_in_the_users_stored_zone(
+    scorer: AsyncMock, passive_scorer: AsyncMock
+) -> None:
+    from core.memory.ingestor import _ingest_entry
+    from shared.streams import USER_TIMEZONE_KEY
+
+    redis = AsyncMock()
+    redis.get = AsyncMock(return_value=b"America/Los_Angeles")
+    episodic = AsyncMock()
+    payload = {b"event": _passive("light.kitchen", "off", "on").model_dump_json().encode()}
+
+    await _ingest_entry(redis, b"1-0", payload, episodic, scorer, passive_scorer)
+
+    redis.get.assert_awaited_with(USER_TIMEZONE_KEY)
+    entry: EpisodicEntry = episodic.write.call_args.args[0]
+    assert entry.summary == "[observation] Sat 2026-10-03 17:39 — light.kitchen: off → on"
+    redis.xack.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_zone_lookup_leaves_the_entry_pending(
+    scorer: AsyncMock, passive_scorer: AsyncMock
+) -> None:
+    """A Redis blip on the lookup is transient, like one on the write — retried, not lost."""
+    from core.memory.ingestor import _ingest_entry
+
+    redis = AsyncMock()
+    redis.get = AsyncMock(side_effect=ConnectionError("connection reset"))
+    redis.hincrby = AsyncMock(return_value=1)
+    episodic = AsyncMock()
+    payload = {b"event": _passive().model_dump_json().encode()}
+
+    await _ingest_entry(redis, b"1-0", payload, episodic, scorer, passive_scorer)
+
+    episodic.write.assert_not_awaited()
+    redis.xack.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

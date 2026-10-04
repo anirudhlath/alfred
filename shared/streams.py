@@ -51,6 +51,11 @@ INGEST_ATTEMPTS_KEY = "alfred:memory:ingest:attempts"
 # what keeps episodic memory readable.
 OBSERVED_ENTITY_PREFIX = "alfred:observer:seen:"
 
+# Last real state per entity (hash field -> state), never `unavailable`/`unknown`.
+# The Reflex runner compares an entity coming back against it, so a device that
+# drops off the network and returns unchanged is not recorded as two changes.
+LAST_KNOWN_STATE_KEY = "alfred:reflex:last_known_state"
+
 # Phase 3: Runtime config + cost
 RUNTIME_CONFIG_KEY = "alfred:config:runtime"
 COST_DAILY_KEY = "alfred:cost:daily"

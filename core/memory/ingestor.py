@@ -9,7 +9,9 @@ Runs as a background task in the unified runner.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 from loguru import logger
 
@@ -21,6 +23,7 @@ from shared.streams import (
     REFLEX_OBSERVATIONS_STREAM,
     decode_stream_value,
 )
+from shared.usertime import get_user_timezone
 
 if TYPE_CHECKING:
     import asyncio
@@ -62,10 +65,44 @@ _ATTEMPTS_TTL_SECONDS = 3600
 SALIENT_ATTRIBUTES = ("media_title", "brightness", "temperature", "friendly_name")
 
 
-def _build_summary(obs: ReflexObservation, action: ActionRequest, result: ActionResult) -> str:
+def _event_time(obs: ReflexObservation) -> datetime:
+    """When HA saw the change, not when the observation was built.
+
+    The observation is minted after Reflex inference, and a redelivered one is
+    ingested later still. ``trigger_event["timestamp"]`` is the event model's own:
+    an ISO string off the wire, a datetime from an in-process ``model_dump()``.
+    Anything else falls back to the observation's time.
+    """
+    raw = obs.trigger_event.get("timestamp")
+    at: datetime | None = None
+    if isinstance(raw, datetime):
+        at = raw
+    elif isinstance(raw, str):
+        try:
+            at = datetime.fromisoformat(raw)
+        except ValueError:
+            at = None
+    if at is None:
+        return obs.timestamp
+    return at if at.tzinfo is not None else at.replace(tzinfo=UTC)
+
+
+def _stamp(at: datetime, tz: ZoneInfo) -> str:
+    """Local weekday, date and time — ``Sat 2026-10-03 18:39``.
+
+    In the text only, never the semantic key: recall takes the better of the two
+    embeddings, so a time-free key keeps matching a time-free query at the floor
+    calibrated for it.
+    """
+    return at.astimezone(tz).strftime("%a %Y-%m-%d %H:%M")
+
+
+def _build_summary(
+    obs: ReflexObservation, action: ActionRequest, result: ActionResult, stamp: str
+) -> str:
     """Build a human-readable summary for embedding."""
     params_str = ", ".join(f"{k}={v}" for k, v in action.parameters.items())
-    base = f"[reflex:{obs.origin}] {action.tool_name}({params_str}) → {result.status}"
+    base = f"[reflex:{obs.origin}] {stamp} — {action.tool_name}({params_str}) → {result.status}"
     if obs.decision_context:
         base += f" | reason: {obs.decision_context}"
     return base
@@ -110,7 +147,7 @@ def _transition(obs: ReflexObservation) -> tuple[str, str, str]:
     return _state("entity_id"), _state("old_state"), _state("new_state")
 
 
-def _build_observation_summary(obs: ReflexObservation) -> str:
+def _build_observation_summary(obs: ReflexObservation, stamp: str) -> str:
     """Summarise a state change nobody acted on.
 
     Salient attributes are rendered ``key=value``. A bare ``178`` or ``0`` is
@@ -127,7 +164,7 @@ def _build_observation_summary(obs: ReflexObservation) -> str:
         if attributes.get(key) not in (None, "")
     ]
     suffix = f" ({', '.join(salient)})" if salient else ""
-    return f"[observation] {entity}: {old_state} → {new_state}{suffix}"
+    return f"[observation] {stamp} — {entity}: {old_state} → {new_state}{suffix}"
 
 
 def _build_observation_semantic_key(obs: ReflexObservation) -> str:
@@ -141,6 +178,8 @@ async def ingest_observation(
     episodic_memory: EpisodicMemory,
     scorer: SignificanceScorer,
     passive_scorer: SignificanceScorer,
+    *,
+    tz: ZoneInfo,
 ) -> None:
     """Convert a ReflexObservation into an episodic entry and store it.
 
@@ -154,19 +193,24 @@ async def ingest_observation(
     observation was silently scored against the shared ``ENTITY_FREQUENCY_KEY``
     — the exact contamination this split exists to prevent, with nothing raised
     and nothing logged. A required argument makes that omission a type error.
+
+    ``tz`` is required for the same reason. The text carries the event's local
+    time, and a UTC default would stamp every entry hours off with nothing raised.
     """
     # `action`/`result` are bound to locals inside the branch so mypy narrows
     # them for the summary builders. An action without a result is unreachable
     # in practice (publish_observation always sets both) — treating it as
     # passive degrades gracefully rather than crashing the ingest loop.
     action, result = obs.action, obs.result
+    at = _event_time(obs)
+    stamp = _stamp(at, tz)
     if action is None or result is None:
         active_scorer, source = passive_scorer, "observation"
-        summary = _build_observation_summary(obs)
+        summary = _build_observation_summary(obs, stamp)
         semantic_key = _build_observation_semantic_key(obs)
     else:
         active_scorer, source = scorer, "reflex"
-        summary = _build_summary(obs, action, result)
+        summary = _build_summary(obs, action, result, stamp)
         semantic_key = _build_semantic_key(obs, action)
 
     entry = EpisodicEntry(
@@ -175,7 +219,7 @@ async def ingest_observation(
         # HSETs at f"{CONTEXT_PREFIX}{id}", which makes a reclaim-driven retry an
         # idempotent overwrite instead of a second copy of the same event.
         id=obs.observation_id,
-        timestamp=obs.timestamp,
+        timestamp=at,
         source=source,
         summary=summary,
         entities=_extract_entities(obs),
@@ -254,7 +298,10 @@ async def _ingest_entry(
         return
 
     try:
-        await ingest_observation(obs, episodic_memory, scorer, passive_scorer)
+        # Read per entry so a zone change applies at once. Inside the try: a Redis
+        # blip here is as transient as one on the write.
+        tz = ZoneInfo(await get_user_timezone(redis))
+        await ingest_observation(obs, episodic_memory, scorer, passive_scorer, tz=tz)
     except Exception as e:
         attempts = await _record_failed_attempt(redis, entry_id)
         if attempts >= _MAX_DELIVERY_ATTEMPTS:

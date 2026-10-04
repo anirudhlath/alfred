@@ -98,6 +98,10 @@ class FakeRedis:
         self.acked.append(entry_id)
         return 1
 
+    async def get(self, _key: str) -> None:
+        """No stored user timezone — the ingestor falls back to env, then UTC."""
+        return None
+
     async def hincrby(self, key: str, field: str, amount: int = 1) -> int:
         self.hashes.setdefault(key, {})
         self.hashes[key][field] = self.hashes[key].get(field, 0) + amount
