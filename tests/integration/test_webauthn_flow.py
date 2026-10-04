@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,15 +14,19 @@ from core.identity.auth_routes import create_auth_router
 from core.identity.credentials import CredentialStore
 from shared.streams import AUTH_SESSION_PREFIX
 
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
 
 @pytest.fixture
-async def store(tmp_path: object) -> CredentialStore:
+async def store(tmp_path: object) -> AsyncIterator[CredentialStore]:
     import pathlib
 
     db_path = pathlib.Path(str(tmp_path)) / "credentials.db"
     s = CredentialStore(db_path)
     await s.initialize()
-    return s
+    yield s
+    await s.close()
 
 
 @pytest.fixture

@@ -29,19 +29,20 @@ from shared.streams import (
 from tests.helpers import aiter_values
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     from httpx import Response
 
 
 @pytest.fixture
-async def store(tmp_path: object) -> CredentialStore:
+async def store(tmp_path: object) -> AsyncIterator[CredentialStore]:
     import pathlib
 
     db_path = pathlib.Path(str(tmp_path)) / "credentials.db"
     s = CredentialStore(db_path)
     await s.initialize()
-    return s
+    yield s
+    await s.close()
 
 
 @pytest.fixture
