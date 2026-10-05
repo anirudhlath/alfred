@@ -570,6 +570,16 @@ async def test_dimension_mismatch_is_latched_not_reprobed() -> None:
     assert redis.commands == ["FT.CREATE", "FT.INFO"]
 
 
+@pytest.mark.asyncio
+async def test_replace_content_refuses_an_index_of_another_width() -> None:
+    """It writes a vector, so it must trip the same latch ``add`` does."""
+    redis = _ExistingIndexRedis(_resp3_info(768))
+    store = RedisVectorStore(redis, dim=1024)  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError, match="dim=768"):
+        await store.replace_content("ep-1", "c", [0.1] * 1024)
+
+
 # ---------------------------------------------------------------------------
 # select — by metadata, no vector
 # ---------------------------------------------------------------------------

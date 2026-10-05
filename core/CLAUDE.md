@@ -9,6 +9,7 @@ Fast event → action loop via local SLM (Ollama).
 - `engine.py` — SLM inference with dynamic tool prompt + TriggerFired reasoning
 - `tool_registry.py` — Reads tool manifests from Redis `alfred:tool_registry`
 - `runner.py` — Event loop orchestration + `ensure_consumer_group()` + `publish_observation()` utilities
+- `availability.py` — `bridge_availability()`: drops transitions into `unavailable`/`unknown` and bridges a return from them (or from no state) to one `last → new` change, or drops it as a blip (hash `alfred:reflex:last_known_state`, one field per entity, ordered by stream entry ID; decisions under `alfred:reflex:returned:{entry_id}`); runs before the attention gate, replay-safe
 - `__main__.py` — Two consumer loops: (1) `HOME_STATE_STREAM` for StateChanged, (2) `EVENTS_STREAM` for TriggerFired (group `reflex-trigger-fired`)
 - TriggerFired handling: Path A (notification) fires first, Path B (SLM reasoning) is isolated — SLM failures never block notification delivery
 
@@ -19,15 +20,16 @@ Episodic + semantic + procedural, biologically inspired.
 - `embedding_provider.py` — EmbeddingProvider ABC (concrete `warmup()`/`aclose()` defaults) + SentenceTransformer (lazy-loaded, async via to_thread)
 - `openai_embedding_provider.py` — `OpenAICompatEmbeddingProvider`: `/v1/embeddings` over HTTP (vLLM `--runner pooling`), verifies the served width on every response
 - `embedding_backend.py` — `build_embedding_provider(config)`: the `EMBEDDING_BACKEND` seam (registry keyed by backend name); services call this, never a concrete provider
-- `vector_store.py` — VectorStore ABC with dual-embedding search (content + semantic key) + `update_metadata()` for retrieval stats
+- `vector_store.py` — VectorStore ABC with dual-embedding search (content + semantic key) + `update_metadata()` for retrieval stats + `replace_content()` (rewrites an entry's text and content vector, False when the entry is gone)
 - `redis_vector_store.py` — Hot store (RediSearch; exact `ADHOC_BF` KNN, metadata `select()`, stored vectors via `embeddings()`), uses CONTEXT_INDEX/CONTEXT_PREFIX; latches a proven dimension mismatch against the existing index and raises from `add`/`search`/`count` — `delete`/`exists`/`update_metadata` skip `ensure_index()` and keep working
-- `sqlite_vec_store.py` — Cold store (sqlite-vec, cosine `vec0` tables), with v1→v2→v3 migrations (v3 rebuilds pre-v3 L2 tables as cosine, keeping every vector); the same dimension latch, raised from every operation that opens the file (they all reach `_ensure_schema()` via `_get_db()`). **Cold is the last stop** — `copy_to_cold_and_remove()` deletes the hot copy once it has written here, so deleting this file discards archived memories permanently, with no re-embed path to rebuild them
+- `sqlite_vec_store.py` — Cold store (sqlite-vec, cosine `vec0` tables, metadata `select()` on timestamp/significance), with v1→v2→v3 migrations (v3 rebuilds pre-v3 L2 tables as cosine, keeping every vector); the same dimension latch, raised from every operation that opens the file (they all reach `_ensure_schema()` via `_get_db()`). **Cold is the last stop** — `copy_to_cold_and_remove()` deletes the hot copy once it has written here, so deleting this file discards archived memories permanently, with no re-embed path to rebuild them
 - `significance.py` — SignificanceScorer: 4 dims (safety/novelty/personal/emotional)
 - `context_index.py` — ContextIndexManager: unified search across all memory types, owns RedisVectorStore; `recall()` (deliberate recall) adds the cold archive, `select()` hands the decay pass its candidates
 - `episodic/memory.py` — EpisodicMemory: hot+cold unified interface; `recall()` gathers hot and cold with `return_exceptions=False` **on purpose** (see Gotchas)
 - `schemas.py` — Memory-specific Pydantic models
 - `routines/patterns.py` — `match_trigger_pattern()`: shared by engine + librarian
-- `ingestor.py` — Memory Ingestor (hippocampus): consumes `ReflexObservation` from `REFLEX_OBSERVATIONS_STREAM`, writes to `EpisodicMemory` via `SignificanceScorer`
+- `ingestor.py` — Memory Ingestor (hippocampus): consumes `ReflexObservation` from `REFLEX_OBSERVATIONS_STREAM`, writes to `EpisodicMemory` via `SignificanceScorer`; stamps the text with the triggering event's local time (required `tz`), keeps the semantic key time-free
+- `migrate_observations.py` — one-off for entries stored before #265's slice 1: deletes stored availability blips and stamps the rest (`python -m core.memory.migrate_observations [--apply]`, dry run by default, re-runnable)
 - `ingestor_main.py` — Entry point for Memory Ingestor service (`python -m core.memory.ingestor_main`)
 
 ## Triggers (`triggers/`) — Dynamic Trigger Engine

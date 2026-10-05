@@ -10,13 +10,17 @@ import struct
 import subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
 import aiosqlite
 import pytest
 
 from core.memory.sqlite_vec_store import _SCHEMA_V1_PATH, SqliteVecStore, _pack
-from core.memory.vector_store import ContextMetadata
+from core.memory.vector_store import ContextMetadata, Range
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -66,15 +70,18 @@ def test_pack_length() -> None:
 
 
 @pytest.fixture
-async def store(tmp_path: object) -> SqliteVecStore:
+async def store(tmp_path: object) -> AsyncIterator[SqliteVecStore]:
     """SqliteVecStore with in-memory DB and sqlite-vec loaded."""
     s = SqliteVecStore(db_path=":memory:", dim=4)
     await s._ensure_schema()
-    return s
+    # Closed even when the test fails: a traceback keeps the store alive, and an open
+    # aiosqlite connection's thread then holds pytest open after the run.
+    yield s
+    await s.close()
 
 
 @pytest.fixture
-async def store_no_vec(tmp_path: object) -> SqliteVecStore:
+async def store_no_vec(tmp_path: object) -> AsyncIterator[SqliteVecStore]:
     """SqliteVecStore without sqlite-vec extension (fallback mode)."""
     s = SqliteVecStore(db_path=":memory:", dim=4)
     # Force schema init but then disable vec
@@ -82,7 +89,8 @@ async def store_no_vec(tmp_path: object) -> SqliteVecStore:
         await s._ensure_schema()
     # Manually mark vec as unavailable after schema init
     s._vec_ready = False
-    return s
+    yield s
+    await s.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1306,3 +1314,57 @@ async def test_first_open_waits_out_a_writer_instead_of_failing(tmp_path: Path) 
             await store.close()
     finally:
         writer.close()
+
+
+# ---------------------------------------------------------------------------
+# replace_content / select — rewriting archived text in place
+# ---------------------------------------------------------------------------
+
+
+def _axis(i: int) -> list[float]:
+    return [1.0 if j == i else 0.0 for j in range(4)]
+
+
+async def test_replace_content_swaps_the_text_and_its_vector_only(store: SqliteVecStore) -> None:
+    await store.add("m1", "old", "key", _axis(0), _axis(1), _meta(significance=0.3))
+
+    assert await store.replace_content("m1", "new", _axis(2)) is True
+
+    by_new = await store.search(_axis(2), limit=5, min_similarity=0.9)
+    assert [(r.id, r.content) for r in by_new] == [("m1", "new")]
+    assert await store.search(_axis(0), limit=5, min_similarity=0.9) == []
+    by_key = await store.search(_axis(1), limit=5, min_similarity=0.9)
+    assert [r.id for r in by_key] == ["m1"]
+    assert by_key[0].semantic_key == "key"
+    assert by_key[0].metadata.significance == pytest.approx(0.3)
+    assert by_key[0].metadata.timestamp == pytest.approx(1_711_000_000.0)
+
+
+async def test_replace_content_of_a_missing_entry_writes_nothing(store: SqliteVecStore) -> None:
+    assert await store.replace_content("absent", "new", _axis(2)) is False
+
+    assert await store.count() == 0
+    assert await store.search(_axis(2), limit=5, min_similarity=0.9) == []
+
+
+async def test_select_returns_every_entry_inside_all_the_ranges(store: SqliteVecStore) -> None:
+    await store.add("low", "a", "k", _axis(0), _axis(0), _meta(significance=0.1, timestamp=5.0))
+    await store.add("high", "b", "k", _axis(1), _axis(1), _meta(significance=0.9, timestamp=5.0))
+    await store.add("section", "c", "k", _axis(2), _axis(2), _meta(significance=0.1, timestamp=0))
+
+    selected = await store.select({"timestamp": Range(above=0.0), "significance": Range(below=0.4)})
+
+    assert [(r.id, r.content, r.score) for r in selected] == [("low", "a", 0.0)]
+    assert sorted(r.id for r in await store.select({})) == ["high", "low", "section"]
+
+
+async def test_select_bounds_are_exclusive(store: SqliteVecStore) -> None:
+    await store.add("edge", "a", "k", _axis(0), _axis(0), _meta(significance=0.4, timestamp=5.0))
+
+    assert await store.select({"significance": Range(below=0.4)}) == []
+    assert await store.select({"timestamp": Range(above=5.0)}) == []
+
+
+async def test_select_refuses_a_field_it_does_not_store(store: SqliteVecStore) -> None:
+    with pytest.raises(ValueError, match="retrieval_count"):
+        await store.select({"retrieval_count": Range(above=0)})

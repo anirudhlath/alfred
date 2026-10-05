@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from unittest.mock import AsyncMock
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -52,7 +53,7 @@ async def test_reflex_observation_reaches_episodic_memory() -> None:
         )
     )
 
-    await ingest_observation(obs, mock_episodic, mock_scorer, AsyncMock())
+    await ingest_observation(obs, mock_episodic, mock_scorer, AsyncMock(), tz=ZoneInfo("UTC"))
 
     # Verify episodic write
     mock_episodic.write.assert_called_once()

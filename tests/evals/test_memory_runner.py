@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -64,8 +65,9 @@ async def test_observations_go_through_the_memory_ingestor() -> None:
     with patch("evals.memory.runner.ingest_observation", new=AsyncMock()) as ingest:
         await write_memory(env, memory)
 
+    # The simulated clock runs in UTC (SIM_START), so its stamps are UTC too.
     ingest.assert_awaited_once_with(
-        memory.observation, env.episodic, env.scorer, env.passive_scorer
+        memory.observation, env.episodic, env.scorer, env.passive_scorer, tz=ZoneInfo("UTC")
     )
 
 

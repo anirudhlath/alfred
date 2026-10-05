@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 import redis.asyncio as aioredis
 
 from bus.schemas.events import ReflexObservation, StateChangedEvent
+from core.reflex.availability import bridge_availability
 from shared.streams import OBSERVED_ENTITY_PREFIX, decode_stream_value
 from shared.types import AioRedis as AioRedis  # noqa: TC001  # re-export for backward compat
 
@@ -138,6 +139,7 @@ async def ensure_consumer_group(
 
 
 async def process_stream_entry(
+    entry_id: bytes | str,
     entry_data: Mapping[str | bytes, str | bytes],
     engine: ReflexEngine,
     agent: DomainAgent,
@@ -150,9 +152,10 @@ async def process_stream_entry(
 
     Raises on retriable errors (e.g., Ollama down) so the caller can choose not
     to ACK the message. Returns False — and is ACKed by the caller — for
-    malformed events, attention-gated events, and events the engine chose not
-    to act on. That last branch is not a no-op: it records a debounced passive
-    observation, best-effort, so a failed write never blocks the ACK.
+    malformed events, availability blips (``core/reflex/availability.py``),
+    attention-gated events, and events the engine chose not to act on. That
+    last branch is not a no-op: it records a debounced passive observation,
+    best-effort, so a failed write never blocks the ACK.
     """
     raw_event = entry_data.get("event") or entry_data.get(b"event")
     if raw_event is None:
@@ -166,6 +169,14 @@ async def process_stream_entry(
     except Exception as e:
         logger.error("Failed to parse event: %s — %s", e, event_str[:200])
         return False
+
+    # Availability bridge — a device dropping off the network and coming back is
+    # not a change. Ahead of the gate, so a blip costs no inference and does not
+    # start the cooldown that would swallow a real change right behind it.
+    bridged = await bridge_availability(redis, event, entry_id)
+    if bridged is None:
+        return False
+    event = bridged
 
     # Attention gate — only attention-set members on real transitions reach
     # the SLM. Gated events stay fully visible to triggers and context

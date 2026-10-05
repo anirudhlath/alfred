@@ -28,6 +28,7 @@ async def test_gated_event_skips_slm_and_returns_false(
     attention.should_fire = AsyncMock(return_value=False)
 
     took_action = await process_stream_entry(
+        entry_id=b"1-0",
         entry_data=_entry(tv_on_event),
         engine=engine,
         agent=agent,
@@ -52,6 +53,7 @@ async def test_attended_event_reaches_engine(tv_on_event: StateChangedEvent) -> 
     attention.should_fire = AsyncMock(return_value=True)
 
     took_action = await process_stream_entry(
+        entry_id=b"1-0",
         entry_data=_entry(tv_on_event),
         engine=engine,
         agent=AsyncMock(),
@@ -74,6 +76,7 @@ async def test_no_attention_set_means_no_gating(tv_on_event: StateChangedEvent) 
     engine.process_event = AsyncMock(return_value=None)
 
     await process_stream_entry(
+        entry_id=b"1-0",
         entry_data=_entry(tv_on_event),
         engine=engine,
         agent=AsyncMock(),

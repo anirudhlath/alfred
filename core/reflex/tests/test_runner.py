@@ -45,6 +45,7 @@ async def test_process_stream_entry_produces_action() -> None:
     mock_redis = AsyncMock()
 
     result = await process_stream_entry(
+        entry_id=b"1-0",
         entry_data={"event": event_json},
         engine=mock_engine,
         agent=mock_agent,
@@ -95,6 +96,7 @@ async def test_process_stream_entry_publishes_reflex_observation() -> None:
     mock_redis = AsyncMock()
 
     await process_stream_entry(
+        entry_id=b"1-0",
         entry_data={"event": event.model_dump_json()},
         engine=mock_engine,
         agent=mock_agent,
@@ -122,6 +124,7 @@ async def test_process_stream_entry_no_action_records_an_observation() -> None:
         source="home-service",
         domain="home",
         entity_id="sensor.temperature",
+        old_state="22.0",
         new_state="22.5",
     )
 
@@ -133,6 +136,7 @@ async def test_process_stream_entry_no_action_records_an_observation() -> None:
     mock_redis.set = AsyncMock(return_value=True)
 
     result = await process_stream_entry(
+        entry_id=b"1-0",
         entry_data={"event": event.model_dump_json()},
         engine=mock_engine,
         agent=mock_agent,
@@ -159,6 +163,7 @@ async def test_process_stream_entry_malformed_event() -> None:
     mock_redis = AsyncMock()
 
     result = await process_stream_entry(
+        entry_id=b"1-0",
         entry_data={"event": "not valid json {{{"},
         engine=mock_engine,
         agent=mock_agent,
@@ -211,6 +216,7 @@ async def test_process_stream_entry_handles_bytes_keys() -> None:
         source="home-service",
         domain="home",
         entity_id="sensor.temperature",
+        old_state="22.0",
         new_state="22.5",
     )
 
@@ -221,6 +227,7 @@ async def test_process_stream_entry_handles_bytes_keys() -> None:
     mock_redis.set = AsyncMock(return_value=True)  # NX succeeds — see the sibling test
 
     result = await process_stream_entry(
+        entry_id=b"1-0",
         entry_data={b"event": event.model_dump_json().encode()},
         engine=mock_engine,
         agent=mock_agent,
