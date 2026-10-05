@@ -265,7 +265,8 @@ annotated source of truth, split into a short **REQUIRED** section and defaulted
 | `HA_HOST` | `http://localhost:8123` | Home Assistant base URL |
 | `HA_TOKEN` | — | HA long-lived token (required for home control) |
 | `EMBEDDING_BACKEND` | `sentence_transformers` | Memory embedding backend: `sentence_transformers` \| `openai` |
-| `EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Model under either backend; ungated, `EMBEDDING_DIM` auto-tracks it |
+| `EMBEDDING_MODEL` | `BAAI/bge-m3` | Model under either backend; ungated, ~2.3 GB, `EMBEDDING_DIM` auto-tracks it |
+| `INVOLUNTARY_RECALL_THRESHOLD` | `0.575` | Lowest similarity a memory is recalled into a reply at. Per-model scale: calibrated for bge-m3, so recalibrate it when you change the model |
 | `ALFRED_TRUSTED_NETWORKS` | — | Extra trusted CIDRs (loopback + LAN + Tailscale trusted by default) |
 | `ALFRED_TRUSTED_NETWORKS_STRICT` | — | Trust **only** loopback, Tailscale and the CIDRs above — drops the RFC1918 defaults. Required when Alfred is reachable from the internet |
 | `FORWARDED_ALLOW_IPS` | loopback | The reverse proxy's own address, so uvicorn rewrites the client IP and scheme from `X-Forwarded-*`. Never `*`. See [`docs/deployment.md`](docs/deployment.md) "Behind a reverse proxy" |

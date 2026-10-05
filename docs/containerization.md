@@ -179,7 +179,7 @@ and never re-download gigabytes on teardown:
 - `alfredctl up --models <path>` overrides the general model volume itself (default
   `~/.cache/alfred/models`, shared across all worktrees/branches on the host).
 - **`HF_TOKEN`** — only needed for a *gated* `EMBEDDING_MODEL`. The default
-  (`sentence-transformers/all-MiniLM-L6-v2`) is ungated and downloads with no token;
+  (`BAAI/bge-m3`) is ungated and downloads with no token;
   point `EMBEDDING_MODEL` at a gated model such as `google/embeddinggemma-300m` and the
   first download of a memory-enabled service fails with an HF access error unless
   `alfredctl` can pass a `HF_TOKEN` through from your host environment. With

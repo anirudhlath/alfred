@@ -247,7 +247,8 @@ def test_embedding_provider_logs_load_failure(caplog: pytest.LogCaptureFixture) 
 def test_conscious_config_has_recall_fields() -> None:
     """ConsciousConfig should have involuntary_recall_limit and threshold."""
     from core.conscious.engine import ConsciousConfig
+    from shared.config import DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
 
     config = ConsciousConfig(model="test")
     assert config.involuntary_recall_limit == 10
-    assert config.involuntary_recall_threshold == 0.4
+    assert config.involuntary_recall_threshold == DEFAULT_INVOLUNTARY_RECALL_THRESHOLD

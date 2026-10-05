@@ -50,9 +50,17 @@ def data_mode() -> str:
 DEFAULT_DECAY_MIGRATION_THRESHOLD = 0.2
 
 # Default embedding model: ungated so a fresh clone works with no HF token or license
-# acceptance. Known models map to their output dimension so ``EMBEDDING_DIM`` stays in
-# sync automatically — the vector index dimension must match the model, or search breaks.
-DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+# acceptance, and the model the recall floor below is calibrated for. Known models map to
+# their output dimension so ``EMBEDDING_DIM`` stays in sync automatically — the vector
+# index dimension must match the model, or search breaks. It is ~2.3 GB, and the
+# in-process backend loads one copy per service; the ``openai`` backend shares one server.
+DEFAULT_EMBEDDING_MODEL = "BAAI/bge-m3"
+
+# The lowest similarity at which involuntary recall pulls a memory into a reply.
+# Similarity sits on a per-model scale, so this belongs to DEFAULT_EMBEDDING_MODEL:
+# bge-m3 scores ~0.1 above EmbeddingGemma, and at 0.5 it pulled memories into a fifth of
+# off-topic questions (EXP-009). Recalibrate it whenever the model changes.
+DEFAULT_INVOLUNTARY_RECALL_THRESHOLD = 0.575
 
 # How the embedding model is run, and where. ``sentence_transformers`` keeps a fresh
 # clone working with no server; ``openai`` talks to an OpenAI-compatible
@@ -277,7 +285,7 @@ class AlfredConfig:
 
     # Memory: Involuntary recall
     involuntary_recall_limit: int = 10
-    involuntary_recall_threshold: float = 0.5
+    involuntary_recall_threshold: float = DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
 
     # Memory: Pattern detection
     pattern_min_occurrences: int = 3
@@ -362,7 +370,9 @@ class AlfredConfig:
             embedding_dim=embedding_dim,
             # Memory: Involuntary recall (env-configurable)
             involuntary_recall_limit=int(os.getenv("INVOLUNTARY_RECALL_LIMIT", "10")),
-            involuntary_recall_threshold=float(os.getenv("INVOLUNTARY_RECALL_THRESHOLD", "0.5")),
+            involuntary_recall_threshold=float(
+                os.getenv("INVOLUNTARY_RECALL_THRESHOLD", str(DEFAULT_INVOLUNTARY_RECALL_THRESHOLD))
+            ),
             # Phase 3: Voice
             voice_confidence_threshold=float(os.getenv("VOICE_CONFIDENCE_THRESHOLD", "0.85")),
             tts_backend=os.getenv("ALFRED_TTS_BACKEND", "kokoro"),
