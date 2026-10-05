@@ -74,6 +74,19 @@ class VectorStore(ABC):
         """
         raise NotImplementedError(f"{type(self).__name__} cannot select by metadata")
 
+    async def replace_content(
+        self,
+        id: str,  # noqa: A002
+        content: str,
+        embedding_content: list[float],
+    ) -> bool:
+        """Rewrite an entry's text and its content vector, leaving everything else.
+
+        False, writing nothing, when the entry is not in this store — it may have
+        been deleted or moved to another store meanwhile.
+        """
+        raise NotImplementedError(f"{type(self).__name__} cannot replace content")
+
     async def embeddings(self, id: str) -> tuple[list[float], list[float]] | None:  # noqa: A002
         """The (content, semantic key) vectors stored for ``id``, as ``add`` received them.
 

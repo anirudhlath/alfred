@@ -60,6 +60,11 @@ about that rate, and no flaky device dominates the hot store.
 2. **Production (H3).** One week after the merge deploys, count passive observations per
    day in the hot store, and the largest share any single entity holds. Post the numbers
    on #265.
+3. **Stored history.** What the stores already held predates the bridge.
+   `core/memory/migrate_observations.py` deletes every stored observation whose transition
+   touches `unavailable` or `unknown`, and stamps the rest. It was dry-run against the
+   production stores, and every planned rewrite was checked for a leftover availability
+   state.
 
 ## Results
 
@@ -75,6 +80,17 @@ about that rate, and no flaky device dominates the hot store.
 | Largest single-entity share of what passed | 17.4% (a media player) |
 
 The pass count matches the exploration's independent count in #265 exactly (12,808).
+
+### Stored history (dry run, 2026-10-05)
+
+| Store | Observations | Blips to delete | To stamp | Planned rewrites still naming `unavailable`/`unknown` |
+|---|---|---|---|---|
+| Hot | 4,359 | 2,811 (64.5%) | 1,548 | 0 |
+| Cold | 2,455 | 1,190 (48.5%) | 1,265 | 0 |
+
+No observation was missing a timestamp. The busiest entity left in either store is a
+streaming box, at 7.6% (hot) and 9.9% (cold) of what remains. The migration is applied
+after the deploy, from a backup of both stores.
 
 ### Production
 

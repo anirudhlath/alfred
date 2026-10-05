@@ -110,3 +110,28 @@ async def test_embeddings_returns_what_add_stored(store: RedisVectorStore) -> No
     assert stored[0] == pytest.approx(content, abs=1e-6)
     assert stored[1] == pytest.approx(semantic, abs=1e-6)
     assert await store.embeddings("absent") is None
+
+
+async def test_replace_content_swaps_the_text_and_its_vector_only(store: RedisVectorStore) -> None:
+    rng = np.random.default_rng(4)
+    old, semantic, new = _unit(rng), _unit(rng), _unit(rng)
+    await store.add("m1", "old", "key", old, semantic, _meta(timestamp=5.0, significance=0.3))
+
+    assert await store.replace_content("m1", "new", new) is True
+
+    stored = await store.embeddings("m1")
+    assert stored is not None
+    assert stored[0] == pytest.approx(new, abs=1e-6)
+    assert stored[1] == pytest.approx(semantic, abs=1e-6)
+    [entry] = await store.select({})
+    assert (entry.content, entry.semantic_key) == ("new", "key")
+    assert (entry.metadata.timestamp, entry.metadata.significance) == pytest.approx((5.0, 0.3))
+    # The index follows the hash, so recall finds the entry by its new vector.
+    assert [r.id for r in await store.search(new, limit=1, min_similarity=0.99)] == ["m1"]
+
+
+async def test_replace_content_of_a_missing_entry_writes_nothing(store: RedisVectorStore) -> None:
+    """A decay pass may move the entry to cold first; a bare HSET would leave a stub hash."""
+    assert await store.replace_content("gone", "new", _unit(np.random.default_rng(5))) is False
+
+    assert await store.exists("gone") is False

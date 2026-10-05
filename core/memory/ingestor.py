@@ -88,7 +88,7 @@ def _event_time(obs: ReflexObservation) -> datetime:
     return at if at.tzinfo is not None else at.replace(tzinfo=UTC)
 
 
-def _stamp(at: datetime, tz: ZoneInfo) -> str:
+def local_stamp(at: datetime, tz: ZoneInfo) -> str:
     """Local weekday, date and time — ``Sat 2026-10-03 18:39``.
 
     In the text only, never the semantic key: recall takes the better of the two
@@ -204,7 +204,7 @@ async def ingest_observation(
     # passive degrades gracefully rather than crashing the ingest loop.
     action, result = obs.action, obs.result
     at = _event_time(obs)
-    stamp = _stamp(at, tz)
+    stamp = local_stamp(at, tz)
     if action is None or result is None:
         active_scorer, source = passive_scorer, "observation"
         summary = _build_observation_summary(obs, stamp)

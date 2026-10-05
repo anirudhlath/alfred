@@ -16,7 +16,10 @@ import aiosqlite
 from core.memory.vector_store import ContextMetadata, SearchResult, VectorStore
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from core.memory.embedding_provider import EmbeddingProvider
+    from core.memory.vector_store import Range
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +38,19 @@ _VEC_METRIC = "distance_metric=cosine"
 # Seconds between attempts to switch a contended file to WAL (see _enable_wal).
 _WAL_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6, 3.2)
 _VEC_COSINE_RE = re.compile(r"\bdistance_metric\s*=\s*cosine\b", re.IGNORECASE)
+
+# The numeric metadata select() can range over, as SQL on episodic_entries. Significance
+# is read out of its JSON column the way _row_to_search_result reads it: 0.5 when absent.
+_SELECT_FIELDS = {
+    "timestamp": "timestamp",
+    "significance": (
+        "COALESCE(CASE WHEN json_valid(significance)"
+        " THEN json_extract(significance, '$.overall') END, 0.5)"
+    ),
+}
+_RESULT_COLUMNS = (
+    "rowid, id, timestamp, source, summary, entities, significance, semantic_key, compressed_into"
+)
 
 # The declared width of the ``embedding`` column, read back out of the DDL sqlite
 # stores verbatim in sqlite_master. Anchored to the column name because vec0
@@ -633,6 +649,57 @@ class SqliteVecStore(VectorStore):
         rows = list(await cursor.fetchall())
         results = [_row_to_search_result(row, 0.5) for row in rows]
         return [r for r in results if r.score >= min_similarity]
+
+    async def select(self, where: Mapping[str, Range]) -> list[SearchResult]:
+        """Every entry inside all of ``where``'s ranges (exclusive bounds); scores are 0."""
+        unknown = sorted(set(where) - _SELECT_FIELDS.keys())
+        if unknown:
+            raise ValueError(f"The cold store cannot select on {', '.join(unknown)}")
+        clauses: list[str] = []
+        bounds: list[float] = []
+        for field, interval in where.items():
+            if interval.above is not None:
+                clauses.append(f"{_SELECT_FIELDS[field]} > ?")
+                bounds.append(interval.above)
+            if interval.below is not None:
+                clauses.append(f"{_SELECT_FIELDS[field]} < ?")
+                bounds.append(interval.below)
+        condition = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        db = await self._get_db()
+        cursor = await db.execute(
+            f"SELECT {_RESULT_COLUMNS} FROM episodic_entries{condition}", bounds
+        )
+        return [_row_to_search_result(row, 0.0) for row in await cursor.fetchall()]
+
+    async def replace_content(
+        self,
+        id: str,  # noqa: A002
+        content: str,
+        embedding_content: list[float],
+    ) -> bool:
+        db = await self._get_db()
+        try:
+            # The UPDATE comes first so the row is write-locked before its rowid is read:
+            # another process deleting it in between would orphan the vector written next.
+            cursor = await db.execute(
+                "UPDATE episodic_entries SET summary = ? WHERE id = ?", (content, id)
+            )
+            rowid = await self._rowid_for_id(db, id) if cursor.rowcount else None
+            if rowid is None:
+                await db.rollback()
+                return False
+            if self._vec_ready:
+                # vec0 refuses INSERT OR REPLACE over a rowid it already holds.
+                await db.execute("DELETE FROM vec_episodic_content WHERE rowid = ?", (rowid,))
+                await db.execute(
+                    "INSERT INTO vec_episodic_content(rowid, embedding) VALUES (?, ?)",
+                    (rowid, _pack(embedding_content)),
+                )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+        return True
 
     async def delete(self, id: str) -> None:  # noqa: A002
         db = await self._get_db()

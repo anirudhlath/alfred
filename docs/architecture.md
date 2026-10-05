@@ -518,6 +518,14 @@ them. `tz` is a required argument of `ingest_observation`, for the same reason
 `passive_scorer` is. The Librarian's pattern-detection prompt lists entry times in the
 same local zone, which is also the zone a routine's `trigger_pattern` is matched in.
 
+Entries stored before both changes are brought into line once, by hand, after the deploy:
+`python -m core.memory.migrate_observations` (`--apply` to write; a dry run otherwise). In
+both stores it deletes every stored observation whose transition touches `unavailable` or
+`unknown` — the ingestor wrote a missing state as `unknown` — and stamps the rest from the
+entry's own timestamp, re-embedding the text through `VectorStore.replace_content()`, which
+writes only while the entry is still there. Stamped entries are left alone, so it can run
+again.
+
 **Passive observations** are the no-action path described in [Section 2](#2-event-pipeline):
 the Reflex Engine saw the event, considered it, and did nothing. Before this existed the
 event was dropped, so episodic memory only ever contained what Alfred *did* — and the

@@ -37,6 +37,13 @@ SELECT_PAGE_SIZE = 1000
 # routines). search() needs one to force brute-force KNN.
 _EVERY_ENTRY = "@timestamp:[-inf +inf]"
 _FLOAT32_BYTES = 4
+# Writes the text and its vector only while the entry is still there. A decay pass may
+# move it to cold in the meantime, and a plain HSET would leave a stub hash behind.
+_REPLACE_CONTENT_SCRIPT = """
+if redis.call('EXISTS', KEYS[1]) == 0 then return 0 end
+redis.call('HSET', KEYS[1], 'content', ARGV[1], 'embedding_content', ARGV[2])
+return 1
+"""
 
 
 def _pack_floats(values: list[float]) -> bytes:
@@ -390,6 +397,22 @@ class RedisVectorStore(VectorStore):
             if len(documents) < page_size:
                 return selected
             offset += page_size
+
+    async def replace_content(
+        self,
+        id: str,  # noqa: A002
+        content: str,
+        embedding_content: list[float],
+    ) -> bool:
+        await self.ensure_index()
+        replaced = await self._redis.eval(
+            _REPLACE_CONTENT_SCRIPT,
+            1,
+            f"{CONTEXT_PREFIX}{id}",
+            content,
+            _pack_floats(embedding_content),
+        )
+        return bool(replaced)
 
     async def embeddings(self, id: str) -> tuple[list[float], list[float]] | None:  # noqa: A002
         """Both stored vectors, or ``None`` for a missing, partial or other-width entry."""
