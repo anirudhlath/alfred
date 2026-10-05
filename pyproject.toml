@@ -63,7 +63,7 @@ voice = [
     "numpy>=1.26",  # speaker_id.py + tts_kokoro.py import it directly
 ]
 evals = [
-    "deepeval>=1.0",
+    "deepeval>=4.2.7",
 ]
 
 [project.scripts]
