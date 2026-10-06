@@ -25,8 +25,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 LIVE_STATE_KEY_PREFIX = "alfred:live_state:"
-# Writers are called inline from a service's event loop: a Redis outage must cost a
-# bounded wait per write, never a hang.
+# Writers are called inline from a service's event loop, so a Redis outage must never hang
+# one. The bound is per Redis command, not per call: calls queue FIFO behind the write lock,
+# so the N-th queued call can wait about N times this timeout.
 WRITE_TIMEOUT_SECONDS = 5.0
 
 LiveStateKind = Literal["controllable", "sensor"]
@@ -61,7 +62,7 @@ class LiveStateWriter:
     lock, so writes reach Redis in the order they were requested. A service applies an
     event to its own state before requesting the write and builds a ``replace`` snapshot
     from that same state with no await in between, so a snapshot never overwrites a newer
-    update.
+    update. ``aclose`` takes the same lock, and every write after it is a no-op.
     """
 
     def __init__(self, redis_url: str, service_name: str) -> None:
@@ -72,6 +73,7 @@ class LiveStateWriter:
             socket_connect_timeout=WRITE_TIMEOUT_SECONDS,
         )
         self._lock = asyncio.Lock()
+        self._closed = False
 
     async def replace(self, snapshot: ContextSnapshot) -> None:
         """Swap the whole hash for ``snapshot`` atomically (on connecting to the source)."""
@@ -84,27 +86,46 @@ class LiveStateWriter:
             for domain, entries in groups.items():
                 for entry in entries:
                     fields[entry.entity_id] = _entry_json(domain, kind, entry)
-        async with self._lock, self._redis.pipeline(transaction=True) as pipe:
-            pipe.delete(self._key)
-            if fields:
-                pipe.hset(self._key, mapping=fields)
-            await pipe.execute()
+        async with self._lock:
+            if self._closed:
+                return
+            async with self._redis.pipeline(transaction=True) as pipe:
+                pipe.delete(self._key)
+                if fields:
+                    pipe.hset(self._key, mapping=fields)
+                await pipe.execute()
 
     async def update(self, domain: str, kind: LiveStateKind, entry: ContextEntry) -> None:
         """Write one entity's state (on each state change)."""
         value = _entry_json(domain, kind, entry)
         async with self._lock:
+            if self._closed:
+                return
             await self._redis.hset(self._key, entry.entity_id, value)
 
     async def remove(self, entity_id: str) -> None:
         """Drop one entity (the source deleted it)."""
         async with self._lock:
+            if self._closed:
+                return
             await self._redis.hdel(self._key, entity_id)
 
     async def clear(self) -> None:
         """Drop the whole hash (on disconnect, at startup, at shutdown)."""
         async with self._lock:
+            if self._closed:
+                return
             await self._redis.delete(self._key)
 
     async def aclose(self) -> None:
-        await self._redis.aclose()
+        """Close the client once the writes queued ahead have landed; later ones are dropped.
+
+        Taking the write lock matters: redis-py's ``aclose()`` cuts in-use connections and
+        leaves the pool usable, so without it a write in flight would be cut off and a
+        queued one would reconnect and land after the close.
+        """
+        async with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            await self._redis.aclose()

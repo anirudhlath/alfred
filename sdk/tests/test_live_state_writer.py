@@ -157,3 +157,43 @@ async def test_aclose_closes_the_client() -> None:
     fake = FakeLiveRedis()
     await _writer(fake).aclose()
     assert fake.closed
+
+
+async def test_writes_after_aclose_send_nothing() -> None:
+    fake = FakeLiveRedis()
+    writer = _writer(fake)
+    await writer.replace(SNAPSHOT)
+    await writer.aclose()
+    await writer.update("light", "controllable", ContextEntry(entity_id="light.new", state="on"))
+    await writer.remove("light.lamp")
+    await writer.clear()
+    await writer.replace(ContextSnapshot())
+    assert set(_stored(fake)) == {"light.lamp", "sensor.temp"}
+    assert fake.executes == [(True, ["delete", "hset"])]
+
+
+async def test_a_second_aclose_closes_nothing_more() -> None:
+    fake = FakeLiveRedis()
+    writer = _writer(fake)
+    with patch.object(fake, "aclose", wraps=fake.aclose) as spy:
+        await writer.aclose()
+        await writer.aclose()
+    spy.assert_awaited_once()
+
+
+async def test_a_write_queued_behind_aclose_is_dropped() -> None:
+    fake = FakeLiveRedis()
+    writer = _writer(fake)
+    fake.slow_next_hset = 0.05
+    first = asyncio.create_task(
+        writer.update("light", "controllable", ContextEntry(entity_id="light.lamp", state="on"))
+    )
+    await asyncio.sleep(0)  # `first` is now inside its slow HSET
+    closing = asyncio.create_task(writer.aclose())
+    await asyncio.sleep(0)  # `closing` now waits on the lock behind `first`
+    second = asyncio.create_task(
+        writer.update("light", "controllable", ContextEntry(entity_id="light.lamp", state="off"))
+    )
+    await asyncio.gather(first, closing, second)
+    assert fake.closed
+    assert _stored(fake)["light.lamp"].state == "on"
