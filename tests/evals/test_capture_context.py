@@ -82,7 +82,8 @@ async def test_capture_gives_up_on_an_unresponsive_redis(
 ) -> None:
     monkeypatch.setattr(evals_main, "_CONTEXTS_DIR", tmp_path)
     monkeypatch.setattr(evals_main, "CAPTURE_TIMEOUT_S", 0.05)
-    monkeypatch.setenv("REDIS_HOST", "localhost")
+    # REDIS_HOST is pasted into the URL verbatim, so userinfo there puts a password in it.
+    monkeypatch.setenv("REDIS_HOST", ":s3cret-pass@localhost")
     monkeypatch.setenv("REDIS_PORT", "6390")
     redis = AsyncMock()
 
@@ -102,7 +103,8 @@ async def test_capture_gives_up_on_an_unresponsive_redis(
 
     assert excinfo.value.code == 1
     redis.aclose.assert_awaited_once()
-    out = capsys.readouterr().out
-    assert "redis://localhost:6390" in out
-    assert "0.05s" in out
+    captured = capsys.readouterr()
+    assert "localhost:6390" in captured.out
+    assert "0.05s" in captured.out
+    assert "s3cret-pass" not in captured.out + captured.err
     assert not (tmp_path / "captured.json").exists()

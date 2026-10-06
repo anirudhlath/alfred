@@ -247,6 +247,7 @@ def _cmd_runs() -> None:
 async def _cmd_capture_context(args: argparse.Namespace) -> None:
     """Capture every service's live state into a fixture file (one snapshot per service)."""
     import json
+    from urllib.parse import urlsplit
 
     from sdk.alfred_sdk.live_state import read_live_state_by_service
     from shared.redis_streams import create_redis
@@ -258,7 +259,12 @@ async def _cmd_capture_context(args: argparse.Namespace) -> None:
             async with asyncio.timeout(CAPTURE_TIMEOUT_S):
                 by_service = await read_live_state_by_service(r)
         except TimeoutError:
-            print(f"Redis at {config.redis_url} did not answer within {CAPTURE_TIMEOUT_S:g}s.")
+            # Host and port only: REDIS_HOST can carry userinfo, and this goes to stdout.
+            where = urlsplit(config.redis_url)
+            print(
+                f"Redis at {where.hostname}:{where.port} did not answer within "
+                f"{CAPTURE_TIMEOUT_S:g}s."
+            )
             sys.exit(1)
         if not by_service:
             print("No live state in Redis — is a service connected to its source?")
