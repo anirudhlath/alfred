@@ -96,6 +96,7 @@ string key simply expires within 600 s of the last write to it.
 |---|---|---|
 | `replace(snapshot: ContextSnapshot)` | `MULTI` · `DEL` · `HSET` all fields · `EXEC` | On connecting to its source of truth |
 | `update(domain, kind, entry: ContextEntry)` | `HSET` one field | On each state change |
+| `remove(entity_id)` | `HDEL` one field | When the source deletes an entity |
 | `clear()` | `DEL` | On disconnect, at startup, at shutdown |
 | `aclose()` | closes the connection | At shutdown |
 
@@ -123,6 +124,10 @@ string key simply expires within 600 s of the last write to it.
    read.
 4. It returns `None` when no registered service has any live state. That is a different
    answer from "a snapshot with nothing in it".
+
+`read_live_state_by_service(redis) -> dict[str, ContextSnapshot]` does steps 1–3 without
+the merge. `read_live_state()` merges its result, and `evals capture-context` writes it
+out as is, so fixtures stay one snapshot per service.
 
 **`register()` stops writing context.** It writes the manifest and appends
 `ServiceRegistered`, and nothing else. Live state is published only through the writer,
@@ -167,8 +172,9 @@ sequenceDiagram
 - **HA connect** (the existing connect listener). Rebuild the index and generate the
   capabilities once, as today. Then `replace()` from `conn.states`, then `register()`.
 - **State change** (a new state listener, replacing `ContextRefresher`). `update()` for
-  that one entity. `_handle_state_changed` already applies the event to `conn.states`
-  before it awaits the listeners, which is the ordering the writer relies on.
+  that one entity, or `remove()` when HA deleted it. `_handle_state_changed` already
+  applies the event to `conn.states` before it awaits the listeners, which is the
+  ordering the writer relies on.
 - **Registry change** (the existing registry listener). Rebuild the index and
   `register()`, because the manifest's area and entity lists changed. Live state is
   unaffected.
@@ -229,6 +235,11 @@ sequenceDiagram
   state until home-service reconnects or restarts. This is the case the owner's
   delete-on-disconnect choice cannot cover without a timer, and it needs Redis
   unreachable from inside the same container while home-service keeps running.
+- **A failed `register()`** is retried with exponential backoff (1 s, doubling to 60 s)
+  until one succeeds, and then nothing more is scheduled. A registration requested in
+  the meantime runs at once, and its success cancels the retry. This keeps the guarantee
+  the 300 s loop gave as a side effect: a service started while Redis is unreachable
+  still registers, and so still gets its credentials pushed.
 - **Malformed entries on read** are skipped and counted in one warning per read. Readers
   never fail a request because one service wrote something odd.
 - **Redis unreachable on read** propagates as it does today. Neither caller treats a
@@ -286,7 +297,11 @@ Posted on #281 a day after the rollout:
 
 ## Docs touched by the implementation
 
+- `docs/context-provider.md` becomes `docs/live-state.md`, rewritten for the new path.
 - `docs/sdk.md`: publishing live state. `register()` no longer carries context.
+- `docs/evals-runner.md`: what `capture-context` reads.
+- `docs/PRD.md`: the live-state capability row.
+- `sdk/CLAUDE.md`: the module list, and the context-TTL gotcha goes.
 - `docs/architecture.md`: the live-state path, the Redis key table and the
   `alfred:events` cap.
 - `core/CLAUDE.md`: the `context_reader.py` entry.
