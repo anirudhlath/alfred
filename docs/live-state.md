@@ -101,36 +101,68 @@ class LiveStateEntry(BaseModel):
 
 ## Home-service lifecycle
 
-Home-service (the `alfred-home-service` repo) is the writer's one caller today.
+Home-service (the `alfred-home-service` repo) is the writer's one caller today. Its
+`LiveStatePublisher` (`app/live_state.py`) makes every live-state write, and
+`app/server.py` wires it to the HA connection and to registration.
 
 | Moment | Live state | Registration |
 |---|---|---|
 | Startup | `clear()` (a crashed run may have left its hash) | `register()` |
-| HA connected | `replace()` from the fetched states | `register()` |
-| State change | `update()`, or `remove()` when HA deleted the entity | — |
-| HA registry change | — | `register()` |
+| HA connected | rebuild the entity index, then `replace()` from the fetched states — published even if the rebuild fails | then generate capabilities (first connect only), then `register()` |
+| State change | `update()`, or `remove()` when HA deleted the entity; a full `replace()` instead while the hash is dirty and HA is connected (see below) | — |
+| HA registry change | — (the index is rebuilt, live state is not written) | `register()` |
 | HA disconnected, connect failed, token rejected | `clear()` | — |
-| Shutdown | `clear()` once it stops listening to HA; `aclose()` last | `unregister()`, after the clear and before the close |
+| A registration lands (any of the above) | heals a dirty hash: `replace()` if HA is connected, `clear()` if not | — |
+| Shutdown | `clear()`, then `aclose()` last | `unregister()`, between the two |
 
-Shutdown runs in this order: stop listening to HA (so no event can write after the
-clear), `clear()`, `unregister()`, then `aclose()`.
+Shutdown runs in this order: cancel the env-credentials task, stop the state forwarder,
+stop the HA connection (so no HA listener can write live state or schedule a
+registration after the clear), cancel a pending registration retry, `clear()`,
+`unregister()`, then `aclose()`. Each step runs even if shutdown is cancelled part-way;
+the cancellation is raised after the last.
 
 A failed registration retries with backoff (1 s, doubling to 60 s) until one lands, then
-nothing stays scheduled.
+nothing stays scheduled. Registrations are serialised: one attempt at a time, in the
+order asked for.
+
+### Healing after a failed write
+
+A failed write leaves Alfred's copy wrong in a way the next `update()` cannot fix: an
+entity that changed during a Redis outage stays stale until it changes again, and a hash
+a failed `clear()` left behind survives underneath fresh updates. So home-service heals
+it, with no timer:
+
+- Any failed live-state write — `update`, `remove`, `replace`, the startup `clear()` or
+  the disconnect `clear()` — marks the hash dirty and logs one WARNING. Later failures
+  while it is dirty retry quietly.
+- While the hash is dirty, and only while HA is connected, the next HA state event of
+  any entity publishes a full `replace()` from the connection's states instead of its
+  per-entity write.
+- A registration that lands while the hash is dirty proves Redis reachable, so it heals
+  too: `replace()` if HA is connected, `clear()` if not.
+- Any `replace()` or `clear()` that lands marks the hash clean again and logs one INFO.
+
+So an Alfred deploy that restarts Redis heals on the next state change of any entity,
+not only the entity that changed. A hash that a crashed run left behind, with Redis down
+at the next startup, is cleared when that startup's registration lands.
 
 ## Failure modes
 
 The writer does not swallow errors: every method raises on a Redis error, after at most
-about 5 s per command. Catching them is the caller's job, and home-service catches and
-logs them wherever a failure must not break event handling.
+about 5 s per command. Catching them is the caller's job. Home-service's publisher
+catches every one, logs it and marks the hash dirty, so a failed write never breaks the
+state forwarding that shares the listener chain.
 
-- When an `update()` fails, home-service logs it and moves on; the entity is stale until
-  its next change or the next connect. Home-service's listener catches the error, so it
-  never breaks the state forwarding that shares the listener chain.
-- When a `replace()` fails, home-service logs it, and the previous hash stays whole (the
-  transaction is all or nothing).
-- When a `clear()` on disconnect fails, home-service logs it, and the hash keeps the last
-  known state until home-service reconnects or restarts.
+- When an `update()` or `remove()` fails, the next state event while HA is connected, or
+  the next registration that lands, heals the hash.
+- When a `replace()` fails, the previous hash stays whole (the transaction is all or
+  nothing) until the next state event or registration heals it.
+- When the startup `clear()` fails, the registration that lands heals it.
+- **One double fault never heals on its own:** HA is away *and* the disconnect's
+  `clear()` failed. No state event arrives and nothing registers, so the hash keeps the
+  last known state until HA returns (its connect publishes a full `replace()`) or
+  home-service restarts. Only a registration retry already pending when Redis returns
+  would clear it sooner. Healing it otherwise would take a timer.
 - Redis unreachable on read propagates to the caller; nothing reads a failure as
   "unavailable".
 
@@ -143,7 +175,7 @@ logs them wherever a failure must not break event handling.
 | `core/reflex/context_reader.py` | `ContextReader` + `render_snapshot()` |
 | `core/conscious/memory_tools.py` | `memory_get_live_state` |
 | `evals/__main__.py` | `capture-context` |
-| `alfred-home-service`: `app/server.py`, `app/live_state.py` | The writer's one caller today |
+| `alfred-home-service`: `app/live_state.py`, `app/server.py` | The writer's one caller today: `LiveStatePublisher` (writes and heals) and the lifecycle wiring |
 
 ## Redis keys
 

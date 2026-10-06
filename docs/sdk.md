@@ -195,7 +195,8 @@ await live.aclose()
 
 Writer methods raise on a Redis error, after at most about 5 s per command, so catch them
 wherever a failure must not break event handling — a listener that also forwards state,
-for example.
+for example. Home-service catches every failure, marks its hash dirty and heals it on
+the next state event or registration, with no timer; `docs/live-state.md` describes how.
 
 ---
 
