@@ -9,6 +9,9 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+# Bytes as from a default client, or str as from one built with decode_responses=True.
+RedisText = bytes | str
+
 
 class FakePipeline:
     def __init__(self, redis: FakeLiveRedis, transaction: bool) -> None:
@@ -41,7 +44,7 @@ class FakePipeline:
 
 class FakeLiveRedis:
     def __init__(self) -> None:
-        self.hashes: dict[str, dict[bytes, bytes]] = {}
+        self.hashes: dict[str, dict[RedisText, RedisText]] = {}
         # (transaction?, [command names]) per pipeline execute
         self.executes: list[tuple[bool, list[str]]] = []
         # When set, the next HSET sleeps this long first (write-order tests).
@@ -76,10 +79,10 @@ class FakeLiveRedis:
     async def delete(self, *keys: str) -> int:
         return sum(self.hashes.pop(k, None) is not None for k in keys)
 
-    async def hgetall(self, key: str) -> dict[bytes, bytes]:
+    async def hgetall(self, key: str) -> dict[RedisText, RedisText]:
         return dict(self.hashes.get(key, {}))
 
-    async def hkeys(self, key: str) -> list[bytes]:
+    async def hkeys(self, key: str) -> list[RedisText]:
         return list(self.hashes.get(key, {}))
 
     def pipeline(self, transaction: bool = True) -> FakePipeline:

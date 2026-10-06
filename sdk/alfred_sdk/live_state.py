@@ -147,13 +147,14 @@ async def read_live_state_by_service(redis: aioredis.Redis) -> dict[str, Context
     """
     names: list[str] = []
     malformed = 0
-    malformed_in: set[str] = set()
+    # Insertion-ordered (a dict, not a set), so the warning's sort is the only ordering.
+    malformed_in: dict[str, None] = {}
     for raw_name in await redis.hkeys(AlfredClient.REGISTRY_KEY):
         try:
             names.append(_text(raw_name))
         except UnicodeDecodeError:
             malformed += 1
-            malformed_in.add(repr(raw_name))
+            malformed_in[repr(raw_name)] = None
     names.sort()
 
     hashes: list[dict[bytes | str, bytes | str]] = []
@@ -173,13 +174,13 @@ async def read_live_state_by_service(redis: aioredis.Redis) -> dict[str, Context
                 values[_text(field)] = value
             except UnicodeDecodeError:
                 malformed += 1
-                malformed_in.add(name)
+                malformed_in[name] = None
         for entity_id in sorted(values):
             try:
                 parsed = LiveStateEntry.model_validate_json(values[entity_id])
             except ValidationError:
                 malformed += 1
-                malformed_in.add(name)
+                malformed_in[name] = None
                 continue
             bucket = controllable if parsed.kind == "controllable" else sensors
             bucket.setdefault(parsed.domain, []).append(
@@ -189,7 +190,7 @@ async def read_live_state_by_service(redis: aioredis.Redis) -> dict[str, Context
             by_service[name] = ContextSnapshot(controllable=controllable, sensors=sensors)
     if malformed:
         logger.warning(
-            "Skipped %d malformed live-state entries from %s",
+            "Skipped %d malformed live-state item(s) from %s",
             malformed,
             ", ".join(sorted(malformed_in)),
         )

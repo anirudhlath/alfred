@@ -113,7 +113,7 @@ async def test_malformed_values_are_skipped_with_one_warning(
 
     assert snapshot is not None
     assert [e.entity_id for e in snapshot.controllable["light"]] == ["light.good"]
-    assert _warnings(caplog) == ["Skipped 3 malformed live-state entries from home-service"]
+    assert _warnings(caplog) == ["Skipped 3 malformed live-state item(s) from home-service"]
 
 
 async def test_an_undecodable_entity_id_is_skipped_as_malformed(
@@ -130,7 +130,7 @@ async def test_an_undecodable_entity_id_is_skipped_as_malformed(
 
     assert snapshot is not None
     assert [e.entity_id for e in snapshot.controllable["light"]] == ["light.good"]
-    assert _warnings(caplog) == ["Skipped 1 malformed live-state entries from home-service"]
+    assert _warnings(caplog) == ["Skipped 1 malformed live-state item(s) from home-service"]
 
 
 async def test_an_undecodable_service_name_is_skipped_and_not_fetched(
@@ -142,6 +142,7 @@ async def test_an_undecodable_service_name_is_skipped_and_not_fetched(
         "attic-service",
         {"sensor.t": _entry("sensor", "sensor", "21"), "sensor.bad": "{"},
     )
+    # Found first (in the registry pass) but sorted last, so only the sort orders the names.
     fake.hashes[REGISTRY][b"\xff-service"] = b"{}"
     caplog.set_level(logging.WARNING)
 
@@ -150,7 +151,7 @@ async def test_an_undecodable_service_name_is_skipped_and_not_fetched(
     assert list(by_service) == ["attic-service"]
     assert fake.executes == [(False, ["hgetall"])]
     assert _warnings(caplog) == [
-        "Skipped 2 malformed live-state entries from attic-service, b'\\xff-service'"
+        "Skipped 2 malformed live-state item(s) from attic-service, b'\\xff-service'"
     ]
 
 
@@ -163,7 +164,7 @@ async def test_a_registry_of_only_undecodable_names_still_warns(
 
     assert await read_live_state(fake) is None
     assert fake.executes == []
-    assert _warnings(caplog) == ["Skipped 1 malformed live-state entries from b'\\xff-service'"]
+    assert _warnings(caplog) == ["Skipped 1 malformed live-state item(s) from b'\\xff-service'"]
 
 
 async def test_a_client_that_decodes_responses_reads_the_same() -> None:
