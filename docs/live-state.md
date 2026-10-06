@@ -112,9 +112,9 @@ Home-service (the `alfred-home-service` repo) is the writer's one caller today. 
 |---|---|---|
 | Startup | `clear()` (a crashed run may have left its hash) | `register()` |
 | HA connected | rebuild the entity index, then `replace()` from the fetched states — published even if the rebuild fails | then generate capabilities (first connect only), then `register()` |
-| State change | `update()`, or `remove()` when HA deleted the entity; a full `replace()` instead while the hash is dirty and HA is connected (see below) | — |
+| State change | `update()`, or `remove()` when HA deleted the entity; while the hash is dirty and HA is connected, a full `replace()` follows once that write lands (see below) | — |
 | HA registry change | — (the index is rebuilt, live state is not written) | `register()` |
-| HA disconnected, each failed connect attempt, token rejected | `clear()` | — |
+| HA disconnected, each failed connect attempt, token rejected | `clear()`, once the connect setup (and any write it was making) has ended | — |
 | A registration lands (any of the above) | heals a dirty hash: `replace()` if HA is connected, `clear()` if not | — |
 | Shutdown | `clear()`, then `aclose()` last | `unregister()`, between the two |
 
@@ -138,9 +138,10 @@ it, with nothing on a schedule:
 - Any failed live-state write — `update`, `remove`, `replace`, the startup `clear()` or
   the disconnect `clear()` — marks the hash dirty and logs one WARNING. Later failures
   while it is dirty retry quietly.
-- While the hash is dirty, and only while HA is connected, the next HA state event of
-  any entity publishes a full `replace()` from the connection's states instead of its
-  per-entity write.
+- An HA state event always makes its own per-entity write first. While the hash is
+  dirty, that write is the probe: one that fails keeps the hash dirty without building a
+  snapshot, and one that lands proves Redis is back, so a full `replace()` from the
+  connection's states follows (only while HA is connected).
 - While HA is unreachable, every failed reconnect attempt (the backoff doubles from 1 s to
   60 s, so at least once a minute) calls `clear()` again. A failed reconnect attempt's
   `clear()` that lands heals the hash.
@@ -151,8 +152,8 @@ it, with nothing on a schedule:
 So an Alfred deploy that restarts Redis heals on the next state change of any entity,
 not only the entity that changed. A hash that a crashed run left behind, with Redis down
 at the next startup, heals on whichever lands first: the connect's `replace()`, a failed
-reconnect attempt's `clear()`, a state event's `replace()` while the hash is dirty, or
-the startup's registration.
+reconnect attempt's `clear()`, the `replace()` that follows a state event's landed write
+while the hash is dirty, or the startup's registration.
 
 ## Failure modes
 
