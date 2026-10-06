@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from evals.memory.sandbox import RedisSandbox
+from sdk.alfred_sdk.client import AlfredClient
 from sdk.alfred_sdk.context import ContextEntry, ContextSnapshot
 from sdk.alfred_sdk.live_state import (
     LiveStateEntry,
@@ -56,6 +57,18 @@ def _ids(prefix: str, n: int = HOUSE_SIZE) -> set[str]:
     return {f"light.{prefix}_{i}" for i in range(n)}
 
 
+def _lamp(state: str) -> ContextSnapshot:
+    return ContextSnapshot(
+        controllable={"light": [ContextEntry(entity_id="light.lamp", state=state)]}
+    )
+
+
+async def _stored_lamp_state(redis: AioRedis) -> str:
+    raw = await redis.hget(KEY, "light.lamp")
+    assert raw is not None
+    return LiveStateEntry.model_validate_json(raw).state
+
+
 @pytest.fixture
 async def redis() -> AsyncIterator[AioRedis]:
     async with RedisSandbox() as client:
@@ -71,6 +84,8 @@ async def writer(redis: AioRedis) -> AsyncIterator[LiveStateWriter]:
 
 async def test_a_reader_never_sees_half_a_replace(redis: AioRedis, writer: LiveStateWriter) -> None:
     old, new = _house("old", "on"), _house("new", "off")
+    old_ids, new_ids = _ids("old"), _ids("new")
+    houses = (new, old, new, old, new)
     await writer.replace(old)
     seen: list[set[str]] = []
     done = asyncio.Event()
@@ -81,13 +96,19 @@ async def test_a_reader_never_sees_half_a_replace(redis: AioRedis, writer: LiveS
             seen.append({f.decode() if isinstance(f, bytes) else f for f in fields})
 
     watcher = asyncio.create_task(watch())
-    for house in (new, old, new, old, new):
-        await writer.replace(house)
-    done.set()
-    await watcher
+    try:
+        for house in houses:
+            await writer.replace(house)
+    finally:
+        done.set()
+        await watcher
 
     assert seen, "the watcher never read"
-    assert all(ids in (_ids("old"), _ids("new")) for ids in seen)
+    bad = [len(ids) for ids in seen if ids not in (old_ids, new_ids)]
+    assert not bad, f"reader saw partial hashes of sizes {bad}"
+    # The sandbox is fresh, so every EXEC it has run came from one of these replaces.
+    stats = await redis.info("commandstats")
+    assert stats.get("cmdstat_exec", {}).get("calls", 0) == 1 + len(houses)
 
 
 async def test_an_update_requested_before_a_replace_never_lands_after_it(
@@ -96,22 +117,27 @@ async def test_an_update_requested_before_a_replace_never_lands_after_it(
     update = asyncio.create_task(
         writer.update("light", "controllable", ContextEntry(entity_id="light.lamp", state="on"))
     )
-    replace = asyncio.create_task(
-        writer.replace(
-            ContextSnapshot(
-                controllable={"light": [ContextEntry(entity_id="light.lamp", state="off")]}
-            )
-        )
-    )
+    replace = asyncio.create_task(writer.replace(_lamp("off")))
     await asyncio.gather(update, replace)
 
-    raw = await redis.hget(KEY, "light.lamp")
-    assert raw is not None
-    assert LiveStateEntry.model_validate_json(raw).state == "off"
+    assert await _stored_lamp_state(redis) == "off"
+
+
+async def test_a_replace_requested_before_an_update_never_overwrites_it(
+    redis: AioRedis, writer: LiveStateWriter
+) -> None:
+    replace = asyncio.create_task(writer.replace(_lamp("off")))
+    update = asyncio.create_task(
+        writer.update("light", "controllable", ContextEntry(entity_id="light.lamp", state="on"))
+    )
+    await asyncio.gather(replace, update)
+
+    assert await _stored_lamp_state(redis) == "on"
 
 
 async def test_clear_removes_the_hash(redis: AioRedis, writer: LiveStateWriter) -> None:
     await writer.replace(_house("x", "on", n=3))
+    assert await redis.exists(KEY) == 1
     await writer.clear()
     assert await redis.exists(KEY) == 0
 
@@ -119,7 +145,7 @@ async def test_clear_removes_the_hash(redis: AioRedis, writer: LiveStateWriter) 
 async def test_the_reader_sees_what_the_writer_wrote(
     redis: AioRedis, writer: LiveStateWriter
 ) -> None:
-    await redis.hset("alfred:tool_registry", "home-service", "{}")
+    await redis.hset(AlfredClient.REGISTRY_KEY, "home-service", "{}")
     await writer.replace(_house("x", "on", n=2))
     await writer.update("light", "controllable", ContextEntry(entity_id="light.x_1", state="off"))
     await writer.remove("light.x_0")
