@@ -1,6 +1,10 @@
 """Redis stream and key constants — single source of truth."""
 
 EVENTS_STREAM = "alfred:events"
+# Approximate cap on EVENTS_STREAM (XADD MAXLEN ~), passed by every producer — the same
+# value and style as bus/bridge.py's FORWARD_MAXLEN. alfred-sdk keeps a copy
+# (AlfredClient.EVENTS_MAXLEN); sdk/tests/test_schema_compatibility.py checks they agree.
+EVENTS_MAXLEN = 10_000
 ACTIONS_STREAM = "alfred:actions"
 SCRATCHPAD_QUEUE = "alfred:scratchpad:queue"
 # Consolidation feed. The ScratchpadWriter forwards here after appending to
