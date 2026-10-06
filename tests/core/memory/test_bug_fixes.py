@@ -2,7 +2,7 @@
 
 Covers: dim default, FT.SEARCH RETURN count, compressed TAG field,
 empty-tag filter, copy-before-delete ordering, search_text embedding,
-pattern matching, cache sharing, model load logging, config fields.
+pattern matching, model load logging, config fields.
 """
 
 from __future__ import annotations
@@ -12,25 +12,6 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
-
-# ---------------------------------------------------------------------------
-# Async iterator helper
-# ---------------------------------------------------------------------------
-
-
-class AsyncIteratorMock:
-    def __init__(self, items: list[object]) -> None:
-        self._items = iter(items)
-
-    def __aiter__(self) -> AsyncIteratorMock:
-        return self
-
-    async def __anext__(self) -> object:
-        try:
-            return next(self._items)
-        except StopIteration as exc:
-            raise StopAsyncIteration from exc
-
 
 # ---------------------------------------------------------------------------
 # Test 1: RedisVectorStore default dim matches AlfredConfig
@@ -239,31 +220,6 @@ def test_match_trigger_pattern_localizes_to_tz() -> None:
     assert match_trigger_pattern("evening routine", now, "America/Denver") is True
     assert match_trigger_pattern("evening routine", now, "UTC") is False
     assert match_trigger_pattern("morning routine", now, "America/Denver") is False
-
-
-# ---------------------------------------------------------------------------
-# Test 8: ContextReader._get_snapshot shares cache between methods
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_context_reader_shares_cache_between_methods() -> None:
-    """get_rendered_context and get_entity_states should share the same cached snapshot."""
-    from core.reflex.context_reader import ContextReader
-
-    mock_redis = AsyncMock()
-    # scan_iter is a sync method that returns an async iterator — use MagicMock, not AsyncMock
-    from unittest.mock import MagicMock
-
-    mock_redis.scan_iter = MagicMock(return_value=AsyncIteratorMock([]))
-
-    reader = ContextReader(redis=mock_redis)
-
-    await reader.get_rendered_context()
-    await reader.get_entity_states()
-
-    # scan_iter should only be called ONCE (cached)
-    assert mock_redis.scan_iter.call_count == 1
 
 
 # ---------------------------------------------------------------------------

@@ -138,9 +138,24 @@ class TestDispatchMemoryTool:
         )
 
         result = json.loads(result_json)
+        assert result["available"] is True
         assert len(result["entities"]) == 1
         assert result["entities"][0]["entity_id"] == "light.living_room"
         context_reader.get_entity_states.assert_called_once_with(patterns=["light.*"])
+
+    @pytest.mark.asyncio
+    async def test_get_live_state_says_when_there_is_none(self) -> None:
+        context_reader = AsyncMock()
+        context_reader.get_entity_states.return_value = None
+
+        result_json = await dispatch_memory_tool(
+            "memory_get_live_state",
+            {},
+            context_index=AsyncMock(),
+            context_reader=context_reader,
+        )
+
+        assert json.loads(result_json) == {"available": False, "entities": []}
 
     @pytest.mark.asyncio
     async def test_unknown_tool_returns_error(self) -> None:

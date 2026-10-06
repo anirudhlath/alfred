@@ -49,7 +49,11 @@ MEMORY_TOOLS_MANIFEST: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "memory_get_live_state",
-            "description": "Get current Home Assistant device state",
+            "description": (
+                "Get current Home Assistant device state. `available` is false when "
+                "Alfred has no live state (Home Assistant disconnected) — that is not "
+                "the same as nothing being on"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -122,4 +126,6 @@ async def _get_live_state(
     states = await context_reader.get_entity_states(
         patterns=params.get("entities"),
     )
-    return json.dumps({"entities": states})
+    if states is None:
+        return json.dumps({"available": False, "entities": []})
+    return json.dumps({"available": True, "entities": states})
