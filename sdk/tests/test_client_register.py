@@ -130,9 +130,11 @@ async def test_register_writes_only_the_manifest_and_the_event() -> None:
     with patch("redis.asyncio.from_url", return_value=mock_redis):
         await client.register()
 
+    # The whole call list, not just "no set": an AsyncMock accepts any method, so a
+    # regression to setex, json().set or a pipeline write would otherwise pass.
+    assert [c[0] for c in mock_redis.method_calls] == ["hset", "xadd", "aclose"]
     mock_redis.hset.assert_awaited_once()
     mock_redis.xadd.assert_awaited_once()
-    mock_redis.set.assert_not_called()
 
 
 @pytest.mark.asyncio
