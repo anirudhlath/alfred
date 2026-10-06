@@ -15,7 +15,6 @@ LIBRARIAN_QUEUE = "alfred:librarian:queue"
 LIBRARIAN_STATUS_KEY = "alfred:librarian:status"
 TRIGGERS_KEY = "alfred:triggers"
 TOOL_REGISTRY_KEY = "alfred:tool_registry"
-CONTEXT_KEY_PREFIX = "alfred:context:"
 
 # Home domain streams (used by MQTT bridge + Reflex Runner)
 HOME_STATE_STREAM = "alfred:home:state_changed"
