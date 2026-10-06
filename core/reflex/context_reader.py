@@ -69,7 +69,9 @@ class ContextReader:
             return None
 
         all_entities: list[dict[str, Any]] = []
-        for _domain, entries in {**snapshot.controllable, **snapshot.sensors}.items():
+        # Walk both buckets rather than merging their dicts: a domain can be in both, and a
+        # merge would drop its controllable entries.
+        for entries in (*snapshot.controllable.values(), *snapshot.sensors.values()):
             for e in entries:
                 entity_dict: dict[str, Any] = {"entity_id": e.entity_id, "state": e.state}
                 if e.attributes:

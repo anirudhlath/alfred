@@ -92,6 +92,33 @@ async def test_entity_states_filter_by_glob() -> None:
     ]
 
 
+async def test_unfiltered_entity_states_come_from_both_buckets() -> None:
+    with patch(_READ, AsyncMock(return_value=_make_snapshot())):
+        states = await ContextReader(redis=AsyncMock()).get_entity_states()
+
+    assert states is not None
+    assert [s["entity_id"] for s in states] == [
+        "light.living_room",
+        "light.bedroom",
+        "scene.movie_night",
+        "sensor.temperature",
+    ]
+
+
+async def test_a_domain_in_both_buckets_keeps_every_entity() -> None:
+    snapshot = ContextSnapshot(
+        controllable={"switch": [ContextEntry(entity_id="switch.kettle", state="on")]},
+        sensors={"switch": [ContextEntry(entity_id="switch.meter", state="off")]},
+    )
+    with patch(_READ, AsyncMock(return_value=snapshot)):
+        states = await ContextReader(redis=AsyncMock()).get_entity_states()
+
+    assert states == [
+        {"entity_id": "switch.kettle", "state": "on"},
+        {"entity_id": "switch.meter", "state": "off"},
+    ]
+
+
 async def test_entity_states_are_none_without_live_state() -> None:
     with patch(_READ, AsyncMock(return_value=None)):
         assert await ContextReader(redis=AsyncMock()).get_entity_states() is None

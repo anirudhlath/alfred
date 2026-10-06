@@ -223,7 +223,7 @@ def test_match_trigger_pattern_localizes_to_tz() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 9: EmbeddingProvider logs on load failure
+# Test 8: EmbeddingProvider logs on load failure
 # ---------------------------------------------------------------------------
 
 
@@ -240,7 +240,7 @@ def test_embedding_provider_logs_load_failure(caplog: pytest.LogCaptureFixture) 
 
 
 # ---------------------------------------------------------------------------
-# Test 10: ConsciousConfig has involuntary recall fields
+# Test 9: ConsciousConfig has involuntary recall fields
 # ---------------------------------------------------------------------------
 
 
