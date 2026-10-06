@@ -238,9 +238,9 @@ answer one at a time.
 ## 8. Roadmap
 
 **Near** — land what's in review (instant reminders #27, credential flow #28, voice
-satellites #29); then the Home Assistant integration Plans 2–3: full-home discovery and
-live state, followed by the attention set, tiered autonomy, and critical-action
-confirmations. Outcome: the real apartment becomes Alfred's body.
+satellites #29); then the Home Assistant integration Plans 2–3: full-home discovery,
+followed by the attention set, tiered autonomy, and critical-action confirmations (live
+state has shipped). Outcome: the real apartment becomes Alfred's body.
 
 **Mid** — the satellite hardware line (Raspberry Pi provisioning, custom "hey Alfred"
 wake word, per-room presence); guest enforcement throughout; routine-aware contextual

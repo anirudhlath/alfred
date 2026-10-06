@@ -65,8 +65,9 @@ class LiveStateEntry(BaseModel):
 - `replace` and `update` validate every entry through `LiveStateEntry` before writing; an
   entry that cannot be stored raises and writes nothing (for `replace`, nothing of the
   snapshot).
-- One client per process with a 5 s socket and connect timeout
-  (`WRITE_TIMEOUT_SECONDS`): writers run inline in a service's event loop, so a Redis
+- Each writer holds one Redis client for its lifetime, so create one writer per process.
+  The client has a 5 s socket and connect timeout (`WRITE_TIMEOUT_SECONDS`): writers run
+  inline in a service's event loop, so a Redis
   outage costs a bounded wait, never a hang. The bound is per Redis command, not per
   call: calls queue behind the write lock, so the N-th queued call can wait about N × 5 s.
 - Writes pass one FIFO `asyncio.Lock`, so they reach Redis in request order. A service
@@ -109,18 +110,27 @@ Home-service (the `alfred-home-service` repo) is the writer's one caller today.
 | State change | `update()`, or `remove()` when HA deleted the entity | — |
 | HA registry change | — | `register()` |
 | HA disconnected, connect failed, token rejected | `clear()` | — |
-| Shutdown | `clear()`, then the writer closes | `unregister()` |
+| Shutdown | `clear()` once it stops listening to HA; `aclose()` last | `unregister()`, after the clear and before the close |
+
+Shutdown runs in this order: stop listening to HA (so no event can write after the
+clear), `clear()`, `unregister()`, then `aclose()`.
 
 A failed registration retries with backoff (1 s, doubling to 60 s) until one lands, then
 nothing stays scheduled.
 
 ## Failure modes
 
-- A failed `update()` is logged; the entity is stale until its next change or the next
-  connect. It never breaks the state forwarding that shares the listener chain.
-- A failed `replace()` leaves the previous hash whole (the transaction is all or nothing).
-- A failed `clear()` on disconnect leaves the last known state until home-service
-  reconnects or restarts.
+The writer does not swallow errors: every method raises on a Redis error, after at most
+about 5 s per command. Catching them is the caller's job, and home-service catches and
+logs them wherever a failure must not break event handling.
+
+- When an `update()` fails, home-service logs it and moves on; the entity is stale until
+  its next change or the next connect. Home-service's listener catches the error, so it
+  never breaks the state forwarding that shares the listener chain.
+- When a `replace()` fails, home-service logs it, and the previous hash stays whole (the
+  transaction is all or nothing).
+- When a `clear()` on disconnect fails, home-service logs it, and the hash keeps the last
+  known state until home-service reconnects or restarts.
 - Redis unreachable on read propagates to the caller; nothing reads a failure as
   "unavailable".
 

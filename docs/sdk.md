@@ -177,7 +177,12 @@ as events arrive. The key and the format are Alfred's; see `docs/live-state.md`.
 from alfred_sdk.live_state import LiveStateWriter
 from alfred_sdk.context import ContextEntry, ContextSnapshot
 
-live = LiveStateWriter(client.redis_url, client.service_name)
+live = LiveStateWriter(client.redis_url, client.service_name)  # one per process
+
+snapshot = ContextSnapshot(
+    controllable={"light": [ContextEntry(entity_id="light.lamp", state="off")]},
+    sensors={"sensor": [ContextEntry(entity_id="sensor.temperature", state="21.5")]},
+)
 
 await live.clear()                                    # startup: drop a crashed run's state
 await live.replace(snapshot)                          # connected: the whole house, atomically
@@ -187,6 +192,10 @@ await live.remove("light.old_lamp")                   # the source deleted an en
 await live.clear()                                    # disconnected / shutting down
 await live.aclose()
 ```
+
+Writer methods raise on a Redis error, after at most about 5 s per command, so catch them
+wherever a failure must not break event handling — a listener that also forwards state,
+for example.
 
 ---
 

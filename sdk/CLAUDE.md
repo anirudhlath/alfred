@@ -21,11 +21,10 @@ Publishable Python package. The ONLY coupling between Alfred and external apps.
 - `BaseFeature` + `@tool` is the ONLY way to define tools — auto-extracts metadata from docstrings + type hints
 - `@tool` supports `@tool` and `@tool(name="custom.name", description="...")` — qualified as `{feature_name}.{method_name}` by default
 - `AlfredClient.discover_features(package="my_app.features")` scans for `BaseFeature` subclasses, instantiates, populates dispatch table
-- `client.register()` → `HSET alfred:tool_registry` + capped `XADD alfred:events` (`EVENTS_MAXLEN`, a copy of `shared.streams.EVENTS_MAXLEN`) — no state
+- `client.register()` → `HSET alfred:tool_registry`, then a capped `XADD` of a `ServiceRegistered` event to `alfred:events` — no state. The stream name and cap are duplicated as `AlfredClient.EVENTS_STREAM` and `AlfredClient.EVENTS_MAXLEN` (copies of `shared.streams`'s) — SDK stays standalone
 - `client.unregister()` → `HDEL alfred:tool_registry` on graceful shutdown
 - `client.dispatch("feature.tool_name", params)` routes to bound method (async + sync supported)
 - `AlfredClient(credentials_schema=CredentialSchema(...), credentials_endpoint="http://host:port/credentials")` declares credential needs; core pushes stored values to that endpoint on every `register()`
-- `client.register()` also publishes a `ServiceRegistered` event to `alfred:events` (constant duplicated as `AlfredClient.EVENTS_STREAM` — SDK stays standalone)
 - `@tool(audience="reflex"|"conscious", risk="benign"|"elevated"|"critical")` — defaults `conscious`/`benign`; carried into `ToolManifest`
 
 ## Testing
