@@ -15,12 +15,13 @@ import logging
 from typing import TYPE_CHECKING, Any, Literal
 
 import redis.asyncio as aioredis
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
+
+from .client import AlfredClient
+from .context import ContextEntry, ContextSnapshot
 
 if TYPE_CHECKING:
     from redis.typing import EncodableT, FieldT
-
-    from .context import ContextEntry, ContextSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -129,3 +130,63 @@ class LiveStateWriter:
                 return
             self._closed = True
             await self._redis.aclose()
+
+
+def _text(value: bytes | str) -> str:
+    return value.decode() if isinstance(value, bytes) else value
+
+
+async def read_live_state_by_service(redis: aioredis.Redis) -> dict[str, ContextSnapshot]:
+    """Each registered service's live state, for the services that have any.
+
+    Services are found through the tool registry, never by scanning the keyspace, and
+    every service's hash comes back in one pipelined round trip. A value that is not a
+    valid ``LiveStateEntry`` is skipped, with one warning per read for all of them.
+    """
+    names = sorted(_text(name) for name in await redis.hkeys(AlfredClient.REGISTRY_KEY))
+    if not names:
+        return {}
+    async with redis.pipeline(transaction=False) as pipe:
+        for name in names:
+            pipe.hgetall(live_state_key(name))
+        hashes: list[dict[bytes | str, bytes | str]] = await pipe.execute()
+
+    by_service: dict[str, ContextSnapshot] = {}
+    malformed = 0
+    for name, raw in zip(names, hashes, strict=True):
+        controllable: dict[str, list[ContextEntry]] = {}
+        sensors: dict[str, list[ContextEntry]] = {}
+        values = {_text(field): value for field, value in raw.items()}
+        for entity_id in sorted(values):
+            try:
+                parsed = LiveStateEntry.model_validate_json(values[entity_id])
+            except ValidationError:
+                malformed += 1
+                continue
+            bucket = controllable if parsed.kind == "controllable" else sensors
+            bucket.setdefault(parsed.domain, []).append(
+                ContextEntry(entity_id=entity_id, state=parsed.state, attributes=parsed.attributes)
+            )
+        if controllable or sensors:
+            by_service[name] = ContextSnapshot(controllable=controllable, sensors=sensors)
+    if malformed:
+        logger.warning("Skipped %d malformed live-state entries", malformed)
+    return by_service
+
+
+async def read_live_state(redis: aioredis.Redis) -> ContextSnapshot | None:
+    """Every registered service's live state merged, or None when none has any.
+
+    None means no live state, which is a different answer from a snapshot with nothing
+    in it.
+    """
+    by_service = await read_live_state_by_service(redis)
+    if not by_service:
+        return None
+    merged = ContextSnapshot()
+    for snapshot in by_service.values():
+        for domain, entries in snapshot.controllable.items():
+            merged.controllable.setdefault(domain, []).extend(entries)
+        for domain, entries in snapshot.sensors.items():
+            merged.sensors.setdefault(domain, []).extend(entries)
+    return merged
