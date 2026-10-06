@@ -154,3 +154,18 @@ async def test_the_reader_sees_what_the_writer_wrote(
 
     assert snapshot is not None
     assert snapshot.controllable == {"light": [ContextEntry(entity_id="light.x_1", state="off")]}
+
+
+async def test_a_key_that_is_not_a_hash_skips_only_its_service(
+    redis: AioRedis, writer: LiveStateWriter
+) -> None:
+    await redis.hset(AlfredClient.REGISTRY_KEY, "home-service", "{}")
+    await redis.hset(AlfredClient.REGISTRY_KEY, "attic-service", "{}")
+    # Written around the writer, so its HGETALL replies WRONGTYPE; it sorts first.
+    await redis.set(live_state_key("attic-service"), "on")
+    await writer.replace(_house("x", "on", n=1))
+
+    snapshot = await read_live_state(redis)
+
+    assert snapshot is not None
+    assert snapshot.controllable == {"light": [ContextEntry(entity_id="light.x_0", state="on")]}

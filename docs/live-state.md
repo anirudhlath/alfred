@@ -89,8 +89,10 @@ class LiveStateEntry(BaseModel):
 - Services are found through `HKEYS alfred:tool_registry`, never a keyspace scan, so only
   a registered service's hash is read. All hashes come back in one pipelined round trip.
 - Malformed items are skipped: a value that is not a valid `LiveStateEntry`, an entity ID
-  that is not UTF-8, and a registry key that is not UTF-8 (whose hash is then never
-  fetched). One warning per read counts them and names the services they came from.
+  that is not UTF-8, a registry key that is not UTF-8 (whose hash is then never
+  fetched), and a service whose key is not a hash (written around the writer, so its
+  `HGETALL` replies `WRONGTYPE`; the other services still read). One warning per read
+  counts them and names the services they came from.
 - `ContextReader` (`core/reflex/context_reader.py`) reads on every call — no cache — and
   renders the Markdown the Reflex prompts put under `## Home State`. Without live state it
   says `Live home state unavailable.`

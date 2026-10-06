@@ -9,8 +9,12 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from redis.exceptions import ResponseError
+
 # Bytes as from a default client, or str as from one built with decode_responses=True.
 RedisText = bytes | str
+
+_WRONGTYPE = "WRONGTYPE Operation against a key holding the wrong kind of value"
 
 
 class FakePipeline:
@@ -37,14 +41,28 @@ class FakePipeline:
         self._ops.append(("hgetall", (key,), {}))
         return self
 
-    async def execute(self) -> list[Any]:
+    async def execute(self, raise_on_error: bool = True) -> list[Any]:
         self._redis.executes.append((self.transaction, [op for op, _, _ in self._ops]))
-        return [await getattr(self._redis, op)(*args, **kw) for op, args, kw in self._ops]
+        results: list[Any] = []
+        for op, args, kw in self._ops:
+            try:
+                results.append(await getattr(self._redis, op)(*args, **kw))
+            except ResponseError as exc:
+                # As redis-py: the error takes the command's place in the results, and
+                # by default the first one is raised once every command has run.
+                results.append(exc)
+        if raise_on_error:
+            for result in results:
+                if isinstance(result, ResponseError):
+                    raise result
+        return results
 
 
 class FakeLiveRedis:
     def __init__(self) -> None:
         self.hashes: dict[str, dict[RedisText, RedisText]] = {}
+        # Keys holding a plain string (written around the writer), so HGETALL is WRONGTYPE.
+        self.strings: dict[str, RedisText] = {}
         # (transaction?, [command names]) per pipeline execute
         self.executes: list[tuple[bool, list[str]]] = []
         # When set, the next HSET sleeps this long first (write-order tests).
@@ -77,9 +95,14 @@ class FakeLiveRedis:
         return removed
 
     async def delete(self, *keys: str) -> int:
-        return sum(self.hashes.pop(k, None) is not None for k in keys)
+        return sum(
+            (self.hashes.pop(k, None) is not None) | (self.strings.pop(k, None) is not None)
+            for k in keys
+        )
 
     async def hgetall(self, key: str) -> dict[RedisText, RedisText]:
+        if key in self.strings:
+            raise ResponseError(_WRONGTYPE)
         return dict(self.hashes.get(key, {}))
 
     async def hkeys(self, key: str) -> list[RedisText]:

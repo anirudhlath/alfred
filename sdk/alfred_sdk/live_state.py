@@ -141,9 +141,10 @@ async def read_live_state_by_service(redis: aioredis.Redis) -> dict[str, Context
 
     Services are found through the tool registry, never by scanning the keyspace, and
     every service's hash comes back in one pipelined round trip. A value that is not a
-    valid ``LiveStateEntry``, an entity ID that is not UTF-8, and a registered service
-    name that is not UTF-8 (whose state is then never fetched) are each skipped, with one
-    warning per read that counts them and names the services they came from.
+    valid ``LiveStateEntry``, an entity ID that is not UTF-8, a registered service name
+    that is not UTF-8 (whose state is then never fetched), and a service whose key Redis
+    cannot read as a hash (that whole service) are each skipped, with one warning per read
+    that counts them and names the services they came from.
     """
     names: list[str] = []
     malformed = 0
@@ -157,15 +158,22 @@ async def read_live_state_by_service(redis: aioredis.Redis) -> dict[str, Context
             malformed_in[repr(raw_name)] = None
     names.sort()
 
-    hashes: list[dict[bytes | str, bytes | str]] = []
+    # A reply is the hash, or the error its HGETALL returned in its place.
+    hashes: list[dict[bytes | str, bytes | str] | Exception] = []
     if names:
         async with redis.pipeline(transaction=False) as pipe:
             for name in names:
                 pipe.hgetall(live_state_key(name))
-            hashes = await pipe.execute()
+            # One service's error must not fail the read for every other service.
+            hashes = await pipe.execute(raise_on_error=False)
 
     by_service: dict[str, ContextSnapshot] = {}
     for name, raw in zip(names, hashes, strict=True):
+        if isinstance(raw, Exception):
+            # A key that is not a hash (written around the writer) replies WRONGTYPE.
+            malformed += 1
+            malformed_in[name] = None
+            continue
         controllable: dict[str, list[ContextEntry]] = {}
         sensors: dict[str, list[ContextEntry]] = {}
         values: dict[str, bytes | str] = {}

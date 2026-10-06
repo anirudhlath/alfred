@@ -167,6 +167,28 @@ async def test_a_registry_of_only_undecodable_names_still_warns(
     assert _warnings(caplog) == ["Skipped 1 malformed live-state item(s) from b'\\xff-service'"]
 
 
+async def test_a_key_that_is_not_a_hash_skips_only_its_service(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fake = FakeLiveRedis()
+    _seed(fake, "home-service", {"sensor.t": _entry("sensor", "sensor", "21")})
+    _seed(fake, "attic-service", {})
+    # Written around the writer as a plain string, so its HGETALL replies WRONGTYPE.
+    # It sorts first, so the service after it must still be read.
+    fake.strings[live_state_key("attic-service")] = b"on"
+    caplog.set_level(logging.WARNING)
+
+    by_service = await read_live_state_by_service(fake)
+
+    assert by_service == {
+        "home-service": ContextSnapshot(
+            sensors={"sensor": [ContextEntry(entity_id="sensor.t", state="21")]}
+        )
+    }
+    assert fake.executes == [(False, ["hgetall", "hgetall"])]
+    assert _warnings(caplog) == ["Skipped 1 malformed live-state item(s) from attic-service"]
+
+
 async def test_a_client_that_decodes_responses_reads_the_same() -> None:
     fake = FakeLiveRedis()
     # As from a client built with decode_responses=True: str keys, fields and values.
