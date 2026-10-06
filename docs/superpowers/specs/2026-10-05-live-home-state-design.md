@@ -233,10 +233,12 @@ sequenceDiagram
   forwarding that shares the listener chain.
 - **A failed `replace()`** is logged. The hash keeps its previous contents (the
   transaction is all or nothing) until the next state changes and the next connect.
-- **A failed `clear()` on disconnect** is logged. The hash then shows the last known
-  state until home-service reconnects or restarts. This is the case the owner's
-  delete-on-disconnect choice cannot cover without a timer, and it needs Redis
-  unreachable from inside the same container while home-service keeps running.
+- **A failed `clear()` on disconnect** is logged. While HA is unreachable, every failed
+  reconnect attempt (backoff 1 s, doubling to 60 s) clears again, so the hash heals
+  within ≤ 60 s of Redis returning, with no timer. The one double fault that persists is
+  a token HA rejected while Redis was down: there are no further attempts, so the hash
+  keeps the last known state until new credentials connect, home-service restarts, or a
+  registration retry that was already pending lands.
 - **A failed `register()`** is retried with exponential backoff (1 s, doubling to 60 s)
   until one succeeds, and then nothing more is scheduled. A registration requested in
   the meantime runs at once, and its success cancels the retry. This keeps the guarantee
