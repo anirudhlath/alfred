@@ -398,5 +398,6 @@ async def test_trigger_fired_caps_the_events_stream(
         trigger, TriggerContext(now=datetime.now(UTC))
     )
 
-    assert mock_redis.xadd.call_args.args[0] == EVENTS_STREAM
-    assert mock_redis.xadd.call_args.kwargs == {"maxlen": EVENTS_MAXLEN, "approximate": True}
+    events_calls = [c for c in mock_redis.xadd.call_args_list if c.args[0] == EVENTS_STREAM]
+    assert len(events_calls) == 1
+    assert events_calls[0].kwargs == {"maxlen": EVENTS_MAXLEN, "approximate": True}
