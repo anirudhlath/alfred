@@ -8,8 +8,6 @@ import os
 import pkgutil
 from typing import TYPE_CHECKING, Any
 
-from .context import ContextSnapshot
-
 if TYPE_CHECKING:
     from collections.abc import Callable
     from types import ModuleType
@@ -25,6 +23,10 @@ class AlfredClient:
     REGISTRY_KEY = "alfred:tool_registry"  # must match ToolRegistry.REGISTRY_KEY in core/
     # Duplicated from shared.streams.EVENTS_STREAM — SDK must be standalone
     EVENTS_STREAM = "alfred:events"
+    # Duplicated from shared.streams.EVENTS_MAXLEN — SDK must be standalone. An approximate
+    # cap (XADD MAXLEN ~) every producer passes; sdk/tests/test_schema_compatibility.py
+    # checks the two copies agree.
+    EVENTS_MAXLEN = 10_000
 
     def __init__(
         self,
@@ -138,25 +140,6 @@ class AlfredClient:
             result = await result
         return result
 
-    # ── Context Collection ──
-
-    # Duplicated from shared.streams — SDK must be standalone (no monorepo imports)
-    CONTEXT_KEY_PREFIX = "alfred:context:"
-
-    async def _collect_context(self) -> ContextSnapshot:
-        """Collect and merge context from all registered features."""
-        from .context import ContextEntry
-
-        controllable: dict[str, list[ContextEntry]] = {}
-        sensors: dict[str, list[ContextEntry]] = {}
-        for feature in self._features:
-            snapshot = await feature.get_context()
-            for domain, entries in snapshot.controllable.items():
-                controllable.setdefault(domain, []).extend(entries)
-            for domain, entries in snapshot.sensors.items():
-                sensors.setdefault(domain, []).extend(entries)
-        return ContextSnapshot(controllable=controllable, sensors=sensors)
-
     # ── Manifest and Registration ──
 
     def get_registration_manifest(self) -> dict[str, Any]:
@@ -173,11 +156,12 @@ class AlfredClient:
         return manifest.model_dump()
 
     async def register(self) -> None:
-        """Register this service's tools and context with Alfred's registry on Redis.
+        """Register this service's tools with Alfred's registry on Redis.
 
         Publishes a ServiceRegistered event to alfred:events AFTER the registry
         hset — consumers read the manifest from the registry when handling the
-        event, so ordering matters.
+        event, so ordering matters. Live state is not part of registration: a
+        service publishes it through ``LiveStateWriter``.
         """
         import json
 
@@ -196,12 +180,12 @@ class AlfredClient:
                 credentials_endpoint=self.credentials_endpoint,
                 has_credentials_schema=self.credentials_schema is not None,
             )
-            await r.xadd(self.EVENTS_STREAM, {"event": event.model_dump_json()})
-
-            context = await self._collect_context()
-            if context.controllable or context.sensors:
-                context_key = f"{self.CONTEXT_KEY_PREFIX}{self.service_name}"
-                await r.set(context_key, context.model_dump_json(), ex=600)
+            await r.xadd(
+                self.EVENTS_STREAM,
+                {"event": event.model_dump_json()},
+                maxlen=self.EVENTS_MAXLEN,
+                approximate=True,
+            )
         finally:
             await r.aclose()
 
