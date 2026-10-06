@@ -2,7 +2,8 @@
 
 What the devices in the house are doing right now, as Alfred sees it. A service publishes
 its live state as events arrive; Alfred reads it fresh whenever a prompt needs it. Nothing
-on either side runs on a timer, and Alfred core never names a service.
+on either side runs on a schedule; only failed attempts are retried, with backoff. Alfred
+core never names a service.
 
 Issue: [#281](https://github.com/anirudhlath/alfred/issues/281) · Design:
 `docs/superpowers/specs/2026-10-05-live-home-state-design.md`
@@ -113,7 +114,7 @@ Home-service (the `alfred-home-service` repo) is the writer's one caller today. 
 | HA connected | rebuild the entity index, then `replace()` from the fetched states — published even if the rebuild fails | then generate capabilities (first connect only), then `register()` |
 | State change | `update()`, or `remove()` when HA deleted the entity; a full `replace()` instead while the hash is dirty and HA is connected (see below) | — |
 | HA registry change | — (the index is rebuilt, live state is not written) | `register()` |
-| HA disconnected, connect failed, token rejected | `clear()` | — |
+| HA disconnected, each failed connect attempt, token rejected | `clear()` | — |
 | A registration lands (any of the above) | heals a dirty hash: `replace()` if HA is connected, `clear()` if not | — |
 | Shutdown | `clear()`, then `aclose()` last | `unregister()`, between the two |
 
@@ -132,7 +133,7 @@ order asked for.
 A failed write leaves Alfred's copy wrong in a way the next `update()` cannot fix: an
 entity that changed during a Redis outage stays stale until it changes again, and a hash
 a failed `clear()` left behind survives underneath fresh updates. So home-service heals
-it, with no timer:
+it, with nothing on a schedule:
 
 - Any failed live-state write — `update`, `remove`, `replace`, the startup `clear()` or
   the disconnect `clear()` — marks the hash dirty and logs one WARNING. Later failures
@@ -140,13 +141,18 @@ it, with no timer:
 - While the hash is dirty, and only while HA is connected, the next HA state event of
   any entity publishes a full `replace()` from the connection's states instead of its
   per-entity write.
+- While HA is unreachable, every failed reconnect attempt (the backoff doubles from 1 s to
+  60 s, so at least once a minute) calls `clear()` again. A failed reconnect attempt's
+  `clear()` that lands heals the hash.
 - A registration that lands while the hash is dirty proves Redis reachable, so it heals
   too: `replace()` if HA is connected, `clear()` if not.
 - Any `replace()` or `clear()` that lands marks the hash clean again and logs one INFO.
 
 So an Alfred deploy that restarts Redis heals on the next state change of any entity,
 not only the entity that changed. A hash that a crashed run left behind, with Redis down
-at the next startup, is cleared when that startup's registration lands.
+at the next startup, heals on whichever lands first: the connect's `replace()`, a failed
+reconnect attempt's `clear()`, a state event's `replace()` while the hash is dirty, or
+the startup's registration.
 
 ## Failure modes
 
@@ -159,12 +165,14 @@ state forwarding that shares the listener chain.
   the next registration that lands, heals the hash.
 - When a `replace()` fails, the previous hash stays whole (the transaction is all or
   nothing) until the next state event or registration heals it.
-- When the startup `clear()` fails, the registration that lands heals it.
-- **One double fault never heals on its own:** HA is away *and* the disconnect's
-  `clear()` failed. No state event arrives and nothing registers, so the hash keeps the
-  last known state until HA returns (its connect publishes a full `replace()`) or
-  home-service restarts. Only a registration retry already pending when Redis returns
-  would clear it sooner. Healing it otherwise would take a timer.
+- When the startup `clear()` fails, whichever lands first heals it: the connect's
+  `replace()`, a failed reconnect attempt's `clear()`, or the registration.
+- When the disconnect's `clear()` fails: while HA is unreachable, every reconnect attempt
+  (at least once a minute) clears again, so a failed disconnect clear heals within one
+  backoff of Redis returning. The one double fault that persists is a token HA rejected
+  while Redis was down. There are no further attempts then, so the hash keeps the last
+  known state until new credentials connect, home-service restarts, or a registration
+  retry that was already pending lands.
 - Redis unreachable on read propagates to the caller; nothing reads a failure as
   "unavailable".
 
