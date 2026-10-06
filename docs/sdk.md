@@ -164,6 +164,30 @@ await client.unregister()  # removes this service's entry from the hash
 
 Registration writes to the Redis hash key `alfred:tool_registry` using `HSET`. The field is the service name, the value is the JSON-serialized manifest. Unregistration calls `HDEL` and is idempotent.
 
+Registration then appends a `ServiceRegistered` event to `alfred:events` (capped at about
+10,000 entries). It carries no device state — register when the service joins (startup,
+reconnecting to its source, a change to what its tools describe), not on a timer.
+
+### Publishing live state
+
+A service that knows what its devices are doing publishes it through `LiveStateWriter`,
+as events arrive. The key and the format are Alfred's; see `docs/live-state.md`.
+
+```python
+from alfred_sdk.live_state import LiveStateWriter
+from alfred_sdk.context import ContextEntry, ContextSnapshot
+
+live = LiveStateWriter(client.redis_url, client.service_name)
+
+await live.clear()                                    # startup: drop a crashed run's state
+await live.replace(snapshot)                          # connected: the whole house, atomically
+await live.update("light", "controllable",            # each change: one entity
+                  ContextEntry(entity_id="light.lamp", state="on"))
+await live.remove("light.old_lamp")                   # the source deleted an entity
+await live.clear()                                    # disconnected / shutting down
+await live.aclose()
+```
+
 ---
 
 ## Dispatch
@@ -407,6 +431,7 @@ sequenceDiagram
     SDK->>SDK: Build ServiceManifest JSON
     SDK->>Redis: HSET alfred:tool_registry "service-name" manifest
     Redis-->>SDK: OK
+    SDK->>Redis: XADD alfred:events MAXLEN ~ 10000 ServiceRegistered
 ```
 
 ### Dispatch flow (runtime)

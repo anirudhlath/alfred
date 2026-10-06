@@ -1,6 +1,6 @@
 # Alfred — Product Requirements Document
 
-**Status:** Living document. Capability statuses current as of **2026-10-03**.
+**Status:** Living document. Capability statuses current as of **2026-10-06**.
 **Maintenance rule:** any PR that adds or changes a user-facing capability updates the
 relevant row(s) in the [Capability Catalog](#4-capability-catalog) in the same branch.
 
@@ -125,8 +125,8 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 | Token-to-live Home Assistant onboarding (credentials via UI, zero config files) | In review | PR #28 ships the mechanism; the HA card itself lands with Plan 2 |
 | Full-home device discovery from HA's own registries (rooms, devices, friendly names) | Planned | HA integration spec, Plan 2 |
 | Generated control surface for every controllable domain (climate, covers, locks, media…) | Planned | same |
-| Live state streaming without HA-side setup (WebSocket ingest) | Planned | same |
-| Tiered autonomy: reflex touches only benign devices; risky domains need the conscious mind | Planned | same, Plan 3 |
+| Live state streaming without HA-side setup (WebSocket ingest) | Shipped | `alfred-home-service` repo (WebSocket ingest); [#281](https://github.com/anirudhlath/alfred/issues/281) (live state written per event, read fresh) |
+| Tiered autonomy: reflex touches only benign devices; risky domains need the conscious mind | Planned | HA integration spec, Plan 3 |
 | Confirmation required for critical actions (locks, alarm, garage) — even when you asked | Planned | same, Plan 3 |
 
 ### 4.5 Integrations & credentials

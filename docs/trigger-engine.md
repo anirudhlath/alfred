@@ -488,7 +488,7 @@ All keys are defined in `shared/streams.py` -- the single source of truth.
 | `alfred:triggers`          | Hash   | trigger_id → JSON (runtime source of truth)   |
 | `alfred:triggers:changed`  | Pub/Sub| Cross-process `TriggerStore` cache coherence (`saved`/`deleted`/`tz-changed`) |
 | `alfred:home:state_changed`| Stream | Input (StateChangedEvent) consumed by the event loop |
-| `alfred:events`            | Stream | Output only (TriggerFired, TriggerCreated) |
+| `alfred:events`            | Stream | Output only (TriggerFired, TriggerCreated); every `XADD` passes `maxlen=EVENTS_MAXLEN` (~10,000), `approximate=True` |
 | `alfred:actions`           | Stream | Output (ActionRequest when trigger has action) |
 | `alfred:scratchpad:queue`  | List   | Fire observations for ScratchpadWriter         |
 | `alfred:tool_registry`     | Hash   | CRUD tools registered via AlfredClient         |
