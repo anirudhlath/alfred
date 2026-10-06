@@ -191,6 +191,7 @@ async def test_a_write_queued_behind_aclose_is_dropped() -> None:
     await asyncio.sleep(0)  # `first` is now inside its slow HSET
     closing = asyncio.create_task(writer.aclose())
     await asyncio.sleep(0)  # `closing` now waits on the lock behind `first`
+    assert not fake.closed
     second = asyncio.create_task(
         writer.update("light", "controllable", ContextEntry(entity_id="light.lamp", state="off"))
     )
