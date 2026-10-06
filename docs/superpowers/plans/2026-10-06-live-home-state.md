@@ -2782,13 +2782,14 @@ git commit -m "build: pin alfred-sdk to the live-state commit; document the life
 The merge deploys. Then run these read-only checks:
 
 ```bash
-docker exec alfred redis-cli XLEN alfred:events          # ~10,000 after the first capped XADD
+docker exec alfred redis-cli XLEN alfred:events          # ~10,000 within minutes (each capped XADD trims ≤ ~10,000; ~39 writes)
 docker exec alfred redis-cli MEMORY USAGE alfred:events
 docker exec alfred redis-cli EXISTS alfred:live_state:home-service   # 0 — old home-service still runs
 ```
 
 The old home-service keeps registering every ~5 s until Step 2, and each of those writes
-is now capped. Readers say "Live home state unavailable." until Step 2 deploys, which the
+is now capped. Each capped write trims at most ~10,000 entries, so the backlog clears
+after ~39 writes: an `XLEN` straight after the first one still reads ~387,000. Readers say "Live home state unavailable." until Step 2 deploys, which the
 spec expects.
 
 - [ ] **Step 2: The home-service pin moves to the merge commit, and it merges on the owner's go**

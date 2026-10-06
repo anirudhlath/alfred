@@ -1,6 +1,6 @@
 # Live Home State — Event-Driven, Owned by Alfred
 
-**Status:** proposed
+**Status:** Approved
 **Date:** 2026-10-05
 **Issue:** [#281](https://github.com/anirudhlath/alfred/issues/281) (slice 1). The wider
 contract library is [#282](https://github.com/anirudhlath/alfred/issues/282).
@@ -217,8 +217,10 @@ sequenceDiagram
     `core/triggers/feature.py`.
   - The constant lives in `shared/streams.py`. The SDK keeps a copy next to its existing
     `EVENTS_STREAM` copy until #282.
-- **Backlog.** The first capped write after the deploy trims the 397,000 entries to about
-  10,000 on its own, so there is no manual step. On 2026-10-05 both consumer groups,
+- **Backlog.** Each capped write trims at most about 10,000 entries (an approximate trim
+  with no `LIMIT` stops at 100 × `stream-node-max-entries`), so the 397,000-entry backlog
+  clears after about 39 writes, within minutes of the deploy at the old service's
+  cadence. There is no manual step. On 2026-10-05 both consumer groups,
   `channels-credentials` and `reflex-trigger-fired`, had zero pending and zero lag, so
   trimming drops nothing unread.
 - **Headroom.** Once home-service registers only when it joins, the stream gets tens of
