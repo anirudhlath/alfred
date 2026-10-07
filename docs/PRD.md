@@ -1,6 +1,6 @@
 # Alfred — Product Requirements Document
 
-**Status:** Living document. Capability statuses current as of **2026-10-06**.
+**Status:** Living document. Capability statuses current as of **2026-10-07**.
 **Maintenance rule:** any PR that adds or changes a user-facing capability updates the
 relevant row(s) in the [Capability Catalog](#4-capability-catalog) in the same branch.
 
@@ -126,6 +126,7 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 | Full-home device discovery from HA's own registries (rooms, devices, friendly names) | Planned | HA integration spec, Plan 2 |
 | Generated control surface for every controllable domain (climate, covers, locks, media…) | Planned | same |
 | Live state streaming without HA-side setup (WebSocket ingest) | Shipped | `alfred-home-service` repo (WebSocket ingest); [#281](https://github.com/anirudhlath/alfred/issues/281) (live state written per event, read fresh) |
+| Reflex judgment calls: the fast mind sees the time, who is home and the house by room, and decides act, ask or nothing on common sense and learned habits — recorded in shadow mode for a week of review before it acts | In review | [#285](https://github.com/anirudhlath/alfred/issues/285), spec `2026-10-07-reflex-context-design.md` |
 | Tiered autonomy: reflex touches only benign devices; risky domains need the conscious mind | Planned | HA integration spec, Plan 3 |
 | Confirmation required for critical actions (locks, alarm, garage) — even when you asked | Planned | same, Plan 3 |
 

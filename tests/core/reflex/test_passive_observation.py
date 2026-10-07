@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from bus.schemas.events import ReflexObservation, StateChangedEvent
+from bus.schemas.events import ReflexObservation, ReflexProposal, StateChangedEvent
 from shared.streams import OBSERVED_ENTITY_PREFIX
 
 STREAM = "alfred:reflex:observations"
@@ -150,7 +150,9 @@ async def test_no_action_path_publishes_an_observation() -> None:
     from core.reflex.runner import process_stream_entry
 
     engine = AsyncMock()
-    engine.process_event = AsyncMock(return_value=None)  # SLM: nothing to do
+    engine.process_event = AsyncMock(
+        return_value=ReflexProposal(decision="none")
+    )  # SLM: nothing to do
     agent = AsyncMock()
     redis = AsyncMock()
     redis.set = AsyncMock(return_value=True)
@@ -179,7 +181,7 @@ async def test_debounced_no_action_publishes_nothing() -> None:
     from core.reflex.runner import process_stream_entry
 
     engine = AsyncMock()
-    engine.process_event = AsyncMock(return_value=None)
+    engine.process_event = AsyncMock(return_value=ReflexProposal(decision="none"))
     redis = AsyncMock()
     redis.set = AsyncMock(return_value=None)  # inside the window
 
@@ -226,48 +228,36 @@ async def test_attention_gated_event_is_not_observed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_action_path_observation_is_unchanged() -> None:
-    """Regression: when the SLM acts, the observation still carries action+result."""
-    from bus.schemas.events import ActionRequest, ActionResult
+async def test_a_proposal_skips_the_debounce() -> None:
+    """Act/ask/invalid are rare and are the evidence #285 collects — never debounced."""
     from core.reflex.runner import process_stream_entry
 
-    action = ActionRequest(
-        source="reflex-engine",
-        target_service="home-service",
-        tool_name="home.light_turn_on",
-        parameters={"entity_id": "light.hallway"},
-    )
-    result = ActionResult(
-        source="home-service",
-        request_id=action.request_id,
-        tool_name="home.light_turn_on",
-        status="success",
-    )
-
     engine = AsyncMock()
-    engine.process_event = AsyncMock(return_value=action)
-    agent = AsyncMock()
-    agent.execute_action = AsyncMock(return_value=result)
+    engine.process_event = AsyncMock(
+        return_value=ReflexProposal(decision="ask", reason="Dim for the film?")
+    )
     redis = AsyncMock()
+    redis.set = AsyncMock(return_value=None)  # the entity is inside its debounce window
 
     took_action = await process_stream_entry(
         entry_id=b"1-0",
         entry_data=_entry(_event()),
         engine=engine,
-        agent=agent,
+        agent=AsyncMock(),
         redis=redis,
         result_stream="alfred:home:action_results",
         observation_stream=STREAM,
     )
 
-    assert took_action is True
-    redis.set.assert_not_awaited()  # no debounce on the action path
-    obs_call = [c for c in redis.xadd.await_args_list if c.args[0] == STREAM]
-    assert len(obs_call) == 1
-    obs = ReflexObservation.model_validate_json(obs_call[0].args[1]["event"])
-    assert obs.action is not None
-    assert obs.action.tool_name == "home.light_turn_on"
-    assert obs.result is not None
+    assert took_action is False
+    assert not any(
+        str(c.args[0]).startswith(OBSERVED_ENTITY_PREFIX) for c in redis.set.await_args_list
+    )
+    (call,) = redis.xadd.await_args_list
+    obs = ReflexObservation.model_validate_json(call.args[1]["event"])
+    assert obs.proposal is not None
+    assert obs.proposal.decision == "ask"
+    assert obs.action is None
 
 
 # --- Configuration hardening -------------------------------------------------
@@ -433,7 +423,7 @@ async def test_a_failed_observation_write_does_not_block_the_ack() -> None:
     from core.reflex.runner import process_stream_entry
 
     engine = AsyncMock()
-    engine.process_event = AsyncMock(return_value=None)
+    engine.process_event = AsyncMock(return_value=ReflexProposal(decision="none"))
     redis = AsyncMock()
     redis.set = AsyncMock(return_value=True)
     redis.xadd = AsyncMock(
@@ -459,7 +449,7 @@ async def test_a_failed_debounce_write_does_not_block_the_ack() -> None:
     from core.reflex.runner import process_stream_entry
 
     engine = AsyncMock()
-    engine.process_event = AsyncMock(return_value=None)
+    engine.process_event = AsyncMock(return_value=ReflexProposal(decision="none"))
     redis = AsyncMock()
     redis.set = AsyncMock(side_effect=Exception("OOM command not allowed"))
 
@@ -477,41 +467,30 @@ async def test_a_failed_debounce_write_does_not_block_the_ack() -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_action_path_still_propagates_write_failures() -> None:
-    """Only the bookkeeping path is isolated — a failed action result must retry."""
-    from bus.schemas.events import ActionRequest, ActionResult
+async def test_a_failed_proposal_write_does_not_block_the_ack() -> None:
+    """Shadow recording is bookkeeping too: under maxmemory it must not wedge the loop."""
     from core.reflex.runner import process_stream_entry
 
-    action = ActionRequest(
-        source="reflex-engine",
-        target_service="home-service",
-        tool_name="home.light_turn_on",
-        parameters={"entity_id": "light.hallway"},
-    )
     engine = AsyncMock()
-    engine.process_event = AsyncMock(return_value=action)
-    agent = AsyncMock()
-    agent.execute_action = AsyncMock(
-        return_value=ActionResult(
-            source="home-service",
-            request_id=action.request_id,
-            tool_name="home.light_turn_on",
-            status="success",
-        )
+    engine.process_event = AsyncMock(
+        return_value=ReflexProposal(decision="ask", reason="Dim for the film?")
     )
     redis = AsyncMock()
-    redis.xadd = AsyncMock(side_effect=ConnectionError("redis went away"))
+    redis.xadd = AsyncMock(
+        side_effect=Exception("OOM command not allowed when used memory > 'maxmemory'")
+    )
 
-    with pytest.raises(ConnectionError):
-        await process_stream_entry(
-            entry_id=b"1-0",
-            entry_data=_entry(_event()),
-            engine=engine,
-            agent=agent,
-            redis=redis,
-            result_stream="alfred:home:action_results",
-            observation_stream=STREAM,
-        )
+    took_action = await process_stream_entry(
+        entry_id=b"1-0",
+        entry_data=_entry(_event()),
+        engine=engine,
+        agent=AsyncMock(),
+        redis=redis,
+        result_stream="alfred:home:action_results",
+        observation_stream=STREAM,
+    )
+
+    assert took_action is False  # the caller ACKs; the decision was already made
 
 
 @pytest.mark.asyncio

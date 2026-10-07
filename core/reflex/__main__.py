@@ -23,7 +23,12 @@ from core.reflex import inference
 from core.reflex.attention import AttentionSet
 from core.reflex.context_reader import ContextReader
 from core.reflex.engine import ReflexEngine, build_notification_body
-from core.reflex.runner import ensure_consumer_group, process_stream_entry, publish_observation
+from core.reflex.runner import (
+    count_decision,
+    ensure_consumer_group,
+    process_stream_entry,
+    publish_proposal,
+)
 from core.reflex.tool_registry import ToolRegistry
 from core.routing.domain_router import DomainRouter
 from core.warmup import start_warmup
@@ -82,6 +87,8 @@ async def _handle_trigger_fired(
     left pending it would be reclaimed for eternity. Only a failure while
     *acting* on a valid TriggerFired propagates, leaving the entry pending for
     the reclaim pass in ``_consume_trigger_fired``.
+
+    In shadow mode (#285) ``agent`` is unused: Reflex's decision is recorded, never executed.
     """
     raw_event = entry_data.get("event") or entry_data.get(b"event")
     if raw_event is None:
@@ -105,20 +112,14 @@ async def _handle_trigger_fired(
         urgency=urgency,
     )
 
-    # Path B: Reflex SLM reasoning (isolated — failures don't block ACK)
+    # Path B: Reflex's decision, recorded in shadow (#285) — nothing executes.
+    # Isolated: failures don't block ACK.
     try:
-        action = await engine.process_trigger_fired(trigger_event)
-        if action is not None:
-            result = await agent.execute_action(action)
-            await redis.xadd(HOME_ACTION_RESULTS_STREAM, {"event": result.model_dump_json()})
-
-            await publish_observation(
-                redis,
-                REFLEX_OBSERVATIONS_STREAM,
-                "trigger_fired",
-                trigger_event,
-                action,
-                result,
+        proposal = await engine.process_trigger_fired(trigger_event)
+        await count_decision(redis, proposal.decision)
+        if proposal.decision != "none":
+            await publish_proposal(
+                redis, REFLEX_OBSERVATIONS_STREAM, "trigger_fired", trigger_event, proposal
             )
     except Exception as e:
         logger.error("SLM reasoning failed for trigger '%s': %s", trigger_event.trigger_name, e)
