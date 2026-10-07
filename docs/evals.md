@@ -1,16 +1,16 @@
 # PRD Eval Suite
 
-Developer documentation for `alfred evals` -- the harness that checks whether Alfred does
+Developer documentation for `alfred evals` — the harness that checks whether Alfred does
 what `docs/PRD.md` says it does.
 
 ## Overview
 
 Every requirement in the PRD that an LLM decides is to be asserted by **goldens**: short
 scripted conversations played against the real assembled stack. Rows whose suite is not
-built yet are mapped as pending until it is. A golden says what the user types
-(or what happens in the house) and what must follow: which Home Assistant service was
-called, which tool the model chose and with which arguments, what the reply says, how fast
-it came, and, where only a reader can tell, whether a judge model agrees the reply is right.
+built yet are mapped as pending until it is. A golden says what the user types (or what
+happens in the house) and what must follow: which Home Assistant service was called, which
+tool the model chose and with which arguments, what the reply says, how fast it came, and,
+where only a reader can tell, whether a judge model agrees the reply is right.
 
 The suite proves three things that unit tests cannot:
 
@@ -113,7 +113,7 @@ The harness passes every setting the stack needs (`container_env()`), never the 
 System 1 and System 2 pointed at the proxy, embeddings at the embedding server, `HA_HOST` at
 the fake HA with a fake token, and the Librarian's interval pushed to a day so it never runs
 mid-suite. The stack is ready when `/health` answers, home-service has connected to the fake
-HA, and System 2 has answered a real request ("Reply with the single word: ready.") -- up to
+HA, and System 2 has answered a real request ("Reply with the single word: ready.") — up to
 420 s in all. It records the suite's first boot time and that first reply's latency for the
 scorecard. Before each sample the task checks the container is still running and restarts a
 dead one, once per suite. Teardown removes the container and wipes the data dir (the
@@ -176,9 +176,9 @@ export ALFRED_EVALS_HOME_SERVICE=~/code/.worktrees/home-service/evals-main
 ```
 
 `--home-service PATH` does the same per run. Without either, the build uses the
-`home-service` checkout beside the main Alfred checkout. Each run fetches `origin/main` and refuses a checkout that is
-behind it or dirty; move the worktree forward with
-`git -C <checkout> checkout --detach origin/main`.
+`home-service` checkout beside the main Alfred checkout. Each run fetches `origin/main` and
+refuses a checkout that is not at `origin/main` (behind or ahead), or dirty; move the
+worktree to it with `git -C <checkout> checkout --detach origin/main`.
 
 ### Calibrate the judge
 
@@ -194,7 +194,8 @@ saved ~/.local/share/alfred-evals/calibration.json
 ```
 
 (Illustrative numbers.) Run it once per model: a run on a model with no calibration of its
-own treats every judge check as untrusted. See [The judge and calibration](#the-judge-and-calibration).
+own treats every judge check as untrusted. See
+[The judge and calibration](#the-judge-and-calibration).
 
 ### List the goldens
 
@@ -251,17 +252,16 @@ uv run alfred evals run --include-pending --no-build --keep
    - the docker bridge has a gateway address.
 3. **Build** the image with `alfredctl build --runtime docker`, bundling the checked
    home-service. A failed build is a one-line error after the build output.
-4. **Start the fakes** -- the fake HA and the proxy -- on the bridge gateway.
+4. **Start the fakes** — the fake HA and the proxy — on the bridge gateway.
 5. **Each suite, one at a time:** boot its stack, run its Inspect task one sample at a time
    (an errored sample is retried once), and tear the stack down. A suite whose stack fails
    to start is recorded under "Run problems" and the next suite still runs.
 6. **Scorecard.** Print it, and write `report.md` and `report.json` to the run directory.
 
-An error before step 5 -- a bad golden, a preflight failure, a failed build -- is a message
-on stderr starting `alfred evals:`, and exit 1. After a run
-whose stacks all started the exit code is 0, whatever the scores. If any suite's stack
-failed to start, the scorecard is still written and the command exits 1, naming the failed
-suites.
+An error before step 5 — a bad golden, a preflight failure, a failed build — is a message
+on stderr starting `alfred evals:`, and exit 1. After a run whose stacks all started the
+exit code is 0, whatever the scores. If any suite's stack failed to start, the scorecard is
+still written and the command exits 1, naming the failed suites.
 
 ---
 
@@ -286,7 +286,7 @@ Each sample epoch scores one value:
 
 | Value | Meaning | Counts against Alfred? |
 |---|---|---|
-| `C` | Every counted check passed | -- |
+| `C` | Every counted check passed | — |
 | `I` | A counted check failed | Yes |
 | `N` | Inconclusive: no counted check failed, but one errored (a judge with no verdict, a check that raised), or nothing counted at all (only untrusted judge checks) | No |
 | `E` | The harness failed: no reply from System 2 in time, a dead container, unreadable data. Inspect retries the sample once first | No |
@@ -301,7 +301,7 @@ Sections, in order:
    which categories are trusted, untrusted and uncalibrated. With no calibration for the
    model, it says every judge check is untrusted.
 2. **Stack lines**, one per suite that started: `boot` (seconds to the first ready), `first
-   reply` (the readiness request, the very first request after boot -- the cold-start
+   reply` (the readiness request, the very first request after boot — the cold-start
    number for PRD 4.7's warmup row) and `recoveries` (dead-container restarts; there is one
    per suite, and once it is spent every later sample in the suite errors at once).
 3. **Run problems**, when there are any: suites whose stack never started, logs that failed
@@ -310,7 +310,7 @@ Sections, in order:
    their pass rates, and how many of them passed every run (pass^k).
 5. **One table per suite** of shipped goldens:
    - **variants**, **runs** (variants × epochs);
-   - **pass rate** = `C / (C + I)` -- errors and inconclusive runs are left out, and the
+   - **pass rate** = `C / (C + I)` — errors and inconclusive runs are left out, and the
      rate is `—` when nothing was scored;
    - **pass^k** ✓ only when every run of every variant scored `C`;
    - **flaky** ⚠ when the golden passed some scored runs and failed others;
@@ -330,7 +330,7 @@ uv run inspect view --log-dir evals/logs/<run>
 
 Each sample shows:
 
-- **Messages:** the transcript -- user turns, Alfred's replies, and `[home event]` turns for
+- **Messages:** the transcript — user turns, Alfred's replies, and `[home event]` turns for
   `ha_event` steps.
 - **Score explanation:** one line per check, `PASS`, `FAIL` or `ERROR`, then the check's
   name and reason. A `*` after the status (`FAIL*`) marks a check that did not count: a
@@ -386,16 +386,20 @@ expect:
 |---|---|---|
 | `user: <text>` | `variants: [<text>, …]`, `as: {…}` | Sends the utterance and waits for System 2's reply, then 2 s for side effects. `as` overrides the golden's actor for this step, which is how a conversation moves between channels |
 | `ha_event: {entity_id, state, attributes}` | `settle: <seconds>` (default 3) | Pushes a state change through the fake HA, merging `attributes` into the entity's current ones, then waits `settle` |
-| `wait: <seconds>` | -- | Lets time pass (more than 0, at most 600) |
+| `wait: <seconds>` | — | Lets time pass (more than 0, at most 600) |
 
-**Variants.** One `user` step may carry `variants`. Each variant is its own sample, with the
-same checks, named `<id>~1`, `<id>~2` and so on; the scorecard groups them under the golden,
-so a feature that works for only one phrasing shows up as flaky.
+**Variants.** One `user` step may carry `variants`. The step's own `user` text runs as
+sample `<id>` (variant 0), and each variant adds a sample on top, `<id>~1`, `<id>~2` and so
+on, with the same checks. So a golden with one variant is two samples, which `list` shows
+as `×2`. The scorecard groups a golden's samples under it, so a feature that works for only
+one phrasing shows up as flaky.
 
-**Epochs share a container.** A non-isolated golden's later epochs see what earlier
-goldens and epochs left in memory and sessions, as a real home would. The fake HA's states
-are restored before every sample. Mark a golden `isolated: true` when its result depends on
-a fresh stack.
+**Samples share a container.** Every sample gets a fresh session id (one per variant and
+epoch, `session_id_for()` in the driver), so no conversation carries over. What does carry
+over is the rest of the stack's state: a non-isolated golden's later samples see whatever
+earlier goldens, variants and epochs left in memory, as a real home would. The fake HA's
+states are restored before every sample. Mark a golden `isolated: true` when its result
+depends on a fresh stack.
 
 ### The quoted-`"on"` gotcha
 
@@ -425,7 +429,8 @@ with a claim the channel derives, so the claim alone selects sir or guest.
 |---|---|---|---|
 | `sir` | `signal` | The registered number (the container's `SIGNAL_PHONE_NUMBER`) | sir, by phone number |
 | `guest` | `signal` | Another number | guest |
-| `sir` | `web_pwa`, `voice`, `ios`, `satellite` | `sir` | sir, as a local claim with low risk clearance -- exactly as in production |
+| `sir` | `web_pwa`, `voice`, `ios` | `sir` | sir, as a local claim with low risk clearance — exactly as in production |
+| `sir` | `satellite` | `sir`, with no voice confidence | sir, as a local claim with low risk clearance — as a production satellite resolves when no voiceprint is enrolled. With an enrolled voiceprint, production resolves through `voice_id` instead, which the driver does not exercise |
 | `guest` | `web_pwa`, `voice`, `ios`, `satellite` | `guest` | guest |
 
 A guest on `web_pwa` is synthetic: the real web socket always claims sir. It stands in for an
@@ -478,17 +483,19 @@ scored separately. Params are validated at load and unknown keys are rejected.
 | `llm_tool_args_absent` | `tool`, `key` (required); `role` (default `system2`) | No call to the tool carries `key` |
 | `reply_contains` | exactly one of `text`, `any` (list), `regex`; `step` (int or `any`, default `-1`) | The reply at `step` (any reply, for `any`) contains `text` or one of `any` (case-insensitive), or `regex` matches it (`re.search`, case-insensitive). No reply at that step fails |
 | `reply_not_contains` | as `reply_contains` | No needle hits the chosen replies. No reply at that step fails |
-| `latency` | `metric: reply_ms` (the only metric in slice 1); `max` (ms, > 0); `step` (int, default `-1`) | The reply at `step` arrived within `max` ms of its request |
+| `latency` | `metric` (required; `reply_ms`, the only metric in slice 1), `max` (required; ms, > 0); `step` (int, default `-1`) | The reply at `step` arrived within `max` ms of its request |
 | `judge` | `category` (required); `rubric` (required, at least 10 characters); `reference` (optional) | The judge answers yes to the rubric about Alfred's last reply. See below |
 
 **Matching values** (`evals/harness/checks/matching.py`), for `data`, `args`, `state` and
-`attributes`:
+`attributes`. Matching goes one way: the **expected** value's type decides how it compares.
 
-- Strings compare whole, trimmed and case-insensitive.
-- Numbers compare as numbers, so `30` matches `30.0` and `"30"`.
-- `{approx: x, tol: t}` matches a number within `t` of `x`.
-- Booleans match booleans, or the strings `"true"`/`"false"`.
-- A list matches a list that has a match for each expected element.
+- An expected string matches only a string: whole, trimmed and case-insensitive. A quoted
+  `"50"` never matches an actual `50`.
+- An expected number matches an actual number or a numeric string, so `30` matches `30`,
+  `30.0` and `"30"`. Write numeric `data`, `args` and `attributes` unquoted.
+- `{approx: x, tol: t}` matches an actual number (or numeric string) within `t` of `x`.
+- An expected boolean matches a boolean, or the strings `"true"`/`"false"`.
+- An expected list matches an actual list that has a match for each expected element.
 
 **Tool names.** System 2 sees home-service's `home.light_turn_on` as `home_light_turn_on`;
 the checks treat dots and underscores alike, so either spelling works. `role` is `system1`,
@@ -533,7 +540,7 @@ needs `openai>=3.4`, and litellm, a base dependency, pins `openai<3`, so it cann
 | Retries | 2 (transport errors, HTTP 429 and 5xx; never another 4xx or a malformed reply) |
 | Timeout | 120 s per request |
 
-A judge that fails -- unreachable, out of retries, no `VERDICT` line, or no reply to judge --
+A judge that fails — unreachable, out of retries, no `VERDICT` line, or no reply to judge --
 scores the check `error`: at worst the sample is inconclusive (`N`), never `E`. A slow or
 down judge cannot make Alfred look broken.
 
@@ -573,7 +580,7 @@ with the labels; an unparseable answer counts as a disagreement. The report goes
 `~/.local/share/alfred-evals/calibration.json` (outside the repo), stamped with the model.
 
 - **Trust.** A category at **85% agreement or more** is trusted. Checks in any other
-  category -- untrusted or uncalibrated -- still run and are reported (marked `*`), but do
+  category — untrusted or uncalibrated — still run and are reported (marked `*`), but do
   not count toward the verdict.
 - **The model owns its calibration.** A run reads the report in preflight; a report measured
   on another model counts as none, so every judge check is untrusted and the run warns you

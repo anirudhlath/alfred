@@ -229,8 +229,8 @@ check's result, so partial correctness stays visible.
 - **Form.** Each `judge:` check is one yes/no rubric question with a `category`. The
   judge answers with a short rationale and then `yes` or `no`, at temperature 0, through
   the harness's own Inspect model provider for vLLM (`alfred-vllm`); Inspect's
-  `openai-api` provider needs an `openai` release that litellm does not allow. A `reference` reply, when given,
-  is shown to the judge as what a good answer looks like.
+  `openai-api` provider needs an `openai` release that litellm does not allow. A
+  `reference` reply, when given, is shown to the judge as what a good answer looks like.
 - **Calibration.** `evals/judge_calibration/<category>.yaml` holds hand-labelled
   (reply, rubric, reference, label) items, about 15 in slice 1 and 40 or more by
   slice 7, with deliberately bad replies among them. The owner confirms each label once.
