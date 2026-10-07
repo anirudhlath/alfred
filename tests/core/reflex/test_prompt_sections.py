@@ -305,3 +305,30 @@ def test_trigger_context_that_is_not_json_or_is_huge_still_renders() -> None:
 
     assert text.startswith('bedtime (time)\nContext: {"at": "2026-10-08 03:30:00+00:00"')
     assert len(text) < 700
+
+
+# Review Focus 3 (final review): one non-finite or huge number must not take every prompt down.
+@pytest.mark.parametrize(
+    "value",
+    [float("nan"), float("inf"), -float("inf"), 10**400],
+    ids=["nan", "inf", "-inf", "huge"],
+)
+def test_house_tolerates_non_finite_numbers(value: object) -> None:
+    entities = _index(
+        _e("light.a", "on", friendly_name="Lamp A", brightness=value),
+        _e(
+            "climate.t",
+            "heat",
+            friendly_name="Thermostat",
+            temperature=value,
+            current_temperature=value,
+        ),
+    )
+
+    assert render_house(entities) == "Other: Lamp A on · Thermostat heat"
+
+
+def test_event_tolerates_non_finite_numbers() -> None:
+    event = _change("light.a", "off", "on", friendly_name="Lamp A", brightness=float("nan"))
+
+    assert render_event(event, None) == "Lamp A: off → on"

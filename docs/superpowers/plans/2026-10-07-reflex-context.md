@@ -2941,5 +2941,5 @@ These come from the spec's Measurement section and are not code tasks:
    - `reflex.p50_ms` on the admin overview, target under 500.
    - Event → observation p50 split by the 5-minute rule.
    - Decision totals from `alfred:reflex:decisions:<date>`.
-2. **After a week:** `docker exec alfred python -m core.reflex.shadow_report --days 7`, posted to #285 for the owner's verdicts.
+2. **After a week:** `docker exec alfred python -m core.reflex.shadow_report --days 7`, reviewed with the owner privately (it names people and their comings and goings); only the counts and verdict tallies go to #285.
 3. **When alfred-home-service#25 deploys:** confirm the House section groups by room in a captured prompt.

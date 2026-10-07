@@ -264,16 +264,19 @@ stays wired for slice 2.
 
 ### 5. The shadow report
 
-`python -m core.reflex.shadow_report --days 7` (run with `docker exec`) prints Markdown,
-ready to post to #285:
+`python -m core.reflex.shadow_report --days 7` (run with `docker exec`) prints Markdown for the
+owner's private review:
 
 - daily counts per decision, from the counters;
 - every act, ask and invalid proposal in the window, each with its time, the
   re-rendered What changed line, the decision, the reason, and the proposed tool and
   parameters.
 
-The owner marks each one right or wrong in a comment. Those verdicts decide which kinds
-of decision slice 2 lets act directly.
+The report names people, says when they came and went, and quotes media titles, and
+the repo is public. So the owner reviews it privately and marks each proposal right or
+wrong there; only the daily counts and the verdict tallies (right and wrong per decision
+and per kind of event) are posted to #285. Those verdicts decide which kinds of decision
+slice 2 lets act directly.
 
 ## Error handling
 
@@ -295,7 +298,8 @@ of decision slice 2 lets act directly.
 2. alfred-home-service#25 ships whenever it is ready. Rooms appear in the House section
    on its deploy, with no Alfred change.
 3. Run the read-only checks in Measurement and post them to #285.
-4. After a week, post the shadow report to #285 for the owner's verdicts.
+4. After a week, review the shadow report with the owner privately, then post its
+   counts and the verdict tallies to #285.
 
 **Rollback:** revert the PR. `proposal` is optional, and the decision counters expire on
 their own.
@@ -377,7 +381,8 @@ These are read-only production checks, posted to #285.
 - **Decisions:** totals per decision from `alfred:reflex:decisions:<date>`, with every
   act, ask and invalid proposal carrying a reason or a problem.
 
-**After a week:** the shadow report, with the owner's verdicts.
+**After a week:** the shadow report's counts and the owner's verdict tallies (the
+report itself stays private, see §5).
 
 ## Docs touched by the implementation
 

@@ -154,3 +154,45 @@ async def test_no_proposals_says_so_and_bad_entries_are_skipped() -> None:
 
     assert "### Proposals (0)" in report
     assert "None in this window." in report
+
+
+async def test_a_proposal_shows_the_change_as_the_prompt_rendered_it() -> None:
+    event = StateChangedEvent(
+        source="home-service",
+        domain="home",
+        entity_id="media_player.living_room_tv",
+        old_state="paused",
+        new_state="playing",
+        attributes={
+            "friendly_name": "Living Room TV",
+            "media_title": "A Film",
+            "app_name": "Streamer",
+        },
+    )
+    obs = ReflexObservation(
+        source="reflex-engine",
+        origin="state_change",
+        trigger_event=event.model_dump(),
+        proposal=ASK,
+        timestamp=datetime(2026, 10, 7, 3, 0, tzinfo=UTC),
+    )
+    redis = _redis([(b"1-0", {b"event": obs.model_dump_json().encode()})])
+
+    report = await build_report(redis, days=2, now=NOW, tz_name="UTC")
+
+    assert '· **ask** · Living Room TV: paused → playing · "A Film" · Streamer —' in report
+
+
+async def test_a_change_that_is_not_a_state_change_still_lists() -> None:
+    obs = ReflexObservation(
+        source="reflex-engine",
+        origin="state_change",
+        trigger_event={"entity_id": "light.a"},
+        proposal=ASK,
+        timestamp=datetime(2026, 10, 7, 3, 0, tzinfo=UTC),
+    )
+    redis = _redis([(b"1-0", {b"event": obs.model_dump_json().encode()})])
+
+    report = await build_report(redis, days=2, now=NOW, tz_name="UTC")
+
+    assert "· **ask** · light.a —" in report

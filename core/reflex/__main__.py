@@ -116,13 +116,26 @@ async def _handle_trigger_fired(
     # Isolated: failures don't block ACK.
     try:
         proposal = await engine.process_trigger_fired(trigger_event)
-        await count_decision(redis, proposal.decision)
-        if proposal.decision != "none":
-            await publish_proposal(
-                redis, REFLEX_OBSERVATIONS_STREAM, "trigger_fired", trigger_event, proposal
-            )
     except Exception as e:
         logger.error("SLM reasoning failed for trigger '%s': %s", trigger_event.trigger_name, e)
+        return
+    await count_decision(redis, proposal.decision)
+    if proposal.decision == "none":
+        return
+    if proposal.decision == "invalid":
+        logger.warning(
+            "Invalid Reflex output for trigger '%s': %s",
+            trigger_event.trigger_name,
+            proposal.problem,
+        )
+    try:
+        await publish_proposal(
+            redis, REFLEX_OBSERVATIONS_STREAM, "trigger_fired", trigger_event, proposal
+        )
+    except Exception as e:
+        logger.warning(
+            "Proposal observation failed for trigger '%s': %s", trigger_event.trigger_name, e
+        )
 
 
 async def _consume_trigger_fired(

@@ -2,9 +2,11 @@
 
     docker exec alfred python -m core.reflex.shadow_report --days 7
 
-Prints Markdown for the #285 thread: daily decision counts from
+Prints Markdown for the owner's review: daily decision counts from
 ``alfred:reflex:decisions:<UTC date>``, then every act, ask and invalid proposal in
-the window, oldest first, in the user's local time.
+the window, oldest first, in the user's local time. The proposals name people, their
+comings and goings and what was playing, so the report is reviewed privately: only
+the counts and verdict tallies go to the public #285 thread.
 """
 
 from __future__ import annotations
@@ -14,7 +16,10 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from bus.schemas.events import ReflexObservation
+from pydantic import ValidationError
+
+from bus.schemas.events import ReflexObservation, StateChangedEvent
+from core.reflex.prompt import render_event
 from core.reflex.runner import decisions_key
 from shared.config import AlfredConfig
 from shared.redis_streams import create_redis, revrange
@@ -34,13 +39,14 @@ MAX_RAW_CHARS = 200
 
 
 def _describe(obs: ReflexObservation) -> str:
+    """The trigger's name, or the change as Reflex's prompt rendered it (live state aside)."""
     event = obs.trigger_event
     if obs.origin == "trigger_fired":
         return f"trigger {event.get('trigger_name', '?')}"
-    attributes = event.get("attributes")
-    name = attributes.get("friendly_name") if isinstance(attributes, dict) else None
-    label = name if isinstance(name, str) and name else event.get("entity_id", "?")
-    return f"{label}: {event.get('old_state')} → {event.get('new_state')}"
+    try:
+        return render_event(StateChangedEvent.model_validate(event), None)
+    except ValidationError:
+        return str(event.get("entity_id", "?"))
 
 
 def format_proposal(obs: ReflexObservation, tz: ZoneInfo) -> str:

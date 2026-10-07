@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from unittest.mock import AsyncMock
 
 import pytest
@@ -339,3 +340,55 @@ async def test_a_trigger_none_records_only_the_count(
 
     redis.xadd.assert_not_awaited()
     assert redis.hincrby.await_args_list[0].args[1:] == ("none", 1)
+
+
+@pytest.mark.asyncio
+async def test_an_invalid_trigger_proposal_is_logged_as_a_warning(
+    mock_agent: AsyncMock,
+    mock_publisher: AsyncMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from bus.schemas.events import ReflexProposal
+    from core.reflex.__main__ import _handle_trigger_fired
+
+    engine = AsyncMock()
+    engine.process_trigger_fired = AsyncMock(
+        return_value=ReflexProposal(decision="invalid", raw="Sure!", problem="not JSON")
+    )
+    event = TriggerFired(trigger_id="t-1", trigger_name="bedtime", trigger_type="time")
+
+    with caplog.at_level(logging.WARNING, logger="core.reflex.__main__"):
+        await _handle_trigger_fired(
+            _make_entry_data(event), engine, mock_agent, AsyncMock(), mock_publisher
+        )
+
+    assert any(
+        r.levelno == logging.WARNING and "not JSON" in r.getMessage() for r in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_failed_proposal_write_is_not_blamed_on_the_model(
+    mock_agent: AsyncMock,
+    mock_publisher: AsyncMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from bus.schemas.events import ReflexProposal
+    from core.reflex.__main__ import _handle_trigger_fired
+
+    engine = AsyncMock()
+    engine.process_trigger_fired = AsyncMock(
+        return_value=ReflexProposal(decision="ask", reason="Lights off for the night?")
+    )
+    event = TriggerFired(trigger_id="t-1", trigger_name="bedtime", trigger_type="time")
+    redis = AsyncMock()
+    redis.xadd = AsyncMock(side_effect=Exception("OOM command not allowed"))
+
+    with caplog.at_level(logging.WARNING, logger="core.reflex.__main__"):
+        await _handle_trigger_fired(
+            _make_entry_data(event), engine, mock_agent, redis, mock_publisher
+        )
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert not any("SLM reasoning failed" in m for m in messages)
+    assert any("Proposal observation failed" in m and "OOM" in m for m in messages)

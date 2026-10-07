@@ -8,6 +8,7 @@ much as it can: rules and tools, preferences, now, the house by room, then the c
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
@@ -114,7 +115,11 @@ def _area(attributes: Mapping[str, Any]) -> str | None:
 def _number(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
-    return float(value)
+    try:
+        number = float(value)
+    except OverflowError:  # an int too large for a float
+        return None
+    return number if math.isfinite(number) else None
 
 
 def _percent(brightness: object) -> str | None:
