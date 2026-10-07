@@ -1,7 +1,7 @@
 # tests/evals/harness/test_report.py
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from inspect_ai import Task, eval_async
 from inspect_ai.dataset import Sample
@@ -10,8 +10,10 @@ from inspect_ai.solver import Generate, TaskState, solver
 
 from evals.harness.checks.result import CheckResult
 from evals.harness.report import (
+    SCORER_NAME,
     RunMeta,
     SampleRun,
+    log_problems,
     percentile,
     render_markdown,
     runs_from_logs,
@@ -23,6 +25,8 @@ from tests.evals.harness.factories import evidence, llm
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from inspect_ai.log import EvalLog
+
 META = RunMeta(
     run_dir="/tmp/run",
     model="m",
@@ -33,6 +37,7 @@ META = RunMeta(
     trusted=["tone"],
     stacks=[],
 )
+EV = evidence(replies=["Done, sir."], llm_calls=[llm("system2")])
 
 
 def run(
@@ -43,8 +48,13 @@ def run(
     status: str = "shipped",
     prd: list[str] | None = None,
     reason: str = "x",
+    checks: list[CheckResult] | None = None,
+    error: str | None = None,
 ) -> SampleRun:
-    checks = [] if value == "C" else [CheckResult(name="ha_called", status="fail", reason=reason)]
+    if checks is None:
+        checks = (
+            [] if value == "C" else [CheckResult(name="ha_called", status="fail", reason=reason)]
+        )
     variant = int(sid.split("~")[1]) if "~" in sid else 0
     return SampleRun(
         sample_id=sid,
@@ -56,8 +66,51 @@ def run(
         prd=prd or ["4.4.lights-scenes"],
         value=value,
         checks=checks,
+        error=error,
         reply_ms=[1000.0 * epoch],
     )
+
+
+def sample(sid: str, **metadata: Any) -> Sample:
+    md = {
+        "scenario_id": sid,
+        "variant": 0,
+        "suite": "home",
+        "status": "shipped",
+        "prd": ["4.4.lights-scenes"],
+    }
+    return Sample(id=sid, input="x", metadata=md | metadata)
+
+
+@solver
+def fake_stack():  # type: ignore[no-untyped-def]
+    async def solve(state: TaskState, generate: Generate) -> TaskState:
+        if state.sample_id == "home.bad":
+            raise RuntimeError("stack fell over")
+        state.store.set("evidence", EV.model_dump(mode="json"))
+        return state
+
+    return solve
+
+
+@scorer(metrics=[mean()], name=SCORER_NAME)
+def fake_scorer():  # type: ignore[no-untyped-def]
+    async def score(state: TaskState, target: Target) -> Score:
+        if state.sample_id == "home.partial":
+            return Score(value="P")
+        ok = state.epoch == 1
+        checks = [
+            CheckResult(name="judge", status="pass" if ok else "fail", reason="r").model_dump()
+        ]
+        return Score(value=CORRECT if ok else INCORRECT, metadata={"checks": checks})
+
+    return score
+
+
+async def run_eval(tmp_path: Path, samples: list[Sample], epochs: int, **kw: Any) -> EvalLog:
+    task = Task(dataset=samples, solver=fake_stack(), scorer=fake_scorer(), epochs=epochs)
+    logs = await eval_async(task, model="mockllm/model", log_dir=str(tmp_path), **kw)
+    return logs[0]
 
 
 def test_percentile_is_nearest_rank() -> None:
@@ -86,6 +139,25 @@ def test_golden_summary_rates() -> None:
     assert c.pass_rate is None and c.inconclusive == 1
 
 
+def test_failing_lists_failures_then_errors_then_judge_errors() -> None:
+    judge_error = CheckResult(name="judge", status="error", reason="judge timed out")
+    runs = [
+        run("home.a", "N", epoch=1, checks=[judge_error]),
+        run("home.a", "E", epoch=2, checks=[], error="boom"),
+        run("home.a", "I", epoch=3, reason="wanted light.turn_on"),
+        run("home.a", "I", epoch=4, reason="wanted light.turn_on"),
+    ]
+    (g,) = summarize(runs, META).goldens
+    assert g.failing == ["ha_called: wanted light.turn_on", "error: boom", "judge: judge timed out"]
+
+
+def test_failing_always_keeps_an_error_message() -> None:
+    runs = [run("home.a", "I", epoch=i, reason=f"miss {i}") for i in range(1, 5)]
+    runs.append(run("home.a", "E", epoch=5, checks=[], error="boom"))
+    (g,) = summarize(runs, META).goldens
+    assert g.failing == ["ha_called: miss 1", "ha_called: miss 2", "error: boom"]
+
+
 def test_pending_goldens_stay_out_of_prd_rows() -> None:
     card = summarize(
         [run("home.a", "C"), run("home.p", "I", status="pending", prd=["4.4.device-discovery"])],
@@ -102,47 +174,77 @@ def test_markdown_names_the_failing_check(tmp_path: Path) -> None:
     assert "wanted light.turn_on" in md_path.read_text() and json_path.exists()
 
 
+def test_a_multiline_reason_keeps_its_table_row_on_one_line() -> None:
+    md = render_markdown(summarize([run("home.a", "I", reason="a\n\n- b|c")], META))
+    row = next(line for line in md.splitlines() if line.startswith("| home.a |"))
+    assert row.endswith("| ha_called: a - b\\|c |")
+    assert not any(line.startswith("- b") for line in md.splitlines())
+
+
+def test_header_names_untrusted_and_uncalibrated_judge_categories() -> None:
+    meta = META.model_copy(update={"calibration": {"tone": 0.9, "privacy": 0.7}})
+    header = render_markdown(summarize([], meta)).splitlines()[2]
+    assert "judge trusted: tone" in header
+    assert "untrusted: privacy" in header
+    assert "uncalibrated: answered, faithfulness, relevance" in header
+
+
+def test_header_says_when_the_judge_has_no_calibration() -> None:
+    meta = META.model_copy(update={"calibration": {}, "trusted": []})
+    header = render_markdown(summarize([], meta)).splitlines()[2]
+    assert "no judge calibration for m — every judge check is untrusted" in header
+    assert "judge trusted" not in header
+
+
+def test_run_problems_render_above_the_tables() -> None:
+    assert "## Run problems" not in render_markdown(summarize([], META))
+    meta = META.model_copy(update={"problems": ["home: error — boom"]})
+    md = render_markdown(summarize([run("home.a", "C")], meta))
+    assert "## Run problems\n\n- home: error — boom" in md
+    assert md.index("## Run problems") < md.index("## PRD rows")
+
+
 async def test_runs_from_logs_reads_inspect_logs(tmp_path: Path) -> None:
-    ev = evidence(replies=["Done, sir."], llm_calls=[llm("system2")])
+    log = await run_eval(tmp_path, [sample("home.a"), sample("home.bad")], 2, fail_on_error=False)
+    runs = runs_from_logs([log])
+    good = sorted((r for r in runs if r.sample_id == "home.a"), key=lambda r: r.epoch)
+    assert [(r.epoch, r.value) for r in good] == [(1, "C"), (2, "I")]
+    assert good[0].reply_ms == [1000.0] and good[0].llm[0].role == "system2"
+    assert good[0].checks == [CheckResult(name="judge", status="pass", reason="r")]
+    assert good[1].checks == [CheckResult(name="judge", status="fail", reason="r")]
+    bad = [r for r in runs if r.sample_id == "home.bad"]
+    assert len(bad) == 2
+    assert all(r.value == "E" and "stack fell over" in (r.error or "") for r in bad)
+    assert log_problems([log], epochs=2) == []
 
-    @solver
-    def fake():  # type: ignore[no-untyped-def]
-        async def solve(state: TaskState, generate: Generate) -> TaskState:
-            state.store.set("evidence", ev.model_dump(mode="json"))
-            return state
 
-        return solve
-
-    @scorer(metrics=[mean()], name="scenario_scorer")
-    def fake_scorer():  # type: ignore[no-untyped-def]
-        async def score(state: TaskState, target: Target) -> Score:
-            ok = state.epoch == 1
-            checks = [
-                CheckResult(name="judge", status="pass" if ok else "fail", reason="r").model_dump()
-            ]
-            return Score(value=CORRECT if ok else INCORRECT, metadata={"checks": checks})
-
-        return score
-
-    task = Task(
-        dataset=[
-            Sample(
-                id="home.a",
-                input="x",
-                metadata={
-                    "scenario_id": "home.a",
-                    "variant": 0,
-                    "suite": "home",
-                    "status": "shipped",
-                    "prd": ["4.4.lights-scenes"],
-                },
-            )
-        ],
-        solver=fake(),
-        scorer=fake_scorer(),
-        epochs=2,
+async def test_an_unexpected_score_or_status_errors_only_that_run(tmp_path: Path) -> None:
+    samples = [sample("home.a"), sample("home.partial"), sample("home.beta", status="beta")]
+    runs = {r.sample_id: r for r in runs_from_logs([await run_eval(tmp_path, samples, 1)])}
+    assert runs["home.a"].value == "C"
+    assert (runs["home.partial"].value, runs["home.partial"].error) == (
+        "E",
+        "unexpected score value P",
     )
-    logs = await eval_async(task, model="mockllm/model", log_dir=str(tmp_path))
-    runs = runs_from_logs(logs)
-    assert sorted((r.epoch, r.value) for r in runs) == [(1, "C"), (2, "I")]
-    assert runs[0].reply_ms == [1000.0] and runs[0].llm[0].role == "system2"
+    beta = runs["home.beta"]
+    assert (beta.value, beta.error, beta.status) == ("E", "unknown status beta", "shipped")
+
+
+async def test_log_problems_names_failed_logs_and_missing_samples(tmp_path: Path) -> None:
+    log = await run_eval(tmp_path, [sample("home.a"), sample("home.bad")], 1)
+    assert log.status == "error"
+    (line,) = log_problems([log], epochs=1)
+    assert line.startswith(f"{log.eval.task}: error — ") and "stack fell over" in line
+    assert log.error is not None
+    multiline = log.error.model_copy(update={"message": "Traceback:\n  stack\n\tfell over"})
+    (flat,) = log_problems([log.model_copy(update={"error": multiline})], epochs=1)
+    assert flat == f"{log.eval.task}: error — Traceback: stack fell over"
+
+    trimmed = log.model_copy(update={"samples": [s for s in log.samples or [] if s.epoch != 1]})
+    problems = log_problems([trimmed], epochs=1)
+    assert f"{log.eval.task}: sample home.a epoch 1 is missing from the log" in problems
+    assert f"{log.eval.task}: sample home.bad epoch 1 is missing from the log" in problems
+
+    unknown = log.eval.dataset.model_copy(update={"sample_ids": None})
+    blind = trimmed.model_copy(update={"eval": log.eval.model_copy(update={"dataset": unknown})})
+    assert log_problems([blind], epochs=1) == [line]

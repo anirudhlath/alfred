@@ -5,10 +5,11 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 
 from pydantic import BaseModel, Field
 
+from evals.harness.checks.judge_spec import JudgeCategory
 from evals.harness.checks.result import CheckResult
 from evals.harness.evidence import Evidence, Role
 
@@ -20,6 +21,8 @@ if TYPE_CHECKING:
 
 SCORER_NAME = "scenario_scorer"
 Value = Literal["C", "I", "N", "E"]
+Status = Literal["shipped", "pending"]
+CELL_CHARS = 160
 
 
 class LlmUsage(BaseModel):
@@ -35,7 +38,7 @@ class SampleRun(BaseModel):
     variant: int
     epoch: int
     suite: str
-    status: Literal["shipped", "pending"]
+    status: Status
     prd: list[str]
     value: Value
     checks: list[CheckResult] = Field(default_factory=list)
@@ -47,7 +50,7 @@ class SampleRun(BaseModel):
 class GoldenSummary(BaseModel):
     scenario_id: str
     suite: str
-    status: Literal["shipped", "pending"]
+    status: Status
     prd: list[str]
     variants: int
     runs: int
@@ -85,6 +88,8 @@ class RunMeta(BaseModel):
     calibration: dict[str, float]
     trusted: list[str]
     stacks: list[dict[str, Any]]
+    # What went wrong with the run as a whole (see ``log_problems``), shown above the tables.
+    problems: list[str] = Field(default_factory=list)
     finished_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -106,6 +111,31 @@ def percentile(values: Sequence[float], q: float) -> float | None:
     return ordered[index]
 
 
+def _flat(text: str) -> str:
+    return " ".join(text.split())
+
+
+def log_problems(logs: Sequence[EvalLog], epochs: int) -> list[str]:
+    """One line per log that did not succeed, and per sample epoch it never recorded."""
+    problems: list[str] = []
+    for log in logs:
+        task = log.eval.task
+        if log.status != "success":
+            message = _flat(log.error.message) if log.error is not None else "no error recorded"
+            problems.append(f"{task}: {log.status} — {message}")
+        sample_ids = log.eval.dataset.sample_ids
+        if sample_ids is None:
+            continue
+        recorded = {(str(s.id), s.epoch) for s in log.samples or []}
+        problems += [
+            f"{task}: sample {sid} epoch {epoch} is missing from the log"
+            for sid in sample_ids
+            for epoch in range(1, epochs + 1)
+            if (str(sid), epoch) not in recorded
+        ]
+    return problems
+
+
 def runs_from_logs(logs: Sequence[EvalLog]) -> list[SampleRun]:
     runs: list[SampleRun] = []
     for log in logs:
@@ -114,16 +144,24 @@ def runs_from_logs(logs: Sequence[EvalLog]) -> list[SampleRun]:
             score = (sample.scores or {}).get(SCORER_NAME)
             raw = (sample.store or {}).get("evidence")
             evidence = Evidence.model_validate(raw) if raw else None
+            value: Value = "E"
+            error: str | None = None
+            checks: list[CheckResult] = []
             if sample.error is not None or score is None:
-                value: Value = "E"
                 error = sample.error.message if sample.error is not None else "not scored"
-                checks: list[CheckResult] = []
+            elif (score_value := str(score.value)) not in get_args(Value):
+                error = f"unexpected score value {score_value}"
             else:
-                value = str(score.value)  # type: ignore[assignment]
-                error = None
+                value = cast("Value", score_value)
                 checks = [
                     CheckResult.model_validate(c) for c in (score.metadata or {}).get("checks", [])
                 ]
+            status = md.get("status", "shipped")
+            if status not in get_args(Status):
+                # Counted as shipped so the run still shows up; the error says why it failed.
+                unknown = f"unknown status {status}"
+                value, status = "E", "shipped"
+                error = f"{error}; {unknown}" if error else unknown
             runs.append(
                 SampleRun(
                     sample_id=str(sample.id),
@@ -131,7 +169,7 @@ def runs_from_logs(logs: Sequence[EvalLog]) -> list[SampleRun]:
                     variant=int(md.get("variant", 0)),
                     epoch=sample.epoch,
                     suite=str(md.get("suite", "")),
-                    status=md.get("status", "shipped"),
+                    status=status,
                     prd=list(md.get("prd", [])),
                     value=value,
                     checks=checks,
@@ -159,15 +197,6 @@ def _golden(runs: list[SampleRun]) -> GoldenSummary:
     errors = sum(r.value == "E" for r in runs)
     inconclusive = sum(r.value == "N" for r in runs)
     scored = len(runs) - errors - inconclusive
-    failing = list(
-        dict.fromkeys(
-            f"{c.name}: {c.reason}"
-            for r in runs
-            for c in r.checks
-            if c.counted and c.status != "pass"
-        )
-    )
-    failing += list(dict.fromkeys(f"error: {r.error}" for r in runs if r.error))
     return GoldenSummary(
         scenario_id=first.scenario_id,
         suite=first.suite,
@@ -181,8 +210,32 @@ def _golden(runs: list[SampleRun]) -> GoldenSummary:
         pass_rate=passes / scored if scored else None,
         pass_k=bool(runs) and passes == len(runs),
         flaky=0 < passes < scored,
-        failing=failing[:3],
+        failing=_failing(runs),
     )
+
+
+def _failing(runs: list[SampleRun], limit: int = 3) -> list[str]:
+    """Why a golden fell short: check failures, then harness errors, then judge errors.
+
+    A harness error always keeps a place: when failures fill every slot, the first error
+    takes the last one.
+    """
+
+    def counted(value: Value, status: str) -> list[str]:
+        return [
+            f"{c.name}: {c.reason}"
+            for r in runs
+            if r.value == value
+            for c in r.checks
+            if c.counted and c.status == status
+        ]
+
+    errors = [f"error: {r.error}" for r in runs if r.value == "E" and r.error]
+    failing = list(dict.fromkeys([*counted("I", "fail"), *errors, *counted("N", "error")]))
+    failing = failing[:limit]
+    if errors and not set(errors) & set(failing):
+        failing[-1] = errors[0]
+    return failing
 
 
 def summarize(runs: Sequence[SampleRun], meta: RunMeta) -> Scorecard:
@@ -238,16 +291,30 @@ def _pct(value: float | None) -> str:
     return "—" if value is None else f"{value:.0%}"
 
 
+def _cell(text: str) -> str:
+    """Free text made safe for one table cell: one line, pipes escaped, bounded."""
+    return _flat(text).replace("|", "\\|")[:CELL_CHARS]
+
+
+def _judge_trust(m: RunMeta) -> str:
+    if not m.calibration:
+        return f"no judge calibration for {m.model} — every judge check is untrusted"
+    untrusted = sorted(set(m.calibration) - set(m.trusted))
+    uncalibrated = sorted(c for c in get_args(JudgeCategory) if c not in m.calibration)
+    return (
+        f"judge trusted: {', '.join(m.trusted) or 'none'}"
+        + (f" · untrusted: {', '.join(untrusted)}" if untrusted else "")
+        + (f" · uncalibrated: {', '.join(uncalibrated)}" if uncalibrated else "")
+    )
+
+
 def render_markdown(card: Scorecard) -> str:
     m = card.meta
-    untrusted = sorted(set(m.calibration) - set(m.trusted))
     lines = [
         f"# Alfred eval scorecard — {m.finished_at:%Y-%m-%d %H:%M} UTC",
         "",
         f"model `{m.model}` · Alfred `{m.alfred_commit[:7]}` · "
-        f"home-service `{m.home_service_commit[:7]}` · "
-        f"{m.epochs} epochs · judge trusted: {', '.join(m.trusted) or 'none'}"
-        + (f" · untrusted: {', '.join(untrusted)}" if untrusted else ""),
+        f"home-service `{m.home_service_commit[:7]}` · {m.epochs} epochs · {_judge_trust(m)}",
         "",
     ]
     for s in m.stacks:
@@ -256,6 +323,8 @@ def render_markdown(card: Scorecard) -> str:
             f"first reply {(s.get('first_reply_ms') or 0) / 1000:.1f} s, "
             f"restarts {s.get('restarts', 0)}"
         )
+    if m.problems:
+        lines += ["", "## Run problems", ""] + [f"- {_flat(p)}" for p in m.problems]
     lines += [
         "",
         "## PRD rows",
@@ -278,7 +347,7 @@ def render_markdown(card: Scorecard) -> str:
             "|---|---|---|---|---|---|---|---|",
         ]
         for g in (g for g in shipped if g.suite == suite):
-            first = g.failing[0].replace("|", "\\|")[:160] if g.failing else ""
+            first = _cell(g.failing[0]) if g.failing else ""
             lines.append(
                 f"| {g.scenario_id} | {g.variants} | {g.runs} | {_pct(g.pass_rate)} | "
                 f"{'✓' if g.pass_k else '✗'} | {'⚠' if g.flaky else ''} | {g.errors} | {first} |"
