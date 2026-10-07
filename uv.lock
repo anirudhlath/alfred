@@ -211,6 +211,7 @@ dev = [
 evals = [
     { name = "aiohttp" },
     { name = "inspect-ai" },
+    { name = "tenacity" },
     { name = "websockets" },
 ]
 integrations = [
@@ -279,6 +280,7 @@ requires-dist = [
     { name = "sentence-transformers", marker = "extra == 'memory'", specifier = ">=5.6.1" },
     { name = "speechbrain", marker = "extra == 'voice'", specifier = ">=1.1" },
     { name = "sqlite-vec", marker = "extra == 'memory'", specifier = ">=0.1" },
+    { name = "tenacity", marker = "extra == 'evals'", specifier = ">=9.1" },
     { name = "transformers", marker = "extra == 'memory'", specifier = ">=5.10.1" },
     { name = "typer", specifier = ">=0.15" },
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },

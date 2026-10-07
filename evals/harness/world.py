@@ -46,6 +46,42 @@ class WorldEntity(BaseModel):
         return self.entity_id.split(".", 1)[0]
 
 
+def _number_selectors_are_numbers(services: dict[str, dict[str, dict[str, Any]]]) -> None:
+    """The service fields' number selectors are what the fake HA range-checks calls
+    against; a malformed one fails here, at load, not as a crash at call time."""
+    for domain, by_service in services.items():
+        for service, spec in by_service.items():
+            fields = spec.get("fields") or {}
+            where = f"services.{domain}.{service}.fields"
+            if not isinstance(fields, dict):
+                raise ValueError(f"{where} must be a mapping, got {fields!r}")
+            for key, field in fields.items():
+                if field is None:
+                    continue
+                if not isinstance(field, dict):
+                    raise ValueError(f"{where}.{key} must be a mapping, got {field!r}")
+                selector = field.get("selector")
+                if selector is None:
+                    continue
+                if not isinstance(selector, dict):
+                    raise ValueError(f"{where}.{key}.selector must be a mapping, got {selector!r}")
+                number = selector.get("number")
+                if number is None:
+                    continue
+                if not isinstance(number, dict):
+                    raise ValueError(
+                        f"{where}.{key}.selector.number must be a mapping, got {number!r}"
+                    )
+                for bound in ("min", "max"):
+                    value = number.get(bound)
+                    if value is not None and (
+                        isinstance(value, bool) or not isinstance(value, int | float)
+                    ):
+                        raise ValueError(
+                            f"{where}.{key}.selector.number.{bound} must be a number, got {value!r}"
+                        )
+
+
 class World(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
@@ -66,6 +102,7 @@ class World(BaseModel):
                 raise ValueError(f"{e.entity_id}: unknown area {e.area_id}")
             if e.device_id is not None and e.device_id not in devices:
                 raise ValueError(f"{e.entity_id}: unknown device {e.device_id}")
+        _number_selectors_are_numbers(self.services)
         return self
 
     def initial_states(self) -> dict[str, HaState]:

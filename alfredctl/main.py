@@ -238,10 +238,13 @@ def _passphrase(mode: str, persist_dir: Path | None) -> str:
 
 
 def _published_address(exe: str, name: str) -> str | None:
-    """First ``host:port`` the runtime publishes for the container's 8081, or None."""
+    """First ``host:port`` the runtime publishes for the container's web port, or None."""
     try:
         out = subprocess.run(
-            [exe, "port", name, "8081"], check=False, capture_output=True, text=True
+            [exe, "port", name, str(launch.CONTAINER_WEB_PORT)],
+            check=False,
+            capture_output=True,
+            text=True,
         )
     except OSError:
         return None
@@ -256,7 +259,7 @@ def _published_address(exe: str, name: str) -> str | None:
 
 
 def _published_port(exe: str, name: str) -> int | None:
-    """Host port bound to the container's 8081, or None if it cannot be determined.
+    """Host port bound to the container's web port, or None if it cannot be determined.
 
     `smoke --attach` used to assume 8081. On a host already running Alfred on that
     port, that silently probed the *other* container and reported it green — a pass
@@ -273,7 +276,10 @@ def _resolve_url(r: rt.Runtime, plan: launch.LaunchPlan) -> str:
         address = _published_address(r.exe, plan.name)
         if address is not None:
             return f"http://{address}"
-        return f"http://127.0.0.1:<port> (run `{r.exe} port {plan.name} 8081` to read it)"
+        return (
+            f"http://127.0.0.1:<port> "
+            f"(run `{r.exe} port {plan.name} {launch.CONTAINER_WEB_PORT}` to read it)"
+        )
     if plan.url_hint != "resolve-ip":
         return plan.url_hint
     try:
@@ -287,10 +293,13 @@ def _resolve_url(r: rt.Runtime, plan: launch.LaunchPlan) -> str:
         address = str(networks[0].get("ipv4Address", "")) if networks else ""
         ip = address.split("/")[0]
         if ip:
-            return f"http://{ip}:8081"
+            return f"http://{ip}:{launch.CONTAINER_WEB_PORT}"
     except Exception:
         pass
-    return "http://<container-ip>:8081 (container inspect failed — check `container ls`)"
+    return (
+        f"http://<container-ip>:{launch.CONTAINER_WEB_PORT} "
+        "(container inspect failed — check `container ls`)"
+    )
 
 
 @app.command()
@@ -388,10 +397,11 @@ def smoke(
         # wrong container and reports it green. Ask the runtime, and fail if it cannot say.
         port = _published_port(r.exe, target)
         if port is None:
+            web = launch.CONTAINER_WEB_PORT
             raise typer.BadParameter(
-                f"could not determine which host port {target!r} publishes for 8081 — "
+                f"could not determine which host port {target!r} publishes for {web} — "
                 f"is it running, and does it publish that port? "
-                f"(`{r.exe} port {target} 8081`)"
+                f"(`{r.exe} port {target} {web}`)"
             )
     plan = launch.LaunchPlan(
         run_args=[],

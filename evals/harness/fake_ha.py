@@ -50,6 +50,17 @@ _SET_STATE: dict[tuple[str, str], str] = {
 _STATE_CHANGED_SUBSCRIPTIONS = ("state_changed", "*")
 
 
+def _command_id(msg: Any) -> int | None:
+    """The command's id, or None when HA would refuse the frame as incorrectly formatted:
+    not an object, an id that is not a positive int, or no type."""
+    if not isinstance(msg, dict):
+        return None
+    msg_id = msg.get("id")
+    if type(msg_id) is not int or msg_id <= 0 or not msg.get("type"):
+        return None
+    return msg_id
+
+
 def _check_fields(fields: dict[str, Any], data: dict[str, Any]) -> None:
     """Range-check *data* against the service's own number selectors, as HA's schema does.
 
@@ -92,7 +103,8 @@ def apply_service(
             if "brightness_pct" in data:
                 attrs["brightness"] = round(float(data["brightness_pct"]) * 255 / 100)
             elif "brightness" in data:
-                attrs["brightness"] = int(data["brightness"])
+                # HA's VALID_BRIGHTNESS: coerced to int, then clamped to 0..255.
+                attrs["brightness"] = max(0, min(255, int(data["brightness"])))
         if domain == "light" and new_state == "off":
             attrs.pop("brightness", None)
         if domain == "media_player" and "volume_level" in data:
@@ -129,7 +141,9 @@ class FakeHA:
         self.connected = asyncio.Event()
         self._call_seen = asyncio.Event()  # replaced on every call; see ``record``
         self._states = world.initial_states()
-        self._subs: dict[ServerConnection, dict[str, int]] = {}
+        # Per connection: event type ("*" for every event) → the subscription ids, since HA
+        # keeps every subscription, each pushed under its own id.
+        self._subs: dict[ServerConnection, dict[str, list[int]]] = {}
         self._server: Server | None = None
 
     @property
@@ -221,21 +235,30 @@ class FakeHA:
                 return
             await ws.send(json.dumps({"type": "auth_ok", "ha_version": _HA_VERSION}))
             async for raw in ws:
-                await self._command(ws, json.loads(raw))
+                msg = json.loads(raw)
+                if (msg_id := _command_id(msg)) is None:
+                    # As HA does: log it and answer invalid_format, under the frame's id
+                    # when it is an object (whatever that id is), else 0.
+                    logger.error("fake HA received an invalid command: %.200s", raw)
+                    bad_id = msg.get("id") if isinstance(msg, dict) else 0
+                    await self._error(
+                        ws, bad_id, "invalid_format", "Message incorrectly formatted."
+                    )
+                    continue
+                await self._command(ws, msg_id, msg)
         except ConnectionClosed:  # a dropped client is not the harness's failure
             logger.debug("fake HA connection closed", exc_info=True)
         except Exception:
-            # A frame the fake could not handle (no id, not JSON): the client's bug or
-            # ours, so loud. The connection closes, as the handler has returned.
+            # A frame the fake could not handle (not JSON, as HA drops too, or a bug of
+            # ours), so loud. The connection closes, as the handler has returned.
             logger.exception("fake HA dropped a connection on a frame it could not handle")
         finally:
             self._subs.pop(ws, None)
 
-    async def _command(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
-        msg_id = int(msg["id"])
+    async def _command(self, ws: ServerConnection, msg_id: int, msg: dict[str, Any]) -> None:
         match msg.get("type"):
             case "subscribe_events":
-                self._subs[ws][str(msg.get("event_type", "*"))] = msg_id
+                self._subs[ws].setdefault(str(msg.get("event_type", "*")), []).append(msg_id)
                 await self._result(ws, msg_id, None)
             case "config/entity_registry/list":
                 await self._result(ws, msg_id, self.world.entity_registry())
@@ -305,9 +328,9 @@ class FakeHA:
         for ws, subs in list(self._subs.items()):
             # One frame per matching subscription, each under its own id, as HA sends.
             frames = [
-                json.dumps({"id": subs[key], "type": "event", "event": event})
+                json.dumps({"id": sub_id, "type": "event", "event": event})
                 for key in _STATE_CHANGED_SUBSCRIPTIONS
-                if key in subs
+                for sub_id in subs.get(key, [])
             ]
             try:
                 for frame in frames:
@@ -322,7 +345,7 @@ class FakeHA:
             json.dumps({"id": msg_id, "type": "result", "success": True, "result": result})
         )
 
-    async def _error(self, ws: ServerConnection, msg_id: int, code: str, message: str) -> None:
+    async def _error(self, ws: ServerConnection, msg_id: Any, code: str, message: str) -> None:
         await ws.send(
             json.dumps(
                 {

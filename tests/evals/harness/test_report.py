@@ -389,7 +389,10 @@ async def test_malformed_run_data_never_loses_the_report(tmp_path: Path) -> None
         sample("home.bad-checks"),
         sample("home.bad-evidence"),
         sample("home.bad-variant", variant="two"),
+        sample("home.fractional-variant", variant=2.9),
+        sample("home.numeric-string-variant", variant="3"),
         sample("home.bad-prd", prd=[1, 2]),
+        sample("home.string-prd", prd="4.4.lights-scenes"),
     ]
     runs = {r.sample_id: r for r in runs_from_logs([await run_eval(tmp_path, samples, 1)])}
     assert (runs["home.a"].value, runs["home.a"].error) == ("C", None)
@@ -405,10 +408,16 @@ async def test_malformed_run_data_never_loses_the_report(tmp_path: Path) -> None
     assert (ev.value, ev.reply_ms) == ("E", [])
     assert ev.error == "unreadable evidence: evidence.scenario_id: Field required (+5 more)"
 
-    # Any other exception keeps its own first line.
-    variant = runs["home.bad-variant"]
-    assert variant.value == "E"
-    assert variant.error == "unreadable sample: invalid literal for int() with base 10: 'two'"
+    # A variant is an int as written: never coerced from a string or truncated from a float.
+    for sid in ("home.bad-variant", "home.fractional-variant", "home.numeric-string-variant"):
+        variant = runs[sid]
+        assert (variant.value, variant.variant) == ("E", 0)
+        assert variant.error == "unreadable sample: variant: Input should be a valid integer"
+
+    # A string prd is an error, never split into one row per character.
+    string_prd = runs["home.string-prd"]
+    assert (string_prd.value, string_prd.prd) == ("E", [])
+    assert string_prd.error == "unreadable sample: prd: Input should be a valid list"
 
     prd = runs["home.bad-prd"]
     assert (prd.value, prd.prd, prd.status) == ("E", [], "shipped")

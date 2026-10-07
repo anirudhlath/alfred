@@ -7,7 +7,7 @@ from collections import defaultdict
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 
-from pydantic import BaseModel, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, StrictInt, TypeAdapter, ValidationError
 
 from evals.harness.checks.judge_spec import JudgeCategory
 from evals.harness.checks.result import CheckResult
@@ -37,7 +37,7 @@ class LlmUsage(BaseModel):
 class SampleRun(BaseModel):
     sample_id: str
     scenario_id: str
-    variant: int
+    variant: StrictInt  # never "3" or 2.9 coerced into one
     epoch: int
     suite: str
     status: Status
@@ -239,11 +239,11 @@ def _sample_run(sample: EvalSample) -> SampleRun:
     return SampleRun(
         sample_id=str(sample.id),
         scenario_id=str(md.get("scenario_id", sample.id)),
-        variant=int(md.get("variant", 0)),
+        variant=md.get("variant", 0),
         epoch=sample.epoch,
         suite=str(md.get("suite", "")),
         status=status,
-        prd=list(md.get("prd", [])),
+        prd=md.get("prd", []),  # a string is an error, never one row per character
         value=value,
         checks=checks,
         error=error,
@@ -269,7 +269,7 @@ def _unreadable_run(sample: EvalSample, problem: str) -> SampleRun:
     return SampleRun(
         sample_id=str(sample.id),
         scenario_id=str(md.get("scenario_id", sample.id)),
-        variant=variant if isinstance(variant, int) else 0,
+        variant=variant if type(variant) is int else 0,
         epoch=sample.epoch,
         suite=str(md.get("suite", "")),
         status=status if status in get_args(Status) else "shipped",

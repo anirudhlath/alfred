@@ -4,7 +4,8 @@ Inspect 0.3.277's own ``openai-api`` provider needs ``openai>=3.4``, which litel
 dependency) forbids, so it cannot load in this environment. This provider needs only httpx:
 ``POST <base_url>/chat/completions``, text in and text out. Tools and streaming are not
 supported. Inspect still owns retries (through ``should_retry``), ``max_connections`` and
-``timeout``.
+``timeout``. The sampling settings vLLM understands are forwarded; any other setting is
+refused, never dropped in silence.
 
 Use it as ``get_model("alfred-vllm/<served model>", base_url="http://host:8000/v1", ...)``.
 """
@@ -13,6 +14,7 @@ from __future__ import annotations
 
 import json
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 import httpx
 from inspect_ai.model import (
@@ -34,7 +36,39 @@ if TYPE_CHECKING:
 PROVIDER = "alfred-vllm"
 DEFAULT_TIMEOUT_S = 120.0  # per request, when the config sets no ``timeout``
 _EXCERPT = 300
+# The back-off signal: retried after a pause, and never the request's own fault.
+TOO_MANY_REQUESTS = 429
 _STOP_REASONS: dict[str, StopReason] = {"stop": "stop", "length": "max_tokens"}
+# GenerateConfig settings sent to vLLM, by the request body key each one becomes.
+_FORWARDED = {
+    "temperature": "temperature",
+    "max_tokens": "max_tokens",
+    "seed": "seed",
+    "top_p": "top_p",
+    "top_k": "top_k",
+    "stop_seqs": "stop",
+    "frequency_penalty": "frequency_penalty",
+    "presence_penalty": "presence_penalty",
+}
+# Settings Inspect acts on itself, around the provider (retries, connections, timeouts,
+# caching, the system message): never this provider's to refuse.
+_INSPECT_OWNED = frozenset(
+    {
+        "max_retries",
+        "timeout",
+        "attempt_timeout",
+        "max_connections",
+        "adaptive_connections",
+        "cache",
+        "batch",
+        "system_message",
+        "fail_on_refusal",
+        "max_tool_output",
+        "reasoning_history",
+        "fallback_models",
+        "stream_idle_timeout",
+    }
+)
 
 
 class VllmStatusError(RuntimeError):
@@ -61,9 +95,17 @@ class VllmChatAPI(ModelAPI):
         **model_args: Any,
     ) -> None:
         super().__init__(model_name, base_url, api_key, [], config)
-        if not base_url:
-            raise ValueError(f"{PROVIDER} needs base_url, such as http://localhost:8000/v1")
-        self._url = f"{base_url.rstrip('/')}/chat/completions"
+        if model_args:
+            raise ValueError(f"{PROVIDER} takes no model args; got {sorted(model_args)}")
+        url = base_url or ""
+        parts = urlsplit(url)
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            # httpx would raise UnsupportedProtocol at every request, which Inspect retries.
+            raise ValueError(
+                f"{PROVIDER} needs an http(s) base_url with a host, such as "
+                f"http://localhost:8000/v1; got {base_url!r}"
+            )
+        self._url = f"{url.rstrip('/')}/chat/completions"
         self._transport = transport  # tests inject an httpx.MockTransport
 
     def connection_key(self) -> str:
@@ -73,7 +115,7 @@ class VllmChatAPI(ModelAPI):
     def should_retry(self, ex: Exception) -> bool | RetryDecision:
         if isinstance(ex, httpx.TransportError):  # unreachable, reset, timed out
             return RetryDecision.transient()
-        if isinstance(ex, VllmStatusError) and ex.status_code == 429:  # the back-off signal
+        if isinstance(ex, VllmStatusError) and ex.status_code == TOO_MANY_REQUESTS:
             return RetryDecision.rate_limit()
         if isinstance(ex, VllmStatusError) and ex.status_code >= 500:
             return RetryDecision.transient()
@@ -88,11 +130,12 @@ class VllmChatAPI(ModelAPI):
     ) -> tuple[ModelOutput, ModelCall]:
         if tools:
             raise NotImplementedError(f"{PROVIDER} does not support tools")
+        settings = config.model_dump(exclude_none=True)
+        unsupported = sorted(set(settings) - set(_FORWARDED) - _INSPECT_OWNED)
+        if unsupported:
+            raise NotImplementedError(f"{PROVIDER} does not support {', '.join(unsupported)}")
         body: dict[str, Any] = {"model": self.model_name, "messages": to_openai_messages(input)}
-        if config.temperature is not None:
-            body["temperature"] = config.temperature
-        if config.max_tokens is not None:
-            body["max_tokens"] = config.max_tokens
+        body |= {key: settings[name] for name, key in _FORWARDED.items() if name in settings}
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
         timeout = float(config.timeout) if config.timeout is not None else DEFAULT_TIMEOUT_S
         async with httpx.AsyncClient(transport=self._transport, timeout=timeout) as client:

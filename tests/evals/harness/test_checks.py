@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from pydantic import ValidationError
 
-from evals.harness.checks import CHECK_PARAMS, run_check
+from evals.harness.checks import CHECK_PARAMS, DETERMINISTIC, run_check
 from evals.harness.evidence import HaState
 from tests.evals.harness.factories import call, evidence, llm
 
@@ -171,7 +171,16 @@ def test_reply_not_contains_passes_when_the_needle_is_absent() -> None:
 
 @pytest.mark.parametrize(
     "params",
-    [{"text": ""}, {"any": []}, {"any": ["door", ""]}, {"regex": ""}],
+    [
+        {"text": ""},
+        {"any": []},
+        {"any": ["door", ""]},
+        {"regex": ""},
+        # Blank is as good as empty: a space is in nearly every reply.
+        {"text": " "},
+        {"any": ["door", " \t"]},
+        {"regex": "  "},
+    ],
 )
 def test_reply_params_reject_empty_needles(params: dict[str, Any]) -> None:
     with pytest.raises(ValidationError):
@@ -209,7 +218,19 @@ def test_ha_called_after_step_keeps_calls_at_or_after_the_step_start() -> None:
     assert res.status == "pass"
 
 
-def test_run_check_scores_a_raising_check_as_error() -> None:
-    ev = evidence(ha_calls=[call("light", "turn_on", ["light.a"])], step_started=[0.0])
-    res = check("ha_called", {"domain": "light", "service": "turn_on", "after_step": 5}, ev)
-    assert res.status == "error" and "IndexError" in res.reason
+def test_reply_contains_any_step_failure_caps_its_reason_overall() -> None:
+    ev = evidence(replies=[f"{n} " + "x" * 300 for n in range(10)])
+    res = check("reply_contains", {"text": "garage", "step": "any"}, ev)
+    assert res.status == "fail" and len(res.reason) < 600
+    assert res.reason.endswith("more replies") and "'0 xxx" in res.reason
+
+
+def test_run_check_scores_a_raising_check_as_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken(evidence: Evidence, params: Any) -> CheckResult:
+        raise RuntimeError("a bug in the check")
+
+    params, _ = DETERMINISTIC["ha_called"]
+    monkeypatch.setitem(DETERMINISTIC, "ha_called", (params, broken))
+    res = check("ha_called", {"domain": "light", "service": "turn_on"}, evidence())
+    assert res.status == "error"
+    assert res.reason == "check raised RuntimeError: a bug in the check"

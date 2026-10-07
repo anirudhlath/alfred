@@ -184,3 +184,52 @@ async def test_the_config_timeout_bounds_each_request() -> None:
 
     await vllm(handler, timeout=120, max_retries=0).generate("Is this formal?")
     assert timeouts[0]["read"] == 120 and timeouts[0]["connect"] == 120
+
+
+async def test_the_sampling_settings_vllm_understands_are_forwarded() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=COMPLETION)
+
+    settings = {
+        "seed": 7,
+        "top_p": 0.9,
+        "top_k": 40,
+        "frequency_penalty": 0.1,
+        "presence_penalty": 0.2,
+    }
+    model = vllm(handler, max_retries=0, stop_seqs=["\n\n"], **settings)
+    await model.generate("Is this formal?")
+    body = json.loads(seen[0].content)
+    assert {k: body[k] for k in settings} == settings and body["stop"] == ["\n\n"]
+
+
+@pytest.mark.parametrize(
+    "setting", [{"logprobs": True}, {"num_choices": 2}, {"response_schema": None, "best_of": 3}]
+)
+async def test_a_setting_it_cannot_send_is_refused_not_dropped(setting: dict[str, Any]) -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=COMPLETION)
+
+    model = vllm(handler, max_retries=0, **setting)
+    named = next(k for k, v in setting.items() if v is not None)
+    with pytest.raises(NotImplementedError, match=named):
+        await model.generate("Is this formal?")
+    assert seen == []
+
+
+def test_an_unknown_model_arg_is_refused() -> None:
+    with pytest.raises(ValueError, match="frobnicate"):
+        get_model(f"{PROVIDER}/judge-m", base_url=BASE_URL, memoize=False, frobnicate=True)
+
+
+@pytest.mark.parametrize("url", ["localhost:8000/v1", "ftp://vllm.test/v1", "http:///v1"])
+def test_a_base_url_without_an_http_scheme_and_host_is_refused(url: str) -> None:
+    # httpx would raise UnsupportedProtocol, which Inspect retries for seconds.
+    with pytest.raises(ValueError, match="http"):
+        get_model(f"{PROVIDER}/judge-m", base_url=url, memoize=False)

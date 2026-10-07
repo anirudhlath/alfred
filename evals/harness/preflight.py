@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
-import subprocess
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 import httpx
+
+from evals.harness._proc import run_checked
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -20,24 +21,6 @@ _GIT_TIMEOUT_S = 120.0
 
 class PreflightError(RuntimeError):
     """The run cannot start; the message says what to fix."""
-
-
-def describe_failure(shown: str, exc: subprocess.SubprocessError | OSError) -> str:
-    """Why the command *shown* did not succeed, with whatever it printed about it."""
-    if isinstance(exc, subprocess.CalledProcessError):
-        return f"{shown} failed (exit {exc.returncode}):\n{exc.stderr or exc.stdout}"
-    if isinstance(exc, subprocess.TimeoutExpired):
-        return f"{shown} timed out after {exc.timeout:.0f}s"
-    return f"{shown} could not run: {exc}"
-
-
-def run_checked(cmd: list[str], *, timeout: float) -> str:
-    """*cmd*'s stdout; any failure to run it is a PreflightError that says why."""
-    try:
-        out = subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=timeout)
-    except (subprocess.SubprocessError, OSError) as exc:
-        raise PreflightError(describe_failure(" ".join(cmd), exc)) from exc
-    return out.stdout
 
 
 def base_url(url: str, option: str) -> str:
@@ -76,7 +59,8 @@ async def check_models(client: httpx.AsyncClient, base_url: str, model: str) -> 
 
 
 def _git(path: Path, *args: str) -> str:
-    return run_checked(["git", "-C", str(path), *args], timeout=_GIT_TIMEOUT_S).strip()
+    cmd = ["git", "-C", str(path), *args]
+    return run_checked(cmd, timeout=_GIT_TIMEOUT_S, error=PreflightError).strip()
 
 
 def alfred_commit(repo: Path, git: Callable[..., str] = _git) -> str:
@@ -109,19 +93,19 @@ def check_home_service(path: Path, *, allow_stale: bool, git: Callable[..., str]
     """Return the home-service commit the image will bundle; refuse a stale or dirty one.
 
     Production follows alfred-home-service ``main``, so evals do too. *allow_stale*
-    waives staleness only (and a fetch that fails, say offline); never uncommitted changes.
+    waives staleness, and with it the fetch that only serves that check (a hanging network
+    would otherwise hold the run up to the git timeout); never uncommitted changes.
     """
     if not (path / ".git").exists():
         raise PreflightError(f"home-service at {path} is not a git checkout (pass --home-service)")
-    try:
-        git(path, "fetch", "-q", "origin", "main")
-    except PreflightError as exc:
-        if not allow_stale:
+    if not allow_stale:
+        try:
+            git(path, "fetch", "-q", "origin", "main")
+        except PreflightError as exc:
             raise PreflightError(
                 f"{exc}\nhome-service at {path} cannot be checked against origin/main. "
                 "Fix the fetch, or pass --allow-stale-home-service to use the checkout as it is."
             ) from exc
-        logger.warning("%s\n--allow-stale-home-service: using %s as it is", exc, path)
     head = git(path, "rev-parse", "HEAD")
     if git(path, "status", "--porcelain"):
         raise PreflightError(

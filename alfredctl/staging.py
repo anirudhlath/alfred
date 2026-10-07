@@ -37,8 +37,9 @@ def ensure_home_service(auto_clone: bool = True) -> Path:
 
     The image build stages alfred + home-service together, so a fresh clone of alfred
     alone can't build. Rather than fail with a hint, fetch the sibling automatically.
-    A missing ``ALFRED_HOME_SERVICE_DIR`` is an error, never a clone: that path pins a
-    specific checkout, and cloning the default branch there would build something else.
+    An ``ALFRED_HOME_SERVICE_DIR`` naming a directory that does not exist is an error,
+    never a clone: that path pins a specific checkout, and cloning the default branch
+    there would build something else.
     """
     path = home_service_dir()
     if os.getenv("ALFRED_HOME_SERVICE_DIR") and not path.is_dir():

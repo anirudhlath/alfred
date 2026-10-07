@@ -137,15 +137,12 @@ def test_a_missing_git_is_a_preflight_error(
         check_home_service(tmp_path, allow_stale=False)
 
 
-def test_allow_stale_carries_on_offline_with_a_warning(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_allow_stale_never_fetches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The fetch only serves the staleness check it waives; a hanging network would hold
+    # the run up to the git timeout for nothing.
     (tmp_path / ".git").mkdir()
-    monkeypatch.setattr(subprocess, "run", git_cli(fetch_error=_offline()))
-    with caplog.at_level(logging.WARNING, logger="evals.harness.preflight"):
-        assert check_home_service(tmp_path, allow_stale=True) == "aaa1111"
-    (warned,) = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
-    assert "could not resolve host" in warned
+    monkeypatch.setattr(subprocess, "run", git_cli(fetch_error=AssertionError("fetched")))
+    assert check_home_service(tmp_path, allow_stale=True) == "aaa1111"
 
 
 @pytest.mark.parametrize(

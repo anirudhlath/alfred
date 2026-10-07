@@ -23,6 +23,9 @@ from shared.gateway import GATEWAY_REWRITE_KEYS
 if TYPE_CHECKING:
     from pathlib import Path
 
+# The container's own ports: the web channel, and Redis (published only for eval stacks).
+CONTAINER_WEB_PORT = 8081
+CONTAINER_REDIS_PORT = 6379
 # `alfred evals` stacks: throwaway, driven from the host, never holding a real secret.
 EVAL_SECRETS_PASSPHRASE = "alfred-eval-not-a-secret"
 # Unknown models are priced at the default rate (core/conscious/cost.py), so a local
@@ -145,10 +148,15 @@ def build_plan(
     else:
         if eval_mode:
             # Loopback-only, host-chosen ports: never clashes with a running stack on
-            # 8081, and the harness reaches Redis without exposing it to the LAN.
-            args += ["-p", "127.0.0.1::8081", "-p", "127.0.0.1::6379"]
+            # the web port, and the harness reaches Redis without exposing it to the LAN.
+            args += [
+                "-p",
+                f"127.0.0.1::{CONTAINER_WEB_PORT}",
+                "-p",
+                f"127.0.0.1::{CONTAINER_REDIS_PORT}",
+            ]
         else:
-            args += ["-p", f"{port}:8081"]
+            args += ["-p", f"{port}:{CONTAINER_WEB_PORT}"]
         if expose_ha:
             args += ["-p", "1883:1883"]
         if expose_home:

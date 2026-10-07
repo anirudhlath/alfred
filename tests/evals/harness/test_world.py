@@ -60,3 +60,27 @@ def test_an_entity_in_an_unknown_area_is_rejected(tmp_path: Path) -> None:
     )
     with pytest.raises(ValidationError, match="unknown area attic"):
         load_world("broken", root=tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("fields", "where"),
+    [
+        ("{brightness_pct: {selector: {number: {min: 0, max: high}}}}", "number.max"),
+        ("{brightness_pct: {selector: {number: {min: true}}}}", "number.min"),
+        ("{brightness_pct: {selector: {number: [0, 100]}}}", "selector.number"),
+        ("{brightness_pct: {selector: number}}", "brightness_pct.selector"),
+        ("{brightness_pct: 5}", "fields.brightness_pct"),
+        ("[brightness_pct]", "light.turn_on.fields"),
+    ],
+)
+def test_a_malformed_number_selector_fails_at_load_not_at_call_time(
+    tmp_path: Path, fields: str, where: str
+) -> None:
+    (tmp_path / "broken.yaml").write_text(
+        "name: broken\n"
+        "areas: []\n"
+        "entities: []\n"
+        f"services: {{light: {{turn_on: {{fields: {fields}}}}}}}\n"
+    )
+    with pytest.raises(ValidationError, match=where):
+        load_world("broken", root=tmp_path)

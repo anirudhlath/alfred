@@ -5,7 +5,8 @@ from __future__ import annotations
 from urllib.parse import urlsplit, urlunsplit
 
 from alfredctl.runtime import DOCKER_HOST_ALIAS
-from evals.harness.preflight import PreflightError, run_checked
+from evals.harness._proc import run_checked
+from evals.harness.preflight import PreflightError
 
 IN_CONTAINER_HOST = DOCKER_HOST_ALIAS
 # Fixed, and below the Linux ephemeral range (32768-60999), so a host firewall rule can
@@ -30,6 +31,7 @@ def docker_bridge_gateway() -> str:
             "{{(index .IPAM.Config 0).Gateway}}",
         ],
         timeout=30,
+        error=PreflightError,
     ).strip()
     if not gateway:
         raise PreflightError("docker's bridge network has no gateway — is docker running?")
@@ -46,6 +48,10 @@ def container_reachable(url: str) -> str:
     parts = urlsplit(url)
     if parts.hostname not in _HOST_SELF_NAMES:
         return url
-    netloc = IN_CONTAINER_HOST if parts.port is None else f"{IN_CONTAINER_HOST}:{parts.port}"
+    try:
+        port = parts.port
+    except ValueError as exc:  # out of range, or not a number
+        raise PreflightError(f"{url!r} has an invalid port ({exc})") from exc
+    netloc = IN_CONTAINER_HOST if port is None else f"{IN_CONTAINER_HOST}:{port}"
     userinfo, at, _ = parts.netloc.rpartition("@")
     return urlunsplit(parts._replace(netloc=f"{userinfo}{at}{netloc}"))

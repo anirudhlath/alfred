@@ -298,7 +298,7 @@ uv run alfred evals run --include-pending --no-build --keep
 | `--embed-url` | `http://localhost:8001` | Embedding server, without `/v1`; checked like `--vllm-url` |
 | `--embed-model` | `BAAI/bge-m3` | Embedding model (bge-m3 also sets its recall floor, 0.575) |
 | `--home-service` | `$ALFRED_EVALS_HOME_SERVICE`, else the sibling repo | home-service checkout to bundle |
-| `--allow-stale-home-service` | off | Accept a checkout that is not at `origin/main`, or whose fetch failed; never a dirty one |
+| `--allow-stale-home-service` | off | Use the checkout as it is: no fetch, and no check against `origin/main`; never a dirty one |
 | `--build` / `--no-build` | build | Build the image first. With `--no-build` the scorecard marks both commits "(image not rebuilt)", because it cannot know what the image holds, and the home-service checkout is only described (its HEAD, `+dirty`), never fetched or refused as stale or dirty |
 | `--keep` | off | Leave the container and data dirs for debugging. Every suite's container has the same name, so only the last suite's survives; every suite's data dir is kept. A restart (an isolated golden, or a recovery) replaces that suite's data dir |
 | `--display` | `rich` | Inspect's console display: `rich`, `plain` or `none`. Inspect's `full` display crashes under `eval_async`, so it is not offered (`evals/harness/display.py`) |
@@ -317,7 +317,8 @@ uv run alfred evals run --include-pending --no-build --keep
    - the Alfred commit, with `+dirty` when the tree has uncommitted or untracked files
      (the build stages both);
    - the judge calibration file reads (a corrupt one is a one-line error telling you to
-     re-run `calibrate`);
+     re-run `calibrate`), and so do the hand-labelled calibration sets it is checked
+     against (a broken one is a one-line error naming the file);
    - the docker bridge has a gateway address.
 3. **Start the fakes** — the fake HA and the proxy — on the bridge gateway, on
    `--fake-ha-port` and `--proxy-port`. They bind before the build, so a second run on the
@@ -644,6 +645,15 @@ needs `openai>=3.4`, and litellm, a base dependency, pins `openai<3`, so it cann
 | Retries | 2 (transport errors, HTTP 429 and 5xx; never another 4xx or a malformed reply) |
 | Timeout | 120 s per request |
 
+The provider forwards the sampling settings vLLM understands (temperature, `max_tokens`,
+seed, `top_p`, `top_k`, stop sequences and the two penalties) and refuses any other one, or
+any model arg, rather than dropping it; it also refuses a base URL that is not `http(s)://`
+with a host, which would otherwise be retried for seconds before failing. A judge out of
+retries raises the last attempt's error, noted with the number of attempts.
+`alfred evals calibrate` words a failure by what happened: an HTTP 4xx other than 429 is
+"refused the request" (most likely a `--model` the server does not serve), anything else
+"did not answer".
+
 A judge that fails — unreachable, out of retries, no `VERDICT` line, or no reply to judge —
 scores the check `error`: at worst the sample is inconclusive (`N`), never `E`. A slow or
 down judge cannot make Alfred look broken.
@@ -683,7 +693,8 @@ Slice 1 has 18 items: 5 `tone`, 5 `answered` and 8 `faithfulness`. `privacy` and
 with the labels; an unparseable answer counts as a disagreement. A file it cannot use
 (bad YAML, not UTF-8, an invalid item, a second file for the same category) stops it with
 one `alfred evals:` line naming the file. The report goes to
-`~/.local/share/alfred-evals/calibration.json` (outside the repo), stamped with the model.
+`~/.local/share/alfred-evals/calibration.json` (outside the repo), stamped with the model
+and, per category, a sha256 of the items it was measured on.
 
 - **Trust.** A category at **85% agreement or more** is trusted. Checks in any other
   category — untrusted or uncalibrated — still run and are reported (marked `*`), but do
@@ -692,6 +703,11 @@ one `alfred evals:` line naming the file. The report goes to
   on another model counts as none, so every judge check is untrusted and the run warns you
   to re-run `alfred evals calibrate --model <model>`. Changing the model therefore always
   means recalibrating.
+- **So do the items.** A category whose items changed since it was measured — an item
+  added, removed or relabelled, a rubric reworded — counts as uncalibrated, and the run
+  warns which categories to recalibrate; so does a category added or removed since, and
+  every category of a report saved before the digests existed. A comment or a layout
+  change in the YAML is not a change of items.
 - A calibration file that cannot be read stops the run in preflight, rather than quietly
   scoring every judge check as untrusted.
 

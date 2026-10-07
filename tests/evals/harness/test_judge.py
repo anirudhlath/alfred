@@ -7,6 +7,7 @@ import pytest
 import yaml
 from inspect_ai.model import GenerateConfig, ModelOutput, get_model
 from pydantic import ValidationError
+from tenacity import Future, RetryError
 
 from evals.harness.checks.judge_spec import JudgeSpec
 from evals.harness.evidence import TranscriptTurn
@@ -19,6 +20,7 @@ from evals.harness.judge import (
     Judge,
     JudgeVerdict,
     calibrate,
+    calibration_digests,
     judge_check,
     load_calibration_sets,
     load_report,
@@ -132,6 +134,23 @@ async def test_a_judge_that_raises_is_an_error_not_a_crash() -> None:
     assert "ConnectionError: connection refused" in res.reason
 
 
+async def test_a_judge_that_gave_up_raises_its_last_error_with_the_attempt_count() -> None:
+    root = OSError("network is unreachable")
+    last = httpx.ConnectError("connection refused")
+    last.__cause__ = root
+    attempt = Future(3)
+    attempt.set_exception(last)
+
+    class GaveUp:
+        async def generate(self, messages: object) -> ModelOutput:
+            raise RetryError(attempt)
+
+    with pytest.raises(httpx.ConnectError) as err:
+        await Judge(GaveUp()).ask(conversation("ok").transcript, SPEC)  # type: ignore[arg-type]
+    assert err.value is last and err.value.__notes__ == ["(gave up after 3 attempts)"]
+    assert err.value.__cause__ is root  # its own cause, not the RetryError wrapping it
+
+
 async def test_an_unreachable_vllm_is_reported_by_its_own_error() -> None:
     def refuse(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused", request=request)
@@ -173,6 +192,34 @@ async def test_calibration_counts_disagreements_and_round_trips(tmp_path: Path) 
     assert abs(result.agreement - (len(tone.items) - 1) / len(tone.items)) < 1e-9
     save_report(report, tmp_path / "c.json")
     assert load_report(tmp_path / "c.json") == report
+
+
+async def test_calibration_stamps_each_category_with_the_digest_of_its_items() -> None:
+    sets = load_calibration_sets()
+    answers = [f"VERDICT: {'yes' if i.label else 'no'}" for s in sets for i in s.items]
+    report = await calibrate(judge_saying(*answers), sets, model="m")
+    assert report.digests == calibration_digests(sets)
+    assert set(report.digests) == {s.category for s in sets}
+
+
+def test_a_calibration_digest_follows_the_items_not_the_file_layout(tmp_path: Path) -> None:
+    def digest(body: str) -> str:
+        (tmp_path / "tone.yaml").write_text(body, encoding="utf-8")
+        return calibration_digests(load_calibration_sets(tmp_path))["tone"]
+
+    item = _item("tone-1")
+    base = digest(yaml.safe_dump({"category": "tone", "items": [item]}))
+    # A comment or a reordered key is the same items; a changed label or rubric is not.
+    commented = "# hand-labelled\n" + yaml.safe_dump({"items": [item], "category": "tone"})
+    assert digest(commented) == base
+    assert digest(yaml.safe_dump({"category": "tone", "items": [item | {"label": False}]})) != base
+    other = _item("tone-1", rubric="Does the reply address the user as sir?")
+    assert digest(yaml.safe_dump({"category": "tone", "items": [other]})) != base
+
+
+def test_a_report_saved_before_digests_reads_with_none() -> None:
+    old = {"model": "m", "categories": {}}
+    assert CalibrationReport.model_validate(old).digests == {}
 
 
 async def test_a_judge_that_agrees_everywhere_is_trusted_everywhere() -> None:

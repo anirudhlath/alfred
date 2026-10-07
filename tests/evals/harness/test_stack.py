@@ -10,10 +10,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from pydantic import ValidationError
 from redis import exceptions as redis_exceptions
 
 from alfredctl.runtime import image_tag
 from bus.schemas.events import AlfredResponse, UserRequest
+from core.conscious.identity import IDENTITY_SIR
 from evals.harness.evidence import LlmCall
 from evals.harness.fake_ha import FakeHA
 from evals.harness.proxy import LlmProxy
@@ -145,12 +147,12 @@ async def test_readiness_waits_for_a_conscious_reply(
 ) -> None:
     answers = iter(["channels", "conscious-engine"])
     published: list[str] = []
-    authenticated: list[bool] = []
+    authenticated: list[tuple[str, bool]] = []
     proxy = LlmProxy("http://x")
 
     async def fake_publish(redis, request: UserRequest, session_id: str, timeout: float):  # type: ignore[no-untyped-def]
         published.append(session_id)
-        authenticated.append(request.authenticated)
+        authenticated.append((request.identity_claim, request.authenticated))
         source = next(answers)
         if source == "conscious-engine":  # System 2 reached the LLM through the proxy
             proxy.calls.append(
@@ -166,7 +168,7 @@ async def test_readiness_waits_for_a_conscious_reply(
     # The channels-only answer did not count: it asked again until System 2 replied.
     assert len(published) == 2 and next(answers, None) is None
     # Readiness asks the way real channels do: a server-derived claim, unauthenticated.
-    assert authenticated == [False, False]
+    assert authenticated == [(IDENTITY_SIR, False)] * 2
     await stack.stop()
 
 
@@ -351,6 +353,52 @@ async def test_losing_redis_during_readiness_fails_with_the_logs(
     with pytest.raises(StackError, match="lost redis during readiness") as err:
         await stack.start()
     assert "conscious crashed" in str(err.value)
+
+
+def _unreadable_reply() -> ValidationError:
+    try:
+        AlfredResponse.model_validate({"source": "conscious-engine"})
+    except ValidationError as exc:
+        return exc
+    raise AssertionError("expected a validation error")
+
+
+async def test_an_unreadable_readiness_reply_fails_with_the_logs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def garbled(redis, request, session_id, timeout):  # type: ignore[no-untyped-def]
+        raise _unreadable_reply()
+
+    monkeypatch.setattr("evals.harness.stack.publish_and_wait", garbled)
+    monkeypatch.setattr("evals.harness.stack.create_redis", lambda url: _NullRedis())
+    stack = make_stack(tmp_path, FakeDocker(running=False))
+    with pytest.raises(StackError, match="unreadable reply during readiness") as err:
+        await stack.start()
+    assert "conscious crashed" in str(err.value)
+
+
+async def test_an_unreadable_reply_mid_run_is_a_stack_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _answer_ready(monkeypatch, _NullRedis())
+    stack = make_stack(tmp_path, FakeDocker())
+    await stack.start()
+
+    async def garbled(redis, request, session_id, timeout):  # type: ignore[no-untyped-def]
+        raise _unreadable_reply()
+
+    monkeypatch.setattr("evals.harness.stack.publish_and_wait", garbled)
+    request = UserRequest(
+        source="alfred-evals",
+        channel="web_pwa",
+        session_id="eval-1",
+        identity_claim="sir",
+        content_type="text",
+        content="Turn on the kitchen lights.",
+    )
+    with pytest.raises(StackError, match="unreadable reply to eval-1"):
+        await stack.send(request, timeout_s=1.0)
+    await stack.stop()
 
 
 async def test_losing_redis_mid_run_is_a_stack_error(

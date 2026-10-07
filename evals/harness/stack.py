@@ -17,11 +17,15 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import httpx
+from pydantic import ValidationError
 from redis.exceptions import RedisError
 
+from alfredctl.launch import CONTAINER_REDIS_PORT, CONTAINER_WEB_PORT
 from alfredctl.runtime import Runtime, eval_container_name, host_alias_args, image_tag
 from bus.schemas.events import AlfredResponse, UserRequest
 from core.channels.request_bus import publish_and_wait
+from core.conscious.identity import IDENTITY_SIR
+from evals.harness._proc import describe_failure
 from evals.harness.fake_ha import EVAL_HA_TOKEN, FakeHA
 from evals.harness.net import (
     HOST_FIREWALL_DOC,
@@ -29,7 +33,6 @@ from evals.harness.net import (
     container_reachable,
     in_container_url,
 )
-from evals.harness.preflight import describe_failure
 from shared.redis_streams import create_redis
 
 if TYPE_CHECKING:
@@ -56,6 +59,14 @@ PROBE_CONNECT_TIMEOUT_S = 5.0
 
 class StackError(RuntimeError):
     """The eval container could not be brought up or answered nothing."""
+
+
+def _first_error(exc: ValidationError) -> str:
+    """A validation error in one line: its first failing field, and how many more."""
+    first = exc.errors()[0]
+    loc = ".".join(str(part) for part in first["loc"])
+    more = f" (+{exc.error_count() - 1} more)" if exc.error_count() > 1 else ""
+    return f"{loc + ': ' if loc else ''}{first['msg']}{more}"
 
 
 @dataclass(frozen=True)
@@ -307,8 +318,8 @@ class Stack:
         self.data_dir = Path(tempfile.mkdtemp(prefix="alfred-eval-data-", dir=self.cfg.work_dir))
         t0 = time.monotonic()
         await self.docker.run_cmd(self.up_command(self.data_dir), timeout=300)
-        self.web_port = await self.docker.port(self.name, 8081)
-        self.redis_port = await self.docker.port(self.name, 6379)
+        self.web_port = await self.docker.port(self.name, CONTAINER_WEB_PORT)
+        self.redis_port = await self.docker.port(self.name, CONTAINER_REDIS_PORT)
         await self._wait_ready(t0)
 
     async def _fail(self, why: str) -> StackError:
@@ -340,7 +351,7 @@ class Stack:
                 source=EVAL_SOURCE,
                 channel="web_pwa",
                 session_id=f"eval-ready-{uuid4().hex[:8]}",
-                identity_claim="sir",
+                identity_claim=IDENTITY_SIR,
                 content_type="text",
                 content="Reply with the single word: ready.",
             )
@@ -351,6 +362,10 @@ class Stack:
                 )
             except (RedisError, OSError) as exc:
                 raise await self._fail(f"lost redis during readiness: {exc}") from exc
+            except ValidationError as exc:
+                raise await self._fail(
+                    f"unreadable reply during readiness: {_first_error(exc)}"
+                ) from exc
             if reply.source == CONSCIOUS_SOURCE:
                 # Conscious can answer with a fallback when its LLM call failed: only a System 2
                 # call the proxy saw answered upstream proves System 2 reaches the model.
@@ -404,6 +419,10 @@ class Stack:
         except (RedisError, OSError) as exc:
             raise StackError(
                 f"{self.name}: lost redis sending {request.session_id}: {exc}"
+            ) from exc
+        except ValidationError as exc:  # an AlfredResponse that does not validate
+            raise StackError(
+                f"{self.name}: unreadable reply to {request.session_id}: {_first_error(exc)}"
             ) from exc
 
     def _manual_cleanup(self, data_dir: Path | None) -> str:

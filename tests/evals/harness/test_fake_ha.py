@@ -231,19 +231,56 @@ async def test_an_overflowing_number_is_an_error_not_a_dropped_connection(ha: Fa
     await ws.close()
 
 
-async def test_a_client_closing_is_quiet_but_a_bad_message_is_logged(
+async def test_a_client_closing_is_quiet_but_a_frame_that_is_not_json_is_logged(
     ha: FakeHA, caplog: pytest.LogCaptureFixture
 ) -> None:
     quiet = await connect(ha.url.replace("http", "ws") + "/api/websocket")
     await recv(quiet)  # auth_required
     await quiet.close()  # gone before authenticating
     bad, _ = await handshake(ha)
-    await bad.send(json.dumps({"type": "get_states"}))  # no id
+    await bad.send("{not json")  # HA drops a connection that sends this
     with pytest.raises(ConnectionClosed):
         await recv(bad)
     await ha.stop()  # waits for every handler to return
     errors = [r for r in caplog.records if r.name == fake_ha.__name__ and r.levelno >= WARNING]
     assert len(errors) == 1 and errors[0].levelno == ERROR and errors[0].exc_info
+
+
+@pytest.mark.parametrize(
+    ("frame", "answered_id"),
+    [
+        ({"type": "get_states"}, None),  # no id
+        ({"id": "7", "type": "get_states"}, "7"),  # not an int
+        ({"id": True, "type": "get_states"}, True),
+        ({"id": -1, "type": "get_states"}, -1),
+        ({"id": 7}, 7),  # no type
+        (["get_states"], 0),  # not an object
+        (3, 0),
+    ],
+)
+async def test_a_malformed_command_is_answered_invalid_format_as_ha_does(
+    ha: FakeHA, caplog: pytest.LogCaptureFixture, frame: object, answered_id: object
+) -> None:
+    ws, _ = await handshake(ha)
+    await ws.send(json.dumps(frame))
+    answer = await recv(ws)
+    assert answer["id"] == answered_id and answer["success"] is False
+    assert answer["error"]["code"] == "invalid_format"
+    # The connection stays up, and the bad frame is logged once.
+    assert (await command(ws, 8, type="get_services"))["success"]
+    errors = [r for r in caplog.records if r.name == fake_ha.__name__ and r.levelno >= WARNING]
+    assert len(errors) == 1 and errors[0].levelno == ERROR
+    await ws.close()
+
+
+async def test_two_subscriptions_to_one_event_type_both_get_each_change(ha: FakeHA) -> None:
+    ws, _ = await handshake(ha)
+    await command(ws, 1, type="subscribe_events", event_type="state_changed")
+    await command(ws, 2, type="subscribe_events", event_type="state_changed")
+    await ha.set_state("light.bedroom_lamp", "on")
+    ids = {(await recv(ws))["id"], (await recv(ws))["id"]}
+    assert ids == {1, 2}  # HA keeps both, each under its own id
+    await ws.close()
 
 
 async def test_calls_between_and_reset(ha: FakeHA) -> None:
@@ -295,7 +332,7 @@ class _GoneSocket:
 
 def _gone_subscriber_first(ha: FakeHA) -> None:
     # First in line, so a push that stopped at it would never reach the live one.
-    ha._subs = {cast("ServerConnection", _GoneSocket()): {"state_changed": 7}, **ha._subs}
+    ha._subs = {cast("ServerConnection", _GoneSocket()): {"state_changed": [7]}, **ha._subs}
 
 
 async def test_a_subscriber_that_went_away_does_not_stop_the_push(ha: FakeHA) -> None:
@@ -342,6 +379,14 @@ def test_apply_service_effects() -> None:
     assert states["switch.b"].state == "on"
     apply_service(states, "media_player", "volume_set", {"volume_level": 0.2}, ["media_player.c"])
     assert states["media_player.c"].attributes["volume_level"] == 0.2
+
+
+@pytest.mark.parametrize(("given", "kept"), [(300, 255), (-5, 0), (128.6, 128), ("77", 77)])
+def test_apply_service_clamps_brightness_as_ha_does(given: object, kept: int) -> None:
+    # HA's VALID_BRIGHTNESS coerces to int, then clamps to 0..255.
+    states = {"light.a": HaState(state="off")}
+    apply_service(states, "light", "turn_on", {"brightness": given}, ["light.a"])
+    assert states["light.a"].attributes["brightness"] == kept
 
 
 def test_apply_service_leaves_other_domains_alone() -> None:

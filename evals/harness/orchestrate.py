@@ -19,7 +19,15 @@ from inspect_ai import eval_async
 from evals.harness.display import use_display
 from evals.harness.driver import PlayContext
 from evals.harness.fake_ha import FakeHA
-from evals.harness.judge import CALIBRATION_FILE, Judge, load_report, make_judge_model
+from evals.harness.judge import (
+    CALIBRATION_DIR,
+    CALIBRATION_FILE,
+    Judge,
+    calibration_digests,
+    load_calibration_sets,
+    load_report,
+    make_judge_model,
+)
 from evals.harness.net import docker_bridge_gateway
 from evals.harness.preflight import (
     PreflightError,
@@ -44,7 +52,7 @@ from evals.harness.tasks import RunContext, build_task
 from evals.harness.world import load_world
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Sequence
+    from collections.abc import Awaitable, Callable, Mapping, Sequence
 
     from inspect_ai import Task
     from inspect_ai.log import EvalLog
@@ -200,12 +208,13 @@ async def execute(
 
 
 def calibration_for(
-    report: CalibrationReport | None, model: str
+    report: CalibrationReport | None, model: str, digests: Mapping[str, str]
 ) -> tuple[dict[str, float], set[str]]:
     """The judge calibration a run on *model* reports, and the categories it trusts.
 
     A calibration measured on another model counts as missing: its agreements say
-    nothing about this judge.
+    nothing about this judge. So does a category measured on other items than its file
+    holds now (*digests*, from ``calibration_digests``): edited, added or removed since.
     """
     if report is None or report.model != model:
         logger.warning(
@@ -216,7 +225,22 @@ def calibration_for(
             model,
         )
         return {}, set()
-    return {c: r.agreement for c, r in report.categories.items()}, report.trusted()
+    changed = sorted(
+        c
+        for c in report.categories.keys() | digests.keys()
+        if report.digests.get(c) != digests.get(c)
+    )
+    if changed:
+        logger.warning(
+            "the judge calibration for %s is stale for the categories whose hand-labelled "
+            "items changed since it was measured: %s — their judge checks are untrusted; "
+            "run `alfred evals calibrate --model %s`",
+            model,
+            ", ".join(changed),
+            model,
+        )
+    current = {c: r.agreement for c, r in report.categories.items() if c not in changed}
+    return current, report.trusted() - set(changed)
 
 
 def read_calibration(path: Path, model: str) -> CalibrationReport | None:
@@ -285,9 +309,10 @@ async def run_suites(opts: RunOptions) -> RunOutcome:
         hs_commit = home_service_commit(opts.home_service) + NOT_REBUILT
     commit = alfred_commit(REPO_ROOT) + ("" if opts.build else NOT_REBUILT)
     report = read_calibration(CALIBRATION_FILE, opts.model)
-    calibration, trusted = calibration_for(report, opts.model)
+    # A file that cannot be used is a CalibrationError naming it, a one-line preflight error.
+    digests = calibration_digests(load_calibration_sets(CALIBRATION_DIR))
+    calibration, trusted = calibration_for(report, opts.model, digests)
     gateway = docker_bridge_gateway()
-    # Created once the fakes are up, so a run that never starts leaves no empty dir.
     run_dir = opts.log_root / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
     judge = Judge(make_judge_model(opts.model, vllm_url))
@@ -327,6 +352,7 @@ async def run_suites(opts: RunOptions) -> RunOutcome:
         # After the build, which makes the image it runs. Seconds, not a boot timeout
         # minutes later, when the container cannot reach the fakes.
         await probe_host_ports({"fake HA": fake_ha.port, "LLM proxy": proxy.port}, gateway=gateway)
+        # Created once the fakes are up, so a run that never starts leaves no empty dir.
         run_dir.mkdir(parents=True, exist_ok=True)
         results = await execute(
             plan,

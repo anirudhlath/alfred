@@ -65,11 +65,16 @@ def _reject_constant(name: str) -> NoReturn:
     raise ValueError(f"{name} is not JSON")
 
 
+def _count(value: Any) -> int | None:
+    """A token count, or None for anything that is not one (bools included)."""
+    return value if type(value) is int and value >= 0 else None
+
+
 def _parse(content: bytes) -> tuple[str | None, list[ToolCall], int | None, int | None]:
     """What a completion said. A reply that is not a JSON object reads as empty."""
     try:
         payload = _obj(json.loads(content))
-    except ValueError:
+    except (ValueError, RecursionError):
         payload = {}
     choices = _list(payload.get("choices")) or [{}]
     message = _obj(_obj(choices[0]).get("message"))
@@ -84,14 +89,16 @@ def _parse(content: bytes) -> tuple[str | None, list[ToolCall], int | None, int 
         except ValueError:
             args = None
         arguments = args if isinstance(args, dict) else {"_raw": raw}
-        calls.append(ToolCall(name=str(fn.get("name", "")), arguments=arguments))
+        # A name that is not a string reads as "", as tools_offered leaves one out.
+        name = fn.get("name")
+        calls.append(ToolCall(name=name if isinstance(name, str) else "", arguments=arguments))
     text = message.get("content")
     usage = _obj(payload.get("usage"))
     return (
         text if isinstance(text, str) else None,
         calls,
-        usage.get("prompt_tokens"),
-        usage.get("completion_tokens"),
+        _count(usage.get("prompt_tokens")),
+        _count(usage.get("completion_tokens")),
     )
 
 
@@ -190,6 +197,8 @@ class LlmProxy:
             body: Any = json.loads(raw, parse_constant=_reject_constant)
         except ValueError as exc:
             return _error(400, f"the request body is not JSON: {exc}")
+        except RecursionError:
+            return _error(400, "the request body is nested too deeply to read")
         if not isinstance(body, dict):
             return _error(400, "the request body is not a JSON object")
         if body.get("stream"):

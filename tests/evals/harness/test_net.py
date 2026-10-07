@@ -58,3 +58,10 @@ def test_bridge_gateway_that_is_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(subprocess, "run", _run_printing("\n"))
     with pytest.raises(PreflightError, match="no gateway"):
         docker_bridge_gateway()
+
+
+@pytest.mark.parametrize("url", ["http://localhost:99999/v1", "http://127.0.0.1:port"])
+def test_container_reachable_refuses_a_port_it_cannot_read(url: str) -> None:
+    with pytest.raises(PreflightError, match="invalid port") as err:
+        container_reachable(url)
+    assert repr(url) in str(err.value)

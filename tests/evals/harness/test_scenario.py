@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
 import pytest
@@ -104,6 +105,11 @@ def test_variants_expand_to_separate_samples(tmp_path: Path) -> None:
         (USER_STEP + "\n", "", "reply and judge checks need at least one user step"),
         ("status: shipped", "status: shipped\nsuite: other", "set by the loader"),
         ("status: shipped", "status: shipped\npath: elsewhere.yaml", "set by the loader"),
+        # Falsy params are not "no params": `false` is a mistake, not ha_not_called's {}.
+        (HA_CALLED, "  - ha_not_called: false", "expect.0\n  Input should be a valid dictionary"),
+        (HA_CALLED, "  - ha_not_called: []", "expect.0\n  Input should be a valid dictionary"),
+        ('user: "Turn on the bedroom lamp."', 'user: "   "', "must not be blank"),
+        ('variants: ["Bedroom lamp on.",', 'variants: [" \\t",', "must not be blank"),
     ],
     ids=[
         "unknown-check",
@@ -120,6 +126,10 @@ def test_variants_expand_to_separate_samples(tmp_path: Path) -> None:
         "reply-check-without-user-step",
         "golden-sets-suite",
         "golden-sets-path",
+        "falsy-params",
+        "empty-list-params",
+        "blank-user",
+        "blank-variant",
     ],
 )
 def test_bad_scenarios_name_the_file(
@@ -146,6 +156,25 @@ def test_undecodable_file_names_the_file(tmp_path: Path) -> None:
     path.write_bytes(b"id: \xff\xfe\n")
     with pytest.raises(ScenarioError, match="not UTF-8") as err:
         load_suites(root=tmp_path)
+    assert str(err.value).startswith(f"{path}: ")
+
+
+def test_a_null_params_mapping_means_the_defaults(tmp_path: Path) -> None:
+    write(tmp_path, "demo", "a.yaml", GOOD.replace(HA_CALLED, "  - ha_not_called:"))
+    [s] = load_suites(root=tmp_path)["demo"]
+    assert s.expect[0].name == "ha_not_called"
+
+
+def test_an_unreadable_file_names_the_file(tmp_path: Path) -> None:
+    path = write(tmp_path, "demo", "bad.yaml", GOOD)
+    path.chmod(0)
+    try:
+        if os.access(path, os.R_OK):
+            pytest.skip("running as a user that can read any file")
+        with pytest.raises(ScenarioError, match="cannot read") as err:
+            load_suites(root=tmp_path)
+    finally:
+        path.chmod(0o644)
     assert str(err.value).startswith(f"{path}: ")
 
 

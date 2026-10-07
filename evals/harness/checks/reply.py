@@ -12,8 +12,9 @@ from evals.harness.checks.result import CheckResult, failed, passed
 if TYPE_CHECKING:
     from evals.harness.evidence import Evidence, Reply
 
-# How much of each reply a failure reason quotes.
+# How much of each reply a failure reason quotes, and of all of them together.
 _QUOTE_CHARS = 120
+_SEEN_CHARS = 480
 
 
 class ReplyTextParams(BaseModel):
@@ -37,8 +38,12 @@ class ReplyTextParams(BaseModel):
     def _exactly_one_needle(self) -> Self:
         if sum(x is not None for x in (self.text, self.any_of, self.regex)) != 1:
             raise ValueError("give exactly one of text, any, regex")
-        if self.any_of == [] or "" in (self.text, self.regex, *(self.any_of or [])):
-            raise ValueError("needles must be non-empty: an empty one matches every reply")
+        needles = [n for n in (self.text, self.regex, *(self.any_of or [])) if n is not None]
+        if self.any_of == [] or any(not n.strip() for n in needles):
+            raise ValueError(
+                "needles must not be empty or blank: an empty one matches every reply, "
+                "and a blank one nearly every reply"
+            )
         return self
 
 
@@ -74,6 +79,18 @@ def _quote(text: str) -> str:
     return repr(text[:_QUOTE_CHARS])
 
 
+def _seen(replies: list[Reply]) -> str:
+    """The replies, quoted, as many as fit in ``_SEEN_CHARS``, then how many were left out."""
+    shown: list[str] = []
+    for r in replies:
+        quote = _quote(r.text)
+        if shown and len("; ".join([*shown, quote])) > _SEEN_CHARS:
+            break
+        shown.append(quote)
+    rest = len(replies) - len(shown)
+    return "; ".join(shown) + (f"; +{rest} more replies" if rest else "")
+
+
 def reply_contains(evidence: Evidence, p: ReplyTextParams) -> CheckResult:
     replies = _replies(evidence, p.step)
     if not replies:
@@ -81,8 +98,7 @@ def reply_contains(evidence: Evidence, p: ReplyTextParams) -> CheckResult:
     for r in replies:
         if (hit := _hit(p, r.text)) is not None:
             return passed("reply_contains", f"found {hit!r}")
-    seen = "; ".join(_quote(r.text) for r in replies)
-    return failed("reply_contains", f"{_needle(p)} not in {seen}")
+    return failed("reply_contains", f"{_needle(p)} not in {_seen(replies)}")
 
 
 def reply_not_contains(evidence: Evidence, p: ReplyTextParams) -> CheckResult:

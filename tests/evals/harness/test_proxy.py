@@ -4,11 +4,12 @@ import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import httpx
 import pytest
 
+from evals.harness import proxy as proxy_module
 from evals.harness.judge import JUDGE_CONNECTIONS, make_judge_model
 from evals.harness.proxy import MAX_UPSTREAM, LlmProxy, classify_role
 
@@ -238,6 +239,8 @@ async def test_passthrough_upstream_failure_is_a_json_502() -> None:
         b'{"model": "m", "messages": {"role": "user", "content": "hi"}}',
         b'{"model": "m", "messages": null}',
         b'{"model": "m", "messages": [{"role": "user", "content": "hi"}, "hi"]}',
+        # Nested past the parser's recursion limit.
+        pytest.param(b"[" * 50_000 + b"]" * 50_000, id="nested"),
     ],
 )
 async def test_a_malformed_chat_body_is_a_400(proxy: LlmProxy, content: bytes) -> None:
@@ -309,6 +312,15 @@ def tool_reply(arguments: Any) -> dict[str, Any]:
             [{"name": "x", "arguments": {"target": "Bedroom Lamp"}}],
         ),
         ({"choices": [{"message": {"tool_calls": ["x", None, 3]}}]}, []),
+        # A name that is not a string reads as "", as tools_offered skips one.
+        (
+            {"choices": [{"message": {"tool_calls": [{"function": {"name": None}}]}}]},
+            [{"name": "", "arguments": {}}],
+        ),
+        (
+            {"choices": [{"message": {"tool_calls": [{"function": {"name": 7}}]}}]},
+            [{"name": "", "arguments": {}}],
+        ),
         ({"choices": "x", "usage": [1]}, []),
         ([], []),
         ([COMPLETION], []),
@@ -329,14 +341,53 @@ async def test_the_recorder_never_changes_a_reply(
     assert call.status == 200 and [tc.model_dump() for tc in call.tool_calls] == recorded
 
 
-async def test_a_reply_the_recorder_cannot_record_still_goes_back(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    raw = json.dumps({"choices": [], "usage": {"prompt_tokens": "many"}}).encode()
+async def test_a_reply_nested_too_deeply_to_read_is_recorded_as_empty() -> None:
+    raw = b"[" * 50_000 + b"]" * 50_000
 
     def handle(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=raw, headers={"content-type": "application/json"})
 
+    async with serving(handle) as p, httpx.AsyncClient() as client:
+        r = await client.post(f"{p.url}/v1/chat/completions", json={"model": "m", "messages": []})
+    assert r.content == raw
+    [call] = p.calls
+    assert call.response_text is None and call.tool_calls == []
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        {"prompt_tokens": "100", "completion_tokens": 7.5},
+        {"prompt_tokens": True, "completion_tokens": None},
+        {"prompt_tokens": -3, "completion_tokens": [1]},
+        "many",
+    ],
+)
+async def test_usage_that_is_not_a_count_is_dropped_but_the_call_is_kept(usage: Any) -> None:
+    raw = json.dumps({**tool_reply({"target": "Lamp"}), "usage": usage}).encode()
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=raw, headers={"content-type": "application/json"})
+
+    async with serving(handle) as p, httpx.AsyncClient() as client:
+        await client.post(f"{p.url}/v1/chat/completions", json={"model": "m", "messages": []})
+    [call] = p.calls
+    assert (call.prompt_tokens, call.completion_tokens) == (None, None)
+    assert call.tool_calls[0].arguments == {"target": "Lamp"}
+
+
+async def test_a_reply_the_recorder_cannot_record_still_goes_back(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw = json.dumps(COMPLETION).encode()
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=raw, headers={"content-type": "application/json"})
+
+    def broken(content: bytes) -> NoReturn:
+        raise RuntimeError("a bug in the recorder")
+
+    monkeypatch.setattr(proxy_module, "_parse", broken)
     with caplog.at_level(logging.ERROR, logger="evals.harness.proxy"):
         async with serving(handle) as p, httpx.AsyncClient() as client:
             r = await client.post(

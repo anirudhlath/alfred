@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
 
 import yaml
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Discriminator,
@@ -49,10 +50,20 @@ class Actor(BaseModel):
     tz: str | None = "America/Denver"
 
 
+def _not_blank(value: str) -> str:
+    if not value.strip():
+        raise ValueError("must not be blank")
+    return value
+
+
+# An utterance: blank text would send Alfred nothing to answer.
+Utterance = Annotated[str, Field(min_length=1), AfterValidator(_not_blank)]
+
+
 class UserStep(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
-    user: str = Field(min_length=1)
-    variants: list[Annotated[str, Field(min_length=1)]] = Field(default_factory=list)
+    user: Utterance
+    variants: list[Utterance] = Field(default_factory=list)
     actor: Actor | None = Field(default=None, alias="as")
 
 
@@ -128,8 +139,10 @@ class CheckSpec(BaseModel):
             raise ValueError(f"a check is a single-key mapping, got keys {sorted(data)}")
         if not isinstance(name, str) or name not in CHECK_PARAMS:
             raise ValueError(f"unknown check {name!r}; known: {sorted(CHECK_PARAMS)}")
-        # An existing params instance of the right model comes back unchanged.
-        return {"name": name, "params": CHECK_PARAMS[name].model_validate(params or {})}
+        # An existing params instance of the right model comes back unchanged. Only a
+        # missing mapping (``ha_not_called:``) means the defaults; ``false`` is a mistake.
+        params = {} if params is None else params
+        return {"name": name, "params": CHECK_PARAMS[name].model_validate(params)}
 
 
 class Scenario(BaseModel):
@@ -205,6 +218,8 @@ def load_scenario(path: Path, suite: str) -> Scenario:
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
         raise ScenarioError(f"{path}: not UTF-8: {exc}") from exc
+    except OSError as exc:
+        raise ScenarioError(f"{path}: cannot read: {exc}") from exc
     try:
         raw = yaml.safe_load(text)
     except yaml.YAMLError as exc:

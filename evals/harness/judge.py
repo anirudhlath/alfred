@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from datetime import UTC, datetime
@@ -20,7 +21,7 @@ from evals.harness.preflight import PreflightError
 from evals.harness.vllm_model import PROVIDER as VLLM_PROVIDER  # importing registers it
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
 
     from inspect_ai.model import ChatMessage
 
@@ -84,9 +85,11 @@ class Judge:
         except RetryError as exc:
             # Inspect gave up retrying and wraps the last attempt's error; raise that one,
             # so a report says "ConnectError: ..." rather than "RetryError[<Future ...>]".
+            # Plainly: ``from exc`` would replace its own cause with the wrapper.
             last = exc.last_attempt.exception()
             if isinstance(last, Exception):
-                raise last from exc
+                last.add_note(f"(gave up after {exc.last_attempt.attempt_number} attempts)")
+                raise last  # noqa: B904 — keeps last's own __cause__
             raise
         text = output.completion
         return JudgeVerdict(verdict=parse_verdict(text), rationale=text.strip())
@@ -94,7 +97,8 @@ class Judge:
 
 def make_judge_model(model: str, base_url: str) -> Model:
     # Inspect otherwise retries an unreachable server for up to 30 minutes, logging below
-    # WARNING, so a down vLLM looks like a hang. Two retries inside 120 s, then fail.
+    # WARNING, so a down vLLM looks like a hang. Two retries, then fail. ``timeout`` bounds
+    # each request, not the whole: three attempts and the back-off between them.
     return get_model(
         f"{VLLM_PROVIDER}/{model}",
         base_url=base_url,
@@ -177,6 +181,9 @@ class CalibrationReport(BaseModel):
     model: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     categories: dict[str, CategoryResult]
+    # Per category, the digest of the items it was measured on (``calibration_digests``).
+    # Empty in a report saved before digests existed, which therefore matches no items.
+    digests: dict[str, str] = Field(default_factory=dict)
 
     def trusted(self, threshold: float = TRUST_THRESHOLD) -> set[str]:
         return {c for c, r in self.categories.items() if r.agreement >= threshold}
@@ -199,6 +206,15 @@ def _calibration_set(path: Path) -> CalibrationSet:
         raise CalibrationError(
             f"{path}: {' '.join(lines[0].split()) if lines else type(exc).__name__}"
         ) from exc
+
+
+def calibration_digests(sets: Iterable[CalibrationSet]) -> dict[str, str]:
+    """Per category, a sha256 of its validated items: a comment or layout edit to the
+    YAML keeps it, any change to an item (its conversation, rubric, reference or label)
+    does not."""
+    return {
+        s.category: hashlib.sha256(s.model_dump_json().encode("utf-8")).hexdigest() for s in sets
+    }
 
 
 def load_calibration_sets(root: Path = CALIBRATION_DIR) -> list[CalibrationSet]:
@@ -237,7 +253,7 @@ async def calibrate(judge: Judge, sets: Sequence[CalibrationSet], model: str) ->
             disagreements=disagreements,
             unparseable=unparseable,
         )
-    return CalibrationReport(model=model, categories=categories)
+    return CalibrationReport(model=model, categories=categories, digests=calibration_digests(sets))
 
 
 def save_report(report: CalibrationReport, path: Path = CALIBRATION_FILE) -> None:

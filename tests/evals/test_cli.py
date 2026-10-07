@@ -115,6 +115,33 @@ def test_evals_calibrate_names_the_vllm_url_when_the_judge_fails(
 JUDGE_ARGS = ["--model", "judge-m", "--vllm-url", "http://vllm.test/v1"]
 
 
+@pytest.mark.parametrize(
+    ("status", "says"),
+    [
+        (404, "the judge at --vllm-url http://vllm.test/v1 refused the request"),
+        (400, "the judge at --vllm-url http://vllm.test/v1 refused the request"),
+        (503, "the judge at --vllm-url http://vllm.test/v1 did not answer"),
+        (429, "the judge at --vllm-url http://vllm.test/v1 did not answer"),
+    ],
+)
+def test_evals_calibrate_words_an_http_error_by_its_status(
+    monkeypatch: pytest.MonkeyPatch, status: int, says: str
+) -> None:
+    from evals.harness.vllm_model import VllmStatusError
+
+    async def answer(*_: object) -> JudgeVerdict:
+        raise VllmStatusError("http://vllm.test/v1/chat/completions", status, "nope")
+
+    _fake_judge_model(monkeypatch, [])
+    monkeypatch.setattr("evals.harness.judge.Judge.ask", answer)
+    result = runner.invoke(app, ["evals", "calibrate", *JUDGE_ARGS])
+    assert result.exit_code == 1
+    [line] = result.output.strip().splitlines()
+    assert line.startswith(says)
+    # A 4xx other than 429 is the request itself: most likely a model it does not serve.
+    assert ("is --model judge-m served there?" in line) == (status in (400, 404))
+
+
 def test_evals_calibrate_strips_a_trailing_slash_from_the_vllm_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

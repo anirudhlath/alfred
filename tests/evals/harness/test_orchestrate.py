@@ -21,7 +21,12 @@ from inspect_ai.util import display_type
 
 from evals.harness import orchestrate
 from evals.harness.fake_ha import FakeHA
-from evals.harness.judge import CalibrationReport, CategoryResult
+from evals.harness.judge import (
+    CalibrationReport,
+    CategoryResult,
+    calibration_digests,
+    load_calibration_sets,
+)
 from evals.harness.orchestrate import (
     RunCancelled,
     RunOptions,
@@ -295,24 +300,63 @@ async def test_a_suite_without_a_finished_log_was_interrupted(
     assert results.interrupted == "first" and results.logs == []
 
 
-def _report(model: str) -> CalibrationReport:
+DIGESTS = {"tone": "d-tone", "answered": "d-answered"}
+
+
+def _report(model: str, digests: dict[str, str] = DIGESTS) -> CalibrationReport:
     result = CategoryResult(agreement=0.9, n=10, disagreements=["t-1"], unparseable=[])
     low = CategoryResult(agreement=0.5, n=10, disagreements=[], unparseable=[])
-    return CalibrationReport(model=model, categories={"tone": result, "answered": low})
+    return CalibrationReport(
+        model=model, categories={"tone": result, "answered": low}, digests=digests
+    )
 
 
 def test_calibration_for_uses_only_the_runs_own_model(caplog: pytest.LogCaptureFixture) -> None:
-    assert calibration_for(_report("judge-m"), "judge-m") == (
+    assert calibration_for(_report("judge-m"), "judge-m", DIGESTS) == (
         {"tone": 0.9, "answered": 0.5},
         {"tone"},
     )
     assert not caplog.records
     with caplog.at_level(logging.WARNING, logger="evals.harness.orchestrate"):
-        assert calibration_for(_report("another-m"), "judge-m") == ({}, set())
-        assert calibration_for(None, "judge-m") == ({}, set())
+        assert calibration_for(_report("another-m"), "judge-m", DIGESTS) == ({}, set())
+        assert calibration_for(None, "judge-m", DIGESTS) == ({}, set())
     mismatch, missing = (r.getMessage() for r in caplog.records)
     assert "(the saved one is for another-m)" in mismatch and "saved one" not in missing
     assert all("alfred evals calibrate --model judge-m" in m for m in (mismatch, missing))
+
+
+@pytest.mark.parametrize(
+    ("saved", "stale"),
+    [
+        ({"tone": "d-tone-before", "answered": "d-answered"}, "tone"),
+        # Saved before digests existed: nothing proves what it measured.
+        ({}, "answered, tone"),
+    ],
+    ids=["edited", "no-digests"],
+)
+def test_a_category_whose_items_changed_since_calibration_is_uncalibrated(
+    caplog: pytest.LogCaptureFixture, saved: dict[str, str], stale: str
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="evals.harness.orchestrate"):
+        calibration, trusted = calibration_for(_report("judge-m", saved), "judge-m", DIGESTS)
+    kept = {"answered": 0.5} if stale == "tone" else {}
+    assert (calibration, trusted) == (kept, set())
+    [warning] = (r.getMessage() for r in caplog.records)
+    assert f"changed since it was measured: {stale}" in warning
+    assert "alfred evals calibrate --model judge-m" in warning
+
+
+def test_a_category_added_or_removed_since_calibration_is_uncalibrated(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    current = {"tone": "d-tone", "relevance": "d-relevance"}  # answered's file is gone
+    with caplog.at_level(logging.WARNING, logger="evals.harness.orchestrate"):
+        assert calibration_for(_report("judge-m"), "judge-m", current) == (
+            {"tone": 0.9},
+            {"tone"},
+        )
+    [warning] = (r.getMessage() for r in caplog.records)
+    assert "changed since it was measured: answered, relevance" in warning
 
 
 def test_read_calibration_reads_a_saved_report_or_none(tmp_path: Path) -> None:
@@ -716,6 +760,34 @@ async def test_run_suites_normalises_the_server_urls_before_using_any(
     }
 
 
+@pytest.mark.parametrize("edited", [False, True], ids=["current", "tone-edited"])
+async def test_run_suites_trusts_only_a_calibration_of_the_items_as_they_are(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, edited: bool
+) -> None:
+    _golden(tmp_path / "suites", "demo", "quiet")
+    _suites_at(monkeypatch, tmp_path / "suites")
+    current = calibration_digests(load_calibration_sets())
+    saved = {c: current[c] for c in ("tone", "answered")}
+    if edited:
+        saved["tone"] = "measured-on-other-items"
+    calibration_file = tmp_path / "calibration.json"
+    calibration_file.write_text(_report("judge-m", saved).model_dump_json(), encoding="utf-8")
+    monkeypatch.setattr(orchestrate, "CALIBRATION_FILE", calibration_file)
+    _preflight_passes(monkeypatch, [])
+    monkeypatch.setattr(
+        orchestrate, "make_judge_model", lambda m, u: get_model("mockllm/model", memoize=False)
+    )
+    monkeypatch.setattr(orchestrate, "Stack", lambda cfg, **_: FakeStack(cfg))
+
+    outcome = await run_suites(_options(tmp_path / "logs"))
+
+    meta = json.loads((outcome.run_dir / "report.json").read_text(encoding="utf-8"))["meta"]
+    if edited:
+        assert (meta["calibration"], meta["trusted"]) == ({"answered": 0.5}, [])
+    else:
+        assert (meta["calibration"], meta["trusted"]) == ({"tone": 0.9, "answered": 0.5}, ["tone"])
+
+
 @pytest.mark.parametrize(
     ("field", "option"), [("vllm_url", "--vllm-url"), ("embed_url", "--embed-url")]
 )
@@ -744,13 +816,21 @@ def _calibration_corrupt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(orchestrate, "CALIBRATION_FILE", corrupt)
 
 
+def _calibration_set_broken(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sets = tmp_path / "judge_calibration"
+    sets.mkdir()
+    (sets / "tone.yaml").write_text("category: tone\nitems: []\n", encoding="utf-8")
+    monkeypatch.setattr(orchestrate, "CALIBRATION_DIR", sets)
+
+
 @pytest.mark.parametrize(
     ("fail", "message"),
     [
         (_models_unreachable, "not reachable"),
         (_calibration_corrupt, r"judge calibration at .* is unreadable"),
+        (_calibration_set_broken, r"tone\.yaml: items: List should have at least 1 item"),
     ],
-    ids=["models-unreachable", "calibration-corrupt"],
+    ids=["models-unreachable", "calibration-corrupt", "calibration-set-broken"],
 )
 async def test_a_failed_preflight_never_builds_or_writes_logs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fail: Any, message: str

@@ -250,6 +250,10 @@ def _reply_checks_pass(s: Scenario, text: str) -> bool:
         ("home_control.live_state.temperature", "It is 21,9 °C, sir.", False),
         ("home_control.live_state.temperature", "It is 21 °C, sir.", True),
         ("home_control.live_state.temperature", "It is 21,5 °C, sir.", True),
+        ("home_control.live_state.temperature", "It is 21.50 °C, sir.", True),
+        ("home_control.live_state.temperature", "It is 3.21 °C, sir.", False),
+        ("home_control.live_state.temperature", "Twenty-one point seven degrees, sir.", False),
+        ("home_control.live_state.temperature", "About twenty-one point five, sir.", True),
         (
             "home_control.live_state.which_lights_on",
             "The living-room lamp and the kitchen pendants.",
