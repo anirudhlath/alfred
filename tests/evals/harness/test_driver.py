@@ -1,11 +1,12 @@
-# tests/evals/harness/test_driver.py
 from __future__ import annotations
+
+import time
 
 import pytest
 
 from bus.schemas.events import AlfredResponse, UserRequest
 from evals.harness.driver import HarnessError, PlayContext, build_request, play
-from evals.harness.evidence import HaCall
+from evals.harness.evidence import HaCall, LlmCall
 from evals.harness.fake_ha import FakeHA
 from evals.harness.proxy import LlmProxy
 from evals.harness.scenario import Actor, Scenario, expand_variants
@@ -24,12 +25,35 @@ def scenario(**kw) -> Scenario:  # type: ignore[no-untyped-def]
 
 
 class Recorder:
-    def __init__(self, source: str = "conscious-engine") -> None:
+    """A stand-in for ``Stack.send``. Given a fake HA and a proxy, each turn also
+    records one HA call and one LLM call, stamped inside the play window."""
+
+    def __init__(
+        self,
+        source: str = "conscious-engine",
+        ha: FakeHA | None = None,
+        proxy: LlmProxy | None = None,
+    ) -> None:
         self.requests: list[UserRequest] = []
         self.source = source
+        self.ha = ha
+        self.proxy = proxy
 
     async def __call__(self, request: UserRequest, timeout: float) -> AlfredResponse:
         self.requests.append(request)
+        if self.ha is not None:
+            self.ha.calls.append(
+                HaCall(
+                    t=time.monotonic(),
+                    domain="light",
+                    service="turn_on",
+                    entity_ids=["light.bedroom_lamp"],
+                )
+            )
+        if self.proxy is not None:
+            self.proxy.calls.append(
+                LlmCall(t=time.monotonic(), role="system2", latency_ms=1.0, status=200)
+            )
         return AlfredResponse(
             source=self.source,
             channel=request.channel,
@@ -38,11 +62,11 @@ class Recorder:
         )
 
 
-def ctx(send, ha: FakeHA | None = None) -> PlayContext:  # type: ignore[no-untyped-def]
+def ctx(send, ha: FakeHA | None = None, proxy: LlmProxy | None = None) -> PlayContext:  # type: ignore[no-untyped-def]
     return PlayContext(
         send=send,
         fake_ha=ha or FakeHA(load_world("apartment")),
-        proxy=LlmProxy("http://x"),
+        proxy=proxy or LlmProxy("http://x"),
         settle_s=0,
         restore_settle_s=0,
     )
@@ -60,18 +84,39 @@ async def test_multi_turn_keeps_one_session_and_records_replies() -> None:
 
 
 @pytest.mark.parametrize(
-    ("who", "channel", "claim", "authenticated"),
+    ("who", "channel", "claim"),
     [
-        ("sir", "web_pwa", "sir", True),
-        ("sir", "signal", "+15550100", False),
-        ("guest", "web_pwa", "guest", False),
-        ("guest", "signal", "+15550199", False),
+        ("sir", "web_pwa", "sir"),
+        ("sir", "signal", "+15550100"),
+        ("guest", "web_pwa", "guest"),
+        ("guest", "signal", "+15550199"),
     ],
 )
-def test_identity_claims(who: str, channel: str, claim: str, authenticated: bool) -> None:
+def test_identity_claims(who: str, channel: str, claim: str) -> None:
     req = build_request(Actor(who=who, channel=channel), "hi", "s", "+15550100")  # type: ignore[arg-type]
-    assert (req.identity_claim, req.authenticated, req.channel) == (claim, authenticated, channel)
+    # Every real channel sends a server-derived claim with authenticated=False; the
+    # claim alone picks sir or guest, through the same identity path production uses.
+    assert (req.identity_claim, req.authenticated, req.channel) == (claim, False, channel)
     assert req.timezone == "America/Denver" and req.source == "alfred-evals"
+
+
+async def test_a_step_actor_overrides_the_scenario_actor() -> None:
+    send = Recorder()
+    s = scenario(steps=[{"user": "Hello."}, {"user": "Who am I?", "as": {"who": "guest"}}])
+    [variant] = expand_variants(s)
+    await play(ctx(send), variant, epoch=1)
+    assert [r.identity_claim for r in send.requests] == ["sir", "guest"]
+
+
+async def test_a_wait_step_pauses_and_is_not_transcribed() -> None:
+    send = Recorder()
+    s = scenario(steps=[{"user": "Hi."}, {"wait": 0.01}, {"user": "Still there?"}])
+    [variant] = expand_variants(s)
+    ev = await play(ctx(send), variant, epoch=1)
+    assert len(ev.step_started) == 3
+    assert ev.step_started[2] - ev.step_started[1] >= 0.01
+    assert [t.role for t in ev.transcript] == ["user", "alfred", "user", "alfred"]
+    assert [r.step for r in ev.replies] == [0, 2]
 
 
 async def test_no_conscious_reply_is_a_harness_error() -> None:
@@ -96,9 +141,14 @@ async def test_ha_event_step_changes_state_and_is_transcribed() -> None:
 
 async def test_world_is_restored_and_only_in_window_calls_are_kept() -> None:
     ha = FakeHA(load_world("apartment"))
+    proxy = LlmProxy("http://x")
     await ha.set_state("light.bedroom_lamp", "on")
     ha.calls.append(HaCall(t=0.0, domain="light", service="turn_on", entity_ids=["light.x"]))
+    proxy.calls.append(LlmCall(t=0.0, role="system2", latency_ms=1.0, status=200))
     [variant] = expand_variants(scenario())
-    ev = await play(ctx(Recorder(), ha), variant, epoch=1)
+    ev = await play(ctx(Recorder(ha=ha, proxy=proxy), ha, proxy), variant, epoch=1)
     assert ev.ha_states["light.bedroom_lamp"].state == "off"
-    assert ev.ha_calls == []
+    # One call of each kind per turn lands in the window; the stale t=0.0 ones stay out.
+    assert len(ev.ha_calls) == 2 and all(c.t > 0.0 for c in ev.ha_calls)
+    assert [c.entity_ids for c in ev.ha_calls] == [["light.bedroom_lamp"]] * 2
+    assert len(ev.llm_calls) == 2 and all(c.t > 0.0 for c in ev.llm_calls)

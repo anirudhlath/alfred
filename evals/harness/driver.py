@@ -1,4 +1,3 @@
-# evals/harness/driver.py
 """Play one scenario variant against a running stack and collect its Evidence."""
 
 from __future__ import annotations
@@ -7,19 +6,23 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, assert_never
 from uuid import uuid4
 
 from bus.schemas.events import AlfredResponse, UserRequest
+from core.conscious.identity import IDENTITY_GUEST, IDENTITY_SIR
 from evals.harness.evidence import Evidence, Reply, TranscriptTurn
 from evals.harness.scenario import Actor, HaEventStep, ScenarioVariant, UserStep, WaitStep
-from evals.harness.stack import CONSCIOUS_SOURCE, EVAL_SIGNAL_NUMBER, EVAL_SOURCE
+from evals.harness.stack import (
+    CONSCIOUS_SOURCE,
+    EVAL_GUEST_SIGNAL_NUMBER,
+    EVAL_SIGNAL_NUMBER,
+    EVAL_SOURCE,
+)
 
 if TYPE_CHECKING:
     from evals.harness.fake_ha import FakeHA
     from evals.harness.proxy import LlmProxy
-
-EVAL_GUEST_SIGNAL_NUMBER = "+15550199"
 
 SendFn = Callable[[UserRequest, float], Awaitable[AlfredResponse]]
 
@@ -40,18 +43,22 @@ class PlayContext:
 
 
 def build_request(actor: Actor, text: str, session_id: str, signal_number: str) -> UserRequest:
+    """A request shaped the way the real channels send one.
+
+    Every production channel sends ``authenticated=False`` with a server-derived claim,
+    so the claim alone picks sir or guest: on signal it is the sender's number, and on
+    every other channel the identity name.
+    """
     if actor.who == "sir":
-        claim = signal_number if actor.channel == "signal" else "sir"
-        authenticated = actor.channel != "signal"
+        claim = signal_number if actor.channel == "signal" else IDENTITY_SIR
     else:
-        claim = EVAL_GUEST_SIGNAL_NUMBER if actor.channel == "signal" else "guest"
-        authenticated = False
+        claim = EVAL_GUEST_SIGNAL_NUMBER if actor.channel == "signal" else IDENTITY_GUEST
     return UserRequest(
         source=EVAL_SOURCE,
         channel=actor.channel,
         session_id=session_id,
         identity_claim=claim,
-        authenticated=authenticated,
+        authenticated=False,
         content_type="text",
         content=text,
         timezone=actor.tz,
@@ -110,6 +117,8 @@ async def play(ctx: PlayContext, variant: ScenarioVariant, epoch: int) -> Eviden
                 await asyncio.sleep(step.settle)
             case WaitStep():
                 await asyncio.sleep(step.wait)
+            case _:
+                assert_never(step)
     ended = time.monotonic()
     ev.ended_at = ended
     ev.ha_calls = ctx.fake_ha.calls_between(started, ended)

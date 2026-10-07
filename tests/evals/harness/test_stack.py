@@ -115,9 +115,11 @@ async def test_readiness_waits_for_a_conscious_reply(
 ) -> None:
     answers = iter(["channels", "conscious-engine"])
     published: list[str] = []
+    authenticated: list[bool] = []
 
     async def fake_publish(redis, request: UserRequest, session_id: str, timeout: float):  # type: ignore[no-untyped-def]
         published.append(session_id)
+        authenticated.append(request.authenticated)
         return AlfredResponse(
             source=next(answers), channel="web_pwa", session_id=session_id, text="ready"
         )
@@ -129,6 +131,8 @@ async def test_readiness_waits_for_a_conscious_reply(
     assert stack.first_reply_ms is not None and stack.boot_seconds is not None
     # The channels-only answer did not count: it asked again until System 2 replied.
     assert len(published) == 2 and next(answers, None) is None
+    # Readiness asks the way real channels do: a server-derived claim, unauthenticated.
+    assert authenticated == [False, False]
     await stack.stop()
 
 

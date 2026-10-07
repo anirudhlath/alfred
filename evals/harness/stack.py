@@ -37,6 +37,7 @@ CONSCIOUS_SOURCE = "conscious-engine"
 EVAL_SOURCE = "alfred-evals"
 EVAL_OPENROUTER_PLACEHOLDER = "alfred-eval-not-a-key"
 EVAL_SIGNAL_NUMBER = "+15550100"
+EVAL_GUEST_SIGNAL_NUMBER = "+15550199"
 _BGE_M3_RECALL_FLOOR = "0.575"  # CLAUDE.md: bge-m3 needs 0.575 (EXP-009)
 
 
@@ -268,7 +269,6 @@ class Stack:
                 channel="web_pwa",
                 session_id=f"eval-ready-{uuid4().hex[:8]}",
                 identity_claim="sir",
-                authenticated=True,
                 content_type="text",
                 content="Reply with the single word: ready.",
             )
