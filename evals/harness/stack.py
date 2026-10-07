@@ -294,21 +294,44 @@ class Stack:
             raise StackError("stack is not started")
         return await publish_and_wait(self.redis, request, request.session_id, timeout=timeout_s)
 
+    def _log_left_behind(self, step: str, exc: Exception, data_dir: Path | None) -> None:
+        logger.error(
+            "%s: %s failed during teardown: %s. If the container is still there, "
+            "remove it by hand: docker rm -f %s (data dir: %s)",
+            self.name,
+            step,
+            exc,
+            self.name,
+            data_dir,
+        )
+
     async def _teardown(self, *, force: bool) -> None:
+        """Never raises: ``stop()`` runs in the orchestrator's ``finally``, where an error
+        would replace the boot error the operator needs. Each failure is logged and the
+        rest still runs; a container left behind goes at the next ``alfredctl up``, which
+        runs ``rm -f`` first."""
+        data_dir = self.data_dir
         if self.redis is not None:
-            await self.redis.aclose()
-            self.redis = None
-        if self.cfg.keep and not force:
-            logger.warning("--keep: leaving %s and %s in place", self.name, self.data_dir)
-            return
-        if self.data_dir is not None:
             try:
-                await self.docker.wipe_data(self.name, self.data_dir, self.image)
-            except StackError:
-                logger.warning("could not wipe %s from inside the container", self.data_dir)
-            shutil.rmtree(self.data_dir, ignore_errors=True)
+                await self.redis.aclose()
+            except Exception as exc:
+                self._log_left_behind("closing its redis client", exc, data_dir)
+            finally:
+                self.redis = None
+        if self.cfg.keep and not force:
+            logger.warning("--keep: leaving %s and %s in place", self.name, data_dir)
+            return
+        if data_dir is not None:
+            try:
+                await self.docker.wipe_data(self.name, data_dir, self.image)
+            except Exception as exc:
+                self._log_left_behind("wiping its data dir", exc, data_dir)
+            shutil.rmtree(data_dir, ignore_errors=True)
             self.data_dir = None
-        await self.docker.remove(self.name)
+        try:
+            await self.docker.remove(self.name)
+        except Exception as exc:
+            self._log_left_behind("removing the container", exc, data_dir)
 
     async def stop(self) -> None:
         await self._teardown(force=False)

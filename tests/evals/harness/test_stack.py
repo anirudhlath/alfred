@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -145,6 +146,90 @@ async def test_stop_wipes_data_and_removes_the_container_unless_keep(
 class _NullRedis:
     async def aclose(self) -> None:
         return None
+
+
+# Teardown runs in the orchestrator's finally: it must never replace the boot error.
+
+
+class _RemoveFails(FakeDocker):
+    async def remove(self, name: str) -> None:
+        raise StackError(f"docker rm -f {name} timed out after 60s")
+
+
+class _WipeFails(FakeDocker):
+    async def wipe_data(self, name: str, data_dir: Path, image: str) -> None:
+        raise StackError(f"docker exec {name} … failed:\nno space left")
+
+
+class _CloseFails:
+    async def aclose(self) -> None:
+        raise ConnectionError("redis went away")
+
+
+def _answer_ready(monkeypatch: pytest.MonkeyPatch, redis: object) -> None:
+    async def fake_publish(redis, request, session_id, timeout):  # type: ignore[no-untyped-def]
+        return AlfredResponse(
+            source="conscious-engine", channel="web_pwa", session_id=session_id, text="ready"
+        )
+
+    monkeypatch.setattr("evals.harness.stack.publish_and_wait", fake_publish)
+    monkeypatch.setattr("evals.harness.stack.create_redis", lambda url: redis)
+
+
+def _teardown_errors(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "evals.harness.stack" and r.levelno == logging.ERROR
+    ]
+
+
+@pytest.mark.parametrize("docker", [_RemoveFails, _WipeFails])
+async def test_a_failed_wipe_or_remove_is_logged_with_the_manual_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    docker: type[FakeDocker],
+) -> None:
+    _answer_ready(monkeypatch, _NullRedis())
+    stack = make_stack(tmp_path, docker())
+    await stack.start()
+    data_dir = stack.data_dir
+    assert data_dir is not None and data_dir.exists()
+
+    await stack.stop()
+
+    (logged,) = _teardown_errors(caplog)
+    assert f"docker rm -f {stack.name}" in logged and str(data_dir) in logged
+    assert not data_dir.exists()
+
+
+async def test_a_failed_redis_close_is_logged_and_teardown_carries_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    _answer_ready(monkeypatch, _CloseFails())
+    docker = FakeDocker()
+    stack = make_stack(tmp_path, docker)
+    await stack.start()
+    data_dir = stack.data_dir
+    assert data_dir is not None
+
+    await stack.stop()
+
+    (logged,) = _teardown_errors(caplog)
+    assert "redis went away" in logged and f"docker rm -f {stack.name}" in logged
+    assert str(data_dir) in logged
+    assert stack.redis is None and docker.removed == [stack.name] and not data_dir.exists()
+
+
+async def test_a_failed_boot_keeps_its_error_through_teardown(tmp_path: Path) -> None:
+    stack = make_stack(tmp_path, _RemoveFails(running=False), healthy=False)
+    with pytest.raises(StackError, match="exited during boot") as err:
+        try:
+            await stack.start()
+        finally:
+            await stack.stop()
+    assert "conscious crashed" in str(err.value) and "docker rm -f" not in str(err.value)
 
 
 # The orchestrator catches only StackError: every way a docker call can fail must become one.
