@@ -431,6 +431,127 @@ def test_up_prints_plan_notes_even_when_the_launch_fails(
     assert "strict-mode-note" in capsys.readouterr().out
 
 
+# --- up --eval: a throwaway stack that never sees the operator's secrets --------------
+
+DOCKER = Runtime("docker", "docker")
+
+
+def _eval_plan() -> LaunchPlan:
+    return LaunchPlan(run_args=[], url_hint="resolve-port", name="alfred-eval-x", image="alfred:x")
+
+
+def _fake_port_run(stdout: str, code: int = 0) -> object:
+    """`subprocess.run` that answers `<exe> port …` and runs anything else for real."""
+    real_run = subprocess.run
+
+    def _run(cmd: list[str], *args: object, **kwargs: object) -> object:
+        if cmd[1:2] == ["port"]:
+            return subprocess.CompletedProcess(cmd, code, stdout, "")
+        return real_run(cmd, *args, **kwargs)
+
+    return _run
+
+
+def test_resolve_url_reads_the_eval_stacks_published_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "127.0.0.1:49153\n", "")
+
+    monkeypatch.setattr(main.subprocess, "run", _fake_run)
+    assert main._resolve_url(DOCKER, _eval_plan()) == "http://127.0.0.1:49153"
+    assert calls == [["docker", "port", "alfred-eval-x", "8081"]]
+
+
+@pytest.mark.parametrize(("code", "stdout"), [(1, ""), (0, ""), (0, "garbage\n")])
+def test_resolve_url_eval_falls_back_to_the_command_that_answers(
+    monkeypatch: pytest.MonkeyPatch, code: int, stdout: str
+) -> None:
+    """Never `localhost:8081`: on a host running the deployed stack that is the wrong one."""
+    monkeypatch.setattr(main.subprocess, "run", _fake_port_run(stdout, code))
+    result = main._resolve_url(DOCKER, _eval_plan())
+    assert "docker port alfred-eval-x 8081" in result
+    assert "8081" not in result.replace("docker port alfred-eval-x 8081", "")
+
+
+def test_resolve_url_eval_survives_a_missing_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _missing(*args: object, **kwargs: object) -> object:
+        raise FileNotFoundError("docker")
+
+    monkeypatch.setattr(main.subprocess, "run", _missing)
+    assert "docker port alfred-eval-x 8081" in main._resolve_url(DOCKER, _eval_plan())
+
+
+def _stub_eval_up(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[list[str]]:
+    """Everything `up --eval` touches outside the plan, stubbed; returns the commands
+    `_run` was handed (none of them run). The repo carries a `.env` holding a secret."""
+    monkeypatch.setattr(rt, "detect", lambda preferred: DOCKER)
+    monkeypatch.setattr(
+        main.doctor_mod,
+        "run_checks",
+        lambda *a, **k: pytest.fail("eval mode must not run the .env preflight"),
+    )
+    monkeypatch.setattr(main.staging, "repo_root", lambda: tmp_path)
+    (tmp_path / ".env").write_text(f"HA_TOKEN={_SECRET_MARK}-ha\n")
+    monkeypatch.setenv("ALFRED_SECRETS_PASSPHRASE", f"{_SECRET_MARK}-passphrase")
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    ran: list[list[str]] = []
+    monkeypatch.setattr(main, "_run", lambda cmd, check=True: ran.append(cmd))
+    monkeypatch.setattr(main.subprocess, "run", _fake_port_run("127.0.0.1:49153\n"))
+    return ran
+
+
+def test_up_eval_launches_without_the_operators_secrets(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ran = _stub_eval_up(monkeypatch, tmp_path)
+    persist = tmp_path / "eval-data"
+
+    main.up(eval_mode=True, persist=persist, models=tmp_path / "models", do_build=False)
+
+    rm, run = ran
+    assert rm[1:3] == ["rm", "-f"] and rm[3].startswith("alfred-eval-")
+    assert run[1] == "run" and run[run.index("--name") + 1] == rm[3]
+    assert "127.0.0.1::8081" in run and "127.0.0.1::6379" in run
+    assert f"{persist.resolve()}:/data" in run
+    assert f"ALFRED_SECRETS_PASSPHRASE={launch.EVAL_SECRETS_PASSPHRASE}" in run
+    assert not any(_SECRET_MARK in arg for arg in run)
+    # The fixed passphrase is not persisted, and a later real run there gets its own.
+    assert not (persist / ".secrets-passphrase").exists()
+    assert "http://127.0.0.1:49153" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("flag", ["expose_ha", "expose_home"])
+def test_up_eval_rejects_the_expose_flags(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, flag: str
+) -> None:
+    ran = _stub_eval_up(monkeypatch, tmp_path)
+    with pytest.raises(typer.BadParameter, match="expose"):
+        main.up(
+            eval_mode=True,
+            persist=tmp_path / "eval-data",
+            do_build=False,
+            expose_ha=flag == "expose_ha",
+            expose_home=flag == "expose_home",
+        )
+    assert ran == []
+
+
+def test_up_eval_needs_a_persist_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    ran = _stub_eval_up(monkeypatch, tmp_path)
+    with pytest.raises(typer.BadParameter, match="--persist"):
+        main.up(eval_mode=True, do_build=False)
+    assert ran == []
+
+
+def test_up_eval_refuses_another_mode(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    ran = _stub_eval_up(monkeypatch, tmp_path)
+    with pytest.raises(typer.BadParameter, match="--mode"):
+        main.up(eval_mode=True, persist=tmp_path / "eval-data", mode="seed", do_build=False)
+    assert ran == []
+
+
 # --- _run: what the echoed command may show ------------------------------------------
 #
 # `_run` prints the command before running it, and for `up` that command carries the

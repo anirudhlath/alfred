@@ -60,6 +60,11 @@ def container_name() -> str:
     return f"alfred-{branch_slug()}"
 
 
+def eval_container_name() -> str:
+    """Container `alfredctl up --eval` starts — apart from this branch's dev container."""
+    return f"alfred-eval-{branch_slug()}"
+
+
 def host_gateway(rt: Runtime) -> str:
     """Address at which the container reaches the HOST (for Ollama/LM Studio/HA)."""
     if rt.name == "docker":

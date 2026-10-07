@@ -7,6 +7,7 @@ never enter the image, regardless of ignore-file support in the active runtime.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -20,7 +21,14 @@ CLONE_HINT = (
 
 
 def home_service_dir() -> Path:
-    """Expected location of the sibling home-service repo (next to the main checkout)."""
+    """The home-service checkout the image build copies.
+
+    Defaults to the sibling repo next to the main checkout. ``ALFRED_HOME_SERVICE_DIR``
+    overrides it — ``alfred evals`` pins the version production runs that way.
+    """
+    override = os.getenv("ALFRED_HOME_SERVICE_DIR")
+    if override:
+        return Path(override).expanduser().resolve()
     return workspace_root() / "home-service"
 
 
@@ -31,6 +39,8 @@ def ensure_home_service(auto_clone: bool = True) -> Path:
     alone can't build. Rather than fail with a hint, fetch the sibling automatically.
     """
     path = home_service_dir()
+    if os.getenv("ALFRED_HOME_SERVICE_DIR") and not path.is_dir():
+        raise FileNotFoundError(f"ALFRED_HOME_SERVICE_DIR={path} does not exist")
     if path.is_dir():
         return path
     if not auto_clone:

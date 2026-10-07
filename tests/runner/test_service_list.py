@@ -34,6 +34,7 @@ def test_infra_added_when_flag_set(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 def test_redis_command_container_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("ALFRED_DATA_MODE", "persistent")
+    monkeypatch.delenv("ALFRED_EVAL", raising=False)
     modules = tmp_path / "mods"
     modules.mkdir()
     (modules / "redisearch.so").touch()
@@ -51,8 +52,23 @@ def test_redis_command_ephemeral_disables_persistence(
 ) -> None:
     monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("ALFRED_DATA_MODE", "ephemeral")
+    monkeypatch.delenv("ALFRED_EVAL", raising=False)
     monkeypatch.setattr("runner.__main__.shutil.which", lambda _: None)
     cmd = _redis_command(tmp_path / "redis")
+    assert cmd[cmd.index("--appendonly") + 1] == "no"
+    assert cmd[cmd.index("--bind") + 1] == "127.0.0.1"
+
+
+def test_redis_command_eval_binds_all_interfaces_without_persistence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("ALFRED_DATA_MODE", "persistent")
+    monkeypatch.setenv("ALFRED_EVAL", "1")
+    monkeypatch.setattr("runner.__main__.shutil.which", lambda _: None)
+    cmd = _redis_command(tmp_path / "redis")
+    assert cmd[cmd.index("--bind") + 1] == "0.0.0.0"
+    assert cmd[cmd.index("--protected-mode") + 1] == "no"
     assert cmd[cmd.index("--appendonly") + 1] == "no"
 
 

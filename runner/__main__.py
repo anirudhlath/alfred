@@ -135,15 +135,22 @@ def _infra_services() -> list[ServiceSpec]:
 
 def _redis_command(redis_dir: Path) -> list[str]:
     """Redis argv: redis-stack-server when installed (native dev), else redis-server
-    with explicit module loads (container). Persistence follows ALFRED_DATA_MODE."""
+    with explicit module loads (container). Persistence follows ALFRED_DATA_MODE, except
+    under ALFRED_EVAL: an eval stack listens on the container interface and keeps nothing."""
     redis_dir.mkdir(parents=True, exist_ok=True)
     if shutil.which("redis-stack-server"):
         return ["redis-stack-server", "--dir", str(redis_dir)]
-    cmd = ["redis-server", "--dir", str(redis_dir), "--bind", "127.0.0.1"]
-    if data_mode() == "persistent":
-        cmd += ["--appendonly", "yes"]
+    cmd = ["redis-server", "--dir", str(redis_dir)]
+    if is_truthy_flag(os.getenv("ALFRED_EVAL")):
+        # `alfred evals` drives the bus from the host through a loopback-only published
+        # port, which arrives on the container's eth0; a throwaway stack keeps nothing.
+        cmd += ["--bind", "0.0.0.0", "--protected-mode", "no", "--save", "", "--appendonly", "no"]
     else:
-        cmd += ["--save", "", "--appendonly", "no"]
+        cmd += ["--bind", "127.0.0.1"]
+        if data_mode() == "persistent":
+            cmd += ["--appendonly", "yes"]
+        else:
+            cmd += ["--save", "", "--appendonly", "no"]
     modules_dir = Path(os.getenv("ALFRED_REDIS_MODULES_DIR", "/usr/local/lib/redis/modules"))
     for mod in ("redisearch.so", "rejson.so"):
         path = modules_dir / mod

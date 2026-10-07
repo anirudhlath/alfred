@@ -136,6 +136,27 @@ loading is deferred; see
 `alfredctl smoke` uses `--mode seed` purely because it needs a throwaway `/data`, not
 because fixtures exist yet.
 
+**Eval mode.** `alfredctl up --eval --persist DIR` starts a throwaway stack named
+`alfred-eval-<branch>` for `alfred evals` (docs/evals.md), apart from this branch's own
+`alfred-<branch>` container and from the deployed `alfred`. It runs `persistent` mode on
+the harness's `DIR` and supports Docker and Podman only.
+
+- It publishes 8081 and Redis (6379) on random `127.0.0.1` ports, never on the LAN, so it
+  cannot clash with a stack already on 8081. `up` prints the web URL it got; read either
+  port with `docker port alfred-eval-<branch> 8081/tcp` (or `6379/tcp`). `--expose-ha` and
+  `--expose-home` are refused, because they would publish on every interface.
+- It never reads `.env` and skips the doctor preflight that reads it. The secrets
+  passphrase is a fixed fake one, `alfred-eval-not-a-secret`, and is never written to
+  `DIR`. Settings reach it through `--env`; the one host value it inherits is `HF_TOKEN`,
+  which `up` forwards in every mode.
+- It sets `ALFRED_EVAL=1`. Redis then listens on the container interface with protected
+  mode off and no persistence, which is how the published port reaches it. It also sets
+  `DAILY_COST_CAP_USD=1000000`, because a local model is priced at the default rate and
+  would trip the $5 cap mid-run. `--env` overrides either value.
+- `ALFRED_HOME_SERVICE_DIR` picks which home-service checkout a build copies, in place of
+  the sibling `../home-service`. The harness sets it to pin the version production runs. A
+  path that does not exist is an error, never a clone.
+
 ## 5. Models — cached volume, not baked
 
 Models (`faster-whisper`, Piper/Kokoro TTS, ECAPA speaker-ID, the embedding model) are
@@ -261,7 +282,7 @@ uv run alfredctl <command> [options]
 |---|---|---|
 | `doctor` | `--online/--offline` (default online) | Validates `.env` + prerequisites and prints a pass/warn/fail preflight table; live-probes OpenRouter/HA/inference unless `--offline`. Exits non-zero on any hard failure |
 | `build` | `--runtime docker\|container\|podman`, `--tag TEXT` (default `alfred:<branch-slug>`) | Stages the git-tracked context (auto-cloning the `home-service` sibling if absent) and builds the image |
-| `up` | `--runtime`, `--mode persistent\|ephemeral\|seed` (default `persistent`), `--persist PATH`, `--models PATH`, `--hf-cache PATH`, `--expose-ha`, `--expose-home`, `--port INT` (default 8081), `--env/-e KEY=VALUE` (repeatable), `--build/--no-build` (default: build) | Prints an offline preflight, builds (unless `--no-build`), removes any existing container of the same name, starts the container, prints the reachable URL |
+| `up` | `--runtime`, `--mode persistent\|ephemeral\|seed` (default `persistent`), `--persist PATH`, `--models PATH`, `--hf-cache PATH`, `--expose-ha`, `--expose-home`, `--port INT` (default 8081), `--env/-e KEY=VALUE` (repeatable), `--build/--no-build` (default: build), `--eval` (see "Eval mode" in section 4) | Prints an offline preflight, builds (unless `--no-build`), removes any existing container of the same name, starts the container, prints the reachable URL |
 | `down` | `--runtime` | Stops and removes this branch's container |
 | `logs` | `--runtime`, `--follow/-f` | Streams container logs |
 | `shell` | `--runtime` | `exec -it <container> bash` |

@@ -132,27 +132,48 @@ def up(
     cpus: Annotated[
         int, typer.Option(help="VM CPUs for the Apple container runtime (default 4)")
     ] = 4,
+    eval_mode: Annotated[
+        bool,
+        typer.Option(
+            "--eval",
+            help="Throwaway stack for `alfred evals`: needs --persist, ignores .env, "
+            "loopback-only random ports (8081 and Redis), fixed fake passphrase",
+        ),
+    ] = False,
 ) -> None:
     """Start this branch's Alfred container (build first if needed)."""
     r = rt.detect(runtime)
     if mode not in ("persistent", "ephemeral", "seed"):
         raise typer.BadParameter("mode must be persistent | ephemeral | seed")
-    # Preflight: surface config gaps early (offline, non-blocking).
-    pre = [
-        c
-        for c in doctor_mod.run_checks(staging.repo_root() / ".env", online=False)
-        if c.status != "pass"
-    ]
-    if pre:
-        console.print("[yellow]Preflight notes (run `alfredctl doctor` for detail):[/yellow]")
-        for c in pre:
-            style = _STATUS_STYLE[c.status]
-            # Escaped for the same reason _render_doctor is: details carry values this
-            # command did not write, and `[/...]` in one is a closing tag to rich.
-            console.print(
-                f"  [{style}]{_STATUS_GLYPH[c.status]}[/{style}] "
-                f"{escape(c.name)}: {escape(c.detail)}"
+    if eval_mode:
+        if persist is None:
+            raise typer.BadParameter("--eval needs --persist DIR (the harness's data dir)")
+        if mode != "persistent":
+            raise typer.BadParameter("--eval always runs persistent mode on --persist; drop --mode")
+        if expose_ha or expose_home:
+            # Both publish on every interface: a no-secret stack open to the LAN, on host
+            # ports the deployed stack may already hold.
+            raise typer.BadParameter(
+                "--eval publishes loopback-only ports; drop --expose-ha/--expose-home"
             )
+    if not eval_mode:
+        # Preflight: surface config gaps early (offline, non-blocking). It reads .env,
+        # which eval mode never uses.
+        pre = [
+            c
+            for c in doctor_mod.run_checks(staging.repo_root() / ".env", online=False)
+            if c.status != "pass"
+        ]
+        if pre:
+            console.print("[yellow]Preflight notes (run `alfredctl doctor` for detail):[/yellow]")
+            for c in pre:
+                style = _STATUS_STYLE[c.status]
+                # Escaped for the same reason _render_doctor is: details carry values this
+                # command did not write, and `[/...]` in one is a closing tag to rich.
+                console.print(
+                    f"  [{style}]{_STATUS_GLYPH[c.status]}[/{style}] "
+                    f"{escape(c.name)}: {escape(c.detail)}"
+                )
     if do_build:
         build(runtime=r.name, tag=None)
     repo = staging.repo_root()
@@ -161,7 +182,8 @@ def up(
     persist_dir = (persist or repo / "data").resolve() if mode == "persistent" else None
     if persist_dir is not None:
         persist_dir.mkdir(parents=True, exist_ok=True)
-    env_file = repo / ".env"
+    env_file = None if eval_mode else repo / ".env"
+    passphrase = launch.EVAL_SECRETS_PASSPHRASE if eval_mode else _passphrase(mode, persist_dir)
     plan = launch.build_plan(
         r,
         mode=mode,
@@ -172,10 +194,11 @@ def up(
         expose_home=expose_home,
         port=port,
         extra_env=list(env),
-        env_file=env_file if env_file.is_file() else None,
-        passphrase=_passphrase(mode, persist_dir),
+        env_file=env_file if env_file is not None and env_file.is_file() else None,
+        passphrase=passphrase,
         memory=memory,
         cpus=cpus,
+        eval_mode=eval_mode,
     )
     # Before the launch, not after: `_run` raises on a non-zero exit, and a container
     # that fails to start would otherwise swallow the one line explaining why passkey
@@ -205,14 +228,8 @@ def _passphrase(mode: str, persist_dir: Path | None) -> str:
     return secrets.token_urlsafe(32)  # ephemeral/seed: fresh per run
 
 
-def _published_port(exe: str, name: str) -> int | None:
-    """Host port bound to the container's 8081, or None if it cannot be determined.
-
-    `smoke --attach` used to assume 8081. On a host already running Alfred on that
-    port, that silently probed the *other* container and reported it green — a pass
-    for something the operator never asked about. Ask the runtime instead of guessing,
-    and let the caller fail loudly when the answer is unavailable.
-    """
+def _published_address(exe: str, name: str) -> str | None:
+    """First ``host:port`` the runtime publishes for the container's 8081, or None."""
     try:
         out = subprocess.run(
             [exe, "port", name, "8081"], check=False, capture_output=True, text=True
@@ -223,13 +240,31 @@ def _published_port(exe: str, name: str) -> int | None:
         return None
     for line in out.stdout.splitlines():
         # "0.0.0.0:8082" / "[::]:8082" — the port is whatever follows the last colon.
-        _, _, host_port = line.strip().rpartition(":")
-        if host_port.isdigit():
-            return int(host_port)
+        address = line.strip()
+        if address.rpartition(":")[2].isdigit():
+            return address
     return None
 
 
+def _published_port(exe: str, name: str) -> int | None:
+    """Host port bound to the container's 8081, or None if it cannot be determined.
+
+    `smoke --attach` used to assume 8081. On a host already running Alfred on that
+    port, that silently probed the *other* container and reported it green — a pass
+    for something the operator never asked about. Ask the runtime instead of guessing,
+    and let the caller fail loudly when the answer is unavailable.
+    """
+    address = _published_address(exe, name)
+    return None if address is None else int(address.rpartition(":")[2])
+
+
 def _resolve_url(r: rt.Runtime, plan: launch.LaunchPlan) -> str:
+    if plan.url_hint == "resolve-port":
+        # An eval stack's host port is random; `localhost:8081` is the deployed stack.
+        address = _published_address(r.exe, plan.name)
+        if address is not None:
+            return f"http://{address}"
+        return f"http://127.0.0.1:<port> (run `{r.exe} port {plan.name} 8081` to read it)"
     if plan.url_hint != "resolve-ip":
         return plan.url_hint
     try:
