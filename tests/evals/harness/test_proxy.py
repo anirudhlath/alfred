@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import pytest
 
 from evals.harness.proxy import ROLE_FINGERPRINTS, LlmProxy, classify_role
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Callable
 
 REPO = Path(__file__).resolve().parents[3]
 
@@ -159,25 +165,52 @@ def test_every_fingerprint_still_exists_in_the_prompts() -> None:
         assert fingerprint in sources, f"prompt changed; update ROLE_FINGERPRINTS: {fingerprint!r}"
 
 
-async def test_passthrough_upstream_failure_is_a_json_502() -> None:
-    def boom(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("refused")
-
-    p = LlmProxy("http://vllm.test", transport=upstream(boom))
+@asynccontextmanager
+async def serving(handle: Callable[[httpx.Request], httpx.Response]) -> AsyncIterator[LlmProxy]:
+    p = LlmProxy("http://vllm.test", transport=upstream(handle))
     await p.start()
     try:
-        async with httpx.AsyncClient() as client:
-            r = await client.get(f"{p.url}/v1/models")
-        assert r.status_code == 502 and "refused" in r.json()["error"]["message"]
-        assert p.calls == []
+        yield p
     finally:
         await p.stop()
 
 
-@pytest.mark.parametrize("content", [b"{not json", b"\xff", b"[]", b'"a string"'])
-async def test_a_chat_body_that_is_not_a_json_object_is_a_400(
-    proxy: LlmProxy, content: bytes
-) -> None:
+def test_classify_role_skips_text_parts_it_cannot_read() -> None:
+    content = [
+        {"type": "text", "text": 5},
+        "x",
+        {"type": "text", "text": "You are a memory analyst"},
+    ]
+    assert classify_role([{"role": "user", "content": content}]) == "librarian"
+
+
+async def test_passthrough_upstream_failure_is_a_json_502() -> None:
+    def boom(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    async with serving(boom) as p, httpx.AsyncClient() as client:
+        r = await client.get(f"{p.url}/v1/models")
+    assert r.status_code == 502 and "refused" in r.json()["error"]["message"]
+    assert p.calls == []
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"{not json",
+        b"\xff",
+        b"[]",
+        b'"a string"',
+        b'{"model": "m", "messages": [], "temperature": NaN}',
+        b'{"model": "m", "messages": [], "temperature": Infinity}',
+        b'{"model": "m", "messages": [], "temperature": -Infinity}',
+        b'{"model": "m", "messages": "abc"}',
+        b'{"model": "m", "messages": {"role": "user", "content": "hi"}}',
+        b'{"model": "m", "messages": null}',
+        b'{"model": "m", "messages": [{"role": "user", "content": "hi"}, "hi"]}',
+    ],
+)
+async def test_a_malformed_chat_body_is_a_400(proxy: LlmProxy, content: bytes) -> None:
     async with httpx.AsyncClient() as client:
         r = await client.post(
             f"{proxy.url}/v1/chat/completions",
@@ -186,6 +219,101 @@ async def test_a_chat_body_that_is_not_a_json_object_is_a_400(
         )
     assert r.status_code == 400 and r.json()["error"]["message"]
     assert proxy.seen == [] and proxy.calls == []  # type: ignore[attr-defined]
+
+
+async def test_forwards_the_request_bytes_alfred_sent(proxy: LlmProxy) -> None:
+    raw = b'{"messages":[ ],  "model":"m", "temperature": 1.0e0}'
+    async with httpx.AsyncClient() as client:
+        r = await client.post(
+            f"{proxy.url}/v1/chat/completions",
+            content=raw,
+            headers={"content-type": "application/json"},
+        )
+    assert r.status_code == 200 and proxy.seen[0].content == raw  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    ("tools", "offered"),
+    [
+        (
+            [
+                1,
+                None,
+                {"function": None},
+                {"type": "function"},
+                {"function": "x"},
+                {"function": {"name": 7}},
+                {"function": {"name": "home_light_turn_on"}},
+            ],
+            ["home_light_turn_on"],
+        ),
+        ("abc", []),
+        ({"function": {"name": "x"}}, []),
+    ],
+)
+async def test_tool_names_are_read_defensively(
+    proxy: LlmProxy, tools: Any, offered: list[str]
+) -> None:
+    async with httpx.AsyncClient() as client:
+        r = await client.post(
+            f"{proxy.url}/v1/chat/completions", json={"model": "m", "messages": [], "tools": tools}
+        )
+    assert r.status_code == 200 and proxy.calls[0].tools_offered == offered
+
+
+def tool_reply(arguments: Any) -> dict[str, Any]:
+    call = {"id": "c1", "type": "function", "function": {"name": "x", "arguments": arguments}}
+    return {"choices": [{"message": {"content": None, "tool_calls": [call]}}]}
+
+
+@pytest.mark.parametrize(
+    ("reply", "recorded"),
+    [
+        (tool_reply("null"), [{"name": "x", "arguments": {"_raw": "null"}}]),
+        (tool_reply("[1]"), [{"name": "x", "arguments": {"_raw": "[1]"}}]),
+        (tool_reply('"x"'), [{"name": "x", "arguments": {"_raw": '"x"'}}]),
+        (tool_reply("{oops"), [{"name": "x", "arguments": {"_raw": "{oops"}}]),
+        (tool_reply(5), [{"name": "x", "arguments": {"_raw": 5}}]),
+        (
+            tool_reply({"target": "Bedroom Lamp"}),
+            [{"name": "x", "arguments": {"target": "Bedroom Lamp"}}],
+        ),
+        ({"choices": [{"message": {"tool_calls": ["x", None, 3]}}]}, []),
+        ({"choices": "x", "usage": [1]}, []),
+        ([], []),
+        ([COMPLETION], []),
+    ],
+)
+async def test_the_recorder_never_changes_a_reply(
+    reply: Any, recorded: list[dict[str, Any]]
+) -> None:
+    raw = json.dumps(reply).encode()
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=raw, headers={"content-type": "application/json"})
+
+    async with serving(handle) as p, httpx.AsyncClient() as client:
+        r = await client.post(f"{p.url}/v1/chat/completions", json={"model": "m", "messages": []})
+    assert r.status_code == 200 and r.content == raw
+    [call] = p.calls
+    assert call.status == 200 and [tc.model_dump() for tc in call.tool_calls] == recorded
+
+
+async def test_a_reply_the_recorder_cannot_record_still_goes_back(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    raw = json.dumps({"choices": [], "usage": {"prompt_tokens": "many"}}).encode()
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=raw, headers={"content-type": "application/json"})
+
+    with caplog.at_level(logging.ERROR, logger="evals.harness.proxy"):
+        async with serving(handle) as p, httpx.AsyncClient() as client:
+            r = await client.post(
+                f"{p.url}/v1/chat/completions", json={"model": "m", "messages": []}
+            )
+    assert r.status_code == 200 and r.content == raw and p.calls == []
+    assert "could not read a chat completion" in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -201,11 +329,6 @@ async def test_mirrors_the_upstream_media_type(
     def handle(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=b"{}", headers=headers)
 
-    p = LlmProxy("http://vllm.test", transport=upstream(handle))
-    await p.start()
-    try:
-        async with httpx.AsyncClient() as client:
-            r = await client.post(f"{p.url}{path}", json={"model": "m", "messages": []})
-        assert r.status_code == 200 and r.headers["content-type"] == expected
-    finally:
-        await p.stop()
+    async with serving(handle) as p, httpx.AsyncClient() as client:
+        r = await client.post(f"{p.url}{path}", json={"model": "m", "messages": []})
+    assert r.status_code == 200 and r.headers["content-type"] == expected

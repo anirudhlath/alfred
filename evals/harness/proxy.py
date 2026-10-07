@@ -3,19 +3,26 @@
 System 2 sends its tool calls to the model and to home-service, never onto a stream, so
 this is the only place their arguments can be seen. Roles are told apart by the first
 message's text (``ROLE_FINGERPRINTS``); a test pins those strings to the prompt sources.
+
+The recorder never changes a reply: a chat request goes upstream as the bytes Alfred sent,
+and the reply comes back as upstream sent it, whether or not the recorder could read it.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
-from typing import Any
+from functools import partial
+from typing import Any, NoReturn
 
 import httpx
 from aiohttp import web
 
 from evals.harness.evidence import LlmCall, Role, ToolCall
+
+logger = logging.getLogger(__name__)
 
 ROLE_FINGERPRINTS: tuple[tuple[Role, str], ...] = (
     ("system1", "You are Alfred's Reflex Engine"),
@@ -29,12 +36,18 @@ ROLE_FINGERPRINTS: tuple[tuple[Role, str], ...] = (
 _DROP_HEADERS = {"host", "content-length", "transfer-encoding", "connection"}
 
 
+def _obj(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
 def _text(content: Any) -> str:
     if isinstance(content, str):
         return content
-    if isinstance(content, list):
-        return "".join(p.get("text", "") for p in content if isinstance(p, dict))
-    return ""
+    return "".join(text for p in _list(content) if isinstance(text := _obj(p).get("text"), str))
 
 
 def classify_role(messages: list[dict[str, Any]]) -> Role:
@@ -45,20 +58,38 @@ def classify_role(messages: list[dict[str, Any]]) -> Role:
     return "unknown"
 
 
-def _parse(payload: dict[str, Any]) -> tuple[str | None, list[ToolCall], int | None, int | None]:
-    choices = payload.get("choices") or [{}]
-    message = choices[0].get("message") or {}
+def _reject_constant(name: str) -> NoReturn:
+    raise ValueError(f"{name} is not JSON")
+
+
+def _parse(content: bytes) -> tuple[str | None, list[ToolCall], int | None, int | None]:
+    """What a completion said. A reply that is not a JSON object reads as empty."""
+    try:
+        payload = _obj(json.loads(content))
+    except ValueError:
+        payload = {}
+    choices = _list(payload.get("choices")) or [{}]
+    message = _obj(_obj(choices[0]).get("message"))
     calls: list[ToolCall] = []
-    for tc in message.get("tool_calls") or []:
-        fn = tc.get("function") or {}
+    for tc in _list(message.get("tool_calls")):
+        if not isinstance(tc, dict):
+            continue
+        fn = _obj(tc.get("function"))
         raw = fn.get("arguments") or "{}"
         try:
-            args = json.loads(raw) if isinstance(raw, str) else dict(raw)
-        except json.JSONDecodeError:
-            args = {"_raw": raw}
-        calls.append(ToolCall(name=str(fn.get("name", "")), arguments=args))
-    usage = payload.get("usage") or {}
-    return message.get("content"), calls, usage.get("prompt_tokens"), usage.get("completion_tokens")
+            args = json.loads(raw) if isinstance(raw, str) else raw
+        except ValueError:
+            args = None
+        arguments = args if isinstance(args, dict) else {"_raw": raw}
+        calls.append(ToolCall(name=str(fn.get("name", "")), arguments=arguments))
+    text = message.get("content")
+    usage = _obj(payload.get("usage"))
+    return (
+        text if isinstance(text, str) else None,
+        calls,
+        usage.get("prompt_tokens"),
+        usage.get("completion_tokens"),
+    )
 
 
 def _error(status: int, message: str) -> web.Response:
@@ -130,57 +161,58 @@ class LlmProxy:
 
     async def _chat(self, request: web.Request) -> web.Response:
         assert self._client is not None
+        raw = await request.read()
         try:
-            body: Any = json.loads(await request.read())
-        except ValueError:
-            return _error(400, "the request body is not JSON")
+            body: Any = json.loads(raw, parse_constant=_reject_constant)
+        except ValueError as exc:
+            return _error(400, f"the request body is not JSON: {exc}")
         if not isinstance(body, dict):
             return _error(400, "the request body is not a JSON object")
         if body.get("stream"):
             return _error(400, "the alfred evals proxy does not support streaming")
-        messages = list(body.get("messages") or [])
-        tools = [str(t.get("function", {}).get("name", "")) for t in body.get("tools") or []]
-        t = time.monotonic()
+        messages = body.get("messages", [])
+        if not isinstance(messages, list) or not all(isinstance(m, dict) for m in messages):
+            return _error(400, "messages must be a list of objects")
+        tools = [
+            name
+            for t in _list(body.get("tools"))
+            if isinstance(name := _obj(_obj(t).get("function")).get("name"), str)
+        ]
+        record = partial(
+            LlmCall,
+            t=time.monotonic(),
+            role=classify_role(messages),
+            messages=messages,
+            tools_offered=tools,
+        )
         async with self._sem:
             started = time.monotonic()
             try:
                 upstream = await self._client.post(
                     f"{self.upstream}/v1/chat/completions",
-                    json=body,
+                    content=raw,
                     headers=self._headers(request),
                 )
             except httpx.HTTPError as exc:
                 self.calls.append(
-                    LlmCall(
-                        t=t,
-                        role=classify_role(messages),
-                        latency_ms=(time.monotonic() - started) * 1000,
-                        status=502,
-                        messages=messages,
-                        tools_offered=tools,
-                    )
+                    record(latency_ms=(time.monotonic() - started) * 1000, status=502)
                 )
                 return _error(502, f"upstream failed: {exc}")
         latency_ms = (time.monotonic() - started) * 1000
         try:
-            payload = upstream.json()
-        except ValueError:
-            payload = {}
-        text, tool_calls, prompt_tokens, completion_tokens = _parse(payload)
-        self.calls.append(
-            LlmCall(
-                t=t,
-                role=classify_role(messages),
-                latency_ms=latency_ms,
-                status=upstream.status_code,
-                messages=messages,
-                tools_offered=tools,
-                response_text=text,
-                tool_calls=tool_calls,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
+            text, tool_calls, prompt_tokens, completion_tokens = _parse(upstream.content)
+            self.calls.append(
+                record(
+                    latency_ms=latency_ms,
+                    status=upstream.status_code,
+                    response_text=text,
+                    tool_calls=tool_calls,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                )
             )
-        )
+        except Exception:
+            logger.exception("the recorder could not read a chat completion; passing it on as is")
         return _mirror(upstream)
 
     async def _passthrough(self, request: web.Request) -> web.Response:
