@@ -3276,9 +3276,10 @@ git commit -m "feat(evals): preflight checks and the eval stack lifecycle"
   - `build_request(actor, text, session_id, signal_number) -> UserRequest`.
   - `session_id_for(sample_id, epoch) -> str`.
   - `async play(ctx, variant, epoch) -> Evidence`.
-- **Identity rules** (`core/conscious/identity.py`):
-  - **sir:** on signal, the claim is the configured Signal number and `authenticated` is false. On every other channel, the claim is `"sir"` and `authenticated` is true.
-  - **guest:** on signal, the claim is `+15550199`. On every other channel, the claim is `"guest"`. `authenticated` is always false.
+- **Identity rules** (`core/conscious/identity.py`). `authenticated` is always false, as on every production channel (spec: "the web socket always claims `sir` and never sets `authenticated`"); the claim alone selects the identity:
+  - **sir:** on signal, the claim is the configured Signal number. On every other channel, the claim is `"sir"`.
+  - **guest:** on signal, the claim is `+15550199`. On every other channel, the claim is `"guest"`.
+  - *(Corrected during execution: an earlier draft set `authenticated` true for sir off signal, which sends the gate down a webauthn path no real channel takes. The code blocks below show that draft; the shipped code follows these rules.)*
 
 - [ ] **Step 1: Write the failing tests**
 
