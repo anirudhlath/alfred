@@ -41,7 +41,6 @@ class RecordingStack:
         self.started = self.stopped = 0
         self.boot_seconds = 1.0
         self.first_reply_ms = 100.0
-        self.restarts = 0
         self._start_error = start_error
 
     async def start(self) -> None:
@@ -420,8 +419,9 @@ async def test_run_suites_preflights_before_the_build_and_reports_whatever_ran(
     commit: str,
 ) -> None:
     # Inspect's display is process-global: unset it here, and restore it afterwards.
+    # Neither eval_async's own fallback nor the env var left here is the display asked for.
     monkeypatch.setattr(inspect_display, "_display_type", None)
-    monkeypatch.setenv("INSPECT_DISPLAY", "none")
+    monkeypatch.setenv("INSPECT_DISPLAY", "plain")
     # Isolated, so its stack restarts before the sample: a restart, not a recovery.
     _golden(tmp_path / "suites", "demo", "quiet", isolated=True)
     _golden(tmp_path / "suites", "zzz", "quiet")
@@ -450,9 +450,9 @@ async def test_run_suites_preflights_before_the_build_and_reports_whatever_ran(
     monkeypatch.setattr(orchestrate, "Stack", stack)
     monkeypatch.setattr(orchestrate, "log_problems", log_problems)
 
-    outcome = await run_suites(_options(tmp_path / "logs", build=build, display="plain"))
+    outcome = await run_suites(_options(tmp_path / "logs", build=build, display="none"))
 
-    assert display_type() == "plain"
+    assert display_type() == "none"
     assert order == [
         "models http://vllm.test/v1 judge-m",
         "models http://embed.test/v1 embed-m",
@@ -571,6 +571,7 @@ async def test_a_fake_that_cannot_start_is_a_stack_error_and_nothing_is_left_run
         f"could not start the {name} on 127.0.0.1: [Errno 98] Address already in use"
     )
     assert stacks == []  # no suite ran
+    assert not (tmp_path / "logs").exists()  # and no empty run dir is left behind
     fake_ha, proxy = made
     assert isinstance(fake_ha, FakeHA) and isinstance(proxy, LlmProxy)
     # Whatever started was stopped.

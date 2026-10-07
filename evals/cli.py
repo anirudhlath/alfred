@@ -113,7 +113,8 @@ def run(
         typer.Option(
             "--keep",
             help="Leave the eval container and data dirs for debugging. Every suite's "
-            "container has the same name, so only the last suite's container survives",
+            "container has the same name, so only the last suite's container survives; "
+            "a restart (an isolated golden, or a recovery) replaces its suite's data dir",
         ),
     ] = False,
     display: DisplayOpt = "rich",

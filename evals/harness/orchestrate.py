@@ -217,8 +217,8 @@ async def run_suites(opts: RunOptions) -> RunOutcome:
     gateway = docker_bridge_gateway()
     if opts.build:
         _build_image(opts.home_service)
+    # Created once the fakes are up, so a run that never starts leaves no empty dir.
     run_dir = opts.log_root / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    run_dir.mkdir(parents=True, exist_ok=True)
 
     judge = Judge(make_judge_model(opts.model, opts.vllm_url))
 
@@ -250,6 +250,7 @@ async def run_suites(opts: RunOptions) -> RunOutcome:
     try:
         await _start_fake("fake HA", fake_ha.start, gateway)
         await _start_fake("LLM proxy", proxy.start, gateway)
+        run_dir.mkdir(parents=True, exist_ok=True)
         logs, stacks, unstarted = await execute(
             plan,
             stack_factory=lambda: Stack(cfg, fake_ha=fake_ha, proxy=proxy),

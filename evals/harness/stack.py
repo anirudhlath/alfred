@@ -211,7 +211,6 @@ class Stack:
         self.data_dir: Path | None = None
         self.boot_seconds: float | None = None
         self.first_reply_ms: float | None = None
-        self.restarts = 0
 
     def up_command(self, data_dir: Path) -> list[str]:
         cmd = [
@@ -374,5 +373,4 @@ class Stack:
 
     async def restart(self) -> None:
         await self._teardown(force=True)
-        self.restarts += 1
         await self.start()
