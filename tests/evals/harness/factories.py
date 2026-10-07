@@ -5,12 +5,13 @@ from typing import TYPE_CHECKING, Any
 from evals.harness.evidence import Evidence, HaCall, HaState, LlmCall, Reply, ToolCall
 
 if TYPE_CHECKING:
-    from evals.harness.evidence import Role
+    from evals.harness.evidence import Role, TranscriptTurn
 
 
 def evidence(
     *,
     replies: list[str] | None = None,
+    transcript: list[TranscriptTurn] | None = None,
     ha_calls: list[HaCall] | None = None,
     ha_states: dict[str, HaState] | None = None,
     llm_calls: list[LlmCall] | None = None,
@@ -27,6 +28,7 @@ def evidence(
         started_at=0.0,
         ended_at=100.0,
         step_started=step_started or [0.0],
+        transcript=transcript or [],
         replies=[
             Reply(step=i, text=t, source="conscious-engine", latency_ms=lat[i])
             for i, t in enumerate(texts)

@@ -26,7 +26,6 @@ def calibrate(model: ModelOpt = DEFAULT_MODEL, vllm_url: VllmUrlOpt = DEFAULT_VL
 
     from evals.harness.judge import (
         CALIBRATION_FILE,
-        TRUST_THRESHOLD,
         Judge,
         load_calibration_sets,
         make_judge_model,
@@ -36,15 +35,25 @@ def calibrate(model: ModelOpt = DEFAULT_MODEL, vllm_url: VllmUrlOpt = DEFAULT_VL
         calibrate as run_calibration,
     )
 
+    sets = load_calibration_sets()
     judge = Judge(make_judge_model(model, vllm_url))
-    report = asyncio.run(run_calibration(judge, load_calibration_sets(), model))
-    save_report(report)
+    try:
+        report = asyncio.run(run_calibration(judge, sets, model))
+    except Exception as exc:
+        detail = " ".join(f"{type(exc).__name__}: {exc}".split())
+        typer.echo(f"the judge at --vllm-url {vllm_url} did not answer: {detail}", err=True)
+        raise typer.Exit(1) from exc
+    save_report(report, CALIBRATION_FILE)
+    trusted = report.trusted()
     for category, result in sorted(report.categories.items()):
-        mark = "trusted" if result.agreement >= TRUST_THRESHOLD else "UNTRUSTED"
-        typer.echo(
-            f"{category:13} {result.agreement:5.0%} of {result.n}  {mark}"
-            + (f"  disagreed: {', '.join(result.disagreements)}" if result.disagreements else "")
-        )
+        line = f"{category:13} {result.agreement:5.0%} of {result.n}  "
+        line += "trusted" if category in trusted else "UNTRUSTED"
+        wrong = [i for i in result.disagreements if i not in result.unparseable]
+        if wrong:
+            line += f"  disagreed: {', '.join(wrong)}"
+        if result.unparseable:
+            line += f"  unparseable: {', '.join(result.unparseable)}"
+        typer.echo(line)
     typer.echo(f"saved {CALIBRATION_FILE}")
 
 

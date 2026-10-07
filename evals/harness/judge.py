@@ -6,13 +6,13 @@ import json
 import re
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 import yaml
 from inspect_ai.model import ChatMessageSystem, ChatMessageUser, GenerateConfig, Model, get_model
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from evals.harness.checks.judge_spec import JudgeCategory, JudgeSpec
+from evals.harness.checks.judge_spec import JudgeCategory, JudgeSpec, Rubric
 from evals.harness.checks.result import CheckResult
 from evals.harness.evidence import TranscriptTurn  # noqa: TC001 — Pydantic field type
 
@@ -33,7 +33,8 @@ JUDGE_SYSTEM = (
     "clearly satisfy the question, the answer is no."
 )
 _LABEL = {"user": "User", "alfred": "Alfred", "event": "Home event"}
-_VERDICT = re.compile(r"VERDICT:\s*(yes|no)\b", re.IGNORECASE)
+# Tolerates Markdown emphasis around the colon and the answer: "**VERDICT:** yes".
+_VERDICT = re.compile(r"VERDICT[*_\s]*:[*_\s]*(yes|no)\b", re.IGNORECASE)
 
 
 def render_prompt(transcript: Sequence[TranscriptTurn], spec: JudgeSpec) -> str:
@@ -78,11 +79,15 @@ class Judge:
 
 
 def make_judge_model(model: str, base_url: str) -> Model:
+    # Inspect otherwise retries an unreachable server for up to 30 minutes, logging below
+    # WARNING, so a down vLLM looks like a hang. Two retries inside 120 s, then fail.
     return get_model(
         f"openai-api/vllm/{model}",
         base_url=base_url,
         api_key=JUDGE_API_KEY,
-        config=GenerateConfig(temperature=0.0, max_tokens=600, max_connections=2),
+        config=GenerateConfig(
+            temperature=0.0, max_tokens=600, max_connections=2, max_retries=2, timeout=120
+        ),
     )
 
 
@@ -91,11 +96,19 @@ async def judge_check(
 ) -> CheckResult:
     counted = spec.category in trusted
     tag = spec.category if counted else f"{spec.category}, untrusted"
-    if not evidence.replies:
+    if not any(turn.role == "alfred" for turn in evidence.transcript):
         return CheckResult(
             name="judge", status="error", reason=f"[{tag}] no reply to judge", counted=counted
         )
-    verdict = await judge.ask(evidence.transcript, spec)
+    try:
+        verdict = await judge.ask(evidence.transcript, spec)
+    except Exception as exc:  # a judge that cannot answer is inconclusive, not a harness failure
+        return CheckResult(
+            name="judge",
+            status="error",
+            counted=counted,
+            reason=f"[{tag}] judge failed: {type(exc).__name__}: {exc}",
+        )
     if verdict.verdict is None:
         return CheckResult(
             name="judge",
@@ -116,7 +129,7 @@ class CalibrationItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str
     conversation: list[TranscriptTurn] = Field(min_length=1)
-    rubric: str
+    rubric: Rubric
     reference: str | None = None
     label: bool
 
@@ -125,6 +138,14 @@ class CalibrationSet(BaseModel):
     model_config = ConfigDict(extra="forbid")
     category: JudgeCategory
     items: list[CalibrationItem] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _ids_are_unique(self) -> Self:
+        ids = [item.id for item in self.items]
+        duplicates = sorted({i for i in ids if ids.count(i) > 1})
+        if duplicates:
+            raise ValueError(f"{self.category}: duplicate item ids {', '.join(duplicates)}")
+        return self
 
 
 class CategoryResult(BaseModel):
@@ -144,10 +165,17 @@ class CalibrationReport(BaseModel):
 
 
 def load_calibration_sets(root: Path = CALIBRATION_DIR) -> list[CalibrationSet]:
-    return [
-        CalibrationSet.model_validate(yaml.safe_load(p.read_text()))
-        for p in sorted(root.glob("*.yaml"))
-    ]
+    sets: list[CalibrationSet] = []
+    origin: dict[str, Path] = {}
+    for path in sorted(root.glob("*.yaml")):
+        s = CalibrationSet.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
+        if s.category in origin:
+            raise ValueError(
+                f"{origin[s.category].name} and {path.name} both calibrate {s.category!r}"
+            )
+        origin[s.category] = path
+        sets.append(s)
+    return sets
 
 
 async def calibrate(judge: Judge, sets: Sequence[CalibrationSet], model: str) -> CalibrationReport:
@@ -175,10 +203,10 @@ async def calibrate(judge: Judge, sets: Sequence[CalibrationSet], model: str) ->
 
 def save_report(report: CalibrationReport, path: Path = CALIBRATION_FILE) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(report.model_dump_json(indent=2))
+    path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
 
 
 def load_report(path: Path = CALIBRATION_FILE) -> CalibrationReport | None:
     if not path.is_file():
         return None
-    return CalibrationReport.model_validate(json.loads(path.read_text()))
+    return CalibrationReport.model_validate(json.loads(path.read_text(encoding="utf-8")))
