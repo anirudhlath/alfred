@@ -22,7 +22,8 @@ if TYPE_CHECKING:
 SCORER_NAME = "scenario_scorer"
 Value = Literal["C", "I", "N", "E"]
 Status = Literal["shipped", "pending"]
-CELL_CHARS = 160
+CELL_CHARS = 200  # room for the sample id each failing entry starts with
+UNKNOWN = "—"
 _CHECKS = TypeAdapter(list[CheckResult])
 
 
@@ -48,27 +49,63 @@ class SampleRun(BaseModel):
     llm: list[LlmUsage] = Field(default_factory=list)
 
 
+class CheckTally(BaseModel):
+    """One of a sample's checks over its runs: how often it passed, failed or errored."""
+
+    index: int  # its place in the golden's ``expect`` list
+    name: str
+    counted: bool  # False when it never counts toward the verdict (an untrusted judge)
+    passed: int = 0
+    failed: int = 0
+    errored: int = 0
+
+
+class SampleSummary(BaseModel):
+    """One sample, i.e. one ``(scenario_id, variant)``, over its epochs."""
+
+    sample_id: str
+    variant: int
+    runs: int
+    passes: int
+    errors: int
+    inconclusive: int
+    pass_rate: float | None
+    # Every run scored C. None (shown —) when a run errored or was inconclusive: an E is
+    # the harness failing, never Alfred, so it cannot decide this either way.
+    pass_k: bool | None
+    flaky: bool  # 0 < pass rate < 1
+    checks: list[CheckTally]
+
+
 class GoldenSummary(BaseModel):
     scenario_id: str
     suite: str
     status: Status
     prd: list[str]
     variants: int
+    variants_pass_k: int  # samples whose pass^k holds
     runs: int
     passes: int
     errors: int
     inconclusive: int
     pass_rate: float | None
-    pass_k: bool
-    flaky: bool
-    failing: list[str]
+    # False when any sample's pass^k fails, None when none fails but one is unknown.
+    pass_k: bool | None
+    flaky: bool  # one of its samples is
+    checks_passed: int  # counted check results that passed, over every run
+    checks_counted: int
+    failing: list[str]  # each entry starts with the sample id it came from
+    samples: list[SampleSummary]
 
 
 class PrdRowSummary(BaseModel):
     prd_id: str
     goldens: list[str]
     pass_rate: float | None
-    pass_k: int
+    pass_k: int  # goldens whose pass^k holds
+    pass_k_unknown: int  # goldens whose pass^k is unknown (an E or N run)
+    flaky: int  # flaky goldens
+    errors: int  # E runs
 
 
 class RoleUsage(BaseModel):
@@ -242,31 +279,83 @@ def _unreadable_run(sample: EvalSample, problem: str) -> SampleRun:
     )
 
 
-def _golden(runs: list[SampleRun]) -> GoldenSummary:
-    first = runs[0]
+def _counts(runs: list[SampleRun]) -> tuple[int, int, int, float | None]:
+    """Passes, errors, inconclusive, and the pass rate ``C / (C + I)``."""
     passes = sum(r.value == "C" for r in runs)
     errors = sum(r.value == "E" for r in runs)
     inconclusive = sum(r.value == "N" for r in runs)
     scored = len(runs) - errors - inconclusive
+    return passes, errors, inconclusive, passes / scored if scored else None
+
+
+def _tallies(runs: list[SampleRun]) -> list[CheckTally]:
+    tallies: dict[tuple[int, str], CheckTally] = {}
+    for r in runs:
+        for index, c in enumerate(r.checks):
+            t = tallies.setdefault(
+                (index, c.name), CheckTally(index=index, name=c.name, counted=True)
+            )
+            t.counted = t.counted and c.counted
+            match c.status:
+                case "pass":
+                    t.passed += 1
+                case "fail":
+                    t.failed += 1
+                case "error":
+                    t.errored += 1
+    return sorted(tallies.values(), key=lambda t: t.index)
+
+
+def _sample(runs: list[SampleRun]) -> SampleSummary:
+    passes, errors, inconclusive, pass_rate = _counts(runs)
+    return SampleSummary(
+        sample_id=runs[0].sample_id,
+        variant=runs[0].variant,
+        runs=len(runs),
+        passes=passes,
+        errors=errors,
+        inconclusive=inconclusive,
+        pass_rate=pass_rate,
+        pass_k=None if errors or inconclusive else passes == len(runs),
+        flaky=pass_rate is not None and 0 < pass_rate < 1,
+        checks=_tallies(runs),
+    )
+
+
+def _golden(runs: list[SampleRun]) -> GoldenSummary:
+    runs = sorted(runs, key=lambda r: (r.variant, r.epoch))
+    first = runs[0]
+    by_variant: dict[int, list[SampleRun]] = defaultdict(list)
+    for r in runs:
+        by_variant[r.variant].append(r)
+    samples = [_sample(rs) for rs in by_variant.values()]
+    passes, errors, inconclusive, pass_rate = _counts(runs)
+    pass_ks = [s.pass_k for s in samples]
+    counted = [c for r in runs for c in r.checks if c.counted]
     return GoldenSummary(
         scenario_id=first.scenario_id,
         suite=first.suite,
         status=first.status,
         prd=first.prd,
-        variants=len({r.variant for r in runs}),
+        variants=len(samples),
+        variants_pass_k=sum(k is True for k in pass_ks),
         runs=len(runs),
         passes=passes,
         errors=errors,
         inconclusive=inconclusive,
-        pass_rate=passes / scored if scored else None,
-        pass_k=bool(runs) and passes == len(runs),
-        flaky=0 < passes < scored,
+        pass_rate=pass_rate,
+        pass_k=False if False in pass_ks else None if None in pass_ks else True,
+        flaky=any(s.flaky for s in samples),
+        checks_passed=sum(c.status == "pass" for c in counted),
+        checks_counted=len(counted),
         failing=_failing(runs),
+        samples=samples,
     )
 
 
 def _failing(runs: list[SampleRun], limit: int = 3) -> list[str]:
-    """Why a golden fell short: check failures, harness errors, judge errors, then notes.
+    """Why a golden fell short: check failures, harness errors, judge errors, then notes,
+    each starting with the sample id it came from.
 
     A harness error always keeps a place: when failures fill every slot, the first error
     takes the last one.
@@ -274,16 +363,16 @@ def _failing(runs: list[SampleRun], limit: int = 3) -> list[str]:
 
     def counted(value: Value, status: str) -> list[str]:
         return [
-            f"{c.name}: {c.reason}"
+            f"{r.sample_id}: {c.name}: {c.reason}"
             for r in runs
             if r.value == value
             for c in r.checks
             if c.counted and c.status == status
         ]
 
-    errors = [f"error: {r.error}" for r in runs if r.value == "E" and r.error]
+    errors = [f"{r.sample_id}: error: {r.error}" for r in runs if r.value == "E" and r.error]
     # A run that kept its score can still carry a note (e.g. unreadable checks); last place.
-    notes = [f"error: {r.error}" for r in runs if r.value != "E" and r.error]
+    notes = [f"{r.sample_id}: error: {r.error}" for r in runs if r.value != "E" and r.error]
     failing = list(dict.fromkeys([*counted("I", "fail"), *errors, *counted("N", "error"), *notes]))
     failing = failing[:limit]
     if errors and not set(errors) & set(failing):
@@ -311,7 +400,10 @@ def summarize(runs: Sequence[SampleRun], meta: RunMeta) -> Scorecard:
                 prd_id=prd_id,
                 goldens=[g.scenario_id for g in gs],
                 pass_rate=sum(rates) / len(rates) if rates else None,
-                pass_k=sum(g.pass_k for g in gs),
+                pass_k=sum(g.pass_k is True for g in gs),
+                pass_k_unknown=sum(g.pass_k is None for g in gs),
+                flaky=sum(g.flaky for g in gs),
+                errors=sum(g.errors for g in gs),
             )
         )
     usage: dict[Role, list[LlmUsage]] = defaultdict(list)
@@ -341,7 +433,12 @@ def summarize(runs: Sequence[SampleRun], meta: RunMeta) -> Scorecard:
 
 
 def _pct(value: float | None) -> str:
-    return "—" if value is None else f"{value:.0%}"
+    return UNKNOWN if value is None else f"{value:.0%}"
+
+
+def _of(held: int, total: int, unknown: int) -> str:
+    """``2/3``, or ``1/3 (1 —)`` when some of the rest are unknown rather than failing."""
+    return f"{held}/{total}" + (f" ({unknown} {UNKNOWN})" if unknown else "")
 
 
 def _cell(text: str) -> str:
@@ -388,11 +485,12 @@ def render_markdown(card: Scorecard) -> str:
         "",
         "## PRD rows",
         "",
-        "| PRD row | goldens | pass rate | pass^k |",
-        "|---|---|---|---|",
+        "| PRD row | goldens | pass rate | pass^k | flaky | errors |",
+        "|---|---|---|---|---|---|",
     ]
     lines += [
-        f"| {r.prd_id} | {len(r.goldens)} | {_pct(r.pass_rate)} | {r.pass_k}/{len(r.goldens)} |"
+        f"| {r.prd_id} | {len(r.goldens)} | {_pct(r.pass_rate)} | "
+        f"{_of(r.pass_k, len(r.goldens), r.pass_k_unknown)} | {r.flaky} | {r.errors} |"
         for r in card.prd_rows
     ]
     shipped = [g for g in card.goldens if g.status == "shipped"]
@@ -401,15 +499,18 @@ def render_markdown(card: Scorecard) -> str:
             "",
             f"## {suite}",
             "",
-            "| golden | variants | runs | pass rate | pass^k | flaky | errors "
-            "| first failing check |",
-            "|---|---|---|---|---|---|---|---|",
+            "| golden | variants | runs | pass rate | variants passing all k | flaky | errors "
+            "| checks passed | first failing check |",
+            "|---|---|---|---|---|---|---|---|---|",
         ]
         for g in (g for g in shipped if g.suite == suite):
+            unknown = sum(s.pass_k is None for s in g.samples)
+            checks = f"{g.checks_passed}/{g.checks_counted}" if g.checks_counted else UNKNOWN
             first = _cell(g.failing[0]) if g.failing else ""
             lines.append(
                 f"| {g.scenario_id} | {g.variants} | {g.runs} | {_pct(g.pass_rate)} | "
-                f"{'✓' if g.pass_k else '✗'} | {'⚠' if g.flaky else ''} | {g.errors} | {first} |"
+                f"{_of(g.variants_pass_k, g.variants, unknown)} | {'⚠' if g.flaky else ''} | "
+                f"{g.errors} | {checks} | {first} |"
             )
     pending = [g for g in card.goldens if g.status == "pending"]
     if pending:

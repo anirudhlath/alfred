@@ -18,7 +18,8 @@ The suite proves three things that unit tests cannot:
    image, driven over its own Redis bus. The home-service bundled into it is the commit
    production runs, and it talks to a fake Home Assistant over the real WebSocket API.
 2. **The model's judgment holds.** Each golden runs several times (epochs) and in several
-   phrasings (variants), so a feature that works once, or for one wording, shows up as flaky.
+   phrasings (variants). A feature that works only some of the time shows up as flaky, and
+   one that works for only one wording shows up as a variant that never passes.
 3. **Nothing in the PRD is forgotten.** `evals/coverage.yaml` maps every PRD row to goldens,
    to tests, or to a stated reason it involves no LLM, and a pytest check keeps that map
    complete as the PRD changes.
@@ -386,16 +387,29 @@ Sections, in order:
    Ctrl-C interrupted (`suite <name>: interrupted`), logs that failed, and sample epochs
    missing from a log.
 4. **PRD rows.** One row per PRD id that shipped goldens cite: how many goldens, the mean of
-   their pass rates, and how many of them passed every run (pass^k).
-5. **One table per suite** of shipped goldens:
+   their pass rates, how many of them hold pass^k (`2/3`, or `1/3 (1 —)` when one is
+   unknown rather than failing), how many are flaky, and how many `E` runs they had.
+5. **One table per suite** of shipped goldens. Pass^k and flaky belong to a **sample**, one
+   variant of a golden, over its epochs; a golden rolls its samples up:
    - **variants**, **runs** (variants × epochs);
-   - **pass rate** = `C / (C + I)` — errors and inconclusive runs are left out, and the
-     rate is `—` when nothing was scored;
-   - **pass^k** ✓ only when every run of every variant scored `C`;
-   - **flaky** ⚠ when the golden passed some scored runs and failed others;
+   - **pass rate** = `C / (C + I)` over every run of the golden — errors and inconclusive
+     runs are left out, and the rate is `—` when nothing was scored;
+   - **variants passing all k**: the samples whose pass^k holds, out of the golden's
+     variants. A sample's pass^k holds when every one of its runs scored `C`; it is
+     unknown, counted as `(n —)`, when any run scored `E` or `N`, since a harness error is
+     never Alfred failing;
+   - **flaky** ⚠ when one of its samples is: that sample passed some scored runs and failed
+     others. A variant that fails every run while another passes every run is a phrasing
+     failure, not noise: it shows as `1/2` with no ⚠;
    - **errors**, the count of `E` runs;
-   - **first failing check**: counted check failures from `I` runs first, then harness
-     errors, then errored checks from `N` runs (mostly judge errors).
+   - **checks passed**: counted check results that passed, out of all counted results over
+     every run (`—` when none were counted);
+   - **first failing check**, prefixed with the sample id it came from (`<id>~1: …`):
+     counted check failures from `I` runs first, then harness errors, then errored checks
+     from `N` runs (mostly judge errors).
+
+   `report.json` holds the same per sample (`goldens[].samples[]`), with a tally per check
+   of how often it passed, failed and errored (`checks[]`, in the golden's `expect` order).
 6. **Not yet working (pending).** Pending goldens and their pass rates. They never count
    toward a PRD row.
 7. **LLM usage** by role (calls, prompt and completion tokens, p50 and p95 latency), then
@@ -470,8 +484,9 @@ expect:
 **Variants.** One `user` step may carry `variants`. The step's own `user` text runs as
 sample `<id>` (variant 0), and each variant adds a sample on top, `<id>~1`, `<id>~2` and so
 on, with the same checks. So a golden with one variant is two samples, which `list` shows
-as `×2`. The scorecard groups a golden's samples under it, so a feature that works for only
-one phrasing shows up as flaky.
+as `×2`. Pass^k and flaky are per sample, and the scorecard rolls a golden's samples up
+under it: a feature that works for only one phrasing shows as `1/2` variants passing all k,
+and its failing check names the sample (`<id>~1: …`).
 
 **Samples share a container.** Every sample gets a fresh session id (one per variant and
 epoch, `session_id_for()` in the driver), so no conversation carries over. What does carry
@@ -587,7 +602,8 @@ Alfred failing.
 
 **The verdict.** A sample is `C` when every counted check passes, `I` when any counted check
 fails, and `N` otherwise (see [The values](#the-values)). Every check's result is kept, so
-partial correctness stays visible in the explanation.
+partial correctness stays visible: in the explanation, in the scorecard's **checks passed**
+column, and in `report.json`'s per-sample check tallies.
 
 ---
 

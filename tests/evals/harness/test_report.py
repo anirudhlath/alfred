@@ -1,7 +1,7 @@
 # tests/evals/harness/test_report.py
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import pytest
 from inspect_ai import Task, eval_async
@@ -39,6 +39,7 @@ META = RunMeta(
     stacks=[],
 )
 EV = evidence(replies=["Done, sir."], llm_calls=[llm("system2")])
+CheckStatus = Literal["pass", "fail", "error"]
 
 
 def run(
@@ -137,11 +138,75 @@ def test_golden_summary_rates() -> None:
     card = summarize(runs, META)
     a = next(g for g in card.goldens if g.scenario_id == "home.a")
     assert (a.runs, a.passes, a.errors, a.variants) == (4, 2, 1, 2)
-    assert abs((a.pass_rate or 0) - 2 / 3) < 1e-9 and a.flaky and not a.pass_k
+    assert abs((a.pass_rate or 0) - 2 / 3) < 1e-9 and a.flaky and a.pass_k is False
+    base, other = a.samples
+    assert (base.sample_id, base.runs, base.passes, base.flaky, base.pass_k) == (
+        "home.a",
+        3,
+        2,
+        True,
+        False,
+    )
+    # An error is not a failure: the variant's pass^k is unknown, and it is not flaky.
+    assert (other.sample_id, other.pass_rate, other.pass_k, other.flaky) == (
+        "home.a~1",
+        None,
+        None,
+        False,
+    )
     b = next(g for g in card.goldens if g.scenario_id == "home.b")
-    assert b.pass_k and not b.flaky
+    assert b.pass_k is True and not b.flaky and b.variants_pass_k == 1
     c = next(g for g in card.goldens if g.scenario_id == "home.c")
-    assert c.pass_rate is None and c.inconclusive == 1
+    assert c.pass_rate is None and c.inconclusive == 1 and c.pass_k is None
+
+
+def test_flaky_and_pass_k_are_per_sample_so_a_phrasing_failure_is_not_noise() -> None:
+    # Variant 0 passes every epoch and variant ~1 fails every epoch: a deterministic
+    # phrasing failure. Neither sample is flaky, so the golden is not either.
+    runs = [run("home.a", "C", epoch=e) for e in (1, 2, 3)]
+    runs += [run("home.a~1", "I", epoch=e, reason="wanted light.turn_on") for e in (1, 2, 3)]
+    (g,) = summarize(runs, META).goldens
+    assert not g.flaky and [s.flaky for s in g.samples] == [False, False]
+    assert [s.pass_k for s in g.samples] == [True, False]
+    assert (g.variants_pass_k, g.variants, g.pass_k) == (1, 2, False)
+    # Each failing entry says which sample failed.
+    assert g.failing == ["home.a~1: ha_called: wanted light.turn_on"]
+
+
+def test_one_flaky_sample_makes_its_golden_flaky() -> None:
+    runs = [run("home.a", "C", epoch=e) for e in (1, 2)]
+    runs += [run("home.a~1", "C", epoch=1), run("home.a~1", "I", epoch=2)]
+    (g,) = summarize(runs, META).goldens
+    assert g.flaky and [s.flaky for s in g.samples] == [False, True]
+
+
+def test_pass_k_counts_scored_runs_and_is_unknown_when_a_run_errored() -> None:
+    runs = [run("home.a", "C", epoch=1), run("home.a", "C", epoch=2)]
+    runs.append(run("home.a", "E", epoch=3, checks=[], error="vLLM hiccup"))
+    runs += [run("home.b", "C", epoch=e) for e in (1, 2, 3)]
+    card = summarize(runs, META)
+    a, b = card.goldens
+    # A harness error never turns pass^k into a failure: it is unknown.
+    assert (a.samples[0].pass_k, a.pass_k, a.variants_pass_k) == (None, None, 0)
+    assert a.pass_rate == 1.0 and b.pass_k is True
+    (row,) = card.prd_rows
+    assert (row.pass_k, row.pass_k_unknown, row.errors, row.flaky) == (1, 1, 1, 0)
+    md = render_markdown(card)
+    assert "| 4.4.lights-scenes | 2 | 100% | 1/2 (1 —) | 0 | 1 |" in md.splitlines()
+    golden_row = next(line for line in md.splitlines() if line.startswith("| home.a |"))
+    assert "| 0/1 (1 —) |" in golden_row
+
+
+def test_prd_rows_carry_flaky_and_error_counts() -> None:
+    runs = [run("home.a", "C", epoch=1), run("home.a", "I", epoch=2)]
+    runs += [run("home.b", "E", epoch=1, checks=[], error="boom"), run("home.b", "C", epoch=2)]
+    runs += [run("home.b", "E", epoch=3, checks=[], error="boom")]
+    card = summarize(runs, META)
+    (row,) = card.prd_rows
+    assert (row.flaky, row.errors, row.pass_k, row.pass_k_unknown) == (1, 2, 0, 1)
+    md = render_markdown(card).splitlines()
+    assert "| PRD row | goldens | pass rate | pass^k | flaky | errors |" in md
+    assert any("| variants passing all k |" in line for line in md)
 
 
 def test_failing_lists_failures_then_errors_then_judge_errors() -> None:
@@ -153,14 +218,55 @@ def test_failing_lists_failures_then_errors_then_judge_errors() -> None:
         run("home.a", "I", epoch=4, reason="wanted light.turn_on"),
     ]
     (g,) = summarize(runs, META).goldens
-    assert g.failing == ["ha_called: wanted light.turn_on", "error: boom", "judge: judge timed out"]
+    assert g.failing == [
+        "home.a: ha_called: wanted light.turn_on",
+        "home.a: error: boom",
+        "home.a: judge: judge timed out",
+    ]
 
 
 def test_failing_always_keeps_an_error_message() -> None:
     runs = [run("home.a", "I", epoch=i, reason=f"miss {i}") for i in range(1, 5)]
-    runs.append(run("home.a", "E", epoch=5, checks=[], error="boom"))
+    runs.append(run("home.a~1", "E", epoch=1, checks=[], error="boom"))
     (g,) = summarize(runs, META).goldens
-    assert g.failing == ["ha_called: miss 1", "ha_called: miss 2", "error: boom"]
+    assert g.failing == [
+        "home.a: ha_called: miss 1",
+        "home.a: ha_called: miss 2",
+        "home.a~1: error: boom",
+    ]
+
+
+def test_every_checks_result_is_tallied_per_sample(tmp_path: Path) -> None:
+    def checks(ha_called: CheckStatus, judge: CheckStatus) -> list[CheckResult]:
+        return [
+            CheckResult(name="ha_called", status=ha_called, reason="r"),
+            CheckResult(name="reply_matches", status="pass", reason="r"),
+            # An untrusted judge category: kept and tallied, but it does not count.
+            CheckResult(name="judge", status=judge, reason="r", counted=False),
+        ]
+
+    runs = [
+        run("home.a", "C", epoch=1, checks=checks("pass", "fail")),
+        run("home.a", "I", epoch=2, checks=checks("fail", "pass")),
+        run("home.a", "N", epoch=3, checks=checks("error", "fail")),
+        run("home.a~1", "E", epoch=1, checks=[], error="boom"),
+    ]
+    card = summarize(runs, META)
+    (g,) = card.goldens
+    base, other = g.samples
+    tallies = [(t.index, t.name, t.passed, t.failed, t.errored, t.counted) for t in base.checks]
+    assert tallies == [
+        (0, "ha_called", 1, 1, 1, True),
+        (1, "reply_matches", 3, 0, 0, True),
+        (2, "judge", 1, 2, 0, False),
+    ]
+    assert other.checks == []
+    # The compact column counts counted results only: 4 of the 6 counted ones passed.
+    assert (g.checks_passed, g.checks_counted) == (4, 6)
+    golden_row = next(line for line in render_markdown(card).splitlines() if "| home.a |" in line)
+    assert "| 4/6 |" in golden_row
+    _, json_path = write_report(card, tmp_path)
+    assert '"checks": [' in json_path.read_text()
 
 
 def test_pending_goldens_stay_out_of_prd_rows() -> None:
@@ -182,7 +288,7 @@ def test_markdown_names_the_failing_check(tmp_path: Path) -> None:
 def test_a_multiline_reason_keeps_its_table_row_on_one_line() -> None:
     md = render_markdown(summarize([run("home.a", "I", reason="a\n\n- b|c")], META))
     row = next(line for line in md.splitlines() if line.startswith("| home.a |"))
-    assert row.endswith("| ha_called: a - b\\|c |")
+    assert row.endswith("| home.a: ha_called: a - b\\|c |")
     assert not any(line.startswith("- b") for line in md.splitlines())
 
 
@@ -311,5 +417,5 @@ async def test_malformed_run_data_never_loses_the_report(tmp_path: Path) -> None
     card = summarize(list(runs.values()), META)
     golden = next(g for g in card.goldens if g.scenario_id == "home.bad-checks")
     assert golden.pass_k
-    assert golden.failing == [f"error: {unreadable_checks}"]
+    assert golden.failing == [f"home.bad-checks: error: {unreadable_checks}"]
     assert "unreadable checks: checks.0.status" in render_markdown(card)
