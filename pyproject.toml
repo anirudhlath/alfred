@@ -70,13 +70,14 @@ evals = [
 
 [project.scripts]
 alfredctl = "alfredctl.main:app"
+alfred = "alfred_cli.main:app"
 
 [build-system]
 requires = ["setuptools>=83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["alfredctl*", "bus*", "core*", "domains*", "evals*", "runner*", "sdk*", "shared*", "telemetry*", "tests*"]
+include = ["alfred_cli*", "alfredctl*", "bus*", "core*", "domains*", "evals*", "runner*", "sdk*", "shared*", "telemetry*", "tests*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
