@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+import httpx
 import pytest
 import yaml
-from inspect_ai.model import ModelOutput, get_model
+from inspect_ai.model import GenerateConfig, ModelOutput, get_model
 from pydantic import ValidationError
 
 from evals.harness.checks.judge_spec import JudgeSpec
@@ -25,13 +26,14 @@ from evals.harness.judge import (
     render_prompt,
     save_report,
 )
+from evals.harness.vllm_model import PROVIDER as VLLM_PROVIDER
 from tests.evals.harness.factories import evidence
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
 
-    from inspect_ai.model import ChatMessage, Model
+    from inspect_ai.model import ChatMessage
 
     from evals.harness.evidence import Evidence
 
@@ -129,23 +131,34 @@ async def test_a_judge_that_raises_is_an_error_not_a_crash() -> None:
     assert "ConnectionError: connection refused" in res.reason
 
 
-def test_judge_model_gives_up_instead_of_retrying_forever(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    stand_in = get_model("mockllm/model", memoize=False)
-    seen: dict[str, Any] = {}
+async def test_an_unreachable_vllm_is_reported_by_its_own_error() -> None:
+    def refuse(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
 
-    def fake_get_model(name: str, **kwargs: Any) -> Model:
-        seen.update(name=name, **kwargs)
-        return stand_in
+    judge = Judge(
+        get_model(
+            f"{VLLM_PROVIDER}/m",
+            base_url="http://vllm.test/v1",
+            config=GenerateConfig(max_retries=0),
+            memoize=False,
+            transport=httpx.MockTransport(refuse),
+        )
+    )
+    res = await judge_check(judge, conversation("ok"), SPEC, trusted={"tone"})
+    assert res.status == "error" and res.counted
+    assert res.reason == "[tone] judge failed: ConnectError: connection refused"
 
-    monkeypatch.setattr("evals.harness.judge.get_model", fake_get_model)
-    assert make_judge_model("judge-m", "http://vllm.test/v1") is stand_in
-    assert seen["name"] == "openai-api/vllm/judge-m"
-    assert seen["base_url"] == "http://vllm.test/v1"
-    config = seen["config"]
+
+def test_the_real_judge_model_builds_and_gives_up_instead_of_retrying_forever() -> None:
+    # Builds the real provider: mocks hid that Inspect's own openai-api one cannot load
+    # here. Never generates, so nothing touches the network.
+    model = make_judge_model("m", "http://127.0.0.1:9/v1")
+    assert str(model) == "alfred-vllm/m"
+    assert model.api.base_url == "http://127.0.0.1:9/v1"
+    assert model.api.api_key == "alfred-eval-not-a-key"
+    config = model.config
     assert config.max_retries == 2 and config.timeout == 120
-    assert config.max_connections == 2 and config.temperature == 0.0
+    assert config.max_connections == 2 and config.temperature == 0.0 and config.max_tokens == 600
 
 
 async def test_calibration_counts_disagreements_and_round_trips(tmp_path: Path) -> None:

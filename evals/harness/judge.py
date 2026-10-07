@@ -11,13 +11,17 @@ from typing import TYPE_CHECKING, Self
 import yaml
 from inspect_ai.model import ChatMessageSystem, ChatMessageUser, GenerateConfig, Model, get_model
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from tenacity import RetryError
 
 from evals.harness.checks.judge_spec import JudgeCategory, JudgeSpec, Rubric
 from evals.harness.checks.result import CheckResult
 from evals.harness.evidence import TranscriptTurn  # noqa: TC001 — Pydantic field type
+from evals.harness.vllm_model import PROVIDER as VLLM_PROVIDER  # importing registers it
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+    from inspect_ai.model import ChatMessage
 
     from evals.harness.evidence import Evidence
 
@@ -68,12 +72,19 @@ class Judge:
         self._model = model
 
     async def ask(self, transcript: Sequence[TranscriptTurn], spec: JudgeSpec) -> JudgeVerdict:
-        output = await self._model.generate(
-            [
-                ChatMessageSystem(content=JUDGE_SYSTEM),
-                ChatMessageUser(content=render_prompt(transcript, spec)),
-            ]
-        )
+        messages: list[ChatMessage] = [
+            ChatMessageSystem(content=JUDGE_SYSTEM),
+            ChatMessageUser(content=render_prompt(transcript, spec)),
+        ]
+        try:
+            output = await self._model.generate(messages)
+        except RetryError as exc:
+            # Inspect gave up retrying and wraps the last attempt's error; raise that one,
+            # so a report says "ConnectError: ..." rather than "RetryError[<Future ...>]".
+            last = exc.last_attempt.exception()
+            if isinstance(last, Exception):
+                raise last from exc
+            raise
         text = output.completion
         return JudgeVerdict(verdict=parse_verdict(text), rationale=text.strip())
 
@@ -82,7 +93,7 @@ def make_judge_model(model: str, base_url: str) -> Model:
     # Inspect otherwise retries an unreachable server for up to 30 minutes, logging below
     # WARNING, so a down vLLM looks like a hang. Two retries inside 120 s, then fail.
     return get_model(
-        f"openai-api/vllm/{model}",
+        f"{VLLM_PROVIDER}/{model}",
         base_url=base_url,
         api_key=JUDGE_API_KEY,
         config=GenerateConfig(
