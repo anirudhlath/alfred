@@ -148,6 +148,12 @@ def coverage_problems(
                     )
             elif not any(e.id in s.prd for s in suites[suite]):
                 problems.append(f"{e.id}: no golden in {suite!r} cites it")
+        for suite in e.pending_suites:
+            if suite in suites:
+                problems.append(
+                    f"{e.id}: suite {suite!r} is built; move it to suites and cite the row "
+                    "from a golden"
+                )
         for test in e.tests:
             if not (repo_root / test).exists():
                 problems.append(f"{e.id}: test path {test} does not exist")

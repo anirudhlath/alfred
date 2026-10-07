@@ -88,6 +88,13 @@ def test_problems_name_unmapped_rows_and_unknown_suites(tmp_path: Path) -> None:
     assert "convo" in problems  # unknown suite
     assert "4.1.ghost matches no PRD row" in problems
     assert "nope/" in problems  # missing test path
+    assert "is built" not in problems  # no suite is built yet
+
+    built = "\n".join(coverage_problems(MINI_PRD, coverage, {"notifications": []}, tmp_path))
+    assert (
+        "principle.1: suite 'notifications' is built; move it to suites and cite the row "
+        "from a golden"
+    ) in built
 
 
 def test_the_real_prd_is_fully_mapped() -> None:
