@@ -6,12 +6,16 @@ import logging
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
 from inspect_ai.model import get_model
+from inspect_ai.util import _display as inspect_display
+from inspect_ai.util import display_type
 
 from evals.harness import orchestrate
+from evals.harness.fake_ha import FakeHA
 from evals.harness.judge import CalibrationReport, CategoryResult
 from evals.harness.orchestrate import (
     RunOptions,
@@ -23,6 +27,7 @@ from evals.harness.orchestrate import (
     run_suites,
 )
 from evals.harness.preflight import PreflightError
+from evals.harness.proxy import LlmProxy
 from evals.harness.scenario import Scenario, ScenarioError, expand_variants, load_suites
 from evals.harness.stack import StackError
 
@@ -65,6 +70,10 @@ def plan(*suites: str) -> dict[str, list]:  # type: ignore[type-arg]
     return {suite: variants(suite) for suite in suites or ("demo",)}
 
 
+# What execute() reads from a suite's RunContext.
+NO_RECOVERIES = SimpleNamespace(recoveries=0)
+
+
 async def _eval_by_suite(task: str, **kwargs: Any) -> list[str]:
     return [f"log {task}"]
 
@@ -91,7 +100,7 @@ async def test_execute_tears_down_and_propagates_anything_but_a_failed_start(
         await execute(
             plan(),
             stack_factory=factory,
-            make_ctx=lambda stack, variants: object(),  # type: ignore[arg-type,return-value]
+            make_ctx=lambda stack, variants: NO_RECOVERIES,  # type: ignore[arg-type,return-value]
             eval_fn=boom,
             log_dir=tmp_path,
             epochs=1,
@@ -110,14 +119,17 @@ async def test_execute_collects_logs_and_stack_meta(tmp_path: Path) -> None:
     logs, meta, unstarted = await execute(
         plan(),
         stack_factory=RecordingStack,
-        make_ctx=lambda stack, variants: object(),  # type: ignore[arg-type,return-value]
+        make_ctx=lambda stack, variants: SimpleNamespace(recoveries=1),  # type: ignore[arg-type,return-value]
         eval_fn=fake_eval,
         log_dir=tmp_path,
         epochs=1,
         build_task_fn=lambda *a: "task",  # type: ignore[arg-type,return-value]
     )
-    assert logs == ["log"] and meta[0]["suite"] == "demo" and meta[0]["boot_seconds"] == 1.0
-    assert unstarted == {}
+    assert logs == ["log"] and unstarted == {}
+    # Recoveries are dead-container restarts, counted by the suite's RunContext.
+    assert meta == [
+        {"suite": "demo", "boot_seconds": 1.0, "first_reply_ms": 100.0, "recoveries": 1}
+    ]
 
 
 async def test_a_stack_that_fails_to_start_costs_only_its_own_suite(tmp_path: Path) -> None:
@@ -130,7 +142,7 @@ async def test_a_stack_that_fails_to_start_costs_only_its_own_suite(tmp_path: Pa
     logs, meta, unstarted = await execute(
         plan("first", "second"),
         stack_factory=lambda: next(made),
-        make_ctx=lambda stack, variants: object(),  # type: ignore[arg-type,return-value]
+        make_ctx=lambda stack, variants: NO_RECOVERIES,  # type: ignore[arg-type,return-value]
         eval_fn=_eval_by_suite,
         log_dir=tmp_path,
         epochs=1,
@@ -150,7 +162,7 @@ async def test_suites_after_a_failed_start_still_run(tmp_path: Path) -> None:
     logs, _, unstarted = await execute(
         plan("first", "second"),
         stack_factory=lambda: next(made),
-        make_ctx=lambda stack, variants: object(),  # type: ignore[arg-type,return-value]
+        make_ctx=lambda stack, variants: NO_RECOVERIES,  # type: ignore[arg-type,return-value]
         eval_fn=_eval_by_suite,
         log_dir=tmp_path,
         epochs=1,
@@ -182,9 +194,9 @@ def test_calibration_for_uses_only_the_runs_own_model(caplog: pytest.LogCaptureF
 
 def test_read_calibration_reads_a_saved_report_or_none(tmp_path: Path) -> None:
     path = tmp_path / "calibration.json"
-    assert read_calibration(path) is None
+    assert read_calibration(path, "judge-m") is None
     path.write_text(_report("judge-m").model_dump_json(), encoding="utf-8")
-    report = read_calibration(path)
+    report = read_calibration(path, "judge-m")
     assert report is not None and report.model == "judge-m"
 
 
@@ -216,10 +228,10 @@ def test_an_unreadable_calibration_is_a_preflight_error(
     path = tmp_path / "calibration.json"
     spoil(path, monkeypatch)
     with pytest.raises(PreflightError) as err:
-        read_calibration(path)
+        read_calibration(path, "judge-m")
     message = str(err.value)
     assert message.startswith(f"judge calibration at {path} is unreadable (")
-    assert message.endswith(") — re-run `alfred evals calibrate`")
+    assert message.endswith(") — re-run `alfred evals calibrate --model judge-m`")
     assert first_line in message and "\n" not in message
 
 
@@ -353,7 +365,7 @@ class FakeStack:
         return True
 
     async def restart(self) -> None:
-        raise AssertionError("a live stack is never restarted")
+        self.restarts += 1
 
     async def send(self, request: Any, timeout_s: float) -> Any:
         raise AssertionError("the goldens have no user step")
@@ -375,9 +387,9 @@ def _preflight_passes(monkeypatch: pytest.MonkeyPatch, order: list[str]) -> None
 
     real_read_calibration = orchestrate.read_calibration
 
-    def read_calibration(path: Path) -> CalibrationReport | None:
+    def read_calibration(path: Path, model: str) -> CalibrationReport | None:
         order.append(f"calibration {path.name}")
-        return real_read_calibration(path)
+        return real_read_calibration(path, model)
 
     def gateway() -> str:
         order.append("gateway")
@@ -391,11 +403,27 @@ def _preflight_passes(monkeypatch: pytest.MonkeyPatch, order: list[str]) -> None
     monkeypatch.setattr(orchestrate, "_build_image", lambda hs: order.append(f"build {hs.name}"))
 
 
+@pytest.mark.parametrize(
+    ("build", "built", "commit"),
+    [
+        (True, ["build home-service"], "abc1234+dirty"),
+        (False, [], "abc1234+dirty (image not rebuilt)"),
+    ],
+    ids=["build", "no-build"],
+)
 async def test_run_suites_preflights_before_the_build_and_reports_whatever_ran(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    build: bool,
+    built: list[str],
+    commit: str,
 ) -> None:
-    monkeypatch.setenv("INSPECT_DISPLAY", "none")  # restored after the test
-    _golden(tmp_path / "suites", "demo", "quiet")
+    # Inspect's display is process-global: unset it here, and restore it afterwards.
+    monkeypatch.setattr(inspect_display, "_display_type", None)
+    monkeypatch.setenv("INSPECT_DISPLAY", "none")
+    # Isolated, so its stack restarts before the sample: a restart, not a recovery.
+    _golden(tmp_path / "suites", "demo", "quiet", isolated=True)
     _golden(tmp_path / "suites", "zzz", "quiet")
     _suites_at(monkeypatch, tmp_path / "suites")
     calibration_file = tmp_path / "calibration.json"
@@ -422,8 +450,9 @@ async def test_run_suites_preflights_before_the_build_and_reports_whatever_ran(
     monkeypatch.setattr(orchestrate, "Stack", stack)
     monkeypatch.setattr(orchestrate, "log_problems", log_problems)
 
-    outcome = await run_suites(_options(tmp_path / "logs", epochs=1))
+    outcome = await run_suites(_options(tmp_path / "logs", build=build, display="plain"))
 
+    assert display_type() == "plain"
     assert order == [
         "models http://vllm.test/v1 judge-m",
         "models http://embed.test/v1 embed-m",
@@ -431,7 +460,7 @@ async def test_run_suites_preflights_before_the_build_and_reports_whatever_ran(
         "alfred commit",
         "calibration calibration.json",
         "gateway",
-        "build home-service",
+        *built,
     ]
     run_dir = outcome.run_dir
     assert run_dir.parent == tmp_path / "logs" and outcome.unstarted == ["zzz"]
@@ -439,7 +468,7 @@ async def test_run_suites_preflights_before_the_build_and_reports_whatever_ran(
     assert stacks[0].cfg.work_dir == run_dir / "data"
     card = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
     meta = card["meta"]
-    assert meta["alfred_commit"] == "abc1234+dirty" and meta["home_service_commit"] == "def5678"
+    assert meta["alfred_commit"] == commit and meta["home_service_commit"] == "def5678"
     # The saved calibration was measured on another model, so none of it applies.
     assert meta["calibration"] == {} and meta["trusted"] == []
     assert meta["problems"] == [
@@ -447,8 +476,9 @@ async def test_run_suites_preflights_before_the_build_and_reports_whatever_ran(
         "demo: a problem with the run",
     ]
     assert problems_asked == [1]
+    assert stacks[0].restarts == 1
     assert meta["stacks"] == [
-        {"suite": "demo", "boot_seconds": 2.0, "first_reply_ms": 300.0, "restarts": 0}
+        {"suite": "demo", "boot_seconds": 2.0, "first_reply_ms": 300.0, "recoveries": 0}
     ]
     assert [(g["scenario_id"], g["passes"], g["runs"]) for g in card["goldens"]] == [
         ("demo.demo.quiet", 1, 1)
@@ -491,3 +521,58 @@ async def test_a_failed_preflight_never_builds_or_writes_logs(
         await run_suites(_options(tmp_path / "logs"))
     assert not [step for step in order if step.startswith(("gateway", "build"))]
     assert not (tmp_path / "logs").exists()
+
+
+class FailingFakeHA(FakeHA):
+    async def start(self) -> None:
+        raise OSError(98, "Address already in use")
+
+
+class FailingProxy(LlmProxy):
+    async def start(self) -> None:
+        await super().start()  # gets as far as binding, then fails
+        raise OSError(98, "Address already in use")
+
+
+@pytest.mark.parametrize(
+    ("fake_ha_cls", "proxy_cls", "name"),
+    [(FailingFakeHA, LlmProxy, "fake HA"), (FakeHA, FailingProxy, "LLM proxy")],
+    ids=["fake-ha", "proxy"],
+)
+async def test_a_fake_that_cannot_start_is_a_stack_error_and_nothing_is_left_running(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_ha_cls: type[FakeHA],
+    proxy_cls: type[LlmProxy],
+    name: str,
+) -> None:
+    _golden(tmp_path / "suites", "demo", "quiet")
+    _suites_at(monkeypatch, tmp_path / "suites")
+    monkeypatch.setattr(orchestrate, "CALIBRATION_FILE", tmp_path / "calibration.json")
+    _preflight_passes(monkeypatch, [])
+    made: list[FakeHA | LlmProxy] = []
+
+    def recorded(cls: type[Any]) -> Any:
+        def make(*args: Any, **kwargs: Any) -> Any:
+            made.append(cls(*args, **kwargs))
+            return made[-1]
+
+        return make
+
+    monkeypatch.setattr(orchestrate, "FakeHA", recorded(fake_ha_cls))
+    monkeypatch.setattr(orchestrate, "LlmProxy", recorded(proxy_cls))
+    stacks: list[object] = []
+    monkeypatch.setattr(orchestrate, "Stack", lambda *a, **kw: stacks.append(a))
+
+    with pytest.raises(StackError) as err:
+        await run_suites(_options(tmp_path / "logs", display="none"))
+
+    assert str(err.value) == (
+        f"could not start the {name} on 127.0.0.1: [Errno 98] Address already in use"
+    )
+    assert stacks == []  # no suite ran
+    fake_ha, proxy = made
+    assert isinstance(fake_ha, FakeHA) and isinstance(proxy, LlmProxy)
+    # Whatever started was stopped.
+    assert fake_ha._server is None
+    assert proxy._runner is None and proxy._client is None

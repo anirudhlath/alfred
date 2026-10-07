@@ -29,6 +29,10 @@ if TYPE_CHECKING:
     from evals.harness.scenario import Scenario, ScenarioVariant
 
 
+# Dead-container restarts a suite gets before every later sample errors at once.
+RECOVERIES_PER_SUITE = 1
+
+
 @dataclass
 class RunContext:
     stack: Any  # evals.harness.stack.Stack; Any so tests can pass a fake
@@ -36,7 +40,12 @@ class RunContext:
     trusted: set[str]
     variants: dict[str, ScenarioVariant]
     play_ctx: PlayContext
-    restarts_left: int = 1
+    restarts_left: int = RECOVERIES_PER_SUITE
+
+    @property
+    def recoveries(self) -> int:
+        """Restarts of a dead container. An isolated golden's restart is not one."""
+        return RECOVERIES_PER_SUITE - self.restarts_left
 
 
 def to_sample(variant: ScenarioVariant) -> Sample:

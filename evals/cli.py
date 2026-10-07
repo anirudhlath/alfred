@@ -11,6 +11,8 @@ from typing import Annotated
 
 import typer
 
+from evals.harness.display import Display
+
 evals_app = typer.Typer(no_args_is_help=True, help="Evaluate Alfred against its PRD.")
 
 DEFAULT_MODEL = "gemma-4-26b-a4b"
@@ -25,6 +27,7 @@ DEFAULT_EMBED_MODEL = "BAAI/bge-m3"
 SuitesArg = Annotated[list[str] | None, typer.Argument(help="Suites (default: all)")]
 TagOpt = Annotated[list[str] | None, typer.Option("--tag", help="Only goldens with this tag")]
 PendingOpt = Annotated[bool, typer.Option("--include-pending", help="Also pending goldens")]
+DisplayOpt = Annotated[Display, typer.Option(help="Inspect's console display")]
 
 
 @evals_app.command()
@@ -70,7 +73,7 @@ def list_cmd(
     suites: SuitesArg = None, tag: TagOpt = None, include_pending: PendingOpt = False
 ) -> None:
     """List goldens: id, status, variants and PRD rows."""
-    from evals.harness.scenario import ScenarioError, UserStep, load_suites, select
+    from evals.harness.scenario import ScenarioError, expand_variants, load_suites, select
 
     try:
         loaded = load_suites(suites or None)
@@ -79,7 +82,7 @@ def list_cmd(
         raise typer.Exit(1) from exc
     for scenarios in loaded.values():
         for s in select(scenarios, tags=tag or [], include_pending=include_pending):
-            variants = 1 + sum(len(st.variants) for st in s.steps if isinstance(st, UserStep))
+            variants = len(expand_variants(s))
             line = f"{s.id:55} {s.status:8} ×{variants}  {', '.join(s.prd)}"  # noqa: RUF001
             typer.echo(line)
 
@@ -106,11 +109,14 @@ def run(
     allow_stale_home_service: Annotated[bool, typer.Option("--allow-stale-home-service")] = False,
     build: Annotated[bool, typer.Option("--build/--no-build", help="Build the image first")] = True,
     keep: Annotated[
-        bool, typer.Option("--keep", help="Leave containers and data for debugging")
+        bool,
+        typer.Option(
+            "--keep",
+            help="Leave the eval container and data dirs for debugging. Every suite's "
+            "container has the same name, so only the last suite's container survives",
+        ),
     ] = False,
-    display: Annotated[str, typer.Option(help="Inspect display: full | rich | plain | none")] = (
-        "full"
-    ),
+    display: DisplayOpt = "rich",
 ) -> None:
     """Boot throwaway stacks and score the goldens. Prints the scorecard."""
     import asyncio

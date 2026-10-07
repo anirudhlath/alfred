@@ -350,9 +350,9 @@ def _cell(text: str) -> str:
 
 
 def _short(commit: str) -> str:
-    """A short sha that keeps any ``+dirty`` mark after it."""
-    sha, plus, rest = commit.partition("+")
-    return f"{sha[:7]}{plus}{rest}"
+    """The sha cut to 7, keeping what follows it (``+dirty``, `` (image not rebuilt)``)."""
+    rest = commit.lstrip("0123456789abcdef")
+    return commit[: len(commit) - len(rest)][:7] + rest
 
 
 def _judge_trust(m: RunMeta) -> str:
@@ -380,7 +380,7 @@ def render_markdown(card: Scorecard) -> str:
         lines.append(
             f"- stack `{s.get('suite')}`: boot {s.get('boot_seconds', 0) or 0:.0f} s, "
             f"first reply {(s.get('first_reply_ms') or 0) / 1000:.1f} s, "
-            f"restarts {s.get('restarts', 0)}"
+            f"recoveries {s.get('recoveries', 0)}"
         )
     if m.problems:
         lines += ["", "## Run problems", ""] + [f"- {_flat(p)}" for p in m.problems]

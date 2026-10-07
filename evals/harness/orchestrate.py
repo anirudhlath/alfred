@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 from inspect_ai import eval_async
 
+from evals.harness.display import use_display
 from evals.harness.driver import PlayContext
 from evals.harness.fake_ha import FakeHA
 from evals.harness.judge import CALIBRATION_FILE, Judge, load_report, make_judge_model
@@ -44,12 +45,15 @@ if TYPE_CHECKING:
     from inspect_ai import Task
     from inspect_ai.log import EvalLog
 
+    from evals.harness.display import Display
     from evals.harness.judge import CalibrationReport
     from evals.harness.scenario import ScenarioVariant
 
 logger = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOG_ROOT = REPO_ROOT / "evals" / "logs"
+# With --no-build the scorecard cannot know what the image holds; it says so.
+NOT_REBUILT = " (image not rebuilt)"
 
 
 @dataclass(frozen=True)
@@ -67,7 +71,7 @@ class RunOptions:
     build: bool
     keep: bool
     log_root: Path
-    display: str
+    display: Display
 
 
 @dataclass(frozen=True)
@@ -118,7 +122,8 @@ async def execute(
                 why = " ".join(str(exc).split())
                 unstarted[suite] = f"suite {suite}: stack failed to start: {why}"
                 continue
-            task = build_task_fn(suite, variants, make_ctx(stack, variants), epochs)
+            ctx = make_ctx(stack, variants)
+            task = build_task_fn(suite, variants, ctx, epochs)
             # No max_connections, max_retries or timeout here: inside eval_async they
             # would override the judge model's own GenerateConfig.
             logs += await eval_fn(
@@ -134,7 +139,7 @@ async def execute(
                     "suite": suite,
                     "boot_seconds": stack.boot_seconds,
                     "first_reply_ms": stack.first_reply_ms,
-                    "restarts": stack.restarts,
+                    "recoveries": ctx.recoveries,
                 }
             )
         finally:
@@ -162,7 +167,7 @@ def calibration_for(
     return {c: r.agreement for c, r in report.categories.items()}, report.trusted()
 
 
-def read_calibration(path: Path) -> CalibrationReport | None:
+def read_calibration(path: Path, model: str) -> CalibrationReport | None:
     """The saved judge calibration, or None when there is none. Unreadable is a preflight
     error: running on would quietly score every judge check as untrusted."""
     try:
@@ -171,7 +176,8 @@ def read_calibration(path: Path) -> CalibrationReport | None:
         lines = str(exc).strip().splitlines()
         first = lines[0] if lines else type(exc).__name__
         raise PreflightError(
-            f"judge calibration at {path} is unreadable ({first}) — re-run `alfred evals calibrate`"
+            f"judge calibration at {path} is unreadable ({first}) — "
+            f"re-run `alfred evals calibrate --model {model}`"
         ) from exc
 
 
@@ -189,6 +195,14 @@ def _build_image(home_service: Path) -> None:
         raise StackError(f"cannot run {alfredctl} to build the image: {exc}") from exc
 
 
+async def _start_fake(name: str, start: Callable[[], Awaitable[None]], host: str) -> None:
+    try:
+        await start()
+    except OSError as exc:
+        why = " ".join(str(exc).split())
+        raise StackError(f"could not start the {name} on {host}: {why}") from exc
+
+
 async def run_suites(opts: RunOptions) -> RunOutcome:
     """Preflight, build, run every suite, then write and print the scorecard for
     whatever ran. Suites whose stack failed to start are named in the outcome."""
@@ -197,8 +211,9 @@ async def run_suites(opts: RunOptions) -> RunOutcome:
         await check_models(client, opts.vllm_url, opts.model)
         await check_models(client, f"{opts.embed_url}/v1", opts.embed_model)
     hs_commit = check_home_service(opts.home_service, allow_stale=opts.allow_stale_home_service)
-    commit = alfred_commit(REPO_ROOT)
-    calibration, trusted = calibration_for(read_calibration(CALIBRATION_FILE), opts.model)
+    commit = alfred_commit(REPO_ROOT) + ("" if opts.build else NOT_REBUILT)
+    report = read_calibration(CALIBRATION_FILE, opts.model)
+    calibration, trusted = calibration_for(report, opts.model)
     gateway = docker_bridge_gateway()
     if opts.build:
         _build_image(opts.home_service)
@@ -231,11 +246,10 @@ async def run_suites(opts: RunOptions) -> RunOutcome:
             play_ctx=play_ctx,
         )
 
-    # eval_async takes no display argument; Inspect reads this on first use.
-    os.environ["INSPECT_DISPLAY"] = opts.display
-    await fake_ha.start()
-    await proxy.start()
+    use_display(opts.display)
     try:
+        await _start_fake("fake HA", fake_ha.start, gateway)
+        await _start_fake("LLM proxy", proxy.start, gateway)
         logs, stacks, unstarted = await execute(
             plan,
             stack_factory=lambda: Stack(cfg, fake_ha=fake_ha, proxy=proxy),

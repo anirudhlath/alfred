@@ -133,7 +133,7 @@ def test_evals_run_exits_1_after_the_scorecard_when_a_suite_never_started(
     result = runner.invoke(app, ["evals", "run", "--no-build", "--home-service", str(tmp_path)])
 
     assert result.exit_code == exit_code, result.output
-    assert [(o.build, o.home_service) for o in seen] == [(False, tmp_path)]
+    assert [(o.build, o.home_service, o.display) for o in seen] == [(False, tmp_path, "rich")]
     assert result.stdout.startswith("# Alfred eval scorecard\n")
     assert f"logs and report: {tmp_path}" in result.stdout
     if unstarted:
@@ -171,3 +171,44 @@ def test_evals_list_shows_scenarios() -> None:
 def test_evals_run_rejects_an_unknown_suite() -> None:
     result = runner.invoke(app, ["evals", "run", "nope"])
     assert result.exit_code == 1 and "unknown suite" in result.output
+
+
+def test_evals_run_offers_only_displays_that_work_under_eval_async() -> None:
+    # Inspect's "full" (Textual) display crashes inside eval_async.
+    result = runner.invoke(app, ["evals", "run", "--display", "full"])
+    assert result.exit_code == 2
+    assert "'full' is not one of 'rich', 'plain', 'none'" in result.output
+
+
+def test_evals_list_shows_each_golden_with_its_variant_count(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import functools
+    import json
+
+    from evals.harness.scenario import load_suites
+
+    (tmp_path / "demo").mkdir()
+    golden = {
+        "id": "demo.lights.on",
+        "prd": ["4.4.lights-scenes", "1.butler"],
+        "status": "shipped",
+        "steps": [{"user": "Lights on.", "variants": ["Light, please.", "Lamp on."]}],
+        "expect": [{"ha_not_called": {}}],
+    }
+    (tmp_path / "demo" / "on.yaml").write_text(json.dumps(golden), encoding="utf-8")
+    monkeypatch.setattr(
+        "evals.harness.scenario.load_suites", functools.partial(load_suites, root=tmp_path)
+    )
+
+    result = runner.invoke(app, ["evals", "list"])
+
+    assert result.exit_code == 0, result.output
+    (line,) = result.output.splitlines()
+    assert line.split() == [
+        "demo.lights.on",
+        "shipped",
+        "\N{MULTIPLICATION SIGN}3",
+        "4.4.lights-scenes,",
+        "1.butler",
+    ]

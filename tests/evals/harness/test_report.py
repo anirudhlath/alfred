@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+import pytest
 from inspect_ai import Task, eval_async
 from inspect_ai.dataset import Sample
 from inspect_ai.scorer import CORRECT, INCORRECT, Score, Target, mean, scorer
@@ -200,11 +201,20 @@ def test_header_says_when_the_judge_has_no_calibration() -> None:
     assert "judge trusted" not in header
 
 
-def test_header_shortens_commits_but_keeps_the_dirty_mark() -> None:
+@pytest.mark.parametrize(
+    "suffix", ["", "+dirty", " (image not rebuilt)", "+dirty (image not rebuilt)"]
+)
+def test_header_shortens_commits_but_keeps_what_follows_the_sha(suffix: str) -> None:
     sha = "abc1234" + "0" * 33
-    meta = META.model_copy(update={"alfred_commit": f"{sha}+dirty", "home_service_commit": sha})
+    meta = META.model_copy(update={"alfred_commit": f"{sha}{suffix}", "home_service_commit": sha})
     header = render_markdown(summarize([], meta)).splitlines()[2]
-    assert "Alfred `abc1234+dirty`" in header and "home-service `abc1234`" in header
+    assert f"Alfred `abc1234{suffix}`" in header and "home-service `abc1234`" in header
+
+
+def test_stack_lines_count_recoveries() -> None:
+    stack = {"suite": "home", "boot_seconds": 61.0, "first_reply_ms": 2500.0, "recoveries": 1}
+    md = render_markdown(summarize([], META.model_copy(update={"stacks": [stack]})))
+    assert "- stack `home`: boot 61 s, first reply 2.5 s, recoveries 1" in md.splitlines()
 
 
 def test_run_problems_render_above_the_tables() -> None:
