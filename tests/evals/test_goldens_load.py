@@ -275,6 +275,27 @@ def _reply_checks_pass(s: Scenario, text: str) -> bool:
             True,
         ),
         ("home_control.live_state.which_lights_on", "Only the bedroom lamp, sir.", False),
+        # The kitchen has one light, so naming it generically is accurate.
+        (
+            "home_control.discovery.room_inventory",
+            "In the kitchen, sir, I can operate the lights and the coffee maker.",
+            True,
+        ),
+        (
+            "home_control.discovery.room_inventory",
+            "The kitchen pendant and the coffee maker, sir.",
+            True,
+        ),
+        (
+            "home_control.discovery.room_inventory",
+            "In the kitchen, sir, I can operate the coffee maker.",
+            False,
+        ),
+        (
+            "home_control.discovery.room_inventory",
+            "The kitchen spotlight and the coffee maker, sir.",
+            False,
+        ),
     ],
 )
 def test_reply_patterns_take_natural_phrasings_and_reject_near_misses(

@@ -26,6 +26,27 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+class _ProbeHangUps(logging.Filter):
+    """Drops websockets' "opening handshake failed" for a peer that hung up before sending
+    a whole request — the reachability probe's bare TCP connect at the start of every run —
+    and keeps every other handshake error: a peer that sent something wrong is logged."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.getMessage() != "opening handshake failed" or not record.exc_info:
+            return True
+        exc: BaseException | None = record.exc_info[1]
+        while exc is not None:
+            if isinstance(exc, EOFError):
+                return False
+            exc = exc.__cause__
+        return True
+
+
+# The fake HA's own websockets logger, so the filter touches no other server's records.
+_ws_logger = logging.getLogger(f"{__name__}.websockets")
+_ws_logger.addFilter(_ProbeHangUps())
+
 EVAL_HA_TOKEN = "alfred-eval-ha-token"
 _HA_VERSION = "2026.7.0"
 
@@ -155,7 +176,7 @@ class FakeHA:
         return f"http://{self.host}:{self._port}"
 
     async def start(self) -> None:
-        self._server = await serve(self._handler, self.host, self._port)
+        self._server = await serve(self._handler, self.host, self._port, logger=_ws_logger)
         self._port = self._server.sockets[0].getsockname()[1]
 
     async def stop(self) -> None:

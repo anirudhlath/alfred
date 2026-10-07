@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -467,22 +468,24 @@ class Stack:
             await self.docker.remove(self.name)
         except Exception as exc:
             self._log_left_behind("removing the container", exc, data_dir)
-        if data_dir is None:
-            return
-        try:
-            await self.docker.wipe_data(self.name, data_dir, self.image)
-        except Exception as exc:
-            self._log_left_behind("wiping its data dir", exc, data_dir)
-        shutil.rmtree(data_dir, ignore_errors=True)
-        self.data_dir = None
-        if data_dir.exists():
-            logger.error(
-                "%s: %s survived teardown (files the container wrote as root); "
-                "delete it by hand: sudo rm -rf %s",
-                self.name,
-                data_dir,
-                data_dir,
-            )
+        if data_dir is not None:
+            try:
+                await self.docker.wipe_data(self.name, data_dir, self.image)
+            except Exception as exc:
+                self._log_left_behind("wiping its data dir", exc, data_dir)
+            shutil.rmtree(data_dir, ignore_errors=True)
+            self.data_dir = None
+            if data_dir.exists():
+                logger.error(
+                    "%s: %s survived teardown (files the container wrote as root); "
+                    "delete it by hand: sudo rm -rf %s",
+                    self.name,
+                    data_dir,
+                    data_dir,
+                )
+        # The run dir's data/ once it is empty; a survivor above, or anything else, keeps it.
+        with suppress(OSError):
+            self.cfg.work_dir.rmdir()
 
     async def stop(self) -> None:
         await self._teardown(force=False)

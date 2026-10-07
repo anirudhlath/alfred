@@ -198,6 +198,38 @@ async def test_stop_wipes_data_and_removes_the_container_unless_keep(
     assert stack.data_dir is not None and stack.data_dir.exists()
 
 
+async def test_stop_removes_the_work_dir_once_nothing_is_left_in_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_publish(redis, request, session_id, timeout):  # type: ignore[no-untyped-def]
+        return AlfredResponse(
+            source="conscious-engine", channel="web_pwa", session_id=session_id, text="ready"
+        )
+
+    monkeypatch.setattr("evals.harness.stack.publish_and_wait", fake_publish)
+    monkeypatch.setattr("evals.harness.stack.create_redis", lambda url: _NullRedis())
+    work = tmp_path / "data"  # what a run passes: <run dir>/data
+    stack = make_stack(tmp_path, FakeDocker(), work_dir=work)
+    await stack.start()
+    assert work.is_dir()
+    await stack.stop()
+    assert not work.exists()  # no empty data/ left in the run dir
+
+    # Only an empty one goes: anything else in it keeps it.
+    stack = make_stack(tmp_path, FakeDocker(), work_dir=work)
+    await stack.start()
+    (work / "left-by-hand").write_text("x", encoding="utf-8")
+    await stack.stop()
+    assert (work / "left-by-hand").exists()
+
+    # --keep keeps it, with the data dir inside.
+    kept = make_stack(tmp_path, FakeDocker(), work_dir=tmp_path / "kept", keep=True)
+    await kept.start()
+    await kept.stop()
+    assert kept.data_dir is not None and kept.data_dir.parent == tmp_path / "kept"
+    assert kept.data_dir.exists()
+
+
 async def test_a_restart_keeps_the_suites_first_boot_and_reply_times(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -5,5 +5,5 @@ tags: [discovery]
 steps:
   - user: "What can you control in the kitchen?"
 expect:
-  - reply_contains: {regex: "pendant"}
+  - reply_contains: {regex: "\\b(?:pendant|light)s?\\b"}
   - reply_contains: {regex: "coffee"}

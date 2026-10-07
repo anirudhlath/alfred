@@ -329,7 +329,8 @@ uv run alfred evals run --include-pending --no-build --keep
    home-service. A failed build is a one-line error after the build output.
 5. **Probe** the fakes from a throwaway container of the eval image (see
    [Host firewall](#host-firewall)). A port the container cannot reach is a one-line error
-   naming it.
+   naming it. The probe only connects and hangs up, so the fake HA does not log that as a
+   failed websocket handshake; a client that sends a bad request still is logged.
 6. **Each suite, one at a time:** boot its stack, run its Inspect task one sample at a time
    (an errored sample is retried once), and tear the stack down. A suite whose stack fails
    to start is recorded under "Run problems" (the error's first line; the log has the rest,
@@ -364,7 +365,7 @@ logs and report: evals/logs/20261007T141500Z  (inspect view --log-dir evals/logs
 | `report.md` | The scorecard, as printed |
 | `report.json` | The same scorecard as data (`Scorecard` in `evals/harness/report.py`), stack numbers included |
 | Inspect logs | One per suite: every sample and epoch with its transcript, score and evidence |
-| `data/` | Each stack's data dir; removed at teardown unless `--keep` |
+| `data/` | Each stack's data dir; removed at teardown unless `--keep`, and `data/` itself once empty |
 
 ### The values
 

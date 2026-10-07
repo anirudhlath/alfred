@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import logging
 import time
 from logging import ERROR, WARNING
 from typing import TYPE_CHECKING, Any, cast
@@ -244,6 +246,41 @@ async def test_a_client_closing_is_quiet_but_a_frame_that_is_not_json_is_logged(
     await ha.stop()  # waits for every handler to return
     errors = [r for r in caplog.records if r.name == fake_ha.__name__ and r.levelno >= WARNING]
     assert len(errors) == 1 and errors[0].levelno == ERROR and errors[0].exc_info
+
+
+async def _raw_exchange(ha: FakeHA, data: bytes) -> None:
+    """Send *data* over a bare TCP connection, half-close it, and wait until the server
+    hangs up too."""
+    reader, writer = await asyncio.open_connection(ha.host, ha.port)
+    writer.write(data)
+    writer.write_eof()
+    with contextlib.suppress(ConnectionError):
+        await asyncio.wait_for(reader.read(), timeout=5)
+    writer.close()
+
+
+def _handshake_failures(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.getMessage() == "opening handshake failed"]
+
+
+async def test_a_bare_tcp_connect_like_the_probes_is_not_logged(
+    ha: FakeHA, caplog: pytest.LogCaptureFixture
+) -> None:
+    await _raw_exchange(ha, b"")
+    ws, reply = await handshake(ha)  # and the server still serves
+    assert reply["type"] == "auth_ok"
+    await ws.close()
+    await ha.stop()  # waits for every connection, the probe's handshake included
+    assert _handshake_failures(caplog) == []
+
+
+async def test_a_real_handshake_error_is_still_logged(
+    ha: FakeHA, caplog: pytest.LogCaptureFixture
+) -> None:
+    await _raw_exchange(ha, b"not an http request\r\n\r\n")
+    await ha.stop()
+    [failure] = _handshake_failures(caplog)
+    assert failure.levelno == ERROR and failure.exc_info
 
 
 @pytest.mark.parametrize(
