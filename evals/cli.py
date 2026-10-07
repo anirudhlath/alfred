@@ -19,4 +19,4 @@ def memory(ctx: typer.Context) -> None:
     """Memory-decay simulation — same arguments as `python -m evals memory`."""
     from evals.__main__ import main as memory_main
 
-    memory_main(["memory", *ctx.args])
+    memory_main(["memory", *ctx.args], prog="alfred evals")

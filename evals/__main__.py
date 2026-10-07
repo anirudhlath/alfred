@@ -14,9 +14,10 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(prog: str = "python -m evals") -> argparse.ArgumentParser:
+    """``prog`` is the command name the usage lines show (``alfred evals`` passes its own)."""
     parser = argparse.ArgumentParser(
-        prog="python -m evals",
+        prog=prog,
         description="Alfred's memory-decay eval. The PRD suites run with `alfred evals`.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -24,8 +25,8 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> None:
-    args = build_parser().parse_args(argv)
+def main(argv: Sequence[str] | None = None, prog: str = "python -m evals") -> None:
+    args = build_parser(prog).parse_args(argv)
     run_memory_command(args)
 
 
