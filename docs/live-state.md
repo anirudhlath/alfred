@@ -53,6 +53,24 @@ class LiveStateEntry(BaseModel):
     attributes: dict[str, Any] = {}
 ```
 
+## Well-known attributes
+
+`attributes` is where a service puts its own details, and the SDK never inspects it.
+Alfred does understand a few keys when a service provides them. All are optional: without
+them Alfred falls back to the entity ID.
+
+| Key | Meaning | Alfred uses it for |
+|---|---|---|
+| `friendly_name` | The display name | Every prompt line that names the entity |
+| `area` | Where the entity is, as a room or area name | Grouping Reflex's House section by room ([#285](https://github.com/anirudhlath/alfred/issues/285)); a room name is also a tool target wherever the service's tools accept one |
+| `unit_of_measurement` | The unit of `state` | Rendering numbers |
+| `device_class` | What kind of sensor or device it is | Attention seeding |
+
+**How to help Alfred understand your entities.** Set `friendly_name` to what a person
+would call the thing, and `area` to where it is, in the same words your tools accept as a
+target. Keep everything else in `attributes` few and small: the Conscious engine renders
+every attribute it is given.
+
 ## Writing — `LiveStateWriter(redis_url, service_name)`
 
 | Method | Redis | When a service calls it |
