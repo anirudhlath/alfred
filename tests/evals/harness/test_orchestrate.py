@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import errno
 import functools
 import json
@@ -11,7 +12,10 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from inspect_ai import Task, eval_async
+from inspect_ai.dataset import Sample
 from inspect_ai.model import get_model
+from inspect_ai.solver import solver
 from inspect_ai.util import _display as inspect_display
 from inspect_ai.util import display_type
 
@@ -19,6 +23,7 @@ from evals.harness import orchestrate
 from evals.harness.fake_ha import FakeHA
 from evals.harness.judge import CalibrationReport, CategoryResult
 from evals.harness.orchestrate import (
+    RunCancelled,
     RunOptions,
     _build_image,
     build_plan,
@@ -33,8 +38,11 @@ from evals.harness.scenario import Scenario, ScenarioError, expand_variants, loa
 from evals.harness.stack import StackError
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from inspect_ai.log import EvalLog
     from inspect_ai.model import Model
+    from inspect_ai.solver import Generate, Solver, TaskState
 
 
 class RecordingStack:
@@ -74,8 +82,14 @@ def plan(*suites: str) -> dict[str, list]:  # type: ignore[type-arg]
 NO_RECOVERIES = SimpleNamespace(recoveries=0)
 
 
+class FakeLog(str):
+    """A finished suite's log, as far as execute() looks: its status."""
+
+    status = "success"
+
+
 async def _eval_by_suite(task: str, **kwargs: Any) -> list[str]:
-    return [f"log {task}"]
+    return [FakeLog(f"log {task}")]
 
 
 @pytest.mark.parametrize(
@@ -114,9 +128,9 @@ async def test_execute_collects_logs_and_stack_meta(tmp_path: Path) -> None:
         assert kwargs["max_samples"] == 1 and kwargs["retry_on_error"] == 1
         # Inside eval_async these would override the judge model's own GenerateConfig.
         assert not {"max_connections", "max_retries", "timeout"} & set(kwargs)
-        return ["log"]
+        return [FakeLog("log")]
 
-    logs, meta, unstarted = await execute(
+    results = await execute(
         plan(),
         stack_factory=RecordingStack,
         make_ctx=lambda stack, variants: SimpleNamespace(recoveries=1),  # type: ignore[arg-type,return-value]
@@ -125,9 +139,10 @@ async def test_execute_collects_logs_and_stack_meta(tmp_path: Path) -> None:
         epochs=1,
         build_task_fn=lambda *a: "task",  # type: ignore[arg-type,return-value]
     )
-    assert logs == ["log"] and unstarted == {}
+    assert results.logs == ["log"] and results.unstarted == {}
+    assert results.interrupted is None and results.problems == []
     # Recoveries are dead-container restarts, counted by the suite's RunContext.
-    assert meta == [
+    assert results.stacks == [
         {"suite": "demo", "boot_seconds": 1.0, "first_reply_ms": 100.0, "recoveries": 1}
     ]
 
@@ -139,7 +154,7 @@ async def test_a_stack_that_fails_to_start_costs_only_its_own_suite(tmp_path: Pa
     ]
     made = iter(stacks)
 
-    logs, meta, unstarted = await execute(
+    results = await execute(
         plan("first", "second"),
         stack_factory=lambda: next(made),
         make_ctx=lambda stack, variants: NO_RECOVERIES,  # type: ignore[arg-type,return-value]
@@ -148,8 +163,8 @@ async def test_a_stack_that_fails_to_start_costs_only_its_own_suite(tmp_path: Pa
         epochs=1,
         build_task_fn=lambda suite, *a: suite,  # type: ignore[arg-type,return-value]
     )
-    assert logs == ["log first"] and [m["suite"] for m in meta] == ["first"]
-    assert unstarted == {
+    assert results.logs == ["log first"] and [m["suite"] for m in results.stacks] == ["first"]
+    assert results.unstarted == {
         "second": "suite second: stack failed to start: exited during boot --- docker logs --- boom"
     }
     assert [(s.started, s.stopped) for s in stacks] == [(1, 1), (1, 1)]
@@ -159,7 +174,7 @@ async def test_suites_after_a_failed_start_still_run(tmp_path: Path) -> None:
     stacks = [RecordingStack(StackError("no port")), RecordingStack()]
     made = iter(stacks)
 
-    logs, _, unstarted = await execute(
+    results = await execute(
         plan("first", "second"),
         stack_factory=lambda: next(made),
         make_ctx=lambda stack, variants: NO_RECOVERIES,  # type: ignore[arg-type,return-value]
@@ -168,8 +183,112 @@ async def test_suites_after_a_failed_start_still_run(tmp_path: Path) -> None:
         epochs=1,
         build_task_fn=lambda suite, *a: suite,  # type: ignore[arg-type,return-value]
     )
-    assert logs == ["log second"] and list(unstarted) == ["first"]
+    assert results.logs == ["log second"] and list(results.unstarted) == ["first"]
     assert [s.stopped for s in stacks] == [1, 1]
+
+
+def _sleeping_task(started: asyncio.Event) -> Callable[..., Task]:
+    """A real Inspect task whose solver signals *started*, then sleeps until cancelled."""
+
+    @solver
+    def sleepy() -> Solver:
+        async def solve(state: TaskState, generate: Generate) -> TaskState:
+            started.set()
+            await asyncio.sleep(60)
+            return state
+
+        return solve
+
+    def build(suite: str, variants: list[Any], ctx: Any, epochs: int) -> Task:
+        samples = [Sample(input="x", id=v.sample_id) for v in variants]
+        return Task(name=suite, dataset=samples, solver=sleepy())
+
+    return build
+
+
+async def test_ctrl_c_inside_inspect_stops_the_suite_loop_and_records_the_interruption(
+    tmp_path: Path,
+) -> None:
+    # Inspect's eval_async absorbs the cancellation a Ctrl-C delivers: it returns no log
+    # and leaves the task uncancelled. execute must still stop, not start the next suite.
+    started = asyncio.Event()
+    stacks = [RecordingStack(), RecordingStack()]
+    made = iter(stacks)
+    running = asyncio.create_task(
+        execute(
+            plan("first", "second"),
+            stack_factory=lambda: next(made),
+            make_ctx=lambda stack, variants: NO_RECOVERIES,  # type: ignore[arg-type,return-value]
+            eval_fn=eval_async,
+            log_dir=tmp_path,
+            epochs=1,
+            build_task_fn=_sleeping_task(started),
+        )
+    )
+    await started.wait()
+    running.cancel()
+    results = await running
+
+    assert results.interrupted == "first"
+    assert results.problems == ["suite first: interrupted"]
+    assert results.logs == [] and results.stacks == []
+    # The interrupted suite's stack was torn down; the second suite's never started.
+    assert [(s.started, s.stopped) for s in stacks] == [(1, 1), (0, 0)]
+
+
+async def test_ctrl_c_while_a_stack_boots_is_an_interruption_too(tmp_path: Path) -> None:
+    booting = asyncio.Event()
+
+    class SlowStack(RecordingStack):
+        async def start(self) -> None:
+            self.started += 1
+            booting.set()
+            await asyncio.sleep(60)
+
+    stacks = [SlowStack(), RecordingStack()]
+    made = iter(stacks)
+    running = asyncio.create_task(
+        execute(
+            plan("first", "second"),
+            stack_factory=lambda: next(made),
+            make_ctx=lambda stack, variants: NO_RECOVERIES,  # type: ignore[arg-type,return-value]
+            eval_fn=_eval_by_suite,
+            log_dir=tmp_path,
+            epochs=1,
+            build_task_fn=lambda suite, *a: suite,  # type: ignore[arg-type,return-value]
+        )
+    )
+    await booting.wait()
+    running.cancel()
+    results = await running
+
+    assert results.interrupted == "first" and results.problems == ["suite first: interrupted"]
+    assert [(s.started, s.stopped) for s in stacks] == [(1, 1), (0, 0)]
+    # The cancellation was handled here, so the task carries on normally afterwards.
+    assert not running.cancelled()
+
+
+@pytest.mark.parametrize(
+    "returned",
+    [[], [SimpleNamespace(status="cancelled")]],
+    ids=["no-log", "cancelled-log"],
+)
+async def test_a_suite_without_a_finished_log_was_interrupted(
+    tmp_path: Path, returned: list[Any]
+) -> None:
+    async def eval_fn(task: Any, **kwargs: Any) -> list[Any]:
+        return returned
+
+    results = await execute(
+        plan("first", "second"),
+        stack_factory=RecordingStack,
+        make_ctx=lambda stack, variants: NO_RECOVERIES,  # type: ignore[arg-type,return-value]
+        eval_fn=eval_fn,
+        log_dir=tmp_path,
+        epochs=1,
+        build_task_fn=lambda suite, *a: suite,  # type: ignore[arg-type,return-value]
+    )
+    assert results.interrupted == "first" and results.logs == []
 
 
 def _report(model: str) -> CalibrationReport:
@@ -496,6 +615,47 @@ async def test_run_suites_preflights_before_the_build_and_reports_whatever_ran(
     printed = capsys.readouterr().out
     assert "# Alfred eval scorecard" in printed
     assert "suite zzz: stack failed to start: no port" in printed
+
+
+async def test_an_interrupted_run_writes_the_scorecard_for_what_finished_then_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _golden(tmp_path / "suites", "demo", "quiet")
+    _golden(tmp_path / "suites", "zzz", "quiet")
+    _golden(tmp_path / "suites", "zzzz", "quiet")
+    _suites_at(monkeypatch, tmp_path / "suites")
+    monkeypatch.setattr(orchestrate, "CALIBRATION_FILE", tmp_path / "calibration.json")
+    _preflight_passes(monkeypatch, [])
+    monkeypatch.setattr(
+        orchestrate, "make_judge_model", lambda m, u: get_model("mockllm/model", memoize=False)
+    )
+    stacks: list[FakeStack] = []
+
+    def stack(cfg: Any, *, fake_ha: Any, proxy: Any) -> FakeStack:
+        stacks.append(FakeStack(cfg))
+        return stacks[-1]
+
+    monkeypatch.setattr(orchestrate, "Stack", stack)
+    real_eval = orchestrate.eval_async
+
+    async def ctrl_c_in_zzz(task: Task, **kwargs: Any) -> list[EvalLog]:
+        if task.name == "zzz":
+            return []  # what eval_async returns once a Ctrl-C has cancelled it
+        return await real_eval(task, **kwargs)
+
+    monkeypatch.setattr(orchestrate, "eval_async", ctrl_c_in_zzz)
+
+    with pytest.raises(RunCancelled) as err:
+        await run_suites(_options(tmp_path / "logs"))
+
+    run_dir = err.value.run_dir
+    card = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+    assert card["meta"]["problems"] == ["suite zzz: interrupted"]
+    assert [g["scenario_id"] for g in card["goldens"]] == ["demo.demo.quiet"]
+    assert [m["suite"] for m in card["meta"]["stacks"]] == ["demo"]
+    assert "- suite zzz: interrupted" in capsys.readouterr().out
+    # Both stacks that started were torn down; the suite after the interrupted one never ran.
+    assert [s.stopped for s in stacks] == [True, True]
 
 
 def _models_unreachable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

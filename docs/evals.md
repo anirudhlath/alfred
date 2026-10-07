@@ -323,6 +323,13 @@ After a run whose stacks all started the exit code is 0, whatever the scores. If
 stack failed to start, the scorecard is still written and the command exits 1, naming the
 failed suites.
 
+**Ctrl-C** stops the run and exits 130. Inside a suite, Inspect cancels the sample in
+progress, the suite's stack is torn down, and no later suite starts. The scorecard is still
+written and printed for the suites that finished, with the Run problems line
+`suite <name>: interrupted`; the interrupted suite's finished samples stay in its Inspect
+log, not on the scorecard. A Ctrl-C before the first suite starts (during preflight, the
+build or the probe) stops the fakes and exits 130 with nothing to report.
+
 ---
 
 ## Reading results
@@ -364,8 +371,9 @@ Sections, in order:
    reply` (the readiness request, the very first request after boot — the cold-start
    number for PRD 4.7's warmup row) and `recoveries` (dead-container restarts; there is one
    per suite, and once it is spent every later sample in the suite errors at once).
-3. **Run problems**, when there are any: suites whose stack never started, logs that failed
-   or were cancelled, and sample epochs missing from a log.
+3. **Run problems**, when there are any: suites whose stack never started, a suite a
+   Ctrl-C interrupted (`suite <name>: interrupted`), logs that failed, and sample epochs
+   missing from a log.
 4. **PRD rows.** One row per PRD id that shipped goldens cite: how many goldens, the mean of
    their pass rates, and how many of them passed every run (pass^k).
 5. **One table per suite** of shipped goldens:

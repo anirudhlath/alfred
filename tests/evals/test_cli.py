@@ -147,6 +147,41 @@ def test_evals_run_exits_1_after_the_scorecard_when_a_suite_never_started(
         assert result.stderr == ""
 
 
+def test_evals_run_exits_130_after_the_scorecard_when_interrupted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from evals.harness.orchestrate import RunCancelled, RunOptions
+
+    async def fake_run_suites(opts: RunOptions) -> None:
+        print("# Alfred eval scorecard")
+        raise RunCancelled(tmp_path)
+
+    monkeypatch.setattr("evals.harness.orchestrate.run_suites", fake_run_suites)
+
+    result = runner.invoke(app, ["evals", "run", "--no-build", "--home-service", str(tmp_path)])
+
+    assert result.exit_code == 130, result.output
+    assert result.stdout.startswith("# Alfred eval scorecard\n")
+    assert f"logs and report: {tmp_path}" in result.stdout
+    assert result.stderr.strip().splitlines() == [
+        "alfred evals: interrupted; the scorecard covers the suites that finished"
+    ]
+
+
+def test_evals_run_exits_130_when_interrupted_before_any_suite_finished(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async def fake_run_suites(opts: object) -> None:
+        raise KeyboardInterrupt  # asyncio.run's answer to a Ctrl-C outside a suite
+
+    monkeypatch.setattr("evals.harness.orchestrate.run_suites", fake_run_suites)
+
+    result = runner.invoke(app, ["evals", "run", "--no-build", "--home-service", str(tmp_path)])
+
+    assert result.exit_code == 130, result.output
+    assert result.stderr.strip().splitlines() == ["alfred evals: interrupted"]
+
+
 def test_evals_run_binds_the_fakes_on_fixed_ports_unless_told_otherwise(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

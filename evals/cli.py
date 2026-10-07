@@ -24,6 +24,8 @@ VllmUrlOpt = Annotated[str, typer.Option(help="vLLM base URL, with /v1")]
 
 DEFAULT_EMBED_URL = "http://localhost:8001"
 DEFAULT_EMBED_MODEL = "BAAI/bge-m3"
+# A Ctrl-C ends the run with the shell's code for SIGINT (128 + 2).
+INTERRUPTED_EXIT = 130
 
 SuitesArg = Annotated[list[str] | None, typer.Argument(help="Suites (default: all)")]
 TagOpt = Annotated[list[str] | None, typer.Option("--tag", help="Only goldens with this tag")]
@@ -134,7 +136,7 @@ def run(
     import os
 
     from alfredctl import staging
-    from evals.harness.orchestrate import LOG_ROOT, RunOptions, run_suites
+    from evals.harness.orchestrate import LOG_ROOT, RunCancelled, RunOptions, run_suites
     from evals.harness.preflight import PreflightError
     from evals.harness.scenario import ScenarioError
     from evals.harness.stack import StackError
@@ -165,8 +167,17 @@ def run(
     except (ScenarioError, PreflightError, StackError) as exc:
         typer.echo(f"alfred evals: {exc}", err=True)
         raise typer.Exit(1) from exc
+    except RunCancelled as exc:
+        _say_where(exc.run_dir)
+        typer.echo(
+            "alfred evals: interrupted; the scorecard covers the suites that finished", err=True
+        )
+        raise typer.Exit(INTERRUPTED_EXIT) from exc
+    except KeyboardInterrupt as exc:  # a Ctrl-C before any suite ran: nothing to report
+        typer.echo("alfred evals: interrupted", err=True)
+        raise typer.Exit(INTERRUPTED_EXIT) from exc
     run_dir = outcome.run_dir
-    typer.echo(f"logs and report: {run_dir}  (inspect view --log-dir {run_dir})")
+    _say_where(run_dir)
     if outcome.unstarted:
         typer.echo(
             f"alfred evals: the stack for {', '.join(outcome.unstarted)} failed to start; "
@@ -174,6 +185,10 @@ def run(
             err=True,
         )
         raise typer.Exit(1)
+
+
+def _say_where(run_dir: Path) -> None:
+    typer.echo(f"logs and report: {run_dir}  (inspect view --log-dir {run_dir})")
 
 
 @evals_app.command(

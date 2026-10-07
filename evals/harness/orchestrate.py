@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import errno
 import logging
 import os
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -83,6 +84,40 @@ class RunOutcome:
     unstarted: list[str]  # suites whose stack failed to start; the run exits 1
 
 
+class RunCancelled(RuntimeError):  # noqa: N818 — a cancellation, not an error
+    """A Ctrl-C stopped the run. Raised after the scorecard for what finished is written;
+    the CLI exits 130."""
+
+    def __init__(self, run_dir: Path) -> None:
+        super().__init__(f"interrupted; the scorecard covers the suites that finished: {run_dir}")
+        self.run_dir = run_dir
+
+
+@dataclass
+class SuiteResults:
+    """What ``execute`` ran: each finished suite's logs and stack numbers, and why the
+    others did not finish."""
+
+    logs: list[EvalLog] = field(default_factory=list)
+    stacks: list[dict[str, Any]] = field(default_factory=list)
+    unstarted: dict[str, str] = field(default_factory=dict)  # suite → its problem line
+    interrupted: str | None = None  # the suite a Ctrl-C stopped; no later suite ran
+
+    @property
+    def problems(self) -> list[str]:
+        lines = list(self.unstarted.values())
+        if self.interrupted is not None:
+            lines.append(f"suite {self.interrupted}: interrupted")
+        return lines
+
+
+def _finished(logs: Sequence[EvalLog]) -> bool:
+    """Whether Inspect ran the suite to the end. Inspect absorbs the cancellation a Ctrl-C
+    delivers: ``eval_async`` then returns no log, or a ``cancelled`` one, and returns
+    normally."""
+    return bool(logs) and not any(log.status == "cancelled" for log in logs)
+
+
 def build_plan(opts: RunOptions) -> dict[str, list[ScenarioVariant]]:
     plan: dict[str, list[ScenarioVariant]] = {}
     for suite, scenarios in load_suites(opts.suites or None).items():
@@ -109,12 +144,10 @@ async def execute(
     log_dir: Path,
     epochs: int,
     build_task_fn: Callable[[str, list[ScenarioVariant], RunContext, int], Task] = build_task,
-) -> tuple[list[EvalLog], list[dict[str, Any]], dict[str, str]]:
-    """Run each suite on its own stack: the logs, each stack's numbers, and a problem
-    line for each suite whose stack failed to start (the next suite still runs)."""
-    logs: list[EvalLog] = []
-    stacks: list[dict[str, Any]] = []
-    unstarted: dict[str, str] = {}
+) -> SuiteResults:
+    """Run each suite on its own stack. A suite whose stack fails to start gets a problem
+    line and the next suite still runs; a Ctrl-C stops the loop at the suite it hit."""
+    results = SuiteResults()
     for suite, variants in plan.items():
         stack = stack_factory()
         try:
@@ -123,13 +156,13 @@ async def execute(
             except StackError as exc:
                 logger.error("suite %s: stack failed to start: %s", suite, exc)
                 why = " ".join(str(exc).split())
-                unstarted[suite] = f"suite {suite}: stack failed to start: {why}"
+                results.unstarted[suite] = f"suite {suite}: stack failed to start: {why}"
                 continue
             ctx = make_ctx(stack, variants)
             task = build_task_fn(suite, variants, ctx, epochs)
             # No max_connections, max_retries or timeout here: inside eval_async they
             # would override the judge model's own GenerateConfig.
-            logs += await eval_fn(
+            logs = await eval_fn(
                 task,
                 model="mockllm/model",
                 log_dir=str(log_dir),
@@ -137,7 +170,11 @@ async def execute(
                 retry_on_error=1,
                 fail_on_error=False,
             )
-            stacks.append(
+            if not _finished(logs):
+                results.interrupted = suite
+                break
+            results.logs += logs
+            results.stacks.append(
                 {
                     "suite": suite,
                     "boot_seconds": stack.boot_seconds,
@@ -145,9 +182,16 @@ async def execute(
                     "recoveries": ctx.recoveries,
                 }
             )
+        except asyncio.CancelledError:
+            # A Ctrl-C outside Inspect (while the stack boots) is the same interruption as
+            # one Inspect absorbed: handled here, so the scorecard is still written.
+            if (current := asyncio.current_task()) is not None:
+                current.uncancel()
+            results.interrupted = suite
+            break
         finally:
             await stack.stop()
-    return logs, stacks, unstarted
+    return results
 
 
 def calibration_for(
@@ -273,7 +317,7 @@ async def run_suites(opts: RunOptions) -> RunOutcome:
         # minutes later, when the container cannot reach the fakes.
         await probe_host_ports({"fake HA": fake_ha.port, "LLM proxy": proxy.port}, gateway=gateway)
         run_dir.mkdir(parents=True, exist_ok=True)
-        logs, stacks, unstarted = await execute(
+        results = await execute(
             plan,
             stack_factory=lambda: Stack(cfg, fake_ha=fake_ha, proxy=proxy),
             make_ctx=make_ctx,
@@ -293,10 +337,12 @@ async def run_suites(opts: RunOptions) -> RunOutcome:
         epochs=opts.epochs,
         calibration=calibration,
         trusted=sorted(trusted),
-        stacks=stacks,
-        problems=[*unstarted.values(), *log_problems(logs, opts.epochs)],
+        stacks=results.stacks,
+        problems=[*results.problems, *log_problems(results.logs, opts.epochs)],
     )
-    card = summarize(runs_from_logs(logs), meta)
+    card = summarize(runs_from_logs(results.logs), meta)
     write_report(card, run_dir)
     print(render_markdown(card))
-    return RunOutcome(run_dir=run_dir, unstarted=list(unstarted))
+    if results.interrupted is not None:
+        raise RunCancelled(run_dir)
+    return RunOutcome(run_dir=run_dir, unstarted=list(results.unstarted))
