@@ -1,0 +1,79 @@
+# A fictional two-bedroom apartment. Every name here is invented.
+name: apartment
+areas:
+  - {area_id: living_room, name: Living Room}
+  - {area_id: bedroom, name: Bedroom}
+  - {area_id: kitchen, name: Kitchen}
+  - {area_id: entryway, name: Entryway}
+  - {area_id: garage, name: Garage}
+devices:
+  - {id: dev_living_tv, name: Living Room TV, area_id: living_room}
+  - {id: dev_front_lock, name: Front Door Lock, area_id: entryway}
+  - {id: dev_garage_opener, name: Garage Door Opener, area_id: garage}
+entities:
+  - {entity_id: light.living_room_lamp, name: Living Room Lamp, area_id: living_room, state: "on", attributes: {brightness: 180}}
+  - {entity_id: light.living_room_ceiling, name: Living Room Ceiling, area_id: living_room, state: "off"}
+  - {entity_id: light.bedroom_lamp, name: Bedroom Lamp, area_id: bedroom, state: "off"}
+  - {entity_id: light.kitchen_pendants, name: Kitchen Pendants, area_id: kitchen, state: "on", attributes: {brightness: 255}}
+  - {entity_id: switch.coffee_maker, name: Coffee Maker, area_id: kitchen, state: "off"}
+  - {entity_id: media_player.living_room_tv, name: Living Room TV, area_id: living_room, device_id: dev_living_tv, state: "off", attributes: {volume_level: 0.35}}
+  - {entity_id: scene.movie_night, name: Movie Night, area_id: living_room, state: "2026-01-01T00:00:00+00:00"}
+  - {entity_id: scene.good_night, name: Good Night, state: "2026-01-01T00:00:00+00:00"}
+  - {entity_id: lock.front_door, name: Front Door Lock, area_id: entryway, device_id: dev_front_lock, state: locked}
+  - {entity_id: cover.garage_door, name: Garage Door, area_id: garage, device_id: dev_garage_opener, state: closed, attributes: {device_class: garage}}
+  - {entity_id: alarm_control_panel.home_alarm, name: Home Alarm, area_id: entryway, state: disarmed}
+  - {entity_id: binary_sensor.front_door, name: Front Door, area_id: entryway, state: "off", attributes: {device_class: door}}
+  - {entity_id: binary_sensor.living_room_motion, name: Living Room Motion, area_id: living_room, state: "off", attributes: {device_class: motion}}
+  - {entity_id: sensor.living_room_temperature, name: Living Room Temperature, area_id: living_room, state: "21.5", attributes: {device_class: temperature, unit_of_measurement: "°C"}}
+  - {entity_id: light.hallway_old, name: Old Hallway Light, area_id: entryway, state: "off", disabled: true}
+services:
+  light:
+    turn_on:
+      name: Turn on
+      description: Turn on one or more lights.
+      fields:
+        brightness_pct: {name: Brightness, description: Brightness percentage., example: 50, selector: {number: {min: 0, max: 100}}}
+      target: {entity: [{}]}
+    turn_off: {name: Turn off, description: Turn off one or more lights., fields: {}, target: {entity: [{}]}}
+    toggle: {name: Toggle, description: Toggle one or more lights., fields: {}, target: {entity: [{}]}}
+  switch:
+    turn_on: {name: Turn on, description: Turn a switch on., fields: {}, target: {entity: [{}]}}
+    turn_off: {name: Turn off, description: Turn a switch off., fields: {}, target: {entity: [{}]}}
+  media_player:
+    turn_on: {name: Turn on, description: Turn on a media player., fields: {}, target: {entity: [{}]}}
+    turn_off: {name: Turn off, description: Turn off a media player., fields: {}, target: {entity: [{}]}}
+    media_play: {name: Play, description: Start playing., fields: {}, target: {entity: [{}]}}
+    media_pause: {name: Pause, description: Pause playback., fields: {}, target: {entity: [{}]}}
+    volume_set:
+      name: Set volume
+      description: Set a media player's volume.
+      fields:
+        volume_level: {name: Level, description: Volume from 0 to 1., example: 0.4, selector: {number: {min: 0, max: 1, step: 0.01}}}
+      target: {entity: [{}]}
+  scene:
+    turn_on: {name: Activate, description: Activate a scene., fields: {}, target: {entity: [{}]}}
+  lock:
+    lock:
+      name: Lock
+      description: Lock a lock.
+      fields: {code: {name: Code, description: Lock code., selector: {text: {}}}}
+      target: {entity: [{}]}
+    unlock:
+      name: Unlock
+      description: Unlock a lock.
+      fields: {code: {name: Code, description: Lock code., selector: {text: {}}}}
+      target: {entity: [{}]}
+  cover:
+    open_cover: {name: Open, description: Open a cover., fields: {}, target: {entity: [{}]}}
+    close_cover: {name: Close, description: Close a cover., fields: {}, target: {entity: [{}]}}
+  alarm_control_panel:
+    alarm_arm_away:
+      name: Arm away
+      description: Arm the alarm in away mode.
+      fields: {code: {name: Code, description: Alarm code., selector: {text: {}}}}
+      target: {entity: [{}]}
+    alarm_disarm:
+      name: Disarm
+      description: Disarm the alarm.
+      fields: {code: {name: Code, description: Alarm code., selector: {text: {}}}}
+      target: {entity: [{}]}
