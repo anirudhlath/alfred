@@ -86,7 +86,7 @@ def ha_state(evidence: Evidence, p: HaStateParams) -> CheckResult:
     state = evidence.ha_states.get(p.entity_id)
     if state is None:
         return failed("ha_state", f"{p.entity_id} is not in the fake HA")
-    if p.state is not None and state.state != p.state:
+    if p.state is not None and not value_matches(p.state, state.state):
         return failed("ha_state", f"{p.entity_id} is {state.state!r}, wanted {p.state!r}")
     for key, want in p.attributes.items():
         have = state.attributes.get(key)

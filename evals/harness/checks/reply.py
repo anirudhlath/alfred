@@ -5,12 +5,15 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from evals.harness.checks.result import CheckResult, failed, passed
 
 if TYPE_CHECKING:
     from evals.harness.evidence import Evidence, Reply
+
+# How much of each reply a failure reason quotes.
+_QUOTE_CHARS = 120
 
 
 class ReplyTextParams(BaseModel):
@@ -20,10 +23,22 @@ class ReplyTextParams(BaseModel):
     regex: str | None = None
     step: int | Literal["any"] = -1
 
+    @field_validator("regex")
+    @classmethod
+    def _regex_compiles(cls, value: str | None) -> str | None:
+        if value is not None:
+            try:
+                re.compile(value)
+            except re.error as exc:
+                raise ValueError(f"regex {value!r} does not compile: {exc}") from exc
+        return value
+
     @model_validator(mode="after")
     def _exactly_one_needle(self) -> Self:
         if sum(x is not None for x in (self.text, self.any_of, self.regex)) != 1:
             raise ValueError("give exactly one of text, any, regex")
+        if self.any_of == [] or "" in (self.text, self.regex, *(self.any_of or [])):
+            raise ValueError("needles must be non-empty: an empty one matches every reply")
         return self
 
 
@@ -48,7 +63,15 @@ def _hit(p: ReplyTextParams, text: str) -> str | None:
 
 
 def _needle(p: ReplyTextParams) -> str:
-    return p.text or (" | ".join(p.any_of) if p.any_of else f"/{p.regex}/")
+    if p.text is not None:
+        return p.text
+    if p.any_of is not None:
+        return " | ".join(p.any_of)
+    return f"/{p.regex}/"
+
+
+def _quote(text: str) -> str:
+    return repr(text[:_QUOTE_CHARS])
 
 
 def reply_contains(evidence: Evidence, p: ReplyTextParams) -> CheckResult:
@@ -58,11 +81,15 @@ def reply_contains(evidence: Evidence, p: ReplyTextParams) -> CheckResult:
     for r in replies:
         if (hit := _hit(p, r.text)) is not None:
             return passed("reply_contains", f"found {hit!r}")
-    return failed("reply_contains", f"{_needle(p)} not in {replies[-1].text[:200]!r}")
+    seen = "; ".join(_quote(r.text) for r in replies)
+    return failed("reply_contains", f"{_needle(p)} not in {seen}")
 
 
 def reply_not_contains(evidence: Evidence, p: ReplyTextParams) -> CheckResult:
-    for r in _replies(evidence, p.step):
+    replies = _replies(evidence, p.step)
+    if not replies:
+        return failed("reply_not_contains", f"no reply at step {p.step}")
+    for r in replies:
         if (hit := _hit(p, r.text)) is not None:
-            return failed("reply_not_contains", f"reply contains {hit!r}: {r.text[:200]!r}")
+            return failed("reply_not_contains", f"reply contains {hit!r}: {_quote(r.text)}")
     return passed("reply_not_contains", f"{_needle(p)} absent")

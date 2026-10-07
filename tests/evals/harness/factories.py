@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from evals.harness.evidence import Evidence, HaCall, HaState, LlmCall, Reply, ToolCall
+
+if TYPE_CHECKING:
+    from evals.harness.evidence import Role
 
 
 def evidence(
@@ -40,10 +43,10 @@ def call(
     return HaCall(t=t, domain=domain, service=service, service_data=data or {}, entity_ids=ids)
 
 
-def llm(role: str, *calls: tuple[str, dict[str, Any]]) -> LlmCall:
+def llm(role: Role, *calls: tuple[str, dict[str, Any]]) -> LlmCall:
     return LlmCall(
         t=1.0,
-        role=role,  # type: ignore[arg-type]
+        role=role,
         latency_ms=10.0,
         status=200,
         tool_calls=[ToolCall(name=n, arguments=a) for n, a in calls],
