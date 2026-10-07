@@ -87,7 +87,8 @@ def fake_stack():  # type: ignore[no-untyped-def]
     async def solve(state: TaskState, generate: Generate) -> TaskState:
         if state.sample_id == "home.bad":
             raise RuntimeError("stack fell over")
-        state.store.set("evidence", EV.model_dump(mode="json"))
+        bogus = state.sample_id == "home.bad-evidence"
+        state.store.set("evidence", {"bogus": 1} if bogus else EV.model_dump(mode="json"))
         return state
 
     return solve
@@ -98,6 +99,8 @@ def fake_scorer():  # type: ignore[no-untyped-def]
     async def score(state: TaskState, target: Target) -> Score:
         if state.sample_id == "home.partial":
             return Score(value="P")
+        if state.sample_id == "home.bad-checks":
+            return Score(value=CORRECT, metadata={"checks": [{"name": "judge"}]})
         ok = state.epoch == 1
         checks = [
             CheckResult(name="judge", status="pass" if ok else "fail", reason="r").model_dump()
@@ -248,3 +251,43 @@ async def test_log_problems_names_failed_logs_and_missing_samples(tmp_path: Path
     unknown = log.eval.dataset.model_copy(update={"sample_ids": None})
     blind = trimmed.model_copy(update={"eval": log.eval.model_copy(update={"dataset": unknown})})
     assert log_problems([blind], epochs=1) == [line]
+
+    header_only = log.model_copy(update={"samples": None})
+    assert log_problems([header_only], epochs=1) == [
+        line,
+        f"{log.eval.task}: samples not loaded — cannot check for missing runs",
+    ]
+
+
+async def test_malformed_run_data_never_loses_the_report(tmp_path: Path) -> None:
+    samples = [
+        sample("home.a"),
+        sample("home.bad-checks"),
+        sample("home.bad-evidence"),
+        sample("home.bad-variant", variant="two"),
+        sample("home.bad-prd", prd=[1, 2]),
+    ]
+    runs = {r.sample_id: r for r in runs_from_logs([await run_eval(tmp_path, samples, 1)])}
+    assert (runs["home.a"].value, runs["home.a"].error) == ("C", None)
+
+    checks = runs["home.bad-checks"]
+    assert (checks.value, checks.checks) == ("C", [])
+    assert checks.error == "unreadable checks: 2 validation errors for CheckResult"
+
+    ev = runs["home.bad-evidence"]
+    assert ev.value == "E" and ev.reply_ms == []
+    assert (ev.error or "").startswith("unreadable evidence: ")
+
+    variant = runs["home.bad-variant"]
+    assert variant.value == "E"
+    assert variant.error == "unreadable sample: invalid literal for int() with base 10: 'two'"
+
+    prd = runs["home.bad-prd"]
+    assert (prd.value, prd.prd, prd.status) == ("E", [], "shipped")
+    assert (prd.error or "").startswith("unreadable sample: ")
+
+    card = summarize(list(runs.values()), META)
+    golden = next(g for g in card.goldens if g.scenario_id == "home.bad-checks")
+    assert golden.pass_k
+    assert golden.failing == ["error: unreadable checks: 2 validation errors for CheckResult"]
+    assert "unreadable checks" in render_markdown(card)

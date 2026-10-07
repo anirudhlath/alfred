@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
 
-    from inspect_ai.log import EvalLog
+    from inspect_ai.log import EvalLog, EvalSample
 
 SCORER_NAME = "scenario_scorer"
 Value = Literal["C", "I", "N", "E"]
@@ -123,10 +123,13 @@ def log_problems(logs: Sequence[EvalLog], epochs: int) -> list[str]:
         if log.status != "success":
             message = _flat(log.error.message) if log.error is not None else "no error recorded"
             problems.append(f"{task}: {log.status} — {message}")
+        if log.samples is None:
+            problems.append(f"{task}: samples not loaded — cannot check for missing runs")
+            continue
         sample_ids = log.eval.dataset.sample_ids
         if sample_ids is None:
             continue
-        recorded = {(str(s.id), s.epoch) for s in log.samples or []}
+        recorded = {(str(s.id), s.epoch) for s in log.samples}
         problems += [
             f"{task}: sample {sid} epoch {epoch} is missing from the log"
             for sid in sample_ids
@@ -137,58 +140,97 @@ def log_problems(logs: Sequence[EvalLog], epochs: int) -> list[str]:
 
 
 def runs_from_logs(logs: Sequence[EvalLog]) -> list[SampleRun]:
+    """One run per sample epoch. A sample whose data cannot be read becomes an E run."""
     runs: list[SampleRun] = []
     for log in logs:
         for sample in log.samples or []:
-            md = sample.metadata or {}
-            score = (sample.scores or {}).get(SCORER_NAME)
-            raw = (sample.store or {}).get("evidence")
-            evidence = Evidence.model_validate(raw) if raw else None
-            value: Value = "E"
-            error: str | None = None
-            checks: list[CheckResult] = []
-            if sample.error is not None or score is None:
-                error = sample.error.message if sample.error is not None else "not scored"
-            elif (score_value := str(score.value)) not in get_args(Value):
-                error = f"unexpected score value {score_value}"
-            else:
-                value = cast("Value", score_value)
-                checks = [
-                    CheckResult.model_validate(c) for c in (score.metadata or {}).get("checks", [])
-                ]
-            status = md.get("status", "shipped")
-            if status not in get_args(Status):
-                # Counted as shipped so the run still shows up; the error says why it failed.
-                unknown = f"unknown status {status}"
-                value, status = "E", "shipped"
-                error = f"{error}; {unknown}" if error else unknown
-            runs.append(
-                SampleRun(
-                    sample_id=str(sample.id),
-                    scenario_id=str(md.get("scenario_id", sample.id)),
-                    variant=int(md.get("variant", 0)),
-                    epoch=sample.epoch,
-                    suite=str(md.get("suite", "")),
-                    status=status,
-                    prd=list(md.get("prd", [])),
-                    value=value,
-                    checks=checks,
-                    error=error,
-                    reply_ms=[r.latency_ms for r in evidence.replies] if evidence else [],
-                    llm=[
-                        LlmUsage(
-                            role=c.role,
-                            latency_ms=c.latency_ms,
-                            prompt_tokens=c.prompt_tokens,
-                            completion_tokens=c.completion_tokens,
-                        )
-                        for c in evidence.llm_calls
-                    ]
-                    if evidence
-                    else [],
-                )
-            )
+            try:
+                runs.append(_sample_run(sample))
+            except (TypeError, ValueError) as exc:  # ValueError covers ValidationError
+                runs.append(_unreadable_run(sample, f"unreadable sample: {_first_line(exc)}"))
     return runs
+
+
+def _first_line(exc: Exception) -> str:
+    lines = str(exc).strip().splitlines()
+    return _flat(lines[0]) if lines else type(exc).__name__
+
+
+def _also(error: str | None, problem: str) -> str:
+    return f"{error}; {problem}" if error else problem
+
+
+def _sample_run(sample: EvalSample) -> SampleRun:
+    md = sample.metadata or {}
+    score = (sample.scores or {}).get(SCORER_NAME)
+    value: Value = "E"
+    error: str | None = None
+    checks: list[CheckResult] = []
+    if sample.error is not None or score is None:
+        error = sample.error.message if sample.error is not None else "not scored"
+    elif (score_value := str(score.value)) not in get_args(Value):
+        error = f"unexpected score value {score_value}"
+    else:
+        value = cast("Value", score_value)
+        try:
+            checks = [
+                CheckResult.model_validate(c) for c in (score.metadata or {}).get("checks", [])
+            ]
+        except (TypeError, ValueError) as exc:
+            # The score itself stands; only its explanation is lost.
+            error = f"unreadable checks: {_first_line(exc)}"
+    status = md.get("status", "shipped")
+    if status not in get_args(Status):
+        # Counted as shipped so the run still shows up; the error says why it failed.
+        value, error = "E", _also(error, f"unknown status {status}")
+        status = "shipped"
+    evidence: Evidence | None = None
+    if raw := (sample.store or {}).get("evidence"):
+        try:
+            evidence = Evidence.model_validate(raw)
+        except ValueError as exc:
+            value, error = "E", _also(error, f"unreadable evidence: {_first_line(exc)}")
+    return SampleRun(
+        sample_id=str(sample.id),
+        scenario_id=str(md.get("scenario_id", sample.id)),
+        variant=int(md.get("variant", 0)),
+        epoch=sample.epoch,
+        suite=str(md.get("suite", "")),
+        status=status,
+        prd=list(md.get("prd", [])),
+        value=value,
+        checks=checks,
+        error=error,
+        reply_ms=[r.latency_ms for r in evidence.replies] if evidence else [],
+        llm=[
+            LlmUsage(
+                role=c.role,
+                latency_ms=c.latency_ms,
+                prompt_tokens=c.prompt_tokens,
+                completion_tokens=c.completion_tokens,
+            )
+            for c in evidence.llm_calls
+        ]
+        if evidence
+        else [],
+    )
+
+
+def _unreadable_run(sample: EvalSample, problem: str) -> SampleRun:
+    """An E run built only from what cannot fail, so one bad sample never loses the report."""
+    md = sample.metadata or {}
+    variant, status, prd = md.get("variant"), md.get("status"), md.get("prd")
+    return SampleRun(
+        sample_id=str(sample.id),
+        scenario_id=str(md.get("scenario_id", sample.id)),
+        variant=variant if isinstance(variant, int) else 0,
+        epoch=sample.epoch,
+        suite=str(md.get("suite", "")),
+        status=status if status in get_args(Status) else "shipped",
+        prd=[p for p in prd if isinstance(p, str)] if isinstance(prd, list) else [],
+        value="E",
+        error=_also(sample.error.message if sample.error is not None else None, problem),
+    )
 
 
 def _golden(runs: list[SampleRun]) -> GoldenSummary:
@@ -215,7 +257,7 @@ def _golden(runs: list[SampleRun]) -> GoldenSummary:
 
 
 def _failing(runs: list[SampleRun], limit: int = 3) -> list[str]:
-    """Why a golden fell short: check failures, then harness errors, then judge errors.
+    """Why a golden fell short: check failures, harness errors, judge errors, then notes.
 
     A harness error always keeps a place: when failures fill every slot, the first error
     takes the last one.
@@ -231,7 +273,9 @@ def _failing(runs: list[SampleRun], limit: int = 3) -> list[str]:
         ]
 
     errors = [f"error: {r.error}" for r in runs if r.value == "E" and r.error]
-    failing = list(dict.fromkeys([*counted("I", "fail"), *errors, *counted("N", "error")]))
+    # A run that kept its score can still carry a note (e.g. unreadable checks); last place.
+    notes = [f"error: {r.error}" for r in runs if r.value != "E" and r.error]
+    failing = list(dict.fromkeys([*counted("I", "fail"), *errors, *counted("N", "error"), *notes]))
     failing = failing[:limit]
     if errors and not set(errors) & set(failing):
         failing[-1] = errors[0]
