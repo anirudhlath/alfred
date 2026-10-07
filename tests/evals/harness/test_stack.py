@@ -188,6 +188,30 @@ async def test_a_restart_keeps_the_suites_first_reply_time(
     await stack.stop()
 
 
+async def test_a_restart_keeps_the_suites_first_boot_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Same rule as first_reply_ms: the stack line reports the suite's first boot.
+    delays = iter([0.0, 0.05])
+
+    async def fake_publish(redis, request, session_id, timeout):  # type: ignore[no-untyped-def]
+        await asyncio.sleep(next(delays))
+        return AlfredResponse(
+            source="conscious-engine", channel="web_pwa", session_id=session_id, text="ready"
+        )
+
+    monkeypatch.setattr("evals.harness.stack.publish_and_wait", fake_publish)
+    monkeypatch.setattr("evals.harness.stack.create_redis", lambda url: _NullRedis())
+    stack = make_stack(tmp_path, FakeDocker())
+    await stack.start()
+    first = stack.boot_seconds
+    assert first is not None and first < 0.05
+    await stack.restart()
+    assert next(delays, None) is None  # the restart really did boot again
+    assert stack.boot_seconds == first
+    await stack.stop()
+
+
 class _NullRedis:
     async def aclose(self) -> None:
         return None

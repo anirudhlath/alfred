@@ -209,9 +209,10 @@ class Stack:
         self.web_port: int | None = None
         self.redis_port: int | None = None
         self.data_dir: Path | None = None
+        # The suite's first boot and its first request after boot: set by the first readiness
+        # only. A restart (an isolated golden) keeps both, so the stack line means what the
+        # warm-up golden says.
         self.boot_seconds: float | None = None
-        # The suite's first request after boot: set by the first readiness only. A restart
-        # (an isolated golden) keeps it, so the stack line means what the warm-up golden says.
         self.first_reply_ms: float | None = None
 
     def up_command(self, data_dir: Path) -> list[str]:
@@ -287,12 +288,12 @@ class Stack:
                 raise await self._fail("exited before System 2 answered")
             if time.monotonic() > deadline:
                 raise await self._fail("System 2 never answered the readiness request")
-        self.boot_seconds = time.monotonic() - t0
+        boot_seconds = time.monotonic() - t0
+        if self.boot_seconds is None:
+            self.boot_seconds = boot_seconds
         if self.first_reply_ms is None:
             self.first_reply_ms = reply_ms
-        logger.info(
-            "%s ready in %.0fs (first reply %.0f ms)", self.name, self.boot_seconds, reply_ms
-        )
+        logger.info("%s ready in %.0fs (first reply %.0f ms)", self.name, boot_seconds, reply_ms)
 
     async def alive(self) -> bool:
         """Raises StackError when docker itself cannot say."""
