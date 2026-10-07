@@ -18,6 +18,10 @@ from shared.config import AlfredConfig
 # Long-lived client reuses TCP connections across inference calls (hot path)
 _http_client: httpx.AsyncClient | None = None
 
+# Reflex replies are a short JSON object: ~7 tokens for "none", ~40 with a reason.
+# The cap bounds the worst case at ~0.9 s of decode time (#285).
+MAX_OUTPUT_TOKENS = 150
+
 
 def _get_client() -> httpx.AsyncClient:
     """Get or create the shared httpx client."""
@@ -66,6 +70,7 @@ async def infer(prompt: str, model: str | None = None) -> dict[str, object]:
             "model": model,
             "messages": messages,
             "temperature": 0.0,
+            "max_tokens": MAX_OUTPUT_TOKENS,
             "response_format": {"type": "json_object"},
         },
     )
