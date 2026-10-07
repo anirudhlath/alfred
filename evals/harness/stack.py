@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import shutil
 import subprocess
 import sys
@@ -16,12 +17,14 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import httpx
+from redis.exceptions import RedisError
 
 from alfredctl.runtime import eval_container_name, image_tag
 from bus.schemas.events import AlfredResponse, UserRequest
 from core.channels.request_bus import publish_and_wait
 from evals.harness.fake_ha import EVAL_HA_TOKEN, FakeHA
 from evals.harness.net import container_reachable, in_container_url
+from evals.harness.preflight import describe_failure
 from shared.redis_streams import create_redis
 
 if TYPE_CHECKING:
@@ -78,11 +81,7 @@ def container_env(cfg: StackConfig, *, proxy_port: int, fake_ha_port: int) -> di
     return env
 
 
-def _cannot_run(shown: str, exc: subprocess.TimeoutExpired | OSError) -> str:
-    """Why *shown* never finished: it ran out of time, or never started (no executable)."""
-    if isinstance(exc, subprocess.TimeoutExpired):
-        return f"{shown} timed out after {exc.timeout:.0f}s"
-    return f"{shown} could not run: {exc}"
+_NO_SUCH_CONTAINER = re.compile(r"no such (container|object)", re.IGNORECASE)
 
 
 async def run_cmd(
@@ -97,10 +96,8 @@ async def run_cmd(
     shown = f"{' '.join(cmd[:3])} …"
     try:
         return await asyncio.to_thread(_run)
-    except subprocess.CalledProcessError as exc:
-        raise StackError(f"{shown} failed:\n{exc.stderr or exc.stdout}") from exc
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        raise StackError(_cannot_run(shown, exc)) from exc
+    except (subprocess.SubprocessError, OSError) as exc:
+        raise StackError(describe_failure(shown, exc)) from exc
 
 
 class Docker:
@@ -118,10 +115,17 @@ class Docker:
             raise StackError(f"{' '.join(cmd)} printed no host port: {out!r}") from None
 
     async def running(self, name: str) -> bool:
+        """False when the container has stopped or docker says it does not exist. Any other
+        docker failure raises: a hung daemon is not an exited container."""
         try:
             out = await run_cmd(["docker", "inspect", "-f", "{{.State.Running}}", name], timeout=30)
-        except StackError:
-            return False
+        except StackError as exc:
+            cause = exc.__cause__
+            if isinstance(cause, subprocess.CalledProcessError) and _NO_SUCH_CONTAINER.search(
+                cause.stderr or ""
+            ):
+                return False
+            raise
         return out.strip() == "true"
 
     async def logs_tail(self, name: str, lines: int = 60) -> str:
@@ -136,11 +140,12 @@ class Docker:
 
         try:
             return await asyncio.to_thread(_run)
-        except (subprocess.TimeoutExpired, OSError) as exc:
-            return f"(no logs: {_cannot_run(f'docker logs {name}', exc)})"
+        except (subprocess.SubprocessError, OSError) as exc:
+            return f"(no logs: {describe_failure(f'docker logs {name}', exc)})"
 
     async def wipe_data(self, name: str, data_dir: Path, image: str) -> None:
-        """The container writes /data as root; empty it from inside before removing."""
+        """The container writes /data as root, so empty it as root: from inside the
+        container while it runs, else from a throwaway one that mounts the dir."""
         wipe = ["find", "/data", "-mindepth", "1", "-delete"]
         if await self.running(name):
             await run_cmd(["docker", "exec", name, *wipe], timeout=120)
@@ -165,8 +170,8 @@ class Docker:
             await asyncio.to_thread(
                 subprocess.run, ["docker", "rm", "-f", name], capture_output=True, timeout=60
             )
-        except (subprocess.TimeoutExpired, OSError) as exc:
-            raise StackError(_cannot_run(f"docker rm -f {name}", exc)) from exc
+        except (subprocess.SubprocessError, OSError) as exc:
+            raise StackError(describe_failure(f"docker rm -f {name}", exc)) from exc
 
 
 HealthFn = Callable[[int], Awaitable[bool]]
@@ -268,9 +273,12 @@ class Stack:
                 content="Reply with the single word: ready.",
             )
             remaining = deadline - time.monotonic()
-            reply = await publish_and_wait(
-                self.redis, request, request.session_id, timeout=max(min(60.0, remaining), 1.0)
-            )
+            try:
+                reply = await publish_and_wait(
+                    self.redis, request, request.session_id, timeout=max(min(60.0, remaining), 1.0)
+                )
+            except (RedisError, OSError) as exc:
+                raise await self._fail(f"lost redis during readiness: {exc}") from exc
             if reply.source == CONSCIOUS_SOURCE:
                 self.first_reply_ms = (time.monotonic() - sent) * 1000
                 break
@@ -287,22 +295,39 @@ class Stack:
         )
 
     async def alive(self) -> bool:
+        """Raises StackError when docker itself cannot say."""
         return await self.docker.running(self.name)
 
     async def send(self, request: UserRequest, timeout_s: float) -> AlfredResponse:
         if self.redis is None:
             raise StackError("stack is not started")
-        return await publish_and_wait(self.redis, request, request.session_id, timeout=timeout_s)
+        try:
+            return await publish_and_wait(
+                self.redis, request, request.session_id, timeout=timeout_s
+            )
+        except (RedisError, OSError) as exc:
+            raise StackError(
+                f"{self.name}: lost redis sending {request.session_id}: {exc}"
+            ) from exc
 
-    def _log_left_behind(self, step: str, exc: Exception, data_dir: Path | None) -> None:
+    def _manual_cleanup(self, data_dir: Path | None) -> str:
+        steps = [f"docker rm -f {self.name}"]
+        if data_dir is not None:
+            steps.append(f"sudo rm -rf {data_dir}")  # the container wrote it as root
+        return "; ".join(steps)
+
+    def _log_left_behind(
+        self, step: str, exc: Exception, data_dir: Path | None, *, keeping: bool = False
+    ) -> None:
+        if keeping:
+            logger.error("%s: %s failed during teardown: %s", self.name, step, exc)
+            return
         logger.error(
-            "%s: %s failed during teardown: %s. If the container is still there, "
-            "remove it by hand: docker rm -f %s (data dir: %s)",
+            "%s: %s failed during teardown: %s. Clean up whatever is left by hand: %s",
             self.name,
             step,
             exc,
-            self.name,
-            data_dir,
+            self._manual_cleanup(data_dir),
         )
 
     async def _teardown(self, *, force: bool) -> None:
@@ -311,27 +336,38 @@ class Stack:
         rest still runs; a container left behind goes at the next ``alfredctl up``, which
         runs ``rm -f`` first."""
         data_dir = self.data_dir
+        keeping = self.cfg.keep and not force
         if self.redis is not None:
             try:
                 await self.redis.aclose()
             except Exception as exc:
-                self._log_left_behind("closing its redis client", exc, data_dir)
+                self._log_left_behind("closing its redis client", exc, data_dir, keeping=keeping)
             finally:
                 self.redis = None
-        if self.cfg.keep and not force:
+        if keeping:
             logger.warning("--keep: leaving %s and %s in place", self.name, data_dir)
             return
-        if data_dir is not None:
-            try:
-                await self.docker.wipe_data(self.name, data_dir, self.image)
-            except Exception as exc:
-                self._log_left_behind("wiping its data dir", exc, data_dir)
-            shutil.rmtree(data_dir, ignore_errors=True)
-            self.data_dir = None
+        # Remove first: wiping /data under a live container races its writes.
         try:
             await self.docker.remove(self.name)
         except Exception as exc:
             self._log_left_behind("removing the container", exc, data_dir)
+        if data_dir is None:
+            return
+        try:
+            await self.docker.wipe_data(self.name, data_dir, self.image)
+        except Exception as exc:
+            self._log_left_behind("wiping its data dir", exc, data_dir)
+        shutil.rmtree(data_dir, ignore_errors=True)
+        self.data_dir = None
+        if data_dir.exists():
+            logger.error(
+                "%s: %s survived teardown (files the container wrote as root); "
+                "delete it by hand: sudo rm -rf %s",
+                self.name,
+                data_dir,
+                data_dir,
+            )
 
     async def stop(self) -> None:
         await self._teardown(force=False)
