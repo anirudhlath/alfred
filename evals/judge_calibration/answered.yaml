@@ -1,0 +1,32 @@
+category: answered
+items:
+  - id: answered-1
+    conversation:
+      - {role: user, text: "Is the front door locked?"}
+      - {role: alfred, text: "Yes, sir — the front door is locked."}
+    rubric: "Does the reply directly say whether the front door is locked?"
+    label: true
+  - id: answered-2
+    conversation:
+      - {role: user, text: "Is the front door locked?"}
+      - {role: alfred, text: "I can help with a great many things around the house, sir. Just say the word."}
+    rubric: "Does the reply directly say whether the front door is locked?"
+    label: false
+  - id: answered-3
+    conversation:
+      - {role: user, text: "What's the temperature in the living room?"}
+      - {role: alfred, text: "It is 21.5 degrees in the living room, sir."}
+    rubric: "Does the reply give the living room temperature?"
+    label: true
+  - id: answered-4
+    conversation:
+      - {role: user, text: "What's the temperature in the living room?"}
+      - {role: alfred, text: "The kitchen pendants are on, sir."}
+    rubric: "Does the reply give the living room temperature?"
+    label: false
+  - id: answered-5
+    conversation:
+      - {role: user, text: "Dim it a bit."}
+      - {role: alfred, text: "Certainly, sir — which light would you like dimmed: the living room lamp or the kitchen pendants?"}
+    rubric: "Does the reply ask which light the user means instead of acting?"
+    label: true
