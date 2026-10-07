@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from bus.schemas.events import ReflexObservation, StateChangedEvent
+from bus.schemas.events import ReflexObservation, ReflexProposal, StateChangedEvent
 from shared.streams import AVAILABILITY_DECISION_PREFIX, LAST_KNOWN_STATE_KEY
 from tests.helpers import attention_redis
 
@@ -392,7 +392,7 @@ async def test_a_bridged_change_reaches_the_model_and_memory_as_one_change() -> 
     redis = await _seeded("off")
     redis.set = AsyncMock(return_value=True)  # outside the observation debounce window
     engine = AsyncMock()
-    engine.process_event = AsyncMock(return_value=None)
+    engine.process_event = AsyncMock(return_value=ReflexProposal(decision="none"))
 
     await _process(redis, _event("unavailable", "on"), engine)
 
@@ -407,7 +407,13 @@ async def test_a_bridged_change_survives_a_failed_inference() -> None:
     redis = await _seeded("off")
     returned, entry = _event("unavailable", "on"), _next_entry()
     engine = AsyncMock()
-    engine.process_event = AsyncMock(side_effect=[ConnectionError("model down"), None, None])
+    engine.process_event = AsyncMock(
+        side_effect=[
+            ConnectionError("model down"),
+            ReflexProposal(decision="none"),
+            ReflexProposal(decision="none"),
+        ]
+    )
 
     with pytest.raises(ConnectionError):
         await _process(redis, returned, engine, entry=entry)
@@ -433,7 +439,7 @@ async def test_a_blip_does_not_start_the_attention_cooldown() -> None:
     redis = await _seeded("off", attention_redis({"alfred:attention:home": {ENTITY}}))
     attention = AttentionSet(redis=redis, cooldown_seconds=60.0)  # type: ignore[arg-type]
     engine = AsyncMock()
-    engine.process_event = AsyncMock(return_value=None)
+    engine.process_event = AsyncMock(return_value=ReflexProposal(decision="none"))
 
     await _process(redis, _event("off", "unavailable"), engine, attention)
     await _process(redis, _event("unavailable", "on"), engine, attention)

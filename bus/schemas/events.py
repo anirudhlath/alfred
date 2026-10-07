@@ -153,6 +153,24 @@ class TriggerCreated(BaseEvent):
     urgency: UrgencyLevel = "informational"
 
 
+ReflexDecision = Literal["act", "ask", "none", "invalid"]
+
+
+class ReflexProposal(BaseModel):
+    """What the Reflex Engine decided about one event (#285).
+
+    In shadow mode nothing executes: ``action`` is what Reflex *would* have run.
+    ``raw`` keeps the model's text and ``problem`` says what was wrong with it when
+    the decision is ``invalid``.
+    """
+
+    decision: ReflexDecision
+    reason: str | None = None
+    action: ActionRequest | None = None
+    raw: str | None = None
+    problem: str | None = None
+
+
 class ReflexObservation(BaseEvent):
     """A structured observation of a Reflex Engine event for System 2 awareness.
 
@@ -174,6 +192,9 @@ class ReflexObservation(BaseEvent):
     action: ActionRequest | None = None
     result: ActionResult | None = None
     decision_context: str | None = None
+    # Reflex's decision when it was act, ask or invalid (#285). action/result above
+    # mean "this happened"; a proposal only means "Reflex would have done this".
+    proposal: ReflexProposal | None = None
 
 
 class ServiceRegistered(BaseEvent):

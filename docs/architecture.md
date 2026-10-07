@@ -65,6 +65,8 @@ image contents, `alfredctl` command reference, data lifecycle modes, and trouble
 
 The full path from a physical device state change to an executed action:
 
+> **Shadow mode ([#285](https://github.com/anirudhlath/alfred/issues/285)):** Reflex currently stops at the decision. The `execute_action` steps below do not run until #286.
+
 ```mermaid
 sequenceDiagram
     participant HA as Home Assistant
@@ -117,7 +119,8 @@ sequenceDiagram
 
 - `unavailable`, `unknown` and a missing old state carry no information. Before the attention gate, `bridge_availability()` (`core/reflex/availability.py`) drops any transition into `unavailable`/`unknown`, and compares an entity coming back — from either, or as `None → state` when HA re-adds it after a restart — with its last real state in `alfred:reflex:last_known_state`: the same state is a blip and is dropped, a different one goes on as a single `last → new` change (`off → unavailable → on` is `off → on`). Running ahead of the gate means a blip costs no inference and does not start the gate's 5 s cooldown, which would swallow a real change right behind it. A return with no known state (first sight, or a fresh hash) is dropped. A failed lookup drops the return; a failed write only logs. Replays are safe, keyed on the stream entry ID, which Redis assigns in arrival order and keeps across redelivery: each return's decision is kept for ten minutes under `alfred:reflex:returned:{entry_id}` and reused by any replay, and the known state only moves forward in entry order, so a late replay cannot roll it back. A replay still retries the known-state write, in case its first delivery lost it.
 - If Ollama is down, `process_event` raises an exception. The Runner does NOT ACK the message; its reclaim pass (`reclaim_replayable`, every few cycles) replays it, as long as it is under five minutes old.
-- If the SLM returns `{"action": "none"}`, no action is dispatched and the message is ACKed normally — but the event is no longer forgotten. `observe_passively()` (`core/reflex/runner.py`) publishes a `ReflexObservation` with `action=None` to `alfred:reflex:observations`, debounced per entity by a `SET NX EX` on `alfred:observer:seen:{entity_id}` (`OBSERVATION_DEBOUNCE_SECONDS`, default 300). The write is best-effort and wrapped in its own `try` — a failure is logged and the message is still ACKed, because a passive observation is bookkeeping for an event the engine has already finished handling, and propagating would feed every no-action event back into a fresh SLM inference on the next reclaim pass. See 3.7.1 and [the design spec](superpowers/specs/2026-09-03-passive-observation-design.md).
+- Reflex runs in **shadow mode** ([#285](https://github.com/anirudhlath/alfred/issues/285)): `engine.process_event()` returns a `ReflexProposal` and the runner executes nothing. Every decision increments `alfred:reflex:decisions:<UTC date>` (one hash per day, one field per decision, 30-day TTL). An **act**, **ask** or **invalid** proposal is published as a `ReflexObservation` with `proposal` set and `action`/`result` empty, bypassing the debounce below. Both writes are best-effort: a failure is logged and the entry is still ACKed. `python -m core.reflex.shadow_report --days 7` prints them for review.
+- On **none**, the event is still not forgotten. `observe_passively()` (`core/reflex/runner.py`) publishes a `ReflexObservation` with `action=None` to `alfred:reflex:observations`, debounced per entity by a `SET NX EX` on `alfred:observer:seen:{entity_id}` (`OBSERVATION_DEBOUNCE_SECONDS`, default 300). The write is best-effort and wrapped in its own `try` — a failure is logged and the message is still ACKed, because a passive observation is bookkeeping for an event the engine has already finished handling, and propagating would feed every no-action event back into a fresh SLM inference on the next reclaim pass. See 3.7.1 and [the design spec](superpowers/specs/2026-09-03-passive-observation-design.md).
 - The SLM response is validated: `target_service` must match a registered service in the tool registry. Unknown services are rejected.
 
 ## 3. Component Architecture
@@ -352,24 +355,22 @@ The bridge subscribes to MQTT topics `home/#` and `media/#` by default and liste
 
 ### 3.2 Reflex Engine (System 1 SLM Inference)
 
-**Files:** `core/reflex/engine.py`, `core/reflex/ollama_client.py`
+**Files:** `core/reflex/engine.py`, `core/reflex/prompt.py`, `core/reflex/decision.py`, `core/reflex/inference.py` (backends `openai_client.py`, `ollama_client.py`)
 
-The `ReflexEngine` class is the System 1 fast path. It is a pure inference component with no side effects -- it takes a `StateChangedEvent` and returns an `ActionRequest | None`.
+The `ReflexEngine` class is the System 1 fast path. It is a pure inference component with no side effects -- it takes a `StateChangedEvent` (or a `TriggerFired`) and returns a `ReflexProposal`: **act**, **ask**, **none** or **invalid** ([#285](https://github.com/anirudhlath/alfred/issues/285), [design](superpowers/specs/2026-10-07-reflex-context-design.md)).
 
 **How it works:**
 
 1. Loads user preferences from `core/memory/preferences/` (cached after first read).
-2. Fetches registered tools from `ToolRegistry` (cached, invalidatable via `reload_tools()`).
-3. Fetches live entity state from `ContextReader` (read fresh on every call through the SDK's `read_live_state()`, rendered as Markdown; says "Live home state unavailable." when no service has any).
-4. Builds a system prompt dynamically from the tool registry -- tool names, parameters, and descriptions are injected at runtime; nothing is hardcoded.
-5. Constructs a user prompt with entity context, preferences, and event details.
-5. Sends the combined prompt to Ollama via `/api/chat` with `format: "json"`.
-6. Parses the JSON response: either `{"action": "none"}` or `{"tool_name": "...", "target_service": "...", "parameters": {...}}`.
-7. Validates `target_service` against registered services. Rejects unknown services.
+2. Fetches the `audience == "reflex"` tools from `ToolRegistry` (5-minute cache, invalidatable via `reload_tools()`).
+3. Reads live state fresh through `ContextReader.get_snapshot()`, and the user's timezone through `ContextReader.get_user_timezone()`.
+4. Builds the prompt with `core/reflex/prompt.py`, ordered from stable to volatile so vLLM's prefix cache covers as much as it can: rules and compact tools, `## Preferences`, `## Now` (local time, time of day, sun, people), `## House` (the actionable domains, one line per room by `attributes.area` — see [live-state.md](live-state.md#well-known-attributes)), then `## What changed` in one line or `## Trigger fired`. About 1,000 tokens.
+5. Sends it through `core/reflex/inference.py` (`REFLEX_BACKEND`: `openai` for vLLM in production, `ollama` by default) with `temperature=0`, JSON output and, on the OpenAI-compatible backend, `max_tokens=150`.
+6. `parse_decision()` turns the reply into a `ReflexProposal`, validating the tool against Reflex's own tool list. Anything else becomes **invalid**, keeping the raw text.
 
-The `@track_latency(category="reflex")` decorator on `process_event` records inference latency to the telemetry buffer. The `@track_tokens(model="ollama")` decorator on `ollama_client.infer` records token usage.
+**Shadow mode (slice 1 of #285 → #286 → #287):** nothing a proposal names is executed. The runner counts every decision and records act, ask and invalid proposals; see section 2.
 
-**Ollama client** (`core/reflex/ollama_client.py`): thin async wrapper using a long-lived `httpx.AsyncClient` for TCP connection reuse on the hot path.
+The `@track_latency(category="reflex")` decorator on `process_event` records inference latency to the telemetry buffer, and `@track_tokens` on each backend's `infer` records token usage.
 
 #### 3.2.1 AttentionSet (Tiered Autonomy — Reflex Gating)
 

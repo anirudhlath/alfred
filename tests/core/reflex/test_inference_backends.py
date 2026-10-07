@@ -97,6 +97,9 @@ async def test_openai_infer_request_shape_and_parse(monkeypatch: pytest.MonkeyPa
     assert url == "http://vllm:8000/v1/chat/completions"
     assert body["model"] == "gemma-27b"
     assert body["response_format"] == {"type": "json_object"}
+    assert body["temperature"] == 0.0
+    # A "none" is ~7 tokens and a reason ~40; the cap bounds a rambling model (#285).
+    assert body["max_tokens"] == 150
     assert body["messages"] == [{"role": "user", "content": "decide"}]
     assert result["response"] == '{"action": "none"}'
     assert result["prompt_tokens"] == 11

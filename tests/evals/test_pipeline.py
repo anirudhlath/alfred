@@ -74,7 +74,7 @@ async def test_run_scenario_captures_trace(tmp_path: pathlib.Path) -> None:
     )
 
     assert trace.model == "test-model"
-    assert "media_player.tv" in trace.prompt
+    assert "TV: off → on" in trace.prompt
     assert trace.raw_response == json.dumps({"action": "none"})
     assert trace.parsed_action is None
     assert trace.prompt_tokens == 100
@@ -90,6 +90,8 @@ async def test_run_scenario_with_action(tmp_path: pathlib.Path) -> None:
     mock_response = {
         "response": json.dumps(
             {
+                "decision": "act",
+                "reason": "Film time",
                 "tool_name": "lighting.dim_lights",
                 "target_service": "home-service",
                 "parameters": {"room": "living_room", "level": 20},
