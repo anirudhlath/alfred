@@ -7,7 +7,7 @@ from collections import defaultdict
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from evals.harness.checks.judge_spec import JudgeCategory
 from evals.harness.checks.result import CheckResult
@@ -23,6 +23,7 @@ SCORER_NAME = "scenario_scorer"
 Value = Literal["C", "I", "N", "E"]
 Status = Literal["shipped", "pending"]
 CELL_CHARS = 160
+_CHECKS = TypeAdapter(list[CheckResult])
 
 
 class LlmUsage(BaseModel):
@@ -147,11 +148,21 @@ def runs_from_logs(logs: Sequence[EvalLog]) -> list[SampleRun]:
             try:
                 runs.append(_sample_run(sample))
             except (TypeError, ValueError) as exc:  # ValueError covers ValidationError
-                runs.append(_unreadable_run(sample, f"unreadable sample: {_first_line(exc)}"))
+                runs.append(_unreadable_run(sample, f"unreadable sample: {_describe(exc)}"))
     return runs
 
 
-def _first_line(exc: Exception) -> str:
+def _describe(exc: Exception, *where: str) -> str:
+    """The problem in one line.
+
+    A validation error names its first failing field (prefixed by ``where``, the path to
+    the data that was validated) and counts the rest; anything else gives its first line.
+    """
+    if isinstance(exc, ValidationError) and (errors := exc.errors()):
+        first = errors[0]
+        loc = ".".join(str(part) for part in (*where, *first["loc"]))
+        more = f" (+{len(errors) - 1} more)" if len(errors) > 1 else ""
+        return _flat(f"{loc}: {first['msg']}" if loc else first["msg"]) + more
     lines = str(exc).strip().splitlines()
     return _flat(lines[0]) if lines else type(exc).__name__
 
@@ -173,12 +184,10 @@ def _sample_run(sample: EvalSample) -> SampleRun:
     else:
         value = cast("Value", score_value)
         try:
-            checks = [
-                CheckResult.model_validate(c) for c in (score.metadata or {}).get("checks", [])
-            ]
+            checks = _CHECKS.validate_python((score.metadata or {}).get("checks", []))
         except (TypeError, ValueError) as exc:
             # The score itself stands; only its explanation is lost.
-            error = f"unreadable checks: {_first_line(exc)}"
+            error = f"unreadable checks: {_describe(exc, 'checks')}"
     status = md.get("status", "shipped")
     if status not in get_args(Status):
         # Counted as shipped so the run still shows up; the error says why it failed.
@@ -189,7 +198,7 @@ def _sample_run(sample: EvalSample) -> SampleRun:
         try:
             evidence = Evidence.model_validate(raw)
         except ValueError as exc:
-            value, error = "E", _also(error, f"unreadable evidence: {_first_line(exc)}")
+            value, error = "E", _also(error, f"unreadable evidence: {_describe(exc, 'evidence')}")
     return SampleRun(
         sample_id=str(sample.id),
         scenario_id=str(md.get("scenario_id", sample.id)),

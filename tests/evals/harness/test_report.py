@@ -100,7 +100,8 @@ def fake_scorer():  # type: ignore[no-untyped-def]
         if state.sample_id == "home.partial":
             return Score(value="P")
         if state.sample_id == "home.bad-checks":
-            return Score(value=CORRECT, metadata={"checks": [{"name": "judge"}]})
+            bad = {"name": "judge", "status": "meh", "reason": "r"}
+            return Score(value=CORRECT, metadata={"checks": [bad]})
         ok = state.epoch == 1
         checks = [
             CheckResult(name="judge", status="pass" if ok else "fail", reason="r").model_dump()
@@ -270,24 +271,28 @@ async def test_malformed_run_data_never_loses_the_report(tmp_path: Path) -> None
     runs = {r.sample_id: r for r in runs_from_logs([await run_eval(tmp_path, samples, 1)])}
     assert (runs["home.a"].value, runs["home.a"].error) == ("C", None)
 
+    # A validation error names its first failing field, and how many more there are.
+    unreadable_checks = (
+        "unreadable checks: checks.0.status: Input should be 'pass', 'fail' or 'error'"
+    )
     checks = runs["home.bad-checks"]
-    assert (checks.value, checks.checks) == ("C", [])
-    assert checks.error == "unreadable checks: 2 validation errors for CheckResult"
+    assert (checks.value, checks.checks, checks.error) == ("C", [], unreadable_checks)
 
     ev = runs["home.bad-evidence"]
-    assert ev.value == "E" and ev.reply_ms == []
-    assert (ev.error or "").startswith("unreadable evidence: ")
+    assert (ev.value, ev.reply_ms) == ("E", [])
+    assert ev.error == "unreadable evidence: evidence.scenario_id: Field required (+5 more)"
 
+    # Any other exception keeps its own first line.
     variant = runs["home.bad-variant"]
     assert variant.value == "E"
     assert variant.error == "unreadable sample: invalid literal for int() with base 10: 'two'"
 
     prd = runs["home.bad-prd"]
     assert (prd.value, prd.prd, prd.status) == ("E", [], "shipped")
-    assert (prd.error or "").startswith("unreadable sample: ")
+    assert prd.error == "unreadable sample: prd.0: Input should be a valid string (+1 more)"
 
     card = summarize(list(runs.values()), META)
     golden = next(g for g in card.goldens if g.scenario_id == "home.bad-checks")
     assert golden.pass_k
-    assert golden.failing == ["error: unreadable checks: 2 validation errors for CheckResult"]
-    assert "unreadable checks" in render_markdown(card)
+    assert golden.failing == [f"error: {unreadable_checks}"]
+    assert "unreadable checks: checks.0.status" in render_markdown(card)
