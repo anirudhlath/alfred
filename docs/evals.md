@@ -397,16 +397,18 @@ Sections, in order:
    missing from a log.
 4. **PRD rows.** One row per PRD id that shipped goldens cite: how many goldens, the mean of
    their pass rates, how many of them hold pass^k (`2/3`, or `1/3 (1 —)` when one is
-   unknown rather than failing), how many are flaky, and how many `E` runs they had.
+   unknown rather than failing: no run scored `I` and one scored `E` or `N`), how many are
+   flaky, and how many `E` runs they had.
 5. **One table per suite** of shipped goldens. Pass^k and flaky belong to a **sample**, one
    variant of a golden, over its epochs; a golden rolls its samples up:
    - **variants**, **runs** (variants × epochs);
    - **pass rate** = `C / (C + I)` over every run of the golden — errors and inconclusive
      runs are left out, and the rate is `—` when nothing was scored;
    - **variants passing all k**: the samples whose pass^k holds, out of the golden's
-     variants. A sample's pass^k holds when every one of its runs scored `C`; it is
-     unknown, counted as `(n —)`, when any run scored `E` or `N`, since a harness error is
-     never Alfred failing;
+     variants. A sample's pass^k holds when every one of its runs scored `C`, and fails
+     once any run scored `I`, whatever else errored; it is unknown, counted as `(n —)`,
+     only when no run scored `I` and one scored `E` or `N`, since a harness error is never
+     Alfred failing;
    - **flaky** ⚠ when one of its samples is: that sample passed some scored runs and failed
      others. A variant that fails every run while another passes every run is a phrasing
      failure, not noise: it shows as `1/2` with no ⚠;

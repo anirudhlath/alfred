@@ -70,8 +70,9 @@ class SampleSummary(BaseModel):
     errors: int
     inconclusive: int
     pass_rate: float | None
-    # Every run scored C. None (shown —) when a run errored or was inconclusive: an E is
-    # the harness failing, never Alfred, so it cannot decide this either way.
+    # Every run scored C. False once any run scored I, whatever else errored. None (shown
+    # —) only when no run scored I and one scored E or N: an E is the harness failing,
+    # never Alfred, so on its own it cannot decide this either way.
     pass_k: bool | None
     flaky: bool  # 0 < pass rate < 1
     checks: list[CheckTally]
@@ -103,7 +104,7 @@ class PrdRowSummary(BaseModel):
     goldens: list[str]
     pass_rate: float | None
     pass_k: int  # goldens whose pass^k holds
-    pass_k_unknown: int  # goldens whose pass^k is unknown (an E or N run)
+    pass_k_unknown: int  # goldens whose pass^k is unknown (no I run, but an E or N one)
     flaky: int  # flaky goldens
     errors: int  # E runs
 
@@ -308,6 +309,11 @@ def _tallies(runs: list[SampleRun]) -> list[CheckTally]:
 
 def _sample(runs: list[SampleRun]) -> SampleSummary:
     passes, errors, inconclusive, pass_rate = _counts(runs)
+    pass_k: bool | None = True
+    if any(r.value == "I" for r in runs):
+        pass_k = False  # an I decides it, whatever else errored
+    elif errors or inconclusive:
+        pass_k = None
     return SampleSummary(
         sample_id=runs[0].sample_id,
         variant=runs[0].variant,
@@ -316,7 +322,7 @@ def _sample(runs: list[SampleRun]) -> SampleSummary:
         errors=errors,
         inconclusive=inconclusive,
         pass_rate=pass_rate,
-        pass_k=None if errors or inconclusive else passes == len(runs),
+        pass_k=pass_k,
         flaky=pass_rate is not None and 0 < pass_rate < 1,
         checks=_tallies(runs),
     )

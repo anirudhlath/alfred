@@ -197,6 +197,24 @@ def test_pass_k_counts_scored_runs_and_is_unknown_when_a_run_errored() -> None:
     assert "| 0/1 (1 —) |" in golden_row
 
 
+def test_a_failed_run_decides_pass_k_whatever_else_errored() -> None:
+    # I, E, C in one sample: the I already broke pass^k, so the E cannot make it unknown.
+    runs = [
+        run("home.a", "I", epoch=1),
+        run("home.a", "E", epoch=2, checks=[], error="vLLM hiccup"),
+        run("home.a", "C", epoch=3),
+    ]
+    card = summarize(runs, META)
+    (g,) = card.goldens
+    assert (g.samples[0].pass_k, g.pass_k, g.variants_pass_k) == (False, False, 0)
+    (row,) = card.prd_rows
+    assert (row.pass_k, row.pass_k_unknown) == (0, 0)
+    md = render_markdown(card).splitlines()
+    assert "| 4.4.lights-scenes | 1 | 50% | 0/1 | 1 | 1 |" in md
+    golden_row = next(line for line in md if line.startswith("| home.a |"))
+    assert "| 0/1 |" in golden_row and "—" not in golden_row
+
+
 def test_prd_rows_carry_flaky_and_error_counts() -> None:
     runs = [run("home.a", "C", epoch=1), run("home.a", "I", epoch=2)]
     runs += [run("home.b", "E", epoch=1, checks=[], error="boom"), run("home.b", "C", epoch=2)]
