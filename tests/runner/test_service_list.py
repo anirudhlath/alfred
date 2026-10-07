@@ -69,6 +69,7 @@ def test_redis_command_eval_binds_all_interfaces_without_persistence(
     cmd = _redis_command(tmp_path / "redis")
     assert cmd[cmd.index("--bind") + 1] == "0.0.0.0"
     assert cmd[cmd.index("--protected-mode") + 1] == "no"
+    assert cmd[cmd.index("--save") + 1] == ""
     assert cmd[cmd.index("--appendonly") + 1] == "no"
 
 

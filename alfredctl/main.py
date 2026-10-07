@@ -23,7 +23,8 @@ from alfredctl.redact import redact_command
 
 _STATUS_STYLE = {"pass": "green", "warn": "yellow", "fail": "red"}
 _STATUS_GLYPH = {"pass": "✓", "warn": "!", "fail": "✗"}
-# `up --port`'s default: --eval refuses anything else, since its port is chosen at start.
+# Default host port for the web UI (`up`, `urls`, `smoke`). `up --eval` refuses any other,
+# since its port is chosen at start.
 _DEFAULT_WEB_PORT = 8081
 
 app = typer.Typer(help="Alfred container launcher", no_args_is_help=True)
@@ -150,6 +151,8 @@ def up(
     if mode not in ("persistent", "ephemeral", "seed"):
         raise typer.BadParameter("mode must be persistent | ephemeral | seed")
     if eval_mode:
+        if r.name == "container":
+            raise typer.BadParameter("--eval supports docker and podman")
         if persist is None:
             raise typer.BadParameter("--eval needs --persist DIR (the harness's data dir)")
         if mode != "persistent":
@@ -322,7 +325,9 @@ def shell(runtime: RuntimeOpt = None) -> None:
 @app.command()
 def urls(
     runtime: RuntimeOpt = None,
-    port: Annotated[int, typer.Option(help="Host port for the web UI (docker/podman)")] = 8081,
+    port: Annotated[
+        int, typer.Option(help="Host port for the web UI (docker/podman)")
+    ] = _DEFAULT_WEB_PORT,
 ) -> None:
     """Print the reachable URL(s) for the running container."""
     r = rt.detect(runtime)
@@ -376,7 +381,7 @@ def smoke(
     target = name or rt.container_name()
     if not attach:
         # Default only applies to the container smoke starts itself.
-        port = port if port is not None else 8081
+        port = port if port is not None else _DEFAULT_WEB_PORT
         up(runtime=r.name, mode="seed", hf_cache=hf_cache, port=port)
     elif r.name != "container":
         # Never assume 8081: on a host already running Alfred there, that probes the

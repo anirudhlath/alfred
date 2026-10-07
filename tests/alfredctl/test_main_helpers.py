@@ -441,13 +441,17 @@ def _eval_plan() -> LaunchPlan:
 
 
 def _fake_port_run(stdout: str, code: int = 0) -> object:
-    """`subprocess.run` that answers `<exe> port …` and runs anything else for real."""
+    """`subprocess.run` that answers `<exe> port …`, lets git (container naming) through,
+    and fails anything else — no test may reach a real container runtime, on a host that
+    may be running the deployed stack."""
     real_run = subprocess.run
 
     def _run(cmd: list[str], *args: object, **kwargs: object) -> object:
         if cmd[1:2] == ["port"]:
             return subprocess.CompletedProcess(cmd, code, stdout, "")
-        return real_run(cmd, *args, **kwargs)
+        if cmd[0] == "git":
+            return real_run(cmd, *args, **kwargs)
+        pytest.fail(f"test reached a real command: {cmd}")
 
     return _run
 
@@ -535,6 +539,17 @@ def test_up_eval_rejects_the_expose_flags(
             expose_ha=flag == "expose_ha",
             expose_home=flag == "expose_home",
         )
+    assert ran == []
+
+
+def test_up_eval_refuses_the_apple_runtime_before_building(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ran = _stub_eval_up(monkeypatch, tmp_path)
+    monkeypatch.setattr(rt, "detect", lambda preferred: APPLE)
+    monkeypatch.setattr(main, "build", lambda **k: pytest.fail("must fail before the build"))
+    with pytest.raises(typer.BadParameter, match="--eval supports docker and podman"):
+        main.up(eval_mode=True, persist=tmp_path / "eval-data", runtime="container")
     assert ran == []
 
 
