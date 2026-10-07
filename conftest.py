@@ -7,14 +7,13 @@ import os
 import shutil
 import tempfile
 
-# This MUST run before the imports below, because the state it guards is
-# established at import time — not when a fixture runs.
-
 # shared/secrets.py builds the cryptfile keyring backend at import time under
 # data_path("secrets"), so merely importing a test module writes a real keyring
 # into the checkout's ./data/. Point runtime state at a throwaway directory: the
 # suite then never touches — or is broken by — a developer's real keyring, whose
-# passphrase may not match whatever the current environment resolves to.
+# passphrase may not match whatever the current environment resolves to. This
+# MUST run before the imports below, because that keyring is built at import
+# time — not when a fixture runs.
 if "ALFRED_DATA_DIR" not in os.environ:
     _tmp_data_dir = tempfile.mkdtemp(prefix="alfred-tests-")
     os.environ["ALFRED_DATA_DIR"] = _tmp_data_dir
