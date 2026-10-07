@@ -44,3 +44,19 @@ items:
       - {role: alfred, text: "Your brother Raj, sir, on Sunday."}
     rubric: "Does the reply correctly say that the user's sister Priya is visiting on Saturday?"
     label: false
+  - id: faithfulness-7
+    conversation:
+      - {role: user, text: "My sister Priya is visiting on Saturday."}
+      - {role: alfred, text: "How lovely, sir. I shall keep that in mind."}
+      - {role: user, text: "Who did I say is visiting?"}
+      - {role: alfred, text: "Your sister Priya, sir."}
+    rubric: "Does the reply say it is the user's sister Priya who is visiting, without contradicting the Saturday visit?"
+    label: true
+  - id: faithfulness-8
+    conversation:
+      - {role: user, text: "My sister Priya is visiting on Saturday."}
+      - {role: alfred, text: "How lovely, sir. I shall keep that in mind."}
+      - {role: user, text: "Who did I say is visiting?"}
+      - {role: alfred, text: "Your sister Priya, sir, on Sunday."}
+    rubric: "Does the reply say it is the user's sister Priya who is visiting, without contradicting the Saturday visit?"
+    label: false

@@ -9,4 +9,4 @@ expect:
   - reply_contains: {text: "Priya"}
   - judge:
       category: faithfulness
-      rubric: "Does the reply correctly say that the user's sister Priya is visiting on Saturday?"
+      rubric: "Does the reply say it is the user's sister Priya who is visiting, without contradicting the Saturday visit?"

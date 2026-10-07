@@ -82,8 +82,10 @@ def test_evals_calibrate_reports_each_category_and_saves(
     assert [(r.model, path) for r, path in saved] == [("judge-m", calibration_file)]
     lines = result.output.splitlines()
     assert lines[0].startswith("answered") and lines[0].endswith("100% of 5  trusted")
-    assert lines[1].startswith("faithfulness") and "50% of 6  UNTRUSTED" in lines[1]
-    assert lines[1].endswith("disagreed: faithfulness-2, faithfulness-4, faithfulness-6")
+    assert lines[1].startswith("faithfulness") and "50% of 8  UNTRUSTED" in lines[1]
+    assert lines[1].endswith(
+        "disagreed: faithfulness-2, faithfulness-4, faithfulness-6, faithfulness-8"
+    )
     assert lines[2].startswith("tone")
     assert lines[2].endswith("80% of 5  UNTRUSTED  unparseable: tone-1")
     assert lines[3] == f"saved {calibration_file}"

@@ -1,13 +1,23 @@
 from __future__ import annotations
 
+from functools import cache
 from typing import Any
 
+import pytest
 from pydantic import BaseModel
 
+from evals.harness.checks import JudgeSpec, run_check
+from evals.harness.checks.llm import normalize_tool
+from evals.harness.evidence import Evidence, Reply
 from evals.harness.scenario import CheckSpec, HaEventStep, Scenario, UserStep, load_suites
-from evals.harness.world import load_world
+from evals.harness.world import World, load_world
 
 SUITES = ["conversation", "home_control"]
+
+
+@cache
+def _goldens() -> dict[str, Scenario]:
+    return {s.id: s for scenarios in load_suites(SUITES).values() for s in scenarios}
 
 
 def test_every_golden_loads_and_names_real_entities() -> None:
@@ -123,3 +133,141 @@ def test_step_index_guard_covers_any_check_with_those_fields() -> None:
     assert bad(step=1) == ["future.step=1 but n=1"]
     assert bad(after_step=1) == ["future.after_step=1 but n=1"]
     assert bad(step="first") == ["future.step='first' but n=1"]
+
+
+def _unknown_services(s: Scenario, world: World) -> list[str]:
+    """HA services and LLM tools that ``s``'s checks name but ``world`` does not offer.
+
+    home-service offers each world service as the tool ``home.{domain}_{service}``, which
+    System 2 sends as ``home_{domain}_{service}`` (``checks/llm.normalize_tool``). Like the
+    step guard, this goes by field name, so a check added later is covered too. A check
+    that leaves ``domain`` or ``service`` unset matches any, so only what it sets is checked.
+    """
+    offered = {(d, svc) for d, services in world.services.items() for svc in services}
+    tools = {normalize_tool(f"home.{d}_{svc}") for d, svc in offered}
+    bad: list[str] = []
+    for check in s.expect:
+        domain, service, tool = (
+            getattr(check.params, f, None) for f in ("domain", "service", "tool")
+        )
+        if (domain or service) and not any(
+            domain in (None, d) and service in (None, svc) for d, svc in offered
+        ):
+            bad.append(f"{check.name}: {domain or '*'}.{service or '*'}")
+        if tool is not None and normalize_tool(tool) not in tools:
+            bad.append(f"{check.name}: tool {tool}")
+    return bad
+
+
+def test_every_golden_names_real_services_and_tools() -> None:
+    world = load_world("apartment")
+    seen: set[str] = set()
+    for s in _goldens().values():
+        assert not _unknown_services(s, world), f"{s.path}: {_unknown_services(s, world)}"
+        seen |= {f for c in s.expect for f in ("service", "tool") if getattr(c.params, f, None)}
+    assert seen == {"service", "tool"}  # the lookup matched something: not a vacuous pass
+
+
+def test_unknown_services_flags_a_misspelt_service_or_tool() -> None:
+    world = load_world("apartment")
+    real = _scenario(
+        [{"user": "a"}],
+        [
+            {"ha_called": {"domain": "light", "service": "turn_on"}},
+            {"ha_not_called": {"domain": "lock"}},
+            {"ha_not_called": {"service": "volume_set"}},
+            {"ha_not_called": {"entity_id": "light.bedroom_lamp"}},
+            {"llm_tool_args": {"tool": "home_light_turn_on", "args": {}}},
+            {"tool_called": {"tool": "home.scene_turn_on"}},
+        ],
+    )
+    assert _unknown_services(real, world) == []
+    typos = _scenario(
+        [{"user": "a"}],
+        [
+            {"ha_called": {"domain": "light", "service": "turn_of"}},
+            {"ha_not_called": {"domain": "lights"}},
+            {"ha_not_called": {"service": "turn_of"}},
+            {"ha_called": {"domain": "switch", "service": "volume_set"}},
+            {"llm_tool_args": {"tool": "home.light_turn_of", "args": {}}},
+            {"tool_not_called": {"tool": "home_switch_turn_onn"}},
+        ],
+    )
+    assert _unknown_services(typos, world) == [
+        "ha_called: light.turn_of",
+        "ha_not_called: lights.*",
+        "ha_not_called: *.turn_of",
+        "ha_called: switch.volume_set",
+        "llm_tool_args: tool home.light_turn_of",
+        "tool_not_called: tool home_switch_turn_onn",
+    ]
+
+
+def _reply_checks_pass(s: Scenario, text: str) -> bool:
+    """Whether every reply_contains/reply_not_contains check in ``s`` passes when Alfred
+    answers each user step with ``text``."""
+    users = sum(isinstance(step, UserStep) for step in s.steps)
+    replies = [
+        Reply(step=i, text=text, source="conscious-engine", latency_ms=1) for i in range(users)
+    ]
+    evidence = Evidence(
+        scenario_id=s.id,
+        variant=0,
+        epoch=0,
+        session_id="t",
+        started_at=0,
+        ended_at=0,
+        replies=replies,
+    )
+    checks = [c for c in s.expect if c.name in ("reply_contains", "reply_not_contains")]
+    assert checks, f"{s.id} has no reply checks"
+    return all(run_check(c.name, c.params, evidence).status == "pass" for c in checks)
+
+
+@pytest.mark.parametrize(
+    ("golden", "reply", "passes"),
+    [
+        ("conversation.signal.multi_turn", "At 3 p.m. tomorrow, sir.", True),
+        ("conversation.signal.multi_turn", "At 3 o'clock tomorrow, sir.", True),
+        ("conversation.signal.multi_turn", "Three o'clock tomorrow, sir.", True),
+        ("conversation.signal.multi_turn", "Tomorrow at 15:00, sir.", True),
+        ("conversation.signal.multi_turn", "Tomorrow at 13:00, sir.", False),
+        ("conversation.signal.multi_turn", "Tomorrow at 4 pm, sir.", False),
+        ("home_control.live_state.temperature", "It is 21.5 °C in the living room, sir.", True),
+        ("home_control.live_state.temperature", "About twenty-one degrees, sir.", True),
+        ("home_control.live_state.temperature", "It is 121 °F, sir.", False),
+        ("home_control.live_state.temperature", "It is 215 K, sir.", False),
+        (
+            "home_control.live_state.which_lights_on",
+            "The living-room lamp and the kitchen pendants.",
+            True,
+        ),
+        (
+            "home_control.live_state.which_lights_on",
+            "The lamp in the living room and the pendants in the kitchen.",
+            True,
+        ),
+        (
+            "home_control.live_state.which_lights_on",
+            "The living room lamp and the kitchen pendant lights.",
+            True,
+        ),
+        ("home_control.live_state.which_lights_on", "Only the bedroom lamp, sir.", False),
+    ],
+)
+def test_reply_patterns_take_natural_phrasings_and_reject_near_misses(
+    golden: str, reply: str, passes: bool
+) -> None:
+    assert _reply_checks_pass(_goldens()[golden], reply) is passes
+
+
+@pytest.mark.parametrize(
+    "golden", ["home_control.live_state.front_door_locked", "conversation.signal.home_question"]
+)
+def test_a_lock_question_has_a_faithfulness_judge_because_the_regex_cannot_tell(
+    golden: str,
+) -> None:
+    s = _goldens()[golden]
+    assert _reply_checks_pass(s, "It is not locked, sir.")  # the deterministic checks let it by
+    categories = {c.params.category for c in s.expect if isinstance(c.params, JudgeSpec)}
+    assert "faithfulness" in categories

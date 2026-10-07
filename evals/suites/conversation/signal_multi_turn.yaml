@@ -7,7 +7,7 @@ steps:
   - user: "The plumber is coming at three tomorrow."
   - user: "When did I say the plumber is coming?"
 expect:
-  - reply_contains: {any: ["three", "3 pm", "3pm", "15:00", "3:00"]}
+  - reply_contains: {regex: "\\bthree\\b|\\b3(?!\\d)|\\b15:00\\b"}
   - judge:
       category: faithfulness
       rubric: "Does the reply say the plumber is coming at three o'clock tomorrow?"

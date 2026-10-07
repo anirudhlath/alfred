@@ -1,7 +1,11 @@
-# Steady-state reply time. The scorecard's stack line reports the first reply after boot.
+# PRD 4.7.warmup: no cold-start latency on the first request. isolated: true restarts the
+# stack before this golden, so its reply is the first after the readiness probe. The
+# scorecard's stack line reports first_reply_ms: the readiness probe, the very first
+# request after boot.
 id: conversation.warmup.reply_latency
 prd: [4.7.warmup]
 status: shipped
+isolated: true
 tags: [latency]
 steps:
   - user: "Thank you, Alfred."

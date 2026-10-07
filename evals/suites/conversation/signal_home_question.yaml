@@ -12,3 +12,6 @@ expect:
   - judge:
       category: answered
       rubric: "Does the reply directly say whether the front door is locked?"
+  - judge:
+      category: faithfulness
+      rubric: "Does the reply state that the front door is currently locked?"
