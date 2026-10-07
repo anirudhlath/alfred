@@ -46,6 +46,25 @@ _SET_STATE: dict[tuple[str, str], str] = {
     ("alarm_control_panel", "alarm_disarm"): "disarmed",
 }
 
+# The subscriptions a state change is pushed to: its own type, and HA's "every event".
+_STATE_CHANGED_SUBSCRIPTIONS = ("state_changed", "*")
+
+
+def _check_fields(fields: dict[str, Any], data: dict[str, Any]) -> None:
+    """Range-check *data* against the service's own number selectors, as HA's schema does.
+
+    Raises ``ValueError`` for a value that is not a number, or one outside the
+    selector's ``min``/``max`` (NaN included).
+    """
+    for key, spec in fields.items():
+        number = ((spec or {}).get("selector") or {}).get("number")
+        if key not in data or number is None:
+            continue
+        value = float(data[key])
+        low, high = number.get("min"), number.get("max")
+        if (low is not None and not value >= low) or (high is not None and not value <= high):
+            raise ValueError(f"{key} must be between {low} and {high}, got {data[key]!r}")
+
 
 def apply_service(
     states: dict[str, HaState],
@@ -86,6 +105,14 @@ def apply_service(
 
 
 class FakeHA:
+    """One fake Home Assistant serving *world*.
+
+    ``calls`` holds every call_service HA would have run, in order. Each call's
+    ``entity_ids`` are the targets it asked for, with areas expanded within the domain,
+    not the entities it affected: an entity of another domain, or one without a state,
+    is listed but left unchanged.
+    """
+
     def __init__(
         self,
         world: World,
@@ -178,8 +205,12 @@ class FakeHA:
             await ws.send(json.dumps({"type": "auth_ok", "ha_version": _HA_VERSION}))
             async for raw in ws:
                 await self._command(ws, json.loads(raw))
-        except Exception:  # a dropped client is not the harness's failure
+        except ConnectionClosed:  # a dropped client is not the harness's failure
             logger.debug("fake HA connection closed", exc_info=True)
+        except Exception:
+            # A frame the fake could not handle (no id, not JSON): the client's bug or
+            # ours, so loud. The connection closes, as the handler has returned.
+            logger.exception("fake HA dropped a connection on a frame it could not handle")
         finally:
             self._subs.pop(ws, None)
 
@@ -213,12 +244,14 @@ class FakeHA:
     async def _call_service(self, ws: ServerConnection, msg_id: int, msg: dict[str, Any]) -> None:
         t = time.monotonic()
         domain, service = str(msg.get("domain")), str(msg.get("service"))
-        if service not in self.world.services.get(domain, {}):
+        spec = self.world.services.get(domain, {}).get(service)
+        if spec is None:
             await self._error(ws, msg_id, "not_found", f"Service {domain}.{service} not found.")
             return
         staged = dict(self._states)
         try:
             data = dict(msg.get("service_data") or {})
+            _check_fields(spec.get("fields") or {}, data)
             # HA merges `target` into the service data and reads the targets from the
             # result, so an entity_id in service_data (home.call_service's free-form
             # data) targets too.
@@ -227,39 +260,41 @@ class FakeHA:
             call = HaCall(
                 t=t, domain=domain, service=service, service_data=data, entity_ids=entity_ids
             )
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, ArithmeticError) as exc:
             # HA validates a call before running it, and answers a bad one with an error
             # (never by dropping the connection); nothing ran, so nothing is recorded.
             await self._error(ws, msg_id, "invalid_format", str(exc))
             return
         self.calls.append(call)
         self._states = staged
-        await self._result(ws, msg_id, {"context": {"id": f"eval-{msg_id}"}, "response": None})
+        # Events first, then the result: what HA does for an entity that writes its state
+        # during the call, so the caller's live state has moved by the time it returns.
         for entity_id, (old, new) in changed.items():
             await self._push_change(entity_id, old, new)
+        await self._result(ws, msg_id, {"context": {"id": f"eval-{msg_id}"}, "response": None})
 
     async def _push_change(self, entity_id: str, old: HaState, new: HaState) -> None:
         def as_state(s: HaState) -> dict[str, Any]:
             return {"entity_id": entity_id, "state": s.state, "attributes": s.attributes}
 
+        event = {
+            "event_type": "state_changed",
+            "data": {
+                "entity_id": entity_id,
+                "old_state": as_state(old),
+                "new_state": as_state(new),
+            },
+        }
         for ws, subs in list(self._subs.items()):
-            sub_id = subs.get("state_changed")
-            if sub_id is None:
-                continue
-            event = {
-                "id": sub_id,
-                "type": "event",
-                "event": {
-                    "event_type": "state_changed",
-                    "data": {
-                        "entity_id": entity_id,
-                        "old_state": as_state(old),
-                        "new_state": as_state(new),
-                    },
-                },
-            }
+            # One frame per matching subscription, each under its own id, as HA sends.
+            frames = [
+                json.dumps({"id": subs[key], "type": "event", "event": event})
+                for key in _STATE_CHANGED_SUBSCRIPTIONS
+                if key in subs
+            ]
             try:
-                await ws.send(json.dumps(event))
+                for frame in frames:
+                    await ws.send(frame)
             except ConnectionClosed:
                 # Closed, but its handler has not unsubscribed it yet. One gone client
                 # must not fail the push to the others, or the driver's set_state.

@@ -31,6 +31,9 @@ class HaCall(BaseModel):
     domain: str
     service: str
     service_data: dict[str, Any] = Field(default_factory=dict)
+    # The targets the call asked for (areas expanded within the domain), not the
+    # entities it affected: an entity of another domain, or one without a state, is
+    # listed here but was left unchanged. Compare ``ha_states`` for what changed.
     entity_ids: list[str] = Field(default_factory=list)
 
 

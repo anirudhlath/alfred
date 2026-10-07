@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
+from logging import ERROR, WARNING
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from websockets.asyncio.client import ClientConnection, connect
-from websockets.exceptions import ConnectionClosedError
+from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
+from evals.harness import fake_ha
 from evals.harness.evidence import HaState
 from evals.harness.fake_ha import EVAL_HA_TOKEN, FakeHA, apply_service
 from evals.harness.world import load_world
@@ -18,21 +21,26 @@ if TYPE_CHECKING:
     from websockets.asyncio.server import ServerConnection
 
 
+async def recv(ws: ClientConnection) -> dict[str, Any]:
+    """The next frame, failing the test rather than hanging when none comes."""
+    return cast("dict[str, Any]", json.loads(await asyncio.wait_for(ws.recv(), timeout=5)))
+
+
 async def handshake(
     ha: FakeHA, token: str = EVAL_HA_TOKEN
 ) -> tuple[ClientConnection, dict[str, Any]]:
     ws = await connect(ha.url.replace("http", "ws") + "/api/websocket")
-    assert json.loads(await ws.recv())["type"] == "auth_required"
+    assert (await recv(ws))["type"] == "auth_required"
     await ws.send(json.dumps({"type": "auth", "access_token": token}))
-    return ws, json.loads(await ws.recv())
+    return ws, await recv(ws)
 
 
 async def command(ws: ClientConnection, msg_id: int, **payload: Any) -> dict[str, Any]:
     await ws.send(json.dumps({"id": msg_id, **payload}))
     while True:
-        msg = json.loads(await ws.recv())
+        msg = await recv(ws)
         if msg.get("type") == "result" and msg["id"] == msg_id:
-            return cast("dict[str, Any]", msg)
+            return msg
 
 
 @pytest.fixture
@@ -79,22 +87,35 @@ async def test_serves_the_world_registries(ha: FakeHA) -> None:
 async def test_call_service_on_an_area_records_entities_and_pushes_state(ha: FakeHA) -> None:
     ws, _ = await handshake(ha)
     await command(ws, 1, type="subscribe_events", event_type="state_changed")
-    result = await command(
-        ws,
-        2,
-        type="call_service",
-        domain="light",
-        service="turn_on",
-        service_data={"brightness_pct": 50},
-        target={"area_id": "bedroom"},
-    )
-    assert result["success"]
+    call = {
+        "id": 2,
+        "type": "call_service",
+        "domain": "light",
+        "service": "turn_on",
+        "service_data": {"brightness_pct": 50},
+        "target": {"area_id": "bedroom"},
+    }
+    await ws.send(json.dumps(call))
+    # As in HA for an entity that writes its state during the call: event, then result.
+    event = await recv(ws)
+    result = await recv(ws)
+    assert event["type"] == "event" and event["id"] == 1
+    assert event["event"]["data"]["new_state"]["state"] == "on"
+    assert result["type"] == "result" and result["id"] == 2 and result["success"]
     assert ha.calls[-1].entity_ids == ["light.bedroom_lamp"]
     assert ha.states()["light.bedroom_lamp"] == HaState(
         state="on", attributes={"friendly_name": "Bedroom Lamp", "brightness": 128}
     )
-    event = json.loads(await ws.recv())
-    assert event["id"] == 1 and event["event"]["data"]["new_state"]["state"] == "on"
+    await ws.close()
+
+
+async def test_a_subscription_to_every_event_gets_state_changes(ha: FakeHA) -> None:
+    ws, _ = await handshake(ha)
+    await command(ws, 1, type="subscribe_events")  # no event_type: every event, as in HA
+    await ha.set_state("light.bedroom_lamp", "on")
+    event = await recv(ws)
+    assert event["id"] == 1 and event["event"]["event_type"] == "state_changed"
+    assert event["event"]["data"]["entity_id"] == "light.bedroom_lamp"
     await ws.close()
 
 
@@ -134,14 +155,15 @@ async def test_unknown_service_is_an_error_and_not_recorded(ha: FakeHA) -> None:
 async def test_a_call_ha_would_reject_is_an_error_and_changes_nothing(ha: FakeHA) -> None:
     ws, _ = await handshake(ha)
     # Sorted, the pendants (on → off) come before the ceiling (off → on), whose
-    # brightness is not a number: nothing may be half-applied.
+    # brightness is not a number: nothing may be half-applied. (`brightness` has no
+    # selector in the world, so it gets past the field check and fails while applying.)
     result = await command(
         ws,
         1,
         type="call_service",
         domain="light",
         service="toggle",
-        service_data={"brightness_pct": "bright"},
+        service_data={"brightness": "bright"},
         target={"entity_id": ["light.living_room_ceiling", "light.kitchen_pendants"]},
     )
     assert result["success"] is False and result["error"]["code"] == "invalid_format"
@@ -150,6 +172,64 @@ async def test_a_call_ha_would_reject_is_an_error_and_changes_nothing(ha: FakeHA
     # HA answers a bad call; it does not drop the connection.
     assert (await command(ws, 2, type="get_services"))["success"]
     await ws.close()
+
+
+@pytest.mark.parametrize(
+    ("domain", "service", "entity_id", "data"),
+    [
+        ("light", "turn_on", "light.bedroom_lamp", {"brightness_pct": 150}),
+        ("light", "turn_on", "light.bedroom_lamp", {"brightness_pct": "inf"}),
+        ("light", "turn_on", "light.bedroom_lamp", {"brightness_pct": "nan"}),
+        ("media_player", "volume_set", "media_player.living_room_tv", {"volume_level": 5}),
+    ],
+)
+async def test_a_number_outside_its_selector_range_is_rejected(
+    ha: FakeHA, domain: str, service: str, entity_id: str, data: dict[str, Any]
+) -> None:
+    before = ha.states()[entity_id]
+    ws, _ = await handshake(ha)
+    result = await command(
+        ws,
+        1,
+        type="call_service",
+        domain=domain,
+        service=service,
+        service_data=data,
+        target={"entity_id": [entity_id]},
+    )
+    assert result["success"] is False and result["error"]["code"] == "invalid_format"
+    assert ha.calls == [] and ha.states()[entity_id] == before
+    assert (await command(ws, 2, type="get_services"))["success"]
+    await ws.close()
+
+
+async def test_an_overflowing_number_is_an_error_not_a_dropped_connection(ha: FakeHA) -> None:
+    ws, _ = await handshake(ha)
+    # 1e999 is valid JSON that parses to inf; int(inf) raises OverflowError.
+    await ws.send(
+        '{"id": 1, "type": "call_service", "domain": "light", "service": "turn_on",'
+        ' "service_data": {"brightness": 1e999}, "target": {"entity_id": ["light.bedroom_lamp"]}}'
+    )
+    result = await recv(ws)
+    assert result["success"] is False and result["error"]["code"] == "invalid_format"
+    assert ha.calls == [] and ha.states()["light.bedroom_lamp"].state == "off"
+    assert (await command(ws, 2, type="get_services"))["success"]
+    await ws.close()
+
+
+async def test_a_client_closing_is_quiet_but_a_bad_message_is_logged(
+    ha: FakeHA, caplog: pytest.LogCaptureFixture
+) -> None:
+    quiet = await connect(ha.url.replace("http", "ws") + "/api/websocket")
+    await recv(quiet)  # auth_required
+    await quiet.close()  # gone before authenticating
+    bad, _ = await handshake(ha)
+    await bad.send(json.dumps({"type": "get_states"}))  # no id
+    with pytest.raises(ConnectionClosed):
+        await recv(bad)
+    await ha.stop()  # waits for every handler to return
+    errors = [r for r in caplog.records if r.name == fake_ha.__name__ and r.levelno >= WARNING]
+    assert len(errors) == 1 and errors[0].levelno == ERROR and errors[0].exc_info
 
 
 async def test_calls_between_and_reset(ha: FakeHA) -> None:
@@ -174,14 +254,22 @@ async def test_calls_between_and_reset(ha: FakeHA) -> None:
     await ws.close()
 
 
-async def test_set_state_and_restore_world() -> None:
-    ha = FakeHA(load_world("apartment"))
+async def test_set_state_and_restore_world_push_to_subscribers(ha: FakeHA) -> None:
+    ws, _ = await handshake(ha)
+    await command(ws, 1, type="subscribe_events", event_type="state_changed")
     await ha.set_state("light.living_room_ceiling", "on", {"brightness": 200})
     assert ha.states()["light.living_room_ceiling"].state == "on"
+    pushed = (await recv(ws))["event"]["data"]
+    assert pushed["new_state"]["attributes"]["brightness"] == 200
     assert await ha.restore_world() == 1
     assert ha.states()["light.living_room_ceiling"].state == "off"
+    restored = (await recv(ws))["event"]["data"]
+    assert restored["entity_id"] == "light.living_room_ceiling"
+    assert restored["old_state"]["state"] == "on" and restored["new_state"]["state"] == "off"
+    assert "brightness" not in restored["new_state"]["attributes"]
     with pytest.raises(KeyError):
         await ha.set_state("light.nope", "on")
+    await ws.close()
 
 
 class _GoneSocket:
@@ -191,13 +279,40 @@ class _GoneSocket:
         raise ConnectionClosedError(None, None)
 
 
+def _gone_subscriber_first(ha: FakeHA) -> None:
+    # First in line, so a push that stopped at it would never reach the live one.
+    ha._subs = {cast("ServerConnection", _GoneSocket()): {"state_changed": 7}, **ha._subs}
+
+
 async def test_a_subscriber_that_went_away_does_not_stop_the_push(ha: FakeHA) -> None:
     ws, _ = await handshake(ha)
     await command(ws, 1, type="subscribe_events", event_type="state_changed")
-    ha._subs[cast("ServerConnection", _GoneSocket())] = {"state_changed": 7}
+    _gone_subscriber_first(ha)
     await ha.set_state("light.bedroom_lamp", "on")
-    event = json.loads(await ws.recv())
+    event = await recv(ws)
     assert event["event"]["data"]["entity_id"] == "light.bedroom_lamp"
+    await ws.close()
+
+
+async def test_a_subscriber_that_went_away_does_not_kill_the_callers_connection(
+    ha: FakeHA,
+) -> None:
+    ws, _ = await handshake(ha)
+    await command(ws, 1, type="subscribe_events", event_type="state_changed")
+    _gone_subscriber_first(ha)
+    call = {
+        "id": 2,
+        "type": "call_service",
+        "domain": "light",
+        "service": "turn_on",
+        "target": {"entity_id": ["light.bedroom_lamp"]},
+    }
+    await ws.send(json.dumps(call))
+    event = await recv(ws)
+    result = await recv(ws)
+    assert event["event"]["data"]["entity_id"] == "light.bedroom_lamp"
+    assert result["id"] == 2 and result["success"]
+    assert (await command(ws, 3, type="get_services"))["success"]
     await ws.close()
 
 
