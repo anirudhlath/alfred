@@ -297,6 +297,9 @@ def _options(log_root: Path, **fields: Any) -> RunOptions:
         "keep": False,
         "log_root": log_root,
         "display": "none",
+        # Any free port: a test must not hold the real defaults.
+        "fake_ha_port": 0,
+        "proxy_port": 0,
     }
     return RunOptions(**{**base, **fields})
 
@@ -394,7 +397,12 @@ def _preflight_passes(monkeypatch: pytest.MonkeyPatch, order: list[str]) -> None
         order.append("gateway")
         return "127.0.0.1"
 
+    async def probe(ports: dict[str, int], *, gateway: str) -> None:
+        assert all(port > 0 for port in ports.values())  # the ports the fakes really got
+        order.append(f"probe {sorted(ports)} via {gateway}")
+
     monkeypatch.setattr(orchestrate, "check_models", check_models)
+    monkeypatch.setattr(orchestrate, "probe_host_ports", probe)
     monkeypatch.setattr(orchestrate, "check_home_service", check_home_service)
     monkeypatch.setattr(orchestrate, "alfred_commit", alfred_commit)
     monkeypatch.setattr(orchestrate, "read_calibration", read_calibration)
@@ -461,6 +469,7 @@ async def test_run_suites_preflights_before_the_build_and_reports_whatever_ran(
         "calibration calibration.json",
         "gateway",
         *built,
+        "probe ['LLM proxy', 'fake HA'] via 127.0.0.1",
     ]
     run_dir = outcome.run_dir
     assert run_dir.parent == tmp_path / "logs" and outcome.unstarted == ["zzz"]
@@ -519,7 +528,7 @@ async def test_a_failed_preflight_never_builds_or_writes_logs(
     fail(tmp_path, monkeypatch)
     with pytest.raises(PreflightError, match=message):
         await run_suites(_options(tmp_path / "logs"))
-    assert not [step for step in order if step.startswith(("gateway", "build"))]
+    assert not [step for step in order if step.startswith(("gateway", "build", "probe"))]
     assert not (tmp_path / "logs").exists()
 
 
@@ -535,8 +544,17 @@ class FailingProxy(LlmProxy):
 
 
 @pytest.mark.parametrize(
-    ("fake_ha_cls", "proxy_cls", "name"),
-    [(FailingFakeHA, LlmProxy, "fake HA"), (FakeHA, FailingProxy, "LLM proxy")],
+    ("fake_ha_cls", "proxy_cls", "ports", "says"),
+    [
+        # The failing fake HA never binds, so its fixed port is safe to ask for here.
+        (
+            FailingFakeHA,
+            LlmProxy,
+            {"fake_ha_port": 18123},
+            "could not start the fake HA on 127.0.0.1:18123 (choose another with --fake-ha-port",
+        ),
+        (FakeHA, FailingProxy, {}, "could not start the LLM proxy on 127.0.0.1 (any free port"),
+    ],
     ids=["fake-ha", "proxy"],
 )
 async def test_a_fake_that_cannot_start_is_a_stack_error_and_nothing_is_left_running(
@@ -544,7 +562,8 @@ async def test_a_fake_that_cannot_start_is_a_stack_error_and_nothing_is_left_run
     monkeypatch: pytest.MonkeyPatch,
     fake_ha_cls: type[FakeHA],
     proxy_cls: type[LlmProxy],
-    name: str,
+    ports: dict[str, int],
+    says: str,
 ) -> None:
     _golden(tmp_path / "suites", "demo", "quiet")
     _suites_at(monkeypatch, tmp_path / "suites")
@@ -565,11 +584,11 @@ async def test_a_fake_that_cannot_start_is_a_stack_error_and_nothing_is_left_run
     monkeypatch.setattr(orchestrate, "Stack", lambda *a, **kw: stacks.append(a))
 
     with pytest.raises(StackError) as err:
-        await run_suites(_options(tmp_path / "logs", display="none"))
+        await run_suites(_options(tmp_path / "logs", display="none", **ports))
 
-    assert str(err.value) == (
-        f"could not start the {name} on 127.0.0.1: [Errno 98] Address already in use"
-    )
+    message = str(err.value)
+    assert message.startswith(says)
+    assert message.endswith(": [Errno 98] Address already in use") and "\n" not in message
     assert stacks == []  # no suite ran
     assert not (tmp_path / "logs").exists()  # and no empty run dir is left behind
     fake_ha, proxy = made
@@ -577,3 +596,81 @@ async def test_a_fake_that_cannot_start_is_a_stack_error_and_nothing_is_left_run
     # Whatever started was stopped.
     assert fake_ha._server is None
     assert proxy._runner is None and proxy._client is None
+
+
+def _recording_fakes(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+    """The port each fake was asked for; each really binds any free port."""
+    asked: dict[str, int] = {}
+
+    def recorded(cls: type[Any]) -> Any:
+        def make(*args: Any, port: int, **kwargs: Any) -> Any:
+            asked[cls.__name__] = port
+            return cls(*args, port=0, **kwargs)
+
+        return make
+
+    monkeypatch.setattr(orchestrate, "FakeHA", recorded(FakeHA))
+    monkeypatch.setattr(orchestrate, "LlmProxy", recorded(LlmProxy))
+    return asked
+
+
+async def test_run_suites_binds_the_asked_ports_and_probes_them_before_any_stack_starts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _golden(tmp_path / "suites", "demo", "quiet")
+    _suites_at(monkeypatch, tmp_path / "suites")
+    monkeypatch.setattr(orchestrate, "CALIBRATION_FILE", tmp_path / "calibration.json")
+    monkeypatch.setattr(
+        orchestrate, "make_judge_model", lambda m, u: get_model("mockllm/model", memoize=False)
+    )
+    order: list[str] = []
+    _preflight_passes(monkeypatch, order)
+    asked = _recording_fakes(monkeypatch)
+
+    class OrderedStack(FakeStack):
+        async def start(self) -> None:
+            order.append("stack start")
+
+    monkeypatch.setattr(orchestrate, "Stack", lambda cfg, **kw: OrderedStack(cfg))
+
+    await run_suites(_options(tmp_path / "logs", build=False, fake_ha_port=18123, proxy_port=18100))
+
+    assert asked == {"FakeHA": 18123, "LlmProxy": 18100}
+    assert order[-2:] == ["probe ['LLM proxy', 'fake HA'] via 127.0.0.1", "stack start"]
+
+
+async def test_a_failed_probe_stops_the_run_before_any_suite_and_stops_the_fakes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _golden(tmp_path / "suites", "demo", "quiet")
+    _suites_at(monkeypatch, tmp_path / "suites")
+    monkeypatch.setattr(orchestrate, "CALIBRATION_FILE", tmp_path / "calibration.json")
+    _preflight_passes(monkeypatch, [])
+    made: list[Any] = []
+
+    def recorded(cls: type[Any]) -> Any:
+        def make(*args: Any, **kwargs: Any) -> Any:
+            made.append(cls(*args, **kwargs))
+            return made[-1]
+
+        return make
+
+    monkeypatch.setattr(orchestrate, "FakeHA", recorded(FakeHA))
+    monkeypatch.setattr(orchestrate, "LlmProxy", recorded(LlmProxy))
+    blocked = StackError("a container cannot reach the fake HA … (see docs/evals.md#host-firewall)")
+
+    async def probe(ports: dict[str, int], *, gateway: str) -> None:
+        raise blocked
+
+    monkeypatch.setattr(orchestrate, "probe_host_ports", probe)
+    stacks: list[object] = []
+    monkeypatch.setattr(orchestrate, "Stack", lambda *a, **kw: stacks.append(a))
+
+    with pytest.raises(StackError) as err:
+        await run_suites(_options(tmp_path / "logs"))
+
+    assert err.value is blocked
+    assert stacks == []  # no suite's stack was made, let alone started
+    assert not (tmp_path / "logs").exists()
+    fake_ha, proxy = made
+    assert fake_ha._server is None and proxy._runner is None

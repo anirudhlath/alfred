@@ -70,7 +70,8 @@ flowchart LR
 
 Dashed edges are later slices. Everything outside the container runs on the host, in the
 `alfred evals` process: the fake Home Assistant, the proxy, the driver and the judge. The
-fakes listen on the docker bridge's gateway address, and the container reaches them as
+fakes listen on the docker bridge's gateway address, on fixed ports (18123 and 18100 by
+default; see [Host firewall](#host-firewall)), and the container reaches them as
 `host.docker.internal`.
 
 **The fake Home Assistant** (`evals/harness/fake_ha.py`) is a WebSocket server speaking the
@@ -114,10 +115,12 @@ System 1 and System 2 pointed at the proxy, embeddings at the embedding server, 
 the fake HA with a fake token, and the Librarian's interval pushed to a day so it never runs
 mid-suite. The stack is ready when `/health` answers, home-service has connected to the fake
 HA, and System 2 has answered a real request ("Reply with the single word: ready.") — up to
-420 s in all. It records the suite's first boot time and that first reply's latency for the
-scorecard. Before each sample the task checks the container is still running and restarts a
-dead one, once per suite. Teardown removes the container and wipes the data dir (the
-container writes it as root).
+420 s in all. The answer must have gone through the model: Conscious can reply with a
+fallback when its LLM call fails, so a System 2 reply with no call recorded by the proxy
+since the request was sent fails the boot ("without reaching the LLM proxy"). It records the
+suite's first boot time and that first reply's latency for the scorecard. Before each sample
+the task checks the container is still running and restarts a dead one, once per suite.
+Teardown removes the container and wipes the data dir (the container writes it as root).
 
 ### One sample
 
@@ -162,6 +165,8 @@ sequenceDiagram
   server** (vLLM with `--runner pooling`) serving `BAAI/bge-m3` at `http://localhost:8001`.
   Both are checked before anything is built.
 - **A home-service checkout at `origin/main`**, with no uncommitted changes.
+- **Container-to-host traffic on two ports**, 18123 and 18100 by default. A host firewall
+  that drops incoming traffic needs a rule for them; see [Host firewall](#host-firewall).
 
 ### One-time setup
 
@@ -179,6 +184,45 @@ export ALFRED_EVALS_HOME_SERVICE=~/code/.worktrees/home-service/evals-main
 `home-service` checkout beside the main Alfred checkout. Each run fetches `origin/main` and
 refuses a checkout that is not at `origin/main` (behind or ahead), or dirty; move the
 worktree to it with `git -C <checkout> checkout --detach origin/main`.
+
+### Host firewall
+
+The eval container must reach two ports on the host: the fake Home Assistant and the LLM
+proxy, both listening on the docker bridge's gateway (`172.17.0.1` on a default Docker
+install). They are host ports, not ports Docker publishes, so the host firewall's incoming
+rules apply to them, and a firewall that drops incoming traffic by default (ufw's
+`deny (incoming)`, for one) drops them too. Published ports are not affected, because
+Docker's NAT rules route around the firewall's input chain; that is why the embedding server
+on `:8001` can work while the fakes cannot.
+
+| Listener | Default port | Option |
+|---|---|---|
+| Fake Home Assistant | 18123 | `--fake-ha-port` |
+| LLM proxy | 18100 | `--proxy-port` |
+
+Both defaults sit below the Linux ephemeral port range (32768 to 60999), so they stay the
+same from run to run and a firewall rule can name them. `0` takes any free port, which only
+suits a host with no such firewall.
+
+With ufw, let the docker bridge reach them:
+
+```bash
+sudo ufw allow from 172.17.0.0/16 to 172.17.0.1 port 18100,18123 proto tcp comment 'alfred evals'
+```
+
+Adjust the subnet and the gateway to your bridge, and the ports if you moved them:
+
+```bash
+docker network inspect bridge --format '{{(index .IPAM.Config 0).Subnet}} {{(index .IPAM.Config 0).Gateway}}'
+```
+
+The rule admits containers on that bridge, not the LAN.
+
+A blocked port fails fast. Once the fakes are up and before any stack boots, the run starts a
+throwaway container from the eval image, with the same `host.docker.internal` alias the
+stack's container gets, and opens a TCP connection to each port (5 s each). If one fails, the
+run stops with a single line that names the address and port, the likely cause and this
+section, instead of waiting out the 420 s boot timeout.
 
 ### Calibrate the judge
 
@@ -236,6 +280,8 @@ uv run alfred evals run --include-pending --no-build --keep
 | `--build` / `--no-build` | build | Build the image first. With `--no-build` the scorecard marks the commit "(image not rebuilt)", because it cannot know what the image holds |
 | `--keep` | off | Leave the container and data dirs for debugging. Every suite's container has the same name, so only the last suite's survives; every suite's data dir is kept. A restart (an isolated golden, or a recovery) replaces that suite's data dir |
 | `--display` | `rich` | Inspect's console display: `rich`, `plain` or `none`. Inspect's `full` display crashes under `eval_async`, so it is not offered (`evals/harness/display.py`) |
+| `--fake-ha-port` | 18123 | Port the fake Home Assistant listens on, on the bridge gateway; `0` takes any free port. See [Host firewall](#host-firewall) |
+| `--proxy-port` | 18100 | Port the LLM proxy listens on, on the bridge gateway; `0` takes any free port |
 
 ### What a run does
 
@@ -252,16 +298,20 @@ uv run alfred evals run --include-pending --no-build --keep
    - the docker bridge has a gateway address.
 3. **Build** the image with `alfredctl build --runtime docker`, bundling the checked
    home-service. A failed build is a one-line error after the build output.
-4. **Start the fakes** — the fake HA and the proxy — on the bridge gateway.
+4. **Start the fakes** — the fake HA and the proxy — on the bridge gateway, on
+   `--fake-ha-port` and `--proxy-port`, then **probe** them from a throwaway container of
+   the eval image (see [Host firewall](#host-firewall)). A port that will not bind, or that
+   the container cannot reach, is a one-line error naming the port.
 5. **Each suite, one at a time:** boot its stack, run its Inspect task one sample at a time
    (an errored sample is retried once), and tear the stack down. A suite whose stack fails
    to start is recorded under "Run problems" and the next suite still runs.
 6. **Scorecard.** Print it, and write `report.md` and `report.json` to the run directory.
 
-An error before step 5 — a bad golden, a preflight failure, a failed build — is a message
-on stderr starting `alfred evals:`, and exit 1. After a run whose stacks all started the
-exit code is 0, whatever the scores. If any suite's stack failed to start, the scorecard is
-still written and the command exits 1, naming the failed suites.
+An error before step 5 — a bad golden, a preflight failure, a failed build, a fake that
+cannot bind or a failed probe — is a message on stderr starting `alfred evals:`, and exit 1.
+After a run whose stacks all started the exit code is 0, whatever the scores. If any suite's
+stack failed to start, the scorecard is still written and the command exits 1, naming the
+failed suites.
 
 ---
 
@@ -656,8 +706,9 @@ goldens are public. Everything about it is fake or fenced.
   fake HA and no real token or key reaches it. The one host value it inherits is `HF_TOKEN`.
 - **Loopback ports.** The container publishes its web port and Redis on random
   `127.0.0.1` ports, never on the LAN, and `--expose-ha`/`--expose-home` are refused. The
-  fake HA and the proxy listen on the docker bridge's gateway, reachable from containers but
-  not from the LAN.
+  fake HA and the proxy listen on the docker bridge's gateway on fixed ports (18123 and
+  18100 by default), reachable from containers but not from the LAN. A firewall rule that
+  opens them should admit the bridge's subnet only ([Host firewall](#host-firewall)).
 - **A capped share of vLLM.** The proxy holds at most 4 requests upstream at once, the judge
   at most 2, and samples run one at a time.
 - **One eval container at a time.** Suites run one after another. Every eval container is
@@ -676,8 +727,8 @@ goldens are public. Everything about it is fake or fenced.
 | `evals/cli.py` | `alfred evals calibrate\|list\|run\|memory` |
 | `evals/harness/orchestrate.py` | `run_suites()`: plan, preflight, build, one stack and Inspect task per suite, scorecard |
 | `evals/harness/preflight.py` | Model lists, home-service and Alfred commits, `PreflightError` |
-| `evals/harness/net.py` | The docker bridge gateway; how the container spells host URLs (`host.docker.internal`) |
-| `evals/harness/stack.py` | `Stack`: boot with `alfredctl up --eval`, readiness, `send()`, restart, teardown; `container_env()` |
+| `evals/harness/net.py` | The docker bridge gateway; how the container spells host URLs (`host.docker.internal`); the fakes' default ports |
+| `evals/harness/stack.py` | `Stack`: boot with `alfredctl up --eval`, readiness, `send()`, restart, teardown; `container_env()`; `probe_host_ports()`, the reachability probe |
 | `evals/harness/fake_ha.py` | `FakeHA`: the Home Assistant WebSocket double |
 | `evals/harness/world.py` | `World` schema and `load_world()` |
 | `evals/harness/worlds/` | World fixtures (`apartment.yaml`) |

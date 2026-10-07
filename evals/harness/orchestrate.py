@@ -35,7 +35,7 @@ from evals.harness.report import (
     write_report,
 )
 from evals.harness.scenario import ScenarioError, expand_variants, load_suites, select
-from evals.harness.stack import Stack, StackConfig, StackError
+from evals.harness.stack import Stack, StackConfig, StackError, probe_host_ports
 from evals.harness.tasks import RunContext, build_task
 from evals.harness.world import load_world
 
@@ -72,6 +72,8 @@ class RunOptions:
     keep: bool
     log_root: Path
     display: Display
+    fake_ha_port: int  # 0: any free port
+    proxy_port: int  # 0: any free port
 
 
 @dataclass(frozen=True)
@@ -195,12 +197,18 @@ def _build_image(home_service: Path) -> None:
         raise StackError(f"cannot run {alfredctl} to build the image: {exc}") from exc
 
 
-async def _start_fake(name: str, start: Callable[[], Awaitable[None]], host: str) -> None:
+async def _start_fake(
+    name: str, start: Callable[[], Awaitable[None]], host: str, port: int, option: str
+) -> None:
     try:
         await start()
     except OSError as exc:
         why = " ".join(str(exc).split())
-        raise StackError(f"could not start the {name} on {host}: {why}") from exc
+        if port:
+            where = f"{host}:{port} (choose another with {option})"
+        else:
+            where = f"{host} (any free port)"
+        raise StackError(f"could not start the {name} on {where}: {why}") from exc
 
 
 async def run_suites(opts: RunOptions) -> RunOutcome:
@@ -222,8 +230,8 @@ async def run_suites(opts: RunOptions) -> RunOutcome:
 
     judge = Judge(make_judge_model(opts.model, opts.vllm_url))
 
-    fake_ha = FakeHA(load_world("apartment"), host=gateway)
-    proxy = LlmProxy(opts.vllm_url.removesuffix("/v1"), host=gateway)
+    fake_ha = FakeHA(load_world("apartment"), host=gateway, port=opts.fake_ha_port)
+    proxy = LlmProxy(opts.vllm_url.removesuffix("/v1"), host=gateway, port=opts.proxy_port)
     cfg = StackConfig(
         model=opts.model,
         vllm_url=opts.vllm_url,
@@ -248,8 +256,10 @@ async def run_suites(opts: RunOptions) -> RunOutcome:
 
     use_display(opts.display)
     try:
-        await _start_fake("fake HA", fake_ha.start, gateway)
-        await _start_fake("LLM proxy", proxy.start, gateway)
+        await _start_fake("fake HA", fake_ha.start, gateway, opts.fake_ha_port, "--fake-ha-port")
+        await _start_fake("LLM proxy", proxy.start, gateway, opts.proxy_port, "--proxy-port")
+        # Seconds, not a boot timeout minutes later, when the container cannot reach them.
+        await probe_host_ports({"fake HA": fake_ha.port, "LLM proxy": proxy.port}, gateway=gateway)
         run_dir.mkdir(parents=True, exist_ok=True)
         logs, stacks, unstarted = await execute(
             plan,

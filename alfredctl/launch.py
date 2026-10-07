@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -13,6 +12,7 @@ from alfredctl.runtime import (
     Runtime,
     container_name,
     eval_container_name,
+    host_alias_args,
     host_gateway,
     image_tag,
     trusted_subnet,
@@ -153,8 +153,7 @@ def build_plan(
             args += ["-p", "1883:1883"]
         if expose_home:
             args += ["-p", "8000:8000"]
-        if rt.name == "docker" and sys.platform == "linux":
-            args += ["--add-host", "host.docker.internal:host-gateway"]
+        args += host_alias_args(rt)
     args += ["-v", f"{models}:/models"]
     if hf_cache is not None:
         args += ["-v", f"{hf_cache}:/models/hf"]

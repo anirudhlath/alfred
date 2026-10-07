@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-from alfredctl import launch
 from alfredctl import runtime as runtime_module
 from alfredctl.launch import LaunchPlan, build_plan
 from alfredctl.runtime import Runtime
@@ -112,7 +111,7 @@ def test_mode_and_passphrase_set() -> None:
 
 
 def test_docker_linux_adds_add_host(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(launch.sys, "platform", "linux")
+    monkeypatch.setattr(runtime_module.sys, "platform", "linux")
     args = _plan(rt=DOCKER).run_args
     assert "--add-host" in args
     assert args[args.index("--add-host") + 1] == "host.docker.internal:host-gateway"

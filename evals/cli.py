@@ -12,6 +12,7 @@ from typing import Annotated
 import typer
 
 from evals.harness.display import Display
+from evals.harness.net import DEFAULT_FAKE_HA_PORT, DEFAULT_PROXY_PORT
 
 evals_app = typer.Typer(no_args_is_help=True, help="Evaluate Alfred against its PRD.")
 
@@ -28,6 +29,13 @@ SuitesArg = Annotated[list[str] | None, typer.Argument(help="Suites (default: al
 TagOpt = Annotated[list[str] | None, typer.Option("--tag", help="Only goldens with this tag")]
 PendingOpt = Annotated[bool, typer.Option("--include-pending", help="Also pending goldens")]
 DisplayOpt = Annotated[Display, typer.Option(help="Inspect's console display")]
+FakeHaPortOpt = Annotated[
+    int,
+    typer.Option(min=0, max=65535, help="Port the fake Home Assistant listens on (0: any free)"),
+]
+ProxyPortOpt = Annotated[
+    int, typer.Option(min=0, max=65535, help="Port the LLM proxy listens on (0: any free)")
+]
 
 
 @evals_app.command()
@@ -118,6 +126,8 @@ def run(
         ),
     ] = False,
     display: DisplayOpt = "rich",
+    fake_ha_port: FakeHaPortOpt = DEFAULT_FAKE_HA_PORT,
+    proxy_port: ProxyPortOpt = DEFAULT_PROXY_PORT,
 ) -> None:
     """Boot throwaway stacks and score the goldens. Prints the scorecard."""
     import asyncio
@@ -147,6 +157,8 @@ def run(
         keep=keep,
         log_root=LOG_ROOT,
         display=display,
+        fake_ha_port=fake_ha_port,
+        proxy_port=proxy_port,
     )
     try:
         outcome = asyncio.run(run_suites(opts))

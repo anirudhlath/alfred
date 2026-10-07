@@ -147,6 +147,29 @@ def test_evals_run_exits_1_after_the_scorecard_when_a_suite_never_started(
         assert result.stderr == ""
 
 
+def test_evals_run_binds_the_fakes_on_fixed_ports_unless_told_otherwise(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from evals.harness.orchestrate import RunOptions, RunOutcome
+
+    seen: list[RunOptions] = []
+
+    async def fake_run_suites(opts: RunOptions) -> RunOutcome:
+        seen.append(opts)
+        return RunOutcome(run_dir=tmp_path, unstarted=[])
+
+    monkeypatch.setattr("evals.harness.orchestrate.run_suites", fake_run_suites)
+    base = ["evals", "run", "--no-build", "--home-service", str(tmp_path)]
+
+    assert runner.invoke(app, base).exit_code == 0
+    moved = ["--fake-ha-port", "0", "--proxy-port", "28100"]
+    assert runner.invoke(app, [*base, *moved]).exit_code == 0
+    assert runner.invoke(app, [*base, "--proxy-port", "-1"]).exit_code == 2
+
+    # Outside the Linux ephemeral range (32768-60999), so a firewall rule can name them.
+    assert [(o.fake_ha_port, o.proxy_port) for o in seen] == [(18123, 18100), (0, 28100)]
+
+
 def _fake_judge_model(monkeypatch: pytest.MonkeyPatch, answers: list[str]) -> list[tuple[str, str]]:
     """Point ``make_judge_model`` at mockllm giving ``answers``; return the (model, url) it got."""
     from inspect_ai.model import ModelOutput, get_model

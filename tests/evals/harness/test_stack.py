@@ -2,17 +2,30 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket
 import subprocess
+import sys
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 from redis import exceptions as redis_exceptions
 
+from alfredctl.runtime import image_tag
 from bus.schemas.events import AlfredResponse, UserRequest
+from evals.harness.evidence import LlmCall
 from evals.harness.fake_ha import FakeHA
 from evals.harness.proxy import LlmProxy
-from evals.harness.stack import Docker, Stack, StackConfig, StackError, container_env, run_cmd
+from evals.harness.stack import (
+    Docker,
+    Stack,
+    StackConfig,
+    StackError,
+    container_env,
+    probe_host_ports,
+    run_cmd,
+)
 from evals.harness.world import load_world
 
 if TYPE_CHECKING:
@@ -62,8 +75,24 @@ class FakeDocker:
         self.events.append("remove")
 
 
+class _ReachedProxy(LlmProxy):
+    """System 2 reached the LLM for every request it answered: each window holds a call."""
+
+    def __init__(self) -> None:
+        super().__init__("http://x")
+
+    def calls_between(self, t0: float, t1: float) -> list[LlmCall]:
+        return [LlmCall(t=t0, role="system2", latency_ms=1.0, status=200)]
+
+
 def make_stack(  # type: ignore[no-untyped-def]
-    tmp_path: Path, docker: FakeDocker, *, healthy: bool = True, ha_connects: bool = True, **kw
+    tmp_path: Path,
+    docker: FakeDocker,
+    *,
+    healthy: bool = True,
+    ha_connects: bool = True,
+    proxy: LlmProxy | None = None,
+    **kw,
 ) -> Stack:
     ha = FakeHA(load_world("apartment"))
 
@@ -76,7 +105,7 @@ def make_stack(  # type: ignore[no-untyped-def]
     return Stack(
         cfg(tmp_path, **kw),
         fake_ha=ha,
-        proxy=LlmProxy("http://x"),
+        proxy=proxy or _ReachedProxy(),
         docker=docker,  # type: ignore[arg-type]
         alfredctl=Path("/venv/bin/alfredctl"),
         health=health,
@@ -117,17 +146,21 @@ async def test_readiness_waits_for_a_conscious_reply(
     answers = iter(["channels", "conscious-engine"])
     published: list[str] = []
     authenticated: list[bool] = []
+    proxy = LlmProxy("http://x")
 
     async def fake_publish(redis, request: UserRequest, session_id: str, timeout: float):  # type: ignore[no-untyped-def]
         published.append(session_id)
         authenticated.append(request.authenticated)
-        return AlfredResponse(
-            source=next(answers), channel="web_pwa", session_id=session_id, text="ready"
-        )
+        source = next(answers)
+        if source == "conscious-engine":  # System 2 reached the LLM through the proxy
+            proxy.calls.append(
+                LlmCall(t=time.monotonic(), role="system2", latency_ms=1.0, status=200)
+            )
+        return AlfredResponse(source=source, channel="web_pwa", session_id=session_id, text="ready")
 
     monkeypatch.setattr("evals.harness.stack.publish_and_wait", fake_publish)
     monkeypatch.setattr("evals.harness.stack.create_redis", lambda url: _NullRedis())
-    stack = make_stack(tmp_path, FakeDocker())
+    stack = make_stack(tmp_path, FakeDocker(), proxy=proxy)
     await stack.start()
     assert stack.first_reply_ms is not None and stack.boot_seconds is not None
     # The channels-only answer did not count: it asked again until System 2 replied.
@@ -363,6 +396,114 @@ async def test_each_readiness_stage_gives_up_at_the_boot_deadline(
     with pytest.raises(StackError, match=says) as err:
         await stack.start()
     assert "conscious crashed" in str(err.value)
+
+
+async def test_a_conscious_reply_that_never_reached_the_llm_proxy_is_not_readiness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Conscious can answer with a fallback when its LLM call failed: that reply proves the
+    # container is up, not that System 2 reaches the model. A call from before the
+    # readiness request does not count either.
+    proxy = LlmProxy("http://x")
+    proxy.calls.append(LlmCall(t=0.0, role="system2", latency_ms=1.0, status=200))
+    _answer_ready(monkeypatch, _NullRedis())
+    stack = make_stack(tmp_path, FakeDocker(), proxy=proxy)
+    with pytest.raises(StackError) as err:
+        await stack.start()
+    assert str(err.value).startswith(
+        f"{stack.name}: System 2 answered the readiness request without reaching the LLM "
+        "proxy — check the container's LLM settings\n--- docker logs ---\n"
+    )
+    assert "conscious crashed" in str(err.value)
+
+
+# The reachability probe: a throwaway container of the eval image, connecting to the fakes.
+
+_FAKES = {"fake HA": 18123, "LLM proxy": 18100}
+
+
+class _ProbeDocker(FakeDocker):
+    def __init__(self, printed: str) -> None:
+        super().__init__()
+        self.printed = printed
+
+    async def run_cmd(self, cmd: list[str], *, timeout: float = 600) -> str:
+        self.commands.append(cmd)
+        return self.printed
+
+
+async def test_the_probe_runs_the_eval_image_with_the_stacks_host_alias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    docker = FakeDocker()
+    await probe_host_ports(_FAKES, gateway="172.17.0.1", docker=docker)  # type: ignore[arg-type]
+    (cmd,) = docker.commands
+    assert cmd[:3] == ["docker", "run", "--rm"]
+    # The alias `alfredctl up --eval` gives the stack's container on Linux docker.
+    alias = cmd.index("--add-host")
+    assert cmd[alias + 1] == "host.docker.internal:host-gateway"
+    tail = cmd[cmd.index("--entrypoint") :]
+    assert tail[:4] == ["--entrypoint", "python", image_tag(), "-c"]
+    assert tail[5:] == ["host.docker.internal", "5.0", "18123", "18100"]
+
+
+async def test_the_probe_script_reports_only_the_ports_it_cannot_reach(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The script the probe container runs, run here against a real listener and a port
+    # nothing listens on.
+    docker = FakeDocker()
+    await probe_host_ports(_FAKES, gateway="172.17.0.1", docker=docker)  # type: ignore[arg-type]
+    (cmd,) = docker.commands
+    script = cmd[cmd.index("-c") + 1]
+    with socket.socket() as listening, socket.socket() as silent:
+        listening.bind(("127.0.0.1", 0))
+        listening.listen()
+        silent.bind(("127.0.0.1", 0))  # bound, never listening: connections are refused
+        reachable, unreachable = listening.getsockname()[1], silent.getsockname()[1]
+        out = subprocess.run(
+            [sys.executable, "-c", script, "127.0.0.1", "2", str(reachable), str(unreachable)],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        ).stdout
+    (line,) = out.splitlines()
+    assert line.startswith(f"{unreachable} ") and "refused" in line.lower()
+
+
+async def test_a_probe_that_reaches_every_fake_passes() -> None:
+    await probe_host_ports(_FAKES, gateway="172.17.0.1", docker=_ProbeDocker(""))  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("printed", "named", "not_named"),
+    [
+        ("18123 timed out\n", ["the fake HA at host.docker.internal:18123 (timed out)"], "18100"),
+        (
+            "18123 timed out\n18100 [Errno 111] Connection refused\n",
+            [
+                "the fake HA at host.docker.internal:18123 (timed out)",
+                "the LLM proxy at host.docker.internal:18100 ([Errno 111] Connection refused)",
+            ],
+            None,
+        ),
+    ],
+    ids=["one-port", "both-ports"],
+)
+async def test_a_failed_probe_names_the_ports_the_firewall_and_the_fix(
+    printed: str, named: list[str], not_named: str | None
+) -> None:
+    with pytest.raises(StackError) as err:
+        await probe_host_ports(_FAKES, gateway="172.17.0.1", docker=_ProbeDocker(printed))  # type: ignore[arg-type]
+    message = str(err.value)
+    assert "\n" not in message
+    assert all(part in message for part in named)
+    assert "172.17.0.1" in message and "firewall" in message
+    assert message.endswith("(see docs/evals.md#host-firewall)")
+    if not_named is not None:
+        assert not_named not in message
 
 
 # The orchestrator catches only StackError: every way a docker call can fail must become one.

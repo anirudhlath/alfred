@@ -4,9 +4,16 @@ from __future__ import annotations
 
 from urllib.parse import urlsplit, urlunsplit
 
+from alfredctl.runtime import DOCKER_HOST_ALIAS
 from evals.harness.preflight import PreflightError, run_checked
 
-IN_CONTAINER_HOST = "host.docker.internal"
+IN_CONTAINER_HOST = DOCKER_HOST_ALIAS
+# Fixed, and below the Linux ephemeral range (32768-60999), so a host firewall rule can
+# name them (docs/evals.md#host-firewall). `alfred evals run --fake-ha-port/--proxy-port`
+# moves them; 0 takes any free port.
+DEFAULT_FAKE_HA_PORT = 18123
+DEFAULT_PROXY_PORT = 18100
+HOST_FIREWALL_DOC = "docs/evals.md#host-firewall"
 # Names a host-side URL uses for the host itself; inside the container they mean the container.
 _HOST_SELF_NAMES = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
 

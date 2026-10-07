@@ -19,15 +19,22 @@ from uuid import uuid4
 import httpx
 from redis.exceptions import RedisError
 
-from alfredctl.runtime import eval_container_name, image_tag
+from alfredctl.runtime import Runtime, eval_container_name, host_alias_args, image_tag
 from bus.schemas.events import AlfredResponse, UserRequest
 from core.channels.request_bus import publish_and_wait
 from evals.harness.fake_ha import EVAL_HA_TOKEN, FakeHA
-from evals.harness.net import container_reachable, in_container_url
+from evals.harness.net import (
+    HOST_FIREWALL_DOC,
+    IN_CONTAINER_HOST,
+    container_reachable,
+    in_container_url,
+)
 from evals.harness.preflight import describe_failure
 from shared.redis_streams import create_redis
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from evals.harness.proxy import LlmProxy
     from shared.types import AioRedis
 
@@ -39,6 +46,9 @@ EVAL_OPENROUTER_PLACEHOLDER = "alfred-eval-not-a-key"
 EVAL_SIGNAL_NUMBER = "+15550100"
 EVAL_GUEST_SIGNAL_NUMBER = "+15550199"
 _BGE_M3_RECALL_FLOOR = "0.575"  # CLAUDE.md: bge-m3 needs 0.575 (EXP-009)
+# Every eval container runs on docker: `alfredctl up --eval --runtime docker`, and the probe.
+EVAL_RUNTIME = Runtime(name="docker", exe="docker")
+PROBE_CONNECT_TIMEOUT_S = 5.0
 
 
 class StackError(RuntimeError):
@@ -175,6 +185,63 @@ class Docker:
             raise StackError(describe_failure(f"docker rm -f {name}", exc)) from exc
 
 
+# Runs in the probe container: one line, "<port> <why>", per port it cannot connect to.
+_PROBE_SCRIPT = """\
+import socket, sys
+host, timeout = sys.argv[1], float(sys.argv[2])
+for port in sys.argv[3:]:
+    try:
+        socket.create_connection((host, int(port)), timeout=timeout).close()
+    except OSError as exc:
+        print(port, " ".join(str(exc).split()) or type(exc).__name__, flush=True)
+"""
+
+
+async def probe_host_ports(
+    ports: Mapping[str, int],
+    *,
+    gateway: str,
+    docker: Docker | None = None,
+    timeout_s: float = PROBE_CONNECT_TIMEOUT_S,
+) -> None:
+    """Raise unless a throwaway container of the eval image, given the stack's host alias,
+    can open a TCP connection to each named host port. A host firewall that drops
+    container→host traffic otherwise shows only as a boot that times out minutes later."""
+    docker = docker or Docker()
+    cmd = [
+        "docker",
+        "run",
+        "--rm",
+        "--pull=never",
+        *host_alias_args(EVAL_RUNTIME),
+        "--entrypoint",
+        "python",
+        image_tag(),
+        "-c",
+        _PROBE_SCRIPT,
+        IN_CONTAINER_HOST,
+        str(timeout_s),
+        *(str(port) for port in ports.values()),
+    ]
+    out = await docker.run_cmd(cmd, timeout=60 + timeout_s * len(ports))
+    why: dict[str, str] = {}
+    for line in out.splitlines():
+        port, _, reason = line.strip().partition(" ")
+        why[port] = reason
+    failed = [(name, port) for name, port in ports.items() if str(port) in why]
+    if not failed:
+        return
+    unreached = " or ".join(
+        f"the {name} at {IN_CONTAINER_HOST}:{port} ({why[str(port)]})" for name, port in failed
+    )
+    allow = ", ".join(str(port) for _, port in failed)
+    raise StackError(
+        f"a container cannot reach {unreached}, which this host serves on the docker bridge "
+        f"gateway {gateway} — a host firewall is probably dropping container→host traffic; "
+        f"allow TCP {allow} to {gateway} from the docker bridge (see {HOST_FIREWALL_DOC})"
+    )
+
+
 HealthFn = Callable[[int], Awaitable[bool]]
 
 
@@ -221,7 +288,7 @@ class Stack:
             "up",
             "--eval",
             "--runtime",
-            "docker",
+            EVAL_RUNTIME.name,
             "--no-build",
             "--persist",
             str(data_dir),
@@ -282,6 +349,13 @@ class Stack:
             except (RedisError, OSError) as exc:
                 raise await self._fail(f"lost redis during readiness: {exc}") from exc
             if reply.source == CONSCIOUS_SOURCE:
+                # Conscious can answer with a fallback when its LLM call failed: only a call
+                # the proxy saw proves System 2 reaches the model.
+                if not self.proxy.calls_between(sent, time.monotonic()):
+                    raise await self._fail(
+                        "System 2 answered the readiness request without reaching the LLM "
+                        "proxy — check the container's LLM settings"
+                    )
                 reply_ms = (time.monotonic() - sent) * 1000
                 break
             if not await self.docker.running(self.name):
