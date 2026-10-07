@@ -124,9 +124,9 @@ count. When none was classed as System 2 but some were classed `unknown`, the bo
 saying so: System 2's prompt has probably changed, and `ROLE_FINGERPRINTS` in
 `evals/harness/proxy.py` needs updating (`tests/evals/harness/test_role_fingerprints.py` pins
 each fingerprint to the first message its role sends). The stack records the suite's first
-boot time and that first reply's latency for the scorecard. Before each sample the task checks the container is still running and restarts a
-dead one, once per suite. Teardown removes the container and wipes the data dir (the
-container writes it as root).
+boot time and that first reply's latency for the scorecard. Before each sample the task
+checks the container is still running and restarts a dead one, once per suite. Teardown
+removes the container and wipes the data dir (the container writes it as root).
 
 ### One sample
 
@@ -724,8 +724,9 @@ goldens are public. Everything about it is fake or fenced.
 - **One eval container at a time.** Suites run one after another. Every eval container is
   named `alfred-eval-<branch>`, apart from the branch's dev container and the deployed
   `alfred`, and `alfredctl up` removes an old one of that name before it starts. So two
-  runs on one branch cannot overlap: the second fails on the fakes' busy ports before it
-  builds anything.
+  runs on one branch cannot overlap. On the same ports the second fails on the fakes' busy
+  ports before it builds anything; don't give it other ports while the first is running,
+  or it rebuilds the image and replaces the first run's container.
 - **Cleanup that says so when it fails.** Teardown removes the container and wipes its data
   dir as root; if a step fails it logs the exact commands to finish by hand.
 
