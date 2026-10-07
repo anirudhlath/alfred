@@ -160,14 +160,12 @@ def _fake_judge_model(monkeypatch: pytest.MonkeyPatch, answers: list[str]) -> li
     return built
 
 
-@pytest.mark.skip(reason="goldens land in Task 13")
 def test_evals_list_shows_scenarios() -> None:
     result = runner.invoke(app, ["evals", "list", "--include-pending"])
     assert result.exit_code == 0, result.output
     assert "home_control.lights.turn_on_named_lamp" in result.output
 
 
-@pytest.mark.skip(reason="goldens land in Task 13")
 def test_evals_run_rejects_an_unknown_suite() -> None:
     result = runner.invoke(app, ["evals", "run", "nope"])
     assert result.exit_code == 1 and "unknown suite" in result.output

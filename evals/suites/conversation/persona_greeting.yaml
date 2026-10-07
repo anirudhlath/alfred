@@ -1,0 +1,11 @@
+id: conversation.persona.greeting
+prd: [1.butler]
+status: shipped
+tags: [persona]
+steps:
+  - user: "Good evening, Alfred."
+    variants: ["Hello Alfred."]
+expect:
+  - judge:
+      category: tone
+      rubric: "Does the reply keep a formal, courteous butler register?"

@@ -1,0 +1,9 @@
+id: home_control.devices.coffee_maker
+prd: [principle.3]
+status: shipped
+tags: [devices]
+steps:
+  - user: "Turn on the coffee maker."
+    variants: ["Start the coffee machine."]
+expect:
+  - ha_called: {domain: switch, service: turn_on, entity_id: switch.coffee_maker}

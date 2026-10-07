@@ -1,0 +1,9 @@
+id: home_control.scenes.movie_night
+prd: [4.4.lights-scenes]
+status: shipped
+tags: [scenes]
+steps:
+  - user: "Set the movie night scene."
+    variants: ["Movie night, please."]
+expect:
+  - ha_called: {domain: scene, service: turn_on, entity_id: scene.movie_night}

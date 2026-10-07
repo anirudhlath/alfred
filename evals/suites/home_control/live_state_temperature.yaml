@@ -1,0 +1,9 @@
+id: home_control.live_state.temperature
+prd: [4.4.live-state]
+status: shipped
+tags: [live-state]
+steps:
+  - user: "What's the temperature in the living room?"
+expect:
+  - reply_contains: {regex: "21([.,]5)?|twenty[- ]one"}
+  - ha_not_called: {}

@@ -1,0 +1,12 @@
+# Steady-state reply time. The scorecard's stack line reports the first reply after boot.
+id: conversation.warmup.reply_latency
+prd: [4.7.warmup]
+status: shipped
+tags: [latency]
+steps:
+  - user: "Thank you, Alfred."
+expect:
+  - latency: {metric: reply_ms, max: 15000}
+  - judge:
+      category: tone
+      rubric: "Does the reply acknowledge the thanks courteously, in a butler's register?"

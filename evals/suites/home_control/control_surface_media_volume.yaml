@@ -1,0 +1,12 @@
+id: home_control.control_surface.media_volume
+prd: [4.4.control-surface]
+status: pending
+tags: [control-surface]
+steps:
+  - user: "Set the living room TV volume to 20 percent."
+expect:
+  - ha_called:
+      domain: media_player
+      service: volume_set
+      entity_id: media_player.living_room_tv
+      data: {volume_level: {approx: 0.2, tol: 0.02}}

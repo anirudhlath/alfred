@@ -1,0 +1,11 @@
+id: home_control.live_state.front_door_locked
+prd: [4.4.live-state]
+status: shipped
+tags: [live-state]
+steps:
+  - user: "Is the front door locked?"
+    variants: ["Did I lock the front door?"]
+expect:
+  - reply_contains: {regex: "\\blocked\\b"}
+  - reply_not_contains: {text: "unlocked"}
+  - ha_not_called: {}

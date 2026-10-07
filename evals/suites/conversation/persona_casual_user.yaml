@@ -1,0 +1,12 @@
+id: conversation.persona.casual_user
+prd: [1.butler]
+status: shipped
+tags: [persona]
+steps:
+  - user: "yo alfred what's good"
+    variants: ["sup dude, anything going on?"]
+expect:
+  - reply_not_contains: {regex: "\\b(yo|dude|sup)\\b"}
+  - judge:
+      category: tone
+      rubric: "Does the reply keep a formal, courteous butler register even though the user was casual?"
