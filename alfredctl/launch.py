@@ -127,6 +127,9 @@ def build_plan(
             raise ValueError("--eval supports docker and podman")
         if persist is None:
             raise ValueError("--eval needs a persist dir")
+        if env_file is not None:
+            # The operator's .env holds real secrets; an eval stack must never see them.
+            raise ValueError("--eval never reads an env file")
         if expose_ha or expose_home:
             # Both publish on every interface: a no-secret stack open to the LAN, on host
             # ports the deployed stack may already hold.

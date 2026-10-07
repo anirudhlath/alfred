@@ -538,6 +538,14 @@ def test_up_eval_rejects_the_expose_flags(
     assert ran == []
 
 
+def test_up_eval_refuses_a_custom_port(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Ignoring it would leave the operator expecting a stack on a port it never bound."""
+    ran = _stub_eval_up(monkeypatch, tmp_path)
+    with pytest.raises(typer.BadParameter, match="--eval picks a random loopback port"):
+        main.up(eval_mode=True, persist=tmp_path / "eval-data", port=8082, do_build=False)
+    assert ran == []
+
+
 def test_up_eval_needs_a_persist_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     ran = _stub_eval_up(monkeypatch, tmp_path)
     with pytest.raises(typer.BadParameter, match="--persist"):

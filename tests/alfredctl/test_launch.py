@@ -347,6 +347,14 @@ def test_eval_mode_rejects_the_expose_flags(flag: str) -> None:
         )
 
 
+def test_eval_mode_refuses_an_env_file(tmp_path: Path) -> None:
+    """ "Never reads .env" holds in the plan itself, not only in the CLI that calls it."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("HA_TOKEN=real\n")
+    with pytest.raises(ValueError, match="env file"):
+        _plan(mode="persistent", persist=Path("/tmp/eval"), eval_mode=True, env_file=env_file)
+
+
 def test_eval_mode_asks_up_to_resolve_the_published_port() -> None:
     """A random host port is unknown until the container starts; `localhost:8081` would
     point at the deployed stack instead."""

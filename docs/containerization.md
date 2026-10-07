@@ -144,7 +144,8 @@ the harness's `DIR` and supports Docker and Podman only.
 - It publishes 8081 and Redis (6379) on random `127.0.0.1` ports, never on the LAN, so it
   cannot clash with a stack already on 8081. `up` prints the web URL it got; read either
   port with `docker port alfred-eval-<branch> 8081/tcp` (or `6379/tcp`). `--expose-ha` and
-  `--expose-home` are refused, because they would publish on every interface.
+  `--expose-home` are refused, because they would publish on every interface, and so is a
+  `--port` other than the default, because the port is chosen at start.
 - It never reads `.env` and skips the doctor preflight that reads it. The secrets
   passphrase is a fixed fake one, `alfred-eval-not-a-secret`, and is never written to
   `DIR`. Settings reach it through `--env`; the one host value it inherits is `HF_TOKEN`,

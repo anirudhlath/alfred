@@ -23,6 +23,8 @@ from alfredctl.redact import redact_command
 
 _STATUS_STYLE = {"pass": "green", "warn": "yellow", "fail": "red"}
 _STATUS_GLYPH = {"pass": "✓", "warn": "!", "fail": "✗"}
+# `up --port`'s default: --eval refuses anything else, since its port is chosen at start.
+_DEFAULT_WEB_PORT = 8081
 
 app = typer.Typer(help="Alfred container launcher", no_args_is_help=True)
 console = Console()
@@ -119,7 +121,9 @@ def up(
     expose_home: Annotated[
         bool, typer.Option("--expose-home", help="Publish :8000 (home-service)")
     ] = False,
-    port: Annotated[int, typer.Option(help="Host port for the web UI (docker/podman)")] = 8081,
+    port: Annotated[
+        int, typer.Option(help="Host port for the web UI (docker/podman)")
+    ] = _DEFAULT_WEB_PORT,
     env: Annotated[
         list[str], typer.Option("--env", "-e", help="Extra KEY=VALUE for the container")
     ] = [],  # noqa: B006
@@ -156,6 +160,8 @@ def up(
             raise typer.BadParameter(
                 "--eval publishes loopback-only ports; drop --expose-ha/--expose-home"
             )
+        if port != _DEFAULT_WEB_PORT:
+            raise typer.BadParameter("--eval picks a random loopback port; drop --port")
     if not eval_mode:
         # Preflight: surface config gaps early (offline, non-blocking). It reads .env,
         # which eval mode never uses.
