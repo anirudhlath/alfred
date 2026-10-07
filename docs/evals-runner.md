@@ -60,7 +60,7 @@ python -m evals run --tag lighting
 # Run a single scenario
 python -m evals run --scenario evals/scenarios/home/tv_on_dims_lights.yaml
 
-# Capture live HA context from Redis
+# Capture live home state from Redis
 python -m evals capture-context --output default.json
 
 # List saved runs
@@ -141,11 +141,13 @@ Context fixtures ground the SLM with real HA entity state. Without them, the mod
 **Capture from live services:**
 
 ```bash
-# Requires home-service running and publishing context to Redis
+# Requires home-service running and publishing live state
 python -m evals capture-context --output default.json
 ```
 
-This reads all `alfred:context:*` keys from Redis and saves raw `ContextSnapshot` JSON to `evals/contexts/default.json`.
+This reads every registered service's live state (`read_live_state_by_service()`, the `alfred:live_state:{service}` hashes) and saves one `ContextSnapshot` per service to `evals/contexts/default.json`.
+
+The read is bounded by `CAPTURE_TIMEOUT_S` (10 s): if Redis does not answer in time, the command prints the Redis host and port (never the full URL, which can carry credentials) and exits 1. It also exits 1 without writing a fixture when no service has live state.
 
 **Fixture format** (maps service names to ContextSnapshot objects):
 

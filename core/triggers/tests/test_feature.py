@@ -12,7 +12,7 @@ import pytest
 
 from core.triggers.registry import TriggerRegistry
 from core.triggers.store import TriggerStore
-from shared.streams import EVENTS_STREAM, USER_TIMEZONE_KEY
+from shared.streams import EVENTS_MAXLEN, EVENTS_STREAM, USER_TIMEZONE_KEY
 
 
 @pytest.fixture(autouse=True)
@@ -418,3 +418,20 @@ async def test_update_trigger_run_in_seconds_reschedules_from_now(
     run_at = stored.conditions.run_at
     assert run_at is not None
     assert before + timedelta(seconds=600) <= run_at <= after + timedelta(seconds=600)
+
+
+@pytest.mark.asyncio
+async def test_trigger_created_caps_the_events_stream(fake_redis: Any, snapshot_dir: Path) -> None:
+    from core.triggers.feature import TriggerFeature, TriggerFeatureContext
+
+    store = TriggerStore(redis=fake_redis, snapshot_dir=snapshot_dir)
+    feature = TriggerFeature(TriggerFeatureContext(store=store, redis=fake_redis))
+
+    result = await feature.create_trigger(
+        name="tea", trigger_type="time", conditions={"run_in_seconds": 5}, one_shot=True
+    )
+
+    assert "error" not in result
+    assert [o for o in fake_redis.xadd_options if o["stream"] == EVENTS_STREAM] == [
+        {"stream": EVENTS_STREAM, "maxlen": EVENTS_MAXLEN, "approximate": True}
+    ]

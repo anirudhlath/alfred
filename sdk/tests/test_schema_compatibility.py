@@ -169,3 +169,12 @@ def test_action_request_reason_roundtrips_and_fields_stay_in_lockstep() -> None:
     assert sdk_action.reason == "The dog walker is at the door."
     assert sdk_action.parameters == {"entity_id": "lock.front_door"}
     assert BusAction.model_validate_json(sdk_action.model_dump_json()).reason == bus_action.reason
+
+
+def test_sdk_copies_of_core_redis_names_match() -> None:
+    from sdk.alfred_sdk.client import AlfredClient
+    from shared.streams import EVENTS_MAXLEN, EVENTS_STREAM, TOOL_REGISTRY_KEY
+
+    assert AlfredClient.EVENTS_STREAM == EVENTS_STREAM
+    assert AlfredClient.EVENTS_MAXLEN == EVENTS_MAXLEN
+    assert AlfredClient.REGISTRY_KEY == TOOL_REGISTRY_KEY

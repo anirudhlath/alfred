@@ -1,20 +1,24 @@
 # core/reflex/context_reader.py
-"""Context reader — fetches and renders service context from Redis."""
+"""Context reader — renders every service's live state for the prompts.
+
+Reads through the SDK's ``read_live_state()`` on every call. There is no cache: a
+change a service has written shows on the very next read.
+"""
 
 from __future__ import annotations
 
 import fnmatch
-import logging
-import time
 from typing import TYPE_CHECKING, Any
 
-from sdk.alfred_sdk.context import ContextSnapshot
-from shared.streams import CONTEXT_KEY_PREFIX
+from sdk.alfred_sdk.live_state import read_live_state
 
 if TYPE_CHECKING:
+    from sdk.alfred_sdk.context import ContextSnapshot
     from shared.types import AioRedis
 
-logger = logging.getLogger(__name__)
+# Said in place of the state section when no service has live state (HA disconnected),
+# so a model never reads an empty section as "nothing is on".
+LIVE_STATE_UNAVAILABLE = "Live home state unavailable."
 
 
 def render_snapshot(snapshot: ContextSnapshot) -> str:
@@ -43,77 +47,41 @@ def render_snapshot(snapshot: ContextSnapshot) -> str:
 
 
 class ContextReader:
-    """Reads and caches service context from Redis.
-
-    Scans all alfred:context:* keys to aggregate context from all
-    registered services (not just home-service).
-    """
-
-    CACHE_TTL = 300.0  # 5 minutes
+    """Reads every registered service's live state, fresh on every call."""
 
     def __init__(self, redis: AioRedis) -> None:
         self._redis = redis
-        self._cached_snapshot: ContextSnapshot | None = None
-        self._cached_rendered: str = ""
-        self._cache_time: float = 0.0
-
-    async def _get_snapshot(self) -> ContextSnapshot:
-        """Fetch and cache the merged ContextSnapshot, respecting TTL."""
-        now = time.monotonic()
-        if self._cached_snapshot is not None and (now - self._cache_time) <= self.CACHE_TTL:
-            return self._cached_snapshot
-
-        merged = ContextSnapshot()
-        async for key in self._redis.scan_iter(match=f"{CONTEXT_KEY_PREFIX}*", count=100):
-            raw: bytes | str | None = await self._redis.get(key)
-            if raw is None:
-                continue
-            try:
-                snap = ContextSnapshot.model_validate_json(raw)
-            except Exception as exc:
-                k = key.decode() if isinstance(key, bytes) else key
-                logger.warning("Failed to parse context from %s: %s", k, exc)
-                continue
-
-            for domain, entries in snap.controllable.items():
-                merged.controllable.setdefault(domain, []).extend(entries)
-            for domain, entries in snap.sensors.items():
-                merged.sensors.setdefault(domain, []).extend(entries)
-
-        self._cached_snapshot = merged
-        self._cached_rendered = render_snapshot(merged)
-        self._cache_time = now
-        return merged
 
     async def get_rendered_context(self) -> str:
-        """Return rendered Markdown context from all services, re-fetching after TTL."""
-        await self._get_snapshot()
-        return self._cached_rendered
+        """Markdown of the live state, or LIVE_STATE_UNAVAILABLE when there is none."""
+        snapshot = await read_live_state(self._redis)
+        if snapshot is None:
+            return LIVE_STATE_UNAVAILABLE
+        return render_snapshot(snapshot)
 
     async def get_entity_states(
         self,
         patterns: list[str] | None = None,
-    ) -> list[dict[str, Any]]:
-        """Return structured entity states, optionally filtered by glob patterns."""
-        merged = await self._get_snapshot()
+    ) -> list[dict[str, Any]] | None:
+        """Entity states, optionally filtered by glob patterns; None when there is no live state."""
+        snapshot = await read_live_state(self._redis)
+        if snapshot is None:
+            return None
 
         all_entities: list[dict[str, Any]] = []
-        for _domain, entries in {**merged.controllable, **merged.sensors}.items():
+        # Walk both buckets rather than merging their dicts: a domain can be in both, and a
+        # merge would drop its controllable entries.
+        for entries in (*snapshot.controllable.values(), *snapshot.sensors.values()):
             for e in entries:
-                entity_dict: dict[str, Any] = {
-                    "entity_id": e.entity_id,
-                    "state": e.state,
-                }
+                entity_dict: dict[str, Any] = {"entity_id": e.entity_id, "state": e.state}
                 if e.attributes:
                     entity_dict["attributes"] = e.attributes
                 all_entities.append(entity_dict)
 
         if patterns:
-            filtered: list[dict[str, Any]] = []
-            for entity in all_entities:
-                eid: str = entity["entity_id"]
-                if any(fnmatch.fnmatch(eid, p) for p in patterns):
-                    filtered.append(entity)
-            return filtered
-
+            return [
+                entity
+                for entity in all_entities
+                if any(fnmatch.fnmatch(entity["entity_id"], p) for p in patterns)
+            ]
         return all_entities

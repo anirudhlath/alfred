@@ -251,7 +251,7 @@ graph TB
     Engine --> Registry
     Engine --> MemReader
     Engine -->|POST /api/chat| Ollama
-    CtxReader -->|GET alfred:context:*| Redis
+    CtxReader -->|HKEYS registry + HGETALL alfred:live_state:*| Redis
     Registry -->|HGETALL alfred:tool_registry| Redis
     MemReader -->|read| Prefs
     ScratchWriter -->|LPOP queue| Redis
@@ -260,6 +260,7 @@ graph TB
     HomeAgent -->|HGET endpoint| Redis
     HomeAgent -->|POST JSON-RPC| HomeSvc
     HomeSvc -->|register/unregister| Redis
+    HomeSvc -->|LiveStateWriter<br/>alfred:live_state:*| Redis
     HomeSvc <-->|HA API| HA
 
     TelCollector -->|flush CSV| CSV
@@ -359,7 +360,7 @@ The `ReflexEngine` class is the System 1 fast path. It is a pure inference compo
 
 1. Loads user preferences from `core/memory/preferences/` (cached after first read).
 2. Fetches registered tools from `ToolRegistry` (cached, invalidatable via `reload_tools()`).
-3. Fetches entity context from `ContextReader` (cached with 5-minute TTL, renders as Markdown).
+3. Fetches live entity state from `ContextReader` (read fresh on every call through the SDK's `read_live_state()`, rendered as Markdown; says "Live home state unavailable." when no service has any).
 4. Builds a system prompt dynamically from the tool registry -- tool names, parameters, and descriptions are injected at runtime; nothing is hardcoded.
 5. Constructs a user prompt with entity context, preferences, and event details.
 5. Sends the combined prompt to Ollama via `/api/chat` with `format: "json"`.
@@ -407,7 +408,7 @@ The registry is a read-only layer. Writing happens on the microservice side via 
 
 ### 3.4 alfred-sdk (Microservice Integration)
 
-**Files:** `sdk/alfred_sdk/feature.py`, `sdk/alfred_sdk/client.py`, `sdk/alfred_sdk/telemetry.py`
+**Files:** `sdk/alfred_sdk/feature.py`, `sdk/alfred_sdk/client.py`, `sdk/alfred_sdk/live_state.py`, `sdk/alfred_sdk/telemetry.py`
 
 The SDK is a standalone Python package -- it has no imports from `alfred/core`, `alfred/bus`, or `alfred/domains`. It is the only coupling point between Alfred and external microservices.
 
@@ -415,16 +416,16 @@ The SDK is a standalone Python package -- it has no imports from `alfred/core`, 
 
 - **`BaseFeature`** -- base class for grouping related tools. Subclass it and decorate methods with `@tool`. Tool metadata (name, description, parameters) is auto-extracted from Python type hints and Google-style docstrings.
 - **`@tool`** -- marks a method as an MCP tool. Supports both bare `@tool` and `@tool(name="...", description="...")`.
-- **`ContextProvider`** -- protocol for features that publish entity context. `BaseFeature` provides a default no-op; features override `get_context()` to return a `ContextSnapshot`.
+- **`LiveStateWriter` / `read_live_state()`** -- Alfred's live-state contract (`sdk/alfred_sdk/live_state.py`). A service publishes what its devices are doing through the writer as events arrive; core reads it with `read_live_state()`.
 - **`AlfredClient`** -- the entry point for microservices. Key operations:
   - `discover_features(package)` -- scans a Python package for `BaseFeature` subclasses, instantiates them, and builds a dispatch table.
-  - `register()` -- writes the service manifest to Redis `alfred:tool_registry` via `HSET`, and writes merged entity context to `alfred:context:{service_name}` with a 10-minute TTL.
+  - `register()` -- writes the service manifest to Redis `alfred:tool_registry` via `HSET`, then appends a capped `ServiceRegistered` to `alfred:events`. It carries no device state.
   - `unregister()` -- removes the service from the registry via `HDEL` on graceful shutdown.
   - `dispatch(method, params)` -- routes an incoming MCP call to the correct bound method on the feature instance.
 
-**Registration flow:** microservice starts --> discovers features --> calls `register()` --> Alfred's `ToolRegistry` sees tools on next `HGETALL`, `ContextReader` sees entity context on next cache miss.
+**Registration flow:** microservice starts --> discovers features --> calls `register()` --> Alfred's `ToolRegistry` sees tools on next `HGETALL`. Live state flows separately, through `LiveStateWriter`, and is read fresh on every prompt.
 
-See `docs/context-provider.md` for full details on the context publishing and consumption pipeline.
+See `docs/live-state.md` for the live-state contract and lifecycle.
 
 ### 3.5 Trigger Engine (Proactive Automation)
 
@@ -858,7 +859,8 @@ All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `
 | `alfred:scratchpad:queue` | List | Pending scratchpad observations (drained by `ScratchpadWriter` only) |
 | `alfred:librarian:queue` | List | Consolidation feed — writer fan-out, drained by the Librarian |
 | `alfred:librarian:status` | Hash | Librarian run status — `last_run_at` (ISO), `reviewed` (count, as str), `next_run_at` (ISO); written best-effort by the consolidator and scheduler |
-| `alfred:context:{service}` | String (JSON) | Service entity context snapshot (TTL 600s) |
+| `alfred:live_state:{service}` | Hash | A service's live state, one `LiveStateEntry` JSON per entity ID; written by `LiveStateWriter`, cleared on disconnect (`docs/live-state.md`) |
+| `alfred:events` | Stream | Bus events (`TriggerFired`, `TriggerCreated`, `ServiceRegistered`); every producer passes `MAXLEN ~ 10000` (`EVENTS_MAXLEN`) |
 | `alfred:triggers` | Hash | Trigger ID → JSON (Trigger Engine runtime store) |
 | `alfred:triggers:changed` | Pub/Sub | Cross-process `TriggerStore` coherence (saved/deleted/tz-changed) |
 | `alfred:user:timezone` | String | User's IANA timezone (`shared/usertime.py`; resolution: stored → `ALFRED_TIMEZONE` env → UTC) |

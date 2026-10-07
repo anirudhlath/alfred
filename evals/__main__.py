@@ -26,6 +26,10 @@ _SCENARIOS_DIR = Path(__file__).parent / "scenarios"
 _RUNS_DIR = Path(__file__).parent / "runs"
 _CONTEXTS_DIR = Path(__file__).parent / "contexts"
 _PREFERENCES_DIR = str(Path(__file__).parent.parent / "core" / "memory" / "preferences")
+# capture-context is a one-shot command, and create_redis() sets no socket timeout (core's
+# blocking stream reads need none), so its read is bounded here or an unresponsive Redis
+# would hang it forever.
+CAPTURE_TIMEOUT_S = 10.0
 
 
 def _parse_args() -> argparse.Namespace:
@@ -241,30 +245,33 @@ def _cmd_runs() -> None:
 
 
 async def _cmd_capture_context(args: argparse.Namespace) -> None:
-    """Scan all alfred:context:* Redis keys and save a fixture file."""
+    """Capture every service's live state into a fixture file (one snapshot per service)."""
     import json
+    from urllib.parse import urlsplit
 
-    from sdk.alfred_sdk.context import ContextSnapshot
+    from sdk.alfred_sdk.live_state import read_live_state_by_service
     from shared.redis_streams import create_redis
-    from shared.streams import CONTEXT_KEY_PREFIX, decode_stream_value
 
     config = AlfredConfig.from_env()
     r = create_redis(config.redis_url)
     try:
-        pattern = f"{CONTEXT_KEY_PREFIX}*"
-        keys: list[bytes | str] = await r.keys(pattern)
-        if not keys:
-            print(f"No keys matching {pattern} found in Redis.")
+        try:
+            async with asyncio.timeout(CAPTURE_TIMEOUT_S):
+                by_service = await read_live_state_by_service(r)
+        except TimeoutError:
+            # Host and port only: REDIS_HOST can carry userinfo, and this goes to stdout.
+            where = urlsplit(config.redis_url)
+            print(
+                f"Redis at {where.hostname}:{where.port} did not answer within "
+                f"{CAPTURE_TIMEOUT_S:g}s."
+            )
+            sys.exit(1)
+        if not by_service:
+            print("No live state in Redis — is a service connected to its source?")
             sys.exit(1)
 
-        sorted_keys = sorted(keys)
-        values: list[bytes | str | None] = await r.mget(*sorted_keys)
         envelope: dict[str, object] = {}
-        for key, raw in zip(sorted_keys, values, strict=True):
-            if not raw:
-                continue
-            service_name = decode_stream_value(key).removeprefix(CONTEXT_KEY_PREFIX)
-            snapshot = ContextSnapshot.model_validate_json(raw)
+        for service_name, snapshot in sorted(by_service.items()):
             envelope[service_name] = snapshot.model_dump()
             print(f"  captured: {service_name}")
 

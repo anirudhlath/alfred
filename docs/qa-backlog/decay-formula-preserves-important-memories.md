@@ -31,4 +31,4 @@
 - A 35-day-old entry with significance=0.1, zero retrievals yields: `1.0 - 0.2 - ~0 - 0 = 0.8` — migrates (`> 0.2`)
 - Nothing with significance >= 0.4 can ever migrate: pressure tops out at `1.0 - 2*significance`
 - Pressure never exceeds 1.0, which is why the old default of 1.0 never migrated anything (#201)
-- Check Redis for `alfred:context:{id}` key absence to confirm hot-store removal
+- Check Redis for `ctx:{id}` key absence to confirm hot-store removal (`CONTEXT_PREFIX` in `shared/streams.py`)

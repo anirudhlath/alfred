@@ -56,6 +56,7 @@ class FakeRedis:
         self.streams: dict[str, list[dict[str, str]]] = {}
         self.lists: dict[str, list[str]] = {}
         self.subscribers: dict[str, list[asyncio.Queue[dict[str, Any]]]] = {}
+        self.xadd_options: list[dict[str, Any]] = []
 
     def pubsub(self) -> FakePubSub:
         return FakePubSub(self)
@@ -78,8 +79,16 @@ class FakeRedis:
     async def set(self, key: str, value: str) -> None:
         self.kv[key] = value
 
-    async def xadd(self, stream: str, fields: dict[str, str]) -> None:
+    async def xadd(
+        self,
+        stream: str,
+        fields: dict[str, str],
+        *,
+        maxlen: int | None = None,
+        approximate: bool = True,
+    ) -> None:
         self.streams.setdefault(stream, []).append(fields)
+        self.xadd_options.append({"stream": stream, "maxlen": maxlen, "approximate": approximate})
 
     async def lpush(self, key: str, value: str) -> None:
         self.lists.setdefault(key, []).insert(0, value)

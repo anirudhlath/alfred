@@ -93,7 +93,7 @@ graph LR
 ```
 
 1. **Scheduler loop** -- calls `engine.evaluate_tick(now)`, then sleeps until `engine.next_wakeup(now)` (the earliest enabled trigger's `next_fire_time()`). No polling interval: a `TriggerStore` mutation wakes it near-instantly via `add_on_change` (see [Coherence](#coherence-pubsub) below), so a newly created or rescheduled trigger fires on time even if it's due sooner than any prior wakeup. This drives `TimeTrigger` evaluations (cron and run_at).
-2. **Event loop** -- reads `StateChangedEvent` entries from `alfred:home:state_changed` (`HOME_STATE_STREAM`) via `XREADGROUP` (consumer group `trigger-engine`, consumer `worker-1`). `alfred:events` only carries the engine's own `TriggerFired`/`TriggerCreated` output, not sensor input. Each event is passed to `engine.evaluate_event(event)`, which drives `SensorTrigger` evaluations.
+2. **Event loop** -- reads `StateChangedEvent` entries from `alfred:home:state_changed` (`HOME_STATE_STREAM`) via `XREADGROUP` (consumer group `trigger-engine`, consumer `worker-1`). `alfred:events` carries only `TriggerFired`/`TriggerCreated`/`ServiceRegistered`, never sensor input. Each event is passed to `engine.evaluate_event(event)`, which drives `SensorTrigger` evaluations.
 3. **Snapshot loop** (5min) -- calls `store.snapshot_all()` to dump all triggers from Redis to YAML files on disk. These serve as cold-start recovery only.
 4. **HTTP server** (:8001) -- a minimal `asyncio.start_server` that handles JSON-RPC requests dispatched to `TriggerFeature` tools via `AlfredClient.dispatch()`.
 
@@ -488,7 +488,7 @@ All keys are defined in `shared/streams.py` -- the single source of truth.
 | `alfred:triggers`          | Hash   | trigger_id → JSON (runtime source of truth)   |
 | `alfred:triggers:changed`  | Pub/Sub| Cross-process `TriggerStore` cache coherence (`saved`/`deleted`/`tz-changed`) |
 | `alfred:home:state_changed`| Stream | Input (StateChangedEvent) consumed by the event loop |
-| `alfred:events`            | Stream | Output only (TriggerFired, TriggerCreated) |
+| `alfred:events`            | Stream | Output only (TriggerFired, TriggerCreated, and ServiceRegistered when the process registers its CRUD tools through `AlfredClient`); every `XADD` passes `maxlen=EVENTS_MAXLEN` (~10,000), `approximate=True` |
 | `alfred:actions`           | Stream | Output (ActionRequest when trigger has action) |
 | `alfred:scratchpad:queue`  | List   | Fire observations for ScratchpadWriter         |
 | `alfred:tool_registry`     | Hash   | CRUD tools registered via AlfredClient         |

@@ -11,7 +11,7 @@ from core.notifications.schema import Urgency
 from core.triggers.models import ActionPayload
 from core.triggers.registry import TriggerRegistry
 from sdk.alfred_sdk.feature import BaseFeature, ToolMeta, tool
-from shared.streams import EVENTS_STREAM
+from shared.streams import EVENTS_MAXLEN, EVENTS_STREAM
 from shared.usertime import get_user_timezone
 
 if TYPE_CHECKING:
@@ -143,7 +143,12 @@ class TriggerFeature(BaseFeature):
                 one_shot=one_shot,
                 urgency=validated_urgency.value,
             )
-            await self._redis.xadd(EVENTS_STREAM, {"event": event.model_dump_json()})
+            await self._redis.xadd(
+                EVENTS_STREAM,
+                {"event": event.model_dump_json()},
+                maxlen=EVENTS_MAXLEN,
+                approximate=True,
+            )
 
         return trigger.model_dump(mode="json")
 
