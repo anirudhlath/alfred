@@ -37,7 +37,7 @@ tests that already cover them. A pytest check keeps that map complete as the PRD
 
 **Success looks like:**
 
-- `alfred-evals run <suite>` boots a throwaway Alfred, plays each golden, and prints a
+- `alfred evals run <suite>` boots a throwaway Alfred, plays each golden, and prints a
   scorecard by PRD row: pass rate, pass^k, change against the baseline.
 - Any failure opens in `inspect view` with the whole story: the utterances, every LLM
   call, every Home Assistant call, the triggers, notifications and judge rationales.
@@ -60,7 +60,7 @@ tests that already cover them. A pytest check keeps that map complete as the PRD
 
 ```mermaid
 flowchart LR
-    CLI["alfred-evals run"] --> Inspect["Inspect task per suite"]
+    CLI["alfred evals run"] --> Inspect["Inspect task per suite"]
     Inspect --> Driver["driver (solver)"]
     Driver -->|"XADD UserRequest / read results"| Redis
     Driver -->|"admin API: triggers, memory, librarian, DND"| Channels
@@ -99,7 +99,7 @@ container reaches them through `host.docker.internal`.
 | `evals/harness/scenario.py` | The scenario schema (Pydantic) and the loader, including the private overlay. |
 | `evals/harness/tasks.py` | One Inspect task per suite, built from the scenario files. |
 | `evals/harness/report.py`, `baseline.py` | The scorecard (terminal, `report.md`, `report.json`), baselines and comparison. |
-| `evals/__main__.py` | The CLI. `alfred-evals` is a `[project.scripts]` alias for `python -m evals`. |
+| `evals/cli.py`, `alfred_cli/main.py` | The CLI: `alfred evals <command>`, a Typer group on the `alfred` console script. `python -m evals memory` keeps working. |
 
 ### Product changes the harness needs
 
@@ -197,7 +197,7 @@ up as one.
 are reported apart from the rest and are never regressions. When the feature lands, the
 same PR flips them to `shipped`.
 
-**Suites** live in `evals/suites/<suite>/`. They are selected by name (`alfred-evals run
+**Suites** live in `evals/suites/<suite>/`. They are selected by name (`alfred evals run
 triggers memory`) or by tag (`--tag guest`).
 
 ## Checks
@@ -232,7 +232,7 @@ check's result, so partial correctness stays visible.
 - **Calibration.** `evals/judge_calibration/<category>.yaml` holds hand-labelled
   (reply, rubric, reference, label) items, about 15 in slice 1 and 40 or more by
   slice 7, with deliberately bad replies among them. The owner confirms each label once.
-  `alfred-evals calibrate` reports each category's agreement with the labels, and the
+  `alfred evals calibrate` reports each category's agreement with the labels, and the
   result is stored with the baseline. A category under 85% agreement is **untrusted**:
   its checks are reported but do not count toward the scenario's verdict or toward
   regressions.
@@ -255,7 +255,7 @@ check's result, so partial correctness stays visible.
   - a negative case
 
   The guest boundary, critical actions and triggers get more.
-- **Variants** are hand-written. `alfred-evals expand <scenario>` drafts more variants
+- **Variants** are hand-written. `alfred evals expand <scenario>` drafts more variants
   with the vLLM model into a review file. Nothing generated enters a suite until the owner
   accepts it.
 - **Sources, in order:**
@@ -264,7 +264,7 @@ check's result, so partial correctness stays visible.
      the bug.
   3. A private overlay mined from production traffic (slice 7). It lives in
      `~/.local/share/alfred-evals/goldens-private/<suite>/`, outside the repo, and the
-     loader merges it in when present. `alfred-evals mine` drafts goldens from what
+     loader merges it in when present. `alfred evals mine` drafts goldens from what
      production retains, for the owner to edit and accept. Slice 7's plan picks the exact
      source after measuring how long production keeps conversation history.
 - **Review.** The owner approves each suite's goldens before its first baseline is saved.
@@ -340,7 +340,7 @@ or tests in the same PR, which extends the PRD's maintenance rule.
   against the baseline, flaky and error counts. Pending rows are listed separately as not
   yet working. It ends with the run's LLM usage by role (calls, tokens, p50 and p95
   latency).
-- **Baselines.** `alfred-evals baseline save [--name master]` writes per-sample results
+- **Baselines.** `alfred evals baseline save [--name master]` writes per-sample results
   to `~/.local/share/alfred-evals/baselines/<name>.json`, outside the repo. Each baseline
   records the model, the vLLM arguments, the Alfred commit, the home-service commit and
   the judge calibration.
