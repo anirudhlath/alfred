@@ -430,7 +430,7 @@ with a claim the channel derives, so the claim alone selects sir or guest.
 | `sir` | `signal` | The registered number (the container's `SIGNAL_PHONE_NUMBER`) | sir, by phone number |
 | `guest` | `signal` | Another number | guest |
 | `sir` | `web_pwa`, `voice`, `ios` | `sir` | sir, as a local claim with low risk clearance — exactly as in production |
-| `sir` | `satellite` | `sir`, with no voice confidence | sir, as a local claim with low risk clearance — as a production satellite resolves when no voiceprint is enrolled. With an enrolled voiceprint, production resolves through `voice_id` instead, which the driver does not exercise |
+| `sir` | `satellite` | `sir`, with no voice confidence | sir, as a local claim with low risk clearance — as a production satellite resolves when speaker ID does not match an enrolled voiceprint (an unmatched voice, a speaker-ID error, or no speaker ID). Only a voice that matches an enrolled voiceprint resolves through `voice_id` in production, which the driver does not exercise |
 | `guest` | `web_pwa`, `voice`, `ios`, `satellite` | `guest` | guest |
 
 A guest on `web_pwa` is synthetic: the real web socket always claims sir. It stands in for an
@@ -457,7 +457,7 @@ patterns of a few goldens to phrasings they must accept and near misses they mus
 - **Cite PRD ids** in `prd`, using the ids `evals/coverage.yaml` defines (`4.4.live-state`,
   `principle.3`, `1.butler`). The coverage test fails on an id it does not define, and on a
   suite entry that no golden in that suite cites.
-- **Prefer deterministic checks.** Use the judge only for what a pattern cannot decide --
+- **Prefer deterministic checks.** Use the judge only for what a pattern cannot decide —
   tone, whether the question was answered, whether the reply is faithful to the house. A
   reply pattern for "is the door locked?" passes "it is not locked", so pair it with a
   `faithfulness` judge.
@@ -494,7 +494,9 @@ scored separately. Params are validated at load and unknown keys are rejected.
 - An expected number matches an actual number or a numeric string, so `30` matches `30`,
   `30.0` and `"30"`. Write numeric `data`, `args` and `attributes` unquoted.
 - `{approx: x, tol: t}` matches an actual number (or numeric string) within `t` of `x`.
-- An expected boolean matches a boolean, or the strings `"true"`/`"false"`.
+- An expected boolean matches only the same boolean, or the one string that spells it
+  (trimmed, case-insensitive): `true` matches `true` and `"True"`, never `false` or
+  `"false"`.
 - An expected list matches an actual list that has a match for each expected element.
 
 **Tool names.** System 2 sees home-service's `home.light_turn_on` as `home_light_turn_on`;
@@ -540,7 +542,7 @@ needs `openai>=3.4`, and litellm, a base dependency, pins `openai<3`, so it cann
 | Retries | 2 (transport errors, HTTP 429 and 5xx; never another 4xx or a malformed reply) |
 | Timeout | 120 s per request |
 
-A judge that fails — unreachable, out of retries, no `VERDICT` line, or no reply to judge --
+A judge that fails — unreachable, out of retries, no `VERDICT` line, or no reply to judge —
 scores the check `error`: at worst the sample is inconclusive (`N`), never `E`. A slow or
 down judge cannot make Alfred look broken.
 
