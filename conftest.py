@@ -7,14 +7,8 @@ import os
 import shutil
 import tempfile
 
-# Both of these MUST run before the imports below, because the state they guard
-# is established at import time — not when a fixture runs.
-
-# deepeval/__init__.py calls autoload_dotenv() as an import side effect, copying
-# the developer's .env into os.environ. It reaches the suite via deepeval's
-# pytest11 entry point (blocked in pyproject's addopts), but keep the belt here
-# too for anyone importing deepeval directly.
-os.environ.setdefault("DEEPEVAL_DISABLE_DOTENV", "1")
+# This MUST run before the imports below, because the state it guards is
+# established at import time — not when a fixture runs.
 
 # shared/secrets.py builds the cryptfile keyring backend at import time under
 # data_path("secrets"), so merely importing a test module writes a real keyring

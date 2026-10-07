@@ -17,7 +17,6 @@ from evals.memory.env import CountingEmbedder, open_env, scan_hot
 from evals.memory.metrics import EligibilityTracker, checkpoint, day_snapshot
 from evals.memory.models import MemoryEvalRun, PassRecord, PolicyResult, RunSettings
 from evals.memory.policies import policy_factory
-from evals.store import build_run_id
 from shared.streams import CONTEXT_PREFIX
 
 if TYPE_CHECKING:
@@ -34,6 +33,13 @@ logger = logging.getLogger(__name__)
 
 # The simulated clock runs in UTC (``SIM_START``), so the stamps in stored text do too.
 _SIM_ZONE = ZoneInfo("UTC")
+
+
+def build_run_id(timestamp: datetime, model: str) -> str:
+    """Build a filesystem-safe run ID from timestamp and model name."""
+    ts_str = timestamp.strftime("%Y-%m-%dT%H%M%S")
+    safe_model = model.replace(":", "-")
+    return f"{ts_str}_{safe_model}"
 
 
 async def write_memory(env: SimEnv, memory: SimMemory) -> None:

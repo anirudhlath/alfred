@@ -27,7 +27,7 @@ from evals.memory.models import (
     RunSettings,
 )
 from evals.memory.report import format_run
-from evals.memory.runner import apply_retrieval, run_eval, write_memory
+from evals.memory.runner import apply_retrieval, build_run_id, run_eval, write_memory
 from evals.memory.sandbox import RedisSandbox
 from shared.config import AlfredConfig
 from tests.evals.memory_fakes import FakeRedis, HashEmbedder
@@ -88,6 +88,18 @@ async def test_a_retrieval_of_a_memory_that_left_hot_is_lost() -> None:
 
     assert not await apply_retrieval(env, Retrieval(at=AT, target_id="rec-00"))
     env.hot.update_metadata.assert_not_awaited()
+
+
+def test_build_run_id() -> None:
+    ts = datetime(2026, 3, 10, 14, 30, 0, tzinfo=UTC)
+    run_id = build_run_id(ts, "example-model:20b")
+    assert run_id == "2026-03-10T143000_example-model-20b"
+
+
+def test_build_run_id_sanitizes_colons() -> None:
+    ts = datetime(2026, 3, 10, 14, 30, 0, tzinfo=UTC)
+    run_id = build_run_id(ts, "model:with:colons")
+    assert ":" not in run_id
 
 
 def _settings() -> RunSettings:
