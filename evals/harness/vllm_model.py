@@ -38,7 +38,7 @@ _STOP_REASONS: dict[str, StopReason] = {"stop": "stop", "length": "max_tokens"}
 
 
 class VllmStatusError(RuntimeError):
-    """The server answered with an HTTP error. Retried for 5xx, never for 4xx."""
+    """The server answered with an HTTP error. Retried for 5xx and 429, never other 4xx."""
 
     def __init__(self, url: str, status_code: int, body: str) -> None:
         super().__init__(f"{url} answered HTTP {status_code}: {body[:_EXCERPT]}")
@@ -73,6 +73,8 @@ class VllmChatAPI(ModelAPI):
     def should_retry(self, ex: Exception) -> bool | RetryDecision:
         if isinstance(ex, httpx.TransportError):  # unreachable, reset, timed out
             return RetryDecision.transient()
+        if isinstance(ex, VllmStatusError) and ex.status_code == 429:  # the back-off signal
+            return RetryDecision.rate_limit()
         if isinstance(ex, VllmStatusError) and ex.status_code >= 500:
             return RetryDecision.transient()
         return RetryDecision.no()

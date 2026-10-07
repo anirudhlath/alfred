@@ -108,7 +108,7 @@ async def one_call(model: Model) -> None:
 
 
 async def test_a_server_error_is_retried_and_a_client_error_is_not() -> None:
-    for status, retried in ((503, True), (500, True), (400, False), (404, False)):
+    for status, retried in ((503, True), (500, True), (429, True), (400, False), (404, False)):
         model, _ = answering({"error": {"message": "nope"}}, status=status)
         with pytest.raises(VllmStatusError) as caught:
             await one_call(model)
