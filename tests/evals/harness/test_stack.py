@@ -398,23 +398,83 @@ async def test_each_readiness_stage_gives_up_at_the_boot_deadline(
     assert "conscious crashed" in str(err.value)
 
 
-async def test_a_conscious_reply_that_never_reached_the_llm_proxy_is_not_readiness(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+_NOT_REACHED = (
+    "System 2 answered the readiness request without reaching the LLM proxy — check the "
+    "container's LLM settings"
+)
+
+
+@pytest.mark.parametrize(
+    ("before", "during", "says"),
+    [
+        ([("system2", 200)], [], _NOT_REACHED),
+        ([], [("system1", 200), ("librarian", 200)], _NOT_REACHED),
+        (
+            [],
+            [("system2", 502)],
+            "System 2 answered the readiness request, but the LLM upstream "
+            "failed (502) — check http://x",
+        ),
+        (
+            [],
+            [("system1", 200), ("system2", 400), ("system2", 503)],
+            "System 2 answered the "
+            "readiness request, but the LLM upstream failed (400, 503) — check http://x",
+        ),
+    ],
+    ids=["stale-call", "other-roles-only", "upstream-failed", "every-system2-call-failed"],
+)
+async def test_readiness_needs_a_successful_system2_llm_call_since_the_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    before: list[tuple[str, int]],
+    during: list[tuple[str, int]],
+    says: str,
 ) -> None:
     # Conscious can answer with a fallback when its LLM call failed: that reply proves the
-    # container is up, not that System 2 reaches the model. A call from before the
-    # readiness request does not count either.
+    # container is up, not that System 2 reaches the model. Only a System 2 call made since
+    # the readiness request, and answered upstream, does.
     proxy = LlmProxy("http://x")
-    proxy.calls.append(LlmCall(t=0.0, role="system2", latency_ms=1.0, status=200))
-    _answer_ready(monkeypatch, _NullRedis())
+    proxy.calls += [LlmCall(t=0.0, role=r, latency_ms=1.0, status=st) for r, st in before]  # type: ignore[arg-type]
+
+    async def fake_publish(redis, request, session_id, timeout):  # type: ignore[no-untyped-def]
+        proxy.calls.extend(
+            LlmCall(t=time.monotonic(), role=r, latency_ms=1.0, status=st)  # type: ignore[arg-type]
+            for r, st in during
+        )
+        return AlfredResponse(
+            source="conscious-engine", channel="web_pwa", session_id=session_id, text="ready"
+        )
+
+    monkeypatch.setattr("evals.harness.stack.publish_and_wait", fake_publish)
+    monkeypatch.setattr("evals.harness.stack.create_redis", lambda url: _NullRedis())
     stack = make_stack(tmp_path, FakeDocker(), proxy=proxy)
     with pytest.raises(StackError) as err:
         await stack.start()
-    assert str(err.value).startswith(
-        f"{stack.name}: System 2 answered the readiness request without reaching the LLM "
-        "proxy — check the container's LLM settings\n--- docker logs ---\n"
-    )
+    assert str(err.value).startswith(f"{stack.name}: {says}\n--- docker logs ---\n")
     assert "conscious crashed" in str(err.value)
+
+
+async def test_one_answered_system2_call_is_enough_beside_a_failed_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proxy = LlmProxy("http://x")
+
+    async def fake_publish(redis, request, session_id, timeout):  # type: ignore[no-untyped-def]
+        for status in (503, 200):  # a retry that got through
+            proxy.calls.append(
+                LlmCall(t=time.monotonic(), role="system2", latency_ms=1.0, status=status)
+            )
+        return AlfredResponse(
+            source="conscious-engine", channel="web_pwa", session_id=session_id, text="ready"
+        )
+
+    monkeypatch.setattr("evals.harness.stack.publish_and_wait", fake_publish)
+    monkeypatch.setattr("evals.harness.stack.create_redis", lambda url: _NullRedis())
+    stack = make_stack(tmp_path, FakeDocker(), proxy=proxy)
+    await stack.start()
+    assert stack.first_reply_ms is not None
+    await stack.stop()
 
 
 # The reachability probe: a throwaway container of the eval image, connecting to the fakes.

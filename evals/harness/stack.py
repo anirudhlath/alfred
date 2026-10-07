@@ -35,12 +35,14 @@ from shared.redis_streams import create_redis
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from evals.harness.evidence import Role
     from evals.harness.proxy import LlmProxy
     from shared.types import AioRedis
 
 logger = logging.getLogger(__name__)
 
 CONSCIOUS_SOURCE = "conscious-engine"
+SYSTEM2_ROLE: Role = "system2"  # the proxy's role for Conscious's calls
 EVAL_SOURCE = "alfred-evals"
 EVAL_OPENROUTER_PLACEHOLDER = "alfred-eval-not-a-key"
 EVAL_SIGNAL_NUMBER = "+15550100"
@@ -349,12 +351,23 @@ class Stack:
             except (RedisError, OSError) as exc:
                 raise await self._fail(f"lost redis during readiness: {exc}") from exc
             if reply.source == CONSCIOUS_SOURCE:
-                # Conscious can answer with a fallback when its LLM call failed: only a call
-                # the proxy saw proves System 2 reaches the model.
-                if not self.proxy.calls_between(sent, time.monotonic()):
+                # Conscious can answer with a fallback when its LLM call failed: only a System 2
+                # call the proxy saw answered upstream proves System 2 reaches the model.
+                calls = [
+                    c
+                    for c in self.proxy.calls_between(sent, time.monotonic())
+                    if c.role == SYSTEM2_ROLE
+                ]
+                if not calls:
                     raise await self._fail(
                         "System 2 answered the readiness request without reaching the LLM "
                         "proxy — check the container's LLM settings"
+                    )
+                if not any(200 <= c.status < 300 for c in calls):
+                    statuses = ", ".join(str(c.status) for c in calls)
+                    raise await self._fail(
+                        "System 2 answered the readiness request, but the LLM upstream failed "
+                        f"({statuses}) — check {self.proxy.upstream}"
                     )
                 reply_ms = (time.monotonic() - sent) * 1000
                 break

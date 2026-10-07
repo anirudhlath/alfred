@@ -116,11 +116,14 @@ the fake HA with a fake token, and the Librarian's interval pushed to a day so i
 mid-suite. The stack is ready when `/health` answers, home-service has connected to the fake
 HA, and System 2 has answered a real request ("Reply with the single word: ready.") — up to
 420 s in all. The answer must have gone through the model: Conscious can reply with a
-fallback when its LLM call fails, so a System 2 reply with no call recorded by the proxy
-since the request was sent fails the boot ("without reaching the LLM proxy"). It records the
-suite's first boot time and that first reply's latency for the scorecard. Before each sample
-the task checks the container is still running and restarts a dead one, once per suite.
-Teardown removes the container and wipes the data dir (the container writes it as root).
+fallback when its LLM call fails, so the proxy must have recorded a System 2 call since the
+request was sent, and vLLM must have answered at least one with a 2xx. With no such call the
+boot fails "without reaching the LLM proxy"; when every one came back with an error it fails
+because "the LLM upstream failed", with the statuses. A System 1 or Librarian call does not
+count. The stack records the suite's first boot time and that first reply's latency for the
+scorecard. Before each sample the task checks the container is still running and restarts a
+dead one, once per suite. Teardown removes the container and wipes the data dir (the
+container writes it as root).
 
 ### One sample
 
