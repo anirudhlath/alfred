@@ -124,9 +124,19 @@ count. When none was classed as System 2 but some were classed `unknown`, the bo
 saying so: System 2's prompt has probably changed, and `ROLE_FINGERPRINTS` in
 `evals/harness/proxy.py` needs updating (`tests/evals/harness/test_role_fingerprints.py` pins
 each fingerprint to the first message its role sends). The stack records the suite's first
-boot time and that first reply's latency for the scorecard. Before each sample the task
-checks the container is still running and restarts a dead one, once per suite. Teardown
-removes the container and wipes the data dir (the container writes it as root).
+boot time and that first reply's latency for the scorecard. Teardown removes the container
+and wipes the data dir (the container writes it as root).
+
+**Recovery.** Before each sample the task restarts the stack when the container has died,
+or when an earlier sample failed mid-play (no reply in time, a lost connection). Such a
+stack is **dirty**: a request that timed out is still running inside Conscious, and one
+whose LLM call failed waits in Conscious's pending list to be replayed a minute or more
+later, so either would land in a later sample's evidence and be scored against Alfred. A
+restart is the only reset that clears both. Each suite gets one such recovery; once it is
+spent, every later sample that needs one errors at once, saying why. A restart that fails
+(say, System 2 never answers the restarted stack's readiness request) leaves the stack
+**broken**: the container may still be running, but every later sample in the suite errors
+at once instead of waiting out its reply timeout.
 
 ### One sample
 
@@ -140,7 +150,7 @@ sequenceDiagram
     participant P as LLM proxy
     participant V as vLLM
 
-    T->>T: setup: restart if isolated, recover if dead
+    T->>T: setup: restart if isolated, recover if dead or dirty
     T->>D: play(variant, epoch)
     D->>H: restore_world() (push drifted entities back)
     D->>R: XADD alfred:user:requests UserRequest
@@ -356,7 +366,7 @@ Each sample epoch scores one value:
 | `C` | Every counted check passed | — |
 | `I` | A counted check failed | Yes |
 | `N` | Inconclusive: no counted check failed, but one errored (a judge with no verdict, a check that raised), or nothing counted at all (only untrusted judge checks) | No |
-| `E` | The harness failed: no reply from System 2 in time, a dead container, unreadable data. Inspect retries the sample once first | No |
+| `E` | The harness failed: no reply from System 2 in time (the reason adds the LLM upstream's non-2xx answers in that window, such as `502 ×2`, when the proxy saw any), a dead, dirty or broken stack, unreadable data. Inspect retries the sample once first | No |
 
 A check is **counted** unless it is a judge check in an untrusted category.
 
@@ -369,8 +379,9 @@ Sections, in order:
    model, it says every judge check is untrusted.
 2. **Stack lines**, one per suite that started: `boot` (seconds to the first ready), `first
    reply` (the readiness request, the very first request after boot — the cold-start
-   number for PRD 4.7's warmup row) and `recoveries` (dead-container restarts; there is one
-   per suite, and once it is spent every later sample in the suite errors at once).
+   number for PRD 4.7's warmup row) and `recoveries` (restarts of a dead container or of a
+   dirty stack; there is one per suite, and once it is spent every later sample that needs
+   one errors at once; see **Recovery** under [Architecture](#architecture)).
 3. **Run problems**, when there are any: suites whose stack never started, a suite a
    Ctrl-C interrupted (`suite <name>: interrupted`), logs that failed, and sample epochs
    missing from a log.

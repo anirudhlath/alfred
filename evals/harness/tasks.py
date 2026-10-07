@@ -18,6 +18,7 @@ from evals.harness.evidence import Evidence
 from evals.harness.judge import judge_check
 from evals.harness.report import SCORER_NAME
 from evals.harness.scenario import UserStep
+from evals.harness.stack import StackError
 
 if TYPE_CHECKING:
     from inspect_ai.scorer import Scorer, Target
@@ -29,8 +30,14 @@ if TYPE_CHECKING:
     from evals.harness.scenario import Scenario, ScenarioVariant
 
 
-# Dead-container restarts a suite gets before every later sample errors at once.
+# Recovery restarts a suite gets (of a dead container, or of a stack a failed sample left
+# dirty) before every later sample that needs one errors at once.
 RECOVERIES_PER_SUITE = 1
+
+
+def _first_line(exc: BaseException) -> str:
+    lines = str(exc).strip().splitlines()
+    return lines[0] if lines else type(exc).__name__
 
 
 @dataclass
@@ -41,10 +48,17 @@ class RunContext:
     variants: dict[str, ScenarioVariant]
     play_ctx: PlayContext
     restarts_left: int = RECOVERIES_PER_SUITE
+    # Why the stack is dirty: a sample failed mid-play. A request that timed out is still
+    # running inside Conscious, and one whose LLM call failed waits in its pending list to
+    # be replayed; either would land in a later sample's evidence. A restart clears both.
+    dirty: str | None = None
+    # Why the stack is past saving: a restart failed. Every later sample errors at once.
+    broken: str | None = None
 
     @property
     def recoveries(self) -> int:
-        """Restarts of a dead container. An isolated golden's restart is not one."""
+        """Recovery restarts: of a dead container, or of a dirty stack. An isolated
+        golden's restart is not one."""
         return RECOVERIES_PER_SUITE - self.restarts_left
 
 
@@ -89,21 +103,43 @@ async def score_evidence(
     return verdict(results), results
 
 
+async def _restart(ctx: RunContext) -> None:
+    """Restart the stack, which leaves it clean. A failed restart leaves it broken."""
+    try:
+        await ctx.stack.restart()
+    except StackError as exc:
+        # The container may well be running but unready, so alive() would keep saying
+        # True and every later sample would wait out its reply timeout. Stop here.
+        ctx.broken = (
+            f"eval container {ctx.stack.name} failed to restart ({_first_line(exc)}); "
+            "every later sample in this suite errors"
+        )
+        raise HarnessError(ctx.broken) from exc
+    ctx.dirty = None
+
+
 @solver
 def reset_or_recover(ctx: RunContext) -> Solver:
     async def solve(state: TaskState, generate: Generate) -> TaskState:
+        if ctx.broken is not None:
+            raise HarnessError(ctx.broken)
         variant = ctx.variants[str(state.sample_id)]
         if variant.scenario.isolated:
-            await ctx.stack.restart()
+            await _restart(ctx)
+            return state
+        if ctx.dirty is not None:
+            why = f"an earlier sample failed mid-play: {ctx.dirty}"
         elif not await ctx.stack.alive():
-            if ctx.restarts_left > 0:
-                ctx.restarts_left -= 1
-                await ctx.stack.restart()
-            else:
-                raise HarnessError(
-                    f"eval container {ctx.stack.name} is not running "
-                    f"(see `docker logs {ctx.stack.name}`)"
-                )
+            why = "it is not running"
+        else:
+            return state
+        if ctx.restarts_left <= 0:
+            raise HarnessError(
+                f"eval container {ctx.stack.name} needs a restart ({why}), but this suite's "
+                f"recovery is spent (see `docker logs {ctx.stack.name}`)"
+            )
+        ctx.restarts_left -= 1
+        await _restart(ctx)
         return state
 
     return solve
@@ -113,7 +149,11 @@ def reset_or_recover(ctx: RunContext) -> Solver:
 def play_scenario(ctx: RunContext) -> Solver:
     async def solve(state: TaskState, generate: Generate) -> TaskState:
         variant = ctx.variants[str(state.sample_id)]
-        evidence = await play(ctx.play_ctx, variant, state.epoch)
+        try:
+            evidence = await play(ctx.play_ctx, variant, state.epoch)
+        except (HarnessError, StackError) as exc:
+            ctx.dirty = _first_line(exc)
+            raise
         state.store.set("evidence", evidence.model_dump(mode="json"))
         state.messages = [
             ChatMessageAssistant(content=t.text)

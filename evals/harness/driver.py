@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, assert_never
@@ -21,10 +22,12 @@ from evals.harness.stack import (
 )
 
 if TYPE_CHECKING:
+    from evals.harness.evidence import LlmCall
     from evals.harness.fake_ha import FakeHA
     from evals.harness.proxy import LlmProxy
 
 SendFn = Callable[[UserRequest, float], Awaitable[AlfredResponse]]
+TIMES = "\N{MULTIPLICATION SIGN}"
 
 
 class HarnessError(RuntimeError):
@@ -65,6 +68,16 @@ def build_request(actor: Actor, text: str, session_id: str, signal_number: str) 
     )
 
 
+def upstream_failures(calls: list[LlmCall]) -> str:
+    """``"; the LLM upstream returned 502 <times>2"`` for the non-2xx answers among *calls*,
+    or ``""``: a reply timeout then says whether vLLM itself was failing."""
+    statuses = Counter(c.status for c in calls if not 200 <= c.status < 300)
+    if not statuses:
+        return ""
+    counts = ", ".join(f"{s} {TIMES}{n}" for s, n in sorted(statuses.items()))
+    return f"; the LLM upstream returned {counts}"
+
+
 def session_id_for(sample_id: str, epoch: int) -> str:
     return f"eval-{sample_id}-e{epoch}-{uuid4().hex[:6]}"
 
@@ -93,9 +106,11 @@ async def play(ctx: PlayContext, variant: ScenarioVariant, epoch: int) -> Eviden
                 request = build_request(actor, step.user, session_id, ctx.signal_number)
                 response = await ctx.send(request, ctx.reply_timeout_s)
                 if response.source != CONSCIOUS_SOURCE:
+                    window = ctx.proxy.calls_between(sent, time.monotonic())
                     raise HarnessError(
                         f"step {index}: no reply from System 2 within {ctx.reply_timeout_s:.0f}s "
                         f"(got {response.source!r}: {response.text[:120]!r})"
+                        + upstream_failures(window)
                     )
                 ev.replies.append(
                     Reply(

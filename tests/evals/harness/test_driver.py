@@ -125,6 +125,33 @@ async def test_no_conscious_reply_is_a_harness_error() -> None:
         await play(ctx(Recorder(source="channels")), variant, epoch=1)
 
 
+async def test_no_reply_names_the_llm_upstreams_failures_in_that_window() -> None:
+    proxy = LlmProxy("http://x")
+    proxy.calls.append(LlmCall(t=0.0, role="system2", latency_ms=1.0, status=503))  # earlier
+
+    async def vllm_down(request: UserRequest, timeout: float) -> AlfredResponse:
+        now = time.monotonic()
+        proxy.calls.extend(
+            LlmCall(t=now, role="system2", latency_ms=1.0, status=status)
+            for status in (502, 200, 502, 500)
+        )
+        return AlfredResponse(
+            source="channels", channel=request.channel, session_id=request.session_id, text=""
+        )
+
+    [variant] = expand_variants(scenario())
+    with pytest.raises(HarnessError, match="no reply from System 2") as err:
+        await play(ctx(vllm_down, proxy=proxy), variant, epoch=1)
+    assert str(err.value).endswith("; the LLM upstream returned 500 ×1, 502 ×2")  # noqa: RUF001
+
+
+async def test_no_reply_without_upstream_failures_says_nothing_about_the_llm() -> None:
+    [variant] = expand_variants(scenario())
+    with pytest.raises(HarnessError) as err:
+        await play(ctx(Recorder(source="channels")), variant, epoch=1)
+    assert "upstream" not in str(err.value)
+
+
 async def test_ha_event_step_changes_state_and_is_transcribed() -> None:
     ha = FakeHA(load_world("apartment"))
     s = scenario(

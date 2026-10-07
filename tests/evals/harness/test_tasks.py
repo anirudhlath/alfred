@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from evals.harness.driver import SendFn
+    from evals.harness.report import SampleRun
 
 
 class FakeStack:
@@ -32,8 +33,10 @@ class FakeStack:
         self._restart_error = restart_error
         self.name = "alfred-eval-test"
         self.restarts = 0
+        self.alive_calls = 0
 
     async def alive(self) -> bool:
+        self.alive_calls += 1
         return self._alive.pop(0) if len(self._alive) > 1 else self._alive[0]
 
     async def restart(self) -> None:
@@ -137,7 +140,7 @@ async def test_dead_container_restarts_once_then_errors_fast(tmp_path: Path) -> 
     runs = runs_from_logs(logs)
     assert stack.restarts == 1 and ctx.recoveries == 1
     assert [r.value for r in runs].count("E") >= 1
-    assert all("not running" in (r.error or "") for r in runs if r.value == "E")
+    assert all("is not running" in (r.error or "") for r in runs if r.value == "E")
 
 
 async def test_restarts_for_isolated_goldens_are_not_recoveries(tmp_path: Path) -> None:
@@ -181,6 +184,82 @@ async def test_a_stack_error_mid_eval_scores_the_sample_e(
     runs = runs_from_logs(logs)
     assert len(runs) == 2 and {r.value for r in runs} == {"E"}
     assert all("lost redis sending a request" in (r.error or "") for r in runs)
+
+
+def answering(sources: list[str]) -> SendFn:
+    """A send that answers with each of *sources* in turn, then from System 2. Any other
+    source makes play() raise HarnessError, as a reply timeout does."""
+    queue = list(sources)
+
+    async def send(request: UserRequest, timeout: float) -> AlfredResponse:
+        source = queue.pop(0) if queue else "conscious-engine"
+        return AlfredResponse(
+            source=source,
+            channel=request.channel,
+            session_id=request.session_id,
+            text="Good evening, sir.",
+        )
+
+    return send
+
+
+async def evaluate(ctx: RunContext, tmp_path: Path) -> list[SampleRun]:
+    task = build_task("conversation", list(ctx.variants.values()), ctx, epochs=1)
+    logs = await eval_async(
+        task,
+        model="mockllm/model",
+        log_dir=str(tmp_path),
+        max_samples=1,
+        retry_on_error=1,
+        fail_on_error=False,
+    )
+    return runs_from_logs(logs)
+
+
+async def test_a_failed_play_leaves_the_stack_dirty_and_the_retry_runs_on_a_restart(
+    tmp_path: Path,
+) -> None:
+    # The first request times out: Conscious is still working on it, so the stack is
+    # dirty and the retry must not share it. The restart is the suite's recovery.
+    stack = FakeStack([True])
+    ctx = context(stack, send=answering(["channels"]))
+    runs = await evaluate(ctx, tmp_path)
+    assert {r.value for r in runs} == {"C"} and len(runs) == 2
+    assert stack.restarts == 1 and ctx.recoveries == 1 and ctx.dirty is None
+
+
+async def test_a_dirty_stack_with_no_recovery_left_errors_at_once(tmp_path: Path) -> None:
+    stack = FakeStack([True])
+    ctx = context(stack, send=answering(["channels"]))
+    ctx.restarts_left = 0
+    runs = await evaluate(ctx, tmp_path)
+    assert [r.value for r in runs] == ["E", "E"] and stack.restarts == 0
+    # The later sample says why the stack needed the restart it could not have.
+    later = next(r for r in runs if r.sample_id.endswith("~1"))
+    assert "needs a restart" in (later.error or "")
+    assert "no reply from System 2" in (later.error or "")
+    assert "recovery is spent" in (later.error or "")
+
+
+async def test_a_failed_restart_breaks_the_stack_and_later_samples_error_at_once(
+    tmp_path: Path,
+) -> None:
+    # The restart's readiness fails, but the container keeps running: alive() would say
+    # True for ever, and every later sample would wait out its reply timeout.
+    broken = StackError(
+        "alfred-eval-test: System 2 never answered the readiness request\n"
+        "--- docker logs ---\nTraceback: conscious crashed"
+    )
+    stack = FakeStack([True], restart_error=broken)
+    ctx = context(stack, send=answering(["channels"]))
+    runs = await evaluate(ctx, tmp_path)
+    assert [r.value for r in runs] == ["E", "E"]
+    # One restart was tried; after it failed nothing probed or restarted the stack again.
+    assert stack.restarts == 1 and stack.alive_calls == 1
+    for r in runs:
+        assert "failed to restart" in (r.error or "")
+        assert "System 2 never answered the readiness request" in (r.error or "")
+        assert "docker logs" not in (r.error or "")  # the first line only; the rest is logged
 
 
 def test_the_test_package_pins_inspect_display_none() -> None:
