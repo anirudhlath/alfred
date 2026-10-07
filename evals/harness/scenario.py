@@ -210,16 +210,21 @@ def load_scenario(path: Path, suite: str) -> Scenario:
     return scenario
 
 
+def _visible(directory: Path) -> list[Path]:
+    """Entries not hidden by a leading ``.`` (``.gitkeep``, editor swap files), sorted."""
+    return sorted(p for p in directory.iterdir() if not p.name.startswith("."))
+
+
 def available_suites(root: Path = SUITES_DIR) -> list[str]:
-    """Every non-empty directory under ``root``. ``load_suites`` rejects what is not a golden."""
+    """Every directory under ``root`` with a visible entry; ``load_suites`` rejects non-goldens."""
     if not root.is_dir():
         return []
-    return sorted(p.name for p in root.iterdir() if p.is_dir() and any(p.iterdir()))
+    return [p.name for p in _visible(root) if p.is_dir() and _visible(p)]
 
 
 def _golden_paths(suite_dir: Path) -> list[Path]:
-    """The suite's goldens. Anything else in the directory would be skipped, so it is an error."""
-    paths = sorted(suite_dir.iterdir())
+    """The suite's goldens. Any other visible entry would be skipped, so it is an error."""
+    paths = _visible(suite_dir)
     for path in paths:
         if not (path.is_file() and path.suffix == GOLDEN_SUFFIX):
             raise ScenarioError(f"{path}: not a golden; a suite holds only *{GOLDEN_SUFFIX} files")

@@ -11,6 +11,7 @@ from evals.harness.scenario import (
     Scenario,
     ScenarioError,
     UserStep,
+    available_suites,
     expand_variants,
     load_suites,
     select,
@@ -159,6 +160,15 @@ def test_a_stray_entry_in_a_suite_is_an_error(tmp_path: Path, stray: str) -> Non
     with pytest.raises(ScenarioError) as err:
         load_suites(root=tmp_path)
     assert str(err.value).startswith(f"{entry}: ") and "*.yaml" in str(err.value)
+
+
+def test_hidden_entries_in_a_suite_are_ignored(tmp_path: Path) -> None:
+    write(tmp_path, "demo", "a.yaml", GOOD)
+    write(tmp_path, "demo", ".gitkeep", "")
+    write(tmp_path, "demo", ".x.yaml.swp", "\x00 not yaml")
+    write(tmp_path, "empty", ".gitkeep", "")
+    assert available_suites(tmp_path) == ["demo"]
+    assert [s.id for s in load_suites(root=tmp_path)["demo"]] == ["demo.lights.on"]
 
 
 def test_a_suite_of_only_yml_files_is_not_skipped(tmp_path: Path) -> None:
