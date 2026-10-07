@@ -6,7 +6,7 @@ steps:
   - user: "Which lights are on right now?"
 expect:
   - ha_not_called: {}
-  - reply_contains: {regex: "living[- ]room lamp|lamp in the living room"}
+  - reply_contains: {regex: "living[- ]room lamp|lamp in the living[- ]room"}
   - reply_contains: {regex: "kitchen pendants?|pendants? in the kitchen|pendant lights"}
   - judge:
       category: faithfulness

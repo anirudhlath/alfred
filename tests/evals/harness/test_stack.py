@@ -163,11 +163,12 @@ async def test_stop_wipes_data_and_removes_the_container_unless_keep(
     assert stack.data_dir is not None and stack.data_dir.exists()
 
 
-async def test_a_restart_keeps_the_suites_first_reply_time(
+async def test_a_restart_keeps_the_suites_first_boot_and_reply_times(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # An isolated golden restarts the stack; the stack line must still report the suite's
-    # very first request after boot, not the readiness probe of the latest restart.
+    # first boot and its very first request after boot, not the latest restart's. The
+    # restart's readiness answers 50 ms later, so an overwrite could not equal the first.
     delays = iter([0.0, 0.05])
 
     async def fake_publish(redis, request, session_id, timeout):  # type: ignore[no-untyped-def]
@@ -180,35 +181,11 @@ async def test_a_restart_keeps_the_suites_first_reply_time(
     monkeypatch.setattr("evals.harness.stack.create_redis", lambda url: _NullRedis())
     stack = make_stack(tmp_path, FakeDocker())
     await stack.start()
-    first = stack.first_reply_ms
-    assert first is not None and first < 50
+    first = (stack.boot_seconds, stack.first_reply_ms)
+    assert None not in first
     await stack.restart()
-    assert next(delays, None) is None  # the restart really did run readiness again
-    assert stack.first_reply_ms == first
-    await stack.stop()
-
-
-async def test_a_restart_keeps_the_suites_first_boot_time(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # Same rule as first_reply_ms: the stack line reports the suite's first boot.
-    delays = iter([0.0, 0.05])
-
-    async def fake_publish(redis, request, session_id, timeout):  # type: ignore[no-untyped-def]
-        await asyncio.sleep(next(delays))
-        return AlfredResponse(
-            source="conscious-engine", channel="web_pwa", session_id=session_id, text="ready"
-        )
-
-    monkeypatch.setattr("evals.harness.stack.publish_and_wait", fake_publish)
-    monkeypatch.setattr("evals.harness.stack.create_redis", lambda url: _NullRedis())
-    stack = make_stack(tmp_path, FakeDocker())
-    await stack.start()
-    first = stack.boot_seconds
-    assert first is not None and first < 0.05
-    await stack.restart()
-    assert next(delays, None) is None  # the restart really did boot again
-    assert stack.boot_seconds == first
+    assert next(delays, None) is None  # the restart really did boot and run readiness again
+    assert (stack.boot_seconds, stack.first_reply_ms) == first
     await stack.stop()
 
 

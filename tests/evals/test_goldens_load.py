@@ -165,10 +165,15 @@ def _unknown_services(s: Scenario, world: World) -> list[str]:
 def test_every_golden_names_real_services_and_tools() -> None:
     world = load_world("apartment")
     seen: set[str] = set()
+    home_tools = 0
     for s in _goldens().values():
         assert not _unknown_services(s, world), f"{s.path}: {_unknown_services(s, world)}"
         seen |= {f for c in s.expect for f in ("service", "tool") if getattr(c.params, f, None)}
-    assert seen == {"service", "tool"}  # the lookup matched something: not a vacuous pass
+        tools = [t for c in s.expect if isinstance(t := getattr(c.params, "tool", None), str)]
+        home_tools += sum(normalize_tool(t).startswith("home_") for t in tools)
+    # The lookup matched something, and at least one tool was a home tool the guard checks:
+    # otherwise every tool could be skipped as non-home and the test would pass vacuously.
+    assert seen == {"service", "tool"} and home_tools > 0
 
 
 def test_unknown_services_flags_a_misspelt_service_or_tool() -> None:
@@ -241,6 +246,10 @@ def _reply_checks_pass(s: Scenario, text: str) -> bool:
         ("home_control.live_state.temperature", "About twenty-one degrees, sir.", True),
         ("home_control.live_state.temperature", "It is 121 °F, sir.", False),
         ("home_control.live_state.temperature", "It is 215 K, sir.", False),
+        ("home_control.live_state.temperature", "It is 21.7 °C, sir.", False),
+        ("home_control.live_state.temperature", "It is 21,9 °C, sir.", False),
+        ("home_control.live_state.temperature", "It is 21 °C, sir.", True),
+        ("home_control.live_state.temperature", "It is 21,5 °C, sir.", True),
         (
             "home_control.live_state.which_lights_on",
             "The living-room lamp and the kitchen pendants.",
@@ -249,6 +258,11 @@ def _reply_checks_pass(s: Scenario, text: str) -> bool:
         (
             "home_control.live_state.which_lights_on",
             "The lamp in the living room and the pendants in the kitchen.",
+            True,
+        ),
+        (
+            "home_control.live_state.which_lights_on",
+            "The lamp in the living-room and the pendants in the kitchen.",
             True,
         ),
         (
