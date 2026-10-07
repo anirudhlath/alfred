@@ -115,6 +115,53 @@ def test_evals_calibrate_names_the_vllm_url_when_the_judge_fails(
 JUDGE_ARGS = ["--model", "judge-m", "--vllm-url", "http://vllm.test/v1"]
 
 
+def test_evals_calibrate_strips_a_trailing_slash_from_the_vllm_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def refuse(*_: object) -> JudgeVerdict:
+        raise ConnectionError("connection refused")
+
+    built = _fake_judge_model(monkeypatch, [])
+    monkeypatch.setattr("evals.harness.judge.Judge.ask", refuse)
+    runner.invoke(
+        app, ["evals", "calibrate", "--model", "judge-m", "--vllm-url", "http://vllm.test/v1/"]
+    )
+    assert built == [("judge-m", "http://vllm.test/v1")]
+
+
+@pytest.mark.parametrize(
+    "url", ["http://localhost:80000/v1", "localhost:8000/v1", "ftp://vllm.test/v1", "http:///v1"]
+)
+def test_evals_calibrate_refuses_a_malformed_vllm_url_in_one_line(
+    monkeypatch: pytest.MonkeyPatch, url: str
+) -> None:
+    built = _fake_judge_model(monkeypatch, [])
+    result = runner.invoke(app, ["evals", "calibrate", "--model", "judge-m", "--vllm-url", url])
+    assert result.exit_code == 1 and built == []
+    [line] = result.output.strip().splitlines()
+    assert line.startswith(f"alfred evals: --vllm-url {url!r}")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [b"category: tone\nitems: [", b"category: nope\nitems: []\n", b"\xff\xfe not utf-8"],
+    ids=["bad-yaml", "invalid", "not-utf8"],
+)
+def test_evals_calibrate_names_a_malformed_calibration_file_in_one_line(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, body: bytes
+) -> None:
+    from evals.harness import judge
+
+    (tmp_path / "tone.yaml").write_bytes(body)
+    real = judge.load_calibration_sets
+    monkeypatch.setattr("evals.harness.judge.load_calibration_sets", lambda: real(tmp_path))
+    built = _fake_judge_model(monkeypatch, [])
+    result = runner.invoke(app, ["evals", "calibrate", *JUDGE_ARGS])
+    assert result.exit_code == 1 and built == []
+    [line] = result.output.strip().splitlines()
+    assert line.startswith(f"alfred evals: {tmp_path / 'tone.yaml'}: ")
+
+
 @pytest.mark.parametrize(
     ("unstarted", "exit_code"), [([], 0), (["home_control", "memory"], 1)], ids=["ok", "unstarted"]
 )

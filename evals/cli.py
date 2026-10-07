@@ -55,8 +55,14 @@ def calibrate(model: ModelOpt = DEFAULT_MODEL, vllm_url: VllmUrlOpt = DEFAULT_VL
     from evals.harness.judge import (
         calibrate as run_calibration,
     )
+    from evals.harness.preflight import PreflightError, base_url
 
-    sets = load_calibration_sets()
+    try:
+        vllm_url = base_url(vllm_url, "--vllm-url")
+        sets = load_calibration_sets()
+    except PreflightError as exc:  # CalibrationError names the file
+        typer.echo(f"alfred evals: {exc}", err=True)
+        raise typer.Exit(1) from exc
     judge = Judge(make_judge_model(model, vllm_url))
     try:
         report = asyncio.run(run_calibration(judge, sets, model))

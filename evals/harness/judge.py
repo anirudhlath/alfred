@@ -10,12 +10,13 @@ from typing import TYPE_CHECKING, Self
 
 import yaml
 from inspect_ai.model import ChatMessageSystem, ChatMessageUser, GenerateConfig, Model, get_model
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from tenacity import RetryError
 
 from evals.harness.checks.judge_spec import JudgeCategory, JudgeSpec, Rubric
 from evals.harness.checks.result import CheckResult
 from evals.harness.evidence import TranscriptTurn  # noqa: TC001 — Pydantic field type
+from evals.harness.preflight import PreflightError
 from evals.harness.vllm_model import PROVIDER as VLLM_PROVIDER  # importing registers it
 
 if TYPE_CHECKING:
@@ -30,6 +31,8 @@ STATE_DIR = Path.home() / ".local" / "share" / "alfred-evals"
 CALIBRATION_FILE = STATE_DIR / "calibration.json"
 TRUST_THRESHOLD = 0.85
 JUDGE_API_KEY = "alfred-eval-not-a-key"
+# Judge requests to vLLM at once; with the proxy's MAX_UPSTREAM, a run's share is 4.
+JUDGE_CONNECTIONS = 2
 
 JUDGE_SYSTEM = (
     "You grade replies from Alfred, a formal, butler-style home assistant. Judge only the "
@@ -97,7 +100,11 @@ def make_judge_model(model: str, base_url: str) -> Model:
         base_url=base_url,
         api_key=JUDGE_API_KEY,
         config=GenerateConfig(
-            temperature=0.0, max_tokens=600, max_connections=2, max_retries=2, timeout=120
+            temperature=0.0,
+            max_tokens=600,
+            max_connections=JUDGE_CONNECTIONS,
+            max_retries=2,
+            timeout=120,
         ),
     )
 
@@ -175,14 +182,35 @@ class CalibrationReport(BaseModel):
         return {c for c, r in self.categories.items() if r.agreement >= threshold}
 
 
+class CalibrationError(PreflightError):
+    """A hand-labelled calibration file cannot be used. The message starts with its path."""
+
+
+def _calibration_set(path: Path) -> CalibrationSet:
+    try:
+        return CalibrationSet.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
+    except ValidationError as exc:
+        first = exc.errors()[0]
+        loc = ".".join(str(part) for part in first["loc"])
+        more = f" (+{exc.error_count() - 1} more)" if exc.error_count() > 1 else ""
+        raise CalibrationError(f"{path}: {loc + ': ' if loc else ''}{first['msg']}{more}") from exc
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+        lines = str(exc).strip().splitlines()
+        raise CalibrationError(
+            f"{path}: {' '.join(lines[0].split()) if lines else type(exc).__name__}"
+        ) from exc
+
+
 def load_calibration_sets(root: Path = CALIBRATION_DIR) -> list[CalibrationSet]:
+    """Every calibration set under *root*. A file that cannot be used is a CalibrationError
+    naming it."""
     sets: list[CalibrationSet] = []
     origin: dict[str, Path] = {}
     for path in sorted(root.glob("*.yaml")):
-        s = CalibrationSet.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
+        s = _calibration_set(path)
         if s.category in origin:
-            raise ValueError(
-                f"{origin[s.category].name} and {path.name} both calibrate {s.category!r}"
+            raise CalibrationError(
+                f"{path}: {origin[s.category].name} and {path.name} both calibrate {s.category!r}"
             )
         origin[s.category] = path
         sets.append(s)

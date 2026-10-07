@@ -9,7 +9,8 @@ from typing import TYPE_CHECKING, Any
 import httpx
 import pytest
 
-from evals.harness.proxy import LlmProxy, classify_role
+from evals.harness.judge import JUDGE_CONNECTIONS, make_judge_model
+from evals.harness.proxy import MAX_UPSTREAM, LlmProxy, classify_role
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
@@ -109,7 +110,7 @@ async def test_upstream_failure_is_recorded_as_502() -> None:
         await p.stop()
 
 
-async def test_concurrency_cap() -> None:
+async def test_concurrency_cap_covers_chat_and_passthrough_alike() -> None:
     active = 0
     peak = 0
 
@@ -121,19 +122,63 @@ async def test_concurrency_cap() -> None:
         active -= 1
         return httpx.Response(200, json=COMPLETION)
 
-    p = LlmProxy("http://vllm.test", max_concurrency=2, transport=httpx.MockTransport(slow))
+    p = LlmProxy("http://vllm.test", transport=httpx.MockTransport(slow))
     await p.start()
     try:
         async with httpx.AsyncClient() as client:
-            await asyncio.gather(
-                *[
-                    client.post(f"{p.url}/v1/chat/completions", json={"model": "m", "messages": []})
-                    for _ in range(6)
-                ]
-            )
-        assert peak == 2
+            chat = [
+                client.post(f"{p.url}/v1/chat/completions", json={"model": "m", "messages": []})
+                for _ in range(4)
+            ]
+            passthrough = [client.get(f"{p.url}/v1/models") for _ in range(2)]
+            passthrough += [client.post(f"{p.url}/v1/completions", json={}) for _ in range(2)]
+            await asyncio.gather(*chat, *passthrough)
+        assert peak == MAX_UPSTREAM == 2
     finally:
         await p.stop()
+
+
+async def test_wait_idle_returns_once_the_call_in_flight_is_recorded() -> None:
+    release = asyncio.Event()
+
+    async def gated(request: httpx.Request) -> httpx.Response:
+        await release.wait()
+        return httpx.Response(200, json=COMPLETION)
+
+    p = LlmProxy("http://vllm.test", transport=httpx.MockTransport(gated))
+    await p.start()
+    try:
+        assert await p.wait_idle(0.01)  # nothing in flight
+        async with httpx.AsyncClient() as client:
+            body = {"model": "m", "messages": []}
+            sent = asyncio.create_task(client.post(f"{p.url}/v1/chat/completions", json=body))
+            while not p.in_flight:
+                await asyncio.sleep(0.005)
+            assert not await p.wait_idle(0.02) and p.calls == []
+            waiting = asyncio.create_task(p.wait_idle(5))
+            await asyncio.sleep(0.01)
+            release.set()
+            assert await waiting
+            assert len(p.calls) == 1 and p.in_flight == 0
+            await sent
+    finally:
+        await p.stop()
+
+
+async def test_a_failed_call_is_not_left_in_flight() -> None:
+    def boom(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    async with serving(boom) as p, httpx.AsyncClient() as client:
+        await client.post(f"{p.url}/v1/chat/completions", json={"model": "m", "messages": []})
+        assert p.in_flight == 0 and await p.wait_idle(0.01)
+
+
+def test_the_proxy_and_the_judge_share_one_vllm_budget_of_four() -> None:
+    # vLLM is shared with production: whatever the eval sends it at once stays within 4.
+    assert MAX_UPSTREAM + JUDGE_CONNECTIONS == 4
+    judge = make_judge_model("m", "http://vllm.test/v1")
+    assert judge.config.max_connections == JUDGE_CONNECTIONS
 
 
 @pytest.mark.parametrize(

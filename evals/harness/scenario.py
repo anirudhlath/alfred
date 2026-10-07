@@ -24,6 +24,7 @@ from pydantic import (
 )
 
 from evals.harness.checks import CHECK_PARAMS, NEEDS_REPLY
+from evals.harness.checks.home import HaCalledParams
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -65,7 +66,9 @@ class HaEvent(BaseModel):
 class HaEventStep(BaseModel):
     model_config = ConfigDict(extra="forbid")
     ha_event: HaEvent
-    settle: float = Field(default=3.0, ge=0)
+    # How long to wait after the event: for a call_service when the golden expects one
+    # (``Scenario.expects_ha_call``), else a quiet window. None: the driver's defaults.
+    settle: float | None = Field(default=None, ge=0)
 
 
 class WaitStep(BaseModel):
@@ -149,6 +152,16 @@ class Scenario(BaseModel):
         if not _ID.match(value):
             raise ValueError(f"id {value!r} must look like suite.topic.case (lowercase, dots)")
         return value
+
+    def expects_ha_call(self, index: int) -> bool:
+        """Whether an ``ha_called`` check could count a call made during step *index*:
+        one with no ``after_step``, or one whose ``after_step`` is at or before it."""
+        for check in self.expect:
+            if isinstance(check.params, HaCalledParams):
+                after = check.params.after_step
+                if after is None or (after if after >= 0 else len(self.steps) + after) <= index:
+                    return True
+        return False
 
     @model_validator(mode="after")
     def _coherent(self) -> Self:

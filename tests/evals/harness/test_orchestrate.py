@@ -147,7 +147,9 @@ async def test_execute_collects_logs_and_stack_meta(tmp_path: Path) -> None:
     ]
 
 
-async def test_a_stack_that_fails_to_start_costs_only_its_own_suite(tmp_path: Path) -> None:
+async def test_a_stack_that_fails_to_start_costs_only_its_own_suite(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     stacks = [
         RecordingStack(),
         RecordingStack(StackError("exited during boot\n--- docker logs ---\n  boom")),
@@ -164,9 +166,11 @@ async def test_a_stack_that_fails_to_start_costs_only_its_own_suite(tmp_path: Pa
         build_task_fn=lambda suite, *a: suite,  # type: ignore[arg-type,return-value]
     )
     assert results.logs == ["log first"] and [m["suite"] for m in results.stacks] == ["first"]
+    # The problem line holds the first line only; the log keeps the docker logs.
     assert results.unstarted == {
-        "second": "suite second: stack failed to start: exited during boot --- docker logs --- boom"
+        "second": "suite second: stack failed to start: exited during boot"
     }
+    assert "--- docker logs ---\n  boom" in caplog.text
     assert [(s.started, s.stopped) for s in stacks] == [(1, 1), (1, 1)]
 
 
@@ -503,6 +507,10 @@ def _preflight_passes(monkeypatch: pytest.MonkeyPatch, order: list[str]) -> None
         order.append("home-service")
         return "def5678"
 
+    def home_service_commit(path: Path) -> str:
+        order.append("home-service commit")
+        return "def5678"
+
     def alfred_commit(repo: Path) -> str:
         order.append("alfred commit")
         return "abc1234+dirty"
@@ -524,6 +532,7 @@ def _preflight_passes(monkeypatch: pytest.MonkeyPatch, order: list[str]) -> None
     monkeypatch.setattr(orchestrate, "check_models", check_models)
     monkeypatch.setattr(orchestrate, "probe_host_ports", probe)
     monkeypatch.setattr(orchestrate, "check_home_service", check_home_service)
+    monkeypatch.setattr(orchestrate, "home_service_commit", home_service_commit)
     monkeypatch.setattr(orchestrate, "alfred_commit", alfred_commit)
     monkeypatch.setattr(orchestrate, "read_calibration", read_calibration)
     monkeypatch.setattr(orchestrate, "docker_bridge_gateway", gateway)
@@ -531,10 +540,18 @@ def _preflight_passes(monkeypatch: pytest.MonkeyPatch, order: list[str]) -> None
 
 
 @pytest.mark.parametrize(
-    ("build", "built", "commit"),
+    ("build", "checked", "built", "commit", "hs_commit"),
     [
-        (True, ["build home-service"], "abc1234+dirty"),
-        (False, [], "abc1234+dirty (image not rebuilt)"),
+        (True, "home-service", ["build home-service"], "abc1234+dirty", "def5678"),
+        # The image holds whatever home-service it was built with: the checkout is only
+        # described, never refused, and both commits say the image was not rebuilt.
+        (
+            False,
+            "home-service commit",
+            [],
+            "abc1234+dirty (image not rebuilt)",
+            "def5678 (image not rebuilt)",
+        ),
     ],
     ids=["build", "no-build"],
 )
@@ -543,8 +560,10 @@ async def test_run_suites_preflights_before_the_build_and_reports_whatever_ran(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     build: bool,
+    checked: str,
     built: list[str],
     commit: str,
+    hs_commit: str,
 ) -> None:
     # Inspect's display is process-global: unset it here, and restore it afterwards.
     # Neither eval_async's own fallback nor the env var left here is the display asked for.
@@ -584,7 +603,7 @@ async def test_run_suites_preflights_before_the_build_and_reports_whatever_ran(
     assert order == [
         "models http://vllm.test/v1 judge-m",
         "models http://embed.test/v1 embed-m",
-        "home-service",
+        checked,
         "alfred commit",
         "calibration calibration.json",
         "gateway",
@@ -597,7 +616,7 @@ async def test_run_suites_preflights_before_the_build_and_reports_whatever_ran(
     assert stacks[0].cfg.work_dir == run_dir / "data"
     card = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
     meta = card["meta"]
-    assert meta["alfred_commit"] == commit and meta["home_service_commit"] == "def5678"
+    assert meta["alfred_commit"] == commit and meta["home_service_commit"] == hs_commit
     # The saved calibration was measured on another model, so none of it applies.
     assert meta["calibration"] == {} and meta["trusted"] == []
     assert meta["problems"] == [
@@ -656,6 +675,60 @@ async def test_an_interrupted_run_writes_the_scorecard_for_what_finished_then_ra
     assert "- suite zzz: interrupted" in capsys.readouterr().out
     # Both stacks that started were torn down; the suite after the interrupted one never ran.
     assert [s.stopped for s in stacks] == [True, True]
+
+
+async def test_run_suites_normalises_the_server_urls_before_using_any(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _golden(tmp_path / "suites", "demo", "quiet")
+    _suites_at(monkeypatch, tmp_path / "suites")
+    monkeypatch.setattr(orchestrate, "CALIBRATION_FILE", tmp_path / "calibration.json")
+    order: list[str] = []
+    _preflight_passes(monkeypatch, order)
+    judged: list[str] = []
+
+    def judge_model(model: str, url: str) -> Model:
+        judged.append(url)
+        return get_model("mockllm/model", memoize=False)
+
+    seen: dict[str, str] = {}
+
+    def stack(cfg: Any, *, fake_ha: Any, proxy: Any) -> FakeStack:
+        seen.update(vllm=cfg.vllm_url, embed=cfg.embed_url, upstream=proxy.upstream)
+        return FakeStack(cfg)
+
+    monkeypatch.setattr(orchestrate, "make_judge_model", judge_model)
+    monkeypatch.setattr(orchestrate, "Stack", stack)
+    opts = _options(
+        tmp_path / "logs", vllm_url="http://vllm.test/v1/", embed_url="http://embed.test//"
+    )
+    await run_suites(opts)
+    assert order[:2] == [
+        "models http://vllm.test/v1 judge-m",
+        "models http://embed.test/v1 embed-m",
+    ]
+    assert judged == ["http://vllm.test/v1"]
+    # Not /v1/: the proxy would otherwise forward to /v1/v1/chat/completions.
+    assert seen == {
+        "vllm": "http://vllm.test/v1",
+        "embed": "http://embed.test",
+        "upstream": "http://vllm.test",
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "option"), [("vllm_url", "--vllm-url"), ("embed_url", "--embed-url")]
+)
+async def test_a_malformed_server_url_is_a_preflight_error_before_anything_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, option: str
+) -> None:
+    _golden(tmp_path / "suites", "demo", "quiet")
+    _suites_at(monkeypatch, tmp_path / "suites")
+    order: list[str] = []
+    _preflight_passes(monkeypatch, order)
+    with pytest.raises(PreflightError, match=f"^{option} 'http://localhost:80000'"):
+        await run_suites(_options(tmp_path / "logs", **{field: "http://localhost:80000"}))
+    assert order == [] and not (tmp_path / "logs").exists()
 
 
 def _models_unreachable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

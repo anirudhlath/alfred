@@ -34,6 +34,9 @@ ROLE_FINGERPRINTS: tuple[tuple[Role, str], ...] = (
     ("librarian", "You are a pattern analyst"),
 )
 _DROP_HEADERS = {"host", "content-length", "transfer-encoding", "connection"}
+# Requests upstream at once, chat and passthrough alike. vLLM is shared with production:
+# with the judge's JUDGE_CONNECTIONS, an eval run never has more than 4 there at once.
+MAX_UPSTREAM = 2
 
 
 def _obj(value: Any) -> dict[str, Any]:
@@ -113,7 +116,7 @@ class LlmProxy:
         *,
         host: str = "127.0.0.1",
         port: int = 0,
-        max_concurrency: int = 4,
+        max_concurrency: int = MAX_UPSTREAM,
         timeout_s: float = 300.0,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
@@ -122,6 +125,11 @@ class LlmProxy:
         self._port = port
         self.calls: list[LlmCall] = []
         self._sem = asyncio.Semaphore(max_concurrency)
+        # Chat completions not yet in ``calls``: a call is recorded when upstream answers,
+        # stamped with when it was sent, so a reader waits for these (``wait_idle``).
+        self._in_flight = 0
+        self._idle = asyncio.Event()
+        self._idle.set()
         self._timeout_s = timeout_s
         self._transport = transport
         self._client: httpx.AsyncClient | None = None
@@ -156,6 +164,22 @@ class LlmProxy:
     def calls_between(self, t0: float, t1: float) -> list[LlmCall]:
         return [c for c in self.calls if t0 <= c.t <= t1]
 
+    @property
+    def in_flight(self) -> int:
+        """Chat completions sent upstream and not yet recorded."""
+        return self._in_flight
+
+    async def wait_idle(self, timeout: float) -> bool:
+        """Wait until no chat completion is in flight, so ``calls`` holds every one sent so
+        far. False when one is still in flight after *timeout* seconds."""
+        try:
+            async with asyncio.timeout(timeout):
+                while self._in_flight:
+                    await self._idle.wait()
+        except TimeoutError:
+            return False
+        return True
+
     def _headers(self, request: web.Request) -> dict[str, str]:
         return {k: v for k, v in request.headers.items() if k.lower() not in _DROP_HEADERS}
 
@@ -185,6 +209,19 @@ class LlmProxy:
             messages=messages,
             tools_offered=tools,
         )
+        self._in_flight += 1
+        self._idle.clear()
+        try:
+            return await self._forward_and_record(request, raw, record)
+        finally:
+            self._in_flight -= 1
+            if not self._in_flight:
+                self._idle.set()
+
+    async def _forward_and_record(
+        self, request: web.Request, raw: bytes, record: partial[LlmCall]
+    ) -> web.Response:
+        assert self._client is not None
         async with self._sem:
             started = time.monotonic()
             try:
@@ -218,13 +255,14 @@ class LlmProxy:
     async def _passthrough(self, request: web.Request) -> web.Response:
         assert self._client is not None
         content = await request.read()
-        try:
-            upstream = await self._client.request(
-                request.method,
-                f"{self.upstream}{request.rel_url}",
-                content=content,
-                headers=self._headers(request),
-            )
-        except httpx.HTTPError as exc:
-            return _error(502, f"upstream failed: {exc}")
+        async with self._sem:  # unrecorded, but still a share of vLLM
+            try:
+                upstream = await self._client.request(
+                    request.method,
+                    f"{self.upstream}{request.rel_url}",
+                    content=content,
+                    headers=self._headers(request),
+                )
+            except httpx.HTTPError as exc:
+                return _error(502, f"upstream failed: {exc}")
         return _mirror(upstream)

@@ -127,6 +127,7 @@ class FakeHA:
         self._port = port
         self.calls: list[HaCall] = []
         self.connected = asyncio.Event()
+        self._call_seen = asyncio.Event()  # replaced on every call; see ``record``
         self._states = world.initial_states()
         self._subs: dict[ServerConnection, dict[str, int]] = {}
         self._server: Server | None = None
@@ -160,6 +161,22 @@ class FakeHA:
 
     def calls_between(self, t0: float, t1: float) -> list[HaCall]:
         return [c for c in self.calls if t0 <= c.t <= t1]
+
+    def record(self, call: HaCall) -> None:
+        """Log a call_service HA ran, and wake whoever waits for one."""
+        self.calls.append(call)
+        seen, self._call_seen = self._call_seen, asyncio.Event()
+        seen.set()
+
+    async def wait_for_call(self, since: float, timeout: float) -> bool:
+        """Wait for a call_service made at or after *since*. False after *timeout* s."""
+        try:
+            async with asyncio.timeout(timeout):
+                while not any(c.t >= since for c in self.calls):
+                    await self._call_seen.wait()
+        except TimeoutError:
+            return False
+        return True
 
     async def set_state(
         self, entity_id: str, state: str, attributes: dict[str, Any] | None = None
@@ -265,7 +282,7 @@ class FakeHA:
             # (never by dropping the connection); nothing ran, so nothing is recorded.
             await self._error(ws, msg_id, "invalid_format", str(exc))
             return
-        self.calls.append(call)
+        self.record(call)
         self._states = staged
         # Events first, then the result: what HA does for an entity that writes its state
         # during the call, so the caller's live state has moved by the time it returns.

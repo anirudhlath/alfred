@@ -24,8 +24,10 @@ from evals.harness.net import docker_bridge_gateway
 from evals.harness.preflight import (
     PreflightError,
     alfred_commit,
+    base_url,
     check_home_service,
     check_models,
+    home_service_commit,
 )
 from evals.harness.proxy import LlmProxy
 from evals.harness.report import (
@@ -54,7 +56,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOG_ROOT = REPO_ROOT / "evals" / "logs"
-# With --no-build the scorecard cannot know what the image holds; it says so.
+# With --no-build the scorecard cannot know what the image holds; both commits say so.
 NOT_REBUILT = " (image not rebuilt)"
 
 
@@ -154,8 +156,11 @@ async def execute(
             try:
                 await stack.start()
             except StackError as exc:
+                # The full text (docker logs included) goes to the log; the scorecard's
+                # problem line keeps the first line.
                 logger.error("suite %s: stack failed to start: %s", suite, exc)
-                why = " ".join(str(exc).split())
+                lines = str(exc).strip().splitlines()
+                why = lines[0].strip() if lines else type(exc).__name__
                 results.unstarted[suite] = f"suite {suite}: stack failed to start: {why}"
                 continue
             ctx = make_ctx(stack, variants)
@@ -268,10 +273,16 @@ async def run_suites(opts: RunOptions) -> RunOutcome:
     """Preflight, build, run every suite, then write and print the scorecard for
     whatever ran. Suites whose stack failed to start are named in the outcome."""
     plan = build_plan(opts)
+    vllm_url = base_url(opts.vllm_url, "--vllm-url")
+    embed_url = base_url(opts.embed_url, "--embed-url")
     async with httpx.AsyncClient(timeout=10) as client:
-        await check_models(client, opts.vllm_url, opts.model)
-        await check_models(client, f"{opts.embed_url}/v1", opts.embed_model)
-    hs_commit = check_home_service(opts.home_service, allow_stale=opts.allow_stale_home_service)
+        await check_models(client, vllm_url, opts.model)
+        await check_models(client, f"{embed_url}/v1", opts.embed_model)
+    if opts.build:
+        hs_commit = check_home_service(opts.home_service, allow_stale=opts.allow_stale_home_service)
+    else:
+        # The image holds whatever home-service it was built with; the checkout may not be it.
+        hs_commit = home_service_commit(opts.home_service) + NOT_REBUILT
     commit = alfred_commit(REPO_ROOT) + ("" if opts.build else NOT_REBUILT)
     report = read_calibration(CALIBRATION_FILE, opts.model)
     calibration, trusted = calibration_for(report, opts.model)
@@ -279,14 +290,14 @@ async def run_suites(opts: RunOptions) -> RunOutcome:
     # Created once the fakes are up, so a run that never starts leaves no empty dir.
     run_dir = opts.log_root / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
-    judge = Judge(make_judge_model(opts.model, opts.vllm_url))
+    judge = Judge(make_judge_model(opts.model, vllm_url))
 
     fake_ha = FakeHA(load_world("apartment"), host=gateway, port=opts.fake_ha_port)
-    proxy = LlmProxy(opts.vllm_url.removesuffix("/v1"), host=gateway, port=opts.proxy_port)
+    proxy = LlmProxy(vllm_url.removesuffix("/v1"), host=gateway, port=opts.proxy_port)
     cfg = StackConfig(
         model=opts.model,
-        vllm_url=opts.vllm_url,
-        embed_url=opts.embed_url,
+        vllm_url=vllm_url,
+        embed_url=embed_url,
         embed_model=opts.embed_model,
         work_dir=run_dir / "data",
         home_service_dir=opts.home_service,

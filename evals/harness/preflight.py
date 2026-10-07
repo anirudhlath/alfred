@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import subprocess
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -39,6 +40,23 @@ def run_checked(cmd: list[str], *, timeout: float) -> str:
     return out.stdout
 
 
+def base_url(url: str, option: str) -> str:
+    """*url* without surrounding space or trailing slashes. A PreflightError naming *option*
+    unless it is an http(s) URL with a host and a valid port: httpx would otherwise fail on
+    it with a traceback, not an error saying which option is wrong."""
+    stripped = url.strip().rstrip("/")
+    parts = urlsplit(stripped)
+    if parts.scheme not in ("http", "https"):
+        raise PreflightError(f"{option} {url!r} is not an http:// or https:// URL")
+    if not parts.hostname:
+        raise PreflightError(f"{option} {url!r} has no host")
+    try:
+        parts.port  # noqa: B018 — parsing the port is the check
+    except ValueError as exc:
+        raise PreflightError(f"{option} {url!r} has an invalid port ({exc})") from exc
+    return stripped
+
+
 async def check_models(client: httpx.AsyncClient, base_url: str, model: str) -> None:
     """*base_url* includes ``/v1``. Raises unless the server lists *model*."""
     try:
@@ -69,6 +87,22 @@ def alfred_commit(repo: Path, git: Callable[..., str] = _git) -> str:
     """
     head = git(repo, "rev-parse", "HEAD")
     return f"{head}+dirty" if git(repo, "status", "--porcelain") else head
+
+
+def home_service_commit(path: Path, git: Callable[..., str] = _git) -> str:
+    """The home-service checkout's commit, ``+dirty`` with changes, for a run that does not
+    build: the image holds whatever home-service it was built with, so the checkout is only
+    described, never fetched or refused. ``unknown``, with a warning, when it cannot be read."""
+    if not (path / ".git").exists():
+        logger.warning("home-service at %s is not a git checkout; its commit is unknown", path)
+        return "unknown"
+    try:
+        head = git(path, "rev-parse", "HEAD")
+        dirty = git(path, "status", "--porcelain")
+    except PreflightError as exc:
+        logger.warning("%s\nthe home-service commit is unknown", exc)
+        return "unknown"
+    return f"{head}+dirty" if dirty else head
 
 
 def check_home_service(path: Path, *, allow_stale: bool, git: Callable[..., str] = _git) -> str:

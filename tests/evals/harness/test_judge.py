@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from evals.harness.checks.judge_spec import JudgeSpec
 from evals.harness.evidence import TranscriptTurn
 from evals.harness.judge import (
+    CalibrationError,
     CalibrationItem,
     CalibrationReport,
     CalibrationSet,
@@ -229,5 +230,5 @@ def test_two_files_cannot_calibrate_the_same_category(tmp_path: Path) -> None:
     for name, item_id in (("a.yaml", "tone-1"), ("b.yaml", "tone-2")):
         body = yaml.safe_dump({"category": "tone", "items": [_item(item_id)]})
         (tmp_path / name).write_text(body, encoding="utf-8")
-    with pytest.raises(ValueError, match=r"a\.yaml and b\.yaml both calibrate 'tone'"):
+    with pytest.raises(CalibrationError, match=r"a\.yaml and b\.yaml both calibrate 'tone'"):
         load_calibration_sets(tmp_path)

@@ -224,3 +224,47 @@ def test_a_loaded_scenario_round_trips(tmp_path: Path) -> None:
     assert isinstance(judge.params, JudgeSpec)
     again = CheckSpec(name=judge.name, params=judge.params)
     assert again == judge and isinstance(again.params, JudgeSpec)
+
+
+@pytest.mark.parametrize(
+    ("after_step", "expected"),
+    [
+        (None, [True, True, True]),  # any call in the window counts, so every event waits
+        (1, [False, True, True]),
+        (2, [False, False, True]),
+        (-1, [False, False, True]),  # the last step, as Evidence.step_started[-1] reads it
+    ],
+)
+def test_expects_ha_call_asks_whether_a_call_from_that_step_could_count(
+    after_step: int | None, expected: list[bool]
+) -> None:
+    called: dict[str, object] = {"domain": "light", "service": "turn_on"}
+    if after_step is not None:
+        called["after_step"] = after_step
+    s = Scenario.model_validate(
+        {
+            "id": "demo.lights.on",
+            "prd": ["x"],
+            "status": "shipped",
+            "steps": [
+                {"user": "Hello."},
+                {"ha_event": {"entity_id": "light.x", "state": "on"}},
+                {"ha_event": {"entity_id": "light.x", "state": "off"}},
+            ],
+            "expect": [{"ha_not_called": {"domain": "switch"}}, {"ha_called": called}],
+        }
+    )
+    assert [s.expects_ha_call(i) for i in range(3)] == expected
+
+
+def test_a_golden_without_ha_called_expects_no_call() -> None:
+    s = Scenario.model_validate(
+        {
+            "id": "demo.lights.quiet",
+            "prd": ["x"],
+            "status": "shipped",
+            "steps": [{"ha_event": {"entity_id": "light.x", "state": "on"}}],
+            "expect": [{"ha_not_called": {}}],
+        }
+    )
+    assert not s.expects_ha_call(0)

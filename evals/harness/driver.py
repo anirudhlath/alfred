@@ -42,6 +42,12 @@ class PlayContext:
     reply_timeout_s: float = 120.0
     settle_s: float = 2.0
     restore_settle_s: float = 2.0
+    # After an ha_event: how long to wait for the call_service a golden expects, and the
+    # quiet window when it expects none. A step's ``settle`` replaces either.
+    ha_call_timeout_s: float = 30.0
+    ha_event_window_s: float = 5.0
+    # After the last step: how long an LLM call still upstream may take to be recorded.
+    llm_idle_timeout_s: float = 120.0
     signal_number: str = EVAL_SIGNAL_NUMBER
 
 
@@ -125,15 +131,30 @@ async def play(ctx: PlayContext, variant: ScenarioVariant, epoch: int) -> Eviden
                 await asyncio.sleep(ctx.settle_s)
             case HaEventStep():
                 e = step.ha_event
+                pushed = time.monotonic()
                 await ctx.fake_ha.set_state(e.entity_id, e.state, e.attributes)
                 ev.transcript.append(
                     TranscriptTurn(role="event", text=f"{e.entity_id} → {e.state}")
                 )
-                await asyncio.sleep(step.settle)
+                if scenario.expects_ha_call(index):
+                    timeout = ctx.ha_call_timeout_s if step.settle is None else step.settle
+                    if await ctx.fake_ha.wait_for_call(pushed, timeout):
+                        await asyncio.sleep(ctx.settle_s)  # for the call's side effects
+                else:
+                    await asyncio.sleep(
+                        ctx.ha_event_window_s if step.settle is None else step.settle
+                    )
             case WaitStep():
                 await asyncio.sleep(step.wait)
             case _:
                 assert_never(step)
+    # A call is recorded when upstream answers, stamped with when it was sent: one still
+    # upstream now belongs in this window, so wait for it before reading the window.
+    if not await ctx.proxy.wait_idle(ctx.llm_idle_timeout_s):
+        raise HarnessError(
+            f"LLM call still in flight {ctx.llm_idle_timeout_s:.0f}s after the last step; "
+            "the evidence would miss it"
+        )
     ended = time.monotonic()
     ev.ended_at = ended
     ev.ha_calls = ctx.fake_ha.calls_between(started, ended)

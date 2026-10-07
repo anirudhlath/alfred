@@ -10,8 +10,10 @@ import pytest
 from evals.harness.preflight import (
     PreflightError,
     alfred_commit,
+    base_url,
     check_home_service,
     check_models,
+    home_service_commit,
 )
 
 if TYPE_CHECKING:
@@ -170,3 +172,60 @@ def test_alfred_commit_that_cannot_be_read_is_a_preflight_error(
     with pytest.raises(PreflightError, match="not a git repository") as err:
         alfred_commit(tmp_path)
     assert "rev-parse HEAD" in str(err.value)
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("http://localhost:8000/v1", "http://localhost:8000/v1"),
+        ("http://localhost:8000/v1/", "http://localhost:8000/v1"),
+        ("https://vllm.test//", "https://vllm.test"),
+        (" http://vllm.test/v1 ", "http://vllm.test/v1"),
+    ],
+)
+def test_base_url_strips_trailing_slashes(url: str, expected: str) -> None:
+    assert base_url(url, "--vllm-url") == expected
+
+
+@pytest.mark.parametrize(
+    ("url", "why"),
+    [
+        ("http://localhost:80000/v1", "port"),
+        ("http://localhost:http/v1", "port"),
+        ("localhost:8000/v1", "http"),
+        ("ftp://vllm.test/v1", "http"),
+        ("http:///v1", "host"),
+        ("", "http"),
+    ],
+)
+def test_base_url_refuses_what_httpx_could_not_reach(url: str, why: str) -> None:
+    with pytest.raises(PreflightError, match=why) as err:
+        base_url(url, "--embed-url")
+    assert str(err.value).startswith(f"--embed-url {url!r}")
+
+
+@pytest.mark.parametrize(
+    ("dirty", "expected"),
+    [("", "aaa1111"), (" M app/x.py", "aaa1111+dirty")],
+    ids=["clean", "dirty"],
+)
+def test_home_service_commit_only_describes_the_checkout(
+    tmp_path: Path, dirty: str, expected: str
+) -> None:
+    # No fetch, no refusal: with --no-build it only labels what the checkout holds.
+    (tmp_path / ".git").mkdir()
+    git = fake_git("aaa1111", "unused", dirty=dirty)
+
+    def no_fetch(path: Path, *args: str) -> str:
+        assert args[:1] != ("fetch",), "a --no-build run never fetches"
+        return str(git(path, *args))
+
+    assert home_service_commit(tmp_path, git=no_fetch) == expected
+
+
+def test_home_service_commit_that_cannot_be_read_is_unknown_with_a_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="evals.harness.preflight"):
+        assert home_service_commit(tmp_path / "nope") == "unknown"
+    assert "not a git checkout" in caplog.text

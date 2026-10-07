@@ -109,6 +109,20 @@ async def test_call_service_on_an_area_records_entities_and_pushes_state(ha: Fak
     await ws.close()
 
 
+async def test_wait_for_call_wakes_on_a_call_service_made_since(ha: FakeHA) -> None:
+    ws, _ = await handshake(ha)
+    since = time.monotonic()
+    assert not await ha.wait_for_call(since, 0.01)  # nothing yet
+    waiting = asyncio.create_task(ha.wait_for_call(since, 5))
+    await asyncio.sleep(0.01)
+    call = {"type": "call_service", "domain": "light", "service": "turn_on"}
+    await command(ws, 1, **call, target={"entity_id": "light.bedroom_lamp"})
+    assert await waiting
+    # A call from before *since* does not count.
+    assert not await ha.wait_for_call(time.monotonic(), 0.01)
+    await ws.close()
+
+
 async def test_a_subscription_to_every_event_gets_state_changes(ha: FakeHA) -> None:
     ws, _ = await handshake(ha)
     await command(ws, 1, type="subscribe_events")  # no event_type: every event, as in HA

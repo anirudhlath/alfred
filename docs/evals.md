@@ -96,18 +96,23 @@ stream, so the proxy is the only place their arguments can be seen. It records e
 the first message's text, `ROLE_FINGERPRINTS`; anything else is `unknown`), the messages,
 the tools offered, the reply text, the tool calls with their arguments, token counts and
 latency. It never changes a request or a reply. Other paths pass through unrecorded, and
-streaming requests are refused. At most 4 requests are upstream at once, because the vLLM
-server is shared with production.
+streaming requests are refused. At most 2 requests are upstream at once, recorded or passed
+through (`MAX_UPSTREAM`), because the vLLM server is shared with production.
 
 **The driver** (`evals/harness/driver.py`) is the Inspect solver. It plays one variant of a
 golden: for each `user` step it `XADD`s a `UserRequest` to `alfred:user:requests` with a
 session id unique to the golden, variant and epoch, and waits up to 120 s for the
 `AlfredResponse` on `alfred:user:responses` (the same `publish_and_wait()` the web channel
 uses), then waits a 2 s settle window for side effects. A reply from anything but System 2
-is a harness error. When the steps are done it collects the **evidence**
-(`evals/harness/evidence.py`): the transcript, every reply with its latency, the fake HA's
-calls and the proxy's LLM calls inside the sample's time window, and the fake HA's final
-states. Evidence is the only input the checks and the judge see.
+is a harness error. For an `ha_event` step it pushes the state change, then waits for the
+fake HA to receive a `call_service` when the golden's `ha_called` checks could count one
+from that step (up to 30 s, then the 2 s settle), or a 5 s window when they could not. When
+the steps are done it waits for every LLM call still upstream to be recorded (a call is
+recorded when vLLM answers, stamped with when it was sent; up to 120 s, then a harness
+error), and collects the **evidence** (`evals/harness/evidence.py`): the transcript, every
+reply with its latency, the fake HA's calls and the proxy's LLM calls inside the sample's
+time window, and the fake HA's final states. Evidence is the only input the checks and the
+judge see.
 
 **The stack** (`evals/harness/stack.py`) boots one throwaway container per suite with
 `alfredctl up --eval` (see "Eval mode" in `docs/containerization.md`) on a fresh data dir.
@@ -164,7 +169,7 @@ sequenceDiagram
     H-->>A: state_changed, then the result
     A->>R: XADD alfred:user:responses AlfredResponse
     R-->>D: the reply for this session id
-    D->>D: settle 2 s, collect Evidence
+    D->>D: settle 2 s, wait for in-flight LLM calls, collect Evidence
     D-->>T: Evidence in the sample store
     T->>T: scorer: deterministic checks, then judge rubrics
 ```
@@ -289,12 +294,12 @@ uv run alfred evals run --include-pending --no-build --keep
 | `--include-pending` | off | Also run `pending` goldens |
 | `--epochs` | 3 | Runs per sample |
 | `--model` | `gemma-4-26b-a4b` | vLLM served model, used in every LLM role and as the judge |
-| `--vllm-url` | `http://localhost:8000/v1` | vLLM base URL, with `/v1` |
-| `--embed-url` | `http://localhost:8001` | Embedding server, without `/v1` |
+| `--vllm-url` | `http://localhost:8000/v1` | vLLM base URL, with `/v1`. Trailing slashes are dropped; a URL that is not `http(s)://` with a host and a valid port stops the run in preflight |
+| `--embed-url` | `http://localhost:8001` | Embedding server, without `/v1`; checked like `--vllm-url` |
 | `--embed-model` | `BAAI/bge-m3` | Embedding model (bge-m3 also sets its recall floor, 0.575) |
 | `--home-service` | `$ALFRED_EVALS_HOME_SERVICE`, else the sibling repo | home-service checkout to bundle |
 | `--allow-stale-home-service` | off | Accept a checkout that is not at `origin/main`, or whose fetch failed; never a dirty one |
-| `--build` / `--no-build` | build | Build the image first. With `--no-build` the scorecard marks the commit "(image not rebuilt)", because it cannot know what the image holds |
+| `--build` / `--no-build` | build | Build the image first. With `--no-build` the scorecard marks both commits "(image not rebuilt)", because it cannot know what the image holds, and the home-service checkout is only described (its HEAD, `+dirty`), never fetched or refused as stale or dirty |
 | `--keep` | off | Leave the container and data dirs for debugging. Every suite's container has the same name, so only the last suite's survives; every suite's data dir is kept. A restart (an isolated golden, or a recovery) replaces that suite's data dir |
 | `--display` | `rich` | Inspect's console display: `rich`, `plain` or `none`. Inspect's `full` display crashes under `eval_async`, so it is not offered (`evals/harness/display.py`) |
 | `--fake-ha-port` | 18123 | Port the fake Home Assistant listens on, on the bridge gateway; `0` takes any free port. See [Host firewall](#host-firewall) |
@@ -305,9 +310,10 @@ uv run alfred evals run --include-pending --no-build --keep
 1. **Plan.** Load the suites, pick goldens by tag and status, and expand variants. A golden
    that fails validation stops the run here.
 2. **Preflight**, before anything is built:
+   - `--vllm-url` and `--embed-url` are well-formed (trailing slashes dropped);
    - vLLM lists `--model`, and the embedding server lists `--embed-model`;
    - the home-service checkout is clean and at `origin/main` (its commit goes on the
-     scorecard);
+     scorecard); with `--no-build` it is only described;
    - the Alfred commit, with `+dirty` when the tree has uncommitted or untracked files
      (the build stages both);
    - the judge calibration file reads (a corrupt one is a one-line error telling you to
@@ -325,7 +331,8 @@ uv run alfred evals run --include-pending --no-build --keep
    naming it.
 6. **Each suite, one at a time:** boot its stack, run its Inspect task one sample at a time
    (an errored sample is retried once), and tear the stack down. A suite whose stack fails
-   to start is recorded under "Run problems" and the next suite still runs.
+   to start is recorded under "Run problems" (the error's first line; the log has the rest,
+   docker logs included) and the next suite still runs.
 7. **Scorecard.** Print it, and write `report.md` and `report.json` to the run directory.
 
 An error before step 6 — a bad golden, a preflight failure, a fake that cannot bind, a
@@ -478,7 +485,7 @@ expect:
 | Step | Fields | What the driver does |
 |---|---|---|
 | `user: <text>` | `variants: [<text>, …]`, `as: {…}` | Sends the utterance and waits for System 2's reply, then 2 s for side effects. `as` overrides the golden's actor for this step, which is how a conversation moves between channels |
-| `ha_event: {entity_id, state, attributes}` | `settle: <seconds>` (default 3) | Pushes a state change through the fake HA, merging `attributes` into the entity's current ones, then waits `settle` |
+| `ha_event: {entity_id, state, attributes}` | `settle: <seconds>` | Pushes a state change through the fake HA, merging `attributes` into the entity's current ones. When an `ha_called` check could count a call from this step (it has no `after_step`, or one at or before this step), it then waits for a `call_service`, up to 30 s, and 2 s more for side effects once one arrives; otherwise it waits a 5 s window. `settle` replaces the 30 s or the 5 s |
 | `wait: <seconds>` | — | Lets time pass (more than 0, at most 600) |
 
 **Variants.** One `user` step may carry `variants`. The step's own `user` text runs as
@@ -673,7 +680,9 @@ Slice 1 has 18 items: 5 `tone`, 5 `answered` and 8 `faithfulness`. `privacy` and
 `relevance` have none yet, so they are uncalibrated.
 
 `alfred evals calibrate` asks the judge every item and reports each category's agreement
-with the labels; an unparseable answer counts as a disagreement. The report goes to
+with the labels; an unparseable answer counts as a disagreement. A file it cannot use
+(bad YAML, not UTF-8, an invalid item, a second file for the same category) stops it with
+one `alfred evals:` line naming the file. The report goes to
 `~/.local/share/alfred-evals/calibration.json` (outside the repo), stamped with the model.
 
 - **Trust.** A category at **85% agreement or more** is trusted. Checks in any other
@@ -754,8 +763,9 @@ goldens are public. Everything about it is fake or fenced.
   fake HA and the proxy listen on the docker bridge's gateway on fixed ports (18123 and
   18100 by default), reachable from containers but not from the LAN. A firewall rule that
   opens them should admit the bridge's subnet only ([Host firewall](#host-firewall)).
-- **A capped share of vLLM.** The proxy holds at most 4 requests upstream at once, the judge
-  at most 2, and samples run one at a time.
+- **A capped share of vLLM.** The proxy holds at most 2 requests upstream at once
+  (`MAX_UPSTREAM`, chat and passthrough alike) and the judge at most 2 (`JUDGE_CONNECTIONS`),
+  so a run never has more than 4 there at once; samples run one at a time.
 - **One eval container at a time.** Suites run one after another. Every eval container is
   named `alfred-eval-<branch>`, apart from the branch's dev container and the deployed
   `alfred`, and `alfredctl up` removes an old one of that name before it starts. So two
