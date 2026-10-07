@@ -349,6 +349,12 @@ def _cell(text: str) -> str:
     return _flat(text).replace("|", "\\|")[:CELL_CHARS]
 
 
+def _short(commit: str) -> str:
+    """A short sha that keeps any ``+dirty`` mark after it."""
+    sha, plus, rest = commit.partition("+")
+    return f"{sha[:7]}{plus}{rest}"
+
+
 def _judge_trust(m: RunMeta) -> str:
     if not m.calibration:
         return f"no judge calibration for {m.model} — every judge check is untrusted"
@@ -366,8 +372,8 @@ def render_markdown(card: Scorecard) -> str:
     lines = [
         f"# Alfred eval scorecard — {m.finished_at:%Y-%m-%d %H:%M} UTC",
         "",
-        f"model `{m.model}` · Alfred `{m.alfred_commit[:7]}` · "
-        f"home-service `{m.home_service_commit[:7]}` · {m.epochs} epochs · {_judge_trust(m)}",
+        f"model `{m.model}` · Alfred `{_short(m.alfred_commit)}` · "
+        f"home-service `{_short(m.home_service_commit)}` · {m.epochs} epochs · {_judge_trust(m)}",
         "",
     ]
     for s in m.stacks:

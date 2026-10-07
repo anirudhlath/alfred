@@ -1,0 +1,345 @@
+from __future__ import annotations
+
+import functools
+import json
+import logging
+import subprocess
+import sys
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+import pytest
+from inspect_ai.model import get_model
+
+from evals.harness import orchestrate
+from evals.harness.judge import CalibrationReport, CategoryResult
+from evals.harness.orchestrate import (
+    RunOptions,
+    _build_image,
+    build_plan,
+    calibration_for,
+    execute,
+    run_suites,
+)
+from evals.harness.preflight import PreflightError
+from evals.harness.scenario import Scenario, ScenarioError, expand_variants, load_suites
+from evals.harness.stack import StackError
+
+if TYPE_CHECKING:
+    from inspect_ai.log import EvalLog
+    from inspect_ai.model import Model
+
+
+class RecordingStack:
+    def __init__(self) -> None:
+        self.started = self.stopped = 0
+        self.boot_seconds = 1.0
+        self.first_reply_ms = 100.0
+        self.restarts = 0
+
+    async def start(self) -> None:
+        self.started += 1
+
+    async def stop(self) -> None:
+        self.stopped += 1
+
+
+def plan() -> dict[str, list]:  # type: ignore[type-arg]
+    s = Scenario.model_validate(
+        {
+            "id": "demo.a.b",
+            "prd": ["x"],
+            "status": "shipped",
+            "suite": "demo",
+            "steps": [{"user": "hi"}],
+            "expect": [{"ha_not_called": {}}],
+        }
+    )
+    return {"demo": expand_variants(s)}
+
+
+async def test_execute_tears_down_when_eval_raises(tmp_path: Path) -> None:
+    stacks: list[RecordingStack] = []
+
+    def factory() -> RecordingStack:
+        stacks.append(RecordingStack())
+        return stacks[-1]
+
+    async def boom(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("inspect crashed")
+
+    with pytest.raises(RuntimeError, match="inspect crashed"):
+        await execute(
+            plan(),
+            stack_factory=factory,
+            make_ctx=lambda stack, variants: object(),  # type: ignore[arg-type,return-value]
+            eval_fn=boom,
+            log_dir=tmp_path,
+            epochs=1,
+            build_task_fn=lambda *a: "task",  # type: ignore[arg-type,return-value]
+        )
+    assert stacks[0].started == 1 and stacks[0].stopped == 1
+
+
+async def test_execute_collects_logs_and_stack_meta(tmp_path: Path) -> None:
+    async def fake_eval(task, **kwargs):  # type: ignore[no-untyped-def]
+        assert kwargs["max_samples"] == 1 and kwargs["retry_on_error"] == 1
+        # Inside eval_async these would override the judge model's own GenerateConfig.
+        assert not {"max_connections", "max_retries", "timeout"} & set(kwargs)
+        return ["log"]
+
+    logs, meta = await execute(
+        plan(),
+        stack_factory=RecordingStack,
+        make_ctx=lambda stack, variants: object(),  # type: ignore[arg-type,return-value]
+        eval_fn=fake_eval,
+        log_dir=tmp_path,
+        epochs=1,
+        build_task_fn=lambda *a: "task",  # type: ignore[arg-type,return-value]
+    )
+    assert logs == ["log"] and meta[0]["suite"] == "demo" and meta[0]["boot_seconds"] == 1.0
+
+
+def _report(model: str) -> CalibrationReport:
+    result = CategoryResult(agreement=0.9, n=10, disagreements=["t-1"], unparseable=[])
+    low = CategoryResult(agreement=0.5, n=10, disagreements=[], unparseable=[])
+    return CalibrationReport(model=model, categories={"tone": result, "answered": low})
+
+
+def test_calibration_for_uses_only_the_runs_own_model(caplog: pytest.LogCaptureFixture) -> None:
+    assert calibration_for(_report("judge-m"), "judge-m") == (
+        {"tone": 0.9, "answered": 0.5},
+        {"tone"},
+    )
+    assert not caplog.records
+    with caplog.at_level(logging.WARNING, logger="evals.harness.orchestrate"):
+        assert calibration_for(_report("another-m"), "judge-m") == ({}, set())
+        assert calibration_for(None, "judge-m") == ({}, set())
+    mismatch, missing = (r.getMessage() for r in caplog.records)
+    assert "(the saved one is for another-m)" in mismatch and "saved one" not in missing
+    assert all("alfred evals calibrate --model judge-m" in m for m in (mismatch, missing))
+
+
+def _alfredctl() -> Path:
+    return Path(sys.executable).parent / "alfredctl"
+
+
+def test_a_failed_build_streams_its_output_and_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[tuple[list[str], dict[str, Any]]] = []
+
+    def run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen.append((cmd, kwargs))
+        raise subprocess.CalledProcessError(2, cmd)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(StackError) as err:
+        _build_image(tmp_path / "home-service")
+    assert str(err.value) == "image build failed (exit 2) — see the build output above"
+    ((cmd, kwargs),) = seen
+    assert cmd == [str(_alfredctl()), "build", "--runtime", "docker"]
+    assert kwargs["env"]["ALFRED_HOME_SERVICE_DIR"] == str(tmp_path / "home-service")
+    # The build prints to the terminal as it goes, and takes as long as it takes.
+    assert not {"capture_output", "stdout", "stderr", "timeout"} & set(kwargs)
+
+
+def test_a_missing_alfredctl_is_named(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError(2, "No such file or directory", cmd[0])
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(StackError, match="No such file or directory") as err:
+        _build_image(tmp_path)
+    assert str(_alfredctl()) in str(err.value)
+
+
+def _golden(root: Path, suite: str, name: str, **fields: Any) -> None:
+    body = {
+        "id": f"{suite}.demo.{name}",
+        "prd": ["x"],
+        "status": "shipped",
+        "steps": [{"wait": 0.01}],
+        "expect": [{"ha_not_called": {}}],
+        **fields,
+    }
+    (root / suite).mkdir(parents=True, exist_ok=True)
+    (root / suite / f"{name}.yaml").write_text(json.dumps(body), encoding="utf-8")
+
+
+def _options(log_root: Path, **fields: Any) -> RunOptions:
+    base: dict[str, Any] = {
+        "suites": [],
+        "tags": [],
+        "include_pending": False,
+        "epochs": 1,
+        "model": "judge-m",
+        "vllm_url": "http://vllm.test/v1",
+        "embed_url": "http://embed.test",
+        "embed_model": "embed-m",
+        "home_service": log_root / "home-service",
+        "allow_stale_home_service": False,
+        "build": True,
+        "keep": False,
+        "log_root": log_root,
+        "display": "none",
+    }
+    return RunOptions(**{**base, **fields})
+
+
+def _suites_at(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
+    monkeypatch.setattr(orchestrate, "load_suites", functools.partial(load_suites, root=root))
+
+
+def test_build_plan_selects_by_tag_and_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _golden(tmp_path, "demo", "tagged", tags=["lights"])
+    _golden(tmp_path, "demo", "untagged")
+    _golden(tmp_path, "demo", "pending", tags=["lights"], status="pending")
+    _golden(tmp_path, "other", "untagged")
+    _suites_at(monkeypatch, tmp_path)
+
+    chosen = build_plan(_options(tmp_path, tags=["lights"]))
+    assert {s: [v.sample_id for v in vs] for s, vs in chosen.items()} == {
+        "demo": ["demo.demo.tagged"]
+    }
+    chosen = build_plan(_options(tmp_path, tags=["lights"], include_pending=True))
+    assert [v.sample_id for v in chosen["demo"]] == ["demo.demo.pending", "demo.demo.tagged"]
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({"tags": ["nothing-has-this"]}, "no goldens match"),
+        ({"world": "mansion"}, "only the 'apartment' world"),
+    ],
+    ids=["nothing-selected", "unserved-world"],
+)
+def test_build_plan_refuses(
+    fields: dict[str, Any], message: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    golden_fields = {k: v for k, v in fields.items() if k != "tags"}
+    _golden(tmp_path, "demo", "one", **golden_fields)
+    _suites_at(monkeypatch, tmp_path)
+    tags = fields.get("tags", [])
+    with pytest.raises(ScenarioError, match=message):
+        build_plan(_options(tmp_path, tags=tags))
+
+
+class FakeStack:
+    """A started stack that never needs docker: the golden used here sends nothing."""
+
+    def __init__(self, cfg: Any, *, fake_ha: Any, proxy: Any) -> None:
+        self.cfg = cfg
+        self.name = "alfred-eval-fake"
+        self.boot_seconds = 2.0
+        self.first_reply_ms = 300.0
+        self.restarts = 0
+        self.stopped = False
+
+    async def start(self) -> None:
+        pass
+
+    async def stop(self) -> None:
+        self.stopped = True
+
+    async def alive(self) -> bool:
+        return True
+
+    async def restart(self) -> None:
+        raise AssertionError("a live stack is never restarted")
+
+    async def send(self, request: Any, timeout_s: float) -> Any:
+        raise AssertionError("the golden has no user step")
+
+
+async def test_run_suites_preflights_before_the_build_and_writes_the_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("INSPECT_DISPLAY", "none")  # restored after the test
+    _golden(tmp_path / "suites", "demo", "quiet")
+    _suites_at(monkeypatch, tmp_path / "suites")
+    order: list[str] = []
+    stacks: list[FakeStack] = []
+    problems_asked: list[int] = []
+
+    async def check_models(client: object, base_url: str, model: str) -> None:
+        order.append(f"models {base_url} {model}")
+
+    def check_home_service(path: Path, *, allow_stale: bool) -> str:
+        order.append("home-service")
+        return "def5678"
+
+    def alfred_commit(repo: Path) -> str:
+        order.append("alfred commit")
+        return "abc1234+dirty"
+
+    def gateway() -> str:
+        order.append("gateway")
+        return "127.0.0.1"
+
+    def judge_model(model: str, base_url: str) -> Model:
+        return get_model("mockllm/model", memoize=False)
+
+    def stack(cfg: Any, *, fake_ha: Any, proxy: Any) -> FakeStack:
+        stacks.append(FakeStack(cfg, fake_ha=fake_ha, proxy=proxy))
+        return stacks[-1]
+
+    def log_problems(logs: list[EvalLog], epochs: int) -> list[str]:
+        problems_asked.append(epochs)
+        return ["demo: a problem with the run"]
+
+    monkeypatch.setattr(orchestrate, "check_models", check_models)
+    monkeypatch.setattr(orchestrate, "check_home_service", check_home_service)
+    monkeypatch.setattr(orchestrate, "alfred_commit", alfred_commit)
+    monkeypatch.setattr(orchestrate, "docker_bridge_gateway", gateway)
+    monkeypatch.setattr(orchestrate, "_build_image", lambda hs: order.append(f"build {hs}"))
+    monkeypatch.setattr(orchestrate, "load_report", lambda: _report("another-m"))
+    monkeypatch.setattr(orchestrate, "make_judge_model", judge_model)
+    monkeypatch.setattr(orchestrate, "Stack", stack)
+    monkeypatch.setattr(orchestrate, "log_problems", log_problems)
+
+    run_dir = await run_suites(_options(tmp_path / "logs", epochs=1))
+
+    assert order == [
+        "models http://vllm.test/v1 judge-m",
+        "models http://embed.test/v1 embed-m",
+        "home-service",
+        "alfred commit",
+        "gateway",
+        f"build {tmp_path / 'logs' / 'home-service'}",
+    ]
+    assert run_dir.parent == tmp_path / "logs"
+    assert [s.stopped for s in stacks] == [True]
+    assert stacks[0].cfg.work_dir == run_dir / "data"
+    card = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+    meta = card["meta"]
+    assert meta["alfred_commit"] == "abc1234+dirty" and meta["home_service_commit"] == "def5678"
+    # The saved calibration was measured on another model, so none of it applies.
+    assert meta["calibration"] == {} and meta["trusted"] == []
+    assert meta["problems"] == ["demo: a problem with the run"] and problems_asked == [1]
+    assert meta["stacks"] == [
+        {"suite": "demo", "boot_seconds": 2.0, "first_reply_ms": 300.0, "restarts": 0}
+    ]
+    assert [(g["scenario_id"], g["passes"], g["runs"]) for g in card["goldens"]] == [
+        ("demo.demo.quiet", 1, 1)
+    ]
+    assert "# Alfred eval scorecard" in capsys.readouterr().out
+
+
+async def test_a_failed_preflight_never_builds_or_writes_logs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _golden(tmp_path / "suites", "demo", "quiet")
+    _suites_at(monkeypatch, tmp_path / "suites")
+
+    async def unreachable(client: object, base_url: str, model: str) -> None:
+        raise PreflightError(f"{base_url} is not reachable")
+
+    built: list[Path] = []
+    monkeypatch.setattr(orchestrate, "check_models", unreachable)
+    monkeypatch.setattr(orchestrate, "_build_image", built.append)
+    with pytest.raises(PreflightError, match="not reachable"):
+        await run_suites(_options(tmp_path / "logs"))
+    assert built == [] and not (tmp_path / "logs").exists()

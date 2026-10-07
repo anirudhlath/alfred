@@ -61,6 +61,16 @@ def _git(path: Path, *args: str) -> str:
     return run_checked(["git", "-C", str(path), *args], timeout=_GIT_TIMEOUT_S).strip()
 
 
+def alfred_commit(repo: Path, git: Callable[..., str] = _git) -> str:
+    """The Alfred commit the image is built from, ``+dirty`` when the checkout has changes.
+
+    The build stages tracked and untracked files alike, so a bare sha would misdescribe
+    a checkout with uncommitted or new files.
+    """
+    head = git(repo, "rev-parse", "HEAD")
+    return f"{head}+dirty" if git(repo, "status", "--porcelain") else head
+
+
 def check_home_service(path: Path, *, allow_stale: bool, git: Callable[..., str] = _git) -> str:
     """Return the home-service commit the image will bundle; refuse a stale or dirty one.
 

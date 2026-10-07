@@ -6,6 +6,7 @@ extra, and ``alfred --help`` must work without it.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -17,6 +18,13 @@ DEFAULT_VLLM_URL = "http://localhost:8000/v1"
 
 ModelOpt = Annotated[str, typer.Option(help="vLLM served model, used in every role")]
 VllmUrlOpt = Annotated[str, typer.Option(help="vLLM base URL, with /v1")]
+
+DEFAULT_EMBED_URL = "http://localhost:8001"
+DEFAULT_EMBED_MODEL = "BAAI/bge-m3"
+
+SuitesArg = Annotated[list[str] | None, typer.Argument(help="Suites (default: all)")]
+TagOpt = Annotated[list[str] | None, typer.Option("--tag", help="Only goldens with this tag")]
+PendingOpt = Annotated[bool, typer.Option("--include-pending", help="Also pending goldens")]
 
 
 @evals_app.command()
@@ -55,6 +63,90 @@ def calibrate(model: ModelOpt = DEFAULT_MODEL, vllm_url: VllmUrlOpt = DEFAULT_VL
             line += f"  unparseable: {', '.join(result.unparseable)}"
         typer.echo(line)
     typer.echo(f"saved {CALIBRATION_FILE}")
+
+
+@evals_app.command("list")
+def list_cmd(
+    suites: SuitesArg = None, tag: TagOpt = None, include_pending: PendingOpt = False
+) -> None:
+    """List goldens: id, status, variants and PRD rows."""
+    from evals.harness.scenario import ScenarioError, UserStep, load_suites, select
+
+    try:
+        loaded = load_suites(suites or None)
+    except ScenarioError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
+    for scenarios in loaded.values():
+        for s in select(scenarios, tags=tag or [], include_pending=include_pending):
+            variants = 1 + sum(len(st.variants) for st in s.steps if isinstance(st, UserStep))
+            line = f"{s.id:55} {s.status:8} ×{variants}  {', '.join(s.prd)}"  # noqa: RUF001
+            typer.echo(line)
+
+
+@evals_app.command()
+def run(
+    suites: SuitesArg = None,
+    tag: TagOpt = None,
+    include_pending: PendingOpt = False,
+    epochs: Annotated[int, typer.Option(min=1, help="Runs per golden")] = 3,
+    model: ModelOpt = DEFAULT_MODEL,
+    vllm_url: VllmUrlOpt = DEFAULT_VLLM_URL,
+    embed_url: Annotated[str, typer.Option(help="Embedding server, without /v1")] = (
+        DEFAULT_EMBED_URL
+    ),
+    embed_model: Annotated[str, typer.Option(help="Embedding model")] = DEFAULT_EMBED_MODEL,
+    home_service: Annotated[
+        Path | None,
+        typer.Option(
+            help="home-service checkout to bundle "
+            "(default: $ALFRED_EVALS_HOME_SERVICE, else the sibling repo)"
+        ),
+    ] = None,
+    allow_stale_home_service: Annotated[bool, typer.Option("--allow-stale-home-service")] = False,
+    build: Annotated[bool, typer.Option("--build/--no-build", help="Build the image first")] = True,
+    keep: Annotated[
+        bool, typer.Option("--keep", help="Leave containers and data for debugging")
+    ] = False,
+    display: Annotated[str, typer.Option(help="Inspect display: full | rich | plain | none")] = (
+        "full"
+    ),
+) -> None:
+    """Boot throwaway stacks and score the goldens. Prints the scorecard."""
+    import asyncio
+    import os
+
+    from alfredctl import staging
+    from evals.harness.orchestrate import LOG_ROOT, RunOptions, run_suites
+    from evals.harness.preflight import PreflightError
+    from evals.harness.scenario import ScenarioError
+    from evals.harness.stack import StackError
+
+    hs = home_service or Path(
+        os.environ.get("ALFRED_EVALS_HOME_SERVICE") or staging.home_service_dir()
+    )
+    opts = RunOptions(
+        suites=list(suites or []),
+        tags=tag or [],
+        include_pending=include_pending,
+        epochs=epochs,
+        model=model,
+        vllm_url=vllm_url,
+        embed_url=embed_url,
+        embed_model=embed_model,
+        home_service=hs,
+        allow_stale_home_service=allow_stale_home_service,
+        build=build,
+        keep=keep,
+        log_root=LOG_ROOT,
+        display=display,
+    )
+    try:
+        run_dir = asyncio.run(run_suites(opts))
+    except (ScenarioError, PreflightError, StackError) as exc:
+        typer.echo(f"alfred evals: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"logs and report: {run_dir}  (inspect view --log-dir {run_dir})")
 
 
 @evals_app.command(

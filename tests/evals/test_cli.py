@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
 from typer.testing import CliRunner
 
 from alfred_cli.main import app
@@ -11,7 +12,6 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
 
-    import pytest
     from inspect_ai.model import Model
 
     from evals.harness.judge import JudgeVerdict
@@ -126,3 +126,16 @@ def _fake_judge_model(monkeypatch: pytest.MonkeyPatch, answers: list[str]) -> li
 
     monkeypatch.setattr("evals.harness.judge.make_judge_model", fake_model)
     return built
+
+
+@pytest.mark.skip(reason="goldens land in Task 13")
+def test_evals_list_shows_scenarios() -> None:
+    result = runner.invoke(app, ["evals", "list", "--include-pending"])
+    assert result.exit_code == 0, result.output
+    assert "home_control.lights.turn_on_named_lamp" in result.output
+
+
+@pytest.mark.skip(reason="goldens land in Task 13")
+def test_evals_run_rejects_an_unknown_suite() -> None:
+    result = runner.invoke(app, ["evals", "run", "nope"])
+    assert result.exit_code == 1 and "unknown suite" in result.output

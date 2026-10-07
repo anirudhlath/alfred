@@ -200,6 +200,13 @@ def test_header_says_when_the_judge_has_no_calibration() -> None:
     assert "judge trusted" not in header
 
 
+def test_header_shortens_commits_but_keeps_the_dirty_mark() -> None:
+    sha = "abc1234" + "0" * 33
+    meta = META.model_copy(update={"alfred_commit": f"{sha}+dirty", "home_service_commit": sha})
+    header = render_markdown(summarize([], meta)).splitlines()[2]
+    assert "Alfred `abc1234+dirty`" in header and "home-service `abc1234`" in header
+
+
 def test_run_problems_render_above_the_tables() -> None:
     assert "## Run problems" not in render_markdown(summarize([], META))
     meta = META.model_copy(update={"problems": ["home: error — boom"]})

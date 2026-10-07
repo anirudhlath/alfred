@@ -7,7 +7,12 @@ from typing import TYPE_CHECKING
 import httpx
 import pytest
 
-from evals.harness.preflight import PreflightError, check_home_service, check_models
+from evals.harness.preflight import (
+    PreflightError,
+    alfred_commit,
+    check_home_service,
+    check_models,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -139,3 +144,29 @@ def test_allow_stale_carries_on_offline_with_a_warning(
         assert check_home_service(tmp_path, allow_stale=True) == "aaa1111"
     (warned,) = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     assert "could not resolve host" in warned
+
+
+@pytest.mark.parametrize(
+    ("dirty", "expected"),
+    [("", "aaa1111"), ("?? evals/new.py", "aaa1111+dirty")],
+    ids=["clean", "dirty"],
+)
+def test_alfred_commit_says_when_the_checkout_has_changes(
+    tmp_path: Path, dirty: str, expected: str
+) -> None:
+    # The image is staged from tracked and untracked files, so either kind is dirty.
+    assert alfred_commit(tmp_path, git=fake_git("aaa1111", "unused", dirty=dirty)) == expected
+
+
+def test_alfred_commit_that_cannot_be_read_is_a_preflight_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.CalledProcessError(
+            128, cmd, output="", stderr="fatal: not a git repository"
+        )
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(PreflightError, match="not a git repository") as err:
+        alfred_commit(tmp_path)
+    assert "rev-parse HEAD" in str(err.value)
