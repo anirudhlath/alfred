@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import subprocess
@@ -197,6 +198,12 @@ def _build_image(home_service: Path) -> None:
         raise StackError(f"cannot run {alfredctl} to build the image: {exc}") from exc
 
 
+_PORT_IN_USE_HINT = (
+    " — another `alfred evals run` may be using it; runs on one branch share a container "
+    "name and cannot overlap"
+)
+
+
 async def _start_fake(
     name: str, start: Callable[[], Awaitable[None]], host: str, port: int, option: str
 ) -> None:
@@ -208,6 +215,8 @@ async def _start_fake(
             where = f"{host}:{port} (choose another with {option})"
         else:
             where = f"{host} (any free port)"
+        if exc.errno == errno.EADDRINUSE:
+            why += _PORT_IN_USE_HINT
         raise StackError(f"could not start the {name} on {where}: {why}") from exc
 
 
@@ -223,8 +232,6 @@ async def run_suites(opts: RunOptions) -> RunOutcome:
     report = read_calibration(CALIBRATION_FILE, opts.model)
     calibration, trusted = calibration_for(report, opts.model)
     gateway = docker_bridge_gateway()
-    if opts.build:
-        _build_image(opts.home_service)
     # Created once the fakes are up, so a run that never starts leaves no empty dir.
     run_dir = opts.log_root / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
@@ -256,9 +263,14 @@ async def run_suites(opts: RunOptions) -> RunOutcome:
 
     use_display(opts.display)
     try:
+        # Bound before the build: a concurrent run fails here, on the busy port, before it
+        # retags the alfred:<branch> image another run is using.
         await _start_fake("fake HA", fake_ha.start, gateway, opts.fake_ha_port, "--fake-ha-port")
         await _start_fake("LLM proxy", proxy.start, gateway, opts.proxy_port, "--proxy-port")
-        # Seconds, not a boot timeout minutes later, when the container cannot reach them.
+        if opts.build:
+            _build_image(opts.home_service)
+        # After the build, which makes the image it runs. Seconds, not a boot timeout
+        # minutes later, when the container cannot reach the fakes.
         await probe_host_ports({"fake HA": fake_ha.port, "LLM proxy": proxy.port}, gateway=gateway)
         run_dir.mkdir(parents=True, exist_ok=True)
         logs, stacks, unstarted = await execute(

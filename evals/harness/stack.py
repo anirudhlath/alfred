@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 
 CONSCIOUS_SOURCE = "conscious-engine"
 SYSTEM2_ROLE: Role = "system2"  # the proxy's role for Conscious's calls
+UNKNOWN_ROLE: Role = "unknown"  # a call no ROLE_FINGERPRINTS entry matched
 EVAL_SOURCE = "alfred-evals"
 EVAL_OPENROUTER_PLACEHOLDER = "alfred-eval-not-a-key"
 EVAL_SIGNAL_NUMBER = "+15550100"
@@ -353,11 +354,18 @@ class Stack:
             if reply.source == CONSCIOUS_SOURCE:
                 # Conscious can answer with a fallback when its LLM call failed: only a System 2
                 # call the proxy saw answered upstream proves System 2 reaches the model.
-                calls = [
-                    c
-                    for c in self.proxy.calls_between(sent, time.monotonic())
-                    if c.role == SYSTEM2_ROLE
-                ]
+                window = self.proxy.calls_between(sent, time.monotonic())
+                calls = [c for c in window if c.role == SYSTEM2_ROLE]
+                # Keyed on `unknown` alone: System 1 calls from the fake HA's initial states
+                # land in this window even when System 2 never reached the proxy.
+                unclassified = sum(c.role == UNKNOWN_ROLE for c in window)
+                if not calls and unclassified:
+                    raise await self._fail(
+                        "System 2 answered the readiness request, but the LLM proxy saw "
+                        f"{unclassified} call(s) it could not classify (role unknown) and none "
+                        "recognised as System 2 — if System 2's prompt changed, update "
+                        "ROLE_FINGERPRINTS in evals/harness/proxy.py"
+                    )
                 if not calls:
                     raise await self._fail(
                         "System 2 answered the readiness request without reaching the LLM "

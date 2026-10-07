@@ -120,8 +120,11 @@ fallback when its LLM call fails, so the proxy must have recorded a System 2 cal
 request was sent, and vLLM must have answered at least one with a 2xx. With no such call the
 boot fails "without reaching the LLM proxy"; when every one came back with an error it fails
 because "the LLM upstream failed", with the statuses. A System 1 or Librarian call does not
-count. The stack records the suite's first boot time and that first reply's latency for the
-scorecard. Before each sample the task checks the container is still running and restarts a
+count. When none was classed as System 2 but some were classed `unknown`, the boot fails
+saying so: System 2's prompt has probably changed, and `ROLE_FINGERPRINTS` in
+`evals/harness/proxy.py` needs updating (`tests/evals/harness/test_role_fingerprints.py` pins
+each fingerprint to the first message its role sends). The stack records the suite's first
+boot time and that first reply's latency for the scorecard. Before each sample the task checks the container is still running and restarts a
 dead one, once per suite. Teardown removes the container and wipes the data dir (the
 container writes it as root).
 
@@ -299,19 +302,23 @@ uv run alfred evals run --include-pending --no-build --keep
    - the judge calibration file reads (a corrupt one is a one-line error telling you to
      re-run `calibrate`);
    - the docker bridge has a gateway address.
-3. **Build** the image with `alfredctl build --runtime docker`, bundling the checked
+3. **Start the fakes** — the fake HA and the proxy — on the bridge gateway, on
+   `--fake-ha-port` and `--proxy-port`. They bind before the build, so a second run on the
+   same ports stops here, before it retags the image the first run is using. A port that
+   will not bind is a one-line error naming the port; a busy one adds that another
+   `alfred evals run` may hold it.
+4. **Build** the image with `alfredctl build --runtime docker`, bundling the checked
    home-service. A failed build is a one-line error after the build output.
-4. **Start the fakes** — the fake HA and the proxy — on the bridge gateway, on
-   `--fake-ha-port` and `--proxy-port`, then **probe** them from a throwaway container of
-   the eval image (see [Host firewall](#host-firewall)). A port that will not bind, or that
-   the container cannot reach, is a one-line error naming the port.
-5. **Each suite, one at a time:** boot its stack, run its Inspect task one sample at a time
+5. **Probe** the fakes from a throwaway container of the eval image (see
+   [Host firewall](#host-firewall)). A port the container cannot reach is a one-line error
+   naming it.
+6. **Each suite, one at a time:** boot its stack, run its Inspect task one sample at a time
    (an errored sample is retried once), and tear the stack down. A suite whose stack fails
    to start is recorded under "Run problems" and the next suite still runs.
-6. **Scorecard.** Print it, and write `report.md` and `report.json` to the run directory.
+7. **Scorecard.** Print it, and write `report.md` and `report.json` to the run directory.
 
-An error before step 5 — a bad golden, a preflight failure, a failed build, a fake that
-cannot bind or a failed probe — is a message on stderr starting `alfred evals:`, and exit 1.
+An error before step 6 — a bad golden, a preflight failure, a fake that cannot bind, a
+failed build or a failed probe — is a message on stderr starting `alfred evals:`, and exit 1.
 After a run whose stacks all started the exit code is 0, whatever the scores. If any suite's
 stack failed to start, the scorecard is still written and the command exits 1, naming the
 failed suites.
@@ -716,7 +723,9 @@ goldens are public. Everything about it is fake or fenced.
   at most 2, and samples run one at a time.
 - **One eval container at a time.** Suites run one after another. Every eval container is
   named `alfred-eval-<branch>`, apart from the branch's dev container and the deployed
-  `alfred`, and `alfredctl up` removes an old one of that name before it starts.
+  `alfred`, and `alfredctl up` removes an old one of that name before it starts. So two
+  runs on one branch cannot overlap: the second fails on the fakes' busy ports before it
+  builds anything.
 - **Cleanup that says so when it fails.** Teardown removes the container and wipes its data
   dir as root; if a step fails it logs the exact commands to finish by hand.
 

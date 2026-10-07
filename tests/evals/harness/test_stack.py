@@ -421,8 +421,23 @@ _NOT_REACHED = (
             "System 2 answered the "
             "readiness request, but the LLM upstream failed (400, 503) — check http://x",
         ),
+        # System 1 calls from the fake HA's initial states land in this window even when
+        # System 2 never reached the proxy, so only `unknown` points at the fingerprints.
+        (
+            [("unknown", 200)],
+            [("system1", 200), ("unknown", 200), ("unknown", 502)],
+            "System 2 answered the readiness request, but the LLM proxy saw 2 call(s) it could "
+            "not classify (role unknown) and none recognised as System 2 — if System 2's prompt "
+            "changed, update ROLE_FINGERPRINTS in evals/harness/proxy.py",
+        ),
     ],
-    ids=["stale-call", "other-roles-only", "upstream-failed", "every-system2-call-failed"],
+    ids=[
+        "stale-call",
+        "other-roles-only",
+        "upstream-failed",
+        "every-system2-call-failed",
+        "unclassified-calls",
+    ],
 )
 async def test_readiness_needs_a_successful_system2_llm_call_since_the_request(
     tmp_path: Path,

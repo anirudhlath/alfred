@@ -4,18 +4,16 @@ import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import httpx
 import pytest
 
-from evals.harness.proxy import ROLE_FINGERPRINTS, LlmProxy, classify_role
+from evals.harness.proxy import LlmProxy, classify_role
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
 
-REPO = Path(__file__).resolve().parents[3]
 
 COMPLETION = {
     "choices": [
@@ -150,19 +148,6 @@ async def test_concurrency_cap() -> None:
 def test_classify_role(text: str, role: str) -> None:
     assert classify_role([{"role": "system", "content": text}]) == role
     assert classify_role([{"role": "user", "content": [{"type": "text", "text": text}]}]) == role
-
-
-def test_every_fingerprint_still_exists_in_the_prompts() -> None:
-    sources = "".join(
-        (REPO / p).read_text()
-        for p in (
-            "core/conscious/prompts/personality.md",
-            "core/reflex/engine.py",
-            "core/librarian/consolidator.py",
-        )
-    )
-    for _, fingerprint in ROLE_FINGERPRINTS:
-        assert fingerprint in sources, f"prompt changed; update ROLE_FINGERPRINTS: {fingerprint!r}"
 
 
 @asynccontextmanager
