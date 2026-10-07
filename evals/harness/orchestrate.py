@@ -16,9 +16,14 @@ from inspect_ai import eval_async
 
 from evals.harness.driver import PlayContext
 from evals.harness.fake_ha import FakeHA
-from evals.harness.judge import Judge, load_report, make_judge_model
+from evals.harness.judge import CALIBRATION_FILE, Judge, load_report, make_judge_model
 from evals.harness.net import docker_bridge_gateway
-from evals.harness.preflight import alfred_commit, check_home_service, check_models
+from evals.harness.preflight import (
+    PreflightError,
+    alfred_commit,
+    check_home_service,
+    check_models,
+)
 from evals.harness.proxy import LlmProxy
 from evals.harness.report import (
     RunMeta,
@@ -65,6 +70,12 @@ class RunOptions:
     display: str
 
 
+@dataclass(frozen=True)
+class RunOutcome:
+    run_dir: Path
+    unstarted: list[str]  # suites whose stack failed to start; the run exits 1
+
+
 def build_plan(opts: RunOptions) -> dict[str, list[ScenarioVariant]]:
     plan: dict[str, list[ScenarioVariant]] = {}
     for suite, scenarios in load_suites(opts.suites or None).items():
@@ -91,13 +102,22 @@ async def execute(
     log_dir: Path,
     epochs: int,
     build_task_fn: Callable[[str, list[ScenarioVariant], RunContext, int], Task] = build_task,
-) -> tuple[list[EvalLog], list[dict[str, Any]]]:
+) -> tuple[list[EvalLog], list[dict[str, Any]], dict[str, str]]:
+    """Run each suite on its own stack: the logs, each stack's numbers, and a problem
+    line for each suite whose stack failed to start (the next suite still runs)."""
     logs: list[EvalLog] = []
     stacks: list[dict[str, Any]] = []
+    unstarted: dict[str, str] = {}
     for suite, variants in plan.items():
         stack = stack_factory()
         try:
-            await stack.start()
+            try:
+                await stack.start()
+            except StackError as exc:
+                logger.error("suite %s: stack failed to start: %s", suite, exc)
+                why = " ".join(str(exc).split())
+                unstarted[suite] = f"suite {suite}: stack failed to start: {why}"
+                continue
             task = build_task_fn(suite, variants, make_ctx(stack, variants), epochs)
             # No max_connections, max_retries or timeout here: inside eval_async they
             # would override the judge model's own GenerateConfig.
@@ -119,7 +139,7 @@ async def execute(
             )
         finally:
             await stack.stop()
-    return logs, stacks
+    return logs, stacks, unstarted
 
 
 def calibration_for(
@@ -142,6 +162,19 @@ def calibration_for(
     return {c: r.agreement for c, r in report.categories.items()}, report.trusted()
 
 
+def read_calibration(path: Path) -> CalibrationReport | None:
+    """The saved judge calibration, or None when there is none. Unreadable is a preflight
+    error: running on would quietly score every judge check as untrusted."""
+    try:
+        return load_report(path)
+    except (OSError, ValueError) as exc:  # ValueError covers bad JSON, UTF-8 and validation
+        lines = str(exc).strip().splitlines()
+        first = lines[0] if lines else type(exc).__name__
+        raise PreflightError(
+            f"judge calibration at {path} is unreadable ({first}) — re-run `alfred evals calibrate`"
+        ) from exc
+
+
 def _build_image(home_service: Path) -> None:
     """Build the image with *home_service* bundled. The build prints as it goes."""
     alfredctl = Path(sys.executable).parent / "alfredctl"
@@ -156,20 +189,22 @@ def _build_image(home_service: Path) -> None:
         raise StackError(f"cannot run {alfredctl} to build the image: {exc}") from exc
 
 
-async def run_suites(opts: RunOptions) -> Path:
+async def run_suites(opts: RunOptions) -> RunOutcome:
+    """Preflight, build, run every suite, then write and print the scorecard for
+    whatever ran. Suites whose stack failed to start are named in the outcome."""
     plan = build_plan(opts)
     async with httpx.AsyncClient(timeout=10) as client:
         await check_models(client, opts.vllm_url, opts.model)
         await check_models(client, f"{opts.embed_url}/v1", opts.embed_model)
     hs_commit = check_home_service(opts.home_service, allow_stale=opts.allow_stale_home_service)
     commit = alfred_commit(REPO_ROOT)
+    calibration, trusted = calibration_for(read_calibration(CALIBRATION_FILE), opts.model)
     gateway = docker_bridge_gateway()
     if opts.build:
         _build_image(opts.home_service)
     run_dir = opts.log_root / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    calibration, trusted = calibration_for(load_report(), opts.model)
     judge = Judge(make_judge_model(opts.model, opts.vllm_url))
 
     fake_ha = FakeHA(load_world("apartment"), host=gateway)
@@ -201,7 +236,7 @@ async def run_suites(opts: RunOptions) -> Path:
     await fake_ha.start()
     await proxy.start()
     try:
-        logs, stacks = await execute(
+        logs, stacks, unstarted = await execute(
             plan,
             stack_factory=lambda: Stack(cfg, fake_ha=fake_ha, proxy=proxy),
             make_ctx=make_ctx,
@@ -222,9 +257,9 @@ async def run_suites(opts: RunOptions) -> Path:
         calibration=calibration,
         trusted=sorted(trusted),
         stacks=stacks,
-        problems=log_problems(logs, opts.epochs),
+        problems=[*unstarted.values(), *log_problems(logs, opts.epochs)],
     )
     card = summarize(runs_from_logs(logs), meta)
     write_report(card, run_dir)
     print(render_markdown(card))
-    return run_dir
+    return RunOutcome(run_dir=run_dir, unstarted=list(unstarted))

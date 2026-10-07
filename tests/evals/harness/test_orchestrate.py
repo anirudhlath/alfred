@@ -19,6 +19,7 @@ from evals.harness.orchestrate import (
     build_plan,
     calibration_for,
     execute,
+    read_calibration,
     run_suites,
 )
 from evals.harness.preflight import PreflightError
@@ -31,44 +32,62 @@ if TYPE_CHECKING:
 
 
 class RecordingStack:
-    def __init__(self) -> None:
+    def __init__(self, start_error: Exception | None = None) -> None:
         self.started = self.stopped = 0
         self.boot_seconds = 1.0
         self.first_reply_ms = 100.0
         self.restarts = 0
+        self._start_error = start_error
 
     async def start(self) -> None:
         self.started += 1
+        if self._start_error is not None:
+            raise self._start_error
 
     async def stop(self) -> None:
         self.stopped += 1
 
 
-def plan() -> dict[str, list]:  # type: ignore[type-arg]
-    s = Scenario.model_validate(
-        {
-            "id": "demo.a.b",
-            "prd": ["x"],
-            "status": "shipped",
-            "suite": "demo",
-            "steps": [{"user": "hi"}],
-            "expect": [{"ha_not_called": {}}],
-        }
-    )
-    return {"demo": expand_variants(s)}
+def plan(*suites: str) -> dict[str, list]:  # type: ignore[type-arg]
+    def variants(suite: str) -> list:  # type: ignore[type-arg]
+        s = Scenario.model_validate(
+            {
+                "id": f"{suite}.a.b",
+                "prd": ["x"],
+                "status": "shipped",
+                "suite": suite,
+                "steps": [{"user": "hi"}],
+                "expect": [{"ha_not_called": {}}],
+            }
+        )
+        return expand_variants(s)
+
+    return {suite: variants(suite) for suite in suites or ("demo",)}
 
 
-async def test_execute_tears_down_when_eval_raises(tmp_path: Path) -> None:
+async def _eval_by_suite(task: str, **kwargs: Any) -> list[str]:
+    return [f"log {task}"]
+
+
+@pytest.mark.parametrize(
+    ("start_error", "eval_error"),
+    [(None, RuntimeError("inspect crashed")), (RuntimeError("docker exploded"), None)],
+    ids=["eval-raises", "start-raises-something-else"],
+)
+async def test_execute_tears_down_and_propagates_anything_but_a_failed_start(
+    tmp_path: Path, start_error: Exception | None, eval_error: Exception | None
+) -> None:
     stacks: list[RecordingStack] = []
 
     def factory() -> RecordingStack:
-        stacks.append(RecordingStack())
+        stacks.append(RecordingStack(start_error))
         return stacks[-1]
 
     async def boom(*args, **kwargs):  # type: ignore[no-untyped-def]
-        raise RuntimeError("inspect crashed")
+        assert eval_error is not None
+        raise eval_error
 
-    with pytest.raises(RuntimeError, match="inspect crashed"):
+    with pytest.raises(RuntimeError, match=str(start_error or eval_error)):
         await execute(
             plan(),
             stack_factory=factory,
@@ -88,7 +107,7 @@ async def test_execute_collects_logs_and_stack_meta(tmp_path: Path) -> None:
         assert not {"max_connections", "max_retries", "timeout"} & set(kwargs)
         return ["log"]
 
-    logs, meta = await execute(
+    logs, meta, unstarted = await execute(
         plan(),
         stack_factory=RecordingStack,
         make_ctx=lambda stack, variants: object(),  # type: ignore[arg-type,return-value]
@@ -98,6 +117,47 @@ async def test_execute_collects_logs_and_stack_meta(tmp_path: Path) -> None:
         build_task_fn=lambda *a: "task",  # type: ignore[arg-type,return-value]
     )
     assert logs == ["log"] and meta[0]["suite"] == "demo" and meta[0]["boot_seconds"] == 1.0
+    assert unstarted == {}
+
+
+async def test_a_stack_that_fails_to_start_costs_only_its_own_suite(tmp_path: Path) -> None:
+    stacks = [
+        RecordingStack(),
+        RecordingStack(StackError("exited during boot\n--- docker logs ---\n  boom")),
+    ]
+    made = iter(stacks)
+
+    logs, meta, unstarted = await execute(
+        plan("first", "second"),
+        stack_factory=lambda: next(made),
+        make_ctx=lambda stack, variants: object(),  # type: ignore[arg-type,return-value]
+        eval_fn=_eval_by_suite,
+        log_dir=tmp_path,
+        epochs=1,
+        build_task_fn=lambda suite, *a: suite,  # type: ignore[arg-type,return-value]
+    )
+    assert logs == ["log first"] and [m["suite"] for m in meta] == ["first"]
+    assert unstarted == {
+        "second": "suite second: stack failed to start: exited during boot --- docker logs --- boom"
+    }
+    assert [(s.started, s.stopped) for s in stacks] == [(1, 1), (1, 1)]
+
+
+async def test_suites_after_a_failed_start_still_run(tmp_path: Path) -> None:
+    stacks = [RecordingStack(StackError("no port")), RecordingStack()]
+    made = iter(stacks)
+
+    logs, _, unstarted = await execute(
+        plan("first", "second"),
+        stack_factory=lambda: next(made),
+        make_ctx=lambda stack, variants: object(),  # type: ignore[arg-type,return-value]
+        eval_fn=_eval_by_suite,
+        log_dir=tmp_path,
+        epochs=1,
+        build_task_fn=lambda suite, *a: suite,  # type: ignore[arg-type,return-value]
+    )
+    assert logs == ["log second"] and list(unstarted) == ["first"]
+    assert [s.stopped for s in stacks] == [1, 1]
 
 
 def _report(model: str) -> CalibrationReport:
@@ -118,6 +178,49 @@ def test_calibration_for_uses_only_the_runs_own_model(caplog: pytest.LogCaptureF
     mismatch, missing = (r.getMessage() for r in caplog.records)
     assert "(the saved one is for another-m)" in mismatch and "saved one" not in missing
     assert all("alfred evals calibrate --model judge-m" in m for m in (mismatch, missing))
+
+
+def test_read_calibration_reads_a_saved_report_or_none(tmp_path: Path) -> None:
+    path = tmp_path / "calibration.json"
+    assert read_calibration(path) is None
+    path.write_text(_report("judge-m").model_dump_json(), encoding="utf-8")
+    report = read_calibration(path)
+    assert report is not None and report.model == "judge-m"
+
+
+def _unreadable(path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path.write_text("{}", encoding="utf-8")
+
+    def refuse(self: Path, *args: Any, **kwargs: Any) -> str:
+        raise PermissionError(13, "Permission denied", str(self))
+
+    monkeypatch.setattr(Path, "read_text", refuse)
+
+
+@pytest.mark.parametrize(
+    ("spoil", "first_line"),
+    [
+        (lambda p, mp: p.write_text("{not json", encoding="utf-8"), "Expecting property name"),
+        (
+            lambda p, mp: p.write_text('{"model": 3}', encoding="utf-8"),
+            "validation error",
+        ),
+        (lambda p, mp: p.write_bytes(b"\xff\xfe"), "can't decode"),
+        (_unreadable, "Permission denied"),
+    ],
+    ids=["bad-json", "failed-validation", "not-utf8", "os-error"],
+)
+def test_an_unreadable_calibration_is_a_preflight_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spoil: Any, first_line: str
+) -> None:
+    path = tmp_path / "calibration.json"
+    spoil(path, monkeypatch)
+    with pytest.raises(PreflightError) as err:
+        read_calibration(path)
+    message = str(err.value)
+    assert message.startswith(f"judge calibration at {path} is unreadable (")
+    assert message.endswith(") — re-run `alfred evals calibrate`")
+    assert first_line in message and "\n" not in message
 
 
 def _alfredctl() -> Path:
@@ -228,18 +331,20 @@ def test_build_plan_refuses(
 
 
 class FakeStack:
-    """A started stack that never needs docker: the golden used here sends nothing."""
+    """A stack that never needs docker: the goldens used here send nothing."""
 
-    def __init__(self, cfg: Any, *, fake_ha: Any, proxy: Any) -> None:
+    def __init__(self, cfg: Any, start_error: StackError | None = None) -> None:
         self.cfg = cfg
         self.name = "alfred-eval-fake"
         self.boot_seconds = 2.0
         self.first_reply_ms = 300.0
         self.restarts = 0
         self.stopped = False
+        self._start_error = start_error
 
     async def start(self) -> None:
-        pass
+        if self._start_error is not None:
+            raise self._start_error
 
     async def stop(self) -> None:
         self.stopped = True
@@ -251,18 +356,11 @@ class FakeStack:
         raise AssertionError("a live stack is never restarted")
 
     async def send(self, request: Any, timeout_s: float) -> Any:
-        raise AssertionError("the golden has no user step")
+        raise AssertionError("the goldens have no user step")
 
 
-async def test_run_suites_preflights_before_the_build_and_writes_the_report(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setenv("INSPECT_DISPLAY", "none")  # restored after the test
-    _golden(tmp_path / "suites", "demo", "quiet")
-    _suites_at(monkeypatch, tmp_path / "suites")
-    order: list[str] = []
-    stacks: list[FakeStack] = []
-    problems_asked: list[int] = []
+def _preflight_passes(monkeypatch: pytest.MonkeyPatch, order: list[str]) -> None:
+    """Every preflight check passes and records itself in *order*; the build only records."""
 
     async def check_models(client: object, base_url: str, model: str) -> None:
         order.append(f"models {base_url} {model}")
@@ -275,71 +373,121 @@ async def test_run_suites_preflights_before_the_build_and_writes_the_report(
         order.append("alfred commit")
         return "abc1234+dirty"
 
+    real_read_calibration = orchestrate.read_calibration
+
+    def read_calibration(path: Path) -> CalibrationReport | None:
+        order.append(f"calibration {path.name}")
+        return real_read_calibration(path)
+
     def gateway() -> str:
         order.append("gateway")
         return "127.0.0.1"
+
+    monkeypatch.setattr(orchestrate, "check_models", check_models)
+    monkeypatch.setattr(orchestrate, "check_home_service", check_home_service)
+    monkeypatch.setattr(orchestrate, "alfred_commit", alfred_commit)
+    monkeypatch.setattr(orchestrate, "read_calibration", read_calibration)
+    monkeypatch.setattr(orchestrate, "docker_bridge_gateway", gateway)
+    monkeypatch.setattr(orchestrate, "_build_image", lambda hs: order.append(f"build {hs.name}"))
+
+
+async def test_run_suites_preflights_before_the_build_and_reports_whatever_ran(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("INSPECT_DISPLAY", "none")  # restored after the test
+    _golden(tmp_path / "suites", "demo", "quiet")
+    _golden(tmp_path / "suites", "zzz", "quiet")
+    _suites_at(monkeypatch, tmp_path / "suites")
+    calibration_file = tmp_path / "calibration.json"
+    calibration_file.write_text(_report("another-m").model_dump_json(), encoding="utf-8")
+    monkeypatch.setattr(orchestrate, "CALIBRATION_FILE", calibration_file)
+    order: list[str] = []
+    _preflight_passes(monkeypatch, order)
+    stacks: list[FakeStack] = []
+    problems_asked: list[int] = []
 
     def judge_model(model: str, base_url: str) -> Model:
         return get_model("mockllm/model", memoize=False)
 
     def stack(cfg: Any, *, fake_ha: Any, proxy: Any) -> FakeStack:
-        stacks.append(FakeStack(cfg, fake_ha=fake_ha, proxy=proxy))
+        # The second suite's stack never comes up.
+        stacks.append(FakeStack(cfg, StackError("no port") if stacks else None))
         return stacks[-1]
 
     def log_problems(logs: list[EvalLog], epochs: int) -> list[str]:
         problems_asked.append(epochs)
         return ["demo: a problem with the run"]
 
-    monkeypatch.setattr(orchestrate, "check_models", check_models)
-    monkeypatch.setattr(orchestrate, "check_home_service", check_home_service)
-    monkeypatch.setattr(orchestrate, "alfred_commit", alfred_commit)
-    monkeypatch.setattr(orchestrate, "docker_bridge_gateway", gateway)
-    monkeypatch.setattr(orchestrate, "_build_image", lambda hs: order.append(f"build {hs}"))
-    monkeypatch.setattr(orchestrate, "load_report", lambda: _report("another-m"))
     monkeypatch.setattr(orchestrate, "make_judge_model", judge_model)
     monkeypatch.setattr(orchestrate, "Stack", stack)
     monkeypatch.setattr(orchestrate, "log_problems", log_problems)
 
-    run_dir = await run_suites(_options(tmp_path / "logs", epochs=1))
+    outcome = await run_suites(_options(tmp_path / "logs", epochs=1))
 
     assert order == [
         "models http://vllm.test/v1 judge-m",
         "models http://embed.test/v1 embed-m",
         "home-service",
         "alfred commit",
+        "calibration calibration.json",
         "gateway",
-        f"build {tmp_path / 'logs' / 'home-service'}",
+        "build home-service",
     ]
-    assert run_dir.parent == tmp_path / "logs"
-    assert [s.stopped for s in stacks] == [True]
+    run_dir = outcome.run_dir
+    assert run_dir.parent == tmp_path / "logs" and outcome.unstarted == ["zzz"]
+    assert [s.stopped for s in stacks] == [True, True]
     assert stacks[0].cfg.work_dir == run_dir / "data"
     card = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
     meta = card["meta"]
     assert meta["alfred_commit"] == "abc1234+dirty" and meta["home_service_commit"] == "def5678"
     # The saved calibration was measured on another model, so none of it applies.
     assert meta["calibration"] == {} and meta["trusted"] == []
-    assert meta["problems"] == ["demo: a problem with the run"] and problems_asked == [1]
+    assert meta["problems"] == [
+        "suite zzz: stack failed to start: no port",
+        "demo: a problem with the run",
+    ]
+    assert problems_asked == [1]
     assert meta["stacks"] == [
         {"suite": "demo", "boot_seconds": 2.0, "first_reply_ms": 300.0, "restarts": 0}
     ]
     assert [(g["scenario_id"], g["passes"], g["runs"]) for g in card["goldens"]] == [
         ("demo.demo.quiet", 1, 1)
     ]
-    assert "# Alfred eval scorecard" in capsys.readouterr().out
+    printed = capsys.readouterr().out
+    assert "# Alfred eval scorecard" in printed
+    assert "suite zzz: stack failed to start: no port" in printed
 
 
-async def test_a_failed_preflight_never_builds_or_writes_logs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _golden(tmp_path / "suites", "demo", "quiet")
-    _suites_at(monkeypatch, tmp_path / "suites")
-
+def _models_unreachable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     async def unreachable(client: object, base_url: str, model: str) -> None:
         raise PreflightError(f"{base_url} is not reachable")
 
-    built: list[Path] = []
     monkeypatch.setattr(orchestrate, "check_models", unreachable)
-    monkeypatch.setattr(orchestrate, "_build_image", built.append)
-    with pytest.raises(PreflightError, match="not reachable"):
+
+
+def _calibration_corrupt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    corrupt = tmp_path / "calibration.json"
+    corrupt.write_text("{truncated", encoding="utf-8")
+    monkeypatch.setattr(orchestrate, "CALIBRATION_FILE", corrupt)
+
+
+@pytest.mark.parametrize(
+    ("fail", "message"),
+    [
+        (_models_unreachable, "not reachable"),
+        (_calibration_corrupt, r"judge calibration at .* is unreadable"),
+    ],
+    ids=["models-unreachable", "calibration-corrupt"],
+)
+async def test_a_failed_preflight_never_builds_or_writes_logs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fail: Any, message: str
+) -> None:
+    _golden(tmp_path / "suites", "demo", "quiet")
+    _suites_at(monkeypatch, tmp_path / "suites")
+    order: list[str] = []
+    _preflight_passes(monkeypatch, order)
+    fail(tmp_path, monkeypatch)
+    with pytest.raises(PreflightError, match=message):
         await run_suites(_options(tmp_path / "logs"))
-    assert built == [] and not (tmp_path / "logs").exists()
+    assert not [step for step in order if step.startswith(("gateway", "build"))]
+    assert not (tmp_path / "logs").exists()

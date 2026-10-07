@@ -113,6 +113,38 @@ def test_evals_calibrate_names_the_vllm_url_when_the_judge_fails(
 JUDGE_ARGS = ["--model", "judge-m", "--vllm-url", "http://vllm.test/v1"]
 
 
+@pytest.mark.parametrize(
+    ("unstarted", "exit_code"), [([], 0), (["home_control", "memory"], 1)], ids=["ok", "unstarted"]
+)
+def test_evals_run_exits_1_after_the_scorecard_when_a_suite_never_started(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, unstarted: list[str], exit_code: int
+) -> None:
+    from evals.harness.orchestrate import RunOptions, RunOutcome
+
+    seen: list[RunOptions] = []
+
+    async def fake_run_suites(opts: RunOptions) -> RunOutcome:
+        seen.append(opts)
+        print("# Alfred eval scorecard")
+        return RunOutcome(run_dir=tmp_path, unstarted=unstarted)
+
+    monkeypatch.setattr("evals.harness.orchestrate.run_suites", fake_run_suites)
+
+    result = runner.invoke(app, ["evals", "run", "--no-build", "--home-service", str(tmp_path)])
+
+    assert result.exit_code == exit_code, result.output
+    assert [(o.build, o.home_service) for o in seen] == [(False, tmp_path)]
+    assert result.stdout.startswith("# Alfred eval scorecard\n")
+    assert f"logs and report: {tmp_path}" in result.stdout
+    if unstarted:
+        assert result.stderr.strip().splitlines() == [
+            "alfred evals: the stack for home_control, memory failed to start; "
+            "see Run problems in the scorecard"
+        ]
+    else:
+        assert result.stderr == ""
+
+
 def _fake_judge_model(monkeypatch: pytest.MonkeyPatch, answers: list[str]) -> list[tuple[str, str]]:
     """Point ``make_judge_model`` at mockllm giving ``answers``; return the (model, url) it got."""
     from inspect_ai.model import ModelOutput, get_model

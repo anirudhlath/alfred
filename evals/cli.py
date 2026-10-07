@@ -142,11 +142,19 @@ def run(
         display=display,
     )
     try:
-        run_dir = asyncio.run(run_suites(opts))
+        outcome = asyncio.run(run_suites(opts))
     except (ScenarioError, PreflightError, StackError) as exc:
         typer.echo(f"alfred evals: {exc}", err=True)
         raise typer.Exit(1) from exc
+    run_dir = outcome.run_dir
     typer.echo(f"logs and report: {run_dir}  (inspect view --log-dir {run_dir})")
+    if outcome.unstarted:
+        typer.echo(
+            f"alfred evals: the stack for {', '.join(outcome.unstarted)} failed to start; "
+            "see Run problems in the scorecard",
+            err=True,
+        )
+        raise typer.Exit(1)
 
 
 @evals_app.command(
