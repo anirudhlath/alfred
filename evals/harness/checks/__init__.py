@@ -32,6 +32,11 @@ CHECK_PARAMS: dict[str, type[BaseModel]] = {n: p for n, (p, _) in DETERMINISTIC.
     "judge": JudgeSpec
 }
 
+# Checks that read Alfred's reply, so a golden using one needs at least one user step.
+NEEDS_REPLY: frozenset[str] = frozenset(
+    {"judge", "reply_contains", "reply_not_contains", "latency"}
+)
+
 
 def run_check(name: str, params: BaseModel, evidence: Evidence) -> CheckResult:
     """Run one deterministic check. A bug in a check scores ``error``, never ``fail``."""
@@ -44,4 +49,11 @@ def run_check(name: str, params: BaseModel, evidence: Evidence) -> CheckResult:
         )
 
 
-__all__ = ["CHECK_PARAMS", "DETERMINISTIC", "CheckResult", "JudgeSpec", "run_check"]
+__all__ = [
+    "CHECK_PARAMS",
+    "DETERMINISTIC",
+    "NEEDS_REPLY",
+    "CheckResult",
+    "JudgeSpec",
+    "run_check",
+]

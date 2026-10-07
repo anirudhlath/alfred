@@ -8,24 +8,29 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Self
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
 
 import yaml
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Discriminator,
     Field,
+    SerializeAsAny,
+    Tag,
     ValidationError,
     field_validator,
     model_validator,
 )
 
-from evals.harness.checks import CHECK_PARAMS
+from evals.harness.checks import CHECK_PARAMS, NEEDS_REPLY
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
 SUITES_DIR = Path(__file__).resolve().parent.parent / "suites"
+GOLDEN_SUFFIX = ".yaml"
+_LOADER_KEYS = frozenset({"suite", "path"})
 
 Who = Literal["sir", "guest"]
 Channel = Literal["web_pwa", "signal", "voice", "ios", "satellite"]
@@ -46,7 +51,7 @@ class Actor(BaseModel):
 class UserStep(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
     user: str = Field(min_length=1)
-    variants: list[str] = Field(default_factory=list)
+    variants: list[Annotated[str, Field(min_length=1)]] = Field(default_factory=list)
     actor: Actor | None = Field(default=None, alias="as")
 
 
@@ -68,32 +73,60 @@ class WaitStep(BaseModel):
     wait: float = Field(gt=0, le=600)
 
 
-Step = UserStep | HaEventStep | WaitStep
-_STEP_TYPES: dict[str, type[BaseModel]] = {
-    "user": UserStep,
-    "ha_event": HaEventStep,
-    "wait": WaitStep,
-}
+_STEP_KINDS = ("user", "ha_event", "wait")
+
+
+def _step_kind(value: Any) -> str | None:
+    """The step's tag: the one step key a mapping (or a step model's fields) carries."""
+    if isinstance(value, BaseModel):
+        keys = set(type(value).model_fields)
+    elif isinstance(value, dict):
+        keys = set(value)
+    else:
+        return None
+    kinds = [k for k in _STEP_KINDS if k in keys]
+    return kinds[0] if len(kinds) == 1 else None
+
+
+# Tagged so a field error names its step: ``steps.1.ha_event.ha_event.state``.
+Step = Annotated[
+    Annotated[UserStep, Tag("user")]
+    | Annotated[HaEventStep, Tag("ha_event")]
+    | Annotated[WaitStep, Tag("wait")],
+    Discriminator(
+        _step_kind,
+        custom_error_type="step_kind",
+        custom_error_message="needs one of user, ha_event, wait",
+    ),
+]
 
 
 class CheckSpec(BaseModel):
-    """One ``expect`` entry: a single-key mapping ``{check_name: params}``."""
+    """One ``expect`` entry: ``{check_name: params}`` in a golden, or ``{name, params}``.
 
-    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
+    Both shapes go through the same validation, so a check name or params that would
+    only fail after the container boots fail at load instead.
+    """
+
+    model_config = ConfigDict(extra="forbid")
     name: str
-    params: Any
+    params: SerializeAsAny[BaseModel]
 
     @model_validator(mode="before")
     @classmethod
-    def _from_mapping(cls, data: Any) -> Any:
-        if isinstance(data, dict) and set(data) != {"name", "params"}:
-            if len(data) != 1:
-                raise ValueError(f"a check is a single-key mapping, got keys {sorted(data)}")
+    def _validated(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        if set(data) == {"name", "params"}:
+            name, params = data["name"], data["params"]
+        elif len(data) == 1:
             ((name, params),) = data.items()
-            if name not in CHECK_PARAMS:
-                raise ValueError(f"unknown check {name!r}; known: {sorted(CHECK_PARAMS)}")
-            return {"name": name, "params": CHECK_PARAMS[name].model_validate(params or {})}
-        return data
+        else:
+            raise ValueError(f"a check is a single-key mapping, got keys {sorted(data)}")
+        if not isinstance(name, str) or name not in CHECK_PARAMS:
+            raise ValueError(f"unknown check {name!r}; known: {sorted(CHECK_PARAMS)}")
+        # An existing params instance of the right model comes back unchanged.
+        return {"name": name, "params": CHECK_PARAMS[name].model_validate(params or {})}
 
 
 class Scenario(BaseModel):
@@ -117,27 +150,12 @@ class Scenario(BaseModel):
             raise ValueError(f"id {value!r} must look like suite.topic.case (lowercase, dots)")
         return value
 
-    @field_validator("steps", mode="before")
-    @classmethod
-    def _typed_steps(cls, value: Any) -> Any:
-        if not isinstance(value, list):
-            return value
-        typed: list[BaseModel] = []
-        for i, raw in enumerate(value):
-            keys = set(raw) if isinstance(raw, dict) else set()
-            kinds = keys & set(_STEP_TYPES)
-            if len(kinds) != 1:
-                raise ValueError(f"step {i}: needs one of user, ha_event, wait; got {sorted(keys)}")
-            typed.append(_STEP_TYPES[kinds.pop()].model_validate(raw))
-        return typed
-
     @model_validator(mode="after")
     def _coherent(self) -> Self:
         with_variants = [s for s in self.steps if isinstance(s, UserStep) and s.variants]
         if len(with_variants) > 1:
             raise ValueError("only one step may have variants")
-        needs_reply = {"judge", "reply_contains", "reply_not_contains", "latency"}
-        if any(c.name in needs_reply for c in self.expect) and not any(
+        if any(c.name in NEEDS_REPLY for c in self.expect) and not any(
             isinstance(s, UserStep) for s in self.steps
         ):
             raise ValueError("reply and judge checks need at least one user step")
@@ -171,11 +189,18 @@ def expand_variants(scenario: Scenario) -> list[ScenarioVariant]:
 
 def load_scenario(path: Path, suite: str) -> Scenario:
     try:
-        raw = yaml.safe_load(path.read_text())
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ScenarioError(f"{path}: not UTF-8: {exc}") from exc
+    try:
+        raw = yaml.safe_load(text)
     except yaml.YAMLError as exc:
         raise ScenarioError(f"{path}: invalid YAML: {exc}") from exc
     if not isinstance(raw, dict):
         raise ScenarioError(f"{path}: expected a mapping at the top level")
+    reserved = sorted(_LOADER_KEYS & set(raw))
+    if reserved:
+        raise ScenarioError(f"{path}: keys {reserved} are set by the loader, not by a golden")
     try:
         scenario = Scenario.model_validate({**raw, "suite": suite, "path": str(path)})
     except ValidationError as exc:
@@ -186,23 +211,33 @@ def load_scenario(path: Path, suite: str) -> Scenario:
 
 
 def available_suites(root: Path = SUITES_DIR) -> list[str]:
+    """Every non-empty directory under ``root``. ``load_suites`` rejects what is not a golden."""
     if not root.is_dir():
         return []
-    return sorted(p.name for p in root.iterdir() if p.is_dir() and any(p.glob("*.yaml")))
+    return sorted(p.name for p in root.iterdir() if p.is_dir() and any(p.iterdir()))
+
+
+def _golden_paths(suite_dir: Path) -> list[Path]:
+    """The suite's goldens. Anything else in the directory would be skipped, so it is an error."""
+    paths = sorted(suite_dir.iterdir())
+    for path in paths:
+        if not (path.is_file() and path.suffix == GOLDEN_SUFFIX):
+            raise ScenarioError(f"{path}: not a golden; a suite holds only *{GOLDEN_SUFFIX} files")
+    return paths
 
 
 def load_suites(
     names: Sequence[str] | None = None, root: Path = SUITES_DIR
 ) -> dict[str, list[Scenario]]:
     known = available_suites(root)
-    wanted = list(names) if names else known
+    wanted = list(dict.fromkeys(names)) if names else known
     unknown = [n for n in wanted if n not in known]
     if unknown:
         raise ScenarioError(f"unknown suite(s) {unknown}; available: {', '.join(known)}")
     seen: dict[str, str] = {}
     out: dict[str, list[Scenario]] = {}
     for name in wanted:
-        scenarios = [load_scenario(p, name) for p in sorted((root / name).glob("*.yaml"))]
+        scenarios = [load_scenario(p, name) for p in _golden_paths(root / name)]
         for s in scenarios:
             if s.id in seen:
                 raise ScenarioError(f"{s.path}: duplicate id {s.id!r} (also in {seen[s.id]})")
