@@ -216,12 +216,10 @@ graph TB
         WebChannel --> CredPushWorker
     end
 
-    subgraph "Evals Runner"
-        EvalsCLI["Evals CLI<br/><code>uv run python -m evals</code>"]
-        EvalsScenarios["YAML Scenarios"]
-        EvalsCtx["Context Fixtures"]
-        EvalsConscious["System 2 Evals<br/>DeepEval metrics"]
-        EvalsRegression["Regression Mode<br/>Mocked Ollama"]
+    subgraph "Eval Harness (host side)"
+        EvalsCLI["alfred evals<br/><code>uv run alfred evals run</code>"]
+        FakeHA["fake HA<br/>Home Assistant WebSocket double"]
+        LLMProxy["LLM proxy<br/>records every chat completion"]
         EvalsMemory["Memory-Decay Eval<br/>throwaway Redis + simulated clock"]
     end
 
@@ -322,16 +320,17 @@ graph TB
     CredPushWorker -->|XREADGROUP channels-credentials| Redis
     CredPushWorker -->|POST credentials_endpoint| HomeSvc
 
-    EvalsCLI -->|build_prompt + parse_response| Engine
-    EvalsCLI -->|POST /api/chat| Ollama
-    EvalsCLI -->|load| EvalsScenarios
-    EvalsCLI -->|load| EvalsCtx
-    EvalsCLI -->|HGETALL tools| Redis
-    EvalsCLI -->|flush CSV| CSV
-    EvalsConscious -->|custom metrics| EvalsCLI
-    EvalsRegression -->|mocked Ollama| EvalsCLI
-    EvalsMemory -->|real decay + recall, simulated clock| EvalsCLI
+    EvalsCLI -->|"XADD alfred:user:requests"| Redis
+    EvalsCLI -->|"XREAD alfred:user:responses"| Redis
+    HomeSvc <-->|"HA WebSocket"| FakeHA
+    Engine -->|chat completions| LLMProxy
+    ConsEngine -->|chat completions| LLMProxy
+    Librarian -->|chat completions| LLMProxy
+    EvalsCLI -->|"alfred evals memory"| EvalsMemory
+    EvalsMemory -->|"real decay + recall, simulated clock"| EpisodicStore
 ```
+
+The `alfred evals run` edges (requests, the fake HA and the LLM proxy) exist only for a throwaway eval stack, where the fake HA stands in for Home Assistant and every LLM call goes through the proxy to vLLM; see [docs/evals.md](evals.md).
 
 ### 3.1 Event Bus: MQTT Bridge + Redis Streams
 
@@ -749,50 +748,17 @@ Runs as a background task in the Reflex Runner (30-second flush interval). Reads
 
 Typed Pydantic models for each metric category: `LatencyMetric`, `TokenMetric`, `EventMetric`. These define canonical CSV column headers.
 
-### 3.13 Evals Runner
+### 3.13 Eval Harness
 
-**Files:** `evals/__main__.py`, `evals/pipeline.py`, `evals/scorer.py`, `evals/inference.py`, `evals/context_fixtures.py`
+**Files:** `evals/cli.py`, `evals/harness/`, `evals/suites/`, `evals/coverage.yaml`
 
-Three-layer eval strategy:
+**PRD Eval Suite** (`evals/harness/`):
 
-**System 1 Evals** (existing):
-
-Scenario-based evaluation that tests the Reflex Engine's SLM output. Reuses the engine's public API (`build_prompt()`, `parse_response()`) to ensure eval prompts match production prompts exactly. YAML scenarios in `evals/scenarios/<domain>/` define event + expected action pairs.
-
-**System 1 Regression Mode** (`evals/regression/`):
-
-Mocked Ollama client (`MockOllamaClient`) for deterministic CI runs without GPU. Canned responses keyed by entity ID substring matching. Run via `python -m evals regression`.
-
-**System 2 Evals** (`evals/conscious/`):
-
-Custom metrics for Conscious Engine output quality:
-
-| Metric | What it checks |
-|--------|---------------|
-| `ButlerPersonalityScore` | Formal language, "sir" address, absence of casual markers |
-| `PrivacyLeakScore` | No personal data leaked to guest identities |
-| `ProactivityRelevanceScore` | Unsolicited suggestions are contextually useful (stub) |
-| `MemoryRetrievalPrecision` | Retrieved memories actually appear in the response |
-
-YAML scenarios in `evals/conscious/scenarios/` define user requests + expected behavior (mentions, forbidden mentions, tool call counts, metric thresholds). Run via `python -m evals conscious`.
-
-**Good Morning Demo** (`evals/e2e/demo_good_morning.py`):
-
-End-to-end script that publishes a `UserRequest` to Redis, waits for an `AlfredResponse`, and scores it with all custom metrics. Exercises every Phase 3 component. Run via `python -m evals demo`.
+`alfred evals run` asserts the PRD's LLM-decided requirements with utterance-level goldens against the real assembled stack. Each suite boots a throwaway copy of the fat image (`alfredctl up --eval`), with every LLM role on the local vLLM model. The host-side driver plays each golden over the container's own bus: it `XADD`s a `UserRequest` to `alfred:user:requests` and reads the `AlfredResponse` from `alfred:user:responses`. Home-service talks to a fake Home Assistant that serves a fictional world and records every `call_service`, and System 1, System 2 and the Librarian reach vLLM through a proxy that records every chat completion. Deterministic checks over that evidence, plus a rubric judge trusted only in categories that agree with hand labels, score each golden over several epochs and variants. A scorecard reports them by PRD row, and `evals/coverage.yaml` with its pytest check keeps every PRD row mapped to goldens, tests or a stated reason. Built on Inspect AI. See [docs/evals.md](evals.md).
 
 **Memory-Decay Eval** (`evals/memory/`):
 
 Replays weeks of a simulated house against the real memory stack (RediSearch in a throwaway container, sqlite-vec, the configured embedding model, the real write path and `Librarian._apply_decay` on a simulated clock) and compares decay policies by what recall returns. No LLM. Run via `python -m evals memory run`; see `docs/evals-memory.md`.
-
-**Other capabilities:**
-
-- Context fixtures in `evals/contexts/` replay captured HA state
-- Parallel execution within each run
-- Multi-run aggregation (`-n N`) with per-scenario pass rates
-- Pluggable backends (Ollama, LM Studio) via `InferFn` protocol
-- Run comparison diffs verdict changes and latency deltas
-
-See [docs/evals-runner.md](evals-runner.md) for full documentation.
 
 ## 4. Notification System
 
@@ -987,11 +953,11 @@ uv run mypy bus/ core/ domains/ evals/ runner/ sdk/ shared/ telemetry/
 # Run tests
 uv run pytest
 
-# Run evals
-uv run python -m evals run                  # System 1 evals (requires Ollama)
-uv run python -m evals regression           # System 1 regression (mocked, CI-safe)
-uv run python -m evals conscious            # System 2 evals (dry-run)
-uv run python -m evals demo                 # Good Morning end-to-end demo
+# Run evals (Docker, a local vLLM and the evals extra; see docs/evals.md)
+uv run alfred evals calibrate                       # judge agreement with hand labels
+uv run alfred evals list                            # goldens, their status and PRD rows
+uv run alfred evals run home_control conversation   # throwaway stacks, scorecard by PRD row
+uv run python -m evals memory run                   # memory-decay simulation
 ```
 
 ### 7.5 Shutdown

@@ -206,6 +206,7 @@ triggers memory`) or by tag (`--tag guest`).
 |---|---|---|
 | `ha_called` | fake HA log | A `call_service` matches domain, service, target and the given data. Numbers match within a tolerance. |
 | `ha_not_called` | fake HA log | No call matches. With no arguments, no call happened at all. |
+| `ha_state` | fake HA state | An entity's state and attributes at the end of the scenario match. Numbers match within a tolerance. |
 | `tool_called`, `tool_not_called` | proxy | The role's response contains or lacks a call to the tool. |
 | `llm_tool_args`, `llm_tool_args_absent` | proxy | The tool's arguments match or lack a key or value. |
 | `prompt_not_contains` | proxy | No recorded prompt for the role contains the literal or pattern (credentials, raw sensor dumps). |
@@ -227,7 +228,8 @@ check's result, so partial correctness stays visible.
   answered.
 - **Form.** Each `judge:` check is one yes/no rubric question with a `category`. The
   judge answers with a short rationale and then `yes` or `no`, at temperature 0, through
-  Inspect's OpenAI-compatible provider pointed at vLLM. A `reference` reply, when given,
+  the harness's own Inspect model provider for vLLM (`alfred-vllm`); Inspect's
+  `openai-api` provider needs an `openai` release that litellm does not allow. A `reference` reply, when given,
   is shown to the judge as what a good answer looks like.
 - **Calibration.** `evals/judge_calibration/<category>.yaml` holds hand-labelled
   (reply, rubric, reference, label) items, about 15 in slice 1 and 40 or more by
@@ -376,7 +378,8 @@ or tests in the same PR, which extends the PRD's maintenance rule.
 **Kept:** `evals/memory/` and `python -m evals memory`, untouched. EXP-006 to EXP-009 and
 the production decay settings cite them.
 
-**Added:** an `evals` dependency group with `inspect-ai` and `radicale`.
+**Added:** an `evals` optional extra (`uv sync --extra evals`) holding `inspect-ai`,
+`aiohttp` (the proxy) and `websockets` (the fake HA). Radicale joins it in slice 5.
 
 ## Documentation
 
@@ -396,8 +399,8 @@ slice's real numbers are in.
    - `alfredctl up --eval` with the vLLM wiring.
    - The fake HA and the `apartment` world.
    - The proxy and the driver.
-   - The checks `ha_called`, `ha_not_called`, `tool_called`, `llm_tool_args*`,
-     `reply_*` and `latency`.
+   - The checks `ha_called`, `ha_not_called`, `ha_state`, `tool_called`,
+     `llm_tool_args*`, `reply_*` and `latency`.
    - The judge and about 15 calibration items.
    - The scorecard.
    - The `home_control` and `conversation` suites.
