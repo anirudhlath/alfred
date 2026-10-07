@@ -136,10 +136,11 @@ def test_step_index_guard_covers_any_check_with_those_fields() -> None:
 
 
 def _unknown_services(s: Scenario, world: World) -> list[str]:
-    """HA services and LLM tools that ``s``'s checks name but ``world`` does not offer.
+    """HA services and home tools that ``s``'s checks name but ``world`` does not offer.
 
     home-service offers each world service as the tool ``home.{domain}_{service}``, which
-    System 2 sends as ``home_{domain}_{service}`` (``checks/llm.normalize_tool``). Like the
+    System 2 sends as ``home_{domain}_{service}`` (``checks/llm.normalize_tool``), so a tool
+    name starting ``home.`` or ``home_`` must be one of those. Like the
     step guard, this goes by field name, so a check added later is covered too. A check
     that leaves ``domain`` or ``service`` unset matches any, so only what it sets is checked.
     """
@@ -154,7 +155,9 @@ def _unknown_services(s: Scenario, world: World) -> list[str]:
             domain in (None, d) and service in (None, svc) for d, svc in offered
         ):
             bad.append(f"{check.name}: {domain or '*'}.{service or '*'}")
-        if tool is not None and normalize_tool(tool) not in tools:
+        name = None if tool is None else normalize_tool(tool)
+        # Only home tools are checked here; memory, trigger etc. tools when their suites arrive.
+        if name is not None and name.startswith("home_") and name not in tools:
             bad.append(f"{check.name}: tool {tool}")
     return bad
 
@@ -179,6 +182,7 @@ def test_unknown_services_flags_a_misspelt_service_or_tool() -> None:
             {"ha_not_called": {"entity_id": "light.bedroom_lamp"}},
             {"llm_tool_args": {"tool": "home_light_turn_on", "args": {}}},
             {"tool_called": {"tool": "home.scene_turn_on"}},
+            {"tool_called": {"tool": "memory_recall_memories"}},  # not a home tool: not judged
         ],
     )
     assert _unknown_services(real, world) == []

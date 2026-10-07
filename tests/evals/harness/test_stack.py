@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import subprocess
 from pathlib import Path
@@ -160,6 +161,31 @@ async def test_stop_wipes_data_and_removes_the_container_unless_keep(
     await stack.stop()
     assert kept.removed == [] and kept.wiped == []
     assert stack.data_dir is not None and stack.data_dir.exists()
+
+
+async def test_a_restart_keeps_the_suites_first_reply_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An isolated golden restarts the stack; the stack line must still report the suite's
+    # very first request after boot, not the readiness probe of the latest restart.
+    delays = iter([0.0, 0.05])
+
+    async def fake_publish(redis, request, session_id, timeout):  # type: ignore[no-untyped-def]
+        await asyncio.sleep(next(delays))
+        return AlfredResponse(
+            source="conscious-engine", channel="web_pwa", session_id=session_id, text="ready"
+        )
+
+    monkeypatch.setattr("evals.harness.stack.publish_and_wait", fake_publish)
+    monkeypatch.setattr("evals.harness.stack.create_redis", lambda url: _NullRedis())
+    stack = make_stack(tmp_path, FakeDocker())
+    await stack.start()
+    first = stack.first_reply_ms
+    assert first is not None and first < 50
+    await stack.restart()
+    assert next(delays, None) is None  # the restart really did run readiness again
+    assert stack.first_reply_ms == first
+    await stack.stop()
 
 
 class _NullRedis:
