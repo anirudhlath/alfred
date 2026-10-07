@@ -15,10 +15,11 @@ from zoneinfo import ZoneInfo
 from core.reflex.context_reader import LIVE_STATE_UNAVAILABLE
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
     from datetime import datetime
 
     from bus.schemas.events import StateChangedEvent, TriggerFired
+    from core.reflex.tool_registry import ToolInfo
     from sdk.alfred_sdk.context import ContextSnapshot
 
 # Domains the House section lists. A rendering choice, not a tool list: Reflex acts only
@@ -42,6 +43,30 @@ MAX_DETAIL_CHARS = 80
 MAX_TRIGGER_CONTEXT_CHARS = 500
 OTHER_ROOM = "Other"
 NO_DEVICES = "No devices to show."
+NO_TOOLS = "No tools available."
+NO_PREFERENCES = "None recorded yet."
+
+STATE_CHANGE_INTRO = (
+    "You are Alfred's Reflex Engine, the quiet steward of a home. One thing in the house "
+    "just changed. Decide whether to do something about it."
+)
+TRIGGER_INTRO = (
+    "You are Alfred's Reflex Engine, the quiet steward of a home. A trigger the owner set "
+    "up has just fired, and the owner is already being notified about it. Decide whether "
+    "the home should also do something."
+)
+DECISION_RULES = """\
+- act: the right move is obvious. Common sense or a stated preference makes it plainly
+  what the household wants, and doing it would surprise no one at home.
+- ask: a move is plausible, but you are not sure it is wanted.
+- none: nothing needs doing. This is the usual answer.
+
+Use only the tools below. Target a room by its name in the House section, or a device by
+its name.
+
+Respond with JSON only. Either {"decision": "none"} or
+{"decision": "act" | "ask", "reason": "<one short sentence>", "tool_name": "...",
+ "target_service": "...", "parameters": {...}}"""
 
 
 @dataclass(frozen=True)
@@ -228,3 +253,82 @@ def render_trigger(event: TriggerFired) -> str:
         return line
     context = json.dumps(event.context, sort_keys=True, default=str)
     return f"{line}\nContext: {_clip(context, MAX_TRIGGER_CONTEXT_CHARS)}"
+
+
+def render_tools(tools: Sequence[ToolInfo]) -> str:
+    """One line per tool, sorted. Parameter descriptions stay out: they list every entity."""
+    if not tools:
+        return NO_TOOLS
+    lines = ["Tools:"]
+    for tool in sorted(tools, key=lambda t: t.name):
+        line = f"- {tool.name}({', '.join(tool.parameters)}) [{tool.target_service}]"
+        lines.append(f"{line}: {tool.description}" if tool.description else line)
+    return "\n".join(lines)
+
+
+def _assemble(
+    intro: str,
+    *,
+    preferences: str,
+    tools: Sequence[ToolInfo],
+    entities: Mapping[str, LiveEntity] | None,
+    now: datetime,
+    tz_name: str,
+    change_heading: str,
+    change: str,
+) -> str:
+    # Stable → volatile. Keep this order: it is what lets vLLM reuse the prefix.
+    return "\n\n".join(
+        [
+            f"{intro}\n\n{DECISION_RULES}\n\n{render_tools(tools)}",
+            f"## Preferences\n{preferences.strip() or NO_PREFERENCES}",
+            f"## Now\n{render_now(now, tz_name, entities)}",
+            f"## House\n{render_house(entities)}",
+            f"## {change_heading}\n{change}",
+            "## Decision (JSON only):",
+        ]
+    )
+
+
+def build_state_change_prompt(
+    *,
+    event: StateChangedEvent,
+    preferences: str,
+    tools: Sequence[ToolInfo],
+    entities: Mapping[str, LiveEntity] | None,
+    now: datetime,
+    tz_name: str,
+) -> str:
+    """The Reflex prompt for one state change."""
+    return _assemble(
+        STATE_CHANGE_INTRO,
+        preferences=preferences,
+        tools=tools,
+        entities=entities,
+        now=now,
+        tz_name=tz_name,
+        change_heading="What changed",
+        change=render_event(event, entities),
+    )
+
+
+def build_trigger_prompt(
+    *,
+    event: TriggerFired,
+    preferences: str,
+    tools: Sequence[ToolInfo],
+    entities: Mapping[str, LiveEntity] | None,
+    now: datetime,
+    tz_name: str,
+) -> str:
+    """The Reflex prompt for a trigger that fired; the owner is already being notified."""
+    return _assemble(
+        TRIGGER_INTRO,
+        preferences=preferences,
+        tools=tools,
+        entities=entities,
+        now=now,
+        tz_name=tz_name,
+        change_heading="Trigger fired",
+        change=render_trigger(event),
+    )
