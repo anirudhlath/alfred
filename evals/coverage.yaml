@@ -1,6 +1,7 @@
 # Every PRD requirement → goldens (suites), not-yet-built suites (pending_suites),
 # existing tests, or a not_llm reason. `prd` is the leading text of the PRD row; the
-# coverage test fails when a row is added, reworded or left unmapped (docs/evals.md).
+# coverage test fails when a row is added, removed, or its leading text changes, or is
+# left unmapped (docs/evals.md).
 rows:
   # §3 Product principles
   - {id: principle.1, section: "3", prd: "Proactive, not intrusive.", pending_suites: [notifications, memory]}
@@ -53,8 +54,8 @@ rows:
   - {id: 4.5.calendar-management, section: "4.5", prd: "Calendar event creation/management", pending_suites: [integrations]}
   # §4.6 Security & privacy
   - {id: 4.6.passkeys, section: "4.6", prd: "Passkey (WebAuthn) login", not_llm: "authentication", tests: [tests/integration/test_webauthn_flow.py]}
-  - {id: 4.6.trusted-network, section: "4.6", prd: "Trusted-network gating", not_llm: "network gate", tests: [tests/core/channels/test_trusted_network.py]}
-  - {id: 4.6.session-management, section: "4.6", prd: "Session and passkey management", not_llm: "admin routes", tests: [tests/core/channels/test_admin_api.py]}
+  - {id: 4.6.trusted-network, section: "4.6", prd: "Trusted-network gating", not_llm: "network gate", tests: [tests/core/channels/test_trusted_network.py, tests/core/identity/test_auth_routes.py]}
+  - {id: 4.6.session-management, section: "4.6", prd: "Session and passkey management", not_llm: "auth routes", tests: [tests/core/identity/test_auth_routes.py, web/src/workshop/SystemSections.test.tsx, web/src/workshop/useSystem.test.tsx]}
   - {id: 4.6.identity-confidence, section: "4.6", prd: "Identity confidence levels per channel", pending_suites: [guest_boundary], tests: [tests/core/conscious/test_identity_local_trust.py]}
   - {id: 4.6.guest-choices, section: "4.6", prd: "Guest access choices captured at onboarding", pending_suites: [guest_boundary], tests: [tests/core/channels/test_onboarding_defaults.py]}
   - {id: 4.6.guest-enforcement, section: "4.6", prd: "Guest boundary enforcement", pending_suites: [guest_boundary]}
@@ -65,7 +66,7 @@ rows:
   - {id: 4.7.phone-ops, section: "4.7", prd: "…surfaced on the phone", not_llm: "phone UI", tests: [web/src/workshop]}
   - {id: 4.7.eval-harness, section: "4.7", prd: "Eval harness", not_llm: "this harness", tests: [tests/evals]}
   - {id: 4.7.warmup, section: "4.7", prd: "Model warmup at startup", suites: [conversation]}
-  - {id: 4.7.service-health, section: "4.7", prd: "Self-describing health for external services", not_llm: "health reporting", tests: [web/src/workshop/SystemSections.test.tsx]}
+  - {id: 4.7.service-health, section: "4.7", prd: "Self-describing health for external services", not_llm: "health reporting", tests: [web/src/workshop/SystemSections.test.tsx, tests/core/channels/test_service_credentials.py]}
   - {id: 4.7.alfredctl, section: "4.7", prd: "One-command containerized deployment", not_llm: "launcher", tests: [tests/alfredctl]}
   # §7 Success criteria
   - {id: 7.reflex-latency, section: "7", prd: "Reflex latency", pending_suites: [reflex]}
@@ -77,4 +78,6 @@ rows:
   - {id: 7.sovereignty, section: "7", prd: "Sovereignty", not_llm: "process isolation via the SDK", tests: [sdk/tests]}
 headings:
   - {id: 1.butler, heading: "1. What is Alfred", suites: [conversation]}
+  - {id: 2.audience, heading: "2. Who it's for", pending_suites: [guest_boundary]}
+  - {id: 5.not-rules-engine, heading: "5. What Alfred is not", pending_suites: [triggers, memory]}
   - {id: 6.cross-domain, heading: "6. Why Alfred is different", pending_suites: [cross_domain]}
