@@ -1,0 +1,80 @@
+# Every PRD requirement → goldens (suites), not-yet-built suites (pending_suites),
+# existing tests, or a not_llm reason. `prd` is the leading text of the PRD row; the
+# coverage test fails when a row is added, reworded or left unmapped (docs/evals.md).
+rows:
+  # §3 Product principles
+  - {id: principle.1, section: "3", prd: "Proactive, not intrusive.", pending_suites: [notifications, memory]}
+  - {id: principle.2, section: "3", prd: "Local-first and private.", pending_suites: [privacy]}
+  - {id: principle.3, section: "3", prd: "Everything describes itself.", suites: [home_control]}
+  - {id: principle.4, section: "3", prd: "Deterministic and auditable.", not_llm: "typed bus schemas", tests: [tests/bus]}
+  - {id: principle.5, section: "3", prd: "Learns routines; doesn't demand programming.", pending_suites: [memory, triggers]}
+  - {id: principle.6, section: "3", prd: "Sovereign services.", not_llm: "process isolation via the SDK", tests: [sdk/tests]}
+  # §4.1 Conversation & channels
+  - {id: 4.1.pwa-room, section: "4.1", prd: "Web app — a phone-first PWA", not_llm: "phone UI, gates and the Door", tests: [web/src/room, web/src/door, web/src/gates]}
+  - {id: 4.1.workshop-activity, section: "4.1", prd: "Web app — the Workshop: the Activity bench", not_llm: "telemetry UI", tests: [web/src/workshop/ActivityBench.test.tsx, web/src/sheets/WhySheet.test.tsx]}
+  - {id: 4.1.workshop-benches, section: "4.1", prd: "Web app — the Workshop's other three benches", not_llm: "management UI", tests: [web/src/workshop/MemoryBench.test.tsx, web/src/workshop/TriggersBench.test.tsx, web/src/workshop/SystemBench.test.tsx]}
+  - {id: 4.1.ios-app, section: "4.1", prd: "Native iOS app", not_llm: "separate client", elsewhere: "alfred-ios repo"}
+  - {id: 4.1.signal, section: "4.1", prd: "Signal messaging", suites: [conversation]}
+  - {id: 4.1.voice-browser, section: "4.1", prd: "Voice in the browser/app", pending_suites: [voice]}
+  - {id: 4.1.satellites, section: "4.1", prd: "Physical wake-word satellites", pending_suites: [voice]}
+  - {id: 4.1.speaker-id, section: "4.1", prd: "Speaker identification", pending_suites: [voice]}
+  - {id: 4.1.sessions, section: "4.1", prd: "Multi-step conversations with session continuity", suites: [conversation]}
+  # §4.2 Proactivity & triggers
+  - {id: 4.2.dynamic-triggers, section: "4.2", prd: "Dynamic triggers created by conversation", pending_suites: [triggers]}
+  - {id: 4.2.sensor-triggers, section: "4.2", prd: "Sensor-driven triggers on live home state", pending_suites: [triggers]}
+  - {id: 4.2.fast-reminders, section: "4.2", prd: "Sub-5-second reminder firing", pending_suites: [triggers]}
+  - {id: 4.2.client-timezone, section: "4.2", prd: "Client-timezone awareness", pending_suites: [triggers]}
+  - {id: 4.2.relative-reminders, section: "4.2", prd: "Relative reminders", pending_suites: [triggers]}
+  - {id: 4.2.proactive-notifications, section: "4.2", prd: "Proactive notifications with urgency levels", pending_suites: [notifications]}
+  - {id: 4.2.notification-delivery, section: "4.2", prd: "Delivery to Signal, web", pending_suites: [notifications]}
+  - {id: 4.2.attention-set, section: "4.2", prd: "Reflex \"attention set\"", pending_suites: [attention]}
+  # §4.3 Memory
+  - {id: 4.3.episodic, section: "4.3", prd: "Episodic memory", pending_suites: [memory]}
+  - {id: 4.3.semantic, section: "4.3", prd: "Semantic memory", pending_suites: [memory]}
+  - {id: 4.3.procedural, section: "4.3", prd: "Procedural memory", pending_suites: [memory]}
+  - {id: 4.3.librarian, section: "4.3", prd: "Nightly librarian consolidation", pending_suites: [memory]}
+  - {id: 4.3.decay, section: "4.3", prd: "Contextual decay", pending_suites: [memory], tests: [tests/evals/test_memory_runner.py]}
+  - {id: 4.3.two-stage-recall, section: "4.3", prd: "Two-stage recall", pending_suites: [memory]}
+  - {id: 4.3.significance, section: "4.3", prd: "Significance scoring", pending_suites: [memory]}
+  - {id: 4.3.passive-observation, section: "4.3", prd: "Passive observation", pending_suites: [memory]}
+  - {id: 4.3.s2-observes-s1, section: "4.3", prd: "System 2 observation of System 1", pending_suites: [reflex, memory]}
+  # §4.4 Smart home
+  - {id: 4.4.lights-scenes, section: "4.4", prd: "Lights and scenes control", suites: [home_control], pending_suites: [reflex]}
+  - {id: 4.4.ha-onboarding, section: "4.4", prd: "Token-to-live Home Assistant onboarding", not_llm: "credential flow", tests: [tests/core/channels/test_service_credentials.py]}
+  - {id: 4.4.device-discovery, section: "4.4", prd: "Full-home device discovery", suites: [home_control]}
+  - {id: 4.4.control-surface, section: "4.4", prd: "Generated control surface", suites: [home_control]}
+  - {id: 4.4.live-state, section: "4.4", prd: "Live state streaming", suites: [home_control]}
+  - {id: 4.4.tiered-autonomy, section: "4.4", prd: "Tiered autonomy", pending_suites: [reflex]}
+  - {id: 4.4.critical-confirmation, section: "4.4", prd: "Confirmation required for critical actions", pending_suites: [critical_actions]}
+  # §4.5 Integrations & credentials
+  - {id: 4.5.adapters, section: "4.5", prd: "Weather, Apple Calendar", pending_suites: [integrations]}
+  - {id: 4.5.secure-credentials, section: "4.5", prd: "Secure credential storage", pending_suites: [privacy], tests: [tests/shared/test_secrets.py]}
+  - {id: 4.5.service-credentials, section: "4.5", prd: "Sovereign services declare credential needs", not_llm: "credential delivery", tests: [tests/core/channels/test_service_credentials.py]}
+  - {id: 4.5.calendar-management, section: "4.5", prd: "Calendar event creation/management", pending_suites: [integrations]}
+  # §4.6 Security & privacy
+  - {id: 4.6.passkeys, section: "4.6", prd: "Passkey (WebAuthn) login", not_llm: "authentication", tests: [tests/integration/test_webauthn_flow.py]}
+  - {id: 4.6.trusted-network, section: "4.6", prd: "Trusted-network gating", not_llm: "network gate", tests: [tests/core/channels/test_trusted_network.py]}
+  - {id: 4.6.session-management, section: "4.6", prd: "Session and passkey management", not_llm: "admin routes", tests: [tests/core/channels/test_admin_api.py]}
+  - {id: 4.6.identity-confidence, section: "4.6", prd: "Identity confidence levels per channel", pending_suites: [guest_boundary], tests: [tests/core/conscious/test_identity_local_trust.py]}
+  - {id: 4.6.guest-choices, section: "4.6", prd: "Guest access choices captured at onboarding", pending_suites: [guest_boundary], tests: [tests/core/channels/test_onboarding_defaults.py]}
+  - {id: 4.6.guest-enforcement, section: "4.6", prd: "Guest boundary enforcement", pending_suites: [guest_boundary]}
+  - {id: 4.6.cost-cap, section: "4.6", prd: "Daily cloud-spend cap", not_llm: "budget accounting", tests: [tests/core/conscious/test_cost.py]}
+  # §4.7 Operations & quality
+  - {id: 4.7.runner, section: "4.7", prd: "Unified runner", not_llm: "process supervision", tests: [tests/runner/test_supervisor.py]}
+  - {id: 4.7.admin-api, section: "4.7", prd: "Admin API", not_llm: "HTTP API", tests: [tests/core/channels/test_admin_api.py]}
+  - {id: 4.7.phone-ops, section: "4.7", prd: "…surfaced on the phone", not_llm: "phone UI", tests: [web/src/workshop]}
+  - {id: 4.7.eval-harness, section: "4.7", prd: "Eval harness", not_llm: "this harness", tests: [tests/evals]}
+  - {id: 4.7.warmup, section: "4.7", prd: "Model warmup at startup", suites: [conversation]}
+  - {id: 4.7.service-health, section: "4.7", prd: "Self-describing health for external services", not_llm: "health reporting", tests: [web/src/workshop/SystemSections.test.tsx]}
+  - {id: 4.7.alfredctl, section: "4.7", prd: "One-command containerized deployment", not_llm: "launcher", tests: [tests/alfredctl]}
+  # §7 Success criteria
+  - {id: 7.reflex-latency, section: "7", prd: "Reflex latency", pending_suites: [reflex]}
+  - {id: 7.reminder-latency, section: "7", prd: "Reminder latency", pending_suites: [triggers]}
+  - {id: 7.onboarding, section: "7", prd: "Onboarding", not_llm: "credential flow", tests: [tests/core/channels/test_service_credentials.py]}
+  - {id: 7.proactivity-quality, section: "7", prd: "Proactivity quality", pending_suites: [memory, notifications]}
+  - {id: 7.cost, section: "7", prd: "Cost", not_llm: "budget accounting", tests: [tests/core/conscious/test_cost.py]}
+  - {id: 7.memory-quality, section: "7", prd: "Memory quality", pending_suites: [memory], tests: [tests/evals/test_memory_runner.py]}
+  - {id: 7.sovereignty, section: "7", prd: "Sovereignty", not_llm: "process isolation via the SDK", tests: [sdk/tests]}
+headings:
+  - {id: 1.butler, heading: "1. What is Alfred", suites: [conversation]}
+  - {id: 6.cross-domain, heading: "6. Why Alfred is different", pending_suites: [cross_domain]}
