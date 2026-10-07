@@ -4,11 +4,13 @@ This directory contains Alfred's brain:
 
 ## Reflex (`reflex/`) — System 1 SLM Engine
 
-Fast event → action loop via local SLM (Ollama).
+Fast event → decision loop via a local SLM (vLLM through `REFLEX_BACKEND=openai` in production). Shadow mode (#285): decisions are recorded, nothing executes.
 
-- `engine.py` — SLM inference with dynamic tool prompt + TriggerFired reasoning
+- `engine.py` — `ReflexEngine`: gathers preferences, reflex-audience tools, live state and timezone; returns a `ReflexProposal` (act/ask/none/invalid) for StateChanged and TriggerFired
+- `prompt.py` — pure prompt builder: rules + tools, Preferences, Now, House by `attributes.area`, What changed / Trigger fired; `HOUSE_DOMAINS`
+- `decision.py` — `parse_decision()`: model reply → `ReflexProposal`, tool validated against Reflex's tools; anything else is `invalid` with the raw text
 - `tool_registry.py` — Reads tool manifests from Redis `alfred:tool_registry`
-- `context_reader.py` — `ContextReader`: reads live state fresh on every call through the SDK's `read_live_state()` (no cache) and renders it for the prompts; says `Live home state unavailable.` when no service has any
+- `context_reader.py` — `ContextReader`: reads live state fresh on every call through the SDK's `read_live_state()` (no cache) and renders it for the prompts; says `Live home state unavailable.` when no service has any; `get_snapshot()` and `get_user_timezone()` feed Reflex's prompt
 - `runner.py` — Event loop orchestration + `ensure_consumer_group()` + `publish_observation()` utilities
 - `availability.py` — `bridge_availability()`: drops transitions into `unavailable`/`unknown` and bridges a return from them (or from no state) to one `last → new` change, or drops it as a blip (hash `alfred:reflex:last_known_state`, one field per entity, ordered by stream entry ID; decisions under `alfred:reflex:returned:{entry_id}`); runs before the attention gate, replay-safe
 - `__main__.py` — Two consumer loops: (1) `HOME_STATE_STREAM` for StateChanged, (2) `EVENTS_STREAM` for TriggerFired (group `reflex-trigger-fired`)

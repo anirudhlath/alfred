@@ -352,24 +352,22 @@ The bridge subscribes to MQTT topics `home/#` and `media/#` by default and liste
 
 ### 3.2 Reflex Engine (System 1 SLM Inference)
 
-**Files:** `core/reflex/engine.py`, `core/reflex/ollama_client.py`
+**Files:** `core/reflex/engine.py`, `core/reflex/prompt.py`, `core/reflex/decision.py`, `core/reflex/inference.py` (backends `openai_client.py`, `ollama_client.py`)
 
-The `ReflexEngine` class is the System 1 fast path. It is a pure inference component with no side effects -- it takes a `StateChangedEvent` and returns an `ActionRequest | None`.
+The `ReflexEngine` class is the System 1 fast path. It is a pure inference component with no side effects -- it takes a `StateChangedEvent` (or a `TriggerFired`) and returns a `ReflexProposal`: **act**, **ask**, **none** or **invalid** ([#285](https://github.com/anirudhlath/alfred/issues/285), [design](superpowers/specs/2026-10-07-reflex-context-design.md)).
 
 **How it works:**
 
 1. Loads user preferences from `core/memory/preferences/` (cached after first read).
-2. Fetches registered tools from `ToolRegistry` (cached, invalidatable via `reload_tools()`).
-3. Fetches live entity state from `ContextReader` (read fresh on every call through the SDK's `read_live_state()`, rendered as Markdown; says "Live home state unavailable." when no service has any).
-4. Builds a system prompt dynamically from the tool registry -- tool names, parameters, and descriptions are injected at runtime; nothing is hardcoded.
-5. Constructs a user prompt with entity context, preferences, and event details.
-5. Sends the combined prompt to Ollama via `/api/chat` with `format: "json"`.
-6. Parses the JSON response: either `{"action": "none"}` or `{"tool_name": "...", "target_service": "...", "parameters": {...}}`.
-7. Validates `target_service` against registered services. Rejects unknown services.
+2. Fetches the `audience == "reflex"` tools from `ToolRegistry` (5-minute cache, invalidatable via `reload_tools()`).
+3. Reads live state fresh through `ContextReader.get_snapshot()`, and the user's timezone through `ContextReader.get_user_timezone()`.
+4. Builds the prompt with `core/reflex/prompt.py`, ordered from stable to volatile so vLLM's prefix cache covers as much as it can: rules and compact tools, `## Preferences`, `## Now` (local time, time of day, sun, people), `## House` (the actionable domains, one line per room by `attributes.area` — see [live-state.md](live-state.md#well-known-attributes)), then `## What changed` in one line or `## Trigger fired`. About 1,000 tokens.
+5. Sends it through `core/reflex/inference.py` (`REFLEX_BACKEND`: `openai` for vLLM in production, `ollama` by default) with `temperature=0`, JSON output and, on the OpenAI-compatible backend, `max_tokens=150`.
+6. `parse_decision()` turns the reply into a `ReflexProposal`, validating the tool against Reflex's own tool list. Anything else becomes **invalid**, keeping the raw text.
 
-The `@track_latency(category="reflex")` decorator on `process_event` records inference latency to the telemetry buffer. The `@track_tokens(model="ollama")` decorator on `ollama_client.infer` records token usage.
+**Shadow mode (slice 1 of #285 → #286 → #287):** nothing a proposal names is executed. The runner counts every decision and records act, ask and invalid proposals; see section 2.
 
-**Ollama client** (`core/reflex/ollama_client.py`): thin async wrapper using a long-lived `httpx.AsyncClient` for TCP connection reuse on the hot path.
+The `@track_latency(category="reflex")` decorator on `process_event` records inference latency to the telemetry buffer, and `@track_tokens` on each backend's `infer` records token usage.
 
 #### 3.2.1 AttentionSet (Tiered Autonomy — Reflex Gating)
 

@@ -11,6 +11,7 @@ import fnmatch
 from typing import TYPE_CHECKING, Any
 
 from sdk.alfred_sdk.live_state import read_live_state
+from shared import usertime
 
 if TYPE_CHECKING:
     from sdk.alfred_sdk.context import ContextSnapshot
@@ -58,6 +59,14 @@ class ContextReader:
         if snapshot is None:
             return LIVE_STATE_UNAVAILABLE
         return render_snapshot(snapshot)
+
+    async def get_snapshot(self) -> ContextSnapshot | None:
+        """Every service's live state merged, read fresh; None when no service has any."""
+        return await read_live_state(self._redis)
+
+    async def get_user_timezone(self) -> str:
+        """The user's IANA timezone: stored, then ``ALFRED_TIMEZONE``, then UTC."""
+        return await usertime.get_user_timezone(self._redis)
 
     async def get_entity_states(
         self,

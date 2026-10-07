@@ -5,20 +5,19 @@ from __future__ import annotations
 import time
 from dataclasses import asdict
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from core.memory.reader import read_preferences
-from core.reflex.engine import ReflexEngine
+from core.reflex.decision import parse_decision
+from core.reflex.prompt import build_state_change_prompt
 from core.reflex.tool_registry import ToolInfo, ToolRegistry
-from evals.context_fixtures import load_context_text
 from evals.inference import InferFn, infer_ollama
 from shared.config import AlfredConfig
 from shared.tracing import TraceRecord
 
 if TYPE_CHECKING:
     from evals.models import Scenario
-    from shared.types import AioRedis
 
 _config = AlfredConfig.from_env()
 
@@ -36,12 +35,6 @@ class EvalContext:
     ) -> None:
         self.model = model or _config.ollama_model
         self.infer = infer
-        self.engine = ReflexEngine(
-            preferences_dir=preferences_dir,
-            # Offline eval harness: the engine only uses build_prompt/parse_response,
-            # so the registry never touches Redis.
-            tool_registry=ToolRegistry(redis=cast("AioRedis", None)),
-        )
         self.preferences_text = read_preferences(preferences_dir)
         self.tools = tools
         self.valid_services = ToolRegistry.get_registered_services(tools)
@@ -69,11 +62,17 @@ async def run_scenario(
     else:
         preferences_text = ctx.preferences_text
 
-    # Per-scenario context fixture
-    context_text = load_context_text(scenario.context) if scenario.context else ""
-
+    # Context fixtures predate live state (#283) and the House section (#285). This
+    # harness is being replaced by the PRD eval suite, so it renders no live state.
     resolved_model = model or ctx.model
-    prompt = ctx.engine.build_prompt(scenario.event, preferences_text, ctx.tools, context_text)
+    prompt = build_state_change_prompt(
+        event=scenario.event,
+        preferences=preferences_text,
+        tools=ctx.tools,
+        entities=None,
+        now=datetime.now(UTC),
+        tz_name="UTC",
+    )
 
     # Call inference backend and measure latency
     start = time.perf_counter()
@@ -81,7 +80,7 @@ async def run_scenario(
     latency_ms = (time.perf_counter() - start) * 1000
 
     # Parse using the engine's real logic
-    parsed_action = ctx.engine.parse_response(response, scenario.event, ctx.valid_services)
+    parsed_action = parse_decision(str(response.get("response", "")), ctx.tools).action
 
     return TraceRecord(
         trace_id=str(uuid4()),
