@@ -49,7 +49,7 @@ def notification(evidence: Evidence, p: NotificationParams) -> CheckResult:
     where = "deferred" if p.deferred else "sent"
     pool = list(evidence.deferred if p.deferred else evidence.notifications)
     if p.after_step is not None:
-        start = evidence.step_started[evidence.step_index(p.after_step)]
+        start = evidence.step_start(p.after_step)
         pool = [n for n in pool if n.t is not None and n.t >= start]
     hits = [n for n in pool if _fits(n, p)]
     if hits:

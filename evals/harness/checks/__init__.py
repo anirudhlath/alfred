@@ -8,10 +8,12 @@ from typing import TYPE_CHECKING, Any
 from evals.harness.checks import home, latency, llm, notifications, reflex, reply, triggers
 from evals.harness.checks.judge_spec import JudgeSpec
 from evals.harness.checks.result import CheckResult
-from evals.harness.evidence import Evidence, StepKind
+from evals.harness.evidence import Evidence
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
+
+    from evals.harness.evidence import StepKind
 
 DeterministicCheck = Callable[[Evidence, Any], CheckResult]
 

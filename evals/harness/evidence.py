@@ -194,6 +194,15 @@ class Evidence(BaseModel):
         end = self.step_started[i + 1] if i + 1 < len(self.step_started) else self.ended_at
         return self.step_started[i], end
 
+    def step_start(self, step: int) -> float:
+        """When the step started (*step* counts every step, -1 the last)."""
+        return self.step_started[self.step_index(step)]
+
+    def reflex_during(self, step: int) -> list[ReflexCall]:
+        """The System 1 calls that reached the proxy during the step's window."""
+        start, end = self.step_window(step)
+        return [c for c in self.reflex if start <= c.t < end]
+
     def last_step(self, kind: StepKind) -> int | None:
         """The index of the last step of *kind*, or None when the sample has none."""
         return next(

@@ -63,6 +63,16 @@ def test_step_at_takes_at_step_as_given_or_defaults_to_the_last_of_the_kind() ->
         ev.step_at("ha_event", 3)
 
 
+def test_step_start_and_reflex_during_read_one_step() -> None:
+    calls = [ReflexCall(t=t, latency_ms=1, decision="none") for t in (9.9, 10.0, 19.9, 20.0)]
+    ev = three_steps().model_copy(update={"reflex": calls})  # steps at 0, 10 and 20
+    assert ev.step_start(1) == 10.0 and ev.step_start(-1) == 20.0
+    assert [c.t for c in ev.reflex_during(1)] == [10.0, 19.9]
+    assert [c.t for c in ev.reflex_during(-1)] == [20.0]
+    with pytest.raises(IndexError):
+        ev.step_start(3)
+
+
 def test_reflex_call_done_is_arrival_plus_latency() -> None:
     assert ReflexCall(t=2.0, latency_ms=500, decision="none").done == 2.5
 

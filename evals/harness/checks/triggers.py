@@ -161,7 +161,7 @@ def trigger_fired(evidence: Evidence, p: TriggerFiredParams) -> CheckResult:
     ]
     start: float | None = None
     if p.after_step is not None:
-        start = evidence.step_started[evidence.step_index(p.after_step)]
+        start = evidence.step_start(p.after_step)
         fires = [f for f in fires if f.t >= start]
     if not fires:
         since = "" if p.after_step is None else f" from step {p.after_step}"

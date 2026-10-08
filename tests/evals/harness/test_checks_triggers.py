@@ -37,6 +37,7 @@ def rec(
     name: str = "Laundry reminder",
     urgency: str = "informational",
     tid: str = "t1",
+    one_shot: bool = False,
 ) -> TriggerRecord:
     return TriggerRecord(
         t=1.0,
@@ -46,6 +47,7 @@ def rec(
         created_by="tool-call",
         conditions=conditions,
         urgency=urgency,
+        one_shot=one_shot,
         created_at=CREATED,
     )
 
@@ -96,6 +98,17 @@ def test_name_and_urgency_narrow_the_match() -> None:
     assert created(e, name="airport", urgency="urgent")[0] == "pass"
     assert created(e, urgency="informational")[0] == "fail"
     assert created(evidence(), type="time")[1].endswith("created: none")
+
+
+def test_one_shot_narrows_the_match() -> None:
+    e = evidence(triggers_created=[rec({}, one_shot=True)])
+    assert created(e, one_shot=True)[0] == "pass"
+    assert created(e, one_shot=False)[0] == "fail"
+
+
+def test_run_in_seconds_as_a_mapping_must_be_approx() -> None:
+    with pytest.raises(ValidationError, match="run_in_seconds is a number or"):
+        TriggerCreatedParams.model_validate({"run_in_seconds": {"tol": 5}})
 
 
 @pytest.mark.parametrize(
@@ -160,6 +173,15 @@ def test_trigger_fired_within_counts_from_after_step() -> None:
         TriggerFiredParams(within_s=5)
 
 
+def test_trigger_fired_name_picks_the_trigger() -> None:
+    e = evidence(
+        triggers_created=[rec({}), rec({}, tid="t2", name="Vet")],
+        triggers_fired=[fire(5.0, tid="t2", name="Vet")],
+    )
+    assert run_check("trigger_fired", TriggerFiredParams(name="vet"), e).status == "pass"
+    assert run_check("trigger_fired", TriggerFiredParams(name="laundry"), e).status == "fail"
+
+
 def note(
     t: float | None, title: str = "Trigger: Laundry reminder", **kw: Any
 ) -> NotificationRecord:
@@ -168,6 +190,7 @@ def note(
         title=title,
         urgency=kw.get("urgency", "informational"),
         source=kw.get("source", "trigger-engine"),
+        body=kw.get("body", ""),
     )
 
 
@@ -190,6 +213,12 @@ def test_notification_sent_deferred_and_after_step() -> None:
         NotificationParams(deferred=True, after_step=0)
 
 
+def test_notification_text_can_be_in_the_body() -> None:
+    e = evidence(notifications=[note(1.0, title="Reminder", body="Move the laundry.")])
+    assert run_check("notification", NotificationParams(text="laundry"), e).status == "pass"
+    assert run_check("notification", NotificationParams(text="dryer"), e).status == "fail"
+
+
 def test_reflex_ms_runs_from_the_event_to_system1s_reply() -> None:
     def ev(*calls: ReflexCall) -> Evidence:
         return evidence(
@@ -204,6 +233,25 @@ def test_reflex_ms_runs_from_the_event_to_system1s_reply() -> None:
     assert result.status == "fail" and "800 ms" in result.reason
     missed = run_check("latency", fast, ev())
     assert missed.status == "fail" and "not called" in missed.reason
+
+
+def test_reflex_ms_at_step_times_the_named_event() -> None:
+    e = evidence(
+        step_started=[0.0, 10.0],
+        step_kinds=["ha_event", "ha_event"],
+        reflex=[
+            ReflexCall(t=0.1, latency_ms=100, decision="none"),
+            ReflexCall(t=10.1, latency_ms=900, decision="none"),
+        ],
+    )
+
+    def timed(**at: int) -> str:
+        p = LatencyParams.model_validate({"metric": "reflex_ms", "max": 5000, **at})
+        return run_check("latency", p, e).reason
+
+    assert "on step 1 in 1000 ms" in timed()  # the default: the last ha_event step
+    assert "on step 0 in 200 ms" in timed(at_step=0)
+    assert "on step 0 in 200 ms" in timed(at_step=-2)
 
 
 def test_reminder_fire_ms_runs_from_the_advance_to_its_notification() -> None:

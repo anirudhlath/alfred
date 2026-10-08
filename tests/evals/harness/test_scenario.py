@@ -4,6 +4,7 @@ import os
 from typing import TYPE_CHECKING
 
 import pytest
+from pydantic import ValidationError
 
 from evals.harness.checks import JudgeSpec
 from evals.harness.scenario import (
@@ -314,3 +315,18 @@ def test_a_golden_without_ha_called_expects_no_call() -> None:
         }
     )
     assert s.ha_called_counting(0) == []
+
+
+def test_only_a_reply_latency_needs_a_user_step() -> None:
+    def golden(metric: str) -> dict[str, object]:
+        return {
+            "id": "demo.reflex.fast",
+            "prd": ["x"],
+            "status": "shipped",
+            "steps": [{"ha_event": {"entity_id": "light.x", "state": "on"}}],
+            "expect": [{"latency": {"metric": metric, "max": 500}}],
+        }
+
+    Scenario.model_validate(golden("reflex_ms"))
+    with pytest.raises(ValidationError, match="reply and judge checks need at least one user"):
+        Scenario.model_validate(golden("reply_ms"))

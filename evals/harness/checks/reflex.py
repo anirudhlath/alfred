@@ -80,8 +80,7 @@ def _window(evidence: Evidence, name: str, at_step: int | None) -> _Window | Che
             status="error",
             reason="the sample has no ha_event step: the harness recorded no event to judge",
         )
-    start, end = evidence.step_window(step)
-    calls = [c for c in evidence.reflex if start <= c.t < end]
+    calls = evidence.reflex_during(step)
     if (problem := _clock_problem(evidence, step, calls)) is not None:
         return CheckResult(name=name, status="error", reason=problem)
     return _Window(step, calls)
