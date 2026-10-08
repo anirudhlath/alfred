@@ -783,13 +783,19 @@ class SqliteVecStore(VectorStore):
     async def delete(self, id: str) -> None:  # noqa: A002
         db = await self._get_db()
 
-        rowid = await self._rowid_for_id(db, id)
-
         try:
-            await db.execute("DELETE FROM episodic_entries WHERE id = ?", (id,))
-            if rowid is not None and self._vec_ready:
-                await db.execute("DELETE FROM vec_episodic_content WHERE rowid = ?", (rowid,))
-                await db.execute("DELETE FROM vec_episodic_semantic WHERE rowid = ?", (rowid,))
+            # The row goes first and hands back its rowid in the same statement, so the
+            # rowid is read under the write lock, as in add(). Read beforehand, a delete
+            # and re-add of the id in between would move it to a new rowid: this would
+            # delete the new row but the old rowid's vectors, orphaning the new ones.
+            cursor = await db.execute(
+                "DELETE FROM episodic_entries WHERE id = ? RETURNING rowid", (id,)
+            )
+            row = await cursor.fetchone()
+            await cursor.close()
+            if row is not None and self._vec_ready:
+                for table in _VEC_TABLES:
+                    await db.execute(f"DELETE FROM {table} WHERE rowid = ?", (row[0],))
             await db.commit()
         except Exception:
             await db.rollback()
