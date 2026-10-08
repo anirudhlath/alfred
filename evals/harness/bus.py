@@ -153,15 +153,19 @@ class ContainerBus:
 
     async def delete_triggers(self, trigger_ids: list[str]) -> None:
         """Remove triggers as ``TriggerStore.delete`` does, except that each one's YAML
-        snapshot stays in the data dir: only the triggers process can delete it, and the
-        admin API has no delete route (it fires and enables, nothing more).
+        snapshot stays in the data dir. Only a ``TriggerStore`` deletes a snapshot, and the
+        harness can reach none: the triggers and conscious processes each hold one on the
+        same snapshot dir, but the admin API has no delete route (it fires and enables,
+        nothing more), and Conscious's ``delete_trigger`` tool runs only when the model
+        calls it.
 
-        That leaves one window. ``TriggerStore.load`` rehydrates from the YAML snapshots
-        when ``alfred:triggers`` is empty, so if the triggers process restarts inside the
-        container (the runner revives a crashed service) after this call has emptied the
-        hash, the deleted triggers come back. The window closes with the container: each
-        suite boots its own, on a fresh data dir, and a sample the harness fails leaves
-        the stack dirty, so the next sample restarts it on a fresh one too."""
+        That leaves one window. ``TriggerStore.load`` rehydrates from the YAML snapshots,
+        HSETting them back, when ``alfred:triggers`` is empty, and both processes call it
+        at startup. So if either restarts inside the container (the runner revives a
+        crashed service) after this call has emptied the hash, the deleted triggers come
+        back. The window closes with the container: each suite boots its own, on a fresh
+        data dir, and a sample the harness fails leaves the stack dirty, so the next
+        sample restarts it on a fresh one too."""
         r = self._redis()
         for trigger_id in trigger_ids:
             if await r.hdel(TRIGGERS_KEY, trigger_id):
