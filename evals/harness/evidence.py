@@ -201,6 +201,14 @@ class Evidence(BaseModel):
             None,
         )
 
+    def step_at(self, kind: StepKind, at_step: int | None) -> int | None:
+        """The step a check's ``at_step`` names, as an index; by default the last *kind* step.
+
+        None only when *at_step* is None and the sample has no step of *kind*. An explicit
+        *at_step* is taken as given, whatever its kind.
+        """
+        return self.last_step(kind) if at_step is None else self.step_index(at_step)
+
     def clock_at(self, step: int) -> ClockSet | None:
         """The clock a step ran under: the last clock step at or before it."""
         i = self.step_index(step)

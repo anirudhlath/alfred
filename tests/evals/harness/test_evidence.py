@@ -53,6 +53,16 @@ def test_last_step_and_clock_at() -> None:
     assert evidence(step_started=[0.0], step_kinds=["ha_event"]).clock_at(0) is None
 
 
+def test_step_at_takes_at_step_as_given_or_defaults_to_the_last_of_the_kind() -> None:
+    ev = three_steps()  # clock, ha_event, ha_event
+    assert ev.step_at("ha_event", None) == 2
+    assert ev.step_at("ha_event", -2) == 1
+    assert ev.step_at("ha_event", 0) == 0  # an explicit step is taken whatever its kind
+    assert ev.step_at("dnd", None) is None
+    with pytest.raises(IndexError):
+        ev.step_at("ha_event", 3)
+
+
 def test_reflex_call_done_is_arrival_plus_latency() -> None:
     assert ReflexCall(t=2.0, latency_ms=500, decision="none").done == 2.5
 

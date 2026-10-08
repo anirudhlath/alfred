@@ -24,7 +24,7 @@ from pydantic import (
     model_validator,
 )
 
-from evals.harness.checks import CHECK_PARAMS, NEEDS_REPLY
+from evals.harness.checks import CHECK_PARAMS, needs_reply
 from evals.harness.checks.home import HaCalledParams
 
 if TYPE_CHECKING:
@@ -187,7 +187,7 @@ class Scenario(BaseModel):
         with_variants = [s for s in self.steps if isinstance(s, UserStep) and s.variants]
         if len(with_variants) > 1:
             raise ValueError("only one step may have variants")
-        if any(c.name in NEEDS_REPLY for c in self.expect) and not any(
+        if any(needs_reply(c.name, c.params) for c in self.expect) and not any(
             isinstance(s, UserStep) for s in self.steps
         ):
             raise ValueError("reply and judge checks need at least one user step")

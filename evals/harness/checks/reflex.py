@@ -73,7 +73,7 @@ class _Window(NamedTuple):
 
 def _window(evidence: Evidence, name: str, at_step: int | None) -> _Window | CheckResult:
     """The step's System 1 calls, or the ``error`` that says why they cannot be judged."""
-    step = evidence.last_step("ha_event") if at_step is None else evidence.step_index(at_step)
+    step = evidence.step_at("ha_event", at_step)
     if step is None:
         return CheckResult(
             name=name,
