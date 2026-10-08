@@ -6,6 +6,8 @@ import pytest
 from pydantic import ValidationError
 
 from evals.harness.checks import CHECK_PARAMS, DETERMINISTIC, run_check
+from evals.harness.checks.llm import ToolArgsParams
+from evals.harness.checks.matching import validate_expected, value_matches
 from evals.harness.evidence import HaState
 from tests.evals.harness.factories import call, evidence, llm
 
@@ -234,3 +236,41 @@ def test_run_check_scores_a_raising_check_as_error(monkeypatch: pytest.MonkeyPat
     res = check("ha_called", {"domain": "light", "service": "turn_on"}, evidence())
     assert res.status == "error"
     assert res.reason == "check raised RuntimeError: a bug in the check"
+
+
+CRON = r"0 7 \* \* (1-5|mon-fri)"
+
+
+@pytest.mark.parametrize(
+    ("expected", "actual", "ok"),
+    [
+        ({"run_in_seconds": {"approx": 1200, "tol": 60}}, {"run_in_seconds": 1230, "x": 1}, True),
+        ({"run_in_seconds": {"approx": 1200, "tol": 60}}, {"run_in_seconds": 1300}, False),
+        ({"entity_id": "binary_sensor.front_door"}, {}, False),
+        ({"a": {"b": "on"}}, {"a": {"b": "ON "}}, True),
+        ({"a": 1}, "a=1", False),
+        ({}, {"anything": 1}, True),
+        ({"regex": CRON}, "0 7 * * MON-FRI", True),
+        ({"regex": CRON}, " 0 7 * * 1-5 ", True),
+        ({"regex": CRON}, "30 7 * * 1-5", False),  # the whole string must match
+        ({"regex": "on"}, 1, False),
+        ({"cron": {"regex": CRON}}, {"cron": "0 7 * * 1-5"}, True),
+    ],
+)
+def test_value_matches_mappings_and_regex(expected: object, actual: object, ok: bool) -> None:
+    assert value_matches(expected, actual) is ok
+
+
+def test_validate_expected_rejects_a_regex_that_does_not_compile_anywhere() -> None:
+    validate_expected({"a": [{"regex": "x+"}], "b": {"approx": 1, "tol": 1}})
+    with pytest.raises(ValueError, match="does not compile"):
+        validate_expected({"conditions": {"cron": {"regex": "0 7 ("}}})
+    with pytest.raises(ValueError, match="must be a string"):
+        validate_expected([{"regex": 7}])
+
+
+def test_tool_args_with_a_bad_regex_fail_at_load() -> None:
+    with pytest.raises(ValidationError, match="does not compile"):
+        ToolArgsParams(
+            tool="triggers.create_trigger", args={"conditions": {"cron": {"regex": "("}}}
+        )
