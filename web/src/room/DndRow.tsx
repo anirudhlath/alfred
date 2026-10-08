@@ -1,7 +1,10 @@
 import { hhmm } from "@/lib/format";
 
 export interface DndRowProps {
-  /** ISO 8601, or null for "no expiry" — the queue that never drains on its own. */
+  /**
+   * ISO 8601, or null for "no expiry" — the queue that waits until
+   * do-not-disturb is turned off, which sends it.
+   */
   until: string | null | undefined;
   heldCount: number;
   onOpen: () => void;

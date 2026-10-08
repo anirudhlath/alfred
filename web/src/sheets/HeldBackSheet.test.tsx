@@ -57,11 +57,11 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("HeldBackSheet", () => {
-  it("explains why the queue exists and what never drains it", async () => {
+  it("explains why the queue exists and that turning quiet off sends it", async () => {
     renderSheet();
     expect(
       await screen.findByText(
-        "Non-urgent notifications wait here while do-not-disturb is on. Urgent ones still speak. With no expiry set this queue never drains on its own.",
+        "Non-urgent notifications wait here while do-not-disturb is on. Urgent ones still speak. With no expiry set, everything here is sent when you turn do-not-disturb off.",
       ),
     ).toBeInTheDocument();
   });

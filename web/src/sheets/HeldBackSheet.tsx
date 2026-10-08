@@ -8,7 +8,7 @@ import type { NotificationEvent } from "@/lib/types";
 import { Sheet } from "@/shell/Sheet";
 
 const INTRO =
-  "Non-urgent notifications wait here while do-not-disturb is on. Urgent ones still speak. With no expiry set this queue never drains on its own.";
+  "Non-urgent notifications wait here while do-not-disturb is on. Urgent ones still speak. With no expiry set, everything here is sent when you turn do-not-disturb off.";
 const IDLE_NOTE =
   "Queued only; the server does not report delivery. Items stay listed until a fresh read confirms.";
 

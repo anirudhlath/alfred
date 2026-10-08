@@ -22,7 +22,10 @@ export interface RoomScreenProps {
   online?: boolean;
   reconnecting?: boolean;
   lastTrueAt?: Date | null;
-  /** Shown only while do-not-disturb is on. `until: null` is the queue that never drains. */
+  /**
+   * Shown only while do-not-disturb is on. `until: null` is the queue that
+   * waits until do-not-disturb is turned off, which sends it.
+   */
   dnd?: { until: string | null; heldCount: number } | null;
   items: TimelineItem[];
   /** Non-null only on a first run with nothing in the thread. */
