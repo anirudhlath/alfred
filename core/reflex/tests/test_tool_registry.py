@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.reflex.tool_registry import ToolRegistry
+from core.reflex.tool_registry import ToolRegistry, legacy_input_schema
 
 
 def _make_manifest(service_name: str, features: list[dict[str, Any]]) -> str:
@@ -243,3 +243,69 @@ async def test_malformed_tool_is_skipped_and_the_rest_still_load(
         "lighting.turn_off_lights",
     ]
     assert caplog.text.count("Skipping malformed tool") == 3
+
+
+@pytest.mark.parametrize(
+    ("spec", "required"),
+    [
+        # An explicit required wins over a default being present...
+        ({"type": "str", "default": "x", "required": True}, ["p"]),
+        # ...and over a default being absent.
+        ({"type": "str", "required": False}, []),
+    ],
+)
+def test_legacy_input_schema_honours_an_explicit_required(
+    spec: dict[str, Any], required: list[str]
+) -> None:
+    assert legacy_input_schema({"p": spec})["required"] == required
+
+
+_VALID_SCHEMA = {"type": "object", "properties": {}, "required": []}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad_tool",
+    [
+        pytest.param({"name": "f.bad", "input_schema": "oops"}, id="string-schema"),
+        pytest.param({"name": "f.bad", "input_schema": {"foo": 1}}, id="non-object-schema"),
+        pytest.param(
+            {"name": "f.bad", "input_schema": {"type": "object", "properties": ["p"]}},
+            id="non-dict-properties",
+        ),
+        pytest.param("oops", id="non-dict-tool"),
+        pytest.param(
+            {"name": "f.bad", "input_schema": _VALID_SCHEMA, "parameters": {"p": "x"}},
+            id="schema-with-malformed-parameters",
+        ),
+    ],
+)
+async def test_tool_with_malformed_schema_or_parameters_is_skipped(
+    bad_tool: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    feature = {"name": "f", "tools": [bad_tool, {"name": "f.good", "parameters": {}}]}
+    with caplog.at_level(logging.WARNING, logger="core.reflex.tool_registry"):
+        tools = await _registry_with(feature).get_tools()
+    assert [t.name for t in tools] == ["f.good"]
+    assert caplog.text.count("Skipping malformed tool") == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shipped", [None, {}], ids=["null", "empty"])
+async def test_unset_input_schema_is_derived_from_parameters(shipped: Any) -> None:
+    feature = {
+        "name": "f",
+        "tools": [
+            {
+                "name": "f.go",
+                "parameters": {"room": {"type": "str"}},
+                "input_schema": shipped,
+            }
+        ],
+    }
+    tools = await _registry_with(feature).get_tools()
+    assert tools[0].input_schema == {
+        "type": "object",
+        "properties": {"room": {"type": "string"}},
+        "required": ["room"],
+    }
