@@ -39,6 +39,7 @@ dev = [
     "types-PyYAML>=6.0",
     "watchfiles>=1.0",
     "fakeredis>=2.39.0",
+    "httpx2>=2.13.1",
 ]
 integrations = [
     "caldav>=1.3",
