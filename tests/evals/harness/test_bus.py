@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -13,6 +15,7 @@ from redis import exceptions as redis_exceptions
 
 from core.reflex.tool_registry import ToolRegistry
 from evals.harness.bus import BusError, ContainerBus, zone_for_hour
+from shared.redis_streams import read
 from shared.streams import (
     AUTH_SESSION_PREFIX,
     DEFERRED_NOTIFICATIONS_KEY,
@@ -97,6 +100,48 @@ async def test_a_window_keeps_the_starts_own_millisecond(redis: fakeredis.FakeAs
     await redis.xadd(EVENTS_STREAM, {"event": "ms before"}, id="4999-0")
     await redis.xadd(EVENTS_STREAM, {"event": "same ms"}, id="5000-0")
     assert [e.data["event"] for e in await bus(redis).events(5.0004)] == ["same ms"]
+
+
+async def test_wait_for_event_blocks_until_a_wanted_entry_lands(
+    redis: fakeredis.FakeAsyncRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reads = 0
+
+    async def counted(*args: Any, **kwargs: Any) -> Any:
+        nonlocal reads
+        reads += 1
+        return await read(*args, **kwargs)
+
+    monkeypatch.setattr("evals.harness.bus.read", counted)
+
+    async def alfred_writes() -> None:
+        await asyncio.sleep(0.1)
+        await redis.xadd(EVENTS_STREAM, {"event": "other"})
+        await asyncio.sleep(0.1)
+        await redis.xadd(EVENTS_STREAM, {"event": "wanted"})
+
+    since = time.time()
+    writing = asyncio.create_task(alfred_writes())
+    t0 = time.monotonic()
+    assert await bus(redis).wait_for_event(since, 5, lambda e: e.data["event"] == "wanted")
+    await writing
+    assert 0.2 <= time.monotonic() - t0 < 2
+    assert reads == 2  # one blocking read per entry, not a poll
+
+
+async def test_wait_for_event_reads_only_the_window_and_times_out(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    await redis.xadd(EVENTS_STREAM, {"event": "ms before"}, id="4999-0")
+    b = bus(redis)
+    t0 = time.monotonic()
+    assert not await b.wait_for_event(5.0004, 0.2, lambda e: True)
+    assert time.monotonic() - t0 >= 0.2
+    # Already in the window when the wait starts: seen at once, even with no time to wait.
+    await redis.xadd(EVENTS_STREAM, {"event": "same ms"}, id="5000-0")
+    assert await b.wait_for_event(
+        5.0004, 0, lambda e: (e.wall, e.data) == (5.0, {"event": "same ms"})
+    )
 
 
 async def test_advance_pulls_run_at_to_now_and_tells_the_engine(

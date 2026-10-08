@@ -15,12 +15,15 @@ import json
 import logging
 import time
 from functools import partial
-from typing import Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import httpx
 from aiohttp import web
 
 from evals.harness.evidence import LlmCall, Role, ToolCall
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +139,8 @@ class LlmProxy:
         # arrived. A call is recorded when upstream answers, stamped with when it was sent,
         # so a reader of a window waits for the ones sent inside it (``wait_idle``).
         self._in_flight: list[float] = []
-        # Set, then replaced, whenever a call leaves flight, so every waiter re-checks.
+        # Set, then replaced, whenever a call is recorded or leaves flight, so every waiter
+        # re-checks.
         self._landed = asyncio.Event()
         self._timeout_s = timeout_s
         self._transport = transport
@@ -182,6 +186,28 @@ class LlmProxy:
         after *since*."""
         return sorted(t for t in self._in_flight if t >= since)
 
+    def record(self, call: LlmCall) -> None:
+        """Log a chat completion upstream answered (or failed), and wake whoever waits."""
+        self.calls.append(call)
+        self._wake()
+
+    def _wake(self) -> None:
+        landed, self._landed = self._landed, asyncio.Event()
+        landed.set()
+
+    async def wait_for_call(
+        self, since: float, timeout: float, wanted: Callable[[LlmCall], bool] | None = None
+    ) -> bool:
+        """Wait for a recorded call that arrived at or after *since* (one *wanted* accepts,
+        when given: any other call does not end the wait). False after *timeout* s."""
+        try:
+            async with asyncio.timeout(timeout):
+                while not any(c.t >= since and (wanted is None or wanted(c)) for c in self.calls):
+                    await self._landed.wait()
+        except TimeoutError:
+            return False
+        return True
+
     async def wait_idle(self, since: float, timeout: float) -> bool:
         """Wait until no chat completion that arrived at or after *since* is in flight, so
         ``calls`` holds every one a window starting at *since* can hold. One from before
@@ -208,8 +234,7 @@ class LlmProxy:
             return await self._take(request, t)
         finally:  # recorded, refused with a 400, or the client gone
             self._in_flight.remove(t)
-            self._landed.set()
-            self._landed = asyncio.Event()
+            self._wake()
 
     async def _take(self, request: web.Request, t: float) -> web.Response:
         """Read, check and forward one chat completion that arrived at *t*."""
@@ -233,17 +258,17 @@ class LlmProxy:
             for tool in _list(body.get("tools"))
             if isinstance(name := _obj(_obj(tool).get("function")).get("name"), str)
         ]
-        record = partial(
+        call_for = partial(
             LlmCall,
             t=t,
             role=classify_role(messages),
             messages=messages,
             tools_offered=tools,
         )
-        return await self._forward_and_record(request, raw, record)
+        return await self._forward_and_record(request, raw, call_for)
 
     async def _forward_and_record(
-        self, request: web.Request, raw: bytes, record: partial[LlmCall]
+        self, request: web.Request, raw: bytes, call_for: partial[LlmCall]
     ) -> web.Response:
         assert self._client is not None
         async with self._sem:
@@ -255,15 +280,13 @@ class LlmProxy:
                     headers=self._headers(request),
                 )
             except httpx.HTTPError as exc:
-                self.calls.append(
-                    record(latency_ms=(time.monotonic() - started) * 1000, status=502)
-                )
+                self.record(call_for(latency_ms=(time.monotonic() - started) * 1000, status=502))
                 return _error(502, f"upstream failed: {exc}")
         latency_ms = (time.monotonic() - started) * 1000
         try:
             text, tool_calls, prompt_tokens, completion_tokens = _parse(upstream.content)
-            self.calls.append(
-                record(
+            self.record(
+                call_for(
                     latency_ms=latency_ms,
                     status=upstream.status_code,
                     response_text=text,

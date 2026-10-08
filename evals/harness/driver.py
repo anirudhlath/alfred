@@ -40,7 +40,7 @@ from evals.harness.stack import (
 )
 
 if TYPE_CHECKING:
-    from evals.harness.bus import Bus
+    from evals.harness.bus import Bus, Entry
     from evals.harness.checks.home import HaCalledParams
     from evals.harness.evidence import HaCall, LlmCall
     from evals.harness.fake_ha import FakeHA
@@ -85,9 +85,8 @@ class PlayContext:
     # run out before the first step.
     reflex_timeout_s: float = 15.0
     reflex_cooldown_s: float = 6.0
-    # How long a trigger brought forward may take to fire; how often the bus is polled.
+    # How long a trigger brought forward may take to fire.
     fire_timeout_s: float = 15.0
-    poll_s: float = 0.2
     now: Callable[[], datetime] = _utc_now
 
 
@@ -156,16 +155,8 @@ def session_id_for(sample_id: str, epoch: int) -> str:
     return f"eval-{sample_id}-e{epoch}-{uuid4().hex[:6]}"
 
 
-async def _wait_until(
-    check: Callable[[], Awaitable[bool]], timeout_s: float, poll_s: float
-) -> bool:
-    deadline = time.monotonic() + timeout_s
-    while True:
-        if await check():
-            return True
-        if time.monotonic() >= deadline:
-            return False
-        await asyncio.sleep(poll_s)
+def _is_system1(call: LlmCall) -> bool:
+    return call.role == "system1"
 
 
 async def _set_clock(ctx: PlayContext, ev: Evidence, index: int, hour: int) -> None:
@@ -197,7 +188,7 @@ async def _advance(
         )
         return
     trigger = candidates[-1]
-    t = time.monotonic()
+    t, t_wall = time.monotonic(), time.time()
     if not await ctx.bus.advance_trigger(trigger.trigger_id, ctx.now()):
         ev.transcript.append(
             TranscriptTurn(role="event", text=f"time passes, but {trigger.name!r} is gone")
@@ -206,12 +197,14 @@ async def _advance(
     ev.advances.append(Advance(step=index, trigger_id=trigger.trigger_id, name=trigger.name, t=t))
     ev.transcript.append(TranscriptTurn(role="event", text=f"time passes: {trigger.name!r} is due"))
 
-    async def fired() -> bool:
-        _, fires = trigger_records(await ctx.bus.events(started_wall), ev.started_at, started_wall)
+    def its_fire(entry: Entry) -> bool:
+        _, fires = trigger_records([entry], ev.started_at, started_wall)
         return any(f.trigger_id == trigger.trigger_id for f in fires)
 
+    # Read from the advance on: an earlier fire of the trigger (a repeating one's, or the
+    # one an earlier advance brought) is not the fire this advance waits for.
     timeout = ctx.fire_timeout_s if step.settle is None else step.settle
-    if await _wait_until(fired, timeout, ctx.poll_s):
+    if await ctx.bus.wait_for_event(t_wall, timeout, its_fire):
         await asyncio.sleep(ctx.settle_s)  # for the notification it sends
 
 
@@ -225,7 +218,7 @@ async def _collect(ctx: PlayContext, ev: Evidence, started_wall: float) -> list[
         await ctx.bus.notifications(started_wall), ev.started_at, started_wall
     )
     ev.deferred = deferred_records(await ctx.bus.deferred())
-    if any(c.role == "system1" for c in ev.llm_calls):
+    if any(_is_system1(c) for c in ev.llm_calls):
         tools = await ctx.bus.reflex_tools()
         ev.reflex = reflex_calls(ev.llm_calls, tools, ctx.fake_ha.world)
     return [r.trigger_id for r in created]
@@ -304,13 +297,8 @@ async def play(ctx: PlayContext, variant: ScenarioVariant, epoch: int) -> Eviden
                 # A golden that watches Reflex waits for System 1's answer to the event: a
                 # call is recorded once it completes, stamped with when it arrived.
                 if scenario.watches_reflex:
-
-                    async def system1_answered(since: float = pushed) -> bool:
-                        calls = ctx.proxy.calls_between(since, time.monotonic())
-                        return any(c.role == "system1" for c in calls)
-
                     timeout = ctx.reflex_timeout_s if step.settle is None else step.settle
-                    await _wait_until(system1_answered, timeout, ctx.poll_s)
+                    await ctx.proxy.wait_for_call(pushed, timeout, _is_system1)
                 # Spec: wait for a call_service, or a 5 s window when the scenario expects
                 # nothing. It still expects one only while an ha_called check is unmet.
                 elif outstanding := outstanding_calls(scenario, index, ev, ctx.fake_ha):

@@ -91,7 +91,6 @@ def ctx(  # type: ignore[no-untyped-def]
         bus=bus or FakeBus(),
         settle_s=0,
         restore_settle_s=0,
-        poll_s=0.01,
         **kw,
     )
 
@@ -432,8 +431,8 @@ def test_a_check_counting_from_a_step_not_yet_started_names_the_step() -> None:
 class Acting(Recorder):
     """A send that also does *act*, as Alfred would while answering."""
 
-    def __init__(self, act: Callable[[], None]) -> None:
-        super().__init__()
+    def __init__(self, act: Callable[[], None], source: str = "conscious-engine") -> None:
+        super().__init__(source)
         self.act = act
 
     async def __call__(self, request: UserRequest, timeout: float) -> AlfredResponse:
@@ -480,6 +479,7 @@ async def test_advance_brings_the_samples_trigger_forward_and_waits_for_its_fire
     assert [n.title for n in ev.notifications] == ["Trigger: Laundry reminder"]
     assert ev.step_kinds == ["user", "advance_trigger"]
     assert bus.deleted == ["t1"]  # cleanup; a fired one-shot is already gone, which is fine
+    assert bus.cleared == 0 and bus.tz_set == []  # neither DND nor the zone was touched
 
 
 async def test_advance_without_a_trigger_is_alfreds_failure_not_the_harness() -> None:
@@ -544,7 +544,7 @@ async def test_an_ha_event_waits_for_system1_when_a_reflex_check_watches() -> No
 
     async def system1_answers() -> None:
         await asyncio.sleep(0.2)
-        proxy.calls.append(
+        proxy.record(
             LlmCall(
                 t=time.monotonic(),
                 role="system1",
@@ -584,3 +584,126 @@ async def test_sent_and_held_notifications_from_the_sample_are_evidence() -> Non
     assert [(n.title, n.urgency) for n in ev.notifications] == [("Trigger: Vet", "urgent")]
     assert ev.started_at <= (ev.notifications[0].t or 0) <= ev.ended_at
     assert [n.title for n in ev.deferred] == ["Trigger: Plants"]
+
+
+async def test_a_clock_step_in_an_hours_last_minutes_sets_the_next_hours_zone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    slept: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def no_wait(delay: float) -> None:
+        slept.append(delay)
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", no_wait)
+    # 15:59:59 before the wait, 16:00:01 after it.
+    times = iter(
+        [datetime(2026, 10, 8, 15, 59, 59, tzinfo=UTC), datetime(2026, 10, 8, 16, 0, 1, tzinfo=UTC)]
+    )
+    ev = await played(
+        ctx(Recorder(), now=lambda: next(times)),
+        steps=[{"clock": {"hour": 22}}, {"user": "Hello."}],
+    )
+    assert 2.0 in slept
+    assert ev.clocks == [ClockSet(step=0, hour=22, tz="Etc/GMT-6")]
+    assert ev.transcript[0].text == "it is now 22:00"
+
+
+async def test_advance_picks_the_newest_trigger_with_a_run_at_or_the_one_named() -> None:
+    bus = FakeBus()
+
+    def alfred_sets_three() -> None:
+        bus.created("t1", "Laundry reminder")
+        bus.created("t2", "Morning briefing", {"cron": "0 7 * * *"})
+        bus.created("t3", "Vet")
+
+    ev = await played(
+        ctx(Acting(alfred_sets_three), bus=bus),
+        steps=[
+            {"user": "Remind me about the laundry and the vet, and brief me every morning."},
+            {"advance_trigger": {"name": "laundry"}},  # a substring, in any case
+            {"advance_trigger": {"name": "briefing"}},  # a cron trigger has no run_at to pull
+            {"advance_trigger": None},  # the newest with a run_at
+        ],
+    )
+    assert bus.advanced == ["t1", "t3"]
+    assert [(a.step, a.trigger_id) for a in ev.advances] == [(1, "t1"), (3, "t3")]
+    assert "time passes, but no reminder was set" in [t.text for t in ev.transcript]
+
+
+async def test_an_advance_waits_for_a_fire_after_it_not_an_earlier_one() -> None:
+    bus = FakeBus(fires=False)  # the engine never gets to the advanced trigger
+
+    def alfred_sets_it_and_it_fires() -> None:
+        bus.created("t1", "Laundry reminder")
+        bus.fire("t1")  # a repeating trigger's earlier fire, before the advance
+
+    elapsed, ev = await timed_play(
+        ctx(Acting(alfred_sets_it_and_it_fires), bus=bus, fire_timeout_s=0.3),
+        scenario(steps=[{"user": "Remind me about the laundry."}, {"advance_trigger": None}]),
+    )
+    assert bus.advanced == ["t1"] and len(ev.advances) == 1
+    assert elapsed >= 0.3  # the earlier fire did not end the wait
+
+
+async def test_an_advance_wakes_on_the_fire_as_it_lands() -> None:
+    bus = FakeBus(fires=False)
+
+    async def the_engine_fires_later() -> None:
+        await asyncio.sleep(0.3)
+        bus.fire("t1")
+
+    firing = asyncio.create_task(the_engine_fires_later())
+    elapsed, ev = await timed_play(
+        ctx(Acting(lambda: bus.created("t1")), bus=bus, fire_timeout_s=5),
+        scenario(steps=[{"user": "Remind me about the laundry."}, {"advance_trigger": None}]),
+    )
+    await firing
+    assert 0.3 <= elapsed < 2
+    assert [f.trigger_id for f in ev.triggers_fired] == ["t1"]
+
+
+async def test_a_zone_an_actor_left_is_put_back_without_a_clock_step() -> None:
+    bus = FakeBus()
+
+    def conscious_stores_the_zone() -> None:
+        bus.tz = "America/Denver"  # as the conscious engine does with a request's zone
+
+    await played(ctx(Acting(conscious_stores_the_zone), bus=bus), steps=[{"user": "Hello."}])
+    assert bus.tz is None and bus.tz_set == [None]
+
+
+async def test_a_sample_that_raises_skips_cleanup() -> None:
+    bus = FakeBus()
+    send = Acting(lambda: bus.created("t1"), source="channels")  # System 2 never answers
+    with pytest.raises(HarnessError, match="no reply from System 2"):
+        await played(
+            ctx(send, bus=bus, now=lambda: datetime(2026, 10, 8, 3, 0, tzinfo=UTC)),
+            steps=[{"clock": {"hour": 22}}, {"dnd": True, "settle": 0}, {"user": "Remind me."}],
+        )
+    # The failed sample's stack is restarted fresh, so nothing needs undoing; and cleanup
+    # through a bus that may be what failed would only raise again, over the first error.
+    assert bus.deleted == [] and bus.cleared == 0 and bus.tz_set == ["Etc/GMT+5"]
+
+
+async def test_the_reflex_wait_counts_only_system1_calls_after_the_push() -> None:
+    proxy = LlmProxy("http://x")
+
+    def system1_answers_early() -> None:  # during the user step, before the event
+        proxy.record(
+            LlmCall(
+                t=time.monotonic(),
+                role="system1",
+                latency_ms=5.0,
+                status=200,
+                response_text='{"decision": "none", "reason": "quiet"}',
+            )
+        )
+
+    ev = await played(
+        ctx(Acting(system1_answers_early), proxy=proxy, reflex_cooldown_s=0, reflex_timeout_s=0.3),
+        steps=[{"user": "Hello."}, LAMP_ON],
+        expect=[{"reflex_decision": {"decision": "none"}}],
+    )
+    assert ev.ended_at - ev.step_start(1) >= 0.3

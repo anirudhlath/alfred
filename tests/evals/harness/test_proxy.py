@@ -11,11 +11,14 @@ import httpx
 import pytest
 
 from evals.harness import proxy as proxy_module
+from evals.harness.evidence import LlmCall
 from evals.harness.judge import JUDGE_CONNECTIONS, make_judge_model
 from evals.harness.proxy import MAX_UPSTREAM, LlmProxy, classify_role
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
+
+    from evals.harness.evidence import Role
 
 
 COMPLETION = {
@@ -174,6 +177,66 @@ async def test_a_failed_call_is_not_left_in_flight() -> None:
     async with serving(boom) as p, httpx.AsyncClient() as client:
         await client.post(f"{p.url}/v1/chat/completions", json={"model": "m", "messages": []})
         assert p.in_flight == 0 and await p.wait_idle(0.0, 0.01)
+
+
+SYSTEM1 = {
+    "model": "m",
+    "messages": [{"role": "system", "content": "You are Alfred's Reflex Engine"}],
+}
+
+
+def is_system1(call: LlmCall) -> bool:
+    return call.role == "system1"
+
+
+async def test_wait_for_call_wakes_when_the_proxy_records_a_wanted_call() -> None:
+    release = asyncio.Event()
+
+    async def gated(request: httpx.Request) -> httpx.Response:
+        await release.wait()
+        return httpx.Response(200, json=COMPLETION)
+
+    p = LlmProxy("http://vllm.test", transport=httpx.MockTransport(gated))
+    await p.start()
+    try:
+        async with httpx.AsyncClient() as client:
+            waiting = asyncio.create_task(p.wait_for_call(time.monotonic(), 5, is_system1))
+            sent = asyncio.create_task(client.post(f"{p.url}/v1/chat/completions", json=SYSTEM1))
+            while not p.in_flight:
+                await asyncio.sleep(0.005)
+            assert not waiting.done()  # in flight is not recorded
+            release.set()
+            assert await waiting
+            assert [c.role for c in p.calls] == ["system1"]
+            await sent
+    finally:
+        await p.stop()
+
+
+def call_at(t: float, role: Role) -> LlmCall:
+    return LlmCall(t=t, role=role, latency_ms=1.0, status=200)
+
+
+async def test_wait_for_call_counts_only_wanted_calls_since_and_times_out() -> None:
+    p = LlmProxy("http://x")
+    p.record(call_at(0.0, "system1"))  # before the wait's start
+    since = time.monotonic()
+
+    async def calls_land() -> None:
+        await asyncio.sleep(0.05)
+        p.record(call_at(time.monotonic(), "system2"))  # not wanted
+        await asyncio.sleep(0.05)
+        p.record(call_at(time.monotonic(), "system1"))
+
+    landing = asyncio.create_task(calls_land())
+    t0 = time.monotonic()
+    assert await p.wait_for_call(since, 5, is_system1)
+    await landing
+    assert 0.1 <= time.monotonic() - t0 < 2
+    assert await p.wait_for_call(since, 0)  # any call, when nothing narrows it
+    t0 = time.monotonic()
+    assert not await p.wait_for_call(time.monotonic(), 0.05, is_system1)
+    assert time.monotonic() - t0 >= 0.05
 
 
 async def test_wait_idle_waits_only_on_calls_sent_since() -> None:

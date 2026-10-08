@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -9,6 +10,7 @@ from evals.harness.bus import Entry
 from evals.harness.evidence import Evidence, HaCall, HaState, LlmCall, Reply, ToolCall
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from datetime import datetime
 
     from core.reflex.tool_registry import ToolInfo
@@ -66,9 +68,12 @@ def llm(role: Role, *calls: tuple[str, dict[str, Any]]) -> LlmCall:
 
 class FakeBus:
     """An in-memory ``Bus``. ``advance_trigger`` fires the trigger and sends its
-    notification at once, as the engine does with a due ``run_at``."""
+    notification at once, as the engine does with a due ``run_at``; with ``fires=False``
+    the engine never gets to it, and a test fires it with ``fire``."""
 
-    def __init__(self, *, tz: str | None = None, tools: list[ToolInfo] | None = None) -> None:
+    def __init__(
+        self, *, tz: str | None = None, tools: list[ToolInfo] | None = None, fires: bool = True
+    ) -> None:
         self.entries: list[Entry] = []  # alfred:events
         self.sent: list[Entry] = []  # the notification dispatch stream
         self.held: list[str] = []  # the deferred list
@@ -79,7 +84,14 @@ class FakeBus:
         self.cleared = 0
         self.advanced: list[str] = []
         self.deleted: list[str] = []
+        self.fires = fires
         self._names: dict[str, str] = {}
+        self._landed = asyncio.Event()  # set, then replaced, when an event is appended
+
+    def _append(self, entry: Entry) -> None:
+        self.entries.append(entry)
+        landed, self._landed = self._landed, asyncio.Event()
+        landed.set()
 
     def created(
         self,
@@ -96,7 +108,14 @@ class FakeBus:
             conditions=conditions or {"run_at": "2026-10-08T20:00:00+00:00"},
         )
         self._names[trigger_id] = name
-        self.entries.append(Entry(wall=time.time(), data={"event": event.model_dump_json()}))
+        self._append(Entry(wall=time.time(), data={"event": event.model_dump_json()}))
+
+    def fire(self, trigger_id: str) -> None:
+        """The engine fired the trigger, now, and sent its notification."""
+        name = self._names[trigger_id]
+        fired = TriggerFired(trigger_id=trigger_id, trigger_name=name, trigger_type="time")
+        self._append(Entry(wall=time.time(), data={"event": fired.model_dump_json()}))
+        self.notify(f"Trigger: {name}")
 
     def notify(self, title: str, urgency: str = "informational", wall: float | None = None) -> None:
         note = Notification(title=title, body="", urgency=Urgency(urgency), source="trigger-engine")
@@ -112,6 +131,17 @@ class FakeBus:
     async def events(self, since_wall: float) -> list[Entry]:
         return [e for e in self.entries if e.wall >= since_wall]
 
+    async def wait_for_event(
+        self, since_wall: float, timeout_s: float, wanted: Callable[[Entry], bool]
+    ) -> bool:
+        try:
+            async with asyncio.timeout(timeout_s):
+                while not any(e.wall >= since_wall and wanted(e) for e in self.entries):
+                    await self._landed.wait()
+        except TimeoutError:
+            return False
+        return True
+
     async def notifications(self, since_wall: float) -> list[Entry]:
         return [e for e in self.sent if e.wall >= since_wall]
 
@@ -125,10 +155,9 @@ class FakeBus:
         if trigger_id not in self._names:
             return False
         self.advanced.append(trigger_id)
-        name = self._names.pop(trigger_id)  # a one-shot is deleted when it fires
-        fired = TriggerFired(trigger_id=trigger_id, trigger_name=name, trigger_type="time")
-        self.entries.append(Entry(wall=time.time(), data={"event": fired.model_dump_json()}))
-        self.notify(f"Trigger: {name}")
+        if self.fires:
+            self.fire(trigger_id)
+            del self._names[trigger_id]  # a one-shot is deleted when it fires
         return True
 
     async def delete_triggers(self, trigger_ids: list[str]) -> None:
