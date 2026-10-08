@@ -100,6 +100,7 @@ means removing litellm from every call site at once.
 | Late replies | Delivered as follow-ups on the same session; the timeout message says Alfred will reply when ready |
 | #304 | Record side-effecting tool calls per request; once one has run, answer once and ACK instead of retrying |
 | Guests | Toolsets are scoped by identity |
+| Session idle limit | Stays at 30 minutes; full history applies within a session |
 
 ## Architecture
 
