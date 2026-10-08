@@ -335,14 +335,18 @@ def _extract_tool_meta(
                 "keyword (no *args, **kwargs or positional-only parameters)"
             )
 
+    input_schema = _signature_input_schema(qualified_name, params, hints, doc_args)
+
     parameters: dict[str, ToolParameter] = {}
     for param in params:
-        has_default = param.default is not inspect.Parameter.empty
         parameters[param.name] = ToolParameter(
             type=getattr(hints.get(param.name), "__name__", str(hints.get(param.name, "Any"))),
             description=doc_args.get(param.name, ""),
-            default=param.default if has_default else None,
-            required=not has_default,
+            # The schema's JSON default, never the raw Python one: an Enum becomes its
+            # value, and a default JSON cannot carry (a sentinel) becomes None, so the
+            # manifest always serialises.
+            default=input_schema["properties"][param.name].get("default"),
+            required=param.default is inspect.Parameter.empty,
         )
 
     return ToolMeta(
@@ -351,7 +355,7 @@ def _extract_tool_meta(
         parameters=parameters,
         audience=audience,
         risk=risk,
-        input_schema=_signature_input_schema(qualified_name, params, hints, doc_args),
+        input_schema=input_schema,
     )
 
 
