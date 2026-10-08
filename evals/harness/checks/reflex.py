@@ -87,10 +87,14 @@ class _Window(NamedTuple):
     unattributed: list[ReflexCall]
 
     def note(self) -> str:
-        """``"; unattributed: …"`` for the calls about anything else, or ``""``."""
-        if not self.unattributed:
-            return ""
-        return "; unattributed: " + "; ".join(describe_unattributed(c) for c in self.unattributed)
+        return unattributed_note(self.unattributed)
+
+
+def unattributed_note(calls: list[ReflexCall]) -> str:
+    """``"; unattributed: …"`` for calls about another change, or ``""``."""
+    if not calls:
+        return ""
+    return "; unattributed: " + "; ".join(describe_unattributed(c) for c in calls)
 
 
 def _window(evidence: Evidence, name: str, at_step: int | None) -> _Window | CheckResult:
@@ -109,14 +113,16 @@ def _window(evidence: Evidence, name: str, at_step: int | None) -> _Window | Che
     return _Window(step, calls, evidence.reflex_unattributed(step))
 
 
-def _uncalled(name: str, window: _Window) -> CheckResult:
+def uncalled(name: str, step: int, unattributed: list[ReflexCall]) -> CheckResult:
     """No call about the step's change: Reflex attends to the entity, so its event was lost
-    (swallowed by a cooldown, a stopped consumer, a regressed attention set)."""
+    (swallowed by a cooldown, a stopped consumer, a regressed attention set). No judgment
+    to score, and nothing to time: the reflex checks and ``reflex_ms`` all say this."""
     return CheckResult(
         name=name,
         status="error",
         reason=(
-            f"System 1 was not called for step {window.step}: no judgment to score" + window.note()
+            f"System 1 was not called for step {step}: no judgment to score"
+            + unattributed_note(unattributed)
         ),
     )
 
@@ -172,7 +178,7 @@ def reflex_decision(evidence: Evidence, p: ReflexDecisionParams) -> CheckResult:
             return passed(
                 name, f"System 1 was not called for step {step}: Reflex let it pass{window.note()}"
             )
-        return _uncalled(name, window)
+        return uncalled(name, window.step, window.unattributed)
     seen = "; ".join(_describe(c) for c in calls)
     if all(_fits(c, p) for c in calls):
         return passed(name, seen + window.note())
@@ -185,7 +191,7 @@ def reflex_not_proposed(evidence: Evidence, p: ReflexNotProposedParams) -> Check
     if isinstance(window, CheckResult):
         return window
     if not window.calls and not p.uncalled_ok:
-        return _uncalled(name, window)
+        return uncalled(name, window.step, window.unattributed)
     for c in window.calls:
         if (
             c.decision in p.decision

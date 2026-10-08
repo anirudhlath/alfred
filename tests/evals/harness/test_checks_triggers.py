@@ -11,6 +11,7 @@ from evals.harness.checks import needs_reply, run_check, step_kind_needed, watch
 from evals.harness.checks.latency import LatencyParams
 from evals.harness.checks.llm import PromptParams
 from evals.harness.checks.notifications import NotificationParams
+from evals.harness.checks.reflex import ReflexDecisionParams
 from evals.harness.checks.triggers import (
     TriggerCreatedParams,
     TriggerFiredParams,
@@ -289,18 +290,38 @@ def test_reflex_ms_runs_from_the_event_to_system1s_reply() -> None:
     result = run_check("latency", slow, ev(call))
     assert result.status == "fail" and "800 ms" in result.reason
     missed = run_check("latency", fast, ev())
-    assert missed.status == "fail" and "not called" in missed.reason
+    assert missed.status == "error" and "not called" in missed.reason
     # A call about another change is not the step's, however early it came back.
     stray = ReflexCall(t=10.1, latency_ms=50, decision="none", event=about("person.alex", "home"))
     timed = run_check("latency", slow, ev(stray, call))
     assert timed.status == "fail" and "800 ms" in timed.reason
     alone = run_check("latency", fast, ev(stray))
-    assert alone.status == "fail" and "not called" in alone.reason
+    assert alone.status == "error" and "not called" in alone.reason
     assert "unattributed" in alone.reason
     # A quick 502 is vLLM failing, not a fast Reflex.
     failed = ReflexCall(t=10.1, latency_ms=30, status=502, decision="invalid", event=about())
     errored = run_check("latency", fast, ev(failed))
     assert errored.status == "error" and "HTTP 502" in errored.reason
+
+
+def test_reflex_ms_with_no_call_for_the_step_is_the_reflex_checks_error() -> None:
+    """No call about the step's change is no judgment, so nothing to time either: the same
+    error a reflex check gives, not a slow Reflex."""
+    stray = ReflexCall(t=10.1, latency_ms=50, decision="none", event=about("person.alex", "home"))
+    timed = LatencyParams.model_validate({"metric": "reflex_ms", "max": 1000})
+    judged = ReflexDecisionParams.model_validate({"decision": "none"})
+    for calls in ([], [stray]):
+        e = evidence(
+            step_started=[0.0, 10.0],
+            step_kinds=["ha_event", "ha_event"],
+            reflex=calls,
+            state_pushes=pushes(["ha_event", "ha_event"]),
+        )
+        latency = run_check("latency", timed, e)
+        decision = run_check("reflex_decision", judged, e)
+        assert latency.status == decision.status == "error"
+        assert latency.reason == decision.reason
+        assert "System 1 was not called for step 1: no judgment to score" in latency.reason
 
 
 def test_reflex_ms_at_step_times_the_named_event() -> None:

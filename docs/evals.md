@@ -694,7 +694,7 @@ scored separately. Params are validated at load and unknown keys are rejected.
 | `llm_tool_args_absent` | `tool`, `key` (required); `role` (default `system2`) | No call to the tool carries `key` |
 | `reply_contains` | exactly one of `text`, `any` (list), `regex`; `step` (int or `any`, default `-1`) | The reply at `step` (any reply, for `any`) contains `text` or one of `any` (case-insensitive), or `regex` matches it (`re.search`, case-insensitive). No reply at that step fails |
 | `reply_not_contains` | as `reply_contains` | No needle hits the chosen replies. No reply at that step fails |
-| `latency` | `metric` (required: `reply_ms`, `reflex_ms` or `reminder_fire_ms`), `max` (required; ms, > 0); `step` (int, default `-1`) for `reply_ms`; `at_step` for the other two | `reply_ms`: the reply at `step` arrived within `max` ms of its request. `reflex_ms`: the earliest System 1 call about the `ha_event` step's change was answered within `max` ms of the step's start (any wait for one of the proxy's upstream slots included). `reminder_fire_ms`: the notification of that trigger's fire was dispatched within `max` ms of the `advance_trigger` making it due |
+| `latency` | `metric` (required: `reply_ms`, `reflex_ms` or `reminder_fire_ms`), `max` (required; ms, > 0); `step` (int, default `-1`) for `reply_ms`; `at_step` for the other two | `reply_ms`: the reply at `step` arrived within `max` ms of its request. `reflex_ms`: the earliest System 1 call about the `ha_event` step's change was answered within `max` ms of the step's start (any wait for one of the proxy's upstream slots included). With no such call it errors, as a reflex check does: no judgment, nothing to time. `reminder_fire_ms`: the notification of that trigger's fire was dispatched within `max` ms of the `advance_trigger` making it due |
 | `reflex_decision` | `decision` (required: `act`, `ask`, `none`, `invalid`, or a list of them); `tool` (one, or a list of which any will do); `target`; `at_step`; `uncalled_ok` (default `false`) | Every System 1 call about the step's change has a decision in the set, and, for act/ask, one of the `tool`s and the `target` (entity or area id) given. With no such call it errors (no judgment to score), unless `uncalled_ok` is set and `none` is in the set: then it passes |
 | `reflex_not_proposed` | `tool` (required); `target`; `decision` (default `[act, ask]`); `at_step`; `uncalled_ok` (default `false`) | No call about the step's change proposes that tool (on that target). With no such call it errors, unless `uncalled_ok` is set |
 | `prompt_not_contains` | exactly one of `text`, `any`, `regex`; `role` (default `system2`) | No prompt of the role contains the text; fails when the role was never called |
@@ -712,9 +712,10 @@ it, and each entity's area is added, so a check can name the entity or the room.
 
 Reflex attends to every entity a shipped golden judges but one, so **no call** means the
 event was lost: a cooldown swallowed it, the consumer stopped, or the attention set
-regressed. That is no judgment to score, so a reflex check errors. Set `uncalled_ok: true`
-only for an entity outside the attention seed (`core/reflex/attention_seed.yaml`), as
-`judgment_sensor_noise_noop` does; `tests/evals/test_goldens_load.py` holds goldens to that.
+regressed. That is no judgment to score, so a reflex check errors, and so does `reflex_ms`
+on that step. Set `uncalled_ok: true` only for an entity outside the attention seed
+(`core/reflex/attention_seed.yaml`), as `judgment_sensor_noise_noop` does;
+`tests/evals/test_goldens_load.py` holds goldens to that.
 
 A System 1 call vLLM answered with a 5xx holds no judgment, so a reflex check or
 `reflex_ms` on its step reports `error`, naming the status. A 4xx stays Reflex's `invalid`: it
