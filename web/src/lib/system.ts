@@ -806,6 +806,10 @@ export function putAttention(
  * sets or deletes the Redis key itself and answers with the state. The switch
  * may move on this, once a read has confirmed it.
  *
+ * A clear that deleted a live key also queues a drain of what quiet held back,
+ * so turning it off sends the queue — the promise the Quiet section's no-expiry
+ * line makes. Queued, as `drainDeferred` is: the answer does not wait for it.
+ *
  * `until` is omitted rather than sent as null, so "clear it" and "on, with no
  * expiry" are one rule: the key is only ever present when there is an instant to
  * put in it.

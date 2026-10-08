@@ -34,7 +34,7 @@ const CELLS: (keyof Health)[] = ["bus", "reflex", "rate", "home"];
  * can certainly report — the notifier clears the key when it next looks.
  */
 const QUIET_OFF = "off · urgent still speaks regardless";
-const QUIET_FOREVER = "on · no expiry · queue will not drain on its own";
+const QUIET_FOREVER = "on · no expiry · queue drains when you turn it off";
 const QUIET_DRAINS = "queue drains then";
 const QUIET_PASSED = "that moment has passed";
 
@@ -388,9 +388,9 @@ function QuietSection({
       ? QUIET_FOREVER
       : `on · until ${whenLabel(new Date(untilMs), new Date(now))} · ${ahead ? QUIET_DRAINS : QUIET_PASSED}`;
   const note = quiet.error ?? (mine !== null ? "applied" : null);
-  // A queue that nothing is going to drain, and something in it to drain. An
-  // empty queue is not growing, whatever the switch is set to — and neither is
-  // one nobody has read.
+  // A queue that only turning quiet off will drain, and something in it to
+  // drain. An empty queue is not growing, whatever the switch is set to — and
+  // neither is one nobody has read.
   const growing = quiet.active && quiet.held !== null && quiet.held > 0 && !ahead;
 
   const drained = maintenance.drainedAt;

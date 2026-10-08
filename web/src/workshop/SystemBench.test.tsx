@@ -666,7 +666,7 @@ describe("SystemBench · Quiet", () => {
 
     rerender(<SystemBench system={state({ quiet: quiet({ active: true }) })} />);
     expect(
-      screen.getByText("on · no expiry · queue will not drain on its own"),
+      screen.getByText("on · no expiry · queue drains when you turn it off"),
     ).toBeInTheDocument();
   });
 
