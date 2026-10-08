@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -71,12 +72,11 @@ class TriggerFeature(BaseFeature):
                 continue
             if "create_trigger" in t.name:
                 enriched.append(
-                    ToolMeta(
-                        name=t.name,
+                    dataclasses.replace(
+                        t,
                         description=(
                             t.description + "\n\n" + conditions_docs + action_docs + urgency_docs
                         ),
-                        parameters=t.parameters,
                     )
                 )
             else:

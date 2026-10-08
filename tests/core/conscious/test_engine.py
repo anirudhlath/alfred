@@ -3,15 +3,23 @@
 from __future__ import annotations
 
 import datetime as _dt
+import enum
+import json
+from typing import Any, Literal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic import BaseModel
 
 from bus.schemas.events import AlfredResponse, UserRequest
 from core.conscious.engine import MAX_ITERATIONS, ConsciousEngine
 from core.identity.schemas import IdentityResult
 from core.memory.schemas import RoutineSpec
-from core.reflex.tool_registry import ToolInfo
+from core.reflex.tool_registry import ToolInfo, ToolRegistry
+from core.triggers.feature import TriggerFeature, TriggerFeatureContext
+from core.triggers.store import TriggerStore
+from sdk.alfred_sdk.client import AlfredClient
+from sdk.alfred_sdk.feature import BaseFeature, tool
 
 
 def _make_request(**overrides: object) -> UserRequest:
@@ -277,6 +285,135 @@ def test_tool_name_sanitization(mock_deps: dict[str, AsyncMock | MagicMock]) -> 
         ),
     ]
     assert engine._unsanitize_tool_name("lighting_dim_lights", tools) == "lighting.dim_lights"
+
+
+class _Mode(enum.Enum):
+    HEAT = "heat"
+    COOL = "cool"
+
+
+class _Window(BaseModel):
+    start: _dt.datetime
+    end: _dt.datetime
+
+
+class _ClimateFeature(BaseFeature):
+    """Climate controls."""
+
+    feature_name = "climate"
+
+    @tool(risk="critical")
+    async def set_schedule(
+        self,
+        zone: str,
+        days: list[Literal["mon", "tue"]],
+        at: _dt.datetime,
+        mode: _Mode,
+        window: _Window | None = None,
+        note: str = "",
+    ) -> dict[str, Any]:
+        """Schedule heating.
+
+        Args:
+            zone: Which zone.
+            days: Days to run.
+            at: When to start.
+        """
+        return {}
+
+
+async def _offered(
+    features: list[type[BaseFeature]], engine: ConsciousEngine
+) -> dict[str, dict[str, Any]]:
+    """The real path: SDK manifest → registry JSON → ToolRegistry → what System 2 sends."""
+    client = AlfredClient(service_name="svc", service_endpoint="http://svc/mcp")
+    for cls in features:
+        # TriggerFeature touches its store while listing its tools, so it needs a context.
+        # spec_set: a bare mock answers `_tool_marker` and would be listed as a tool.
+        ctx = (
+            TriggerFeatureContext(store=AsyncMock(spec_set=TriggerStore))
+            if cls is TriggerFeature
+            else None
+        )
+        client.discover_features_from_classes([cls], ctx)
+    redis = AsyncMock()
+    redis.hgetall.return_value = {b"svc": json.dumps(client.get_registration_manifest()).encode()}
+    tools = await ToolRegistry(redis).get_tools()
+    return {
+        d["function"]["name"]: d["function"]["parameters"]
+        for d in engine._tools_to_openai_format(tools)
+    }
+
+
+@pytest.mark.asyncio
+async def test_required_lists_exactly_the_parameters_without_defaults(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """#300: a real BaseFeature manifest, through the registry, to the model."""
+    offered = await _offered([TriggerFeature, _ClimateFeature], ConsciousEngine(**mock_deps))
+    assert offered["triggers_delete_trigger"]["required"] == ["trigger_id"]
+    assert offered["triggers_toggle_trigger"]["required"] == ["trigger_id", "enabled"]
+    assert offered["triggers_create_trigger"]["required"] == ["name", "trigger_type", "conditions"]
+    assert offered["triggers_list_triggers"]["required"] == []
+    assert offered["climate_set_schedule"]["required"] == ["zone", "days", "at", "mode"]
+
+
+@pytest.mark.asyncio
+async def test_rich_types_reach_the_model(mock_deps: dict[str, AsyncMock | MagicMock]) -> None:
+    """#301: list items, enums, dates and nested models survive to the tool definition."""
+    schema = (await _offered([_ClimateFeature], ConsciousEngine(**mock_deps)))[
+        "climate_set_schedule"
+    ]
+    props = schema["properties"]
+    assert props["days"] == {
+        "type": "array",
+        "items": {"type": "string", "enum": ["mon", "tue"]},
+        "description": "Days to run.",
+    }
+    assert props["at"] == {"type": "string", "format": "date-time", "description": "When to start."}
+    assert props["mode"] == {"$ref": "#/$defs/_Mode"}
+    assert schema["$defs"]["_Mode"] == {"type": "string", "enum": ["heat", "cool"]}
+    assert props["window"]["anyOf"][0] == {"$ref": "#/$defs/_Window"}
+    assert schema["$defs"]["_Window"]["properties"]["start"] == {
+        "type": "string",
+        "format": "date-time",
+    }
+    # Critical tools are still offered the optional `reason`.
+    assert props["reason"]["type"] == "string"
+    assert "reason" not in schema["required"]
+
+
+def test_reason_injection_leaves_the_registry_schema_untouched(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    engine = ConsciousEngine(**mock_deps)
+    tool_info = _critical_tool()
+    first = engine._tools_to_openai_format([tool_info])
+    second = engine._tools_to_openai_format([tool_info])
+    assert first == second
+    assert "reason" not in tool_info.input_schema["properties"]
+
+
+def test_reason_is_offered_on_a_schema_without_properties(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """A critical tool whose schema has no `properties` still gets `reason`, on a copy."""
+    engine = ConsciousEngine(**mock_deps)
+    tool_info = ToolInfo(
+        name="home.sound_alarm",
+        description="Sound the alarm",
+        parameters={},
+        feature_name="home",
+        feature_description="Home control",
+        target_service="home-service",
+        risk="critical",
+        input_schema={"type": "object"},
+    )
+
+    schema = engine._tools_to_openai_format([tool_info])[0]["function"]["parameters"]
+
+    assert schema["properties"]["reason"]["type"] == "string"
+    assert tool_info.input_schema == {"type": "object"}
 
 
 # ---------------------------------------------------------------------------
@@ -632,6 +769,42 @@ async def test_dispatch_preserves_a_tools_own_reason_parameter(
     await engine._dispatch_tool_call(
         {"id": "tc-1", "name": "home.log_incident", "input": {"reason": "Smoke alarm tripped."}},
         tools=[_critical_tool_with_own_reason()],
+    )
+
+    routed = mock_deps["domain_router"].route.call_args[0][0]
+    assert routed.parameters == {"reason": "Smoke alarm tripped."}
+    assert routed.reason is None
+
+
+def _critical_tool_with_reason_in_its_schema_only() -> ToolInfo:
+    """A critical tool whose shipped `input_schema` declares `reason`; its `parameters` do not."""
+    return ToolInfo(
+        name="home.log_incident",
+        description="Log an incident",
+        parameters={},
+        feature_name="home",
+        feature_description="Home control",
+        target_service="home-service",
+        risk="critical",
+        input_schema={
+            "type": "object",
+            "properties": {"reason": {"type": "string", "description": "Incident reason"}},
+            "required": ["reason"],
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_reads_an_own_reason_from_the_schema_the_model_sees(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """A `reason` the shipped schema declares is the tool's own, whatever `parameters` say."""
+    mock_deps["domain_router"].route.return_value = MagicMock(status="success", result={"ok": True})
+    engine = ConsciousEngine(**mock_deps)
+
+    await engine._dispatch_tool_call(
+        {"id": "tc-1", "name": "home.log_incident", "input": {"reason": "Smoke alarm tripped."}},
+        tools=[_critical_tool_with_reason_in_its_schema_only()],
     )
 
     routed = mock_deps["domain_router"].route.call_args[0][0]

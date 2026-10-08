@@ -64,6 +64,7 @@ graph LR
 - New trigger types: subclass `BaseTrigger`, define `Conditions` model, implement `evaluate()`, decorate with `@TriggerRegistry.register_type("name")`
 - Storage: Redis hash `alfred:triggers` (primary) + YAML snapshots in `$ALFRED_DATA_DIR/triggers/` (default `data/triggers/`, gitignored) — resolved via `core.memory.paths.triggers_snapshot_dir()`
 - CRUD exposed via `TriggerFeature(BaseFeature)` with dynamic tool descriptions from `TriggerRegistry.build_conditions_docs()`
+- `friendly_type()` (`core/triggers/registry.py`) is LLM-aware: it renders a `datetime` condition field as an ISO 8601 hint (`"string (ISO 8601, e.g. …)"`) in those docs
 
 ## Conscious (`conscious/`) — System 2 Cloud LLM
 

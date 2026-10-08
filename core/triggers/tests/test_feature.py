@@ -10,8 +10,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from core.triggers.feature import TriggerFeature, TriggerFeatureContext
 from core.triggers.registry import TriggerRegistry
 from core.triggers.store import TriggerStore
+from sdk.alfred_sdk.feature import BaseFeature, tool
 from shared.streams import EVENTS_MAXLEN, EVENTS_STREAM, USER_TIMEZONE_KEY
 
 
@@ -435,3 +437,39 @@ async def test_trigger_created_caps_the_events_stream(fake_redis: Any, snapshot_
     assert [o for o in fake_redis.xadd_options if o["stream"] == EVENTS_STREAM] == [
         {"stream": EVENTS_STREAM, "maxlen": EVENTS_MAXLEN, "approximate": True}
     ]
+
+
+class _TaggedTriggerFeature(TriggerFeature):
+    """create_trigger tagged with a non-default audience and risk."""
+
+    @tool(audience="reflex", risk="critical")
+    async def create_trigger(
+        self,
+        name: str,
+        trigger_type: str,
+        conditions: dict[str, Any],
+        action: dict[str, Any] | None = None,
+        one_shot: bool = False,
+        urgency: str = "informational",
+    ) -> dict[str, Any]:
+        """Create a new trigger."""
+        return await super().create_trigger(
+            name, trigger_type, conditions, action, one_shot, urgency
+        )
+
+
+def test_create_trigger_enrichment_keeps_audience_risk_and_schema() -> None:
+    feature = _TaggedTriggerFeature(
+        ctx=TriggerFeatureContext(store=AsyncMock(spec_set=TriggerStore))
+    )
+    tools = {t.name: t for t in feature.get_tools()}
+    meta = tools["triggers.create_trigger"]
+    base = {t.name: t for t in BaseFeature.get_tools(feature)}["triggers.create_trigger"]
+    assert (meta.audience, meta.risk) == ("reflex", "critical")
+    assert "informational" in meta.description  # the enrichment still ran
+    assert meta.input_schema["required"] == ["name", "trigger_type", "conditions"]
+    # Only the signature-generated schema carries defaults; one re-derived from
+    # `parameters` would not.
+    assert meta.input_schema["properties"]["urgency"]["default"] == "informational"
+    assert meta.input_schema == base.input_schema
+    assert meta.parameters == base.parameters
