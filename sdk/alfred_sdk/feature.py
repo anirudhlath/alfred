@@ -200,9 +200,9 @@ class ToolMeta:
     """Extracted metadata for a single tool method.
 
     ``input_schema`` is the tool's arguments as one JSON Schema object. Left empty, it
-    is assembled from ``parameters``; passed in, it must pass ``check_object_schema``,
-    or construction raises ``TypeError`` naming the tool, and a deep copy is kept, so
-    the caller changing its dict later cannot change this frozen one.
+    is assembled from ``parameters``. Passed in, it must pass ``check_object_schema``
+    (construction raises ``TypeError`` naming the tool otherwise), and a deep copy of
+    it is kept, so the caller changing its dict later cannot change this frozen meta.
 
     ``dataclasses.replace(meta, parameters=new)`` keeps the old ``input_schema``, which
     then no longer matches ``new``; pass ``input_schema={}`` as well to re-derive it.
