@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
@@ -23,6 +29,16 @@ def _restore_channel_registry() -> Iterator[None]:
     yield
     ChannelRegistry._instances.clear()
     ChannelRegistry._instances.update(snapshot)
+
+
+@pytest.fixture(autouse=True)
+def tracing_stub(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    """main() installs the process-global tracer provider — stubbed so these tests
+    never point it at a collector. The export test below runs the real one in a child
+    interpreter instead."""
+    stub = MagicMock()
+    monkeypatch.setattr(entry, "init_tracing", stub)
+    return stub
 
 
 # --- the wiring: main() hands uvicorn what the resolver returned -------------------
@@ -78,6 +94,100 @@ def test_main_uses_the_resolver() -> None:
         run = _run_main()
 
     assert run.call_args.kwargs["forwarded_allow_ips"] == "sentinel"
+
+
+# --- tracing: the channels process exports its own spans (#312) ---------------------
+
+
+@pytest.mark.parametrize(
+    ("signoz_enabled", "expected_endpoint"),
+    [("true", "http://localhost:14317"), ("false", None)],
+)
+def test_main_initialises_tracing(
+    monkeypatch: pytest.MonkeyPatch,
+    tracing_stub: MagicMock,
+    signoz_enabled: str,
+    expected_endpoint: str | None,
+) -> None:
+    """The runner starts channels as its own subprocess, so the runner's provider never
+    reaches it — without this call every voice STT/TTS span here is a no-op."""
+    monkeypatch.setenv("SIGNOZ_ENABLED", signoz_enabled)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:14317")
+
+    _run_main()
+
+    tracing_stub.assert_called_once_with(service_name="channels", endpoint=expected_endpoint)
+
+
+# Runs in a fresh interpreter: init_tracing installs the process-global tracer provider,
+# which OpenTelemetry lets a process set only once. The OTLP exporter class is swapped
+# for an in-memory one, so the real init_tracing builds its real pipeline around it.
+_EXPORT_PROBE = textwrap.dedent(
+    """
+    import json
+    from unittest.mock import MagicMock, patch
+
+    from opentelemetry import trace
+    from opentelemetry.exporter.otlp.proto.grpc import trace_exporter as otlp_grpc
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    otlp_grpc.OTLPSpanExporter = lambda **_kwargs: exporter
+
+    from shared.traced import traced
+
+    # Decorated before main() runs, as the voice modules are at import.
+    @traced(name="channels.smoke")
+    def work():
+        return None
+
+    import core.channels.__main__ as entry
+
+    with (
+        patch.object(entry, "create_app", return_value=MagicMock()),
+        patch.object(entry.uvicorn, "run"),
+    ):
+        entry.main()
+
+    work()
+    # Without init_tracing this is the API's proxy, which has nothing to flush.
+    provider = trace.get_tracer_provider()
+    if hasattr(provider, "force_flush"):
+        provider.force_flush()
+    print(json.dumps([
+        [span.name, span.resource.attributes["service.name"]]
+        for span in exporter.get_finished_spans()
+    ]))
+    """
+)
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def test_a_span_from_the_channels_process_is_exported(tmp_path: Path) -> None:
+    """End to end through the real init_tracing: a span from a function decorated at
+    import time reaches the OTLP exporter tagged with the channels service name."""
+    env = {
+        **os.environ,
+        "SIGNOZ_ENABLED": "true",
+        "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:14317",
+        "ALFRED_DATA_DIR": str(tmp_path),
+        "CHANNELS_PORT": "18081",
+    }
+
+    result = subprocess.run(
+        [sys.executable, "-c", _EXPORT_PROBE],
+        cwd=_REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    spans = json.loads(result.stdout.strip().splitlines()[-1])
+    assert spans == [["channels.smoke", "channels"]]
 
 
 # --- the seam: _resolve_forwarded_allow_ips() defaults, validates, warns -----------

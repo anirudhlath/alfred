@@ -23,6 +23,7 @@ from core.memory.sqlite_vec_store import SqliteVecStore
 from core.shutdown import teardown
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
+from shared.otel import init_tracing
 from shared.redis_streams import create_redis
 
 if TYPE_CHECKING:
@@ -32,6 +33,10 @@ if TYPE_CHECKING:
 async def run() -> None:
     log = configure_logging(service="librarian")
     config = AlfredConfig.from_env()
+    init_tracing(
+        service_name="librarian",
+        endpoint=config.otel_endpoint if config.signoz_enabled else None,
+    )
 
     r: AioRedis = create_redis(config.redis_url)
 

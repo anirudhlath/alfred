@@ -23,6 +23,7 @@ from core.shutdown import teardown
 from core.warmup import start_warmup
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
+from shared.otel import init_tracing
 from shared.redis_streams import create_redis
 from shared.streams import OBSERVED_FREQUENCY_KEY
 
@@ -95,6 +96,10 @@ async def run(config: AlfredConfig) -> None:
 def main() -> None:
     configure_logging(service="memory-ingestor")
     config = AlfredConfig.from_env()
+    init_tracing(
+        service_name="memory-ingestor",
+        endpoint=config.otel_endpoint if config.signoz_enabled else None,
+    )
     asyncio.run(run(config))
 
 
