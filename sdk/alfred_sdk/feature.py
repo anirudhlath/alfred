@@ -147,8 +147,9 @@ def input_schema_from_parameters(parameters: Mapping[str, ToolParameter]) -> dic
     properties: dict[str, Any] = {}
     required: list[str] = []
     for name, param in parameters.items():
+        # A deep copy: the schema must share nothing with the parameter it came from.
         prop: dict[str, Any] = (
-            dict(param.json_schema)
+            copy.deepcopy(param.json_schema)
             if param.json_schema is not None
             else {"type": JSON_TYPE_BY_PYTHON_NAME.get(_base_type_name(param.type), "string")}
         )
