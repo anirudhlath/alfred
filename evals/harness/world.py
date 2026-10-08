@@ -97,6 +97,9 @@ class World(BaseModel):
         ids = [e.entity_id for e in self.entities]
         if len(ids) != len(set(ids)):
             raise ValueError("duplicate entity ids")
+        for d in self.devices:
+            if d.area_id is not None and d.area_id not in areas:
+                raise ValueError(f"{d.id}: unknown area {d.area_id}")
         for e in self.entities:
             if e.area_id is not None and e.area_id not in areas:
                 raise ValueError(f"{e.entity_id}: unknown area {e.area_id}")
@@ -139,12 +142,7 @@ class World(BaseModel):
     def area_of(self, entity_id: str) -> str | None:
         """The entity's room: its own area, else its device's."""
         entity = next((e for e in self.entities if e.entity_id == entity_id), None)
-        if entity is None:
-            return None
-        if entity.area_id is not None:
-            return entity.area_id
-        device = next((d for d in self.devices if d.id == entity.device_id), None)
-        return None if device is None else device.area_id
+        return None if entity is None else self._area(entity)
 
     def entities_in(self, area_id: str, domain: str | None = None) -> list[str]:
         """Enabled entities in the area, in world order, optionally of one domain."""
@@ -152,16 +150,16 @@ class World(BaseModel):
             e.entity_id
             for e in self.entities
             if not e.disabled
-            and self.area_of(e.entity_id) == area_id
+            and self._area(e) == area_id
             and (domain is None or e.domain == domain)
         ]
 
-    def entity_ids_in_area(self, area_id: str, domain: str) -> list[str]:
-        return sorted(
-            e.entity_id
-            for e in self.entities
-            if e.area_id == area_id and e.domain == domain and not e.disabled
-        )
+    def _area(self, entity: WorldEntity) -> str | None:
+        """The one room rule, as HA has it: the entity's own area wins over its device's."""
+        if entity.area_id is not None:
+            return entity.area_id
+        device = next((d for d in self.devices if d.id == entity.device_id), None)
+        return None if device is None else device.area_id
 
 
 def load_world(name: str, root: Path = WORLDS_DIR) -> World:

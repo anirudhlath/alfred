@@ -38,14 +38,6 @@ def test_states_carry_friendly_names() -> None:
     assert states["light.bedroom_lamp"].state == "off"
 
 
-def test_entities_in_area_by_domain() -> None:
-    world = load_world("apartment")
-    assert world.entity_ids_in_area("living_room", "light") == [
-        "light.living_room_ceiling",
-        "light.living_room_lamp",
-    ]
-
-
 def test_an_unknown_world_names_the_known_ones() -> None:
     with pytest.raises(FileNotFoundError, match="apartment"):
         load_world("castle")
@@ -59,6 +51,18 @@ def test_an_entity_in_an_unknown_area_is_rejected(tmp_path: Path) -> None:
         "services: {}\n"
     )
     with pytest.raises(ValidationError, match="unknown area attic"):
+        load_world("broken", root=tmp_path)
+
+
+def test_a_device_in_an_unknown_area_is_rejected(tmp_path: Path) -> None:
+    (tmp_path / "broken.yaml").write_text(
+        "name: broken\n"
+        "areas: [{area_id: kitchen, name: Kitchen}]\n"
+        "devices: [{id: d1, name: Attic Lamp, area_id: attic}]\n"
+        "entities: [{entity_id: light.attic, name: Attic, device_id: d1, state: 'off'}]\n"
+        "services: {}\n"
+    )
+    with pytest.raises(ValidationError, match="d1: unknown area attic"):
         load_world("broken", root=tmp_path)
 
 
@@ -104,15 +108,25 @@ def test_area_of_uses_the_entity_then_its_device() -> None:
     by_device = World.model_validate(
         {
             "name": "t",
-            "areas": [{"area_id": "den", "name": "Den"}],
+            "areas": [{"area_id": "den", "name": "Den"}, {"area_id": "kitchen", "name": "Kitchen"}],
             "devices": [{"id": "d1", "name": "Lamp", "area_id": "den"}],
             "entities": [
-                {"entity_id": "light.den", "name": "Den", "device_id": "d1", "state": "off"}
+                {"entity_id": "light.den", "name": "Den", "device_id": "d1", "state": "off"},
+                {
+                    "entity_id": "light.kitchen",
+                    "name": "Kitchen",
+                    "area_id": "kitchen",
+                    "device_id": "d1",
+                    "state": "off",
+                },
             ],
             "services": {"light": {}},
         }
     )
     assert by_device.area_of("light.den") == "den"
+    # The entity's own area wins over its device's.
+    assert by_device.area_of("light.kitchen") == "kitchen"
+    assert by_device.entities_in("den") == ["light.den"]
 
 
 def test_entities_in_an_area_by_domain_skip_disabled_ones() -> None:

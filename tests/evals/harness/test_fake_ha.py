@@ -15,7 +15,7 @@ from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 from evals.harness import fake_ha
 from evals.harness.evidence import HaCall, HaState
 from evals.harness.fake_ha import EVAL_HA_TOKEN, FakeHA, apply_service
-from evals.harness.world import load_world
+from evals.harness.world import World, load_world
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -108,6 +108,56 @@ async def test_call_service_on_an_area_records_entities_and_pushes_state(ha: Fak
     assert ha.states()["light.bedroom_lamp"] == HaState(
         state="on", attributes={"friendly_name": "Bedroom Lamp", "brightness": 128}
     )
+    await ws.close()
+
+
+@pytest.fixture
+async def den_ha() -> AsyncIterator[FakeHA]:
+    """A lamp in the den only through its device, and one on the same device whose
+    own area (the kitchen) overrides the device's."""
+    world = World.model_validate(
+        {
+            "name": "den",
+            "areas": [{"area_id": "den", "name": "Den"}, {"area_id": "kitchen", "name": "Kitchen"}],
+            "devices": [{"id": "d1", "name": "Den Hub", "area_id": "den"}],
+            "entities": [
+                {"entity_id": "light.den", "name": "Den", "device_id": "d1", "state": "off"},
+                {
+                    "entity_id": "light.kitchen",
+                    "name": "Kitchen",
+                    "area_id": "kitchen",
+                    "device_id": "d1",
+                    "state": "off",
+                },
+            ],
+            "services": {"light": {"turn_on": {"fields": {}, "target": {"entity": [{}]}}}},
+        }
+    )
+    server = FakeHA(world)
+    await server.start()
+    yield server
+    await server.stop()
+
+
+async def test_an_area_call_reaches_an_entity_in_the_area_through_its_device(
+    den_ha: FakeHA,
+) -> None:
+    ws, _ = await handshake(den_ha)
+    call = {"type": "call_service", "domain": "light", "service": "turn_on"}
+    assert (await command(ws, 1, **call, target={"area_id": "den"}))["success"]
+    assert den_ha.calls[-1].entity_ids == ["light.den"]
+    await ws.close()
+
+
+async def test_an_area_call_skips_an_entity_whose_own_area_overrides_its_device(
+    den_ha: FakeHA,
+) -> None:
+    ws, _ = await handshake(den_ha)
+    call = {"type": "call_service", "domain": "light", "service": "turn_on"}
+    assert (await command(ws, 1, **call, target={"area_id": "den"}))["success"]
+    assert "light.kitchen" not in den_ha.calls[-1].entity_ids
+    assert (await command(ws, 2, **call, target={"area_id": "kitchen"}))["success"]
+    assert den_ha.calls[-1].entity_ids == ["light.kitchen"]
     await ws.close()
 
 

@@ -246,7 +246,7 @@ class FakeHA:
         ids += [raw_ids] if isinstance(raw_ids, str) else list(raw_ids)
         raw_areas = target.get("area_id", [])
         for area in [raw_areas] if isinstance(raw_areas, str) else list(raw_areas):
-            ids += self.world.entity_ids_in_area(area, domain)
+            ids += self.world.entities_in(area, domain)
         return sorted(dict.fromkeys(ids))
 
     async def _handler(self, ws: ServerConnection) -> None:
