@@ -30,6 +30,7 @@ from core.integrations.base import IntegrationRequest
 from core.integrations.registry import IntegrationRegistry
 from core.triggers.feature import TriggerFeature  # noqa: TC001 (runtime use)
 from sdk.alfred_sdk.telemetry import track_latency
+from shared.config import DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
 from shared.env import is_truthy_flag
 from shared.streams import SCRATCHPAD_QUEUE
 from shared.traced import traced
@@ -81,7 +82,7 @@ class ConsciousConfig:
     api_key: str = ""
     max_tokens: int = 2048
     involuntary_recall_limit: int = 10
-    involuntary_recall_threshold: float = 0.4
+    involuntary_recall_threshold: float = DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
 
 
 @dataclass

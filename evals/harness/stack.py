@@ -35,6 +35,7 @@ from evals.harness.net import (
     container_reachable,
     in_container_url,
 )
+from shared.config import DEFAULT_EMBEDDING_MODEL, DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
 from shared.redis_streams import create_redis
 
 if TYPE_CHECKING:
@@ -53,7 +54,6 @@ EVAL_SOURCE = "alfred-evals"
 EVAL_OPENROUTER_PLACEHOLDER = "alfred-eval-not-a-key"
 EVAL_SIGNAL_NUMBER = "+15550100"
 EVAL_GUEST_SIGNAL_NUMBER = "+15550199"
-_BGE_M3_RECALL_FLOOR = "0.575"  # CLAUDE.md: bge-m3 needs 0.575 (EXP-009)
 # Every eval container runs on docker: `alfredctl up --eval --runtime docker`, and the probe.
 EVAL_RUNTIME = Runtime(name="docker", exe="docker")
 PROBE_CONNECT_TIMEOUT_S = 5.0
@@ -103,8 +103,8 @@ def container_env(cfg: StackConfig, *, proxy_port: int, fake_ha_port: int) -> di
         "SIGNAL_PHONE_NUMBER": EVAL_SIGNAL_NUMBER,
         "LIBRARIAN_INTERVAL_SECONDS": "86400",
     }
-    if cfg.embed_model == "BAAI/bge-m3":
-        env["INVOLUNTARY_RECALL_THRESHOLD"] = _BGE_M3_RECALL_FLOOR
+    if cfg.embed_model == DEFAULT_EMBEDDING_MODEL:
+        env["INVOLUNTARY_RECALL_THRESHOLD"] = str(DEFAULT_INVOLUNTARY_RECALL_THRESHOLD)
     return env
 
 

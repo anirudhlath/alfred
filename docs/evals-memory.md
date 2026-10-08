@@ -209,8 +209,8 @@ but are never compared.
 ## Gotchas
 
 - **Use the deployment's embedding model.** Similarity scales differ by model, and
-  involuntary recall's 0.5 floor is absolute. The deployment runs
-  `google/embeddinggemma-300m`; a fresh clone defaults to `all-MiniLM-L6-v2`.
+  involuntary recall's floor is absolute. The deployment and a fresh clone both run
+  `BAAI/bge-m3` at its calibrated floor of 0.575 (EXP-009).
 - **Don't load a second model onto a GPU that serves vLLM.** Run the in-process model
   on CPU (`CUDA_VISIBLE_DEVICES=""`), or point `EMBEDDING_BACKEND=openai` at an
   embedding model vLLM already serves. The second is fast enough to show what
