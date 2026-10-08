@@ -21,12 +21,12 @@ from evals.harness.driver import (
     outstanding_calls,
     play,
 )
-from evals.harness.evidence import ClockSet, Evidence, HaCall, LlmCall
+from evals.harness.evidence import ClockSet, Evidence, HaCall, LlmCall, StatePush
 from evals.harness.fake_ha import FakeHA
 from evals.harness.proxy import LlmProxy
 from evals.harness.scenario import Actor, Scenario, expand_variants
 from evals.harness.world import load_world
-from tests.evals.harness.factories import FakeBus, evidence
+from tests.evals.harness.factories import FakeBus, evidence, reflex_prompt
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
@@ -541,20 +541,27 @@ async def test_reflex_golden_waits_out_the_attention_cooldown_after_a_restore() 
     assert elapsed < 0.3  # a golden that does not watch Reflex does not wait
 
 
+CEILING_ON = "Living Room Ceiling (Living Room): off → on"  # LAMP_ON, as Reflex writes it
+
+
+def system1(change: str, reason: str = "quiet", status: int = 200) -> LlmCall:
+    """A System 1 call about *change* (a What changed line), arriving now."""
+    return LlmCall(
+        t=time.monotonic(),
+        role="system1",
+        latency_ms=5.0,
+        status=status,
+        messages=reflex_prompt(change),
+        response_text=f'{{"decision": "none", "reason": "{reason}"}}',
+    )
+
+
 async def test_an_ha_event_waits_for_system1_when_a_reflex_check_watches() -> None:
     proxy = LlmProxy("http://x")
 
     async def system1_answers() -> None:
         await asyncio.sleep(0.2)
-        proxy.record(
-            LlmCall(
-                t=time.monotonic(),
-                role="system1",
-                latency_ms=5.0,
-                status=200,
-                response_text='{"decision": "none", "reason": "quiet"}',
-            )
-        )
+        proxy.record(system1(CEILING_ON))
 
     answering = asyncio.create_task(system1_answers())
     elapsed, ev = await timed_play(
@@ -564,6 +571,29 @@ async def test_an_ha_event_waits_for_system1_when_a_reflex_check_watches() -> No
     await answering
     assert 0.2 <= elapsed < 2
     assert [(c.decision, c.reason) for c in ev.reflex] == [("none", "quiet")]
+    assert ev.state_pushes == [StatePush(step=0, entity_id="light.living_room_ceiling", state="on")]
+
+
+async def test_the_reflex_wait_ends_on_the_call_about_the_steps_own_change() -> None:
+    """A System 1 call about another change (a restore's backlog, a replay) does not end
+    it: the step's own call is still upstream."""
+    proxy = LlmProxy("http://x")
+
+    async def system1_answers() -> None:
+        await asyncio.sleep(0.1)
+        proxy.record(system1("Alex: not_home → home", reason="stray"))
+        await asyncio.sleep(0.2)
+        proxy.record(system1(CEILING_ON))
+
+    answering = asyncio.create_task(system1_answers())
+    elapsed, ev = await timed_play(
+        ctx(Recorder(), proxy=proxy, reflex_cooldown_s=0, reflex_timeout_s=5),
+        scenario(steps=[LAMP_ON], expect=[{"reflex_decision": {"decision": "none"}}]),
+    )
+    await answering
+    assert 0.3 <= elapsed < 2
+    assert ev.reflex_during(0)[0].reason == "quiet"
+    assert [c.reason for c in ev.reflex_unattributed(0)] == ["stray"]
 
 
 async def test_an_ha_event_waits_out_the_reflex_timeout_when_system1_stays_quiet() -> None:

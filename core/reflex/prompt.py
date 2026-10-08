@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
@@ -46,6 +47,12 @@ OTHER_ROOM = "Other"
 NO_DEVICES = "No devices to show."
 NO_TOOLS = "No tools available."
 NO_PREFERENCES = "None recorded yet."
+# The What changed line: "{name} ({room}): {old} → {new} · {detail} · …".
+STATE_CHANGE_HEADING = "What changed"
+NO_OLD_STATE = "(none)"
+_ARROW = " → "
+_DETAIL_SEP = " · "
+_HEAD = re.compile(r"(?P<name>.+) \((?P<area>[^()]+)\)")
 
 STATE_CHANGE_INTRO = (
     "You are Alfred's Reflex Engine, the quiet steward of a home. One thing in the house "
@@ -234,21 +241,60 @@ def _event_detail(key: str, value: object) -> str | None:
 
 
 def render_event(event: StateChangedEvent, entities: Mapping[str, LiveEntity] | None) -> str:
-    """One line: name (room): old → new, then up to three details from the event."""
+    """One line: name (room): old → new, then up to three details from the event.
+    ``parse_event`` reads it back."""
     known = entities.get(event.entity_id) if entities is not None else None
     # Live state names and places the entity; the event carries only HA's raw attributes.
     attributes = {**event.attributes, **(known.attributes if known is not None else {})}
     name = _name(event.entity_id, attributes)
     area = _area(attributes)
     head = f"{name} ({area})" if area else name
-    old = _clip(event.old_state) if event.old_state is not None else "(none)"
-    line = f"{head}: {old} → {_clip(event.new_state)}"
+    old = _clip(event.old_state) if event.old_state is not None else NO_OLD_STATE
+    line = f"{head}: {old}{_ARROW}{_clip(event.new_state)}"
     details = [
         detail
         for key in EVENT_ATTRIBUTES
         if (detail := _event_detail(key, event.attributes.get(key))) is not None
     ][:MAX_EVENT_DETAILS]
-    return " · ".join([line, *details])
+    return _DETAIL_SEP.join([line, *details])
+
+
+@dataclass(frozen=True)
+class RenderedEvent:
+    """A What changed line read back: the entity's name as written (its friendly name, or
+    its id when it has none), its room, and its states (clipped as written)."""
+
+    name: str
+    area: str | None
+    old: str | None
+    new: str
+
+
+def parse_event(line: str) -> RenderedEvent | None:
+    """``render_event``'s line read back, or None for a line it did not write.
+
+    A name that ends in a parenthesis, on an entity with no room, reads as a name and a
+    room: the line cannot tell them apart.
+    """
+    change = line.split(_DETAIL_SEP, 1)[0]
+    before, arrow, new = change.partition(_ARROW)
+    head, colon, old = before.rpartition(": ")
+    if not (arrow and colon and head and new):
+        return None
+    m = _HEAD.fullmatch(head)
+    return RenderedEvent(
+        name=head if m is None else m["name"],
+        area=None if m is None else m["area"],
+        old=None if old == NO_OLD_STATE else old,
+        new=new,
+    )
+
+
+def read_state_change(prompt: str) -> RenderedEvent | None:
+    """The state change a ``build_state_change_prompt`` prompt is about; None for any other
+    prompt. The section comes last but one, so the last heading of its name is the one."""
+    _, heading, section = prompt.rpartition(f"## {STATE_CHANGE_HEADING}\n")
+    return parse_event(section.split("\n", 1)[0]) if heading else None
 
 
 def render_trigger(event: TriggerFired) -> str:
@@ -312,7 +358,7 @@ def build_state_change_prompt(
         entities=entities,
         now=now,
         tz_name=tz_name,
-        change_heading="What changed",
+        change_heading=STATE_CHANGE_HEADING,
         change=render_event(event, entities),
     )
 

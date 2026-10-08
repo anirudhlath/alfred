@@ -19,10 +19,10 @@ from evals.harness.collect import (
     trigger_records,
 )
 from evals.harness.errors import HarnessError
-from evals.harness.evidence import LlmCall
-from evals.harness.reflex import local_hour, reflex_calls, targets, tool_domain
+from evals.harness.evidence import LlmCall, ReflexEvent
+from evals.harness.reflex import local_hour, reflex_calls, reflex_event, targets, tool_domain
 from evals.harness.world import World, load_world
-from tests.evals.harness.factories import evidence
+from tests.evals.harness.factories import evidence, reflex_prompt
 
 WALL0 = 1_760_000_000.0  # time.time() when the sample started
 STARTED = 50.0  # time.monotonic() at the same instant
@@ -410,6 +410,25 @@ def s1(text: str | None, status: int = 200, role: str = "system1", t: float = 3.
         messages=prompt("Thu 8 Oct, 22:05 (night)"),
         response_text=text,
     )
+
+
+def test_a_reflex_call_says_which_state_change_it_was_about() -> None:
+    world = load_world("apartment")
+    alex = reflex_event(reflex_prompt("Alex: home → not_home"), world)
+    assert alex == ReflexEvent(name="Alex", state="not_home", entity_id="person.alex")
+    lamp = reflex_event(reflex_prompt("Bedroom Lamp (Bedroom): off → on · 50%"), world)
+    assert lamp == ReflexEvent(name="Bedroom Lamp", state="on", entity_id="light.bedroom_lamp")
+    # No friendly name live: Reflex writes the entity id.
+    door = reflex_event(reflex_prompt("binary_sensor.front_door: off → on"), world)
+    assert door is not None and door.entity_id == "binary_sensor.front_door"
+    stranger = reflex_event(reflex_prompt("Robin: home → not_home"), world)
+    assert stranger == ReflexEvent(name="Robin", state="not_home", entity_id=None)
+    assert reflex_event(prompt("## Trigger fired\nLaundry (time)"), world) is None
+    call = s1(json.dumps({"decision": "none"})).model_copy(
+        update={"messages": reflex_prompt("Alex: home → not_home")}
+    )
+    [seen] = reflex_calls([call], [REFLEX_TOOL], world)
+    assert seen.event == alex
 
 
 def test_a_reflex_calls_done_is_when_the_proxy_answered() -> None:

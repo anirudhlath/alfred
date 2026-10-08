@@ -1,7 +1,9 @@
 """Checks over System 1's decisions. Reflex runs in shadow mode: it decides, nothing acts.
 
-The calls a check reads are the System 1 calls that reached the proxy during one step,
-an ``ha_event`` (``at_step``, which counts every step; default the golden's last one).
+The calls a check reads are the System 1 calls about one step's state change that reached
+the proxy during that step, an ``ha_event`` (``at_step``, which counts every step; default
+the golden's last one). A call in the window about anything else is named in the reason
+as unattributed, never judged.
 """
 
 from __future__ import annotations
@@ -65,10 +67,18 @@ def _clock_problem(evidence: Evidence, step: int, calls: list[ReflexCall]) -> st
 
 
 class _Window(NamedTuple):
-    """The ``ha_event`` step a reflex check judges, and the System 1 calls made during it."""
+    """The ``ha_event`` step a reflex check judges, the System 1 calls about its change, and
+    the calls in its window about anything else."""
 
     step: int
     calls: list[ReflexCall]
+    unattributed: list[ReflexCall]
+
+    def note(self) -> str:
+        """``"; unattributed: …"`` for the calls about anything else, or ``""``."""
+        if not self.unattributed:
+            return ""
+        return "; unattributed: " + "; ".join(describe_unattributed(c) for c in self.unattributed)
 
 
 def _window(evidence: Evidence, name: str, at_step: int | None) -> _Window | CheckResult:
@@ -83,7 +93,7 @@ def _window(evidence: Evidence, name: str, at_step: int | None) -> _Window | Che
     calls = evidence.reflex_during(step)
     if (problem := _clock_problem(evidence, step, calls)) is not None:
         return CheckResult(name=name, status="error", reason=problem)
-    return _Window(step, calls)
+    return _Window(step, calls, evidence.reflex_unattributed(step))
 
 
 def _tool_is(c: ReflexCall, tool: str) -> bool:
@@ -97,6 +107,13 @@ def _describe(c: ReflexCall) -> str:
         what += f" on {', '.join(named)}"
     why = c.problem or c.reason
     return f"{what} ({why})" if why else what
+
+
+def describe_unattributed(c: ReflexCall) -> str:
+    """A call about another change, and what that change was."""
+    if c.event is None:
+        return f"{_describe(c)} about no state change"
+    return f"{_describe(c)} about {c.event.name} → {c.event.state}"
 
 
 def _fits(c: ReflexCall, p: ReflexDecisionParams) -> bool:
@@ -124,15 +141,19 @@ def reflex_decision(evidence: Evidence, p: ReflexDecisionParams) -> CheckResult:
     window = _window(evidence, name, p.at_step)
     if isinstance(window, CheckResult):
         return window
-    step, calls = window
+    step, calls, _ = window
     if not calls:
         if "none" in p.decision:
-            return passed(name, f"System 1 was not called for step {step}: Reflex let it pass")
-        return failed(name, f"System 1 was not called for step {step}; wanted {_want(p)}")
+            return passed(
+                name, f"System 1 was not called for step {step}: Reflex let it pass{window.note()}"
+            )
+        return failed(
+            name, f"System 1 was not called for step {step}; wanted {_want(p)}{window.note()}"
+        )
     seen = "; ".join(_describe(c) for c in calls)
     if all(_fits(c, p) for c in calls):
-        return passed(name, seen)
-    return failed(name, f"wanted {_want(p)}; System 1 decided {seen}")
+        return passed(name, seen + window.note())
+    return failed(name, f"wanted {_want(p)}; System 1 decided {seen}{window.note()}")
 
 
 def reflex_not_proposed(evidence: Evidence, p: ReflexNotProposedParams) -> CheckResult:
@@ -146,7 +167,7 @@ def reflex_not_proposed(evidence: Evidence, p: ReflexNotProposedParams) -> Check
             and _tool_is(c, p.tool)
             and (p.target is None or p.target in c.targets)
         ):
-            return failed(name, f"System 1 proposed {_describe(c)}")
+            return failed(name, f"System 1 proposed {_describe(c)}{window.note()}")
     seen = "; ".join(_describe(c) for c in window.calls) or "it was not called"
     on = "" if p.target is None else f" on {p.target}"
-    return passed(name, f"no {'/'.join(p.decision)} {p.tool}{on} (System 1: {seen})")
+    return passed(name, f"no {'/'.join(p.decision)} {p.tool}{on} (System 1: {seen}){window.note()}")

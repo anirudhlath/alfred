@@ -24,8 +24,15 @@ from evals.harness.collect import (
     trigger_records,
 )
 from evals.harness.errors import HarnessError as HarnessError  # re-exported for tasks.py
-from evals.harness.evidence import Advance, ClockSet, Evidence, Reply, TranscriptTurn
-from evals.harness.reflex import reflex_calls
+from evals.harness.evidence import (
+    Advance,
+    ClockSet,
+    Evidence,
+    Reply,
+    StatePush,
+    TranscriptTurn,
+)
+from evals.harness.reflex import judges, reflex_calls
 from evals.harness.scenario import (
     Actor,
     AdvanceTriggerStep,
@@ -296,14 +303,19 @@ async def play(ctx: PlayContext, variant: ScenarioVariant, epoch: int) -> Eviden
                 e = step.ha_event
                 pushed = time.monotonic()
                 await ctx.fake_ha.set_state(e.entity_id, e.state, e.attributes)
+                ev.state_pushes.append(StatePush(step=index, entity_id=e.entity_id, state=e.state))
                 ev.transcript.append(
                     TranscriptTurn(role="event", text=f"{e.entity_id} → {e.state}")
                 )
-                # A golden that watches Reflex waits for System 1's answer to the event: a
-                # call is recorded once it completes, stamped with when it arrived.
+                # A golden that watches Reflex waits for System 1's answer to this event: a
+                # call is recorded once it completes, stamped with when it arrived. A call
+                # about another change (a restore's, a replay) does not end the wait.
                 if scenario.watches_reflex:
                     timeout = ctx.reflex_timeout_s if step.settle is None else step.settle
-                    await ctx.proxy.wait_for_call(pushed, timeout, _is_system1)
+                    about = partial(
+                        judges, world=ctx.fake_ha.world, entity_id=e.entity_id, state=e.state
+                    )
+                    await ctx.proxy.wait_for_call(pushed, timeout, about)
                 # Spec: wait for a call_service, or a 5 s window when the scenario expects
                 # nothing. It still expects one only while an ha_called check is unmet.
                 elif outstanding := outstanding_calls(scenario, index, ev, ctx.fake_ha):

@@ -70,6 +70,27 @@ class LlmCall(BaseModel):
     completion_tokens: int | None = None
 
 
+class ReflexEvent(BaseModel):
+    """The state change a System 1 prompt was about, read off its What changed line
+    (``core.reflex.prompt.read_state_change``)."""
+
+    name: str  # as Reflex wrote it: the entity's friendly name, or its id
+    state: str  # the new state
+    entity_id: str | None = None  # the world's one entity of that name; None if no one has it
+
+    def is_of(self, entity_id: str, state: str) -> bool:
+        """Whether this is *entity_id* changing to *state*."""
+        return self.entity_id == entity_id and self.state == state
+
+
+class StatePush(BaseModel):
+    """An ``ha_event`` step pushed ``entity_id`` to ``state``."""
+
+    step: int
+    entity_id: str
+    state: str
+
+
 class ReflexCall(BaseModel):
     """One System 1 call, parsed the way Reflex parses it (``core.reflex.decision``)."""
 
@@ -85,6 +106,11 @@ class ReflexCall(BaseModel):
     targets: list[str] = Field(default_factory=list)
     problem: str | None = None
     local_hour: int | None = None  # the hour the prompt's clock line showed
+    event: ReflexEvent | None = None  # None: a prompt about no state change (a trigger's)
+
+    def is_about(self, push: StatePush) -> bool:
+        """Whether this call judged the change *push* made."""
+        return self.event is not None and self.event.is_of(push.entity_id, push.state)
 
     @property
     def done(self) -> float:
@@ -182,6 +208,7 @@ class Evidence(BaseModel):
     deferred: list[NotificationRecord] = Field(default_factory=list)  # still held at the end
     advances: list[Advance] = Field(default_factory=list)
     clocks: list[ClockSet] = Field(default_factory=list)
+    state_pushes: list[StatePush] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _one_kind_per_step(self) -> Self:
@@ -215,10 +242,26 @@ class Evidence(BaseModel):
         """When the step started (*step* counts every step, -1 the last)."""
         return self.step_started[self.step_index(step)]
 
-    def reflex_during(self, step: int) -> list[ReflexCall]:
-        """The System 1 calls that reached the proxy during the step's window."""
+    def state_push(self, step: int) -> StatePush | None:
+        """What the step pushed, or None for a step that pushed nothing."""
+        i = self.step_index(step)
+        return next((p for p in self.state_pushes if p.step == i), None)
+
+    def _reflex_in(self, step: int) -> list[ReflexCall]:
         start, end = self.step_window(step)
         return [c for c in self.reflex if start <= c.t < end]
+
+    def reflex_during(self, step: int) -> list[ReflexCall]:
+        """The System 1 calls about the step's own state change that reached the proxy
+        during its window."""
+        push = self.state_push(step)
+        return [c for c in self._reflex_in(step) if push is not None and c.is_about(push)]
+
+    def reflex_unattributed(self, step: int) -> list[ReflexCall]:
+        """The System 1 calls in the step's window about anything else: a restore's change,
+        an earlier step's, a replayed one, or a trigger's fire."""
+        push = self.state_push(step)
+        return [c for c in self._reflex_in(step) if push is None or not c.is_about(push)]
 
     def last_step(self, kind: StepKind) -> int | None:
         """The index of the last step of *kind*, or None when the sample has none."""

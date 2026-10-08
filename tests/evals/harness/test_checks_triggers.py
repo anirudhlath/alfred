@@ -24,7 +24,7 @@ from evals.harness.evidence import (
     TriggerFire,
     TriggerRecord,
 )
-from tests.evals.harness.factories import evidence
+from tests.evals.harness.factories import about, evidence, pushes
 
 CREATED = datetime(2026, 10, 8, 18, 0, tzinfo=UTC)
 CRON = r"0 7 \* \* (1-5|mon-fri)"
@@ -276,10 +276,13 @@ def test_notification_text_can_be_in_the_body() -> None:
 def test_reflex_ms_runs_from_the_event_to_system1s_reply() -> None:
     def ev(*calls: ReflexCall) -> Evidence:
         return evidence(
-            step_started=[0.0, 10.0], step_kinds=["ha_event", "ha_event"], reflex=list(calls)
+            step_started=[0.0, 10.0],
+            step_kinds=["ha_event", "ha_event"],
+            reflex=list(calls),
+            state_pushes=pushes(["ha_event", "ha_event"]),
         )
 
-    call = ReflexCall(t=10.2, latency_ms=600, decision="none")
+    call = ReflexCall(t=10.2, latency_ms=600, decision="none", event=about())
     fast = LatencyParams.model_validate({"metric": "reflex_ms", "max": 1000})
     slow = LatencyParams.model_validate({"metric": "reflex_ms", "max": 500})
     assert run_check("latency", fast, ev(call)).status == "pass"
@@ -287,6 +290,13 @@ def test_reflex_ms_runs_from_the_event_to_system1s_reply() -> None:
     assert result.status == "fail" and "800 ms" in result.reason
     missed = run_check("latency", fast, ev())
     assert missed.status == "fail" and "not called" in missed.reason
+    # A call about another change is not the step's, however early it came back.
+    stray = ReflexCall(t=10.1, latency_ms=50, decision="none", event=about("person.alex", "home"))
+    timed = run_check("latency", slow, ev(stray, call))
+    assert timed.status == "fail" and "800 ms" in timed.reason
+    alone = run_check("latency", fast, ev(stray))
+    assert alone.status == "fail" and "not called" in alone.reason
+    assert "unattributed" in alone.reason
 
 
 def test_reflex_ms_at_step_times_the_named_event() -> None:
@@ -294,9 +304,10 @@ def test_reflex_ms_at_step_times_the_named_event() -> None:
         step_started=[0.0, 10.0],
         step_kinds=["ha_event", "ha_event"],
         reflex=[
-            ReflexCall(t=0.1, latency_ms=100, decision="none"),
-            ReflexCall(t=10.1, latency_ms=900, decision="none"),
+            ReflexCall(t=0.1, latency_ms=100, decision="none", event=about()),
+            ReflexCall(t=10.1, latency_ms=900, decision="none", event=about()),
         ],
+        state_pushes=pushes(["ha_event", "ha_event"]),
     )
 
     def timed(**at: int) -> str:

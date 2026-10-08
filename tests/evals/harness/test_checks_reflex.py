@@ -11,8 +11,8 @@ from evals.harness.checks.reflex import (
     ReflexDecisionParams,
     ReflexNotProposedParams,
 )
-from evals.harness.evidence import ClockSet, Evidence, ReflexCall, StepKind
-from tests.evals.harness.factories import evidence
+from evals.harness.evidence import ClockSet, Evidence, ReflexCall, ReflexEvent, StepKind
+from tests.evals.harness.factories import about, evidence, pushes
 
 
 def rc(
@@ -23,7 +23,9 @@ def rc(
     hour: int | None = None,
     reason: str = "because",
     problem: str | None = None,
+    event: ReflexEvent | None = None,
 ) -> ReflexCall:
+    """A System 1 call about the step's push (``factories.about``), unless *event* says."""
     return ReflexCall(
         t=t,
         latency_ms=800,
@@ -33,6 +35,7 @@ def rc(
         local_hour=hour,
         reason=reason,
         problem=problem,
+        event=event or about(),
     )
 
 
@@ -43,7 +46,11 @@ def ev(
     clocks: tuple[ClockSet, ...] = (),
 ) -> Evidence:
     return evidence(
-        step_started=list(starts), step_kinds=list(kinds), reflex=list(calls), clocks=list(clocks)
+        step_started=list(starts),
+        step_kinds=list(kinds),
+        reflex=list(calls),
+        clocks=list(clocks),
+        state_pushes=pushes(list(kinds)),
     )
 
 
@@ -85,6 +92,26 @@ def test_calls_outside_the_step_window_do_not_count() -> None:
     )
     assert decide(e, decision="none")[0] == "pass"  # default: the last ha_event step
     assert decide(e, decision="none", at_step=0)[0] == "fail"
+
+
+def test_a_call_about_another_change_is_not_the_steps_and_is_named() -> None:
+    """A restore's backlog, a replay or an earlier step's late call can land in the window:
+    only a call about the step's own change is judged."""
+    alex = about("person.alex", "home", name="Alex")
+    e = ev(rc("act", "home.light_turn_on", ("living_room",), event=alex), rc("none", t=2.0))
+    status, reason = decide(e, decision="none")
+    assert status == "pass"
+    assert "unattributed: act home.light_turn_on on living_room (because) about Alex → home" in (
+        reason
+    )
+    status, reason = not_proposed(e, tool="home.light_turn_on")
+    assert status == "pass" and "unattributed" in reason
+    trigger = rc("act", "home.light_turn_on", t=3.0).model_copy(update={"event": None})
+    status, reason = decide(ev(rc("none"), trigger), decision="none")
+    assert status == "pass" and "about no state change" in reason
+    # The same entity with another state is another step's change, too.
+    other = rc("act", "home.light_turn_on", event=about(state="on"))
+    assert decide(ev(rc("none"), other), decision="none")[0] == "pass"
 
 
 def test_every_call_in_the_window_must_fit() -> None:

@@ -12,10 +12,11 @@ from evals.harness.evidence import (
     Evidence,
     NotificationRecord,
     ReflexCall,
+    StatePush,
     TriggerFire,
     TriggerRecord,
 )
-from tests.evals.harness.factories import evidence
+from tests.evals.harness.factories import about, evidence, pushes
 
 
 def three_steps() -> Evidence:
@@ -23,6 +24,7 @@ def three_steps() -> Evidence:
         step_started=[0.0, 10.0, 20.0],
         step_kinds=["clock", "ha_event", "ha_event"],
         clocks=[ClockSet(step=0, hour=22, tz="Etc/GMT-7")],
+        state_pushes=pushes(["clock", "ha_event", "ha_event"]),
     )
 
 
@@ -58,8 +60,25 @@ def test_step_at_takes_at_step_as_given_or_defaults_to_the_last_of_the_kind() ->
         ev.step_at("ha_event", 3)
 
 
+def test_reflex_during_keeps_the_calls_about_the_steps_own_change() -> None:
+    def call(t: float, entity_id: str, state: str) -> ReflexCall:
+        return ReflexCall(t=t, latency_ms=1, decision="none", event=about(entity_id, state))
+
+    ours, theirs = call(10.5, "light.bedroom_lamp", "off"), call(11.0, "person.alex", "home")
+    unnamed = ReflexCall(t=12.0, latency_ms=1, decision="none")  # a trigger's: no change
+    ev = three_steps().model_copy(update={"reflex": [ours, theirs, unnamed]})
+    assert ev.reflex_during(1) == [ours]
+    assert ev.reflex_unattributed(1) == [theirs, unnamed]
+    assert ev.state_push(1) == StatePush(step=1, entity_id="light.bedroom_lamp", state="off")
+    assert ev.state_push(0) is None  # a clock step pushes nothing
+    assert ev.reflex_during(0) == []
+
+
 def test_step_start_and_reflex_during_read_one_step() -> None:
-    calls = [ReflexCall(t=t, latency_ms=1, decision="none") for t in (9.9, 10.0, 19.9, 20.0)]
+    calls = [
+        ReflexCall(t=t, latency_ms=1, decision="none", event=about())
+        for t in (9.9, 10.0, 19.9, 20.0)
+    ]
     ev = three_steps().model_copy(update={"reflex": calls})  # steps at 0, 10 and 20
     assert ev.step_start(1) == 10.0 and ev.step_start(-1) == 20.0
     assert [c.t for c in ev.reflex_during(1)] == [10.0, 19.9]
@@ -89,8 +108,18 @@ def test_new_evidence_round_trips_through_json() -> None:
     created = datetime(2026, 10, 8, 18, 0, tzinfo=UTC)
     ev = evidence(
         step_started=[0.0, 5.0],
-        step_kinds=["user", "advance_trigger"],
-        reflex=[ReflexCall(t=1.0, latency_ms=900, decision="act", tool="home.light_turn_off")],
+        step_kinds=["ha_event", "advance_trigger"],
+        reflex=[
+            ReflexCall(
+                t=1.0,
+                latency_ms=900,
+                answered_at=1.95,
+                decision="act",
+                tool="home.light_turn_off",
+                event=about(),
+            )
+        ],
+        state_pushes=pushes(["ha_event", "advance_trigger"]),
         triggers_created=[
             TriggerRecord(
                 t=1.0,
@@ -114,7 +143,11 @@ def test_new_evidence_round_trips_through_json() -> None:
         ],
         notifications=[
             NotificationRecord(
-                t=6.5, title="Trigger: Laundry", urgency="informational", source="trigger-engine"
+                t=6.5,
+                title="Trigger: Laundry",
+                urgency="informational",
+                source="trigger-engine",
+                trigger="Laundry",
             )
         ],
         deferred=[NotificationRecord(t=None, title="x", urgency="important", source="librarian")],

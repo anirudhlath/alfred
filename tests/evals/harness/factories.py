@@ -7,7 +7,16 @@ from typing import TYPE_CHECKING, Any
 from bus.schemas.events import ActionRequest, TriggerCreated, TriggerFired
 from core.notifications.schema import Notification, Urgency
 from evals.harness.bus import Entry
-from evals.harness.evidence import Evidence, HaCall, HaState, LlmCall, Reply, ToolCall
+from evals.harness.evidence import (
+    Evidence,
+    HaCall,
+    HaState,
+    LlmCall,
+    ReflexEvent,
+    Reply,
+    StatePush,
+    ToolCall,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -16,7 +25,10 @@ if TYPE_CHECKING:
     from pydantic import BaseModel
 
     from core.reflex.tool_registry import ToolInfo
-    from evals.harness.evidence import Role, TranscriptTurn
+    from evals.harness.evidence import Role, StepKind, TranscriptTurn
+
+# The state change a test's ha_event steps push, unless it says otherwise.
+LAMP, LAMP_STATE = "light.bedroom_lamp", "off"
 
 
 def evidence(
@@ -66,6 +78,31 @@ def llm(role: Role, *calls: tuple[str, dict[str, Any]]) -> LlmCall:
         status=200,
         tool_calls=[ToolCall(name=n, arguments=a) for n, a in calls],
     )
+
+
+def about(entity_id: str = LAMP, state: str = LAMP_STATE, name: str = "") -> ReflexEvent:
+    """What a System 1 prompt was about: *entity_id* changing to *state*."""
+    return ReflexEvent(name=name or entity_id, state=state, entity_id=entity_id)
+
+
+def pushes(
+    kinds: list[StepKind], entity_id: str = LAMP, state: str = LAMP_STATE
+) -> list[StatePush]:
+    """One push per ha_event step in *kinds*, each of *entity_id* to *state*."""
+    return [
+        StatePush(step=i, entity_id=entity_id, state=state)
+        for i, kind in enumerate(kinds)
+        if kind == "ha_event"
+    ]
+
+
+def reflex_prompt(change: str) -> list[dict[str, Any]]:
+    """System 1's messages, with *change* as the What changed line (``render_event``'s)."""
+    text = (
+        "You are Alfred's Reflex Engine, the quiet steward of a home.\n\n"
+        f"## What changed\n{change}\n\n## Decision (JSON only):"
+    )
+    return [{"role": "user", "content": text}]
 
 
 class FakeBus:

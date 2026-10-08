@@ -12,12 +12,14 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from core.reflex.decision import parse_decision
+from core.reflex.prompt import read_state_change
 from evals.harness.checks.llm import message_text
-from evals.harness.evidence import ReflexCall
+from evals.harness.evidence import ReflexCall, ReflexEvent
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
+    from core.reflex.prompt import RenderedEvent
     from core.reflex.tool_registry import ToolInfo
     from evals.harness.evidence import LlmCall
     from evals.harness.world import World
@@ -35,6 +37,34 @@ def local_hour(messages: list[dict[str, Any]]) -> int | None:
         if (m := _CLOCK.search(message_text(message))) is not None:
             return int(m.group(1))
     return None
+
+
+def _entity_named(world: World, seen: RenderedEvent) -> str | None:
+    """The one world entity Reflex writes this name for: its friendly name, or its id when
+    live state names none. The room narrows a name two entities share. None when no one
+    entity fits."""
+    hits = [e for e in world.entities if seen.name in (e.friendly_name, e.entity_id)]
+    if len(hits) > 1 and seen.area is not None:
+        rooms = {a.area_id: a.name for a in world.areas}
+        hits = [e for e in hits if rooms.get(world.area_of(e.entity_id) or "") == seen.area]
+    return hits[0].entity_id if len(hits) == 1 else None
+
+
+def reflex_event(messages: list[dict[str, Any]], world: World) -> ReflexEvent | None:
+    """The state change System 1's prompt was about, or None for a prompt about none (a
+    trigger's fire)."""
+    for message in messages:
+        if (seen := read_state_change(message_text(message))) is not None:
+            return ReflexEvent(name=seen.name, state=seen.new, entity_id=_entity_named(world, seen))
+    return None
+
+
+def judges(call: LlmCall, world: World, entity_id: str, state: str) -> bool:
+    """Whether *call* is System 1 judging *entity_id* changing to *state*."""
+    if call.role != "system1":
+        return False
+    event = reflex_event(call.messages, world)
+    return event is not None and event.is_of(entity_id, state)
 
 
 def tool_domain(tool: str, domains: Iterable[str]) -> str | None:
@@ -82,13 +112,15 @@ def reflex_calls(
     """Every System 1 call, as the decision Reflex took from it, earliest request first.
 
     The proxy records a call when its reply returns, so a slow call can be recorded after a
-    quicker one sent later; checks take ``[0]`` as the earliest request.
+    quicker one sent later; checks take ``[0]`` as the earliest request. Each call names
+    the state change it was about, so a check judges a step on its own change only.
     """
     out: list[ReflexCall] = []
     for call in sorted(llm_calls, key=lambda c: c.t):
         if call.role != "system1":
             continue
         hour = local_hour(call.messages)
+        event = reflex_event(call.messages, world)
         if not 200 <= call.status < 300:
             out.append(
                 ReflexCall(
@@ -98,6 +130,7 @@ def reflex_calls(
                     decision="invalid",
                     problem=f"no reply (HTTP {call.status})",
                     local_hour=hour,
+                    event=event,
                 )
             )
             continue
@@ -117,6 +150,7 @@ def reflex_calls(
                 targets=targets(world, tool, parameters),
                 problem=proposal.problem,
                 local_hour=hour,
+                event=event,
             )
         )
     return out

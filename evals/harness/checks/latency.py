@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Literal, Self, assert_never, get_args
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from evals.harness.checks.notifications import sample_trigger
+from evals.harness.checks.reflex import describe_unattributed
 from evals.harness.checks.result import CheckResult, failed, passed
 
 if TYPE_CHECKING:
@@ -50,7 +51,10 @@ def _reply_ms(evidence: Evidence, step: int) -> Measured:
 def _reflex_ms(evidence: Evidence, step: int) -> Measured:
     calls = evidence.reflex_during(step)
     if not calls:
-        return f"System 1 was not called for step {step}"
+        others = "; ".join(describe_unattributed(c) for c in evidence.reflex_unattributed(step))
+        return f"System 1 was not called for step {step}" + (
+            f"; unattributed: {others}" if others else ""
+        )
     return (calls[0].done - evidence.step_start(step)) * 1000, f"Reflex decided on step {step}"
 
 

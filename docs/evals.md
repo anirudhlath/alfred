@@ -111,7 +111,8 @@ fake HA to receive a `call_service` that an outstanding `ha_called` check wants 
 could count a call from that step and that no call so far in its range satisfies — up to
 30 s, then the 2 s settle; any other call does not end the wait. With no check outstanding
 it waits a 5 s window. A golden that watches Reflex (see [One sample](#one-sample)) waits
-instead for System 1's answer to the event, up to 15 s. When the steps are done it waits
+instead for System 1's answer to that event, up to 15 s: a System 1 call about any other
+change does not end the wait. When the steps are done it waits
 for every LLM call sent since the sample started and still upstream to be recorded (a call
 is recorded when vLLM answers, stamped with when it reached
 the proxy; up to 120 s, then a harness error). A call from before the sample started, such
@@ -544,7 +545,7 @@ expect:
 | Step | Fields | What the driver does |
 |---|---|---|
 | `user: <text>` | `variants: [<text>, …]`, `as: {…}` | Sends the utterance and waits for System 2's reply, then 2 s for side effects. `as` overrides the golden's actor for this step, which is how a conversation moves between channels |
-| `ha_event: {entity_id, state, attributes}` | `settle: <seconds>` | Pushes a state change through the fake HA, merging `attributes` into the entity's current ones. While an `ha_called` check that could count a call from this step (it has no `after_step`, or one at or before this step) is still unmet, it then waits for a `call_service` that check wants, up to 30 s, and 2 s more for side effects once one arrives; any other call does not end the wait. With no such check outstanding it waits a 5 s window. In a golden that watches Reflex (see [One sample](#one-sample)) it waits instead for System 1's answer, up to 15 s. `settle` replaces the 30 s, the 5 s or the 15 s |
+| `ha_event: {entity_id, state, attributes}` | `settle: <seconds>` | Pushes a state change through the fake HA, merging `attributes` into the entity's current ones. While an `ha_called` check that could count a call from this step (it has no `after_step`, or one at or before this step) is still unmet, it then waits for a `call_service` that check wants, up to 30 s, and 2 s more for side effects once one arrives; any other call does not end the wait. With no such check outstanding it waits a 5 s window. In a golden that watches Reflex (see [One sample](#one-sample)) it waits instead for System 1's answer to this change, up to 15 s. `settle` replaces the 30 s, the 5 s or the 15 s |
 | `wait: <seconds>` | — | Lets time pass (more than 0, at most 600) |
 | `clock: {hour: H}` | — | Sets the user's zone to the `Etc/GMT±N` zone whose local hour is H now. Reflex's clock is UTC shown in that zone. Never runs in an hour's last two minutes: there it first waits for the next hour. The reflex checks error if the prompt showed another hour |
 | `advance_trigger: {name: …}` | `settle: <seconds>` | Makes the newest one-time trigger (one with a `run_at`) the sample created due now, optionally narrowed by `name`, a case-insensitive part of its name. Then waits up to 15 s (`settle`) for it to fire, as a TriggerFired or, for a trigger with an action, its `ActionRequest`, and 2 s more once it has. With no such trigger, the transcript says so and the checks score it. `advance_trigger: {}` takes the newest |
@@ -668,8 +669,8 @@ scored separately. Params are validated at load and unknown keys are rejected.
 | `llm_tool_args_absent` | `tool`, `key` (required); `role` (default `system2`) | No call to the tool carries `key` |
 | `reply_contains` | exactly one of `text`, `any` (list), `regex`; `step` (int or `any`, default `-1`) | The reply at `step` (any reply, for `any`) contains `text` or one of `any` (case-insensitive), or `regex` matches it (`re.search`, case-insensitive). No reply at that step fails |
 | `reply_not_contains` | as `reply_contains` | No needle hits the chosen replies. No reply at that step fails |
-| `latency` | `metric` (required: `reply_ms`, `reflex_ms` or `reminder_fire_ms`), `max` (required; ms, > 0); `step` (int, default `-1`) for `reply_ms`; `at_step` for the other two | `reply_ms`: the reply at `step` arrived within `max` ms of its request. `reflex_ms`: the earliest System 1 call during the `ha_event` step was answered within `max` ms of the step's start (any wait for one of the proxy's upstream slots included). `reminder_fire_ms`: the notification of that trigger's fire was dispatched within `max` ms of the `advance_trigger` making it due |
-| `reflex_decision` | `decision` (required: `act`, `ask`, `none`, `invalid`, or a list of them); `tool`; `target`; `at_step` | Every System 1 call in the step's window has a decision in the set, and, for act/ask, the `tool` and `target` (entity or area id) given. `none` also passes when System 1 was not called |
+| `latency` | `metric` (required: `reply_ms`, `reflex_ms` or `reminder_fire_ms`), `max` (required; ms, > 0); `step` (int, default `-1`) for `reply_ms`; `at_step` for the other two | `reply_ms`: the reply at `step` arrived within `max` ms of its request. `reflex_ms`: the earliest System 1 call about the `ha_event` step's change was answered within `max` ms of the step's start (any wait for one of the proxy's upstream slots included). `reminder_fire_ms`: the notification of that trigger's fire was dispatched within `max` ms of the `advance_trigger` making it due |
+| `reflex_decision` | `decision` (required: `act`, `ask`, `none`, `invalid`, or a list of them); `tool`; `target`; `at_step` | Every System 1 call about the step's change has a decision in the set, and, for act/ask, the `tool` and `target` (entity or area id) given. `none` also passes when System 1 was not called |
 | `reflex_not_proposed` | `tool` (required); `target`; `decision` (default `[act, ask]`); `at_step` | No call in the window proposes that tool (on that target) |
 | `prompt_not_contains` | exactly one of `text`, `any`, `regex`; `role` (default `system2`) | No prompt of the role contains the text; fails when the role was never called |
 | `trigger_created` | `type` (`time`, `sensor`, `composite`), `name`, `conditions` (mapping), `run_in_seconds` (number or `{approx, tol}`), `at_local` (`{time: "HH:MM", tz}`), `urgency`, `one_shot`; all optional | A trigger System 2 created matches `type`, `name`, `conditions`, `run_in_seconds` (from creation to `run_at`), `at_local` (the `run_at`'s wall-clock time in a zone), `urgency` and `one_shot`. `name` is a case-insensitive part of the trigger's name |
@@ -678,11 +679,21 @@ scored separately. Params are validated at load and unknown keys are rejected.
 | `notification` | `urgency`, `source`, `text`, `deferred` (default `false`), `after_step`; all optional | A notification was dispatched (after `after_step`), or with `deferred: true` is still held by do-not-disturb, matching `urgency`, `source` and `text` (a case-insensitive part of the title or body). `deferred: true` reads the deferred list, so it cannot be combined with `after_step`. A `trigger-engine` notification counts only for the sample's own trigger: see below |
 | `judge` | `category` (required); `rubric` (required, at least 10 characters); `reference` (optional) | The judge answers yes to the rubric about Alfred's last reply. See below |
 
-**Reflex checks** read the System 1 calls that reached the proxy during their `at_step`
-step, from its start to the next step's or, for the last step, to the sample's end, each
-parsed into the decision Reflex took from it
+**Reflex checks** read the System 1 calls about their `at_step` step's state change that
+reached the proxy during that step, from its start to the next step's or, for the last
+step, to the sample's end. Each is parsed into the decision Reflex took from it
 (see [The bus](#the-bus)). A proposal's target is resolved the way home-service resolves
 it, and each entity's area is added, so a check can name the entity or the room.
+
+A call's change is read off its prompt's What changed line, by the parser that sits beside
+Reflex's renderer (`core/reflex/prompt.parse_event`). The name on it is resolved to the
+world's entity. Any other call in the window is never judged; the check's reason lists it
+as **unattributed**. Such a call can come from:
+
+- a restore the sample's first steps ran into;
+- an earlier step whose call came back late;
+- Reflex replaying an event it failed on;
+- a trigger's fire, whose prompt is about no state change.
 
 **Trigger checks** read only the triggers System 2 created with its tool in this sample: a
 trigger from another creator, such as the notification dispatcher's drain trigger, is not
