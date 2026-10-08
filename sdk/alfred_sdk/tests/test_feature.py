@@ -433,6 +433,19 @@ def test_parameter_json_schema_overrides_the_type_name() -> None:
     }
 
 
+def test_a_json_schema_description_wins_over_the_parameters() -> None:
+    schema = input_schema_from_parameters(
+        {
+            "mode": ToolParameter(
+                type="str",
+                description="From the parameter.",
+                json_schema={"type": "string", "description": "From the schema."},
+            )
+        }
+    )
+    assert schema["properties"]["mode"] == {"type": "string", "description": "From the schema."}
+
+
 def test_legacy_type_names_map_like_before() -> None:
     schema = input_schema_from_parameters(
         {
@@ -523,16 +536,24 @@ def test_mutating_the_callers_json_schema_leaves_the_parameter_alone() -> None:
 
 
 def test_replace_keeps_input_schema_audience_and_risk() -> None:
+    explicit = {
+        "type": "object",
+        "properties": {"q": {"type": "string", "minLength": 1}},
+        "required": ["q"],
+    }
     meta = ToolMeta(
         name="x.q",
         description="Q.",
         parameters={"q": ToolParameter(type="str", required=True)},
         audience="reflex",
         risk="critical",
+        input_schema=explicit,
     )
-    copy = dataclasses.replace(meta, description="Q, enriched.")
-    assert copy.input_schema == meta.input_schema
-    assert (copy.audience, copy.risk) == ("reflex", "critical")
+    # What `parameters` alone gives differs, so a replace that re-derived would show.
+    assert input_schema_from_parameters(meta.parameters) != explicit
+    enriched = dataclasses.replace(meta, description="Q, enriched.")
+    assert enriched.input_schema == explicit
+    assert (enriched.audience, enriched.risk) == ("reflex", "critical")
 
 
 def test_replace_re_derives_the_schema_only_when_told_to() -> None:
