@@ -94,6 +94,7 @@ def reflex_calls(
                 ReflexCall(
                     t=call.t,
                     latency_ms=call.latency_ms,
+                    answered_at=call.answered_at,
                     decision="invalid",
                     problem=f"no reply (HTTP {call.status})",
                     local_hour=hour,
@@ -108,6 +109,7 @@ def reflex_calls(
             ReflexCall(
                 t=call.t,
                 latency_ms=call.latency_ms,
+                answered_at=call.answered_at,
                 decision=proposal.decision,
                 reason=proposal.reason or "",
                 tool=tool,

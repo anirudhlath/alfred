@@ -187,8 +187,9 @@ class LlmProxy:
         return sorted(t for t in self._in_flight if t >= since)
 
     def record(self, call: LlmCall) -> None:
-        """Log a chat completion upstream answered (or failed), and wake whoever waits."""
-        self.calls.append(call)
+        """Log a chat completion upstream answered (or failed), stamped with when, and wake
+        whoever waits."""
+        self.calls.append(call.model_copy(update={"answered_at": time.monotonic()}))
         self._wake()
 
     def _wake(self) -> None:

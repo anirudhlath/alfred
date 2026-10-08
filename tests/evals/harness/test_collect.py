@@ -412,6 +412,12 @@ def s1(text: str | None, status: int = 200, role: str = "system1", t: float = 3.
     )
 
 
+def test_a_reflex_calls_done_is_when_the_proxy_answered() -> None:
+    queued = s1(json.dumps({"decision": "none"})).model_copy(update={"answered_at": 4.2})
+    [call] = reflex_calls([queued], [REFLEX_TOOL], load_world("apartment"))
+    assert call.done == 4.2
+
+
 def test_reflex_calls_parse_system1_replies_the_way_reflex_does() -> None:
     world = load_world("apartment")
     act = json.dumps(

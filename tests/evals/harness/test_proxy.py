@@ -143,6 +143,29 @@ async def test_concurrency_cap_covers_chat_and_passthrough_alike() -> None:
         await p.stop()
 
 
+async def test_answered_at_counts_the_wait_for_an_upstream_slot() -> None:
+    """latency_ms is upstream's time only; answered_at - t is what the caller waited."""
+
+    async def slow(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.1)
+        return httpx.Response(200, json=COMPLETION)
+
+    p = LlmProxy("http://vllm.test", max_concurrency=1, transport=httpx.MockTransport(slow))
+    await p.start()
+    try:
+        async with httpx.AsyncClient() as client:
+            body = {"model": "m", "messages": []}
+            await asyncio.gather(
+                *(client.post(f"{p.url}/v1/chat/completions", json=body) for _ in range(2))
+            )
+        queued = max(p.calls, key=lambda c: c.answered_at or 0.0)
+        assert queued.answered_at is not None
+        assert queued.latency_ms < 190  # its own upstream call
+        assert queued.answered_at - queued.t >= 0.19  # behind the other one's, too
+    finally:
+        await p.stop()
+
+
 async def test_wait_idle_returns_once_the_call_in_flight_is_recorded() -> None:
     release = asyncio.Event()
 

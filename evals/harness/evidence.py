@@ -55,10 +55,13 @@ class ToolCall(BaseModel):
 
 
 class LlmCall(BaseModel):
-    t: float
+    t: float  # when the request reached the proxy
     role: Role
-    latency_ms: float
+    latency_ms: float  # upstream's time only, for the usage table
     status: int
+    # When the proxy recorded the reply: queued behind its upstream slots and the body read
+    # included. None in a record from before it was kept.
+    answered_at: float | None = None
     messages: list[dict[str, Any]] = Field(default_factory=list)
     tools_offered: list[str] = Field(default_factory=list)
     response_text: str | None = None
@@ -72,6 +75,7 @@ class ReflexCall(BaseModel):
 
     t: float  # when the request reached the proxy
     latency_ms: float
+    answered_at: float | None = None  # LlmCall.answered_at
     decision: Decision
     reason: str = ""
     tool: str | None = None
@@ -84,7 +88,10 @@ class ReflexCall(BaseModel):
 
     @property
     def done(self) -> float:
-        """When System 1's reply came back: Reflex has decided."""
+        """When System 1's reply came back: Reflex has decided. A record from before
+        ``answered_at`` was kept has only upstream's time to go on."""
+        if self.answered_at is not None:
+            return self.answered_at
         return self.t + self.latency_ms / 1000
 
 

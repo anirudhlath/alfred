@@ -73,7 +73,10 @@ def test_calls_after_step_names_a_step_outside_the_sample() -> None:
         three_steps().calls_after_step(3)
 
 
-def test_reflex_call_done_is_arrival_plus_latency() -> None:
+def test_reflex_call_done_is_when_the_reply_came_back() -> None:
+    queued = ReflexCall(t=2.0, latency_ms=500, answered_at=2.9, decision="none")
+    assert queued.done == 2.9  # the proxy's queue and the body read count too
+    # A record from before answered_at was kept: upstream's time is all it has.
     assert ReflexCall(t=2.0, latency_ms=500, decision="none").done == 2.5
 
 
