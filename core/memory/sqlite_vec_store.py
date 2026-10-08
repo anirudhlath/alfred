@@ -35,6 +35,10 @@ _SCHEMA_VERSION = 3
 # vec0 measures L2 unless told otherwise, and search() reads ``1 - distance`` as cosine
 # similarity — the hot store's scale, which EpisodicMemory.recall merges with this one.
 _VEC_METRIC = "distance_metric=cosine"
+# The most neighbours vec0 returns from one KNN query (sqlite-vec's
+# SQLITE_VEC_VEC0_K_MAX): it refuses a larger k outright. search() scores every vector
+# past it, since deliberate recall reads deeper than this to find what its filters keep.
+_VEC_KNN_MAX_K = 4096
 # Seconds between attempts to switch a contended file to WAL (see _enable_wal).
 _WAL_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6, 3.2)
 _VEC_COSINE_RE = re.compile(r"\bdistance_metric\s*=\s*cosine\b", re.IGNORECASE)
@@ -585,14 +589,18 @@ class SqliteVecStore(VectorStore):
     ) -> list[SearchResult]:
         """KNN search via vec0 virtual tables, merging content + semantic results."""
         query_bytes = _pack(query_embedding)
+        # Past vec0's KNN ceiling, rank every vector by the cosine distance vec0 measures
+        # — the order KNN gives, read on below where it has to stop.
+        if limit <= _VEC_KNN_MAX_K:
+            nearest = "SELECT rowid, distance FROM {table} WHERE embedding MATCH ? AND k = ?"
+            nearest += " ORDER BY distance"
+        else:
+            nearest = "SELECT rowid, vec_distance_cosine(embedding, ?) AS distance FROM {table}"
+            nearest += " ORDER BY distance LIMIT ?"
 
         async def _query_table(table: str) -> list[tuple[int, float]]:
             try:
-                cursor = await db.execute(
-                    f"SELECT rowid, distance FROM {table}"
-                    f" WHERE embedding MATCH ? AND k = ? ORDER BY distance",
-                    (query_bytes, limit),
-                )
+                cursor = await db.execute(nearest.format(table=table), (query_bytes, limit))
                 rows = await cursor.fetchall()
                 return [(int(r[0]), float(r[1])) for r in rows]
             except Exception as exc:
@@ -620,13 +628,12 @@ class SqliteVecStore(VectorStore):
         if not rowid_score:
             return []
 
-        # Fetch metadata for matched rowids
-        placeholders = ",".join("?" * len(rowid_score))
+        # Fetch metadata for matched rowids, bound as one JSON array: a deep search can
+        # match more rows than SQLite takes variables in a statement (32766 by default).
         cursor = await db.execute(
-            f"SELECT rowid, id, timestamp, source, summary, entities,"
-            f" significance, semantic_key, compressed_into"
-            f" FROM episodic_entries WHERE rowid IN ({placeholders})",
-            list(rowid_score.keys()),
+            f"SELECT {_RESULT_COLUMNS} FROM episodic_entries"
+            " WHERE rowid IN (SELECT value FROM json_each(?))",
+            (json.dumps(list(rowid_score)),),
         )
         rows = list(await cursor.fetchall())
 
