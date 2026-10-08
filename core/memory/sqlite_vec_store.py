@@ -16,7 +16,7 @@ import aiosqlite
 from core.memory.vector_store import ContextMetadata, SearchResult, VectorStore
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Awaitable, Callable, Mapping
 
     from core.memory.embedding_provider import EmbeddingProvider
     from core.memory.vector_store import Range
@@ -30,8 +30,9 @@ _MIGRATION_V2_PATH = Path(__file__).parent / "episodic" / "migrations" / "v2.sql
 # their DDL, so both have to be checked (see _verify_vec_dim).
 _VEC_TABLES = ("vec_episodic_content", "vec_episodic_semantic")
 
-# v3 rebuilt the vec0 tables to measure cosine distance (see _migrate_v3).
-_SCHEMA_VERSION = 3
+# v3 rebuilt the vec0 tables to measure cosine distance (see _migrate_v3); v4 deleted
+# the vectors re-adds orphaned (see _migrate_v4).
+_SCHEMA_VERSION = 4
 # vec0 measures L2 unless told otherwise, and search() reads ``1 - distance`` as cosine
 # similarity — the hot store's scale, which EpisodicMemory.recall merges with this one.
 _VEC_METRIC = "distance_metric=cosine"
@@ -114,11 +115,11 @@ class SqliteVecStore(VectorStore):
     ``add``/``delete``/``exists``/``count`` still work, but ``search`` falls
     back to a full-table sequential scan (slower but correct).
 
-    Schema migration from v1 → v2 → v3 happens automatically on first connection
-    via ``_ensure_schema()``.  If the database already contains rows the v2 data
-    migration step embeds each existing summary so the vec0 tables are
+    Schema migration from v1 → v2 → v3 → v4 happens automatically on first
+    connection via ``_ensure_schema()``.  If the database already contains rows the
+    v2 data migration step embeds each existing summary so the vec0 tables are
     consistent from the start; v3 rebuilds L2 vec0 tables as cosine, copying every
-    vector.
+    vector; v4 deletes the vectors no entry owns any more.
 
     A vec0 table built at a different embedding width is the one case that is
     deliberately *not* graceful (see ``_verify_vec_dim``): it is latched and
@@ -178,7 +179,7 @@ class SqliteVecStore(VectorStore):
         return db
 
     async def _ensure_schema(self) -> None:
-        """Run schema migrations up to v3 if needed.
+        """Run schema migrations up to ``_SCHEMA_VERSION`` if needed.
 
         A proven dimension mismatch is latched and re-raised without touching the
         database again: every ``add``/``search``/``count`` reaches here via
@@ -202,8 +203,8 @@ class SqliteVecStore(VectorStore):
         # Fast path: already migrated and clean — stay read-only. Multiple
         # processes share this file and warm concurrently at startup while the
         # librarian may hold write transactions; taking write locks here
-        # produced "database is locked" warmup failures. v3 is the vec0 tables'
-        # version, which a process without the extension can neither build nor need.
+        # produced "database is locked" warmup failures. v3 and v4 migrate only the
+        # vec0 tables, which a process without the extension can neither touch nor need.
         current = _SCHEMA_VERSION if self._vec_ready else 2
         try:
             cursor = await db.execute("SELECT COUNT(*), MAX(version) FROM schema_version")
@@ -243,6 +244,7 @@ class SqliteVecStore(VectorStore):
 
         if self._vec_ready:
             await self._migrate_v3(db)
+            await self._migrate_v4(db)
 
         self._schema_ready = True
 
@@ -445,24 +447,78 @@ class SqliteVecStore(VectorStore):
         ``1 - distance`` — read everywhere as cosine similarity — was neither cosine
         nor bounded: a vector of length 3 pointing exactly at the query scored -1,
         and recall merged those scores with the hot store's real cosine ones. Cold
-        is the last stop, so the copy runs in one write transaction and a failure
-        rolls back to the L2 tables whole. The version and each table's DDL are read
-        again inside it: every service opens this file at startup, and only the
-        first to take the write lock should rebuild.
+        is the last stop, so a failure rolls back to the L2 tables whole (see
+        ``_migrate_vec_tables``), and each table's DDL is read again inside the
+        transaction.
+        """
+        await self._migrate_vec_tables(db, 3, self._rebuild_as_cosine, "cosine vec0 tables")
+
+    async def _migrate_v4(self, db: aiosqlite.Connection) -> None:
+        """Delete the vectors no entry owns, which re-adding an id left behind (issue #279).
+
+        Until v4, ``add()`` wrote an existing id with INSERT OR REPLACE, which deletes the
+        row and inserts it again under a new rowid. The vectors went in under the new
+        one, and the old rowid's stayed: KNN still returned them, each taking one of a
+        search's ``k`` slots, but no entry did, so a search came back short. And SQLite
+        hands a new row the largest rowid plus one, so once the entries above an orphan
+        were deleted, the next add landed on its rowid and vec0 refused that add's
+        vector — and every add after it, each rolling back to the same rowid.
+
+        No entry can reach an orphan, so deleting it loses nothing. Run once, as a
+        migration, so the startup fast path stays read-only; ``add()`` no longer makes
+        them.
+        """
+        await self._migrate_vec_tables(db, 4, self._delete_orphans, "orphaned vectors deleted")
+
+    async def _migrate_vec_tables(
+        self,
+        db: aiosqlite.Connection,
+        version: int,
+        migrate_table: Callable[[aiosqlite.Connection, str], Awaitable[None]],
+        description: str,
+    ) -> None:
+        """Apply ``migrate_table`` to each vec0 table and record ``version``.
+
+        One write transaction, so a failure rolls back to the tables as they were —
+        cold is the last stop. The version is read again inside it: every service
+        opens this file at startup, and only the first to take the write lock should
+        migrate. Reached only from ``_ensure_schema``, after ``_verify_vec_dim`` passed.
         """
         await db.execute("BEGIN IMMEDIATE")
         try:
             cursor = await db.execute("SELECT MAX(version) FROM schema_version")
             row = await cursor.fetchone()
-            if row is None or row[0] is None or row[0] < _SCHEMA_VERSION:
+            if row is None or row[0] is None or row[0] < version:
                 for table in _VEC_TABLES:
-                    await self._rebuild_as_cosine(db, table)
-                await db.execute("UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,))
-                logger.info("Applied schema migration v2 → v3 (cosine vec0 tables)")
+                    await migrate_table(db, table)
+                await db.execute("UPDATE schema_version SET version = ?", (version,))
+                logger.info(
+                    "Applied schema migration v%d → v%d (%s)", version - 1, version, description
+                )
             await db.commit()
         except BaseException:
             await db.rollback()
             raise
+
+    async def _delete_orphans(self, db: aiosqlite.Connection, table: str) -> None:
+        """Delete ``table``'s vectors under a rowid no entry has; inside ``_migrate_v4``.
+
+        Found first and then deleted one rowid at a time, the form ``delete()`` uses,
+        rather than by one DELETE scanning the vec0 table it deletes from. The scan
+        reads rowids only, never a vector.
+        """
+        cursor = await db.execute(
+            f"SELECT rowid FROM {table} WHERE rowid NOT IN (SELECT rowid FROM episodic_entries)"
+        )
+        orphans = [(row[0],) for row in await cursor.fetchall()]
+        if not orphans:
+            return
+        await db.executemany(f"DELETE FROM {table} WHERE rowid = ?", orphans)
+        logger.info(
+            "Deleted %d orphaned vectors from %s, left by re-added entries (issue #279)",
+            len(orphans),
+            table,
+        )
 
     async def _rebuild_as_cosine(self, db: aiosqlite.Connection, table: str) -> None:
         """Make ``table`` a cosine vec0 table; inside ``_migrate_v3``'s transaction.
@@ -528,12 +584,25 @@ class SqliteVecStore(VectorStore):
         significance_json = json.dumps({"overall": metadata.significance})
 
         try:
-            # Transactional write: metadata row + both vec0 tables in one commit
+            # Transactional write: metadata row + both vec0 tables in one commit. An
+            # upsert, so a re-added id keeps its rowid: INSERT OR REPLACE deletes the row
+            # and inserts it under a new one, orphaning the old rowid's vectors (issue
+            # #279). It comes first so the row is write-locked before its rowid is read.
             await db.execute(
-                """INSERT OR REPLACE INTO episodic_entries
+                """INSERT INTO episodic_entries
                    (id, timestamp, source, summary, entities, valence, embedding,
                     significance, semantic_key, compressed_into)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                    timestamp = excluded.timestamp,
+                    source = excluded.source,
+                    summary = excluded.summary,
+                    entities = excluded.entities,
+                    valence = excluded.valence,
+                    embedding = excluded.embedding,
+                    significance = excluded.significance,
+                    semantic_key = excluded.semantic_key,
+                    compressed_into = excluded.compressed_into""",
                 (
                     id,
                     metadata.timestamp,
@@ -550,16 +619,19 @@ class SqliteVecStore(VectorStore):
 
             rowid = await self._rowid_for_id(db, id)
             if rowid is not None and self._vec_ready:
-                content_bytes = _pack(embedding_content)
-                semantic_bytes = _pack(embedding_semantic)
-                await db.execute(
-                    "INSERT OR REPLACE INTO vec_episodic_content(rowid, embedding) VALUES (?, ?)",
-                    (rowid, content_bytes),
-                )
-                await db.execute(
-                    "INSERT OR REPLACE INTO vec_episodic_semantic(rowid, embedding) VALUES (?, ?)",
-                    (rowid, semantic_bytes),
-                )
+                for table, embedding in (
+                    ("vec_episodic_content", embedding_content),
+                    ("vec_episodic_semantic", embedding_semantic),
+                ):
+                    # vec0 refuses INSERT OR REPLACE over a rowid it already holds. On a
+                    # re-add that is this entry's old vector; on a new rowid it is normally
+                    # nothing, but an orphan there (see _migrate_v4) would refuse this add
+                    # and every later one, each rolling back to the same rowid.
+                    await db.execute(f"DELETE FROM {table} WHERE rowid = ?", (rowid,))
+                    await db.execute(
+                        f"INSERT INTO {table}(rowid, embedding) VALUES (?, ?)",
+                        (rowid, _pack(embedding)),
+                    )
 
             await db.commit()
         except Exception:
