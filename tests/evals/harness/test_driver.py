@@ -4,19 +4,27 @@ import asyncio
 import re
 import time
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import httpx
 import pytest
 
 from bus.schemas.events import AlfredResponse, UserRequest
-from evals.harness.driver import HarnessError, PlayContext, build_request, outstanding_calls, play
-from evals.harness.evidence import Evidence, HaCall, LlmCall
+from evals.harness.driver import (
+    HarnessError,
+    PlayContext,
+    build_request,
+    clock_wait_s,
+    outstanding_calls,
+    play,
+)
+from evals.harness.evidence import ClockSet, Evidence, HaCall, LlmCall
 from evals.harness.fake_ha import FakeHA
 from evals.harness.proxy import LlmProxy
 from evals.harness.scenario import Actor, Scenario, expand_variants
 from evals.harness.world import load_world
-from tests.evals.harness.factories import evidence
+from tests.evals.harness.factories import FakeBus, evidence
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
@@ -73,13 +81,18 @@ class Recorder:
         )
 
 
-def ctx(send, ha: FakeHA | None = None, proxy: LlmProxy | None = None) -> PlayContext:  # type: ignore[no-untyped-def]
+def ctx(  # type: ignore[no-untyped-def]
+    send, ha: FakeHA | None = None, proxy: LlmProxy | None = None, bus: FakeBus | None = None, **kw
+) -> PlayContext:
     return PlayContext(
         send=send,
         fake_ha=ha or FakeHA(load_world("apartment")),
         proxy=proxy or LlmProxy("http://x"),
+        bus=bus or FakeBus(),
         settle_s=0,
         restore_settle_s=0,
+        poll_s=0.01,
+        **kw,
     )
 
 
@@ -414,3 +427,160 @@ def test_a_check_counting_from_a_step_not_yet_started_names_the_step() -> None:
     ev = evidence(step_started=[0.0])  # the driver has not started step 1
     with pytest.raises(IndexError, match="step 1 is outside the sample's 1 steps"):
         outstanding_calls(s, 1, ev, FakeHA(load_world("apartment")))
+
+
+class Acting(Recorder):
+    """A send that also does *act*, as Alfred would while answering."""
+
+    def __init__(self, act: Callable[[], None]) -> None:
+        super().__init__()
+        self.act = act
+
+    async def __call__(self, request: UserRequest, timeout: float) -> AlfredResponse:
+        self.act()
+        return await super().__call__(request, timeout)
+
+
+async def played(play_ctx: PlayContext, **fields: object) -> Evidence:
+    [variant] = expand_variants(scenario(**fields))
+    return await play(play_ctx, variant, epoch=1)
+
+
+async def test_a_clock_step_sets_the_zone_for_its_hour_and_the_sample_puts_it_back() -> None:
+    bus = FakeBus(tz="America/Denver")
+    now = datetime(2026, 10, 8, 15, 10, tzinfo=UTC)
+    ev = await played(
+        ctx(Recorder(), bus=bus, now=lambda: now),
+        steps=[{"clock": {"hour": 22}}, {"user": "Hello."}],
+    )
+    assert ev.clocks == [ClockSet(step=0, hour=22, tz="Etc/GMT-7")]
+    assert ev.step_kinds == ["clock", "user"]
+    assert ev.transcript[0].text == "it is now 22:10"
+    assert bus.tz_set == ["Etc/GMT-7", "America/Denver"]
+
+
+@pytest.mark.parametrize(
+    ("minute", "second", "wait"),
+    [(10, 0, 0.0), (57, 59, 0.0), (58, 0, 121.0), (59, 30, 31.0), (59, 59, 2.0)],
+)
+def test_clock_waits_out_the_last_minutes_of_an_hour(minute: int, second: int, wait: float) -> None:
+    assert clock_wait_s(datetime(2026, 10, 8, 15, minute, second, tzinfo=UTC)) == wait
+
+
+async def test_advance_brings_the_samples_trigger_forward_and_waits_for_its_fire() -> None:
+    bus = FakeBus()
+    ev = await played(
+        ctx(Acting(lambda: bus.created("t1", "Laundry reminder")), bus=bus),
+        steps=[{"user": "Remind me in 20 minutes to move the laundry."}, {"advance_trigger": None}],
+    )
+    assert bus.advanced == ["t1"]
+    [advance] = ev.advances
+    assert (advance.step, advance.name) == (1, "Laundry reminder")
+    assert [f.trigger_id for f in ev.triggers_fired] == ["t1"]
+    assert [n.title for n in ev.notifications] == ["Trigger: Laundry reminder"]
+    assert ev.step_kinds == ["user", "advance_trigger"]
+    assert bus.deleted == ["t1"]  # cleanup; a fired one-shot is already gone, which is fine
+
+
+async def test_advance_without_a_trigger_is_alfreds_failure_not_the_harness() -> None:
+    bus = FakeBus()
+    ev = await played(
+        ctx(Recorder(), bus=bus),
+        steps=[{"user": "Remind me later."}, {"advance_trigger": None}],
+    )
+    assert ev.advances == [] and bus.advanced == []
+    assert ev.transcript[-1].text == "time passes, but no reminder was set"
+
+
+async def test_advancing_a_one_shot_that_already_fired_notes_it_is_gone() -> None:
+    bus = FakeBus()
+    ev = await played(
+        ctx(Acting(lambda: bus.created("t1", "Laundry reminder")), bus=bus),
+        steps=[
+            {"user": "Remind me in 20 minutes to move the laundry."},
+            {"advance_trigger": None},
+            {"advance_trigger": None},  # the one-shot fired and was deleted at the first
+        ],
+    )
+    assert bus.advanced == ["t1"] and [a.step for a in ev.advances] == [1]
+    assert ev.transcript[-1].text == "time passes, but 'Laundry reminder' is gone"
+
+
+async def test_play_cleans_up_triggers_dnd_and_clock() -> None:
+    bus = FakeBus()
+    ev = await played(
+        ctx(
+            Acting(lambda: bus.created("t9")),
+            bus=bus,
+            now=lambda: datetime(2026, 10, 8, 3, 0, tzinfo=UTC),
+        ),
+        steps=[{"clock": {"hour": 22}}, {"dnd": True, "settle": 0}, {"user": "Remind me."}],
+    )
+    assert "do not disturb on" in [t.text for t in ev.transcript]
+    assert bus.dnd == [True] and bus.cleared == 1
+    assert bus.deleted == ["t9"]
+    assert bus.tz_set[-1] is None  # nothing was stored before the sample
+
+
+async def test_reflex_golden_waits_out_the_attention_cooldown_after_a_restore() -> None:
+    ha = FakeHA(load_world("apartment"))
+    # The bedroom lamp starts off and the golden sets it off, so the golden never drifts it.
+    event = {"ha_event": {"entity_id": "light.bedroom_lamp", "state": "off"}, "settle": 0}
+    watches = scenario(steps=[event], expect=[{"reflex_decision": {"decision": "none"}}])
+    await ha.set_state("light.bedroom_lamp", "on")  # drifted: the restore pushes it back
+    elapsed, _ = await timed_play(ctx(Recorder(), ha, reflex_cooldown_s=0.4), watches)
+    assert elapsed >= 0.4
+    # Nothing to restore now, and the wait still applies: the last sample's event started
+    # a cooldown on the very entity this golden changes.
+    elapsed, _ = await timed_play(ctx(Recorder(), ha, reflex_cooldown_s=0.4), watches)
+    assert elapsed >= 0.4
+    plain = scenario(steps=[event])
+    elapsed, _ = await timed_play(ctx(Recorder(), ha, reflex_cooldown_s=0.4), plain)
+    assert elapsed < 0.3  # a golden that does not watch Reflex does not wait
+
+
+async def test_an_ha_event_waits_for_system1_when_a_reflex_check_watches() -> None:
+    proxy = LlmProxy("http://x")
+
+    async def system1_answers() -> None:
+        await asyncio.sleep(0.2)
+        proxy.calls.append(
+            LlmCall(
+                t=time.monotonic(),
+                role="system1",
+                latency_ms=5.0,
+                status=200,
+                response_text='{"decision": "none", "reason": "quiet"}',
+            )
+        )
+
+    answering = asyncio.create_task(system1_answers())
+    elapsed, ev = await timed_play(
+        ctx(Recorder(), proxy=proxy, reflex_cooldown_s=0, reflex_timeout_s=5),
+        scenario(steps=[LAMP_ON], expect=[{"reflex_decision": {"decision": "none"}}]),
+    )
+    await answering
+    assert 0.2 <= elapsed < 2
+    assert [(c.decision, c.reason) for c in ev.reflex] == [("none", "quiet")]
+
+
+async def test_an_ha_event_waits_out_the_reflex_timeout_when_system1_stays_quiet() -> None:
+    elapsed, ev = await timed_play(
+        ctx(Recorder(), reflex_cooldown_s=0, reflex_timeout_s=0.3),
+        scenario(steps=[LAMP_ON], expect=[{"reflex_decision": {"decision": "none"}}]),
+    )
+    assert elapsed >= 0.3 and ev.reflex == []
+
+
+async def test_sent_and_held_notifications_from_the_sample_are_evidence() -> None:
+    bus = FakeBus()
+    bus.notify("Trigger: Before the sample", wall=time.time() - 60)
+
+    def alfred_notifies() -> None:
+        bus.notify("Trigger: Vet", urgency="urgent")
+        bus.hold("Trigger: Plants")
+
+    ev = await played(ctx(Acting(alfred_notifies), bus=bus), steps=[{"user": "Hello."}])
+    assert [(n.title, n.urgency) for n in ev.notifications] == [("Trigger: Vet", "urgent")]
+    assert ev.started_at <= (ev.notifications[0].t or 0) <= ev.ended_at
+    assert [n.title for n in ev.deferred] == ["Trigger: Plants"]

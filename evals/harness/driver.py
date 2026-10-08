@@ -7,16 +7,31 @@ import time
 from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from functools import partial
 from typing import TYPE_CHECKING, assert_never
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from bus.schemas.events import AlfredResponse, UserRequest
 from core.conscious.identity import IDENTITY_GUEST, IDENTITY_SIR
+from evals.harness.bus import zone_for_hour
 from evals.harness.checks.home import satisfies
+from evals.harness.collect import deferred_records, notification_records, trigger_records
 from evals.harness.errors import HarnessError as HarnessError  # re-exported for tasks.py
-from evals.harness.evidence import Evidence, Reply, TranscriptTurn
-from evals.harness.scenario import Actor, HaEventStep, ScenarioVariant, UserStep, WaitStep
+from evals.harness.evidence import Advance, ClockSet, Evidence, Reply, TranscriptTurn
+from evals.harness.reflex import reflex_calls
+from evals.harness.scenario import (
+    Actor,
+    AdvanceTriggerStep,
+    ClockStep,
+    DndStep,
+    HaEventStep,
+    ScenarioVariant,
+    UserStep,
+    WaitStep,
+    step_kind,
+)
 from evals.harness.stack import (
     CONSCIOUS_SOURCE,
     EVAL_GUEST_SIGNAL_NUMBER,
@@ -25,6 +40,7 @@ from evals.harness.stack import (
 )
 
 if TYPE_CHECKING:
+    from evals.harness.bus import Bus
     from evals.harness.checks.home import HaCalledParams
     from evals.harness.evidence import HaCall, LlmCall
     from evals.harness.fake_ha import FakeHA
@@ -35,11 +51,25 @@ SendFn = Callable[[UserRequest, float], Awaitable[AlfredResponse]]
 TIMES = "\N{MULTIPLICATION SIGN}"
 
 
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def clock_wait_s(now: datetime) -> float:
+    """How long to wait before a clock step, so the hour it sets is still the hour when
+    Reflex reads it. Zero, except in an hour's last two minutes, when the wait runs one
+    second into the next hour."""
+    if now.minute < 58:
+        return 0.0
+    return float((60 - now.minute) * 60 - now.second + 1)
+
+
 @dataclass
 class PlayContext:
     send: SendFn
     fake_ha: FakeHA
     proxy: LlmProxy
+    bus: Bus
     reply_timeout_s: float = 120.0
     settle_s: float = 2.0
     restore_settle_s: float = 2.0
@@ -50,6 +80,15 @@ class PlayContext:
     # After the last step: how long an LLM call still upstream may take to be recorded.
     llm_idle_timeout_s: float = 120.0
     signal_number: str = EVAL_SIGNAL_NUMBER
+    # A golden that watches Reflex: how long to wait for System 1 after an ha_event (a
+    # step's ``settle`` replaces it), and how long to let Reflex's 5 s attention cooldown
+    # run out before the first step.
+    reflex_timeout_s: float = 15.0
+    reflex_cooldown_s: float = 6.0
+    # How long a trigger brought forward may take to fire; how often the bus is polled.
+    fire_timeout_s: float = 15.0
+    poll_s: float = 0.2
+    now: Callable[[], datetime] = _utc_now
 
 
 def build_request(actor: Actor, text: str, session_id: str, signal_number: str) -> UserRequest:
@@ -117,12 +156,103 @@ def session_id_for(sample_id: str, epoch: int) -> str:
     return f"eval-{sample_id}-e{epoch}-{uuid4().hex[:6]}"
 
 
+async def _wait_until(
+    check: Callable[[], Awaitable[bool]], timeout_s: float, poll_s: float
+) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while True:
+        if await check():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(poll_s)
+
+
+async def _set_clock(ctx: PlayContext, ev: Evidence, index: int, hour: int) -> None:
+    if (wait := clock_wait_s(ctx.now())) > 0:
+        await asyncio.sleep(wait)
+    now = ctx.now()
+    zone = zone_for_hour(hour, now)
+    await ctx.bus.set_user_timezone(zone)
+    ev.clocks.append(ClockSet(step=index, hour=hour, tz=zone))
+    local = now.astimezone(ZoneInfo(zone))
+    ev.transcript.append(TranscriptTurn(role="event", text=f"it is now {local:%H:%M}"))
+
+
+async def _advance(
+    ctx: PlayContext, ev: Evidence, index: int, step: AdvanceTriggerStep, started_wall: float
+) -> None:
+    """Make the sample's newest one-time trigger due now, then wait for it to fire."""
+    created, _ = trigger_records(await ctx.bus.events(started_wall), ev.started_at, started_wall)
+    name = step.advance_trigger.name
+    candidates = [
+        r
+        for r in created
+        if r.conditions.get("run_at") is not None
+        and (name is None or name.lower() in r.name.lower())
+    ]
+    if not candidates:
+        ev.transcript.append(
+            TranscriptTurn(role="event", text="time passes, but no reminder was set")
+        )
+        return
+    trigger = candidates[-1]
+    t = time.monotonic()
+    if not await ctx.bus.advance_trigger(trigger.trigger_id, ctx.now()):
+        ev.transcript.append(
+            TranscriptTurn(role="event", text=f"time passes, but {trigger.name!r} is gone")
+        )
+        return
+    ev.advances.append(Advance(step=index, trigger_id=trigger.trigger_id, name=trigger.name, t=t))
+    ev.transcript.append(TranscriptTurn(role="event", text=f"time passes: {trigger.name!r} is due"))
+
+    async def fired() -> bool:
+        _, fires = trigger_records(await ctx.bus.events(started_wall), ev.started_at, started_wall)
+        return any(f.trigger_id == trigger.trigger_id for f in fires)
+
+    timeout = ctx.fire_timeout_s if step.settle is None else step.settle
+    if await _wait_until(fired, timeout, ctx.poll_s):
+        await asyncio.sleep(ctx.settle_s)  # for the notification it sends
+
+
+async def _collect(ctx: PlayContext, ev: Evidence, started_wall: float) -> list[str]:
+    """Fill in the bus's evidence. Returns the ids of every trigger the sample created."""
+    created, fired = trigger_records(
+        await ctx.bus.events(started_wall), ev.started_at, started_wall
+    )
+    ev.triggers_created, ev.triggers_fired = created, fired
+    ev.notifications = notification_records(
+        await ctx.bus.notifications(started_wall), ev.started_at, started_wall
+    )
+    ev.deferred = deferred_records(await ctx.bus.deferred())
+    if any(c.role == "system1" for c in ev.llm_calls):
+        tools = await ctx.bus.reflex_tools()
+        ev.reflex = reflex_calls(ev.llm_calls, tools, ctx.fake_ha.world)
+    return [r.trigger_id for r in created]
+
+
+async def _clean_up(
+    ctx: PlayContext, created: list[str], touched_dnd: bool, tz_before: str | None
+) -> None:
+    """Leave the container as the sample found it, for the next sample in it."""
+    if created:
+        await ctx.bus.delete_triggers(created)
+    if touched_dnd:
+        await ctx.bus.clear_dnd()
+    if await ctx.bus.user_timezone() != tz_before:  # a clock step, or an actor's tz
+        await ctx.bus.set_user_timezone(tz_before)
+
+
 async def play(ctx: PlayContext, variant: ScenarioVariant, epoch: int) -> Evidence:
     scenario = variant.scenario
-    if await ctx.fake_ha.restore_world():
+    restored = await ctx.fake_ha.restore_world()
+    if scenario.watches_reflex:
+        await asyncio.sleep(max(ctx.restore_settle_s, ctx.reflex_cooldown_s))
+    elif restored:
         await asyncio.sleep(ctx.restore_settle_s)
     session_id = session_id_for(variant.sample_id, epoch)
     started = time.monotonic()
+    started_wall = time.time()
     ev = Evidence(
         scenario_id=scenario.id,
         variant=variant.variant,
@@ -131,8 +261,13 @@ async def play(ctx: PlayContext, variant: ScenarioVariant, epoch: int) -> Eviden
         started_at=started,
         ended_at=started,
     )
+    tz_before = await ctx.bus.user_timezone()
+    touched_dnd = False
     for index, step in enumerate(variant.steps):
         ev.step_started.append(time.monotonic())
+        kind = step_kind(step)
+        assert kind is not None  # a parsed step always has one
+        ev.step_kinds.append(kind)
         match step:
             case UserStep():
                 actor = step.actor or scenario.actor
@@ -166,9 +301,19 @@ async def play(ctx: PlayContext, variant: ScenarioVariant, epoch: int) -> Eviden
                 ev.transcript.append(
                     TranscriptTurn(role="event", text=f"{e.entity_id} → {e.state}")
                 )
+                # A golden that watches Reflex waits for System 1's answer to the event: a
+                # call is recorded once it completes, stamped with when it arrived.
+                if scenario.watches_reflex:
+
+                    async def system1_answered(since: float = pushed) -> bool:
+                        calls = ctx.proxy.calls_between(since, time.monotonic())
+                        return any(c.role == "system1" for c in calls)
+
+                    timeout = ctx.reflex_timeout_s if step.settle is None else step.settle
+                    await _wait_until(system1_answered, timeout, ctx.poll_s)
                 # Spec: wait for a call_service, or a 5 s window when the scenario expects
                 # nothing. It still expects one only while an ha_called check is unmet.
-                if outstanding := outstanding_calls(scenario, index, ev, ctx.fake_ha):
+                elif outstanding := outstanding_calls(scenario, index, ev, ctx.fake_ha):
                     wanted = partial(_satisfies_any, outstanding)
                     timeout = ctx.ha_call_timeout_s if step.settle is None else step.settle
                     if await ctx.fake_ha.wait_for_call(pushed, timeout, wanted):
@@ -179,6 +324,16 @@ async def play(ctx: PlayContext, variant: ScenarioVariant, epoch: int) -> Eviden
                     )
             case WaitStep():
                 await asyncio.sleep(step.wait)
+            case ClockStep():
+                await _set_clock(ctx, ev, index, step.clock.hour)
+            case AdvanceTriggerStep():
+                await _advance(ctx, ev, index, step, started_wall)
+            case DndStep():
+                await ctx.bus.set_dnd(step.dnd)
+                touched_dnd = True
+                state = "on" if step.dnd else "off"
+                ev.transcript.append(TranscriptTurn(role="event", text=f"do not disturb {state}"))
+                await asyncio.sleep(step.settle)
             case _:
                 assert_never(step)
     # A call is recorded when upstream answers, stamped with when it arrived: one sent
@@ -194,4 +349,8 @@ async def play(ctx: PlayContext, variant: ScenarioVariant, epoch: int) -> Eviden
     ev.ha_calls = ctx.fake_ha.calls_between(started, ended)
     ev.llm_calls = ctx.proxy.calls_between(started, ended)
     ev.ha_states = ctx.fake_ha.states()
+    # Cleanup runs only on this path: a sample that raised leaves a dirty stack, and the
+    # next sample restarts it (tasks.reset_or_recover).
+    created = await _collect(ctx, ev, started_wall)
+    await _clean_up(ctx, created, touched_dnd, tz_before)
     return ev

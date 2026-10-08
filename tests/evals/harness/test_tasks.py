@@ -19,6 +19,7 @@ from evals.harness.scenario import Scenario, expand_variants
 from evals.harness.stack import StackError
 from evals.harness.tasks import RunContext, build_task, verdict
 from evals.harness.world import load_world
+from tests.evals.harness.factories import FakeBus
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -89,6 +90,7 @@ def context(
         send=send,
         fake_ha=FakeHA(load_world("apartment")),
         proxy=LlmProxy("http://x"),
+        bus=FakeBus(),
         settle_s=0,
         restore_settle_s=0,
     )
