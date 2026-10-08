@@ -214,7 +214,7 @@ graph TD
     Agents -->|MCP/HTTP| Services[Microservices<br/>home-service, ...]
     Conscious --> Memory[Memory<br/>episodic + semantic + procedural]
     Conscious --> Integrations[IntegrationRegistry<br/>weather, calendar, health, robinhood]
-    Conscious --> Notify[NotificationDispatcher<br/>Signal, WebSocket, APNs]
+    Conscious --> Notify[NotificationDispatcher<br/>Signal, WebSocket, APNs, satellites]
     Memory --> Librarian[Librarian<br/>nightly consolidation]
     WebAuthn[WebAuthn<br/>Passkey Auth] --> WebChannel
     WebChannel[Web Channel :8081<br/>SPA + chat WS<br/>+ /api/admin/* + /ws/telemetry] -->|UserRequest| Bus

@@ -771,13 +771,15 @@ graph LR
     DND -->|inactive| CR[ChannelRegistry]
     CR --> Signal[Signal]
     CR --> WS[WebSocket]
-    CR --> Voice[Voice TTS]
+    CR --> APNs[APNs]
+    CR --> Sat[Voice satellites]
     Defer -->|drain trigger| Disp
 ```
 
 The notification system is deterministic — no LLM calls. The Dispatcher checks DND state,
 defers non-urgent notifications during DND, and routes to auto-discovered channel adapters
-by urgency level. URGENT notifications always bypass DND.
+by urgency level. URGENT notifications always bypass DND. Which adapter takes which urgency,
+and which surfaces speak, is listed in [docs/notifications.md](notifications.md).
 
 ## 4.5 Authentication (WebAuthn)
 
