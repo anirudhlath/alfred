@@ -7,11 +7,17 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import Body, FastAPI
 
+from sdk.alfred_sdk.feature import ToolArgumentError
+
 if TYPE_CHECKING:
     from core.triggers.feature import TriggerFeature
     from sdk.alfred_sdk.client import AlfredClient
 
 logger = logging.getLogger(__name__)
+
+# JSON-RPC 2.0 error codes.
+JSONRPC_INVALID_PARAMS = -32602
+JSONRPC_INTERNAL_ERROR = -32603
 
 
 def create_app(client: AlfredClient, feature: TriggerFeature) -> FastAPI:
@@ -59,11 +65,20 @@ def create_app(client: AlfredClient, feature: TriggerFeature) -> FastAPI:
         try:
             result = await client.dispatch(method, params)
             return {"jsonrpc": "2.0", "result": result, "id": req_id}
+        except ToolArgumentError as e:
+            # The caller's arguments, not this server, are at fault: JSON-RPC's
+            # "Invalid params", with the SDK's message naming the tool and every field.
+            logger.warning("JSON-RPC invalid params for method '%s': %s", method, e)
+            return {
+                "jsonrpc": "2.0",
+                "error": {"code": JSONRPC_INVALID_PARAMS, "message": str(e)},
+                "id": req_id,
+            }
         except Exception as e:
             logger.error("JSON-RPC error for method '%s': %s", method, e)
             return {
                 "jsonrpc": "2.0",
-                "error": {"code": -32603, "message": str(e)},
+                "error": {"code": JSONRPC_INTERNAL_ERROR, "message": str(e)},
                 "id": req_id,
             }
 
