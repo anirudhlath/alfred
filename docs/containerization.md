@@ -31,7 +31,7 @@ flowchart TB
         subgraph C["alfred container — one fat OCI image"]
             tini["tini (PID 1)"]
             runner["runner supervisor<br/>(ALFRED_MANAGE_INFRA=1)"]
-            redis["redis-stack-server :6379"]
+            redis["redis-server + RediSearch :6379"]
             mqtt["mosquitto :1883"]
             core["bridge · reflex · triggers ·<br/>conscious · channels · memory-ingestor"]
             home["home-service :8000"]
@@ -70,7 +70,13 @@ Inside the final stage:
   `mosquitto-clients` (MQTT broker + CLI for smoke checks), `libgomp1` (RediSearch's
   OpenMP runtime dependency)
 - **Redis** — `redis-server`/`redis-cli` binaries + `/usr/local/lib/redis/modules/*.so`
-  copied from the `redis` stage
+  copied from the `redis` stage. With no `redis-stack-server` on `PATH`, the runner
+  (`runner/__main__.py:_redis_command`) starts `redis-server --loadmodule …` from
+  `ALFRED_REDIS_MODULES_DIR` (default `/usr/local/lib/redis/modules`). `redisearch.so` is
+  required — vector memory's `FT.*` commands are RediSearch — and without it the runner
+  exits 1 before launching anything ([Troubleshooting](#runner-exits-at-startup-redis-refusing-to-start-redis-server-without-redisearchso)).
+  `rejson.so` is loaded when present but optional: nothing issues a `JSON.*` command (the
+  context index is `ON HASH`)
 - **Python deps** — `alfred[voice,memory,integrations]` and home-service's own
   `pyproject.toml` deps, installed via `uv pip install --system` in a cache-friendly
   layer *before* source is copied (deps rarely change; source changes every commit)
@@ -492,6 +498,27 @@ raw `docker build`. Clone the sibling yourself in that case:
 ```bash
 git clone https://github.com/anirudhlath/alfred-home-service ../home-service
 ```
+
+### Runner exits at startup: `[redis] refusing to start redis-server without redisearch.so`
+
+**Symptom:** the container exits with status 1 seconds after starting, before any
+service starts. The runner's `[redis]` error names `ALFRED_REDIS_MODULES_DIR` and says
+what it found there (`it holds no .so files`, `the directory does not exist`, or the
+modules it did find).
+
+**Cause:** `redis-stack-server` is not on `PATH` (it never is in the image), so the
+runner starts plain `redis-server` and loads RediSearch from `ALFRED_REDIS_MODULES_DIR`
+— and `redisearch.so` is not there. That happens with an image whose `COPY --from=redis
+/usr/local/lib/redis/modules/` step was dropped or changed, or a hand-rolled
+`ALFRED_MANAGE_INFRA=1` environment whose modules live somewhere else. The runner
+refuses rather than start a Redis without its query engine: that Redis would answer
+`PING`, pass the readiness gate, and leave memory to fail later with `unknown command
+'FT.SEARCH'`.
+
+**Fix:** rebuild the image (`uv run alfredctl build`), or set `ALFRED_REDIS_MODULES_DIR`
+to the directory holding `redisearch.so` (and `rejson.so`, optional). Native dev never
+hits this — with `redis-stack-server` on `PATH`, the runner starts that and ignores the
+variable.
 
 ### `alfredctl smoke` health check times out
 

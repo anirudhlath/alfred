@@ -32,6 +32,21 @@ logger = logging.getLogger(__name__)
 # Docker adds host.docker.internal via extra_hosts; Podman uses host.containers.internal.
 _GATEWAY_HOSTS = ("host.docker.internal", "host.containers.internal")
 
+# Where the container path's redis-server finds its modules (ALFRED_REDIS_MODULES_DIR):
+# the Containerfile copies them here from redis:8-bookworm.
+_DEFAULT_REDIS_MODULES_DIR = "/usr/local/lib/redis/modules"
+# Vector memory's FT.CREATE/FT.SEARCH/FT.INFO (core/memory/redis_vector_store.py) are
+# RediSearch commands. A redis-server without it starts and answers PING, then fails
+# every recall with "unknown command 'FT.SEARCH'" — so its absence is fatal at startup.
+_REQUIRED_REDIS_MODULES = ("redisearch.so",)
+# Loaded when present, as the image ships it, but nothing issues a JSON.* command (the
+# context index is ON HASH) — a Redis without it is missing nothing Alfred uses.
+_OPTIONAL_REDIS_MODULES = ("rejson.so",)
+
+
+class RedisModulesMissingError(RuntimeError):
+    """``redis-server`` would start without a module Alfred cannot run without."""
+
 
 def _reachable_gateway() -> str | None:
     """First container→host gateway hostname that resolves, or None."""
@@ -70,6 +85,7 @@ def build_services() -> list[ServiceSpec]:
     The six core Python services are always included. Native infra
     (redis, mosquitto) and home-service are added only when
     ``ALFRED_MANAGE_INFRA`` is truthy — the container's job, not native dev.
+    Raises RedisModulesMissingError when that Redis would start without RediSearch.
     """
     services = [
         ServiceSpec(name="bridge", module="bus"),
@@ -136,7 +152,10 @@ def _infra_services() -> list[ServiceSpec]:
 def _redis_command(redis_dir: Path) -> list[str]:
     """Redis argv: redis-stack-server when installed (native dev), else redis-server
     with explicit module loads (container). Persistence follows ALFRED_DATA_MODE, except
-    under ALFRED_EVAL: an eval stack listens on the container interface and keeps nothing."""
+    under ALFRED_EVAL: an eval stack listens on the container interface and keeps nothing.
+
+    Raises RedisModulesMissingError on the container path when RediSearch is absent.
+    """
     redis_dir.mkdir(parents=True, exist_ok=True)
     if shutil.which("redis-stack-server"):
         return ["redis-stack-server", "--dir", str(redis_dir)]
@@ -151,12 +170,40 @@ def _redis_command(redis_dir: Path) -> list[str]:
             cmd += ["--appendonly", "yes"]
         else:
             cmd += ["--save", "", "--appendonly", "no"]
-    modules_dir = Path(os.getenv("ALFRED_REDIS_MODULES_DIR", "/usr/local/lib/redis/modules"))
-    for mod in ("redisearch.so", "rejson.so"):
-        path = modules_dir / mod
-        if path.exists():
-            cmd += ["--loadmodule", str(path)]
+    for module in _redis_modules():
+        cmd += ["--loadmodule", str(module)]
     return cmd
+
+
+def _redis_modules() -> list[Path]:
+    """Module files for ``redis-server --loadmodule``, from ALFRED_REDIS_MODULES_DIR.
+
+    Raises RedisModulesMissingError when a required one is absent, before any process
+    exists: a modules-less Redis passes the PING readiness gate, so it would otherwise
+    surface only later, as cryptic FT.* errors from memory (issue #212).
+    """
+    modules_dir = Path(os.getenv("ALFRED_REDIS_MODULES_DIR") or _DEFAULT_REDIS_MODULES_DIR)
+    missing = [name for name in _REQUIRED_REDIS_MODULES if not (modules_dir / name).is_file()]
+    if missing:
+        if modules_dir.is_dir():
+            present = sorted(p.name for p in modules_dir.glob("*.so"))
+            found = f"found: {', '.join(present)}" if present else "it holds no .so files"
+        else:
+            found = "the directory does not exist"
+        expected = [f"{name} (required)" for name in _REQUIRED_REDIS_MODULES] + [
+            f"{name} (optional)" for name in _OPTIONAL_REDIS_MODULES
+        ]
+        raise RedisModulesMissingError(
+            f"refusing to start redis-server without {', '.join(missing)}: "
+            "redis-stack-server is not on PATH, so Redis loads its modules from "
+            f"ALFRED_REDIS_MODULES_DIR={modules_dir} ({found}). Expected "
+            f"{' and '.join(expected)} there — vector memory issues RediSearch FT.* "
+            "commands. Rebuild the image (uv run alfredctl build), which copies them from "
+            "redis:8-bookworm, or point ALFRED_REDIS_MODULES_DIR at the directory that "
+            "holds them."
+        )
+    candidates = _REQUIRED_REDIS_MODULES + _OPTIONAL_REDIS_MODULES
+    return [modules_dir / name for name in candidates if (modules_dir / name).is_file()]
 
 
 def _write_mosquitto_conf() -> Path:
@@ -212,7 +259,13 @@ def main() -> None:
         endpoint=config.otel_endpoint if config.signoz_enabled else None,
     )
 
-    services = build_services()
+    try:
+        services = build_services()
+    except RedisModulesMissingError as exc:
+        # Same exit code and log channel as a failed readiness gate, but before the
+        # supervisor launches anything — no Redis to start only to kill again.
+        logger.error("[redis] %s", exc)
+        sys.exit(1)
     names = ", ".join(s.name for s in services)
     mode = "reload" if reload else "static"
     log.info("Alfred — starting {} services ({}): {}", len(services), mode, names)
