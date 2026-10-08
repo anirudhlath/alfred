@@ -1,0 +1,11 @@
+id: triggers.sensor.front_door_opens
+prd: [4.2.sensor-triggers, 4.2.dynamic-triggers, 5.not-rules-engine]
+status: shipped
+tags: [sensor]
+steps:
+  - user: "Let me know when the front door opens."
+  - ha_event: {entity_id: binary_sensor.front_door, state: "on"}
+expect:
+  - trigger_created: {type: sensor, conditions: {entity_id: binary_sensor.front_door}}
+  # Whatever state_match Alfred wrote, HA's "on" is what a door opening sends.
+  - trigger_fired: {after_step: 1, within_s: 5}

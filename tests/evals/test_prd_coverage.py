@@ -90,25 +90,90 @@ def test_problems_name_unmapped_rows_and_unknown_suites(tmp_path: Path) -> None:
     assert "nope/" in problems  # missing test path
     assert "is built" not in problems  # no suite is built yet
 
+    # A built suite no golden of which cites the row is still pending for it.
     built = "\n".join(coverage_problems(MINI_PRD, coverage, {"notifications": []}, tmp_path))
-    assert (
-        "principle.1: suite 'notifications' is built; move it to suites and cite the row "
-        "from a golden"
-    ) in built
+    assert "principle.1" not in built
 
 
-def _golden(scenario_id: str, prd: list[str]) -> Scenario:
+def _golden(
+    scenario_id: str, prd: list[str], *, status: str = "shipped", suite: str = "conversation"
+) -> Scenario:
     return Scenario.model_validate(
         {
             "id": scenario_id,
             "prd": prd,
-            "status": "shipped",
-            "suite": "conversation",
-            "path": f"conversation/{scenario_id}.yaml",
+            "status": status,
+            "suite": suite,
+            "path": f"{suite}/{scenario_id}.yaml",
             "steps": [{"user": "Good evening, Alfred."}],
             "expect": [{"ha_not_called": {}}],
         }
     )
+
+
+def _one_row(**mapping: list[str]) -> Coverage:
+    """A coverage map whose one row is MINI_PRD's §7 row, the rest not_llm."""
+    return Coverage.model_validate(
+        {
+            "rows": [
+                {
+                    "id": "principle.1",
+                    "section": "3",
+                    "prd": "Proactive",
+                    "not_llm": "x",
+                    "elsewhere": "y",
+                },
+                {
+                    "id": "principle.2",
+                    "section": "3",
+                    "prd": "Local-first",
+                    "not_llm": "x",
+                    "elsewhere": "y",
+                },
+                {
+                    "id": "4.1.signal",
+                    "section": "4.1",
+                    "prd": "Signal",
+                    "not_llm": "x",
+                    "elsewhere": "y",
+                },
+                {"id": "7.reflex-latency", "section": "7", "prd": "Reflex latency", **mapping},
+            ]
+        }
+    )
+
+
+def test_a_row_only_pending_goldens_cite_is_not_covered_by_its_suite(tmp_path: Path) -> None:
+    suites = {
+        "reflex": [_golden("reflex.fast", ["7.reflex-latency"], status="pending", suite="reflex")]
+    }
+    problems = coverage_problems(MINI_PRD, _one_row(suites=["reflex"]), suites, tmp_path)
+    assert problems == [
+        "7.reflex-latency: only pending goldens in 'reflex' cite it; list it under pending_suites"
+    ]
+
+
+def test_a_built_suite_whose_goldens_for_the_row_are_pending_is_a_pending_suite(
+    tmp_path: Path,
+) -> None:
+    suites = {
+        "reflex": [_golden("reflex.fast", ["7.reflex-latency"], status="pending", suite="reflex")]
+    }
+    coverage = _one_row(pending_suites=["reflex"])
+    assert coverage_problems(MINI_PRD, coverage, suites, tmp_path) == []
+
+
+def test_a_row_a_shipped_golden_cites_is_not_pending(tmp_path: Path) -> None:
+    suites = {
+        "reflex": [
+            _golden("reflex.fast", ["7.reflex-latency"], suite="reflex"),
+            _golden("reflex.later", ["7.reflex-latency"], status="pending", suite="reflex"),
+        ]
+    }
+    problems = coverage_problems(MINI_PRD, _one_row(pending_suites=["reflex"]), suites, tmp_path)
+    assert problems == [
+        "7.reflex-latency: a shipped golden in 'reflex' cites it; move it to suites"
+    ]
 
 
 def test_problems_name_suite_heading_and_golden_faults(tmp_path: Path) -> None:

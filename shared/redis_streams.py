@@ -1,7 +1,7 @@
 """Typed async wrappers for Redis stream reads.
 
 redis-py's asyncio stream-read methods (``xread``, ``xreadgroup``,
-``xrevrange``) are declared via an ``@overload`` pair keyed off an
+``xrange``, ``xrevrange``) are declared via an ``@overload`` pair keyed off an
 ``_is_async_client`` Protocol marker that mypy cannot resolve against
 ``redis.asyncio.Redis`` — every call site previously had to repeat the same
 verbose return-type annotation plus a
@@ -83,6 +83,26 @@ async def revrange(
     entries: list[tuple[bytes | str, dict[bytes | str, bytes | str]]]
     entries = await redis.xrevrange(  # type: ignore[assignment,misc,unused-ignore]
         stream, max=max_id, min=min_id, count=count
+    )
+    return entries
+
+
+async def forward_range(
+    redis: AioRedis,
+    stream: str,
+    *,
+    min_id: str = "-",
+    max_id: str = "+",
+    count: int | None = None,
+) -> list[tuple[bytes | str, dict[bytes | str, bytes | str]]]:
+    """Typed ``XRANGE`` — owns the stub-gap ignore for the whole codebase.
+
+    ``min_id``/``max_id`` bound the scan (oldest first); the defaults cover the whole
+    stream, and ``count=None`` returns every entry in the bounds.
+    """
+    entries: list[tuple[bytes | str, dict[bytes | str, bytes | str]]]
+    entries = await redis.xrange(  # type: ignore[assignment,misc,unused-ignore]
+        stream, min=min_id, max=max_id, count=count
     )
     return entries
 

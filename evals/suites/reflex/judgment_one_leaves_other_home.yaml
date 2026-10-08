@@ -1,0 +1,9 @@
+id: reflex.judgment.one_leaves_other_home
+prd: [4.4.reflex-judgment]
+status: shipped
+tags: [judgment, presence]
+steps:
+  - clock: {hour: 19}
+  - ha_event: {entity_id: person.sam, state: not_home}
+expect:
+  - reflex_decision: {decision: none}

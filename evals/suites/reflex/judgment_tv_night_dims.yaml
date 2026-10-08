@@ -1,0 +1,17 @@
+id: reflex.judgment.tv_night_dims
+prd: [4.4.reflex-judgment, 4.4.lights-scenes]
+status: shipped
+tags: [judgment, media]
+steps:
+  - clock: {hour: 22}
+  - ha_event: {entity_id: sun.sun, state: below_horizon}
+    settle: 1  # Reflex does not attend to the sun
+  - ha_event: {entity_id: media_player.living_room_tv, state: paused}
+  - wait: 6
+  - ha_event: {entity_id: media_player.living_room_tv, state: playing}
+expect:
+  # Dims: a light in the room, either way. Pausing the TV is not what this golden asks.
+  - reflex_decision:
+      decision: [act, ask]
+      tool: [home.light_turn_on, home.light_turn_off]
+      target: living_room

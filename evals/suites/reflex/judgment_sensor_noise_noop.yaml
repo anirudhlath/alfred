@@ -1,0 +1,10 @@
+id: reflex.judgment.sensor_noise_noop
+prd: [4.4.reflex-judgment]
+status: shipped
+tags: [judgment, noise]
+steps:
+  - ha_event: {entity_id: sensor.living_room_temperature, state: "21.6"}
+    settle: 5
+expect:
+  # Reflex does not attend to a temperature sensor: no call is the right answer.
+  - reflex_decision: {decision: none, uncalled_ok: true}

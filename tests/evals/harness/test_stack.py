@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import fakeredis
 import pytest
 from pydantic import ValidationError
 from redis import exceptions as redis_exceptions
@@ -29,6 +30,7 @@ from evals.harness.stack import (
     run_cmd,
 )
 from evals.harness.world import load_world
+from shared.streams import USER_TIMEZONE_KEY
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -820,3 +822,16 @@ async def test_wipe_data_empties_data_as_root(
     monkeypatch.setattr(subprocess, "run", docker_cli)
     await Docker().wipe_data("alfred-eval-x", tmp_path, "alfred:x")
     assert seen[-1] == [part.replace("{data}", str(tmp_path)) for part in wipe]
+
+
+async def test_the_bus_follows_the_stacks_redis(tmp_path: Path) -> None:
+    stack = make_stack(tmp_path, FakeDocker())
+    with pytest.raises(StackError, match="not started"):
+        await stack.bus.user_timezone()
+    stack.redis = fakeredis.FakeAsyncRedis()
+    with pytest.raises(StackError, match="not started"):
+        stack._web_url()
+    stack.web_port = 1234
+    await stack.redis.set(USER_TIMEZONE_KEY, "Etc/GMT-7")
+    assert await stack.bus.user_timezone() == "Etc/GMT-7"
+    assert stack._web_url() == "http://127.0.0.1:1234"

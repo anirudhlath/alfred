@@ -335,7 +335,11 @@ async def run_suites(opts: RunOptions) -> RunOutcome:
 
     def make_ctx(stack: Stack, variants: Sequence[ScenarioVariant]) -> RunContext:
         play_ctx = PlayContext(
-            send=stack.send, fake_ha=fake_ha, proxy=proxy, reply_timeout_s=cfg.reply_timeout_s
+            send=stack.send,
+            fake_ha=fake_ha,
+            proxy=proxy,
+            bus=stack.bus,
+            reply_timeout_s=cfg.reply_timeout_s,
         )
         return RunContext(
             stack=stack,

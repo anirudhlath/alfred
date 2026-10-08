@@ -18,6 +18,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# The audience tag that puts a tool in Reflex's prompt; untagged tools are "conscious".
+REFLEX_AUDIENCE = "reflex"
+
 
 @dataclass(frozen=True)
 class ToolInfo:

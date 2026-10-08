@@ -1,0 +1,11 @@
+id: triggers.fast.reminder_fires_quickly
+prd: [4.2.fast-reminders, 7.reminder-latency]
+status: shipped
+tags: [fast]
+steps:
+  - user: "Remind me in 30 minutes to stretch."
+  - advance_trigger: {}
+expect:
+  - trigger_fired: {after_step: 1, within_s: 5}
+  - latency: {metric: reminder_fire_ms, max: 5000}
+  - notification: {source: trigger-engine, after_step: 1}

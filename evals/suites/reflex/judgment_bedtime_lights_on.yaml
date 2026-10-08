@@ -1,0 +1,14 @@
+id: reflex.judgment.bedtime_lights_on
+prd: [4.4.reflex-judgment]
+status: shipped
+tags: [judgment, lights]
+steps:
+  - clock: {hour: 0}
+  - ha_event: {entity_id: sun.sun, state: below_horizon}
+    settle: 1  # Reflex does not attend to the sun
+  - ha_event: {entity_id: light.bedroom_lamp, state: "on"}
+  - wait: 6
+  - ha_event: {entity_id: light.bedroom_lamp, state: "off"}
+expect:
+  # Off to bed with the living room still lit: worth a question, not a decision.
+  - reflex_decision: {decision: ask}

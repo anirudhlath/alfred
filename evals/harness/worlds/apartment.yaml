@@ -11,7 +11,7 @@ devices:
   - {id: dev_front_lock, name: Front Door Lock, area_id: entryway}
   - {id: dev_garage_opener, name: Garage Door Opener, area_id: garage}
 entities:
-  - {entity_id: light.living_room_lamp, name: Living Room Lamp, area_id: living_room, state: "on", attributes: {brightness: 180}}
+  - {entity_id: light.living_room_lamp, name: Living Room Lamp, area_id: living_room, state: "on", attributes: {brightness: 180, supported_features: 44}}
   - {entity_id: light.living_room_ceiling, name: Living Room Ceiling, area_id: living_room, state: "off"}
   - {entity_id: light.bedroom_lamp, name: Bedroom Lamp, area_id: bedroom, state: "off"}
   - {entity_id: light.kitchen_pendants, name: Kitchen Pendants, area_id: kitchen, state: "on", attributes: {brightness: 255}}
@@ -26,6 +26,10 @@ entities:
   - {entity_id: binary_sensor.living_room_motion, name: Living Room Motion, area_id: living_room, state: "off", attributes: {device_class: motion}}
   - {entity_id: sensor.living_room_temperature, name: Living Room Temperature, area_id: living_room, state: "21.5", attributes: {device_class: temperature, unit_of_measurement: "°C"}}
   - {entity_id: light.hallway_old, name: Old Hallway Light, area_id: entryway, state: "off", disabled: true}
+  - {entity_id: person.alex, name: Alex, state: home, attributes: {entity_picture: /api/image/serve/alex/512x512}}
+  - {entity_id: person.sam, name: Sam, state: home}
+  - {entity_id: sun.sun, name: Sun, state: above_horizon}
+  - {entity_id: button.router_restart, name: Router Restart, state: unknown}
 services:
   light:
     turn_on:

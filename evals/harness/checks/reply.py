@@ -17,12 +17,13 @@ _QUOTE_CHARS = 120
 _SEEN_CHARS = 480
 
 
-class ReplyTextParams(BaseModel):
+class Needles(BaseModel):
+    """Exactly one of ``text``, ``any`` or ``regex``: what to look for in a text."""
+
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
     text: str | None = None
     any_of: list[str] | None = Field(default=None, alias="any")
     regex: str | None = None
-    step: int | Literal["any"] = -1
 
     @field_validator("regex")
     @classmethod
@@ -41,10 +42,14 @@ class ReplyTextParams(BaseModel):
         needles = [n for n in (self.text, self.regex, *(self.any_of or [])) if n is not None]
         if self.any_of == [] or any(not n.strip() for n in needles):
             raise ValueError(
-                "needles must not be empty or blank: an empty one matches every reply, "
-                "and a blank one nearly every reply"
+                "needles must not be empty or blank: an empty one matches every text, "
+                "and a blank one nearly every text"
             )
         return self
+
+
+class ReplyTextParams(Needles):
+    step: int | Literal["any"] = -1
 
 
 def _replies(evidence: Evidence, step: int | Literal["any"]) -> list[Reply]:
@@ -56,7 +61,8 @@ def _replies(evidence: Evidence, step: int | Literal["any"]) -> list[Reply]:
         return []
 
 
-def _hit(p: ReplyTextParams, text: str) -> str | None:
+def hit(p: Needles, text: str) -> str | None:
+    """The needle found in *text* (case-insensitive), or None."""
     lowered = text.lower()
     if p.text is not None:
         return p.text if p.text.lower() in lowered else None
@@ -67,7 +73,7 @@ def _hit(p: ReplyTextParams, text: str) -> str | None:
     return m.group(0) if m else None
 
 
-def _needle(p: ReplyTextParams) -> str:
+def needle_text(p: Needles) -> str:
     if p.text is not None:
         return p.text
     if p.any_of is not None:
@@ -96,9 +102,9 @@ def reply_contains(evidence: Evidence, p: ReplyTextParams) -> CheckResult:
     if not replies:
         return failed("reply_contains", f"no reply at step {p.step}")
     for r in replies:
-        if (hit := _hit(p, r.text)) is not None:
-            return passed("reply_contains", f"found {hit!r}")
-    return failed("reply_contains", f"{_needle(p)} not in {_seen(replies)}")
+        if (found := hit(p, r.text)) is not None:
+            return passed("reply_contains", f"found {found!r}")
+    return failed("reply_contains", f"{needle_text(p)} not in {_seen(replies)}")
 
 
 def reply_not_contains(evidence: Evidence, p: ReplyTextParams) -> CheckResult:
@@ -106,6 +112,6 @@ def reply_not_contains(evidence: Evidence, p: ReplyTextParams) -> CheckResult:
     if not replies:
         return failed("reply_not_contains", f"no reply at step {p.step}")
     for r in replies:
-        if (hit := _hit(p, r.text)) is not None:
-            return failed("reply_not_contains", f"reply contains {hit!r}: {_quote(r.text)}")
-    return passed("reply_not_contains", f"{_needle(p)} absent")
+        if (found := hit(p, r.text)) is not None:
+            return failed("reply_not_contains", f"reply contains {found!r}: {_quote(r.text)}")
+    return passed("reply_not_contains", f"{needle_text(p)} absent")

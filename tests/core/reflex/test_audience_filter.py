@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, get_args
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from core.reflex.tool_registry import ToolInfo, ToolRegistry
+from core.reflex.tool_registry import REFLEX_AUDIENCE, ToolInfo, ToolRegistry
+from sdk.alfred_sdk.feature import ToolAudience
 
 if TYPE_CHECKING:
     from bus.schemas.events import StateChangedEvent
@@ -103,3 +104,7 @@ def test_toolinfo_defaults() -> None:
     )
     assert tool.audience == "conscious"
     assert tool.risk == "benign"
+
+
+def test_reflex_audience_is_a_tag_the_sdk_writes() -> None:
+    assert REFLEX_AUDIENCE in get_args(ToolAudience)

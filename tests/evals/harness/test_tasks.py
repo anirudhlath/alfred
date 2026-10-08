@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import pytest
 from inspect_ai import eval_async
 from inspect_ai.model import ModelOutput, get_model
 from inspect_ai.util import display_type
 from inspect_ai.util._display import display_type_initialized
+from redis.exceptions import ConnectionError as RedisConnectionError
 
 from bus.schemas.events import AlfredResponse, UserRequest
+from evals.harness.bus import BusError
 from evals.harness.checks.result import CheckResult
 from evals.harness.driver import PlayContext
 from evals.harness.fake_ha import FakeHA
@@ -19,10 +21,12 @@ from evals.harness.scenario import Scenario, expand_variants
 from evals.harness.stack import StackError
 from evals.harness.tasks import RunContext, build_task, verdict
 from evals.harness.world import load_world
+from tests.evals.harness.factories import FakeBus
 
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from evals.harness.bus import Entry
     from evals.harness.driver import SendFn
     from evals.harness.report import SampleRun
 
@@ -80,6 +84,7 @@ def context(
     stack: FakeStack,
     judge_says: str = "Formal.\nVERDICT: yes",
     send: SendFn = polite,
+    bus: FakeBus | None = None,
     **scenario_fields: Any,
 ) -> RunContext:
     variants = expand_variants(scenario(**scenario_fields))
@@ -89,6 +94,7 @@ def context(
         send=send,
         fake_ha=FakeHA(load_world("apartment")),
         proxy=LlmProxy("http://x"),
+        bus=bus or FakeBus(),
         settle_s=0,
         restore_settle_s=0,
     )
@@ -260,6 +266,108 @@ async def test_a_failed_restart_breaks_the_stack_and_later_samples_error_at_once
         assert "failed to restart" in (r.error or "")
         assert "System 2 never answered the readiness request" in (r.error or "")
         assert "docker logs" not in (r.error or "")  # the first line only; the rest is logged
+
+
+class BrokenBus(FakeBus):
+    def __init__(self, error: Exception) -> None:
+        super().__init__()
+        self.error = error
+
+    async def user_timezone(self) -> str | None:
+        raise self.error
+
+
+# A bus failure, and how the dirty mark and the scorecard name it. redis-py's repr drops
+# the message, so a redis error is named as the harness losing redis.
+BUS_FAILURES = pytest.mark.parametrize(
+    ("error", "named"),
+    [
+        (
+            RedisConnectionError("Connection closed by server."),
+            "lost redis: ConnectionError: Connection closed by server.",
+        ),
+        (BusError("POST /api/admin/dnd answered 401"), "POST /api/admin/dnd answered 401"),
+        # One the harness does not name, such as a bus entry that is not JSON.
+        (ValueError("Expecting value: line 1 column 1"), "Expecting value: line 1 column 1"),
+    ],
+    ids=["redis", "bus", "unnamed"],
+)
+
+
+@BUS_FAILURES
+async def test_a_bus_failure_errors_the_sample_and_dirties_the_stack(
+    tmp_path: Path, error: Exception, named: str
+) -> None:
+    stack = FakeStack([True])
+    ctx = context(stack, bus=BrokenBus(error))
+    ctx.restarts_left = 0
+    runs = await evaluate(ctx, tmp_path)
+    assert [r.value for r in runs] == ["E", "E"] and stack.restarts == 0
+    assert ctx.dirty == named
+    # Only a dirty stack makes the next sample ask for the restart it cannot have.
+    later = next(r for r in runs if r.sample_id.endswith("~1"))
+    assert f"needs a restart (an earlier sample failed mid-play: {named})" in (later.error or "")
+
+
+@BUS_FAILURES
+async def test_a_bus_failure_that_ends_a_sample_is_its_reported_error(
+    tmp_path: Path, error: Exception, named: str
+) -> None:
+    # One sample. Its first try dirties the stack; the retry runs on the restart and fails
+    # the same way, so the bus failure itself is the error the scorecard shows.
+    stack = FakeStack([True])
+    ctx = context(stack, bus=BrokenBus(error))
+    ctx.variants = {k: v for k, v in ctx.variants.items() if not k.endswith("~1")}
+    (run,) = await evaluate(ctx, tmp_path)
+    assert run.value == "E" and stack.restarts == 1
+    assert named in (run.error or "") and "needs a restart" not in (run.error or "")
+
+
+Stage = Literal["collection", "cleanup"]
+
+
+class BusLostAt(FakeBus):
+    """Loses redis late in play(): as it collects the bus's evidence, or as it cleans up,
+    once it has deleted the sample's triggers."""
+
+    def __init__(self, stage: Stage) -> None:
+        super().__init__()
+        self.stage = stage
+
+    async def notifications(self, since_wall: float) -> list[Entry]:
+        if self.stage == "collection":
+            raise RedisConnectionError("Connection closed by server.")
+        return await super().notifications(since_wall)
+
+    async def delete_triggers(self, trigger_ids: list[str]) -> None:
+        await super().delete_triggers(trigger_ids)
+        if self.stage == "cleanup":
+            raise RedisConnectionError("Connection closed by server.")
+
+
+def creating_a_trigger(bus: FakeBus) -> SendFn:
+    """A polite send whose turn also creates a trigger, which cleanup then deletes."""
+
+    async def send(request: UserRequest, timeout: float) -> AlfredResponse:
+        bus.created()
+        return await polite(request, timeout)
+
+    return send
+
+
+@pytest.mark.parametrize("stage", ["collection", "cleanup"])
+async def test_a_bus_failure_late_in_play_dirties_the_stack(tmp_path: Path, stage: Stage) -> None:
+    stack = FakeStack([True])
+    bus = BusLostAt(stage)
+    ctx = context(stack, send=creating_a_trigger(bus), bus=bus)
+    ctx.restarts_left = 0
+    runs = await evaluate(ctx, tmp_path)
+    assert [r.value for r in runs] == ["E", "E"] and stack.restarts == 0
+    # Cleanup ran only where collection got through: a failed collection skips it.
+    assert bus.deleted == (["t1"] if stage == "cleanup" else [])
+    assert ctx.dirty == "lost redis: ConnectionError: Connection closed by server."
+    later = next(r for r in runs if r.sample_id.endswith("~1"))
+    assert "needs a restart" in (later.error or "")
 
 
 def test_the_test_package_pins_inspect_display_none() -> None:

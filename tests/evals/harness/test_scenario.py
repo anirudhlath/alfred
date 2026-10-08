@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
+import yaml
+from pydantic import ValidationError
 
 from evals.harness.checks import JudgeSpec
 from evals.harness.scenario import (
+    AdvanceTriggerStep,
     CheckSpec,
+    DndStep,
     HaEventStep,
     Scenario,
     ScenarioError,
@@ -16,6 +20,7 @@ from evals.harness.scenario import (
     expand_variants,
     load_suites,
     select,
+    step_kind,
 )
 
 if TYPE_CHECKING:
@@ -314,3 +319,115 @@ def test_a_golden_without_ha_called_expects_no_call() -> None:
         }
     )
     assert s.ha_called_counting(0) == []
+
+
+EVENT: dict[str, Any] = {"ha_event": {"entity_id": "light.bedroom_lamp", "state": "on"}}
+
+
+def golden(steps: list[dict[str, Any]], expect: list[dict[str, Any]]) -> Scenario:
+    return Scenario.model_validate(
+        {"id": "reflex.t.t", "prd": ["x"], "status": "shipped", "steps": steps, "expect": expect}
+    )
+
+
+def test_the_new_steps_load_from_yaml() -> None:
+    raw = yaml.safe_load(
+        """
+id: reflex.t.t
+prd: [x]
+status: shipped
+steps:
+  - clock: {hour: 22}
+  - dnd: on
+  - advance_trigger:
+  - advance_trigger: {name: laundry}
+    settle: 5
+  - ha_event: {entity_id: light.bedroom_lamp, state: "on"}
+expect:
+  - reflex_decision: {decision: none}
+"""
+    )
+    s = Scenario.model_validate(raw)
+    kinds = [step_kind(step) for step in s.steps]
+    assert kinds == ["clock", "dnd", "advance_trigger", "advance_trigger", "ha_event"]
+    assert isinstance(s.steps[1], DndStep) and s.steps[1].dnd is True
+    assert isinstance(s.steps[2], AdvanceTriggerStep) and s.steps[2].advance_trigger.name is None
+    assert s.watches_reflex
+
+
+@pytest.mark.parametrize(
+    "step", [{"dnd": "on"}, {"clock": {"hour": 24}}, {"clock": {}}, {"advance_trigger": {"x": 1}}]
+)
+def test_malformed_new_steps_fail_to_load(step: dict[str, Any]) -> None:
+    with pytest.raises(ValidationError):
+        golden([step], [{"ha_not_called": {}}])
+
+
+def test_at_step_must_name_a_step_of_the_kind_the_check_reads() -> None:
+    steps = [{"user": "a"}, EVENT]
+    golden(steps, [{"reflex_decision": {"decision": "none", "at_step": 1}}])
+    with pytest.raises(ValidationError, match="at_step 0 is a user step, not ha_event"):
+        golden(steps, [{"reflex_decision": {"decision": "none", "at_step": 0}}])
+    with pytest.raises(ValidationError, match="at_step is 2, but the golden has 2 steps"):
+        golden(steps, [{"reflex_not_proposed": {"tool": "home.light_turn_on", "at_step": 2}}])
+    with pytest.raises(ValidationError, match="needs a ha_event step"):
+        golden([{"user": "a"}], [{"reflex_decision": {"decision": "none"}}])
+    fire_ms = {"latency": {"metric": "reminder_fire_ms", "max": 5000}}
+    with pytest.raises(ValidationError, match="needs an advance_trigger step"):
+        golden([{"user": "a"}], [fire_ms])
+    golden([{"user": "a"}, {"advance_trigger": {}}], [fire_ms])
+
+
+def test_a_reflex_latency_golden_needs_no_user_step() -> None:
+    s = golden([EVENT], [{"latency": {"metric": "reflex_ms", "max": 500}}])
+    assert s.watches_reflex
+    with pytest.raises(ValidationError, match="need at least one user step"):
+        golden([EVENT], [{"latency": {"metric": "reply_ms", "max": 500}}])
+
+
+def test_a_plain_golden_does_not_watch_reflex() -> None:
+    assert not golden([{"user": "a"}], [{"reply_contains": {"text": "x"}}]).watches_reflex
+
+
+# Every check step_kind_needed names, with the kind of step its at_step must name.
+AT_STEP_CHECKS = [
+    ("reflex_decision", {"decision": "none"}, "ha_event"),
+    ("reflex_not_proposed", {"tool": "home.light_turn_on"}, "ha_event"),
+    ("latency", {"metric": "reflex_ms", "max": 500}, "ha_event"),
+    ("latency", {"metric": "reminder_fire_ms", "max": 5000}, "advance_trigger"),
+]
+# One step of each kind the checks read, between two user steps: -4 to 3.
+MIXED: list[dict[str, Any]] = [{"user": "a"}, EVENT, {"advance_trigger": {}}, {"user": "b"}]
+INDEX_OF = {"ha_event": 1, "advance_trigger": 2}
+A_STEP = {"ha_event": "a ha_event step", "advance_trigger": "an advance_trigger step"}
+
+
+@pytest.mark.parametrize(("name", "params", "kind"), AT_STEP_CHECKS)
+def test_every_step_reading_check_takes_an_at_step_of_its_kind_counted_either_way(
+    name: str, params: dict[str, Any], kind: str
+) -> None:
+    for at in (INDEX_OF[kind], INDEX_OF[kind] - len(MIXED)):
+        golden(MIXED, [{name: {**params, "at_step": at}}])
+    for at in (0, 3, -4, -1):  # user steps, from either end
+        with pytest.raises(ValidationError, match=f"at_step {at} is a user step, not {kind}"):
+            golden(MIXED, [{name: {**params, "at_step": at}}])
+    other_kind, other = next((k, i) for k, i in INDEX_OF.items() if k != kind)
+    for at in (other, other - len(MIXED)):
+        with pytest.raises(
+            ValidationError, match=f"at_step {at} is {A_STEP[other_kind]}, not {kind}"
+        ):
+            golden(MIXED, [{name: {**params, "at_step": at}}])
+    for at in (4, -5):
+        with pytest.raises(ValidationError, match=f"at_step is {at}, but the golden has 4 steps"):
+            golden(MIXED, [{name: {**params, "at_step": at}}])
+    with pytest.raises(ValidationError, match=f"needs {A_STEP[kind]}"):
+        golden([{"user": "a"}], [{name: params}])
+
+
+@pytest.mark.parametrize(
+    ("at", "named"), [(0, "a wait step"), (1, "a clock step"), (2, "a dnd step")]
+)
+def test_the_wrong_kind_message_names_every_kind_with_its_article(at: int, named: str) -> None:
+    steps: list[dict[str, Any]] = [{"wait": 1}, {"clock": {"hour": 7}}, {"dnd": True}, EVENT]
+    with pytest.raises(ValidationError, match=f"at_step {at} is {named}, not ha_event"):
+        golden(steps, [{"reflex_decision": {"decision": "none", "at_step": at}}])

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
-from evals.harness.checks.matching import describe, value_matches
+from evals.harness.checks.matching import describe, validate_fields, value_matches
+from evals.harness.checks.reply import Needles, hit, needle_text
 from evals.harness.checks.result import CheckResult, failed, passed
 from evals.harness.evidence import Role  # noqa: TC001 — Pydantic resolves ToolParams.role
 
@@ -27,6 +28,11 @@ class ToolParams(BaseModel):
 
 class ToolArgsParams(ToolParams):
     args: dict[str, Any]
+
+    @field_validator("args")
+    @classmethod
+    def _patterns_compile(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return validate_fields(value)
 
 
 class ToolArgAbsentParams(ToolParams):
@@ -80,3 +86,31 @@ def llm_tool_args_absent(evidence: Evidence, p: ToolArgAbsentParams) -> CheckRes
             f"{p.tool} was given {p.key}={describe(bad[0].arguments[p.key])}",
         )
     return passed("llm_tool_args_absent", f"{p.tool} never given {p.key}")
+
+
+class PromptParams(Needles):
+    role: Role = "system2"
+
+
+def message_text(message: dict[str, Any]) -> str:
+    """A chat message's text: its string content, or its text parts joined."""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(str(part.get("text", "")) for part in content if isinstance(part, dict))
+    return ""
+
+
+def prompt_not_contains(evidence: Evidence, p: PromptParams) -> CheckResult:
+    calls = [c for c in evidence.llm_calls if c.role == p.role]
+    if not calls:
+        # Vacuously clean is no evidence: the prompt the golden is about was never sent.
+        return failed("prompt_not_contains", f"no {p.role} call was recorded")
+    for call in calls:
+        for message in call.messages:
+            if (found := hit(p, message_text(message))) is not None:
+                return failed("prompt_not_contains", f"a {p.role} prompt contains {found!r}")
+    return passed(
+        "prompt_not_contains", f"{needle_text(p)} absent from {len(calls)} {p.role} prompt(s)"
+    )

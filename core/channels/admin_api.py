@@ -37,6 +37,7 @@ from core.reflex.attention import (
     attention_seen_list,
 )
 from core.reflex.inference import REFLEX_BACKENDS
+from core.triggers.models import TRIGGER_ENGINE_SOURCE
 from shared.config import AlfredConfig
 from shared.redis_streams import revrange
 from shared.streams import (
@@ -126,13 +127,13 @@ async def _publish_trigger_action(
     """Queue a trigger mutation for the triggers process (owns TriggerStore).
 
     The triggers process consumes ACTIONS_STREAM (group 'triggers-internal'),
-    filters target_service='trigger-engine', and applies the change via the
+    filters target_service=TRIGGER_ENGINE_SOURCE, and applies the change via the
     real TriggerEngine / TriggerStore so Redis AND the YAML snapshot stay
     consistent — no direct hash writes from the channels process.
     """
     action = ActionRequest(
         source="admin-api",
-        target_service="trigger-engine",
+        target_service=TRIGGER_ENGINE_SOURCE,
         tool_name=tool_name,
         parameters=parameters,
     )

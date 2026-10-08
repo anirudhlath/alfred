@@ -45,6 +45,13 @@ class WorldEntity(BaseModel):
     def domain(self) -> str:
         return self.entity_id.split(".", 1)[0]
 
+    @property
+    def friendly_name(self) -> str:
+        """The name HA shows, and home-service resolves a target by: a ``friendly_name``
+        attribute, else the entity's name (home-service falls back to the registry's
+        ``original_name``, which is the name too)."""
+        return str(self.attributes.get("friendly_name") or self.name)
+
 
 def _number_selectors_are_numbers(services: dict[str, dict[str, dict[str, Any]]]) -> None:
     """The service fields' number selectors are what the fake HA range-checks calls
@@ -97,6 +104,9 @@ class World(BaseModel):
         ids = [e.entity_id for e in self.entities]
         if len(ids) != len(set(ids)):
             raise ValueError("duplicate entity ids")
+        for d in self.devices:
+            if d.area_id is not None and d.area_id not in areas:
+                raise ValueError(f"{d.id}: unknown area {d.area_id}")
         for e in self.entities:
             if e.area_id is not None and e.area_id not in areas:
                 raise ValueError(f"{e.entity_id}: unknown area {e.area_id}")
@@ -108,7 +118,7 @@ class World(BaseModel):
     def initial_states(self) -> dict[str, HaState]:
         return {
             e.entity_id: HaState(
-                state=e.state, attributes={"friendly_name": e.name, **e.attributes}
+                state=e.state, attributes={**e.attributes, "friendly_name": e.friendly_name}
             )
             for e in self.entities
             if not e.disabled
@@ -137,14 +147,26 @@ class World(BaseModel):
         return [{"area_id": a.area_id, "name": a.name} for a in self.areas]
 
     def area_of(self, entity_id: str) -> str | None:
-        return next((e.area_id for e in self.entities if e.entity_id == entity_id), None)
+        """The entity's room: its own area, else its device's."""
+        entity = next((e for e in self.entities if e.entity_id == entity_id), None)
+        return None if entity is None else self._area(entity)
 
-    def entity_ids_in_area(self, area_id: str, domain: str) -> list[str]:
-        return sorted(
+    def entities_in(self, area_id: str, domain: str | None = None) -> list[str]:
+        """Enabled entities in the area, in world order, optionally of one domain."""
+        return [
             e.entity_id
             for e in self.entities
-            if e.area_id == area_id and e.domain == domain and not e.disabled
-        )
+            if not e.disabled
+            and self._area(e) == area_id
+            and (domain is None or e.domain == domain)
+        ]
+
+    def _area(self, entity: WorldEntity) -> str | None:
+        """The one room rule, as HA has it: the entity's own area wins over its device's."""
+        if entity.area_id is not None:
+            return entity.area_id
+        device = next((d for d in self.devices if d.id == entity.device_id), None)
+        return None if device is None else device.area_id
 
 
 def load_world(name: str, root: Path = WORLDS_DIR) -> World:

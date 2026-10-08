@@ -4,18 +4,30 @@ import asyncio
 import re
 import time
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import httpx
 import pytest
 
-from bus.schemas.events import AlfredResponse, UserRequest
-from evals.harness.driver import HarnessError, PlayContext, build_request, play
-from evals.harness.evidence import Evidence, HaCall, LlmCall
+from bus.schemas.events import ActionRequest, AlfredResponse, UserRequest
+from evals.harness.checks import run_check
+from evals.harness.checks.triggers import TriggerFiredParams
+from evals.harness.driver import (
+    TIMES,
+    HarnessError,
+    PlayContext,
+    build_request,
+    clock_wait_s,
+    outstanding_calls,
+    play,
+)
+from evals.harness.evidence import ClockSet, Evidence, HaCall, LlmCall, StatePush
 from evals.harness.fake_ha import FakeHA
 from evals.harness.proxy import LlmProxy
 from evals.harness.scenario import Actor, Scenario, expand_variants
 from evals.harness.world import load_world
+from tests.evals.harness.factories import FakeBus, evidence, reflex_prompt
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
@@ -72,13 +84,17 @@ class Recorder:
         )
 
 
-def ctx(send, ha: FakeHA | None = None, proxy: LlmProxy | None = None) -> PlayContext:  # type: ignore[no-untyped-def]
+def ctx(  # type: ignore[no-untyped-def]
+    send, ha: FakeHA | None = None, proxy: LlmProxy | None = None, bus: FakeBus | None = None, **kw
+) -> PlayContext:
     return PlayContext(
         send=send,
         fake_ha=ha or FakeHA(load_world("apartment")),
         proxy=proxy or LlmProxy("http://x"),
+        bus=bus or FakeBus(),
         settle_s=0,
         restore_settle_s=0,
+        **kw,
     )
 
 
@@ -405,3 +421,506 @@ async def test_world_is_restored_and_only_in_window_calls_are_kept() -> None:
     assert len(ev.ha_calls) == 2 and all(c.t > 0.0 for c in ev.ha_calls)
     assert [c.entity_ids for c in ev.ha_calls] == [["light.bedroom_lamp"]] * 2
     assert len(ev.llm_calls) == 2 and all(c.t > 0.0 for c in ev.llm_calls)
+
+
+def test_a_check_counting_from_a_step_not_yet_started_names_the_step() -> None:
+    called = {"domain": "light", "service": "turn_on", "after_step": 1}
+    s = scenario(steps=[{"user": "Hello."}, LAMP_ON], expect=[{"ha_called": called}])
+    ev = evidence(step_started=[0.0])  # the driver has not started step 1
+    with pytest.raises(IndexError, match="step 1 is outside the sample's 1 steps"):
+        outstanding_calls(s, 1, ev, FakeHA(load_world("apartment")))
+
+
+class Acting(Recorder):
+    """A send that also does *act*, as Alfred would while answering."""
+
+    def __init__(self, act: Callable[[], None], source: str = "conscious-engine") -> None:
+        super().__init__(source)
+        self.act = act
+
+    async def __call__(self, request: UserRequest, timeout: float) -> AlfredResponse:
+        self.act()
+        return await super().__call__(request, timeout)
+
+
+async def played(play_ctx: PlayContext, **fields: object) -> Evidence:
+    [variant] = expand_variants(scenario(**fields))
+    return await play(play_ctx, variant, epoch=1)
+
+
+async def test_a_clock_step_sets_the_zone_for_its_hour_and_the_sample_puts_it_back() -> None:
+    bus = FakeBus(tz="America/Denver")
+    now = datetime(2026, 10, 8, 15, 10, tzinfo=UTC)
+    ev = await played(
+        ctx(Recorder(), bus=bus, now=lambda: now),
+        steps=[{"clock": {"hour": 22}}, {"user": "Hello."}],
+    )
+    assert ev.clocks == [ClockSet(step=0, hour=22, tz="Etc/GMT-7")]
+    assert ev.step_kinds == ["clock", "user"]
+    assert ev.transcript[0].text == "it is now 22:10"
+    assert bus.tz_set == ["Etc/GMT-7", "America/Denver"]
+
+
+@pytest.mark.parametrize(
+    ("minute", "second", "wait"),
+    [(10, 0, 0.0), (57, 59, 0.0), (58, 0, 121.0), (59, 30, 31.0), (59, 59, 2.0)],
+)
+def test_clock_waits_out_the_last_minutes_of_an_hour(minute: int, second: int, wait: float) -> None:
+    assert clock_wait_s(datetime(2026, 10, 8, 15, minute, second, tzinfo=UTC)) == wait
+
+
+async def test_advance_brings_the_samples_trigger_forward_and_waits_for_its_fire() -> None:
+    bus = FakeBus()
+    ev = await played(
+        ctx(Acting(lambda: bus.created("t1", "Laundry reminder")), bus=bus),
+        steps=[{"user": "Remind me in 20 minutes to move the laundry."}, {"advance_trigger": None}],
+    )
+    assert bus.advanced == ["t1"]
+    [advance] = ev.advances
+    assert (advance.step, advance.name) == (1, "Laundry reminder")
+    assert [f.trigger_id for f in ev.triggers_fired] == ["t1"]
+    assert [n.title for n in ev.notifications] == ["Trigger: Laundry reminder"]
+    assert ev.step_kinds == ["user", "advance_trigger"]
+    assert bus.deleted == ["t1"]  # cleanup; a fired one-shot is already gone, which is fine
+    assert bus.cleared == 0 and bus.tz_set == []  # neither DND nor the zone was touched
+
+
+async def test_advance_without_a_trigger_is_alfreds_failure_not_the_harness() -> None:
+    bus = FakeBus()
+    ev = await played(
+        ctx(Recorder(), bus=bus),
+        steps=[{"user": "Remind me later."}, {"advance_trigger": None}],
+    )
+    assert ev.advances == [] and bus.advanced == []
+    assert ev.transcript[-1].text == "time passes, but no reminder was set"
+
+
+async def test_advancing_a_one_shot_that_already_fired_notes_it_is_gone() -> None:
+    bus = FakeBus()
+    ev = await played(
+        ctx(Acting(lambda: bus.created("t1", "Laundry reminder")), bus=bus),
+        steps=[
+            {"user": "Remind me in 20 minutes to move the laundry."},
+            {"advance_trigger": None},
+            {"advance_trigger": None},  # the one-shot fired and was deleted at the first
+        ],
+    )
+    assert bus.advanced == ["t1"] and [a.step for a in ev.advances] == [1]
+    assert ev.transcript[-1].text == "time passes, but 'Laundry reminder' is gone"
+
+
+async def test_play_cleans_up_triggers_dnd_and_clock() -> None:
+    bus = FakeBus()
+    ev = await played(
+        ctx(
+            Acting(lambda: bus.created("t9")),
+            bus=bus,
+            now=lambda: datetime(2026, 10, 8, 3, 0, tzinfo=UTC),
+        ),
+        steps=[{"clock": {"hour": 22}}, {"dnd": True, "settle": 0}, {"user": "Remind me."}],
+    )
+    assert "do not disturb on" in [t.text for t in ev.transcript]
+    assert bus.dnd == [True] and bus.cleared == 1
+    assert bus.deleted == ["t9"]
+    assert bus.tz_set[-1] is None  # nothing was stored before the sample
+
+
+# The bedroom lamp starts off and the golden sets it off, so the golden never drifts it.
+LAMP_OFF = {"ha_event": {"entity_id": "light.bedroom_lamp", "state": "off"}, "settle": 0}
+WATCHES = {"steps": [LAMP_OFF], "expect": [{"reflex_decision": {"decision": "none"}}]}
+
+
+async def first_step_at(play_ctx: PlayContext, s: Scenario) -> float:
+    """How long after play began the golden's first step started."""
+    [variant] = expand_variants(s)
+    t0 = time.monotonic()
+    ev = await play(play_ctx, variant, epoch=1)
+    return ev.step_started[0] - t0
+
+
+async def test_reflex_golden_waits_until_system1_is_quiet_after_a_restore() -> None:
+    """Reflex judges the restored entities one at a time, and each one's cooldown runs from
+    when it was judged: the golden starts a full cooldown after System 1's last answer."""
+    ha, proxy = FakeHA(load_world("apartment")), LlmProxy("http://x")
+    await ha.set_state("light.bedroom_lamp", "on")  # drifted: the restore pushes it back
+
+    async def system1_judges_the_restore() -> None:
+        await asyncio.sleep(0.3)
+        proxy.record(system1("Bedroom Lamp (Bedroom): on → off"))
+
+    judging = asyncio.create_task(system1_judges_the_restore())
+    play_ctx = ctx(Recorder(), ha, proxy, reflex_cooldown_s=0.4, reflex_timeout_s=0)
+    assert 0.7 <= await first_step_at(play_ctx, scenario(**WATCHES)) < 1.5
+    await judging
+    # Nothing to restore now, and the wait still applies: the last sample's event started
+    # a cooldown on the very entity this golden changes.
+    assert await first_step_at(play_ctx, scenario(**WATCHES)) >= 0.4
+    plain = scenario(steps=[LAMP_OFF])
+    assert await first_step_at(play_ctx, plain) < 0.3  # it does not watch Reflex: no wait
+
+
+async def test_reflex_settle_waits_for_a_system1_call_in_flight() -> None:
+    async def slow(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.4)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    proxy = LlmProxy("http://vllm.test", transport=httpx.MockTransport(slow))
+    await proxy.start()
+    ha = FakeHA(load_world("apartment"))
+    await ha.set_state("light.bedroom_lamp", "on")
+
+    async def reflex_asks() -> None:
+        await asyncio.sleep(0.1)
+        async with httpx.AsyncClient() as client:
+            body = {"model": "m", "messages": reflex_prompt("Bedroom Lamp: on → off")}
+            await client.post(f"{proxy.url}/v1/chat/completions", json=body)
+
+    try:
+        asking = asyncio.create_task(reflex_asks())
+        play_ctx = ctx(Recorder(), ha, proxy, reflex_cooldown_s=0.3, reflex_timeout_s=0)
+        # Answered at about 0.5 s; quiet for 0.3 s after that.
+        assert await first_step_at(play_ctx, scenario(**WATCHES)) >= 0.8
+        await asking
+    finally:
+        await proxy.stop()
+
+
+async def test_reflex_settle_is_not_held_by_a_system2_call_in_flight() -> None:
+    """A Conscious call still upstream is not Reflex's: the golden starts once System 1 is
+    quiet, however long the other call runs."""
+    release = asyncio.Event()
+
+    async def held(request: httpx.Request) -> httpx.Response:
+        await release.wait()
+        return httpx.Response(200, json={"choices": [{"message": {"content": "hello"}}]})
+
+    proxy = LlmProxy("http://vllm.test", transport=httpx.MockTransport(held))
+    await proxy.start()
+    body = {
+        "model": "m",
+        "messages": [
+            {"role": "system", "content": "You are Alfred — personal butler"},
+            {"role": "user", "content": "hello"},
+        ],
+    }
+
+    async def conscious_asks() -> httpx.Response:
+        await asyncio.sleep(0.05)  # after the restore: inside the settle's window
+        async with httpx.AsyncClient() as client:
+            return await client.post(f"{proxy.url}/v1/chat/completions", json=body)
+
+    try:
+        asking = asyncio.create_task(conscious_asks())
+        play_ctx = ctx(Recorder(), proxy=proxy, reflex_cooldown_s=0.3, reflex_settle_cap_s=3)
+        assert await first_step_at(play_ctx, scenario(**WATCHES)) < 1.5
+        release.set()
+        assert (await asking).status_code == 200
+    finally:
+        release.set()
+        await proxy.stop()
+
+
+async def test_a_system1_upstream_failure_during_the_settle_dirties_the_stack() -> None:
+    """Reflex replays a restore's event its model call failed on into a later sample, as it
+    does a step's: the stack must restart. A failure from before the sample is not its."""
+    ha, proxy = FakeHA(load_world("apartment")), LlmProxy("http://x")
+    await ha.set_state("light.bedroom_lamp", "on")  # drifted: the restore pushes it back
+
+    async def system1_fails_on_the_restore() -> None:
+        await asyncio.sleep(0.1)
+        proxy.record(system1("Bedroom Lamp (Bedroom): on → off", status=502))
+
+    failing = asyncio.create_task(system1_fails_on_the_restore())
+    play_ctx = ctx(Recorder(), ha, proxy, reflex_cooldown_s=0.2, reflex_timeout_s=0)
+    with pytest.raises(HarnessError, match=f"the restore.*upstream returned 502 {TIMES}1"):
+        await first_step_at(play_ctx, scenario(**WATCHES))
+    await failing
+    # The next sample's settle sees no failure of its own.
+    assert await first_step_at(play_ctx, scenario(**WATCHES)) >= 0.2
+
+
+async def test_reflex_that_never_settles_after_the_restore_is_a_harness_error() -> None:
+    proxy = LlmProxy("http://x")
+
+    async def system1_never_stops() -> None:
+        while True:
+            await asyncio.sleep(0.1)
+            proxy.record(system1("Alex: home → not_home"))
+
+    busy = asyncio.create_task(system1_never_stops())
+    play_ctx = ctx(Recorder(), proxy=proxy, reflex_cooldown_s=0.3, reflex_settle_cap_s=0.8)
+    try:
+        with pytest.raises(HarnessError, match="Reflex did not settle after the restore"):
+            await first_step_at(play_ctx, scenario(**WATCHES))
+    finally:
+        busy.cancel()
+
+
+CEILING_ON = "Living Room Ceiling (Living Room): off → on"  # LAMP_ON, as Reflex writes it
+
+
+def system1(change: str, reason: str = "quiet", status: int = 200) -> LlmCall:
+    """A System 1 call about *change* (a What changed line), arriving now."""
+    return LlmCall(
+        t=time.monotonic(),
+        role="system1",
+        latency_ms=5.0,
+        status=status,
+        messages=reflex_prompt(change),
+        response_text=f'{{"decision": "none", "reason": "{reason}"}}',
+    )
+
+
+async def test_an_ha_event_waits_for_system1_when_a_reflex_check_watches() -> None:
+    proxy = LlmProxy("http://x")
+
+    async def system1_answers() -> None:
+        await asyncio.sleep(0.2)
+        proxy.record(system1(CEILING_ON))
+
+    answering = asyncio.create_task(system1_answers())
+    elapsed, ev = await timed_play(
+        ctx(Recorder(), proxy=proxy, reflex_cooldown_s=0, reflex_timeout_s=5),
+        scenario(steps=[LAMP_ON], expect=[{"reflex_decision": {"decision": "none"}}]),
+    )
+    await answering
+    assert 0.2 <= elapsed < 2
+    assert [(c.decision, c.reason) for c in ev.reflex] == [("none", "quiet")]
+    assert ev.state_pushes == [StatePush(step=0, entity_id="light.living_room_ceiling", state="on")]
+
+
+@pytest.mark.parametrize("watches", [True, False])
+async def test_a_system1_upstream_failure_fails_a_reflex_golden_and_dirties_the_stack(
+    watches: bool,
+) -> None:
+    """Reflex does not ACK an event its model call failed on and replays it about a minute
+    later, into a later sample: the stack must restart."""
+    proxy = LlmProxy("http://x")
+
+    async def system1_fails() -> None:
+        await asyncio.sleep(0.05)
+        proxy.record(system1(CEILING_ON, status=502))
+
+    failing = asyncio.create_task(system1_fails())
+    expect = [{"reflex_decision": {"decision": "none"}}] if watches else [{"ha_not_called": {}}]
+    play_ctx = ctx(
+        Recorder(), proxy=proxy, reflex_cooldown_s=0, reflex_timeout_s=1, ha_event_window_s=0.2
+    )
+    s = scenario(steps=[LAMP_ON], expect=expect)
+    if watches:
+        with pytest.raises(HarnessError, match=f"System 1.*upstream returned 502 {TIMES}1"):
+            await play(play_ctx, expand_variants(s)[0], epoch=1)
+    else:  # it does not judge Reflex, and the replay is never judged as another step's
+        await play(play_ctx, expand_variants(s)[0], epoch=1)
+    await failing
+
+
+async def test_the_reflex_wait_ends_on_the_call_about_the_steps_own_change() -> None:
+    """A System 1 call about another change (a restore's backlog, a replay) does not end
+    it: the step's own call is still upstream."""
+    proxy = LlmProxy("http://x")
+
+    async def system1_answers() -> None:
+        await asyncio.sleep(0.1)
+        proxy.record(system1("Alex: not_home → home", reason="stray"))
+        await asyncio.sleep(0.2)
+        proxy.record(system1(CEILING_ON))
+
+    answering = asyncio.create_task(system1_answers())
+    elapsed, ev = await timed_play(
+        ctx(Recorder(), proxy=proxy, reflex_cooldown_s=0, reflex_timeout_s=5),
+        scenario(steps=[LAMP_ON], expect=[{"reflex_decision": {"decision": "none"}}]),
+    )
+    await answering
+    assert 0.3 <= elapsed < 2
+    assert ev.reflex_during(0)[0].reason == "quiet"
+    assert [c.reason for c in ev.reflex_unattributed(0)] == ["stray"]
+
+
+async def test_an_ha_event_waits_out_the_reflex_timeout_when_system1_stays_quiet() -> None:
+    elapsed, ev = await timed_play(
+        ctx(Recorder(), reflex_cooldown_s=0, reflex_timeout_s=0.3),
+        scenario(steps=[LAMP_ON], expect=[{"reflex_decision": {"decision": "none"}}]),
+    )
+    assert elapsed >= 0.3 and ev.reflex == []
+
+
+async def test_sent_and_held_notifications_from_the_sample_are_evidence() -> None:
+    bus = FakeBus()
+    bus.notify("Trigger: Before the sample", wall=time.time() - 60)
+
+    def alfred_notifies() -> None:
+        bus.notify("Trigger: Vet", urgency="urgent")
+        bus.hold("Trigger: Plants")
+
+    ev = await played(ctx(Acting(alfred_notifies), bus=bus), steps=[{"user": "Hello."}])
+    assert [(n.title, n.urgency) for n in ev.notifications] == [("Trigger: Vet", "urgent")]
+    assert ev.started_at <= (ev.notifications[0].t or 0) <= ev.ended_at
+    assert [n.title for n in ev.deferred] == ["Trigger: Plants"]
+
+
+async def test_a_clock_step_in_an_hours_last_minutes_sets_the_next_hours_zone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    slept: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def no_wait(delay: float) -> None:
+        slept.append(delay)
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", no_wait)
+    # 15:59:59 before the wait, 16:00:01 after it.
+    times = iter(
+        [datetime(2026, 10, 8, 15, 59, 59, tzinfo=UTC), datetime(2026, 10, 8, 16, 0, 1, tzinfo=UTC)]
+    )
+    ev = await played(
+        ctx(Recorder(), now=lambda: next(times)),
+        steps=[{"clock": {"hour": 22}}, {"user": "Hello."}],
+    )
+    assert 2.0 in slept
+    assert ev.clocks == [ClockSet(step=0, hour=22, tz="Etc/GMT-6")]
+    assert ev.transcript[0].text == "it is now 22:00"
+
+
+async def test_advance_picks_the_newest_trigger_with_a_run_at_or_the_one_named() -> None:
+    bus = FakeBus()
+
+    def alfred_sets_three() -> None:
+        bus.created("t1", "Laundry reminder")
+        bus.created("t2", "Morning briefing", {"cron": "0 7 * * *"})
+        bus.created("t3", "Vet")
+
+    ev = await played(
+        ctx(Acting(alfred_sets_three), bus=bus),
+        steps=[
+            {"user": "Remind me about the laundry and the vet, and brief me every morning."},
+            {"advance_trigger": {"name": "laundry"}},  # a substring, in any case
+            {"advance_trigger": {"name": "briefing"}},  # a cron trigger has no run_at to pull
+            {"advance_trigger": None},  # the newest with a run_at
+        ],
+    )
+    assert bus.advanced == ["t1", "t3"]
+    assert [(a.step, a.trigger_id) for a in ev.advances] == [(1, "t1"), (3, "t3")]
+    assert "time passes, but no reminder was set" in [t.text for t in ev.transcript]
+
+
+async def test_an_advance_waits_for_a_fire_after_it_not_an_earlier_one() -> None:
+    bus = FakeBus(fires=False)  # the engine never gets to the advanced trigger
+
+    def alfred_sets_it_and_it_fires() -> None:
+        bus.created("t1", "Laundry reminder")
+        bus.fire("t1")  # a repeating trigger's earlier fire, before the advance
+
+    elapsed, ev = await timed_play(
+        ctx(Acting(alfred_sets_it_and_it_fires), bus=bus, fire_timeout_s=0.3),
+        scenario(steps=[{"user": "Remind me about the laundry."}, {"advance_trigger": None}]),
+    )
+    assert bus.advanced == ["t1"] and len(ev.advances) == 1
+    assert elapsed >= 0.3  # the earlier fire did not end the wait
+
+
+async def test_an_advance_wakes_on_the_fire_as_it_lands() -> None:
+    bus = FakeBus(fires=False)
+
+    async def the_engine_fires_later() -> None:
+        await asyncio.sleep(0.3)
+        bus.fire("t1")
+
+    firing = asyncio.create_task(the_engine_fires_later())
+    elapsed, ev = await timed_play(
+        ctx(Acting(lambda: bus.created("t1")), bus=bus, fire_timeout_s=5),
+        scenario(steps=[{"user": "Remind me about the laundry."}, {"advance_trigger": None}]),
+    )
+    await firing
+    assert 0.3 <= elapsed < 2
+    assert [f.trigger_id for f in ev.triggers_fired] == ["t1"]
+
+
+async def test_an_advance_ends_on_an_action_triggers_fire_and_trigger_fired_counts_it() -> None:
+    """A trigger with an action fires as an ActionRequest on alfred:actions, and sends no
+    notification of its own."""
+    bus = FakeBus(fires=False)
+    lamp = {
+        "tool_name": "home.light_turn_on",
+        "target_service": "home-service",
+        "parameters": {"target": "light.bedroom_lamp"},
+    }
+
+    async def the_engine_fires_later() -> None:
+        await asyncio.sleep(0.3)
+        bus.fire("t1")
+
+    firing = asyncio.create_task(the_engine_fires_later())
+    elapsed, ev = await timed_play(
+        ctx(Acting(lambda: bus.created("t1", "Lamp on", action=lamp)), bus=bus, fire_timeout_s=5),
+        scenario(steps=[{"user": "Turn the bedroom lamp on in a bit."}, {"advance_trigger": None}]),
+    )
+    await firing
+    assert 0.3 <= elapsed < 2
+    assert [(f.trigger_id, f.name) for f in ev.triggers_fired] == [("t1", "Lamp on")]
+    assert ev.notifications == []
+    fired = run_check("trigger_fired", TriggerFiredParams(after_step=1, within_s=5), ev)
+    assert fired.status == "pass", fired.reason
+
+
+async def test_an_advance_is_not_ended_by_another_actors_identical_action() -> None:
+    bus = FakeBus(fires=False)
+    lamp = {"tool_name": "home.light_turn_on", "target_service": "home-service"}
+
+    async def system2_acts_later() -> None:
+        await asyncio.sleep(0.1)
+        bus.request(ActionRequest(source="conscious-engine", **lamp))
+
+    acting = asyncio.create_task(system2_acts_later())
+    elapsed, ev = await timed_play(
+        ctx(Acting(lambda: bus.created("t1", action=lamp)), bus=bus, fire_timeout_s=0.4),
+        scenario(steps=[{"user": "Turn the lamp on in a bit."}, {"advance_trigger": None}]),
+    )
+    await acting
+    assert elapsed >= 0.4 and ev.triggers_fired == []
+
+
+async def test_a_zone_an_actor_left_is_put_back_without_a_clock_step() -> None:
+    bus = FakeBus()
+
+    def conscious_stores_the_zone() -> None:
+        bus.tz = "America/Denver"  # as the conscious engine does with a request's zone
+
+    await played(ctx(Acting(conscious_stores_the_zone), bus=bus), steps=[{"user": "Hello."}])
+    assert bus.tz is None and bus.tz_set == [None]
+
+
+async def test_a_sample_that_raises_skips_cleanup() -> None:
+    bus = FakeBus()
+    send = Acting(lambda: bus.created("t1"), source="channels")  # System 2 never answers
+    with pytest.raises(HarnessError, match="no reply from System 2"):
+        await played(
+            ctx(send, bus=bus, now=lambda: datetime(2026, 10, 8, 3, 0, tzinfo=UTC)),
+            steps=[{"clock": {"hour": 22}}, {"dnd": True, "settle": 0}, {"user": "Remind me."}],
+        )
+    # The failed sample's stack is restarted fresh, so nothing needs undoing; and cleanup
+    # through a bus that may be what failed would only raise again, over the first error.
+    assert bus.deleted == [] and bus.cleared == 0 and bus.tz_set == ["Etc/GMT+5"]
+
+
+async def test_the_reflex_wait_counts_only_system1_calls_after_the_push() -> None:
+    proxy = LlmProxy("http://x")
+
+    def system1_answers_early() -> None:  # during the user step, before the event
+        proxy.record(
+            LlmCall(
+                t=time.monotonic(),
+                role="system1",
+                latency_ms=5.0,
+                status=200,
+                response_text='{"decision": "none", "reason": "quiet"}',
+            )
+        )
+
+    ev = await played(
+        ctx(Acting(system1_answers_early), proxy=proxy, reflex_cooldown_s=0, reflex_timeout_s=0.3),
+        steps=[{"user": "Hello."}, LAMP_ON],
+        expect=[{"reflex_decision": {"decision": "none"}}],
+    )
+    assert ev.ended_at - ev.step_start(1) >= 0.3

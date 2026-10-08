@@ -1,0 +1,11 @@
+id: triggers.relative.hour_and_a_half
+prd: [4.2.relative-reminders]
+status: shipped
+tags: [relative]
+steps:
+  - user: "Remind me in an hour and a half to check on the bread."
+expect:
+  - trigger_created: {type: time, run_in_seconds: {approx: 5400, tol: 60}}
+  - llm_tool_args:
+      tool: triggers.create_trigger
+      args: {conditions: {run_in_seconds: {approx: 5400, tol: 60}}}

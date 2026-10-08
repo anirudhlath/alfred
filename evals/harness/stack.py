@@ -27,6 +27,7 @@ from bus.schemas.events import AlfredResponse, UserRequest
 from core.channels.request_bus import publish_and_wait
 from core.conscious.identity import IDENTITY_SIR
 from evals.harness._proc import describe_failure
+from evals.harness.bus import ContainerBus
 from evals.harness.fake_ha import EVAL_HA_TOKEN, FakeHA
 from evals.harness.net import (
     HOST_FIREWALL_DOC,
@@ -296,6 +297,19 @@ class Stack:
         # warm-up golden says.
         self.boot_seconds: float | None = None
         self.first_reply_ms: float | None = None
+        # Reads self.redis and self.web_port on every call, so a restart's new client
+        # and port need nothing re-wired.
+        self.bus = ContainerBus(self._live_redis, self._web_url)
+
+    def _live_redis(self) -> AioRedis:
+        if self.redis is None:
+            raise StackError(f"{self.name} is not started")
+        return self.redis
+
+    def _web_url(self) -> str:
+        if self.web_port is None:
+            raise StackError(f"{self.name} is not started")
+        return f"http://127.0.0.1:{self.web_port}"
 
     def up_command(self, data_dir: Path) -> list[str]:
         cmd = [

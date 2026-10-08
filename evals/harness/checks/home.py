@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from evals.harness.checks.matching import describe, value_matches
+from evals.harness.checks.matching import describe, validate_fields, value_matches
 from evals.harness.checks.result import CheckResult, failed, passed
 
 if TYPE_CHECKING:
@@ -29,6 +29,11 @@ class HaCalledParams(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
     after_step: int | None = None
 
+    @field_validator("data")
+    @classmethod
+    def _patterns_compile(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return validate_fields(value)
+
 
 class HaNotCalledParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -42,6 +47,11 @@ class HaStateParams(BaseModel):
     entity_id: str
     state: str | None = None
     attributes: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("attributes")
+    @classmethod
+    def _patterns_compile(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return validate_fields(value)
 
 
 def _matches(

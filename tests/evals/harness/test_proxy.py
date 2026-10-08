@@ -11,11 +11,14 @@ import httpx
 import pytest
 
 from evals.harness import proxy as proxy_module
+from evals.harness.evidence import LlmCall
 from evals.harness.judge import JUDGE_CONNECTIONS, make_judge_model
 from evals.harness.proxy import MAX_UPSTREAM, LlmProxy, classify_role
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
+
+    from evals.harness.evidence import Role
 
 
 COMPLETION = {
@@ -140,6 +143,29 @@ async def test_concurrency_cap_covers_chat_and_passthrough_alike() -> None:
         await p.stop()
 
 
+async def test_answered_at_counts_the_wait_for_an_upstream_slot() -> None:
+    """latency_ms is upstream's time only; answered_at - t is what the caller waited."""
+
+    async def slow(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.1)
+        return httpx.Response(200, json=COMPLETION)
+
+    p = LlmProxy("http://vllm.test", max_concurrency=1, transport=httpx.MockTransport(slow))
+    await p.start()
+    try:
+        async with httpx.AsyncClient() as client:
+            body = {"model": "m", "messages": []}
+            await asyncio.gather(
+                *(client.post(f"{p.url}/v1/chat/completions", json=body) for _ in range(2))
+            )
+        queued = max(p.calls, key=lambda c: c.answered_at or 0.0)
+        assert queued.answered_at is not None
+        assert queued.latency_ms < 190  # its own upstream call
+        assert queued.answered_at - queued.t >= 0.19  # behind the other one's, too
+    finally:
+        await p.stop()
+
+
 async def test_wait_idle_returns_once_the_call_in_flight_is_recorded() -> None:
     release = asyncio.Event()
 
@@ -176,6 +202,66 @@ async def test_a_failed_call_is_not_left_in_flight() -> None:
         assert p.in_flight == 0 and await p.wait_idle(0.0, 0.01)
 
 
+SYSTEM1 = {
+    "model": "m",
+    "messages": [{"role": "system", "content": "You are Alfred's Reflex Engine"}],
+}
+
+
+def is_system1(call: LlmCall) -> bool:
+    return call.role == "system1"
+
+
+async def test_wait_for_call_wakes_when_the_proxy_records_a_wanted_call() -> None:
+    release = asyncio.Event()
+
+    async def gated(request: httpx.Request) -> httpx.Response:
+        await release.wait()
+        return httpx.Response(200, json=COMPLETION)
+
+    p = LlmProxy("http://vllm.test", transport=httpx.MockTransport(gated))
+    await p.start()
+    try:
+        async with httpx.AsyncClient() as client:
+            waiting = asyncio.create_task(p.wait_for_call(time.monotonic(), 5, is_system1))
+            sent = asyncio.create_task(client.post(f"{p.url}/v1/chat/completions", json=SYSTEM1))
+            while not p.in_flight:
+                await asyncio.sleep(0.005)
+            assert not waiting.done()  # in flight is not recorded
+            release.set()
+            assert await waiting
+            assert [c.role for c in p.calls] == ["system1"]
+            await sent
+    finally:
+        await p.stop()
+
+
+def call_at(t: float, role: Role) -> LlmCall:
+    return LlmCall(t=t, role=role, latency_ms=1.0, status=200)
+
+
+async def test_wait_for_call_counts_only_wanted_calls_since_and_times_out() -> None:
+    p = LlmProxy("http://x")
+    p.record(call_at(0.0, "system1"))  # before the wait's start
+    since = time.monotonic()
+
+    async def calls_land() -> None:
+        await asyncio.sleep(0.05)
+        p.record(call_at(time.monotonic(), "system2"))  # not wanted
+        await asyncio.sleep(0.05)
+        p.record(call_at(time.monotonic(), "system1"))
+
+    landing = asyncio.create_task(calls_land())
+    t0 = time.monotonic()
+    assert await p.wait_for_call(since, 5, is_system1)
+    await landing
+    assert 0.1 <= time.monotonic() - t0 < 2
+    assert await p.wait_for_call(since, 0)  # any call, when nothing narrows it
+    t0 = time.monotonic()
+    assert not await p.wait_for_call(time.monotonic(), 0.05, is_system1)
+    assert time.monotonic() - t0 >= 0.05
+
+
 async def test_wait_idle_waits_only_on_calls_sent_since() -> None:
     release = asyncio.Event()
 
@@ -200,6 +286,59 @@ async def test_wait_idle_waits_only_on_calls_sent_since() -> None:
             release.set()
             await orphan
             assert p.in_flight_since(0.0) == []
+    finally:
+        await p.stop()
+
+
+SYSTEM2 = {
+    "model": "m",
+    "messages": [{"role": "system", "content": "You are Alfred — personal butler"}],
+}
+
+
+async def test_waiting_on_one_role_is_not_held_by_another_roles_call() -> None:
+    """A call in flight counts for a role once its body says whose it is; before then it
+    could be anyone's, so it counts for every role."""
+    release, body_sent = asyncio.Event(), asyncio.Event()
+
+    async def gated(request: httpx.Request) -> httpx.Response:
+        await release.wait()
+        return httpx.Response(200, json=COMPLETION)
+
+    raw = json.dumps(SYSTEM2).encode()
+    split = raw.index(b'"messages"')
+
+    async def slow_body() -> AsyncIterator[bytes]:
+        yield raw[:split]
+        await body_sent.wait()
+        yield raw[split:]
+
+    p = LlmProxy("http://vllm.test", transport=httpx.MockTransport(gated))
+    await p.start()
+    try:
+        async with httpx.AsyncClient() as client:
+            sent = asyncio.create_task(
+                client.post(
+                    f"{p.url}/v1/chat/completions",
+                    content=slow_body(),
+                    headers={"content-type": "application/json"},
+                )
+            )
+            async with asyncio.timeout(5):
+                while not p.in_flight:  # the body is still on its way
+                    await asyncio.sleep(0.005)
+            [stamp] = p.in_flight_since(0.0, role="system1")  # whose, it cannot tell yet
+            assert not await p.wait_idle(0.0, 0.02, role="system1")
+            body_sent.set()
+            # Read and found to be System 2's: no longer System 1's to wait for.
+            assert await p.wait_idle(0.0, 5, role="system1")
+            assert p.in_flight_since(0.0, role="system1") == []
+            assert p.in_flight_since(0.0, role="system2") == [stamp]
+            assert p.in_flight_since(0.0) == [stamp] and p.calls == []
+            assert not await p.wait_idle(0.0, 0.02)
+            release.set()
+            await sent
+            assert [c.role for c in p.calls] == ["system2"] and p.in_flight == 0
     finally:
         await p.stop()
 

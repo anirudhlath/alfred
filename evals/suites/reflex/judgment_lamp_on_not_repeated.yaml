@@ -1,0 +1,10 @@
+id: reflex.judgment.lamp_on_not_repeated
+prd: [4.4.reflex-judgment]
+status: shipped
+tags: [judgment, lights]
+steps:
+  - clock: {hour: 20}
+  - ha_event: {entity_id: light.living_room_ceiling, state: "on"}
+expect:
+  # Someone just turned it on: proposing to turn it on is noise.
+  - reflex_not_proposed: {tool: home.light_turn_on, target: light.living_room_ceiling}

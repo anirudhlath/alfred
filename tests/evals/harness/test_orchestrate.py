@@ -41,6 +41,7 @@ from evals.harness.preflight import PreflightError
 from evals.harness.proxy import LlmProxy
 from evals.harness.scenario import Scenario, ScenarioError, expand_variants, load_suites
 from evals.harness.stack import StackError
+from tests.evals.harness.factories import FakeBus
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -528,6 +529,7 @@ class FakeStack:
         self.first_reply_ms = 300.0
         self.restarts = 0
         self.stopped = False
+        self.bus = FakeBus()
         self._start_error = start_error
 
     async def start(self) -> None:

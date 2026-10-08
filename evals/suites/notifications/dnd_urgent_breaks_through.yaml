@@ -1,0 +1,12 @@
+id: notifications.dnd.urgent_breaks_through
+prd: [principle.1, 4.2.proactive-notifications]
+status: shipped
+tags: [dnd, urgency]
+steps:
+  - dnd: on
+    settle: 0  # the admin API sets the key before it answers; nothing to wait for
+  - user: "Remind me in 10 minutes to take my medication. It's urgent."
+  - advance_trigger: {}
+expect:
+  - trigger_created: {type: time, urgency: urgent}
+  - notification: {source: trigger-engine, urgency: urgent, after_step: 2}
