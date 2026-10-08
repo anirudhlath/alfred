@@ -21,7 +21,7 @@ there skips every close — reintroducing the exact failure above, one line earl
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
@@ -30,36 +30,6 @@ if TYPE_CHECKING:
 
 # A task that ignores cancellation must not be able to hang shutdown forever.
 _DRAIN_TIMEOUT_SECONDS = 5.0
-
-
-@runtime_checkable
-class _AsyncCloseable(Protocol):
-    """A resource released by ``aclose()``, the name redis-py and httpx settled on."""
-
-    def aclose(self) -> Awaitable[object]: ...
-
-
-class _Closeable(Protocol):
-    """A resource that predates ``aclose()`` and is released by ``close()``."""
-
-    def close(self) -> Awaitable[object]: ...
-
-
-def closer_for(
-    resource: _AsyncCloseable | _Closeable | None,
-) -> Callable[[], Awaitable[object]] | None:
-    """The closer :func:`teardown` should run for *resource*: ``aclose()`` when it has one.
-
-    A client that grew ``aclose()`` keeps ``close()`` only as a deprecated alias —
-    redis-py warns on every call — so handing teardown the bound ``client.close`` closes
-    it the deprecated way. A resource with only ``close()`` falls back to that. ``None``
-    passes through, which teardown skips.
-    """
-    if resource is None:
-        return None
-    if isinstance(resource, _AsyncCloseable):
-        return resource.aclose
-    return resource.close
 
 
 async def teardown(
@@ -71,8 +41,7 @@ async def teardown(
     """Stop background tasks, then release resources, under one cancellation deferral.
 
     ``None`` entries are skipped in both arguments, so a caller holding an optional task
-    or resource needs no branch at the call site. Pass a client as ``closer_for(client)``
-    rather than its bound ``close``, so it is closed through ``aclose()`` when it has one.
+    or resource needs no branch at the call site.
 
     Tasks are drained before resources are closed because a live task may still be using
     one. Failures are logged rather than raised — teardown has nowhere useful to

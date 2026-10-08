@@ -52,7 +52,7 @@ from core.routing.pending import (
     pending_action_payload,
     pending_key,
 )
-from core.shutdown import closer_for, teardown
+from core.shutdown import teardown
 from core.warmup import start_warmup
 from shared.env import is_truthy_flag
 from shared.redis_streams import create_redis
@@ -405,7 +405,7 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
             # (it must outlive any single request), so this hook is its only close.
             "admin episodic provider": aclose_episodic,
             "http client": app.state.http.aclose,
-            "redis pool": closer_for(pool),
+            "redis pool": pool.aclose,
         },
     )
 
