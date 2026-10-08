@@ -16,7 +16,7 @@ External apps remain sovereign. They work independently without Alfred. The SDK 
 uv pip install -e path/to/alfred/sdk   # not on PyPI -- installed from source in container builds
 ```
 
-Minimum dependencies: `pydantic>=2.0`, `redis>=5.0`, Python 3.13+.
+Minimum dependencies: `pydantic>=2.11`, `redis>=5.0`, Python 3.13+.
 
 ---
 
