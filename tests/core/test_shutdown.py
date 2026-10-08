@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import warnings
 from typing import TYPE_CHECKING
 
 import pytest
+import redis.asyncio as aioredis
 from loguru import logger
 
-from core.shutdown import teardown
+from core.shutdown import closer_for, teardown
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterator
@@ -222,3 +224,62 @@ async def test_teardown_reports_a_task_that_failed_rather_than_cancelled(
     await teardown(tasks=[task])
 
     assert any("exploder" in line and "worker blew up" in line for line in captured_logs)
+
+
+class ClientWithAclose:
+    """The redis-py and httpx shape: ``aclose()`` closes, ``close()`` is a deprecated alias."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def aclose(self) -> None:
+        self.calls.append("aclose")
+
+    async def close(self) -> None:
+        self.calls.append("close")
+
+
+class ClientWithCloseOnly:
+    """The shape of the stores that predate ``aclose()``: ``close()`` is all there is."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def close(self) -> None:
+        self.calls.append("close")
+
+
+async def test_teardown_closes_a_client_through_aclose_when_it_has_one() -> None:
+    client = ClientWithAclose()
+
+    await teardown(closers={"redis": closer_for(client)})
+
+    assert client.calls == ["aclose"]
+
+
+async def test_teardown_still_closes_a_client_that_has_only_close() -> None:
+    client = ClientWithCloseOnly()
+
+    await teardown(closers={"credential store": closer_for(client)})
+
+    assert client.calls == ["close"]
+
+
+def test_closer_for_passes_none_through() -> None:
+    """Callers hold optional resources; teardown skips None, so the helper must keep it."""
+    assert closer_for(None) is None
+
+
+async def test_teardown_closes_a_redis_client_without_a_deprecation_warning() -> None:
+    """redis-py deprecated ``close()`` for ``aclose()``; closing the pool raised a warning.
+
+    Recorded rather than raised as an error: teardown logs whatever a closer raises,
+    so an error-filtered warning would be swallowed and the test would pass regardless.
+    """
+    client = aioredis.Redis()  # never connects; closing it needs no server
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        await teardown(closers={"redis": closer_for(client)})
+
+    assert [w for w in caught if issubclass(w.category, DeprecationWarning)] == []

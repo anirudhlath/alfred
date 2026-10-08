@@ -296,7 +296,7 @@ def test_lifespan_shutdown_closes_everything_past_a_failing_closer(tmp_path: Pat
 
     mock_redis = AsyncMock()
     mock_redis.hgetall = AsyncMock(return_value={})
-    mock_redis.close = AsyncMock()
+    mock_redis.aclose = AsyncMock()
 
     mock_store = AsyncMock()
     mock_store.initialize = AsyncMock()
@@ -336,7 +336,9 @@ def test_lifespan_shutdown_closes_everything_past_a_failing_closer(tmp_path: Pat
     assert mock_store.close.await_count == 1
     assert aclose_episodic.await_count == 1
     assert http_aclose.await_count == 1
-    assert mock_redis.close.await_count == 1
+    # Through aclose(): redis-py deprecated close() for it.
+    assert mock_redis.aclose.await_count == 1
+    assert mock_redis.close.await_count == 0
 
 
 def test_ws_ping_is_a_no_op_and_does_not_lock_the_session(web_client: TestClient) -> None:
