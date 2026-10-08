@@ -126,6 +126,9 @@ class RunMeta(BaseModel):
     epochs: int
     calibration: dict[str, float]
     trusted: list[str]
+    # Categories the saved calibration measured on items that have changed since: it
+    # exists but no longer applies, so they are untrusted (``orchestrate.calibration_for``).
+    stale: list[str] = Field(default_factory=list)
     stacks: list[dict[str, Any]]
     # What went wrong with the run as a whole (see ``log_problems``), shown above the tables.
     problems: list[str] = Field(default_factory=list)
@@ -459,15 +462,26 @@ def _short(commit: str) -> str:
 
 
 def _judge_trust(m: RunMeta) -> str:
-    if not m.calibration:
+    """The header's judge part: trusted, untrusted, stale and uncalibrated categories, each
+    in its own part. "No calibration" only when there is none for this model at all."""
+    if not m.calibration and not m.stale:
         return f"no judge calibration for {m.model} — every judge check is untrusted"
-    untrusted = sorted(set(m.calibration) - set(m.trusted))
-    uncalibrated = sorted(c for c in get_args(JudgeCategory) if c not in m.calibration)
-    return (
-        f"judge trusted: {', '.join(m.trusted) or 'none'}"
-        + (f" · untrusted: {', '.join(untrusted)}" if untrusted else "")
-        + (f" · uncalibrated: {', '.join(uncalibrated)}" if uncalibrated else "")
-    )
+    parts: list[str] = []
+    if m.calibration:
+        untrusted = sorted(set(m.calibration) - set(m.trusted))
+        parts.append(f"judge trusted: {', '.join(m.trusted) or 'none'}")
+        if untrusted:
+            parts.append(f"untrusted: {', '.join(untrusted)}")
+    if m.stale:
+        parts.append(
+            f"judge calibration stale for {', '.join(m.stale)} (items changed) — untrusted; "
+            f"run `alfred evals calibrate --model {m.model}`"
+        )
+    known = set(m.calibration) | set(m.stale)
+    uncalibrated = sorted(c for c in get_args(JudgeCategory) if c not in known)
+    if uncalibrated:
+        parts.append(f"uncalibrated: {', '.join(uncalibrated)}")
+    return " · ".join(parts)
 
 
 def render_markdown(card: Scorecard) -> str:

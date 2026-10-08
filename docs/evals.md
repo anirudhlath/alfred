@@ -389,8 +389,10 @@ A check is **counted** unless it is a judge check in an untrusted category.
 Sections, in order:
 
 1. **Header.** Model, Alfred commit, home-service commit, epochs, and the judge's trust:
-   which categories are trusted, untrusted and uncalibrated. With no calibration for the
-   model, it says every judge check is untrusted.
+   which categories are trusted, untrusted, stale (calibrated on hand-labelled items that
+   have changed since, with the command to recalibrate) and uncalibrated, each in its own
+   part. Only with no calibration for the model at all does it say every judge check is
+   untrusted.
 2. **Stack lines**, one per suite that started: `boot` (seconds to the first ready), `first
    reply` (the readiness request, the very first request after boot — the cold-start
    number for PRD 4.7's warmup row) and `recoveries` (restarts of a dead container or of a
@@ -712,10 +714,11 @@ and, per category, a sha256 of the items it was measured on.
   to re-run `alfred evals calibrate --model <model>`. Changing the model therefore always
   means recalibrating.
 - **So do the items.** A category whose items changed since it was measured — an item
-  added, removed or relabelled, a rubric reworded — counts as uncalibrated, and the run
-  warns which categories to recalibrate; so does a category added or removed since, and
-  every category of a report saved before the digests existed. A comment or a layout
-  change in the YAML is not a change of items.
+  added, removed or relabelled, a rubric reworded — is stale: its checks are untrusted,
+  the run warns which categories to recalibrate, and the scorecard header names them as
+  stale. So is a category whose file was removed, and every category of a report saved
+  before the digests existed; a category added since was never measured, so it is
+  uncalibrated. A comment or a layout change in the YAML is not a change of items.
 - A calibration file that cannot be read stops the run in preflight, rather than quietly
   scoring every judge check as untrusted.
 

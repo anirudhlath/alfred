@@ -209,12 +209,15 @@ async def execute(
 
 def calibration_for(
     report: CalibrationReport | None, model: str, digests: Mapping[str, str]
-) -> tuple[dict[str, float], set[str]]:
-    """The judge calibration a run on *model* reports, and the categories it trusts.
+) -> tuple[dict[str, float], set[str], list[str]]:
+    """The judge calibration a run on *model* reports, the categories it trusts, and the
+    ones it measured that are stale.
 
     A calibration measured on another model counts as missing: its agreements say
-    nothing about this judge. So does a category measured on other items than its file
-    holds now (*digests*, from ``calibration_digests``): edited, added or removed since.
+    nothing about this judge. A category measured on other items than its file holds now
+    (*digests*, from ``calibration_digests``), edited or removed since, is stale: left out
+    of the calibration and named, so the scorecard does not call it missing. A category
+    added since was never measured: it is simply uncalibrated.
     """
     if report is None or report.model != model:
         logger.warning(
@@ -224,7 +227,7 @@ def calibration_for(
             "" if report is None else f" (the saved one is for {report.model})",
             model,
         )
-        return {}, set()
+        return {}, set(), []
     changed = sorted(
         c
         for c in report.categories.keys() | digests.keys()
@@ -240,7 +243,8 @@ def calibration_for(
             model,
         )
     current = {c: r.agreement for c, r in report.categories.items() if c not in changed}
-    return current, report.trusted() - set(changed)
+    stale = [c for c in changed if c in report.categories]
+    return current, report.trusted() - set(changed), stale
 
 
 def read_calibration(path: Path, model: str) -> CalibrationReport | None:
@@ -311,7 +315,7 @@ async def run_suites(opts: RunOptions) -> RunOutcome:
     report = read_calibration(CALIBRATION_FILE, opts.model)
     # A file that cannot be used is a CalibrationError naming it, a one-line preflight error.
     digests = calibration_digests(load_calibration_sets(CALIBRATION_DIR))
-    calibration, trusted = calibration_for(report, opts.model, digests)
+    calibration, trusted, stale = calibration_for(report, opts.model, digests)
     gateway = docker_bridge_gateway()
     run_dir = opts.log_root / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
@@ -374,6 +378,7 @@ async def run_suites(opts: RunOptions) -> RunOutcome:
         epochs=opts.epochs,
         calibration=calibration,
         trusted=sorted(trusted),
+        stale=stale,
         stacks=results.stacks,
         problems=[*results.problems, *log_problems(results.logs, opts.epochs)],
     )

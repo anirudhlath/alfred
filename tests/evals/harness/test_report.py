@@ -318,6 +318,41 @@ def test_header_names_untrusted_and_uncalibrated_judge_categories() -> None:
     assert "uncalibrated: answered, faithfulness, relevance" in header
 
 
+STALE = (
+    "judge calibration stale for {} (items changed) — untrusted; "
+    "run `alfred evals calibrate --model m`"
+)
+
+
+def test_header_says_a_stale_calibration_is_stale_not_missing() -> None:
+    # Every category it measured has changed items since: it exists, and it is stale.
+    stale = ["answered", "faithfulness", "tone"]
+    meta = META.model_copy(update={"calibration": {}, "trusted": [], "stale": stale})
+    header = render_markdown(summarize([], meta)).splitlines()[2]
+    assert header.endswith(
+        " · " + STALE.format("answered, faithfulness, tone") + " · uncalibrated: privacy, relevance"
+    )
+    assert "no judge calibration" not in header and "judge trusted" not in header
+
+
+def test_header_lists_trusted_untrusted_stale_and_uncalibrated_each_in_its_own_part() -> None:
+    meta = META.model_copy(
+        update={
+            "calibration": {"tone": 0.9, "privacy": 0.7},
+            "trusted": ["tone"],
+            "stale": ["answered"],
+        }
+    )
+    header = render_markdown(summarize([], meta)).splitlines()[2]
+    parts = [
+        "judge trusted: tone",
+        "untrusted: privacy",
+        STALE.format("answered"),
+        "uncalibrated: faithfulness, relevance",
+    ]
+    assert header.endswith(" · " + " · ".join(parts))
+
+
 def test_header_says_when_the_judge_has_no_calibration() -> None:
     meta = META.model_copy(update={"calibration": {}, "trusted": []})
     header = render_markdown(summarize([], meta)).splitlines()[2]

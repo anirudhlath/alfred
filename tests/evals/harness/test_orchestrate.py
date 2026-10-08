@@ -315,11 +315,13 @@ def test_calibration_for_uses_only_the_runs_own_model(caplog: pytest.LogCaptureF
     assert calibration_for(_report("judge-m"), "judge-m", DIGESTS) == (
         {"tone": 0.9, "answered": 0.5},
         {"tone"},
+        [],
     )
     assert not caplog.records
     with caplog.at_level(logging.WARNING, logger="evals.harness.orchestrate"):
-        assert calibration_for(_report("another-m"), "judge-m", DIGESTS) == ({}, set())
-        assert calibration_for(None, "judge-m", DIGESTS) == ({}, set())
+        # Another model's calibration is missing, not stale.
+        assert calibration_for(_report("another-m"), "judge-m", DIGESTS) == ({}, set(), [])
+        assert calibration_for(None, "judge-m", DIGESTS) == ({}, set(), [])
     mismatch, missing = (r.getMessage() for r in caplog.records)
     assert "(the saved one is for another-m)" in mismatch and "saved one" not in missing
     assert all("alfred evals calibrate --model judge-m" in m for m in (mismatch, missing))
@@ -338,9 +340,11 @@ def test_a_category_whose_items_changed_since_calibration_is_uncalibrated(
     caplog: pytest.LogCaptureFixture, saved: dict[str, str], stale: str
 ) -> None:
     with caplog.at_level(logging.WARNING, logger="evals.harness.orchestrate"):
-        calibration, trusted = calibration_for(_report("judge-m", saved), "judge-m", DIGESTS)
+        calibration, trusted, stale_ones = calibration_for(
+            _report("judge-m", saved), "judge-m", DIGESTS
+        )
     kept = {"answered": 0.5} if stale == "tone" else {}
-    assert (calibration, trusted) == (kept, set())
+    assert (calibration, trusted, stale_ones) == (kept, set(), stale.split(", "))
     [warning] = (r.getMessage() for r in caplog.records)
     assert f"changed since it was measured: {stale}" in warning
     assert "alfred evals calibrate --model judge-m" in warning
@@ -351,9 +355,11 @@ def test_a_category_added_or_removed_since_calibration_is_uncalibrated(
 ) -> None:
     current = {"tone": "d-tone", "relevance": "d-relevance"}  # answered's file is gone
     with caplog.at_level(logging.WARNING, logger="evals.harness.orchestrate"):
+        # answered was measured and its file is gone: stale. relevance never was: missing.
         assert calibration_for(_report("judge-m"), "judge-m", current) == (
             {"tone": 0.9},
             {"tone"},
+            ["answered"],
         )
     [warning] = (r.getMessage() for r in caplog.records)
     assert "changed since it was measured: answered, relevance" in warning
@@ -662,7 +668,7 @@ async def test_run_suites_preflights_before_the_build_and_reports_whatever_ran(
     meta = card["meta"]
     assert meta["alfred_commit"] == commit and meta["home_service_commit"] == hs_commit
     # The saved calibration was measured on another model, so none of it applies.
-    assert meta["calibration"] == {} and meta["trusted"] == []
+    assert meta["calibration"] == {} and meta["trusted"] == [] and meta["stale"] == []
     assert meta["problems"] == [
         "suite zzz: stack failed to start: no port",
         "demo: a problem with the run",
@@ -784,8 +790,10 @@ async def test_run_suites_trusts_only_a_calibration_of_the_items_as_they_are(
     meta = json.loads((outcome.run_dir / "report.json").read_text(encoding="utf-8"))["meta"]
     if edited:
         assert (meta["calibration"], meta["trusted"]) == ({"answered": 0.5}, [])
+        assert meta["stale"] == ["tone"]
     else:
         assert (meta["calibration"], meta["trusted"]) == ({"tone": 0.9, "answered": 0.5}, ["tone"])
+        assert meta["stale"] == []
 
 
 @pytest.mark.parametrize(
