@@ -158,3 +158,88 @@ async def test_get_tools_non_object_manifest_skipped(
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1
     assert "bad-service" in warnings[0].getMessage()
+
+
+def _registry_with(*features: dict[str, Any]) -> ToolRegistry:
+    mock_redis = AsyncMock()
+    mock_redis.hgetall.return_value = {
+        b"svc": _make_manifest("svc", list(features)).encode(),
+    }
+    return ToolRegistry(mock_redis)
+
+
+@pytest.mark.asyncio
+async def test_manifest_input_schema_is_used_verbatim() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"days": {"type": "array", "items": {"type": "string"}}},
+        "required": ["days"],
+    }
+    feature = {
+        "name": "f",
+        "tools": [
+            {
+                "name": "f.go",
+                "parameters": {"days": {"type": "list", "default": None, "required": True}},
+                "input_schema": schema,
+            }
+        ],
+    }
+    tools = await _registry_with(feature).get_tools()
+    assert tools[0].input_schema == schema
+
+
+@pytest.mark.asyncio
+async def test_old_sdk_manifest_keeps_todays_schema() -> None:
+    # An older SDK wrote "default": null for every parameter and no input_schema.
+    old = {
+        "name": "lighting",
+        "tools": [
+            {
+                "name": "lighting.dim_lights",
+                "description": "Dim the lights in a room.",
+                "parameters": {
+                    "room": {"type": "str", "description": "The room to dim.", "default": None},
+                    "level": {"type": "int", "description": "0-100.", "default": None},
+                },
+            }
+        ],
+    }
+    tools = await _registry_with(old).get_tools()
+    assert tools[0].input_schema == {
+        "type": "object",
+        "properties": {
+            "room": {"type": "string", "description": "The room to dim."},
+            "level": {"type": "integer", "description": "0-100."},
+        },
+        "required": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_parameters_without_a_default_key_stay_required() -> None:
+    tools = await _registry_with(LIGHTING_FEATURE).get_tools()
+    assert tools[0].input_schema["required"] == ["room", "level"]
+
+
+@pytest.mark.asyncio
+async def test_malformed_tool_is_skipped_and_the_rest_still_load(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    feature = {
+        "name": "f",
+        "tools": [
+            {"description": "no name"},
+            {"name": "f.bad_params", "parameters": {"p": "not-a-dict"}},
+            {"name": "f.bad_type", "parameters": {"p": {"type": 5}}},
+            {"name": "f.good", "parameters": {}},
+        ],
+    }
+    with caplog.at_level(logging.WARNING):
+        tools = await _registry_with(feature, LIGHTING_FEATURE).get_tools()
+    assert [t.name for t in tools] == [
+        "f.good",
+        "lighting.dim_lights",
+        "lighting.turn_off_lights",
+    ]
+    assert caplog.text.count("Skipping malformed tool") == 3
