@@ -191,6 +191,16 @@ class Scenario(BaseModel):
             isinstance(s, UserStep) for s in self.steps
         ):
             raise ValueError("reply and judge checks need at least one user step")
+        # after_step indexes Evidence.step_started, one entry per step of any kind, which
+        # the driver reads mid-play: out of range, it would raise there, not here.
+        n = len(self.steps)
+        for i, check in enumerate(self.expect):
+            after = getattr(check.params, "after_step", None)
+            if isinstance(after, int) and not -n <= after < n:
+                raise ValueError(
+                    f"expect.{i}.after_step is {after}, but the golden has {n} steps "
+                    f"({-n} to {n - 1})"
+                )
         return self
 
 

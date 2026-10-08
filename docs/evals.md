@@ -549,11 +549,12 @@ unauthenticated session.
 
 At load (`evals/harness/scenario.py`), so a mistake fails before a container boots: the id's
 shape and suite prefix, unique ids, known check names and valid params, exactly one step kind
-per step, at most one step with variants, and at least one `user` step when a check reads a
-reply (`reply_*`, `latency`, `judge`).
+per step, at most one step with variants, at least one `user` step when a check reads a
+reply (`reply_*`, `latency`, `judge`), and every `after_step` names a real step (it counts
+every step, so a golden with 3 steps takes `-3` to `2`).
 
 `tests/evals/test_goldens_load.py` adds what needs the world: every `entity_id` in an
-`ha_event` or a check exists in it; every `step` and `after_step` names a real step; every
+`ha_event` or a check exists in it; every reply `step` names a real user step; every
 `domain`/`service` a check names is a service the world offers; and every home tool a check
 names is one home-service would generate, `home.{domain}_{service}`. It also pins the reply
 patterns of a few goldens to phrasings they must accept and near misses they must reject.

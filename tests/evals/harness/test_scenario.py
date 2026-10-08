@@ -110,6 +110,17 @@ def test_variants_expand_to_separate_samples(tmp_path: Path) -> None:
         (HA_CALLED, "  - ha_not_called: []", "expect.0\n  Input should be a valid dictionary"),
         ('user: "Turn on the bedroom lamp."', 'user: "   "', "must not be blank"),
         ('variants: ["Bedroom lamp on.",', 'variants: [" \\t",', "must not be blank"),
+        # after_step indexes every step (2 here), as Python reads a list: -2 to 1.
+        (
+            "entity_id: light.bedroom_lamp}",
+            "entity_id: light.bedroom_lamp, after_step: 2}",
+            "expect.0.after_step is 2, but the golden has 2 steps (-2 to 1)",
+        ),
+        (
+            "entity_id: light.bedroom_lamp}",
+            "entity_id: light.bedroom_lamp, after_step: -3}",
+            "expect.0.after_step is -3, but the golden has 2 steps (-2 to 1)",
+        ),
     ],
     ids=[
         "unknown-check",
@@ -130,6 +141,8 @@ def test_variants_expand_to_separate_samples(tmp_path: Path) -> None:
         "empty-list-params",
         "blank-user",
         "blank-variant",
+        "after-step-past-the-end",
+        "after-step-before-the-start",
     ],
 )
 def test_bad_scenarios_name_the_file(
