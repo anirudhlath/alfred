@@ -496,6 +496,32 @@ def test_explicit_input_schema_that_is_not_an_object_schema_fails() -> None:
         ToolMeta(name="x.q", description="Q.", parameters={}, input_schema={"type": "array"})
 
 
+def test_mutating_the_callers_input_schema_leaves_the_meta_alone() -> None:
+    explicit: dict[str, Any] = {
+        "type": "object",
+        "properties": {"q": {"type": "string", "enum": ["a"]}},
+        "required": ["q"],
+    }
+    meta = ToolMeta(name="x.q", description="Q.", parameters={}, input_schema=explicit)
+    explicit["properties"]["q"]["enum"].append("b")
+    explicit["required"].clear()
+    assert meta.input_schema == {
+        "type": "object",
+        "properties": {"q": {"type": "string", "enum": ["a"]}},
+        "required": ["q"],
+    }
+
+
+def test_mutating_the_callers_json_schema_leaves_the_parameter_alone() -> None:
+    json_schema: dict[str, Any] = {"type": "string", "enum": ["low", "high"]}
+    param = ToolParameter(type="str", json_schema=json_schema)
+    meta = ToolMeta(name="x.m", description="M.", parameters={"mode": param})
+    json_schema["enum"].append("max")
+    json_schema["type"] = "integer"
+    assert param.json_schema == {"type": "string", "enum": ["low", "high"]}
+    assert meta.input_schema["properties"]["mode"] == {"type": "string", "enum": ["low", "high"]}
+
+
 def test_replace_keeps_input_schema_audience_and_risk() -> None:
     meta = ToolMeta(
         name="x.q",
@@ -507,6 +533,19 @@ def test_replace_keeps_input_schema_audience_and_risk() -> None:
     copy = dataclasses.replace(meta, description="Q, enriched.")
     assert copy.input_schema == meta.input_schema
     assert (copy.audience, copy.risk) == ("reflex", "critical")
+
+
+def test_replace_re_derives_the_schema_only_when_told_to() -> None:
+    meta = ToolMeta(
+        name="x.q", description="Q.", parameters={"q": ToolParameter(type="str", required=True)}
+    )
+    new = {"n": ToolParameter(type="int", required=True)}
+    assert dataclasses.replace(meta, parameters=new).input_schema == meta.input_schema
+    assert dataclasses.replace(meta, parameters=new, input_schema={}).input_schema == {
+        "type": "object",
+        "properties": {"n": {"type": "integer"}},
+        "required": ["n"],
+    }
 
 
 class _HandBuiltFeature(BaseFeature):
