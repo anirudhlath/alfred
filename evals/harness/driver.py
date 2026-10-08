@@ -17,7 +17,12 @@ from bus.schemas.events import AlfredResponse, UserRequest
 from core.conscious.identity import IDENTITY_GUEST, IDENTITY_SIR
 from evals.harness.bus import zone_for_hour
 from evals.harness.checks.home import satisfies
-from evals.harness.collect import deferred_records, notification_records, trigger_records
+from evals.harness.collect import (
+    deferred_records,
+    is_fire_of,
+    notification_records,
+    trigger_records,
+)
 from evals.harness.errors import HarnessError as HarnessError  # re-exported for tasks.py
 from evals.harness.evidence import Advance, ClockSet, Evidence, Reply, TranscriptTurn
 from evals.harness.reflex import reflex_calls
@@ -40,7 +45,7 @@ from evals.harness.stack import (
 )
 
 if TYPE_CHECKING:
-    from evals.harness.bus import Bus, Entry
+    from evals.harness.bus import Bus
     from evals.harness.checks.home import HaCalledParams
     from evals.harness.evidence import HaCall, LlmCall
     from evals.harness.fake_ha import FakeHA
@@ -197,21 +202,21 @@ async def _advance(
     ev.advances.append(Advance(step=index, trigger_id=trigger.trigger_id, name=trigger.name, t=t))
     ev.transcript.append(TranscriptTurn(role="event", text=f"time passes: {trigger.name!r} is due"))
 
-    def its_fire(entry: Entry) -> bool:
-        _, fires = trigger_records([entry], ev.started_at, started_wall)
-        return any(f.trigger_id == trigger.trigger_id for f in fires)
-
     # Read from the advance on: an earlier fire of the trigger (a repeating one's, or the
-    # one an earlier advance brought) is not the fire this advance waits for.
+    # one an earlier advance brought) is not the fire this advance waits for. Either kind
+    # of fire ends the wait: a TriggerFired, or the ActionRequest of a trigger with an action.
     timeout = ctx.fire_timeout_s if step.settle is None else step.settle
-    if await ctx.bus.wait_for_event(t_wall, timeout, its_fire):
-        await asyncio.sleep(ctx.settle_s)  # for the notification it sends
+    if await ctx.bus.wait_for_event(t_wall, timeout, partial(is_fire_of, trigger=trigger)):
+        await asyncio.sleep(ctx.settle_s)  # for what the fire sets off: a notification, a call
 
 
 async def _collect(ctx: PlayContext, ev: Evidence, started_wall: float) -> list[str]:
     """Fill in the bus's evidence. Returns the ids of every trigger the sample created."""
     created, fired = trigger_records(
-        await ctx.bus.events(started_wall), ev.started_at, started_wall
+        await ctx.bus.events(started_wall),
+        ev.started_at,
+        started_wall,
+        actions=await ctx.bus.actions(started_wall),
     )
     ev.triggers_created, ev.triggers_fired = created, fired
     ev.notifications = notification_records(

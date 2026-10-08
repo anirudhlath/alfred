@@ -98,6 +98,9 @@ class TriggerRecord(BaseModel):
     urgency: str = "informational"
     one_shot: bool = False
     created_at: datetime  # the event's own timestamp, the base a relative delay ran from
+    # What it runs when it fires, as the engine runs it (an ``ActionPayload``). None: it
+    # fires a TriggerFired instead.
+    action: dict[str, Any] | None = None
 
     @field_validator("created_at")
     @classmethod
@@ -107,7 +110,9 @@ class TriggerRecord(BaseModel):
 
 
 class TriggerFire(BaseModel):
-    """``TriggerFired`` on alfred:events: a trigger with no action fired."""
+    """A trigger of this sample fired: a ``TriggerFired`` on alfred:events for one with no
+    action, or the ``ActionRequest`` the engine sends to alfred:actions in its place for
+    one with an action (``collect.trigger_records``)."""
 
     t: float
     trigger_id: str

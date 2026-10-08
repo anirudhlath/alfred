@@ -1,7 +1,9 @@
 """The eval container's bus: what the driver reads from Alfred and does through it.
 
 Reads:
-- ``alfred:events`` (TriggerCreated and TriggerFired), and waits on it with blocking reads;
+- ``alfred:events`` (TriggerCreated and TriggerFired);
+- ``alfred:actions``, where a trigger with an action fires (an ActionRequest);
+- either of those two, waiting on them with blocking reads;
 - the notification dispatch stream;
 - the deferred list;
 - the registry's reflex-audience tools, which are what Reflex's prompt shows;
@@ -35,6 +37,7 @@ from core.reflex.tool_registry import REFLEX_AUDIENCE, ToolRegistry
 from shared import usertime
 from shared.redis_streams import forward_range, read
 from shared.streams import (
+    ACTIONS_STREAM,
     AUTH_SESSION_PREFIX,
     DEFERRED_NOTIFICATIONS_KEY,
     DND_STATE_KEY,
@@ -72,6 +75,7 @@ class Entry:
 
 class Bus(Protocol):
     async def events(self, since_wall: float) -> list[Entry]: ...
+    async def actions(self, since_wall: float) -> list[Entry]: ...
     async def wait_for_event(
         self, since_wall: float, timeout_s: float, wanted: Callable[[Entry], bool]
     ) -> bool: ...
@@ -135,26 +139,31 @@ class ContainerBus:
     async def events(self, since_wall: float) -> list[Entry]:
         return await self._range(EVENTS_STREAM, since_wall)
 
+    async def actions(self, since_wall: float) -> list[Entry]:
+        return await self._range(ACTIONS_STREAM, since_wall)
+
     async def wait_for_event(
         self, since_wall: float, timeout_s: float, wanted: Callable[[Entry], bool]
     ) -> bool:
-        """Wait for an ``alfred:events`` entry at or after *since_wall* that *wanted*
-        accepts. False after *timeout_s*.
+        """Wait for an ``alfred:events`` or ``alfred:actions`` entry at or after
+        *since_wall* that *wanted* accepts. False after *timeout_s*.
 
-        Each read blocks until an entry lands after the last one seen, so the wait wakes
-        as the entry lands, and an entry already in the window is seen at once.
+        Each read blocks until an entry lands on either stream after the last one seen
+        there, so the wait wakes as the entry lands, and an entry already in the window is
+        seen at once.
         """
         r = self._redis()
         # XREAD returns the entries after the id it is given: start just before the window.
-        last_id = f"{window_start_ms(since_wall) - 1}-{_MAX_SEQ}"
+        start = f"{window_start_ms(since_wall) - 1}-{_MAX_SEQ}"
+        last_ids = {EVENTS_STREAM: start, ACTIONS_STREAM: start}
         deadline = time.monotonic() + timeout_s
         while True:
             remaining_ms = math.ceil((deadline - time.monotonic()) * 1000)
             # BLOCK 0 blocks for ever, so past the deadline the last read does not block.
             block = remaining_ms if remaining_ms > 0 else None
-            for _stream, entries in await read(r, {EVENTS_STREAM: last_id}, block=block):
+            for stream, entries in await read(r, dict(last_ids), block=block):
                 for entry_id, fields in entries:
-                    last_id = decode_stream_value(entry_id)
+                    last_ids[decode_stream_value(stream)] = decode_stream_value(entry_id)
                     if wanted(_entry(entry_id, fields)):
                         return True
             if block is None:

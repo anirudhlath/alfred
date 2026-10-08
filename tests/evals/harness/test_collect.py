@@ -5,11 +5,16 @@ from datetime import UTC, datetime
 
 import pytest
 
-from bus.schemas.events import TriggerCreated, TriggerFired
+from bus.schemas.events import ActionRequest, TriggerCreated, TriggerFired
 from core.notifications.schema import Notification, Urgency
 from core.reflex.tool_registry import ToolInfo
 from evals.harness.bus import Entry
-from evals.harness.collect import deferred_records, notification_records, trigger_records
+from evals.harness.collect import (
+    deferred_records,
+    is_fire_of,
+    notification_records,
+    trigger_records,
+)
 from evals.harness.errors import HarnessError
 from evals.harness.evidence import LlmCall
 from evals.harness.reflex import local_hour, reflex_calls, targets, tool_domain
@@ -20,20 +25,35 @@ STARTED = 50.0  # time.monotonic() at the same instant
 CREATED = datetime(2026, 10, 8, 18, 0, tzinfo=UTC)
 
 
-def event_entry(event: TriggerCreated | TriggerFired, wall: float) -> Entry:
+def event_entry(event: TriggerCreated | TriggerFired | ActionRequest, wall: float) -> Entry:
     return Entry(wall=wall, data={"event": event.model_dump_json()})
 
 
-def made(created_by: str = "tool-call", trigger_id: str = "t1") -> TriggerCreated:
+def made(
+    created_by: str = "tool-call", trigger_id: str = "t1", action: dict[str, object] | None = None
+) -> TriggerCreated:
     return TriggerCreated(
         trigger_id=trigger_id,
         trigger_type="time",
         name="Laundry",
         created_by=created_by,
         conditions={"run_at": "2026-10-08T12:20:00-06:00"},
+        action=action,
         urgency="urgent",
         timestamp=CREATED,
     )
+
+
+LAMP = {
+    "tool_name": "home.light_turn_on",
+    "target_service": "home-service",
+    "parameters": {"target": "light.bedroom_lamp"},
+}
+
+
+def engine_runs(action: dict[str, object] = LAMP, **fields: object) -> ActionRequest:
+    """The ActionRequest the trigger engine sends for a trigger with *action* (engine.py)."""
+    return ActionRequest.model_validate({"source": "trigger-engine", **action, **fields})
 
 
 def test_trigger_records_keep_system2s_triggers_and_every_fire() -> None:
@@ -114,6 +134,88 @@ def test_an_unreadable_trigger_event_is_a_harness_failure(event: dict[str, objec
     entries = [Entry(wall=WALL0 + 1, data={"event": json.dumps(event)})]
     with pytest.raises(HarnessError, match=f"unreadable {event['event_type']}"):
         trigger_records(entries, STARTED, WALL0)
+
+
+def test_an_action_triggers_fire_is_the_engines_action_request_on_alfred_actions() -> None:
+    """The engine sends a trigger with an action to alfred:actions as an ActionRequest, in
+    place of a TriggerFired. It carries no trigger id, so the newest trigger of this sample
+    created before it with that action is the one that fired."""
+    plain = TriggerFired(trigger_id="plain", trigger_name="Laundry", trigger_type="time")
+    events = [
+        event_entry(made(trigger_id="older", action=LAMP), WALL0 + 1),
+        event_entry(made(trigger_id="newer", action=LAMP), WALL0 + 2),
+        event_entry(made(trigger_id="after the fire", action=LAMP), WALL0 + 7),
+        event_entry(made(trigger_id="plain"), WALL0 + 3),
+        event_entry(plain, WALL0 + 9),
+    ]
+    actions = [event_entry(engine_runs(), WALL0 + 5)]
+    created, fires = trigger_records(events, STARTED, WALL0, actions=actions)
+    assert {r.trigger_id: r.action for r in created}["newer"] == LAMP
+    assert {r.trigger_id: r.action for r in created}["plain"] is None
+    assert [(f.trigger_id, f.t, f.fired_by, f.urgency) for f in fires] == [
+        ("newer", STARTED + 5, "engine", "urgent"),
+        ("plain", STARTED + 9, "engine", "informational"),
+    ]
+
+
+def test_a_created_action_is_kept_as_the_engine_runs_it() -> None:
+    """The engine runs the action as an ``ActionPayload``: parameters default to none, and
+    a field it does not know is dropped. The record keeps it the same way, so it matches."""
+    sent = {"tool_name": "home.scene_turn_on", "target_service": "home-service", "why": "x"}
+    events = [event_entry(made(action=sent), WALL0 + 1)]
+    actions = [
+        event_entry(
+            engine_runs({"tool_name": "home.scene_turn_on", "target_service": "home-service"}),
+            WALL0 + 2,
+        )
+    ]
+    [record], [fire] = trigger_records(events, STARTED, WALL0, actions=actions)
+    assert record.action == {
+        "tool_name": "home.scene_turn_on",
+        "target_service": "home-service",
+        "parameters": {},
+    }
+    assert fire.trigger_id == "t1"
+
+
+def test_action_requests_that_are_no_fire_of_this_samples_triggers_are_ignored() -> None:
+    events = [event_entry(made(action=LAMP), WALL0 + 1)]
+    actions = [
+        event_entry(engine_runs(source="conscious-engine"), WALL0 + 2),  # System 2 acting
+        event_entry(engine_runs(confirmed=True), WALL0 + 3),  # a confirmed republish
+        event_entry(engine_runs(parameters={"target": "light.hall"}), WALL0 + 4),
+        event_entry(engine_runs(), WALL0 - 1),  # the previous sample's
+        Entry(wall=WALL0 + 5, data={"event": "{not json"}),
+        Entry(wall=WALL0 + 6, data={"event": json.dumps({"event_type": "something_else"})}),
+    ]
+    created, fires = trigger_records(events, STARTED, WALL0, actions=actions)
+    assert len(created) == 1 and fires == []
+
+
+def test_an_unreadable_action_request_is_a_harness_failure() -> None:
+    broken = {"event_type": "action_request", "source": "trigger-engine"}  # no tool or service
+    actions = [Entry(wall=WALL0 + 1, data={"event": json.dumps(broken)})]
+    with pytest.raises(HarnessError, match="unreadable action_request on alfred:actions"):
+        trigger_records([], STARTED, WALL0, actions=actions)
+
+
+def test_is_fire_of_takes_either_kind_of_fire_of_that_trigger() -> None:
+    [with_action], _ = trigger_records(
+        [event_entry(made(trigger_id="lamp", action=LAMP), WALL0 + 1)], STARTED, WALL0
+    )
+    [plain], _ = trigger_records([event_entry(made(trigger_id="plain"), WALL0 + 1)], STARTED, WALL0)
+
+    def fired(trigger_id: str) -> Entry:
+        event = TriggerFired(trigger_id=trigger_id, trigger_name="x", trigger_type="time")
+        return event_entry(event, WALL0 + 2)
+
+    assert is_fire_of(fired("plain"), plain)
+    assert not is_fire_of(fired("other"), plain)
+    assert is_fire_of(event_entry(engine_runs(), WALL0 + 2), with_action)
+    assert not is_fire_of(event_entry(engine_runs(source="reflex-engine"), WALL0 + 2), with_action)
+    assert not is_fire_of(event_entry(engine_runs(confirmed=True), WALL0 + 2), with_action)
+    assert not is_fire_of(event_entry(engine_runs(), WALL0 + 2), plain)
+    assert not is_fire_of(Entry(wall=WALL0 + 2, data={"other": "x"}), plain)
 
 
 def test_an_unreadable_notification_is_a_harness_failure() -> None:

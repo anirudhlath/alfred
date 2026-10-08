@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from functools import cache
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic import BaseModel, ValidationError
 
+from core.triggers.feature import TriggerFeature, TriggerFeatureContext
+from core.triggers.store import TriggerStore
 from evals.harness.checks import JudgeSpec, run_check
 from evals.harness.checks.llm import normalize_tool
-from evals.harness.evidence import Evidence, Reply
+from evals.harness.evidence import Evidence, Reply, TriggerRecord
 from evals.harness.scenario import CheckSpec, HaEventStep, Scenario, UserStep, load_suites
 from evals.harness.world import World, load_world
 
@@ -142,17 +146,36 @@ def test_step_index_guard_covers_any_check_with_those_fields() -> None:
         golden.model_copy(update={"expect": [future]})._coherent()
 
 
-def _unknown_services(s: Scenario, world: World) -> list[str]:
-    """HA services and home tools that ``s``'s checks name but ``world`` does not offer.
+@cache
+def _trigger_tools() -> frozenset[str]:
+    """The triggers feature's tools as System 2 sends them, read off the feature itself.
+    Listing them needs a store, which naming them never touches."""
+    feature = TriggerFeature(TriggerFeatureContext(store=AsyncMock(spec_set=TriggerStore)))
+    return frozenset(normalize_tool(t.name) for t in feature.get_tools())
 
-    home-service offers each world service as the tool ``home.{domain}_{service}``, which
-    System 2 sends as ``home_{domain}_{service}`` (``checks/llm.normalize_tool``), so a tool
-    name starting ``home.`` or ``home_`` must be one of those. Like the
-    step guard, this goes by field name, so a check added later is covered too. A check
-    that leaves ``domain`` or ``service`` unset matches any, so only what it sets is checked.
+
+def _offered_tools(world: World) -> dict[str, frozenset[str]]:
+    """Per feature, as the prefix System 2 sends its tools under, the tools it offers.
+
+    home-service offers each world service as the tool ``home.{domain}_{service}``, and
+    System 2 sends a dotted name with underscores (``checks/llm.normalize_tool``).
+    """
+    services = [(d, svc) for d, offered in world.services.items() for svc in offered]
+    home = frozenset(normalize_tool(f"home.{d}_{svc}") for d, svc in services)
+    return {"home_": home, normalize_tool(f"{TriggerFeature.feature_name}."): _trigger_tools()}
+
+
+def _unknown_services(s: Scenario, world: World) -> list[str]:
+    """HA services, and home and trigger tools, that ``s``'s checks name but the stack does
+    not offer.
+
+    A tool named under a feature's prefix (``home.`` or ``home_``, ``triggers.`` or
+    ``triggers_``) must be one of that feature's tools (``_offered_tools``). Like the step
+    guard, this goes by field name, so a check added later is covered too. A check that
+    leaves ``domain`` or ``service`` unset matches any, so only what it sets is checked.
     """
     offered = {(d, svc) for d, services in world.services.items() for svc in services}
-    tools = {normalize_tool(f"home.{d}_{svc}") for d, svc in offered}
+    features = _offered_tools(world)
     bad: list[str] = []
     for check in s.expect:
         domain, service, tool = (
@@ -163,24 +186,46 @@ def _unknown_services(s: Scenario, world: World) -> list[str]:
         ):
             bad.append(f"{check.name}: {domain or '*'}.{service or '*'}")
         name = None if tool is None else normalize_tool(tool)
-        # Only home tools are checked here; memory, trigger etc. tools when their suites arrive.
-        if name is not None and name.startswith("home_") and name not in tools:
+        # Home and trigger tools are checked here; memory etc. tools when their suites arrive.
+        if name is not None and any(
+            name.startswith(prefix) and name not in tools for prefix, tools in features.items()
+        ):
             bad.append(f"{check.name}: tool {tool}")
     return bad
+
+
+def _condition_entities(s: Scenario) -> list[str]:
+    """The entity ids ``s``'s checks name in a trigger's conditions: ``trigger_created``'s,
+    and those in the ``conditions`` System 2 sends ``create_trigger`` (``llm_tool_args``).
+
+    Like the guards above, this goes by field name, so a check added later is covered too.
+    A matcher such as ``{regex}`` names no one entity, so it is not checked.
+    """
+    out: list[str] = []
+    for check in s.expect:
+        args = getattr(check.params, "args", None)
+        sent = args.get("conditions") if isinstance(args, dict) else None
+        for conditions in (getattr(check.params, "conditions", None), sent):
+            entity = conditions.get("entity_id") if isinstance(conditions, dict) else None
+            if isinstance(entity, str):
+                out.append(entity)
+    return out
 
 
 def test_every_golden_names_real_services_and_tools() -> None:
     world = load_world("apartment")
     seen: set[str] = set()
-    home_tools = 0
+    checked = dict.fromkeys(_offered_tools(world), 0)
     for s in _goldens().values():
         assert not _unknown_services(s, world), f"{s.path}: {_unknown_services(s, world)}"
         seen |= {f for c in s.expect for f in ("service", "tool") if getattr(c.params, f, None)}
         tools = [t for c in s.expect if isinstance(t := getattr(c.params, "tool", None), str)]
-        home_tools += sum(normalize_tool(t).startswith("home_") for t in tools)
-    # The lookup matched something, and at least one tool was a home tool the guard checks:
-    # otherwise every tool could be skipped as non-home and the test would pass vacuously.
-    assert seen == {"service", "tool"} and home_tools > 0
+        for prefix in checked:
+            checked[prefix] += sum(normalize_tool(t).startswith(prefix) for t in tools)
+    # The lookup matched something, and each feature's guard checked at least one tool:
+    # otherwise every tool could be skipped as another feature's and the test would pass
+    # vacuously.
+    assert seen == {"service", "tool"} and all(checked.values()), checked
 
 
 def test_unknown_services_flags_a_misspelt_service_or_tool() -> None:
@@ -194,7 +239,9 @@ def test_unknown_services_flags_a_misspelt_service_or_tool() -> None:
             {"ha_not_called": {"entity_id": "light.bedroom_lamp"}},
             {"llm_tool_args": {"tool": "home_light_turn_on", "args": {}}},
             {"tool_called": {"tool": "home.scene_turn_on"}},
-            {"tool_called": {"tool": "memory_recall_memories"}},  # not a home tool: not judged
+            {"tool_called": {"tool": "memory_recall_memories"}},  # no tool list yet: not judged
+            {"llm_tool_args": {"tool": "triggers.create_trigger", "args": {}}},
+            {"tool_not_called": {"tool": "triggers_delete_trigger"}},
         ],
     )
     assert _unknown_services(real, world) == []
@@ -207,6 +254,8 @@ def test_unknown_services_flags_a_misspelt_service_or_tool() -> None:
             {"ha_called": {"domain": "switch", "service": "volume_set"}},
             {"llm_tool_args": {"tool": "home.light_turn_of", "args": {}}},
             {"tool_not_called": {"tool": "home_switch_turn_onn"}},
+            {"llm_tool_args": {"tool": "triggers.create_triger", "args": {}}},
+            {"tool_called": {"tool": "triggers_set_reminder"}},
         ],
     )
     assert _unknown_services(typos, world) == [
@@ -216,6 +265,8 @@ def test_unknown_services_flags_a_misspelt_service_or_tool() -> None:
         "ha_called: switch.volume_set",
         "llm_tool_args: tool home.light_turn_of",
         "tool_not_called: tool home_switch_turn_onn",
+        "llm_tool_args: tool triggers.create_triger",
+        "tool_called: tool triggers_set_reminder",
     ]
 
 
@@ -334,8 +385,75 @@ def test_reflex_targets_name_a_real_entity_or_room() -> None:
 
 def test_trigger_conditions_name_real_entities() -> None:
     world_ids = {e.entity_id for e in load_world("apartment").entities}
+    checked = 0
     for s in _goldens().values():
-        for check in s.expect:
-            conditions = getattr(check.params, "conditions", None) or {}
-            entity = conditions.get("entity_id")
-            assert not isinstance(entity, str) or entity in world_ids, f"{s.path}: {entity}"
+        entities = _condition_entities(s)
+        assert set(entities) <= world_ids, f"{s.path}: {entities}"
+        checked += len(entities)
+    # If a rename left the lookup matching nothing, this test would pass vacuously.
+    assert checked > 0
+
+
+def test_condition_entities_reads_created_triggers_and_the_tools_args() -> None:
+    s = _scenario(
+        [{"user": "a"}],
+        [
+            {"trigger_created": {"conditions": {"entity_id": "binary_sensor.front_door"}}},
+            {
+                "llm_tool_args": {
+                    "tool": "triggers.create_trigger",
+                    "args": {"conditions": {"entity_id": "binary_sensor.back_door"}},
+                }
+            },
+            {
+                "llm_tool_args": {
+                    "tool": "triggers.create_trigger",
+                    "args": {"conditions": {"entity_id": {"regex": "binary_sensor\\..*"}}},
+                }
+            },
+            {"llm_tool_args": {"tool": "triggers.create_trigger", "args": {"conditions": "x"}}},
+            {"trigger_created": {"conditions": {"cron": "0 7 * * *"}}},
+        ],
+    )
+    assert _condition_entities(s) == ["binary_sensor.front_door", "binary_sensor.back_door"]
+
+
+@pytest.mark.parametrize(
+    ("cron", "passes"),
+    [
+        ("0 7 * * 1-5", True),
+        ("0 7 * * MON-FRI", True),
+        ("0 7 * * 1,2,3,4,5", True),
+        ("0 7 * * mon,tue,wed,thu,fri", True),
+        ("0 07 * * 1-5", True),
+        ("0 7 * * *", False),
+        ("0 7 * * 0-6", False),
+        ("0 7 * * 1-6", False),
+        ("30 7 * * 1-5", False),
+        ("10 7 * * 1-5", False),
+        ("0 17 * * 1-5", False),
+    ],
+)
+def test_the_weekday_cron_takes_any_spelling_of_weekdays_at_seven(cron: str, passes: bool) -> None:
+    s = _goldens()["triggers.recurring.weekday_vitamins"]
+    made = TriggerRecord(
+        t=1.0,
+        trigger_id="t1",
+        trigger_type="time",
+        name="Vitamins",
+        created_by="tool-call",
+        conditions={"cron": cron},
+        created_at=datetime(2026, 10, 8, 12, 0, tzinfo=UTC),
+    )
+    evidence = Evidence(
+        scenario_id=s.id,
+        variant=0,
+        epoch=0,
+        session_id="t",
+        started_at=0,
+        ended_at=0,
+        triggers_created=[made],
+    )
+    checks = [c for c in s.expect if c.name == "trigger_created"]
+    assert checks
+    assert all(run_check(c.name, c.params, evidence).status == "pass" for c in checks) is passes

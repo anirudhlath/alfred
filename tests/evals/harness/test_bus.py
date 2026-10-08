@@ -17,6 +17,7 @@ from core.reflex.tool_registry import ToolRegistry
 from evals.harness.bus import BusError, ContainerBus, zone_for_hour
 from shared.redis_streams import read
 from shared.streams import (
+    ACTIONS_STREAM,
     AUTH_SESSION_PREFIX,
     DEFERRED_NOTIFICATIONS_KEY,
     DND_STATE_KEY,
@@ -88,10 +89,13 @@ async def test_streams_are_read_from_a_wall_time(redis: fakeredis.FakeAsyncRedis
     await redis.xadd(EVENTS_STREAM, {"event": "old"}, id="1000-0")
     await redis.xadd(EVENTS_STREAM, {"event": "new"}, id="5000-0")
     await redis.xadd(NOTIFICATION_DISPATCH_STREAM, {"notification": "n"}, id="6000-0")
+    await redis.xadd(ACTIONS_STREAM, {"event": "old action"}, id="1500-0")
+    await redis.xadd(ACTIONS_STREAM, {"event": "action"}, id="7000-0")
     await redis.rpush(DEFERRED_NOTIFICATIONS_KEY, "a", "b")
     b = bus(redis)
     assert [(e.wall, e.data) for e in await b.events(2.0)] == [(5.0, {"event": "new"})]
     assert [e.wall for e in await b.notifications(0.0)] == [6.0]
+    assert [(e.wall, e.data) for e in await b.actions(2.0)] == [(7.0, {"event": "action"})]
     assert await b.deferred() == ["a", "b"]
 
 
@@ -142,6 +146,26 @@ async def test_wait_for_event_reads_only_the_window_and_times_out(
     assert await b.wait_for_event(
         5.0004, 0, lambda e: (e.wall, e.data) == (5.0, {"event": "same ms"})
     )
+
+
+async def test_wait_for_event_wakes_on_alfred_actions_too(redis: fakeredis.FakeAsyncRedis) -> None:
+    """A trigger with an action fires onto alfred:actions, not alfred:events."""
+    await redis.xadd(ACTIONS_STREAM, {"event": "ms before"}, id="4999-0")
+    b = bus(redis)
+    assert not await b.wait_for_event(5.0004, 0.1, lambda e: True)  # the window rule holds
+
+    async def the_engine_acts() -> None:
+        await asyncio.sleep(0.1)
+        await redis.xadd(EVENTS_STREAM, {"event": "other"})
+        await asyncio.sleep(0.1)
+        await redis.xadd(ACTIONS_STREAM, {"event": "action"})
+
+    since = time.time()
+    acting = asyncio.create_task(the_engine_acts())
+    t0 = time.monotonic()
+    assert await b.wait_for_event(since, 5, lambda e: e.data["event"] == "action")
+    await acting
+    assert 0.2 <= time.monotonic() - t0 < 2
 
 
 async def test_advance_pulls_run_at_to_now_and_tells_the_engine(

@@ -10,7 +10,9 @@ from typing import TYPE_CHECKING
 import httpx
 import pytest
 
-from bus.schemas.events import AlfredResponse, UserRequest
+from bus.schemas.events import ActionRequest, AlfredResponse, UserRequest
+from evals.harness.checks import run_check
+from evals.harness.checks.triggers import TriggerFiredParams
 from evals.harness.driver import (
     HarnessError,
     PlayContext,
@@ -662,6 +664,50 @@ async def test_an_advance_wakes_on_the_fire_as_it_lands() -> None:
     await firing
     assert 0.3 <= elapsed < 2
     assert [f.trigger_id for f in ev.triggers_fired] == ["t1"]
+
+
+async def test_an_advance_ends_on_an_action_triggers_fire_and_trigger_fired_counts_it() -> None:
+    """A trigger with an action fires as an ActionRequest on alfred:actions, and sends no
+    notification of its own."""
+    bus = FakeBus(fires=False)
+    lamp = {
+        "tool_name": "home.light_turn_on",
+        "target_service": "home-service",
+        "parameters": {"target": "light.bedroom_lamp"},
+    }
+
+    async def the_engine_fires_later() -> None:
+        await asyncio.sleep(0.3)
+        bus.fire("t1")
+
+    firing = asyncio.create_task(the_engine_fires_later())
+    elapsed, ev = await timed_play(
+        ctx(Acting(lambda: bus.created("t1", "Lamp on", action=lamp)), bus=bus, fire_timeout_s=5),
+        scenario(steps=[{"user": "Turn the bedroom lamp on in a bit."}, {"advance_trigger": None}]),
+    )
+    await firing
+    assert 0.3 <= elapsed < 2
+    assert [(f.trigger_id, f.name) for f in ev.triggers_fired] == [("t1", "Lamp on")]
+    assert ev.notifications == []
+    fired = run_check("trigger_fired", TriggerFiredParams(after_step=1, within_s=5), ev)
+    assert fired.status == "pass", fired.reason
+
+
+async def test_an_advance_is_not_ended_by_another_actors_identical_action() -> None:
+    bus = FakeBus(fires=False)
+    lamp = {"tool_name": "home.light_turn_on", "target_service": "home-service"}
+
+    async def system2_acts_later() -> None:
+        await asyncio.sleep(0.1)
+        bus.request(ActionRequest(source="conscious-engine", **lamp))
+
+    acting = asyncio.create_task(system2_acts_later())
+    elapsed, ev = await timed_play(
+        ctx(Acting(lambda: bus.created("t1", action=lamp)), bus=bus, fire_timeout_s=0.4),
+        scenario(steps=[{"user": "Turn the lamp on in a bit."}, {"advance_trigger": None}]),
+    )
+    await acting
+    assert elapsed >= 0.4 and ev.triggers_fired == []
 
 
 async def test_a_zone_an_actor_left_is_put_back_without_a_clock_step() -> None:
