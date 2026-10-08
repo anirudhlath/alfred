@@ -7,11 +7,13 @@ import time
 from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, assert_never
 from uuid import uuid4
 
 from bus.schemas.events import AlfredResponse, UserRequest
 from core.conscious.identity import IDENTITY_GUEST, IDENTITY_SIR
+from evals.harness.checks.home import satisfies
 from evals.harness.evidence import Evidence, Reply, TranscriptTurn
 from evals.harness.scenario import Actor, HaEventStep, ScenarioVariant, UserStep, WaitStep
 from evals.harness.stack import (
@@ -22,9 +24,11 @@ from evals.harness.stack import (
 )
 
 if TYPE_CHECKING:
-    from evals.harness.evidence import LlmCall
+    from evals.harness.checks.home import HaCalledParams
+    from evals.harness.evidence import HaCall, LlmCall
     from evals.harness.fake_ha import FakeHA
     from evals.harness.proxy import LlmProxy
+    from evals.harness.scenario import Scenario
 
 SendFn = Callable[[UserRequest, float], Awaitable[AlfredResponse]]
 TIMES = "\N{MULTIPLICATION SIGN}"
@@ -94,6 +98,24 @@ def still_upstream(stamps: list[float], now: float) -> str:
     return f"; {len(stamps)} LLM {calls} still upstream after {now - stamps[0]:.0f}s"
 
 
+def outstanding_calls(
+    scenario: Scenario, index: int, ev: Evidence, fake_ha: FakeHA
+) -> list[HaCalledParams]:
+    """The ``ha_called`` checks still waiting, at step *index*, for a call this step could
+    make: those that could count one, and that no call so far in their range satisfies."""
+    now = time.monotonic()
+    outstanding = []
+    for p in scenario.ha_called_counting(index):
+        start = ev.started_at if p.after_step is None else ev.step_started[p.after_step]
+        if not any(satisfies(p, c) for c in fake_ha.calls_between(start, now)):
+            outstanding.append(p)
+    return outstanding
+
+
+def _satisfies_any(checks: list[HaCalledParams], call: HaCall) -> bool:
+    return any(satisfies(p, call) for p in checks)
+
+
 def session_id_for(sample_id: str, epoch: int) -> str:
     return f"eval-{sample_id}-e{epoch}-{uuid4().hex[:6]}"
 
@@ -147,9 +169,12 @@ async def play(ctx: PlayContext, variant: ScenarioVariant, epoch: int) -> Eviden
                 ev.transcript.append(
                     TranscriptTurn(role="event", text=f"{e.entity_id} → {e.state}")
                 )
-                if scenario.expects_ha_call(index):
+                # Spec: wait for a call_service, or a 5 s window when the scenario expects
+                # nothing. It still expects one only while an ha_called check is unmet.
+                if outstanding := outstanding_calls(scenario, index, ev, ctx.fake_ha):
+                    wanted = partial(_satisfies_any, outstanding)
                     timeout = ctx.ha_call_timeout_s if step.settle is None else step.settle
-                    if await ctx.fake_ha.wait_for_call(pushed, timeout):
+                    if await ctx.fake_ha.wait_for_call(pushed, timeout, wanted):
                         await asyncio.sleep(ctx.settle_s)  # for the call's side effects
                 else:
                     await asyncio.sleep(

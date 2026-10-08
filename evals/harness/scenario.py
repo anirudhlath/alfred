@@ -77,8 +77,9 @@ class HaEvent(BaseModel):
 class HaEventStep(BaseModel):
     model_config = ConfigDict(extra="forbid")
     ha_event: HaEvent
-    # How long to wait after the event: for a call_service when the golden expects one
-    # (``Scenario.expects_ha_call``), else a quiet window. None: the driver's defaults.
+    # How long to wait after the event: for a call_service an outstanding ``ha_called``
+    # check wants (``Scenario.ha_called_counting``), else a quiet window. None: the
+    # driver's defaults.
     settle: float | None = Field(default=None, ge=0)
 
 
@@ -166,15 +167,20 @@ class Scenario(BaseModel):
             raise ValueError(f"id {value!r} must look like suite.topic.case (lowercase, dots)")
         return value
 
-    def expects_ha_call(self, index: int) -> bool:
-        """Whether an ``ha_called`` check could count a call made during step *index*:
-        one with no ``after_step``, or one whose ``after_step`` is at or before it."""
+    def ha_called_counting(self, index: int) -> list[HaCalledParams]:
+        """The ``ha_called`` checks that could count a call made during step *index*: those
+        with no ``after_step``, or one at or before it. Each comes back with its
+        ``after_step`` made non-negative, so it indexes ``Evidence.step_started`` mid-play
+        as it will once every step has started."""
+        counting: list[HaCalledParams] = []
         for check in self.expect:
             if isinstance(check.params, HaCalledParams):
                 after = check.params.after_step
-                if after is None or (after if after >= 0 else len(self.steps) + after) <= index:
-                    return True
-        return False
+                if after is not None and after < 0:
+                    after += len(self.steps)
+                if after is None or after <= index:
+                    counting.append(check.params.model_copy(update={"after_step": after}))
+        return counting
 
     @model_validator(mode="after")
     def _coherent(self) -> Self:

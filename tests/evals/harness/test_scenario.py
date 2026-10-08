@@ -264,7 +264,7 @@ def test_a_loaded_scenario_round_trips(tmp_path: Path) -> None:
         (-1, [False, False, True]),  # the last step, as Evidence.step_started[-1] reads it
     ],
 )
-def test_expects_ha_call_asks_whether_a_call_from_that_step_could_count(
+def test_ha_called_counting_names_the_checks_a_call_from_that_step_could_count_for(
     after_step: int | None, expected: list[bool]
 ) -> None:
     called: dict[str, object] = {"domain": "light", "service": "turn_on"}
@@ -283,7 +283,11 @@ def test_expects_ha_call_asks_whether_a_call_from_that_step_could_count(
             "expect": [{"ha_not_called": {"domain": "switch"}}, {"ha_called": called}],
         }
     )
-    assert [s.expects_ha_call(i) for i in range(3)] == expected
+    counting = [s.ha_called_counting(i) for i in range(3)]
+    assert [bool(c) for c in counting] == expected
+    # Each comes back with its after_step made non-negative, ready to index step_started.
+    after = None if after_step is None else after_step % 3
+    assert all(p.after_step == after and p.service == "turn_on" for c in counting for p in c)
 
 
 def test_a_golden_without_ha_called_expects_no_call() -> None:
@@ -296,4 +300,4 @@ def test_a_golden_without_ha_called_expects_no_call() -> None:
             "expect": [{"ha_not_called": {}}],
         }
     )
-    assert not s.expects_ha_call(0)
+    assert s.ha_called_counting(0) == []

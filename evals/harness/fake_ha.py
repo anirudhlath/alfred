@@ -20,6 +20,8 @@ from websockets.exceptions import ConnectionClosed
 from evals.harness.evidence import HaCall, HaState
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from websockets.asyncio.server import Server, ServerConnection
 
     from evals.harness.world import World
@@ -203,11 +205,14 @@ class FakeHA:
         seen, self._call_seen = self._call_seen, asyncio.Event()
         seen.set()
 
-    async def wait_for_call(self, since: float, timeout: float) -> bool:
-        """Wait for a call_service made at or after *since*. False after *timeout* s."""
+    async def wait_for_call(
+        self, since: float, timeout: float, wanted: Callable[[HaCall], bool] | None = None
+    ) -> bool:
+        """Wait for a call_service made at or after *since* (one *wanted* accepts, when
+        given: any other call does not end the wait). False after *timeout* s."""
         try:
             async with asyncio.timeout(timeout):
-                while not any(c.t >= since for c in self.calls):
+                while not any(c.t >= since and (wanted is None or wanted(c)) for c in self.calls):
                     await self._call_seen.wait()
         except TimeoutError:
             return False

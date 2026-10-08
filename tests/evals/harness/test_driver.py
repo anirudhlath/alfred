@@ -222,6 +222,44 @@ async def test_an_ha_event_waits_a_window_when_the_golden_expects_no_call() -> N
     assert 0.1 <= elapsed < 5
 
 
+async def test_an_ha_event_takes_the_window_when_the_expected_call_already_came() -> None:
+    ha = FakeHA(load_world("apartment"))
+
+    async def turns_it_off(request: UserRequest, timeout: float) -> AlfredResponse:
+        ha.record(ha_call(time.monotonic()))  # ha_called is satisfied before the event
+        return AlfredResponse(
+            source="conscious-engine",
+            channel=request.channel,
+            session_id=request.session_id,
+            text="Done, sir.",
+        )
+
+    play_ctx = ctx(turns_it_off, ha)
+    play_ctx.ha_call_timeout_s = 10.0
+    play_ctx.ha_event_window_s = 0.1
+    s = scenario(steps=[{"user": "Ceiling light off."}, LAMP_ON], expect=EXPECTS_CALL)
+    elapsed, ev = await timed_play(play_ctx, s)
+    assert 0.1 <= elapsed < 5 and [c.service for c in ev.ha_calls] == ["turn_off"]
+
+
+async def test_an_unrelated_call_does_not_end_the_wait_for_the_expected_one() -> None:
+    ha = FakeHA(load_world("apartment"))
+    play_ctx = ctx(Recorder(), ha)
+    play_ctx.ha_call_timeout_s = 10.0
+
+    async def react() -> None:
+        await asyncio.sleep(0.05)  # a stray System 1 call first
+        ha.record(HaCall(t=time.monotonic(), domain="light", service="turn_on", entity_ids=[]))
+        await asyncio.sleep(0.3)
+        ha.record(ha_call(time.monotonic()))
+
+    reacting = asyncio.create_task(react())
+    elapsed, ev = await timed_play(play_ctx, scenario(steps=[LAMP_ON], expect=EXPECTS_CALL))
+    await reacting
+    assert 0.35 <= elapsed < 5
+    assert [c.service for c in ev.ha_calls] == ["turn_on", "turn_off"]
+
+
 @pytest.mark.parametrize("expect", [EXPECTS_CALL, [{"ha_not_called": {}}]], ids=["call", "none"])
 async def test_an_ha_event_settle_bounds_the_wait_either_way(expect: list[object]) -> None:
     play_ctx = ctx(Recorder())

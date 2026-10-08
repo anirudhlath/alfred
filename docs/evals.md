@@ -105,8 +105,10 @@ session id unique to the golden, variant and epoch, and waits up to 120 s for th
 `AlfredResponse` on `alfred:user:responses` (the same `publish_and_wait()` the web channel
 uses), then waits a 2 s settle window for side effects. A reply from anything but System 2
 is a harness error. For an `ha_event` step it pushes the state change, then waits for the
-fake HA to receive a `call_service` when the golden's `ha_called` checks could count one
-from that step (up to 30 s, then the 2 s settle), or a 5 s window when they could not. When
+fake HA to receive a `call_service` that an outstanding `ha_called` check wants — one that
+could count a call from that step and that no call so far in its range satisfies — up to
+30 s, then the 2 s settle; any other call does not end the wait. With no check outstanding
+it waits a 5 s window. When
 the steps are done it waits for every LLM call sent since the sample started and still
 upstream to be recorded (a call is recorded when vLLM answers, stamped with when it reached
 the proxy; up to 120 s, then a harness error). A call from before the sample started, such
@@ -491,7 +493,7 @@ expect:
 | Step | Fields | What the driver does |
 |---|---|---|
 | `user: <text>` | `variants: [<text>, …]`, `as: {…}` | Sends the utterance and waits for System 2's reply, then 2 s for side effects. `as` overrides the golden's actor for this step, which is how a conversation moves between channels |
-| `ha_event: {entity_id, state, attributes}` | `settle: <seconds>` | Pushes a state change through the fake HA, merging `attributes` into the entity's current ones. When an `ha_called` check could count a call from this step (it has no `after_step`, or one at or before this step), it then waits for a `call_service`, up to 30 s, and 2 s more for side effects once one arrives; otherwise it waits a 5 s window. `settle` replaces the 30 s or the 5 s |
+| `ha_event: {entity_id, state, attributes}` | `settle: <seconds>` | Pushes a state change through the fake HA, merging `attributes` into the entity's current ones. While an `ha_called` check that could count a call from this step (it has no `after_step`, or one at or before this step) is still unmet, it then waits for a `call_service` that check wants, up to 30 s, and 2 s more for side effects once one arrives; any other call does not end the wait. With no such check outstanding it waits a 5 s window. `settle` replaces the 30 s or the 5 s |
 | `wait: <seconds>` | — | Lets time pass (more than 0, at most 600) |
 
 **Variants.** One `user` step may carry `variants`. The step's own `user` text runs as

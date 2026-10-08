@@ -13,7 +13,7 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
 from evals.harness import fake_ha
-from evals.harness.evidence import HaState
+from evals.harness.evidence import HaCall, HaState
 from evals.harness.fake_ha import EVAL_HA_TOKEN, FakeHA, apply_service
 from evals.harness.world import load_world
 
@@ -123,6 +123,21 @@ async def test_wait_for_call_wakes_on_a_call_service_made_since(ha: FakeHA) -> N
     # A call from before *since* does not count.
     assert not await ha.wait_for_call(time.monotonic(), 0.01)
     await ws.close()
+
+
+async def test_wait_for_call_can_wait_for_one_call_in_particular(ha: FakeHA) -> None:
+    since = time.monotonic()
+
+    def lamp_off(call: HaCall) -> bool:
+        return call.service == "turn_off"
+
+    waiting = asyncio.create_task(ha.wait_for_call(since, 5, lamp_off))
+    await asyncio.sleep(0.01)
+    ha.record(HaCall(t=time.monotonic(), domain="light", service="turn_on", entity_ids=[]))
+    await asyncio.sleep(0.01)
+    assert not waiting.done()  # another call does not end the wait
+    ha.record(HaCall(t=time.monotonic(), domain="light", service="turn_off", entity_ids=[]))
+    assert await waiting
 
 
 async def test_a_subscription_to_every_event_gets_state_changes(ha: FakeHA) -> None:

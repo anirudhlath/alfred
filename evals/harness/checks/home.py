@@ -58,6 +58,12 @@ def _matches(
     )
 
 
+def satisfies(p: HaCalledParams, call: HaCall) -> bool:
+    """Whether *call* is one an ``ha_called`` check with *p* looks for (its step range
+    aside): the driver waits on this after an ``ha_event``."""
+    return _matches(call, p.domain, p.service, _ids(p.entity_id), p.data)
+
+
 def _fmt(calls: list[HaCall]) -> str:
     return (
         "; ".join(
@@ -70,7 +76,7 @@ def _fmt(calls: list[HaCall]) -> str:
 def ha_called(evidence: Evidence, p: HaCalledParams) -> CheckResult:
     calls = evidence.calls_after_step(p.after_step)
     want = f"{p.domain}.{p.service} {_ids(p.entity_id)} {describe(p.data)}"
-    if any(_matches(c, p.domain, p.service, _ids(p.entity_id), p.data) for c in calls):
+    if any(satisfies(p, c) for c in calls):
         return passed("ha_called", f"saw {want}")
     return failed("ha_called", f"wanted {want}; HA calls: {_fmt(calls)}")
 
