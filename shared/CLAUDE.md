@@ -15,7 +15,6 @@ Cross-cutting utilities used by multiple top-level packages (core, bus, domains)
 - `traced.py` — `@traced` decorator for OTel span instrumentation (sync + async, optional name override)
 - `tracing.py` — `ReflexTraceRecord` / `ConsciousTraceRecord` dataclasses + `init_tracing()` with optional OTLP export
 - `otel.py` — TracerProvider init with Resource + optional OTLP BatchSpanProcessor
-- `type_map.py` — `PYTHON_TO_JSON_SCHEMA` mapping + `friendly_type()` for LLM-friendly type strings
 
 ## Key Stream Constants
 
@@ -43,7 +42,6 @@ CONTEXT_PREFIX = "ctx:"             # RediSearch key prefix
 - Two tracing files: `traced.py` (per-function `@traced` decorator) vs `tracing.py` + `otel.py` (global provider init at startup)
 - `.env` loaded automatically at `config.py` import time — walks up to parent of `shared/`
 - `AlfredConfig` is frozen (immutable dataclass) — prevents accidental mutation
-- `friendly_type()` is LLM-aware: converts `datetime` → `"string (ISO 8601)"` for Claude prompts
 - `TraceRecord` is a backward-compat alias for `ReflexTraceRecord`
 - Root `conftest.py` has autouse `_mock_keyring` fixture — all tests use `InMemoryKeyring`, never OS keychain
 - redis-py 8 defaults `socket_timeout` to 5s (was `None`), which races idle blocking stream reads (`block=`) — always construct async Redis clients via `create_redis()` in this module, never `redis.asyncio.from_url()` directly (SDK is the sole exception — see `sdk/CLAUDE.md`)

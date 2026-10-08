@@ -5,12 +5,26 @@ from __future__ import annotations
 import functools
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from shared.type_map import friendly_type
+from sdk.alfred_sdk.feature import JSON_TYPE_BY_PYTHON_NAME
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from core.triggers.models import BaseTrigger
+
+
+def friendly_type(annotation: Any) -> str:
+    """Convert a Python type annotation to an LLM-friendly string.
+
+    Handles Optional/Union wrappers and provides datetime formatting hints.
+    """
+    raw = getattr(annotation, "__name__", str(annotation))
+    # Strip Optional/Union wrappers
+    base = raw.replace("typing.", "").split("|")[0].strip().split("[")[0].strip()
+    # datetime.datetime -> ISO 8601 string
+    if "datetime" in base:
+        return "string (ISO 8601, e.g. 2026-03-20T08:30:00Z)"
+    return JSON_TYPE_BY_PYTHON_NAME.get(base, base)
 
 
 class TriggerRegistry:

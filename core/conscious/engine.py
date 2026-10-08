@@ -6,6 +6,7 @@ Routes through OpenRouter via LiteLLM for provider-agnostic model access.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import os
@@ -34,7 +35,6 @@ from shared.config import DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
 from shared.env import is_truthy_flag
 from shared.streams import SCRATCHPAD_QUEUE
 from shared.traced import traced
-from shared.type_map import PYTHON_TO_JSON_SCHEMA
 from shared.usertime import (
     get_user_timezone,
     is_valid_timezone,
@@ -205,7 +205,6 @@ class ConsciousEngine:
         """Whether a routine store is configured."""
         return self._routines is not None
 
-    _TYPE_MAP: ClassVar[dict[str, str]] = PYTHON_TO_JSON_SCHEMA
     # Prefix for integration tool names to distinguish from domain tools
     _INTEGRATION_PREFIX: ClassVar[str] = "integration_"
     # Extra argument offered on critical tools; moved off `parameters` onto ActionRequest.reason
@@ -227,26 +226,16 @@ class ConsciousEngine:
         sanitized_to_original = {t.name.replace(".", "_"): t.name for t in tools}
         return sanitized_to_original.get(name, name)
 
-    def _to_json_schema_type(self, py_type: str) -> str:
-        """Convert a Python type annotation string to a JSON Schema type."""
-        # Strip Optional/None union syntax
-        base = py_type.split("|")[0].strip().split("[")[0].strip()
-        return self._TYPE_MAP.get(base, "string")
-
     def _tools_to_openai_format(self, tools: list[ToolInfo]) -> list[dict[str, Any]]:
-        """Convert ToolInfo list to OpenAI function-calling format (used by LiteLLM)."""
+        """Convert ToolInfo list to OpenAI function-calling format (used by LiteLLM).
+
+        Each tool's ``input_schema`` is offered as is. It is deep-copied, because the
+        ``reason`` injected for critical tools must never reach the registry's copy.
+        """
         openai_tools: list[dict[str, Any]] = []
         for t in tools:
-            properties: dict[str, Any] = {}
-            required: list[str] = []
-            for pname, pinfo in t.parameters.items():
-                properties[pname] = {
-                    "type": self._to_json_schema_type(pinfo.get("type", "string")),
-                    "description": pinfo.get("description", ""),
-                }
-                if "default" not in pinfo:
-                    required.append(pname)
-
+            schema = copy.deepcopy(t.input_schema)
+            properties: dict[str, Any] = schema.setdefault("properties", {})
             if t.risk == "critical" and self._REASON_PARAM not in properties:
                 properties[self._REASON_PARAM] = {
                     "type": "string",
@@ -262,11 +251,7 @@ class ConsciousEngine:
                     "function": {
                         "name": self._sanitize_tool_name(t.name),
                         "description": t.description,
-                        "parameters": {
-                            "type": "object",
-                            "properties": properties,
-                            "required": required,
-                        },
+                        "parameters": schema,
                     },
                 }
             )
@@ -509,7 +494,7 @@ class ConsciousEngine:
                 risk = t.risk
                 # A tool may own a `reason` parameter; `_tools_to_openai_format` leaves
                 # that schema alone, so it belongs to the service and must not be popped.
-                declares_own_reason = self._REASON_PARAM in t.parameters
+                declares_own_reason = self._REASON_PARAM in t.input_schema.get("properties", {})
                 break
 
         if not target:
