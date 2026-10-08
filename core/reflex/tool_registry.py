@@ -66,6 +66,11 @@ class ToolInfo:
     input_schema: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        # Both reach every prompt and tool-call payload, so a bad one fails here instead.
+        if not isinstance(self.name, str) or not self.name:
+            raise ValueError(f"tool name must be a non-empty string, not {self.name!r}")
+        if not isinstance(self.description, str):
+            raise ValueError(f"tool description must be a string, not {self.description!r}")
         # Derived even when a schema ships: that validates `parameters`, which Reflex
         # renders, so a malformed one fails here rather than in a later prompt.
         derived = legacy_input_schema(self.parameters)
@@ -127,11 +132,26 @@ class ToolRegistry:
                 )
                 continue
 
-            # Parse features
+            # Parse features. A malformed feature is skipped whole; the rest still load.
             for feature in manifest.get("features", []):
+                if not isinstance(feature, dict):
+                    logger.warning(
+                        "Skipping malformed feature %r from service '%s': not an object",
+                        feature,
+                        service_name,
+                    )
+                    continue
                 feature_name = feature.get("name", "")
                 feature_desc = feature.get("description", "")
-                for t in feature.get("tools", []):
+                feature_tools = feature.get("tools", [])
+                if not isinstance(feature_tools, list):
+                    logger.warning(
+                        "Skipping malformed feature %r from service '%s': its tools are not a list",
+                        feature_name,
+                        service_name,
+                    )
+                    continue
+                for t in feature_tools:
                     try:
                         tools.append(
                             ToolInfo(
@@ -147,9 +167,10 @@ class ToolRegistry:
                             )
                         )
                     except (AttributeError, KeyError, TypeError, ValueError) as exc:
-                        # One bad tool (no name, malformed parameters, or a schema that is
-                        # not an object schema) must not take down every other tool.
-                        # pydantic's ValidationError is a ValueError.
+                        # One bad tool (an entry that is not an object, a missing or empty
+                        # name, a description that is not a string, malformed parameters,
+                        # or a schema that is not an object schema) must not take down
+                        # every other tool. pydantic's ValidationError is a ValueError.
                         logger.warning(
                             "Skipping malformed tool %r from service '%s': %s",
                             t.get("name") if isinstance(t, dict) else t,
