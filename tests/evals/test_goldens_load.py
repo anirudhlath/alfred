@@ -6,8 +6,10 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+import yaml
 from pydantic import BaseModel, ValidationError
 
+from core.reflex.attention import DEFAULT_SEED_PATH, AttentionSeedRules
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
 from core.triggers.store import TriggerStore
 from evals.harness.checks import JudgeSpec, run_check
@@ -382,6 +384,29 @@ def test_reflex_targets_name_a_real_entity_or_room() -> None:
         for check in s.expect:
             target = getattr(check.params, "target", None)
             assert target is None or target in names, f"{s.path}: {target}"
+
+
+def test_only_an_entity_reflex_does_not_attend_to_may_go_uncalled() -> None:
+    """``uncalled_ok`` says Reflex rightly skipped the event. That holds only for an entity
+    outside the attention seed: for any other, no call means the event was lost."""
+    rules = AttentionSeedRules.model_validate(yaml.safe_load(DEFAULT_SEED_PATH.read_text()))
+    world = {e.entity_id: e for e in load_world("apartment").entities}
+    found = 0
+    for s in _goldens().values():
+        events = [i for i, step in enumerate(s.steps) if isinstance(step, HaEventStep)]
+        for check in s.expect:
+            if not getattr(check.params, "uncalled_ok", False):
+                continue
+            at = getattr(check.params, "at_step", None)
+            step = s.steps[events[-1] if at is None else at]
+            assert isinstance(step, HaEventStep), s.path
+            entity = world[step.ha_event.entity_id]
+            attended = entity.domain in rules.domains or (
+                entity.attributes.get("device_class") in rules.device_classes
+            )
+            assert not attended, f"{s.path}: Reflex attends to {entity.entity_id}"
+            found += 1
+    assert found > 0  # the sensor-noise golden sets it
 
 
 def test_trigger_conditions_name_real_entities() -> None:

@@ -80,10 +80,24 @@ def test_the_wrong_tool_or_target_fails_and_says_what_system1_decided() -> None:
     assert decide(e, decision=["act"], target="living_room")[0] == "fail"
 
 
-def test_none_passes_when_system1_was_not_called_and_says_so() -> None:
-    status, reason = decide(ev(), decision="none")
+def test_no_call_is_no_judgment_unless_the_golden_says_reflex_may_skip_it() -> None:
+    """Every attended entity gets a call, so none means the event was lost, the consumer
+    is down, or the attention set regressed: the harness cannot score that as Alfred's."""
+    for params in ({"decision": "none"}, {"decision": ["act", "ask"]}):
+        status, reason = decide(ev(), **params)
+        assert status == "error"
+        assert "System 1 was not called for step 0: no judgment to score" in reason
+    status, reason = not_proposed(ev(), tool="home.light_turn_on")
+    assert status == "error" and "no judgment to score" in reason
+    # A deliberately unattended entity (sensor noise): not calling is the right answer.
+    status, reason = decide(ev(), decision="none", uncalled_ok=True)
     assert status == "pass" and "not called" in reason
-    assert decide(ev(), decision=["act", "ask"])[0] == "fail"
+    assert decide(ev(), decision="act", uncalled_ok=True)[0] == "error"
+    assert not_proposed(ev(), tool="home.light_turn_on", uncalled_ok=True)[0] == "pass"
+    # A call about another change does not make the step's own.
+    stray = rc("none", event=about("person.alex", "home", name="Alex"))
+    status, reason = decide(ev(stray), decision="none")
+    assert status == "error" and "unattributed: none (because) about Alex → home" in reason
 
 
 def test_calls_outside_the_step_window_do_not_count() -> None:
@@ -92,7 +106,7 @@ def test_calls_outside_the_step_window_do_not_count() -> None:
         kinds=("ha_event", "ha_event"),
         starts=(0.0, 10.0),
     )
-    assert decide(e, decision="none")[0] == "pass"  # default: the last ha_event step
+    assert decide(e, decision="none", uncalled_ok=True)[0] == "pass"  # the last ha_event step
     assert decide(e, decision="none", at_step=0)[0] == "fail"
 
 

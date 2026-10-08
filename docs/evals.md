@@ -633,7 +633,8 @@ kind.
 names is one home-service would generate, `home.{domain}_{service}`; every reflex `target`
 is an entity or an area in the world; and every `entity_id` a trigger's `conditions` name
 directly (a `trigger_created`'s, or those System 2 is expected to send `create_trigger`)
-exists in it.
+exists in it; and a reflex check sets `uncalled_ok` only on an entity Reflex does not attend
+to.
 It also pins the reply patterns of a few goldens to phrasings they must accept and near
 misses they must reject.
 
@@ -672,8 +673,8 @@ scored separately. Params are validated at load and unknown keys are rejected.
 | `reply_contains` | exactly one of `text`, `any` (list), `regex`; `step` (int or `any`, default `-1`) | The reply at `step` (any reply, for `any`) contains `text` or one of `any` (case-insensitive), or `regex` matches it (`re.search`, case-insensitive). No reply at that step fails |
 | `reply_not_contains` | as `reply_contains` | No needle hits the chosen replies. No reply at that step fails |
 | `latency` | `metric` (required: `reply_ms`, `reflex_ms` or `reminder_fire_ms`), `max` (required; ms, > 0); `step` (int, default `-1`) for `reply_ms`; `at_step` for the other two | `reply_ms`: the reply at `step` arrived within `max` ms of its request. `reflex_ms`: the earliest System 1 call about the `ha_event` step's change was answered within `max` ms of the step's start (any wait for one of the proxy's upstream slots included). `reminder_fire_ms`: the notification of that trigger's fire was dispatched within `max` ms of the `advance_trigger` making it due |
-| `reflex_decision` | `decision` (required: `act`, `ask`, `none`, `invalid`, or a list of them); `tool`; `target`; `at_step` | Every System 1 call about the step's change has a decision in the set, and, for act/ask, the `tool` and `target` (entity or area id) given. `none` also passes when System 1 was not called |
-| `reflex_not_proposed` | `tool` (required); `target`; `decision` (default `[act, ask]`); `at_step` | No call in the window proposes that tool (on that target) |
+| `reflex_decision` | `decision` (required: `act`, `ask`, `none`, `invalid`, or a list of them); `tool`; `target`; `at_step`; `uncalled_ok` (default `false`) | Every System 1 call about the step's change has a decision in the set, and, for act/ask, the `tool` and `target` (entity or area id) given. With no such call it errors (no judgment to score), unless `uncalled_ok` is set and `none` is in the set: then it passes |
+| `reflex_not_proposed` | `tool` (required); `target`; `decision` (default `[act, ask]`); `at_step`; `uncalled_ok` (default `false`) | No call about the step's change proposes that tool (on that target). With no such call it errors, unless `uncalled_ok` is set |
 | `prompt_not_contains` | exactly one of `text`, `any`, `regex`; `role` (default `system2`) | No prompt of the role contains the text; fails when the role was never called |
 | `trigger_created` | `type` (`time`, `sensor`, `composite`), `name`, `conditions` (mapping), `run_in_seconds` (number or `{approx, tol}`), `at_local` (`{time: "HH:MM", tz}`), `urgency`, `one_shot`; all optional | A trigger System 2 created matches `type`, `name`, `conditions`, `run_in_seconds` (from creation to `run_at`), `at_local` (the `run_at`'s wall-clock time in a zone), `urgency` and `one_shot`. `name` is a case-insensitive part of the trigger's name |
 | `trigger_not_created` | `type` (optional) | No trigger (of that type) was created |
@@ -686,6 +687,12 @@ reached the proxy during that step, from its start to the next step's or, for th
 step, to the sample's end. Each is parsed into the decision Reflex took from it
 (see [The bus](#the-bus)). A proposal's target is resolved the way home-service resolves
 it, and each entity's area is added, so a check can name the entity or the room.
+
+Reflex attends to every entity a shipped golden judges but one, so **no call** means the
+event was lost: a cooldown swallowed it, the consumer stopped, or the attention set
+regressed. That is no judgment to score, so a reflex check errors. Set `uncalled_ok: true`
+only for an entity outside the attention seed (`core/reflex/attention_seed.yaml`), as
+`judgment_sensor_noise_noop` does; `tests/evals/test_goldens_load.py` holds goldens to that.
 
 A System 1 call vLLM answered with a 5xx holds no judgment, so a reflex check or
 `reflex_ms` on its step reports `error`, naming the status. A 4xx stays Reflex's `invalid`: it

@@ -37,6 +37,9 @@ def _proposals() -> list[Decision]:
 class _AtStep(BaseModel):
     model_config = ConfigDict(extra="forbid")
     at_step: int | None = None
+    # Reflex may rightly skip the event: only for an entity it does not attend to. Without
+    # it, no call means the event was lost, so there is no judgment to score (error).
+    uncalled_ok: bool = False
 
 
 class ReflexDecisionParams(_AtStep):
@@ -105,6 +108,18 @@ def _window(evidence: Evidence, name: str, at_step: int | None) -> _Window | Che
     return _Window(step, calls, evidence.reflex_unattributed(step))
 
 
+def _uncalled(name: str, window: _Window) -> CheckResult:
+    """No call about the step's change: Reflex attends to the entity, so its event was lost
+    (swallowed by a cooldown, a stopped consumer, a regressed attention set)."""
+    return CheckResult(
+        name=name,
+        status="error",
+        reason=(
+            f"System 1 was not called for step {window.step}: no judgment to score" + window.note()
+        ),
+    )
+
+
 def _tool_is(c: ReflexCall, tool: str) -> bool:
     return c.tool is not None and normalize_tool(c.tool) == normalize_tool(tool)
 
@@ -152,13 +167,11 @@ def reflex_decision(evidence: Evidence, p: ReflexDecisionParams) -> CheckResult:
         return window
     step, calls, _ = window
     if not calls:
-        if "none" in p.decision:
+        if p.uncalled_ok and "none" in p.decision:
             return passed(
                 name, f"System 1 was not called for step {step}: Reflex let it pass{window.note()}"
             )
-        return failed(
-            name, f"System 1 was not called for step {step}; wanted {_want(p)}{window.note()}"
-        )
+        return _uncalled(name, window)
     seen = "; ".join(_describe(c) for c in calls)
     if all(_fits(c, p) for c in calls):
         return passed(name, seen + window.note())
@@ -170,6 +183,8 @@ def reflex_not_proposed(evidence: Evidence, p: ReflexNotProposedParams) -> Check
     window = _window(evidence, name, p.at_step)
     if isinstance(window, CheckResult):
         return window
+    if not window.calls and not p.uncalled_ok:
+        return _uncalled(name, window)
     for c in window.calls:
         if (
             c.decision in p.decision
