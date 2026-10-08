@@ -9,6 +9,8 @@ from bus.schemas.events import ActionRequest, TriggerCreated, TriggerFired
 from core.notifications.schema import Notification, Urgency
 from core.reflex.tool_registry import ToolInfo
 from evals.harness.bus import Entry
+from evals.harness.checks import run_check
+from evals.harness.checks.triggers import TriggerFiredParams
 from evals.harness.collect import (
     deferred_records,
     is_fire_of,
@@ -19,6 +21,7 @@ from evals.harness.errors import HarnessError
 from evals.harness.evidence import LlmCall
 from evals.harness.reflex import local_hour, reflex_calls, targets, tool_domain
 from evals.harness.world import World, load_world
+from tests.evals.harness.factories import evidence
 
 WALL0 = 1_760_000_000.0  # time.time() when the sample started
 STARTED = 50.0  # time.monotonic() at the same instant
@@ -156,6 +159,18 @@ def test_an_action_triggers_fire_is_the_engines_action_request_on_alfred_actions
         ("newer", STARTED + 5, "engine", "urgent"),
         ("plain", STARTED + 9, "engine", "informational"),
     ]
+
+
+def test_an_empty_action_is_no_action_as_the_feature_reads_it() -> None:
+    """``create_trigger`` takes a falsy action as none (``core/triggers/feature.py``): the
+    trigger fires a TriggerFired, which counts as its fire."""
+    fired = TriggerFired(trigger_id="t1", trigger_name="Laundry", trigger_type="time")
+    events = [event_entry(made(action={}), WALL0 + 1), event_entry(fired, WALL0 + 2)]
+    [record], fires = trigger_records(events, STARTED, WALL0)
+    assert record.action is None
+    ev = evidence(triggers_created=[record], triggers_fired=fires, step_started=[STARTED])
+    result = run_check("trigger_fired", TriggerFiredParams(after_step=0), ev)
+    assert result.status == "pass", result.reason
 
 
 def test_a_created_action_is_kept_as_the_engine_runs_it() -> None:

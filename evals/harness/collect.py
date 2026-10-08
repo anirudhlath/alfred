@@ -125,7 +125,8 @@ def trigger_records(
         if kind == "trigger_created":
             made = _read(TriggerCreated, event, what)
             if made.created_by == TOOL_CALL:
-                action = None if made.action is None else _read(ActionPayload, made.action, what)
+                # create_trigger takes a falsy action as none (core/triggers/feature.py).
+                action = _read(ActionPayload, made.action, what) if made.action else None
                 created.append(
                     TriggerRecord(
                         t=t,
