@@ -6,6 +6,7 @@ import dataclasses
 import datetime as _dt  # noqa: TC003 — get_type_hints and the pydantic model need it at runtime
 import enum
 import json
+import re
 import warnings
 from collections.abc import Callable  # noqa: TC003 — get_type_hints resolves it at runtime
 from typing import Annotated, Any, Literal
@@ -832,19 +833,83 @@ class _HiddenRequiredFeature(BaseFeature):
         return {}
 
 
+class _FieldDefaultFeature(BaseFeature):
+    feature_name = "fielddefault"
+
+    @tool
+    def bad(self, x: int = Field(5, ge=0)) -> dict[str, Any]:
+        """A default the call never applies: Python passes the FieldInfo itself."""
+        return {}
+
+
+class _AnnotatedDefaultFeature(BaseFeature):
+    feature_name = "annotateddefault"
+
+    @tool
+    def bad(self, n: Annotated[int, Field(default=5)]) -> dict[str, Any]:
+        """A default only the schema knows: a call without `n` fails."""
+        return {}
+
+
+class _AnnotatedFactoryFeature(BaseFeature):
+    feature_name = "annotatedfactory"
+
+    @tool
+    def bad(self, tags: Annotated[list[str], Field(default_factory=list)]) -> dict[str, Any]:
+        """A default factory only the schema knows: a call without `tags` fails."""
+        return {}
+
+
+_FIELD_DEFAULT_FIX = r"put the default on the parameter itself"
+
+
 @pytest.mark.parametrize(
-    ("feature", "name"),
+    ("feature", "name", "message"),
     [
-        (_HiddenRequiredFeature, "hidden.bad"),
-        (_VarArgsFeature, "varargs.bad"),
-        (_KwArgsFeature, "kwargs.bad"),
-        (_PositionalOnlyFeature, "posonly.bad"),
-        (_UnresolvableFeature, "unresolvable.bad"),
-        (_OpaqueFeature, "opaque.bad"),
-        (_SkippedChoiceFeature, "skipped.bad"),
-        (_DanglingModelFeature, "dangling.bad"),
+        (
+            _HiddenRequiredFeature,
+            "hidden.bad",
+            r"parameter 'secret' has no default but is hidden from its JSON Schema",
+        ),
+        (_FieldDefaultFeature, "fielddefault.bad", rf"parameter 'x' .*{_FIELD_DEFAULT_FIX}"),
+        (
+            _AnnotatedDefaultFeature,
+            "annotateddefault.bad",
+            rf"parameter 'n' .*{_FIELD_DEFAULT_FIX}",
+        ),
+        (
+            _AnnotatedFactoryFeature,
+            "annotatedfactory.bad",
+            rf"parameter 'tags' .*{_FIELD_DEFAULT_FIX}",
+        ),
+        (_VarArgsFeature, "varargs.bad", r"parameter 'names' must be passable by keyword"),
+        (_KwArgsFeature, "kwargs.bad", r"parameter 'options' must be passable by keyword"),
+        (_PositionalOnlyFeature, "posonly.bad", r"parameter 'x' must be passable by keyword"),
+        (_UnresolvableFeature, "unresolvable.bad", r"cannot resolve its type hints"),
+        (_OpaqueFeature, "opaque.bad", r"cannot describe its parameters as JSON Schema"),
+        (_SkippedChoiceFeature, "skipped.bad", r"cannot describe .*skipped-choice"),
+        (_DanglingModelFeature, "dangling.bad", r"cannot describe its parameters as JSON Schema"),
     ],
 )
-def test_undescribable_signatures_fail_at_discovery(feature: type[BaseFeature], name: str) -> None:
-    with pytest.raises(TypeError, match=name.replace(".", r"\.")):
+def test_undescribable_signatures_fail_at_discovery(
+    feature: type[BaseFeature], name: str, message: str
+) -> None:
+    with pytest.raises(TypeError, match=rf"^Tool '{re.escape(name)}': .*{message}"):
         feature().get_tools()
+
+
+class _ConstrainedDefaultFeature(BaseFeature):
+    feature_name = "constrained"
+
+    @tool
+    def go(self, x: Annotated[int, Field(ge=0)] = 5) -> dict[str, Any]:
+        """A constraint in Annotated, the default on the parameter: the supported form."""
+        return {}
+
+
+def test_a_default_beside_annotated_constraints_reaches_the_schema() -> None:
+    meta = {t.name: t for t in _ConstrainedDefaultFeature().get_tools()}["constrained.go"]
+    assert meta.input_schema["properties"]["x"] == {"type": "integer", "minimum": 0, "default": 5}
+    assert meta.input_schema["required"] == []
+    assert meta.parameters["x"].required is False
+    assert meta.parameters["x"].default == 5

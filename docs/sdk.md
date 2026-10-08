@@ -67,6 +67,10 @@ types Pydantic cannot describe raise `TypeError` at discovery, naming the tool. 
 includes a union Pydantic would otherwise narrow in silence (`int | Callable[[], int]`
 becomes plain `integer`), and a parameter without a default hidden from the schema with
 `SkipJsonSchema`, which no model could ever supply (with a default it may stay hidden).
+A default set through a pydantic `Field` raises too, since a call to the method never
+applies it (`x: int = Field(5, ge=0)`, or `Field(default=...)` or
+`Field(default_factory=...)` inside `Annotated`): put the default on the parameter
+itself (`x: Annotated[int, Field(ge=0)] = 5`).
 The usual cause of an unresolvable hint is a type imported
 under `if TYPE_CHECKING:` in a module with `from __future__ import annotations`: the
 hint is a string that names nothing at runtime. Import the type at runtime instead.
