@@ -1,9 +1,11 @@
 """Parse the Reflex model's reply into a ReflexProposal (#285).
 
 The model answers ``{"decision": "none"}`` or ``{"decision": "act" | "ask", "reason",
-"tool_name", "target_service", "parameters"}``. Anything this module cannot turn into
-one of those becomes an ``invalid`` proposal that keeps the raw text and says what was
-wrong, so the shadow report shows model failures instead of hiding them.
+"tool_name", "parameters"}``. The service that runs the tool comes from the registry, never
+the model: it is not in the reply format, and a ``target_service`` the model adds anyway is
+ignored. Anything this module cannot turn into one of those becomes an ``invalid`` proposal
+that keeps the raw text and says what was wrong, so the shadow report shows model failures
+instead of hiding them.
 """
 
 from __future__ import annotations
@@ -57,9 +59,6 @@ def parse_decision(raw: str, tools: Sequence[ToolInfo]) -> ReflexProposal:
     tool = next((t for t in tools if t.name == tool_name), None)
     if tool is None:
         return _invalid(raw, f"tool {tool_name!r} is not one of Reflex's tools")
-    target_service = parsed.get("target_service", tool.target_service)
-    if target_service != tool.target_service:
-        return _invalid(raw, f"target_service {target_service!r} does not serve {tool_name}")
     parameters = parsed.get("parameters", {})
     if not isinstance(parameters, dict):
         return _invalid(raw, "parameters is not an object")

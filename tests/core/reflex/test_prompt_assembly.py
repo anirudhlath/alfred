@@ -122,6 +122,14 @@ def test_the_rules_spell_out_the_decision_format() -> None:
         assert label in prompt
 
 
+def test_the_reply_format_does_not_ask_the_model_for_a_service() -> None:
+    assert '"target_service"' not in _prompt()
+
+
+def test_a_state_change_prompt_says_never_undo_or_repeat_the_change() -> None:
+    assert "Never undo or repeat the change itself" in _prompt()
+
+
 def test_a_trigger_prompt_names_the_trigger_and_says_the_owner_knows() -> None:
     prompt = build_trigger_prompt(
         event=TriggerFired(trigger_id="t-1", trigger_name="bedtime", trigger_type="time"),

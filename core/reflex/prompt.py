@@ -49,7 +49,9 @@ NO_PREFERENCES = "None recorded yet."
 
 STATE_CHANGE_INTRO = (
     "You are Alfred's Reflex Engine, the quiet steward of a home. One thing in the house "
-    "just changed. Decide whether to do something about it."
+    "just changed. Decide whether to do something about it. Never undo or repeat the change "
+    "itself: whoever made it meant it, so paused music stays paused and a light that just "
+    "came on needs no turning on. Act, if at all, on what it means for the rest of the house."
 )
 TRIGGER_INTRO = (
     "You are Alfred's Reflex Engine, the quiet steward of a home. A trigger the owner set "
@@ -67,7 +69,7 @@ its name.
 
 Respond with JSON only. Either {"decision": "none"} or
 {"decision": "act" | "ask", "reason": "<one short sentence>", "tool_name": "...",
- "target_service": "...", "parameters": {...}}"""
+ "parameters": {...}}"""
 
 
 @dataclass(frozen=True)

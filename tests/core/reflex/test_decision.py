@@ -71,6 +71,25 @@ def test_a_missing_target_service_is_taken_from_the_tool() -> None:
     assert proposal.action.target_service == "home-service"
 
 
+def test_the_model_never_picks_the_service_the_tool_names_it() -> None:
+    proposal = parse_decision(_act(target_service="other-service"), TOOLS)
+
+    assert proposal.decision == "act"
+    assert proposal.action is not None
+    assert proposal.action.target_service == "home-service"
+
+
+def test_an_ha_service_name_in_target_service_is_not_invalid() -> None:
+    # The shadow week's invalid replies: the model copied the tool's description,
+    # the HA service it calls, into target_service.
+    proposal = parse_decision(_act(target_service="light.turn_on"), TOOLS)
+
+    assert proposal.decision == "act"
+    assert proposal.problem is None
+    assert proposal.action is not None
+    assert proposal.action.target_service == "home-service"
+
+
 def test_a_missing_reason_is_allowed() -> None:
     reply = json.loads(_act())
     del reply["reason"]
@@ -92,10 +111,6 @@ def test_a_missing_reason_is_allowed() -> None:
         (
             _act(tool_name="home.lock_unlock"),
             "tool 'home.lock_unlock' is not one of Reflex's tools",
-        ),
-        (
-            _act(target_service="other-service"),
-            "target_service 'other-service' does not serve home.light_turn_on",
         ),
         (_act(parameters=["Living Room"]), "parameters is not an object"),
     ],
