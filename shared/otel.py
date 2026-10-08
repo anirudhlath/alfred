@@ -2,10 +2,23 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Final
+
 from opentelemetry import trace
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+
+if TYPE_CHECKING:
+    from fastapi.telemetry import TelemetryConfig
+
+# Every FastAPI app passes this as ``FastAPI(telemetry=...)``. Since 0.142, FastAPI adds an
+# OTLP exporter of its own at startup whenever OTEL_EXPORTER_OTLP_ENDPOINT is set. It only
+# speaks OTLP/HTTP, and that variable names init_tracing's gRPC endpoint, so the second
+# exporter posted every batch to the gRPC port and was reset (issue #333). Export belongs
+# to init_tracing alone; FastAPI's request and WebSocket spans still reach the collector
+# through the provider it installs.
+FASTAPI_TELEMETRY: Final[TelemetryConfig] = {"auto_configure": False}
 
 
 def init_tracing(

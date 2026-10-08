@@ -47,3 +47,4 @@ CONTEXT_PREFIX = "ctx:"             # RediSearch key prefix
 - `TraceRecord` is a backward-compat alias for `ReflexTraceRecord`
 - Root `conftest.py` has autouse `_mock_keyring` fixture — all tests use `InMemoryKeyring`, never OS keychain
 - redis-py 8 defaults `socket_timeout` to 5s (was `None`), which races idle blocking stream reads (`block=`) — always construct async Redis clients via `create_redis()` in this module, never `redis.asyncio.from_url()` directly (SDK is the sole exception — see `sdk/CLAUDE.md`)
+- Every FastAPI app passes `telemetry=FASTAPI_TELEMETRY` (`otel.py`). FastAPI 0.142+ otherwise adds its own OTLP/HTTP exporter at startup from `OTEL_EXPORTER_OTLP_ENDPOINT`, which names `init_tracing`'s gRPC endpoint, so every batch is reset at the gRPC port ([#333](https://github.com/anirudhlath/alfred/issues/333)). Its request and WebSocket spans still export through `init_tracing`'s provider
