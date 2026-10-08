@@ -13,7 +13,7 @@ import pytest
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
 from core.triggers.registry import TriggerRegistry
 from core.triggers.store import TriggerStore
-from sdk.alfred_sdk.feature import tool
+from sdk.alfred_sdk.feature import BaseFeature, tool
 from shared.streams import EVENTS_MAXLEN, EVENTS_STREAM, USER_TIMEZONE_KEY
 
 
@@ -464,9 +464,12 @@ def test_create_trigger_enrichment_keeps_audience_risk_and_schema() -> None:
     )
     tools = {t.name: t for t in feature.get_tools()}
     meta = tools["triggers.create_trigger"]
+    base = {t.name: t for t in BaseFeature.get_tools(feature)}["triggers.create_trigger"]
     assert (meta.audience, meta.risk) == ("reflex", "critical")
     assert "informational" in meta.description  # the enrichment still ran
     assert meta.input_schema["required"] == ["name", "trigger_type", "conditions"]
     # Only the signature-generated schema carries defaults; one re-derived from
     # `parameters` would not.
     assert meta.input_schema["properties"]["urgency"]["default"] == "informational"
+    assert meta.input_schema == base.input_schema
+    assert meta.parameters == base.parameters
