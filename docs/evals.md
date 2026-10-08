@@ -157,10 +157,7 @@ The driver reads and acts on the eval container through `evals/harness/bus.py`.
 
 - **Reads:**
   - triggers created and fired, from `alfred:events`;
-  - fires of triggers that have an action, from `alfred:actions`: such a trigger fires as
-    an `ActionRequest` (source `trigger-engine`) there instead of a TriggerFired. A
-    confirmed `ActionRequest` is ignored: it is a critical action the routing layer
-    re-publishes under its original source once the user confirms it, not a fire;
+  - fires of triggers that have an action, from `alfred:actions`;
   - notifications, from the dispatch stream and the deferred list;
   - Reflex's tools, the registry's reflex-audience ones.
 - **Acts:**
@@ -169,8 +166,14 @@ The driver reads and acts on the eval container through `evals/harness/bus.py`.
     that one call;
   - sets the stored user timezone (`clock`).
 
-Every wait is event-driven: waiting for a fire is a blocking `XREAD` on `alfred:events` and
-`alfred:actions`, and waiting for System 1 wakes as the proxy records each call.
+A trigger that has an action fires as an `ActionRequest` (source `trigger-engine`) on
+`alfred:actions` instead of a TriggerFired. A confirmed `ActionRequest` is ignored: it is a
+critical action the routing layer re-publishes under its original source once the user
+confirms it, not a fire.
+
+Neither wait for an event polls: a fire is waited for with a blocking `XREAD` on
+`alfred:events` and `alfred:actions`, and System 1's answer wakes the wait as the proxy
+records each call.
 
 `collect.py` turns bus entries into evidence. `reflex.py` turns System 1's recorded replies
 into Reflex's decisions, with Reflex's own `parse_decision` and the same tools its prompt
@@ -180,7 +183,8 @@ showed. An entry `collect.py` recognises (a TriggerCreated, a TriggerFired, an
 
 After each sample the driver deletes the triggers that sample created. If the sample touched
 do-not-disturb, it clears it and drops what it held. It also puts the user timezone back. A
-sample that failed is not cleaned up: its stack is dirty and restarts.
+sample the harness fails mid-play (it raises, and scores `E`) is not cleaned up: its stack
+is dirty and restarts.
 
 ### One sample
 
@@ -213,10 +217,11 @@ sequenceDiagram
     T->>T: scorer: deterministic checks, then judge rubrics
 ```
 
-A golden with a reflex check (`reflex_decision`, `reflex_not_proposed`, or a `reflex_ms`
-latency), or a `prompt_not_contains` on `system1`, waits 6 s first. Reflex ignores an entity
-for 5 s after it fires, and the restore may just have made it fire. Such a golden *watches
-Reflex*: after each `ha_event` the driver waits for System 1's answer, not for an HA call.
+A golden with a reflex check (`reflex_decision` or `reflex_not_proposed`), a `reflex_ms`
+latency, or a `prompt_not_contains` on `system1` waits 6 s first. Reflex ignores an entity
+for 5 s after it last let one of its events through, and the restore may just have done so.
+Such a golden **watches Reflex**: after each `ha_event` the driver waits for System 1's
+answer, not for an HA call.
 
 ---
 
@@ -526,7 +531,7 @@ expect:
 | `prd` | required | PRD ids the golden evidences (at least one) |
 | `status` | required | `shipped`, or `pending` for a row not built yet: it runs only with `--include-pending` and is reported apart |
 | `tags` | `[]` | Free labels for `--tag` |
-| `world` | `apartment` | The world the fake HA serves (slice 1 has only `apartment`) |
+| `world` | `apartment` | The world the fake HA serves (only `apartment` exists so far) |
 | `isolated` | `false` | Restart the stack before each of this golden's samples (every variant and epoch), for a golden that needs a fresh container: clean memory and sessions, or a reply soon after boot |
 | `as` | `{who: sir, channel: web_pwa, tz: America/Denver}` | Who is speaking: `who` is `sir` or `guest`; `channel` is `web_pwa`, `signal`, `voice`, `ios` or `satellite`; `tz` is the client's IANA zone |
 | `steps` | required | At least one step |
@@ -543,10 +548,12 @@ expect:
 | `advance_trigger: {name: …}` | `settle: <seconds>` | Makes the newest one-time trigger (one with a `run_at`) the sample created due now, optionally narrowed by `name`, a case-insensitive part of its name. Then waits up to 15 s (`settle`) for it to fire, as a TriggerFired or, for a trigger with an action, its `ActionRequest`, and 2 s more once it has. With no such trigger, the transcript says so and the checks score it. `advance_trigger: {}` takes the newest |
 | `dnd: on` / `dnd: off` | `settle: <seconds>` | Sets do-not-disturb through the admin API, then settles 3 s (`settle` replaces it). Turning it off drains what it held; the drain runs in the conscious process, so give `settle` time for it |
 
-**`clock` and `user` steps.** Conscious stores the zone every request carries (the actor's
-`tz`) before it answers (`process_request` in `core/conscious/engine.py`), so a `user` step
-after a `clock` step undoes it, and the reflex checks then error on the hour. Put `clock`
-after the last `user` step. The driver puts the stored zone back after the sample either way.
+**`clock` and `user` steps.** Conscious stores the zone a request carries (the actor's `tz`)
+before it answers (`process_request` in `core/conscious/engine.py`), so a `user` step whose
+actor has a `tz` undoes an earlier `clock` step, and the reflex checks then error on the
+hour. Put `clock` after the last such `user` step, or give that step's actor `tz: null`
+(`as: {tz: null}`): its request then carries no zone, and the clock's stays. The driver puts
+the stored zone back after the sample either way.
 
 **Variants.** One `user` step may carry `variants`. The step's own `user` text runs as
 sample `<id>` (variant 0), and each variant adds a sample on top, `<id>~1`, `<id>~2` and so
@@ -619,8 +626,9 @@ kind.
 `ha_event` or a check exists in it; every reply `step` names a real user step; every
 `domain`/`service` a check names is a service the world offers; every home tool a check
 names is one home-service would generate, `home.{domain}_{service}`; every reflex `target`
-is an entity or an area in the world; and every `entity_id` in a trigger's `conditions` (a
-`trigger_created`'s, or those System 2 is expected to send `create_trigger`) exists in it.
+is an entity or an area in the world; and every `entity_id` a trigger's `conditions` name
+directly (a `trigger_created`'s, or those System 2 is expected to send `create_trigger`)
+exists in it.
 It also pins the reply patterns of a few goldens to phrasings they must accept and near
 misses they must reject.
 
@@ -664,12 +672,13 @@ scored separately. Params are validated at load and unknown keys are rejected.
 | `prompt_not_contains` | exactly one of `text`, `any`, `regex`; `role` (default `system2`) | No prompt of the role contains the text; fails when the role was never called |
 | `trigger_created` | `type` (`time`, `sensor`, `composite`), `name`, `conditions` (mapping), `run_in_seconds` (number or `{approx, tol}`), `at_local` (`{time: "HH:MM", tz}`), `urgency`, `one_shot`; all optional | A trigger System 2 created matches `type`, `name`, `conditions`, `run_in_seconds` (from creation to `run_at`), `at_local` (the `run_at`'s wall-clock time in a zone), `urgency` and `one_shot`. `name` is a case-insensitive part of the trigger's name |
 | `trigger_not_created` | `type` (optional) | No trigger (of that type) was created |
-| `trigger_fired` | `name`, `after_step`, `within_s` (needs `after_step`); all optional | A trigger created in this sample fired, within `within_s` of `after_step`'s start. A fire is a TriggerFired or, for a trigger with an action, the engine's `ActionRequest` |
+| `trigger_fired` | `name`, `after_step`, `within_s` (needs `after_step`); all optional | A trigger created in this sample fired, within `within_s` of `after_step`'s start. A fire is a TriggerFired or, for a trigger with an action, the engine's `ActionRequest`. `name` is a case-insensitive part of the trigger's name |
 | `notification` | `urgency`, `source`, `text`, `deferred` (default `false`), `after_step`; all optional | A notification was dispatched (after `after_step`), or with `deferred: true` is still held by do-not-disturb, matching `urgency`, `source` and `text` (a case-insensitive part of the title or body). `deferred: true` reads the deferred list, so it cannot be combined with `after_step` |
 | `judge` | `category` (required); `rubric` (required, at least 10 characters); `reference` (optional) | The judge answers yes to the rubric about Alfred's last reply. See below |
 
 **Reflex checks** read the System 1 calls that reached the proxy during their `at_step`
-step, from its start to the next step's, each parsed into the decision Reflex took from it
+step, from its start to the next step's or, for the last step, to the sample's end, each
+parsed into the decision Reflex took from it
 (see [The bus](#the-bus)). A proposal's target is resolved the way home-service resolves
 it, and each entity's area is added, so a check can name the entity or the room.
 
@@ -934,9 +943,11 @@ goldens are public. Everything about it is fake or fenced.
 
 - **Timed do-not-disturb windows are not exercised.** The `dnd` step is on/off only, so
   neither a window's `until` nor the drain trigger the dispatcher creates for it is tested.
-- **A trigger record can go stale.** `trigger_created` reads TriggerCreated, which carries
-  the raw `action` the tool was given. An `update_trigger` publishes no event, so if System 2
-  updates a trigger, the sample's record of it no longer matches the stored trigger.
+- **A trigger record can go stale.** The harness records a trigger from its TriggerCreated,
+  and an `update_trigger` publishes no event, so a trigger System 2 updates keeps its
+  creation-time record. `trigger_created` then judges the trigger as it was created, and
+  `trigger_fired` misses the fire of a trigger whose action System 2 changed: the engine's
+  `ActionRequest` is matched against the action the trigger was created with.
 - **Delivery is not evaluated.** Delivery to Signal and the web is covered by
   `tests/core/notifications`, not by evals. Eval evidence stops at the dispatch stream.
 
