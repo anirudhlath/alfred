@@ -20,6 +20,7 @@ import redis.asyncio as aioredis  # noqa: TC002 — patched at runtime by tests 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from loguru import logger
 from pydantic import BaseModel, Field
+from redis.exceptions import RedisError
 
 if TYPE_CHECKING:
     from core.integrations.base import CredentialSchema
@@ -602,8 +603,12 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.get("/api/integrations", dependencies=[Depends(require_authenticated)])
     async def list_integrations() -> list[dict[str, Any]]:
-        """List integration adapters + registry-declared sovereign services (C5)."""
+        """List integration adapters + registry-declared sovereign services (C5).
+
+        Adapters alone when Redis cannot be read — the services come from it.
+        """
         from core.channels.service_credentials import (
+            ServiceCredentialManifest,
             build_integration_entry,
             list_service_manifests,
         )
@@ -615,11 +620,26 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
                 name, integration_cls.category, "adapter", integration_cls.credentials_schema
             )
 
+        async def _service_manifests() -> dict[str, ServiceCredentialManifest]:
+            # The adapter half needs no Redis, so whatever stops the registry read
+            # (refused, timed out, or an error reply) costs the services alone, never
+            # the adapters' credential entry (issue #118). RedisError and not
+            # Exception: a bug in the service half must still surface as a 500.
+            try:
+                return await list_service_manifests(app.state.redis)
+            except RedisError as exc:
+                logger.warning(
+                    "Tool registry unreadable ({}: {}) — listing integration adapters only",
+                    type(exc).__name__,
+                    exc,
+                )
+                return {}
+
         # Adapters and registry-declared services live in independent stores
         # (in-process registry vs. Redis) — read both concurrently.
         adapters, manifests = await asyncio.gather(
             asyncio.gather(*[_build_info(n) for n in IntegrationRegistry.available()]),
-            list_service_manifests(app.state.redis),
+            _service_manifests(),
         )
         services = await asyncio.gather(
             *[
