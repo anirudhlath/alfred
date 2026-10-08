@@ -24,7 +24,7 @@ class _FakeModel:
         _constructions += 1
         time.sleep(0.05)  # simulate slow model load
 
-    def get_sentence_embedding_dimension(self) -> int:
+    def get_embedding_dimension(self) -> int:
         return 8
 
     def encode(self, text: Any, normalize_embeddings: bool = True) -> Any:

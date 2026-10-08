@@ -97,16 +97,6 @@ class RenamedModel:
         return 384
 
 
-class PreRenameModel:
-    """A sentence-transformers release before the rename: only the old name exists."""
-
-    def __init__(self, model_name: str) -> None:
-        self.model_name = model_name
-
-    def get_sentence_embedding_dimension(self) -> int:
-        return 768
-
-
 def test_dimension_uses_get_embedding_dimension(monkeypatch: pytest.MonkeyPatch) -> None:
     """Both the load-time log line and dimension() read the width by its new name."""
     monkeypatch.setattr("sentence_transformers.SentenceTransformer", RenamedModel)
@@ -117,10 +107,3 @@ def test_dimension_uses_get_embedding_dimension(monkeypatch: pytest.MonkeyPatch)
         assert provider.dimension() == 384
 
     assert [w for w in caught if issubclass(w.category, FutureWarning)] == []
-
-
-def test_dimension_falls_back_to_the_old_name(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("sentence_transformers.SentenceTransformer", PreRenameModel)
-    provider = SentenceTransformerProvider("pre-rename-model")
-
-    assert provider.dimension() == 768
