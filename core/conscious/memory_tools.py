@@ -90,22 +90,16 @@ async def _recall_memories(
 ) -> str:
     query: str = params.get("query", "")
     limit: int = params.get("limit", 10)
+    since_days: int | None = params.get("since_days_ago")
 
     # Hot and the cold archive, compressed entries included; counts as using the memory.
-    results = await context_index.recall(query, limit=limit)
-
-    # Filter by type if specified
-    types: list[str] | None = params.get("types")
-    if types:
-        results = [r for r in results if r.metadata.type in types]
-
-    # Filter by time if specified
-    since_days: int | None = params.get("since_days_ago")
-    if since_days:
-        cutoff = (datetime.now(UTC) - timedelta(days=since_days)).timestamp()
-        results = [
-            r for r in results if r.metadata.timestamp >= cutoff or r.metadata.timestamp == 0.0
-        ]
+    # The filters go to the search, so the limit counts only memories that match.
+    results = await context_index.recall(
+        query,
+        limit=limit,
+        types=params.get("types"),
+        since=datetime.now(UTC) - timedelta(days=since_days) if since_days else None,
+    )
 
     formatted = [
         {
