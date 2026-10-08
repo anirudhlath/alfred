@@ -7,4 +7,5 @@ steps:
 expect:
   - prompt_not_contains:
       role: system1
+      # "notify." guards a richer world: the apartment has no notify service yet.
       any: ["button.", "notify.", "entity_picture", "supported_features"]

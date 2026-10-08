@@ -4,6 +4,8 @@ status: shipped
 tags: [judgment, lights]
 steps:
   - clock: {hour: 0}
+  - ha_event: {entity_id: sun.sun, state: below_horizon}
+    settle: 1  # Reflex does not attend to the sun
   - ha_event: {entity_id: light.bedroom_lamp, state: "on"}
   - wait: 6
   - ha_event: {entity_id: light.bedroom_lamp, state: "off"}
