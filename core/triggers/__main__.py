@@ -38,7 +38,9 @@ from shared.streams import ACTIONS_STREAM, HOME_STATE_STREAM, decode_stream_valu
 
 logger = logging.getLogger(__name__)
 
-GROUP = TRIGGER_ENGINE_SOURCE
+# A consumer group's name is Redis state (its read position), so it keeps its own literal:
+# renaming the service must not orphan the group.
+GROUP = "trigger-engine"
 CONSUMER = "worker-1"
 SNAPSHOT_DIR = triggers_snapshot_dir()
 
