@@ -585,6 +585,41 @@ async def test_reflex_settle_waits_for_a_system1_call_in_flight() -> None:
         await proxy.stop()
 
 
+async def test_reflex_settle_is_not_held_by_a_system2_call_in_flight() -> None:
+    """A Conscious call still upstream is not Reflex's: the golden starts once System 1 is
+    quiet, however long the other call runs."""
+    release = asyncio.Event()
+
+    async def held(request: httpx.Request) -> httpx.Response:
+        await release.wait()
+        return httpx.Response(200, json={"choices": [{"message": {"content": "hello"}}]})
+
+    proxy = LlmProxy("http://vllm.test", transport=httpx.MockTransport(held))
+    await proxy.start()
+    body = {
+        "model": "m",
+        "messages": [
+            {"role": "system", "content": "You are Alfred — personal butler"},
+            {"role": "user", "content": "hello"},
+        ],
+    }
+
+    async def conscious_asks() -> httpx.Response:
+        await asyncio.sleep(0.05)  # after the restore: inside the settle's window
+        async with httpx.AsyncClient() as client:
+            return await client.post(f"{proxy.url}/v1/chat/completions", json=body)
+
+    try:
+        asking = asyncio.create_task(conscious_asks())
+        play_ctx = ctx(Recorder(), proxy=proxy, reflex_cooldown_s=0.3, reflex_settle_cap_s=3)
+        assert await first_step_at(play_ctx, scenario(**WATCHES)) < 1.5
+        release.set()
+        assert (await asking).status_code == 200
+    finally:
+        release.set()
+        await proxy.stop()
+
+
 async def test_reflex_that_never_settles_after_the_restore_is_a_harness_error() -> None:
     proxy = LlmProxy("http://x")
 

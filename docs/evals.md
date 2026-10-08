@@ -243,10 +243,12 @@ restore's push, and Reflex judges one event at a time. So:
 | The restore | The wait |
 |---|---|
 | Touched nothing Reflex attends to | 6 s from the restore |
-| Queued System 1 calls | Until every call in flight is back, then 6 s from the last answer |
+| Queued System 1 calls | Until every System 1 call in flight is back, then 6 s from the last answer |
 | Kept System 1 busy past 60 s | A harness error (`E`): "Reflex did not settle after the restore" |
 
-The drain waits on every LLM call in flight since the restore, not only System 1's.
+The drain waits only on System 1's calls. Another role's call still upstream, such as
+Conscious answering a turn, does not hold it. A call whose body the proxy is still reading
+counts until the body says whose it is.
 
 ---
 

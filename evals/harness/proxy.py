@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import time
+from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any, NoReturn
 
@@ -119,6 +120,15 @@ def _mirror(upstream: httpx.Response) -> web.Response:
     )
 
 
+@dataclass(eq=False)  # each one is its own request, whatever its fields
+class _Flight:
+    """A chat completion received and not yet recorded: when it arrived, and whose it is
+    once its body has been read (None until then)."""
+
+    t: float
+    role: Role | None = None
+
+
 class LlmProxy:
     def __init__(
         self,
@@ -135,12 +145,12 @@ class LlmProxy:
         self._port = port
         self.calls: list[LlmCall] = []
         self._sem = asyncio.Semaphore(max_concurrency)
-        # The stamps of chat completions not yet in ``calls``, taken when each request
-        # arrived. A call is recorded when upstream answers, stamped with when it was sent,
-        # so a reader of a window waits for the ones sent inside it (``wait_idle``).
-        self._in_flight: list[float] = []
-        # Set, then replaced, whenever a call is recorded or leaves flight, so every waiter
-        # re-checks.
+        # The chat completions not yet in ``calls``, stamped when each request arrived. A
+        # call is recorded when upstream answers, stamped with when it was sent, so a reader
+        # of a window waits for the ones sent inside it (``wait_idle``).
+        self._in_flight: list[_Flight] = []
+        # Set, then replaced, whenever a call is recorded, leaves flight or is found to be
+        # one role's, so every waiter re-checks.
         self._landed = asyncio.Event()
         self._timeout_s = timeout_s
         self._transport = transport
@@ -181,10 +191,15 @@ class LlmProxy:
         """Chat completions received and not yet recorded (or refused)."""
         return len(self._in_flight)
 
-    def in_flight_since(self, since: float) -> list[float]:
+    def in_flight_since(self, since: float, role: Role | None = None) -> list[float]:
         """The stamps, oldest first, of the chat completions in flight that arrived at or
-        after *since*."""
-        return sorted(t for t in self._in_flight if t >= since)
+        after *since*. With *role*, only that role's, and those whose body is still being
+        read: they could be anyone's."""
+        return sorted(
+            f.t
+            for f in self._in_flight
+            if f.t >= since and (role is None or f.role in (None, role))
+        )
 
     def record(self, call: LlmCall) -> None:
         """Log a chat completion upstream answered (or failed), stamped with when, and wake
@@ -209,15 +224,16 @@ class LlmProxy:
             return False
         return True
 
-    async def wait_idle(self, since: float, timeout: float) -> bool:
+    async def wait_idle(self, since: float, timeout: float, role: Role | None = None) -> bool:
         """Wait until no chat completion that arrived at or after *since* is in flight, so
         ``calls`` holds every one a window starting at *since* can hold. One from before
         *since* (say, left upstream by a container a restart killed) never enters that
-        window, so it is not waited on. False when one is still in flight after *timeout*
+        window, so it is not waited on. With *role*, only that role's calls are waited on
+        (see ``in_flight_since``). False when one is still in flight after *timeout*
         seconds."""
         try:
             async with asyncio.timeout(timeout):
-                while self.in_flight_since(since):
+                while self.in_flight_since(since, role):
                     await self._landed.wait()
         except TimeoutError:
             return False
@@ -229,16 +245,16 @@ class LlmProxy:
     async def _chat(self, request: web.Request) -> web.Response:
         # In flight from the first byte, not the last: a call whose body is still being
         # read is already one a window must wait for.
-        t = time.monotonic()
-        self._in_flight.append(t)
+        flight = _Flight(t=time.monotonic())
+        self._in_flight.append(flight)
         try:
-            return await self._take(request, t)
+            return await self._take(request, flight)
         finally:  # recorded, refused with a 400, or the client gone
-            self._in_flight.remove(t)
+            self._in_flight.remove(flight)
             self._wake()
 
-    async def _take(self, request: web.Request, t: float) -> web.Response:
-        """Read, check and forward one chat completion that arrived at *t*."""
+    async def _take(self, request: web.Request, flight: _Flight) -> web.Response:
+        """Read, check and forward one chat completion, in flight as *flight*."""
         assert self._client is not None
         raw = await request.read()
         try:
@@ -259,10 +275,12 @@ class LlmProxy:
             for tool in _list(body.get("tools"))
             if isinstance(name := _obj(_obj(tool).get("function")).get("name"), str)
         ]
+        flight.role = classify_role(messages)
+        self._wake()  # a waiter on another role's calls need not wait on this one
         call_for = partial(
             LlmCall,
-            t=t,
-            role=classify_role(messages),
+            t=flight.t,
+            role=flight.role,
             messages=messages,
             tools_offered=tools,
         )

@@ -290,6 +290,59 @@ async def test_wait_idle_waits_only_on_calls_sent_since() -> None:
         await p.stop()
 
 
+SYSTEM2 = {
+    "model": "m",
+    "messages": [{"role": "system", "content": "You are Alfred — personal butler"}],
+}
+
+
+async def test_waiting_on_one_role_is_not_held_by_another_roles_call() -> None:
+    """A call in flight counts for a role once its body says whose it is; before then it
+    could be anyone's, so it counts for every role."""
+    release, body_sent = asyncio.Event(), asyncio.Event()
+
+    async def gated(request: httpx.Request) -> httpx.Response:
+        await release.wait()
+        return httpx.Response(200, json=COMPLETION)
+
+    raw = json.dumps(SYSTEM2).encode()
+    split = raw.index(b'"messages"')
+
+    async def slow_body() -> AsyncIterator[bytes]:
+        yield raw[:split]
+        await body_sent.wait()
+        yield raw[split:]
+
+    p = LlmProxy("http://vllm.test", transport=httpx.MockTransport(gated))
+    await p.start()
+    try:
+        async with httpx.AsyncClient() as client:
+            sent = asyncio.create_task(
+                client.post(
+                    f"{p.url}/v1/chat/completions",
+                    content=slow_body(),
+                    headers={"content-type": "application/json"},
+                )
+            )
+            async with asyncio.timeout(5):
+                while not p.in_flight:  # the body is still on its way
+                    await asyncio.sleep(0.005)
+            [stamp] = p.in_flight_since(0.0, role="system1")  # whose, it cannot tell yet
+            assert not await p.wait_idle(0.0, 0.02, role="system1")
+            body_sent.set()
+            # Read and found to be System 2's: no longer System 1's to wait for.
+            assert await p.wait_idle(0.0, 5, role="system1")
+            assert p.in_flight_since(0.0, role="system1") == []
+            assert p.in_flight_since(0.0, role="system2") == [stamp]
+            assert p.in_flight_since(0.0) == [stamp] and p.calls == []
+            assert not await p.wait_idle(0.0, 0.02)
+            release.set()
+            await sent
+            assert [c.role for c in p.calls] == ["system2"] and p.in_flight == 0
+    finally:
+        await p.stop()
+
+
 async def test_a_call_is_in_flight_from_its_first_byte_not_its_last() -> None:
     body_sent = asyncio.Event()
 

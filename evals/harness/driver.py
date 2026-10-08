@@ -54,13 +54,14 @@ from evals.harness.stack import (
 if TYPE_CHECKING:
     from evals.harness.bus import Bus
     from evals.harness.checks.home import HaCalledParams
-    from evals.harness.evidence import HaCall, LlmCall
+    from evals.harness.evidence import HaCall, LlmCall, Role
     from evals.harness.fake_ha import FakeHA
     from evals.harness.proxy import LlmProxy
     from evals.harness.scenario import Scenario
 
 SendFn = Callable[[UserRequest, float], Awaitable[AlfredResponse]]
 TIMES = "\N{MULTIPLICATION SIGN}"
+SYSTEM1_ROLE: Role = "system1"  # the proxy's role for Reflex's calls
 
 
 def _utc_now() -> datetime:
@@ -169,7 +170,7 @@ def session_id_for(sample_id: str, epoch: int) -> str:
 
 
 def _is_system1(call: LlmCall) -> bool:
-    return call.role == "system1"
+    return call.role == SYSTEM1_ROLE
 
 
 def _system1_upstream_failures(calls: list[LlmCall]) -> str:
@@ -188,15 +189,17 @@ async def _settle_reflex(ctx: PlayContext, since: float, restored_at: float) -> 
     Reflex judges one event at a time, and an entity's cooldown runs from when Reflex
     judged its event, not from the restore's push. With several restored entities queued,
     the last one is judged a System 1 call or more after the push. So the quiet runs from
-    the last System 1 answer since the restore (*since*), after every call in flight has
-    come back. A restore Reflex does not attend to makes no call: the quiet then runs from
-    *restored_at*, which also covers the cooldown the previous sample's last event started.
+    the last System 1 answer since the restore (*since*), after every System 1 call in
+    flight has come back. Another role's call still upstream (Conscious answering a turn)
+    is not Reflex's and does not hold the wait. A restore Reflex does not attend to makes
+    no call: the quiet then runs from *restored_at*, which also covers the cooldown the
+    previous sample's last event started.
     """
     quiet_s = max(ctx.restore_settle_s, ctx.reflex_cooldown_s)
     deadline = restored_at + ctx.reflex_settle_cap_s
     while (now := time.monotonic()) < deadline:
-        if ctx.proxy.in_flight_since(since):
-            await ctx.proxy.wait_idle(since, deadline - now)
+        if ctx.proxy.in_flight_since(since, SYSTEM1_ROLE):
+            await ctx.proxy.wait_idle(since, deadline - now, SYSTEM1_ROLE)
             continue
         answers = [_answered(c) for c in ctx.proxy.calls if _is_system1(c) and c.t >= since]
         until = max([restored_at, *answers]) + quiet_s
@@ -211,7 +214,7 @@ async def _settle_reflex(ctx: PlayContext, since: float, restored_at: float) -> 
     raise HarnessError(
         f"Reflex did not settle after the restore: System 1 was not quiet for {quiet_s:.0f}s "
         f"within {ctx.reflex_settle_cap_s:.0f}s of it"
-        + still_upstream(ctx.proxy.in_flight_since(since), now)
+        + still_upstream(ctx.proxy.in_flight_since(since, SYSTEM1_ROLE), now)
     )
 
 
