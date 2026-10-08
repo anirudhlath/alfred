@@ -109,6 +109,16 @@ Core stays the single credential authority (`core/channels/service_credentials.p
   PWA phase 1 has no integrations screen: the only credential surface is the setup
   gate's second step (`web/src/gates/SetupGate.tsx`), which writes home-service and
   nothing else. The Workshop that browses the full list is phase 2.
+  Only the service half reads Redis (`HGETALL alfred:tool_registry`). When that read
+  raises any `RedisError` the listing logs a WARNING and answers 200 with the adapters
+  alone, rather than 500ing
+  ([#118](https://github.com/anirudhlath/alfred/issues/118)). Nothing in the body marks
+  the omission, so a client cannot tell it from a house with no services. The per-name
+  routes resolve an adapter in-process before they read the registry, so adapter
+  credentials and status keep working through an outage; a service name still fails
+  there. A sustained outage usually surfaces as a 401 before any of this, because the
+  session lookup is a Redis read too and `AuthCookieMiddleware` treats its failure as
+  signed out.
 - `PUT /api/integrations/{name}/credentials` (service, session + trusted network):
   validate against the registry schema → store non-transient fields in the OS
   keyring (namespace = service name) → POST the flat field dict to the
