@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, Final
 
 from opentelemetry import trace
@@ -10,15 +11,26 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
 
 if TYPE_CHECKING:
-    from fastapi.telemetry import TelemetryConfig
+    from collections.abc import MutableMapping
 
-# Every FastAPI app passes this as ``FastAPI(telemetry=...)``. Since 0.142, FastAPI adds an
-# OTLP exporter of its own at startup whenever OTEL_EXPORTER_OTLP_ENDPOINT is set. It only
-# speaks OTLP/HTTP, and that variable names init_tracing's gRPC endpoint, so the second
-# exporter posted every batch to the gRPC port and was reset (issue #333). Export belongs
-# to init_tracing alone; FastAPI's request and WebSocket spans still reach the collector
-# through the provider it installs.
-FASTAPI_TELEMETRY: Final[TelemetryConfig] = {"auto_configure": False}
+# Export belongs to init_tracing alone. OpenTelemetry's standard variables also drive every
+# component that adds exporters from the environment: since 0.142, FastAPI adds OTLP
+# exporters at startup whenever OTEL_EXPORTER_OTLP_ENDPOINT is set. Those only speak
+# OTLP/HTTP, and that variable names init_tracing's gRPC endpoint, so they posted every
+# batch to the gRPC port and were reset (issue #333). "none" turns each of them off;
+# init_tracing builds its own exporter and reads none of these. FastAPI's request and
+# WebSocket spans still reach the collector through the provider init_tracing installs.
+ENV_EXPORTERS_OFF: Final = {
+    "OTEL_TRACES_EXPORTER": "none",
+    "OTEL_METRICS_EXPORTER": "none",
+    "OTEL_LOGS_EXPORTER": "none",
+}
+
+
+def turn_off_env_exporters(env: MutableMapping[str, str]) -> None:
+    """Default ``env`` to no environment-configured exporters, keeping any set explicitly."""
+    for name, value in ENV_EXPORTERS_OFF.items():
+        env.setdefault(name, value)
 
 
 def init_tracing(
@@ -34,6 +46,10 @@ def init_tracing(
     Returns:
         An OpenTelemetry Tracer instance.
     """
+    # In this process's own environment, so every process it starts inherits the default
+    # too: the runner calls this before launching any service, home-service included,
+    # whose FastAPI app Alfred never constructs.
+    turn_off_env_exporters(os.environ)
     resource = Resource.create({"service.name": service_name})
     provider = TracerProvider(resource=resource)
 
