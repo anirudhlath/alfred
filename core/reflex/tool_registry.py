@@ -29,6 +29,12 @@ def legacy_input_schema(parameters: dict[str, dict[str, Any]]) -> dict[str, Any]
     Such a manifest gives every parameter ``"default": null`` (#300), so this
     reproduces exactly what the model was offered before: a parameter is required
     when it says so, or, lacking a ``required`` key, when it has no ``default`` key.
+
+    Args:
+        parameters: The manifest's ``parameters``: name → that parameter's metadata.
+
+    Returns:
+        An object schema with ``properties`` and ``required``.
     """
     return input_schema_from_parameters(
         {
@@ -56,8 +62,34 @@ class ToolInfo:
     input_schema: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        # Derived even when a schema ships: that validates `parameters`, which Reflex
+        # renders, so a malformed one fails here rather than in a later prompt.
+        derived = legacy_input_schema(self.parameters)
         if not self.input_schema:
-            object.__setattr__(self, "input_schema", legacy_input_schema(self.parameters))
+            object.__setattr__(self, "input_schema", derived)
+
+
+def _shipped_input_schema(schema: object) -> dict[str, Any]:
+    """Check the ``input_schema`` a manifest ships; ``{}`` when it ships none.
+
+    Args:
+        schema: The tool's ``input_schema`` value, as read from the manifest.
+
+    Returns:
+        The schema, or ``{}`` when it is absent, null or empty (derive it instead).
+
+    Raises:
+        ValueError: The schema is present but not an object schema.
+    """
+    if schema is None or schema == {}:
+        return {}
+    if (
+        not isinstance(schema, dict)
+        or schema.get("type") != "object"
+        or not isinstance(schema.get("properties", {}), dict)
+    ):
+        raise ValueError("input_schema is not an object schema")
+    return schema
 
 
 class ToolRegistry:
@@ -102,7 +134,6 @@ class ToolRegistry:
                 feature_desc = feature.get("description", "")
                 for t in feature.get("tools", []):
                     try:
-                        schema = t.get("input_schema")
                         tools.append(
                             ToolInfo(
                                 name=t["name"],
@@ -113,12 +144,13 @@ class ToolRegistry:
                                 target_service=service_name,
                                 audience=t.get("audience", "conscious"),
                                 risk=t.get("risk", "benign"),
-                                input_schema=schema if isinstance(schema, dict) else {},
+                                input_schema=_shipped_input_schema(t.get("input_schema")),
                             )
                         )
                     except (AttributeError, KeyError, TypeError, ValueError) as exc:
-                        # One bad tool must not take down every other tool (pydantic's
-                        # ValidationError is a ValueError).
+                        # One bad tool (no name, malformed parameters, or a schema that is
+                        # not an object schema) must not take down every other tool.
+                        # pydantic's ValidationError is a ValueError.
                         logger.warning(
                             "Skipping malformed tool %r from service '%s': %s",
                             t.get("name") if isinstance(t, dict) else t,
