@@ -38,17 +38,18 @@ from shared.streams import ACTIONS_STREAM, HOME_STATE_STREAM, decode_stream_valu
 
 logger = logging.getLogger(__name__)
 
-GROUP = "trigger-engine"
+GROUP = TRIGGER_ENGINE_SOURCE
 CONSUMER = "worker-1"
 SNAPSHOT_DIR = triggers_snapshot_dir()
 
 # ACTIONS_STREAM consumer (internal trigger actions from admin API). A distinct
 # consumer GROUP so this process sees every entry independently of the home-agent
-# and conscious-engine groups; we only act on target_service="trigger-engine"
-# entries and ack-and-skip everything else.
+# and conscious-engine groups; we only act on entries whose target_service is this
+# service's name (TRIGGER_ENGINE_SOURCE, which it registers as) and ack-and-skip
+# everything else.
 ACTIONS_GROUP = "triggers-internal"
 ACTIONS_CONSUMER = "worker-1"
-TARGET_SERVICE = "trigger-engine"
+TARGET_SERVICE = TRIGGER_ENGINE_SOURCE
 
 _shutdown = asyncio.Event()
 
