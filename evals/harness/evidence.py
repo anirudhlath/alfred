@@ -6,16 +6,16 @@ one process, so their clocks agree.
 
 from __future__ import annotations
 
-from datetime import datetime  # noqa: TC003 — Pydantic resolves TriggerRecord.created_at
-from typing import Any, Literal
+from datetime import UTC, datetime
+from typing import Any, Literal, Self, get_args
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 Role = Literal["system1", "system2", "librarian", "unknown"]
 Decision = Literal["act", "ask", "none", "invalid"]
 Urgency = Literal["informational", "important", "urgent"]
 StepKind = Literal["user", "ha_event", "wait", "clock", "advance_trigger", "dnd"]
-STEP_KINDS: tuple[StepKind, ...] = ("user", "ha_event", "wait", "clock", "advance_trigger", "dnd")
+STEP_KINDS: tuple[StepKind, ...] = get_args(StepKind)
 
 
 class TranscriptTurn(BaseModel):
@@ -99,6 +99,12 @@ class TriggerRecord(BaseModel):
     one_shot: bool = False
     created_at: datetime  # the event's own timestamp, the base a relative delay ran from
 
+    @field_validator("created_at")
+    @classmethod
+    def _naive_is_utc(cls, value: datetime) -> datetime:
+        """A naive timestamp reads as UTC, so it compares with an aware ``run_at``."""
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value
+
 
 class TriggerFire(BaseModel):
     """``TriggerFired`` on alfred:events: a trigger with no action fired."""
@@ -112,6 +118,8 @@ class TriggerFire(BaseModel):
 
 
 class NotificationRecord(BaseModel):
+    """A notification the dispatcher sent, or one it still held deferred at the end."""
+
     t: float | None = None  # None for one read off the deferred list
     title: str
     body: str = ""
@@ -158,6 +166,15 @@ class Evidence(BaseModel):
     advances: list[Advance] = Field(default_factory=list)
     clocks: list[ClockSet] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def _one_kind_per_step(self) -> Self:
+        if self.step_kinds and len(self.step_kinds) != len(self.step_started):
+            raise ValueError(
+                f"step_kinds has {len(self.step_kinds)} entries for "
+                f"{len(self.step_started)} steps; record one per step or none"
+            )
+        return self
+
     def calls_after_step(self, step: int | None) -> list[HaCall]:
         if step is None:
             return list(self.ha_calls)
@@ -178,6 +195,7 @@ class Evidence(BaseModel):
         return self.step_started[i], end
 
     def last_step(self, kind: StepKind) -> int | None:
+        """The index of the last step of *kind*, or None when the sample has none."""
         return next(
             (i for i in range(len(self.step_kinds) - 1, -1, -1) if self.step_kinds[i] == kind),
             None,
