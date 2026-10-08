@@ -1,0 +1,8 @@
+id: reflex.latency.lamp_event
+prd: [7.reflex-latency]
+status: shipped
+tags: [latency]
+steps:
+  - ha_event: {entity_id: light.living_room_ceiling, state: "on"}
+expect:
+  - latency: {metric: reflex_ms, max: 500}

@@ -12,7 +12,7 @@ from evals.harness.evidence import Evidence, Reply
 from evals.harness.scenario import CheckSpec, HaEventStep, Scenario, UserStep, load_suites
 from evals.harness.world import World, load_world
 
-SUITES = ["conversation", "home_control"]
+SUITES = ["conversation", "home_control", "reflex"]
 
 
 @cache
@@ -23,7 +23,11 @@ def _goldens() -> dict[str, Scenario]:
 def test_every_golden_loads_and_names_real_entities() -> None:
     world_ids = {e.entity_id for e in load_world("apartment").entities}
     suites = load_suites(SUITES)
-    assert len(suites["conversation"]) >= 8 and len(suites["home_control"]) >= 13
+    assert (
+        len(suites["conversation"]) >= 8
+        and len(suites["home_control"]) >= 13
+        and len(suites["reflex"]) >= 13
+    )
     for scenarios in suites.values():
         for s in scenarios:
             for step in s.steps:
@@ -316,3 +320,12 @@ def test_a_lock_question_has_a_faithfulness_judge_because_the_regex_cannot_tell(
     assert _reply_checks_pass(s, "It is not locked, sir.")  # the deterministic checks let it by
     categories = {c.params.category for c in s.expect if isinstance(c.params, JudgeSpec)}
     assert "faithfulness" in categories
+
+
+def test_reflex_targets_name_a_real_entity_or_room() -> None:
+    world = load_world("apartment")
+    names = {e.entity_id for e in world.entities} | {a.area_id for a in world.areas}
+    for s in _goldens().values():
+        for check in s.expect:
+            target = getattr(check.params, "target", None)
+            assert target is None or target in names, f"{s.path}: {target}"

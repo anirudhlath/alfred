@@ -1,0 +1,10 @@
+id: reflex.prompt.compact
+prd: [4.4.reflex-judgment]
+status: shipped
+tags: [prompt]
+steps:
+  - ha_event: {entity_id: light.bedroom_lamp, state: "on"}
+expect:
+  - prompt_not_contains:
+      role: system1
+      any: ["button.", "notify.", "entity_picture", "supported_features"]

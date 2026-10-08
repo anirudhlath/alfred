@@ -38,15 +38,15 @@ rows:
   - {id: 4.3.two-stage-recall, section: "4.3", prd: "Two-stage recall", pending_suites: [memory]}
   - {id: 4.3.significance, section: "4.3", prd: "Significance scoring", pending_suites: [memory]}
   - {id: 4.3.passive-observation, section: "4.3", prd: "Passive observation", pending_suites: [memory]}
-  - {id: 4.3.s2-observes-s1, section: "4.3", prd: "System 2 observation of System 1", pending_suites: [reflex, memory]}
+  - {id: 4.3.s2-observes-s1, section: "4.3", prd: "System 2 observation of System 1", pending_suites: [memory]}
   # §4.4 Smart home
-  - {id: 4.4.lights-scenes, section: "4.4", prd: "Lights and scenes control", suites: [home_control], pending_suites: [reflex]}
+  - {id: 4.4.lights-scenes, section: "4.4", prd: "Lights and scenes control", suites: [home_control, reflex]}
   - {id: 4.4.ha-onboarding, section: "4.4", prd: "Token-to-live Home Assistant onboarding", not_llm: "credential flow", tests: [tests/core/channels/test_service_credentials.py]}
   - {id: 4.4.device-discovery, section: "4.4", prd: "Full-home device discovery", suites: [home_control]}
   - {id: 4.4.control-surface, section: "4.4", prd: "Generated control surface", suites: [home_control]}
   - {id: 4.4.live-state, section: "4.4", prd: "Live state streaming", suites: [home_control]}
-  - {id: 4.4.reflex-judgment, section: "4.4", prd: "Reflex judgment calls", pending_suites: [reflex]}
-  - {id: 4.4.tiered-autonomy, section: "4.4", prd: "Tiered autonomy", pending_suites: [reflex]}
+  - {id: 4.4.reflex-judgment, section: "4.4", prd: "Reflex judgment calls", suites: [reflex]}
+  - {id: 4.4.tiered-autonomy, section: "4.4", prd: "Tiered autonomy", suites: [reflex]}
   - {id: 4.4.critical-confirmation, section: "4.4", prd: "Confirmation required for critical actions", pending_suites: [critical_actions]}
   # §4.5 Integrations & credentials
   - {id: 4.5.adapters, section: "4.5", prd: "Weather, Apple Calendar", pending_suites: [integrations]}
@@ -70,7 +70,7 @@ rows:
   - {id: 4.7.service-health, section: "4.7", prd: "Self-describing health for external services", not_llm: "health reporting", tests: [web/src/workshop/SystemSections.test.tsx, tests/core/channels/test_service_credentials.py]}
   - {id: 4.7.alfredctl, section: "4.7", prd: "One-command containerized deployment", not_llm: "launcher", tests: [tests/alfredctl]}
   # §7 Success criteria
-  - {id: 7.reflex-latency, section: "7", prd: "Reflex latency", pending_suites: [reflex]}
+  - {id: 7.reflex-latency, section: "7", prd: "Reflex latency", suites: [reflex]}
   - {id: 7.reminder-latency, section: "7", prd: "Reminder latency", pending_suites: [triggers]}
   - {id: 7.onboarding, section: "7", prd: "Onboarding", not_llm: "credential flow", tests: [tests/core/channels/test_service_credentials.py]}
   - {id: 7.proactivity-quality, section: "7", prd: "Proactivity quality", pending_suites: [memory, notifications]}
