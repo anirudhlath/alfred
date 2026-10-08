@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 import fakeredis
 import httpx
 import pytest
+from redis import exceptions as redis_exceptions
 
 from core.reflex.tool_registry import ToolRegistry
 from evals.harness.bus import BusError, ContainerBus, zone_for_hour
@@ -126,29 +127,87 @@ async def test_delete_triggers_removes_only_rows_that_exist_and_says_so(
 async def test_user_timezone_is_set_restored_and_validated(
     redis: fakeredis.FakeAsyncRedis,
 ) -> None:
+    pubsub = redis.pubsub()
+    await pubsub.subscribe(TRIGGERS_CHANGED_CHANNEL)
     b = bus(redis)
     assert await b.user_timezone() is None
     await b.set_user_timezone("Etc/GMT-7")
     assert await b.user_timezone() == "Etc/GMT-7"
+    assert await published(pubsub) == [{"op": "tz-changed"}]
     await b.set_user_timezone(None)
     assert await redis.get(USER_TIMEZONE_KEY) is None
+    # The engine re-arms its cron alarms on the env zone Alfred now falls back to.
+    assert await published(pubsub) == [{"op": "tz-changed"}]
+    await b.set_user_timezone(None)  # nothing was stored, so nothing changed
     with pytest.raises(BusError, match="Mars/Base"):
         await b.set_user_timezone("Mars/Base")
+    assert await published(pubsub) == []
+    await pubsub.aclose()
 
 
 async def test_set_dnd_posts_with_a_session_that_lives_only_for_the_call(
     redis: fakeredis.FakeAsyncRedis,
 ) -> None:
-    seen: list[tuple[str, object, bytes | None]] = []
+    seen: list[tuple[str, object, bytes | None, int]] = []
 
     async def admin(request: httpx.Request) -> httpx.Response:
         session_id = request.headers["cookie"].removeprefix("alfred_auth=")
-        session = await redis.hgetall(f"{AUTH_SESSION_PREFIX}{session_id}")
-        seen.append((str(request.url), json.loads(request.content), session.get(b"authenticated")))
+        key = f"{AUTH_SESSION_PREFIX}{session_id}"
+        session = await redis.hgetall(key)
+        content = json.loads(request.content)
+        seen.append(
+            (str(request.url), content, session.get(b"authenticated"), await redis.ttl(key))
+        )
         return httpx.Response(200, json={"active": True})
 
     await bus(redis, admin).set_dnd(True)
-    assert seen == [("http://alfred.test/api/admin/dnd", {"active": True}, b"1")]
+    [(url, content, authenticated, ttl)] = seen
+    assert (url, content, authenticated) == (
+        "http://alfred.test/api/admin/dnd",
+        {"active": True},
+        b"1",
+    )
+    assert 0 < ttl <= 300  # the backstop, should the delete after the call never run
+    assert await redis.keys(f"{AUTH_SESSION_PREFIX}*") == []
+
+
+async def test_an_unreachable_admin_api_is_a_bus_error_and_leaves_no_session(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    async def unreachable(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    with pytest.raises(BusError, match="connection refused"):
+        await bus(redis, unreachable).set_dnd(False)
+    assert await redis.keys(f"{AUTH_SESSION_PREFIX}*") == []
+
+
+class LostExecReply(fakeredis.FakeAsyncRedis):
+    """A Redis whose transactions are applied but whose EXEC reply never arrives."""
+
+    def pipeline(self, transaction: bool = True, shard_hint: str | None = None) -> Any:
+        pipe = super().pipeline(transaction=transaction, shard_hint=shard_hint)
+        execute = pipe.execute
+
+        async def lost(raise_on_error: bool = True) -> list[Any]:
+            await execute(raise_on_error)
+            raise redis_exceptions.ConnectionError("EXEC reply lost")
+
+        pipe.execute = lost  # type: ignore[method-assign]
+        return pipe
+
+
+async def test_a_failed_session_write_leaves_no_session_and_makes_no_call() -> None:
+    redis = LostExecReply()
+    calls: list[httpx.Request] = []
+
+    async def admin(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json={})
+
+    with pytest.raises(redis_exceptions.ConnectionError, match="EXEC reply lost"):
+        await bus(redis, admin).set_dnd(True)
+    assert calls == []
     assert await redis.keys(f"{AUTH_SESSION_PREFIX}*") == []
 
 

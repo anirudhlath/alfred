@@ -829,6 +829,8 @@ async def test_the_bus_follows_the_stacks_redis(tmp_path: Path) -> None:
     with pytest.raises(StackError, match="not started"):
         await stack.bus.user_timezone()
     stack.redis = fakeredis.FakeAsyncRedis()
+    with pytest.raises(StackError, match="not started"):
+        stack._web_url()
     stack.web_port = 1234
     await stack.redis.set(USER_TIMEZONE_KEY, "Etc/GMT-7")
     assert await stack.bus.user_timezone() == "Etc/GMT-7"

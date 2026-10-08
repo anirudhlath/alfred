@@ -29,8 +29,9 @@ from uuid import uuid4
 import httpx
 
 from core.identity.auth_middleware import COOKIE_NAME
-from core.reflex.tool_registry import ToolRegistry
+from core.reflex.tool_registry import REFLEX_AUDIENCE, ToolRegistry
 from shared import usertime
+from shared.redis_streams import forward_range
 from shared.streams import (
     AUTH_SESSION_PREFIX,
     DEFERRED_NOTIFICATIONS_KEY,
@@ -52,7 +53,6 @@ if TYPE_CHECKING:
     from core.reflex.tool_registry import ToolInfo
     from shared.types import AioRedis
 
-REFLEX_AUDIENCE = "reflex"
 EVAL_CREDENTIAL = "alfred-eval"  # the credential_id on the harness's admin sessions
 _SESSION_TTL_S = 300  # a backstop: the session is deleted right after its one call
 
@@ -108,9 +108,7 @@ class ContainerBus:
         self._timeout_s = timeout_s
 
     async def _range(self, stream: str, since_wall: float) -> list[Entry]:
-        raw: list[tuple[Any, dict[Any, Any]]] = await self._redis().xrange(  # type: ignore[assignment,misc,unused-ignore]
-            stream, min=str(int(since_wall * 1000)), max="+"
-        )
+        raw = await forward_range(self._redis(), stream, min_id=str(int(since_wall * 1000)))
         entries: list[Entry] = []
         for entry_id, fields in raw:
             ms = int(decode_stream_value(entry_id).split("-", 1)[0])
@@ -154,8 +152,16 @@ class ContainerBus:
         return True
 
     async def delete_triggers(self, trigger_ids: list[str]) -> None:
-        """Remove triggers as ``TriggerStore.delete`` does, except for its YAML snapshot:
-        the container's data dir is wiped with the container."""
+        """Remove triggers as ``TriggerStore.delete`` does, except that each one's YAML
+        snapshot stays in the data dir: only the triggers process can delete it, and the
+        admin API has no delete route (it fires and enables, nothing more).
+
+        That leaves one window. ``TriggerStore.load`` rehydrates from the YAML snapshots
+        when ``alfred:triggers`` is empty, so if the triggers process restarts inside the
+        container (the runner revives a crashed service) after this call has emptied the
+        hash, the deleted triggers come back. The window closes with the container: each
+        suite boots its own, on a fresh data dir, and a sample the harness fails leaves
+        the stack dirty, so the next sample restarts it on a fresh one too."""
         r = self._redis()
         for trigger_id in trigger_ids:
             if await r.hdel(TRIGGERS_KEY, trigger_id):
@@ -185,17 +191,21 @@ class ContainerBus:
         r = self._redis()
         session_id = uuid4().hex
         key = f"{AUTH_SESSION_PREFIX}{session_id}"
-        await r.hset(
-            key,
-            mapping={
-                "authenticated": "1",
-                "credential_id": EVAL_CREDENTIAL,
-                "created_at": datetime.now(UTC).isoformat(),
-                "channel": "eval",
-            },
-        )
-        await r.expire(key, _SESSION_TTL_S)
         try:
+            # One transaction, so the session never exists without its TTL; inside the
+            # try, so a write whose reply is lost is still deleted.
+            async with r.pipeline(transaction=True) as pipe:
+                pipe.hset(
+                    key,
+                    mapping={
+                        "authenticated": "1",
+                        "credential_id": EVAL_CREDENTIAL,
+                        "created_at": datetime.now(UTC).isoformat(),
+                        "channel": "eval",
+                    },
+                )
+                pipe.expire(key, _SESSION_TTL_S)
+                await pipe.execute()
             async with self._http() as client:
                 response = await client.post(
                     f"{self._web_url()}/api/admin/dnd",

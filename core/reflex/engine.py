@@ -19,6 +19,7 @@ from core.memory.reader import MemoryReader
 from core.reflex import inference
 from core.reflex.decision import parse_decision
 from core.reflex.prompt import build_state_change_prompt, build_trigger_prompt, index_snapshot
+from core.reflex.tool_registry import REFLEX_AUDIENCE
 from sdk.alfred_sdk.telemetry import track_latency
 from shared.traced import traced
 
@@ -90,13 +91,13 @@ class ReflexEngine:
     async def _get_tools(self) -> list[ToolInfo]:
         """Reflex-audience tools, TTL-cached.
 
-        Only tools tagged ``audience == "reflex"`` reach the prompt — the first layer
+        Only tools tagged ``REFLEX_AUDIENCE`` reach the prompt — the first layer
         of tiered autonomy (contract C9). Untagged tools default to "conscious".
         """
         now = time.monotonic()
         if self._cached_tools is None or (now - self._cache_time) > self.TOOL_CACHE_TTL:
             all_tools = await self._registry.get_tools()
-            self._cached_tools = [t for t in all_tools if t.audience == "reflex"]
+            self._cached_tools = [t for t in all_tools if t.audience == REFLEX_AUDIENCE]
             self._cache_time = now
         return self._cached_tools
 
