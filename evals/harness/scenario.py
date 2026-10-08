@@ -18,17 +18,22 @@ from pydantic import (
     Discriminator,
     Field,
     SerializeAsAny,
+    StrictBool,
     Tag,
     ValidationError,
     field_validator,
     model_validator,
 )
 
-from evals.harness.checks import CHECK_PARAMS, needs_reply
+from evals.harness.checks import CHECK_PARAMS, needs_reply, step_kind_needed
+from evals.harness.checks import watches_reflex as _watches_reflex
 from evals.harness.checks.home import HaCalledParams
+from evals.harness.evidence import STEP_KINDS
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
+
+    from evals.harness.evidence import StepKind
 
 SUITES_DIR = Path(__file__).resolve().parent.parent / "suites"
 GOLDEN_SUFFIX = ".yaml"
@@ -88,10 +93,41 @@ class WaitStep(BaseModel):
     wait: float = Field(gt=0, le=600)
 
 
-_STEP_KINDS = ("user", "ha_event", "wait")
+class Clock(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    hour: int = Field(ge=0, le=23)  # the local hour Reflex's prompt shows from this step on
 
 
-def _step_kind(value: Any) -> str | None:
+class ClockStep(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    clock: Clock
+
+
+class AdvanceTrigger(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = None  # a substring of the trigger's name; None: the newest
+
+
+class AdvanceTriggerStep(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    advance_trigger: AdvanceTrigger
+    # How long to wait for the trigger to fire. None: the driver's default.
+    settle: float | None = Field(default=None, ge=0)
+
+    @field_validator("advance_trigger", mode="before")
+    @classmethod
+    def _bare_key_means_the_newest(cls, value: Any) -> Any:
+        return {} if value is None else value
+
+
+class DndStep(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # YAML reads a bare on/off as a boolean, so `dnd: on` is true; a quoted "on" is a mistake.
+    dnd: StrictBool
+    settle: float = Field(default=3.0, ge=0)
+
+
+def step_kind(value: Any) -> StepKind | None:
     """The step's tag: the one step key a mapping (or a step model's fields) carries."""
     if isinstance(value, BaseModel):
         keys = set(type(value).model_fields)
@@ -99,7 +135,7 @@ def _step_kind(value: Any) -> str | None:
         keys = set(value)
     else:
         return None
-    kinds = [k for k in _STEP_KINDS if k in keys]
+    kinds = [k for k in STEP_KINDS if k in keys]
     return kinds[0] if len(kinds) == 1 else None
 
 
@@ -107,11 +143,14 @@ def _step_kind(value: Any) -> str | None:
 Step = Annotated[
     Annotated[UserStep, Tag("user")]
     | Annotated[HaEventStep, Tag("ha_event")]
-    | Annotated[WaitStep, Tag("wait")],
+    | Annotated[WaitStep, Tag("wait")]
+    | Annotated[ClockStep, Tag("clock")]
+    | Annotated[AdvanceTriggerStep, Tag("advance_trigger")]
+    | Annotated[DndStep, Tag("dnd")],
     Discriminator(
-        _step_kind,
+        step_kind,
         custom_error_type="step_kind",
-        custom_error_message="needs one of user, ha_event, wait",
+        custom_error_message="needs one of " + ", ".join(STEP_KINDS),
     ),
 ]
 
@@ -167,6 +206,12 @@ class Scenario(BaseModel):
             raise ValueError(f"id {value!r} must look like suite.topic.case (lowercase, dots)")
         return value
 
+    @property
+    def watches_reflex(self) -> bool:
+        """Whether a check reads System 1's calls: the driver then waits for them after an
+        ha_event, and out the attention cooldown after a restore."""
+        return any(_watches_reflex(c.name, c.params) for c in self.expect)
+
     def ha_called_counting(self, index: int) -> list[HaCalledParams]:
         """The ``ha_called`` checks that could count a call made during step *index*: those
         with no ``after_step``, or one at or before it. Each comes back with its
@@ -191,16 +236,25 @@ class Scenario(BaseModel):
             isinstance(s, UserStep) for s in self.steps
         ):
             raise ValueError("reply and judge checks need at least one user step")
-        # after_step indexes Evidence.step_started, one entry per step of any kind, which
-        # the driver reads mid-play: out of range, it would raise there, not here.
+        # after_step and at_step count every step; the driver reads after_step mid-play.
         n = len(self.steps)
+        kinds = [step_kind(s) for s in self.steps]
         for i, check in enumerate(self.expect):
-            after = getattr(check.params, "after_step", None)
-            if isinstance(after, int) and not -n <= after < n:
-                raise ValueError(
-                    f"expect.{i}.after_step is {after}, but the golden has {n} steps "
-                    f"({-n} to {n - 1})"
-                )
+            for field in ("after_step", "at_step"):
+                index = getattr(check.params, field, None)
+                if isinstance(index, int) and not -n <= index < n:
+                    raise ValueError(
+                        f"expect.{i}.{field} is {index}, but the golden has {n} steps "
+                        f"({-n} to {n - 1})"
+                    )
+            wanted = step_kind_needed(check.name, check.params)
+            if wanted is None:
+                continue
+            at = getattr(check.params, "at_step", None)
+            if at is None and wanted not in kinds:
+                raise ValueError(f"expect.{i} ({check.name}) needs a {wanted} step")
+            if at is not None and kinds[at] != wanted:
+                raise ValueError(f"expect.{i}.at_step {at} is a {kinds[at]} step, not {wanted}")
         return self
 
 
