@@ -28,13 +28,11 @@ def test_bridge_started_when_satellites_configured(tmp_path: Path) -> None:
     with (
         patch.dict("os.environ", {"SATELLITES_CONFIG": str(cfg)}),
         patch("core.channels.web_server.SatelliteBridge") as bridge_cls,
-        # The lifespan's background warmup task calls the real aget_stt/aget_tts,
-        # which serialize on a module-level asyncio.Lock in voice_models.py that
-        # binds to whichever event loop first acquires it — leaking that bind
-        # here would break unrelated tests (e.g. test_voice_async.py) that expect
-        # a fresh, unbound lock on their own event loop. Stub the warmup calls so
-        # this wiring test doesn't touch that shared lock (or spend real time
-        # loading STT/TTS models neither test exercises).
+        # The lifespan's background warmup calls the real aget_stt/aget_tts, which
+        # load Whisper and the TTS model (seconds each, and a Hugging Face Hub
+        # download on a cold cache) that none of these tests exercises. Stubbed for
+        # speed and to keep the tests off the network — not for isolation: the load
+        # lock is loop-agnostic, so the real calls are safe here (issue #97).
         patch("core.channels.web_server.aget_stt", new=AsyncMock(return_value=None)),
         patch("core.channels.web_server.aget_tts", new=AsyncMock(return_value=None)),
     ):
