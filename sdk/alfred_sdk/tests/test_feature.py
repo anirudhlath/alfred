@@ -535,6 +535,22 @@ def test_mutating_the_callers_json_schema_leaves_the_parameter_alone() -> None:
     assert meta.input_schema["properties"]["mode"] == {"type": "string", "enum": ["low", "high"]}
 
 
+def test_a_derived_schema_shares_nothing_with_the_parameters() -> None:
+    meta = ToolMeta(
+        name="x.m",
+        description="M.",
+        parameters={
+            "mode": ToolParameter(type="str", json_schema={"type": "string", "enum": ["a", "b"]})
+        },
+    )
+    json_schema = meta.parameters["mode"].json_schema
+    assert json_schema is not None
+    json_schema["enum"].append("c")
+    assert meta.input_schema["properties"]["mode"] == {"type": "string", "enum": ["a", "b"]}
+    meta.input_schema["properties"]["mode"]["enum"].append("z")
+    assert json_schema == {"type": "string", "enum": ["a", "b", "c"]}
+
+
 def test_replace_keeps_input_schema_audience_and_risk() -> None:
     explicit = {
         "type": "object",
