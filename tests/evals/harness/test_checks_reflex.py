@@ -6,7 +6,11 @@ import pytest
 from pydantic import ValidationError
 
 from evals.harness.checks import run_check
-from evals.harness.checks.reflex import ReflexDecisionParams, ReflexNotProposedParams
+from evals.harness.checks.reflex import (
+    PROPOSALS,
+    ReflexDecisionParams,
+    ReflexNotProposedParams,
+)
 from evals.harness.evidence import ClockSet, Evidence, ReflexCall, StepKind
 from tests.evals.harness.factories import evidence
 
@@ -18,15 +22,17 @@ def rc(
     t: float = 1.0,
     hour: int | None = None,
     reason: str = "because",
+    problem: str | None = None,
 ) -> ReflexCall:
     return ReflexCall(
         t=t,
         latency_ms=800,
-        decision=decision,  # type: ignore[arg-type]
+        decision=decision,
         tool=tool,
         targets=list(targets),
         local_hour=hour,
         reason=reason,
+        problem=problem,
     )
 
 
@@ -116,3 +122,27 @@ def test_decision_params_take_one_string_and_reject_unknown_decisions() -> None:
         ReflexDecisionParams.model_validate({"decision": []})
     with pytest.raises(ValidationError):
         ReflexDecisionParams.model_validate({"decision": "none", "step": 0})
+
+
+@pytest.mark.parametrize("kinds", [("user",), ()], ids=["user step only", "no kinds recorded"])
+def test_reflex_checks_error_when_the_sample_has_no_ha_event_step(
+    kinds: tuple[StepKind, ...],
+) -> None:
+    e = ev(rc("act", "home.light_turn_on"), kinds=kinds)
+    for status, reason in (decide(e, decision="none"), not_proposed(e, tool="home.light_turn_on")):
+        assert status == "error" and "no ha_event step" in reason
+
+
+def test_not_proposed_catches_an_ask_by_default() -> None:
+    assert ReflexNotProposedParams.model_validate({"tool": "x"}).decision == list(PROPOSALS)
+    asked = ev(rc("ask", "home.light_turn_on", ("light.bedroom_lamp", "bedroom")))
+    status, reason = not_proposed(asked, tool="home.light_turn_on")
+    assert status == "fail" and "ask home.light_turn_on on light.bedroom_lamp" in reason
+
+
+def test_an_invalid_call_names_its_problem_in_the_failure() -> None:
+    e = ev(rc("invalid", problem="tool home.vacuum_start is not registered"))
+    status, reason = decide(e, decision="none")
+    assert status == "fail"
+    assert "invalid (tool home.vacuum_start is not registered)" in reason
+    assert "because" not in reason  # the problem, not System 1's own reason

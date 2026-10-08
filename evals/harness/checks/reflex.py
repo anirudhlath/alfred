@@ -6,7 +6,7 @@ an ``ha_event`` (``at_step``, which counts every step; default the golden's last
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, NamedTuple
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 
@@ -25,9 +25,11 @@ def _as_list(value: Any) -> Any:
 Decisions = Annotated[list[Decision], BeforeValidator(_as_list), Field(min_length=1)]
 
 
+PROPOSALS: tuple[Decision, ...] = ("act", "ask")  # the decisions that propose a tool call
+
+
 def _proposals() -> list[Decision]:
-    """The decisions that propose a tool call."""
-    return ["act", "ask"]
+    return list(PROPOSALS)
 
 
 class _AtStep(BaseModel):
@@ -47,15 +49,6 @@ class ReflexNotProposedParams(_AtStep):
     decision: Decisions = Field(default_factory=_proposals)
 
 
-def _step(evidence: Evidence, at_step: int | None) -> int | None:
-    return evidence.last_step("ha_event") if at_step is None else evidence.step_index(at_step)
-
-
-def _calls(evidence: Evidence, step: int) -> list[ReflexCall]:
-    start, end = evidence.step_window(step)
-    return [c for c in evidence.reflex if start <= c.t < end]
-
-
 def _clock_problem(evidence: Evidence, step: int, calls: list[ReflexCall]) -> str | None:
     """Why these calls cannot be judged against the golden's clock, or None."""
     clock = evidence.clock_at(step)
@@ -69,6 +62,29 @@ def _clock_problem(evidence: Evidence, step: int, calls: list[ReflexCall]) -> st
                 f"showed {saw}: the evidence is about the wrong time of day"
             )
     return None
+
+
+class _Window(NamedTuple):
+    """The ``ha_event`` step a reflex check judges, and the System 1 calls made during it."""
+
+    step: int
+    calls: list[ReflexCall]
+
+
+def _window(evidence: Evidence, name: str, at_step: int | None) -> _Window | CheckResult:
+    """The step's System 1 calls, or the ``error`` that says why they cannot be judged."""
+    step = evidence.last_step("ha_event") if at_step is None else evidence.step_index(at_step)
+    if step is None:
+        return CheckResult(
+            name=name,
+            status="error",
+            reason="the sample has no ha_event step: the harness recorded no event to judge",
+        )
+    start, end = evidence.step_window(step)
+    calls = [c for c in evidence.reflex if start <= c.t < end]
+    if (problem := _clock_problem(evidence, step, calls)) is not None:
+        return CheckResult(name=name, status="error", reason=problem)
+    return _Window(step, calls)
 
 
 def _tool_is(c: ReflexCall, tool: str) -> bool:
@@ -87,7 +103,7 @@ def _describe(c: ReflexCall) -> str:
 def _fits(c: ReflexCall, p: ReflexDecisionParams) -> bool:
     if c.decision not in p.decision:
         return False
-    if c.decision in ("act", "ask"):
+    if c.decision in PROPOSALS:
         if p.tool is not None and not _tool_is(c, p.tool):
             return False
         if p.target is not None and p.target not in c.targets:
@@ -106,12 +122,10 @@ def _want(p: ReflexDecisionParams) -> str:
 
 def reflex_decision(evidence: Evidence, p: ReflexDecisionParams) -> CheckResult:
     name = "reflex_decision"
-    step = _step(evidence, p.at_step)
-    if step is None:
-        return failed(name, "the sample has no ha_event step")
-    calls = _calls(evidence, step)
-    if (problem := _clock_problem(evidence, step, calls)) is not None:
-        return CheckResult(name=name, status="error", reason=problem)
+    window = _window(evidence, name, p.at_step)
+    if isinstance(window, CheckResult):
+        return window
+    step, calls = window
     if not calls:
         if "none" in p.decision:
             return passed(name, f"System 1 was not called for step {step}: Reflex let it pass")
@@ -124,19 +138,16 @@ def reflex_decision(evidence: Evidence, p: ReflexDecisionParams) -> CheckResult:
 
 def reflex_not_proposed(evidence: Evidence, p: ReflexNotProposedParams) -> CheckResult:
     name = "reflex_not_proposed"
-    step = _step(evidence, p.at_step)
-    if step is None:
-        return failed(name, "the sample has no ha_event step")
-    calls = _calls(evidence, step)
-    if (problem := _clock_problem(evidence, step, calls)) is not None:
-        return CheckResult(name=name, status="error", reason=problem)
-    for c in calls:
+    window = _window(evidence, name, p.at_step)
+    if isinstance(window, CheckResult):
+        return window
+    for c in window.calls:
         if (
             c.decision in p.decision
             and _tool_is(c, p.tool)
             and (p.target is None or p.target in c.targets)
         ):
             return failed(name, f"System 1 proposed {_describe(c)}")
-    seen = "; ".join(_describe(c) for c in calls) or "it was not called"
+    seen = "; ".join(_describe(c) for c in window.calls) or "it was not called"
     on = "" if p.target is None else f" on {p.target}"
     return passed(name, f"no {'/'.join(p.decision)} {p.tool}{on} (System 1: {seen})")

@@ -326,7 +326,7 @@ def test_a_top_level_key_named_regex_is_a_field_not_a_pattern() -> None:
 def prompted(role: str, *contents: object) -> LlmCall:
     return LlmCall(
         t=1.0,
-        role=role,  # type: ignore[arg-type]
+        role=role,
         latency_ms=1.0,
         status=200,
         messages=[{"role": "user", "content": c} for c in contents],
