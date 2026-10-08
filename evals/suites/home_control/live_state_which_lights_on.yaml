@@ -1,0 +1,13 @@
+id: home_control.live_state.which_lights_on
+prd: [4.4.live-state]
+status: shipped
+tags: [live-state]
+steps:
+  - user: "Which lights are on right now?"
+expect:
+  - ha_not_called: {}
+  - reply_contains: {regex: "living[- ]room lamp|lamp in the living[- ]room"}
+  - reply_contains: {regex: "kitchen pendants?|pendants? in the kitchen|pendant lights"}
+  - judge:
+      category: faithfulness
+      rubric: "Does the reply name the living room lamp and the kitchen pendants as on, without claiming the bedroom lamp or the living room ceiling light is on?"

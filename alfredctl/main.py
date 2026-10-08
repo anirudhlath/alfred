@@ -23,6 +23,9 @@ from alfredctl.redact import redact_command
 
 _STATUS_STYLE = {"pass": "green", "warn": "yellow", "fail": "red"}
 _STATUS_GLYPH = {"pass": "✓", "warn": "!", "fail": "✗"}
+# Default host port for the web UI (`up`, `urls`, `smoke`). `up --eval` refuses any other,
+# since its port is chosen at start.
+_DEFAULT_WEB_PORT = 8081
 
 app = typer.Typer(help="Alfred container launcher", no_args_is_help=True)
 console = Console()
@@ -119,7 +122,9 @@ def up(
     expose_home: Annotated[
         bool, typer.Option("--expose-home", help="Publish :8000 (home-service)")
     ] = False,
-    port: Annotated[int, typer.Option(help="Host port for the web UI (docker/podman)")] = 8081,
+    port: Annotated[
+        int, typer.Option(help="Host port for the web UI (docker/podman)")
+    ] = _DEFAULT_WEB_PORT,
     env: Annotated[
         list[str], typer.Option("--env", "-e", help="Extra KEY=VALUE for the container")
     ] = [],  # noqa: B006
@@ -132,27 +137,52 @@ def up(
     cpus: Annotated[
         int, typer.Option(help="VM CPUs for the Apple container runtime (default 4)")
     ] = 4,
+    eval_mode: Annotated[
+        bool,
+        typer.Option(
+            "--eval",
+            help="Throwaway stack for `alfred evals`: needs --persist, ignores .env, "
+            "loopback-only random ports (8081 and Redis), fixed fake passphrase",
+        ),
+    ] = False,
 ) -> None:
     """Start this branch's Alfred container (build first if needed)."""
     r = rt.detect(runtime)
     if mode not in ("persistent", "ephemeral", "seed"):
         raise typer.BadParameter("mode must be persistent | ephemeral | seed")
-    # Preflight: surface config gaps early (offline, non-blocking).
-    pre = [
-        c
-        for c in doctor_mod.run_checks(staging.repo_root() / ".env", online=False)
-        if c.status != "pass"
-    ]
-    if pre:
-        console.print("[yellow]Preflight notes (run `alfredctl doctor` for detail):[/yellow]")
-        for c in pre:
-            style = _STATUS_STYLE[c.status]
-            # Escaped for the same reason _render_doctor is: details carry values this
-            # command did not write, and `[/...]` in one is a closing tag to rich.
-            console.print(
-                f"  [{style}]{_STATUS_GLYPH[c.status]}[/{style}] "
-                f"{escape(c.name)}: {escape(c.detail)}"
+    if eval_mode:
+        if r.name == "container":
+            raise typer.BadParameter("--eval supports docker and podman")
+        if persist is None:
+            raise typer.BadParameter("--eval needs --persist DIR (the harness's data dir)")
+        if mode != "persistent":
+            raise typer.BadParameter("--eval always runs persistent mode on --persist; drop --mode")
+        if expose_ha or expose_home:
+            # Both publish on every interface: a no-secret stack open to the LAN, on host
+            # ports the deployed stack may already hold.
+            raise typer.BadParameter(
+                "--eval publishes loopback-only ports; drop --expose-ha/--expose-home"
             )
+        if port != _DEFAULT_WEB_PORT:
+            raise typer.BadParameter("--eval picks a random loopback port; drop --port")
+    if not eval_mode:
+        # Preflight: surface config gaps early (offline, non-blocking). It reads .env,
+        # which eval mode never uses.
+        pre = [
+            c
+            for c in doctor_mod.run_checks(staging.repo_root() / ".env", online=False)
+            if c.status != "pass"
+        ]
+        if pre:
+            console.print("[yellow]Preflight notes (run `alfredctl doctor` for detail):[/yellow]")
+            for c in pre:
+                style = _STATUS_STYLE[c.status]
+                # Escaped for the same reason _render_doctor is: details carry values this
+                # command did not write, and `[/...]` in one is a closing tag to rich.
+                console.print(
+                    f"  [{style}]{_STATUS_GLYPH[c.status]}[/{style}] "
+                    f"{escape(c.name)}: {escape(c.detail)}"
+                )
     if do_build:
         build(runtime=r.name, tag=None)
     repo = staging.repo_root()
@@ -161,7 +191,8 @@ def up(
     persist_dir = (persist or repo / "data").resolve() if mode == "persistent" else None
     if persist_dir is not None:
         persist_dir.mkdir(parents=True, exist_ok=True)
-    env_file = repo / ".env"
+    env_file = None if eval_mode else repo / ".env"
+    passphrase = launch.EVAL_SECRETS_PASSPHRASE if eval_mode else _passphrase(mode, persist_dir)
     plan = launch.build_plan(
         r,
         mode=mode,
@@ -172,10 +203,11 @@ def up(
         expose_home=expose_home,
         port=port,
         extra_env=list(env),
-        env_file=env_file if env_file.is_file() else None,
-        passphrase=_passphrase(mode, persist_dir),
+        env_file=env_file if env_file is not None and env_file.is_file() else None,
+        passphrase=passphrase,
         memory=memory,
         cpus=cpus,
+        eval_mode=eval_mode,
     )
     # Before the launch, not after: `_run` raises on a non-zero exit, and a container
     # that fails to start would otherwise swallow the one line explaining why passkey
@@ -205,17 +237,14 @@ def _passphrase(mode: str, persist_dir: Path | None) -> str:
     return secrets.token_urlsafe(32)  # ephemeral/seed: fresh per run
 
 
-def _published_port(exe: str, name: str) -> int | None:
-    """Host port bound to the container's 8081, or None if it cannot be determined.
-
-    `smoke --attach` used to assume 8081. On a host already running Alfred on that
-    port, that silently probed the *other* container and reported it green — a pass
-    for something the operator never asked about. Ask the runtime instead of guessing,
-    and let the caller fail loudly when the answer is unavailable.
-    """
+def _published_address(exe: str, name: str) -> str | None:
+    """First ``host:port`` the runtime publishes for the container's web port, or None."""
     try:
         out = subprocess.run(
-            [exe, "port", name, "8081"], check=False, capture_output=True, text=True
+            [exe, "port", name, str(launch.CONTAINER_WEB_PORT)],
+            check=False,
+            capture_output=True,
+            text=True,
         )
     except OSError:
         return None
@@ -223,13 +252,34 @@ def _published_port(exe: str, name: str) -> int | None:
         return None
     for line in out.stdout.splitlines():
         # "0.0.0.0:8082" / "[::]:8082" — the port is whatever follows the last colon.
-        _, _, host_port = line.strip().rpartition(":")
-        if host_port.isdigit():
-            return int(host_port)
+        address = line.strip()
+        if address.rpartition(":")[2].isdigit():
+            return address
     return None
 
 
+def _published_port(exe: str, name: str) -> int | None:
+    """Host port bound to the container's web port, or None if it cannot be determined.
+
+    `smoke --attach` used to assume 8081. On a host already running Alfred on that
+    port, that silently probed the *other* container and reported it green — a pass
+    for something the operator never asked about. Ask the runtime instead of guessing,
+    and let the caller fail loudly when the answer is unavailable.
+    """
+    address = _published_address(exe, name)
+    return None if address is None else int(address.rpartition(":")[2])
+
+
 def _resolve_url(r: rt.Runtime, plan: launch.LaunchPlan) -> str:
+    if plan.url_hint == "resolve-port":
+        # An eval stack's host port is random; `localhost:8081` is the deployed stack.
+        address = _published_address(r.exe, plan.name)
+        if address is not None:
+            return f"http://{address}"
+        return (
+            f"http://127.0.0.1:<port> "
+            f"(run `{r.exe} port {plan.name} {launch.CONTAINER_WEB_PORT}` to read it)"
+        )
     if plan.url_hint != "resolve-ip":
         return plan.url_hint
     try:
@@ -243,10 +293,13 @@ def _resolve_url(r: rt.Runtime, plan: launch.LaunchPlan) -> str:
         address = str(networks[0].get("ipv4Address", "")) if networks else ""
         ip = address.split("/")[0]
         if ip:
-            return f"http://{ip}:8081"
+            return f"http://{ip}:{launch.CONTAINER_WEB_PORT}"
     except Exception:
         pass
-    return "http://<container-ip>:8081 (container inspect failed — check `container ls`)"
+    return (
+        f"http://<container-ip>:{launch.CONTAINER_WEB_PORT} "
+        "(container inspect failed — check `container ls`)"
+    )
 
 
 @app.command()
@@ -281,7 +334,9 @@ def shell(runtime: RuntimeOpt = None) -> None:
 @app.command()
 def urls(
     runtime: RuntimeOpt = None,
-    port: Annotated[int, typer.Option(help="Host port for the web UI (docker/podman)")] = 8081,
+    port: Annotated[
+        int, typer.Option(help="Host port for the web UI (docker/podman)")
+    ] = _DEFAULT_WEB_PORT,
 ) -> None:
     """Print the reachable URL(s) for the running container."""
     r = rt.detect(runtime)
@@ -335,17 +390,18 @@ def smoke(
     target = name or rt.container_name()
     if not attach:
         # Default only applies to the container smoke starts itself.
-        port = port if port is not None else 8081
+        port = port if port is not None else _DEFAULT_WEB_PORT
         up(runtime=r.name, mode="seed", hf_cache=hf_cache, port=port)
     elif r.name != "container":
         # Never assume 8081: on a host already running Alfred there, that probes the
         # wrong container and reports it green. Ask the runtime, and fail if it cannot say.
         port = _published_port(r.exe, target)
         if port is None:
+            web = launch.CONTAINER_WEB_PORT
             raise typer.BadParameter(
-                f"could not determine which host port {target!r} publishes for 8081 — "
+                f"could not determine which host port {target!r} publishes for {web} — "
                 f"is it running, and does it publish that port? "
-                f"(`{r.exe} port {target} 8081`)"
+                f"(`{r.exe} port {target} {web}`)"
             )
     plan = launch.LaunchPlan(
         run_args=[],

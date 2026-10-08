@@ -68,7 +68,7 @@ flowchart TB
     Conscious --> Integrations["IntegrationRegistry<br/>weather, calendar, health, robinhood"]
     Conscious --> Notify["Notification Dispatcher<br/>APNs push, WebSocket, voice TTS"]
 
-    Evals["Evals Runner<br/>DeepEval metrics + mocked regression suite"] -.-> Reflex
+    Evals["PRD Eval Suite<br/>goldens on a throwaway stack, vLLM in every role"] -.-> Reflex
     Evals -.-> Conscious
     Telemetry["Telemetry<br/>OpenTelemetry + latency/token CSVs"] -.-> Reflex
 ```
@@ -197,7 +197,7 @@ uv sync --all-extras       # everything (voice, integrations, memory, evals)
 uv sync --extra dev --extra voice         # WhisperSTT + PiperTTS
 uv sync --extra dev --extra integrations  # Calendar, Robinhood
 uv sync --extra dev --extra memory        # Sentence transformers, sqlite-vec
-uv sync --extra dev --extra evals         # DeepEval
+uv sync --extra dev --extra evals         # Inspect AI eval harness (alfred evals)
 ```
 
 ```bash
@@ -227,13 +227,14 @@ uv run alfredctl smoke --deep # also drives a real request through System 2 (nee
 ## Evals
 
 ```bash
-uv run python -m evals run                  # System 1 (requires Ollama)
-uv run python -m evals regression           # System 1 regression (mocked, CI-safe)
-uv run python -m evals conscious            # System 2 (dry-run)
-uv run python -m evals demo                 # Good Morning end-to-end demo
-uv run python -m evals run -n 5             # Repeat 5x with aggregate stats
-uv run python -m evals compare <run1> <run2> # Compare two runs
+uv run alfred evals calibrate                         # judge agreement with hand labels
+uv run alfred evals list                              # goldens, their status and PRD rows
+uv run alfred evals run home_control conversation     # throwaway stacks, scorecard by PRD row
+uv run python -m evals memory run                     # memory-decay simulation (docs/evals-memory.md)
 ```
+
+The PRD suites need Docker, a local vLLM and the `evals` extra (`uv sync --all-extras`); see
+[docs/evals.md](docs/evals.md).
 
 ## Development
 

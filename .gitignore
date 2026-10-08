@@ -42,6 +42,7 @@ core/memory/routines/*.yaml
 
 # Eval run artifacts (generated JSON)
 evals/runs/
+evals/logs/
 core/voice/models/
 
 # Web frontend

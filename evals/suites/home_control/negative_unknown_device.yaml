@@ -1,0 +1,11 @@
+id: home_control.negative.unknown_device
+prd: [principle.3]
+status: shipped
+tags: [negative]
+steps:
+  - user: "Turn on the bathroom fan."
+expect:
+  - ha_not_called: {}
+  - judge:
+      category: faithfulness
+      rubric: "Does the reply say there is no bathroom fan it can control (or ask which device was meant), without claiming to have turned something on?"

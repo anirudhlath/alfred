@@ -104,7 +104,7 @@ every attribute it is given.
   different answer from an empty snapshot.
 - `read_live_state_by_service(redis) -> dict[str, ContextSnapshot]` is the same read
   without the merge: one snapshot per service that has at least one valid entry, in
-  service-name order. `python -m evals capture-context` writes it out as a fixture.
+  service-name order.
 - Services are found through `HKEYS alfred:tool_registry`, never a keyspace scan, so only
   a registered service's hash is read. All hashes come back in one pipelined round trip.
 - Malformed items are skipped: a value that is not a valid `LiveStateEntry`, an entity ID
@@ -203,7 +203,6 @@ state forwarding that shares the listener chain.
 | `sdk/alfred_sdk/context.py` | `ContextSnapshot`, `ContextEntry` — the shape readers return |
 | `core/reflex/context_reader.py` | `ContextReader` + `render_snapshot()` |
 | `core/conscious/memory_tools.py` | `memory_get_live_state` |
-| `evals/__main__.py` | `capture-context` |
 | `alfred-home-service`: `app/live_state.py`, `app/server.py` | The writer's one caller today: `LiveStatePublisher` (writes and heals) and the lifecycle wiring |
 
 ## Redis keys

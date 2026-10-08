@@ -167,7 +167,7 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 | Unified runner: one process supervises all services, restarts crashes, hot-reloads code | Shipped | `docs/architecture.md` |
 | Admin API: live telemetry socket, stream pages, trigger management, overview | Shipped | `docs/admin-api.md` |
 | …surfaced on the phone: telemetry and stream inspection in the Workshop's Activity bench, memory and trigger management on its Memory and Triggers benches, and health, sessions, services and identity on System. No service restart or log download — neither has a route | In branch | `docs/web-frontend.md`, [#258](https://github.com/anirudhlath/alfred/issues/258) |
-| Eval harness: regression + live modes, custom judgment metrics, run comparison | Shipped | `docs/evals-runner.md` |
+| Eval harness: utterance-level goldens against the real stack, deterministic checks plus a calibrated judge, PRD coverage enforced | Shipped | `docs/evals.md` |
 | Model warmup at startup (no cold-start latency on first request) | Shipped | spec `2026-04-16-startup-warmup-design.md` |
 | Self-describing health for external services, surfaced on the phone in the Workshop's System bench › Connected services — a state word, a dot and the credential form built from the service's own schema (the Mission Control *Settings* screen this row used to name is gone) | In review | PR #28, `docs/web-frontend.md` |
 | One-command containerized deployment (`alfredctl`: build/up/down/logs/shell/urls/smoke — Docker, Apple `container`, Podman; worktree-isolated; persistent/ephemeral/seed data modes) | Shipped | `docs/containerization.md` |

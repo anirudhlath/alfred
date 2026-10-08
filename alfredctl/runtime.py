@@ -60,13 +60,30 @@ def container_name() -> str:
     return f"alfred-{branch_slug()}"
 
 
+def eval_container_name() -> str:
+    """Container `alfredctl up --eval` starts — apart from this branch's dev container."""
+    return f"alfred-eval-{branch_slug()}"
+
+
+# The name a docker container reaches the host by.
+DOCKER_HOST_ALIAS = "host.docker.internal"
+
+
 def host_gateway(rt: Runtime) -> str:
     """Address at which the container reaches the HOST (for Ollama/LM Studio/HA)."""
     if rt.name == "docker":
-        return "host.docker.internal"
+        return DOCKER_HOST_ALIAS
     if rt.name == "podman":
         return "host.containers.internal"
     return _apple_vmnet_gateway(rt)
+
+
+def host_alias_args(rt: Runtime) -> list[str]:
+    """`run` args that make `host_gateway()` resolve inside the container. Docker Desktop
+    and podman resolve their host names themselves; Linux Docker Engine needs the mapping."""
+    if rt.name == "docker" and sys.platform == "linux":
+        return ["--add-host", f"{DOCKER_HOST_ALIAS}:host-gateway"]
+    return []
 
 
 def _apple_vmnet_gateway(rt: Runtime) -> str:

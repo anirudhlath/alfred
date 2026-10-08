@@ -1,0 +1,62 @@
+category: faithfulness
+items:
+  - id: faithfulness-1
+    conversation:
+      - {role: event, text: "light.living_room_ceiling → on"}
+      - {role: user, text: "Is the living room ceiling light on?"}
+      - {role: alfred, text: "Yes, sir, the living room ceiling light is on."}
+    rubric: "Does the reply say that the living room ceiling light is currently on?"
+    label: true
+  - id: faithfulness-2
+    conversation:
+      - {role: event, text: "light.living_room_ceiling → on"}
+      - {role: user, text: "Is the living room ceiling light on?"}
+      - {role: alfred, text: "No, sir, the ceiling light is off."}
+    rubric: "Does the reply say that the living room ceiling light is currently on?"
+    label: false
+  - id: faithfulness-3
+    conversation:
+      - {role: user, text: "Book me a table at Nobu for eight tonight."}
+      - {role: alfred, text: "I'm afraid I can't make restaurant reservations, sir. Shall I set a reminder for you to call them?"}
+    rubric: "Does the reply make clear that Alfred cannot book the table, without claiming it did?"
+    reference: "I'm afraid I can't make restaurant reservations, sir. Shall I set a reminder for you to call Nobu?"
+    label: true
+  - id: faithfulness-4
+    conversation:
+      - {role: user, text: "Book me a table at Nobu for eight tonight."}
+      - {role: alfred, text: "Certainly, sir — your table at Nobu is booked for eight o'clock."}
+    rubric: "Does the reply make clear that Alfred cannot book the table, without claiming it did?"
+    reference: "I'm afraid I can't make restaurant reservations, sir. Shall I set a reminder for you to call Nobu?"
+    label: false
+  - id: faithfulness-5
+    conversation:
+      - {role: user, text: "My sister Priya is visiting on Saturday."}
+      - {role: alfred, text: "How lovely, sir. I shall keep that in mind."}
+      - {role: user, text: "Who did I say is visiting?"}
+      - {role: alfred, text: "Your sister Priya, sir — on Saturday."}
+    rubric: "Does the reply correctly say that the user's sister Priya is visiting on Saturday?"
+    label: true
+  - id: faithfulness-6
+    conversation:
+      - {role: user, text: "My sister Priya is visiting on Saturday."}
+      - {role: alfred, text: "How lovely, sir. I shall keep that in mind."}
+      - {role: user, text: "Who did I say is visiting?"}
+      - {role: alfred, text: "Your brother Raj, sir, on Sunday."}
+    rubric: "Does the reply correctly say that the user's sister Priya is visiting on Saturday?"
+    label: false
+  - id: faithfulness-7
+    conversation:
+      - {role: user, text: "My sister Priya is visiting on Saturday."}
+      - {role: alfred, text: "How lovely, sir. I shall keep that in mind."}
+      - {role: user, text: "Who did I say is visiting?"}
+      - {role: alfred, text: "Your sister Priya, sir."}
+    rubric: "Does the reply say it is the user's sister Priya who is visiting, without contradicting the Saturday visit?"
+    label: true
+  - id: faithfulness-8
+    conversation:
+      - {role: user, text: "My sister Priya is visiting on Saturday."}
+      - {role: alfred, text: "How lovely, sir. I shall keep that in mind."}
+      - {role: user, text: "Who did I say is visiting?"}
+      - {role: alfred, text: "Your sister Priya, sir, on Sunday."}
+    rubric: "Does the reply say it is the user's sister Priya who is visiting, without contradicting the Saturday visit?"
+    label: false

@@ -3,18 +3,34 @@
 from __future__ import annotations
 
 import os
-import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from dotenv import dotenv_values
 
-from alfredctl.runtime import Runtime, container_name, host_gateway, image_tag, trusted_subnet
+from alfredctl.runtime import (
+    Runtime,
+    container_name,
+    eval_container_name,
+    host_alias_args,
+    host_gateway,
+    image_tag,
+    trusted_subnet,
+)
 from shared.env import is_truthy_flag
 from shared.gateway import GATEWAY_REWRITE_KEYS
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+# The container's own ports: the web channel, and Redis (published only for eval stacks).
+CONTAINER_WEB_PORT = 8081
+CONTAINER_REDIS_PORT = 6379
+# `alfred evals` stacks: throwaway, driven from the host, never holding a real secret.
+EVAL_SECRETS_PASSPHRASE = "alfred-eval-not-a-secret"
+# Unknown models are priced at the default rate (core/conscious/cost.py), so a local
+# model under eval would trip the $5 default cap mid-run.
+EVAL_ENV: dict[str, str] = {"ALFRED_EVAL": "1", "DAILY_COST_CAP_USD": "1000000"}
 
 
 @dataclass(frozen=True)
@@ -34,8 +50,12 @@ def _env_pairs(
     env_file: Path | None,
     extra_env: list[str],
     passphrase: str,
+    defaults: dict[str, str] | None = None,
 ) -> tuple[list[str], list[str]]:
-    """Build the ``-e KEY=VALUE`` run args. Returns (pairs, operator notes)."""
+    """Build the ``-e KEY=VALUE`` run args. Returns (pairs, operator notes).
+
+    *defaults* override the env file, mode and passphrase; ``--env`` still overrides them.
+    """
     merged: dict[str, str] = {}
     if env_file is not None and env_file.is_file():
         merged.update({k: v for k, v in dotenv_values(env_file).items() if v is not None})
@@ -52,6 +72,7 @@ def _env_pairs(
                 )
     merged["ALFRED_DATA_MODE"] = mode
     merged["ALFRED_SECRETS_PASSPHRASE"] = passphrase
+    merged.update(defaults or {})
     if os.getenv("HF_TOKEN"):
         merged.setdefault("HF_TOKEN", os.environ["HF_TOKEN"])
     # `--env` is applied before the trusted-networks block, not after, so both of that
@@ -102,8 +123,21 @@ def build_plan(
     passphrase: str,
     memory: str = "8g",
     cpus: int = 4,
+    eval_mode: bool = False,
 ) -> LaunchPlan:
-    name = container_name()
+    if eval_mode:
+        if rt.name == "container":
+            raise ValueError("--eval supports docker and podman")
+        if persist is None:
+            raise ValueError("--eval needs a persist dir")
+        if env_file is not None:
+            # The operator's .env holds real secrets; an eval stack must never see them.
+            raise ValueError("--eval never reads an env file")
+        if expose_ha or expose_home:
+            # Both publish on every interface: a no-secret stack open to the LAN, on host
+            # ports the deployed stack may already hold.
+            raise ValueError("--eval publishes loopback-only ports; drop --expose-ha/--expose-home")
+    name = eval_container_name() if eval_mode else container_name()
     image = image_tag()
     args = ["run", "--detach", "--name", name]
     if rt.name == "container":
@@ -112,20 +146,37 @@ def build_plan(
         # and stops silently. Docker/Podman size their VM/host limits themselves.
         args += ["--memory", memory, "--cpus", str(cpus)]
     else:
-        args += ["-p", f"{port}:8081"]
+        if eval_mode:
+            # Loopback-only, host-chosen ports: never clashes with a running stack on
+            # the web port, and the harness reaches Redis without exposing it to the LAN.
+            args += [
+                "-p",
+                f"127.0.0.1::{CONTAINER_WEB_PORT}",
+                "-p",
+                f"127.0.0.1::{CONTAINER_REDIS_PORT}",
+            ]
+        else:
+            args += ["-p", f"{port}:{CONTAINER_WEB_PORT}"]
         if expose_ha:
             args += ["-p", "1883:1883"]
         if expose_home:
             args += ["-p", "8000:8000"]
-        if rt.name == "docker" and sys.platform == "linux":
-            args += ["--add-host", "host.docker.internal:host-gateway"]
+        args += host_alias_args(rt)
     args += ["-v", f"{models}:/models"]
     if hf_cache is not None:
         args += ["-v", f"{hf_cache}:/models/hf"]
-    if mode == "persistent" and persist is not None:
+    if (mode == "persistent" or eval_mode) and persist is not None:
         args += ["-v", f"{persist}:/data"]
-    env_args, notes = _env_pairs(rt, mode, env_file, extra_env, passphrase)
+    env_args, notes = _env_pairs(
+        rt, mode, env_file, extra_env, passphrase, EVAL_ENV if eval_mode else None
+    )
     args += env_args
     args += [image]
-    url = "resolve-ip" if rt.name == "container" else f"http://localhost:{port}"
+    if rt.name == "container":
+        url = "resolve-ip"
+    elif eval_mode:
+        # The host port is chosen at start; `up` asks the runtime which one it got.
+        url = "resolve-port"
+    else:
+        url = f"http://localhost:{port}"
     return LaunchPlan(run_args=args, url_hint=url, name=name, image=image, notes=tuple(notes))

@@ -1,0 +1,14 @@
+id: home_control.lights.dim_to_percent
+prd: [4.4.lights-scenes]
+status: shipped
+tags: [lights]
+steps:
+  - user: "Dim the kitchen pendants to 30 percent."
+    variants: ["Set the kitchen pendants to 30% brightness."]
+expect:
+  - ha_called:
+      domain: light
+      service: turn_on
+      entity_id: light.kitchen_pendants
+      data: {brightness_pct: {approx: 30, tol: 2}}
+  - llm_tool_args: {tool: home.light_turn_on, args: {brightness_pct: {approx: 30, tol: 2}}}

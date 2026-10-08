@@ -51,7 +51,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `sdk/` — publishable alfred-sdk package (BaseFeature, @tool, AlfredClient)
 - `sdk/alfred_sdk/live_state.py` — live-state contract: key `alfred:live_state:{service}`, `LiveStateEntry`, `LiveStateWriter`, `read_live_state()` (see `docs/live-state.md`)
 - `domains/home/home_agent.py` — routes actions to home-service
-- `evals/` — eval runner, scenarios, inference backends (`python -m evals`)
+- `evals/harness/` — the PRD eval harness: `alfred evals run|list|calibrate`, goldens in `evals/suites/`, PRD map in `evals/coverage.yaml`; see `docs/evals.md`
 - `evals/memory/` — memory-decay eval: simulated house on a throwaway Redis, decay policies compared by recall (`python -m evals memory run`; `docs/evals-memory.md`)
 - `web/` — Vite + React 19 phone-first PWA client: one screen (the Room), one interrupt (the Door), four identity gates (src/lib, src/shell, src/gates, src/room, src/door, src/workshop, src/sheets; npm run dev|build|test|lint) — built `web/dist/` is served by the web channel. See `docs/web-frontend.md`
 - `web/design-system/` — generator for the claude.ai/design "Alfred Design System": bundles the real `web/src` components, type-checks the preview stories against their props, generates props/docs/tokens from tsc and `index.css`, and render-checks every card in Chromium (`cd web && npm run design-sync` → `web/design-system/out/`, gitignored). See `docs/design-system.md`
@@ -111,7 +111,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 ```bash
 # Python (ruff >=0.15.16, mypy >=2.1)
 ruff check . --fix && ruff format .        # lint + format
-mypy --strict alfredctl/ bus/ core/ domains/ evals/ runner/ sdk/ shared/ telemetry/  # type check
+mypy --strict alfred_cli/ alfredctl/ bus/ core/ domains/ evals/ runner/ sdk/ shared/ telemetry/  # type check
 .venv/bin/python -m pytest -x -q           # test (use .venv in worktrees)
 
 # Frontend (run from web/)
@@ -176,17 +176,15 @@ uv run python -m runner
 bash scripts/smoke-test.sh
 ```
 
-**Either path** — run evals (requires Ollama + tools registered in Redis):
+**Evals** — the PRD suites boot their own throwaway stacks (Docker, a local vLLM, `uv sync --all-extras`):
 
 ```bash
-uv run python -m evals run
-uv run python -m evals run --model gpt-oss:20b -n 5  # repeat 5x with aggregate
-uv run python -m evals run --backend lmstudio        # use LM Studio
-uv run python -m evals capture-context --output default.json  # capture live HA state
-uv run python -m evals runs                           # list saved runs
-uv run python -m evals list
-uv run python -m evals compare <run1> <run2>
+uv run alfred evals calibrate                       # judge agreement with hand labels
+uv run alfred evals list                            # goldens, their status and PRD rows
+uv run alfred evals run home_control conversation   # scorecard by PRD row
 ```
+
+See `docs/evals.md` for setup (a home-service checkout at `origin/main`), options and reading results.
 
 Individual services can still be run standalone: `python -m bus`, `python -m core.reflex`, `python -m core.triggers`, `python -m core.conscious`, `python -m core.channels`, `python -m core.memory.ingestor_main`.
 
