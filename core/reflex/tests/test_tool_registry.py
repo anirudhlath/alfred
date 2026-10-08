@@ -309,6 +309,33 @@ async def test_malformed_tool_is_skipped_alone(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "features",
+    [
+        pytest.param(5, id="int"),
+        pytest.param({"name": "f", "tools": []}, id="dict"),
+        pytest.param("oops", id="string"),
+    ],
+)
+async def test_manifest_whose_features_are_not_a_list_is_skipped(
+    features: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    mock_redis = AsyncMock()
+    mock_redis.hgetall.return_value = {
+        b"bad-service": json.dumps(
+            {"service_name": "bad-service", "service_endpoint": "x", "features": features}
+        ).encode(),
+        b"good-service": _make_manifest("good-service", [LIGHTING_FEATURE]).encode(),
+    }
+    with caplog.at_level(logging.WARNING, logger="core.reflex.tool_registry"):
+        tools = await ToolRegistry(mock_redis).get_tools()
+    assert [t.name for t in tools] == ["lighting.dim_lights", "lighting.turn_off_lights"]
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    assert warnings[0].startswith("Skipping malformed manifest from service 'bad-service'")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "bad_feature",
     [
         pytest.param("oops", id="non-dict-feature"),

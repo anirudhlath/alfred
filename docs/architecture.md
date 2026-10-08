@@ -425,9 +425,9 @@ One malformed entry never takes the others down. A tool whose name is missing or
 whose description is not a string, whose `parameters` are malformed, or whose
 `input_schema` fails the SDK's `check_object_schema()` is skipped with a
 `Skipping malformed tool` WARNING. A feature that is not an object, or whose `tools` are
-not a list, is skipped with a `Skipping malformed feature` WARNING, and a service whose
-manifest is not a JSON object is skipped with a WARNING of its own (invalid JSON logs an
-ERROR). Everything else still loads.
+not a list, is skipped with a `Skipping malformed feature` WARNING. A service whose
+manifest is not a JSON object, or whose `features` are not a list, is skipped with a
+WARNING of its own (invalid JSON logs an ERROR). Everything else still loads.
 
 The registry is a read-only layer. Writing happens on the microservice side via `AlfredClient.register()` (see SDK section below).
 

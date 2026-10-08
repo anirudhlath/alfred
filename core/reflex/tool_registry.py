@@ -135,8 +135,16 @@ class ToolRegistry:
                 )
                 continue
 
+            features = manifest.get("features", [])
+            if not isinstance(features, list):
+                logger.warning(
+                    "Skipping malformed manifest from service '%s': its features are not a list",
+                    service_name,
+                )
+                continue
+
             # Parse features. A malformed feature is skipped whole; the rest still load.
-            for feature in manifest.get("features", []):
+            for feature in features:
                 if not isinstance(feature, dict):
                     logger.warning(
                         "Skipping malformed feature %r from service '%s': not an object",
