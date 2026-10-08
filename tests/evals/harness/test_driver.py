@@ -525,21 +525,81 @@ async def test_play_cleans_up_triggers_dnd_and_clock() -> None:
     assert bus.tz_set[-1] is None  # nothing was stored before the sample
 
 
-async def test_reflex_golden_waits_out_the_attention_cooldown_after_a_restore() -> None:
-    ha = FakeHA(load_world("apartment"))
-    # The bedroom lamp starts off and the golden sets it off, so the golden never drifts it.
-    event = {"ha_event": {"entity_id": "light.bedroom_lamp", "state": "off"}, "settle": 0}
-    watches = scenario(steps=[event], expect=[{"reflex_decision": {"decision": "none"}}])
+# The bedroom lamp starts off and the golden sets it off, so the golden never drifts it.
+LAMP_OFF = {"ha_event": {"entity_id": "light.bedroom_lamp", "state": "off"}, "settle": 0}
+WATCHES = {"steps": [LAMP_OFF], "expect": [{"reflex_decision": {"decision": "none"}}]}
+
+
+async def first_step_at(play_ctx: PlayContext, s: Scenario) -> float:
+    """How long after play began the golden's first step started."""
+    [variant] = expand_variants(s)
+    t0 = time.monotonic()
+    ev = await play(play_ctx, variant, epoch=1)
+    return ev.step_started[0] - t0
+
+
+async def test_reflex_golden_waits_until_system1_is_quiet_after_a_restore() -> None:
+    """Reflex judges the restored entities one at a time, and each one's cooldown runs from
+    when it was judged: the golden starts a full cooldown after System 1's last answer."""
+    ha, proxy = FakeHA(load_world("apartment")), LlmProxy("http://x")
     await ha.set_state("light.bedroom_lamp", "on")  # drifted: the restore pushes it back
-    elapsed, _ = await timed_play(ctx(Recorder(), ha, reflex_cooldown_s=0.4), watches)
-    assert elapsed >= 0.4
+
+    async def system1_judges_the_restore() -> None:
+        await asyncio.sleep(0.3)
+        proxy.record(system1("Bedroom Lamp (Bedroom): on → off"))
+
+    judging = asyncio.create_task(system1_judges_the_restore())
+    play_ctx = ctx(Recorder(), ha, proxy, reflex_cooldown_s=0.4, reflex_timeout_s=0)
+    assert 0.7 <= await first_step_at(play_ctx, scenario(**WATCHES)) < 1.5
+    await judging
     # Nothing to restore now, and the wait still applies: the last sample's event started
     # a cooldown on the very entity this golden changes.
-    elapsed, _ = await timed_play(ctx(Recorder(), ha, reflex_cooldown_s=0.4), watches)
-    assert elapsed >= 0.4
-    plain = scenario(steps=[event])
-    elapsed, _ = await timed_play(ctx(Recorder(), ha, reflex_cooldown_s=0.4), plain)
-    assert elapsed < 0.3  # a golden that does not watch Reflex does not wait
+    assert await first_step_at(play_ctx, scenario(**WATCHES)) >= 0.4
+    plain = scenario(steps=[LAMP_OFF])
+    assert await first_step_at(play_ctx, plain) < 0.3  # it does not watch Reflex: no wait
+
+
+async def test_reflex_settle_waits_for_a_system1_call_in_flight() -> None:
+    async def slow(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.4)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    proxy = LlmProxy("http://vllm.test", transport=httpx.MockTransport(slow))
+    await proxy.start()
+    ha = FakeHA(load_world("apartment"))
+    await ha.set_state("light.bedroom_lamp", "on")
+
+    async def reflex_asks() -> None:
+        await asyncio.sleep(0.1)
+        async with httpx.AsyncClient() as client:
+            body = {"model": "m", "messages": reflex_prompt("Bedroom Lamp: on → off")}
+            await client.post(f"{proxy.url}/v1/chat/completions", json=body)
+
+    try:
+        asking = asyncio.create_task(reflex_asks())
+        play_ctx = ctx(Recorder(), ha, proxy, reflex_cooldown_s=0.3, reflex_timeout_s=0)
+        # Answered at about 0.5 s; quiet for 0.3 s after that.
+        assert await first_step_at(play_ctx, scenario(**WATCHES)) >= 0.8
+        await asking
+    finally:
+        await proxy.stop()
+
+
+async def test_reflex_that_never_settles_after_the_restore_is_a_harness_error() -> None:
+    proxy = LlmProxy("http://x")
+
+    async def system1_never_stops() -> None:
+        while True:
+            await asyncio.sleep(0.1)
+            proxy.record(system1("Alex: home → not_home"))
+
+    busy = asyncio.create_task(system1_never_stops())
+    play_ctx = ctx(Recorder(), proxy=proxy, reflex_cooldown_s=0.3, reflex_settle_cap_s=0.8)
+    try:
+        with pytest.raises(HarnessError, match="Reflex did not settle after the restore"):
+            await first_step_at(play_ctx, scenario(**WATCHES))
+    finally:
+        busy.cancel()
 
 
 CEILING_ON = "Living Room Ceiling (Living Room): off → on"  # LAMP_ON, as Reflex writes it

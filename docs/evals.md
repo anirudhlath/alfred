@@ -206,7 +206,7 @@ sequenceDiagram
     T->>T: setup: restart if isolated, recover if dead or dirty
     T->>D: play(variant, epoch)
     D->>H: restore_world() (push drifted entities back)
-    D->>D: a golden that watches Reflex waits 6 s
+    D->>D: a golden that watches Reflex waits until System 1 is quiet for 6 s
     D->>R: XADD alfred:user:requests UserRequest
     R->>A: conscious reads the request
     A->>P: POST /v1/chat/completions (tools offered)
@@ -223,10 +223,21 @@ sequenceDiagram
 ```
 
 A golden with a reflex check (`reflex_decision` or `reflex_not_proposed`), a `reflex_ms`
-latency, or a `prompt_not_contains` on `system1` waits 6 s first. Reflex ignores an entity
-for 5 s after it last let one of its events through, and the restore may just have done so.
-Such a golden **watches Reflex**: after each `ha_event` the driver waits for System 1's
-answer, not for an HA call.
+latency, or a `prompt_not_contains` on `system1` **watches Reflex**. After each `ha_event`
+the driver waits for System 1's answer to that change, not for an HA call.
+
+Before its first step, such a golden waits until System 1 has been quiet for 6 s. Reflex
+ignores an entity for 5 s after it last let one of its events through, and the restore may
+just have done so. That cooldown runs from when Reflex judged the event, not from the
+restore's push, and Reflex judges one event at a time. So:
+
+| The restore | The wait |
+|---|---|
+| Touched nothing Reflex attends to | 6 s from the restore |
+| Queued System 1 calls | Until every call in flight is back, then 6 s from the last answer |
+| Kept System 1 busy past 60 s | A harness error (`E`): "Reflex did not settle after the restore" |
+
+The drain waits on every LLM call in flight since the restore, not only System 1's.
 
 ---
 
