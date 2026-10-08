@@ -78,7 +78,17 @@ hint is a string that names nothing at runtime. Import the type at runtime inste
 A feature that builds its `ToolMeta` by hand (home-service generates its tools from
 Home Assistant's service catalog) passes `ToolParameter(type=..., description=...,
 required=True)` per parameter, or `json_schema={...}` for an exact schema, and
-`ToolMeta` assembles `input_schema` from them. Passing `input_schema` skips the assembly.
+`ToolMeta` assembles `input_schema` from them. Passing `input_schema` skips the assembly;
+it must be an object schema (`check_object_schema()`), or `ToolMeta` raises `TypeError`.
+
+A feature that overrides `get_tools()` to adjust a discovered tool (a richer description,
+say) should rebuild it with `dataclasses.replace(meta, description=...)`, which keeps
+everything else. Rebuilding it with `ToolMeta(name=..., parameters=...)` re-derives the
+schema from the legacy type names instead, losing its `$defs`, enums, defaults and
+constraints, and resets `audience` and `risk` to their defaults
+([#314](https://github.com/anirudhlath/alfred/issues/314)). To change the parameters
+themselves, pass `input_schema={}` to `replace` as well, so the schema is re-derived from
+the new ones.
 
 ### @tool with overrides
 

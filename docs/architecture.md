@@ -397,12 +397,37 @@ The `ToolRegistry` reads tool manifests from the Redis hash `alfred:tool_registr
 ToolInfo(
     name="lighting.dim_lights",
     description="Dim lights in a room",
-    parameters={"room": {"type": "str"}, "level": {"type": "int"}},
+    parameters={"room": {"type": "str", "required": True}, "level": {"type": "int", "default": 50}},
     feature_name="lighting",
     feature_description="Smart home lighting control",
     target_service="home-service",
+    audience="conscious",
+    risk="benign",
+    input_schema={
+        "type": "object",
+        "properties": {"room": {"type": "string"}, "level": {"type": "integer", "default": 50}},
+        "required": ["room"],
+    },
 )
 ```
+
+`input_schema` is the tool's arguments as one JSON Schema object, the form System 2
+offers the model; the SDK generates it from each `@tool` signature (see
+[docs/sdk.md](sdk.md)). `parameters` stays alongside it for Reflex, whose prompt renders
+the legacy type names. A manifest written before the SDK shipped `input_schema` has none,
+or an empty one, so the registry derives it from `parameters` with
+`legacy_input_schema()`, keeping today's `required` rule: a parameter is required when it
+says so, or, without a `required` key, when it has no `default` key. Old SDKs wrote
+`"default": null` for every parameter, so such a manifest marks nothing required
+([#300](https://github.com/anirudhlath/alfred/issues/300)).
+
+One malformed entry never takes the others down. A tool whose name is missing or empty,
+whose description is not a string, whose `parameters` are malformed, or whose
+`input_schema` fails the SDK's `check_object_schema()` is skipped with a
+`Skipping malformed tool` WARNING. A feature that is not an object, or whose `tools` are
+not a list, is skipped with a `Skipping malformed feature` WARNING, and a service whose
+manifest is not a JSON object is skipped with a WARNING of its own (invalid JSON logs an
+ERROR). Everything else still loads.
 
 The registry is a read-only layer. Writing happens on the microservice side via `AlfredClient.register()` (see SDK section below).
 
