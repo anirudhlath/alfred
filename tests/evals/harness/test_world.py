@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 import pytest
 from pydantic import ValidationError
 
-from evals.harness.world import load_world
+from evals.harness.world import World, load_world
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -84,3 +84,42 @@ def test_a_malformed_number_selector_fails_at_load_not_at_call_time(
     )
     with pytest.raises(ValidationError, match=where):
         load_world("broken", root=tmp_path)
+
+
+def test_apartment_has_two_people_home_and_the_sun_up() -> None:
+    states = load_world("apartment").initial_states()
+    assert states["person.alex"].state == "home" and states["person.sam"].state == "home"
+    assert states["sun.sun"].state == "above_horizon"
+    assert "entity_picture" in states["person.alex"].attributes
+    assert "supported_features" in states["light.living_room_lamp"].attributes
+    assert "button.router_restart" in states
+
+
+def test_area_of_uses_the_entity_then_its_device() -> None:
+    world = load_world("apartment")
+    assert world.area_of("light.bedroom_lamp") == "bedroom"
+    assert world.area_of("media_player.living_room_tv") == "living_room"
+    assert world.area_of("person.alex") is None
+    assert world.area_of("light.not_there") is None
+    by_device = World.model_validate(
+        {
+            "name": "t",
+            "areas": [{"area_id": "den", "name": "Den"}],
+            "devices": [{"id": "d1", "name": "Lamp", "area_id": "den"}],
+            "entities": [
+                {"entity_id": "light.den", "name": "Den", "device_id": "d1", "state": "off"}
+            ],
+            "services": {"light": {}},
+        }
+    )
+    assert by_device.area_of("light.den") == "den"
+
+
+def test_entities_in_an_area_by_domain_skip_disabled_ones() -> None:
+    world = load_world("apartment")
+    assert world.entities_in("living_room", "light") == [
+        "light.living_room_lamp",
+        "light.living_room_ceiling",
+    ]
+    assert "switch.coffee_maker" in world.entities_in("kitchen")
+    assert "light.hallway_old" not in world.entities_in("entryway")  # disabled

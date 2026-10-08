@@ -137,7 +137,24 @@ class World(BaseModel):
         return [{"area_id": a.area_id, "name": a.name} for a in self.areas]
 
     def area_of(self, entity_id: str) -> str | None:
-        return next((e.area_id for e in self.entities if e.entity_id == entity_id), None)
+        """The entity's room: its own area, else its device's."""
+        entity = next((e for e in self.entities if e.entity_id == entity_id), None)
+        if entity is None:
+            return None
+        if entity.area_id is not None:
+            return entity.area_id
+        device = next((d for d in self.devices if d.id == entity.device_id), None)
+        return None if device is None else device.area_id
+
+    def entities_in(self, area_id: str, domain: str | None = None) -> list[str]:
+        """Enabled entities in the area, in world order, optionally of one domain."""
+        return [
+            e.entity_id
+            for e in self.entities
+            if not e.disabled
+            and self.area_of(e.entity_id) == area_id
+            and (domain is None or e.domain == domain)
+        ]
 
     def entity_ids_in_area(self, area_id: str, domain: str) -> list[str]:
         return sorted(
