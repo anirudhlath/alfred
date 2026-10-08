@@ -201,6 +201,7 @@ async def test_old_sdk_manifest_keeps_todays_schema() -> None:
                 "parameters": {
                     "room": {"type": "str", "description": "The room to dim.", "default": None},
                     "level": {"type": "int", "description": "0-100.", "default": None},
+                    "fade": {"type": "bool", "default": None},
                 },
             }
         ],
@@ -211,9 +212,12 @@ async def test_old_sdk_manifest_keeps_todays_schema() -> None:
         "properties": {
             "room": {"type": "string", "description": "The room to dim."},
             "level": {"type": "integer", "description": "0-100."},
+            "fade": {"type": "boolean"},
         },
         "required": [],
     }
+    # Deliberate: System 2 used to offer `"description": ""` here, which tells a model nothing.
+    assert "description" not in tools[0].input_schema["properties"]["fade"]
 
 
 @pytest.mark.asyncio

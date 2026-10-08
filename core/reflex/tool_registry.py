@@ -31,8 +31,11 @@ def legacy_input_schema(parameters: dict[str, dict[str, Any]]) -> dict[str, Any]
     """Build a tool's input schema from a manifest written before ``input_schema``.
 
     Such a manifest gives every parameter ``"default": null`` (#300), so this
-    reproduces exactly what the model was offered before: a parameter is required
-    when it says so, or, lacking a ``required`` key, when it has no ``default`` key.
+    reproduces what the model was offered before: a parameter is required when it
+    says so, or, lacking a ``required`` key, when it has no ``default`` key. One
+    difference is deliberate: a parameter without a description gets no
+    ``description`` keyword, where System 2 used to send ``"description": ""``,
+    which tells a model nothing.
 
     Args:
         parameters: The manifest's ``parameters``: name → that parameter's metadata.
