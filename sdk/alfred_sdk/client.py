@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from types import ModuleType
 
-    from .feature import BaseFeature, CredentialSchema
+    from .feature import BaseFeature, CredentialSchema, ToolMeta
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,8 @@ class AlfredClient:
         self.credentials_endpoint = credentials_endpoint
 
         self._tool_fns: dict[str, Callable[..., Any]] = {}
+        # Each tool's metadata, for the arguments model dispatch validates with.
+        self._tool_metas: dict[str, ToolMeta] = {}
         self._features: list[BaseFeature] = []
 
     # ── Feature Discovery ──
@@ -81,6 +83,7 @@ class AlfredClient:
                         tool_meta.name,
                     )
                 self._tool_fns[tool_meta.name] = bound_method
+                self._tool_metas[tool_meta.name] = tool_meta
 
         self._features.extend(instances)
         return instances
@@ -121,21 +124,52 @@ class AlfredClient:
 
     # ── Dispatch ──
 
-    def dispatch_sync(self, method: str, params: dict[str, Any]) -> Any:
-        """Synchronous dispatch — for testing. Raises KeyError if not found."""
+    def _bind(
+        self, method: str, params: dict[str, Any]
+    ) -> tuple[Callable[..., Any], dict[str, Any]]:
+        """Find a tool and the keyword arguments to call it with.
+
+        Args:
+            method: The tool's qualified name.
+            params: The arguments as decoded from JSON.
+
+        Returns:
+            The bound tool, and ``params`` validated and coerced against its signature
+            (``ToolMeta.validate_arguments``), or unchanged for a hand-built tool.
+
+        Raises:
+            KeyError: No tool has that name.
+            ToolArgumentError: An argument is missing, invalid or unexpected.
+        """
         fn = self._tool_fns.get(method)
         if fn is None:
             raise KeyError(f"Unknown tool: {method}")
-        return fn(**params)
+        meta = self._tool_metas.get(method)
+        return fn, params if meta is None else meta.validate_arguments(params)
+
+    def dispatch_sync(self, method: str, params: dict[str, Any]) -> Any:
+        """Synchronous dispatch — for testing; validates arguments like ``dispatch``.
+
+        Raises:
+            KeyError: No tool has that name.
+            ToolArgumentError: An argument is missing, invalid or unexpected; the tool
+                is not called.
+        """
+        fn, kwargs = self._bind(method, params)
+        return fn(**kwargs)
 
     async def dispatch(self, method: str, params: dict[str, Any]) -> Any:
-        """Async dispatch — calls the bound tool method."""
+        """Async dispatch — validates the arguments, then calls the bound tool method.
+
+        Raises:
+            KeyError: No tool has that name.
+            ToolArgumentError: An argument is missing, invalid or unexpected; the tool
+                is not called.
+        """
         import asyncio
 
-        fn = self._tool_fns.get(method)
-        if fn is None:
-            raise KeyError(f"Unknown tool: {method}")
-        result: Any = fn(**params)
+        fn, kwargs = self._bind(method, params)
+        result: Any = fn(**kwargs)
         if asyncio.iscoroutine(result) or asyncio.isfuture(result):
             result = await result
         return result

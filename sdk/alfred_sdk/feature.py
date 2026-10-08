@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import inspect
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Annotated, Any, Literal, TypeVar, get_origin, overload
 
@@ -14,6 +14,7 @@ from pydantic import (
     Field,
     PydanticUndefinedAnnotation,
     PydanticUserError,
+    ValidationError,
     create_model,
     field_validator,
 )
@@ -21,7 +22,7 @@ from pydantic.fields import FieldInfo
 from pydantic.json_schema import GenerateJsonSchema
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Sequence
 
     from pydantic.json_schema import JsonSchemaWarningKind
 
@@ -193,6 +194,30 @@ def check_object_schema(schema: object) -> dict[str, Any]:
     return schema
 
 
+# ── Dispatch-time argument errors ──
+
+
+class ToolArgumentError(ValueError):
+    """A tool was dispatched with arguments its signature refuses.
+
+    ``AlfredClient.dispatch()``/``dispatch_sync()`` raise it before the tool runs, for a
+    missing, an invalid and an unexpected argument alike. The message names the tool
+    and every failing argument by its parameter name.
+
+    Attributes:
+        tool_name: The tool's qualified name.
+        problems: ``(path, message)`` per failing argument: the signature's order, then
+            unexpected arguments. ``path`` is the parameter name, dotted into a nested
+            value (``window.start``), and empty when the arguments are not an object.
+    """
+
+    def __init__(self, tool_name: str, problems: Sequence[tuple[str, str]]) -> None:
+        self.tool_name = tool_name
+        self.problems = tuple(problems)
+        details = "; ".join(f"{path}: {msg}" if path else msg for path, msg in self.problems)
+        super().__init__(f"Tool '{tool_name}' got invalid arguments: {details}")
+
+
 # ── ToolMeta dataclass ──
 
 
@@ -208,6 +233,13 @@ class ToolMeta:
 
     ``dataclasses.replace(meta, parameters=new)`` keeps the old ``input_schema``, which
     then no longer matches ``new``; pass ``input_schema={}`` as well to re-derive it.
+
+    ``arguments_model`` is the Pydantic model ``@tool`` discovery builds from the
+    method's signature, the same one ``input_schema`` is generated from, and
+    ``validate_arguments`` checks a call's arguments against it. It describes the method,
+    not the manifest, so ``replace`` keeps it. It stays beside the tool: it is not
+    compared, not in the repr, and never copied into a ``ToolManifest``. A tool built by
+    hand leaves it ``None`` and is called with its arguments as they arrive.
     """
 
     name: str
@@ -216,6 +248,51 @@ class ToolMeta:
     audience: ToolAudience = "conscious"
     risk: ToolRisk = "benign"
     input_schema: dict[str, Any] = field(default_factory=dict)
+    arguments_model: type[BaseModel] | None = field(default=None, repr=False, compare=False)
+
+    def validate_arguments(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Check a call's arguments against the tool's signature, coercing them (lax mode).
+
+        An ISO string becomes a ``datetime``, an enum value its member, a dict the
+        nested model, ``"5"`` an ``int``. Only the arguments the call supplied are
+        returned, so an omitted one still takes the method's own default.
+
+        Args:
+            params: The arguments as decoded from JSON, keyed by parameter name.
+
+        Returns:
+            Keyword arguments for the method, by parameter name. ``params`` itself,
+            unchanged, for a tool without an ``arguments_model``.
+
+        Raises:
+            ToolArgumentError: ``params`` is not an object, or an argument is missing,
+                invalid or unexpected; every failing argument is named.
+        """
+        model = self.arguments_model
+        if model is None:
+            return params
+        if not isinstance(params, Mapping):
+            problem = f"Arguments must be a JSON object, not {type(params).__name__}"
+            raise ToolArgumentError(self.name, [("", problem)])
+        # Fields are positional (`p0`, `p1`, ...) with the parameter name as alias.
+        names = {key: info.alias or key for key, info in model.model_fields.items()}
+        problems: list[tuple[str, str]] = []
+        cause: ValidationError | None = None
+        validated: BaseModel | None = None
+        try:
+            validated = model.model_validate(params)
+        except ValidationError as exc:
+            cause = exc
+            # Error locations are by alias, so they name parameters, never `p0`.
+            problems.extend(
+                (".".join(str(part) for part in error["loc"]), error["msg"])
+                for error in exc.errors(include_url=False)
+            )
+        accepted = set(names.values())
+        problems.extend((key, "Unexpected argument") for key in params if key not in accepted)
+        if problems or validated is None:
+            raise ToolArgumentError(self.name, problems) from cause
+        return {names[key]: getattr(validated, key) for key in validated.model_fields_set}
 
     def __post_init__(self) -> None:
         # A new dict: keys the caller adds or removes later cannot drift from the schema.
@@ -379,16 +456,18 @@ def _sets_a_field_default(param: inspect.Parameter, hint: Any) -> bool:
     return False
 
 
-def _signature_input_schema(
+def _signature_arguments(
     qualified_name: str,
     params: list[inspect.Parameter],
     hints: dict[str, Any],
     doc_args: dict[str, str],
-) -> dict[str, Any]:
-    """Generate one JSON Schema for a tool's arguments from its signature.
+) -> tuple[type[BaseModel], dict[str, Any]]:
+    """Build a model of a tool's arguments from its signature, and its JSON Schema.
 
-    Fields are positional names with the parameter name as alias, so a parameter may
-    be called anything (``model_config``, ``_private``) without colliding with BaseModel.
+    One model serves both: the schema a model is offered is generated from it, and
+    dispatch validates the arguments with it, so the two cannot drift. Fields are
+    positional names with the parameter name as alias, so a parameter may be called
+    anything (``model_config``, ``_private``) without colliding with BaseModel.
 
     Args:
         qualified_name: The tool's name, for error messages.
@@ -397,8 +476,8 @@ def _signature_input_schema(
         doc_args: Descriptions from the docstring's ``Args:`` section by parameter name.
 
     Returns:
-        An object schema, ``title`` keywords stripped, always with ``type``,
-        ``properties`` and ``required``.
+        The arguments model, and an object schema generated from it, ``title`` keywords
+        stripped, always with ``type``, ``properties`` and ``required``.
 
     Raises:
         TypeError: A parameter's type cannot be described as JSON Schema, in full, or a
@@ -438,7 +517,7 @@ def _signature_input_schema(
                 f"Tool '{qualified_name}': parameter '{param.name}' has no default but is "
                 "hidden from its JSON Schema, so no model could supply it"
             )
-    return schema
+    return model, schema
 
 
 def _extract_tool_meta(
@@ -460,7 +539,8 @@ def _extract_tool_meta(
         risk: Dispatch risk gate ("benign", "elevated", "critical").
 
     Returns:
-        The tool's metadata, with ``input_schema`` generated from its signature.
+        The tool's metadata, with ``input_schema`` generated from the same signature
+        model it keeps as ``arguments_model`` for dispatch.
 
     Raises:
         TypeError: A parameter cannot be passed by keyword (``*args``, ``**kwargs``,
@@ -503,7 +583,7 @@ def _extract_tool_meta(
                 "the parameter itself (`x: Annotated[int, Field(ge=0)] = 5`)"
             )
 
-    input_schema = _signature_input_schema(qualified_name, params, hints, doc_args)
+    arguments_model, input_schema = _signature_arguments(qualified_name, params, hints, doc_args)
 
     parameters: dict[str, ToolParameter] = {}
     for param in params:
@@ -526,6 +606,7 @@ def _extract_tool_meta(
         audience=audience,
         risk=risk,
         input_schema=input_schema,
+        arguments_model=arguments_model,
     )
 
 
