@@ -12,7 +12,6 @@ from inspect_ai.scorer import CORRECT, INCORRECT, NOANSWER, Score, mean, scorer
 from inspect_ai.solver import solver
 from redis.exceptions import RedisError
 
-from evals.harness.bus import BusError
 from evals.harness.checks import run_check
 from evals.harness.checks.judge_spec import JudgeSpec
 from evals.harness.driver import HarnessError, play
@@ -52,7 +51,9 @@ class RunContext:
     restarts_left: int = RECOVERIES_PER_SUITE
     # Why the stack is dirty: a sample failed mid-play. A request that timed out is still
     # running inside Conscious, and one whose LLM call failed waits in its pending list to
-    # be replayed; either would land in a later sample's evidence. A restart clears both.
+    # be replayed; either would land in a later sample's evidence. A sample that raised also
+    # skipped its cleanup, so its triggers, do-not-disturb and zone are still set. A restart
+    # clears all of it.
     dirty: str | None = None
     # Why the stack is past saving: a restart failed. Every later sample errors at once.
     broken: str | None = None
@@ -153,7 +154,12 @@ def play_scenario(ctx: RunContext) -> Solver:
         variant = ctx.variants[str(state.sample_id)]
         try:
             evidence = await play(ctx.play_ctx, variant, state.epoch)
-        except (HarnessError, StackError, BusError, RedisError) as exc:
+        except RedisError as exc:
+            # redis-py's repr drops the message, and Inspect reports an error by its repr.
+            why = f"lost redis: {type(exc).__name__}: {_first_line(exc)}"
+            ctx.dirty = why
+            raise HarnessError(why) from exc
+        except Exception as exc:  # whatever it was, play() skipped its cleanup
             ctx.dirty = _first_line(exc)
             raise
         state.store.set("evidence", evidence.model_dump(mode="json"))

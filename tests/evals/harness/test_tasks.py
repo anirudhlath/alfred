@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import pytest
 from inspect_ai import eval_async
@@ -8,7 +8,6 @@ from inspect_ai.model import ModelOutput, get_model
 from inspect_ai.util import display_type
 from inspect_ai.util._display import display_type_initialized
 from redis.exceptions import ConnectionError as RedisConnectionError
-from redis.exceptions import RedisError
 
 from bus.schemas.events import AlfredResponse, UserRequest
 from evals.harness.bus import BusError
@@ -278,56 +277,95 @@ class BrokenBus(FakeBus):
         raise self.error
 
 
-@pytest.mark.parametrize(
-    "error",
-    [RedisError("Connection closed by server."), BusError("POST /api/admin/dnd answered 401")],
-    ids=["redis", "bus"],
+# A bus failure, and how the dirty mark and the scorecard name it. redis-py's repr drops
+# the message, so a redis error is named as the harness losing redis.
+BUS_FAILURES = pytest.mark.parametrize(
+    ("error", "named"),
+    [
+        (
+            RedisConnectionError("Connection closed by server."),
+            "lost redis: ConnectionError: Connection closed by server.",
+        ),
+        (BusError("POST /api/admin/dnd answered 401"), "POST /api/admin/dnd answered 401"),
+        # One the harness does not name, such as a bus entry that is not JSON.
+        (ValueError("Expecting value: line 1 column 1"), "Expecting value: line 1 column 1"),
+    ],
+    ids=["redis", "bus", "unnamed"],
 )
+
+
+@BUS_FAILURES
 async def test_a_bus_failure_errors_the_sample_and_dirties_the_stack(
-    tmp_path: Path, error: Exception
+    tmp_path: Path, error: Exception, named: str
 ) -> None:
     stack = FakeStack([True])
     ctx = context(stack, bus=BrokenBus(error))
     ctx.restarts_left = 0
     runs = await evaluate(ctx, tmp_path)
     assert [r.value for r in runs] == ["E", "E"] and stack.restarts == 0
-    first = next(r for r in runs if not r.sample_id.endswith("~1"))
-    assert str(error) in (first.error or "")
+    assert ctx.dirty == named
     # Only a dirty stack makes the next sample ask for the restart it cannot have.
     later = next(r for r in runs if r.sample_id.endswith("~1"))
-    assert "needs a restart" in (later.error or "")
+    assert f"needs a restart (an earlier sample failed mid-play: {named})" in (later.error or "")
+
+
+@BUS_FAILURES
+async def test_a_bus_failure_that_ends_a_sample_is_its_reported_error(
+    tmp_path: Path, error: Exception, named: str
+) -> None:
+    # One sample. Its first try dirties the stack; the retry runs on the restart and fails
+    # the same way, so the bus failure itself is the error the scorecard shows.
+    stack = FakeStack([True])
+    ctx = context(stack, bus=BrokenBus(error))
+    ctx.variants = {k: v for k, v in ctx.variants.items() if not k.endswith("~1")}
+    (run,) = await evaluate(ctx, tmp_path)
+    assert run.value == "E" and stack.restarts == 1
+    assert named in (run.error or "") and "needs a restart" not in (run.error or "")
+
+
+Stage = Literal["collection", "cleanup"]
 
 
 class BusLostAt(FakeBus):
-    """Loses redis late in play(): while it collects the bus's evidence, or while it
-    cleans up. A failure there still raises out of play() and must dirty the stack."""
+    """Loses redis late in play(): as it collects the bus's evidence, or as it cleans up,
+    once it has deleted the sample's triggers."""
 
-    def __init__(self, stage: str) -> None:
+    def __init__(self, stage: Stage) -> None:
         super().__init__()
         self.stage = stage
-        self.tz_reads = 0
 
     async def notifications(self, since_wall: float) -> list[Entry]:
         if self.stage == "collection":
             raise RedisConnectionError("Connection closed by server.")
         return await super().notifications(since_wall)
 
-    async def user_timezone(self) -> str | None:
-        self.tz_reads += 1
-        # play() reads the zone first as it starts, then again as it cleans up.
-        if self.stage == "cleanup" and self.tz_reads == 2:
+    async def delete_triggers(self, trigger_ids: list[str]) -> None:
+        await super().delete_triggers(trigger_ids)
+        if self.stage == "cleanup":
             raise RedisConnectionError("Connection closed by server.")
-        return await super().user_timezone()
+
+
+def creating_a_trigger(bus: FakeBus) -> SendFn:
+    """A polite send whose turn also creates a trigger, which cleanup then deletes."""
+
+    async def send(request: UserRequest, timeout: float) -> AlfredResponse:
+        bus.created()
+        return await polite(request, timeout)
+
+    return send
 
 
 @pytest.mark.parametrize("stage", ["collection", "cleanup"])
-async def test_a_bus_failure_late_in_play_dirties_the_stack(tmp_path: Path, stage: str) -> None:
+async def test_a_bus_failure_late_in_play_dirties_the_stack(tmp_path: Path, stage: Stage) -> None:
     stack = FakeStack([True])
-    ctx = context(stack, bus=BusLostAt(stage))
+    bus = BusLostAt(stage)
+    ctx = context(stack, send=creating_a_trigger(bus), bus=bus)
     ctx.restarts_left = 0
     runs = await evaluate(ctx, tmp_path)
     assert [r.value for r in runs] == ["E", "E"] and stack.restarts == 0
-    assert ctx.dirty == "Connection closed by server."
+    # Cleanup ran only where collection got through: a failed collection skips it.
+    assert bus.deleted == (["t1"] if stage == "cleanup" else [])
+    assert ctx.dirty == "lost redis: ConnectionError: Connection closed by server."
     later = next(r for r in runs if r.sample_id.endswith("~1"))
     assert "needs a restart" in (later.error or "")
 
