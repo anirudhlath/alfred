@@ -3,7 +3,9 @@ prd: [4.2.proactive-notifications, 4.2.notification-delivery]
 status: shipped
 tags: [reminder]
 steps:
-  - user: "Remind me in 10 minutes to check the oven."
+  - user: "Remind me in 10 minutes to take the recycling out."
   - advance_trigger: {}
 expect:
+  # create_trigger defaults an omitted urgency to informational (core/triggers/feature.py).
+  - trigger_created: {type: time, urgency: informational}
   - notification: {source: trigger-engine, urgency: informational, after_step: 1}

@@ -4,6 +4,7 @@ status: shipped
 tags: [dnd, urgency]
 steps:
   - dnd: on
+    settle: 0  # the admin API sets the key before it answers; nothing to wait for
   - user: "Remind me in 10 minutes to take my medication. It's urgent."
   - advance_trigger: {}
 expect:

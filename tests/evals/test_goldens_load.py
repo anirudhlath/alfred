@@ -32,7 +32,7 @@ def test_every_golden_loads_and_names_real_entities() -> None:
         and len(suites["home_control"]) >= 13
         and len(suites["reflex"]) >= 13
         and len(suites["triggers"]) >= 9
-        and len(suites["notifications"]) >= 5
+        and len(suites["notifications"]) >= 6
     )
     for scenarios in suites.values():
         for s in scenarios:

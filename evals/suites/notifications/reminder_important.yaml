@@ -1,0 +1,10 @@
+id: notifications.reminder.important
+prd: [4.2.proactive-notifications]
+status: shipped
+tags: [reminder, urgency]
+steps:
+  - user: "Remind me in 20 minutes to pay the electricity bill. It's important, but not urgent."
+  - advance_trigger: {}
+expect:
+  - trigger_created: {type: time, urgency: important}
+  - notification: {source: trigger-engine, urgency: important, after_step: 1}

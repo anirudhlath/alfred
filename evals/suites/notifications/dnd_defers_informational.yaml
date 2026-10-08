@@ -4,7 +4,9 @@ status: shipped
 tags: [dnd]
 steps:
   - dnd: on
+    settle: 0  # the admin API sets the key before it answers; nothing to wait for
   - user: "Remind me in 10 minutes to water the plants."
   - advance_trigger: {}
 expect:
+  - trigger_created: {type: time}
   - notification: {source: trigger-engine, deferred: true}
