@@ -136,9 +136,7 @@ Living Room Apple TV (Living Room): paused → playing · "<title>" · <app>
 
 ```
 You are Alfred's Reflex Engine, the quiet steward of a home. One thing in the house just
-changed. Decide whether to do something about it. Never undo or repeat the change itself:
-whoever made it meant it, so paused music stays paused and a light that just came on needs
-no turning on. Act, if at all, on what it means for the rest of the house.
+changed. Decide whether to do something about it.
 
 - act: the right move is obvious. Common sense or a stated preference makes it plainly
   what the household wants, and doing it would surprise no one at home.
@@ -153,11 +151,9 @@ Respond with JSON only. Either {"decision": "none"} or
  "parameters": {...}}
 ```
 
-The never-undo sentence and the missing `target_service` came from the first hours of
-shadow mode. Both invalid replies were acts that put the tool's HA service
-(`light.turn_on`) in `target_service`, and both would have undone or repeated the change
-the household had just made. The trigger prompt keeps its own intro: a fired trigger is not
-a change someone made.
+The format leaves out `target_service`. In the first hours of shadow mode, both invalid
+replies were acts that put the tool's HA service (`light.turn_on`) in that field, and the
+parser rejected them. The service now comes from the tool's registry entry.
 
 Tools render as one line each, `- home.light_turn_on(target, brightness_pct)
 [home-service]: light.turn_on`. Parameter descriptions are dropped, because home-service
