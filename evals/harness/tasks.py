@@ -52,8 +52,8 @@ class RunContext:
     # Why the stack is dirty: a sample failed mid-play. A request that timed out is still
     # running inside Conscious, and one whose LLM call failed waits in its pending list to
     # be replayed; either would land in a later sample's evidence. A sample that raised also
-    # skipped its cleanup, so its triggers, do-not-disturb and zone are still set. A restart
-    # clears all of it.
+    # skipped or broke off its cleanup, so its triggers, do-not-disturb or zone may still be
+    # set. A restart clears all of it.
     dirty: str | None = None
     # Why the stack is past saving: a restart failed. Every later sample errors at once.
     broken: str | None = None
@@ -159,7 +159,7 @@ def play_scenario(ctx: RunContext) -> Solver:
             why = f"lost redis: {type(exc).__name__}: {_first_line(exc)}"
             ctx.dirty = why
             raise HarnessError(why) from exc
-        except Exception as exc:  # whatever it was, play() skipped its cleanup
+        except Exception as exc:  # whatever it was, play() skipped or broke off its cleanup
             ctx.dirty = _first_line(exc)
             raise
         state.store.set("evidence", evidence.model_dump(mode="json"))
