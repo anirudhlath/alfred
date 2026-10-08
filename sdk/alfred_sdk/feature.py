@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import inspect
 import re
 from collections.abc import Callable
@@ -14,6 +15,7 @@ from pydantic import (
     PydanticUndefinedAnnotation,
     PydanticUserError,
     create_model,
+    field_validator,
 )
 from pydantic.fields import FieldInfo
 from pydantic.json_schema import GenerateJsonSchema
@@ -50,6 +52,19 @@ class ToolParameter(BaseModel):
     default: Any = None
     required: bool = False
     json_schema: dict[str, Any] | None = None
+
+    @field_validator("json_schema")
+    @classmethod
+    def _own_json_schema(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        """Keep a deep copy, so the caller changing its dict later cannot change this one.
+
+        Args:
+            value: The ``json_schema`` as passed in.
+
+        Returns:
+            A deep copy of it.
+        """
+        return copy.deepcopy(value)
 
 
 ToolAudience = Literal["reflex", "conscious"]
@@ -186,7 +201,11 @@ class ToolMeta:
 
     ``input_schema`` is the tool's arguments as one JSON Schema object. Left empty, it
     is assembled from ``parameters``; passed in, it must pass ``check_object_schema``,
-    or construction raises ``TypeError`` naming the tool.
+    or construction raises ``TypeError`` naming the tool, and a deep copy is kept, so
+    the caller changing its dict later cannot change this frozen one.
+
+    ``dataclasses.replace(meta, parameters=new)`` keeps the old ``input_schema``, which
+    then no longer matches ``new``; pass ``input_schema={}`` as well to re-derive it.
     """
 
     name: str
@@ -205,6 +224,7 @@ class ToolMeta:
             check_object_schema(self.input_schema)
         except ValueError as exc:
             raise TypeError(f"Tool '{self.name}': {exc}") from exc
+        object.__setattr__(self, "input_schema", copy.deepcopy(self.input_schema))
 
 
 # ── Docstring parser ──
