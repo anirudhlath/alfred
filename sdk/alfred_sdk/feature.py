@@ -315,7 +315,8 @@ def _signature_input_schema(
         ``properties`` and ``required``.
 
     Raises:
-        TypeError: A parameter's type cannot be described as JSON Schema, in full.
+        TypeError: A parameter's type cannot be described as JSON Schema, in full, or a
+            parameter without a default is hidden from the schema (``SkipJsonSchema``).
     """
     fields: dict[str, Any] = {}
     for index, param in enumerate(params):
@@ -343,6 +344,14 @@ def _signature_input_schema(
     schema = _strip_titles(schema)
     schema.setdefault("properties", {})
     schema.setdefault("required", [])
+    # `SkipJsonSchema` hides a parameter from the schema. With a default that is fine (the
+    # call falls back to it); without one, no model could ever supply it.
+    for param in params:
+        if param.default is inspect.Parameter.empty and param.name not in schema["properties"]:
+            raise TypeError(
+                f"Tool '{qualified_name}': parameter '{param.name}' has no default but is "
+                "hidden from its JSON Schema, so no model could supply it"
+            )
     return schema
 
 
@@ -371,7 +380,8 @@ def _extract_tool_meta(
         TypeError: A parameter cannot be passed by keyword (``*args``, ``**kwargs``,
             positional-only), a type hint cannot be resolved (usually a type imported
             under ``if TYPE_CHECKING:`` in a module with ``from __future__ import
-            annotations``), or a type cannot be described as JSON Schema.
+            annotations``), a type cannot be described as JSON Schema, or a parameter
+            without a default is hidden from the schema.
     """
     from typing import get_type_hints
 

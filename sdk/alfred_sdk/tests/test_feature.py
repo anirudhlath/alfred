@@ -652,6 +652,27 @@ def test_annotated_constraints_reach_the_schema() -> None:
     assert meta.parameters["hidden"].type == "int"
 
 
+class _DescribedTwiceFeature(BaseFeature):
+    feature_name = "described"
+
+    @tool
+    def dim(self, level: Annotated[int, Field(ge=0, description="From Field.")]) -> dict[str, Any]:
+        """Dim.
+
+        Args:
+            level: From the docstring.
+        """
+        return {}
+
+
+def test_docstring_description_wins_over_field_description() -> None:
+    assert _schema(_DescribedTwiceFeature(), "described.dim")["properties"]["level"] == {
+        "type": "integer",
+        "minimum": 0,
+        "description": "From the docstring.",
+    }
+
+
 _UNSET = object()
 
 
@@ -802,9 +823,19 @@ class _DanglingModelFeature(BaseFeature):
         return {}
 
 
+class _HiddenRequiredFeature(BaseFeature):
+    feature_name = "hidden"
+
+    @tool
+    def bad(self, secret: Annotated[int, SkipJsonSchema()]) -> dict[str, Any]:
+        """A required parameter no model could ever be shown, and so never supply."""
+        return {}
+
+
 @pytest.mark.parametrize(
     ("feature", "name"),
     [
+        (_HiddenRequiredFeature, "hidden.bad"),
         (_VarArgsFeature, "varargs.bad"),
         (_KwArgsFeature, "kwargs.bad"),
         (_PositionalOnlyFeature, "posonly.bad"),
