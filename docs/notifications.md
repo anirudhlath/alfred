@@ -16,7 +16,7 @@ graph TD
     DND -->|Yes + non-urgent| DEFER[Redis List<br/>alfred:notifications:deferred]
     DND -->|No or Urgent| STREAM[Redis Stream<br/>alfred:notifications:dispatch]
     STREAM --> CG1[conscious-delivery group<br/>→ SignalAdapter]
-    STREAM --> CG2[channels-delivery group<br/>→ WebSocket + Voice]
+    STREAM --> CG2[channels-delivery group<br/>→ WebSocket + APNs + Satellite]
     DEFER -->|DND expiry trigger<br/>or DND cleared| DRAIN[drain_deferred]
     DRAIN --> STREAM
 ```
@@ -27,9 +27,12 @@ graph TD
 
 | Level | Value | Channels |
 |-------|-------|----------|
-| INFORMATIONAL | `"informational"` | Signal only |
-| IMPORTANT | `"important"` | Signal + WebSocket |
-| URGENT | `"urgent"` | Signal + WebSocket + Voice (bypasses DND) |
+| INFORMATIONAL | `"informational"` | Signal + APNs |
+| IMPORTANT | `"important"` | Signal + WebSocket + APNs |
+| URGENT | `"urgent"` | Signal + WebSocket (with spoken audio) + APNs + Satellite (bypasses DND) |
+
+APNs delivers only when its credentials are configured, and Satellite only when
+`config/satellites.yaml` lists devices.
 
 ### Notification (Pydantic BaseModel)
 
@@ -82,8 +85,21 @@ at import time and are initialized via `set_instance()` during startup.
 | Adapter | Urgencies | Delivery |
 |---------|-----------|----------|
 | SignalChannelAdapter | All | Formats `"Title: body"` → SignalBridge.send_notification() |
-| WebSocketChannelAdapter | Important, Urgent | JSON payload to all connected WS sessions |
-| VoiceChannelAdapter | Urgent only | TTS synthesis → base64 audio via WebSocket |
+| WebSocketChannelAdapter | Important, Urgent | JSON `notification` frame to all connected WS sessions; an Urgent one also carries its TTS audio (base64 WAV in `audio`) |
+| APNsChannelAdapter | All | HTTP/2 push to every registered iOS device token |
+| SatelliteChannelAdapter | Urgent only | TTS audio played on every connected voice satellite ([voice-satellites.md](voice-satellites.md)) |
+
+### Spoken audio
+
+An URGENT notification is spoken once per surface. The WebSocket adapter synthesises
+`"<title>: <body>"` and sends the audio inside the same `notification` frame as the text,
+and the satellite adapter plays its own synthesis on the satellites. Both synthesise through
+`synthesize_async` (`core/channels/voice_models.py`), in a worker thread, because synthesis
+takes seconds and the channels event loop also serves every WebSocket and delivery.
+
+There is no separate voice adapter. A second adapter pushing audio to the same WebSocket
+sessions would speak every URGENT notification twice (the hazard
+[#56](https://github.com/anirudhlath/alfred/issues/56) investigates).
 
 ### Device Registration (APNs)
 

@@ -1,8 +1,9 @@
-"""Tests for concrete channel adapters: Signal, WebSocket, Voice."""
+"""Tests for concrete channel adapters: Signal, WebSocket."""
 
 from __future__ import annotations
 
 import base64
+import threading
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -109,6 +110,29 @@ class TestWebSocketChannelAdapter:
         assert payload["audio"] == base64.b64encode(b"\x00\x01\x02\x03").decode()
 
     @pytest.mark.asyncio
+    async def test_urgent_synthesis_runs_off_event_loop(self) -> None:
+        """Synthesis takes seconds; on the loop it would stall every WebSocket and
+        delivery in the channels process (issue #313)."""
+        from core.notifications.adapters.websocket import WebSocketChannelAdapter
+
+        synth_threads: list[int] = []
+
+        def synthesize(text: str) -> bytes:
+            synth_threads.append(threading.get_ident())
+            return b"RIFFwav"
+
+        tts = MagicMock()
+        tts.synthesize.side_effect = synthesize
+        adapter = WebSocketChannelAdapter(
+            get_sessions=MagicMock(return_value=[AsyncMock()]),
+            aget_tts=AsyncMock(return_value=tts),
+        )
+        await adapter.deliver(_make_notification(Urgency.URGENT))
+
+        assert synth_threads
+        assert synth_threads[0] != threading.get_ident()
+
+    @pytest.mark.asyncio
     async def test_important_notification_has_no_audio(self) -> None:
         from core.notifications.adapters.websocket import WebSocketChannelAdapter
 
@@ -143,51 +167,6 @@ class TestWebSocketChannelAdapter:
         payload = ws.send_json.call_args[0][0]
         assert payload["type"] == "notification"
         assert "audio" not in payload
-
-
-class TestVoiceChannelAdapter:
-    @pytest.mark.asyncio
-    async def test_synthesizes_and_pushes_audio(self) -> None:
-        from core.notifications.adapters.voice import VoiceChannelAdapter
-
-        tts = MagicMock()
-        tts.synthesize.return_value = b"\x00\x01\x02\x03"  # Fake WAV bytes
-        ws = AsyncMock()
-        session_getter = MagicMock(return_value=[ws])
-
-        adapter = VoiceChannelAdapter(get_tts=lambda: tts, get_sessions=session_getter)
-        await adapter.deliver(_make_notification(Urgency.URGENT))
-
-        tts.synthesize.assert_called_once_with("Test: Hello world")
-        ws.send_json.assert_called_once()
-        payload = ws.send_json.call_args[0][0]
-        assert payload["type"] == "voice_notification"
-        assert payload["audio"] == base64.b64encode(b"\x00\x01\x02\x03").decode()
-
-    @pytest.mark.asyncio
-    async def test_skips_when_tts_unavailable(self) -> None:
-        from core.notifications.adapters.voice import VoiceChannelAdapter
-
-        adapter = VoiceChannelAdapter(get_tts=lambda: None, get_sessions=MagicMock(return_value=[]))
-        # Should not raise
-        await adapter.deliver(_make_notification(Urgency.URGENT))
-
-    @pytest.mark.asyncio
-    async def test_skips_when_no_sessions(self) -> None:
-        from core.notifications.adapters.voice import VoiceChannelAdapter
-
-        tts = MagicMock()
-        adapter = VoiceChannelAdapter(get_tts=lambda: tts, get_sessions=MagicMock(return_value=[]))
-        await adapter.deliver(_make_notification(Urgency.URGENT))
-        tts.synthesize.assert_not_called()
-
-    def test_supports_urgent_only(self) -> None:
-        from core.notifications.adapters.voice import VoiceChannelAdapter
-
-        adapter = VoiceChannelAdapter(get_tts=lambda: None, get_sessions=MagicMock(return_value=[]))
-        assert not adapter.supports_urgency(Urgency.INFORMATIONAL)
-        assert not adapter.supports_urgency(Urgency.IMPORTANT)
-        assert adapter.supports_urgency(Urgency.URGENT)
 
 
 class TestD28NoDoubleTTS:

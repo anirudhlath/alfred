@@ -212,7 +212,7 @@ async def run(config: AlfredConfig) -> None:
             },
         )
 
-    # Import only Signal adapter — WebSocket + Voice are delivered by the channels process
+    # Import only Signal adapter — WebSocket, APNs and Satellite deliver from the channels process
     import core.notifications.adapters.signal
     from core.channels.signal_bridge.bridge import SignalBridge
     from core.notifications.channels import ChannelRegistry
@@ -245,7 +245,7 @@ async def run(config: AlfredConfig) -> None:
     )
 
     # Inject pre-built adapter instances that need constructor args.
-    # Signal adapter lives here; WebSocket + Voice in the channels process.
+    # Signal adapter lives here; WebSocket, APNs and Satellite in the channels process.
     # Notifications reach all channels via the dispatch stream (each process
     # runs a delivery worker with its own consumer group).
     signal_bridge = SignalBridge(redis=r, phone_number=config.signal_phone_number)

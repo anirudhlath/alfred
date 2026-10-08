@@ -121,7 +121,7 @@ Agentic tool-use loop with parallel execution (`asyncio.gather`).
 - `dnd.py` — DNDChecker (manual Redis key + calendar meeting detection)
 - `channels.py` — `ChannelAdapter` ABC + `ChannelRegistry` (decorator-based registration)
 - `publisher.py` — Public API (thin facade over dispatcher)
-- `adapters/` — Signal, WebSocket, APNs, Satellite concrete adapters (Voice adapter exists but is not loaded in channels process; TTS for URGENT notifications is handled inline by the WebSocket adapter). `SatelliteChannelAdapter` (`adapters/satellite.py`) is URGENT-only, registered only when `config/satellites.yaml` has entries, and broadcasts TTS-synthesized speech to every currently-connected satellite via `SatelliteBridge.play_wav_all()`
+- `adapters/` — Signal, WebSocket, APNs, Satellite concrete adapters. There is no voice adapter: URGENT TTS rides inside the WebSocket adapter's single `notification` frame — a second adapter pushing audio to the same sessions would speak it twice (#56). Both TTS-speaking adapters synthesise via `synthesize_async` (`channels/voice_models.py`), never on the loop. `SatelliteChannelAdapter` (`adapters/satellite.py`) is URGENT-only, registered only when `config/satellites.yaml` has entries, and broadcasts TTS-synthesized speech to every currently-connected satellite via `SatelliteBridge.play_wav_all()`
 
 ### Notification Data Flow
 
