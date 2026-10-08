@@ -39,7 +39,7 @@ dev = [
     "types-PyYAML>=6.0",
     "watchfiles>=1.0",
     "fakeredis>=2.39.0",
-    "httpx2>=2.13.1",
+    "httpx2>=2.13.1",  # starlette.testclient's transport; without it TestClient falls back to httpx and warns
 ]
 integrations = [
     "caldav>=1.3",
