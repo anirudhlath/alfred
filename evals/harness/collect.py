@@ -20,7 +20,7 @@ from pydantic import BaseModel, ValidationError
 
 from bus.schemas.events import ActionRequest, TriggerCreated, TriggerFired
 from core.notifications.schema import Notification
-from core.triggers.models import ActionPayload
+from core.triggers.models import TRIGGER_ENGINE_SOURCE, ActionPayload
 from evals.harness.bus import window_start_ms
 from evals.harness.errors import HarnessError
 from evals.harness.evidence import NotificationRecord, TriggerFire, TriggerRecord
@@ -39,7 +39,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 TOOL_CALL = "tool-call"  # TriggerCreated.created_by when System 2 used its tool
-TRIGGER_ENGINE = "trigger-engine"  # ActionRequest.source when a trigger with an action fires
 
 
 def _on_sample_clock(wall: float, started: float, started_wall: float) -> float:
@@ -87,7 +86,7 @@ def _engine_ran(event: dict[str, Any]) -> ActionPayload | None:
     if event.get("event_type") != "action_request":
         return None
     request = _read(ActionRequest, event, f"action_request on {ACTIONS_STREAM}")
-    if request.source != TRIGGER_ENGINE or request.confirmed:
+    if request.source != TRIGGER_ENGINE_SOURCE or request.confirmed:
         return None
     return ActionPayload(
         tool_name=request.tool_name,

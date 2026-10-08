@@ -11,13 +11,17 @@ from pydantic import BaseModel
 from bus.schemas.events import StateChangedEvent  # noqa: TC001
 from core.notifications.schema import Urgency
 
+# Who a trigger's fire is from: the source of the ActionRequest the engine sends for a
+# trigger with an action, and of the notification Reflex sends for one without.
+TRIGGER_ENGINE_SOURCE = "trigger-engine"
+
 
 class ActionPayload(BaseModel):
     """Action to execute when a trigger fires.
 
     Contains the subset of ActionRequest fields needed to describe the action.
     The Trigger Engine converts this to a full ActionRequest on fire, setting
-    source='trigger-engine' and generating event metadata.
+    source=TRIGGER_ENGINE_SOURCE and generating event metadata.
     """
 
     tool_name: str

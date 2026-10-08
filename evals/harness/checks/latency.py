@@ -6,14 +6,13 @@ from typing import TYPE_CHECKING, Literal, Self, assert_never, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from core.triggers.models import TRIGGER_ENGINE_SOURCE
 from evals.harness.checks.result import CheckResult, failed, passed
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from evals.harness.evidence import Evidence, StepKind
-
-TRIGGER_SOURCE = "trigger-engine"  # the source of the notification a trigger's fire sends
 
 StepMetric = Literal["reflex_ms", "reminder_fire_ms"]  # timed from a step of one kind
 
@@ -64,7 +63,7 @@ def _reminder_fire_ms(evidence: Evidence, step: int) -> Measured:
         for n in evidence.notifications
         if n.t is not None
         and n.t >= advance.t
-        and n.source == TRIGGER_SOURCE
+        and n.source == TRIGGER_ENGINE_SOURCE
         and advance.name.lower() in n.title.lower()
     ]
     if not sent:

@@ -1,24 +1,19 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import get_args
 
 import pytest
 from pydantic import ValidationError
 
-from bus.schemas.events import ReflexDecision
-from core.notifications.schema import Urgency as NotificationUrgency
 from evals.harness.evidence import (
     STEP_KINDS,
     Advance,
     ClockSet,
-    Decision,
     Evidence,
     NotificationRecord,
     ReflexCall,
     TriggerFire,
     TriggerRecord,
-    Urgency,
 )
 from tests.evals.harness.factories import evidence
 
@@ -174,11 +169,3 @@ def test_a_naive_trigger_created_at_reads_as_utc() -> None:
     )
     assert record.created_at == datetime(2026, 10, 8, 18, 0, tzinfo=UTC)
     assert record.created_at.tzinfo is UTC
-
-
-def test_decision_matches_what_reflex_proposals_carry() -> None:
-    assert get_args(Decision) == get_args(ReflexDecision)
-
-
-def test_urgency_matches_the_notification_urgencies() -> None:
-    assert set(get_args(Urgency)) == {u.value for u in NotificationUrgency}

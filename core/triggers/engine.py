@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 from bus.schemas.events import ActionRequest, StateChangedEvent, TriggerFired
-from core.triggers.models import BaseTrigger, TriggerContext
+from core.triggers.models import TRIGGER_ENGINE_SOURCE, BaseTrigger, TriggerContext
 from shared.streams import ACTIONS_STREAM, EVENTS_MAXLEN, EVENTS_STREAM, SCRATCHPAD_QUEUE
 from shared.types import AioRedis  # noqa: TC001
 from shared.usertime import get_user_timezone
@@ -59,7 +59,7 @@ class TriggerEngine:
 
         if trigger.action is not None:
             action = ActionRequest(
-                source="trigger-engine",
+                source=TRIGGER_ENGINE_SOURCE,
                 target_service=trigger.action.target_service,
                 tool_name=trigger.action.tool_name,
                 parameters=trigger.action.parameters,

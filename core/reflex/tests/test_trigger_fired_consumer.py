@@ -10,6 +10,7 @@ import pytest
 
 from bus.schemas.events import ReflexProposal, TriggerFired
 from core.notifications.schema import Urgency
+from core.triggers.models import TRIGGER_ENGINE_SOURCE
 
 
 @pytest.fixture
@@ -62,6 +63,7 @@ async def test_handle_trigger_fired_publishes_notification(
     mock_publisher.publish.assert_called_once()
     call_kwargs = mock_publisher.publish.call_args
     assert call_kwargs.kwargs["urgency"] == Urgency.IMPORTANT
+    assert call_kwargs.kwargs["source"] == TRIGGER_ENGINE_SOURCE
     assert "Trigger:" in call_kwargs.kwargs["title"]
     assert "take medicine" in call_kwargs.kwargs["title"]
 

@@ -11,9 +11,11 @@ from typing import Any, Literal, Self, get_args
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from bus.schemas.events import ReflexDecision, UrgencyLevel
+
 Role = Literal["system1", "system2", "librarian", "unknown"]
-Decision = Literal["act", "ask", "none", "invalid"]
-Urgency = Literal["informational", "important", "urgent"]
+Decision = ReflexDecision
+Urgency = UrgencyLevel
 StepKind = Literal["user", "ha_event", "wait", "clock", "advance_trigger", "dnd"]
 STEP_KINDS: tuple[StepKind, ...] = get_args(StepKind)
 

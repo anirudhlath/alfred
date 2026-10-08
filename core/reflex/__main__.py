@@ -31,6 +31,7 @@ from core.reflex.runner import (
 )
 from core.reflex.tool_registry import ToolRegistry
 from core.routing.domain_router import DomainRouter
+from core.triggers.models import TRIGGER_ENGINE_SOURCE
 from core.warmup import start_warmup
 from domains.home.home_agent import HomeAgent
 from sdk.alfred_sdk.telemetry import clear_telemetry_buffer, get_telemetry_buffer
@@ -108,7 +109,7 @@ async def _handle_trigger_fired(
     await publisher.publish(
         title=f"Trigger: {trigger_event.trigger_name}",
         body=build_notification_body(trigger_event),
-        source="trigger-engine",
+        source=TRIGGER_ENGINE_SOURCE,
         urgency=urgency,
     )
 

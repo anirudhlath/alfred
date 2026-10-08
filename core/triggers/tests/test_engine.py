@@ -10,7 +10,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.triggers.models import ActionPayload, TriggerContext
+from bus.schemas.events import ActionRequest
+from core.triggers.models import TRIGGER_ENGINE_SOURCE, ActionPayload, TriggerContext
 from core.triggers.registry import TriggerRegistry
 from core.triggers.store import TriggerStore
 from shared.streams import EVENTS_MAXLEN, EVENTS_STREAM, USER_TIMEZONE_KEY
@@ -75,6 +76,8 @@ async def test_fire_with_action_publishes_action_request(
     call_args = mock_redis.xadd.call_args
     stream_name = call_args[0][0]
     assert stream_name == "alfred:actions"
+    request = ActionRequest.model_validate_json(call_args[0][1]["event"])
+    assert request.source == TRIGGER_ENGINE_SOURCE
 
 
 @pytest.mark.asyncio
